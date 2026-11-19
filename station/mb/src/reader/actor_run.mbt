@@ -50,7 +50,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         }
         ignore(self.deps(a, "cleanArchive", [jstr(a.key)]))
       })
-    "kick" => self.enqueue(a, async fn() { self.pump(a) })
+    "kick" => {
+      let before = a.start_failures
+      self.enqueue(a, async fn() { self.pump(a, before_failures=before) })
+    }
     "notify" => {
       // (not told where it is archived: Node's to see, as it asks)
       a.notices.push(str_of(Some(arg(0))).unwrap_or(""))
@@ -609,6 +612,7 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
       return self.recover(a)
     }
   }
+  let before = a.start_failures
   self.enqueue(a, async fn() {
     if a.waiting is Some(_) && a.waiting_until <= self.now {
       self.wait_ms(a, a.waiting_seconds, 0.0)
@@ -616,7 +620,7 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
     }
-    self.pump(a)
+    self.pump(a, before_failures=before)
     if a.notices.length() > 0 {
       self.give_notices(a)
     }
@@ -1018,7 +1022,17 @@ fn Actors::interrupted(self : Actors, a : Actor) -> Bool {
 }
 
 ///|
-async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
+/// What `pending` hands over, as one key: the same messages waiting again say the same.
+fn handed_ids(pending : Array[Json]) -> String {
+  pending.map(m => m.value("handed").unwrap_or(Json::null()).stringify()).join(",")
+}
+
+///|
+/// `before_failures`: how many turns had failed to start as it was asked (a kick, a release queued behind a start
+/// that then failed); -1, now. Asked before a failure, with the same messages still waiting and none since, it starts
+/// no turn on them again: the hub's kicks at a start came three at once, each waiting 120 s on a runtime that could not
+/// start (2026-11-19). What comes after the failure, a message or a wake of its own, starts one.
+async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> Unit raise {
   // (stopped by a move and spoken to: said once in this stop what it waits for and what to do; what was said is kept:
   // actor.ts `pump`, SessionDeps `stoppedNotice`)
   let held = self.held(a)
@@ -1049,6 +1063,14 @@ async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
   }
   let was = a.agent
   let busy = self.busy_of(a, was)
+  let hkey = handed_ids(d.pending)
+  if !busy &&
+    before_failures >= 0 &&
+    before_failures < a.start_failures &&
+    hkey != "" &&
+    hkey == a.failed_handed {
+    return
+  }
   // (let go of meanwhile: its turn's end pumps again)
   guard still(a, was) else { return }
   if busy && was is Some(agent) {
@@ -1080,7 +1102,14 @@ async fn Actors::pump(self : Actors, a : Actor) -> Unit raise {
     Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
     None => turn_for_nobody()
   }
-  self.start_turn(a, "input", d.text, by~)
+  self.start_turn(a, "input", d.text, by~) catch {
+    e => {
+      a.start_failures += 1
+      a.failed_handed = hkey
+      raise e
+    }
+  }
+  a.failed_handed = ""
   self.delivered(a, d)
 }
 
@@ -1574,16 +1603,26 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   let kind = str_of(outcome.value("kind")).unwrap_or("")
   let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
-  // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
-  // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on one
-  // lent anew and goes on once)
-  if a.runtime == "agy" && kind == "failed" && reason == "other" &&
-    message.to_lower().contains("agent execution terminated due to error") && a.agent is Some(g) {
-    if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
-      reason = "auth"
+  let mut lent_expired = false
+  if a.runtime == "agy" && kind == "failed" && a.agent is Some(g) {
+    // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
+    // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on
+    // one lent anew and goes on)
+    if reason == "other" && message.to_lower().contains("agent execution terminated due to error") {
+      if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
+        reason = "auth"
+      }
+      if !self.is_current(a, generation) {
+        return
+      }
     }
-    if !self.is_current(a, generation) {
-      return
+    // (a long-running turn on a borrowed agy sign-in outlives multiple 1-hour access tokens: if this `auth_retry`
+    // turn ran on a valid borrowed token until it naturally expired, reopen on one lent anew again)
+    if reason == "auth" && a.turn is Some({ auth_retried: true, .. }) {
+      lent_expired = truthy(self.agent_do(a, g, "lentExpired", []) catch { _ => Json::null() })
+      if !self.is_current(a, generation) {
+        return
+      }
     }
   }
   // (undefined: none shown; null: the account's; a name: that model's own)
@@ -1680,6 +1719,19 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       ignore(self.store(a, "setWaitFor", [jstr(t.id), jstr(self.t(a, "station.wait.overloaded")), jbool(false)]))
     }
   }
+  // (a turn that said nothing, its process never having reached the station's tools at all: Antigravity CLI tells
+  // nothing of an MCP server it could not connect, so no call of one failed; Node keeps what its token made, `toolsUnheard`)
+  if a.tools_lost is None && kind == "completed" && !stop_requested && !a.posted && turn is Some({ declared: None, .. }) &&
+    a.agent is Some(g) {
+    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+    match unheard {
+      String(why) => {
+        self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })
+        a.tools_lost = Some(why)
+      }
+      _ => ()
+    }
+  }
   let lost = a.tools_lost
   a.tools_lost = None
   if lost is Some(why) {
@@ -1735,7 +1787,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
   if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
-    !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && t.declared is None {
     a.nudges = 0
     let agent = a.agent
     self.set_agent(a, None)

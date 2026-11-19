@@ -8,7 +8,8 @@
 // leaves: scrolled off, the card goes); nothing worked out frame by frame (the old view's peeks_built, peeks_frame,
 // peeks_settle pass a node's Peek by). An Android device's (H.264 alone, where the host decodes it) is its Peek's
 // Stream, drawn in the card by a stream node (ui's stream) the Peek closes itself (peek_drop_video: as the card leaves
-// sight, and past video_peeks_most).
+// sight, and past video_peeks_most). A card's capsule, its mark and its two lines are the library's
+// (@sf.link_card_node, link_mark_node, link_words_node); this is what the core says of each and where a press leads.
 
 ///|
 /// Whether the page what is made in it is on shows (a chat's page made as nodes lends it to its rows:
@@ -55,7 +56,7 @@ fn terminal_link_card_node(v : @view.View, src : Source, href : String, to : @sf
   link_card_node(
     v,
     href,
-    fn() { Some(terminal_mark) },
+    fn() { Some(terminal_mark.name) },
     fn() {
       match (words, card()) {
         (Some(w), _) => w
@@ -115,7 +116,7 @@ fn screen_link_card_node(
       fn() {
         match card() {
           None => None
-          Some(k) => Some(if k.kind == "browser" { globe_mark } else { monitor_mark })
+          Some(k) => Some(if k.kind == "browser" { globe_mark.name } else { monitor_mark.name })
         }
       },
       fn() {
@@ -150,7 +151,7 @@ fn service_link_card_node(v : @view.View, src : Source, href : String, to : @sf.
   link_card_node(
     v,
     href,
-    fn() { Some(globe_mark) },
+    fn() { Some(globe_mark.name) },
     fn() {
       match words {
         Some(w) => w
@@ -163,52 +164,18 @@ fn service_link_card_node(v : @view.View, src : Source, href : String, to : @sf.
 }
 
 ///|
-/// A link's card (link_card's) in `v`: a capsule a file's card's size, `mark` in its room (none: the room kept), its
-/// `title` over its `line` (each as high as its words at least), the title quieter where `gone`; tapped, `href` opened (open_link, as the link does). Named
-/// as a link by its title. Each as it changes.
+/// A link's card (link_card's, @sf.link_card_node) in `v`: `mark` (an icon's name; none: the room kept), its `title`
+/// over its `line`, the title quieter where `gone`; tapped, `href` opened (open_link, as the link does). Each as it
+/// changes.
 fn link_card_node(
   v : @view.View,
   href : String,
-  mark : () -> LinkMark?,
+  mark : () -> String?,
   title : () -> String,
   line : () -> String,
   gone : () -> Bool,
 ) -> Unit {
-  v.box(fn(b) {
-    @sf.style_node(b, fn() { link_card })
-    @sf.presses_node(b, fn() { open_link(href) })
-    b.says(By(fn() { Some(@view.said(Link, label=title())) })) |> ignore
-    link_mark_node(b, mark)
-    link_words_node(b, link_words, true, title, line, gone)
-  })
-  |> ignore
-}
-
-///|
-/// A card's two lines (link_card_words') in `v`, in a box of `look` (`in_row`: laid out along a row): its `title` over
-/// its `line`, each as high as its words at least, the title quieter where `gone`. Each as it changes.
-fn link_words_node(
-  v : @view.View,
-  look : @ui.Style,
-  in_row : Bool,
-  title : () -> String,
-  line : () -> String,
-  gone : () -> Bool,
-) -> Unit {
-  v.box(fn(w) {
-    @sf.style_node(w, fn() { look }, in_row~)
-    w.box(fn(l) {
-      @sf.style_node(l, fn() { link_title_line_node })
-      @sf.words_node(l, title, fn() { if gone() { link_title_gone } else { link_title } }) |> ignore
-    })
-    |> ignore
-    w.box(fn(l) {
-      @sf.style_node(l, fn() { link_line_line_node })
-      @sf.words_node(l, line, fn() { link_line }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.link_card_node(v, mark, title, line, gone, fn() { open_link(href) })
 }
 
 ///|
@@ -229,10 +196,8 @@ fn screen_peek_card_node(
     @sf.presses_node(b, fn() { open_link(href) })
     b.says(By(fn() { Some(@view.said(Link, label=title())) })) |> ignore
     screen_peek_node(b, src, key, to.station, to.screen, card)
-    link_words_node(
+    @sf.link_words_node(
       b,
-      peek_card_words,
-      false,
       title,
       fn() {
         match card() {
@@ -241,6 +206,7 @@ fn screen_peek_card_node(
         }
       },
       fn() { false },
+      look=peek_card_words,
     )
   })
   |> ignore
@@ -390,8 +356,8 @@ fn screen_peek_node(
     |> ignore
     // (its mark in its middle till a picture is decoded; the picture over it then, which covers it)
     f.show(at_once=true, fn() { newest() < 0 }, fn(m) {
-      link_mark_node(m, fn() {
-        Some(if card().map(fn(k) { k.kind }) == Some("browser") { globe_mark } else { monitor_mark })
+      @sf.link_mark_node(m, fn() {
+        Some(if card().map(fn(k) { k.kind }) == Some("browser") { globe_mark.name } else { monitor_mark.name })
       })
     })
     // (the newest decoded and any newer one decoding, each over it all, filling it from its top, the newer over it)
@@ -433,32 +399,6 @@ fn screen_peek_node(
   })
   |> ignore
 }
-
-///|
-/// A mark in its room, 24, muted (link_mark's) in `v`; none, its room kept, while `mark` says none.
-fn link_mark_node(v : @view.View, mark : () -> LinkMark?) -> Unit {
-  v.box(fn(r) {
-    @sf.style_node(r, fn() { link_mark_box }, in_row=true)
-    r.pick(fn() { mark().map(fn(m) { m.name }) }, fn(i, name) {
-      match name {
-        Some(n) => @sf.icon_node(i, n, 24.0, By(fn() { @sf.theme().p.muted })) |> ignore
-        None => ()
-      }
-    })
-  })
-  |> ignore
-}
-
-///|
-/// Each of a card's two lines a line high at least (link_title_line's 20, link_line_line's 16), as high as its words
-/// where the system's size of words makes them higher: at 1.3 the old view's ran over each other (a box holding words
-/// grows with them: apps/mbui/AGENTS.md, What is checked).
-// kept across runs: a value (no field of it changes)
-let link_title_line_node : @ui.Style = @ui.css("w=Full min_h=S5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let link_line_line_node : @ui.Style = @ui.css("w=Full min_h=S4")
 
 ///|
 /// The preview's frame (peek_frame's but its corner, said on its node: concentric with the card's).

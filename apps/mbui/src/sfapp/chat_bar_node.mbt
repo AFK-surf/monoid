@@ -159,6 +159,13 @@ fn bar_trailing_width(held : @view.View, agents : Array[Agent], station : Statio
 /// Chat `r`'s bar (chat_bar_node) in `b`.
 fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> Unit {
   let state = chat_bar_state(r)
+  b.owns(fn() {
+    let k = chat_bar_key(r)
+    if chat_bar_states.get(k) is Some(now) && physical_equal(now, state) {
+      chat_bar_states.remove(k)
+    }
+  })
+  |> ignore
   let mid_w_sig : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
   let view = fn() { @sfbase.chat_view_now(src, r) }
   let read = fn() { view() is Some(_) }
@@ -168,13 +175,12 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       None => r.title
     }
   }
-  let station_now = fn() {
-    let w = match workspace_in_view(src).0 {
-      Some(w) => w.id
-      None => ""
-    }
-    station_marks(src, w).iter().find_first(fn(s) { s.address == r.station })
-  }
+  // (its station and its jobs as the core says them, what they last were while asked again (asked_again.mbt): a page
+  // taken back from the stack's kept left reads them anew, the row as it was meanwhile)
+  let station_held = @sfbase.station_mark_held(src, r.station)
+  let station_now = fn() { station_held.get() }
+  let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
+  let jobs = fn() { jobs_held.get() }
   b.box(fn(g) {
     let metrics = fn() {
       let mid_w = mid_w_sig.get()
@@ -212,11 +218,34 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       must_expand_sig.set(m.0)
       can_toggle_sig.set(m.1)
     })
+    // (what the bar's first row holds last told by an answer (the chat's, its jobs' or its station's first value, as the
+    // page opens): what it leaves the title is laid out after that answer is over, and opens or shuts the second row at
+    // once as an answer's change does, not on its way; told otherwise (live, a press, the find opened or shut), on its way again)
+    let answer_settle = Ref(false)
+    let bar_inputs = fn() {
+      let v_shape = match view() {
+        Some(v) =>
+          (true, v.title, v.archivable && !v.archived, v.agents.length(), v.people.length(), chat_screens_driven(v.screens))
+        None => (false, r.title, false, 0, 0, false)
+      }
+      let st_shape = match station_now() {
+        Some(s) => (true, s.name, s.emoji, s.icon)
+        None => (false, "", "", "")
+      }
+      (v_shape, bar_has_jobs(jobs), st_shape, finding(), state.manual_expanded.get())
+    }
+    g.reacts(bar_inputs, at_start=false, fn(_) { answer_settle.val = @view.answering_now() })
     g.reacts(fn() { (mid_w_sig.get() > 0.0, expanded(), state.row2_h.get()) }, fn(cur) {
-      if cur.0 && !state.settled_initial {
-        state.settled_initial = true
-        state.open_way.put(if cur.1 { 1.0 } else { 0.0 })
-        state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
+      if cur.0 && (!state.settled_initial || answer_settle.val || @view.answering_now()) {
+        // (open as it is first laid out, and as an answer changes what it holds: settled only once its second row's height
+        // is known (that row made while it is open, measured shut), its way and the height it comes to put there at once
+        // together, never open on a height of none first)
+        if !cur.1 || cur.2 > 0.0 {
+          state.settled_initial = true
+          answer_settle.val = false
+          state.open_way.put(if cur.1 { 1.0 } else { 0.0 })
+          state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
+        }
       } else if state.settled_initial {
         if cur.1 != (state.open_way.target() >= 0.5) {
           state.open_way.go_ms(
@@ -307,9 +336,9 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
             // (what moves in the row as 归档 or the services' key comes or goes: laid out at once where the change has
             // them, the people left out of it then or not at that moment alone, what is beside them drawn from where it
             // was to there on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
-            let slides = bar_slides(e, fn() { bar_keys_shown(src, r, view) })
+            let slides = bar_slides(e, fn() { bar_keys_shown(view, jobs) })
             bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
-            e.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, slides) })
+            e.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, jobs, slides) })
           }
         },
       )
@@ -415,14 +444,12 @@ fn bar_middle_node(
   mid_w_sig : @signals.Signal[Double],
   slides : (@view.View) -> Unit,
 ) -> Unit {
+  // (its station as the workspace's marks have it, what it last was while they are asked again: asked_again.mbt)
+  let station_held = @sfbase.station_mark_held(src, r.station)
   let marks = fn() {
-    let w = match workspace_in_view(src).0 {
-      Some(w) => w.id
-      None => ""
-    }
     match view() {
       Some(v) => {
-        let station = station_marks(src, w).iter().find_first(fn(s) { s.address == r.station })
+        let station = station_held.get()
         let people = if v.people.length() > 5 { v.people[:5].to_owned() } else { v.people }
         let s = match station {
           Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
@@ -539,15 +566,13 @@ fn bar_middle_node(
       }
       for i, ag in v.agents {
         let key = ag.key
-        mid.box(fn(k) {
+        // each opens its card, said as the agent (with the station it runs on, the first's): its name said once
+        let label = match station {
+          Some(s) if i == 0 => ag.who + " · " + s.name
+          _ => ag.who
+        }
+        @sf.action_box_node(mid, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
           slides(k)
-          // each opens its card, said as the agent (with the station it runs on, the first's)
-          @sf.presses_node(k, fn() { open_agent(src, r, key) })
-          let label = match station {
-            Some(s) if i == 0 => ag.who + " · " + s.name
-            _ => ag.who
-          }
-          k.says(Is(Some(@view.said(Button, label~)))) |> ignore
           if i == 0 {
             agent_station_node(k, ag, badge_of(key), station, via, stint)
           } else {
@@ -632,18 +657,18 @@ fn bar_archivable(view : () -> ChatView?) -> Bool {
 }
 
 ///|
-/// Whether chat `r` has services or jobs (its bar's key to them), as the core says now.
-fn bar_has_jobs(src : Source, r : ChatRef) -> Bool {
-  let j = src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
+/// Whether a chat has services or jobs (its bar's key to them), its jobs' summary `jobs` as the core says it.
+fn bar_has_jobs(jobs : () -> Json?) -> Bool {
+  let j = jobs()
   flag(j, "hasJobs") || items(j, "jobs").length() > 0
 }
 
 ///|
 /// What of chat `r`'s bar's end is shown (its view `view`): none before the view is read; once it is, 归档 and the
 /// services' key, each while it is: what slides in the bar is set off by (bar_slides).
-fn bar_keys_shown(src : Source, r : ChatRef, view : () -> ChatView?) -> (Bool, Bool, Bool) {
+fn bar_keys_shown(view : () -> ChatView?, jobs : () -> Json?) -> (Bool, Bool, Bool) {
   match view() {
-    Some(_) => (true, bar_archivable(view), bar_has_jobs(src, r))
+    Some(_) => (true, bar_archivable(view), bar_has_jobs(jobs))
     None => (false, false, false)
   }
 }
@@ -658,6 +683,7 @@ fn bar_end_node(
   src : Source,
   r : ChatRef,
   view : () -> ChatView?,
+  jobs : () -> Json?,
   slides : (@view.View) -> Unit,
 ) -> Unit {
   e.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
@@ -719,8 +745,7 @@ fn bar_end_node(
   })
   |> ignore
   // its services and jobs, while it has any
-  let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
-  let has_jobs = fn() { bar_has_jobs(src, r) }
+  let has_jobs = fn() { bar_has_jobs(jobs) }
   e.show(has_jobs, at_once=true, fn(k) {
     slides(k)
     k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore

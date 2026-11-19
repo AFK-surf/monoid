@@ -34,14 +34,8 @@ pub fn host_dial_io(host : @host.Host, origin? : String = cloud_origin) -> DialI
       let route = { id, host: h, port, destroy: () => () }
       let fiber = host.rt.fork(async fn() {
         let answered = try {
-          ignore(
-            host.shell("fetch", {
-              "url": Json::string(origin + "/healthz"),
-              "method": "GET",
-              "headers": Json::array([]),
-              "entry": entry_json(route),
-            }),
-          )
+          // (interrupted, `destroy`: the fetch is given up at the shell too, its TLS with it)
+          ignore(host.fetch(origin + "/healthz", entry=(route.host, route.port)))
           None
         } catch {
           e => Some(error_words(e))
@@ -72,31 +66,18 @@ pub fn host_dial_io(host : @host.Host, origin? : String = cloud_origin) -> DialI
 /// HTTP on the shell: by itself, or on the route a dial made (its entry).
 pub fn host_http(host : @host.Host) -> Http {
   let ask = async fn(req : HttpRequest, socket : TlsSocket?) -> HttpResponse {
-    let args : Map[String, Json] = {
-      "url": Json::string(req.url),
-      "method": Json::string(req.http_method),
-      "headers": pairs_json(req.headers),
+    let r = host.fetch(
+      req.url,
+      method_=req.http_method,
+      headers=req.headers.pairs,
+      body?=req.body.map(b => @utf8.encode(b)),
+      entry?=socket.map(s => (s.host, s.port)),
+      timeout_ms=req.timeout_ms,
+    ) catch {
+      @host.FetchTimeout => raise NetError(@host.fetch_timed_out)
+      e => raise e
     }
-    match socket {
-      Some(s) => args["entry"] = entry_json(s)
-      None => ()
-    }
-    let call = async fn() {
-      let (answer, body) = match req.body {
-        Some(b) => host.shell("fetch", Json::object(args), bytes=@utf8.encode(b))
-        None => host.shell("fetch", Json::object(args))
-      }
-      let status = safe_int(field(answer, "status")).unwrap_or(0L).to_int()
-      let text = match body {
-        Some(b) => @utf8.decode_lossy(b)
-        None => ""
-      }
-      { status, body: text }
-    }
-    match @effect.timeout(req.timeout_ms, call) {
-      Some(r) => r
-      None => raise NetError("The operation was aborted due to timeout")
-    }
+    { status: r.status, body: r.text() }
   }
   { fetch: req => ask(req, None), over: (req, socket) => ask(req, Some(socket)) }
 }
@@ -170,7 +151,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           Some(n) => {
             id.val = None
             ignore(
-              host.rt.fork(async fn() {
+              host.rt.fork_quiet(name="cloud ws close", async fn() {
                 ignore(host.shell("ws.close", { "id": Json::number(n.to_double()) })) catch {
                   _ => ()
                 }
@@ -186,7 +167,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
         send: text => match id.val {
           Some(n) =>
             ignore(
-              host.rt.fork(async fn() {
+              host.rt.fork_quiet(name="cloud ws send", async fn() {
                 ignore(
                   host.shell("ws.send", {
                     "id": Json::number(n.to_double()),
@@ -220,7 +201,7 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
   }
   let writing : @effect.Queue[String] = @effect.Queue::unbounded()
   ignore(
-    host.rt.fork(async fn() {
+    host.rt.fork_daemon("cloud file writes", on_error=e => @host.note("\{path} no longer written: \{error_words(e)}"), async fn() {
       while true {
         let t = writing.take()
         ignore(
@@ -242,8 +223,8 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
 fn hex_bytes(hex : String) -> Bytes {
   let out = FixedArray::make(hex.length() / 2, b'\x00')
   for i in 0..<(hex.length() / 2) {
-    let hi = hex_value(hex.get_char(2 * i).unwrap_or('0')).unwrap_or(0)
-    let lo = hex_value(hex.get_char(2 * i + 1).unwrap_or('0')).unwrap_or(0)
+    let hi = @codec.hex_digit(hex.get_char(2 * i).unwrap_or('0').to_int()).unwrap_or(0)
+    let lo = @codec.hex_digit(hex.get_char(2 * i + 1).unwrap_or('0').to_int()).unwrap_or(0)
     out[i] = (hi * 16 + lo).to_byte()
   }
   Bytes::from_array(out)

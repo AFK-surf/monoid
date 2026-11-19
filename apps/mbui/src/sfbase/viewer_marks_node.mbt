@@ -125,29 +125,17 @@ fn marks_tools_node(col : @view.View, tips : @sf.TipLayer) -> Unit {
       .radius(Is(20.0))
       .glass(By(glass))
       |> ignore
-      for col_ in mark_colors {
-        let color = col_.0
-        row.box(fn(b) {
-          b
-          .width(Is(Some(32.0)))
-          .height(Is(Some(32.0)))
-          .radius(Is(16.0))
-          .lines_up(Is(Some(Middle)))
-          .ground(By(fn() {
-            marks_said()
-            if color == marks_shown_color() {
-              0xFFFFFF29L
-            } else {
-              0L
-            }
-          }))
-          .presses(Is(true))
-          .on_press(fn() { marks_pick_color(color) })
-          |> ignore
-          swatch_node(b, fn() { color })
-        })
-        |> ignore
-      }
+      // (the colours to pick one of: a radio group made of the row itself)
+      @sf.color_swatches_node(
+        row,
+        fn() { pv("android-chat.marks.color") },
+        mark_colors.mapi(fn(i, c) { (c.0, pv("android-chat.marks.color") + " \{i + 1}") }),
+        fn() {
+          marks_said()
+          marks_shown_color()
+        },
+        fn(color) { marks_pick_color(color) },
+      )
     },
   )
   col.box(fn(row) {
@@ -200,7 +188,7 @@ fn marks_tools_node(col : @view.View, tips : @sf.TipLayer) -> Unit {
       .radius(Is(picture_key))
       .lines_up(Is(Some(Middle)))
       |> ignore
-      swatch_node(b, fn() {
+      @sf.color_swatch_node(b, fn() {
         marks_said()
         marks_shown_color()
       })
@@ -271,26 +259,6 @@ fn gap_node(row : @view.View) -> Unit {
     g.box(fn(l) { l.width(Is(Some(1.0))).height(Is(Some(18.0))).ground(Is(0xFFFFFF1AL)) |> ignore }) |> ignore
   })
   |> ignore
-}
-
-///|
-/// A colour's swatch in `b`'s middle: a disc of it 16 across, ringed 1.5 inside its edge in white at
-/// 50% (the ring the white over what is under it, as the old box's edge is: its ground within its edge; the disc
-/// within it the colour).
-fn swatch_node(b : @view.View, color : () -> Int64) -> Unit {
-  b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-  b.box(fn(ring) {
-    ring
-    .width(Is(Some(16.0)))
-    .height(Is(Some(16.0)))
-    .radius(Is(8.0))
-    .padding(Is((1.5, 1.5, 1.5, 1.5)))
-    .ground(Is(0xFFFFFF80L))
-    |> ignore
-    ring.box(fn(d) { d.grow(Is(1.0)).radius(Is(6.5)).ground(By(color)) |> ignore }) |> ignore
-  })
-  |> ignore
-  b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
 }
 
 ///|
@@ -619,7 +587,7 @@ fn note_cards_node(r : @view.View) -> Unit {
 }
 
 ///|
-/// A card of the notes' tray in `card` (`w` wide, frosted, round by the ladder's row step, its pin
+/// A card of the notes' tray, a button in `card` (`w` wide, frosted, round by the ladder's row step, its pin
 /// concentric in its corner, its first line level with it): its head row (`head`) over what `body` puts under it,
 /// read out as a button `label` says; pressed (its press let go on it), `press`.
 fn note_tray_card_node(
@@ -631,26 +599,31 @@ fn note_tray_card_node(
   press~ : () -> Unit,
 ) -> Unit {
   let pin_in = @ui.capsule_in(note_card_corner, note_pin)
-  card
-  .width(Is(Some(w)))
-  .padding(Is((pin_in, pin_in - (note_first_line - note_pin) / 2.0, note_card_end, note_card_foot)))
-  .gap(Is(3.0))
-  .radius(Is(note_card_corner))
-  .ground(Is(note_ground))
-  .shadow(Is((@sf.floating.sigma, @sf.floating.dy, @sf.floating.color)))
-  .presses(Is(true))
-  .says(By(fn() {
-    marks_said()
-    Some(@view.said(Button, label=label()))
-  }))
-  .on_press(press)
+  @sf.action_box_node(
+    card,
+    fn() {
+      marks_said()
+      label()
+    },
+    fn(_) { press() },
+    fn(c) {
+      c
+      .width(Is(Some(w)))
+      .padding(Is((pin_in, pin_in - (note_first_line - note_pin) / 2.0, note_card_end, note_card_foot)))
+      .gap(Is(3.0))
+      .radius(Is(note_card_corner))
+      .ground(Is(note_ground))
+      .shadow(Is((@sf.floating.sigma, @sf.floating.dy, @sf.floating.color)))
+      |> ignore
+      c.box(fn(h) {
+        h.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
+        head(h)
+      })
+      |> ignore
+      body(c)
+    },
+  )
   |> ignore
-  card.box(fn(h) {
-    h.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
-    head(h)
-  })
-  |> ignore
-  body(card)
 }
 
 ///|
@@ -717,9 +690,6 @@ fn marks_pins_node(h : @view.View, vw : Viewer) -> Unit {
       .over(Is(true))
       .width(Is(Some(24.0)))
       .height(Is(Some(24.0)))
-      .radius(Is(12.0))
-      .ground(By(halo))
-      .shadow(Is((@sf.pin_raised.sigma, @sf.pin_raised.dy, @sf.pin_raised.color)))
       // (where the picture is: as each frame draws it while the zoom or the lift goes, else where they have it)
       .offset(By(fn() {
         let (_, _, _, x0, y0) = pin.get()
@@ -734,51 +704,64 @@ fn marks_pins_node(h : @view.View, vw : Viewer) -> Unit {
         }
       }))
       .scale(By(fn() { grown.shown(p) }), about=@view.At(2.0 / 24.0, 22.0 / 24.0))
-      .presses(Is(true))
-      .says(By(fn() { Some(@view.said(Button, label=pv_fill("android-chat.marks.pin", [("n", pin.get().1.to_string())]))) }))
-      .on_press(fn() {
-        let id = @signals.untracked(fn() { pin.get().0 })
-        if marking.note == id {
-          marks_put_down()
-          marking.picked = -1
-          marking.note = -1
-          marks_changed()
-        } else {
-          marks_open_note(id)
-        }
-      })
       |> ignore
-      // its pointed corner: a square over the round one at the foot towards the mark
-      p.box(fn(q) {
-        q.over(Is(true)).offset(Is((0.0, 12.0))).width(Is(Some(12.0))).height(Is(Some(12.0))).radius(Is(3.0)).ground(By(halo))
-        |> ignore
-      })
-      |> ignore
-      // within its halo's 2, the mark's colour, cornered the same (its corner a square at its own foot, as a pin's)
-      p.box(fn(q) {
-        q.over(Is(true)).offset(Is((2.0, 2.0))).width(Is(Some(20.0))).height(Is(Some(20.0))).radius(Is(10.0)).ground(By(color))
-        |> ignore
-        q.box(fn(c) {
-          c.over(Is(true)).offset(Is((0.0, 10.0))).width(Is(Some(10.0))).height(Is(Some(10.0))).radius(Is(1.5)).ground(By(color))
+      // (the pin itself a button, opening its note or closing it where it was the one open)
+      @sf.action_box_node(
+        p,
+        fn() { pv_fill("android-chat.marks.pin", [("n", pin.get().1.to_string())]) },
+        fn(_) {
+          let id = @signals.untracked(fn() { pin.get().0 })
+          if marking.note == id {
+            marks_put_down()
+            marking.picked = -1
+            marking.note = -1
+            marks_changed()
+          } else {
+            marks_open_note(id)
+          }
+        },
+        fn(p) {
+          p
+          .width(Is(Some(24.0)))
+          .height(Is(Some(24.0)))
+          .radius(Is(12.0))
+          .ground(By(halo))
+          .shadow(Is((@sf.pin_raised.sigma, @sf.pin_raised.dy, @sf.pin_raised.color)))
           |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      // its number, in its middle, in its halo's colour
-      p.box(fn(m) {
-        m.over(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-        m.box(fn(t) {
-          t
-          .words(By(fn() { "\{pin.get().1}" }))
-          .words_look(By(fn() { { size: 11.0, weight: 700, line: @ui.tree_theme().text_line * 11.0, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
-          .ink(By(halo))
+          // its pointed corner: a square over the round one at the foot towards the mark
+          p.box(fn(q) {
+            q.over(Is(true)).offset(Is((0.0, 12.0))).width(Is(Some(12.0))).height(Is(Some(12.0))).radius(Is(3.0)).ground(By(halo))
+            |> ignore
+          })
           |> ignore
-        })
-        |> ignore
-        m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-      })
+          // within its halo's 2, the mark's colour, cornered the same (its corner a square at its own foot, as a pin's)
+          p.box(fn(q) {
+            q.over(Is(true)).offset(Is((2.0, 2.0))).width(Is(Some(20.0))).height(Is(Some(20.0))).radius(Is(10.0)).ground(By(color))
+            |> ignore
+            q.box(fn(c) {
+              c.over(Is(true)).offset(Is((0.0, 10.0))).width(Is(Some(10.0))).height(Is(Some(10.0))).radius(Is(1.5)).ground(By(color))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+          // its number, in its middle, in its halo's colour
+          p.box(fn(m) {
+            m.over(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+            m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+            m.box(fn(t) {
+              t
+              .words(By(fn() { "\{pin.get().1}" }))
+              .words_look(By(fn() { { size: 11.0, weight: 700, line: @ui.tree_theme().text_line * 11.0, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
+              .ink(By(halo))
+              |> ignore
+            })
+            |> ignore
+            m.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+          })
+          |> ignore
+        },
+      )
       |> ignore
     },
   )

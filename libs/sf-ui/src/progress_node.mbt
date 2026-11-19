@@ -36,12 +36,17 @@ pub fn progress_node(
     .ground(By(track))
     // (its part cut to it at its round ends, as the old one's track cuts it: @kit.progress_look_of's clip)
     .clips(Is(true))
-    .says(By(fn() {
-      match part() {
-        Some(k) => Some(@view.said(ProgressBar, value="\{(k * 100.0).round().to_int()}%", range=(0.0, k * 100.0, 100.0)))
-        None => Some(@view.said(ProgressBar))
-      }
-    }))
+    |> ignore
+    // (what it is to a screen reader the headless progress bar's, on this node: how far as a share and as a number of
+    // 100, none while it is not known; finishing, read whole as it is drawn)
+    @headless.progress(
+      bar,
+      fn() { part().map(fn(k) { k * 100.0 }) },
+      fn(_, _) {  },
+      finishing~,
+      in_node=true,
+      made_for=loc,
+    )
     |> ignore
     bar.reacts(told, fn(p) {
       match p {

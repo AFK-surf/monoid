@@ -1,0 +1,7 @@
+{
+  "counts": {
+    "frame-wait": {
+      "src/sfcore/clock.mbt": 1
+    }
+  }
+}

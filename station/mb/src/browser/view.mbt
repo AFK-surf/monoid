@@ -39,8 +39,8 @@ pub fn viewport_of(m : J?) -> (Double, Double)? {
 }
 
 ///|
-/// JPEG quality of the cast frames.
-let quality : Int = 70
+/// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
+let quality : Int = 82
 
 ///|
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`).

@@ -623,11 +623,5 @@ fn claude_project(path : String) -> String {
 ///|
 /// Bytes as lowercase hex (Buffer.toString("hex")).
 fn hex_of(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    out.write_char(digits.unsafe_charcode_at(x.to_int() >> 4).unsafe_to_char())
-    out.write_char(digits.unsafe_charcode_at(x.to_int() & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }

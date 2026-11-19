@@ -22,20 +22,37 @@ fn p54_stream_handle(asked : Json) -> Json {
 ///|
 /// One of the shell's calls of a member's stream (`read`, `write`, `finish`, `reset`, `stopped`), as its handle is
 /// held: `istream.*`, or `tcp.*` for one carried on a loopback connection.
-async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes? : Bytes, code? : Json) -> (Json, Bytes?) {
+async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes? : Bytes, code? : Json, token? : Json) -> (Json, Bytes?) {
   match handle {
     { "$tcp": id, .. } =>
       match call {
-        "read" => host.shell("tcp.read", { "id": id })
-        "write" => host.shell("tcp.write", { "id": id }, bytes=bytes.unwrap_or(b""))
-        "finish" => host.shell("tcp.end", { "id": id })
-        "reset" => host.shell("tcp.close", { "id": id })
+        "read" =>
+          match host.tcp_read(id) {
+            Some(b) => (Json::null(), Some(b))
+            None => ({ "end": true }, None)
+          }
+        "write" => {
+          host.tcp_write(id, bytes.unwrap_or(b""))
+          (Json::null(), None)
+        }
+        "finish" => {
+          host.tcp_end(id)
+          (Json::null(), None)
+        }
+        "reset" => {
+          host.tcp_close(id)
+          (Json::null(), None)
+        }
         _ => (Json::null(), None)
       }
     id => {
       let asked : Map[String, Json] = { "id": id }
       match code {
         Some(c) => asked["code"] = c
+        None => ()
+      }
+      match token {
+        Some(t) => asked["token"] = t
         None => ()
       }
       match bytes {
@@ -130,7 +147,7 @@ fn p54_runner_socket(host : @host.Host, socket_path : String) -> @terminals_logi
   }
   let write_now : Ref[(Bytes) -> Unit] = Ref(b => pending.push(b))
   ignore(
-    host.rt.fork(name="runner socket", async fn() {
+    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
       let c = p54_unix_open(host, socket_path) catch {
         _ => {
           close_all()
@@ -237,9 +254,14 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       { "workspace": Json::string(workspace) },
     ),
     mkdir: async fn(p) { @drive.mkdir(p, true, mode=0o700) },
-    write_file: async fn(p, text) { @drive.write_private(p, text) },
+    write_file: async fn(p, text) { bus.host.write_private(p, @utf8.encode(text), sep=sep()) },
     remove: async fn(p) { @drive.rm_force(p) },
-    read_file: async fn(p) { @utf8.decode_lossy(@drive.read_all(p)) },
+    read_file: async fn(p) {
+      match bus.host.read_text(p) {
+        Some(t) => t
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
     start_runner: async fn(id, program, args, cwd, cols, rows) {
       let station_env : Map[String, String] = Map([])
       for kv in env_all() {
@@ -266,7 +288,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
     },
     wire: info => @terminals_logins.runner_wire(p54_runner_socket(host, sockets.get(info.id).unwrap_or(""))),
     now: () => wall_ms().to_double(),
-    spawn: f => ignore(host.rt.fork(name="terminal", async fn() { f() catch { _ => () } })),
+    spawn: f => ignore(host.rt.fork_quiet(name="terminal", async fn() { f() catch { _ => () } })),
     log: (said, about) => err_write("terminal: \{said} \{@jsjson.stringify(about)}\n"),
   })
   bus.parts.streams("terminal", async fn(asked) {
@@ -466,7 +488,7 @@ async fn p54_logins_start(
 ) -> P54Logins {
   let host = bus.host
   let mac = platform() == "darwin"
-  let fork = (f : async () -> Unit) => ignore(host.rt.fork(name="login", async fn() { f() catch { _ => () } }))
+  let fork = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="login", async fn() { f() catch { _ => () } }))
   let env_map = () => {
     let m : Map[String, String] = Map([])
     for kv in env_all() {
@@ -580,7 +602,12 @@ async fn p54_logins_start(
         None => []
       }
     },
-    read_file: async fn(p) { @utf8.decode_lossy(@drive.read_all(p)) },
+    read_file: async fn(p) {
+      match bus.host.read_text(p) {
+        Some(t) => t
+        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
     watch: (dir, _) => raise Failure("\{dir} is not watched here: its file is read as it is asked"),
     tr: (lang, key, args) => tr(lang, key, args=args.iter().map(kv => (kv.0, kv.1)).collect()),
     log: (said, about) => err_write("login: \{said} \{@jsjson.stringify(about)}\n"),
@@ -592,12 +619,13 @@ async fn p54_logins_start(
     run: run_io,
     mkdir: async fn(p) { @drive.mkdir(p, true) },
     make_command: async fn(p, text) {
-      @drive.write_private(p, text)
+      // (made 0o700 as it is written; chmod'd after, as the umask may have taken bits off)
+      bus.host.write_atomic(p, @utf8.encode(text), mode=0o700, sync=true, mkdir=true, sep=sep())
       ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(0o700.to_double()) })) catch {
         _ => ()
       }
     },
-    write_private: async fn(p, text) { @drive.write_private(p, text) },
+    write_private: async fn(p, text) { bus.host.write_private(p, @utf8.encode(text), sep=sep()) },
     sleep: async fn(ms) { @effect.sleep(ms) },
     random4: () => @drive.hex(@drive.random_bytes(2)),
     relay: {

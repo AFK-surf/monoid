@@ -18,13 +18,25 @@
 /// core was last told the
 /// chat is, the chat's Reading keeps (sfbase's reading_of, told_place and told_at): one account of it with the old
 /// page's list, which still draws the chat beside a page over it on the wide frame (a service's, its tab shown).
+/// What its page last made of it, to tell where it is left as it is (chat_read_left, the app going behind:
+/// chat_reads_behind, the page covered): its source `src` and chat `chat`, its view as it changes (`view`), and
+/// `refresh`, what its list has in sight this moment taken (where a fling or a notch still goes on: ListPlace::sight_live,
+/// not where it will rest), so that what is told is where the reader left it.
 priv struct ChatRead {
   mut sight : (@view.Sight[String], ChatBodyNow)?
   mut whole : Double
-  mut top : (Double, Double)?
+  mut top : ChatReaderAt?
   mut scale : Double
   mut last : Double
   mut told_focus : String
+  mut src : Source
+  chat : ChatRef
+  mut view : () -> ChatView
+  mut refresh : () -> Unit
+  mut page : @view.View?
+  /// what its page's list worked out that nothing follows let go of (ChatBodyList's rest_unwatched): after it is read
+  /// once more as the chat is left (chat_read_left)
+  mut rest_unwatched : () -> Unit
 }
 
 ///|
@@ -48,6 +60,7 @@ fn chat_read_node(
   shows : () -> Bool,
   cover : () -> Double,
   top : () -> Double,
+  rest? : () -> Unit = fn() {  },
 ) -> Unit {
   let k = r.station + "\u{1}" + r.session
   // (the chat's while it is open: a page made again for it, as another comes over it and goes, goes on from it)
@@ -61,9 +74,22 @@ fn chat_read_node(
         scale: 1.0,
         last: -1.0,
         told_focus: "",
+        src,
+        chat: r,
+        view,
+        refresh: fn() {  },
+        page: None,
+        rest_unwatched: fn() {  },
       }
   }
+  a.rest_unwatched = fn() {
+    (rows.rest_unwatched)()
+    rest()
+  }
   chat_reads[k] = a
+  a.src = src
+  a.view = view
+  a.page = Some(v)
   // (while the chat is open, none once it is left, and its page is drawn)
   let live = fn() { chat_reads.get(k) is Some(now) && physical_equal(now, a) && @signals.untracked(shows) }
   // what is in sight taken as it changes, the hand on it or not, as the old page's list read it each frame (sfbase's
@@ -73,7 +99,9 @@ fn chat_read_node(
     let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
     a.sight = Some((s, rs))
-    a.scale = @signals.untracked(fn() { v.pixel_scale() })
+    if v.alive() {
+      a.scale = @signals.untracked(fn() { v.pixel_scale() })
+    }
     // (the last message its rows have: what its end is as it is left, whatever of the chat is let go of by then)
     let mut j = rs.keys.length() - 1
     while j >= 0 {
@@ -87,7 +115,7 @@ fn chat_read_node(
     }
     // the message at the top, its top under the list's: where the reader is (chat_reader_at: what is read under the bar,
     // not a tail of what was over it, nor a row of no message), as a go-to and the outline take it (else as it was)
-    match chat_reader_at(s, rs, @signals.untracked(cover), @signals.untracked(top)) {
+    match chat_reader_at(s, rs, place, @signals.untracked(cover), @signals.untracked(top)) {
       Some(top) => a.top = Some(top)
       None => ()
     }
@@ -127,13 +155,17 @@ fn chat_read_node(
     telling.val = true
     @ui.after_frame(fn() {
       telling.val = false
-      guard live() && app_in_front() && a.sight is Some((s, _)) else {
+      guard live() && a.sight is Some((s, _)) else {
         placing.val = false
         return
       }
       let cv = @signals.untracked(view)
-      // (its end seen: at its foot with all there drawn whole, not a message still on its way in; @view.Sight's)
-      chat_read_focus(src, r, cv, a, !cv.newer && s.foot_whole)
+      // (its end seen: at its foot with all there drawn whole, not a message still on its way in; @view.Sight's; only
+      // while the app is in front, what comes behind it not read)
+      if app_in_front() {
+        chat_read_focus(src, r, cv, a, !cv.newer && s.foot_whole)
+      }
+      // (where it is, the app in front or not: a glide that ends as it goes behind still leaves it there)
       if placing.val && !@signals.untracked(fn() { scroll.in_hand() }) {
         placing.val = false
         chat_read_place(src, r, cv, a, exact=false)
@@ -173,6 +205,46 @@ fn chat_read_node(
     settle()
   }
   place.on_sight(seen)
+  // (what it has in sight this moment while the list still goes by itself (a fling's glide, a notch easing in) or is in
+  // the hand: what was last told is where it was let go, not where it is. At rest what was last told is where it is,
+  // taken as it came to rest: read again as the page goes, it would be read off a list laid out for leaving)
+  a.refresh = fn() {
+    guard @signals.untracked(fn() { scroll.in_hand() }) || scroll.glides_till() is Some(_) else { return }
+    match place.sight_live() {
+      Some(s) if !(a.sight is Some((was, _)) && was == s) => taken(s)
+      _ => ()
+    }
+  }
+  // (its page let go: where it was left this moment, before what its list counts goes; chat_read_left tells it)
+  v.owns(fn() { if chat_reads.get(k) is Some(now) && physical_equal(now, a) { (a.refresh)() } }) |> ignore
+  // (put by at rest on the stack's kept left: where it was left this moment, its page no longer one that shows it
+  // (chat_read_left's `unless_shown`); taken back, its page again, and the chat's read again where it shows then, told
+  // anew that it shows (its `shows` the same as it rested, so the reaction under tells nothing))
+  v.on_rest(
+    fn() {
+      if chat_reads.get(k) is Some(now) && physical_equal(now, a) {
+        (a.refresh)()
+      }
+      if a.page is Some(pv) && pv.id() == v.id() {
+        a.page = None
+      }
+    },
+    wake=fn() {
+      a.src = src
+      a.view = view
+      a.page = Some(v)
+      if @signals.untracked(shows) {
+        if !(chat_reads.get(k) is Some(now) && physical_equal(now, a)) {
+          chat_reads[k] = a
+          a.told_focus = ""
+        }
+        if place.sight_now() is Some(s) {
+          seen(s)
+        }
+      }
+    },
+  )
+  |> ignore
   v.reacts(fn() { scroll.in_hand() }, fn(held) { if !held { settle() } }, at_start=false)
   // (told only as what is in sight differs: as it comes to be drawn again, what is in sight then; a page kept as its chat
   // was left (chat_read_left: a place of the bar's, a page kept under another) the chat's again as it is drawn again,
@@ -183,8 +255,15 @@ fn chat_read_node(
       // (covered by another page over it (小屏's stack): the core told it is not before the eyes, its end not seen,
       // told again that it is as it is drawn again)
       guard on else {
-        if chat_reads.get(k) is Some(now) && physical_equal(now, a) && app_in_front() {
-          chat_read_focus(src, r, @signals.untracked(view), a, false)
+        if chat_reads.get(k) is Some(now) && physical_equal(now, a) {
+          // (and where it was left as it was covered, to the pixel, a glide still going or not: the page under another
+          // may be let go before it is drawn again)
+          (a.refresh)()
+          let cv = @signals.untracked(view)
+          if app_in_front() {
+            chat_read_focus(src, r, cv, a, false)
+          }
+          chat_read_place(src, r, cv, a, exact=true)
         }
         return
       }
@@ -282,18 +361,22 @@ fn chat_read_focus(src : Source, r : ChatRef, v : ChatView, a : ChatRead, end : 
 /// The core told where chat `r` (view `v`) is (`chat.place`): the message at the top and its top under the list's in the
 /// screen's pixels, none at its end; told again as the message at the top changes, and to the pixel as it is left
 /// (`exact`). Kept for opening it again this run (sfbase's kept_places).
-fn chat_read_place(src : Source, r : ChatRef, v : ChatView, a : ChatRead, exact~ : Bool) -> Unit {
+fn chat_read_place(src : Source, r : ChatRef, v : ChatView, a : ChatRead, exact~ : Bool, leaving? : Bool = false) -> Unit {
   guard a.sight is Some((s, _)) else { return }
-  let end = !v.newer && s.at_foot
+  // (at its foot within half a point, as Scroll::at_foot_now has it: a fraction of a point short of it is no place)
+  let end = !v.newer && (s.at_foot || s.from_foot <= 0.5)
   match a.top {
-    Some((seq, off)) =>
+    Some(at) =>
       @sfbase.kept_places[r.station + "\u{1}" + r.session] = {
-        top: seq,
-        offset: off,
+        top: at.seq,
+        offset: at.off,
+        piece: at.piece,
+        piece_offset: at.piece_off,
         bottom: if !end {
           -1.0
-        } else if !@signals.untracked(fn() { (src.topic_alive)() }) {
-          // (its page let go of as it is left: its last message as its rows last had it)
+        } else if leaving || !@signals.untracked(fn() { (src.topic_alive)() }) {
+          // (its page let go of, or put by at rest, as it is left: its last message as its rows last had it, nothing of
+          // the chat read again for it)
           a.last
         } else {
           match chat_said_ends(src, r, fn() { v }).1 {
@@ -308,10 +391,10 @@ fn chat_read_place(src : Source, r : ChatRef, v : ChatView, a : ChatRead, exact~
   let place : Map[String, Json] = { "station": Json::string(r.station), "thread": Json::number(th) }
   let mut at = ""
   match a.top {
-    Some((seq, off)) if !end => {
-      place["seq"] = Json::number(seq)
-      place["offset"] = Json::number((off * a.scale).round())
-      at = Json::number(seq).stringify()
+    Some(top) if !end => {
+      place["seq"] = Json::number(top.seq)
+      place["offset"] = Json::number((top.off * a.scale).round())
+      at = Json::number(top.seq).stringify()
     }
     _ => ()
   }
@@ -329,24 +412,45 @@ fn chat_read_place(src : Source, r : ChatRef, v : ChatView, a : ChatRead, exact~
 /// Chat `r`'s page made as nodes gone (sfapp's chat_left, as the page goes), its view `v` as it was left: the core told
 /// it shows no more, and where it was left, to the pixel (once its list was laid out). False where no such page was the
 /// chat's (the old page's, which tells it itself).
-pub fn chat_read_left(src : Source, r : ChatRef, v : ChatView?) -> Bool {
+pub fn chat_read_left(src : Source, r : ChatRef, v : ChatView?, unless_shown? : Bool = false) -> Bool {
   let k = r.station + "\u{1}" + r.session
   guard chat_reads.get(k) is Some(a) else { return false }
+  // (`unless_shown`: left by a place that is not the stack's (the board's side), the chat may be made on another page
+  // already (opened over the whole page from it): that one's, nothing told of it left)
+  if unless_shown && a.page is Some(pv) && pv.alive() {
+    return true
+  }
+  // (where it was left this moment, a glide still going or not)
+  (a.refresh)()
   chat_reads.remove(k)
   // (what it was to go to, and where back to, gone with it: not gone to in a page made for it later)
   @sfbase.go_tos.remove(k)
   @sfbase.go_to_passages.remove(k)
   @sfbase.go_to_words.remove(k)
   @sfbase.go_back_offsets.remove(k)
+  @sfbase.go_back_pieces.remove(k)
   @sfbase.go_to_around.remove(k)
   @sfbase.place_forget(k)
   find_goes.remove(k)
   match v {
     Some(view) if !src.read_only => {
       (src.call)("client.focus", { "left": @sfbase.focus_chat(r, view, None) }, @sfbase.answer_unread)
-      chat_read_place(src, r, view, a, exact=true)
+      chat_read_place(src, r, view, a, exact=true, leaving=true)
     }
     _ => ()
   }
+  // (what its list was read for that once more, nothing following it, let go of what that read)
+  (a.rest_unwatched)()
   true
+}
+
+///|
+/// The app gone behind (the shell's `behind`: a phone's app sent away, after which no frame may come): where each chat
+/// open on a page made as nodes is, to the pixel as it is this moment (a glide still going or not), kept and told the
+/// core, so that it opens there again whatever becomes of the app.
+pub fn chat_reads_behind() -> Unit {
+  for _, a in chat_reads {
+    (a.refresh)()
+    chat_read_place(a.src, a.chat, @signals.untracked(a.view), a, exact=true)
+  }
 }

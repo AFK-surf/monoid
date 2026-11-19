@@ -1,0 +1,3 @@
+import {
+  "base/hash",
+} for "test"

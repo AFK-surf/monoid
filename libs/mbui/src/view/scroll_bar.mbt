@@ -374,7 +374,7 @@ fn View::scroll_bar(
             bar.rested_at(b, self)
           }
         }
-      })
+      }, captures=true)
       |> ignore
       thumb.box(fn(ink) {
         let long = fn() { Some(track(0.0).1) }

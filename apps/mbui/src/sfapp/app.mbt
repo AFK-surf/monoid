@@ -42,7 +42,7 @@ fn init {
 ///|
 /// A run begun before its Tester is made (the made-up core given what it opens first, then the Tester): the run
 /// before let go of first (its window's tree follows nothing this one says), then the app as at the start (reset).
-fn new_run() -> Unit {
+pub fn new_run() -> Unit {
   @ui.run_let_go()
   @ui.host_let_go()
   reset()
@@ -55,8 +55,7 @@ fn new_run() -> Unit {
 /// as that test had left it, not as at the start (2026-11-11). detlint's `reset-by-hand` holds new_run() to a Tester
 /// after it.
 // called by tests alone; here, as detlint's `reset-by-hand` wants it
-#warnings("-unused_value")
-fn fresh_app() -> Unit {
+pub fn fresh_app() -> Unit {
   new_run()
   reset_by_hand.val = false
 }
@@ -65,11 +64,9 @@ fn fresh_app() -> Unit {
 /// As at the start: Home alone, nothing chosen here yet (tests; every Tester as it starts: init above). Each global
 /// of this package is put back here (or in what this calls) as its `let` has it, or says why it is kept across runs
 /// (scripts/check.sh checks).
-fn reset() -> Unit {
+pub fn reset() -> Unit {
   files_cornered.val = false
   image_quoted_at.val = -1
-  bar_glyph.val = None
-  bar_stations_said.val = ""
   // the stack and what the app keeps of it (src/sfbase)
   @sfbase.reset()
   // the desktop's own (src/sfdesk)
@@ -157,7 +154,11 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
     close_overlays,
     open_invite,
     open_login,
-    behind: peeks_stop_all,
+    behind: fn(s) {
+      peeks_stop_all(s)
+      // (where each chat open on a page made as nodes is, kept and told now: no frame may come after)
+      @sfpages.chat_reads_behind()
+    },
     open: fn(p) { open_where(src, p) },
     open_over: fn(p) { open_over_where(src, p) },
     detail: detail_where,
@@ -313,7 +314,7 @@ fn beside_where(src : Source, wide : Bool, tab : String) -> String? {
 ///|
 /// Back to Home (the stack's root), what is over the pages put down (close_overlays: a file open over the window too,
 /// as a notification tapped opens its chat over Home).
-fn home() -> Unit {
+pub fn home() -> Unit {
   close_overlays()
   nav_home()
 }
@@ -329,6 +330,10 @@ fn pages_left(src : Source) -> Unit {
         match page_src {
           Some(source) => {
             chat_left(source, r, saved=chat_view)
+            // (what the window's source read of it too, nothing following it, let go of; nothing still read)
+            if !physical_equal(source, src) {
+              @sfbase.chat_reads_forget_from(src, r)
+            }
             viz_chat_left(r.station, r.session)
           }
           None => ()
@@ -362,6 +367,9 @@ fn pages_left(src : Source) -> Unit {
     }
   }
   left_pages.clear()
+  // (the pages put by on the stack's kept left told what they left: their sources put by at rest now, what they held
+  // let go of as this frame ends)
+  @sfbase.entries_kept_park_due()
 }
 
 ///|
@@ -470,9 +478,14 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     window_shown.val = true
     @hostapi.window_show()
   }
-  // the window's own buttons where they are the app's (Windows'), over all of it as a title bar's are
+  // the window's own buttons where they are the app's (Windows'), over all of it as a title bar's are: on the bar's
+  // line of a page over all the window (a window of its own, a chat's tab or a file over the whole window) at any
+  // width, as in a window's whole
   if @ui.window_keys_own() {
-    c.layer(fn() { @sf.window_keys(c) }) |> ignore
+    let whole = shell_is(src, c.window_size().0) is Lone ||
+      @sfbase.tab_full.untracked() is Some(_) ||
+      @sfbase.preview_open()
+    c.layer(fn() { @sf.window_keys(c, whole~) }) |> ignore
   }
 }
 
@@ -534,7 +547,7 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
       match shell_is(src, width) {
         Stacked | Taped | Paned => @sfbase.Shown::Shows(app.nav.top())
         Lone =>
-          match @sfbase.lone_page.val {
+          match @sfbase.first_lone_page() {
             Some(p) => @sfbase.Shown::Shows(p)
             None => @sfbase.Shown::Starting
           }
@@ -590,7 +603,10 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // made read by the core, viewer_host.mbt)
     @sf.set_viewer_host(viewer_host_of(src))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
-    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
+    root.reacts(fn() { src.topic("prefs", {}).get().value }, fn(p) {
+      @sfbase.language_from_prefs(p)
+      @sfbase.stale_build_from_prefs(p)
+    })
     // (the experimental switches of 实验性功能 (试用新对话页, Farview 原生标签页渲染, 看板), told before any page of nodes
     // is made and in the frame a switch is pressed: what is chosen here before the core answers is read with the prefs)
     root.reacts(
@@ -599,7 +615,6 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         (
           p,
           @settings.feature_from(p, "chatPage"),
-          @settings.feature_from(p, "composerNodes"),
           @settings.feature_from(p, "farviewNative"),
           @settings.feature_from(p, "board"),
         )
@@ -659,6 +674,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @ui.set_tree_theme(@sf.ui_theme_now)
     // (the window's sides beside the system's bars kept, all of it between: sides.mbt)
     root.sides(By(fn() { sides_room() })) |> ignore
+    // (static by default across the whole app: structures, lists and reshapes settle at Δt 0 unless told inside
+    // @view.transition for an explicit cause, libs/mbui/src/view/transition.mbt)
+    root.transitions_only() |> ignore
     // over another app (a share sheet over the app it came from: share.mbt): nothing but the sheet, an old view of its
     // own; the app's state's nodes let go meanwhile, made again as it opens
     root.pick(fn() { share_over.get() }, fn(o, over) {
@@ -681,8 +699,13 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // the library's confirms in the middle of the window, each at its place in the window's stack of layers among what
     // else is presented (src/sf presented_node.mbt)
     @sf.presented_nodes(root)
+    // what a right click offers, over every shell, switcher, viewer and presented modal (sfdesk context_menu.mbt)
+    @sfdesk.context_menu_node(root)
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+    // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
+    // library's loupe_node: a switch's knob held's glass)
+    @sf.loupe_node(root, fn() { !share_over.get() && app_is(src) is SignedIn })
   }
 }
 
@@ -799,7 +822,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
 ///|
 /// A window of its own (sfbase's window.mbt) in node `v` (shell_is's Lone): on the window's ground, its top dragging it
 /// where its buttons are in the app's top row (under all of it), its page alone over all of it (a station's screen,
-/// sfpages' screen_node: closing it closes the window), the library's presenters and the toasts over that, taking a finger
+/// sfpages' screen_node: closing it closes the window; a terminal; a chat's tab, sfdesk's tab_window_node), the library's presenters and the toasts over that, taking a finger
 /// only where they draw something.
 fn lone_tree(v : @view.View, src : Source) -> Unit {
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
@@ -816,6 +839,15 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
   let shown = @sfbase.lone_shown.val
   shown.set(@sfbase.lone_page.val)
+  // (its title the page's, said again as another is put in its place; this window's by its id, taken as it is made, as
+  // what tells it may come while another window's runtime is in place: a tab's own, as its name comes, sfdesk's)
+  let wid = @ui.current_window_id()
+  v.reacts(fn() { shown.get() }, fn(p) {
+    match p {
+      Some((Screen(_) | Terminal(_)) as p) if wid > 0 => @ui.set_window_title_of(wid, @sfbase.window_title(p))
+      _ => ()
+    }
+  })
   v.pick(
     at_once=true,
     fn() {
@@ -823,52 +855,64 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
       match shown.get() {
         Some(Screen(at)) => Some((@sfbase.Page::Screen(at), native && @sfpages.farview_screen(at.screen)))
         Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), false))
+        Some(SideTab(f)) => Some((@sfbase.Page::SideTab(f), false))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((Screen(at), true)) => {
-          // (padding's order: left, top, right, bottom)
-          q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
+        // (each page's one bar the window's top row, a bar's height at its top, clear of the window's buttons (a Mac's at
+        // its left, Windows' and Linux's at its right) and moving the window where nothing of it takes the press; no way
+        // back, the window's own close (⌘W) closing it)
+        Some((Screen(at), true)) =>
           @sfpages.farview_pane_node(
             q,
             src,
             at.station,
             at.screen,
             title=at.title,
-            on_back=fn() { lone_closed(q) },
             on_switch=@sfbase.lone_page_replace,
             on_close=fn() { lone_closed(q) },
+            bar_pads=fn() {
+              (
+                if @ui.window_keys_left_now() { lone_bar_buttons_in } else { lone_bar_in },
+                @sf.window_end_in(lone_bar_in, roots=@ui.tree_corner_roots_now()),
+              )
+            },
           )
-        }
         Some((Screen(at), false)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
+          // (its frame the window's top, no band over it at any width: the band is a phone's laid out Small, never a
+          // window of its own's)
+          @sfpages.screen_node(
+            q,
+            src,
+            at,
+            fn() { { back: None, top: @ui.system_bars().top, foot: nav_foot(), named: false } },
+            on_close=fn() { lone_closed(q) },
+          )
         }
         Some((Terminal(at), _)) =>
           @sfpages.terminal_pane_node(
             q,
             src,
             at,
-            back=fn() { @sf.t("common.close") },
+            back=fn() { "" },
             on_back=fn() { lone_closed(q) },
-            top=window_band_now,
+            top=fn() { @ui.system_bars().top },
             width=fn() { q.window().0 },
             on_switch_page=@sfbase.lone_page_replace,
           )
+        // (a chat's tab: drawn as over the whole window, its bar the window's top row, clear of the window's buttons as
+        // that bar keeps itself (sf's viewer_bar_node), its 移到侧边 putting it back beside the chat and closing the
+        // window: sfdesk's tab_window_node)
+        Some((SideTab(f), _)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
         Some(_) => ()
         None => ()
       }
     },
   )
-  @ui.old(v, fn(c) {
-    @sf.presented(c)
-  })
-  .over(Is(true))
-  |> @ui.old_takes_own
-  |> ignore
 }
 
 ///|
@@ -904,15 +948,39 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     |> ignore
     @ui.set_tree_theme(@sf.ui_theme_now)
     root.sides(By(fn() { sides_room() })) |> ignore
+    root.transitions_only() |> ignore
+    // ⌘W (a Mac's, the web's there) or Ctrl+W closes it, nothing presented over its page: what its own close button
+    // does, the tab or the screen it shows let go of as it closes (sfbase's window_here_gone); a Mac's menu bar's ⌘W
+    // the same, Windows', Linux's and a browser's window having none of it to
+    root.on_key(fn(k) {
+      let primary = match @ui.keys_system() {
+        0 | 1 => @ui.mod_cmd
+        _ => @ui.mod_ctrl
+      }
+      guard wid > 0 && k.code == @ui.key_of_char('w') && k.mods == primary else { return false }
+      guard !@signals.untracked(@sf.presenting) else { return false }
+      lone_closed(root)
+      true
+    })
+    |> ignore
     root.box(fn(v) {
       v.grow(Is(1.0)) |> ignore
       lone_tree(v, src)
     })
     |> ignore
     @sf.presented_nodes(root)
+    @sfdesk.context_menu_node(root)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }
 }
+
+///|
+/// How far in from the window's sides a window of its own's one bar stands (lone_tree's Farview tab): at its corner
+/// alone, after a Mac's own buttons at its left.
+let lone_bar_in : Double = 12.0
+
+///|
+let lone_bar_buttons_in : Double = 84.0
 
 ///|
 /// The old frame round window `wid`'s old views (lone_window_tree's): still.fail's theme as the first window's frame has
@@ -925,6 +993,11 @@ pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
   c.with_theme(@sf.ui_theme(), fn() {
     entry_said()
     @ui.old_views_here(c)
+    // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are, on
+    // its page's bar's line: its page alone over all of it (window_keys' whole)
+    if @ui.window_keys_own() {
+      c.layer(fn() { @sf.window_keys(c, whole=true) }) |> ignore
+    }
   })
 }
 
@@ -1020,6 +1093,8 @@ fn page_view(
         Screen(_) => ()
         // (made once: narrow_shell.mbt's terminal_node)
         Terminal(_) => ()
+        // (a window of its own's alone: lone_tree)
+        SideTab(_) => ()
       }
       // the page runs under the status bar; it keeps the paper behind its icons, moving with it (App.kt: the list, a
       // place's top page with the bar and a chat have frosted bars there instead; a book and a film their own)
@@ -1056,15 +1131,15 @@ fn page_view(
 /// coming in from the side the ball goes to; the same place again changes nothing. `sets`, `cur`:
 /// the bar it is chosen in (none: from no side). The page left kept and the one come to taken back where it was kept
 /// (go_place_by's `kept`).
-fn go_place(at : Double, place : String, sets : Array[Array[String]], cur : Int) -> Unit {
+pub fn go_place(at : Double, place : String, sets : Array[Array[String]], cur : Int) -> Unit {
   go_place_by(at, place, sets, cur, true)
 }
 
 ///|
 /// go_place's, the page that leaves the stack's root put on its shelf and the one come to taken back from it where it is
 /// there (`kept`: sfbase's nav_root_kept), or let go and made anew (not `kept`: what a test compares a page kept with,
-/// bar_places_kept_wbtest.mbt).
-fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur : Int, kept : Bool) -> Unit {
+/// bar_places_kept_test.mbt).
+pub fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur : Int, kept : Bool) -> Unit {
   let from = match place_of(app.nav.top()) {
     Some(p) => p
     None => ""
@@ -1163,13 +1238,6 @@ fn toast_bottom_now(v : @view.View) -> Double {
   } else {
     bar_room
   }
-}
-
-///|
-/// What a finger hides as it drags a field's caret or what is picked (@ui.Ctx::finger_reads), shown larger over it:
-/// kit's loupe, of the glass a switch's knob held is (@sf.glass_knob), over everything.
-fn finger_loupe(c : @ui.Ctx) -> Unit {
-  @kit.loupe(c, "loupe", c.finger_reads(), glass=@sf.glass_knob())
 }
 
 ///|
@@ -1308,7 +1376,7 @@ fn splash_begin(owner : @view.View, at : Double) -> Unit {
 /// first page's (first_page_ms), not LOCAL_MS: the core reads what is here in its own time, slower on a phone and
 /// busy as the app comes back (what came meanwhile read in); cut short at LOCAL_MS, a chat on the device slid in as its
 /// messages' bones, they a moment later (2026-10-31, android 0.1.6303: no request to a station as the chats opened).
-let page_local_ms : Double = splash_label_ms
+pub let page_local_ms : Double = splash_label_ms
 
 ///|
 /// How long the app's first page waits for what it shows (all of it the core's on the device, as a page opening's):
@@ -1316,7 +1384,7 @@ let page_local_ms : Double = splash_label_ms
 /// then and answers more slowly than in a running app; cut short at LOCAL_MS, the page came in pieces (2026-10-27,
 /// the sidebar by itself, then the chat's bones, then its messages), where an opening quicker than that is meant to be
 /// one picture and then the page (splash).
-let first_page_ms : Double = splash_label_ms
+pub let first_page_ms : Double = splash_label_ms
 
 ///|
 /// Whether the core has answered (a value or why not) for what page `p` of workspace `w` shows as it opens (App.kt

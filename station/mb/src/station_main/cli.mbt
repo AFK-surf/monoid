@@ -129,35 +129,7 @@ pub fn station_lang(data : String) -> String {
 ///|
 /// An instant as JavaScript's `toISOString` says it (ms since 1970, UTC).
 pub fn iso_time(ms : Double) -> String {
-  let total = ms.floor().to_int64()
-  let millis = ((total % 1000L) + 1000L) % 1000L
-  let secs = (total - millis) / 1000L
-  let mut days = secs / 86400L
-  let mut rem = secs % 86400L
-  if rem < 0L {
-    rem += 86400L
-    days -= 1L
-  }
-  // (days since 1970 to a civil date: Howard Hinnant's)
-  let z = days + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let year = if m <= 2L { y + 1L } else { y }
-  let pad = (v : Int64, n : Int) => {
-    let s = v.to_string()
-    let mut out = s
-    while out.length() < n {
-      out = "0" + out
-    }
-    out
-  }
-  "\{pad(year, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rem / 3600L, 2)}:\{pad(rem % 3600L / 60L, 2)}:\{pad(rem % 60L, 2)}.\{pad(millis, 3)}Z"
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 // ── id ──
@@ -247,6 +219,9 @@ priv struct Health {
   updated_at : Double
   front : String
   relay_conflict : Bool
+  /// Its open descriptors and resident memory (none from a release from before it said them).
+  open_fds : Int?
+  rss_bytes : Double?
 }
 
 ///|
@@ -255,7 +230,15 @@ fn health_of(v : Json?) -> Health? {
   guard h.get("pid") is Some(Number(pid, ..)) && pid == pid.floor() else { None }
   guard h.get("updatedAt") is Some(Number(at, ..)) else { None }
   guard h.get("front") is Some(String(front)) && ["ok", "reconnecting", "direct"].contains(front) else { None }
-  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True) })
+  let open_fds = match h.get("openFds") {
+    Some(Number(n, ..)) if n >= 0.0 && n == n.floor() => Some(n.to_int())
+    _ => None
+  }
+  let rss_bytes = match h.get("rssBytes") {
+    Some(Number(n, ..)) if n >= 0.0 => Some(n)
+    _ => None
+  }
+  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True), open_fds, rss_bytes })
 }
 
 ///|
@@ -537,13 +520,13 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
 ///|
 /// A JavaScript value (jsjson's) as JSON.
 fn to_core(v : @jsjson.JValue) -> Json {
-  attempt(() => @json.parse(@jsjson.stringify(v))).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 /// JSON as a JavaScript value (jsjson's).
 fn of_core(j : Json) -> @jsjson.JValue {
-  attempt(() => @jsjson.parse(j.stringify())).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
@@ -562,7 +545,9 @@ fn js_text(v : @jsjson.JValue) -> String {
 
 ///|
 /// The updates' parts set up for this machine: their words and language, its paths and Node (none: this program).
-pub fn updates_setup(data : String, argv0 : String) -> Unit {
+pub fn updates_setup(data : String, argv0 : String, app? : String = "") -> Unit {
+  updates_runner_from.val = (app, argv0, data)
+  updates_runner.val = None
   let (zh, en) = catalogs_json()
   @updates.set_words(zh, en)
   @updates.set_station_lang(station_lang(data))
@@ -863,19 +848,16 @@ async fn redeem(
     if rig {
       fields["rig"] = Json::boolean(true)
     }
-    let asked : Json = {
-      "url": Json::string(origin + at),
-      "method": Json::string("POST"),
-      "headers": Json::array([Json::array([Json::string("content-type"), Json::string("application/json")])]),
-    }
-    let (said, bytes) = host.shell("fetch", asked, bytes=@utf8.encode(Json::object(fields).stringify())) catch {
+    let r = host.fetch(
+      origin + at,
+      method_="POST",
+      headers=[("content-type", "application/json")],
+      body=@utf8.encode(Json::object(fields).stringify()),
+    ) catch {
       e => fail("\{plane_name} did not answer: \{e}")
     }
-    let status = match said {
-      { "status": Number(n, ..), .. } => n.to_int()
-      _ => 0
-    }
-    answered = (status, @utf8.decode_lossy(bytes.unwrap_or(b"")))
+    let status = r.status
+    answered = (status, r.text())
     if prefix == prefixes[prefixes.length() - 1] || status != 401 {
       break
     }
@@ -895,6 +877,14 @@ async fn redeem(
 /// workspace left as it is), as the admin API's route throws it.
 pub(all) suberror JoinRefused {
   JoinRefused(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for JoinRefused with output(self, logger) {
+  match self {
+    JoinRefused(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

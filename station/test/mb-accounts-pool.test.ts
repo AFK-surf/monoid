@@ -1,4 +1,4 @@
-// The accounts in MoonBit (station/mb src/accounts_pool, the reader's `--builder harness-accounts-pool`) held to the
+// The accounts in MoonBit (station/mb src/accounts_pool, `stillfail-reader-harness --builder harness-accounts-pool`) held to the
 // TypeScript they are the MoonBit of: src/accounts/{index,quota,agy-quota,claude-reset,cursor,kimi,check,pace}.ts,
 // src/sessions/accounts.ts and the pool (src/sessions/pool.ts). Each side is given the same world and asked the same:
 // the functions on the same values (seeded random ones too), what reads a provider or a file against the same local
@@ -17,7 +17,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { after, before, describe, test } from "node:test";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { Store } from "../src/store/store.ts";
 import { ConfigFile } from "../src/ops/config.ts";
@@ -52,8 +52,8 @@ import { provider, temp } from "./accounts-fakes.ts";
 import { rng } from "./lock-chains.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const SEEDS = Number(process.env.ACCOUNTS_POOL_SEEDS ?? 300);
 const TZ = -new Date(Date.UTC(2026, 10, 16)).getTimezoneOffset() * 60_000;
 
@@ -286,9 +286,9 @@ describe("accounts_pool: functions", { skip }, () => {
       return p;
     });
     const connects = Array.from({ length: r.int(3) }, (_, i) => {
-      const c: Json = { id: r.next() < 0.1 ? `C${i}` : `c${i}`, bind: { runtime: r.pick(["claude", "codex", "pi", "x", undefined]) } };
+      const c: Json = { id: r.next() < 0.1 ? `C${i}` : `c${i}`, bind: { runtime: r.pick(["claude", "codex", "agy", "cursor", "pi", "x", undefined]) } };
       if (r.next() < 0.5) c.bind.model = r.pick(MODELS);
-      if (r.next() < 0.3) c.bind.effort = r.pick(["low", "max", "xhigh", "weird", ""]);
+      if (r.next() < 0.3) c.bind.effort = r.pick(["none", "minimal", "low", "high", "max", "xhigh", "weird", ""]);
       if (r.next() < 0.3) c.bind.profiles = r.next() < 0.1 ? [1] : ["p0", " p1 ", ""];
       if (r.next() < 0.3) c.mode = r.pick(["single-session", "multi-session", "other"]);
       if (r.next() < 0.3) c.kind = r.pick(["slack", "feishu", "comma", "group", "irc"]);
@@ -326,6 +326,13 @@ describe("accounts_pool: functions", { skip }, () => {
         assert.equal(await p.ask("billedPerUse", plain), billedPerUse(plain), `seed ${seed}: billed`);
         assert.equal(await p.ask("takesFast", pr), takesFast(pr), `seed ${seed}: fast`);
       }
+    }
+    for (const raw of [
+      { connects: [{ id: "c", bind: { runtime: "agy", effort: "high" } }] },
+      { connects: [{ id: "c", bind: { runtime: "agy", effort: "ultra" } }] },
+      { connects: [{ id: "c", bind: { runtime: "cursor", effort: "high" } }] },
+    ]) {
+      same(await p.said("checkConfig", raw, "/data"), await tsSaid(() => checkConfig(raw, "/data")), JSON.stringify(raw));
     }
   });
 
@@ -1200,6 +1207,9 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
         case "shared.lendCodex": return m.shared.lendCodex(args[0]);
         case "shared.loginUpdated": m.shared.loginUpdated(args[0]); return null;
         case "shared.hostName": return m.shared.hostName();
+        case "shared.view": return m.shared.view() ?? { $undef: 1 };
+        case "share.shareRefusal": return (await import("../src/share/index.ts")).shareRefusal(args[0]);
+        case "profiles.loginCommand": return (await import("../src/accounts/profiles.ts")).loginCommand(args[0], args[1], args[2]);
         case "codex.rateLimits": return m.codex.rateLimits();
         case "codex.models": { const c = await m.codex.models(); return { models: c.models, efforts: Object.fromEntries(c.efforts), defaults: Object.fromEntries(c.defaults), ultrafastModels: c.ultrafastModels }; }
         case "codex.loginChanged": await m.codex.loginChanged(args[0]); return null;
@@ -1294,12 +1304,39 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
       await alike("runtimes checked");
       // A borrowed Codex subscription: its host's status, then its allowance read with the login lent.
       await both("borrowed check", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      // Checked again while the host has not read again: the same reading is not written again; one changed at the same
+      // checkedAt is.
+      const writes = { ts: 0, mb: 0 };
+      for (const [s, k] of [[ts, "ts"], [mb, "mb"]] as const) {
+        const set = s.store.setProfileQuota.bind(s.store);
+        s.store.setProfileQuota = (id, q) => (writes[k]++, set(id, q));
+      }
+      await both("borrowed checked again, the same", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 0, mb: 0 }, "the same reading not written again");
+      const hostSaid = [tsParts.shared.status, mbParts.shared.status] as const;
+      const changedSaid = (said: typeof tsParts.shared.status) => async (pr: Json) => {
+        const got = await said(pr);
+        return { ...got, quota: { ...got.quota, windows: [{ label: "5 小时", usedPercent: 41, resetsAt: null }] } };
+      };
+      tsParts.shared.status = changedSaid(hostSaid[0]);
+      mbParts.shared.status = changedSaid(hostSaid[1]);
+      await both("borrowed checked again, changed", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 1, mb: 1 }, "a changed reading at the same checkedAt written");
+      [tsParts.shared.status, mbParts.shared.status] = hostSaid;
+      await both("borrowed checked again, as before", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 2, mb: 2 });
+      await alike("borrowed checked again");
       reply = (url) => (url.endsWith("/wham/usage") ? { status: 200, body: { rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18000 } }, plan_type: "plus" } } : { status: 404, body: {} });
       await both("borrowed allowance", () => tsAccounts.refreshQuota("bx"), "refreshQuota", "bx");
       await both("borrowed changed", () => tsAccounts.sharedChanged("bx", true), "sharedChanged", "bx", true);
       reply = () => ({ status: 401, body: { error: { message: "token revoked" } } });
       await both("borrowed allowance refused", () => tsAccounts.refreshQuota("bx"), "refreshQuota", "bx");
       await alike("borrowed");
+      // Listed to the workspaces its host lends it in alone (ws1 here), and to no viewer all of them.
+      for (const v of [viewer, { ...viewer, home: false, workspace: "ws2" }, undefined]) {
+        const seen = (await both(`profiles view ${v?.workspace}`, () => tsAccounts.profilesView(v as any), "profilesView", v)) as Json[];
+        assert.equal(seen.some((x) => x.id === "bx"), v?.workspace !== "ws2", `bx listed to ${v?.workspace}`);
+      }
       // Sign-ins: one for a new profile made once it is done, named by its account; one dropped; one of a profile.
       const tsNew = await tsAccounts.newLogin({ runtime: "claude" }, viewer as any, "zh");
       const mbNew = await p.ask("accounts.newLogin", { runtime: "claude" }, viewer, "zh");

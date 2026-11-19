@@ -1,5 +1,5 @@
-// A chat relayed to a channel (station/src/sessions/relay.ts): a person picks a Slack channel or a Feishu/Lark group
-// one of the station's connects' bots is in, and the chat's agent goes on there too. The station starts the
+// A chat relayed to a channel (station/src/sessions/relay.ts): a person picks a Slack channel, a Feishu/Lark group or a
+// group connect's space one of the station's connects' bots is in, and the chat's agent goes on there too. The station starts the
 // conversation there itself (who relayed it, from which chat, their note), or joins a Slack thread a person gave the
 // link of, makes it one of the agent's conversations, says so in the chat it came from, and tells the agent. Each
 // connect's chat surface is the station's (`chat.<method>` with its connect's id; `chat.has` whether it offers one);
@@ -46,13 +46,12 @@ async fn Storage::connects_for(self : Storage, session : String) -> Array[RelayV
       None => ()
     }
     let kind = str(c, "kind").unwrap_or("")
-    if kind == "group" {
-      continue
-    }
     if !(self.ask("hub.hasChat", [js(id)]) is True) || !self.chat_has(id, "places") || !self.chat_has(id, "begin") {
       continue
     }
-    let shown = if kind == "feishu" {
+    let shown = if kind == "group" {
+      "group"
+    } else if kind == "feishu" {
       if self.chat_has(id, "platform") && self.chat_call(id, "platform", []) == js("lark") { "lark" } else { "feishu" }
     } else {
       "slack"
@@ -400,7 +399,8 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
   let (begun_thread, begun_ts) = match t.existing {
     Some(e) => (e, self.chat_call(c.id, "post", [e, js(opening), ja([])]))
     None => {
-      let b = self.chat_call(c.id, "begin", [js(t.channel), js(opening)])
+      // (a group space's conversation is a topic of its own, called as the chat is)
+      let b = self.chat_call(c.id, "begin", [js(t.channel), js(opening), js(title)])
       (get(b, "thread").unwrap_or(Json::null()), get(b, "ts").unwrap_or(Json::null()))
     }
   }
@@ -445,6 +445,7 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
       match str(t.place, "kind") {
         Some("channel") => "a new thread in Slack channel #\{pname}"
         Some("topics") => "a new topic in Feishu topic group \{pname}"
+        Some("space") => "a new topic in the group space \{pname}"
         _ => "Feishu group \{pname}, whose conversation is now yours"
       }
   }

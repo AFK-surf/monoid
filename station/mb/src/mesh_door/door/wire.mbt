@@ -23,6 +23,14 @@ pub(all) suberror WireError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WireError with output(self, logger) {
+  match self {
+    WireError(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// A body as it comes (an event stream): the next piece, None at its end; `stop` lets go of it (TS's `return`).
 pub(all) struct Chunks {
   next : async () -> Bytes?

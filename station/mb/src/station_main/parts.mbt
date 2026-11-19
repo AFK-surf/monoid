@@ -45,6 +45,14 @@ pub(all) suberror PartTwice {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for PartTwice with output(self, logger) {
+  match self {
+    PartTwice(m) => logger.write_string(m)
+  }
+}
+
+///|
 priv enum Routes {
   Made(Array[PartRoute])
   /// Made with what the admin API's routes are given (its readers, the store, the events).

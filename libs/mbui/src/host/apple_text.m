@@ -839,16 +839,28 @@ static BOOL ahead_ask(int k, uint8_t want, uint8_t first, NSMutableArray<MBAhead
   return YES;
 }
 
+// The phases of `asked` other than their first, a phase an item, in the order the queue of less weight draws them: a
+// phase of every glyph in turn, one more of each before a third of any (so a page moved across by a quarter of a pixel
+// a frame finds the next phase of all its glyphs drawn, not all four of a few).
+static NSMutableArray<MBAhead *> *ahead_rests(NSArray<MBAhead *> *asked) {
+  NSMutableArray<MBAhead *> *rests = [NSMutableArray new];
+  for (int pass = 0; pass < SUB_COUNT; pass++) {
+    for (MBAhead *a in asked) {
+      if (pass < __builtin_popcount((uint8_t)(a.want & ~a.first))) [rests addObject:a];
+    }
+  }
+  return rests;
+}
+
 // What was asked handed to the queues, a phase an item: each glyph's first phases over the cores there are (a page's
 // few hundred drawn in the time a frame or two takes, not one after another), each batch after the one before; the
-// rest of their phases on the queue of less weight. `firsts`: more first phases of glyphs asked before.
+// rest of their phases on the queue of less weight (ahead_rests). `firsts`: more first phases of glyphs asked before.
 static void ahead_go(NSMutableArray<MBAhead *> *asked, NSMutableArray<MBAhead *> *firsts) {
   if (!asked.count && !firsts.count) return;
-  NSMutableArray<MBAhead *> *rests = [NSMutableArray new];
   for (MBAhead *a in asked) {
     for (int n = __builtin_popcount(a.first); n > 0; n--) [firsts addObject:a];
-    for (int n = __builtin_popcount((uint8_t)(a.want & ~a.first)); n > 0; n--) [rests addObject:a];
   }
+  NSMutableArray<MBAhead *> *rests = ahead_rests(asked);
   if (firsts.count) {
     dispatch_async(ahead_q, ^{
       dispatch_apply(firsts.count, DISPATCH_APPLY_AUTO, ^(size_t i) { draw_ahead(firsts[i], YES); });

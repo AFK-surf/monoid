@@ -1,0 +1,10 @@
+{
+  "counts": {
+    "style-literal": {
+      "src/stillfail/main.mbt": 3
+    },
+    "box-loose": {
+      "src/stillfail/main.mbt": 2
+    }
+  }
+}

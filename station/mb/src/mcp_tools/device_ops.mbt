@@ -14,6 +14,14 @@ pub(all) suberror ToolError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ToolError with output(self, logger) {
+  match self {
+    ToolError(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 pub let access_levels : Array[String] = ["off", "read", "full"]
 
 ///|

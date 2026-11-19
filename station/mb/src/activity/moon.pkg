@@ -1,4 +1,5 @@
 import {
+  "base/hash",
   "station/sql",
   "moonbitlang/core/json",
 }

@@ -626,6 +626,9 @@ struct Node {
   /// whether a drag anywhere on it is its own, whole (View::on_drag's `whole`): nothing drawn over it reached from round
   /// where it is drawn by a press on it (reach.mbt)
   mut drags_whole : Bool
+  /// whether, held, it alone is pointed at (View::on_drag's `captures`: a slider's or a scrollbar's thumb, as a captured
+  /// pointer's on the web): what the pointer passes over meanwhile is not (Tree::pointed_of)
+  mut drag_captures : Bool
   /// which saying of its on_drag it is (each said anew, or let go, another): what was told by one is that one's alone
   mut drag_said : Int
   /// where in it a finger is taken at a moment (View::takes, View::hosted_takes; none: all of it)
@@ -658,6 +661,9 @@ struct Node {
   mut said_hidden : Bool
   /// it and all it holds not in use, behind what is (View::in_use): the keyboard's focus none of theirs
   mut behind : Bool
+  /// it and all it holds move only for a cause said (@view.transition, View::transitions_only): what changes outside
+  /// one is there at once
+  mut transitions_only : Bool
   /// what it and all it holds are drawn in, as their bones (View::bones): 0 none
   mut bones : Int64
   /// drawn in its bones as one piece of its own box, nothing in it drawn (View::bone_whole)
@@ -703,6 +709,11 @@ struct Node {
   /// goes (View::flip_in): how far down off where it is laid out (against what holds it), how much shorter its own
   /// ground is drawn, how big it is drawn from its top (1 whole), how opaque of that
   mut flip_in : (Double, Double, Double, Double)
+  /// and across, as that way goes (where the block holding it is laid out as wide as it was: what changes in it moving
+  /// along a row or growing across, a pill opened): how far across off where it is laid out (against what holds it), how
+  /// much narrower its own ground is drawn; and its ground's corners as drawn on that way, none as said
+  mut flip_across : (Double, Double)
+  mut flip_round : (Double, Double, Double, Double)?
   /// a page's list's row: how far the last walk of the drawn put it to be on the host's grid (Tree::each_drawn_in_order),
   /// taken back from what in it is drawn grown from its top on a way (flip_in's), which is on no grid
   mut grid_put : Double
@@ -901,6 +912,9 @@ pub struct Tree {
   /// each so followed, those that follow it: placed again as it is laid out on its way
   priv shown_bys : Map[Int, (NodeId, (Double) -> GroundShape)]
   priv shown_followers : Map[Int, Array[Int]]
+  /// for each node whose boxes are followed so, the nodes whose ground is drawn by where those boxes are drawn
+  /// (View::ground_by_placed): drawn again as any of them is placed or drawn off anew
+  priv placed_followers : Map[Int, Array[Int]]
   /// what is due being done (Tree::advance)
   mut advancing : Bool
   /// where its logic stands: what is due by then done (Tree::advance), what is said from then on said as of then at the
@@ -1241,6 +1255,8 @@ pub struct Tree {
   mut bones_set : Int
   /// how many nodes are said not in use (View::in_use): none, that not asked of what holds a node
   mut behind_set : Int
+  /// how many nodes are said to move only in a transition (View::transitions_only): none, none walked to learn it
+  mut transitions_only_set : Int
   /// how many nodes are said pressed by Enter that nothing with the focus takes (View::default_press): none, none looked for
   mut defaults_set : Int
   /// the width each node that says it lays what it holds out at (View::lays_anew), by node: what a Tester's steadiness
@@ -1428,6 +1444,9 @@ struct Bound {
   /// whether what it read was written as an answer was told (answering.mbt): what it sets then is the answer's, done at
   /// once (answer_marked.mbt)
   mut answered : Bool
+  /// the transitions told as what it reads was marked (transition.mbt), done in them as it next runs; let go of as its
+  /// read comes out the same (Tree::pull)
+  mut moved : Array[Int]
   /// what follows what it read (none once let go)
   mut watch : @signals.Watch?
   mut run : () -> Unit
@@ -1537,6 +1556,7 @@ pub fn Tree::new(
     old_built_waits: [],
     shown_bys: {},
     shown_followers: {},
+    placed_followers: {},
     told: 0,
     clock_came_at: -1.0e9,
     advancing: false,
@@ -1661,6 +1681,7 @@ pub fn Tree::new(
     hand: fn(_) {  },
     bones_set: 0,
     behind_set: 0,
+    transitions_only_set: 0,
     defaults_set: 0,
     laid_said: Map([]),
     shakes_said: Map([]),
@@ -1846,6 +1867,10 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         self.behind_set -= 1
       }
       n.behind = false
+      if n.transitions_only {
+        self.transitions_only_set -= 1
+      }
+      n.transitions_only = false
       if n.default_press {
         self.defaults_set -= 1
       }
@@ -1887,6 +1912,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.moved_by = None
       n.moved = (0.0, 0.0)
       n.flip_in = (0.0, 0.0, 1.0, 1.0)
+      n.flip_across = (0.0, 0.0)
+      n.flip_round = None
       n.moved_holds = None
       n.moved_ends = None
       n.went = None
@@ -1969,6 +1996,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.wheel_said = 0
       n.on_drag = None
       n.drags_whole = false
+      n.drag_captures = false
       n.takes = None
       if n.takes_units.length() > 0 {
         n.takes_units = []
@@ -2116,6 +2144,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         on_drag: None,
         fingers: 1,
         drags_whole: false,
+        drag_captures: false,
         drag_said: 0,
         takes: None,
         takes_units: [],
@@ -2129,6 +2158,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         said: None,
         said_hidden: false,
         behind: false,
+        transitions_only: false,
         bones: 0L,
         bone_whole: false,
         cut: false,
@@ -2153,6 +2183,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         moved_by: None,
         moved: (0.0, 0.0),
         flip_in: (0.0, 0.0, 1.0, 1.0),
+        flip_across: (0.0, 0.0),
+        flip_round: None,
         grid_put: 0.0,
         near_rest: 0.0,
         moved_holds: None,
@@ -2635,6 +2667,9 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   if self.nodes.length() > 0 && self.nodes[0].live {
     self.root().let_go()
   }
+  if node_rests.length() > 0 {
+    node_rests.retain(fn(e) { !physical_equal(e.1.tree, self) })
+  }
   self.drawn_marks.clear()
   self.looks_due.clear()
   self.places_due.clear()
@@ -2976,7 +3011,7 @@ fn Tree::place_marked_at(self : Tree, at : Int) -> Unit {
   }
   // (where it is drawn off in what holds it, as it changes, whatever else of its place was told before: the middle of
   // what each that holds it draws, not its own)
-  let off = (n.look.dx + n.moved.0, n.look.dy + n.moved.1 + n.flip_in.0, n.look.sx, n.look.sy)
+  let off = (n.look.dx + n.moved.0 + n.flip_across.0, n.look.dy + n.moved.1 + n.flip_in.0, n.look.sx, n.look.sy)
   if n.drawn_off != off {
     n.drawn_off = off
     self.drawn_stale_from(n.parent)
@@ -3375,6 +3410,7 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     told_at: -1.0,
     by_clock: false,
     answered: false,
+    moved: [],
     watch: None,
     run: bound_runs_not,
   }
@@ -3401,8 +3437,17 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
   })
   w.on_marked(fn() {
     // (marked as an answer writes what it read: what it sets as it runs is the answer's)
-    if b.live && answering_now() {
+    // (or, where only a transition moves its node, outside one, by no clock: its change at once, transition.mbt)
+    if b.live &&
+      (answering_now() ||
+      (b.at >= 0 && !(self.ticking || self.laying || self.handing) && !self.transition_gate(b.at))) {
       b.answered = true
+    }
+    if b.live {
+      let told = transition_marked()
+      if !told.is_empty() {
+        b.moved = b.moved + told
+      }
     }
     if b.live && !b.marked {
       if !b.queued {
@@ -3418,30 +3463,35 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     b.marked = false
     // (at rest since it was told: nothing of it worked out again till it wakes, told anew then (View::rests))
     if !b.live || w.resting() {
+      b.moved = []
       return
     }
     self.work.bindings_run += 1
-    let reading_was = self.binding_reading
-    self.binding_reading = at
-    let v = w.read(read)
-    self.binding_reading = reading_was
-    let was = self.cause_at
-    self.cause_at = b.told_at
-    b.told_at = -1.0
-    let by_clock_was = self.bound_by_clock
-    self.bound_by_clock = b.by_clock
-    let answered_was = self.binding_answered
-    self.binding_answered = b.answered
-    b.answered = false
-    self.binding_running = self.binding_running + 1
-    // (untracked: what it sets read by nothing that reads now)
-    let was_sub = @signals.set_active_sub(None)
-    then(v)
-    @signals.set_active_sub(was_sub) |> ignore
-    self.bound_by_clock = by_clock_was
-    self.binding_answered = answered_was
-    self.binding_running = self.binding_running - 1
-    self.cause_at = was
+    let scopes = b.moved
+    b.moved = []
+    transition_again(scopes, fn() {
+      let reading_was = self.binding_reading
+      self.binding_reading = at
+      let v = w.read(read)
+      self.binding_reading = reading_was
+      let was = self.cause_at
+      self.cause_at = b.told_at
+      b.told_at = -1.0
+      let by_clock_was = self.bound_by_clock
+      self.bound_by_clock = b.by_clock
+      let answered_was = self.binding_answered
+      self.binding_answered = b.answered
+      b.answered = false
+      self.binding_running = self.binding_running + 1
+      // (untracked: what it sets read by nothing that reads now)
+      let was_sub = @signals.set_active_sub(None)
+      then(v)
+      @signals.set_active_sub(was_sub) |> ignore
+      self.bound_by_clock = by_clock_was
+      self.binding_answered = answered_was
+      self.binding_running = self.binding_running - 1
+      self.cause_at = was
+    })
     self.change_ended()
   }
   (b.run)()
@@ -3478,6 +3528,7 @@ fn Tree::pull(self : Tree) -> Unit {
             (b.run)()
           } else {
             b.marked = false
+            b.moved = []
           }
         }
         _ => ()
@@ -3540,6 +3591,8 @@ fn Tree::structured_by(
 ) -> () -> Unit {
   let live = Ref(true)
   let last : Ref[Int?] = Ref(None)
+  // (the transitions told as what it reads was marked, kept for its next run whenever that comes: transition.mbt)
+  let moved : Ref[Array[Int]] = Ref([])
   // (the watch reads anew as it is told; let go as it stops)
   let watch : Ref[@signals.Watch?] = Ref(None)
   let w = @signals.watch(fn() {
@@ -3556,13 +3609,16 @@ fn Tree::structured_by(
       // (still bound once what was due by then is settled: one let go then reads nothing more, follows nothing again)
       guard live.val else { return false }
       let v = w.read(read)
+      // (what this read was marked within is its own, whether it changes what is made or not: never left for a later run)
+      let scopes = moved.val
+      moved.val = []
       if last.val != Some(v) {
         last.val = Some(v)
         if live.val {
           self.structure_done(fn() {
             let was = answered.val
             answered.val = was || quiet
-            then(v)
+            transition_again(scopes, fn() { then(v) })
             answered.val = was
           })
         }
@@ -3583,6 +3639,8 @@ fn Tree::structured_by(
     self.at_cause(fn() {
       guard live.val else { return false }
       let v = w.read(read)
+      // (settled as an answer: what it was marked within is done with)
+      moved.val = []
       if last.val != Some(v) {
         last.val = Some(v)
         if live.val {
@@ -3604,6 +3662,11 @@ fn Tree::structured_by(
     if answering_depth.val > 0 && !queued.val {
       queued.val = true
       answer_marked.push((self, settle))
+    }
+    // (marked inside a transition: its next run is that transition's, run when it may)
+    let told = transition_marked()
+    if !told.is_empty() {
+      moved.val = moved.val + told
     }
   })
   let v = w.read(read)
@@ -3803,6 +3866,10 @@ priv enum Prop {
   FocusRing
   BesideOf
   EdgeDashed
+  Notch
+  ShadowOut
+  CutAcross
+  Magnifies
 }
 
 ///|
@@ -3911,6 +3978,10 @@ impl Show for Prop with output(self, logger) {
       FocusRing => "FocusRing"
       BesideOf => "BesideOf"
       EdgeDashed => "EdgeDashed"
+      Notch => "Notch"
+      ShadowOut => "ShadowOut"
+      CutAcross => "CutAcross"
+      Magnifies => "Magnifies"
     },
   )
 }
@@ -4043,6 +4114,10 @@ fn Prop::ord(self : Prop) -> Int {
     FocusRing => 93
     BesideOf => 97
     EdgeDashed => 94
+    Notch => 98
+    ShadowOut => 99
+    CutAcross => 100
+    Magnifies => 101
   }
 }
 
@@ -5176,6 +5251,134 @@ pub fn Tree::edge_dashed_of(self : Tree, id : NodeId) -> Bool {
 }
 
 ///|
+/// The notch cut into its top, as it changes: a circle about the middle of its top, its middle `y` below the edge
+/// (above it when negative), of radius `r`, met by the edge through fillets of `f` (a radius of 0 or less: none); its
+/// ground, its frosted glass and its edge cut alike, none of its shadow, as an old view's box's (Ctx::box `notch_y`,
+/// `notch_r`, `notch_fillet`): paint's.
+#callsite(autofill(loc))
+pub fn View::notch(self : View, notch : Live[(Double, Double, Double)], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { notches.remove(id) }) |> ignore
+  self.bind(loc~, Notch, notch, Paint, fn(n) { if n.1 > 0.0 { notches[id] = n } else { notches.remove(id) } })
+  self
+}
+
+///|
+/// Its shadow (View::shadow) cast outside its outline only, none under it (what is under it seen through it), as an old
+/// view's box's `shadow_out`, as it changes: paint's.
+#callsite(autofill(loc))
+pub fn View::shadow_outside(self : View, out : Live[Bool], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { shadows_out.remove(id) }) |> ignore
+  self.bind(loc~, ShadowOut, out, Paint, fn(o) { if o { shadows_out[id] = true } else { shadows_out.remove(id) } })
+  self
+}
+
+///|
+/// Where across it cuts what it holds, where it clips (View::clips), as it changes (from and to in its own terms; none
+/// between them: nothing of what it holds drawn; None: all of it), as an old view's Ctx::cut_across_by: paint's.
+#callsite(autofill(loc))
+pub fn View::cut_across(self : View, across : Live[(Double, Double)?], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { cuts_across.remove(id) }) |> ignore
+  self.bind(loc~, CutAcross, across, Paint, fn(a) {
+    match a {
+      Some(a) => cuts_across[id] = a
+      None => cuts_across.remove(id)
+    }
+  })
+  self
+}
+
+///|
+/// What the frame drew before it round (`x`, `y`) in the window (points), `zoom` times as large, shown in it over its
+/// ground, cut to it (None: nothing), as it changes, as an old view's Ctx::magnified (a loupe over what a finger hides):
+/// drawn anew each frame it is drawn, what is under it drawn before it (said last of what the root holds:
+/// View::over_all). Paint's.
+#callsite(autofill(loc))
+pub fn View::magnifies(self : View, m : Live[(Double, Double, Double)?], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { magnifiers.remove(id) }) |> ignore
+  self.bind(loc~, Magnifies, m, Paint, fn(m) {
+    match m {
+      Some(m) => magnifiers[id] = m
+      None => magnifiers.remove(id)
+    }
+  })
+  self
+}
+
+///|
+/// The nodes cut by a notch (View::notch), cast a shadow outside alone (View::shadow_outside), cut across
+/// (View::cut_across) and magnifying (View::magnifies), kept beside the tree as dashed edges are (only a few nodes ever
+/// say them), each the window's own (ui's window_kept).
+let notches : Map[NodeId, (Double, Double, Double)] = Map([])
+
+///|
+let shadows_out : Map[NodeId, Bool] = Map([])
+
+///|
+let cuts_across : Map[NodeId, (Double, Double)] = Map([])
+
+///|
+let magnifiers : Map[NodeId, (Double, Double, Double)] = Map([])
+
+///|
+/// What ui keeps of each window's of those (its window_kept), as one window or another comes in.
+pub fn notches_kept() -> Map[NodeId, (Double, Double, Double)] {
+  notches
+}
+
+///|
+pub fn shadows_out_kept() -> Map[NodeId, Bool] {
+  shadows_out
+}
+
+///|
+pub fn cuts_across_kept() -> Map[NodeId, (Double, Double)] {
+  cuts_across
+}
+
+///|
+pub fn magnifiers_kept() -> Map[NodeId, (Double, Double, Double)] {
+  magnifiers
+}
+
+///|
+/// Node `id`'s notch (View::notch): where its circle's middle is below its top, its radius, its fillets' (a radius of
+/// 0: none).
+pub fn Tree::notch_of(self : Tree, id : NodeId) -> (Double, Double, Double) {
+  if notches.is_empty() || !self.alive_id(id) {
+    return (0.0, 0.0, 0.0)
+  }
+  notches.get(id).unwrap_or((0.0, 0.0, 0.0))
+}
+
+///|
+/// Whether node `id`'s shadow is cast outside its outline alone (View::shadow_outside).
+pub fn Tree::shadow_outside_of(self : Tree, id : NodeId) -> Bool {
+  !shadows_out.is_empty() && self.alive_id(id) && shadows_out.get(id).unwrap_or(false)
+}
+
+///|
+/// Where across node `id` cuts what it holds (View::cut_across; None: all of it).
+pub fn Tree::cut_across_of(self : Tree, id : NodeId) -> (Double, Double)? {
+  if cuts_across.is_empty() || !self.alive_id(id) {
+    return None
+  }
+  cuts_across.get(id)
+}
+
+///|
+/// What node `id` magnifies (View::magnifies): round where in the window, how many times as large.
+pub fn Tree::magnifies_of(self : Tree, id : NodeId) -> (Double, Double, Double)? {
+  if magnifiers.is_empty() || !self.alive_id(id) {
+    return None
+  }
+  magnifiers.get(id)
+}
+
+///|
 /// An outer concentric ring round the node (`(width, gap, colour)`; `0` wide: none), drawn after what it holds and
 /// outside its clip, concentric with its own corners: paint's.
 #callsite(autofill(loc))
@@ -5371,7 +5574,7 @@ fn Tree::moved_of(self : Tree, n : Node) -> (Double, Double) {
 /// placed): its offset, its shift by how big it is laid out, and how far what moves it by that moved it as it was
 /// placed (View::moved_by).
 fn off_x(n : Node) -> Double {
-  n.look.dx + n.look.sx * n.flex.width + n.moved.0
+  n.look.dx + n.look.sx * n.flex.width + n.moved.0 + n.flip_across.0
 }
 
 ///|
@@ -5666,7 +5869,7 @@ fn Tree::drawn_box_of(
     }
     let draws = draws_of(m)
     m.drew = draws
-    m.drawn_off = (m.look.dx + m.moved.0, m.look.dy + m.moved.1 + m.flip_in.0, m.look.sx, m.look.sy)
+    m.drawn_off = (m.look.dx + m.moved.0 + m.flip_across.0, m.look.dy + m.moved.1 + m.flip_in.0, m.look.sx, m.look.sy)
     if draws && m.flex.width > 0.0 && m.flex.height > 0.0 {
       // (lines: one that draws only words draws its lines across, not its box: as wide as the widest, at its start or
       // in its middle as its words stand)
@@ -5865,12 +6068,15 @@ pub fn Tree::ground_drawn_of(self : Tree, id : NodeId) -> GroundShape {
       Some((of, f)) if self.alive_id(of) => f(self.nodes[of.at].flex.height)
       _ => self.nodes[id.at].look.ground_drawn
     }
-    // (drawn shorter as what it holds changes in a block of a page's list said `flips`, View::flip_in)
-    let less = self.nodes[id.at].flip_in.1
-    if less != 0.0 {
-      { ..g, dh: g.dh - less }
-    } else {
-      g
+    // (drawn shorter as what it holds changes in a block of a page's list said `flips`, View::flip_in; and narrower,
+    // its corners on their way, where the block is as wide as it was)
+    let n = self.nodes[id.at]
+    let less = n.flip_in.1
+    let less_w = n.flip_across.1
+    let g = if less != 0.0 || less_w != 0.0 { { ..g, dh: g.dh - less, dw: g.dw - less_w } } else { g }
+    match n.flip_round {
+      Some(r) => { ..g, corners: Some(r) }
+      None => g
     }
   } else {
     ground_as_laid
@@ -6119,11 +6325,26 @@ fn Tree::rows_placed(self : Tree, at : Int, y : Double) -> Double {
 /// Each change told the tree from now on (a signal set outside or a batch of them, an event, a moment come on the
 /// timeline) laid out and placed once it is told whole (a frame drawn after or none): where things stand as the next
 /// comes is where that one left them (View::placed_window_now), for what moves from there for its cause. As long as
-/// this node lives.
+/// this node lives, and is not put by at rest (View::on_rest): none while it rests, again as it wakes.
 pub fn View::laid_before_causes(self : View) -> Unit {
   guard self.alive() else { return }
   self.tree.before_causes = self.tree.before_causes + 1
-  self.owns(fn() { self.tree.before_causes = self.tree.before_causes - 1 }) |> ignore
+  let held = Ref(true)
+  self.on_rest(
+    fn() {
+      if held.val {
+        held.val = false
+        self.tree.before_causes = self.tree.before_causes - 1
+      }
+    },
+    wake=fn() {
+      if !held.val {
+        held.val = true
+        self.tree.before_causes = self.tree.before_causes + 1
+      }
+    },
+  )
+  |> ignore
 }
 
 ///|
@@ -7627,11 +7848,21 @@ pub(all) struct Drag {
 /// any tracking. One let go meanwhile is told nothing more. Up to `fingers` held on it at once, each told by its own
 /// events (Drag's `finger`); one more down calls the hold off (each of those down told Off), the rest of it nobody's.
 /// `whole`: a drag anywhere on it is its own (a picture a drag pans, as the old view's `capture`): a press on it takes
-/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt).
-pub fn View::on_drag(self : View, f : (Drag) -> Unit, fingers? : Int = 1, whole? : Bool = false) -> View {
+/// nothing drawn over it smaller than its room from round where that is drawn (reach.mbt). `captures`: while held, it
+/// alone is pointed at, and only while the pointer is over it (a slider's or a scrollbar's thumb: the controls the
+/// pointer passes over meanwhile take no hover, show no tip), as the web's setPointerCapture; not for what is dragged
+/// onto something that should answer it being over it (a file onto a folder).
+pub fn View::on_drag(
+  self : View,
+  f : (Drag) -> Unit,
+  fingers? : Int = 1,
+  whole? : Bool = false,
+  captures? : Bool = false,
+) -> View {
   guard self.live() is Some(n) else { return self }
   n.fingers = if fingers < 1 { 1 } else { fingers }
   n.drags_whole = whole
+  n.drag_captures = captures
   n.drag_said = n.drag_said + 1
   // (a raw on_drag, or a gesture said anew: answering a hold alone only where the gesture says so after it)
   n.hold_only = None
@@ -8443,6 +8674,37 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
+// what each node said to do at rest (View::on_rest), kept beside the tree by registration and View (its tree, index
+// and making, as Lent's), never in Node: only the few nodes a kept part rests on say one, so Node's C layout stays
+// what every unit inlining View::live was built against
+let node_rest_next : Ref[Int] = Ref(0)
+
+///|
+let node_rests : Array[(Int, View, () -> Unit, () -> Unit)] = []
+
+///|
+/// `f` run as it is put by at rest (View::park, View::rests: after what it holds is, so what binds in it has let go of
+/// what it read by then) and once as it is let go (View::owns): what it worked out that nothing follows (a computed read
+/// untracked as it laid out) let go of what that read, or it holds what that read while nothing shows it. `wake`: what
+/// it does as it is woken again (taken in: View::park's waking), not as it is let go.
+pub fn View::on_rest(self : View, f : () -> Unit, wake? : () -> Unit = fn() {  }) -> View {
+  guard self.alive() else { return self }
+  if node_rests.length() >= 64 {
+    node_rests.retain(fn(e) { e.1.alive() })
+  }
+  let id = node_rest_next.val
+  node_rest_next.val = id + 1
+  node_rests.push((id, self, f, wake))
+  self.owns(fn() {
+    match node_rests.search_by(fn(e) { e.0 == id }) {
+      Some(i) => node_rests.remove(i) |> ignore
+      None => ()
+    }
+    f()
+  })
+}
+
+///|
 /// `stop` kept as one it lets go of as it goes (View::owns), and what lets go of that keeping again: for what ends
 /// before it does (a moment's work done or called off), nothing of it kept by it after.
 pub fn View::owns_while(self : View, stop : () -> Unit) -> () -> Unit {
@@ -8559,6 +8821,10 @@ fn View::let_go(self : View) -> Unit {
   if n.behind {
     self.tree.behind_set -= 1
   }
+  if n.transitions_only {
+    self.tree.transitions_only_set -= 1
+  }
+  n.transitions_only = false
   n.behind = false
   if n.default_press {
     self.tree.defaults_set -= 1
@@ -8608,6 +8874,7 @@ fn View::let_go(self : View) -> Unit {
   self.drag_ended()
   n.on_drag = None
   n.drags_whole = false
+  n.drag_captures = false
   n.drag_said = n.drag_said + 1
   n.takes = None
   // (what holds it holds one taking a point the fewer: what it held let go of already, each so)
@@ -9025,12 +9292,28 @@ fn View::rests(self : View) -> () -> Unit {
 /// What node `at` and what it holds bind, at rest (View::park), each's waking added to `wakes`.
 fn Tree::rest_in(self : Tree, at : Int, wakes : Array[() -> Unit]) -> Unit {
   let n = self.nodes[at]
+  // (it before what it holds, as ever: what it makes rests before what that holds, so a part's watch resting tells no
+  // structure of it still awake to make anew; then what it said to do at rest (View::on_rest), once all it holds rests
+  // and what binds in all of it has let go of what it read)
   match n.owner {
     Some(o) => wakes.push(@signals.rest(o))
     None => ()
   }
   for k in n.kids {
     self.rest_in(k, wakes)
+  }
+  if node_rests.length() > 0 {
+    let v = self.handle(at)
+    let pairs : Array[(() -> Unit, () -> Unit)] = []
+    for e in node_rests {
+      if e.1.same(v) {
+        pairs.push((e.2, e.3))
+      }
+    }
+    for pair in pairs {
+      (pair.0)()
+      wakes.push(pair.1)
+    }
   }
 }
 
@@ -9070,6 +9353,7 @@ pub fn View::show(
   leave? : Double = 0.0,
   at_once? : Bool = false,
   along_row? : Bool = false,
+  pop_leave? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.alive() else { return }
@@ -9118,6 +9402,13 @@ pub fn View::show(
         // (under a page's list, as a key going, `leave` or not: its room given back from the cause in the list's one way,
         // what it holds drawn by that way, never cut: pick_leave.mbt's head)
         let held = !at_once && slot.tree.pick_held(v)
+        // (said to leave out of the flow: from where it stands, never come back to: pop_leave.mbt)
+        if pop_leave && leave > 0.0 {
+          slot.tree.tell_leaving(v.at)
+          slot.pop_leaves(v, leave) |> ignore
+          gone.val = None
+          return
+        }
         gone.val = if slot.goes(v, if held { 0.0 } else { leave }, !held && (at_once || leave > 0.0), swaps=true) {
           Some(v)
         } else {
@@ -9251,7 +9542,7 @@ fn View::pick_by(
       None => ()
     }
     match (had.val, leave_of) {
-      (Some((was, v)), Some(of)) if was != k && !at_once && v.alive() => {
+      (Some((was, v)), Some(of)) if was != k && !at_once && v.alive() && slot.tree.transition_gate(v.at) => {
         let ms = of(was, k)
         if ms > 0.0 {
           slot.tree.work.structure = slot.tree.work.structure + 1
@@ -9345,9 +9636,10 @@ pub fn[T : Eq, K : Hash + Eq] View::each(
   at_once? : Bool = false,
   along_row? : Bool = false,
   keeps? : () -> Array[K],
+  pop_leave? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
-  self.each_by(items, key, row, leave~, at_once~, along_row~, keeps?, loc~)
+  self.each_by(items, key, row, leave~, at_once~, along_row~, keeps?, pop_leave~, loc~)
 }
 
 ///|
@@ -9372,6 +9664,7 @@ fn[T : Eq, K : Hash + Eq] View::each_by(
   from_of? : (K, View) -> Double,
   keeps? : () -> Array[K],
   splits? : (K) -> Bool = fn(_) { false },
+  pop_leave? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.alive() else { return }
@@ -9395,7 +9688,7 @@ fn[T : Eq, K : Hash + Eq] View::each_by(
   }
   let kept : EachKept[K, T]? = keeps.map(EachKept::new)
   let change = fn(all) {
-    slot.tree.holding_boxes(fn() { each_change(slot, all, rows, gone_rows, key, row, leave, ways, from, loc, kept, splits~) })
+    slot.tree.holding_boxes(fn() { each_change(slot, all, rows, gone_rows, key, row, leave, ways, from, loc, kept, splits~, pop_leave~) })
   }
   let stop = match kept {
     None => slot.tree.structured(items, change)
@@ -9431,6 +9724,7 @@ fn[T : Eq, K : Hash + Eq] each_change(
   loc : SourceLoc,
   kept : EachKept[K, T]?,
   splits? : (K) -> Bool = fn(_) { false },
+  pop_leave? : Bool = false,
 ) -> Unit {
   guard slot.live() is Some(sn) else { return }
   slot.tree.work.structure = slot.tree.work.structure + 1
@@ -9504,6 +9798,14 @@ fn[T : Eq, K : Hash + Eq] each_change(
   for k, r in rows {
     if !seen.contains(k) {
       gone.push(k)
+      // (said to leave out of the flow: from where it stands, never come back to: pop_leave.mbt)
+      // (but where none stays: what holds it goes as it does (a show said to pop out with it), it in the flow there, so
+      // that it is not put back where it stood twice, once by itself and once with what holds it)
+      if pop_leave && leave > 0.0 && kept is None && !seen.is_empty() {
+        slot.tree.tell_leaving(r.0.at)
+        slot.pop_leaves(r.0, leave) |> ignore
+        continue
+      }
       if !each_kept_parks(slot, kept, k, r) && slot.goes(r.0, leave, !way(k, r.0, false)) {
         gone_rows[k] = r
       }
@@ -9862,10 +10164,15 @@ fn View::comes(
     while p >= 0 {
       match tree.flip_lists.get(p) {
         Some(tell) => {
-          // (made or let go as an answer told it: at once, nothing set out, answering.mbt)
-          if v.live() is Some(_) && !@signals.untracked(tree.motion_reduced) && !answered.val && !tree.answer_holds(v.at) {
+          // (made or let go as an answer told it, or outside a transition where only one moves it: at once, nothing
+          // set out, answering.mbt, transition.mbt)
+          let quiet = answered.val || tree.answer_holds(v.at) || !tree.transition_gate(v.at)
+          if v.live() is Some(_) &&
+            !@signals.untracked(tree.motion_reduced) &&
+            !quiet &&
+            !tree.nowhere_at(self.at) {
             tell(v.at)
-          } else if answered.val || tree.answer_holds(v.at) {
+          } else if quiet {
             tree.answer_mark(v.at)
           }
           return false
@@ -9879,14 +10186,19 @@ fn View::comes(
     v.live() is Some(n) &&
     tree.last_w >= 0.0 &&
     !@signals.untracked(tree.motion_reduced) &&
+    // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
+    !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
     !tree.holds_shared(v.at) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
     // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
     // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
-    ((n.coming && n.flex.style.come_to <= 0.0 && to > 0.0) || (!answered.val && !tree.answer_holds(v.at))) else {
-    // (made or let go at once as an answer told it: marked so, for what judges how what moves goes)
-    if answered.val || tree.answer_holds(v.at) {
+    // (and where only a transition moves it, told outside one: at once, transition.mbt)
+    ((n.coming && n.flex.style.come_to <= 0.0 && to > 0.0) ||
+    (!answered.val && !tree.answer_holds(v.at) && tree.transition_gate(v.at))) else {
+    // (made or let go at once as an answer told it, or outside a transition: marked so, for what judges how what moves
+    // goes)
+    if answered.val || tree.answer_holds(v.at) || !tree.transition_gate(v.at) {
       tree.answer_mark(v.at)
     }
     return false
@@ -10365,10 +10677,34 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   // again or laid out as it said it is)
   st.come_k = 1.0
   m.look.clips = m.clips_said
+  // (what is drawn by the way (held_on_way, a pick's place held by it) told it is over: worked out again, whole, even
+  // where it never read the clock, its end unmeasured as it was laid out nowhere)
+  match m.come_said {
+    Some(s) => s.set(s.untracked() + 1)
+    None => ()
+  }
   m.come_said = None
   m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
   tree.look_marked_at(v.at)
+}
+
+///|
+/// Whether node `at` lies in what is laid out nowhere (View::laid_nowhere: a page under the one on top), as
+/// Tree::alone_laid_out has it: what is made or let go there comes or goes at once, no way set out, so that it is there
+/// as it is, at rest, when it is shown again (nowhere_changed_test.mbt), and nothing hidden asks for frames meanwhile.
+/// Not what was left out of its row as it was last laid out (Node's `out`): a box gone_empty holding nothing is so, and
+/// what comes into it opens it on its way (gone_empty_test.mbt).
+fn Tree::nowhere_at(self : Tree, at : Int) -> Bool {
+  let mut p = at
+  while p >= 0 {
+    let pn = self.nodes[p]
+    if !pn.slot && pn.flex.style.display == @flex.DisplayNone {
+      return true
+    }
+    p = pn.parent
+  }
+  false
 }
 
 ///|
@@ -10379,6 +10715,16 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
 fn View::goes(self : View, v : View, ms : Double, at_once : Bool, swaps? : Bool = false) -> Bool {
   // (it and what it holds told it starts leaving before any of it is put to rest (View::rests, below))
   self.tree.tell_leaving(v.at)
+  // (in what is laid out nowhere: gone at once, nothing of it left behind to fade or wait (Tree::nowhere_at); and where
+  // only a transition moves it, told outside one: gone at once, no way closed, nothing left fading, transition.mbt)
+  let quiet = !self.tree.transition_gate(v.at)
+  if self.tree.nowhere_at(self.at) || quiet {
+    if quiet {
+      self.tree.answer_mark(v.at)
+    }
+    self.leave(v, 0.0)
+    return false
+  }
   if !at_once && v.live() is Some(n) {
     // (as tall as it is at this moment: on its way, where that way has it (flex's come_state), whether a frame has laid
     // it out since or not; else as it was laid out last)
@@ -10630,6 +10976,16 @@ pub fn View::leaving(self : View) -> Bool {
     i = n.parent
   }
   self.tree.leaving_at(self.at)
+}
+
+///|
+/// Whether it is leaving, or what holds it is, now: View::leaving's answer, read without following it (what a cause's
+/// handler or a set-off asks at its moment, makes nothing of any node's).
+pub fn View::leaving_now(self : View) -> Bool {
+  match self.live() {
+    Some(_) => self.tree.leaving_at(self.at)
+    None => true
+  }
 }
 
 ///|
@@ -11466,6 +11822,10 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   self.withins_owed = false
   self.laid_out(upto)
   self.laying = laying_was
+  // (what was let go of in this moment's changes and paired with nothing in them let go of: shared.mbt)
+  if !self.in_change() {
+    self.departures_kept_go()
+  }
   // (what was asked for in its layout, where it still stands: View::image_ask; in a change, as it is committed)
   if !self.in_change() {
     self.images_asked_now()
@@ -12146,6 +12506,10 @@ fn Tree::shorter_in(self : Tree, at : Int) -> Unit {
 fn Tree::place(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
   n.place_due = false
+  // (what draws its ground by where the boxes beside this one are drawn: drawn again, View::ground_by_placed)
+  if self.placed_followers.length() > 0 {
+    self.placed_told(at)
+  }
   // (what moves it by how big it is laid out: by how big it is laid out now, Tree::place's own moment, View::moved_by)
   // (no pair made for each node placed where nothing moves it so, nor for its offset or its pivot: placed every time
   // anything about it is)
@@ -12155,10 +12519,19 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
   }
   let w = n.flex.width
   let h = n.flex.height
-  let x = n.flex.left + n.look.dx + n.look.sx * w + n.moved.0
+  let g = self.pixel_grid
+  let mut sx = n.look.sx * w
+  let mut sy = n.look.sy * h
+  if g > 0.0 && (sx != 0.0 || sy != 0.0) {
+    // (whole pixels of the host's, half-up so two edge-to-edge pages or lanes at p and p - 1 stay flush on integer
+    // pixel widths while keeping retained rows whole-pixel aligned and avoiding four-phase glyph re-phasing mid-slide)
+    sx = (sx * g + 0.5).floor() / g
+    sy = (sy * g + 0.5).floor() / g
+  }
+  let x = n.flex.left + n.look.dx + sx + n.moved.0 + n.flip_across.0
   // (a page's list's first row on the host's pixels where it sets them so: Tree::rows_placed)
   let (iy, _, fo, fa) = n.flip_in
-  let y = self.rows_placed(at, n.flex.top + n.look.dy + n.look.sy * h + n.moved.1 + iy)
+  let y = self.rows_placed(at, n.flex.top + n.look.dy + sy + n.moved.1 + iy)
   let a = n.look.alpha * fa
   let s = n.look.scale * fo
   let mut px = 0.0
@@ -12330,27 +12703,17 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
 /// `holder` in it.
 fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   let n = self.nodes[at]
-  // (on a flight's way: drawn over the rest of its layer, put there as that ends, Tree::ordered_lifted; the one that
-  // moves of a flight with an end that stays drawn where it is held, what is drawn after it over it: Tree::lifted_over)
+  // (on a flight's way: drawn in what holds both its ends, put there after the later of them, Tree::ordered_lifted; the
+  // one that moves of a flight with an end that stays drawn where it is held, what is drawn after it over it:
+  // Tree::lifted_over)
   match n.lift {
-    Some(l) if !self.lifting && l.top != at && (self.lifted_over(n, l) || self.flies_under_foot(at)) => {
+    Some(l) if !self.lifting && l.host != at && self.lifted_over(n, l) => {
       self.tops[at] = top
       return
     }
     _ => ()
   }
   self.lifting = false
-  // (a flight drawn under this foot now (its route's level): put just before it, held by what holds it, so what is drawn
-  // over the column it pins over is over it too)
-  if self.flights.length() > 0 {
-    for f in self.flights {
-      if f.foot == at && self.alive_id(f.node) && self.under_foot(f) && f.node.at != at {
-        self.lifting = true
-        self.ordered(f.node.at, holder, top)
-      }
-    }
-    self.lifting = false
-  }
   if n.slot {
     self.tops[at] = top
     for k in n.kids {
@@ -12368,12 +12731,17 @@ fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   // (the node of the root's it is in: itself where the root holds it, through its slots alone; Tree::top_of)
   let top = if at == 0 { -1 } else if top < 0 { at } else { top }
   self.tops[at] = top
-  // (what the root holds, each by its place in the window's stack of layers: Tree::kids_in_order)
+  // (what the root holds, each by its place in the window's stack of layers: Tree::kids_in_order; what flies in it
+  // after the one it is drawn after, the rest after all it holds)
+  let flying = self.flights.length() > 0 && self.flights.iter().any(fn(f) { f.host == at })
   for k in self.kids_in_order(at) {
     self.ordered(k, me, top)
+    if flying {
+      self.ordered_lifted(at, k, me, top)
+    }
   }
-  if top == at && self.flights.length() > 0 {
-    self.ordered_lifted(at, me)
+  if flying {
+    self.ordered_lifted(at, -1, me, top)
   }
   self.order_end[me] = self.order.length()
 }
@@ -12842,6 +13210,8 @@ fn Tree::each_drawn_in_order(
   // ask at every node to know it is out of the inner again): such a list is a fault as it is made,
   // Tree::rows_list_nested_said.)
   let rg = self.rows_grid
+  // (what flies: a container's old copy draws what it holds fainter than itself, Tree::held_a)
+  let flying = self.flights.length() > 0
   let mut rows_at = -1
   let mut i = 0
   while i < len {
@@ -12904,7 +13274,11 @@ fn Tree::each_drawn_in_order(
       let bs = ws.unsafe_get(h)
       x = wx.unsafe_get(h) + bs * x
       y = wy.unsafe_get(h) + bs * y
-      a = wa.unsafe_get(h) * a
+      a = wa.unsafe_get(h) * a * (if flying { self.held_a(self.order.unsafe_get(h)) } else { 1.0 })
+      // (what flies apart from an old copy that holds it drawn nowhere in it: View::flies_apart)
+      if flying && self.apart_hidden(self.order.unsafe_get(i)) {
+        a = 0.0
+      }
       s = bs * s
       lx = ux.unsafe_get(h) + lx
       ly = uy.unsafe_get(h) + ly
@@ -13034,7 +13408,10 @@ pub fn Tree::drawn_one(
     if k < path.length() - 1 {
       nx = x + s * nx
       ny = y + s * ny
-      na = a * na
+      na = a * na * (if self.flights.length() > 0 { self.held_a(self.order[path[k + 1]]) } else { 1.0 })
+      if self.flights.length() > 0 && self.apart_hidden(self.order[path[k]]) {
+        na = 0.0
+      }
       ns = s * ns
       lx = ux + lx
       ly = uy + ly
@@ -13464,7 +13841,7 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
     let (ox, oy) = if drawn { m.look.drawn_off } else { (0.0, 0.0) }
     x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
     y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
-    a = a * m.la
+    a = a * m.la * (if k < chain.length() - 1 && self.flights.length() > 0 { self.held_a(chain[k + 1]) } else { 1.0 })
     s = s * m.ls
     // (on a flight's way: where the flight has it, shared.mbt)
     match m.lift {
@@ -13879,6 +14256,18 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
 /// and what hosts it say it: what says it is pointed at alone over all that takes it there (View::points); else what
 /// takes a press or a hold there; else nothing.
 pub fn Tree::pointed_of(self : Tree, t : Target) -> NodeId? {
+  // (while a node held captures the pointer (View::on_drag's `captures`) it alone is pointed at, and only while the
+  // pointer is over it: what the pointer passes over meanwhile is not, its hover and its tip not told, as a captured
+  // pointer's are not on the web (setPointerCapture); let go, what is under a still pointer is pointed at again:
+  // Tree::held_to)
+  match self.held {
+    Some(h) if self.alive_id(h) && self.nodes[h.at].drag_captures =>
+      return match t {
+        Pressed(id) | Dragged(id) if id == h => Some(id)
+        _ => None
+      }
+    _ => ()
+  }
   match self.points_hover {
     Some(id) => Some(id)
     None =>
@@ -14361,6 +14750,9 @@ fn Tree::held_to(self : Tree, h : NodeId?) -> Unit {
     self.pressing = h
     self.hand_told(was, fn(n) { n.pressed_cell }, false)
     self.hand_told(h, fn(n) { n.pressed_cell }, true)
+    // (what a still pointer is over worked out again: held by what captures it, nothing else is pointed at; let go, what
+    // is under it is again: Tree::pointed_of)
+    self.hits_bump()
   }
 }
 
@@ -15125,6 +15517,20 @@ fn Tree::holds_hosted(self : Tree, at : Int) -> Bool {
 }
 
 ///|
+/// Whether node `at` or what it holds is an old view hosted in the tree as tall as what it holds (ui's `old`, `natural`)
+/// whose height the old frame has not laid out yet (as tall as nothing till then, its height said by no number): a
+/// list's pinned foot holding one does not end where it will (View::scrolls_window's `foot_unbuilt`), whatever frame
+/// was painted since it was made (a page made while it waits to be drawn: its old view built by no frame yet).
+fn Tree::holds_unlaid_hosted(self : Tree, at : Int) -> Bool {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return false }
+  let n = self.nodes[at]
+  if n.hosted && n.flex.style.height_kind() == @flex.LEN_AUTO {
+    return true
+  }
+  n.kids.iter().any(fn(k) { self.holds_unlaid_hosted(k) })
+}
+
+///|
 /// Node `at` drawn by `f` as what holds it in a block of a page's list said `flips` changes inside it (Node's flip_in:
 /// how far down off where it is laid out, how much shorter its own ground, how big from its top, how opaque), as that
 /// list's way goes: the list's (View::scrolls_window), bound once for the node, read as it is placed, nothing laid out.
@@ -15132,15 +15538,22 @@ fn Tree::holds_hosted(self : Tree, at : Int) -> Bool {
 fn Tree::flip_in_by(
   self : Tree,
   at : Int,
-  f : () -> (Double, Double, Double, Double),
+  f : () -> ((Double, Double, Double, Double), (Double, Double), (Double, Double, Double, Double)?),
   loc~ : SourceLoc,
 ) -> Unit {
   let tree = self
-  self.handle(at).bind(loc~, FlipIn, By(f), Place, fn(d) {
-    let was = tree.nodes[at].flip_in
-    tree.nodes[at].flip_in = d
-    // (its ground alone changed (a ground's grown share): no place of it moves, its ground drawn again all the same)
-    if d.1 != was.1 {
+  self.handle(at).bind(loc~, FlipIn, By(f), Place, fn(all) {
+    let (d, across, round) = all
+    let n = tree.nodes[at]
+    let was = n.flip_in
+    let across_was = n.flip_across
+    let round_was = n.flip_round
+    n.flip_in = d
+    n.flip_across = across
+    n.flip_round = round
+    // (its ground alone changed (a ground's grown share, narrower, its corners): no place of it moves, its ground drawn
+    // again all the same)
+    if d.1 != was.1 || across.1 != across_was.1 || round != round_was {
       tree.places_rev = tree.places_rev + 1
       tree.touched(at, words=false)
       tree.composed.push({ at, gen: tree.nodes[at].gen })

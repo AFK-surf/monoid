@@ -8,67 +8,24 @@
 let fetch_open : Double = 10000.0
 
 ///|
-let b64_chars : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
 /// Bytes in base64, as they go between the program and its world.
 pub fn b64(b : BytesView) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i < n {
-    let a = b[i].to_int()
-    let c1 = if i + 1 < n { b[i + 1].to_int() } else { 0 }
-    let c2 = if i + 2 < n { b[i + 2].to_int() } else { 0 }
-    out.write_char(b64_chars[a >> 2].unsafe_to_char())
-    out.write_char(b64_chars[((a & 3) << 4) | (c1 >> 4)].unsafe_to_char())
-    out.write_char(
-      if i + 1 < n {
-        b64_chars[((c1 & 15) << 2) | (c2 >> 6)].unsafe_to_char()
-      } else {
-        '='
-      },
-    )
-    out.write_char(
-      if i + 2 < n {
-        b64_chars[c2 & 63].unsafe_to_char()
-      } else {
-        '='
-      },
-    )
-    i += 3
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }
 
 ///|
 /// Base64's bytes (what is no letter of it left out).
 pub fn unb64(s : String) -> Bytes {
-  let buf = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
+  let kept = StringBuilder()
   for c in s {
-    let v = if c >= 'A' && c <= 'Z' {
-      c.to_int() - 'A'.to_int()
-    } else if c >= 'a' && c <= 'z' {
-      c.to_int() - 'a'.to_int() + 26
-    } else if c >= '0' && c <= '9' {
-      c.to_int() - '0'.to_int() + 52
-    } else if c == '+' || c == '-' {
-      62
-    } else if c == '/' || c == '_' {
-      63
-    } else {
-      continue
-    }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      buf.write_byte(((acc >> bits) & 0xff).to_byte())
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
+      kept.write_char(c)
     }
   }
-  buf.to_bytes()
+  let kept = kept.to_string()
+  // (a lone letter at the end makes no byte)
+  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
+  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
 }
 
 ///|

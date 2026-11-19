@@ -1,6 +1,10 @@
 import {
+  "base/hash",
+  "base/time",
+  "base/url",
   "station/host",
   "station/jsjson",
+  "station/i18n",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/double",

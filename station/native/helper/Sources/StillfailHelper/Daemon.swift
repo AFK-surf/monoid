@@ -106,7 +106,7 @@ final class Daemon {
     }
     switch request["op"] as? String {
     case "hello":
-      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui"]])
+      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui", "resolution"]])
     case "status":
       var status = Status.fresh() ?? Status.now()
       status["live"] = ["capture": CGPreflightScreenCaptureAccess(), "control": Status.inputAllowed()]
@@ -128,6 +128,16 @@ final class Daemon {
         return
       }
       channel.line(Ui.run(arguments))
+    case "resolution":
+      // A display's resolution (Resolution.swift): read, or set to one of its modes (on the main thread, as the
+      // display's configuration is AppKit's too) and read again.
+      let display = (request["display"] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) } ?? CGMainDisplayID()
+      if let width = (request["width"] as? NSNumber)?.intValue, let height = (request["height"] as? NSNumber)?.intValue {
+        let modeID = (request["modeID"] as? NSNumber)?.int32Value
+        channel.line(DispatchQueue.main.sync { Resolution.set(display, width: width, height: height, modeID: modeID) })
+      } else {
+        channel.line(Resolution.read(display))
+      }
     case "screen.view":
       // Granted since this process started: it starts again to have it (the station asks again once it is back).
       if !CGPreflightScreenCaptureAccess() && request["synthetic"] == nil {

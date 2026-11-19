@@ -100,17 +100,26 @@ pub fn farview_for(config : FarviewConfig?, session : String, chosen : String?) 
 }
 
 ///|
-/// What a host writes into its state directory once it listens: its process and its ports.
+/// No link to a tab that asked for this one.
+let no_meta : OpenTabMeta = { window: "", opener: "", origin: "" }
+
+///|
+/// What a host writes into its state directory once it listens: its process and its ports; `closed` once its page
+/// closed its tab.
 pub(all) struct HostFile {
   pid : Int
   port : Int
   agent : Int
   frame : Int
+  closed : Bool
 }
 
 ///|
 pub fn HostFile::to_j(self : HostFile) -> J {
-  jo([("pid", ji(self.pid)), ("port", ji(self.port)), ("agent", ji(self.agent)), ("frame", ji(self.frame))])
+  jo(
+    [("pid", ji(self.pid)), ("port", ji(self.port)), ("agent", ji(self.agent)), ("frame", ji(self.frame))] +
+    (if self.closed { [("closed", jb(true))] } else { [] }),
+  )
 }
 
 ///|
@@ -129,6 +138,7 @@ pub fn host_file_of(v : J?) -> HostFile? {
     port: js_num(at(v, "port")).to_int(),
     agent: js_num(at(v, "agent")).to_int(),
     frame: js_num(at(v, "frame")).to_int(),
+    closed: at(v, "closed") is Some(Bool(true)),
   })
 }
 
@@ -324,16 +334,20 @@ async fn FarviewTabs::find(self : FarviewTabs, session : String, n : Int, dir : 
 }
 
 ///|
-async fn FarviewTabs::alive(self : FarviewTabs, dir : String) -> HostFile? {
-  let file = match (self.o.files.read)(join(dir, "host.json")) {
+async fn FarviewTabs::file_of(self : FarviewTabs, dir : String) -> HostFile? {
+  match (self.o.files.read)(join(dir, "host.json")) {
     Some(t) =>
       match (try Some(parse(t)) catch { _ => None }) {
         Some(v) => host_file_of(Some(v))
-        None => return None
+        None => None
       }
-    None => return None
+    None => None
   }
-  match file {
+}
+
+///|
+async fn FarviewTabs::alive(self : FarviewTabs, dir : String) -> HostFile? {
+  match self.file_of(dir) {
     Some(f) if (self.o.machine.group_alive)(f.pid) && (self.o.machine.answers)(f.agent) => Some(f)
     _ => None
   }
@@ -349,9 +363,10 @@ fn FarviewTabs::up(
   started : Double?,
 ) -> Host {
   let screen = FarviewScreen::new(session, file.frame, n, self.o.net, self.o.log)
-  // (a page that asks for a new tab: opened beside it, one of the screens)
-  screen.opened = url => (self.o.net.clock.spawn)(async fn() {
-    ignore(self.open(session, url)) catch {
+  // (a page that asks for a new tab: opened beside it, one of the screens, linked to this one where it is a window
+  // the page holds)
+  screen.opened = (url, meta) => (self.o.net.clock.spawn)(async fn() {
+    ignore(self.open(session, url, meta~)) catch {
       e =>
         (self.o.log.warn)(
           "browser",
@@ -360,6 +375,19 @@ fn FarviewTabs::up(
         )
     }
   })
+  // (a page that closed its tab: closed here, back to the tab that opened it; never the chat's first)
+  screen.closed_by_page = () => if n != 0 {
+    (self.o.net.clock.spawn)(async fn() {
+      self.close_tab(session, screen.id) catch {
+        e =>
+          (self.o.log.warn)(
+            "browser",
+            "a tab its page closed could not be closed",
+            fields([("session", js(session)), ("error", js(message_of(e)))]),
+          )
+      }
+    })
+  }
   let unscreen = match self.o.screens {
     Some(s) => (s.add)(screen.source())
     None => () => ()
@@ -393,7 +421,7 @@ async fn FarviewTabs::host(self : FarviewTabs, session : String, n? : Int = 0) -
     None => ()
   }
   let made = Later::start(self.o.net.clock, async fn() {
-    let r = attempt(async fn() { self.start(session, n, None) })
+    let r = attempt(async fn() { self.start(session, n, None, no_meta) })
     self.starting.remove(key)
     match r {
       Ok(h) => h
@@ -427,7 +455,13 @@ async fn FarviewTabs::move_old(self : FarviewTabs, session : String) -> Unit {
 }
 
 ///|
-async fn FarviewTabs::start(self : FarviewTabs, session : String, n : Int, url0 : String?) -> Host {
+async fn FarviewTabs::start(
+  self : FarviewTabs,
+  session : String,
+  n : Int,
+  url0 : String?,
+  meta : OpenTabMeta,
+) -> Host {
   guard self.active() is Some(config) else {
     raise fail_("Farview is not this station's browser (config.json `browser`).")
   }
@@ -466,6 +500,12 @@ async fn FarviewTabs::start(self : FarviewTabs, session : String, n : Int, url0 
         None => first_page
       }
   }
+  // (its id among the profile's tabs: the window id its opener's page holds, else its screen's)
+  let tab_id = if meta.window != "" {
+    meta.window
+  } else {
+    "fv_\{chat_dir(session)}" + (if n != 0 { "_\{n}" } else { "" })
+  }
   let child = (self.o.machine.start_lasting)(
     config.host,
     ["--tab", "0", url],
@@ -478,7 +518,9 @@ async fn FarviewTabs::start(self : FarviewTabs, session : String, n : Int, url0 
       ("FV_AGENT_PORT", "0"),
       ("FV_FRAME_PORT", "0"),
       ("FV_BIND", "127.0.0.1"),
-    ],
+      ("FV_TAB_ID", tab_id),
+    ] +
+    (if meta.opener != "" { [("FV_OPENER_ID", meta.opener), ("FV_OPENER_ORIGIN", meta.origin)] } else { [] }),
   )
   let pid = child.pid
   // timer: a deadline for a process that tells nothing until it wrote its file.
@@ -530,9 +572,14 @@ async fn FarviewTabs::start(self : FarviewTabs, session : String, n : Int, url0 
 }
 
 ///|
-/// A new tab of `session`'s chat on `url` (its agent's, or a page's that asked for one): the next number after every
-/// tab its directory holds.
-pub async fn FarviewTabs::open(self : FarviewTabs, session : String, url : String) -> FarviewTab {
+/// A new tab of `session`'s chat on `url` (its agent's, or a page's that asked for one, `meta` linking it to the tab
+/// that did): the next number after every tab its directory holds.
+pub async fn FarviewTabs::open(
+  self : FarviewTabs,
+  session : String,
+  url : String,
+  meta? : OpenTabMeta = no_meta,
+) -> FarviewTab {
   let before = self.opening.get(session)
   let me : Ref[Later[FarviewTab]?] = Ref(None)
   let made = Later::start(self.o.net.clock, async fn() {
@@ -562,7 +609,7 @@ pub async fn FarviewTabs::open(self : FarviewTabs, session : String, url : Strin
         }
       None => ()
     }
-    let host = self.start(session, n, Some(if url == "" { first_page } else { url }))
+    let host = self.start(session, n, Some(if url == "" { first_page } else { url }), meta)
     self.tab_of(session, host)
   })
   me.val = Some(made)
@@ -668,6 +715,21 @@ pub async fn FarviewTabs::resume(self : FarviewTabs) -> Unit {
       match self.hosts.get(session) {
         Some(m) => if m.contains(n) { continue }
         None => ()
+      }
+      // (a tab its page closed while no station process held it: closed now, never taken up again, its host ended
+      // where it still runs and answers)
+      let tab_dir = pjoin([chat, "tabs", t])
+      if n != 0 && self.file_of(tab_dir) is Some(file) && file.closed {
+        if self.alive(tab_dir) is Some(_) {
+          self.end(file.pid)
+        }
+        (self.o.files.rm)(tab_dir, true)
+        (self.o.log.info)(
+          "browser",
+          "a chat's Farview tab its page closed, closed",
+          fields([("session", js(session)), ("tab", ji(n)), ("pid", ji(file.pid))]),
+        )
+        continue
       }
       let found = self.find(session, n, pjoin([chat, "tabs", t])) catch { _ => None }
       match found {

@@ -28,6 +28,22 @@ pub fn Hub::keep_usage(self : Hub, key : String, quiet? : Bool = false) -> Unit 
 }
 
 ///|
+/// module.ts `repriceUsage`: recomputes kept usage summaries that still had unpriced calls once the model catalog loads
+/// or changes.
+pub fn Hub::reprice_usage(self : Hub) -> Unit {
+  let keys = self.store.unpriced_usage_sessions() catch { _ => return }
+  if keys.length() == 0 {
+    return
+  }
+  for key in keys {
+    self.keep_usage(key) catch {
+      _ => ()
+    }
+  }
+  (self.world.tell)("live.usageCounted", Json::null())
+}
+
+///|
 /// module.ts `keepCounted`: what the store told of usage recorded (not of the statistics alone) or a conversation gone
 /// on in another: each session's kept, and the live view told the counter counted.
 pub fn Hub::counted(self : Hub, change : Json) -> Unit {
@@ -139,11 +155,10 @@ pub async fn UsageCounter::start(self : UsageCounter) -> Unit {
   }
   self.started_at = self.hub.now()
   self.state = 2
-  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too)
+  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too;
+  // the counter finds those sessions itself, off this thread)
   let from = self.hub.now() - timed_back_ms
   ignore(self.read(None, time_from=from))
-  let active = self.hub.store.usage_active_sessions(Json::number(from)) catch { _ => [] }
-  ignore(self.read(Some(active.map(js_string)), time_from=from))
   self.due = self.hub.now() + self.safety
   self.waiting()
 }

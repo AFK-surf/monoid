@@ -43,6 +43,9 @@ fn pick_menu_of(choices : Array[Choice], search : Bool) -> Bool {
 /// layout's panel while one is open (reader_layout_nodes).
 #callsite(autofill(loc))
 pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
+  // (when the tree moves only for explicit causes, each presented overlay is its own transition boundary so a
+  // dialog/sheet's internal transitions stay within it without turning standalone sf-ui tests static)
+  let isolated = !root.transition_gate()
   // (the tips of what they hold: one layer of them for the window, over all of it, each presented one's lent it;
   // made after them, its keys (Escape shutting a tip) asked before theirs)
   let tips_at : Ref[@view.View?] = Ref(None)
@@ -71,6 +74,9 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
       tree_as_sheet[serial] = as_sheet
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
+      if isolated {
+        row.transitions_only() |> ignore
+      }
       row.over(Is(true)).stacked(Is(serial)) |> ignore
       // (what opened it, for every kind it is drawn as: the focus given back to that as it goes, where it still takes
       // it, not to what had the focus as it opened: View::opened_by)

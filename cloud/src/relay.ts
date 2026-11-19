@@ -8,6 +8,8 @@ export { LIMITS };
 import { relayCounters, type Counters } from "./relay-metrics";
 /** What a refused connect was held to (admit). */
 export type Refusal = { open: number; dialing: number; connects: number; bytes: number; frames: number; running: boolean };
+/** Today's traffic as the budget counts it, and the limits it holds it to (standing). */
+export type BudgetStanding = { bytes: number; frames: number; limitBytes: number; limitFrames: number; exhausted: boolean };
 
 export type Quota = {
   minute: number;
@@ -69,8 +71,15 @@ export class RelayBudget extends DurableObject<Env> {
     return q;
   }
 
-  private exhausted(q: Quota): boolean {
+  protected exhausted(q: Quota): boolean {
     return q.bytes >= LIMITS.bytesPerDay || (q.frames ?? 0) >= LIMITS.framesPerDay;
+  }
+
+  /** Today's traffic and limits as counted by the budget (relay-load.ts `sampleOwnRelay`), without polling or starting the
+   * container: once the budget ran out and stopped the process, its counters are read no more, and only this says why. */
+  standing(): BudgetStanding {
+    const q = this.load();
+    return { bytes: q.bytes, frames: q.frames ?? 0, limitBytes: LIMITS.bytesPerDay, limitFrames: LIMITS.framesPerDay, exhausted: this.exhausted(q) };
   }
 
   /** The read of the relay's counters under way, which those asked meanwhile take the answer of. */

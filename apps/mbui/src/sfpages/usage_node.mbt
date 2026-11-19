@@ -175,34 +175,32 @@ fn usage_rank_row_node(parent : @view.View, core : Core, rank_key : () -> String
   let opens_chat = fn() { rank_key() == "chats" && !is_deleted() && chat() is Some(Object(_)) }
   let filters_only = fn() { rank_key() != "chats" && item_key() != "" }
   let interactive = fn() { opens_chat() || filters_only() }
-  parent.box(fn(r) {
+  // (one that only filters the days by it: a button, pressed as a whole; else a link to its chat, or nothing to press)
+  @sf.action_box_while_node(parent, filters_only, fn() { text(it(), "title") }, in_pick=true, fn(_) {
+    @signals.untracked(fn() {
+      let rk = rank_key()
+      let ik = item_key()
+      let cur = usage_pick.only.get()
+      usage_pick.only.set(if cur == (rk, ik) { ("", "") } else { (rk, ik) })
+    })
+  }, fn(r) {
     r
     .padding(Is((@sf.card_pad - @sf.corner_inset, 8.0, @sf.card_pad - @sf.corner_inset, 8.0)))
     .gap(Is(6.0))
     .radius(By(ug_row_corner))
     |> ignore
     @sf.hover_ground_node(r, on=interactive)
-    @sf.presses_node(r, on=interactive, fn() {
-      @signals.untracked(fn() {
-        if opens_chat() {
-          (core.open_chat)(text(chat(), "station"), text(chat(), "session"), text(it(), "title"))
-        } else if filters_only() {
-          let rk = rank_key()
-          let ik = item_key()
-          let cur = usage_pick.only.get()
-          usage_pick.only.set(if cur == (rk, ik) { ("", "") } else { (rk, ik) })
-        }
+    // (made anew as that changes: action_box_while_node's)
+    if !@signals.untracked(filters_only) {
+      @sf.presses_node(r, on=opens_chat, fn() {
+        @signals.untracked(fn() {
+          if opens_chat() {
+            (core.open_chat)(text(chat(), "station"), text(chat(), "session"), text(it(), "title"))
+          }
+        })
       })
-    })
-    r.says(By(fn() {
-      if opens_chat() {
-        Some(@view.said(Link, label=text(it(), "title")))
-      } else if filters_only() {
-        Some(@view.said(Button, label=text(it(), "title")))
-      } else {
-        None
-      }
-    })) |> ignore
+      r.says(By(fn() { if opens_chat() { Some(@view.said(Link, label=text(it(), "title"))) } else { None } })) |> ignore
+    }
     let lit = fn() { interactive() && (@sf.lit_node(r) || (filters_only() && usage_pick.only.get() == (rank_key(), item_key()))) }
     ug_line_node(r, fn(l) {
       ug_grow_words(l, fn() { text(it(), "title") }, ug_row_title).words_look(By(fn() {
@@ -238,7 +236,6 @@ fn usage_rank_row_node(parent : @view.View, core : Core, rank_key : () -> String
     })
     usage_track_node(r, fn() { number(it(), "share") })
   })
-  |> ignore
 }
 
 ///|
@@ -418,50 +415,44 @@ fn usage_split_node(parent : @view.View, v : () -> Json?, press : UsagePress) ->
           let split = fn() { text(v(), "split") }
           let selected = fn() { key() != "" && usage_pick.only.get() == (split(), key()) }
           let can_pick = fn() { key() != "" }
-          {
-            it
-            .row(Is(true))
-            .gap(Is(6.0))
-            .padding(Is((0.0, 4.0, 0.0, 4.0)))
-            .lines_up(Is(Some(Middle)))
-            .shrink(Is(1.0))
-            .min_width(Is(Some(0.0)))
-            .says(By(fn() {
-              if can_pick() {
-                let word = if selected() { "web-main.usage.onlyOff" } else { "web-main.usage.only" }
-                Some(@view.said(Button, label=@sf.t(word, args=[("name", text(pv(), "name"))])))
-              } else {
-                None
-              }
-            }))
-            |> ignore
-            @sf.presses_node(it, on=can_pick, fn() {
+          it.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          // (a part of what the days are made of pressed as a whole to show the days by it alone, and back)
+          @sf.action_box_while_node(
+            it,
+            can_pick,
+            in_pick=true,
+            fn() {
+              let word = if selected() { "web-main.usage.onlyOff" } else { "web-main.usage.only" }
+              @sf.t(word, args=[("name", text(pv(), "name"))])
+            },
+            fn(_) {
               @signals.untracked(fn() {
-                if can_pick() {
-                  usage_pick.only.set(if selected() { ("", "") } else { (split(), key()) })
-                  usage_pick.all.set(false)
-                }
+                usage_pick.only.set(if selected() { ("", "") } else { (split(), key()) })
+                usage_pick.all.set(false)
               })
-            })
-            it.box(fn(d) {
-              d
-              .width(Is(Some(8.0)))
-              .height(Is(Some(8.0)))
-              .radius(Is(1.0e6))
-              .ground(By(fn() {
-                if usage_chart_only(v()) != "" && !selected() { @ui.tree_theme().color(TintStrong) } else { usage_series_ink(items(v(), "series"), p.get().0) }
-              }))
+            },
+            fn(b) {
+              b.row(Is(true)).gap(Is(6.0)).padding(Is((0.0, 4.0, 0.0, 4.0))).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+              b.box(fn(d) {
+                d
+                .width(Is(Some(8.0)))
+                .height(Is(Some(8.0)))
+                .radius(Is(1.0e6))
+                .ground(By(fn() {
+                  if usage_chart_only(v()) != "" && !selected() { @ui.tree_theme().color(TintStrong) } else { usage_series_ink(items(v(), "series"), p.get().0) }
+                }))
+                |> ignore
+              })
               |> ignore
-            })
-            |> ignore
-            @sf.words_node(it, fn() { text(pv(), "name") }, fn() {
-              if selected() || (can_pick() && @sf.lit_node(it)) { ug_legend_lit } else { ug_legend_words }
-            })
-            |> ignore
-            it.show(fn() { series_cost(pv()) != "" }, fn(c) {
-              @sf.words_node(c, fn() { series_cost(pv()) }, fn() { ug_legend_cost }) |> ignore
-            })
-          }
+              @sf.words_node(b, fn() { text(pv(), "name") }, fn() {
+                if selected() || (can_pick() && @sf.lit_node(b)) { ug_legend_lit } else { ug_legend_words }
+              })
+              |> ignore
+              b.show(fn() { series_cost(pv()) != "" }, fn(c) {
+                @sf.words_node(c, fn() { series_cost(pv()) }, fn() { ug_legend_cost }) |> ignore
+              })
+            },
+          )
         },
       )
     })
@@ -594,8 +585,12 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
         row.each(daily, fn(d) { text(Some(d), "day") }, fn(day, d) {
           let dv = fn() { Some(d.get()) }
           let key = fn() { text(dv(), "day") }
-          {
-            days[@signals.untracked(key)] = day
+          days[@signals.untracked(key)] = day
+          // (a button by the keyboard and a screen reader, the day's own node; a finger or the pointer goes through it to
+          // the plot's, which picks the day nearest)
+          @sf.action_box_node(day, fn() { text(dv(), "label") + " " + shown_cost_text(dv()) }, in_node=true, fn(_) {
+            press(@signals.untracked(key))
+          }, fn(day) {
             day
             .grow(Is(1.0))
             .basis(Is(Some(0.0)))
@@ -603,16 +598,14 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
             // (as high as the plot, what is said over its bar past its top where they are taller: its own least none)
             .min_height(Is(Some(0.0)))
             .lies_along(Is(End))
-            .says(By(fn() { Some(@view.said(Button, label=text(dv(), "label") + " " + shown_cost_text(dv()))) }))
-            .focusable(Is(true))
-            .on_press(fn() { press(@signals.untracked(key)) })
             .takes(fn(_, _, _) { [] })
             |> ignore
             usage_bar_node(day, v, dv, fn() {
               let shown = usage_pick.day.get()
               shown == "" || key() == shown
             }, fn() { if !many() && key() == said() { shown_cost_text(dv()) } else { "" } })
-          }
+          })
+          |> ignore
         })
         // (days too many for what is said over one to fit its day, where it was cut to "$…": said over all of them
         // instead, whole, as near its day's middle as the days' row leaves it)

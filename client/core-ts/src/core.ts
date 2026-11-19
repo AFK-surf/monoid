@@ -71,7 +71,7 @@ import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
 import { PersonalLock } from "./personal-lock.ts";
-import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personalStations, refusedAgain, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
+import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
 import * as xshare from "./views/xshare.ts";
@@ -359,6 +359,9 @@ export class Core {
               // (where its chain moved, the state in force made anew of the person's log now, the vaults following it:
               // views/lock.ts `inForceOf`, whether or not anything shown reads it)
               if (movedHere(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => void inForceOf(inner, ws)))));
+              // (no safe mode: the vault goes by this very lock, views/vault.ts `personalLockOf`; its page and the chats'
+              // cards answered again, what it takes held, as a workspace's lock coming does)
+              else if (!safeNow(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => vaultCalls.vaultCome(inner, ws)))));
             }
           },
           told: (sub, chain) => tellStations(inner, sub, chain),
@@ -368,6 +371,7 @@ export class Core {
         // (the vaults read first, while the device is still in: views/vault.ts `levelVaults`)
         tookOff: (sub, id, removal) => Effect.andThen(vaultCalls.levelVaultsOf(inner, sub, id), withBound(inner, sub, Effect.tap(removal, () => takeOffBound(inner, sub, id)))),
         subOf: (workspace) => inner.workspaces.owner(workspace),
+        stationsOf: (sub) => personStations(inner, sub).map(String),
         subs: () => inner.accounts.list().map((a) => ({ sub: a.sub, email: a.email })),
         pair: {
           begin: (subs) => personalBegin(inner, subs),
@@ -418,7 +422,7 @@ export class Core {
       handlers.device = (_i, call) => inner.devices.run((call as Extract<Call, { kind: "device" }>).call);
       inner.stations.also.push({ read: (address) => inner.devices.read(address), event: (address, name, data) => inner.devices.heard(address, name, data) });
       // This person's chats' grants of their phone, as each station says them.
-      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : undefined), resume: true });
+      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : name === "adb-revoke" ? inner.adb.heardRevoke(address, data) : undefined), resume: true });
       handlers.ask = (_i, call) => asks.run((call as Extract<Call, { kind: "ask" }>).ask, inner.accounts);
       inner.changelog = new Changelog(inner.host, inner.store, inner.data);
       inner.router.owners.push(inner.changelog);
@@ -532,6 +536,8 @@ export class Core {
       // while it was closed too).
       inner.scheduler.enqueue("cloud", "changelog", Priority.background, inner.changelog.read());
       inner.cloudSync.onOpen = () => {
+        inner.store.checkMoments();
+        inner.views.checkMoments();
         inner.scheduler.enqueue("cloud", "changelog", Priority.background, inner.changelog.read());
         inner.cloudSync.onRelease();
       };

@@ -24,10 +24,13 @@ import { loadKey } from "../src/cloud/key.ts";
 import { loadMesh } from "../src/mesh/native.ts";
 import { answer as loopbackAnswer } from "../src/ops/loopback.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];
 // (short: a Unix socket's path is at most 104 bytes on macOS)
@@ -74,7 +77,7 @@ function logged(f: () => void): string {
 let harnessProc: { send: (op: string, a?: Record<string, unknown>) => Promise<any> } | null = null;
 function harness() {
   if (harnessProc !== null) return harnessProc;
-  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
+  const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
   children.push(child);
   let seq = 0;
   const waiting = new Map<number, (v: any) => void>();
@@ -616,7 +619,7 @@ test("children started, followed to their end, given input and signals; a lock o
   // the lock: taken, then a second process waits for it until it is let go
   const lock = join(dir, "pack.lock");
   const held = await ok("fileLock", { path: lock });
-  const other = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
+  const other = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
   children.push(other);
   const lines = createInterface({ input: other.stdout! });
   const got: string[] = [];
@@ -706,6 +709,9 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const health = JSON.parse(readFileSync(join(data, "run", "health.json"), "utf8"));
   assert.equal(health.pid, a.child.pid);
   assert.ok(Math.abs(health.updatedAt - Date.now()) < 5_000);
+  // its descriptors and resident memory, from the system's own counters
+  assert.ok(Number.isInteger(health.openFds) && health.openFds > 0, `openFds ${health.openFds}`);
+  assert.ok(Number.isInteger(health.rssBytes) && health.rssBytes > 0, `rssBytes ${health.rssBytes}`);
   // the loopback port
   assert.equal((await get(admin.port, "/healthz")).status, 200);
   const unjoined = await get(admin.port, "/admin");
@@ -724,7 +730,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const init = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), "t1")).body);
   assert.equal(init.result.serverInfo.name, "still.fail");
   const tools = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }), "t1")).body).result.tools.map((t: { name: string }) => t.name);
-  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api", "station_retire"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "chat_configure", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const hidden of ["station_retire", "adb_devices", "phone_use", "secret_reask"]) assert.ok(!tools.includes(hidden), `${hidden} hidden: ${tools.join(",")}`);
   const running = store.runningSessions();
   const status = JSON.parse((await get({ socket: join(data, "run", "status.sock") }, "/v1/status")).body);
   assert.equal(status.version, "0.1.9400");

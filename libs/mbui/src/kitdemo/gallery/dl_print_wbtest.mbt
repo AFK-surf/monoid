@@ -605,3 +605,131 @@ fn words_named(dl : String) -> String {
   }
   out.to_string()
 }
+
+///|
+/// A Backdrop lens of lenses_shown's, bending a good deal, its colours spread, as strong as its highlight goes.
+fn lens(
+  depth_effect? : Bool = false,
+  saturation? : Double = 1.0,
+  brightness? : Double = 0.0,
+  contrast? : Double = 1.0,
+  style? : @ui.BackdropHighlight = Default,
+  angle? : Double = 45.0,
+  falloff? : Double = 1.0,
+  tint? : Int64 = 0L,
+  tint_hue? : Bool = false,
+  spot? : (Double, Double)? = None,
+  spot_alpha? : Double = 0.0,
+  inner_shadow? : Double = 0.0,
+  inner_shadow_full? : Bool = false,
+) -> @ui.Glass {
+  @ui.Glass::backdrop_lens(height=24.0, amount=36.0, blur=0.0, tint~, solid=0xFFFFFFFFL, highlight=1.0,
+    dispersion=true, style=Some(style), saturation~, brightness~, contrast~, depth_effect~, highlight_angle=angle,
+    highlight_falloff=falloff, tint_hue~, spot~, spot_alpha~, inner_shadow~, inner_shadow_full~)
+}
+
+///|
+/// Backdrop lenses (Glass::backdrop_lens) over stripes, a row each: depthEffect off and on; saturation one, vibrancy's
+/// 1.5, brighter with more contrast; Default, Ambient and Plain highlights; a Default one along 90 degrees falling off
+/// by 2, and corners each their own; a tint laid over, and by hue first (LiquidButton's); a finger's spot lit, an
+/// InnerShadow a whole radius lower.
+fn lenses_shown() -> @ui.Tester {
+  let colours = [0xE5484DFFL, 0xF5A524FFL, 0xFFE14DFFL, 0x30A46CFFL, 0x0091FFFFL, 0x6E56CFFFL, 0xFFFFFFFFL, 0x111111FFL]
+  let rows : Array[Array[(@ui.Glass, @ui.Radius?)]] = [
+    [(lens(), None), (lens(depth_effect=true), None)],
+    [(lens(), None), (lens(saturation=1.5), None), (lens(brightness=0.2, contrast=1.4), None)],
+    [(lens(), None), (lens(style=Ambient), None), (lens(style=Plain), None)],
+    [(lens(angle=90.0, falloff=2.0), None), (lens(), Some(Corners(34.0, 4.0, 34.0, 4.0)))],
+    [
+      (lens(tint=0x0088FFBFL), None),
+      (lens(tint=0x0088FFBFL, tint_hue=true), None),
+      (lens(spot=Some((40.0, 24.0)), spot_alpha=1.0, inner_shadow=12.0, inner_shadow_full=true), None),
+    ],
+  ]
+  let t = @ui.Tester::new(
+    fn(c) {
+      c.box(w=Fill(1.0), h=Fill(1.0), bg=0xFFFFFFFFL, fn() {
+        c.box(w=Fill(1.0), h=Fill(1.0), dir=Row, fn() {
+          for i in 0..<32 {
+            c.box(w=Px(20.0), h=Fill(1.0), bg=colours[i % colours.length()], fn() { () }) |> ignore
+          }
+        }) |> ignore
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), dir=Column, pad=20.0, gap=24.0, fn() {
+            for row in rows {
+              c.box(dir=Row, gap=20.0, fn() {
+                for l in row {
+                  let (gl, corners) = l
+                  match corners {
+                    Some(r) => c.box(style=@ui.style(radius=r), w=Px(180.0), h=Px(84.0), glass=gl, fn() { () }) |> ignore
+                    None => c.box(w=Px(180.0), h=Px(84.0), radius=42.0, glass=gl, fn() { () }) |> ignore
+                  }
+                }
+              }) |> ignore
+            }
+          }) |> ignore
+        }) |> ignore
+      }) |> ignore
+    },
+    w=640.0,
+    h=600.0,
+    scale=2.0,
+  )
+  t.draw()
+  t
+}
+
+///|
+test "Backdrop lenses' draw list printed when asked (MBUI_DL_PRINT=lenses)" {
+  if node_env("MBUI_DL_PRINT") == "lenses" {
+    println("DLBEGIN")
+    println(lenses_shown().drawlist())
+    println("DLEND")
+  }
+}
+
+///|
+/// Backdrop lenses as they were said before they took more (sf-ui's toggle, slider and tab lenses' kinds): Default and
+/// Ambient highlights, colours spread or not, an InnerShadow a sixth of its radius lower; drawn as they were, to the byte.
+fn lenses_before_shown() -> @ui.Tester {
+  let colours = [0xE5484DFFL, 0xF5A524FFL, 0xFFE14DFFL, 0x30A46CFFL, 0x0091FFFFL, 0x6E56CFFFL, 0xFFFFFFFFL, 0x111111FFL]
+  let lenses = [
+    @ui.Glass::backdrop_lens(height=10.0, amount=14.0, blur=0.0, tint=0x0000000DL, solid=0xFFFFFFFFL, highlight=1.0,
+      dispersion=true, inner_shadow=8.0),
+    @ui.Glass::backdrop_lens(height=5.0, amount=10.0, blur=4.0, tint=0xFFFFFF80L, solid=0xFFFFFFFFL, highlight=0.5,
+      ambient=true, dispersion=true),
+    @ui.Glass::backdrop_lens(height=24.0, amount=36.0, blur=0.0, tint=0L, solid=0xFFFFFFFFL, highlight=1.0),
+  ]
+  let t = @ui.Tester::new(
+    fn(c) {
+      c.box(w=Fill(1.0), h=Fill(1.0), bg=0xFFFFFFFFL, fn() {
+        c.box(w=Fill(1.0), h=Fill(1.0), dir=Row, fn() {
+          for i in 0..<16 {
+            c.box(w=Px(20.0), h=Fill(1.0), bg=colours[i % colours.length()], fn() { () }) |> ignore
+          }
+        }) |> ignore
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), dir=Column, pad=20.0, gap=20.0, fn() {
+            for gl in lenses {
+              c.box(w=Px(180.0), h=Px(64.0), radius=32.0, glass=gl, fn() { () }) |> ignore
+            }
+          }) |> ignore
+        }) |> ignore
+      }) |> ignore
+    },
+    w=320.0,
+    h=280.0,
+    scale=2.0,
+  )
+  t.draw()
+  t
+}
+
+///|
+test "Backdrop lenses said as before: their draw list printed when asked (MBUI_DL_PRINT=lenses-before)" {
+  if node_env("MBUI_DL_PRINT") == "lenses-before" {
+    println("DLBEGIN")
+    println(lenses_before_shown().drawlist())
+    println("DLEND")
+  }
+}

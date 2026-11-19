@@ -11,19 +11,12 @@
 let kept_switch_over_ms : Double = 1000.0
 
 ///|
-/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds; three for a long one).
+/// What a finger's drag up or down a list glides for after it is let go, over by then (two seconds).
 let kept_glide_over_ms : Double = 2000.0
-
-///|
-let kept_glide_long_ms : Double = 3000.0
 
 ///|
 /// A few frames: what a change told, or a Tab, takes to be drawn.
 let kept_few_frames_ms : Double = 100.0
-
-///|
-/// Between two Tabs, a frame or so drawn after each.
-let kept_tab_gap_ms : Double = 50.0
 
 ///|
 /// The bar the switches are made on: the three places made as nodes (对话, 连接, 用量) and one old view's (额度).
@@ -275,8 +268,10 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // (what each switch made and let go of the tree: the first visit of a place made as nodes makes it, a place come back
   // to makes and lets go of nothing but a node of Home's (made while it was away, let go as it is back); 用量 made once,
   // whole, its answer come by the core's channel before the frame that builds it; 额度 too, made once as nodes since
-  // the profiles' list was, kept as the others; its list or 概览 one page, the pick between them two nodes more)
-  let works = [(131, 0), (0, 1), (436, 0), (0, 0), (0, 0), (0, 1), (233, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // the profiles' list was, kept as the others; its list or 概览 one page, the pick between them two nodes more; 用量's
+  // controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's
+  // pick)
+  let works = [(131, 0), (0, 1), (448, 0), (0, 0), (0, 0), (0, 1), (230, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

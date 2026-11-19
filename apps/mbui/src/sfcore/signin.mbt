@@ -89,6 +89,7 @@ pub fn listen(taking : (Array[String], Array[String], Array[(String, (Json) -> B
   let (said, unread, quiet) = taking
   @ui.on_message("core", @core.receive)
   @ui.on_message_said("core", @core.receive_said)
+  @ui.on_messages_ahead("core", @core.receive_ahead)
   for q in quiet {
     @core.quiet(q.0, q.1)
   }
@@ -189,6 +190,13 @@ fn tell_device() -> Unit {
   let version = @ui.app_version()
   if version > 0 {
     facts["build"] = Json::string("0.1." + version.to_string())
+  }
+  let built_at = @ui.env("MBUI_BUILT_AT")
+  if built_at != "" {
+    let parsed = try Some(@json.parse(built_at)) catch { _ => None }
+    if parsed is Some(Number(n, ..)) && n > 0.0 {
+      facts["builtAt"] = Json::number(n)
+    }
   }
   // the device's language (its host's MBUI_LOCALE, a BCP 47 tag): the core's `lang` when none is chosen (prefs.ts)
   let locale = @ui.env("MBUI_LOCALE")

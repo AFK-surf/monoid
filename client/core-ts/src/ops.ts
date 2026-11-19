@@ -223,6 +223,7 @@ export const PARAMS: Record<string, string> = {
   "machineLogin.cancel": "id:string",
   "machineLogin.answer": "id:string text:string",
   "machineLogin.browser": "id:string",
+  "machineLogin.again": "id:string",
   "workspace.create": "name?:string invite_code?:string",
   "workspace.rename": "workspace:string name?:string emoji?:string icon?:string",
   "workspace.setRelays": "workspace:string relays?:strings",
@@ -798,6 +799,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // What a login's page gave (a code), entered by the person from its card: the station types it into the command.
     case "machineLogin.answer":
       return op("POST", () => `/machine-logins/${p.at("id")}/answer`, p.pick(["text"]), { kind: "machineLogins" });
+    // Started again from its card by the person, once it failed (ran out of time, say): the new login, which its card
+    // shows from then on (the old one's `again`).
+    case "machineLogin.again":
+      return op("POST", () => `/machine-logins/${p.at("id")}/again`, null, { kind: "machineLogins" });
     // Its page opened in the station's own browser, for the person to finish it there: `{screen}`, to open.
     case "machineLogin.browser":
       return op("POST", () => `/machine-logins/${p.at("id")}/browser`, null, NONE);

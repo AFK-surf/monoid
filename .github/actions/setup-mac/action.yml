@@ -26,9 +26,10 @@ runs:
         # Keep native artifacts within 5 GiB when old enough to be unused by any running job (scripts/native.ts).
         echo "STILLFAIL_NATIVE_CACHE_MAX_BYTES=5368709120" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-        # Cloudflare's API and the native artifact store resolved directly by the releases' puts and native.ts;
+        # Cloudflare's API, nodejs.org and the native artifact store resolved directly by the releases' puts, node-here.sh and native.ts;
         # GitHub keeps the machine's usual route.
-        echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
+        export STILLFAIL_DIRECT_DNS=223.5.5.5
+        echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
         # Rust's tests a few at a time: three runners share the machine, and the core's timing tests fail under load.
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         # (Not the station's test files a few at a time (STILLFAIL_NODE_TEST_JOBS, scripts/check.sh): three a check

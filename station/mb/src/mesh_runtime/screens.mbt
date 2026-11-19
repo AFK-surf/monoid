@@ -7,6 +7,11 @@
 pub let screen_type : String = "application/x-stillfail-screen"
 
 ///|
+/// The header of a view's reply that says its frames go as datagrams, with the client's token (mesh/screens.ts
+/// `DGRAM_HEADER`).
+pub let dgram_header : String = "x-screen-dgram"
+
+///|
 pub let kind_config : Int = 1
 
 ///|
@@ -23,6 +28,19 @@ pub let kind_audio_config : Int = 5
 
 ///|
 pub let kind_audio : Int = 6
+
+///|
+/// The pointer in a few bytes (`cursor_payload`), to a client that asked `binaryCursor`.
+pub let kind_cursor : Int = 7
+
+///|
+/// A pointer of an app's own, before the first `cursor` or state naming it "custom:<id>", to a client that asked
+/// `customCursor` (screens/source.mbt `cursor_image_shape`).
+pub let kind_cursor_image : Int = 8
+
+///|
+/// How many pictures of pointers a view sends before it sends them again.
+pub let cursor_images_most : Int = 64
 
 ///|
 pub let kind_input : Int = 16
@@ -82,6 +100,34 @@ pub fn frame(kind : Int, payload : Bytes) -> Bytes {
   b.write_byte(kind.to_byte())
   b.write_uint_be(payload.length().reinterpret_as_uint())
   b.write_bytes(payload)
+  b.to_bytes()
+}
+
+///|
+/// The most of a pointer's shape a `cursor` frame carries (its UTF-8): a longer one goes without it.
+pub let cursor_shape_max : Int = 64
+
+///|
+/// A `cursor` frame's payload (`cursorPayload`): none for no pointer (null); else x and y (0..1, each in 16 bits,
+/// big-endian, of 65535) and the shape's UTF-8.
+pub fn cursor_payload(cursor : Json) -> Bytes {
+  if cursor is Null {
+    return b""
+  }
+  let shape = match field(cursor, "shape") {
+    Some(String(t)) => @utf8.encode(t)
+    _ => b""
+  }
+  let q = (k : String) => js_round(unit(finite(field(cursor, k)).unwrap_or(0.0)) * 65535.0).to_int()
+  let (x, y) = (q("x"), q("y"))
+  let b = @buffer.Buffer(size_hint=4 + shape.length())
+  b.write_byte((x >> 8).to_byte())
+  b.write_byte((x & 255).to_byte())
+  b.write_byte((y >> 8).to_byte())
+  b.write_byte((y & 255).to_byte())
+  if shape.length() <= cursor_shape_max {
+    b.write_bytes(shape)
+  }
   b.to_bytes()
 }
 
@@ -675,6 +721,18 @@ pub fn asked(screen : Json) -> Json {
   }
   if m.get("taken") is Some(True) {
     out.push(("taken", Json::boolean(true)))
+  }
+  if m.get("binaryCursor") is Some(True) && !peek {
+    out.push(("binaryCursor", Json::boolean(true)))
+  }
+  if m.get("customCursor") is Some(True) && !peek {
+    out.push(("customCursor", Json::boolean(true)))
+  }
+  // (the token the client takes the video and audio frames under as datagrams: client/shell screen_dgram.rs)
+  match m.get("datagrams") {
+    Some(Number(t, ..)) if !peek && t >= 1.0 && t <= 4294967295.0 && js_round(t) == t =>
+      out.push(("datagrams", jnum(t)))
+    _ => ()
   }
   jobj(out)
 }

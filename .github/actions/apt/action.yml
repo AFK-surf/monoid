@@ -20,9 +20,13 @@ runs:
     # cache matched it, they are what apt would install again, so they are installed from the cache with nothing asked
     # of any mirror: apt-get update alone, of every list the image names (GitHub's third parties' among them), took 74 s
     # of preview's linux (x64) build with every .deb in the cache (run 44340331135, cancelled at its time, exit 124).
+    # v2: kept since what this run did not install is put away (a cache kept every .deb it was ever given, the image's
+    # own packages upgraded among them, and every run unpacked them all again). A cache from before is still taken
+    # where there is no v2 one, so that what it holds is not fetched again from a slow mirror (preview's linux (x64)
+    # with none: 31 MB at under 300 kB/s, cut at its 120 s, run 44359009201); what of it is not installed goes.
     - shell: bash
       run: |
-        echo "APT_SPEC=$(printf '%s\n' "${ImageOS:-linux}-${ImageVersion:-0}" "${{ inputs.packages }}" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
+        echo "APT_SPEC=$(printf 'v2\n%s\n' "${ImageOS:-linux}-${ImageVersion:-0}" "${{ inputs.packages }}" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
     - uses: actions/cache/restore@v4
       id: debs
       with:
@@ -36,13 +40,40 @@ runs:
         d="$GITHUB_WORKSPACE/.ci/apt"
         mkdir -p "$d/partial"
         matched="${{ steps.debs.outputs.cache-matched-key }}"
+        # Nothing of the packages' manuals, docs and translations is unpacked, and man-db does not index what was: the
+        # -dev packages' tens of thousands of small files and man-db's trigger took 25-35 s of 66 (preview's linux (x64),
+        # run 44356246478). These runners are GitHub's, made anew for each job, so dpkg does not sync each file it
+        # unpacks either (force-unsafe-io): 26 s of unpacking with it, preview 44464002952's linux (x64).
+        sudo rm -f /var/lib/man-db/auto-update
+        printf '%s\n' \
+          'force-unsafe-io' \
+          'path-exclude=/usr/share/man/*' \
+          'path-exclude=/usr/share/doc/*' \
+          'path-exclude=/usr/share/gtk-doc/*' \
+          'path-exclude=/usr/share/locale/*' \
+          | sudo tee /etc/dpkg/dpkg.cfg.d/99-ci-nodoc > /dev/null
+        # Of the packages asked, those the image has not installed: one it has is not upgraded with all it depends on.
+        # Every one installed already: nothing to do.
+        installed() { [ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null)" = installed ]; }
+        want=
+        for p in ${{ inputs.packages }}; do installed "$p" || want="$want $p"; done
+        if [ -z "$want" ]; then
+          echo "apt: every package asked is installed already"
+          echo "APT_KEY=$matched" >> "$GITHUB_ENV"
+          exit 0
+        fi
+        # What the .debs installed must have installed: dpkg forced past what they lack, or a cache cut short, is not
+        # taken as done.
+        complete() {
+          for p in $want; do installed "$p" || { echo "apt: $p is not installed"; return 1; }; done
+        }
         # The cache kept for this image and these packages: installed as it is, no mirror asked. Where dpkg refuses it
         # (a package the image updated since), apt is asked as below.
         case "$matched" in
           "apt-${{ inputs.name }}-$APT_SPEC-"*)
             if ls "$d"/*.deb > /dev/null 2>&1 &&
               sudo dpkg --install --force-depends --skip-same-version "$d"/*.deb &&
-              sudo dpkg --configure --pending; then
+              sudo dpkg --configure --pending && complete; then
               echo "apt: installed the .debs kept for $APT_SPEC"
               echo "APT_KEY=$matched" >> "$GITHUB_ENV"
               exit 0
@@ -61,26 +92,96 @@ runs:
         # cancelled as they uploaded what they had built (#5550's, #5572's, 5 min 4 s), the rest took 4:09 to 4:36.
         # (the mirror: the first the runner's list names, or the sources' own where they name one, arm64's; none found,
         # apt is asked as before)
-        mirror=$(awk 'NF { print $1; exit }' /etc/apt/apt-mirrors.txt 2>/dev/null || true)
-        [ -n "$mirror" ] || mirror=$(sed -n 's/^URIs: *\(https\{0,1\}:[^ ]*\).*/\1/p' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null | head -1 || true)
+        first_mirror() {
+          local m
+          m=$(awk 'NF { print $1; exit }' /etc/apt/apt-mirrors.txt 2>/dev/null || true)
+          [ -n "$m" ] || m=$(sed -n 's/^URIs: *\(https\{0,1\}:[^ ]*\).*/\1/p' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null | head -1 || true)
+          echo "$m"
+        }
+        mirror=$(first_mirror)
         answers() {
           [ -n "$mirror" ] || return 0
           curl -fsS -m 5 -o /dev/null "${mirror%/}/dists/$(. /etc/os-release && echo "$VERSION_CODENAME")/InRelease" && echo "apt: $mirror answers" ||
             { echo "apt: $mirror did not answer in 5 s"; return 1; }
         }
-        # Only Ubuntu's own lists where the image names them apart (the packages are all Ubuntu's): the third parties'
-        # lists the image adds are most of update's time. Where that fails, every list as before.
-        update() {
-          u=/etc/apt/sources.list.d/ubuntu.sources
-          if [ -f "$u" ] && sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any \
-            -o Dir::Etc::sourcelist="$u" -o Dir::Etc::sourceparts=-; then
-            return 0
-          fi
-          sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any
+        # (each connection given 15 s and two tries, beside update's and install's own limits)
+        apt_opts=(-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=2)
+        # A mirror that did not answer, or did not give the .debs in time, is put out of the runner's list, Ubuntu's own
+        # archive and then the runner's Azure one first, each mirror left out once: apt went on asking it, 8 of 125 .debs
+        # in install's 120 s (side 44457653376's x11, us-east-2.ec2.archive.ubuntu.com, 2026-11-19). Where the runner
+        # has no list (arm64's ports.ubuntu.com, named in the sources alone) nothing is rewritten.
+        dropped=" "
+        drop_mirror() {
+          local bad="$1" m rest tab=$'\t'
+          [ -f /etc/apt/apt-mirrors.txt ] || return 1
+          dropped="$dropped${bad%/} "
+          {
+            for m in 'http://archive.ubuntu.com/ubuntu/' 'http://azure.archive.ubuntu.com/ubuntu/'; do
+              case "$dropped" in *" ${m%/} "*) ;; *) echo "$m" ;; esac
+            done
+            while read -r m rest; do
+              [ -n "$m" ] || continue
+              case "$dropped" in *" ${m%/} "*) ;; *) printf '%s\n' "$m${rest:+$tab$rest}" ;; esac
+            done < /etc/apt/apt-mirrors.txt
+          } | awk '!seen[$1]++' > "$RUNNER_TEMP/apt-mirrors.txt"
+          [ -s "$RUNNER_TEMP/apt-mirrors.txt" ] || return 1
+          sudo cp "$RUNNER_TEMP/apt-mirrors.txt" /etc/apt/apt-mirrors.txt
+          mirror=$(first_mirror)
+          echo "apt: $bad left out of /etc/apt/apt-mirrors.txt; trying $mirror next"
         }
-        if { answers || ! ls "$d"/*.deb > /dev/null 2>&1; } && update &&
-          sudo timeout 120 apt-get install -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" ${{ inputs.packages }}; then
+        # Only Ubuntu's own lists where the image names them apart (the packages are all Ubuntu's): the third parties'
+        # lists the image adds are most of update's time, and asking them after Ubuntu's failed waited a second limit.
+        update() {
+          local secs="${1:-60}" u=/etc/apt/sources.list.d/ubuntu.sources
+          if [ -f "$u" ]; then
+            sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any \
+              -o Dir::Etc::sourcelist="$u" -o Dir::Etc::sourceparts=-
+          else
+            sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" update -q -o APT::Update::Error-Mode=any
+          fi
+        }
+        # The .debs are fetched apart from installing them, so that a mirror that answers its release file at once and
+        # then gives the .debs at 93 kB/s (side 44487092966's x11, us-east-2.ec2.archive.ubuntu.com: 9 of 125 .debs in
+        # install's 120 s, then dpkg on those nine) is left for the next within the time, what came of it kept in $d.
+        # shellcheck disable=SC2086 # the packages are words, split on purpose
+        download_debs() {
+          local secs="$1"
+          sudo timeout -k 5 "$secs" apt-get "${apt_opts[@]}" install --download-only -f -y -q --no-install-recommends \
+            -o Dir::Cache::Archives="$d" $want
+        }
+        have_debs=0
+        ls "$d"/*.deb > /dev/null 2>&1 && have_debs=1
+        mirror_ok=0
+        answers && mirror_ok=1
+        if [ "$mirror_ok" != 1 ] && [ "$have_debs" != 1 ]; then drop_mirror "$mirror" || true; fi
+        # Three mirrors at most, 45 s and then 55 s each for the .debs (the next asked for its release file first);
+        # with no list to rewrite, the one mirror its minute and two as before.
+        fetch() {
+          local attempt dl_secs
+          if [ ! -f /etc/apt/apt-mirrors.txt ]; then
+            update 60 && download_debs 120
+            return
+          fi
+          for attempt in 0 1 2; do
+            dl_secs=55
+            [ "$attempt" != 0 ] || dl_secs=45
+            if { [ "$attempt" = 0 ] || answers; } && update 30 && download_debs "$dl_secs"; then return 0; fi
+            if [ "$attempt" -lt 2 ]; then drop_mirror "$mirror" || return 1; fi
+          done
+          return 1
+        }
+        # shellcheck disable=SC2086 # the packages are words, split on purpose
+        if { [ "$mirror_ok" = 1 ] || [ "$have_debs" != 1 ]; } && fetch &&
+          sudo apt-get install --no-download -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" $want; then
           sudo apt-get autoclean -q -o Dir::Cache::Archives="$d"
+          # Only what is installed now, at that version, is kept: a .deb of a cache from before that this run did not
+          # install (an upgrade of the image's own packages) would be unpacked by every run that installs the cache.
+          for f in "$d"/*.deb; do
+            # shellcheck disable=SC2016 # dpkg-deb's own fields
+            read -r pkg arch ver < <(dpkg-deb --show --showformat='${Package} ${Architecture} ${Version}\n' "$f")
+            [ "$arch" = all ] && q=$pkg || q=$pkg:$arch
+            [ "$(dpkg-query -W -f='${db:Status-Status} ${Version}' "$q" 2>/dev/null)" = "installed $ver" ] || sudo rm -f "$f"
+          done
           sudo chown -R "$(id -u)" "$d"
           echo "APT_KEY=apt-${{ inputs.name }}-$APT_SPEC-$(cd "$d" && ls *.deb | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
         else
@@ -88,6 +189,7 @@ runs:
           ls "$d"/*.deb > /dev/null
           sudo dpkg --install --force-depends --skip-same-version "$d"/*.deb
           sudo dpkg --configure --pending
+          complete
           echo "APT_KEY=$matched" >> "$GITHUB_ENV"
         fi
     - if: github.ref == 'refs/heads/main' && env.APT_KEY != steps.debs.outputs.cache-matched-key

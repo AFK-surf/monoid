@@ -35,16 +35,40 @@ gallery_pictures() {
   [ -f out/pictures/big4.heic ] || swift "$(dirname "${BASH_SOURCE[0]}")/test_images.swift" --gallery out/pictures
 }
 
+# Windows C compiler for mbc: Visual Studio's clang-cl when installed (faster than cl on GitHub runners and avoids
+# MSVC 14.52.37025 /O2 miscompilation of @dmath.sin/cos rem_pio2, run 44500103863); leave an explicit MBC_REAL_CC
+# and machines without it alone. Matches apps/mbui/scripts/win-compiler.sh.
+win_compiler() {
+  if [ -z "${MBC_REAL_CC:-}" ] && [ -n "${llvmX64:-}" ] && [ -f "$(cygpath -u "$llvmX64")/clang-cl.exe" ]; then
+    export MBC_REAL_CC="$llvmX64\\clang-cl.exe"
+  fi
+  case "${MBC_REAL_CC:-}" in
+    *clang-cl|*clang-cl.exe)
+      # MoonBit invokes the cl.exe shim with MSVC flags only; clang-cl does not default to MSVC's wrapping signed
+      # arithmetic or no-TBAA aliasing (unlike moon on macOS/Linux, which passes -fwrapv -fno-strict-aliasing).
+      # Without -fwrapv, wrapping Int arithmetic (e.g. demo/main.mbt's LCG) triggers signed-overflow UB in /O2.
+      # MoonBit's runtime also passes int32_t * for DWORD *.
+      for f in /clang:-fwrapv /clang:-fno-strict-aliasing /clang:-Wno-error=incompatible-pointer-types; do
+        case " ${CL:-} " in
+          *" $f "*) ;;
+          *) export CL="$f ${CL:-}" ;;
+        esac
+      done ;;
+  esac
+}
+
 # The native tests built as the apps are: --release, moonc's C split and compiled in parallel by scripts/mbc (its
 # shim moon's cc on PATH), the units made of the same inputs (by content) kept in MBC_STORE and compiled once for every
 # test that has them. `native_tests [DIR]` (the module's directory, the current one by default) sets that up; then
-# `moon test $NATIVE …`. clang where there is one (MBC_REAL_CC says otherwise; Windows: the cl on PATH); without ThinLTO
-# unless MBC_LTO says.
+# `moon test $NATIVE …`. clang where there is one (MBC_REAL_CC says otherwise; Windows: win_compiler's, Visual Studio's
+# clang-cl, or the cl on PATH without it); without ThinLTO unless MBC_LTO says.
 native_tests() {
   local root=${1:-$PWD}
   unset MOON_CC
   if [ "$(uname -s | cut -c1-5)" != MINGW ] && [ "$(uname -s | cut -c1-4)" != MSYS ]; then
     export MBC_REAL_CC=${MBC_REAL_CC:-$(command -v clang || command -v cc)}
+  else
+    win_compiler
   fi
   export MBC_LTO=${MBC_LTO:-0}
   export MBC_STORE=${MBC_STORE:-$root/_build/native/release/mbc-store}

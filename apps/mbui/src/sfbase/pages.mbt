@@ -40,6 +40,9 @@ pub(all) enum Page {
   Screen(ScreenAt)
   /// one of a station's terminals (src/sfpages terminal_view_node.mbt), over the whole window as a screen is
   Terminal(TerminalAt)
+  /// a tab of a chat's side panel (a file in the viewer, a mini-program, a web service, a visualization: tab_full.mbt)
+  /// in a window of its own (window.mbt), its third place; never on the stack of the app's window
+  SideTab(TabFull)
 }
 
 ///|
@@ -47,6 +50,19 @@ pub(all) enum Page {
 /// Other pages keep only the readers of their visible views.
 pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page) -> Unit {
   let held : Ref[(String, TopicLease)?] = Ref(None)
+  // (let go of as its entry is put by on the stack's kept left, page_entry_parked: no chat held while it is not on the
+  // stack; asked again as it is read again, put on once more)
+  let let_go = fn() {
+    let previous = held.val
+    held.val = None
+    match previous { Some((_, reader)) => reader.release(); None => () }
+  }
+  entry.owns(fn() {
+    if active_chat_readers.get(serial) is Some(f) && physical_equal(f, let_go) {
+      active_chat_readers.remove(serial)
+    }
+  })
+  |> ignore
   fn(page) {
     match page {
       Chat(r) => {
@@ -59,6 +75,7 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
         next.bind_to(entry)
         let previous = held.val
         held.val = Some((key, next))
+        active_chat_readers[serial] = let_go
         match previous { Some((_, reader)) => reader.release(); None => () }
         if next.alive() { page_chat_ready(serial, src, key) }
       }
@@ -72,16 +89,75 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
 }
 
 ///|
+/// What puts by at rest the sources each entry's page reads by (Source::owned_by_parkable: page_entry_source's, a chat
+/// page's own), by its serial: put by once the entry kept left has told what it left (page_entry_parked), taken back as
+/// it is read again (page_entry_read).
+let entry_parks : Map[Int, Array[(Bool) -> Unit]] = Map([])
+
+///|
+/// The entries put by on the stack's kept left (page_entry_parked), by serial, till taken back (page_entry_read) or let
+/// go for good (page_entry_gone): whether their sources are put by yet (entries_kept_park_due).
+let entries_kept : Map[Int, Bool] = Map([])
+
+///|
+/// The sources of the entries put by on the stack's kept left and not yet so put by at rest (entry_parked): once what
+/// they left is told (the frame's pages left, chat_left, reading through them), in that frame's build, so that what
+/// they held is let go of as that frame ends; else as the frame ends where no build tells it.
+pub fn entries_kept_park_due() -> Unit {
+  let due : Array[Int] = []
+  for serial, done in entries_kept {
+    if !done {
+      due.push(serial)
+    }
+  }
+  for serial in due {
+    entries_kept[serial] = true
+    entry_parked(serial, true)
+  }
+}
+
+///|
+/// `park` (Source::owned_by_parkable's, of a source owned by `view`) entry `serial`'s, till `view` goes.
+fn entry_park_said(serial : Int, view : @view.View, park : (Bool) -> Unit) -> Unit {
+  match entry_parks.get(serial) {
+    Some(all) => all.push(park)
+    None => entry_parks[serial] = [park]
+  }
+  view.owns(fn() {
+    match entry_parks.get(serial) {
+      Some(all) => {
+        let rest = all.filter(fn(p) { !physical_equal(p, park) })
+        if rest.is_empty() {
+          entry_parks.remove(serial)
+        } else {
+          entry_parks[serial] = rest
+        }
+      }
+      None => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Entry `serial`'s sources put by (true) or taken back (false): entry_parks'.
+fn entry_parked(serial : Int, on : Bool) -> Unit {
+  match entry_parks.get(serial) {
+    Some(all) => for p in all.copy() { p(on) }
+    None => ()
+  }
+}
+
+///|
+/// The chat each entry's page holds (page_chat_reader), by its serial: what lets it go as the entry is put by on the
+/// stack's kept left (page_entry_parked).
+let active_chat_readers : Map[Int, () -> Unit] = Map([])
+
+///|
 /// Whether a chat's page is made with its inside nodes (chat_page_made's `body` and `foot`): a bridge while the page
 /// is moved off its old view, deleted at the switch-over; off, the page is as it was. Read as a page is made.
 // kept across runs: chat_page_nodes_at_start as a run begins (reset)
 pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_nodes_at_start, same=fn(a, b) { a == b })
-
-///|
-/// Whether a chat's composer on its page made as nodes is made as nodes too (sfpages' composer_node), not an old view
-/// in its list's foot: 实验性功能's 试用新输入框, read with chat_page_nodes as the page is made (chat_page_kind).
-// kept across runs: false as a run begins (reset)
-pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
 /// What chat_page_nodes is as a run begins.
@@ -89,17 +165,30 @@ pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 let chat_page_nodes_at_start : Bool = false
 
 ///|
+/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes
+/// whole, its composer too (one an old view draws, the old composer's island, is never kept: built each frame it
+/// would read its chat at rest), by its station and session and the kind it is made as (chat_page_kind); none other.
+pub fn chat_page_left_key(p : Page) -> (String, String)? {
+  match p {
+    Chat(r) if chat_page_nodes.untracked() =>
+      Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
+    _ => None
+  }
+}
+
+///|
+/// chat_page_kind, read untracked (at a cause of the stack's, outside what is made).
+fn chat_page_kind_now() -> String {
+  @signals.untracked(chat_page_kind)
+}
+
+///|
 /// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
 /// place): its nodes' or its old view's as chat_page_nodes says now, so 实验性功能's 试用新对话页 turned either way makes
 /// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
 pub fn chat_page_kind() -> String {
   if chat_page_nodes.get() {
-    // (its composer made as nodes or as an old view: another make of the page, made again in its place as it turns)
-    if composer_nodes.get() {
-      "chat-composed"
-    } else {
-      "chat"
-    }
+    "chat"
   } else {
     "chat-old"
   }
@@ -152,15 +241,19 @@ let columns_set_off : Map[String, () -> Unit] = Map([])
 ///|
 /// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it.
 pub fn column_sets_off(chat : String) -> Unit {
-  columns_set_off_said.set(columns_set_off_said.untracked() + 1)
-  match columns_set_off.get(chat) {
-    Some(f) => f()
-    None => ()
-  }
-  // (each row's room over it told after its list, in the same change: column_set_off_each)
-  for _, f in columns_set_off_each.copy() {
-    f()
-  }
+  // (the page set off on its way by its cause (a side panel opened or shut): what it changes on the chat's page goes its
+  // way, @view.transition)
+  @view.transition(fn() {
+    columns_set_off_said.set(columns_set_off_said.untracked() + 1)
+    match columns_set_off.get(chat) {
+      Some(f) => f()
+      None => ()
+    }
+    // (each row's room over it told after its list, in the same change: column_set_off_each)
+    for _, f in columns_set_off_each.copy() {
+      f()
+    }
+  })
 }
 
 ///|
@@ -226,18 +319,20 @@ pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
 /// time on top, `stint`; made while `drawn` says its entry is drawn: shown, or kept shown in place while the one on top
 /// waits, as its island is). What it reads by, the source it keeps (its reads the page's, let go with it), given back:
 /// what is beside it reads by it too. With chat_page_nodes on as the page is made, its inside as what the page is,
-/// one in the other's place at once as it changes: a new chat its old view (what that reads let go as it goes); a chat,
+/// one in the other's place at once as it changes: a new chat its nodes (`new_node`), or its old view where the shell
+/// makes none (what that reads let go as it goes); a chat,
 /// one made so or a new chat become it in place (Nav::become), its inside nodes, chat `r`'s messages made by `body` in
-/// a column, given what makes its composer (by `foot`, its old view in a node of its own, as tall as it is laid out) in
-/// the node it is put in, the foot of the messages' list, and whether its entry is drawn (as `drawn` says). On the
+/// a column, given what makes its composer as nodes (by `foot_node`) in the node it is put in, the foot of the
+/// messages' list, and whether its entry is drawn (as `drawn` says). On the
 /// page's way to another width (a side panel sliding in or out beside it), its column laid out as at the narrower of
 /// where the way set off and where it goes, from the frame it sets off till the one it is there, so that its rows are
 /// laid out anew only at those two (as the old list's laid_w had it held), and moved across by as much as its rows'
 /// words start further in at the width it is drawn at than at the one it is laid out at, so that they go across with
 /// the page, never stepping where it is laid out anew: both the shell's to say, at a node's moment (`narrower`: how much
 /// narrower, how far across; none at rest), and moved aside with all of it (`aside`, as a node is drawn: the pane's page
-/// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, an old view as yet, is laid out at the
-/// width the column is drawn at all the way, and goes its way to another as with_side has it, by itself.
+/// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, is laid out at
+/// the width the column is drawn at all the way. A new chat, where the shell makes it so (`new_node`), is made as nodes
+/// too, over the column, leaving over the chat it becomes.
 pub fn chat_page_made(
   v : @view.View,
   src : Source,
@@ -248,17 +343,21 @@ pub fn chat_page_made(
   stint? : () -> Int = fn() { 0 },
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
-  foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
   foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
-  narrower? : (@view.View) -> ColumnLaid,
+  narrower? : (Source, @view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
   held? : (@view.View) -> ColumnLaid,
   held_from? : () -> Bool = fn() { true },
+  new_node? : (@view.View, Source) -> Unit,
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
+  // (what the shell says of its column read by the page's own source, what it holds the page's, let go with it: never
+  // the window's)
+  let narrower = narrower.map(fn(f) { fn(n : @view.View) { f(retained, n) } })
   let page_read = page_chat_reader(retained, v, serial)
-  let shown = src.owned_by(v)
+  let (shown, shown_park) = src.owned_by_parkable(v)
+  entry_park_said(serial, v, shown_park)
   let aside_of = fn(n : @view.View) {
     match aside {
       Some(f) => f(n)
@@ -268,12 +367,12 @@ pub fn chat_page_made(
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   // (with chat_page_nodes on as the page is made, a chat's made as nodes inside, as what the page is: a new chat its old
   // view, a chat once it has become one in place, Nav::become, its nodes, at once, the one in the other's place)
-  let nodes = match (body, foot) {
-    (Some(b), Some(f)) if @signals.untracked(fn() { chat_page_nodes.get() }) => Some((b, f))
+  let nodes = match body {
+    Some(b) if @signals.untracked(fn() { chat_page_nodes.get() }) => Some(b)
     _ => None
   }
   match nodes {
-    Some((b, f)) => {
+    Some(b) => {
       // (which chat the page is, by its station and session, "" while a new chat; as it was once its entry is gone)
       let was = Ref("")
       v.pick(
@@ -330,33 +429,28 @@ pub fn chat_page_made(
                     col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
                   }
               }
+              // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
+              // subscription held by the entry; read again as the page it is changes, and as it is put on again from
+              // the stack's kept left (its time on top anew), where its chat was let go of, page_entry_parked)
+              col.reacts(fn() { (app.nav.page_of(serial).map(fn(e) { e.0 }), app.nav.stint_of(serial), app.nav.is_kept_left(serial)) }, fn(
+                now,
+              ) {
+                match now {
+                  (Some(page), _, false) => {
+                    page_entry_read(serial, retained, page)
+                    page_read(page)
+                  }
+                  _ => ()
+                }
+              })
               // (coming to need the viewer while open, felt, as its old view felt it)
               feel_needed_node(col, retained, r)
               b(col, retained, r, fn(n) {
-                // (its height going the way the composer's ground sets out on for what it holds, from that cause's
-                // moment and by its spec, so the room under the last row goes with that ground, one motion:
-                // composer_set_out, foot_resizes)
-                // (its composer made as nodes too, where 试用新输入框 is on as the page is made (chat_page_kind): in the
-                // list's foot, its height going its own way, View::resizes)
-                let composed = @signals.untracked(fn() { composer_nodes.get() })
+                // (its composer made as nodes in the list's foot, its height going its own way, View::resizes)
                 match foot_node {
-                  // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
-                  // buttons the foot holds made before it under that picture, as over the list they stand on)
-                  Some(make) if composed => {
-                    // (what the page reads as its entry, read as its old view's build read it: its source's page, its
-                    // chat's subscription held by the entry; read again as the page it is changes)
-                    n.reacts(fn() { app.nav.page_of(serial).map(fn(e) { e.0 }) }, fn(page) {
-                      match page {
-                        Some(page) => {
-                          page_entry_read(serial, retained, page)
-                          page_read(page)
-                        }
-                        None => ()
-                      }
-                    })
+                  Some(make) => {
                     n
                     .box(fn(at) {
-                      at.flights_under() |> ignore
                       // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
                       make(at, retained, r, fn() { drawn(serial) }, fn() {
                         match narrower {
@@ -374,30 +468,7 @@ pub fn chat_page_made(
                     })
                     |> ignore
                   }
-                  _ => {
-                    let island : Ref[@view.View?] = Ref(None)
-                    island.val = app.nav.page_island(
-                      n,
-                      serial,
-                      fn(c, page) {
-                        page_entry_read(serial, retained, page)
-                        page_read(page)
-                        f(c, retained, r)
-                      },
-                      key~,
-                      natural=true,
-                      // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
-                      // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
-                      over=true,
-                      reshaped=fn(was, now) { foot_resizes(island.val, r, was, now) },
-                    )
-                    // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
-                    // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
-                    // from outside)
-                    |> @ui.old_takes_own
-                    |> i => { i.flights_under() }
-                    |> Some
-                  }
+                  None => ()
                 }
                 // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
                 // at: its own way to another width with_side's)
@@ -431,8 +502,9 @@ pub fn chat_page_made(
       // to draw it leaving, an old view drawing nothing in the frame it is made (the frame the words were sent in drawn
       // with neither the scene nor a composer); what it reads as the new chat let go with it
       // (what the scene is: none; the new chat; leaving over the chat it became; only mounted when the entry begins as
-      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages)
-      let has_scene = @signals.untracked(fn() {
+      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages; none where the
+      // new chat is made as nodes, `new_node`'s below)
+      let has_scene = new_node is None && @signals.untracked(fn() {
         match app.nav.page_of(serial) {
           Some((NewChat, _)) => true
           Some((Chat(r), _)) => leaving is Some(_) && fresh.became.get() == Some(r)
@@ -508,6 +580,45 @@ pub fn chat_page_made(
           at_once=true,
         )
       }
+      // (a new chat made as nodes where the shell makes it so (`new_node`): over the column, the page while it is the
+      // new chat; become its chat (its first words sent: Nav::become), leaving over it as its scene does (new_leave_ms:
+      // View::show's `leave`, how far it has left its View::going), nothing of it pressed, focused or read out as it
+      // leaves, the chat's own under it; come back as it was where its chat was not made; what it reads let go with it)
+      // (none on a page made as a chat: only a new chat becomes one, and comes back as itself where its chat is not made)
+      let made_new = @signals.untracked(fn() { app.nav.page_of(serial) is Some((NewChat, _)) })
+      match new_node {
+        Some(make) if made_new => {
+          // (held while it is the new chat, and while it leaves over the chat it becomes in place (Nav::become); let go
+          // at once as the page becomes anything else: another chat, a place, 设置)
+          let keeps_new = fn() {
+            match app.nav.page_of(serial) {
+              Some((NewChat, _)) => true
+              Some((Chat(r), _)) => fresh.became.get() == Some(r)
+              _ => false
+            }
+          }
+          v.show(at_once=true, keeps_new, fn(hold) {
+            hold.over(Is(true)) |> ignore
+            // (the new chat itself, leaving over the chat it became for new_leave_ms; come back to where it was asked
+            // back before it is gone)
+            hold.show(at_once=true, leave=new_leave_ms, fn() { app.nav.page_of(serial) is Some((NewChat, _)) }, fn(o) {
+              o.over(Is(true)) |> ignore
+              // (on the page's way to another width as what is beside it slides, laid out at the width it goes to all
+              // the way, drawn as the frame says: `narrower`, as a chat's column)
+              match narrower {
+                Some(by) =>
+                  o
+                  .width(By(fn() { Some(by(o).laid) }))
+                  .offset(By(fn() { (-by(o).across, 0.0) }))
+                  |> ignore
+                None => ()
+              }
+              make(o, src.owned_by(o))
+            })
+          })
+        }
+        _ => ()
+      }
     }
     None => {
       // (its old view, on the block's way laid out where and as wide as it is where the way ends (`held`, the
@@ -562,8 +673,9 @@ pub fn chat_page_made(
   v.box(fn(slot) { viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
   match over {
     Some(f) =>
-      // (while the page shows, as its old view is built: what it reads let go of while another covers it)
-      v.show(fn() { drawn(serial) }, fn(o) {
+      // (while the page shows, as its old view is built: what it reads let go of while another covers it; kept, at rest,
+      // as its entry is put by on the stack's kept left, Nav::try_park_left)
+      v.show(fn() { drawn(serial) || app.nav.is_kept_left(serial) }, fn(o) {
         o.over(Is(true)) |> ignore
         f(o, retained, fn() { app.nav.page_of(serial).map(fn(e) { e.0 }) }, stint)
       })
@@ -573,18 +685,8 @@ pub fn chat_page_made(
 }
 
 ///|
-/// The way a chat's composer's ground last set out on for what it holds (a line more, a file, a quote; sfpages'
-/// composer reshape, its `by` changed): its draft, the moment its build said it, and where that way is declared (when
-/// it set out, how long, and how far on it the ground is drawn at a moment: @motion.reshape_way, reshape_share, read
-/// once the frame that set it off is laid out). Said by the composer's build at that cause, none for words sent from
-/// it (their row carries its room) nor once a later build sets out on none; taken by the one height change of its node
-/// in a list's foot it comes out as (foot_resizes).
-// put back as a run starts (reset), said again by each composer's build, taken once
-pub let composer_set_out : Ref[(String, Double, () -> (Double, Double, (Double) -> Double)?)?] = Ref(None)
-
-///|
-/// How far the old composer's foot in a chat's list came down at once as words were sent from it (foot_resizes: the
-/// list takes that in the change their key comes), the chat's draft, the moment they were sent and by how much: what
+/// How far a chat's composer made as nodes came down at once as words were sent from it (sfpages' composer_sent_holds:
+/// the list takes that in the change their key comes), the chat's draft, the moment they were sent and by how much: what
 /// stands beside the list by that foot (对话目录's rail, sfpages' chat_rail_node) drawn from where it stood, down to
 /// where it is laid out on the ground's way (chat_foot_dropped_off), never stepped by half of it in a frame.
 pub let chat_foot_dropped : @signals.Signal[(String, Double, Double)?] = @signals.signal(None)
@@ -609,52 +711,6 @@ pub fn chat_foot_dropped_off(chat : String, t : Double) -> (Double, Double) {
     }
     _ => (0.0, 0.0)
   }
-}
-
-///|
-/// The old view `island` holding chat `r`'s composer in its list's foot come to another height: where its composer's
-/// ground set out on a way for that (composer_set_out), its height goes that very way (View::resizes, kept to its foot:
-/// the composer grows from it): from when the ground set out, as long as its way is declared, at each moment as far on
-/// as the ground is drawn then (its own way read, not one worked out beside it), so the room under the last row and
-/// what stands on the foot go with the ground in the same frames, one way, as the old list's foot went with it
-/// (sfpages' composer_way_for_list). Otherwise at once.
-fn foot_resizes(island : @view.View?, r : ChatRef, was : Double, now : Double) -> Unit {
-  // (words just sent from it: down at once, what the list takes in the change their key comes; what stands beside the
-  // list by it told how far, and from when, chat_foot_dropped)
-  let chat = r.station + ":" + r.session
-  if now < was && !(composer_set_out.val is Some((draft, _, _)) && draft == chat) {
-    match sent_out_at.get(chat) {
-      Some(at) => chat_foot_dropped.set(Some((chat, at, was - now)))
-      None => ()
-    }
-  }
-  guard composer_set_out.val is Some((draft, _, declared)) &&
-    draft == r.station + ":" + r.session &&
-    island is Some(v) else {
-    return
-  }
-  composer_set_out.val = None
-  guard declared() is Some((start, dur, ground)) && dur > 0.0 else {
-    v.resizes(foot=true) |> ignore
-    return
-  }
-  // (told after it set out: the rest of its way, from where it has got to)
-  let since = @ui.tree_cause().unwrap_or(start) - start
-  let gone = if since > 0.0 { since } else { 0.0 }
-  let left = dur - gone
-  guard left > 0.0 else { return }
-  let p0 = ground(start + gone)
-  v.resizes(
-    spec=(left, fn(f) {
-      if p0 >= 1.0 {
-        1.0
-      } else {
-        (ground(start + gone + f * left) - p0) / (1.0 - p0)
-      }
-    }),
-    foot=true,
-  )
-  |> ignore
 }
 
 ///|
@@ -909,7 +965,8 @@ pub fn page_entry_source(src : Source, entry : @view.View, serial : Int) -> Sour
     Some(readers) => for reader in readers { reader.bind_to(entry) }
     None => ()
   }
-  let source = src.owned_by(entry)
+  let (source, park) = src.owned_by_parkable(entry)
+  entry_park_said(serial, entry, park)
   let current : PageSource = { source, page: None, seen: 0, chat_ready: "", chat_view: None, active: true }
   let sources = match page_sources.get(serial) {
     Some(sources) => sources
@@ -976,6 +1033,17 @@ fn entry_last_source(serial : Int, page : Page) -> PageSource? {
 
 ///|
 pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
+  // (taken back from the stack's kept left: its sources read again)
+  match entries_kept.get(serial) {
+    Some(done) => {
+      entries_kept.remove(serial)
+      // (put by already: taken back; else taken back before it was, nothing to take back)
+      if done {
+        entry_parked(serial, false)
+      }
+    }
+    None => ()
+  }
   // (what the page before handed over, open_handing: let go once this build has read what it reads, at its frame's
   // end; what it read is its own reader's by then)
   match handed_readers.get(serial) {
@@ -1001,7 +1069,12 @@ pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
 pub fn page_source_for_chat(fallback : Source, r : ChatRef) -> Source {
   let mut latest = -1
   let mut result = fallback
-  for _, sources in page_sources {
+  for serial, sources in page_sources {
+    // (an entry put by on the stack's kept left reads nothing while it rests: none of its sources the chat's, so that
+    // what reads a chat through its page's source (linger_tick, each frame) holds none of it meanwhile)
+    if entries_kept.contains(serial) {
+      continue
+    }
     for current in sources {
       match current.page {
         Some(Chat(chat)) if current.active && chat.station == r.station && chat.session == r.session && current.seen > latest &&
@@ -1023,11 +1096,29 @@ fn page_chat_view_read(source : Source, chat : ChatRef, value : ChatView?) -> Un
   if !@signals.untracked(fn() { (source.topic_alive)() }) { return }
   for _, sources in page_sources {
     for current in sources {
-      if physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) {
+      // (none read where it had one: kept, a page taken back from the stack's kept left reading it again before the
+      // core's first answer to it, page_chat_view_kept)
+      if physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) &&
+        (value is Some(_) || current.chat_view is None) {
         current.chat_view = value
       }
     }
   }
+}
+
+///|
+/// The view of chat `chat` that page source `source` last read, where it is a page's (page_entry_source) and still
+/// live: what a page taken back from the stack's kept left shows while its chat, asked again, waits for the core's
+/// first answer (chat_view_now). None for a page that never read it (one opened cold).
+fn page_chat_view_kept(source : Source, chat : ChatRef) -> ChatView? {
+  for _, sources in page_sources {
+    for current in sources {
+      if current.active && physical_equal(current.source, source) && page_source_read_page(current, Chat(chat)) {
+        return current.chat_view
+      }
+    }
+  }
+  None
 }
 
 ///|
@@ -1144,6 +1235,7 @@ pub fn page_kind(p : Page) -> String {
     Setting(r) => "Setting " + setting_kind(r)
     Screen(_) => "Screen"
     Terminal(_) => "Terminal"
+    SideTab(_) => "SideTab"
   }
 }
 
@@ -1302,45 +1394,99 @@ pub let left_said : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a 
 
 ///|
 fn page_entry_left(serial : Int, p : Page) -> Unit {
-    let entry = entry_last_source(serial, p)
-    let chat : LeftPageChat? = match (p, entry) {
-      (Chat(r), Some(current)) => {
-        let view = match chat_kept_from(current.source, r) {
-          Some(view) => Some(view)
-          None => current.chat_view
-        }
-        Some({ source: current.source, view })
+  page_entry_tells_left(serial, p, false)
+}
+
+///|
+/// Entry `serial` of page `p` put by on the stack's kept left (Nav::try_park_left), its nodes at rest: told as left
+/// (where it was left, the core told so, what was handed to it let go: page_entry_left's) but for its sources, kept for it
+/// as it is put on again, and its chat let go of, none held while it is put by (page_chat_reader's).
+fn page_entry_parked(serial : Int, p : Page) -> Unit {
+  page_entry_tells_left(serial, p, true)
+}
+
+///|
+/// Entry `serial` let go for good (Nav's on_entry_gone): what was kept for it as it was put by let go (none, where it
+/// left without being put by: page_entry_left let go of all of it then).
+fn page_entry_gone(serial : Int, _p : Page) -> Unit {
+  entries_kept.remove(serial)
+  page_sources.remove(serial)
+  active_chat_readers.remove(serial)
+  release_pending_chat(serial)
+  match handed_readers.get(serial) {
+    Some(readers) => {
+      handed_readers.remove(serial)
+      for reader in readers {
+        reader.release()
       }
-      _ => None
     }
-    page_sources.remove(serial)
-    release_pending_chat(serial)
-    // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
-    // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
-    // held while it showed, let go as it leaves, not by the tree's root for good)
-    match handed_readers.get(serial) {
-      Some(readers) => {
-        handed_readers.remove(serial)
-        for reader in readers {
-          reader.release()
-        }
+    None => ()
+  }
+}
+
+///|
+/// Entry `serial` of page `p` told as left (page_entry_left), or as put by (`parked`: page_entry_parked).
+fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
+  let entry = entry_last_source(serial, p)
+  let chat : LeftPageChat? = match (p, entry) {
+    (Chat(r), Some(current)) => {
+      let view = match chat_kept_from(current.source, r) {
+        Some(view) => Some(view)
+        None => current.chat_view
+      }
+      Some({ source: current.source, view })
+    }
+    _ => None
+  }
+  if parked {
+    // (its sources kept for it as it is put on again: what they had read of its chat read anew then)
+    match page_sources.get(serial) {
+      Some(sources) => for current in sources { current.chat_ready = "" }
+      None => ()
+    }
+    match active_chat_readers.get(serial) {
+      Some(let_go) => {
+        active_chat_readers.remove(serial)
+        let_go()
       }
       None => ()
     }
-    match p {
-      Chat(_) => left_page_sources[left_pages.length()] = chat
-      _ => ()
+    // (its sources put by once what it left is told (the frame's pages left, chat_left, reading through them), at the
+    // end of the frame that tells it, where it is still kept then)
+    if !entries_kept.contains(serial) {
+      entries_kept[serial] = false
     }
-    left_pages.push(p)
-    left_said.set(serial)
-    match p {
-      Setting(r) => @settings.left(r)
-      Archived => @settings.left(@settings.Route::Archive)
-      Settings => @settings.left(@settings.Route::Home)
-      // a place of the bar's whose page is the settings' (bar.mbt place_page)
-      Place(name) => @settings.place_left(name)
-      _ => ()
+    @ui.after_frame(entries_kept_park_due)
+  } else {
+    page_sources.remove(serial)
+  }
+  release_pending_chat(serial)
+  // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
+  // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
+  // held while it showed, let go as it leaves, not by the tree's root for good)
+  match handed_readers.get(serial) {
+    Some(readers) => {
+      handed_readers.remove(serial)
+      for reader in readers {
+        reader.release()
+      }
     }
+    None => ()
+  }
+  match p {
+    Chat(_) => left_page_sources[left_pages.length()] = chat
+    _ => ()
+  }
+  left_pages.push(p)
+  left_said.set(serial)
+  match p {
+    Setting(r) => @settings.left(r)
+    Archived => @settings.left(@settings.Route::Archive)
+    Settings => @settings.left(@settings.Route::Home)
+    // a place of the bar's whose page is the settings' (bar.mbt place_page)
+    Place(name) => @settings.place_left(name)
+    _ => ()
+  }
 }
 
 ///|
@@ -1357,7 +1503,7 @@ pub fn nav_root_kept(page : Page) -> Unit {
 pub fn new_nav() -> @ui.Nav[Page] {
   // what its own back comes to, back's in the history (app_history.mbt went_back); settings' gear is at the right of
   // every top bar, so it comes in from the right like any page
-  @ui.Nav::new(Home, went_back~, on_entry_leave=page_entry_left)
+  @ui.Nav::new(Home, went_back~, on_entry_leave=page_entry_left, on_entry_park=page_entry_parked, on_entry_gone=page_entry_gone)
 }
 
 ///|
@@ -1505,6 +1651,7 @@ pub fn reset() -> Unit {
   @ui.set_motion_chosen(None)
   @ui.set_haptics(true)
   felt_reset()
+  awake_reset()
   board_reset()
   app.filters.clear()
   app.menu = false
@@ -1514,6 +1661,9 @@ pub fn reset() -> Unit {
   // (none said; which saying was last kept: the next a new one, as ever)
   app.toast.set({ ..toast_none, n: @signals.untracked(fn() { app.toast.get().n }) })
   left_pages.clear()
+  active_chat_readers.clear()
+  entry_parks.clear()
+  entries_kept.clear()
   let pending = pending_chat_readers.values().collect()
   pending_chat_readers.clear()
   for reader in pending { stop_pending_chat(reader) }
@@ -1586,7 +1736,9 @@ pub fn reset() -> Unit {
   go_to_around.clear()
   // and where each chat's reader was as a go-to took its list away (jump.mbt)
   places_back.clear()
+  places_back_pieces.clear()
   go_back_offsets.clear()
+  go_back_pieces.clear()
   places_back_said.set(0)
   // when the flash of a message gone to on a page made as nodes is over (chat_list.mbt)
   flash_rest_nodes.val = -1.0
@@ -1596,7 +1748,6 @@ pub fn reset() -> Unit {
   absolute_times.set(false)
   // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
-  composer_nodes.set(false)
   farview_native.set(false)
   board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
@@ -1604,12 +1755,13 @@ pub fn reset() -> Unit {
   emits.clear()
   // words sent flying (flight.mbt)
   flights_reset()
-  composer_set_out.val = None
   chat_foot_dropped.set(None)
   sent_from_at.clear()
-  sent_quotes_from_at.clear()
+  sent_words_room_at.clear()
+  sent_quote_ids_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
+  foot_vers.clear()
   kept_places.clear()
   flash_held.val = false
   at_end_env.val = -1
@@ -1628,10 +1780,12 @@ pub fn reset() -> Unit {
   tab_full_reset()
   // the page shown alone in a window of its own (window.mbt) and remote workbench tabs (remote_tabs.mbt)
   lone_page.val = None
+  first_lone.val = None
   lone_shown.val = @signals.signal(None)
   remote_tabs_reset()
   windows_open.clear()
   windows_here_show.clear()
+  tab_windows.clear()
 }
 
 ///|

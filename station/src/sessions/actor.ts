@@ -160,6 +160,8 @@ export type SessionDeps = {
   /// (accounts.ts `limitAfter`: a model's own limit by its name, null the account's, undefined none).
   limitAfter?(profile: string, model: string | null): Promise<string | null | undefined>;
   mcpUrl(): string;
+  /// How many requests session `key`'s token made of the agents' MCP endpoint (mcp.ts `heard`); absent where unknown.
+  toolsHeard?(key: string): number;
   reposDir(): string;
   /// Session `key`'s MEMORY.md: its workspace's (agent-home.ts `workspaceAgentHome`).
   memoryPath(key: string): string;

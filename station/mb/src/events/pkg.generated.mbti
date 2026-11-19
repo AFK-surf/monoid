@@ -117,6 +117,7 @@ pub fn went(SeenStore, String, Viewer) -> @jsjson.JValue?
 pub suberror NotALog {
   NotALog
 }
+pub impl Show for NotALog
 
 // Types and methods
 pub(all) struct AccountsDeps {

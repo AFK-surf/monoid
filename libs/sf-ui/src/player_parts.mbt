@@ -515,7 +515,8 @@ fn where_runs(p : @kit.Media, fr : Frames, s : @kit.MediaStatus, playing : Bool,
 /// How far in from the stage's top and foot a film's picture is fitted (`top`, `foot`): laid out wider than Small,
 /// clear of the bar along the top and of the controls over the foot (and of the system's bars where they are over the
 /// window), so neither ever hides an edge of it (a screen's recording looked at closely, its time dragged along); it
-/// stays where it is as they come and go. Laid out Small (a phone's) edge to edge, its controls over it. `embedded`: in
+/// stays where it is as they come and go. Laid out Small (a phone's) or beside the system's bars (an iPhone Duo's:
+/// its bar's actions in them, none of its own over the film) edge to edge, its controls over it. `embedded`: in
 /// a stage of a page's own (a tab beside a chat), no bar over it and nothing of the window's bars: the room over its
 /// controls, a phone's (phone_embedded_foot) or a desktop's, which stand as far up from the stage's foot as a panel's
 /// corner is round.
@@ -523,21 +524,28 @@ pub fn player_room(width : Double, embedded? : Bool = false) -> (Double, Double)
   if layout(width) is Small {
     return (0.0, if embedded { phone_embedded_foot() } else { 0.0 })
   }
+  if embedded {
+    return (0.0, desk_controls_foot(width, true))
+  }
+  // (beside the system's bars, an iPhone Duo's: its bar's actions in them, none of its own over the film; its
+  // controls over it as a phone's are)
+  if native_on() {
+    return (0.0, 0.0)
+  }
+  let top = (viewer_host().room)().0
+  (viewer_bar_h + top, desk_controls_foot(width, false))
+}
+
+///|
+/// How far up from the stage's foot a desktop's controls reach (`embedded`: in a tab's stage, clear of its corner;
+/// else media_bar_in over the window's foot bar).
+fn desk_controls_foot(width : Double, embedded : Bool) -> Double {
   let said = if desk_narrow(width) { desk_time_over - media_bar_top + desk_time_h } else { 0.0 }
   if embedded {
-    return (0.0, media_bar_h() + said + pane_corner)
-  }
-  let (top, foot) = (viewer_host().room)()
-  // (beside the system's bars, an iPhone Duo's: its bar's actions in them, none of its own over the film; filling the
-  // window, nothing of them either)
-  let top = if native_on() && native_full.get() {
-    0.0
-  } else if native_on() {
-    top
+    media_bar_h() + said + pane_corner
   } else {
-    viewer_bar_h + top
+    media_bar_h() + said + media_bar_in + (viewer_host().room)().1
   }
-  (top, media_bar_h() + said + media_bar_in + foot)
 }
 
 ///|
@@ -737,10 +745,10 @@ let desk_volume_steps : Double = 20.0
 let desk_volume_w : Double = 72.0
 
 ///|
-/// A cue over a desktop's controls: as far off the foot as they reach (player_room), and 16 more (with keyboard and
-/// mouse on a wide page, the 112 it stood at before).
+/// A cue over a desktop's controls: as far off the foot as they reach (desk_controls_foot), and 16 more (with keyboard
+/// and mouse on a wide page, the 112 it stood at before).
 fn desk_cue_over(width : Double, embedded : Bool) -> Double {
-  player_room(width, embedded~).1 + desk_cue_apart
+  desk_controls_foot(width, embedded) + desk_cue_apart
 }
 
 ///|

@@ -41,6 +41,10 @@ pub fn vault_node(
       None => vault_library_keys(shown.get())
     }
   })
+  // (its vaults kept by id once, as the library shows them and as the core says them: a block reads its own vault
+  // by its key, told only as that one changes: View::keyed_by)
+  let vaults_by = v.keyed_by(fn() { items(shown.get(), "vaults") }, vault_id)
+  let named_by = vault_named_by(v, view)
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.vault.title") },
@@ -52,14 +56,15 @@ pub fn vault_node(
     lead=fn() { @sf.t("web-pages.vault.lead") },
     fn() { keys.get() },
     fn(b, key) {
-      if vault_first_node(b, core, here, view, key, fn(s, quiet, sample) {
+      if vault_first_node(b, core, here, view, named_by, key, fn(s, quiet, sample) {
+          let sample_by = s.keyed_by(fn() { items(sample, "vaults") }, vault_id)
           s.each(fn() { vault_library_keys(sample) }, fn(k) { k }, fn(sb, k) {
-            vault_library_block(sb, quiet, ws, fn() { sample }, k.untracked())
+            vault_library_block(sb, quiet, ws, fn() { sample }, sample_by, k.untracked())
           })
         }) {
         return
       }
-      vault_library_block(b, core, ws, fn() { shown.get() }, key)
+      vault_library_block(b, core, ws, fn() { shown.get() }, vaults_by, key)
     },
   )
 }
@@ -138,8 +143,15 @@ fn vault_library_keys(v : Json?) -> Array[String] {
 
 ///|
 /// The library's block `key` (vault_library_keys') in `b`, as `v` (the core's `vaults`) says it now.
-fn vault_library_block(b : @view.View, core : Core, ws : () -> String, v : () -> Json?, key : String) -> Unit {
-  let vault_of = fn(id : String) { fn() { items(v(), "vaults").iter().find_first(fn(r) { text(Some(r), "id") == id }) } }
+fn vault_library_block(
+  b : @view.View,
+  core : Core,
+  ws : () -> String,
+  v : () -> Json?,
+  vaults : @signals.KeyedList[String, Json],
+  key : String,
+) -> Unit {
+  let vault_of = fn(id : String) { fn() { vaults.get(id) } }
   match key {
     "requests" => {
       let requests = fn() { items(v(), "requests") }
@@ -534,7 +546,13 @@ fn vault_delete_ask(core : Core, ws : String, rv : Json?) -> Unit {
 ///|
 /// A library made up (the core's `vaults`), for what its pages show while it is read: one vault, its items to read.
 fn vaults_sample() -> Json {
-  { "plain": true, "available": true, "vaults": [{ "id": "sample", "name": Json::string(@sf.sample_words(4)), "keyed": true }] }
+  {
+    "locked": true,
+    "canSign": true,
+    "setUp": true,
+    "available": true,
+    "vaults": [{ "id": "sample", "name": Json::string(@sf.sample_words(4)), "keyed": true }],
+  }
 }
 
 ///|
@@ -570,9 +588,8 @@ let vt_find : @ui.Style = @ui.css("w=Full pb=S2_5")
 let vt_requests : @ui.Style = @ui.css("w=Full gap=S2_5 pb=S2_5")
 
 ///|
-/// An item agents are told of (listed): a green dot 6 round at its row's end.
-// kept across runs: a value (no field of it changes)
-let vt_listed : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")
+/// An item agents are told of (listed): a green dot 6 round at its row's end (@sf.state_dot_node's, up).
+let vt_listed_side : Double = 6.0
 
 ///|
 /// The recovery words (Words): three to a row, 10 apart; each its number (the code face 12, subtle, 24 wide at its
@@ -610,6 +627,8 @@ pub fn vault_items_node(
   // (what comes before the library, worked out once for each change of the vaults and told on only as it changes: a
   // vault's own row changed (an item more in it) runs none of what reads it)
   let first = @signals.computed(fn(_) { vault_first_keys(ws(), view().value) })
+  // (its vaults kept by id once, for the names a web page shows: each its own vault, View::keyed_by)
+  let named_by = vault_named_by(v, view)
   let usable = fn() { first.get() is None }
   let all = vault_all_of(core, ws, fn() { view().value })
   // (its blocks worked out once for each change of what they are of, told on only as one comes, goes or moves: a
@@ -649,7 +668,7 @@ pub fn vault_items_node(
     },
     fn() { blocks.get() },
     fn(b, key) {
-      if vault_first_node(b, core, here, view, key, fn(s, quiet, sample) {
+      if vault_first_node(b, core, here, view, named_by, key, fn(s, quiet, sample) {
           vault_all_node(s, quiet, ws, fn() { sample }, tips)
         }) {
         return
@@ -662,7 +681,8 @@ pub fn vault_items_node(
 ///|
 /// What 密钥 and 全部密钥 show before the library, by their keys, as the core's `vaults` (`v`) says where the viewer
 /// stands: the recovery words to write down ("words"); waiting for the core ("waiting"); a web page's names
-/// ("read-only", then "named/<vault>" each); what has to come first ("needs-lock", "not-signer", "off"), or, not
+/// ("read-only", then "named/<vault>" each); what has to come first ("personal-lock": no safe mode, this device to be
+/// approved by another trusted device of theirs; "not-signer": in safe mode; "off"), or, not
 /// signing for another reason than its not being trusted (the core's `stateText`), this device verified once by a press
 /// ("confirm-signer": its `confirmText`) or the members still syncing ("lock-waiting"). None where the library is there
 /// to be used (in plain text on the station, or locked, signed and set up here).
@@ -674,9 +694,11 @@ fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
     None => Some(["waiting"])
     Some(_) if flag(v, "plain") => None
     Some(_) if !flag(v, "available") => Some(["read-only"] + items(v, "vaults").map(fn(r) { "named/" + text(Some(r), "id") }))
-    Some(_) if !flag(v, "locked") => Some(["needs-lock"])
     Some(_) if !flag(v, "canSign") && text(v, "confirmText") != "" => Some(["confirm-signer"])
     Some(_) if !flag(v, "canSign") && text(v, "stateText") != "" => Some(["lock-waiting"])
+    // (no safe mode: this device to be approved by another trusted device of theirs, here on the page, the vault being
+    // theirs whatever the workspace; in safe mode, 安全 is where a device is approved)
+    Some(_) if !flag(v, "canSign") && !flag(v, "locked") => Some(["personal-lock"])
     Some(_) if !flag(v, "canSign") => Some(["not-signer"])
     Some(_) if !flag(v, "setUp") => Some(["off"])
     Some(_) => None
@@ -692,6 +714,7 @@ fn vault_first_node(
   core : Core,
   here : () -> Here,
   view : () -> @settings.Read,
+  named : @signals.KeyedList[String, Json],
   key : String,
   shown : (@view.View, Core, Json?) -> Unit,
 ) -> Bool {
@@ -706,8 +729,8 @@ fn vault_first_node(
         }
       })
     "read-only" => @sf.page_note_node(b, fn() { @sf.t("android-settings.vault.readOnly") })
-    "needs-lock" => vault_gate_node(b, core, "web-pages.vault.needsLock", "web-pages.vault.needsLockWhy")
     "not-signer" => vault_gate_node(b, core, "web-pages.vault.notSigner", "web-pages.vault.notSignerWhy")
+    "personal-lock" => vault_personal_node(b, core, here)
     "confirm-signer" => vault_confirm_node(b, core, ws, view)
     // (what it waits for, in the core's words, nothing to press: it comes by itself)
     "lock-waiting" =>
@@ -715,11 +738,27 @@ fn vault_first_node(
     "off" => vault_off_node(b, core, ws)
     k if k.has_prefix("named/") => {
       let id = k.exact_view(start=6).to_owned()
-      vault_named_node(b, core, ws, fn() { items(view().value, "vaults").iter().find_first(fn(r) { text(Some(r), "id") == id }) })
+      vault_named_node(b, core, ws, fn() { named.get(id) })
     }
     _ => return false
   }
   true
+}
+
+///|
+/// This device off its person's own lock, the workspace in no safe mode (the core's `vaults` neither `locked` nor
+/// `canSign`): approved here by another of their trusted devices (发送批准请求, the code it shows typed in), or, their
+/// trusted devices set up again elsewhere, said to be theirs; as 共享调试 has it (@settings.personal_lock_node), its
+/// words the vault's. The core's `adbShare` read only while this shows.
+fn vault_personal_node(b : @view.View, core : Core, here : () -> Here) -> Unit {
+  let adb = fn() { (core.topic)("adbShare", Map([])).get().value }
+  @settings.personal_lock_node(
+    b,
+    core,
+    fn() { @settings.personal_lock_step(adb(), here().sub) },
+    outside_note=fn() { @sf.t("web-pages.vault.outsideNote") },
+    restart_note=fn() { @sf.t("web-pages.vault.restartNote") },
+  )
 }
 
 ///|
@@ -810,10 +849,10 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
                 s.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))) |> ignore
                 s.box(fn(n) {
                   @sf.style_node(n, fn() { vt_word_number })
-                  vt_mono_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
+                  @sf.mono_line_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
                 })
                 |> ignore
-                vt_mono_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
+                @sf.mono_line_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
               })
             })
             |> ignore
@@ -837,25 +876,6 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
       |> ignore
     })
   })
-}
-
-///|
-/// Words in the code face on one line (mono's, as a node) in `parent`, `words` as they are now, `size` (the theme's as
-/// the node is made), in `ink`.
-fn vt_mono_node(parent : @view.View, words : () -> String, size : @ui.TextSize, ink : () -> Int64) -> Unit {
-  parent.box(fn(w) {
-    // (its size as the theme's is now: followed, the system's size of words changed)
-    let look = fn() -> @view.WordsLook {
-      let (px, line) = @ui.tree_theme().text_size(size)
-      { size: px, weight: 400, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-    }
-    w
-    .words_runs(By(fn() { [@ui.span(words(), mono=true)] }), look=@signals.untracked(look))
-    .words_look(By(look))
-    .ink(By(ink))
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -1330,15 +1350,15 @@ fn vault_named_node(b : @view.View, core : Core, ws : () -> String, rv : () -> J
 /// A vault's items known by their names only (`list`, as it is now), on a group's card `g`: each item's name (locked,
 /// that it is), how agents may ask for it under it, a green dot at its end where agents are told of it.
 fn named_rows_node(g : @view.View, list : () -> Array[Json]) -> Unit {
-  g.each(fn() { list().mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
-    let iv = fn() { Some(x.get().1) }
+  g.each(list, vault_id, fn(row, x) {
+    let iv = fn() { Some(x.get()) }
     @sf.link_row_node(
       row,
       fn() { opt_text(iv(), "name").unwrap_or(@sf.t("android-settings.vault.lockedItem")) },
       fn() {  },
       note=fn() { text(iv(), "agentText") },
       goes=false,
-      tail=fn(e) { e.box(fn(d) { @sf.style_node(d, fn() { vt_listed }) }) |> ignore },
+      tail=fn(e) { @sf.state_dot_node(e, fn() { "up" }, size=vt_listed_side) },
       tail_shown=fn() { flag(iv(), "listed") },
     )
   })
@@ -1357,4 +1377,25 @@ fn vt_group_mark_node(parent : @view.View, group : String) -> Unit {
     "" => @sf.provider_logo_node(parent, "claude", "subscription", vt_glyph, "") |> ignore
     g => @sf.provider_logo_node(parent, g, "subscription", vt_glyph, "") |> ignore
   }
+}
+
+///|
+/// A vault's key in the core's `vaults` (what its library and its names are kept by).
+fn vault_id(r : Json) -> String {
+  text(Some(r), "id")
+}
+
+///|
+/// The vaults a web page names (one that keeps no keys: `available` false), kept by id once, each its own vault
+/// (View::keyed_by); none where keys are kept, so a vault's own change there runs nothing of these.
+fn vault_named_by(v : @view.View, view : () -> @settings.Read) -> @signals.KeyedList[String, Json] {
+  let named = @signals.computed(fn(_) {
+    let x = view().value
+    if x is Some(_) && !flag(x, "available") {
+      items(x, "vaults")
+    } else {
+      []
+    }
+  })
+  v.keyed_by(fn() { named.get() }, vault_id)
 }

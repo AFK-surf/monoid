@@ -149,8 +149,6 @@ fn message_video_node(
     // at their rounded edge): the black round a letterboxed one (contained in its own proportions, in the middle) and
     // all of it while it is decoded
     let share = fn() { picture_share(a(), video_least) }
-    // (decoded for its box at its largest, as its data says it: a width given changing asks no other decode)
-    let (nw, nh, _) = @signals.untracked(fn() { image_box(a(), video_least) })
     f.box(fn(s) {
       s
       .width(By(fn() { Some(w()) }))
@@ -160,7 +158,9 @@ fn message_video_node(
         if k == "" || k == "!" {
           None
         } else {
-          // (decoded as large as it is drawn, reveal_px's: asked so by what draws it, as it comes to it)
+          // (decoded for its box at its largest, as its data says it now (one sent from here its size once the core's
+          // row takes it over): a width given changing asks no other decode; as large as it is drawn, reveal_px's)
+          let (nw, nh, _) = image_box(a(), video_least)
           let px = dmin(dmax(nw, nh) * s.pixel_scale(), image_px_most)
           Some((k, "", px.to_int()))
         }

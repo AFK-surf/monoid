@@ -26,6 +26,7 @@ import { type Control, launcher } from "./ops/launcher.ts";
 import { HELD, heldBy } from "./ops/held.ts";
 import { hearErrors, hearLines, log } from "./ops/log.ts";
 import { stationLog } from "./ops/log-export.ts";
+import { Forewarn, lookAt } from "./ops/forewarn.ts";
 import { ConfigFile } from "./ops/config.ts";
 import { InvalidJsonFile } from "./ops/json-file.ts";
 import { ErrorReports, builtKey } from "./ops/telemetry.ts";
@@ -186,8 +187,15 @@ function run() {
   // defaults when another program has made config.json unreadable.
   const settings = new ConfigFile(data);
   settings.watch();
-  readState(data);
+  // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`): what a machine is, is read
+  // once, as it starts (`rigStation` below).
+  const asRig = readState(data)?.rig !== undefined;
   const control = launcher(args);
+  // What brings the process down said in its log first: an exception nobody caught, or a promise's rejection nobody
+  // handled, which Node ends the process with as well (a monitor, so it still ends as it did).
+  process.on("uncaughtExceptionMonitor", (error, origin) => {
+    log.error("station", origin === "unhandledRejection" ? "unhandled rejection" : "uncaught exception", { error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
+  });
   // Runners (agents', jobs') from copies under the data directory on Windows, out of reach of the app's installer.
   keepRunnerIn(join(data, "run", "bin"));
   // Error lines to still.fail's error tracking, while config.json says so (telemetry.errors) and the build has a key.
@@ -206,7 +214,10 @@ function run() {
   });
   hearErrors((line, error) => reports.report(line, error));
   // Every line to still.fail, scrubbed, unless config.json turns it off (telemetry.logs: false); sent once the mesh is up.
-  stationLog.configure({ enabled: () => settings.raw()?.telemetry?.logs !== false, station: stationId, version });
+  stationLog.configure({
+    enabled: () => settings.raw()?.telemetry?.logs !== false, station: stationId, version,
+    os: platform.buildOs ?? platform.os, arch: process.arch, runtime: "nodejs", role: asRig ? "rig" : "station",
+  });
   hearLines((line) => stationLog.add(line));
   // A lost station's chats brought here to take back (replica/restore.ts): put in before the store opens.
   const beforeStore = () => takeBackSoon(data, join(data, "stillfail.db"), wall.now()).then(
@@ -220,7 +231,6 @@ function run() {
   // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`) is another program of the same release: of a station's
   // parts only what another station asks of it (rig/main.ts). What a machine is, is read once, as it starts; enrolled
   // as the other meanwhile, the process ends and the launcher starts it again as that.
-  const asRig = readState(data)?.rig !== undefined;
   const rigStation = Layer.mergeAll(RigMeshLive, Loopback(control), AwakeLive, CheckpointsLive).pipe(
     Layer.provideMerge(RigLive(control)),
     Layer.provideMerge(RigSide.layer),
@@ -304,6 +314,11 @@ function run() {
     //   long one, with the longest by who made them.
     // Its own CPU near `heldMs` is work of its own; neither that nor a wait near it: it was not given a CPU, or waited on
     // what is timed nowhere.
+    // What runs out on this machine said before it does (ops/forewarn.ts), looked at with each sample.
+    const forewarn = new Forewarn();
+    const forewarned = () => void lookAt(data, mesh.relayConflict?.() === true).then((l) => {
+      for (const w of forewarn.look(l, wall.now())) log.warn(w.at, w.message, w.fields);
+    }, () => {});
     const files = timeFiles();
     const processes = timeProcesses();
     const held = monitorEventLoopDelay({ resolution: 50 });
@@ -325,6 +340,7 @@ function run() {
       const ms = held.max / 1e6;
       heldMs = ms;
       sayHealth();
+      forewarned();
       const now = wall.now();
       const used = process.cpuUsage(cpu);
       const own = process.threadCpuUsage(ownCpu);
@@ -353,11 +369,19 @@ function run() {
       gc.ms = 0;
       gc.longest = 0;
     });
+    // With how the process is (as health.json says it) and what ops/forewarn.ts looks at: its descriptors, the data
+    // directory's disk and the database's log.
     wall.every(process.env.STILLFAIL_MEMLOG ? 10_000 : 600_000, () => {
       const m = process.memoryUsage();
       const mb = (v: number) => Math.round(v / 1048576);
-      void readers.heaps().then((heaps) =>
-        log.info("memory", "now", { ...Object.fromEntries(Object.entries(m).map(([k, v]) => [k, mb(v)])), readers: heaps.map(mb) }),
+      void Promise.all([readers.heaps(), lookAt(data, mesh.relayConflict?.() === true)]).then(([heaps, l]) =>
+        log.info("memory", "now", {
+          ...Object.fromEntries(Object.entries(m).map(([k, v]) => [k, mb(v)])), readers: heaps.map(mb),
+          rssMb: mb(m.rss), ...(l.openFds !== null ? { openFds: l.openFds } : {}),
+          front: mesh.frontLink?.() ?? "direct", presenceOnline: plane.state.reached, relayConflict: l.relayConflict,
+          ...(l.diskFree !== null && l.diskTotal !== null ? { diskFreeMb: mb(l.diskFree), diskTotalMb: mb(l.diskTotal) } : {}),
+          walBytes: l.walBytes,
+        }),
       );
     });
     return yield* Effect.never;

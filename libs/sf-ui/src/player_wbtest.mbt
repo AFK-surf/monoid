@@ -229,6 +229,40 @@ test "at its end the next one plays a moment after, its seconds counted down, un
 }
 
 ///|
+test "at its end 选集 opened: the card goes at once and the next one is let go, played neither while it is open nor once it closes" {
+  for narrow in [true, false] {
+    let gone = []
+    let t = player_tester(narrow, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [], pin=pinned(10000.0, ended=true))
+    t.draw()
+    assert_true(t.find("播放结束") is Some(_))
+    t.click(Button, label="web-pages.drive.player.list")
+    assert_true(t.find("播放结束") is None)
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    // closed (as the system's bars close it too): the card not back, nothing played
+    player_list_toggle("k")
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    assert_true(t.find("播放结束") is None)
+  }
+}
+
+///|
+test "a desktop's with 选集 open beside it as it ends: the card comes and the next one plays a moment after, as with it shut" {
+  let gone = []
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [])
+  t.draw()
+  t.set_player(1, position=5000.0, duration=10000.0, playing=true)
+  t.draw()
+  t.click(Button, label="web-pages.drive.player.list")
+  t.set_player(1, position=10000.0, duration=10000.0, playing=false, ended=true)
+  t.draw()
+  assert_true(t.find("播放结束") is Some(_))
+  t.run_for(player_next_ms)
+  assert_eq(gone, ["E2.mp4"])
+}
+
+///|
 test "a phone's: a finger down the film takes it away with it, past 120 back" {
   let backs = []
   let t = player_tester(true, "a.mp4", [], [], backs)
@@ -338,18 +372,20 @@ test "a desktop's: the bar says the film's size, length and rate as its message 
 
 ///|
 test "a desktop's on a narrow stage: short of room for its keys, 保存此帧 leaves them for their ⋯" {
-  // short of a little room (选集 docked beside a stage 850 wide): 保存此帧 leaves first, the speed still on the row
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(850.0, 900.0, 2), subtitled=true)
+  // short of a little room (选集 docked beside a stage 760 wide; a finger's, no volume line beside the sound's key):
+  // 保存此帧 leaves first, the speed still on the row
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(760.0, 900.0, 2), subtitled=true)
   t.draw()
+  assert_true(t.query(Slider, label="web-pages.drive.player.volume") is None)
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
   // (the speed the last to go)
   assert_true(t.find("1×") is Some(_))
   t.click(Button, label="web-main.menu.more")
   assert_true(t.find("android-chat.video.saveFrame") is Some(_))
-  // shorter still (beside a stage 780 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
+  // shorter still (beside a stage 690 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
   // view left its 1× in its draw list at no size)
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(780.0, 900.0, 2), subtitled=true)
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(690.0, 900.0, 2), subtitled=true)
   t.draw()
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
@@ -412,4 +448,19 @@ test "a song's end and its failure on the page's own colours: their cards' butto
   let failed = player_tester(true, "曲.mp3", [], [], [], kind="audio", pin={ ..pinned(1000.0), state: -1, playing: false })
   failed.draw()
   assert_true(under(failed, "android-misc.drive.player.retry", theme().p.primary), msg="重试 on the primary")
+}
+
+///|
+test "what it waits on is said in its bar beside its name, a phone's and a desktop's, never over the middle of the film" {
+  let buffering : @kit.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  for narrow in [true, false] {
+    let t = player_tester(narrow, "a.mp4", [], [], [], pin=buffering)
+    t.draw()
+    assert_true(t.find("web-pages.drive.player.buffering") is None, msg="narrow \{narrow}: not said before it has waited")
+    t.run_for(playing_for("k").media.times().0)
+    match t.find("web-pages.drive.player.buffering") {
+      Some((_, y)) => assert_true(y < 100.0, msg="narrow \{narrow}: said in its bar along the top, at \{y}")
+      None => fail("narrow \{narrow}: not said once it has waited")
+    }
+  }
 }

@@ -32,12 +32,12 @@ test "the stations that keep a copy are the same whatever their order" {
 ///|
 test "a hash taken a piece at a time is the whole's" {
   let data = @utf8.encode("the quick brown fox jumps over the lazy dog".repeat(37))
-  let h = Sha256::new()
+  let h = @hash.Sha256::new()
   h.update(data[0:5])
   h.update(data[5:64])
   h.update(data[64:])
   assert_eq(h.hex(), @memory.sha256_hex(data))
-  inspect(Sha256::new().hex(), content="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  inspect(@hash.Sha256::new().hex(), content="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 }
 
 ///|

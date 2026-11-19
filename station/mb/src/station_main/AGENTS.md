@@ -17,7 +17,8 @@
 - What can be tested without the shell is in `media/` (the images' codecs, local links): `moon test` links no shell
   (scripts/check.sh's station MoonBit step), and this package, which imports the host package (station/mb/src/host), links only into the
   reader. The rest is held by station/test/mb-station-e2e.test.ts through the program (`--builder
-  harness-station-main`, the commands, `run` under a launcher of the test's), each part to the TypeScript, the
+  harness-station-main` of the tests' program, `stillfail-reader-harness`; the commands and `run` under a launcher of
+  the test's of the reader), each part to the TypeScript, the
   .mjs hooks or the mesh addon it replaces.
 - `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as the program carries them: a change to the
   catalog writes it again (the e2e test fails until it is: `STILLFAIL_WRITE_WORDS=1` on that test writes it).
@@ -31,9 +32,11 @@
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
   (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
   what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
-  `register_pids`). station/test/mb-station-contracts.test.ts holds every `Ref` of the bus given by a slice, and every
-  `parts.carry`, `plane.told` and `events.follow` hook of the TypeScript's given here; station/test/mb-live-hooks-parity.test.ts
-  holds them live.
+  `register_pids`). What is asked often across slices is a typed method of the bus (live_bus.mbt `hub_notify`,
+  `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
+  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
+  of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
+  TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
   A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
@@ -49,7 +52,9 @@
   - P5-2 (`live_p5_2_*.mbt`), the agents' side: the hub, its actors and their drivers in the sessions' program
     (`stillfail-reader --sessions`, with `#live` mounted: live_p5_2_main `mount_live`), the conversations and their
     storage's world (live_p5_2_world.mbt: the live view's locator, the machine's sessions, the peers), the tools of
-    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); the usage
+    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); a session's
+    cold storage, its packing and its room's measure each a process of its own (live_p5_2_cold.mbt: `--builder packed`,
+    `--builder footprint` backgrounded), never on the station's loop; the usage
     counter, its drain and the old statistics' retirement (live_p5_2_usage.mbt), the bug reports' part:
     station/test/mb-live-p5-2.test.ts.
   - P5-3 (`live_p5_3*.mbt`), the jobs and their services, other stations' tasks (`task.*`, `sync.*`, `file.*`,
@@ -69,9 +74,11 @@
     backgrounded process of its own, and a retirement; the moves; the updates and the `beta` features, on
     `coord_ask`: station/test/mb-live-p5-5.test.ts.
 - `@host.now()` (and the runtime's `now`) is a monotonic clock counting from the machine's start: it times waits and
-  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry, a process's start) is
-  `p5_epoch_ms` (sys.mbt), given to each package's clock where it is made; a process's start is `start_time_of`
-  (the system's, ms since the epoch), never `ps`'s words, which are in the machine's own time zone.
+  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry) is `@host.epoch_ms()`
+  (sys.mbt `p5_epoch_ms`: the wall's time once, then the monotonic clock, never going back), and what is shared with
+  other programs (file times) `@host.wall_ms()`; each package's own default clock is one of these, never
+  `@host.now()`. A process's start is `start_time_of` (the system's, ms since the epoch), never `ps`'s words, which
+  are in the machine's own time zone.
 - The shell keeps no watch of a file or a folder: what the TypeScript watched (a transcript, a job's log, a drive's
   folder, run/'s files) is looked at by its size and time every few hundred ms while it is followed, its line saying
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories

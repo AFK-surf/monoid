@@ -74,7 +74,9 @@ pub fn about_node(
         section("web-pages.settings.nav.version", fn(s) {
           @sf.group_node(s, fn(g) {
             version_rows_node(g, core)
-            @sf.link_row_node(g, fn() { @sf.t("web-pages.settings.nav.changelog") }, fn() { (core.push)(Changelog) })
+            @sf.row_box_node(g, fn() { @sf.t("web-pages.settings.nav.changelog") }, press=fn() { (core.push)(Changelog) }, fn(row) {
+              row.chevron()
+            })
           })
         })
       // this machine's station, under the app's own: its version and the way to its newer release
@@ -100,7 +102,9 @@ pub fn about_node(
         section("web-pages.about.legal", fn(s) {
           @sf.group_node(s, fn(g) {
             for l in [("terms", "common.legal.terms"), ("privacy", "common.legal.privacy")] {
-              @sf.link_row_node(g, fn() { @sf.t(l.1) }, fn() { (core.open_link)(@settings.legal_url(l.0)) }, out=true)
+              @sf.row_box_node(g, fn() { @sf.t(l.1) }, press=fn() { (core.open_link)(@settings.legal_url(l.0)) }, fn(row) {
+                row.chevron(kind=@sf.RowChevron::ChevronOut)
+              })
             }
           })
         })
@@ -164,10 +168,14 @@ pub fn about_node(
 /// phone, 2026-10-26.)
 fn version_rows_node(g : @view.View, core : Core) -> Unit {
   // (its name as the core's preferences say it, still.fail where they say none)
-  @sf.link_row_node(g, fn() {
-    let product = text((core.topic)("prefs", Map([])).get().value, "productName")
-    (if product == "" { @sf.product() } else { product }) + " " + build_version()
-  }, fn() {  }, goes=false)
+  @sf.row_box_node(
+    g,
+    fn() {
+      let product = text((core.topic)("prefs", Map([])).get().value, "productName")
+      (if product == "" { @sf.product() } else { product }) + " " + build_version()
+    },
+    fn(_) {  },
+  )
   let v = fn() { (core.version_now)() }
   // (whether newer builds come by themselves, on unless turned off, under what it is about: off, one is said in the
   // update's row and comes only as the person presses it, 2026-11-04 the user「自动更新应该有个设置，默认打开可以关闭」)
@@ -187,7 +195,9 @@ fn version_rows_node(g : @view.View, core : Core) -> Unit {
   })
   // (what is done at once where it is, in the link's ink: checking, and the update's row under it)
   g.show(fn() { v().asks }, fn(r) {
-    @sf.link_row_node(r, fn() { @sf.t("android-settings.version.check") }, fn() { (core.version_check)() }, acts=true)
+    @sf.row_box_node(r, fn() { @sf.t("android-settings.version.check") }, press=fn() { (core.version_check)() }, fn(row) {
+      row.title(tone=@sf.RowTone::RowAccent)
+    })
   })
   g.show(fn() { v().asks && v().newer }, fn(r) {
     let open = @motion.Way::new(if @signals.untracked(fn() { v().going }) { 1.0 } else { 0.0 })
@@ -199,21 +209,20 @@ fn version_rows_node(g : @view.View, core : Core) -> Unit {
       open.said()
       open.value_at(r.drawn_while(fn(t) { open.goes_at(t) }))
     }
-    @sf.link_row_node(
-      r,
-      fn() { v().label },
-      fn() { (core.version_tap)() },
-      note=fn() { v().note },
-      acts=true,
-      below=fn(b) {
-        b.box(fn(bar) {
-          bar.grow(Is(1.0)) |> ignore
-          @sf.progress_node(bar, fn() { v().part }, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
-        })
-        |> ignore
-      },
-      below_open=share,
-    )
+    @sf.row_box_node(r, fn() { v().label }, press=fn() { (core.version_tap)() }, fn(row) {
+      row.title(tone=@sf.RowTone::RowAccent)
+      row.note(fn() { v().note })
+      row.below(
+        fn(b) {
+          b.box(fn(bar) {
+            bar.grow(Is(1.0)) |> ignore
+            @sf.progress_node(bar, fn() { v().part }, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
+          })
+          |> ignore
+        },
+        open=share,
+      )
+    })
   })
 }
 

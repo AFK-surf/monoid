@@ -151,6 +151,20 @@ fn p53_words(e : Error) -> String {
     BusError(s) => s
     @jobs_host.HostError(s) => s
     @accounts_pool.Thrown(_, _) => @accounts_pool.message_of(e)
+    @accounts_oauth.Said(m)
+    | @accounts_oauth.RenewRefused(_, m)
+    | @accounts_oauth.Failed(m)
+    | @accounts_oauth.FsError(_, m)
+    | @accounts_oauth.JsonError(m) => m
+    @api_routes.Thrown(kind, said) =>
+      match said {
+        Obj(_) =>
+          match said.get("message") {
+            Some(Str(m)) => m
+            _ => kind
+          }
+        _ => kind
+      }
     @jobs_host.Refused(m) | @jobs_host.Unreached(m) | @jobs_host.NoBytes(m) | @jobs_host.NoLink(m) => m
     _ => {
       // (the mesh's errors their words; anything else as it shows)
@@ -254,13 +268,10 @@ async fn p53_write(host : @host.Host, path : String, text : String) -> Unit {
 }
 
 ///|
-/// A file of the station's user's alone written whole: beside it with mode 0600, then renamed into place.
+/// A file of the station's user's alone written whole: beside it under a name of its own with mode 0600, synced, then
+/// renamed into place (`Host::write_private`).
 async fn p53_write_private(host : @host.Host, path : String, bytes : Bytes) -> Unit {
-  ignore(host.shell("fs.mkdir", { "path": Json::string(@nodepath.dirname(sep(), path)), "recursive": Json::boolean(true) }))
-  let tmp = "\{path}.\{@drive.pid()}.tmp"
-  ignore(host.shell("fs.put", { "path": Json::string(tmp), "offset": Json::number(0.0), "truncate": Json::boolean(true), "mode": Json::number(384.0) }, bytes~))
-  ignore(host.shell("fs.chmod", { "path": Json::string(tmp), "mode": Json::number(384.0) }))
-  ignore(host.shell("fs.rename", { "from": Json::string(tmp), "to": Json::string(path) }))
+  host.write_private(path, bytes, sep=sep())
 }
 
 ///|
@@ -376,7 +387,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
   }
   // (the station stops: the jobs go on, what follows them here ends; the parts' programs and timers let go)
   ignore(
-    bus.host.rt.fork(name="p5-3 stop", async fn() {
+    bus.host.rt.fork_daemon("p5-3 stop", on_error=e => @host.note("p5-3 stop failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
       p.jobs.shutdown()
       ignore(p.program.call(p53_remote_key, "close", [])) catch { _ => () }
@@ -389,7 +400,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
   )
   // (what waits for the agents' door: a job's notify place, the jobs taken up)
   ignore(
-    bus.host.rt.fork(name="p5-3 door", async fn() {
+    bus.host.rt.fork_daemon("p5-3 door", on_error=e => @host.note("p5-3 door failed: \{e}"), async fn() {
       let url = bus.door_ready.wait()
       p.jobs.door_open(url)
     }),
@@ -572,14 +583,14 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "resources.watch.end" =>
       Json::string(
         self.resources.end(num(0, "pid").unwrap_or(-1.0).to_int(), text(1, "session")) catch {
-          P53Error(m) => raise @api_routes.Thrown("NotEndable", jv_of_json({ "message": Json::string(m) }))
+          P53Error(m) => raise @api_routes.Thrown("NotEndable", @jsjson.JV::of_json({ "message": Json::string(m) }))
           e => raise e
         },
       )
     "resources.watch.follow" => {
       let f = at(0, "told")
       let bus = self.bus
-      let stop = self.resources.follow(() => ignore(bus.host.rt.fork(name="resources told", async fn() {
+      let stop = self.resources.follow(() => ignore(bus.host.rt.fork_quiet(name="resources told", async fn() {
         ignore(bus.call_peer("self", None, "$admin.called", { "id": p53_get(f, "$fn"), "args": [] })) catch { _ => () }
       })))
       p53_follows_next.val += 1
@@ -845,7 +856,21 @@ async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
     }
     json_reply(404, p53_obj([("error", p53_s("no such place"))]))
   } catch {
-    e => json_reply(400, p53_obj([("error", p53_s(p53_words(e)))]))
+    // (a part's refusal by its kind too, as the routes take it: a renewal refused, a refusal, words for people)
+    e =>
+      json_reply(
+        400,
+        p53_obj([
+          ("error", p53_s(p53_words(e))),
+          (
+            "kind",
+            match e {
+              @api_routes.Thrown(kind, _) | @accounts_pool.Thrown(kind, _) => p53_s(kind)
+              _ => Json::null()
+            },
+          ),
+        ]),
+      )
   }
 }
 

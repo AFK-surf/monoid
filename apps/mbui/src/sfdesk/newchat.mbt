@@ -17,9 +17,39 @@ fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
 }
 
 ///|
+/// What the wide frame gives a new chat made as nodes (sfpages' new_chat_node: new_frame's): no bar (its 文件 is the
+/// frame's, over it: chat_bar_wide_node's new_bar_node), nothing under it; a row of the 文件 tab carried over it, let go
+/// there: into its message (chat_drop_node, as a chat's page made so: new_chat_page's drop_hint, chat_drop); as it
+/// becomes its chat, the files open beside it open beside the chat (new_sent). Its 文件 beside it is the tree's
+/// (side_panel_node's new_side_node; on the tape the frame's, tape_side).
+/// `ground`: as node `n` draws it (the pane's; a tape's panel's: tape_page_ground); `width`: the page's, as the frame
+/// lays it out.
+fn new_frame_node(
+  src : Source,
+  w : Workspace,
+  width : () -> Double,
+  ground? : (@view.View) -> Int64 = fn(_) { @sf.theme().p.bg },
+) -> @sfpages.NewChatNodeFrame {
+  {
+    core: settings_core(src, w),
+    ground,
+    width,
+    bar: fn(_) {  },
+    foot: fn() { 0.0 },
+    // (what is let go going up to the station its 文件 tab starts on, as the page's own picks say it now)
+    over: fn(v, shows) {
+      chat_drop_node(v, src, "new:" + w.id, fn() { new_drive_station(src, w).unwrap_or("") }, fn() { None }, shows)
+    },
+    in_place: false,
+    sent: fn(r) { new_sent(src, w, r) },
+  }
+}
+
+///|
 /// A new chat in the workspace (NewChat): the pages', the 文件 tab beside it where the stations lend their files
-/// (useStationDrive: as the view has its stations), on a station it can start on.
-pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
+/// (useStationDrive: as the view has its stations), on a station it can start on. `tape`: the frame lays it out on the
+/// tape (中屏), its panel a panel of its own beside the page's (the frame's to say).
+pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, tape~ : Bool) -> Unit {
   new_keys(c, src, w)
   let v = src.topic("newChat", @sfpages.new_chat_asked(w.id)).get().value
   let frame = new_frame(src, w)
@@ -64,7 +94,7 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   }
   // (on the tape, laid out Medium, its panel is a panel of its own beside the page's, as a chat's: the frame's,
   // tape_side)
-  if wide.tape.get() {
+  if tape {
     with_bar()
     return
   }
@@ -104,13 +134,22 @@ fn new_drive_station(src : Source, w : Workspace) -> String? {
 
 ///|
 /// The new chat of view `v` as it is left (`up`, `fade`: sfpages new_chat_left), as wide as it was: with its 文件 tab
-/// open, beside where the panel is (the chat it became has the panel now, the chat it was left for its own).
-fn new_left(c : @ui.Ctx, src : Source, w : Workspace, v : Json?, up : @motion.Anim, fade : @motion.Anim) -> Unit {
+/// open, beside where the panel is (the chat it became has the panel now, the chat it was left for its own); on the
+/// tape (`tape`), the page alone.
+fn new_left(
+  c : @ui.Ctx,
+  src : Source,
+  w : Workspace,
+  v : Json?,
+  up : @motion.Anim,
+  fade : @motion.Anim,
+  tape : Bool,
+) -> Unit {
   let frame = new_frame(src, w)
   let files = new_files_open(src, w.id)
   let left = fn() { @sfpages.new_chat_left(c, src, w, frame, v, up, fade) }
   // (on the tape its panel is the frame's: the page alone)
-  if wide.tape.get() {
+  if tape {
     left()
     return
   }
@@ -130,10 +169,10 @@ fn new_sent(src : Source, w : Workspace, r : ChatRef) -> Unit {
 
 ///|
 /// Over the chat a new chat became: the page leaving (a new chat left for another chat is gone at once: switch.mbt).
-/// Drawn over the chat's page, after it.
-pub fn new_chat_after(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
+/// Drawn over the chat's page, after it; on the tape (`tape`) as new_left has it there.
+pub fn new_chat_after(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tape~ : Bool) -> Unit {
   if @sfbase.new_chat_leaving_of(c, r) {
-    let l = c.layer(fn() { new_left(c, src, w, fresh.scene.get(), new_leave(c), new_fade(c)) })
+    let l = c.layer(fn() { new_left(c, src, w, fresh.scene.get(), new_leave(c), new_fade(c), tape) })
     // (drawn only, while it leaves)
     c.draw_only(l)
   }

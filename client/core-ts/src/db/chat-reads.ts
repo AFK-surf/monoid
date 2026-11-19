@@ -168,14 +168,15 @@ export const CHAT_READS = {
     of: (c: ChatKeys): ReadKey[] => (listed(c) && c.clientKey !== null ? [[c.station, c.clientKey]] : []),
   } satisfies ChatRead<{ station: string; key: string }>,
   /// The chat a link names (its id, else its agent's session), listed before archived, by its id before its session;
-  /// with its title and whether it is the viewer's own (`mine`).
+  /// with its title, whether it is the viewer's own (`mine`), its thread and whether its record is marked archived
+  /// (`archived_mark`: a row of the archive's list without the mark is one gone).
   named: {
     name: "$chat-named", bound: "one", records: true,
     // (by its id, listed or archived, through the primary key, and by its session through `chat_session`: the two found
     // apart, so that neither walks the station's rows; one found both ways is the same first either way)
-    sql: `SELECT station, archived, id, title, mine FROM (
-        SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
-        UNION ALL SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND session = ?)
+    sql: `SELECT station, archived, id, title, mine, thread, archived_mark FROM (
+        SELECT station, archived, id, title, mine, thread, archived_mark, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
+        UNION ALL SELECT station, archived, id, title, mine, thread, archived_mark, ord FROM chat WHERE station = ? AND session = ?)
       ORDER BY archived, id IS NOT ?, ord, id LIMIT 1`,
     params: (p: { station: string; id: string }) => [p.station, p.id, p.station, p.id, p.id],
     keys: (p: { station: string; id: string }): ReadKey[] => [[p.station, p.id]],
@@ -235,22 +236,24 @@ export const CHAT_READS = {
     // (whether it is in it; its order: pinned, last active, its place, its id the key)
     by: (c) => [shown(c), c.pinnedAt, c.lastActive, c.ord],
   } satisfies ChatRead<ListWindow>,
-  /// Of the same rows (the window's but its limit), each station's count, whether one of them runs (`state`) and how many:
-  /// of `chat_listed` alone.
+  /// Of the same rows of one station (the window's but its limit), its count, whether one of them runs (`state`) and how
+  /// many: of `chat_listed` alone. A station's alone, read and kept by itself (Data #chatRows), so that one chat of one
+  /// station starting or ending its work reads that station's count again, not every station's of the list.
   counts: {
     name: "$chat-counts", bound: "count", records: false,
-    sql: `SELECT c.station, count(*), max(c.state IS 'run'), sum(c.state IS 'run')
-      FROM chat AS c
-      WHERE c.archived = 0 AND c.station IN (SELECT value FROM json_each(?1)) AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
+    sql: `SELECT count(*), max(c.state IS 'run'), sum(c.state IS 'run')
+      FROM chat AS c INDEXED BY chat_listed
+      WHERE c.station = ?1 AND c.archived = 0 AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
         AND (?5 = '' OR c.thread IS NULL OR instr(?5, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
-        AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)
-      GROUP BY c.station`,
-    params: (p: ListWindow) => [JSON.stringify(p.stations), p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, keyed(p.threads), keyed(p.sessions)],
-    keys: each,
+        AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)`,
+    // (those apart of its own station alone: what another station has overlaid changes nothing of its answer, nor of
+    // the key it is kept by)
+    params: (p: StationWindow) => [p.station, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
+    keys: (p: StationWindow): ReadKey[] => [[p.station]],
     of: station(false),
     // (whether it is in them, and whether it runs)
     by: (c) => [shown(c), c.state === "run"],
-  } satisfies ChatRead<ListWindow>,
+  } satisfies ChatRead<StationWindow>,
   /// Of a station's listed chats, those whose agents run (`state`: their ids and sessions), and whether any was last
   /// active from `from` to before `to` (fleet.ts: the chats at work, the stations used today): of `chat_listed` alone.
   /// In the order of their ids (after the row that says whether any was active): the index's own order goes by columns
@@ -282,7 +285,7 @@ export const CHAT_READS = {
   /// parameters were bound, where the tests' (Node's) took `chat_archive`.
   archived: {
     name: "$chat-archived", bound: "first", records: false,
-    sql: `SELECT c.station, c.archived, c.id, w.at, CASE json_type(c.json, '$.session') WHEN 'text' THEN json_extract(c.json, '$.session') END, CASE json_type(c.json, '$.thread') WHEN 'integer' THEN json_extract(c.json, '$.thread') END, c.title,
+    sql: `SELECT c.station, c.archived, c.id, w.at, c.session, c.thread, c.title,
         CASE json_type(c.json, '$.last.text') WHEN 'text' THEN json_extract(c.json, '$.last.text') END, CASE json_type(c.json, '$.archived.by') WHEN 'text' THEN json_extract(c.json, '$.archived.by') END, json_type(c.json, '$.archived.alone') IS 'true', c.ord
       FROM (SELECT c.rowid AS r, coalesce(c.archived_at, 0) AS at, instr(?1, char(1) || c.station || char(1)) AS pos, c.ord AS ord, c.id AS id
         FROM chat AS c INDEXED BY chat_archive
@@ -298,22 +301,24 @@ export const CHAT_READS = {
     // (whether it is in it; what it shows of it is read of its JSON, so a row in it written tells it, with its place)
     by: (c) => (c.archivedMark ? [c.ord, c.record] : null),
   } satisfies ChatRead<Archived>,
-  /// How many those are (the archive's but its limit), by station (rows with no day); and how many of every archived
-  /// chat marked so were archived on each local day from `from` on, by station (a day's number: its start `offset` ms
-  /// east of UTC, in days of `day` ms; format.ts localDay): of `chat_archived_at` alone.
+  /// How many those are of a station (the archive's but its limit; the row with no day); and how many of its archived
+  /// chats marked so were archived on each local day from `from` on (a day's number: its start `offset` ms east of UTC,
+  /// in days of `day` ms; format.ts localDay): of `chat_archived_at` alone. A station's by itself, as `counts` is: a
+  /// chat archived on one station counts none of the others again.
   archivedCount: {
     name: "$chat-archived-count", bound: "count", records: false,
-    sql: `SELECT station, NULL, count(*) FROM chat WHERE station IN (SELECT value FROM json_each(?1)) AND archived = 1 AND archived_mark = 1
+    sql: `SELECT station, NULL, count(*) FROM chat WHERE station = ?1 AND archived = 1 AND archived_mark = 1
         AND (?2 = '' OR thread IS NULL OR instr(?2, char(1) || station || char(2) || thread || char(1)) = 0)
         AND (?3 = '' OR session IS NULL OR instr(?3, char(1) || station || char(2) || session || char(1)) = 0)
         GROUP BY station
-      UNION ALL SELECT station, CAST((archived_at + ?4) / ?5 AS INTEGER) AS day, count(*) FROM chat WHERE station IN (SELECT value FROM json_each(?1)) AND archived = 1 AND archived_mark = 1 AND archived_at >= ?6 GROUP BY station, day`,
-    params: (p: ArchivedCount) => [JSON.stringify(p.stations), keyed(p.threads), keyed(p.sessions), p.offset, p.day, p.from],
-    keys: each,
+      UNION ALL SELECT station, CAST((archived_at + ?4) / ?5 AS INTEGER) AS day, count(*) FROM chat WHERE station = ?1 AND archived = 1 AND archived_mark = 1 AND archived_at >= ?6 GROUP BY station, day`,
+    // (those apart of its own station alone, as `counts`)
+    params: (p: StationArchivedCount) => [p.station, keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station)), p.offset, p.day, p.from],
+    keys: (p: StationArchivedCount): ReadKey[] => [[p.station]],
     of: station(true),
     // (whether it is counted, read apart, and on which day)
     by: (c) => (c.archivedMark ? [c.thread, c.session, c.archivedAt] : null),
-  } satisfies ChatRead<ArchivedCount>,
+  } satisfies ChatRead<StationArchivedCount>,
 } as const;
 
 export type ListWindow = Stations & {
@@ -324,8 +329,14 @@ export type ListWindow = Stations & {
   limit: number;
 } & Apart;
 
+/// The window's terms for one station (`counts`): its threads and sessions apart given as the window's, every station's,
+/// of which its own are taken.
+export type StationWindow = Omit<ListWindow, "stations" | "limit"> & { station: string };
+/// Of rows apart (`station␁key`), those of `station`.
+const ofStation = (apart: readonly string[], station: string): string[] => apart.filter((a) => a.startsWith(`${station}\u0001`));
+
 /// Rows read apart from a read by their keys on their station (`station␁thread`, `station␁session`).
 type Apart = { threads: string[]; sessions: string[] };
 export type Overlaid = Stations & Apart & { archived: boolean };
 export type Archived = Stations & Apart & { limit: number };
-export type ArchivedCount = Stations & Apart & { from: number; offset: number; day: number };
+export type StationArchivedCount = { station: string; from: number; offset: number; day: number } & Apart;

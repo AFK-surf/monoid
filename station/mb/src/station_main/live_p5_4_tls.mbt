@@ -714,31 +714,25 @@ async fn p54_http_inside(
         for h in sent {
           if !p54_hop.contains(h.0) && h.0 != "content-length" {
             for v in h.1 {
-              pairs.push(Json::array([Json::string(h.0), Json::string(v)]))
+              pairs.push((h.0, v))
             }
           }
         }
         let got = (try {
-          Ok(host.shell("fetch", { "url": Json::string(url), "method": Json::string(verb), "headers": Json::array(pairs) }, bytes=body.to_bytes()))
+          Ok(host.fetch(url, method_=verb, headers=pairs, body=body.to_bytes()))
         } catch {
           e => Err(e)
         })
         match got {
-          Ok((said, bytes)) => {
-            let status = p54_num(p54_get(Some(said), "status")).unwrap_or(502.0).to_int()
-            let b = bytes.unwrap_or(b"")
+          Ok(r) => {
+            let (status, b) = (r.status, r.body)
             let out = StringBuilder::new()
             out.write_string("HTTP/1.1 \{status} \{reason(status)}\r\n")
-            match p54_get(Some(said), "headers") {
-              Some(Array(hs)) =>
-                for h in hs {
-                  match h {
-                    Array([String(k), String(v), ..]) if !p54_hop.contains(k.to_lower()) && k.to_lower() != "content-length" =>
-                      out.write_string("\{k}: \{v}\r\n")
-                    _ => ()
-                  }
-                }
-              _ => ()
+            for h in r.headers {
+              let (k, v) = h
+              if !p54_hop.contains(k.to_lower()) && k.to_lower() != "content-length" {
+                out.write_string("\{k}: \{v}\r\n")
+              }
             }
             out.write_string("content-length: \{b.length()}\r\n")
             if close {

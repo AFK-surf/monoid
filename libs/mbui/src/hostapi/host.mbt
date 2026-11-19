@@ -284,6 +284,7 @@ pub(open) trait Host {
   // (a method is added last: one put before others moves their places in the table every call goes through, and the C
   // of each program calling them, all of it, is compiled again)
   words_spaced(Self) -> Int = _
+  window_set_title(Self, Int, String) -> Unit = _
 }
 
 ///|
@@ -409,6 +410,11 @@ impl Host with window_close_id(_, _) {
 ///|
 impl Host with window_current(_) {
   0
+}
+
+///|
+impl Host with window_set_title(_, _, _) {
+  ()
 }
 
 ///|
@@ -1785,6 +1791,13 @@ pub fn window_close_id(wid : Int) -> Unit {
 /// The window of this run the host is drawing a frame of or handing input from now (0, the first, between them).
 pub fn window_current() -> Int {
   current.val.window_current()
+}
+
+///|
+/// The title the system shows for window `wid` of this run (0 the first; its title bar, the Dock's and the switcher's
+/// list), from now on. Nothing where the host has no title of a window.
+pub fn window_set_title(wid : Int, title : String) -> Unit {
+  current.val.window_set_title(wid, title)
 }
 
 ///|

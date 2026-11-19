@@ -107,7 +107,7 @@ fn P52::arm(self : P52, key : String, file : String) -> Unit {
     }
   }
   ignore(
-    host.rt.fork(name="a transcript watched", async fn() {
+    host.rt.fork_daemon("a transcript watched", on_error=e => @host.note("a transcript watched failed: \{e}"), async fn() {
       let mut before = stamp()
       while going.val && !self.closed {
         @effect.sleep(transcript_watch_ms) // timer: an outside system that offers no push (a runtime's transcript; the shell keeps no watch)
@@ -264,7 +264,14 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     "hub.pid" => Json::number(@drive.pid().to_double())
     "hub.outsideChats" => (self.bus.jobs_ask.val)("xshare.borrowed", Json::array([a(0)]))
     "hub.recentChatList" => reader("recentChatList", { "ws": a(0), "home": a(1), "limit": a(2) }, "zh")
-    "hub.searchChatList" => reader("searchChatList", { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }, "zh")
+    "hub.searchChatList" => {
+      let req : Map[String, Json] = { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }
+      match a(4) {
+        Object(f) => for k, v in f { req[k] = v }
+        _ => ()
+      }
+      reader("searchChatList", Json::object(req), "zh")
+    }
     "hub.threadList" => reader("threadList", Json::object({}), "zh")
     "hub.workspaces" => Json::array(self.workspaces().map(Json::string))
     "hub.wsOf" => jopt(hub.ws_of(opt(0)))
@@ -331,7 +338,7 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     }
     "policy.mine" =>
       match viewer {
-        Some(v) => Json::boolean(@api_routes.sees(jv_of_json(v), jv_of_json(jopt(self.ws_of(s(0))))))
+        Some(v) => Json::boolean(@api_routes.sees(@jsjson.JV::of_json(v), @jsjson.JV::of_json(jopt(self.ws_of(s(0))))))
         None => Json::boolean(true)
       }
     "policy.title" => Json::string(self.chat_title_of(s(0)))
@@ -480,7 +487,7 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
 fn P52::on_closed(self : P52, key : String) -> Unit {
   let bus = self.bus
   ignore(
-    self.host.rt.fork(name="a session closed", async fn() {
+    self.host.rt.fork_daemon("a session closed", on_error=e => @host.note("a session closed failed: \{e}"), async fn() {
       ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
         _ => ()
       }
@@ -528,7 +535,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
         let ask : @mcp_tools.ReportAsk = {
           body: @utf8.encode(jtext(asked, "rawBody").unwrap_or("")),
           lang: jtext(asked, "lang").unwrap_or(self.lang()),
-          viewer: jv_of_json(jfield(asked, "viewer")),
+          viewer: @jsjson.JV::of_json(jfield(asked, "viewer")),
         }
         let answer = (rr.handle)(ask, params)
         let body = match answer.body {
@@ -547,9 +554,9 @@ async fn P52::start_feedback(self : P52) -> Unit {
   bus.parts.overview("feedback", async fn(_viewer, _lang) { Json::boolean((part.overview)()) }) catch {
     _ => ()
   }
-  let tell = () => ignore(self.host.rt.fork(name="fixed bug reports", async fn() { (part.telling_fixed)() }))
+  let tell = () => ignore(self.host.rt.fork_daemon("fixed bug reports", on_error=e => @host.note("fixed bug reports failed: \{e}"), async fn() { (part.telling_fixed)() }))
   ignore(
-    self.host.rt.fork(name="fixed bug reports, later", async fn() {
+    self.host.rt.fork_daemon("fixed bug reports, later", on_error=e => @host.note("fixed bug reports, later failed: \{e}"), async fn() {
       @effect.sleep(part.told_after_ms) // timer: a deadline (what came out while the station was not running, a while after it starts)
       tell()
     }),

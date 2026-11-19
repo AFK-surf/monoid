@@ -23,7 +23,7 @@ import { Cause, Clock, Deferred, Effect, Exit, Fiber, Semaphore } from "effect";
 import { CoreError, asCoreError, failedIn } from "./error.ts";
 import type { BaseHost, Pull } from "./host-of.ts";
 import { t } from "./lang.ts";
-import type { CloseReason, Iroh, IrohConnection, IrohEndpoint, IrohStream } from "./iroh.ts";
+import type { CloseReason, Iroh, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "./iroh.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { Kind, type SpanContext, type Tracer } from "./trace.ts";
 import { fromUtf8, hex, localDay, parseJson, sha256, toJsonBytes, utf8 } from "./util.ts";
@@ -471,7 +471,10 @@ export type Reply = {
   cancel(): void;
   /// A screen view's body read by the host from here (IrohStream.tap), before any of it was taken; false where it is
   /// not (the host's has none, or it was read already).
-  tap?: (call: number) => Effect.Effect<boolean>;
+  tap?: (call: number, cursor?: boolean) => Effect.Effect<boolean | "cursor">;
+  /// Its frames that come as datagrams under the token it was opened with are given among its body (`duplex`'s
+  /// `media`): false where the host's stream takes none.
+  datagrams?: boolean;
 };
 
 function headersOf(v: J): [string, string][] {
@@ -532,11 +535,15 @@ export class Link {
   /// A request's stream, its head and body sent and its reply's head read. Given up before that head (its asker gone, a
   /// read let go of; or failed), the stream goes at once: the station stops what it is sending on it, which no one
   /// would read.
-  #open(head: J, finish: boolean, body: Uint8Array | null, wrote?: (sent: number) => void): Effect.Effect<[IrohStream, Lines, J], CoreError> {
+  /// `media`: a token its frames' datagrams are taken under before its head goes (IrohStream.receiveMediaDatagrams), the
+  /// head made knowing whether they are (`head` a function); the fourth of what it gives.
+  #open(head: J | ((media: boolean) => J), finish: boolean, body: Uint8Array | null, wrote?: (sent: number) => void, media = 0): Effect.Effect<[IrohStream, Lines, J, boolean], CoreError> {
     let opened: IrohStream | null = null;
     return Effect.gen({ self: this }, function* () {
       const stream = (opened = yield* Effect.mapError(this.conn.openBi(), cut));
-      yield* Effect.mapError(stream.write(utf8(`${JSON.stringify(head)}\n`)), cut);
+      const taking = media > 0 && stream.receiveMediaDatagrams !== undefined ? yield* Effect.orElseSucceed(stream.receiveMediaDatagrams(media), () => false) : false;
+      const said = typeof head === "function" ? head(taking) : head;
+      yield* Effect.mapError(stream.write(utf8(`${JSON.stringify(said)}\n`)), cut);
       // A body that is told of goes a step at a time, each said as the stream takes it (as far as the link lets it).
       if (body !== null && body.length > 0 && wrote) {
         for (let at = 0; at < body.length; at += BODY_STEP) {
@@ -557,7 +564,7 @@ export class Link {
       }
       const status = reply?.status;
       if (typeof status !== "number" || !Number.isInteger(status) || status < 0 || status > 65535) return yield* Effect.fail(meshError(t("core-logic.mesh.reply_no_status")));
-      return [stream, lines, reply] as [IrohStream, Lines, J];
+      return [stream, lines, reply, taking] as [IrohStream, Lines, J, boolean];
     }).pipe(Effect.onExit((exit) => (exit._tag === "Success" ? Effect.void : Effect.sync(() => opened?.reset(0)))));
   }
 
@@ -612,12 +619,15 @@ export class Link {
 
   /// A request whose head line carries further fields (`more`, after its headers) on its own stream, which stays open
   /// both ways: a view of one of the station's screens, its head's `screen` and then the frames (station/mesh-wire.ts).
-  duplex(head: RequestHead, more: Record<string, unknown>): Effect.Effect<[Reply, SocketOut], CoreError> {
-    return this.#duplex({ method: head.method, path: head.path, headers: Object.fromEntries(head.headers), ...more });
+  /// `media` (with `more` a function of whether it is taken): a token the frames the other end sends as datagrams are
+  /// taken under, given among the body (`Reply.datagrams`).
+  duplex(head: RequestHead, more: Record<string, unknown> | ((media: boolean) => Record<string, unknown>), media = 0): Effect.Effect<[Reply, SocketOut], CoreError> {
+    const wire = (taking: boolean) => ({ method: head.method, path: head.path, headers: Object.fromEntries(head.headers), ...(typeof more === "function" ? more(taking) : more) });
+    return this.#duplex(wire, media);
   }
 
-  #duplex(wire: J): Effect.Effect<[Reply, SocketOut], CoreError> {
-    return Effect.map(this.#open(wire, false, null), ([stream, lines, reply]) => {
+  #duplex(wire: J | ((media: boolean) => J), media = 0): Effect.Effect<[Reply, SocketOut], CoreError> {
+    return Effect.map(this.#open(wire, false, null, undefined, media), ([stream, lines, reply, taking]) => {
       const out: SocketOut = {
         write: (bytes) => Effect.mapError(stream.write(bytes), cut),
         finish: () => void Effect.runFork(Effect.ignore(stream.finish())),
@@ -628,16 +638,16 @@ export class Link {
       const tap =
         tapping === undefined
           ? undefined
-          : (call: number) =>
+          : (call: number, cursor?: boolean) =>
               Effect.suspend(() => {
                 const prefix = body.claim();
                 if (prefix === null) return Effect.succeed(false);
-                return Effect.map(Effect.orElseSucceed(tapping.call(stream, call, prefix), () => false), (tapped) => {
+                return Effect.map(Effect.orElseSucceed(tapping.call(stream, call, prefix, cursor), () => false as const), (tapped) => {
                   if (!tapped) body.restore(prefix);
                   return tapped;
                 });
               });
-      return [{ status: reply.status, headers: headersOf(reply.headers), body, cancel: () => stream.reset(0), tap }, out] as [Reply, SocketOut];
+      return [{ status: reply.status, headers: headersOf(reply.headers), body, cancel: () => stream.reset(0), tap, ...(taking ? { datagrams: true } : {}) }, out] as [Reply, SocketOut];
     });
   }
 
@@ -662,39 +672,59 @@ export class Link {
     this.conn.close(0, "closed");
   }
 
+  /// The way it goes by now: the one iroh chose; where a host marks none while the link carries on (iroh keeps one
+  /// chosen way an endpoint to another, which two links of one endpoint to the same station, or a way moved between a
+  /// machine's interfaces, leaves unmarked: Windows to Windows), the way its packets go, a direct one before a relay's
+  /// and the busiest first; with none sent yet, the only way, or the first where the link is pinned to one kind of
+  /// direct way (`LAN`, `TAILNET`) or every way is direct. None only where it may still be a relay's.
+  #chosen(paths: IrohPath[] = this.conn.paths()): IrohPath | undefined {
+    const selected = paths.find((p) => p.selected);
+    if (selected !== undefined || paths.length === 0) return selected;
+    let busiest: IrohPath | undefined;
+    for (const p of paths) {
+      if (p.txPackets <= 0) continue;
+      const direct = p.relay === null;
+      if (busiest === undefined || (direct && busiest.relay !== null) || (direct === (busiest.relay === null) && p.txPackets > busiest.txPackets)) busiest = p;
+    }
+    if (busiest !== undefined) return busiest;
+    return paths.length === 1 || this.pinned === LAN || this.pinned === TAILNET || paths.every((p) => p.relay === null) ? paths[0] : undefined;
+  }
+
   path(): string | null {
-    const p = this.conn.paths().find((x) => x.selected);
+    const p = this.#chosen();
     return p === undefined ? null : p.relay !== null ? "relay" : "direct";
   }
 
   via(): string | null {
-    return this.conn.paths().find((x) => x.selected)?.relay ?? null;
+    return this.#chosen()?.relay ?? null;
   }
 
   /// Every way iroh has for it, as a span says them: `*` the one chosen, then where it goes (a relay's host, or a direct
   /// way's address), its round trip, the packets sent and lost on it. What a phone's direct way was, and how it went,
   /// as requests moved off it (2026-10-17: gone 20–30 s after it was taken, on a phone alone).
   paths(): string {
-    return this.conn
-      .paths()
-      .map((p) => `${p.selected ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} ${p.txPackets}/${p.lostPackets}`)
+    const paths = this.conn.paths();
+    const chosen = this.#chosen(paths);
+    return paths
+      .map((p) => `${p === chosen ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} ${p.txPackets}/${p.lostPackets}`)
       .join("; ");
   }
 
   /// Which ways iroh has for it, where each goes and the one chosen, without their counts: what changes as one opens, goes
   /// or is chosen.
   pathShape(): string {
-    return this.conn
-      .paths()
-      .map((p) => `${p.selected ? "*" : ""}${p.id}@${p.relay ?? p.ip ?? "direct"}`)
-      .join(",");
+    const paths = this.conn.paths();
+    const chosen = this.#chosen(paths);
+    return paths.map((p) => `${p === chosen ? "*" : ""}${p.id}@${p.relay ?? p.ip ?? "direct"}`).join(",");
   }
 
   net(): LinkNet {
-    const selected = this.conn.paths().find((p) => p.selected);
+    const selected = this.#chosen();
     const stats = this.conn.stats();
+    // A link pinned to a direct way goes by none other, whatever its host marks.
+    const pinnedPath = this.pinned === TAILNET ? TAILNET : this.pinned === LAN ? "direct" : null;
     return {
-      path: selected === undefined ? null : selected.relay !== null ? "relay" : this.pinned === TAILNET ? TAILNET : "direct",
+      path: selected === undefined ? pinnedPath : selected.relay !== null ? "relay" : this.pinned === TAILNET ? TAILNET : "direct",
       relay: selected?.relay ? relayHost(selected.relay) : null,
       rttMs: selected !== undefined ? selected.rttMs : null,
       measured: null,
@@ -1123,6 +1153,15 @@ export class Mesh {
   /// Whether a view's sound may be asked as Opus: what taps it decodes it (IrohEndpoint `opus`).
   decodesOpus(): boolean {
     return this.#endpoint.opus?.() === true;
+  }
+
+  /// A token a stream may take the frames the other end sends as datagrams under (`Link.duplex`'s `media`), drawn at
+  /// random; 0 where the host's streams take none (IrohEndpoint `mediaDatagrams`).
+  mediaToken(): number {
+    if (this.#endpoint.mediaDatagrams?.() !== true) return 0;
+    const b = new Uint8Array(4);
+    this.#env.host.randomBytes(b);
+    return (((b[0]! << 24) | (b[1]! << 16) | (b[2]! << 8) | b[3]!) >>> 0) || 1;
   }
 
   /// `message` signed with the device key (an Ed25519 seed), and that key's public half: by the host where it signs

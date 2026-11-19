@@ -37,6 +37,8 @@ fn wide_page_node(
   tips : TipLayer,
   head : ((@view.View) -> Unit)?,
   near_foot : (Double, () -> Bool, () -> Unit)?,
+  reused : ((String) -> Int?)?,
+  make_reused : ((@view.View, Int, () -> String) -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
   // (its blocks as last read, and whether their last change put another set in their place: pg_blocks_read)
@@ -74,6 +76,38 @@ fn wide_page_node(
       comes=fn(k) { !other.val && k is WideBlock(_) },
       goes=fn(k) { !other.val && k is WideBlock(_) },
       near_foot?,
+      // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, in its lane as
+      // `block` makes one (below), the first's room over it following which key it shows now)
+      reused?=reused.map(fn(r) {
+        fn(item) {
+          match item {
+            WideBlock(k) => r(k)
+            _ => None
+          }
+        }
+      }),
+      make_reused?=make_reused.map(fn(m) {
+        fn(s, item) {
+          let kind = s.reused_kind().unwrap_or(0)
+          let key = fn() {
+            match item() {
+              WideBlock(k) => k
+              _ => ""
+            }
+          }
+          lane_node(s, fn(col) {
+            col.box(fn(room) {
+              room
+              .padding(By(fn() {
+                (desk_column_in, if is_first(key()) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
+              }))
+              |> ignore
+              m(room, kind, key)
+            })
+            |> ignore
+          })
+        }
+      }),
       fn(s, item) {
       match item {
         // the room the frame keeps over it (a status bar's)
@@ -559,7 +593,7 @@ fn wide_group_node(
         k.padding(Is((pad, ends, pad, ends))).gap(Is(desk_list_gap)).radius(Is(corner))
         |> ignore
       }
-      k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card }) |> ignore
+      k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card, card }) |> ignore
       rows(k)
     })
     |> ignore
@@ -877,7 +911,7 @@ fn wide_control_row_node(
       cell
       // (as wide_in_list's: a row's room in at its start, at its end what holds its switch out of the card's corner,
       // 10 over and under)
-      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)))
+      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)))
       .lies_along(Is(Middle))
       .radius(Is(if in_pane_node(parent) { 0.0 } else { list_row_corner(cell) }))
       .min_height(By(fn() { Some(theme().items.least) }))
@@ -886,7 +920,18 @@ fn wide_control_row_node(
     })
     |> ignore
   } else {
-    parent.box(row) |> ignore
+    parent.box(fn(r) {
+      // (on a card of words, its padding in: what is at its end on the title's line held out of its corner where
+      // that is rounder, as far in as the corner is round)
+      if at.card {
+        let end = dmax(0.0, card_corner - card_pad)
+        if end > 0.0 {
+          r.padding(Is((0.0, 0.0, end, 0.0))) |> ignore
+        }
+      }
+      row(r)
+    })
+    |> ignore
   }
 }
 

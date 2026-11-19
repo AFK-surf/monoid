@@ -301,6 +301,9 @@ fn touch(node : Node) -> Unit {
       node.cache_n = 0
       node.p_ok = false
       node.dirty = false
+      // (where its first line is, as its measure tells it again: first_line_at)
+      node.first_baseline = undef
+      node.first_line_mid = undef
     }
   }
 }
@@ -422,9 +425,9 @@ fn Box::pbh(self : Box) -> Double {
 /// again. The caller marks `dirty` every node whose style, measure
 /// function (or what it measures) or children changed, and every node
 /// above one; a node moved under another parent dirties both parents.
-/// Nothing may be aligned by baseline (finding one lays items out while
-/// only measuring their container): reuse stops on it, saying so
-/// (reuse_refused_item; reuse_refused says it of a whole tree).
+/// Items aligned by their first lines (Baseline, FirstLineCenter) are
+/// lined up by measuring them (first_line_at), never by laying them out
+/// while their container is only measured: reuse takes them as any other.
 ///
 /// With `grid` (device pixels a point), each node is placed on whole device
 /// pixels from its parent, as Compose places a child (its alignment's and
@@ -510,9 +513,9 @@ pub fn relayout(node : Node) -> Unit {
 
 ///|
 /// How tall `node` would be `width` wide with no bound on its height, as its subtree stands since the last compute():
-/// measured only, its measures kept among those of that compute: what that compute laid out stands as it was, where
-/// nothing in it is aligned by baseline (finding one lays items out while measuring their container, as compute's reuse
-/// refuses it). What is laid out in less than it asks, giving way, asks this.
+/// measured only, its measures kept among those of that compute: what that compute laid out stands as it was (items
+/// aligned by their first lines too: lined up by measuring them, first_line_at). What is laid out in less than it asks,
+/// giving way, asks this.
 pub fn measured_height(node : Node, width : Double) -> Double {
   let b = box_of(node.style, width, undef)
   let w = or_else(b.w, width)
@@ -917,12 +920,15 @@ fn size_uncached(
           Undefined
         }
         counters[2] = counters[2] + 1
+        first_told_base.val = undef
+        first_told_mid.val = undef
         let (mw, mh) = m(
           if known(iw) { iw } else { 0.0 },
           wm,
           if known(ih) { ih } else { 0.0 },
           hm,
         )
+        first_kept(node, b)
         let fw = if known(w) { w } else { clamp_size(mw + pbw, b.min_w, b.max_w) }
         let fh = if known(h) { h } else { clamp_size(mh + pbh, b.min_h, b.max_h) }
         out_h.val = fh
@@ -950,7 +956,11 @@ fn size_uncached(
   // as tall as its share of what it holds comes to at its width, what it holds laid out whole in that (Style's
   // content_share): what it holds sized first, then laid out in the height that comes to
   if known(s.content_share) && !known(h) {
+    // (where its first line is, asked of the layout it comes to: first_line_at)
+    let asked = first_asked.val
+    first_asked.val = 0
     let fw = layout_flex(node, b, w, h, aw, ah, false)
+    first_asked.val = asked
     let natural = out_h.val
     let share = fmax(fmin(s.content_share, 1.0), 0.0)
     let sized = clamp_size(pbh + (natural - pbh) * share, b.min_h, b.max_h)
@@ -1219,40 +1229,6 @@ fn Pool::line(self : Pool, start : Int, end : Int) -> Unit {
 }
 
 ///|
-/// Why an item aligned `align` in a container laid out in a row (`row`) is one compute(reuse=true) cannot lay out, said;
-/// None where it can. Asked by compute as it comes to the item (it stops there on what this says), and by reuse_refused
-/// of a whole tree: the two are one judging.
-fn reuse_refused_item(align : Align, row : Bool) -> String? {
-  if align == Baseline && row {
-    Some("flex: compute(reuse=true) with an item aligned by baseline")
-  } else {
-    None
-  }
-}
-
-///|
-/// What compute(reuse=true) would stop on in the tree under `root`, said (each item judged as compute judges it as it
-/// comes to it, reuse_refused_item); None where it would lay it all out. Walks the whole tree: a test's, never asked
-/// on the way of a compute.
-pub fn reuse_refused(root : Node) -> String? {
-  let row = is_row(root.style.direction)
-  for c in root.children {
-    if c.style.display == DisplayNone || c.style.position == Absolute {
-      continue
-    }
-    match reuse_refused_item(item_align(root.style, c.style), row) {
-      Some(said) => return Some(said)
-      None => ()
-    }
-    match reuse_refused(c) {
-      Some(said) => return Some(said)
-      None => ()
-    }
-  }
-  None
-}
-
-///|
 fn item_align(container : Style, s : Style) -> Align {
   if s.align_self == Auto {
     container.align_items
@@ -1271,6 +1247,9 @@ fn layout_flex(
   ah : Double,
   perform : Bool,
 ) -> Double {
+  // (where its first line is, asked of this layout of it alone, none of those of what it holds: first_line_at)
+  let asked = first_asked.val
+  first_asked.val = 0
   let s = node.style
   let row = is_row(s.direction)
   let pbw = b.pbw()
@@ -1533,7 +1512,7 @@ fn layout_flex(
       }
       pool.flags.unsafe_set(k, fl)
       pool.line_of.unsafe_set(k, 0)
-      if al == Baseline {
+      if al == Baseline || al == FirstLineCenter {
         any_baseline = true
       }
       if !known(cross_style) || cb.of_cb_h {
@@ -1926,8 +1905,8 @@ fn layout_flex(
         )
       }
     }
-    // line cross sizes; items aligned by baseline share the line's baseline
-    // (one line of a known cross size is that size: below)
+    // line cross sizes; items aligned by baseline share the line's baseline, those by their first lines' middles that
+    // middle (a line's items aligned either way share one; one line of a known cross size is that size: below)
     let one_known_line = !wrap && known(inner_cross) && lines.length() == 1
     for li, ln in lines {
       if one_known_line && !(any_baseline && row) {
@@ -1939,23 +1918,14 @@ fn layout_flex(
       for k in ln.start..<ln.end {
         let i = k * ITEM
         pool.line_of.unsafe_set(k, li)
-        if aligns.unsafe_get(k) == Baseline && row {
-          // its baseline is found by laying it out, while this one may be
-          // only measured: a layout kept above it could hold that one
-          if reusing.val {
-            match reuse_refused_item(aligns.unsafe_get(k), row) {
-              Some(said) => @halt.saying(said)
-              None => ()
-            }
-          }
+        let al = aligns.unsafe_get(k)
+        if (al == Baseline || al == FirstLineCenter) && row {
+          // (found by measuring it at its size, never by laying it out: this one may be only measured, and a layout
+          // kept above it, reused, would keep that one)
           let iw = f.unsafe_get(i + MAIN)
           let ih = f.unsafe_get(i + CROSS)
           let n = flow.unsafe_get(at.unsafe_get(k))
-          let rw = size_node(n, iw, ih, iw, ih, cb_w, cb_h, true)
-          let rh = out_h.val
-          n.width = rw
-          n.height = rh
-          let ascent = node_baseline(n) + f.unsafe_get(i + MAR_CROSS_START)
+          let ascent = first_line_at(n, iw, ih, cb_w, cb_h, al == FirstLineCenter) + f.unsafe_get(i + MAR_CROSS_START)
           f.unsafe_set(i + ASCENT, ascent)
           asc = fmax(asc, ascent)
           desc = fmax(desc, f.unsafe_get(i + CROSS) + f.unsafe_get(i + MARGIN_CROSS) - ascent)
@@ -2108,14 +2078,14 @@ fn layout_flex(
           }
         }
         let mut cross_pos = ln.pos + c_start + off
-        if al == Baseline && row && !(ca_start || ca_end) {
+        if (al == Baseline || al == FirstLineCenter) && row && !(ca_start || ca_end) {
           cross_pos = ln.pos + ln.ascent - f.unsafe_get(i + ASCENT) + c_start
         }
         if wrap_reverse {
           cross_pos = cross_size - cross_pos - cross
         }
         f.unsafe_set(i + CROSS_POS, cross_pos)
-        // (for baselines only, which reuse does not take; laid out only, never as it is measured: a measure in a room
+        // (for which line it is on; laid out only, never as it is measured: a measure in a room
         // it has not laid out in (a row with none bound, what holds it finding its size) puts back on a line what its
         // row left out as it was laid, and a layout of that row kept after it (p_ok) would leave it so, of no size but
         // not left out: drawn whole where it was let go, 2026-11-15)
@@ -2285,6 +2255,9 @@ fn layout_flex(
         }
       }
     }
+  }
+  if asked > 0 {
+    first_out.val = first_in_pool(node, b, flow, pool, row, fw, fh, gone_cut, rows_g, cb_w, cb_h, asked == 2)
   }
   pool.count = 0
   depth.val = d
@@ -3336,32 +3309,154 @@ fn round_layout(n : Node, abs_x : Double, abs_y : Double) -> Unit {
 }
 
 ///|
-/// The distance from a node's top to its first baseline: that of its first
-/// child on the first line (preferring one aligned by baseline), or its
-/// bottom when it has none (Yoga).
-fn node_baseline(n : Node) -> Double {
-  let mut pick : Node? = None
-  for c in n.children {
-    if c.line > 0 {
+/// What a measure tells of the words it measured (first_line_told), from their top: their first line's baseline, and
+/// its middle (NaN: told none).
+let first_told_base : Ref[Double] = { val: undef }
+
+///|
+let first_told_mid : Ref[Double] = { val: undef }
+
+///|
+/// Told by a leaf's measure (Node's `measure`) as it measures words: where their first line's baseline is and that
+/// line's middle, down from the top of what it measures (the node's content box), as they are drawn. Kept on the node
+/// (first_baseline, first_line_mid) for a row aligned by Baseline or FirstLineCenter to line it up by; a measure that
+/// tells none leaves it none (a leaf's own foot its baseline then, as Yoga's, its own middle its first line's).
+pub fn first_line_told(baseline : Double, middle : Double) -> Unit {
+  first_told_base.val = baseline
+  first_told_mid.val = middle
+}
+
+///|
+/// What a leaf's measure just told of its first line (first_line_told) kept on it (`b` its box), from its own top; none,
+/// none kept.
+fn first_kept(node : Node, b : Box) -> Unit {
+  let oy = b.bor_t + b.pad_t
+  node.first_baseline = if known(first_told_base.val) { oy + first_told_base.val } else { undef }
+  node.first_line_mid = if known(first_told_mid.val) { oy + first_told_mid.val } else { undef }
+  first_told_base.val = undef
+  first_told_mid.val = undef
+}
+
+///|
+/// Where its first line is (1 its baseline, 2 its middle), asked of the layout_flex about to start, and what that
+/// answers (NaN: none).
+let first_asked : Ref[Int] = { val: 0 }
+
+///|
+let first_out : Ref[Double] = { val: undef }
+
+///|
+/// Where `n`'s first line is from its top as it is `kw` × `kh` in a containing block `cb_w` × `cb_h` (an item's size
+/// in what lines it up): its baseline, or that line's middle (`mid`). Found by measuring it, never by laying it out,
+/// so that a container only measured lines up what it holds as its layout will: a leaf's, its measure's (what it told,
+/// first_line_told; one that told none, its foot, as Yoga's, or its middle); a container's, the first line of the
+/// first of what it holds on its first line (one aligned the same way first), where its measure at that size puts it
+/// (first_in_pool), or its foot, or its middle, holding none.
+fn first_line_at(n : Node, kw : Double, kh : Double, cb_w : Double, cb_h : Double, mid : Bool) -> Double {
+  if n.children.length() == 0 {
+    match n.measure {
+      Some(m) if !n.room => {
+        // (told nothing since it last changed: asked at its size now, as a fresh tree asks it, never a size given it
+        // having kept it from being measured)
+        if !known(n.first_baseline) && !known(n.first_line_mid) {
+          let b = box_for(n, cb_w, cb_h)
+          first_told_base.val = undef
+          first_told_mid.val = undef
+          m(
+            if known(kw) { fmax(kw - b.pbw(), 0.0) } else { 0.0 },
+            if known(kw) { Exactly } else { Undefined },
+            if known(kh) { fmax(kh - b.pbh(), 0.0) } else { 0.0 },
+            if known(kh) { Exactly } else { Undefined },
+          )
+          |> ignore
+          first_kept(n, b)
+        }
+        let told = if mid { n.first_line_mid } else { n.first_baseline }
+        if known(told) {
+          return told
+        }
+      }
+      _ => ()
+    }
+    size_node(n, kw, kh, kw, kh, cb_w, cb_h, false) |> ignore
+    let h = out_h.val
+    return if mid { h / 2.0 } else { h }
+  }
+  first_asked.val = if mid { 2 } else { 1 }
+  first_out.val = undef
+  let fw = size_uncached(n, kw, kh, kw, kh, cb_w, cb_h, false)
+  ignore(fw)
+  let h = out_h.val
+  first_asked.val = 0
+  let v = first_out.val
+  first_out.val = undef
+  if known(v) {
+    v
+  } else if mid {
+    h / 2.0
+  } else {
+    h
+  }
+}
+
+///|
+/// Where the first line of `node` (laid out `fw` × `fh`, its items in `pool` as its layout_flex just put them: of
+/// `flow`, in a row where `row`) is from its top: its baseline, or that line's middle (`mid`): the first line of the
+/// first of its items on its first line (one aligned by Baseline, or FirstLineCenter for its middle, before the rest:
+/// Yoga's), placed as its layout places it (the perform part of layout_flex), as measured at its size there; none, its
+/// foot (Yoga's), or its middle.
+fn first_in_pool(
+  node : Node,
+  b : Box,
+  flow : Array[Node],
+  pool : Pool,
+  row : Bool,
+  fw : Double,
+  fh : Double,
+  gone_cut : Double,
+  rows_g : Double,
+  cb_w : Double,
+  cb_h : Double,
+  mid : Bool,
+) -> Double {
+  let want = if mid { FirstLineCenter } else { Baseline }
+  let mut pick = -1
+  for k in 0..<pool.count {
+    if pool.line_of.unsafe_get(k) > 0 {
       break
     }
-    if c.line < 0 ||
-      c.style.position == Absolute ||
+    let c = flow.unsafe_get(pool.at.unsafe_get(k))
+    if c.style.position == Absolute ||
       c.style.display == DisplayNone ||
-      (n.holds_gone && c.style.gone_empty && holds_none(c)) {
+      (node.holds_gone && c.style.gone_empty && holds_none(c)) {
       continue
     }
-    let al = item_align(n.style, c.style)
-    if al == Baseline {
-      pick = Some(c)
+    if item_align(node.style, c.style) == want {
+      pick = k
       break
     }
-    if pick is None {
-      pick = Some(c)
+    if pick < 0 {
+      pick = k
     }
   }
-  match pick {
-    Some(c) => node_baseline(c) + c.top
-    None => n.height
+  if pick < 0 {
+    return if mid { fh / 2.0 } else { fh }
   }
+  let f = pool.f
+  let i = pick * ITEM
+  let c = flow.unsafe_get(pool.at.unsafe_get(pick))
+  let iw = if row { f.unsafe_get(i + MAIN) } else { f.unsafe_get(i + CROSS) }
+  let ih = if row { f.unsafe_get(i + CROSS) } else { f.unsafe_get(i + MAIN) }
+  // (its top as the perform part of layout_flex puts it)
+  let oy = b.bor_t + b.pad_t
+  let oy = if gone_cut > 0.0 { oy - b.pad_t * gone_cut } else { oy }
+  let oy = if rows_g > 0.0 { rows_room(oy, rows_g) } else { oy }
+  let y = if row { f.unsafe_get(i + CROSS_POS) } else { f.unsafe_get(i + MAIN_POS) }
+  let dy = if (pool.flags.unsafe_get(pick) & INSET) != 0 {
+    inset_offset(c.style, fw - b.pbw(), fh - b.pbh(), false)
+  } else {
+    0.0
+  }
+  let top = on_grid(if rows_g > 0.0 { ((oy + y + dy) * rows_g + 0.5).floor() / rows_g } else { oy + y + dy })
+  top + first_line_at(c, iw, ih, cb_w, cb_h, mid)
 }

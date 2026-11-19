@@ -44,6 +44,21 @@ pub fn message_said_on(channel : String) -> Bool {
 }
 
 ///|
+// kept across runs: as message_handlers, the app's code
+let message_ahead : Map[String, (Array[(String, Bytes?)?]) -> Unit] = Map([])
+
+///|
+/// What one take holds (all that came between two frames, or as a frame begins), in the order it came, shown to `ahead`
+/// as `channel` sees it (its own messages' JSON and bytes, another channel's None) before any of it is offered to the
+/// channel's `said` (on_message_said): so a `said` may know what comes after a message in the same take (a later one
+/// that undoes what an earlier one does, all of it one change: messages_take's view_event). Not while the run's tape is
+/// kept, nor where what came is left for the frame from its start (something before it was). One a channel: the last
+/// given.
+pub fn on_messages_ahead(channel : String, ahead : (Array[(String, Bytes?)?]) -> Unit) -> Unit {
+  message_ahead[channel] = ahead
+}
+
+///|
 /// A Tester's messages posted and not taken by a frame yet (the fake host's queue), oldest first.
 let fake_posted : Array[(String, String, Bytes?)] = []
 
@@ -244,6 +259,14 @@ fn messages_take(came : Array[(String, String, Bytes?)]) -> Unit {
 
 ///|
 fn messages_take_now(came : Array[(String, String, Bytes?)]) -> Unit {
+  // (what comes after each, shown first to a channel that asks, as it sees it: on_messages_ahead)
+  if messages_in.is_empty() && message_ahead.length() > 0 && !taping() {
+    message_ahead.each(fn(channel, ahead) {
+      if came.iter().any(fn(m) { m.0 == channel }) {
+        ahead(came.map(fn(m) { if m.0 == channel { Some((m.1, m.2)) } else { None } }))
+      }
+    })
+  }
   // (what changes only signals taken now, in the order they came, till one is left for its handler: messages_in)
   for m in came {
     probe_message(m.0, m.1, m.2)

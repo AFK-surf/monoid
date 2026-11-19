@@ -82,15 +82,14 @@ test "waiting tile: 56 square, as round as what waits in the composer" {
 }
 
 ///|
-test "waiting tile: a hairline rim drawn over its picture, as round as it; red once it failed" {
+test "waiting tile: no edge round its picture; edged red, as round as it, once it failed" {
   let failed = @signals.signal(false, same=fn(a, b) { a == b })
   let off = fn() { @signals.signal(false, same=fn(a, b) { a == b }) }
   let t = tile_tester(off(), failed, off(), Ref(0))
   let rims = t
     .drawn_rect_corners()
     .filter(fn(r) { r.2 == waiting_tile_side && r.3 == waiting_tile_side && r.4 != 0x8899AAFFL })
-  guard rims is [(_, _, _, _, _, (r, _, _, _)), ..] else { fail("no rim: \{Repr(t.drawn_rect_corners())}") }
-  assert_eq(r, composer_inner())
+  assert_true(rims.is_empty(), msg="an edge round a whole tile: \{Repr(rims)}")
   failed.set(true)
   t.draw()
   let edged = t.drawn_rect_corners().iter().any(fn(r) { r.2 == waiting_tile_side && r.3 == waiting_tile_side })

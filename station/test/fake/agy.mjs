@@ -7,8 +7,9 @@
 // what it is and waits for the answer; with a sign-in in $HOME already it asks nothing and goes straight into its
 // interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`). FAKE_AGY_OFFLINE: how many openings
 // (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
-// every model refused after (counted in FAKE_DUMP.offline).
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// every model refused after (counted in FAKE_DUMP.offline). FAKE_AGY_SILENT: initialize never answered (its backend out of
+// reach as it starts), nothing written.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -207,6 +208,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (dump) appendFileSync(dump + '.rpc', line + '\n');
   if (!m.method) continue;
   const p = m.params;
+  if (m.method === 'initialize' && process.env.FAKE_AGY_SILENT) continue;
   if (m.method === 'initialize') reply(m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } }, agentInfo: { name: 'Antigravity ACP Server', version: '1.4.12' } });
   else if (m.method === 'session/new') {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
@@ -234,12 +236,15 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
     if (text === 'expired') { say({ id: m.id, error: { code: -32603, message: 'Authentication expired. Please log back in.' } }); held = null; continue; }
     if (text.includes('expire-mid-turn')) { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Agent execution terminated due to error.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
+    if (text.includes('unauth-mid-turn')) { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota-said') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota-after-calls') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reading it.' } }); update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } }); update({ sessionUpdate: 'tool_call', toolCallId: 'q1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } }); update({ sessionUpdate: 'tool_call_update', toolCallId: 'q1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 22m58s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota') { say({ id: m.id, error: { code: -32603, message: 'RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 4h.' } }); held = null; continue; }
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });
     if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn')) continue;
+    // Held once: the marker is consumed here, so the test sees the hold only after this process read the prompt.
+    if (dump && existsSync(dump + '.hold-auth-retry') && text.includes('authentication error')) { try { unlinkSync(dump + '.hold-auth-retry'); } catch {} continue; }
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
     update({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } });
     update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] });

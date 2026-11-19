@@ -7,8 +7,7 @@
 ///|
 /// The tile in `parent`: `picture` draws its picture in the node given (cover, as big as the tile); `going()`: whether
 /// it goes up now, `part()` how far (None till that is said); `failed()`: whether it failed going up, `again` what a
-/// press on ↻ does; `video`: a video's still; `rim`: its hairline drawn round it (none where it stands off a card's
-/// corner by a gap the corner rule keeps for nothing grounded: the board's draft card). The node.
+/// press on ↻ does; `video`: a video's still. The node.
 #callsite(autofill(loc))
 pub fn waiting_tile_node(
   parent : @view.View,
@@ -19,7 +18,6 @@ pub fn waiting_tile_node(
   again : () -> Unit,
   again_label : () -> String,
   video? : () -> Bool = fn() { false },
-  rim? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(tile) {
@@ -29,15 +27,11 @@ pub fn waiting_tile_node(
     .min_width(Is(Some(waiting_tile_side)))
     .radius(By(fn() { composer_inner() }))
     .clips(Is(true))
-    // (its rim, drawn over all it holds, its veils too: a hairline so a light picture stands off a light composer and a
-    // dark one off a dark one (the line, as a message's picture's: sfpages' image_frame_rimmed), where `rim` says;
-    // failed, edged red)
+    // (failed: edged red, drawn over all it holds, its veils too; no edge otherwise)
     .edge(
       By(fn() {
         if failed() {
           (waiting_failed_edge, @ui.tree_theme().color(Danger))
-        } else if rim {
-          (1.0, theme().p.line)
         } else {
           (0.0, 0L)
         }

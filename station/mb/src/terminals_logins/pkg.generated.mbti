@@ -157,18 +157,22 @@ pub fn utf8_text(Bytes) -> String
 pub(all) suberror BusRefused {
   BusRefused(String)
 }
+pub impl Show for BusRefused
 
 pub suberror Refused {
   Refused(Int32, String)
 }
+pub impl Show for Refused
 
 pub(all) suberror SendFailed {
   SendFailed(String, String)
 }
+pub impl Show for SendFailed
 
 pub suberror TerminalRefused {
   TerminalRefused(Int32, String)
 }
+pub impl Show for TerminalRefused
 
 // Types and methods
 pub(all) struct Acting {

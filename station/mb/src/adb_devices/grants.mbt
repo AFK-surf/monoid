@@ -99,6 +99,23 @@ let grants_schema : String =
   #|  lasts TEXT NOT NULL,
   #|  at INTEGER NOT NULL
   #|);
+  #|-- (what the owner's devices signed to take a grant back, kept until the grant would have ended: given to their devices
+  #|-- as they read their grants, told to them as it comes, the grant's own station or another of theirs)
+  #|CREATE TABLE IF NOT EXISTS adb_revokes (
+  #|  id TEXT PRIMARY KEY, -- owner, a space, request: another member naming the same request keeps a row of their own
+  #|  owner TEXT NOT NULL,
+  #|  exp INTEGER NOT NULL,
+  #|  body TEXT NOT NULL
+  #|);
+  #|CREATE INDEX IF NOT EXISTS adb_revokes_by_owner ON adb_revokes (owner, exp);
+
+///|
+/// How large a signed taking back is kept at most (its JSON's length), and how many of an owner's at most (those that
+/// end first let go).
+pub let signed_revoke_max : Int = 4096
+
+///|
+pub let revokes_per_owner_max : Int = 256
 
 ///|
 /// A phone request as kept: an object whose fields keep the order they were first set in.
@@ -173,6 +190,9 @@ pub struct PhoneGrants {
   title : async (Req) -> String?
   /// Who hears of a change (the owner's devices).
   told : async (J, J, String) -> Unit
+  /// A signed taking back kept (`keep_revoke`): told to its owner's devices (`adb-revoke`): signed, owner, request,
+  /// workspace.
+  told_revoke : (async (J, String, String, String) -> Unit)?
   /// Whether the station keeps cards' outcomes in its outbox (`cardOutcomes`).
   outcomes : Bool
   titles : Map[String, (String, String?)]
@@ -203,6 +223,7 @@ pub fn PhoneGrants::new(
   title : async (Req) -> String?,
   told : async (J, J, String) -> Unit,
   outcomes~ : Bool = false,
+  told_revoke? : async (J, String, String, String) -> Unit,
 ) -> PhoneGrants raise {
   db.exec(grants_schema) catch {
     e => raise sql_err(e)
@@ -212,6 +233,7 @@ pub fn PhoneGrants::new(
     db,
     title,
     told,
+    told_revoke,
     outcomes,
     titles: {},
     shown_by_session: {},
@@ -1096,13 +1118,112 @@ pub async fn PhoneGrants::sign(
 }
 
 ///|
-/// The owner takes a grant (or a request) of theirs back.
+/// What the owner's device signed to take a grant of theirs back, this station's or another's: kept until the grant
+/// would have ended and told to their devices, each of which checks it itself. Why it is not kept, or None.
+pub async fn PhoneGrants::keep_revoke(
+  self : PhoneGrants,
+  email : String,
+  signed : J?,
+  workspace : String,
+) -> String? {
+  let not_one = Some("not a signature")
+  guard signed is Some(Obj(_) as s) else { return not_one }
+  guard at(Some(s), "body") is Some(Obj(_) as body) else { return not_one }
+  guard at(Some(s), "sig") is Some(Obj(_) | Arr(_) as sig) else {
+    return not_one
+  }
+  guard at(Some(body), "request") is Some(Str(_) as rq) else { return not_one }
+  let request = js_text(rq)
+  if request.length() == 0 || request.length() > 128 {
+    return not_one
+  }
+  guard at(Some(body), "station") is Some(Str(_) as st) &&
+    js_text(st).length() > 0 else {
+    return not_one
+  }
+  guard at(Some(body), "exp") is Some(Num(exp)) && @jsjson.is_safe_integer(exp) else {
+    return not_one
+  }
+  let kept = jo([("body", body), ("sig", sig)])
+  let text = stringify(kept)
+  if text.length() > signed_revoke_max {
+    return not_one
+  }
+  let now = self.secs()
+  // (ended already: the grant it takes back ended with it)
+  if exp <= now {
+    return None
+  }
+  let owner = email.to_lower()
+  try {
+    ignore(
+      self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
+        Json::string(owner),
+        Json::number(now),
+      ]),
+    )
+    ignore(
+      self.db.run(
+        "INSERT OR REPLACE INTO adb_revokes (id, owner, exp, body) VALUES (?, ?, ?, ?)",
+        [
+          Json::string("\{owner} \{request}"),
+          Json::string(owner),
+          Json::number(exp),
+          Json::string(text),
+        ],
+      ),
+    )
+    ignore(
+      self.db.run(
+        "DELETE FROM adb_revokes WHERE id IN (SELECT id FROM adb_revokes WHERE owner = ?1 ORDER BY exp DESC LIMIT -1 OFFSET ?2)",
+        [Json::string(owner), Json::number(revokes_per_owner_max.to_double())],
+      ),
+    )
+  } catch {
+    e => return Some(e.to_string())
+  }
+  match self.told_revoke {
+    Some(f) => f(kept, owner, request, workspace)
+    None => ()
+  }
+  None
+}
+
+///|
+/// The signed takings back of `email`'s grants kept here (those ended let go).
+pub fn PhoneGrants::revokes_of_owner(
+  self : PhoneGrants,
+  email : String,
+) -> Array[J] raise {
+  let owner = email.to_lower()
+  ignore(
+    self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
+      Json::string(owner),
+      Json::number(self.secs()),
+    ]),
+  ) catch {
+    e => raise sql_err(e)
+  }
+  self
+  .rows("SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?", [
+    js(owner),
+    jn(revokes_per_owner_max.to_double()),
+  ])
+  .map(row => @session_chats.parse_js(text_of(at(Some(row), "body"))))
+}
+
+///|
+/// The owner takes a grant (or a request) of theirs back; `signed`, what their device signed for it (`keep_revoke`).
 pub async fn PhoneGrants::revoke(
   self : PhoneGrants,
   email : String,
   id : String,
   workspace : String,
+  signed? : J,
 ) -> String? {
+  if signed is Some(_) {
+    ignore(self.keep_revoke(email, signed, workspace))
+  }
   guard self.get(id) is Some(r) && jeq(self.workspace(r), js(workspace)) else {
     return Some("no such request")
   }

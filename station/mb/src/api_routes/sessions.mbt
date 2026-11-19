@@ -44,7 +44,7 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
   }
   // Packed with its archived workspace: the route reads it out of the archive, under its lock.
   let room = match self.setup.data {
-    None => Null
+    None => JV::Null
     Some(data) =>
       self.backend.ask("sessions/footprint.roomOfSoon", [
         js(data),
@@ -558,30 +558,7 @@ async fn Admin::peek(self : Admin, r : Request, key : String) -> Answer {
 ///|
 /// encodeURIComponent.
 pub fn encode_uri_component(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for b in utf8(s) {
-    let c = b.to_int()
-    if (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9') ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '!' ||
-      c == '~' ||
-      c == '*' ||
-      c == '\'' ||
-      c == '(' ||
-      c == ')' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|
@@ -596,10 +573,25 @@ async fn Admin::open_file(self : Admin, r : Request, key : String) -> Answer {
   let path = jstr(found.get("path")).unwrap_or("")
   let name = jstr(found.get("name")).unwrap_or("")
   let content_type = jstr(found.get("contentType")).unwrap_or("")
+  let mtime = js_string(found.get("mtime"))
+  let size = js_string(found.get("size"))
   let named = [
     ("stillfail-name", encode_uri_component(name)),
     ("stillfail-path", encode_uri_component(path)),
+    ("stillfail-mtime", mtime),
   ]
+  // (the version the device keeps, not changed since: no bytes, they are its already)
+  if r.param("raw") == Some("1") && r.param("have") == Some(mtime + ":" + size) {
+    let headers : Map[String, String] = {
+      "content-type": content_type,
+      "cache-control": "no-store",
+    }
+    for e in named {
+      headers[e.0] = e.1
+    }
+    headers["stillfail-total"] = size
+    return { status: 304, headers, body: Whole(b"") }
+  }
   if r.param("raw") == Some("1") &&
     (r.param("offset") is Some(_) || r.param("length") is Some(_)) {
     guard range_of(r) is Some((offset, length)) else {

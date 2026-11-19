@@ -10,6 +10,11 @@
 //
 // A view a person drives carries the Mac's clipboard both ways (text, PNG): the helper sets NSPasteboard and pastes
 // with ⌘V, and, while the view watches it, says what was copied.
+//
+// A person who drives it sets the display's resolution (the helper's `resolution`: Resolution.swift, its sizes in
+// points, HiDPI kept on a Retina display), for this login session alone; once the last view ends, or the station
+// stops, the mode it was in before the first change is put back. A helper from before it has no resolution to give:
+// none is told, and nothing is set.
 
 ///|
 /// The helper's window's words, in `lang` (Permissions.swift; PermissionFlow's panel under `panel`).
@@ -47,7 +52,8 @@ pub fn window_words(io : Io, lang : String) -> J {
 /// rate (bits a second, 4 bytes), 8 bounds (JSON {maxWidth, maxHeight, region?}), 9 audio (the next 20 ms packet), 10
 /// window (JSON {window}). From it: 1 info, 2 config, 3 frame, 4 event, 5 clipboard (type, bytes), 6 cursor (JSON
 /// {x, y, shape}), 7 region (JSON {region}), 8 audio config (JSON {codec, sampleRate, channels}, or {error}), 9 audio
-/// (8 bytes timestamp µs, then the packet), 10 turn (JSON {turn}).
+/// (8 bytes timestamp µs, then the packet), 10 turn (JSON {turn}), 11 cursor image (a pointer of an app's own, before
+/// the first 6 that names it "custom:<id>": source.mbt `cursor_image_shape`).
 pub const TO_NEXT : Int = 1
 
 ///|
@@ -156,6 +162,8 @@ pub struct HelperView {
   priv mut clipboard : (Int, (Clip) -> Unit)?
   priv mut cursor : (Int, (ScreenCursor) -> Unit)?
   priv mut last_cursor : ScreenCursor?
+  /// The pictures of the pointers of apps' own it said (message 11), by shape.
+  priv cursor_images : Map[String, Bytes]
   priv mut turn : (Int, (Int) -> Unit)?
   priv mut last_turn : Int?
   priv mut windows : ScreenWindows?
@@ -197,6 +205,7 @@ pub fn HelperView::new(
     clipboard: None,
     cursor: None,
     last_cursor: None,
+    cursor_images: {},
     turn: None,
     last_turn: None,
     windows: None,
@@ -385,8 +394,9 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
       if said is Null || !unit(get(Some(said), "x")) || !unit(get(Some(said), "y")) {
         return
       }
+      // (one of an app's own whose picture it did not say: the default)
       let shape = match text(get(Some(said), "shape")) {
-        Some(s) if cursor_shape(s) => s
+        Some(s) if cursor_shape(s) && (!s.has_prefix("custom:") || self.cursor_images.contains(s)) => s
         _ => "default"
       }
       let c = { x: num(get(Some(said), "x")).unwrap(), y: num(get(Some(said), "y")).unwrap(), shape }
@@ -396,6 +406,16 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
         None => ()
       }
     }
+    11 =>
+      match cursor_image_shape(payload[:]) {
+        Some(shape) => {
+          if self.cursor_images.length() >= CURSOR_IMAGES_MOST && !self.cursor_images.contains(shape) {
+            self.cursor_images.clear()
+          }
+          self.cursor_images[shape] = payload
+        }
+        None => ()
+      }
     10 => {
       let said = parse_or_null(payload)
       let turn = match get(Some(said), "turn") {
@@ -432,21 +452,6 @@ fn HelperView::message(self : HelperView, kind : Int, payload : Bytes) -> Unit {
     }
     _ => ()
   }
-}
-
-///|
-/// A CSS cursor's name as the helper says one: `/^[a-z-]{1,24}$/`.
-fn cursor_shape(s : String) -> Bool {
-  let n = s.length()
-  if n < 1 || n > 24 {
-    return false
-  }
-  for c in s {
-    if !((c >= 'a' && c <= 'z') || c == '-') {
-      return false
-    }
-  }
-  true
 }
 
 ///|
@@ -585,6 +590,11 @@ pub fn HelperView::watch_cursor(self : HelperView, heard : (ScreenCursor) -> Uni
 }
 
 ///|
+pub fn HelperView::cursor_image(self : HelperView, shape : String) -> Bytes? {
+  self.cursor_images.get(shape)
+}
+
+///|
 pub fn HelperView::watch_windows(self : HelperView, heard : (ScreenWindows) -> Unit) -> () -> Unit {
   let id = self.id()
   self.heard_windows = Some((id, heard))
@@ -685,6 +695,7 @@ pub fn HelperView::view(self : HelperView) -> ScreenView {
     watch_clipboard: Some(f => self.watch_clipboard(f)),
     reveal: Some(async fn(p) { self.reveal(p) }),
     watch_cursor: Some(f => self.watch_cursor(f)),
+    cursor_image: Some(s => self.cursor_image(s)),
     watch_windows: Some(f => self.watch_windows(f)),
     window: Some(i => self.window(i)),
     watch_turn: Some(f => self.watch_turn(f)),
@@ -716,6 +727,11 @@ pub struct Desktop {
   priv views : Array[HelperView]
   /// Its window was put up for grants not all taken yet: up again when the helper comes back still lacking one.
   priv mut wanted : Bool
+  /// The display's mode before a view first changed it (its size, and its id where the helper said it), put back once
+  /// the last view ends; none while unchanged.
+  priv mut original_mode : (Double, Double, Double?)?
+  /// Resolution changes, one after another.
+  priv sizing : Chain
 }
 
 ///|
@@ -733,7 +749,7 @@ pub fn Desktop::new(io : Io, o : DesktopOptions) -> Desktop {
     Some(g) => ignore(g.on_change(() => (o.changed)()))
     None => ()
   }
-  { io, o, grants, views: [], wanted: false }
+  { io, o, grants, views: [], wanted: false, original_mode: None, sizing: Chain::new() }
 }
 
 ///|
@@ -869,13 +885,16 @@ pub async fn Desktop::open(self : Desktop, options : ViewOptions) -> ScreenView 
       self.io,
       codec,
       sock_pipe(socket),
-      () => match view_ref.val {
-        Some(v) =>
-          match self.views.search_by(x => physical_equal(x, v)) {
-            Some(i) => ignore(self.views.remove(i))
-            None => ()
-          }
-        None => ()
+      () => {
+        match view_ref.val {
+          Some(v) =>
+            match self.views.search_by(x => physical_equal(x, v)) {
+              Some(i) => ignore(self.views.remove(i))
+              None => ()
+            }
+          None => ()
+        }
+        self.put_back()
       },
       input=Some(MacInput::new().input_ops()),
       capture="ScreenCaptureKit",
@@ -970,11 +989,106 @@ pub async fn Desktop::ui(self : Desktop, args : Array[String]) -> J {
 }
 
 ///|
-/// The station stopping: every view ends, and the helper.
+/// The helper's `resolution` op for its display, with `more` (a size to set).
+fn Desktop::resolution_op(self : Desktop, more : Array[(String, J?)]) -> J {
+  let display = match get(self.status(), "display") {
+    Some(Obj(_) as d) => get(Some(d), "id")
+    _ => None
+  }
+  let pairs = [("op", Some(js("resolution")))]
+  pairs.append(more)
+  pairs.push(("display", display))
+  jsome(pairs)
+}
+
+///|
+/// A mode as it is put back: its size, and its id where the helper said it.
+fn mode_fields(mode : (Double, Double, Double?)) -> Array[(String, J?)] {
+  let (w, h, id) = mode
+  [("width", Some(jn(w))), ("height", Some(jn(h))), ("modeID", id.map(jn))]
+}
+
+///|
+/// As it is once the changes asked before are made; none where it is not had (no helper, one from before it).
+pub async fn Desktop::resolution(self : Desktop) -> ScreenResolution? {
+  guard self.o.supported && self.o.helper is Some(helper) else { return None }
+  self.sizing.then(self.io, async fn() {
+    let told = helper.request(self.resolution_op([])) catch {
+      e => {
+        self.io.log.info("screens", "the display's resolution was not had", fields=jo([("error", js(message_of(e)))]))
+        return None
+      }
+    }
+    resolution_of(Some(told))
+  })
+}
+
+///|
+pub async fn Desktop::set_resolution(self : Desktop, width : Double, height : Double) -> ScreenResolution {
+  guard self.o.supported && self.o.helper is Some(helper) else { raise fail("the display's resolution was not had") }
+  self.sizing.then(self.io, async fn() {
+    if self.original_mode is None {
+      let told = helper.request(self.resolution_op([]))
+      guard resolution_of(Some(told)) is Some(before) else { raise fail("the display's resolution was not had") }
+      self.original_mode = Some((before.width, before.height, num(get(Some(told), "modeID")).filter(is_integer)))
+    }
+    let asked = self.resolution_op([("width", Some(jn(js_round(width)))), ("height", Some(jn(js_round(height))))])
+    guard resolution_of(Some(helper.request(asked))) is Some(now) else {
+      raise fail("the display's resolution was not had")
+    }
+    self.io.log.info(
+      "screens",
+      "the display's resolution set",
+      fields=jo([
+        ("width", jn(now.width)),
+        ("height", jn(now.height)),
+        (
+          "was",
+          match self.original_mode {
+            Some(m) => jsome(mode_fields(m))
+            None => Null
+          },
+        ),
+      ]),
+    )
+    // (its size in pixels another now: had again, and listed anew)
+    self.refresh(force=true)
+    (self.o.changed)()
+    now
+  })
+}
+
+///|
+/// The last view ended: the display's mode as it was before a view changed it.
+fn Desktop::put_back(self : Desktop) -> Unit {
+  guard self.views.length() == 0 && self.original_mode is Some(mode) && self.o.helper is Some(helper) else { return }
+  self.original_mode = None
+  let fields = mode_fields(mode)
+  self.sizing.after(self.io, async fn() {
+    let _ = helper.request(self.resolution_op(fields)) catch {
+      e => {
+        self.io.log.warn(
+          "screens",
+          "the display's resolution was not put back",
+          fields=spread(jsome(fields), jo([("error", js(message_of(e)))])),
+        )
+        return
+      }
+    }
+    self.io.log.info("screens", "the display's resolution put back", fields=jsome(fields))
+    self.refresh(force=true)
+    (self.o.changed)()
+  })
+}
+
+///|
+/// The station stopping: every view ends, the display's resolution is put back, then the helper goes.
 pub async fn Desktop::close(self : Desktop) -> Unit {
   for v in self.views.copy() {
     v.close()
   }
+  // (put back before the helper quits: it is the helper that sets it)
+  self.sizing.idle()
   match self.o.helper {
     Some(h) => h.quit() catch { _ => () }
     None => ()
@@ -988,6 +1102,8 @@ pub fn Desktop::source(self : Desktop) -> ScreenSource {
     reveal: true,
     access: Some(() => self.access()),
     clipboard: Some(() => self.clipboard()),
+    resolution: Some(async fn() { self.resolution() }),
+    set_resolution: Some(async fn(w, h) { self.set_resolution(w, h) }),
     ui: Some(async fn(args) { self.ui(args) }),
   }
 }

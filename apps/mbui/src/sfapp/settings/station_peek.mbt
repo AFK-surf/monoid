@@ -669,9 +669,9 @@ fn peek_figures_node(p : @view.View, s : () -> Json?, net : () -> Json?) -> Unit
         // (until it is read, a made-up one's in its bones)
         w.pick(fn() { net() is Some(_) }, fn(x, read) {
           if read {
-            net_line_node(x, net)
+            @sf.station_net_line_node(x, net, look=Peek)
           } else {
-            @sf.waiting_node(x, fn(b) { net_line_node(b, fn() { None }) })
+            @sf.waiting_node(x, fn(b) { @sf.station_net_line_node(b, fn() { None }, look=Peek) })
           }
         })
       })
@@ -699,124 +699,3 @@ fn sample_meters_node(p : @view.View) -> Unit {
     |> ignore
   })
 }
-
-///|
-/// This device's connection to a station (net_line's, as nodes) in `p`, as `net` says it now (none: a made-up one, to
-/// be drawn in its bones, its words in Chinese): how it goes (and packets lost) over its round trip on the left, cut
-/// short before the figures are; on the right ↑ over ↓, the speed each way and what went that way.
-fn net_line_node(p : @view.View, net : () -> Json?) -> Unit {
-  let n = fn() {
-    match net() {
-      Some(_) as x => x
-      None =>
-        Some(
-          obj([
-            ("path", str("直连")),
-            ("rtt", obj([("text", str("0 ms")), ("level", str("ok"))])),
-            ("down", str("0.0 KB/s")),
-            ("up", str("0.0 KB/s")),
-          ]),
-        )
-    }
-  }
-  // (a figure's ink: its level's)
-  let tone = fn(f : () -> Json?) {
-    fn() {
-      let t = @sf.theme()
-      match text(f(), "level") {
-        "red" => t.p.red
-        "amber" => t.p.warn_ink
-        _ => t.p.text
-      }
-    }
-  }
-  let muted = fn() { @sf.theme().p.muted }
-  p.box(fn(row) {
-    @sf.style_node(row, fn() { net_row })
-    row.wraps(Is(Some(2.0))) |> ignore
-    row.box(fn(left) {
-      @sf.style_node(left, fn() { net_left }, in_row=true)
-      left.box(fn(l) {
-        @sf.style_node(l, fn() { net_path })
-        net_words_node(l, fn() { text(n(), "path") }, muted)
-        l.show(fn() { field(n(), "loss") is Some(Object(_)) }, fn(x) {
-          net_words_node(x, fn() { text(field(n(), "loss"), "text") }, tone(fn() { field(n(), "loss") }), weight=500)
-        })
-      })
-      |> ignore
-      left.show(fn() { field(n(), "rtt") is Some(Object(_)) }, fn(x) {
-        x.box(fn(l) {
-          @sf.style_node(l, fn() { net_rtt }, in_row=true)
-          net_words_node(l, fn() { "·" }, muted)
-          net_words_node(l, fn() { tr("android-settings.stations.rtt") }, muted, cut=true)
-          net_words_node(l, fn() { text(field(n(), "rtt"), "text") }, tone(fn() { field(n(), "rtt") }), weight=500)
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-    row.box(fn(right) {
-      @sf.style_node(right, fn() { net_right }, in_row=true)
-      for way in [("↑", "up"), ("↓", "down")] {
-        right.box(fn(l) {
-          @sf.style_node(l, fn() { net_way })
-          net_words_node(l, fn() { way.0 }, muted)
-          net_words_node(l, fn() { text(n(), way.1) }, fn() { @sf.theme().p.text }, weight=500)
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// Its line (net_line's): the left of it and ↑ / ↓, 10 apart, in their middle.
-// kept across runs: a value (no field of it changes)
-let net_row : @ui.Style = @ui.css("row w=Full gap=S2_5 align=ACenter justify=JBetween")
-
-///|
-/// Its left: how it goes and its round trip, 6 apart, taking what the right leaves.
-// kept across runs: a value (no field of it changes)
-let net_left : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
-
-///|
-/// How it goes and packets lost, 6 apart.
-// kept across runs: a value (no field of it changes)
-let net_path : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let net_rtt : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter")
-
-///|
-/// ↑ and ↓, 10 apart.
-// kept across runs: a value (no field of it changes)
-let net_right : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let net_way : @ui.Style = @ui.css("row gap=S1 align=ACenter")
-
-///|
-/// Words of it (net_line's) in `p`: the meta's size on a line of 18, `weight`, in `ink`; `cut`: cut short where the
-/// line has not the room for them.
-fn net_words_node(p : @view.View, words : () -> String, ink : () -> Int64, weight? : Int = 400, cut? : Bool = false) -> Unit {
-  p.box(fn(w) {
-    if cut {
-      w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    }
-    w
-    .words(By(words))
-    .words_look(By(fn() { { size: @sf.theme().t.meta, weight, line: net_line_h, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
-    .ink(By(ink))
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// Its lines' height (net_line's: 18).
-// kept across runs: a value
-let net_line_h : Double = 18.0

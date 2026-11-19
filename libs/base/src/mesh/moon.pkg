@@ -1,4 +1,5 @@
 import {
+  "base/hash",
   "base/shell",
   "base/wire",
   "mbui/effect",

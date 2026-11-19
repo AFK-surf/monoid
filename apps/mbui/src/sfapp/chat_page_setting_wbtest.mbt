@@ -1,6 +1,6 @@
 // 实验性功能's 试用新对话页 (the experimental feature `chatPage`, the prefs' `experimental`; sfbase's chat_page_from_prefs):
-// off unless a person turns it on, kept on the device by the core; a chat page open as it is pressed becomes the one
-// chosen at once, and the app started with it kept on opens its first chat on the page made as nodes (an older app's
+// off unless a person turns it on, kept on the device by the core; a chat's page or a new chat's (its composer with
+// it) open as it is pressed becomes the one chosen at once, and the app started with it kept on opens its first chat on the page made as nodes (an older app's
 // `chatPage` is the core's to read as the switch: client/core-ts features.ts).
 
 ///|
@@ -88,6 +88,33 @@ test "试用新对话页 pressed while a chat is open: the page under the settin
   setting_pressed(t)
   assert_true(app.nav.top() is Chat(_), msg="back on the chat again")
   assert_false(setting_page_nodes(t, "turned off while open"), msg="turned off while open: the old page again")
+}
+
+///|
+/// Whether the new chat shown is the one made as nodes (sfpages' new_chat_node): its heading drawn by a node made
+/// there; the old view's (new_chat.mbt, none of the window's tree's) the other way round.
+fn setting_new_nodes(t : @ui.Tester, at : String) -> Bool raise {
+  let heading = @sf.t("android-chat.new.heading")
+  assert_true(t.find(heading) is Some(_), msg="\{at}: its heading not drawn")
+  t.sources_of(heading).contains("sfpages/new_chat_node.mbt")
+}
+
+///|
+test "试用新对话页 pressed while a new chat is open: the new chat under the settings becomes the one chosen (its composer with it), at once, both ways" {
+  new_run()
+  let src = fixture("chat")
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  app.nav.rise(NewChat)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat, msg="the new chat not opened")
+  assert_false(setting_new_nodes(t, "open"), msg="open: the old new chat")
+  setting_pressed(t)
+  assert_true(app.nav.top() is NewChat, msg="back on the new chat")
+  assert_true(setting_new_nodes(t, "turned on while open"), msg="turned on while open: the new chat made as nodes")
+  setting_pressed(t)
+  assert_true(app.nav.top() is NewChat, msg="back on the new chat again")
+  assert_false(setting_new_nodes(t, "turned off while open"), msg="turned off while open: the old new chat again")
 }
 
 ///|

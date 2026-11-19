@@ -32,15 +32,31 @@
 #                                                       a link to it; <folder> the home brings it back. Its station
 #                                                       stopped meanwhile (what its agents ran too) and started again,
 #                                                       the old place given back only once it runs from the new one
-# The data is in $STILLFAIL_DATA, default ~/.stillfail.
+# The data is in $STILLFAIL_DATA, default ~/.stillfail (another product's own: below).
 set -eu
 # Called through a link (~/.local/bin/stillfail): the app is where the link points.
 self=$(readlink -f "$0" 2>/dev/null || echo "$0")
 here=$(cd "$(dirname "$self")/.." && pwd)
-# Called as another product's command (`monoid`: the installer links it so, client/i18n/brand.ts), that product's data
-# directory (~/.monoid) beside still.fail's.
+# Whose station this is: its product's data directory beside still.fail's (~/.monoid, client/i18n/brand.ts). Called as
+# another product's command (`monoid`: the installer links it so), that product's, whether its data is there now or not
+# (on a disk not connected, or taken away): never still.fail's instead. Called as stillfail (ember its name before) from
+# a release in such a directory (~/.monoid/app/bin/stillfail, as the app calls it), that directory's, by the path it was
+# called by before any link is followed (data moved to another disk is called by its home's name still). `named` when
+# either said whose.
 own=$HOME/.stillfail
-case "$(basename "$0")" in stillfail|stillfail-*) ;; *) [ ! -d "$HOME/.$(basename "$0")/app" ] || own="$HOME/.$(basename "$0")" ;; esac
+named=""
+case "$(basename "$0")" in
+  stillfail|stillfail-*|ember)
+    for at in "$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -L)" "$here"; do
+      case "$at" in "$HOME"/.*/app) ;; *) continue ;; esac
+      name=${at#"$HOME"/.}
+      name=${name%/app}
+      case "$name" in ""|.|..|*/*) continue ;; esac
+      own=$HOME/.$name named=yes
+      break
+    done ;;
+  *) own=$HOME/.$(basename "$0") named=yes ;;
+esac
 data=${STILLFAIL_DATA:-$own}
 station=${STILLFAIL_STATION_BIN:-$here/mesh/target/release/stillfail-station}
 
@@ -144,13 +160,21 @@ local $SIG{ALRM} = sub { exit 0 }; alarm 3; my $b; sysread($s, $b, 1);' "$sock" 
 # moved (or there already), 2 asked wrong (no such folder, not a whole path, inside its data, not this machine's own
 # station), 3 a stillfail there already, 4 not room enough, 5 the folder not writable, 6 not copied, 7 the station did
 # not start from there (back where it was), 8 its data not there (its disk not connected).
+# Which product's own station moves: the one how it was called says, else one STILLFAIL_DATA names (a clone's); never
+# another's data.
+moving() {
+  if [ "$data" != "$own" ] && [ -z "$named" ]; then
+    case "$data" in "$HOME/.stillfail"|"$HOME/.monoid") own=$data ;; esac
+  fi
+  [ "$data" = "$own" ] || { echo "stillfail move: only this machine's own station ($own) moves, not $data" >&2; exit 2; }
+}
 move() {
   pick=$1
+  moving
   product=${own##*/.}
   product=${product:-stillfail}
   reverse=fail.still
   [ "$product" = stillfail ] || reverse=build.monoid
-  [ "$data" = "$own" ] || { echo "stillfail move: only this machine's own station ($own) moves, not $data" >&2; exit 2; }
   case "$pick" in /*) ;; *) echo "stillfail move: give the folder as a whole path" >&2; exit 2 ;; esac
   [ -d "$pick" ] || { echo "stillfail move: no folder $pick" >&2; exit 2; }
   pick=$(cd "$pick" && pwd -P)
@@ -321,11 +345,14 @@ case "${1:-} ${2:-}" in
   "start "*) shift; exec "$station" run --app "$here" --data "$data" "$@" ;;
   "move "*)
     [ $# -eq 2 ] || { echo "usage: stillfail move <folder>" >&2; exit 2; }
-    # run from a copy of this script outside the data, which it moves (its name kept: it says which product's)
+    # run from a copy of this script outside the data, which it moves, named as its product's command and told its
+    # data: whose it is, which the path it was called by said and the copy's does not
     if [ -z "${STILLFAIL_MOVE_COPY:-}" ]; then
+      moving
       dir=$(mktemp -d "${TMPDIR:-/tmp}/stillfail-move.XXXXXX")
-      cp "$self" "$dir/$(basename "$0")"
-      STILLFAIL_MOVE_COPY=$dir exec sh "$dir/$(basename "$0")" "$@"
+      name=${own##*/.}
+      cp "$self" "$dir/${name:-stillfail}"
+      STILLFAIL_MOVE_COPY=$dir STILLFAIL_DATA=$data exec sh "$dir/${name:-stillfail}" "$@"
     fi
     trap 'rm -rf "$STILLFAIL_MOVE_COPY"' EXIT
     move "$2" ;;

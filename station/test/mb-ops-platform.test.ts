@@ -1,4 +1,4 @@
-// The station's operations and its platform in MoonBit (station/mb src/ops_platform: reader `--builder
+// The station's operations and its platform in MoonBit (station/mb src/ops_platform: `stillfail-reader-harness --builder
 // harness-ops-platform`) held to the TypeScript they port, on the same inputs: src/platform/ (what macOS', Linux's and
 // Windows' commands and files say, the commands made, Windows' paths and shims), src/ops/ (paths, config, the
 // launcher's channel, the logs, a command's output, the station's memory and its upkeep), src/resources/, the files and
@@ -15,7 +15,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import * as text from "../src/platform/text.ts";
 import { cpuShare } from "../src/platform/cpu-share.ts";
 import { treeOf } from "../src/platform/index.ts";
@@ -37,8 +37,8 @@ import { flag, portsToTry, positionals } from "../src/ops/files.ts";
 import * as out from "../src/ops/command-output.ts";
 import { answer as loopbackAnswer, langOfBrowser, moved } from "../src/ops/loopback.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -482,11 +482,19 @@ test("platform/windows.ts: Windows' paths, shims, PATH and scripts", { skip }, a
       rm: async () => {}, copyFile: async () => {}, writeFile: async () => {},
       spawn: (_: string, args: string[]) => { script = Buffer.from(args.at(-1)!, "base64").toString("utf16le"); return { on: (e: string, f: (c: number) => void) => e === "exit" && f(0) }; },
     }, `installer-${kept}`);
-    await sm.startInstaller("C:\\s.ps1", "C:\\data\\run", {}, "C:\\app");
-    const task = /-TaskName '([^']*)'/.exec(script)![1]!.replace(/''/g, "'");
-    const admin = /-RunLevel (\w+)/.exec(script)![1] === "Highest";
-    await same({ fn: "windowsTaskOf", kept }, { task, admin });
-    await same({ fn: "windowsRegisterScript", hidden: "C:\\data\\run\\stillfail-update-w.exe", ps1: "C:\\data\\run\\update.ps1", runDir: "C:\\data\\run", task, admin }, script);
+    for (const [runDir, dataDir] of [["C:\\data\\run", "C:\\data"], ["C:\\Users\\alice\\.monoid\\run", "C:\\Users\\alice\\.monoid"]]) {
+      await sm.startInstaller("C:\\s.ps1", runDir, {}, "C:\\app");
+      const task = /-TaskName '([^']*)'/.exec(script)![1]!.replace(/''/g, "'");
+      const admin = /-RunLevel (\w+)/.exec(script)![1] === "Highest";
+      // Where windows.json names none, the data directory's product's (install.ps1 writes none for its own).
+      const own = kept === null || kept === "not json" || kept === '  {"task":""}  ' || kept === '{"admin":1}';
+      if (own) assert.equal(task, `${dataDir.endsWith(".monoid") ? "monoid" : "still.fail"} station update`, `${runDir} ${kept}`);
+      await same({ fn: "windowsTaskOf", kept, dataDir }, { task, admin });
+      await same({ fn: "windowsRegisterScript", hidden: `${runDir}\\stillfail-update-w.exe`, ps1: `${runDir}\\update.ps1`, runDir, task, admin }, script);
+    }
+  }
+  for (const [dataDir, task] of [["C:\\Users\\alice\\.MONOID\\", "monoid station update"], ["/home/a/.monoid/", "monoid station update"], ["C:\\Users\\alice\\.stillfail", "still.fail station update"], ["", "still.fail station update"]]) {
+    await same({ fn: "windowsTaskOf", kept: null, dataDir }, { task, admin: false });
   }
   const there = ["C:\\", "E:\\", "Z:\\"];
   await same({ fn: "winDrives", there }, await w.drives(async (p: string) => there.includes(p)));
@@ -1306,14 +1314,21 @@ test("ops/log-export.ts and telemetry.ts: the log as it may leave the machine", 
     { ms: 1_790_000_000_123.4, level: "WARN" as const, at: "cloud", message: "presence lost for alice@example.com", fields: { error: "ECONNRESET", text: "people's words", workspace: "not-an-id", n: 3, f: 1.5, ok: true, nested: { name: "x", path: "/Users/alice/y" }, list: ["/home/z/q", 2], und: undefined } },
     { ms: 0, level: "INFO" as const, at: "x", message: "", fields: { workspace: "01ARZ3NDEKTSV4RRFFQ69G5FAV", big: 2 ** 60 } },
     { ms: 5, level: "ERROR" as const, at: "y", message: "e", fields: {} },
+    { ms: 6, level: "INFO" as const, at: "traces", message: "span", fields: { trace: "0af7651916cd43dd8448eb211c80319c" } },
+    { ms: 7, level: "INFO" as const, at: "traces", message: "span", fields: { trace: "0".repeat(32) } },
+    { ms: 8, level: "WARN" as const, at: "traces", message: "span", fields: { trace: "0AF7651916CD43DD8448EB211C80319C" } },
   ];
   for (const l of lines) await same({ fn: "logRecord", line: l, home: "/Users/alice" }, record(l, "/Users/alice"));
   // The export's batches: what waits, what is dropped, what is sent again.
   const { LogExport } = await privateOf("ops/log-export.ts", { wall: { now: () => 1_790_000_000_000, every: () => () => {} }, process: { env: { HOME: "/Users/alice" }, stderr: { write: () => {} } } }, "export");
+  // (what each batch says the station runs on, given: the defaults are this process's)
+  const described = { os: "linux", arch: "x64", runtime: "moonbit", role: "rig" };
   const scripts = [
-    [{ do: "add", line: lines[0], enabled: true }, { do: "configure" }, { do: "add", line: lines[0], enabled: true }, { do: "add", line: lines[1], enabled: false }, { do: "send", enabled: true, station: "S", version: "0.1.2", statuses: [-1] }],
-    [{ do: "configure" }, { do: "addMany", line: lines[2], count: 5003 }, { do: "send", enabled: true, station: null, version: "v", statuses: [] }, { do: "send", enabled: true, station: "S", version: "v", statuses: [0] }, { do: "send", enabled: true, station: "S", version: "v", statuses: [-1, 400, -1] }],
-    [{ do: "configure" }, { do: "addMany", line: lines[2], count: 1200 }, { do: "send", enabled: true, station: "S", version: "v", statuses: [-1, 429] }, { do: "send", enabled: false, station: "S", version: "v", statuses: [] }],
+    [{ do: "add", line: lines[0], enabled: true }, { do: "configure", ...described }, { do: "add", line: lines[0], enabled: true }, { do: "add", line: lines[1], enabled: false }, { do: "send", enabled: true, station: "S", version: "0.1.2", statuses: [-1] }],
+    [{ do: "configure", ...described }, { do: "addMany", line: lines[2], count: 5003 }, { do: "send", enabled: true, station: null, version: "v", statuses: [] }, { do: "send", enabled: true, station: "S", version: "v", statuses: [0] }, { do: "send", enabled: true, station: "S", version: "v", statuses: [-1, 400, -1] }],
+    [{ do: "configure", ...described }, { do: "addMany", line: lines[2], count: 1200 }, { do: "send", enabled: true, station: "S", version: "v", statuses: [-1, 429] }, { do: "send", enabled: false, station: "S", version: "v", statuses: [] }],
+    // Past what waits the oldest INFO lines go first, the oldest of the rest once none is left.
+    [{ do: "configure", ...described }, { do: "addMany", line: lines[0], count: 7 }, { do: "addMany", line: lines[1], count: 4995 }, { do: "addMany", line: lines[2], count: 9 }, { do: "send", enabled: true, station: "S", version: "v", statuses: [0] }, { do: "addMany", line: lines[0], count: 5002 }, { do: "send", enabled: true, station: "S", version: "v", statuses: [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1] }],
   ];
   for (const steps of scripts) {
     const e = new LogExport();
@@ -1322,7 +1337,7 @@ test("ops/log-export.ts and telemetry.ts: the log as it may leave the machine", 
     let stationNow: string | null = null;
     let versionNow = "";
     for (const step of steps as Record<string, any>[]) {
-      if (step.do === "configure") e.configure({ enabled: () => enabledNow, station: () => stationNow, version: () => versionNow, home: "/Users/alice" });
+      if (step.do === "configure") e.configure({ enabled: () => enabledNow, station: () => stationNow, version: () => versionNow, home: "/Users/alice", os: step.os, arch: step.arch, runtime: step.runtime, role: step.role });
       else if (step.do === "add") { enabledNow = step.enabled; e.add(step.line); enabledNow = true; }
       else if (step.do === "addMany") for (let i = 0; i < step.count; i++) e.add(step.line);
       else {
@@ -1350,6 +1365,19 @@ test("ops/log-export.ts and telemetry.ts: the log as it may leave the machine", 
   for (const status of [undefined, 400, 404, 429, 500, 399]) {
     const m = await privateOf("ops/log-export.ts", {}, "refused");
     await same({ fn: "logRefused", status }, m.refused(status === undefined ? new Error("x") : { status }));
+  }
+  // ops/forewarn.ts: what runs out, said as it starts and again while it lasts.
+  {
+    const { Forewarn } = await import("../src/ops/forewarn.ts");
+    const MiB = 1_048_576;
+    const fine = { diskFree: 100_000 * MiB, diskTotal: 500_000 * MiB, walBytes: 4 * MiB, openFds: 120, rss: 300 * MiB, relayConflict: false };
+    const looks = [
+      fine, { ...fine, diskFree: 1_500.4 * MiB }, { ...fine, diskFree: 1_500 * MiB, walBytes: 300 * MiB }, { ...fine, diskFree: 4_000 * MiB, diskTotal: 100_000 * MiB, openFds: 2_048, relayConflict: true },
+      { ...fine, openFds: 3_000, rss: null, relayConflict: true }, { ...fine, diskFree: null, diskTotal: null, openFds: null }, { ...fine, diskFree: 3 * MiB, diskTotal: 7 * MiB, relayConflict: true }, fine,
+    ];
+    const steps = looks.map((look, i) => ({ look, now: i * 300_000 }));
+    const f = new Forewarn();
+    await same({ fn: "forewarn", steps }, steps.map((st) => f.look(st.look, st.now)));
   }
   // Error reports: the event a report makes.
   const posted: any[] = [];
@@ -1491,14 +1519,15 @@ const PROCS = [
 test("resources/: what processes use, whose they are", { skip }, async () => {
   const mod = await privateOf("resources/module.ts", {}, "resources");
   const { appBundles, parseNettop, programsIn, frontIn } = await import("../src/resources/module.ts");
-  const plists: Record<string, string> = { "/Applications/still.fail.app/Contents/Info.plist": "<string>fail.still.desktop.beta</string>", "/Applications/Other.app/Contents/Info.plist": "x" };
-  const commands = ["/Applications/still.fail.app/Contents/MacOS/x", "/Applications/still.fail.app/Contents/MacOS/x", "/Applications/Other.app/Contents/MacOS/y", "/Applications/Other.app/Contents/MacOS/y", "/usr/bin/z", "/Missing.app/Contents/a"];
+  const plists: Record<string, string> = { "/Applications/still.fail.app/Contents/Info.plist": "<string>fail.still.desktop.beta</string>", "/Applications/Other.app/Contents/Info.plist": "x", "/Applications/monoid.app/Contents/Info.plist": "<string>build.monoid.desktop</string>", "/Applications/monoid beta.app/Contents/Info.plist": "<string>build.monoid.desktop.beta</string>" };
+  const commands = ["/Applications/still.fail.app/Contents/MacOS/x", "/Applications/still.fail.app/Contents/MacOS/x", "/Applications/Other.app/Contents/MacOS/y", "/Applications/Other.app/Contents/MacOS/y", "/usr/bin/z", "/Missing.app/Contents/a", "/Applications/monoid.app/Contents/MacOS/m", "/Applications/monoid.app/Contents/MacOS/m", "/Applications/monoid beta.app/Contents/MacOS/m", "/Applications/monoid beta.app/Contents/MacOS/m"];
   const isApp = appBundles(async (p) => { if (plists[p] === undefined) throw new Error("none"); return Buffer.from(plists[p]!); });
   const told: boolean[] = [];
   for (const c of commands) {
     told.push(isApp(c));
     await new Promise((r) => setImmediate(r));
   }
+  assert.deepEqual(told, [false, true, false, false, false, false, false, true, false, true], "monoid's desktop app (build.monoid.desktop) too");
   await same({ fn: "appBundles", commands, plists }, told);
   const ps = " 12 /usr/bin/node --x y\n 7 /bin/sh -c 'a b'\nbad\n  8\n 9 \n 12 again\n";
   await same({ fn: "parseArgs", text: ps }, entries(mod.parseArgs(ps)));

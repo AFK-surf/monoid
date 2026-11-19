@@ -149,6 +149,37 @@ test "style_node: a least width said Within is so many points where what holds i
 }
 
 ///|
+test "style_node: a most width said Within is so many points where what holds it has the room, all of it where it has less" {
+  let wide = @signals.signal(true, same=fn(a, b) { a == b })
+  let at : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  }, w=500.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      r.width(By(fn() { Some(if wide.get() { 400.0 } else { 180.0 }) })).lines_up(Is(Some(Start))) |> ignore
+      // (a box as wide as what it holds, 300, not cut short (no w=Cut): its most alone keeps it in)
+      r.box(fn(b) {
+        at.val = Some(b)
+        style_node(b, fn() { @ui.style(max_w=Within(240.0)) })
+        b.box(fn(k) { style_node(k, fn() { @ui.style(w=Fixed(300.0), h=Fixed(10.0)) }) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let seen = [at.val.unwrap().placed_window_now().2]
+  wide.set(false)
+  t.run_for(@ui.move_most_ms)
+  seen.push(at.val.unwrap().placed_window_now().2)
+  wide.set(true)
+  t.run_for(@ui.move_most_ms)
+  seen.push(at.val.unwrap().placed_window_now().2)
+  assert_eq(seen, [240.0, 180.0, 240.0])
+}
+
+///|
 test "style_node: a share of what holds it as a size is laid on no node: a fault naming where it was said, the property and its value" {
   let told : Array[String] = []
   @view.faults_stop.val = false
@@ -160,4 +191,75 @@ test "style_node: a share of what holds it as a size is laid on no node: a fault
   @view.fault_told.val = None
   assert_eq(told.length(), 1, msg=told.join(" | "))
   assert_true(told[0].contains("style_node_wbtest.mbt") && told[0].contains("w=Pct("), msg=told[0])
+}
+
+///|
+/// A window 400 by 300 holding a node 200 by 100 at its top left, `before` run on it as it is made, then styled as
+/// `look` says, two boxes 20 by 10 in it (kept in `at`).
+fn style_lay_tester(before : (@view.View) -> Unit, look : () -> @ui.Style, at : Array[@view.View]) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(n) {
+      n.width(Is(Some(200.0))).height(Is(Some(100.0))) |> ignore
+      before(n)
+      style_node(n, look)
+      for _ in 0..<2 {
+        n.box(fn(b) {
+          at.push(b)
+          b.width(Is(Some(20.0))).height(Is(Some(10.0))) |> ignore
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "style_node: a row, padding, gap and how it lines up and lies along that the node had, and the style never says, are kept" {
+  let at : Array[@view.View] = []
+  let _ = style_lay_tester(
+    fn(n) {
+      n
+      .row(Is(true))
+      .padding(Is((10.0, 10.0, 10.0, 10.0)))
+      .gap(Is(8.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      |> ignore
+    },
+    fn() { @ui.css("bg=Veil") },
+    at,
+  )
+  // (20 + 8 + 20 in the middle of 180 along, from 10; 10 in the middle of 80 across, from 10)
+  assert_eq(at.map(fn(b) { b.placed_window_now() }), [
+    (76.0, 45.0, 20.0, 10.0),
+    (104.0, 45.0, 20.0, 10.0),
+  ])
+}
+
+///|
+test "style_node: a row, padding, gap and how it lines up and lies along said before and said no more are put back to none" {
+  let on = @signals.signal(true, same=fn(a, b) { a == b })
+  let at : Array[@view.View] = []
+  let said = @ui.css("row p=S3 gap=S2 align=ACenter justify=JCenter bg=Surface")
+  let plain = @ui.css("bg=Veil")
+  let t = style_lay_tester(fn(_n) {  }, fn() { if on.get() { said } else { plain } }, at)
+  let placed = fn() { at.map(fn(b) { b.placed_window_now() }) }
+  let p = @ui.Space::S3.px()
+  let g = @ui.Space::S2.px()
+  let x = p + (200.0 - 2.0 * p - (40.0 + g)) / 2.0
+  let y = p + (100.0 - 2.0 * p - 10.0) / 2.0
+  let seen = [placed()]
+  on.set(false)
+  t.run_for(@ui.move_most_ms)
+  seen.push(placed())
+  assert_eq(seen, [
+    [(x, y, 20.0, 10.0), (x + 20.0 + g, y, 20.0, 10.0)],
+    [(0.0, 0.0, 20.0, 10.0), (0.0, 10.0, 20.0, 10.0)],
+  ])
 }

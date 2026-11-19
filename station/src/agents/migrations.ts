@@ -182,6 +182,7 @@ export const NOTES: [number, string][] = [
   [175, "Skill stillfail-browser: Farview now has an authenticator of its own as Chrome does, so a site asking for a passkey stored in its sign-in signs with it automatically in either engine; no need to switch to Chrome for a passkey."],
   [176, "relays action enroll (name) now issues a one-use workspace mesh relay enrollment token, valid for 24 hours. Keep it private; it grants forwarding only and is redeemed at the issuing station. list includes registered mesh nodes; revoke (node) asks the issuing station to remove one."],
   [177, "station_version: list shows this station's release, its channel's latest and the earlier releases it can go back to; update installs the latest; back {to} goes back to one of them when the latest broke something (updating by itself pauses until a newer release is out)."],
+  [178, "New tool chat_configure: inspect or change a session's runtime, model, effort, speed, context, preset or account (repick) here or on another workspace station; omit chat or pass \"self\" for your own. chat_list now shows each session's model and creator and accepts model, created_by (\"me\" or email), archived and station (name/id or \"all\") filters. Superseded tools (adb_devices, phone_use, secret_reask, station_retire) are hidden from tools/list in favor of device_list/device_use and station_move."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

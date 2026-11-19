@@ -479,7 +479,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   let done = Ref(false)
   // (until the far side is first heard, SILENT_MS at the least: a shortened silence is for a connection once made)
   ignore(
-    host.rt.fork(name="the bridge's pings", async fn() {
+    host.rt.fork_daemon("the bridge's pings", on_error=e => @host.note("the bridge's pings failed: \{e}"), async fn() {
       let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
       while !done.val {
         @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
@@ -587,15 +587,18 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
             match port {
               None => send(p53_t_close, stream, b"")
               Some((_, here)) =>
-                match (try { Ok(host.shell("tcp.open", { "port": p53_i(here) })) } catch { e => Err(e) }) {
-                  Ok((said, _)) => {
-                    let id = p53_num(said, "id").unwrap_or(0.0).to_int64()
+                match (try { Ok(host.tcp_open(here)) } catch { e => Err(e) }) {
+                  Ok(conn) => {
+                    let id = match conn.id {
+                      Number(n, ..) => n.to_int64()
+                      _ => 0L
+                    }
                     sockets[stream] = id
                     ignore(
-                      host.rt.fork(name="a connection through the bridge", async fn() {
+                      host.rt.fork_daemon("a connection through the bridge", on_error=e => @host.note("a connection through the bridge failed: \{e}"), async fn() {
                         while true {
-                          match (try { Ok(host.shell("tcp.read", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) }) {
-                            Ok((_, Some(b))) if b.length() > 0 => send(p53_t_data, stream, b)
+                          match (try { Ok(host.tcp_read(Json::number(id.to_double()))) } catch { e => Err(e) }) {
+                            Ok(Some(b)) if b.length() > 0 => send(p53_t_data, stream, b)
                             _ => break
                           }
                         }
@@ -603,7 +606,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
                           sockets.remove(stream)
                           send(p53_t_close, stream, b"")
                         }
-                        ignore(try { Ok(host.shell("tcp.close", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) })
+                        host.tcp_close(Json::number(id.to_double()))
                       }),
                     )
                   }
@@ -613,14 +616,18 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
           } else if t == p53_t_data {
             match sockets.get(stream) {
               Some(id) =>
-                ignore(try { Ok(host.shell("tcp.write", { "id": Json::number(id.to_double()) }, bytes=payload)) } catch { e => Err(e) })
+                host.tcp_write(Json::number(id.to_double()), payload) catch {
+                  _ => ()
+                }
               None => ()
             }
           } else if t == p53_t_close {
             match sockets.get(stream) {
               Some(id) => {
                 sockets.remove(stream)
-                ignore(try { Ok(host.shell("tcp.end", { "id": Json::number(id.to_double()) })) } catch { e => Err(e) })
+                host.tcp_end(Json::number(id.to_double())) catch {
+                  _ => ()
+                }
               }
               None => ()
             }

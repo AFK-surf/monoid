@@ -107,6 +107,61 @@ pub fn View::shown_by(self : View, of : View, f : (Double) -> GroundShape) -> Vi
 }
 
 ///|
+/// What draws this node's ground (View::shown_by) worked out of where the boxes node `of` lays out are drawn (past any
+/// slot: a page's list's blocks, its spacers), drawn again as any of them is placed or drawn off anew (moved by its
+/// layout, by a way it is drawn off on: a list's `flips`), so what it draws goes with them in every frame they go,
+/// never where they were last told to rest. Till this node goes.
+pub fn View::ground_by_placed(self : View, of : View) -> View {
+  guard self.live() is Some(_) && of.live() is Some(_) else { return self }
+  let tree = self.tree
+  let me = self.at
+  let them = of.at
+  let fs = match tree.placed_followers.get(them) {
+    Some(fs) => fs
+    None => {
+      let fs = []
+      tree.placed_followers[them] = fs
+      fs
+    }
+  }
+  fs.push(me)
+  self.owns(fn() {
+    match tree.placed_followers.get(them) {
+      Some(fs) => {
+        let left = fs.filter(fn(f) { f != me })
+        if left.is_empty() {
+          tree.placed_followers.remove(them)
+        } else {
+          fs.clear()
+          fs.append(left)
+        }
+      }
+      None => ()
+    }
+  })
+  |> ignore
+  self
+}
+
+///|
+/// Node `at` placed: what draws its ground by where the boxes beside it are drawn (View::ground_by_placed, of the box
+/// that lays it out, past any slot) drawn again, its ground alone, no place of it moved (as Tree::flip_in_by's ground).
+fn Tree::placed_told(self : Tree, at : Int) -> Unit {
+  let mut h = self.nodes[at].parent
+  while h >= 0 && self.nodes[h].slot {
+    h = self.nodes[h].parent
+  }
+  guard h >= 0 && self.placed_followers.get(h) is Some(fs) else { return }
+  for f in fs {
+    if f != at && self.nodes[f].live {
+      self.places_rev = self.places_rev + 1
+      self.touched(f, words=false)
+      self.composed.push({ at: f, gen: self.nodes[f].gen })
+    }
+  }
+}
+
+///|
 /// Whether what node `id` holds keeps to its foot now, its height on a way said so (View::resizes `foot`): an old view
 /// hosted in it is placed from its foot, cut at its top, as a node's children are (flex's come_keep_foot).
 pub fn Tree::holds_to_foot(self : Tree, id : NodeId) -> Bool {

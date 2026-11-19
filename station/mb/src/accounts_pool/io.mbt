@@ -241,28 +241,17 @@ pub fn unanswered(e : Error) -> Bool {
 ///|
 /// URLSearchParams' form encoding of one value (application/x-www-form-urlencoded).
 pub fn form_encode(s : String) -> String {
-  let out = StringBuilder::new()
-  let bytes = utf8(s)
-  let hex = "0123456789ABCDEF"
-  for b in bytes {
-    let c = b.to_int()
-    if (c >= 'a'.to_int() && c <= 'z'.to_int()) ||
+  @url.percent_encode(
+    s,
+    c => (c >= 'a'.to_int() && c <= 'z'.to_int()) ||
       (c >= 'A'.to_int() && c <= 'Z'.to_int()) ||
       (c >= '0'.to_int() && c <= '9'.to_int()) ||
       c == '*'.to_int() ||
       c == '-'.to_int() ||
       c == '.'.to_int() ||
-      c == '_'.to_int() {
-      out.write_char(c.unsafe_to_char())
-    } else if c == 0x20 {
-      out.write_char('+')
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
+      c == '_'.to_int(),
+    space_plus=true,
+  )
 }
 
 ///|

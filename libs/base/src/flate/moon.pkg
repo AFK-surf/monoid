@@ -1,0 +1,9 @@
+import {
+  "base/codec",
+}
+
+import {
+  "base/codec",
+  "base/flate",
+  "moonbitlang/core/encoding/utf8",
+} for "test"

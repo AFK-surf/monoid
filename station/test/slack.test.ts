@@ -14,10 +14,10 @@ import { toolStatus } from "../src/sessions/chat.ts";
 import { answerOf, answeredBlocks, questionBlocks } from "../src/slack/cards.ts";
 import { NameBook } from "../src/connects/names.ts";
 import { ThreadStatus } from "../src/slack/status.ts";
-import { SlackSurface, personOf, toEvent, verifySlackTokens } from "../src/slack/surface.ts";
+import { SlackSurface, personOf, toEvent, updateText, verifySlackTokens } from "../src/slack/surface.ts";
 import { SlackClient } from "../src/slack/web.ts";
 import { settle, testClock } from "./hub-fakes.ts";
-import { FakeSlack, bot } from "./slack-fake.ts";
+import { FakeSlack, bot, updateTooLong } from "./slack-fake.ts";
 
 const quiet = async (_: ChatEvent) => {};
 const PING = 50;
@@ -497,6 +497,133 @@ describe("slack", { concurrency: true }, () => {
         type: "context",
         elements: [{ type: "mrkdwn", text: "🔕 已退出这个 thread，@ 我即可回来" }],
       });
+    } finally {
+      await surface.stop();
+      await fake.close();
+    }
+  });
+
+  test("a message over chat.update's 4,000 bytes of text changes in place all the same: its blocks whole, its text cut at a whole character", async () => {
+    const fake = await FakeSlack.start();
+    bot(fake);
+    const surface = new SlackSurface({ appToken: "xapp-1", botToken: "xoxb-1", client: new SlackClient(fake.base), pingMs: PING, staleMs: STALE * 5 });
+    const heard: ChatEvent[] = [];
+    // 2,433 characters of Chinese, 7,300 bytes: posted as one message; the rocket after the first 3,495 bytes would
+    // cross the 3,497 the cut keeps before its "…"
+    const long = `${"长".repeat(1165)}🚀${"长".repeat(1267)}`;
+    const cut = `${"长".repeat(1165)}…`;
+    const blocks = (c: { params: Record<string, string> }) => JSON.parse(c.params.blocks!);
+    const fits = (c: { params: Record<string, string> }) => {
+      assert.equal(c.params.text, cut);
+      assert.ok(Buffer.byteLength(c.params.text!, "utf8") <= 3_500);
+    };
+    const thread = { channel: "C1", threadTs: "1.1" };
+    try {
+      await surface.start(async (event) => void heard.push(event));
+      await fake.until("a socket", () => fake.sockets.length === 1 && surface.socket().connected);
+      // (a) an options card answered
+      const asked = await surface.post(thread, long, [], { type: "options", options: [{ label: "合并", recommended: true }, { label: "先不" }] });
+      assert.equal(fake.calls("chat.postMessage").at(-1)!.params.text, long, "posted whole");
+      fake.send({
+        type: "interactive",
+        envelope_id: "i1",
+        payload: {
+          type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: asked, thread_ts: "1.1", text: long },
+          actions: [{ action_id: "sf_answer", value: '{"l":["先不","合并"]}', action_ts: "9.5" }],
+          state: { values: { b1: { sf_pick: { selected_option: { value: "1" } } } } },
+        },
+      });
+      await fake.until("the card changed", () => fake.calls("chat.update").length === 1);
+      const answered = fake.calls("chat.update")[0]!;
+      fits(answered);
+      assert.deepEqual(blocks(answered).map((b: any) => b.type), ["markdown", "context"], "nothing to press any more");
+      assert.equal(blocks(answered)[0].text, long, "the question whole");
+      assert.match(answered.params.blocks!, /Ada 回答：合并/);
+      // (b) a login's code entered, and a card closed otherwise
+      const login = await surface.post(thread, long, [], { type: "login", login: "l1" });
+      fake.send({
+        type: "interactive",
+        envelope_id: "i2",
+        payload: {
+          type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: login, thread_ts: "1.1", text: long },
+          actions: [{ action_id: "sf_login", action_ts: "9.6" }], state: { values: { sf_code: { sf_code: { value: "4/0Ab-code" } } } },
+        },
+      });
+      await fake.until("the login card changed", () => fake.calls("chat.update").length === 2);
+      const entered = fake.calls("chat.update")[1]!;
+      fits(entered);
+      assert.deepEqual([entered.params.ts, blocks(entered).map((b: any) => b.type), blocks(entered)[0].text], [login, ["markdown", "context"], long]);
+      const field = await surface.post(thread, long, [], { type: "text" });
+      await surface.cardEnded(thread, field, long, { type: "text" }, { why: "withdrawn" });
+      const ended = fake.calls("chat.update")[2]!;
+      fits(ended);
+      assert.deepEqual([ended.params.ts, blocks(ended).map((b: any) => b.type), blocks(ended)[0].text], [field, ["markdown", "context"], long]);
+      // (c) a plain message: where the thread stands said under it, the message edited, the line taken back
+      const said = await surface.post(thread, long, []);
+      surface.standsAt(thread, { kind: "done", words: "好了" });
+      await fake.until("the line added", () => fake.calls("chat.update").length === 4);
+      const added = fake.calls("chat.update")[3]!;
+      fits(added);
+      assert.deepEqual([added.params.ts, blocks(added).map((b: any) => b.type), blocks(added)[0].text], [said, ["markdown", "context"], long]);
+      assert.equal(await surface.edit(thread, said, `${long}。`), true);
+      const edited = fake.calls("chat.update")[4]!;
+      fits(edited);
+      assert.deepEqual([blocks(edited).map((b: any) => b.type), blocks(edited)[0].text], [["markdown", "context"], `${long}。`]);
+      surface.working(thread, "1.5", "正在思考…");
+      await fake.until("the line taken back", () => fake.calls("chat.update").length === 6);
+      const back = fake.calls("chat.update")[5]!;
+      fits(back);
+      assert.deepEqual(blocks(back), [{ type: "markdown", text: `${long}。` }]);
+      assert.deepEqual(heard.map((e) => e.type), ["message", "loginCode"]);
+    } finally {
+      await surface.stop();
+      await fake.close();
+    }
+  });
+
+  test("a card answered on a message whose `&`, `<…>` and link Slack makes longer: the first chat.update fits; one of links alone tried again shorter", async () => {
+    const fake = await FakeSlack.start();
+    bot(fake);
+    const surface = new SlackSurface({ appToken: "xapp-1", botToken: "xoxb-1", client: new SlackClient(fake.base), pingMs: PING, staleMs: STALE * 5 });
+    // as 1795075309.381569 was: over 4,000 bytes, its text cut at 4,000 grew past them once Slack escaped and linked it
+    const long = `合并 PR & 看 <这个> https://github.com/AFK-surf/Cue/pull/5440 ${"长".repeat(1400)}`;
+    assert.ok(Buffer.byteLength(long, "utf8") > 4_000);
+    // 3,300 bytes, cut to nothing, yet over 4,000 once its links and emails are made links
+    const storm = "https://e.co/x a@e.co ".repeat(150);
+    assert.ok(updateTooLong(storm));
+    const thread = { channel: "C1", threadTs: "1.1" };
+    const card = { type: "options" as const, options: [{ label: "合并", recommended: true }, { label: "先不" }] };
+    const answer = (ts: string, text: string, envelope: string) =>
+      fake.send({
+        type: "interactive",
+        envelope_id: envelope,
+        payload: {
+          type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts, thread_ts: "1.1", text },
+          actions: [{ action_id: "sf_answer", value: '{"l":["先不","合并"]}', action_ts: "9.5" }],
+          state: { values: { b1: { sf_pick: { selected_option: { value: "1" } } } } },
+        },
+      });
+    try {
+      await surface.start(async () => {});
+      await fake.until("a socket", () => fake.sockets.length === 1 && surface.socket().connected);
+      const asked = await surface.post(thread, long, [], card);
+      answer(asked, long, "i1");
+      await fake.until("the card changed", () => fake.calls("chat.update").length === 1);
+      const first = fake.calls("chat.update")[0]!;
+      assert.equal(first.params.text, updateText(long));
+      assert.ok(first.params.text!.endsWith("…") && !updateTooLong(first.params.text!), "taken the first time");
+      assert.equal(JSON.parse(first.params.blocks!)[0].text, long, "the question whole");
+      assert.match(first.params.blocks!, /Ada 回答：合并/);
+      const stormed = await surface.post(thread, storm, [], card);
+      answer(stormed, storm, "i2");
+      await fake.until("tried again", () => fake.calls("chat.update").length === 3);
+      const [refused, again] = fake.calls("chat.update").slice(1);
+      assert.equal(refused!.params.text, storm, "within 3,500 bytes as counted, so not cut");
+      assert.equal(again!.params.text, updateText(storm, 200));
+      assert.ok(Buffer.byteLength(again!.params.text!, "utf8") <= 200 && again!.params.text!.endsWith("…"));
+      assert.equal(again!.params.blocks, refused!.params.blocks, "the same blocks, whole");
+      assert.equal(JSON.parse(again!.params.blocks!)[0].text, storm);
+      assert.match(again!.params.blocks!, /Ada 回答：合并/);
     } finally {
       await surface.stop();
       await fake.close();

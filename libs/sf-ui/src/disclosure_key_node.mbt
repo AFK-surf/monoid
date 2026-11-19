@@ -14,7 +14,7 @@ pub fn disclosure_key_node(
   icon_size? : Double = 12.0,
   loc~ : SourceLoc,
 ) -> Unit {
-  @headless.disclosure(made_for=loc, parent, label, open, fn(_) { toggle() }, fn(k, _) {
+  @headless.disclosure(made_for=loc, parent, label, open, fn(_) { @view.transition(toggle) }, fn(k, _) {
     k
     .focus_ring_theme()
     .width(Is(Some(side)))

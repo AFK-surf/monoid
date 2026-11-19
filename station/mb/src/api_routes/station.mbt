@@ -75,7 +75,7 @@ fn Admin::agent_env_routes(self : Admin) -> Array[Route] {
       }
       let before = self.agent_env(self.config_raw())
       // As written (`text`, a .env file's lines): all of them, a secret left masked kept as it was; else a patch.
-      let mut next = Obj([])
+      let mut next = JV::Obj([])
       match (body.get("text"), body.get("env")) {
         (Some(Str(text)), _) => {
           let read = self.backend.ask("ops/agent-env.parseEnvText", [
@@ -296,7 +296,7 @@ fn Admin::network_routes(self : Admin) -> Array[Route] {
       guard body_json(r) is Some(body) else {
         return error(400, "invalid JSON")
       }
-      let mut set = Obj([])
+      let mut set = JV::Obj([])
       if body is (Obj(_) | Arr(_)) && jhas(body, "congestion") {
         match body.get("congestion") {
           Some(Str("cubic" | "bbr") as c) => set = jset(set, "congestion", c)
@@ -686,7 +686,7 @@ fn Admin::xshare_routes(self : Admin) -> Array[Route] {
         let key = segment(m[0].unwrap())
         // Its own chat on the pages, else the Slack thread it is in.
         let home = if self.store("getSession", [js(key)]) is Null {
-          Null
+          JV::Null
         } else {
           let own = self.store("homeChat", [js(key)])
           if !nullish(own) {

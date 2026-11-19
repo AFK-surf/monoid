@@ -20,7 +20,8 @@
 /// paragraph's links as they are (its words' node, each link's way, its words and its first run: what shows over one
 /// while it is pointed at, @ui.runs_links' `shown`); `link_cards`, the card each link has (drawn in its layer while a
 /// mouse rests on that link: link_cards_node); `one_line`: its first block's words alone, on one line as wide as
-/// they are, cut with an ellipsis where the column is narrower (markdown's: a notice closed); `chat_title`, what a bare
+/// they are, cut with an ellipsis where the column is narrower (markdown's: a notice closed); `one_line_by`: so while it
+/// says, and else all of it, those words one node either way (a notice opened and closed: their way); `chat_title`, what a bare
 /// link to a chat reads as; `code`, a fenced block of a language drawn another way (what draws it, its code as it
 /// changes); `files`, the files it names by their names, drawn where it names them (a paragraph of only a link to one,
 /// or its images); `screens`, its links to screens: a paragraph of only one its card, one bare in a sentence its title.
@@ -51,6 +52,7 @@ pub fn markdown_node(
   on_link_shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?),
   one_line? : Bool = false,
+  one_line_by? : () -> Bool,
   chat_title? : (String) -> String? = fn(_) { None },
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   files? : (String) -> PlacedNode?,
@@ -114,6 +116,10 @@ pub fn markdown_node(
       glyphs,
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
+      rows_by: match (piece.bind(fn(p) { p.rows }), piece_by) {
+        (Some(_), Some(by)) => Some(fn() { by().bind(fn(p) { p.rows }) })
+        _ => None
+      },
       across_of,
       tracks_of,
       text_face,
@@ -126,7 +132,15 @@ pub fn markdown_node(
       Some(given) => @signals.computed(fn(_) { core_blocks(given(), text()) })
       None => @signals.computed(fn(_) { md_node_blocks(text(), tree()) })
     }
-    if one_line {
+    if one_line_by is Some(closed) {
+      // (its first block's words one node, on one line cut short while `closed`, broken into lines and the rest of its
+      // blocks under them while not: the same words broken anew at another width, never one copy for another, so on a
+      // way they are drawn at their size and cut, not drawn smaller and grown back (mbui's grown_cut_of))
+      md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, one_line=closed)
+      col.show(fn() { !closed() && blocks.get().length() > 1 }, fn(rest) {
+        md_blocks_node(rest, md, fn() { blocks.get() }, false, range=Some((1, 1 << 30)))
+      })
+    } else if one_line {
       // (its first block's words on one line, cut short: markdown's one_line)
       md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, wrap=false, cut=true)
     } else {
@@ -336,6 +350,9 @@ priv struct MdNode {
   /// the rows of its table or the items of its list it draws where it is a piece of one (markdown_node's `piece`):
   /// none, all of them; none in what a block holds (a list's item, a quote)
   table_rows : (Int, Int)?
+  /// those rows or items as they are now, where the piece is told as it changes (markdown_node's `piece_by`: a message's
+  /// table streamed in, the piece of its rows after the first growing as rows come), none: table_rows all along
+  rows_by : (() -> (Int, Int)?)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
   /// what the pieces of the table at a block keep of its columns together (markdown_node's `tracks_of`: measured once
@@ -714,7 +731,7 @@ fn md_block_node(
           Some(List(l)) => Some(l)
           _ => None
         }
-      }, 1, items=md.table_rows)
+      }, 1, items=md.table_rows, items_by?=md.rows_by)
     4 => {
       let lang = fn() {
         match block() {
@@ -787,6 +804,7 @@ fn md_block_node(
         md.on_link_hold,
         fit=md.fit,
         rows=md.table_rows,
+        rows_by?=md.rows_by,
         across=match md.table_rows {
           Some(_) => @signals.untracked(fn() { (md.across_of)(md.block_at) })
           None => @view.Scroll::across()
@@ -797,6 +815,11 @@ fn md_block_node(
           None => None
         },
         cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
+        // (its cells' words as the message's are, measured as they are drawn: its files' chips, a bare link's title)
+        cell_runs=fn(cell) { md_inlines_runs(md, cell, 0) },
+        line_share=md.line,
+        link_cards=md.link_cards,
+        on_link_shown=md.on_link_shown,
       )
     20 => {
       // (by what it links to, as it is now: another's card made again in its place)
@@ -898,6 +921,51 @@ fn md_block_node(
 }
 
 ///|
+/// Words `now` of a message as the pieces they are drawn in (`weight`: 600 or more bold), as md_words_node and a table's
+/// cell draw them: a bare link to a screen or a chat read as its title, a file's chip where the message marks paths,
+/// what a find found in its weight, in the faces tried and the serif face where the message is told them (Md::words').
+fn md_inlines_runs(md : MdNode, now : Array[MdInline], weight : Int) -> Array[@ui.Run] {
+  let titles : Map[String, String] = Map([])
+  // (a bare link to a screen reads as its title, a chat's too where the message says it: Md::words')
+  match md.screens {
+    Some(sc) => {
+      let bare = []
+      bare_screens(now, bare)
+      for b in bare {
+        titles[b.0] = (sc.title)(b.0, b.1)
+      }
+    }
+    None => ()
+  }
+  let chats = []
+  bare_chats(now, chats)
+  for href in chats {
+    match (md.chat_title)(href) {
+      Some(title) => titles[href] = title
+      None => ()
+    }
+  }
+  let out = []
+  runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
+  let runs = found_weight(out, (md.found)())
+  // (in the faces tried, where it is told them: Md::words')
+  let text_face = (md.text_face)()
+  let code_face = (md.code_face)()
+  let runs = if (md.serif)() { runs.map(fn(x) { if x.mono || x.code { x } else { { ..x, serif: true } } }) } else { runs }
+  if text_face is None && code_face is None {
+    runs
+  } else {
+    runs.map(fn(run) {
+      let face = if run.code || run.mono { code_face } else { text_face }
+      match face {
+        Some(_) => { ..run, face }
+        None => run
+      }
+    })
+  }
+}
+
+///|
 /// A block's words (`xs`, as they change) as one paragraph of pieces (Md::words'): `size` and `weight` (0: 400), on
 /// Markdown's lines, in the block's ink; links in blue pressed where they lead, code in its ink at 0.9; a bare link to
 /// a chat its title; words found in bold.
@@ -910,50 +978,11 @@ fn md_words_node(
   weight : Int,
   wrap? : Bool = true,
   cut? : Bool = false,
+  one_line? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   // (worked out once as what they are worked out of changes, what reads them many times over reading that)
-  let runs_now = @signals.computed(fn(_) {
-    let now = xs()
-    let titles : Map[String, String] = Map([])
-    // (a bare link to a screen reads as its title, a chat's too where the message says it: Md::words')
-    match md.screens {
-      Some(sc) => {
-        let bare = []
-        bare_screens(now, bare)
-        for b in bare {
-          titles[b.0] = (sc.title)(b.0, b.1)
-        }
-      }
-      None => ()
-    }
-    let chats = []
-    bare_chats(now, chats)
-    for href in chats {
-      match (md.chat_title)(href) {
-        Some(title) => titles[href] = title
-        None => ()
-      }
-    }
-    let out = []
-    runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
-    let runs = found_weight(out, (md.found)())
-    // (in the faces tried, where it is told them: Md::words')
-    let text_face = (md.text_face)()
-    let code_face = (md.code_face)()
-    let runs = if (md.serif)() { runs.map(fn(x) { if x.mono || x.code { x } else { { ..x, serif: true } } }) } else { runs }
-    if text_face is None && code_face is None {
-      runs
-    } else {
-      runs.map(fn(run) {
-        let face = if run.code || run.mono { code_face } else { text_face }
-        match face {
-          Some(_) => { ..run, face }
-          None => run
-        }
-      })
-    }
-  })
+  let runs_now = @signals.computed(fn(_) { md_inlines_runs(md, xs(), weight) })
   let runs = fn() { runs_now.get() }
   let look = fn() -> @view.WordsLook {
     let size = size()
@@ -961,6 +990,10 @@ fn md_words_node(
     // words applied first, as the old view's paragraph's line_em; else Md::lh's points)
     let share = (md.line)()
     let line = if share > 0.0 { -share } else { md_line(md, size) }
+    let wrap = match one_line {
+      Some(f) => !f()
+      None => wrap
+    }
     { size, weight: if weight > 0 { weight } else { 400 }, line, wrap, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
   let words = p.box(made_for=loc, fn(w) {
@@ -998,8 +1031,13 @@ fn md_words_node(
       None => ()
     }
     // (on one line as wide as they are, cut short with an ellipsis where the column is narrower: one_line's)
-    if cut {
-      w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    match one_line {
+      Some(f) =>
+        w.cuts(By(f)).min_width(By(fn() { if f() { Some(0.0) } else { None } })).allow_ellipsis(By(f)) |> ignore
+      None =>
+        if cut {
+          w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+        }
     }
   })
   // (its links pressed and their cards, made once it has one: words_links_node)
@@ -1094,8 +1132,9 @@ fn md_list_node(
   list : () -> MdList?,
   depth : Int,
   items? : (Int, Int)? = None,
+  items_by? : () -> (Int, Int)?,
 ) -> Unit {
-  let inner_md = { ..md, bleed: fn() { 0.0 }, table_rows: None }
+  let inner_md = { ..md, bleed: fn() { 0.0 }, table_rows: None, rows_by: None }
   let s = md.size
   // (the list's own, worked out once for all its items as what they are worked out of changes)
   let ordered_now = @signals.computed(fn(_) { list().map(fn(l) { l.ordered }).unwrap_or(false) })
@@ -1117,6 +1156,11 @@ fn md_list_node(
   // (all its items, or those of them its piece draws (`items`), each by its place among all)
   let count = fn() {
     let n = list().map(fn(l) { l.items.length() }).unwrap_or(0)
+    // (those its piece draws as it is now, where it is told so: more come as the list is streamed in)
+    let items = match items_by {
+      Some(f) => f()
+      None => items
+    }
     match items {
       Some((from, upto)) => {
         let upto = if upto < n { upto } else { n }

@@ -33,8 +33,8 @@ priv struct NavPage[P] {
   mut ended : Bool
   mut page : P
   // the page under it as it was put on the stack (none: the root); only the top changes, so it stays so while it is
-  // there
-  under : P?
+  // there (put on again from the stack's kept left, Nav::take_kept_left: the one under it then)
+  mut under : P?
   // it rose from the bottom (Nav::rise): it goes back down the same way
   mut rise : Bool
   // pushed over the one under it as a phone's are where the stack is drawn flat (Nav::push_over): Ctx::nav_flat slides
@@ -46,6 +46,15 @@ priv struct NavPage[P] {
   // what in it had the keyboard's focus as a page was put over it (0: none), given back as it is on top again
   // (Nav::focus_follows); gone with it, where it leaves the stack before
   mut focus_kept : Int
+  // shown once at least (nav_view's, nav_flat_view's made page first shown): only such an entry is worth keeping as it
+  // leaves (Nav::try_park_left); one put on and taken off unseen made nothing
+  mut shown_once : Bool
+  // its leaving told (Nav's on_entry_leave, on_leave) as it was put by on the stack's kept left (Nav::try_park_left):
+  // not told again as it is let go for good from there, told anew once it is put on again and leaves again
+  mut told_left : Bool
+  // put on again as it was put by (Nav::take_kept_left): what it shows held as it was left, nothing of it waited for
+  // as it comes back, till it shows (Nav::waiting_taken_back)
+  mut taken_back : Bool
 }
 
 ///|
@@ -57,7 +66,19 @@ let nav_serial : Ref[Int] = { val: 0 }
 ///|
 fn[P] nav_page(page : P, under : P?) -> NavPage[P] {
   nav_serial.val = nav_serial.val + 1
-  { serial: nav_serial.val, ended: false, page, under, rise: false, over: false, stint: next_stint(), focus_kept: 0 }
+  {
+    serial: nav_serial.val,
+    ended: false,
+    page,
+    under,
+    rise: false,
+    over: false,
+    stint: next_stint(),
+    focus_kept: 0,
+    shown_once: false,
+    told_left: false,
+    taken_back: false,
+  }
 }
 
 ///|
@@ -125,6 +146,10 @@ struct Nav[P] {
   mut moved_p : Double
   on_leave : (P) -> Unit
   on_entry_leave : (Int, P) -> Unit
+  // told of an entry put by on the kept left (Nav::try_park_left), as it is, in the place of on_entry_leave
+  on_entry_park : (Int, P) -> Unit
+  // told of each entry let go for good (Nav::entry_left), whether its leaving was told as it was put by or now
+  on_entry_gone : (Int, P) -> Unit
   // told of a page back took off (its own back: the edge's swipe, the system's, Ctx::back): the page, whether it was
   // pushed over the one under it, whether it rose from the foot, and the pages left
   went_back : (P, Bool, Bool, Array[P]) -> Unit
@@ -179,7 +204,19 @@ struct Nav[P] {
   // page made once as nodes, nav_view's `keeps_made`), none where nothing keeps them (an old view's frame, a flat one)
   shelf : Array[NavPage[P]]
   mut shelves : ((P) -> Bool)?
+  // entries over the root that left the stack (popped, put in place of, taken off as pages were put over the root)
+  // kept by what holds the stack (`keeps_left`: their page made once as nodes, a key it is known by and its kind), the
+  // least lately used first, nav_kept_left_most at most: known by their serial still, out of the stack (not shown, taking
+  // no press), their nodes put by at rest; taken back as a page of the same key and kind is put on again
+  // (Nav::take_kept_left). None where nothing keeps them (an old view's frame, a stack no view holds)
+  kept_left : Array[(String, String, NavPage[P])]
+  mut keeps_left : ((P) -> (String, String)?)?
 }
+
+///|
+/// How many entries that left a stack it keeps at most (Nav's `kept_left`): the least lately used let go for good as
+/// another is kept past it.
+let nav_kept_left_most : Int = 3
 
 ///|
 /// A stack of pages, `root` at the bottom. `on_leave` is told of each page
@@ -193,6 +230,8 @@ pub fn[P] Nav::new(
   on_entry_leave? : (Int, P) -> Unit = fn(_, _) {  },
   went_back? : (P, Bool, Bool, Array[P]) -> Unit = fn(_, _, _, _) {  },
   from_left? : (P, P?) -> Bool = fn(_, _) { false },
+  on_entry_park? : (Int, P) -> Unit = fn(_, _) {  },
+  on_entry_gone? : (Int, P) -> Unit = fn(_, _) {  },
 ) -> Nav[P] {
   {
     pages: [nav_page(root, None)],
@@ -219,6 +258,8 @@ pub fn[P] Nav::new(
     moved_p: 0.0,
     on_leave,
     on_entry_leave,
+    on_entry_park,
+    on_entry_gone,
     went_back,
     from_left,
     mover: Mover::new(),
@@ -245,6 +286,8 @@ pub fn[P] Nav::new(
     shown: @signals.signal(0),
     shelf: [],
     shelves: None,
+    kept_left: [],
+    keeps_left: None,
   }
 }
 
@@ -252,8 +295,118 @@ pub fn[P] Nav::new(
 fn[P] Nav::entry_left(self : Nav[P], entry : NavPage[P]) -> Unit {
   if entry.ended { return }
   entry.ended = true
-  (self.on_entry_leave)(entry.serial, entry.page)
-  (self.on_leave)(entry.page)
+  // (its leaving told as it was put by on the kept left: not again)
+  if !entry.told_left {
+    entry.told_left = true
+    (self.on_entry_leave)(entry.serial, entry.page)
+    (self.on_leave)(entry.page)
+  }
+  (self.on_entry_gone)(entry.serial, entry.page)
+}
+
+///|
+/// Whether entry `serial` is put by on the stack's kept left (Nav's `kept_left`), read as that changes.
+pub fn[P] Nav::is_kept_left(self : Nav[P], serial : Int) -> Bool {
+  self.said.get() |> ignore
+  self.shown.get() |> ignore
+  self.kept_left.iter().any(fn(x) { x.2.serial == serial }) || self.parks_soon(serial) is Some(_)
+}
+
+///|
+/// Entry `serial`, gone from a stack drawn flat by an owner and to be put by on its kept left as that owner lets it go
+/// (nav_flat_view's, as the stack stands whole once the change is told: Nav::leaves): kept so already to what reads it
+/// meanwhile (Nav::is_kept_left, Nav::flat_entry), so nothing made of it is let go in the change it leaves in. One let go
+/// for good from the kept left (its leaving told) or never shown is none.
+fn[P] Nav::parks_soon(self : Nav[P], serial : Int) -> NavPage[P]? {
+  guard self.flat_owner && self.keeps_left is Some(keeps) else { return None }
+  self.gone
+  .iter()
+  .find_first(fn(e) {
+    e.serial == serial && e.shown_once && !e.ended && !e.told_left && keeps(e.page) is Some(_)
+  })
+}
+
+///|
+/// Entry `e`, gone from the stack, put by on its kept left where what holds the stack keeps it (`keeps_left`: its page
+/// made once, shown once at least): one of the same key there before let go for good, and the least lately used where
+/// that makes more than nav_kept_left_most; its leaving told now (Nav's on_entry_park in the place of on_entry_leave, so
+/// what the entry holds may be kept for it; on_leave), as it would be were it let go, and its keyboard's focus given up. Whether it was kept; else it is the caller's to let go.
+fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
+  // (one let go for good from the kept left, its leaving told, is never put by again)
+  if !e.shown_once || e.ended || e.told_left || self.pages.iter().any(fn(x) { x.serial == e.serial }) {
+    return false
+  }
+  guard self.keeps_left is Some(keeps) && keeps(e.page) is Some((key, kind)) else { return false }
+  match self.kept_left.search_by(fn(x) { x.0 == key }) {
+    Some(i) => self.gone.push(self.kept_left.remove(i).2)
+    None => ()
+  }
+  if self.kept_left.length() >= nav_kept_left_most {
+    self.gone.push(self.kept_left.remove(0).2)
+  }
+  e.focus_kept = 0
+  e.taken_back = false
+  self.kept_left.push((key, kind, e))
+  if !e.told_left {
+    e.told_left = true
+    (self.on_entry_park)(e.serial, e.page)
+    (self.on_leave)(e.page)
+  }
+  true
+}
+
+///|
+/// Entry `e` gone from the stack: put by on its kept left where that keeps it (Nav::try_park_left), else let go at the
+/// next frame (forgotten, told) as ever. Drawn flat by an owner (Nav::flat_owned), let go as ever here: it may be kept
+/// shown in place while the one put there waits (Nav::flat_keep), and is put by as that owner lets it go
+/// (nav_flat_view).
+fn[P] Nav::leaves(self : Nav[P], e : NavPage[P]) -> Unit {
+  if self.flat_owner || !self.try_park_left(e) {
+    self.gone.push(e)
+  }
+}
+
+///|
+/// The entry for `page` put on the stack over `under`: the one put by on its kept left for the same key, where it is
+/// of the same kind still (its nodes, as they were left; its time on top anew, its leaving to be told again), else a new
+/// one (the one put by of another kind let go for good).
+fn[P] Nav::take_kept_left(self : Nav[P], page : P, under : P?) -> NavPage[P] {
+  match self.keeps_left {
+    Some(keeps) =>
+      match keeps(page) {
+        Some((key, kind)) =>
+          match self.kept_left.search_by(fn(x) { x.0 == key }) {
+            Some(i) => {
+              let (_, kd, e) = self.kept_left.remove(i)
+              if kd == kind && !e.ended {
+                e.page = page
+                e.under = under
+                e.over = false
+                e.rise = false
+                e.told_left = false
+                e.focus_kept = 0
+                e.stint = next_stint()
+                e.taken_back = true
+                return e
+              }
+              self.gone.push(e)
+            }
+            None => ()
+          }
+        None => ()
+      }
+    None => ()
+  }
+  nav_page(page, under)
+}
+
+///|
+/// Every entry put by on the kept left let go for good (at the next frame, or as what holds the stack lets its node go).
+fn[P] Nav::kept_left_empty(self : Nav[P]) -> Unit {
+  for x in self.kept_left {
+    self.gone.push(x.2)
+  }
+  self.kept_left.clear()
 }
 
 ///|
@@ -439,8 +592,9 @@ fn[P] Nav::settle(self : Nav[P]) -> Unit {
   }
   match self.leaving {
     Some(e) => {
-      // forgotten at the next frame
-      self.gone.push(e)
+      // forgotten at the next frame, or put by on the kept left where what holds the stack keeps it (drawn flat by an
+      // owner: as that owner lets it go, nav_flat_view)
+      self.leaves(e)
       wake()
     }
     None => ()
@@ -526,6 +680,17 @@ pub fn[P] Nav::shows_when(self : Nav[P], ready : () -> Bool, most : Double) -> U
   self.flat_ready = ready
   self.flat_most = most
   self.flat_asked = g().frame_no
+}
+
+///|
+/// Whether entry `serial` is the page on top, put on again from the stack's kept left (Nav::take_kept_left) and not
+/// shown yet (its owner waiting for what it shows: nav_flat_view), read as that changes: laid out where it was as it
+/// waits, out of sight, never laid out nowhere and then again.
+pub fn[P] Nav::waiting_taken_back(self : Nav[P], serial : Int) -> Bool {
+  self.said.get() |> ignore
+  self.shown.get() |> ignore
+  let top = self.pages[self.pages.length() - 1]
+  top.serial == serial && top.taken_back
 }
 
 ///|
@@ -713,7 +878,7 @@ fn[P] Nav::pushes(self : Nav[P], page : P, over : Bool) -> Unit {
 ///|
 fn[P] Nav::pushes_now(self : Nav[P], page : P, over : Bool) -> Unit {
   self.settle()
-  self.pages.push(nav_page(page, Some(self.top())))
+  self.pages.push(self.take_kept_left(page, Some(self.top())))
   self.pages[self.pages.length() - 1].over = over
   self.told()
   self.p = 1.0
@@ -754,7 +919,7 @@ pub fn[P] Nav::rise(self : Nav[P], page : P) -> Unit {
 ///|
 fn[P] Nav::rise_now(self : Nav[P], page : P) -> Unit {
   self.settle()
-  let e = nav_page(page, Some(self.top()))
+  let e = self.take_kept_left(page, Some(self.top()))
   e.rise = true
   self.pages.push(e)
   self.told()
@@ -769,6 +934,7 @@ pub fn[P] Nav::become(self : Nav[P], page : P) -> Unit {
   let e = self.pages[self.pages.length() - 1]
   e.page = page
   e.rise = false
+  e.taken_back = false
   // (what reads which page is on top told: the same page, its widgets' state kept, now another)
   self.told()
   wake()
@@ -794,7 +960,7 @@ fn[P] Nav::pop_now(self : Nav[P]) -> Bool {
   if self.mode == 1 && self.t0 == nav_held {
     // (still waiting for what it shows, so never shown: taken off as it is, nothing sliding, its wait called off; the
     // page under it, shown in place all along, on top)
-    self.gone.push(self.pages.pop().unwrap())
+    self.leaves(self.pages.pop().unwrap())
     wake()
     self.mode = 0
     self.p = 0.0
@@ -839,7 +1005,7 @@ fn[P] Nav::pop_to_now(self : Nav[P], depth : Int) -> Bool {
     self.settle()
   }
   while self.pages.length() > depth + 1 {
-    self.gone.push(self.pages.remove(self.pages.length() - 2))
+    self.leaves(self.pages.remove(self.pages.length() - 2))
   }
   self.pop()
 }
@@ -856,10 +1022,10 @@ fn[P] Nav::replace_now(self : Nav[P], page : P) -> Unit {
   // (told once, as the new one is on top: never with no page)
   let was = self.pages.pop()
   match was {
-    Some(e) => self.gone.push(e)
+    Some(e) => self.leaves(e)
     None => ()
   }
-  let e = nav_page(page, self.pages.last().map(fn(e) { e.page }))
+  let e = self.take_kept_left(page, self.pages.last().map(fn(e) { e.page }))
   // (in its place: over the one under it as it was, Nav::push_over)
   match was {
     Some(w) => e.over = w.over
@@ -916,8 +1082,10 @@ pub fn[P : Eq] Nav::shelved(self : Nav[P], page : P) -> Int? {
 /// The shelf emptied (Nav::replace_kept): each entry on it left for good, as one let go of is (what holds the stack
 /// lets go of its page: forgotten, Nav's `on_leave` told). As the workspace in view changes.
 pub fn[P] Nav::shelf_empty(self : Nav[P]) -> Unit {
-  if self.shelf.length() > 0 {
+  if self.shelf.length() > 0 || self.kept_left.length() > 0 {
     self.shelf.clear()
+    // (and what left over the root, kept: Nav's `kept_left`, let go for good the same way)
+    self.kept_left_empty()
     self.told()
     wake()
   }
@@ -940,12 +1108,23 @@ fn[P] Nav::replace_above_now(self : Nav[P], keep : Int, pages : Array[P]) -> Uni
   }
   self.settle()
   while self.pages.length() > keep {
-    self.gone.push(self.pages.pop().unwrap())
+    let e = self.pages.pop().unwrap()
+    // (the root's too: what left over it is of another root, let go with it, never put by, nav_flat_view's
+    // either; else kept, Nav::try_park_left)
+    if keep == 0 {
+      e.shown_once = false
+      self.gone.push(e)
+    } else {
+      self.leaves(e)
+    }
   }
   // (another workspace's pages, or a page in place of a place: none put by is taken back, Nav::replace_kept)
   self.shelf.clear()
+  if keep == 0 {
+    self.kept_left_empty()
+  }
   for page in pages {
-    self.pages.push(nav_page(page, self.pages.last().map(fn(e) { e.page })))
+    self.pages.push(self.take_kept_left(page, self.pages.last().map(fn(e) { e.page })))
   }
   // (none put on: the one now on top come back to, as a pop's is)
   if pages.is_empty() {

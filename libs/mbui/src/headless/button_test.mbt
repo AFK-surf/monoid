@@ -565,3 +565,86 @@ test "a button given its value and range: read out with them besides its name, e
     ("资源加载 25%", Some((0.0, 25.0, 100.0)), "资源加载 75%", Some((0.0, 75.0, 100.0)), "", None),
   )
 }
+
+///|
+test "a button whose name is said once (label_is): read out a button by it with a press to do, pressed once by a tap, by Enter, by Space and by a screen reader's ask, Tab coming to it; disabled given beside it, disabled as ever" {
+  let pressed = Ref(0)
+  let off = @signals.signal(false, same=fn(a : Bool, b : Bool) { a == b })
+  let t = window(fn(root) {
+    root.box(fn(e) {
+      e
+      .width(Is(Some(50.0)))
+      .height(Is(Some(50.0)))
+      .presses(Is(true))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="别处"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    @headless.button(root, fn() { "Agent" }, label_is="Agent", fn(_) { pressed.val += 1 }, fn(v, _) {
+      v.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+    })
+    |> ignore
+    @headless.button(root, fn() { "停用的" }, label_is="停用的", disabled=fn() { off.get() }, fn(_) {  }, fn(v, _) {
+      v.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+    })
+    |> ignore
+  })
+  let s = t.get(Button, label="Agent")
+  t.click(Button, label="Agent")
+  let tapped = pressed.val
+  t.act(Button, Focus, label="别处")
+  t.tab()
+  let at = match t.focused() {
+    Some(f) => f.label
+    None => ""
+  }
+  t.enter()
+  t.key(@ui.key_space)
+  t.act(Button, Activate, label="Agent")
+  off.set(true)
+  t.frame()
+  let stopped = t.get(Button, label="停用的")
+  assert_eq(
+    (s.disabled, s.actions.contains(Activate), tapped, at, pressed.val, stopped.disabled, stopped.actions.contains(Activate)),
+    (false, true, 1, "Agent", 4, true, false),
+  )
+}
+
+///|
+test "a button whose name is said once (label_is) runs no binding for what it says as it is made, where the same button named by a function runs one (whether it takes a press and the focus, said once too, are no bindings run)" {
+  let bound = fn(once : Bool) raise {
+    window(fn(root) {
+      let look = fn(v : @view.View, _ : @headless.Button) {
+        v.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      }
+      if once {
+        @headless.button(root, fn() { "Agent" }, label_is="Agent", fn(_) {  }, look) |> ignore
+      } else {
+        @headless.button(root, fn() { "Agent" }, fn(_) {  }, look) |> ignore
+      }
+    })
+    |> ignore
+    @ui.view_tree().unwrap().work().bindings_run
+  }
+  let (by, once) = (bound(false), bound(true))
+  assert_eq(by - once, 1)
+}
+
+///|
+test "a button in its node (in_node): the node it is given is the button, read out and pressed as one, no box of its own" {
+  let pressed = Ref(0)
+  let holder : Ref[@view.NodeId?] = Ref(None)
+  let made : Ref[@view.NodeId?] = Ref(None)
+  let t = window(fn(root) {
+    root.box(fn(h) {
+      holder.val = Some(h.id())
+      h.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      made.val = Some(@headless.button(h, fn() { "行" }, in_node=true, fn(_) { pressed.val += 1 }, fn(_, _) {  }).id())
+    })
+    |> ignore
+  })
+  t.click(Button, label="行")
+  assert_eq((made.val == holder.val, pressed.val), (true, 1))
+}

@@ -154,7 +154,13 @@ fn app_update_row_node(row : @view.View, src : @sfbase.Source) -> Unit {
         h.pick(fn() { now().2 != "" }, fn(e, pressed) {
           @sf.style_node(e, fn() { sw_rest })
           if pressed {
-            @sf.button_node(e, fn() { now().2 }, fn() { @sfbase.update_go(src) }, tone=Primary) |> ignore
+            @sf.button_node(
+              e,
+              fn() { now().2 },
+              fn() { if @sfbase.stale_build_now() { @sfbase.stale_build_action(src) } else { @sfbase.update_go(src) } },
+              tone=Primary,
+            )
+            |> ignore
           } else {
             e.show(fn() { now().1 is Some(_) }, fn(b) {
               b.box(fn(bar) {

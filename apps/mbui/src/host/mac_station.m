@@ -232,6 +232,8 @@ static NSString *local_install(NSString *json) {
   NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
   [env addEntriesFromDictionary:login_env()];
   if (beta) env[@"STILLFAIL_CHANNEL"] = @"beta";
+  // (this app's own station, never one a STILLFAIL_DATA the app was started with names)
+  env[@"STILLFAIL_DATA"] = local_data();
   NSTask *t = [NSTask new];
   t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
   t.arguments = args;
@@ -271,13 +273,13 @@ static NSString *local_install(NSString *json) {
 }
 
 // 更改存储位置: its data moved into `folder` by its release's own command (bin/stillfail's `move`), as the person would
-// run it (their shell's PATH, no STILLFAIL_DATA of the app's), what it says of the copy shown as it goes (its "NN%"
-// lines: local_percent). nil when it did, else "move.<its exit>" (2 to 8: bin/stillfail says each), or "move:" and the
-// last it said.
+// run it (their shell's PATH; its data named, this app's own: never another's STILLFAIL_DATA), what it says of the copy
+// shown as it goes (its "NN%" lines: local_percent). nil when it did, else "move.<its exit>" (2 to 8: bin/stillfail says
+// each), or "move:" and the last it said.
 static NSString *local_move(NSString *data, NSString *folder) {
   NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
   [env addEntriesFromDictionary:login_env()];
-  [env removeObjectForKey:@"STILLFAIL_DATA"];
+  env[@"STILLFAIL_DATA"] = data;
   NSTask *t = [NSTask new];
   t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
   t.arguments = @[ [data stringByAppendingPathComponent:@"app/bin/stillfail"], @"move", folder ];

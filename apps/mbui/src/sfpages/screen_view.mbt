@@ -65,6 +65,15 @@ priv struct ScreenUi {
   /// a read of the device's clipboard under way, for a paste
   // (a handle: no value to compare)
   reading : @signals.Signal[@ui.ClipboardRead?]
+  /// the read under way asked by ⌘V (Ctrl+V) on a screen that carries no clipboard: the key (its name, its modifiers)
+  /// typed there as the device's text, or sent itself where the device has none; None: 粘贴手机剪贴板's, or a screen
+  /// that carries one
+  mut paste_from_key : (String, Int)?
+  /// another paste asked while one is under way (two sentences a voice input pasted one on the other): asked as that
+  /// one is done, by the key it came from as above
+  mut paste_owed : ((String, Int)?)?
+  /// ⌘V's V taken as a paste and still down: its going up taken too, whatever is let go of first
+  mut pasted_v : Bool
   /// the modifiers held from the keys row as each key went down (by its code), for it to go up with them too
   down_with : Map[String, Int]
   /// the device kept awake, the window sideways, a phone let turn as held: as last told to the host
@@ -116,6 +125,16 @@ priv struct ScreenUi {
   mut mouse_pair : @view.View?
   /// bumped when the person presses on the picture while another operates it, shaking the 接管 capsule
   held_nudge : @signals.Signal[Int]
+  /// 左键 held down from its button (a press of it held: left_hold_node), a finger dragging with it till a tap on the
+  /// stage or the button lets it go; where it is (where it went down, then as far as a finger dragged it) and the
+  /// modifiers held round it
+  left_locked : @signals.Signal[Bool]
+  mut lock_at : (Double, Double)
+  mut lock_mods : Int
+  /// two fingers' scroll going on by itself once let go (ScrollFling)
+  fling : ScrollFling
+  /// where the last tap driving it directly clicked on the stage, and when (screen_tap_ripple_node draws it)
+  ripple : @signals.Signal[(Double, Double, Double)?]
 }
 
 ///|
@@ -144,11 +163,19 @@ fn screen_ui(key : String) -> ScreenUi {
         case_y: 0.0,
         over_seen: false,
         gesture: gesture_new(),
+        left_locked: @signals.signal(false),
+        lock_at: (0.5, 0.5),
+        lock_mods: 0,
+        fling: scroll_fling_new(),
+        ripple: @signals.signal(None),
         tapped_at: None,
         at: None,
         covered: @signals.signal(false, same=fn(a, b) { a == b }),
         mouse: mouse_drive_new(),
         reading: @signals.signal_ref(None),
+        paste_from_key: None,
+        paste_owed: None,
+        pasted_v: false,
         down_with: {},
         awake: false,
         sideways_told: false,
@@ -577,6 +604,20 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
       u.held.take() |> ignore
       u.down_with.clear()
       u.typing.set(false)
+    } else {
+      // driving it on a page of its own with a keyboard (a window's, not a tab beside a chat's, whose field it would
+      // take; no soft keyboard brought up unasked): the keys go to the screen straight away, so a shortcut or what a
+      // voice input types lands there without a press on the picture first; never over the address bar asked for
+      let addr_focused = match u.address_field {
+        Some(f) => @signals.untracked(fn() { f.focused() })
+        None => false
+      }
+      if !pg.in_tab && !@sf.soft_keyboard() && u.address_asked.untracked() == 0 && !addr_focused {
+        match u.catcher {
+          Some(k) => @ui.key_catcher_focus_set(k, true)
+          None => ()
+        }
+      }
     }
   })
 }
@@ -625,7 +666,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     // while it is looked at, the device stays awake: a screen is watched more than touched
     if u.awake != shown {
       u.awake = shown
-      @ui.keep_awake(shown)
+      @sfbase.keep_awake_by("screen:" + key, shown)
       // (into the device's performance record while it is kept: what warms a phone is mostly a screen looked at)
       @hostapi.perf_line("app: screen " + (if shown { "shown " } else { "hidden " }) + key)
     }
@@ -699,7 +740,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
       match got {
         Some(g) => {
           u.reading.set(None)
-          screen_pasted(s, g)
+          screen_pasted(s, u, g)
         }
         None => ()
       }
@@ -916,7 +957,7 @@ pub fn screen_covered(src : Source, station : String, screen : String, covered :
   }
   if u.awake {
     u.awake = false
-    @ui.keep_awake(false)
+    @sfbase.keep_awake_by("screen:" + key, false)
     @hostapi.perf_line("app: screen hidden " + key)
   }
   if u.turnable {
@@ -959,7 +1000,7 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
         @hostapi.set_sideways(false)
       }
       if u.awake {
-        @ui.keep_awake(false)
+        @sfbase.keep_awake_by("screen:" + key, false)
         @hostapi.perf_line("app: screen closed " + key)
       }
       if u.turnable {
@@ -1060,14 +1101,39 @@ fn screen_copies(s : ScreenSess) -> Unit {
 ///|
 /// The device's clipboard (`got`), pasted into the screen where its focus is: its picture as PNG where the screen
 /// carries pictures, else its text. Asked of the system as the button is tapped (paste_asked), taken here once it
-/// answers.
-fn screen_pasted(s : ScreenSess, got : @ui.Clipboard) -> Unit {
+/// answers. Asked by ⌘V (Ctrl+V) where the screen carries no clipboard (a tab of the station's browser, a device's): its
+/// text typed there, or with none the key itself sent, the screen pasting its own. A paste asked meanwhile, asked next.
+fn screen_pasted(s : ScreenSess, u : ScreenUi, got : @ui.Clipboard) -> Unit {
+  let from_key = u.paste_from_key
+  u.paste_from_key = None
+  let finish = fn() {
+    s.pasting.set(false)
+    match u.paste_owed {
+      Some(next) => {
+        u.paste_owed = None
+        paste_asked(s, u, from_key=next)
+      }
+      None => ()
+    }
+  }
+  match from_key {
+    Some((key, mods)) => {
+      if got.text != "" {
+        type_into(s, u, got.text)
+      } else {
+        paste_key_sent(s, key, mods)
+      }
+      finish()
+      return
+    }
+    None => ()
+  }
   let types = s.clip_types()
   let image = !(got.picture is NoPicture)
   let words = got.text
   let what = @sf.t("android-misc.screen.pasteWhat")
   let done = fn(r : Result[Json, Json]) {
-    s.pasting.set(false)
+    finish()
     (screen_act(what))(r)
   }
   let kind = if image && types.contains("png") {
@@ -1082,7 +1148,7 @@ fn screen_pasted(s : ScreenSess, got : @ui.Clipboard) -> Unit {
     "empty"
   }
   let said = fn(key : String) {
-    s.pasting.set(false)
+    finish()
     toast_later(@sf.t(key))
   }
   match kind {
@@ -1100,17 +1166,47 @@ fn screen_pasted(s : ScreenSess, got : @ui.Clipboard) -> Unit {
 }
 
 ///|
-/// 粘贴手机剪贴板 tapped (or ⌘V): the device's clipboard read (the system answers; screen_pasted takes it).
-fn paste_asked(s : ScreenSess, u : ScreenUi) -> Unit {
+/// ⌘V (Ctrl+V) itself, down and up with `mods`: the screen pastes what it has of its own.
+fn paste_key_sent(s : ScreenSess, key : String, mods : Int) -> Unit {
+  s.input(s.src, key_input("down", key, "KeyV", mods))
+  s.input(s.src, key_input("up", key, "KeyV", mods))
+}
+
+///|
+/// `words` typed on the screen as the keyboard types them (screen_keys_in's Text), with the modifiers held on the keys
+/// row.
+fn type_into(s : ScreenSess, u : ScreenUi, words : String) -> Unit {
+  let sent : Array[Json] = []
+  type_words(fn(j) { sent.push(j) }, u.held, words)
+  for j in sent {
+    s.input(s.src, j)
+  }
+  // (no paste on Xcode 27's yet, the keys; said when it is what was just typed)
+  if s.simulator() && text(s.state, "title").contains("iOS 27") && words.iter().any(fn(ch) { ch.to_int() > 0x7e }) {
+    toast_later(@sf.t("web-pages.screen.debug.keysNote"))
+  }
+}
+
+///|
+/// 粘贴手机剪贴板 tapped (or ⌘V): the device's clipboard read (the system answers; screen_pasted takes it). `from_key`:
+/// ⌘V's key and modifiers where the screen carries no clipboard (screen_pasted). Asked while one is under way, asked
+/// again as that one is done, not lost.
+fn paste_asked(s : ScreenSess, u : ScreenUi, from_key? : (String, Int)? = None) -> Unit {
   if s.pasting.untracked() {
+    u.paste_owed = Some(from_key)
     return
   }
   match @ui.clipboard_read() {
     Some(r) => {
+      u.paste_from_key = from_key
       s.pasting.set(true)
       u.reading.set(Some(r))
     }
-    None => toast_later(@sf.t("android-misc.screen.clipboardEmpty"))
+    None =>
+      match from_key {
+        Some((key, mods)) => paste_key_sent(s, key, mods)
+        None => toast_later(@sf.t("android-misc.screen.clipboardEmpty"))
+      }
   }
 }
 
@@ -1161,22 +1257,18 @@ fn screen_keys_in(pg : ScreenPage, k : @ui.KeyIn) -> Unit {
   let u = pg.u
   let send = fn(j : Json) { s.input(s.src, j) }
   match k {
-    Text(words) => {
-      let sent : Array[Json] = []
-      type_words(fn(j) { sent.push(j) }, u.held, words)
-      for j in sent {
-        send(j)
-      }
-      // (no paste on Xcode 27's yet, the keys; said when it is what was just typed)
-      if s.simulator() && text(s.state, "title").contains("iOS 27") && words.iter().any(fn(ch) { ch.to_int() > 0x7e }) {
-        toast_later(@sf.t("web-pages.screen.debug.keysNote"))
-      }
-    }
+    Text(words) => type_into(s, u, words)
     // ⌘V (Ctrl+V): this device's clipboard onto the screen's and pasted there, where it carries one, as a paste is on
-    // the web's page (its keys are not sent)
-    Key(down~, code="KeyV", mods~, ..) if (mods & (mod_meta | mod_ctrl)) != 0 && (mods & mod_alt) == 0 && s.pastes() =>
+    // the web's page (its keys are not sent); where it carries none, its text typed there (what a voice input put on
+    // the clipboard and pasted). Its V let go of after ⌘, taken here too: nothing of it went down there
+    Key(down~, key~, code="KeyV", mods~) if (down && (mods & (mod_meta | mod_ctrl)) != 0 && (mods & mod_alt) == 0) ||
+      (!down && u.pasted_v) =>
       if down {
-        paste_asked(s, u)
+        u.pasted_v = true
+        let held_mods = mods | u.held.take()
+        paste_asked(s, u, from_key=if s.pastes() { None } else { Some((key, held_mods)) })
+      } else {
+        u.pasted_v = false
       }
     // a browser's own keys on a tab of the station's browser (⌘L, ⌘T, ⌘W, ⌘R, ⌘[, ⌘]): the viewer's, as a browser's
     Key(down~, code~, mods~, ..) if browser_key(s, u, code, mods, down) => ()

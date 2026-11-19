@@ -281,3 +281,211 @@ test "window tree: a made page come back to tells what reads its time on top the
   assert_true(last != then)
   assert_eq(log.seen["m1"].last(), Some(last), msg="by a pop from outside an event: \{Repr(log.seen["m1"])}")
 }
+
+///|
+/// made_stack's, its pages made once kept as they leave the stack (nav_view's `keeps_left`: by their name, of kind "m";
+/// Nav's kept left), those let go for good told (`gone_for_good`, Nav's on_entry_gone).
+fn made_stack_kept() -> (Tester, Nav[String], MadeLog, Array[String], Array[String]) {
+  let left : Array[String] = []
+  let gone_for_good : Array[String] = []
+  let log : MadeLog = { made: [], gone: [], taps: Map([]), scrolls: Map([]), roots: Map([]), owns: Ref(0), stints: Map([]), seen: Map([]) }
+  let nav = Nav::new("a", on_leave=fn(p) { left.push(p) }, on_entry_gone=fn(_, p) { gone_for_good.push(p) })
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      keeps_left=fn(p) { if p.has_prefix("m") { Some((p, "m")) } else { None } },
+      made=fn(p) {
+        if p.has_prefix("m") {
+          Some(
+            (
+              "m",
+              fn(v, page, _under, _stint, _k) {
+                let first = @signals.untracked(page)
+                log.made.push(first)
+                let taps = @signals.signal(0)
+                log.taps[first] = taps
+                v.owns(fn() { log.gone.push(first) }) |> ignore
+                v.box(fn(head) {
+                  head
+                  .height(Is(Some(60.0)))
+                  .words(By(fn() { page() + " " + taps.get().to_string() }), look={ ..@view.words_plain, size: 12.0 })
+                  .presses(Is(true))
+                  .on_press(fn() { taps.set(taps.untracked() + 1) })
+                  |> ignore
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  (t, nav, log, left, gone_for_good)
+}
+
+///|
+/// Popped, its slide run out.
+fn popped(t : Tester, nav : Nav[String]) -> Unit {
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+}
+
+///|
+test "window tree: a made page gone back from kept at rest, taken back the same nodes as it is pushed again; its leaving told once a stay, the least lately used let go for good past the most kept" {
+  let (t, nav, log, left, gone_for_good) = made_stack_kept()
+  pushed(t, nav, "m1")
+  let (m1, _) = nav.top_stay()
+  t.tap(100.0, 30.0)
+  t.tap(100.0, 30.0)
+  assert_true(t.find("m1 2") is Some(_))
+  popped(t, nav)
+  // (gone from the stack: kept, its nodes put by at rest, not drawn, nothing let go; its leaving told once)
+  assert_true(nav.is_kept_left(m1))
+  assert_eq(nav.pages(), ["a"])
+  assert_eq(log.gone, [])
+  assert_eq(left, ["m1"])
+  assert_eq(gone_for_good, [])
+  assert_true(t.find("m1 2") is None)
+  // (a tap where its head was while it is put by: the page on top's, not its)
+  t.tap(100.0, 30.0)
+  assert_eq(log.taps["m1"].get(), 2)
+  // (pushed again: the same nodes, its taps as they were, made no more)
+  pushed(t, nav, "m1")
+  assert_eq(log.made, ["m1"])
+  assert_eq(nav.top_stay().0, m1)
+  assert_true(!nav.is_kept_left(m1))
+  assert_true(t.find("m1 2") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  t.tap(100.0, 30.0)
+  assert_eq(log.taps["m1"].get(), 3)
+  popped(t, nav)
+  assert_eq(left, ["m1", "m1"])
+  // (three others kept after it: it the least lately used, let go for good, its leaving not told again)
+  for p in ["m2", "m3", "m4"] {
+    pushed(t, nav, p)
+    popped(t, nav)
+  }
+  assert_eq(log.gone, ["m1"])
+  assert_eq(gone_for_good, ["m1"])
+  assert_eq(left, ["m1", "m1", "m2", "m3", "m4"])
+  // (pushed again once let go: made anew)
+  pushed(t, nav, "m1")
+  assert_eq(log.made, ["m1", "m2", "m3", "m4", "m1"])
+  assert_true(t.find("m1 0") is Some(_))
+  // (the shelf emptied, as the workspace in view changes: those kept let go for good with it)
+  popped(t, nav)
+  view_event(fn() { nav.shelf_empty() })
+  t.draw()
+  assert_eq(gone_for_good, ["m1", "m2", "m3", "m4", "m1"])
+}
+
+///|
+test "window tree: a made page put by as another is put in place of it over the root, taken back as it is put there again; one never shown kept not" {
+  let (t, nav, log, left, _) = made_stack_kept()
+  pushed(t, nav, "m1")
+  view_event(fn() { nav.replace_above(1, ["m2"]) })
+  t.draw()
+  assert_eq(left, ["m1"])
+  assert_eq(log.gone, [])
+  view_event(fn() { nav.replace_above(1, ["m1"]) })
+  t.draw()
+  assert_eq(log.made, ["m1", "m2"])
+  assert_true(t.find("m1 0") is Some(_))
+  // (one pushed and put in place of before a frame showed it: made nothing, kept nothing)
+  view_event(fn() {
+    nav.push("m5")
+    nav.replace("m6")
+  })
+  t.draw()
+  assert_true(!log.made.contains("m5"))
+  // (the root put in place: what was kept let go for good with the stack over it)
+  view_event(fn() { nav.replace_above(0, ["b"]) })
+  t.draw()
+  assert_true(log.gone.contains("m2"), msg="\{Repr(log.gone)}")
+}
+
+///|
+test "window tree: a flat stack's made page put in place of over its root kept, kept shown while the one in its place waits and put by once that shows, taken back the same nodes as it is put there again" {
+  for owned in [false, true] {
+    let made : Array[String] = []
+    let gone : Array[String] = []
+    let left : Array[String] = []
+    let ready = @signals.signal(true)
+    let nav = Nav::new("root", on_leave=fn(p) { left.push(p) })
+    let t = Tester::new(fn(_c) {  }, w=390.0, h=600.0)
+    set_view_app(fn(root) {
+      if owned {
+        // (an owner as the panes' (page_wait.mbt): the page shown kept while the one put in its place waits)
+        nav.flat_owned(true)
+        let shown = Ref(@signals.untracked(fn() { nav.top_stay() }))
+        root.reacts(fn() { (nav.top_stay(), ready.get()) }, fn(now) {
+          if now.0 == shown.val {
+            return
+          }
+          if now.1 {
+            shown.val = now.0
+            nav.flat_keep(None)
+          } else {
+            nav.flat_keep(Some(shown.val))
+          }
+        })
+      }
+      nav_flat_view(
+        root,
+        nav,
+        fn(c, p) { c.text(p, size=12.0) |> ignore },
+        fn(_) { true },
+        0.0,
+        keeps_left=fn(p) { if p.has_prefix("m") { Some((p, "m")) } else { None } },
+        made=fn(p) {
+          if !p.has_prefix("m") {
+            return None
+          }
+          Some(
+            (
+              "m",
+              fn(v, page, _under, _stint, _k) {
+                let name = @signals.untracked(page)
+                made.push(name)
+                v.box(fn(w) { w.words(By(fn() { "page " + page() })) |> ignore }) |> ignore
+                v.owns(fn() { gone.push(name) }) |> ignore
+              },
+            ),
+          )
+        },
+      )
+      |> ignore
+    })
+    t.draw()
+    nav.replace_above(1, ["mA"])
+    t.draw()
+    assert_true(t.find("page mA") is Some(_), msg="\{owned}")
+    // (B put in its place, waiting where an owner keeps A shown meanwhile: A still shown, then put by as B shows)
+    ready.set(false)
+    nav.replace_above(1, ["mB"])
+    t.draw()
+    if owned {
+      assert_true(t.find("page mA") is Some(_), msg="kept shown")
+      assert_eq(left, [], msg="kept shown")
+    }
+    ready.set(true)
+    t.draw()
+    assert_true(t.find("page mB") is Some(_), msg="\{owned}")
+    assert_true(t.find("page mA") is None, msg="\{owned}")
+    assert_eq((made, gone, left), (["mA", "mB"], [], ["mA"]), msg="\{owned}")
+    // (A again: the same nodes, made no more; B put by)
+    nav.replace_above(1, ["mA"])
+    t.draw()
+    assert_true(t.find("page mA") is Some(_), msg="\{owned}")
+    assert_eq((made, gone, left), (["mA", "mB"], [], ["mA", "mB"]), msg="\{owned}")
+  }
+}

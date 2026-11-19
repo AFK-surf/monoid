@@ -280,8 +280,9 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic, copy) NSString *spec;
 @property(nonatomic, copy) NSString *tabsKey;
 @property(nonatomic, copy) NSString *action;
-// (iOS 27: the accent the action's glass is washed with, and the wash, inside the system's own glass, nav_wash)
+// (iOS 27: the accent the action's glass is tinted with, and its tinted UIGlassEffect view inside the platter)
 @property(nonatomic, strong) UIColor *actionInk;
+@property(nonatomic, strong) UIColor *actionWashInk;
 @property(nonatomic, strong) UIView *actionWash;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UIButton *> *floatingButtons;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *floatingKeys;
@@ -404,7 +405,25 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.delegate = self;
   self.navs = [NSMutableDictionary dictionary];
   self.tabsById = [NSMutableDictionary dictionary];
+  __weak MBTabs *weakSelf = self;
+  [self registerForTraitChanges:@[UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class, UITraitUserInterfaceStyle.class]
+                    withHandler:^(id<UITraitEnvironment> env, UITraitCollection *prev) {
+    MBTabs *s = weakSelf;
+    if (!s) return;
+    [s washAction];
+    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
+  }];
   [self applyNone];
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+  [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+  __weak MBTabs *weakSelf = self;
+  [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+    [weakSelf washAction];
+  } completion:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+    [weakSelf washAction];
+    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
+  }];
 }
 // Where the system put the action's tab (iOS 27's prominent one: an iPhone Duo's round one at its column's foot) in
 // the app's view, said as it moves (`nav_action`; w 0 where none shows), for what the app lines up with it (its
@@ -425,11 +444,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   said = r;
   say_system(@{@"nav_action" : @{@"x" : @(r.origin.x), @"y" : @(r.origin.y), @"w" : @(r.size.width), @"h" : @(r.size.height)}});
 }
-// iOS 27's prominent tab, the action's, on its glass washed with the accent (the user, 2026-11-07: 橙色背景太难看了，还是
-// 得用玻璃): the system has no API for its glass's colour, so the wash is a view of ours inside the system's own glass,
-// under its glyph; it moves, presses and turns with it as a part of it. (Laid over it from the tab's frame, it was
-// left off it as the column moved: 2026-10-28, 橙色圆形跑到了按钮右边.) Found again as the system makes its glass anew
-// (the column, the bar across the foot, a pose).
+// iOS 27's prominent tab, the action's, on tinted Liquid Glass matching a prominent bar button item: UITab has no API
+// for its platter's glass colour, and a plain 60% backgroundColor view inside `_UITabBarItemPlatterView` looked washed
+// out. A capsule UIVisualEffectView with UIGlassEffectStyleRegular + tintColor inserted at index 0 inside the platter
+// renders system-tinted glass with specular rim and refraction under the white glyph, and moves, presses and turns
+// with the platter (in the vertical column and across the foot alike).
 - (void)washAction {
   if (!self.actionInk || !self.action.length || self.tabBarHidden) {
     [self.actionWash removeFromSuperview];
@@ -439,6 +458,35 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   CGRect r = x ? [x frameInView:self.view] : CGRectNull;
   UIView *p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
   if (!p) return;
+#ifdef __IPHONE_26_0
+  if (@available(iOS 26.0, *)) {
+    UIVisualEffectView *w = [self.actionWash isKindOfClass:UIVisualEffectView.class] ? (UIVisualEffectView *)self.actionWash : nil;
+    if (!w) {
+      [self.actionWash removeFromSuperview];
+      w = [UIVisualEffectView new];
+      w.userInteractionEnabled = NO;
+      w.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+      w.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+      self.actionWash = w;
+      self.actionWashInk = nil;
+    }
+    if (![self.actionWashInk isEqual:self.actionInk]) {
+      UIGlassEffect *e = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+      e.tintColor = self.actionInk;
+      e.interactive = YES;
+      w.effect = e;
+      self.actionWashInk = self.actionInk;
+    }
+    if (w.superview == p) {
+      if (!CGRectEqualToRect(w.frame, p.bounds)) w.frame = p.bounds;
+      return;
+    }
+    [w removeFromSuperview];
+    w.frame = p.bounds;
+    [p insertSubview:w atIndex:0];
+    return;
+  }
+#endif
   if (!self.actionWash) {
     self.actionWash = [UIView new];
     self.actionWash.userInteractionEnabled = NO;
@@ -827,7 +875,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   // the one before still has it, is refused: UIKit's "cannot be shared between multiple UITab", the app stopped)
   for (NSDictionary *t in places) [key appendFormat:@"%@\x1e", t[@"id"]];
   if (act) [key appendFormat:@"!%@\x1f%@\x1f%@\x1f%@", act[@"id"], act[@"title"], act[@"icon"], b[@"chosen_ink"]];
-  if (![key isEqualToString:self.tabsKey]) {
+  BOOL tabsChanged = ![key isEqualToString:self.tabsKey];
+  if (tabsChanged) {
     self.tabsKey = key;
     NSMutableArray<UITab *> *made = [NSMutableArray array];
     // (an id twice one tab: one controller is never two tabs')
@@ -885,7 +934,15 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
           });
         }
       }
-  if (self.tabBarHidden != bare) [self setTabBarHidden:bare animated:YES];
+  BOOL hiddenChanged = self.tabBarHidden != bare;
+  if (hiddenChanged) [self setTabBarHidden:bare animated:YES];
+  if (tabsChanged || hiddenChanged) {
+    [self washAction];
+    if (self.actionInk && !bare) {
+      __weak MBTabs *weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
+    }
+  }
   self.shown = YES;
   if (bare) [buttons removeAllObjects];
   [buttons insertObjects:own atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, own.count)]];

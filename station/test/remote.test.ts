@@ -412,7 +412,7 @@ describe("remote", { concurrency: true }, () => {
     assert.equal(answer.thread, "CHAT/1.1");
     const [peer, request] = got.pop()!;
     assert.deepEqual([peer, request.to, request.text], ["peer-c", "k", "hi"]);
-    for (const method of ["session.file", "session.put", "session.archive"]) {
+    for (const method of ["session.file", "session.put", "session.archive", "session.configure", "session.list"]) {
       await call(r, "peer-c", method, { to: "k" });
       assert.equal(got.pop()![1].method, method, "a chat's files and a message's go where messages go");
     }

@@ -17,7 +17,7 @@ import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
 import { adminApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
-import { noted, parseTraceparent, recordCall, relayToTelemetry, takeNotes, unverifiedNotes } from "./tracing";
+import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, relayToTelemetry, route, takeNotes, unverifiedNotes } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
 export { Directory } from "./directory";
@@ -92,24 +92,47 @@ export default {
 async function answer(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const parent = new URL(request.url).pathname.startsWith("/v1/") && request.headers.get("upgrade") === null ? parseTraceparent(request.headers.get("traceparent")) : null;
   const started = Date.now();
+  const path = new URL(request.url).pathname;
+  let handled: Response;
+  try {
+    handled = await handle(request, env);
+  } catch (error) {
+    // (thrown on as before: the runtime answers it as it did; the line is what is left of it)
+    console.error(`${request.method} ${route(path)}:`, error);
+    ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "unhandled worker error", { method: request.method, path: route(path), error: errorMessage(error) }));
+    throw error;
+  }
   // What the handler noted for the span never goes out with the answer.
-  const { response, notes } = takeNotes(await handle(request, env));
+  const { response, notes } = takeNotes(handled);
   if (parent?.sampled) ctx.waitUntil(recordCall(env, parent, request, response, started, Date.now(), notes));
+  // (telemetry's own failures are not logged through it: a Google Cloud refusing would loop)
+  if (response.status >= 500 && !path.startsWith("/v1/telemetry/")) {
+    ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "worker returned 5xx", { method: request.method, path: route(path), status: response.status }));
+  }
   return response;
+}
+
+/** A scheduled task's failure: said on the console and logged (cloudLogToTelemetry), its caller going on with `fallback`. */
+function cronFailed<T>(env: Env, task: string, fallback: T): (error: unknown) => Promise<T> {
+  return async (error) => {
+    console.error(`cron ${task}:`, error);
+    await cloudLogToTelemetry(env, "ERROR", "cron", `${task} failed`, { task, error: errorMessage(error) });
+    return fallback;
+  };
 }
 
 async function scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
   const minute = Math.floor(controller.scheduledTime / 60_000);
   ctx.waitUntil(
     sampleOwnRelay(env)
-      .catch(() => [])
+      .catch(cronFailed(env, "sampleOwnRelay", [] as string[]))
       .then(async (full) => {
         await env.DIRECTORY.getByName("primary").tellAdmins({ type: "relays" }).catch(() => undefined);
-        await checkServices(env, full);
+        await checkServices(env, full).catch(cronFailed(env, "checkServices", undefined));
       }),
   );
-  if (minute % 60 === MODELS_MINUTE && !env.FORWARD_TO) ctx.waitUntil(checkModels(env).catch(() => undefined));
-  if (env.RELAY_PROBES === "globalping" && minute % PROBE_EVERY_MIN === 0) ctx.waitUntil(probeAndSay(env));
+  if (minute % 60 === MODELS_MINUTE && !env.FORWARD_TO) ctx.waitUntil(checkModels(env).catch(cronFailed(env, "checkModels", undefined)));
+  if (env.RELAY_PROBES === "globalping" && minute % PROBE_EVERY_MIN === 0) ctx.waitUntil(probeAndSay(env).catch(cronFailed(env, "probeAndSay", undefined)));
 }
 
 /** Whether the request carries FEEDBACK_TOKEN, the team's feedback monitor's (unset or short: nobody's). */

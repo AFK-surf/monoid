@@ -259,9 +259,14 @@ pub fn offers_node(
     None => around.tree.root()
   }
   layer.box(made_for=loc, fn(o) {
-    // (let go as what holds the field is, out of sight as that leaves)
+    // (let go as what holds the field is, out of sight as that leaves; open/close and live candidate filtering stay
+    // scoped within this overlay node alone, @view.transition)
     o.lives_with(around).over(Is(true)) |> ignore
-    o.show(open, leave=@kit.pop_out_ms, fn(shown) {
+    let shown_open = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
+    let shown_keys = @signals.signal(@signals.untracked(keys), same=fn(a, b) { a == b })
+    o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
+    o.reacts(keys, fn(ks) { @view.transition(within=o, fn() { shown_keys.set(ks) }) }, at_start=false)
+    o.show(fn() { shown_open.get() }, leave=@kit.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
@@ -371,7 +376,7 @@ pub fn offers_node(
                 cb.listbox(cv, fn(l) {
                   // (the one chosen, by member: a change tells the two rows it concerns)
                   let on_is = l.selected(now)
-                  l.each(fn() { keys() }, fn(k) { k }, fn(cell, k) {
+                  l.each(fn() { shown_keys.get() }, fn(k) { k }, fn(cell, k) {
                     let key = k.untracked()
                     let on = fn() { on_is(key) }
                     cb.option(cell, fn() { key }, fn() { name(key) }, fn(r, _) {

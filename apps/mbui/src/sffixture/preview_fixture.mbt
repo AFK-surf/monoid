@@ -162,7 +162,25 @@ pub fn fixture_fetch(
   fix_fetches.push((name, params))
   let p = Some(params)
   if name == "file.open" {
-    fixture_named(text(p, "path"), p, done)
+    let path = text(p, "path")
+    // (what the device kept of one read before, given at once; one never read, none)
+    if field(p, "kept") is Some(True) {
+      if fix_named_kept.contains(path) {
+        fixture_named(path, p, done)
+      } else {
+        done(Err({ "code": "not_kept", "message": "这份假数据没有留下 " + path }))
+      }
+      return
+    }
+    if fix_station_for.val <= 0.0 {
+      fix_named_kept[path] = true
+      fixture_named(path, p, done)
+      return
+    }
+    fix_later(fix_station_for.val, fn() {
+      fix_named_kept[path] = true
+      fixture_named(path, p, done)
+    })
     return
   }
   let file = text(p, "name")
@@ -195,6 +213,11 @@ pub fn fixture_fetch(
     _ => done(Err({ "code": "unknown_call", "message": "这份假数据没有 " + name }))
   }
 }
+
+///|
+/// The files a message names that the made-up device kept, read once (`file.open` with `kept`).
+// kept across runs: put back as a fixture is made (made.mbt)
+pub let fix_named_kept : Map[String, Bool] = Map([])
 
 ///|
 /// A file a message names by its path (`file.open`), as the made-up station reads it: the rich chat's place.mbt, and

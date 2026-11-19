@@ -1,5 +1,5 @@
-// What the station in MoonBit asks of the system that the shell (client/shell) does not do: the wall clock, stderr and
-// a descriptor's writes, the environment, the machine (its CPUs, memory, load, disks, addresses), the three calls the
+// What the station in MoonBit asks of the system that the shell (client/shell) does not do: stderr and a descriptor's
+// writes, the environment, the machine (its CPUs, memory, load, disks, addresses), the three calls the
 // mesh addon made for Node (native/mesh: `file_lock`, `peer_process`, `process_usage`), child processes followed to
 // their end, signals, and the launcher's control lines. Each path and string is UTF-8, ended by a NUL. What comes later
 // (a child's output and end, a lock taken, a control line, a signal) is told on the program's queue as an event of its
@@ -159,14 +159,6 @@ static void start_thread(thread_fn f, void *arg) {
   if (t) CloseHandle(t);
 }
 
-/// The time since 1970, in ms.
-int64_t sfs_wall_ms(void) {
-  FILETIME t;
-  GetSystemTimePreciseAsFileTime(&t);
-  uint64_t v = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime;
-  return (int64_t)((v - 116444736000000000ULL) / 10000ULL);
-}
-
 int32_t sfs_err(moonbit_bytes_t b) {
   size_t len = (size_t)Moonbit_array_length(b), done = 0;
   HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
@@ -313,6 +305,19 @@ moonbit_bytes_t sfs_machine(void) {
   sb_fmt(&b, ",\"rss\":%.0f", rss);
   sb_fmt(&b, ",\"footprint\":%.0f}", footprint);
   return sb_bytes(&b);
+}
+
+/// This process's open handles (health.json's `openFds`), or -1 where not read: one call, no child.
+int32_t sfs_open_fds(void) {
+  DWORD count = 0;
+  return GetProcessHandleCount(GetCurrentProcess(), &count) ? (int32_t)count : -1;
+}
+
+/// This process's resident memory in bytes (health.json's `rssBytes`), or -1 where not read: only its own counters,
+/// never the whole machine as `sfs_machine` reads it.
+double sfs_self_rss(void) {
+  PROCESS_MEMORY_COUNTERS pmc;
+  return K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc) ? (double)pmc.WorkingSetSize : -1.0;
 }
 
 /// A disk's free and whole size where `path` is, JSON `{free, total}`; empty where it is not read.
@@ -771,6 +776,7 @@ void sfs_signals(int64_t id, int32_t ignore) {
 extern char **environ;
 #else
 #include <sys/sysinfo.h>
+#include <dirent.h>
 extern char **environ;
 #endif
 
@@ -781,12 +787,6 @@ static void start_thread(void *(*f)(void *), void *arg) {
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
   pthread_create(&t, &attr, f, arg);
   pthread_attr_destroy(&attr);
-}
-
-int64_t sfs_wall_ms(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_REALTIME, &t);
-  return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
 static int write_all(int fd, const uint8_t *b, size_t len) {
@@ -1179,6 +1179,45 @@ moonbit_bytes_t sfs_process_usage(int32_t pid) {
 #else
   (void)pid;
   return bytes_of("", 0);
+#endif
+}
+
+/// This process's open descriptors (health.json's `openFds`), or -1 where not read: the kernel's count, no child.
+int32_t sfs_open_fds(void) {
+#if defined(__APPLE__)
+  int n = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, NULL, 0);
+  return n >= 0 ? (int32_t)(n / (int)sizeof(struct proc_fdinfo)) : -1;
+#elif defined(__linux__)
+  DIR *d = opendir("/proc/self/fd");
+  if (!d) return -1;
+  int32_t n = 0;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) n++;
+  }
+  closedir(d);
+  return n > 0 ? n - 1 : -1; // (the directory's own descriptor, counted while it was open)
+#else
+  return -1;
+#endif
+}
+
+/// This process's resident memory in bytes (health.json's `rssBytes`), or -1 where not read: only its own counters,
+/// never the whole machine as `sfs_machine` reads it.
+double sfs_self_rss(void) {
+#if defined(__APPLE__)
+  mach_task_basic_info_data_t basic;
+  mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+  return task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&basic, &n) == KERN_SUCCESS ? (double)basic.resident_size : -1.0;
+#elif defined(__linux__)
+  FILE *f = fopen("/proc/self/statm", "r");
+  if (!f) return -1.0;
+  unsigned long size = 0, resident = 0;
+  double rss = fscanf(f, "%lu %lu", &size, &resident) == 2 ? (double)resident * (double)sysconf(_SC_PAGESIZE) : -1.0;
+  fclose(f);
+  return rss;
+#else
+  return -1.0;
 #endif
 }
 

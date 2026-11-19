@@ -1,4 +1,4 @@
-// The station's lock in MoonBit (station/mb src/cloud_lock, the reader's `--builder harness-cloud-lock`) held to the
+// The station's lock in MoonBit (station/mb src/cloud_lock, `stillfail-reader-harness --builder harness-cloud-lock`) held to the
 // TypeScript it is written from (src/cloud/key.ts, signed.ts, log-keep.ts, lock-bodies.ts, lock.ts, state.ts,
 // mesh/person-chains.ts, moved-pin.ts, device-builds.ts, api/moved-from.ts and the lock's routes of mesh/serve.ts): the
 // same events given both, each step's answer the same (the states in force, GET /lock, /lock/heads, POST /lock/given,
@@ -27,13 +27,13 @@ import { answerLock } from "../src/mesh/lock-sync.ts";
 import { pinBrought, pinMoved } from "../src/mesh/moved-pin.ts";
 import { answerBodies, answerPerson } from "../src/mesh/person-sync.ts";
 import { lockPartRoute, lockRoute, movedFloor, movedTooOld, refusalOf } from "../src/mesh/serve.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { WS as RWS, bases, genesisOf, key, nextOf, rng, signers } from "./lock-chains.ts";
 import { bindBytes } from "./lock-roster4-model.ts";
 import { Log, WS, WS2, ed, handover, signed, viewerOf, world } from "./lock-moved-world.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 let NOW = 2_000_000;
 mock.method(wall, "now", () => NOW * 1000);

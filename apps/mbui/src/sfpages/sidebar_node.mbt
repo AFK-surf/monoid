@@ -175,7 +175,10 @@ fn chats_pane_node(
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
   // changes (held_order), what its lines and rows read
   let ordered : @signals.Signal[Array[ChatDay]] = @signals.signal([])
-  let rows : @signals.Signal[Map[String, ChatItem]] = @signals.signal({})
+  // (by name, each row told only as its own chat changes, comes or goes: one row's words changed wake no other row)
+  let rows : @signals.KeyedList[String, ChatItem] = @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b })
+  // (its days' lines by their keys, told only as a row or a day comes, goes or moves: not as a row's words change)
+  let day_lines : @signals.Signal[Array[String]] = @signals.signal([])
   // (how many times the order shown has been said: what follows it told as it changes)
   let revision : @signals.Signal[Int] = @signals.signal(0)
   let seen : Ref[Array[ChatDay]] = Ref([])
@@ -193,9 +196,10 @@ fn chats_pane_node(
   v.reacts(
     fn() {
       // (the core's days, a new array each time they change: told by a number as they do)
-      let days = match read().0 {
-        Some(view) => view.days
-        None => []
+      // (and whether what changed since the app was last with the stations is still coming in: ChatsView's syncing)
+      let (days, syncing) = match read().0 {
+        Some(view) => (view.days, view.syncing is Some(_))
+        None => ([], false)
       }
       if !physical_equal(days, seen.val) {
         seen.val = days
@@ -203,11 +207,19 @@ fn chats_pane_node(
       }
       // (and its page's stay on top: what changed while it was off the top said as it is put back there, RowsMotion::said;
       // and whether it is the core's answer now or what it said before it was let go of: chats_live)
-      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter))
+      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter), syncing)
     },
     fn(at) {
       let days = seen.val
       let hold = at.1 && !@sfbase.viewer_moved(key, days)
+      // (only whether it is still catching up changed: nothing of its rows to say again, what comes next told by it)
+      if at.0 == said_stamp.val &&
+        hold == said_hold.val &&
+        at.2 == motion.stint &&
+        (!at.3 || motion.had) {
+        motion.syncing = at.4
+        return
+      }
       // (the hand let go of the list (gone to the chat beside it) with nothing come meanwhile: the order it held back
       // put in place quietly, no row seen to run off and back for the hand leaving; what comes while it is away, as ever)
       let let_go = at.0 == said_stamp.val && said_hold.val && !hold
@@ -215,33 +227,50 @@ fn chats_pane_node(
       said_hold.val = hold
       let shown = @sfbase.held_order(key, days, hold)
       let by_name : Map[String, ChatItem] = Map([])
+      let names : Array[String] = []
       for d in shown {
         for item in d.items {
-          by_name[@sfbase.row_name(item)] = item
+          let name = @sfbase.row_name(item)
+          if !by_name.contains(name) {
+            names.push(name)
+          }
+          by_name[name] = item
         }
       }
+      let lines = day_keys(shown)
       if @hostapi.perf_recording() && by_name.length() != recorded_rows.val {
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
       }
       motion.said(
         v,
-        shown,
+        lines,
         by_name,
         @signals.untracked(current),
         @signals.untracked(current) && @signals.untracked(frame.watched) && !let_go,
         at.2,
         @sfbase.chats_window_asked(id, filter),
         at.3,
+        at.4,
       )
-      ordered.set(shown)
-      rows.set(by_name)
-      revision.set(revision.untracked() + 1)
+      let apply = fn() {
+        ordered.set(shown)
+        rows.reset(names, by_name)
+        day_lines.set(lines)
+        revision.set(revision.untracked() + 1)
+      }
+      if motion.watched {
+        @view.transition(within=v, apply)
+      } else {
+        apply()
+      }
     },
   )
   let days = fn() { ordered.get() }
-  // its lines' keys: its room under the bar, what the frame puts at its top, its states, its days, its foot
-  let keys = fn() {
+  // its lines' keys before its days (its room under the bar, what the frame puts at its top, its states) and whether
+  // its days follow: worked out anew as what is read changes, what follows it told only where these do, not as a row's
+  // words or state do
+  let lead_lines = @signals.computed(fn(_) {
     let (view, _) = read()
     let out = ["top"]
     if search_tucked(view) {
@@ -251,7 +280,10 @@ fn chats_pane_node(
       out.push("part/" + p.key)
     }
     match view {
-      None => out.push("wait")
+      None => {
+        out.push("wait")
+        (out, false)
+      }
       Some(v) => {
         match v.note {
           Some(n) if v.days.length() == 0 && (n.reading || n.failing.length() > 0) => out.push("wait")
@@ -264,14 +296,22 @@ fn chats_pane_node(
         for p in (frame.after)(filter, Some(v)) {
           out.push("part/" + p.key)
         }
-        out.append(motion.lines(days()))
+        (out, true)
       }
+    }
+  })
+  // its lines' keys: those before its days, its days, its foot
+  let keys = fn() {
+    let (lead, has_days) = lead_lines.get()
+    let out = lead.copy()
+    if has_days {
+      out.append(motion.lines(day_lines.get()))
     }
     out.push("foot")
     out
   }
-  // (each row's chat by its name, as the days have it now)
-  let item_of = fn(name : String) -> ChatItem? { rows.get().get(name) }
+  // (each row's chat by its name, as the days have it now: what reads it told only as that row's chat changes)
+  let item_of = fn(name : String) -> ChatItem? { rows.get(name) }
   // (the shown one's rows: those an archived chat's neighbour is looked for in)
   v.reacts(fn() { (current(), revision.get()) }, fn(_) {
     if @signals.untracked(current) {
@@ -622,6 +662,9 @@ priv struct RowsMotion {
   undo_lines : Map[String, (ChatItem?, String)]
   closed : Set[String]
   told : @signals.Signal[Int]
+  // (whether it was catching up as it was last said: what the stations bring in then, the last of it too, is there at
+  // once)
+  mut syncing : Bool
 }
 
 ///|
@@ -637,6 +680,7 @@ fn RowsMotion::new() -> RowsMotion {
     undo_lines: {},
     closed: Set([]),
     told: @signals.signal(0),
+    syncing: false,
   }
 }
 
@@ -661,7 +705,7 @@ fn day_line(key : String) -> Bool {
 }
 
 ///|
-/// The list's days now said (`shown`, its rows `by_name`) in node `v`'s timeline, `current` whether it is the list in view,
+/// The list's days now said (their lines `lines`, day_keys', its rows `by_name`) in node `v`'s timeline, `current` whether it is the list in view,
 /// `watched` whether it is the list shown, in its page's stay on top `stint`, the window its list was last told it grows
 /// to `asked` (chats_window_asked): whether what came, went and went ahead makes its way. What changed while its page was
 /// off the top (on 小屏 kept on the stack's shelf at rest, its list said again only as it is taken back: a new stint) is
@@ -670,19 +714,23 @@ fn day_line(key : String) -> Bool {
 /// coordinator of the migration's ruling, 2026-11-13: a page more's rows opening one by one, measured as they opened, a
 /// fling into them showed the list's ground). `live`: what is said is the core's answer now (sfbase's chats_live), not
 /// what it said before the list was let go of; till it is, and as it is first told, nothing of it makes its way.
+/// `syncing`: what changed since the app was last with the stations is still coming (ChatsView's syncing): what the
+/// stations bring in then, and the batch that ends it, is there at once, but a row archived here from the list.
 fn RowsMotion::said(
   self : RowsMotion,
   v : @view.View,
-  shown : Array[ChatDay],
+  lines : Array[String],
   by_name : Map[String, ChatItem],
   current : Bool,
   watched : Bool,
   stint : Int,
   asked : Int,
   live : Bool,
+  syncing : Bool,
 ) -> Unit {
-  let lines = day_keys(shown)
   let was = self.last
+  let catching_up = syncing || self.syncing
+  self.syncing = syncing
   self.quiet.clear()
   // (archived here and come back (撤销, or its archive refused): the list's again, in the line it kept, no way in)
   let mut back = false
@@ -700,7 +748,13 @@ fn RowsMotion::said(
   self.held = held
   // (what the core answers first, and what it said before it was let go of shown till it does (`live` not yet: a
   // workspace or 设置 come back from), is where it is at once: only what changes after its answer is seen to)
-  let watched = watched && live && !@view.answering_now() && self.had && !lines.is_empty() && stint == self.stint
+  let watched = watched &&
+    live &&
+    !@view.answering_now() &&
+    self.had &&
+    !lines.is_empty() &&
+    stint == self.stint &&
+    (!catching_up || archived_here.untracked() is Some(_))
   self.stint = stint
   self.watched = watched
   if watched && !(was == lines) {
@@ -744,7 +798,7 @@ fn RowsMotion::said(
     }
   }
   if back {
-    self.told.set(self.told.untracked() + 1)
+    @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
   }
   // (archived from its row in the list in view, its line not kept (the list's last row gone with it, or its page not
   // on top as the core said it gone): said in a toast with its 撤销 as from anywhere else, never left unsaid)
@@ -786,14 +840,14 @@ fn RowsMotion::moves(self : RowsMotion, key : String) -> Bool {
 }
 
 ///|
-/// The days `days` as lines with the rows archived here whose line is kept among them, each after the line it came
-/// after (the first, before all).
-fn RowsMotion::lines(self : RowsMotion, days : Array[ChatDay]) -> Array[String] {
+/// The days' lines `lines` (day_keys') with the rows archived here whose line is kept among them, each after the line
+/// it came after (the first, before all).
+fn RowsMotion::lines(self : RowsMotion, lines : Array[String]) -> Array[String] {
   self.told.get() |> ignore
-  let out = day_keys(days)
   if self.undo_lines.is_empty() {
-    return out
+    return lines
   }
+  let out = lines.copy()
   let order = self.undo_lines.to_array()
   order.sort_by(fn(a, b) { a.0.compare(b.0) })
   for g in order {
@@ -835,7 +889,7 @@ fn RowsMotion::undo_over(self : RowsMotion, v : @view.View, here : ArchivedHere?
   if end > rows_rest_at.val {
     rows_rest_at.val = end
   }
-  self.told.set(self.told.untracked() + 1)
+  @view.transition(within=v, fn() { self.told.set(self.told.untracked() + 1) })
 }
 
 ///|

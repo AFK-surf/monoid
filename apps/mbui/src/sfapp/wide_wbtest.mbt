@@ -3126,3 +3126,26 @@ test "大屏: a settings row pressed, its page opened as one change: the setting
   }
   assert_eq(seen.filter(fn(p) { p != "settings" }), [], msg="\{Repr(seen)}")
 }
+
+///|
+test "大屏: right click on a field inside ⌘K switcher opens edit menu above the modal and pastes" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls)
+  t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("签")
+  t.frame()
+  let (fx, fy, _, fh) = t.ime_rect()
+  t.clipboard_gives("签名")
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("全选") is Some(_) && t.find("粘贴") is Some(_), msg="switcher field context menu visible above modal")
+  t.tap_text("全选")
+  t.run_for(@ui.move_most_ms)
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("粘贴")
+  t.run_for(@ui.move_most_ms)
+  let (_, words, _, _) = t.ime()
+  assert_eq(words, "签名")
+}

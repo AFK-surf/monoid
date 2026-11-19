@@ -108,7 +108,22 @@ pub fn recent_chat_list(db : @sql.Db, args : Json) -> Json raise {
   let sessions = []
   for key in keys {
     if one(db, "SELECT * FROM sessions WHERE key = ?", [key]) is Some(r) {
-      sessions.push(({ "key": field(r, "key"), "title": field(r, "title"), "archivedAt": field(r, "archived_at"), "ws": or_null(col(r, "ws")) } : Json))
+      let running = match field(r, "running") {
+        Number(n, ..) => Json::boolean(n != 0.0)
+        True => Json::boolean(true)
+        _ => Json::boolean(false)
+      }
+      sessions.push(({
+        "key": field(r, "key"),
+        "title": field(r, "title"),
+        "archivedAt": field(r, "archived_at"),
+        "ws": or_null(col(r, "ws")),
+        "runtime": field(r, "runtime"),
+        "model": or_null(col(r, "model")),
+        "effort": or_null(col(r, "effort")),
+        "running": running,
+        "createdBy": or_null(col(r, "created_by")),
+      } : Json))
     }
   }
   { "threads": Json::array(threads), "sessions": Json::array(sessions), "total": Json::number(total) }

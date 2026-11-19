@@ -115,32 +115,42 @@ pub fn Store::set_profile_quota(
   } else {
     []
   }
-  ignore(
-    self.run(
-      (
-        #|INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
-        #|       ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at
+  fn status() raise {
+    ignore(
+      self.run(
+        (
+          #|INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
+          #|       ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at
+        ),
+        [profile, jstr(js(quota)), at],
       ),
-      [profile, jstr(js(quota)), at],
-    ),
-  )
-  guard windows.length() > 0 && at is Number(a, ..) else { return }
+    )
+  }
+
+  guard windows.length() > 0 && at is Number(a, ..) else {
+    status()
+    return
+  }
+  // One commit, not three: each autocommit is an fsync.
   let hour = (a / hour_ms).floor()
-  ignore(
-    self.run(
-      (
-        #|INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
-        #|       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at
+  self.tx(() => {
+    status()
+    ignore(
+      self.run(
+        (
+          #|INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+          #|       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at
+        ),
+        [profile, jnum(hour), jstr(js(Json::array(windows))), at],
       ),
-      [profile, jnum(hour), jstr(js(Json::array(windows))), at],
-    ),
-  )
-  ignore(
-    self.run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", [
-      profile,
-      jnum(hour - pace_hours),
-    ]),
-  )
+    )
+    ignore(
+      self.run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", [
+        profile,
+        jnum(hour - pace_hours),
+      ]),
+    )
+  })
 }
 
 ///|

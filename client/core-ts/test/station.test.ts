@@ -11,7 +11,7 @@ import { HostWire } from "../src/station/wire.ts";
 import { FakeHost, jsonResponse } from "../src/testing.ts";
 import { answers as answered, apply, call, readsOf, signIn, subscribe, v } from "./helpers.ts";
 import { run } from "./run.ts";
-import { type Answers, base, entries, entry, overview, session, started, stationHost, stationLater, status, threadView } from "./station-fixture.ts";
+import { type Answers, MARKS, base, entries, entry, overview, session, started, stationHost, stationLater, status, threadView } from "./station-fixture.ts";
 import { retryAfter } from "../src/station/sync.ts";
 
 test("live rates follow station events, clear on reconnect, and distinguish older stations", async () => {
@@ -155,6 +155,7 @@ test("a_dropped_stream_is_opened_again_and_reads_what_it_missed", async () => {
 test("a_thread_is_brought_whole_onto_the_device_from_its_latest_page_back", async () => {
   const answers = base();
   answers["GET /threads"] = [threadView(7, 120)];
+  answers["GET /chats?marks=1"] = { ...MARKS, reads: { "7": 120 } };
   answers["GET /threads/7/entries?limit=50"] = { last: 120, entries: entries(71, 120) };
   answers["GET /threads/7/entries?from=21&to=70"] = { last: 120, entries: entries(21, 70) };
   answers["GET /threads/7/entries?from=1&to=20"] = { last: 120, entries: entries(1, 20) };
@@ -191,6 +192,7 @@ test("the_page_before_a_chat_is_read_once_at_a_time_and_a_failure_says_why_and_w
   // turning for ever; the core says how it stands instead and asks again only a while after.
   const answers = base();
   answers["GET /threads"] = [threadView(7, 120)];
+  answers["GET /chats?marks=1"] = { ...MARKS, reads: { "7": 120 } };
   answers["GET /threads/7/entries?limit=50"] = { last: 120, entries: entries(71, 120) };
   const older = "GET /threads/7/entries?before=71&limit=50";
   answers[older] = status(502, { error: "busy" });
@@ -437,6 +439,7 @@ test("a_chat_whose_unread_came_while_the_app_was_away_opens_at_once_with_what_is
   // come, the unread line over the first of them.
   const answers = base();
   answers["GET /threads"] = [threadView(7, 120)];
+  answers["GET /chats?marks=1"] = { ...MARKS, reads: { "7": 120 } };
   answers["GET /threads/7/entries?limit=50"] = { last: 120, entries: entries(71, 120) };
   const first = await started(answers);
   await run(first.core.inner.data.written);

@@ -128,10 +128,12 @@ pub fn hover_card_node(
     due.val = None
   }
   let made = Ref(false)
+  let holder_v : Ref[@view.View?] = Ref(None)
   let set_open : Ref[(Bool) -> Unit] = Ref(fn(_) {  })
   let make = fn() -> Bool {
     guard (layer.layer)() is Some(l) else { return false }
-    let holder = l.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore }).lives_with(owner)
+    let holder = l.box(made_for=loc, fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(owner)
+    holder_v.val = Some(holder)
     holder.on_key(fn(k) {
       if k.code == @ui.key_escape && open.untracked() && !@signals.untracked(held) {
         (set_open.val)(false)
@@ -250,7 +252,10 @@ pub fn hover_card_node(
       gate.val.stop()
       way.go_ms(anchor, 0.0, hover_card_out_ms, ease=Leave)
     }
-    open.set(on)
+    match holder_v.val {
+      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
+      _ => open.set(on)
+    }
   }
   // (what decides it, as of each cause: a mouse's pointer on what it is of or on the card, a press held anywhere in
   // the window (View::window_held: one carried onto it from elsewhere, or one on it that is not its, a bar's dragging

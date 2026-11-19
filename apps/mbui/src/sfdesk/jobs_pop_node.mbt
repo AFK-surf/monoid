@@ -31,7 +31,20 @@ fn jobs_pop_node(
       (None, _) => 0
     }
   }
-  v.pick(shows, fn(p, said) {
+  // (transitioning an open popover from its initial loading state (0) into its jobs or empty view grows smoothly within it)
+  let shown_state = @signals.signal(@signals.untracked(shows), same=fn(a, b) { a == b })
+  v.reacts(
+    shows,
+    fn(next) {
+      if shown_state.untracked() == 0 && next != 0 {
+        @view.transition(within=v.transitions_root(), fn() { shown_state.set(next) })
+      } else {
+        shown_state.set(next)
+      }
+    },
+    at_start=false,
+  )
+  v.pick(fn() { shown_state.get() }, fn(p, said) {
     if said == 0 {
       return
     }

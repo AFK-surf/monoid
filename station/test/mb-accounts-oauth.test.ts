@@ -1,4 +1,4 @@
-// The accounts' sign-ins and checks in MoonBit (station/mb src/accounts_oauth: reader `--builder harness-accounts-oauth`)
+// The accounts' sign-ins and checks in MoonBit (station/mb src/accounts_oauth: `stillfail-reader-harness --builder harness-accounts-oauth`)
 // held to the TypeScript they replace (src/accounts/oauth.ts, login.ts, console.ts, profiles.ts, models.ts, catalog.ts,
 // machine.ts, src/models/module.ts) on the same inputs. A pure function is given the same arguments on both sides; a
 // flow that does IO is given one world on both: the TypeScript a temp directory, a provider on 127.0.0.1 (accounts-
@@ -29,12 +29,12 @@ import { ModelCatalog } from "../src/models/module.ts";
 import { urlsIn } from "../src/ops/command-output.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { platform, WINDOWS } from "../src/platform/index.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { exe, fakeLogin, idToken, machine, script, upon, type Asked } from "./accounts-fakes.ts";
 import { testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : WINDOWS ? "the stand-ins are POSIX shell scripts" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : WINDOWS ? "the stand-ins are POSIX shell scripts" : false;
 const catalogDir = fileURLToPath(new URL("../../client/i18n/catalog", import.meta.url));
 
 // The keychain is the machine's: neither side reads it here (the files are what both read).

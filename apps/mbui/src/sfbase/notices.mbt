@@ -201,6 +201,23 @@ pub fn notices_said_node(v : @view.View, src : Source) -> Unit {
       }
     },
   )
+  // the notices to show taken as the core says them (follow_notices: `notice.claim`), at that moment between frames, not
+  // as a frame of the old view comes to be built after it (notices_frame's, a press's or an island's): what a press
+  // opens then asks the core after them, as the run had it
+  v.reacts(
+    fn() {
+      match workspace_in_view(src).0 {
+        Some(w) if !src.read_only && @ui.app_awake() => Some((w.id, src.topic("notify", notify_params(w.id)).get().value))
+        _ => None
+      }
+    },
+    fn(said) {
+      match said {
+        Some((ws, _)) => follow_notices(src, ws)
+        None => ()
+      }
+    },
+  )
 }
 
 ///|

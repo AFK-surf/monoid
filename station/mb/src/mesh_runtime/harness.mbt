@@ -273,6 +273,8 @@ async fn Harness::call(self : Harness, name : String, a : Json) -> Json {
       )
     "isFps" => Json::boolean(is_fps(arg(a, "v")))
     "queueMs" => jnum(queue_ms(num_of(arg(a, "rtt")).unwrap_or(0.0)))
+    "startRate" => jnum(start_rate_for(arg(a, "paths")))
+    "cursorPayload" => hexj(cursor_payload(arg(a, "cursor").unwrap_or(Json::null())))
     "frame" => hexj(frame(num_of(arg(a, "kind")).unwrap_or(0.0).to_int(), hex_arg(arg(a, "payload"))))
     "configPayload" => {
       let c = arg(a, "config").unwrap_or(Json::null())
@@ -735,9 +737,10 @@ async fn Harness::do_(self : Harness, on : String, verb : String, a : Json) -> J
   }
   if self.sharpeners.get(on) is Some(s) {
     return match verb {
-      "sent" => { s.sent(n("now"), num_of(arg(a, "rate"))); Json::null() }
+      "sent" => { s.sent(n("now"), num_of(arg(a, "rate")), key=arg(a, "key") is Some(True)); Json::null() }
       "left" => jnum(s.left(n("now")))
       "due" => Json::boolean(s.due(n("now"), num_of(arg(a, "rate"))))
+      "dueMoving" => Json::boolean(s.due_moving(n("now"), num_of(arg(a, "rate"))))
       _ => raise Failure("no method \{verb}")
     }
   }

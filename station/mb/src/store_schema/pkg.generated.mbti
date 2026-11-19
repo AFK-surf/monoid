@@ -89,6 +89,7 @@ pub fn widget_source_before_add_needs_repair(@sql.Db) -> Bool raise
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
 // Types and methods
 

@@ -1402,15 +1402,36 @@ impl @hostapi.Host for FakeHost with window_drag(self) {
 }
 
 ///|
-/// What the app asked of the window's own buttons, oldest first (Tester's).
+/// What the app asked of the window's own buttons, oldest first (Tester's), the window in place's (window_acts_by;
+/// the first's in window_acts too, as ever). Close (3) in a window beside the first closes it as a host's own close
+/// does: told the app between frames, as the person's (Tester::close_window_beside).
 impl @hostapi.Host for FakeHost with window_act(self, what) {
-  self.window_acts.push(what)
+  let wid = self.window_at
+  if wid == 0 {
+    self.window_acts.push(what)
+  }
+  match self.window_acts_by.get(wid) {
+    Some(acts) => acts.push(what)
+    None => self.window_acts_by[wid] = [what]
+  }
+  if what == 3 && wid > 0 {
+    after_frame(fn() {
+      if !self.window_ids_closed.contains(wid) {
+        self.window_ids_closed.push(wid)
+      }
+      on_outside(outside_window, wid, -1)
+      self.wants = true
+    })
+  }
 }
 
 ///|
-/// Whether the window is maximized (Tester::set_window_zoomed).
+/// Whether the window in place is maximized (Tester::set_window_zoomed, set_window_zoomed_of).
 impl @hostapi.Host for FakeHost with window_zoomed(self) {
-  self.zoomed
+  match self.window_zooms.get(self.window_at) {
+    Some(z) if self.window_at > 0 => z
+    _ => self.zoomed
+  }
 }
 
 ///|
@@ -1422,7 +1443,10 @@ impl @hostapi.Host for FakeHost with window_snap(self, x, y, w, h) {
 ///|
 /// How the pointer stands on the maximize button (Tester::set_window_snap).
 impl @hostapi.Host for FakeHost with window_snap_state(self) {
-  self.snap_state
+  match self.window_snaps.get(self.window_at) {
+    Some(s) if self.window_at > 0 => s
+    _ => self.snap_state
+  }
 }
 
 ///|
@@ -1457,17 +1481,66 @@ impl @hostapi.Host for FakeHost with windows_in_process(self) {
 }
 
 ///|
-/// Another window of the run, its size the one said for it or 480 × 720 (Tester::set_window_beside_size).
+/// The title each window of the run was given (as it was opened, @ui.set_window_title) and the role each beside the
+/// first was opened as, by id (Tester::window_title, window_role): the run's, emptied as a Tester starts anew.
+// kept across runs: a run's start clears it (the init below)
+let fake_window_titles : Map[Int, String] = Map([])
+
+///|
+// kept across runs: a run's start clears it (the init below)
+let fake_window_roles : Map[Int, String] = Map([])
+
+///|
+fn init {
+  on_reset(fn() {
+    fake_window_titles.clear()
+    fake_window_roles.clear()
+  })
+}
+
+///|
+/// Another window of the run, its size the one a test said for it (Tester::set_window_beside_size), else what it was
+/// opened at (a JSON object's positive "w" and "h": @ui.WindowSpec), else 480 × 720; its title and role kept as it says
+/// them, its buttons in its top row as its "inset" says (else the first window's).
 impl @hostapi.Host for FakeHost with window_open_id(self, what) {
-  ignore(what)
   guard self.windows_in_process else { return 0 }
   self.window_ids = self.window_ids + 1
   let wid = self.window_ids
+  let parsed = @json.parse(what) catch { _ => Json::null() }
+  let said : Map[String, Json] = match parsed {
+    Object(m) => m
+    _ => Map([])
+  }
   if !self.window_sizes.contains(wid) {
-    self.window_sizes[wid] = (480.0, 720.0)
+    match (said.get("w"), said.get("h")) {
+      (Some(Number(w, ..)), Some(Number(h, ..))) if w > 0.0 && h > 0.0 => self.window_sizes[wid] = (w, h)
+      _ => self.window_sizes[wid] = (480.0, 720.0)
+    }
+  }
+  match said.get("title") {
+    Some(String(t)) if t != "" => fake_window_titles[wid] = t
+    _ => ()
+  }
+  match said.get("role") {
+    Some(String(r)) if r != "" => fake_window_roles[wid] = r
+    _ => ()
+  }
+  // (its buttons in its top row as its spec says, else as the first window's; one a test said for it before kept)
+  if !self.window_insets.contains(wid) {
+    match said.get("inset") {
+      Some(True) => self.window_insets[wid] = true
+      Some(False) => self.window_insets[wid] = false
+      _ => ()
+    }
   }
   self.wants = true
   wid
+}
+
+///|
+/// A window's title, kept (Tester::window_title): the window drawn or handed input now's where it says none (< 0).
+impl @hostapi.Host for FakeHost with window_set_title(self, wid, title) {
+  fake_window_titles[if wid < 0 { self.window_at } else { wid }] = title
 }
 
 ///|
@@ -1605,7 +1678,10 @@ impl @hostapi.Host for FakeHost with keyboard(self) {
 
 ///|
 impl @hostapi.Host for FakeHost with window_inset(self) {
-  self.inset
+  match self.window_insets.get(self.window_at) {
+    Some(i) if self.window_at > 0 => i
+    _ => self.inset
+  }
 }
 
 ///|

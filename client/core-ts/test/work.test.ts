@@ -65,14 +65,22 @@ test("a_new_message_costs_the_same_with_150_messages_shown_as_with_50", async ()
 });
 
 /// Home's list (its first 50 chats) on a station of `n` chats while one of them moves to the top 10 times, as its station
-/// tells each new message in it: the sidebar made here of the summaries held and the station's marks (rows-made.ts).
+/// tells each changed shared row (`chat-shared`, rows-made.ts).
 async function homeChanging(n: number) {
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
+  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: {} };
   const sessions = Array.from({ length: n }, (_, i) => ({ ...session(`k${i}`), lastActiveAt: 1_000_000 - i * 1000 }));
   const threads = Array.from({ length: n }, (_, i) => ({ ...threadView(i, 1), sessions: [{ thread: i, session: `k${i}`, connect: "ember", joinedAt: 1 }], lastMessage: { ...threadView(i, 1).lastMessage, createdAt: 1_000_000 - i * 1000 } }));
-  const answers: Record<string, unknown> = { ...base(), "GET /sessions": sessions, "GET /threads": threads, "GET /chats?marks=1": marks, "GET /chats": [] };
+  const sharedRow = (i: number, seq: number, text: string, at: number) => ({
+    id: `k${i}`, session: `k${i}`, thread: i, title: "",
+    agents: [{ key: `k${i}`, runtime: "claude", model: null, effort: null, process: "cold", pending: 0, lastTurn: null }],
+    last: { seq, authorKind: "agent", author: `k${i}`, authorName: null, text, createdAt: at },
+    unread: false, mine: false, lastActiveAt: at, connect: null, origin: null, creator: null, people: [],
+    ws: null, named: { thread: { surface: "ember", title: null }, firstText: null, channelName: null },
+    mineOf: [], said: { n: seq, authorKind: "agent", author: `k${i}`, other: seq }, pinned: null,
+  });
+  const shared = Array.from({ length: n }, (_, i) => sharedRow(i, 1, "…", 1_000_000 - i * 1000));
+  const answers: Record<string, unknown> = { ...base(), "GET /sessions": sessions, "GET /threads": threads, "GET /chats?shared=1": shared, "GET /chats?marks=1": marks, "GET /chats": [] };
   const { host, core, push } = await started(answers);
-  push("made", { rows: true, marks: true });
   const ui = core.connect();
   // (its window said first, as the app says it: chats.window)
   call(core, ui, 2, "chats.window", { scope: "ws", rows: 50 });
@@ -81,7 +89,9 @@ async function homeChanging(n: number) {
   const from = { ...work };
   for (let k = 1; k <= 10; k++) {
     const id = 100 + k * 7;
-    push("thread", { id, entries: [{ ...entry(2, "新的"), thread: id, authorKind: "agent", author: `k${id}`, at: 2_000_000 + k * 1000 }] });
+    const at = 2_000_000 + k * 1000;
+    push("thread", { id, entries: [{ ...entry(2, "新的"), thread: id, authorKind: "agent", author: `k${id}`, at }] });
+    push("chat-shared", sharedRow(id, 2, "新的", at));
     await host.time.pass(200, 50);
   }
   const counted = workSince(from);

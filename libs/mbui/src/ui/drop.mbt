@@ -2,7 +2,8 @@
 // they are held as they move and, once let go, the pick their reading is (macOS's MBView, Windows' drop target in
 // win_files.h, Linux's GTK drop target in linux_app.c: their
 // `mbui.drop` messages, {"type":"over","x","y"},
-// {"type":"left"}, {"type":"drop","x","y","pick"}). A box follows them as the host says them, outside any build
+// {"type":"left"}, {"type":"drop","x","y","pick"}; each with "wid", the window of the run it is over where it is one
+// beside the first: window_slots.mbt). A box follows them as the host says them, outside any build
 // (Ctx::on_files): told where they are held over it, and taking them as they are let go on it, their files read as a
 // pick's are (Pick::files: a folder's by their way down, each folder itself named with a "/" at its end). Under a
 // Tester: Tester::hold_files, Tester::drop_files.
@@ -509,81 +510,92 @@ fn init {
         }
       _ => ""
     }
-    match kind {
-      "over" => files_held_at(Some((num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val)))
-      "drop" => {
-        files_held_at(None)
-        let id = num("pick").to_int()
-        let (x, y) = (num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val)
-        // (where they are, as the host says: taken so, they are not read)
-        let paths = match v {
-          Object(m) =>
-            match m.get("paths") {
-              Some(Array(ps)) =>
-                ps.filter_map(fn(p) {
-                  match p {
-                    Object(o) =>
-                      match (o.get("path"), o.get("dir"), o.get("size")) {
-                        (Some(String(path)), dir, size) if path != "" =>
-                          Some({
-                            path,
-                            dir: dir is Some(True),
-                            size: if size is Some(Number(n, ..)) { n } else { 0.0 },
-                          })
-                        _ => None
-                      }
-                    _ => None
+    // (the window they are over or let go on, as the host says it: 0 the first, or a window beside it; taken in that
+    // window's state, its zoom, its tree and what it holds; one closed since, none, what it named let go)
+    let wid = num("wid").to_int()
+    if wid < 0 || (wid > 0 && !windows_beside.contains(wid)) {
+      if kind == "drop" {
+        forget_drop(num("pick").to_int())
+      }
+      return
+    }
+    as_window(wid, fn() {
+      match kind {
+        "over" => files_held_at(Some((num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val)))
+        "drop" => {
+          files_held_at(None)
+          let id = num("pick").to_int()
+          let (x, y) = (num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val)
+          // (where they are, as the host says: taken so, they are not read)
+          let paths = match v {
+            Object(m) =>
+              match m.get("paths") {
+                Some(Array(ps)) =>
+                  ps.filter_map(fn(p) {
+                    match p {
+                      Object(o) =>
+                        match (o.get("path"), o.get("dir"), o.get("size")) {
+                          (Some(String(path)), dir, size) if path != "" =>
+                            Some({
+                              path,
+                              dir: dir is Some(True),
+                              size: if size is Some(Number(n, ..)) { n } else { 0.0 },
+                            })
+                          _ => None
+                        }
+                      _ => None
+                    }
+                  })
+                _ => []
+              }
+            _ => []
+          }
+          // (the window's tree's first, by their paths (tree_paths_at); where none of it took them, taken as they are let
+          // go by what of an old view takes them there, Ctx::on_files: not those let go on a field with their paths, which
+          // are the field's)
+          old_input_brought()
+          let c = g()
+          match tree_paths_at(c, x, y, paths, id) {
+            Not => {
+              let on_field = !paths.is_empty() && c.editors.contains(hit_in(c.hit_ids, c.hit_rects, x, y))
+              let take_tree = if on_field {
+                None
+              } else {
+                match tree_files_at(x, y) {
+                  (Some(f), _) => (f.take)(x, y)
+                  _ => None
+                }
+              }
+              match (if on_field { None } else if take_tree is Some(_) { take_tree } else { files_take_at(x, y) }) {
+                Some(take) => take(Pick::waits([@hostapi.dropped_pick(id)], "files dropped"))
+                // (taken by none as files: left to this frame's build, what takes them by their paths or reads them for
+                // its field (Ctx::paths_into, Ctx::files_into), else let go as it ends, drops_frame_end)
+                None =>
+                  if id > 0 || !paths.is_empty() {
+                    paths_let_go(x, y, paths, id)
+                  } else {
+                    forget_drop(id)
                   }
-                })
-              _ => []
-            }
-          _ => []
-        }
-        // (the window's tree's first, by their paths (tree_paths_at); where none of it took them, taken as they are let
-        // go by what of an old view takes them there, Ctx::on_files: not those let go on a field with their paths, which
-        // are the field's)
-        old_input_brought()
-        let c = g()
-        match tree_paths_at(c, x, y, paths, id) {
-          Not => {
-            let on_field = !paths.is_empty() && c.editors.contains(hit_in(c.hit_ids, c.hit_rects, x, y))
-            let take_tree = if on_field {
-              None
-            } else {
-              match tree_files_at(x, y) {
-                (Some(f), _) => (f.take)(x, y)
-                _ => None
               }
             }
-            match (if on_field { None } else if take_tree is Some(_) { take_tree } else { files_take_at(x, y) }) {
-              Some(take) => take(Pick::waits([@hostapi.dropped_pick(id)], "files dropped"))
-              // (taken by none as files: left to this frame's build, what takes them by their paths or reads them for its
-              // field (Ctx::paths_into, Ctx::files_into), else let go as it ends, drops_frame_end)
-              None =>
-                if id > 0 || !paths.is_empty() {
-                  paths_let_go(x, y, paths, id)
-                } else {
-                  forget_drop(id)
-                }
-            }
+            // (taken by the tree, or shut under a modal layer)
+            Took | Shut => hand_event()
           }
-          // (taken by the tree, or shut under a modal layer)
-          Took | Shut => hand_event()
         }
-      }
-      "words" => {
-        files_held_at(None)
-        match v {
-          Object(m) =>
-            match m.get("text") {
-              Some(String(s)) if s != "" => words_let_go(num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val, s)
-              _ => ()
-            }
-          _ => ()
+        "words" => {
+          files_held_at(None)
+          match v {
+            Object(m) =>
+              match m.get("text") {
+                Some(String(s)) if s != "" => words_let_go(num("x") / window_zoom_drawn.val, num("y") / window_zoom_drawn.val, s)
+                _ => ()
+              }
+            _ => ()
+          }
         }
+        _ => files_held_at(None)
       }
-      _ => files_held_at(None)
-    }
+    })
   })
 }
 
@@ -692,18 +704,21 @@ fn files_take_at(x : Double, y : Double) -> ((Pick) -> Unit)? {
 }
 
 ///|
-/// Files from outside held over the window at (x, y), as a host says while they are dragged (None: taken away).
-pub fn Tester::hold_files(self : Tester, at : (Double, Double)?) -> Unit {
+/// Files from outside held over the window at (x, y), as a host says while they are dragged (None: taken away); over
+/// window `wid` of the run where it says one beside the first.
+pub fn Tester::hold_files(self : Tester, at : (Double, Double)?, wid? : Int = 0) -> Unit {
+  let on = if wid != 0 { ",\"wid\":\{wid}" } else { "" }
   match at {
-    Some((x, y)) => self.post("mbui.drop", "{\"type\":\"over\",\"x\":\{x},\"y\":\{y}}")
-    None => self.post("mbui.drop", "{\"type\":\"left\"}")
+    Some((x, y)) => self.post("mbui.drop", "{\"type\":\"over\",\"x\":\{x},\"y\":\{y}\{on}}")
+    None => self.post("mbui.drop", "{\"type\":\"left\"\{on}}")
   }
 }
 
 ///|
 /// `files` (their names, a folder's by their way down and a folder itself with a "/" at its end, and bytes) let go on
 /// the window at (x, y), as a host says, with their `paths` where it says them (the Finder's: one for each of `files`,
-/// a folder as that file says, its size that file's bytes); taken as the frame that takes the message begins
+/// a folder as that file says, its size that file's bytes), on window `wid` of the run where it says one beside the
+/// first (the host says which; one closed by then lets them go); taken as the frame that takes the message begins
 /// (Ctx::on_files), what they hold told by the host's event after the message, at its moment (FakeHost::due), as a
 /// pick's is.
 pub fn Tester::drop_files(
@@ -712,6 +727,7 @@ pub fn Tester::drop_files(
   y : Double,
   files : Array[(String, Bytes)],
   paths? : Array[String] = [],
+  wid? : Int = 0,
 ) -> Unit {
   self.picks(files)
   self.fake.pick_asks.push({ kind: Files, said: false, taken: false })
@@ -727,6 +743,9 @@ pub fn Tester::drop_files(
     "x": Json::number(x),
     "y": Json::number(y),
     "pick": Json::number(id.to_double()),
+  }
+  if wid != 0 {
+    m["wid"] = Json::number(wid.to_double())
   }
   if !paths.is_empty() {
     m["paths"] = Json::array(
@@ -745,14 +764,17 @@ pub fn Tester::drop_files(
 }
 
 ///|
-/// Words from outside (another app's text) let go on the window at (`x`, `y`), as a host says; taken by the frame that
-/// takes the message.
-pub fn Tester::drop_words(self : Tester, x : Double, y : Double, words : String) -> Unit {
+/// Words from outside (another app's text) let go on the window at (`x`, `y`), as a host says (on window `wid` of the
+/// run where it says one beside the first); taken by the frame that takes the message.
+pub fn Tester::drop_words(self : Tester, x : Double, y : Double, words : String, wid? : Int = 0) -> Unit {
   let m : Map[String, Json] = {
     "type": Json::string("words"),
     "x": Json::number(x),
     "y": Json::number(y),
     "text": Json::string(words),
+  }
+  if wid != 0 {
+    m["wid"] = Json::number(wid.to_double())
   }
   self.post("mbui.drop", Json::object(m).stringify())
 }

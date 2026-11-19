@@ -741,6 +741,7 @@ fn agy_case(c : JValue) -> JValue {
       }
       "outlived" => Later::ok(lp, b(session(st).outlived()))
       "signInExpired" => Later::ok(lp, b(session(st).sign_in_expired()))
+      "lentExpired" => Later::ok(lp, b(session(st).lent_expired()))
       "model" =>
         Later::ok(
           lp,

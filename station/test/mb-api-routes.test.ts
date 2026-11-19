@@ -1,4 +1,4 @@
-// The admin API in MoonBit (station/mb/src/api_routes, the reader's `--builder harness-api-routes`) held to the
+// The admin API in MoonBit (station/mb/src/api_routes, `stillfail-reader-harness --builder harness-api-routes`) held to the
 // TypeScript one it replaces (src/api/admin.ts and every module of src/api/routes) on the same requests against the
 // same station: each request is asked of both, and each answer's status, headers and bytes, and every call either
 // made of the station's parts with what it gave them, must be the same.
@@ -448,9 +448,9 @@ const CASES: Case[] = [];
 const add = (name: string, ask: Asked, more: Omit<Case, "name" | "ask"> = {}) => CASES.push({ name, ask, ...more });
 
 async function main() {
-  const { mbReaderBinary } = await import("../src/read/mb-reader.ts");
-  const binary = mbReaderBinary();
-  const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const { mbHarnessBinary } = await import("./mb-harness.ts");
+  const binary = mbHarnessBinary();
+  const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   const zh = (await import("../../client/i18n/catalog/zh/station.json", { with: { type: "json" } })).default;
   const en = (await import("../../client/i18n/catalog/en/station.json", { with: { type: "json" } })).default;
   await installMocks();
@@ -686,7 +686,7 @@ async function partRoutes(): Promise<(tools: any) => any[]> {
     overview: (viewer: unknown, lang: unknown) => callWorld("agents.overview", [viewer, lang]),
     place: () => callWorld("agents.place", []), heldBy: P("agents.heldBy"),
   });
-  const lock = (ws: string) => callWorld("vault.lock", [ws]);
+  const lock = (ws: string, viewer?: unknown) => callWorld("vault.lock", viewer === undefined ? [ws] : [ws, viewer]);
   return (tools) => (MADE_PARTS ??= [
     ...usage.usageRoutes(tools, () => callWorld("usage.readingAll", [])),
     ...usage.resourceRoutes(tools, P("resources.watch")),
@@ -842,6 +842,10 @@ function baseWorld(): World {
   on("logins.get", ([id]) => (id === "l1" ? { id: "l1", command: "gh", url: "https://x", callback: "c", state: "waiting" } : null));
   on("logins.cancel", ([id]) => ({ id, cancelled: true }));
   on("logins.answer", ([id]) => ({ id, url: "u", state: "ok" }));
+  on("logins.again", ([id]) => {
+    if (id !== "l1") throw thrown("Refused", { status: 409, message: "not again" });
+    return { id: "l3", from: id, url: "u", code: "c", state: "starting" };
+  });
   on("logins.callback", () => ({ status: 200, headers: {}, body: "" }));
   on("logins.openPage", ([id]) => {
     if (id !== "l1") throw thrown("Error", { message: "no page" });
@@ -1284,6 +1288,10 @@ function defineCases() {
   add("session open", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"]] });
   add("session open raw", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"]] });
   add("session open raw part", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["offset", "2"], ["length", "4"]] });
+  // (a version the device keeps: 304, no bytes, whole or a part; one it changed since read as before)
+  add("session open raw kept", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["have", "5:11"]] });
+  add("session open raw part kept", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["offset", "2"], ["length", "4"], ["have", "5:11"]] });
+  add("session open raw changed", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["have", "4:11"]] });
   add("session open dir", { method: "GET", path: "/sessions/s1/open" }, { world: (w) => (w.state.place = { path: "/rooms/s1", name: "s1", dir: true, size: 0, mtime: 5, contentType: "x" }) });
   add("session unknown action", { method: "GET", path: "/sessions/s1/what" });
   add("changed sessions", { method: "POST", path: "/changed/sessions", body: { held: {} } });
@@ -1394,7 +1402,7 @@ function defineCases() {
   add("closed card a part's", { method: "PUT", path: "/threads/7/closed-card", body: { n: 4, option: "go" }, viewer: MEMBER }, { world: (w) => w.handlers.set("store.entriesBetween", () => [{ n: 4, ts: "9.1", card: { retire: { at: 1 } } }]) });
   add("mark unknown thread", { method: "PUT", path: "/threads/99/read", body: { n: 1 } });
   // events.ts
-  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"]] });
+  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"], ["shared", "1"]] });
   add("events for a client from before", { method: "GET", path: "/events", headers: { "stillfail-runtimes": "claude, codex,BAD" } }, {
     world: (w) => {
       const frames = [
@@ -1529,6 +1537,9 @@ function defineCases() {
   add("machine login malformed", { method: "GET", path: "/machine-logins/%E0%A4%A" });
   add("machine login cancelled", { method: "DELETE", path: "/machine-logins/l1" });
   add("machine login answered", { method: "POST", path: "/machine-logins/l1/answer", body: { text: "code" } });
+  add("machine login again", { method: "POST", path: "/machine-logins/l1/again" });
+  add("machine login again refused", { method: "POST", path: "/machine-logins/l2/again" });
+  add("machine login again read-only", { method: "POST", path: "/machine-logins/l1/again", viewer: VIEWER });
   add("machine login callback", { method: "POST", path: "/machine-logins/l1/callback", body: { method: "GET", path: "/cb", headers: { a: "1", b: 2 }, body: "eA==" } });
   add("machine login callback bad", { method: "POST", path: "/machine-logins/l1/callback", body: { path: "/cb" } });
   add("machine login page", { method: "POST", path: "/machine-logins/l1/browser" });
@@ -1732,6 +1743,7 @@ function defineCases() {
   add("slack connect not installed", { method: "POST", path: "/connects", body: { slack: { install: "st6" } } });
   add("slack connect with app", { method: "POST", path: "/connects", body: { slack: { appId: "A7" }, bind: { runtime: "claude" } } });
   add("slack app made", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: "data:image/jpeg;base64,AAAA" } });
+  add("slack app made large icon", { method: "POST", path: "/slack/apps", body: { settings: { name: " Bot ", backgroundColor: "#abcdef" }, icon: `data:image/jpeg;base64,${"AAAA".repeat(30000)}` } });
   add("slack app made icon refused", { method: "POST", path: "/slack/apps", body: { icon: "nope" } });
   add("slack app made bad color", { method: "POST", path: "/slack/apps", body: { settings: { backgroundColor: "red" } } });
   add("slack app made other team", { method: "POST", path: "/slack/apps", body: { team: "T9" } });
@@ -1850,8 +1862,8 @@ function defineCases() {
 // ---------------------------------------------------------------------------------------------------------------
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const { mbReaderBinary } = await import("../src/read/mb-reader.ts");
-  const skip = mbReaderBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const { mbHarnessBinary } = await import("./mb-harness.ts");
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit admin API answers as the TypeScript one (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

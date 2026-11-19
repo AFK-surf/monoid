@@ -1,4 +1,4 @@
-// The migrations in MoonBit (station/mb src/move_coord: reader `--builder harness-move-coord`) held to the TypeScript
+// The migrations in MoonBit (station/mb src/move_coord: `stillfail-reader-harness --builder harness-move-coord`) held to the TypeScript
 // they are a port of (src/move/): the same world given to both, each part of the one and of the other driven the same
 // way, and what each did compared: what it answered, what it asked of its world and of the other station in what order,
 // and every file it keeps (stopped.log, last.json, turn.json, jobs.log, sizes.log, accounts-lent.log, accounts-shared.json,
@@ -21,7 +21,7 @@ import { bytesOf, Refused } from "../src/mesh/bus.ts";
 import { PeerGone, PeerStopped } from "../src/mesh/peer.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { Said, setStationLang } from "../src/ops/i18n.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { accountItemId, accountsModule } from "../src/move/accounts.ts";
 import { chatsModule, shortKey, stampOf } from "../src/move/chats.ts";
 import { connectItemId, connectsModule } from "../src/move/connects.ts";
@@ -44,8 +44,8 @@ type Json = any;
 // (what both say in English here)
 setStationLang("en");
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const CATALOG = fileURLToPath(new URL("../../client/i18n/catalog/", import.meta.url));
 
 const dirs: string[] = [];

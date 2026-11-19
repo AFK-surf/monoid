@@ -14,6 +14,85 @@
 priv struct P54Cloud {
   locks : Map[String, Json]
   mut memberships : Array[Json]
+  /// Each workspace not in security mode: the lock its vault goes by, its members' own locks as one
+  /// (cloud/vault-lock.ts), as made last (`p54_personal_lock`).
+  personal : Map[String, Json]
+  /// Who asked the vault of each workspace here (vault/module.ts `lock`'s `viewer`), by sub: their email.
+  viewers : Map[String, Map[String, String]]
+  /// The vault's records of a workspace (its vaults, its box certificates) and its check of a box certificate against
+  /// a lock: the vault's part's, once it is made.
+  held : Ref[((String) -> (Array[Json], Array[Json]))?]
+  cert_ok : Ref[((Json, Json) -> Bool)?]
+}
+
+///|
+fn P54Cloud::new() -> P54Cloud {
+  { locks: Map([]), memberships: [], personal: Map([]), viewers: Map([]), held: Ref(None), cert_ok: Ref(None) }
+}
+
+///|
+/// Whether `ws` is the home workspace or one this station is in.
+fn P54Cloud::has(self : P54Cloud, bus : LiveBus, ws : String) -> Bool {
+  p54_home(bus) == Some(ws) || self.memberships.iter().any(m => p54_text(Some(m), "workspace") == Some(ws))
+}
+
+///|
+/// The members of `ws` whose devices came to this station (mesh/seen-devices.json, the gate's), by sub: their email,
+/// as they said it last.
+fn p54_seen_members(bus : LiveBus, ws : String) -> Map[String, String] {
+  let out : Map[String, (String, Double)] = Map([])
+  let rows = match read_text(path([bus.data, "mesh", "seen-devices.json"])).bind(@cloud_lock.parse) {
+    Some(Array(a)) => a
+    _ => []
+  }
+  for r in rows {
+    guard p54_text(Some(r), "workspace") == Some(ws) else { continue }
+    guard p54_text(Some(r), "sub") is Some(sub) && p54_text(Some(r), "email") is Some(email) && email != "" else { continue }
+    let at = match r {
+      { "last_seen": Number(n, ..), .. } => n
+      _ => 0.0
+    }
+    match out.get(sub) {
+      Some((_, had)) if had > at => ()
+      _ => out[sub] = (email, at)
+    }
+  }
+  let said : Map[String, String] = Map([])
+  for sub, v in out {
+    said[sub] = v.0
+  }
+  said
+}
+
+///|
+/// The lock `ws`'s vault goes by where it is not in security mode (Cloud `vaultLock`), made again of the person logs
+/// the control plane keeps, the members known and the vault's records; None where it is in security mode or this
+/// station is not in it.
+async fn p54_personal_lock(bus : LiveBus, c : P54Cloud, ws : String) -> Json? {
+  if c.locks.contains(ws) || !c.has(bus, ws) {
+    c.personal.remove(ws)
+    return None
+  }
+  let chains : Array[(String, Array[Json])] = match (try { Ok((bus.cloud_call.val)("personChains", Json::null())) } catch { e => Err(e) }) {
+    Ok(Array(a)) =>
+      a.filter_map(p => match p {
+        Array([String(g), Array(ch)]) => Some((g, ch))
+        _ => None
+      })
+    _ => []
+  }
+  let emails = p54_seen_members(bus, ws)
+  for sub, e in c.viewers.get(ws).unwrap_or(Map([])) {
+    emails[sub] = e
+  }
+  let (vaults, boxes) = match c.held.val {
+    Some(f) => f(ws)
+    None => ([], [])
+  }
+  let cert_ok = c.cert_ok.val.unwrap_or((_, _) => false)
+  let lock = @cloud_lock.personal_vault_lock(@cloud_lock.Crypto::of_host(bus.host), ws, chains, emails, vaults, boxes, cert_ok)
+  c.personal[ws] = lock
+  Some(lock)
 }
 
 ///|
@@ -51,6 +130,7 @@ async fn p54_cloud_refresh(bus : LiveBus, c : P54Cloud) -> Unit {
       Ok({ "state": Object(_) as st, .. }) => c.locks[w] = st
       _ => c.locks.remove(w)
     }
+    ignore(p54_personal_lock(bus, c, w))
   }
 }
 
@@ -227,14 +307,14 @@ fn p54_vault_machine(bus : LiveBus) -> @vault_service.Machine {
       }
     },
     write_file: async fn(p, b, mode) {
-      @drive.write_private_bytes(p, b)
+      host.write_atomic(p, b, mode~, sync=true, mkdir=true, sep=sep())
       if mode != 0o600 {
         ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(mode.to_double()) })) catch {
           _ => ()
         }
       }
     },
-    read_file: async fn(p) { (try { Some(@drive.read_all(p)) } catch { _ => None }) },
+    read_file: async fn(p) { host.read_bytes(p) catch { _ => None } },
     mkdir: async fn(p, mode) { @drive.mkdir(p, true, mode~) },
     shell_for: async fn(_env) {
       if is_windows() {
@@ -299,6 +379,7 @@ priv struct P54Vault {
   crypto : @vault_crypto.Crypto
   db : @vault_crypto.Db
   cloud : P54Cloud
+  bus : LiveBus
 }
 
 ///|
@@ -330,7 +411,7 @@ fn p54_vault_world(
     None => None
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   ({
     hub: {
       store: p54_vault_store(bus, threads),
@@ -383,7 +464,12 @@ fn p54_vault_world(
         None => p54_home(bus)
       }
       match w {
-        Some(x) => cloud.lock(x).map(@vault_service.Lock::of_json)
+        // (its lock in force in security mode, else its members' own as made last)
+        Some(x) =>
+          match cloud.lock(x) {
+            Some(l) => Some(@vault_service.Lock::of_json(l))
+            None => cloud.personal.get(x).map(@vault_service.Lock::of_json)
+          }
         None => None
       }
     },
@@ -433,7 +519,7 @@ async fn p54_vault_live(
   db : @vault_crypto.Db,
 ) -> P54Vault {
   let host = bus.host
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   let vault = @vault_service.Vault::new(world, db, crypto, {
     tell: (ev, data, key, to) => (bus.events_tell.val)(ev, data, key, to),
     tabs: session => p54_browser_tabs(session),
@@ -511,7 +597,14 @@ async fn p54_vault_live(
       events.follow(in_vault=(viewer, id) => vault.secrets.in_vault(viewer.sub, viewer.workspace, id) catch { _ => false })
     None => ()
   }
-  { vault, world, crypto, db, cloud }
+  // (the lock of a workspace not in security mode is made of the vault's records too: p54_personal_lock)
+  cloud.held.val = Some(ws => {
+    let vs = vault.vaults.vaults(ws) catch { _ => [] }
+    let bs = vault.vaults.boxes(ws) catch { _ => [] }
+    (vs, bs)
+  })
+  cloud.cert_ok.val = Some((lock, cert) => @vault_crypto.cert_ok(crypto, @vault_crypto.lock_view(lock), Some(cert)) is None)
+  { vault, world, crypto, db, cloud, bus }
 }
 
 ///|
@@ -589,6 +682,33 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
         Some(String(w)) => Some(w)
         _ => None
       }
+      // (who asks is known by its members' own locks from then on: vault/module.ts `lock`'s `viewer`)
+      match (ws, some(j(1))) {
+        (Some(w), Some(viewer)) =>
+          match (p54_text(Some(viewer), "sub"), p54_text(Some(viewer), "email")) {
+            (Some(sub), Some(email)) if sub != "" && email != "" => {
+              let of = match v.cloud.viewers.get(w) {
+                Some(m) => m
+                None => {
+                  let m = Map([])
+                  v.cloud.viewers[w] = m
+                  m
+                }
+              }
+              of[sub] = email.to_lower()
+            }
+            _ => ()
+          }
+        _ => ()
+      }
+      let w = match ws {
+        Some(x) => Some(x)
+        None => p54_home(v.bus)
+      }
+      match w {
+        Some(x) if !v.cloud.locks.contains(x) => ignore(p54_personal_lock(v.bus, v.cloud, x))
+        _ => ()
+      }
       match (v.world.lock)(ws) {
         Some(l) => l.json
         None => Json::null()
@@ -643,7 +763,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     "secrets.removedPlain" => p54_result(secrets.removed_plain(s(0), s(1), j(2)))
     "secrets.savedPlain" => p54_result(secrets.saved_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
     "secrets.grant" => p54_opt(secrets.grant(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
-    "secrets.deny" => p54_opt(secrets.deny(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.deny" => p54_opt(secrets.deny(@vault_service.Lock::of_json(j(0)), s(1), j(2), email?=p54_str(some(j(3)))))
     "secrets.saved" => p54_opt(secrets.saved(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.described" => p54_opt(secrets.described(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.removed" => p54_opt(secrets.removed(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
@@ -752,6 +872,20 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     }
     _ => return None
   }
+  // (a vault or a box certificate written where no workspace lock is pinned: the lock its vaults go by, made of its
+  // members' own locks and named by its vaults' owners and members, made again: vault/module.ts `held.version`)
+  let written = match op {
+    "vaults.putVault" | "vaults.forgetVault" => true
+    "vaults.putVaultIf" | "vaults.putBoxIf" => answer is True
+    _ => false
+  }
+  if written {
+    let w = if op == "vaults.forgetVault" { Some(s(0)) } else { p54_text(Some(j(0)), "ws") }
+    match w {
+      Some(x) if x != "" && !v.cloud.locks.contains(x) => ignore(p54_personal_lock(v.bus, v.cloud, x))
+      _ => ()
+    }
+  }
   Some(answer)
 }
 
@@ -760,21 +894,19 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
 /// answers written back, the connection closed where it says so; what it gives stops it and removes the socket.
 async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, Bytes) -> (Bytes, Bool)) -> () -> Unit {
   @drive.rm_force(path)
-  let (opened, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
+  let id = host.unix_listen(path).id
   let stopped = Ref(false)
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
   ignore(
-    host.rt.fork(name="unix serve", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
+    host.rt.fork_daemon("unix serve", on_error=e => @host.note("unix serve failed: \{e}"), async fn() {
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
         next.val += 1
         let n = next.val
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+        let conn : P54Conn = { host, id: got.id, closed: false }
         conns[n] = conn
         ignore(
-          host.rt.fork(name="unix conn", async fn() {
+          host.rt.fork_daemon("unix conn", on_error=e => @host.note("unix conn failed: \{e}"), async fn() {
             while conn.read() is Some(chunk) {
               let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
               if reply.length() > 0 {
@@ -802,10 +934,8 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
       c.close()
     }
     ignore(
-      host.rt.fork(name="unix close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+      host.rt.fork_daemon("unix close", on_error=e => @host.note("unix close failed: \{e}"), async fn() {
+        host.listen_close(id)
         @drive.rm_force(path)
       }),
     )
@@ -846,7 +976,7 @@ async fn p54_roots(host : @host.Host) -> Array[String] {
     if code == Some(0) {
       for name in @drive.names(dir) catch { _ => [] } {
         if name.has_suffix(".crt") || name.has_suffix(".cer") {
-          let der = @drive.read_all(path([dir, name])) catch { _ => continue }
+          guard (host.read_bytes(path([dir, name])) catch { _ => None }) is Some(der) else { continue }
           out.push(p54_pem("CERTIFICATE", der).trim().to_owned())
         }
       }
@@ -869,9 +999,9 @@ async fn p54_proxy_listen(
   connect : async (@vault_service.ConnectAsk) -> @vault_service.ConnectDecision,
   forward : async (@vault_service.ForwardAsk) -> @vault_service.ForwardDecision,
 ) -> Int {
-  let (opened, _) = host.shell("tcp.listen", { "port": Json::number(0.0) }) // 127.0.0.1 only: the shell binds no other address
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(opened), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let id = listening.id
+  let port = listening.port
   let stopped = Ref(false)
   stop.val = () => {
     if stopped.val {
@@ -879,20 +1009,17 @@ async fn p54_proxy_listen(
     }
     stopped.val = true
     ignore(
-      host.rt.fork(name="proxy close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+      host.rt.fork_daemon("proxy close", on_error=e => @host.note("proxy close failed: \{e}"), async fn() {
+        host.listen_close(id)
       }),
     )
   }
   ignore(
-    host.rt.fork(name="vault proxy", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+    host.rt.fork_daemon("vault proxy", on_error=e => @host.note("vault proxy failed: \{e}"), async fn() {
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+        let conn : P54Conn = { host, id: got.id, closed: false }
         ignore(
-          host.rt.fork(name="proxy connection", async fn() {
+          host.rt.fork_quiet(name="proxy connection", async fn() {
             p54_proxy_connection(host, conn, connect, forward) catch {
               _ => ()
             }
@@ -971,7 +1098,7 @@ async fn p54_proxy_connection(
             _ => break
           }
         }
-        ignore(host.shell("tcp.end", { "id": conn.id })) catch {
+        host.tcp_end(conn.id) catch {
           _ => ()
         }
       })
@@ -1041,7 +1168,7 @@ fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault
       }
       p54_told_threads(bus, threads)
       ignore(
-        bus.host.rt.fork(name="card outcome", async fn() {
+        bus.host.rt.fork_quiet(name="card outcome", async fn() {
           ignore((bus.hub_ask.val)("cardOutcomes.wake", Json::array([]))) catch {
             _ => ()
           }

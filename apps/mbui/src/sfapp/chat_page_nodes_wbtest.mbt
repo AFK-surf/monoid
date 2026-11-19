@@ -85,13 +85,10 @@ fn chat_nodes_calling(
   long_md? : Bool = false,
   scale? : Double = 2.0,
   on_pixels? : Bool = false,
-  composer_nodes? : Bool = false,
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
   @sfbase.chat_page_nodes.set(true)
-  // (its composer made as nodes too where said: 试用新输入框)
-  @sfbase.composer_nodes.set(composer_nodes)
   let base = fixture(fixture_mode)
   let src : Source = {
     ..base,
@@ -608,9 +605,8 @@ test "a chat's page made with its inside nodes opens where it was left, on 小�
     // left at its end, with nothing come since and with a message come since
     for came in [0, 1] {
       let l = long_chat()
-      // (its composer made as nodes too, in the list's foot as it is laid out: the old view's composer there is as tall
-      // as its first build only a frame after, the list brought short of its foot in the first fill held at it)
-      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
+      // (its composer made as nodes, in the list's foot as it is laid out)
+      let t = place_long_open(l, s)
       // (at its end as it opens: how far down its last message's words end)
       let foot_of = fn(n : Int) { t.rect_of("第\{n}条：").map(fn(r) { r.1 + r.3 }) }
       guard foot_of(long_count) is Some(end) else { fail("\{name}: its last message not drawn as it opens") }
@@ -697,7 +693,7 @@ test "a chat's page made with its inside nodes left at its end, messages come wh
     let (name, _, h, _) = s
     for came in [20, 0] {
       let l = long_chat()
-      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
+      let t = place_long_open(l, s)
       let last = "第\{long_count}条："
       guard t.rect_of(last) is Some((_, y0, _, _)) else { fail("\{name}: its last message not drawn as it opens") }
       place_left_and_opened(t, l, meanwhile=fn() { l.last.set(long_count + came) })
@@ -1190,7 +1186,7 @@ test "a chat's page and its composer made as nodes, on 小屏 and 大屏, where 
   for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = screen
     let calls : Array[(String, Json)] = []
-    let (t, _) = chat_nodes_calling(w, h, platform, calls, composer_nodes=true)
+    let (t, _) = chat_nodes_calling(w, h, platform, calls)
     @sfbase.machine_here.val = None
     // (what the draft holds, each by its name and how it goes: read, its bytes going up, it has no `ref`; the bytes go
     // to the core by call_bytes, which this source does not count)
@@ -1215,7 +1211,7 @@ test "a chat's page and its composer made as nodes, on 小屏 and 大屏, where 
   }
   // ⌘F's field takes them as their paths, as any field does
   let calls : Array[(String, Json)] = []
-  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, calls, composer_nodes=true)
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, calls)
   @sfbase.machine_here.val = None
   t.key(@ui.key_of_char('f'), mods=@ui.mod_cmd)
   t.run_for(@ui.move_most_ms)
@@ -2115,4 +2111,243 @@ test "小屏, a chat's page made with its inside nodes: an agent's message of a 
   assert_true(t.find("下载") is Some(_), msg="its file's own menu")
   assert_true(t.find("复制消息链接") is Some(_), msg="no 复制消息链接 in its file's menu: \{Repr(t.words().map(fn(w) { w.0 }))}")
   assert_true(t.find("多选") is Some(_), msg="no 多选 in its file's menu")
+}
+
+///|
+/// A chat whose title does not fit the bar's first row beside its agents (its second row open all along: must_expand)
+/// and whose agent's messages are long, every third drawn a block a paragraph (chat_body_pieces), as a phone's 小屏
+/// (360 by 800) opens it: the long chat (chat_window_wbtest's) with its title, its agents and those messages put in.
+let reopen_title : String = "monoid PR 与 Issue 监控处理 — 长标题测试对话"
+
+///|
+/// What message `n` of the long chat says where it is long: five paragraphs, its number first in the first, each a few
+/// lines on a phone.
+fn reopen_paragraphs(n : Int) -> Array[String] {
+  let line = "检查构建脚本与签名上传流程，确认每一步的输出都符合预期，再把结果整理成清单发给大家过目。"
+  Array::makei(5, fn(p) { if p == 0 { "第\{n}条：先说结论。" + line } else { "第\{n}条第\{p}段：" + line } })
+}
+
+///|
+/// The long chat opened `w` by `h` on a phone (platform 2) with its page and composer made as nodes, its title
+/// `title` beside `agents` more agents, every third message (n % 3 == 1) long and drawn in pieces; at rest.
+fn reopen_long_open(
+  l : LongChat,
+  w? : Double = 360.0,
+  h? : Double = 800.0,
+  title? : String = reopen_title,
+  agents? : Int = 3,
+) -> @ui.Tester {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let base = long_source(l)
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = (base.topic_read)(name, params)
+      guard name == "chat" && got.value is Some(Object(v)) else { return got }
+      let out = v.copy()
+      out["title"] = Json::string(title)
+      let more = items(got.value, "agents").copy()
+      for i in 0..<agents {
+        more.push({
+          "session": {
+            "key": "s-extra-\{i}",
+            "runtime": "codex",
+            "maker": { "id": "openai", "name": "OpenAI" },
+            "agentText": "Codex",
+            "statusText": "未开始",
+            "tone": "neutral",
+          },
+          "status": "idle",
+        })
+      }
+      out["agents"] = Json::array(more)
+      out["messages"] = Json::array(
+        items(got.value, "messages").map(fn(m) {
+          let n = number(Some(m), "seq").to_int()
+          guard n % 3 == 1 && m is Object(o) else { return m }
+          let paras = reopen_paragraphs(n)
+          let text = paras.join("\n\n")
+          let md : Array[Json] = []
+          let mut at = 0
+          for p in paras {
+            md.push([Json::string("p"), [[Json::number(at.to_double()), Json::number((at + p.length()).to_double())]]])
+            at = at + p.length() + 2
+          }
+          let c = o.copy()
+          c["text"] = Json::string(text)
+          c["words"] = Json::array([{ "text": Json::string(text) }])
+          c["md"] = Json::array(md)
+          Json::object(c)
+        }),
+      )
+      { ..got, value: Some(Json::object(out)) }
+    },
+  }
+  open_chat({ ..long_ref, title })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2, begun=fn() {
+    @sfbase.window_tall.val = h
+  })
+  long_run(t, l, long_opened_ms)
+  t
+}
+
+///|
+/// The long chat's lines (its messages' words, each paragraph its own) drawn now between `top` and `foot` of the window,
+/// where each is drawn.
+fn reopen_lines(t : @ui.Tester, top : Double, foot : Double) -> Array[(String, Double)] {
+  t
+  .words()
+  .filter(fn(w) { w.0.has_prefix("第") && w.5 > 0.5 && w.2 >= top && w.2 + w.4 <= foot })
+  .map(fn(w) { (w.0, w.2) })
+}
+
+///|
+/// Which paragraph of a long message (0 its first, or a message of one) is what is read at the top, under the bar, by
+/// its words: one whose words begin over the bar's foot and go on well under the room the list keeps there (so the
+/// block before it shows nothing under the bar to read: chat_reader_at's); -1 where none is so.
+fn reopen_piece_at_top(t : @ui.Tester) -> Int {
+  let cover = bar_foot() + bar_extra_target(long_ref)
+  let mut piece = -1
+  for w in t.words() {
+    guard w.0.has_prefix("第") && w.5 > 0.5 && w.2 < cover + 2.0 && w.2 + w.4 > cover + 30.0 else { continue }
+    piece = match (w.0.find("条第"), w.0.find("段：")) {
+      (Some(a), Some(b)) if b > a + 2 => {
+        let mut n = 0
+        for ch in w.0.unsafe_substring(start=a + 2, end=b) {
+          n = n * 10 + (ch.to_int() - '0'.to_int())
+        }
+        n
+      }
+      _ => 0
+    }
+  }
+  piece
+}
+
+///|
+/// The long chat left (back to the chats) and opened again, `l` answering, each frame of its opening looked at: the
+/// lines `kept` (where they rest) drawn nowhere else on any frame they show, and none of the window's words drawn over
+/// another's. What is wrong said with `name`.
+fn reopen_cycle(t : @ui.Tester, l : LongChat, kept : Array[(String, Double)], name : String) -> Unit raise {
+  home()
+  @ui.came_from_outside()
+  long_run(t, l, long_opened_ms)
+  open_chat({ ..long_ref, title: reopen_title })
+  @ui.came_from_outside()
+  let from = t.time()
+  let mut frames = 0
+  while t.time() - from < long_opened_ms - 1.0e-6 {
+    long_frame(t, l)
+    frames = frames + 1
+    let over = t.words_over_now().filter(fn(f) { f.contains("第") })
+    assert_true(over.is_empty(), msg="\{name}: words over words at \{t.time() - from} ms: \{Repr(over)}")
+    for k in kept {
+      // (drawn near where it rests, but not there: moved; the chats' list under it may show its words elsewhere)
+      let near = t.words().filter(fn(w) { w.0 == k.0 && w.5 > 0.0 && (w.2 - k.1).abs() < 120.0 })
+      assert_true(
+        near.is_empty() || near.iter().any(fn(w) { (w.2 - k.1).abs() <= 0.5 }),
+        msg="\{name}: 「\{k.0}」 drawn at \{Repr(near.map(fn(w) { w.2 }))} at \{t.time() - from} ms (frame \{frames}), where it rests \{k.1}",
+      )
+    }
+  }
+}
+
+///|
+test "小屏, a chat with its bar's second row open all along and long messages drawn a block a paragraph, left and opened again five times: at its end, its last message where it was on every frame; read up into a long message's third paragraph, every line where it was on every frame, nothing over anything" {
+  let k = long_ref.station + "\u{1}" + long_ref.session
+  // at its end
+  let l = long_chat()
+  let t = reopen_long_open(l)
+  assert_true(bar_extra_target(long_ref) > 30.0, msg="its bar's second row not open as it opens")
+  let foot = reopen_lines(t, 0.0, 800.0).filter(fn(w) { w.0.has_prefix("第\{long_count}条：") })
+  assert_eq(foot.length(), 1, msg="its last message not drawn as it opens")
+  for i in 0..<5 {
+    reopen_cycle(t, l, foot, "at its end, opened again \{i + 1}")
+  }
+  // read up, into the third paragraph (piece 2) of a long message, at its top
+  let l = long_chat()
+  let t = reopen_long_open(l)
+  t.move_to(180.0, 400.0)
+  let rd = @sfbase.reading_of(k)
+  let mut tries = 0
+  while !(reopen_piece_at_top(t) >= 2 && !rd.at_end) && tries < 80 {
+    t.wheel(180.0, 400.0, -60.0)
+    long_run(t, l, long_rest_ms)
+    tries = tries + 1
+  }
+  assert_true(reopen_piece_at_top(t) >= 2, msg="never read up into a long message's third paragraph")
+  let seen = reopen_lines(t, 200.0, 600.0)
+  assert_true(seen.length() > 0, msg="nothing read in the middle of the list")
+  for i in 0..<5 {
+    reopen_cycle(t, l, seen, "read up, opened again \{i + 1}")
+    // (kept by a piece of the long message, or by the next message whose top shows where its pieces over what is read
+    // are not measured: chat_jump_node's; either way every line read stays where it was)
+    guard @sfbase.kept_places.get(k) is Some(_) else { fail("no place kept") }
+  }
+  let now = reopen_lines(t, 0.0, 800.0)
+  let wrong = seen.filter(fn(s) { !now.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1).abs() <= 0.5 }) })
+  assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, opened again five times at \{Repr(now)}")
+}
+
+///|
+test "小屏, a chat with its bar's second row open all along: read up into a long message's third paragraph, a message gone to and back where the reader was: every line where it was" {
+  let k = long_ref.station + "\u{1}" + long_ref.session
+  let l = long_chat()
+  let t = reopen_long_open(l)
+  t.move_to(180.0, 400.0)
+  let rd = @sfbase.reading_of(k)
+  let mut tries = 0
+  while !(reopen_piece_at_top(t) >= 2 && rd.far) && tries < 120 {
+    t.wheel(180.0, 400.0, -60.0)
+    long_run(t, l, long_rest_ms)
+    tries = tries + 1
+  }
+  assert_true(reopen_piece_at_top(t) >= 2 && rd.far, msg="never read far up into a long message's third paragraph")
+  let seen = reopen_lines(t, 200.0, 600.0)
+  assert_true(seen.length() > 0, msg="nothing read in the middle of the list")
+  // (a message well after it, and back)
+  go_to(long_ref, rd.top_seq + 20.0)
+  long_run(t, l, long_opened_ms)
+  assert_true(@sfbase.go_back_to(long_ref), msg="no place kept to go back to")
+  long_run(t, l, long_opened_ms)
+  let now = reopen_lines(t, 0.0, 800.0)
+  let wrong = seen.filter(fn(s) { !now.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1).abs() <= 1.0 }) })
+  assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, back at \{Repr(now)}")
+}
+
+///|
+test "小屏, a chat whose title can open its bar's second row, opened again where it was read up: the second row opened by a press, what is read goes down as far as it opens; shut, back where it was" {
+  let title = "重新设计窄排法小屏顶部栏标题展开与收起动画节奏验证"
+  let l = long_chat()
+  let t = reopen_long_open(l, title~, agents=0)
+  assert_true(bar_extra_target(long_ref) < 0.5, msg="its bar's second row open as it opens")
+  t.move_to(180.0, 400.0)
+  t.wheel(180.0, 400.0, -600.0)
+  long_run(t, l, long_rest_ms)
+  home()
+  @ui.came_from_outside()
+  long_run(t, l, long_opened_ms)
+  open_chat({ ..long_ref, title })
+  @ui.came_from_outside()
+  long_run(t, l, long_opened_ms)
+  let seen = reopen_lines(t, 200.0, 600.0)
+  assert_true(seen.length() > 0, msg="nothing read in the middle of the list")
+  let row1 = t.words().filter(fn(w) { w.0 == title && w.5 > 0.5 && w.2 < 60.0 })
+  assert_eq(row1.length(), 1, msg="its title not on the bar's first row: \{Repr(row1)}")
+  t.tap(row1[0].1 + row1[0].3 / 2.0, row1[0].2 + row1[0].4 / 2.0)
+  long_run(t, l, 400.0)
+  let open = bar_extra_target(long_ref)
+  assert_true(open > 30.0, msg="its bar's second row not opened by the press")
+  let down = reopen_lines(t, 0.0, 800.0)
+  let wrong = seen.filter(fn(s) { !down.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1 - open).abs() <= 1.0 }) })
+  assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, opened \{open} more at \{Repr(down)}")
+  let row2 = t.words().filter(fn(w) { w.0 == title && w.5 > 0.5 && w.2 >= 48.0 })
+  assert_eq(row2.length(), 1, msg="its title not on the bar's second row: \{Repr(row2)}")
+  t.tap(row2[0].1 + row2[0].3 / 2.0, row2[0].2 + row2[0].4 / 2.0)
+  long_run(t, l, 400.0)
+  assert_true(bar_extra_target(long_ref) < 0.5, msg="its bar's second row not shut by the press")
+  let back = reopen_lines(t, 0.0, 800.0)
+  let wrong = seen.filter(fn(s) { !back.iter().any(fn(n) { n.0 == s.0 && (n.1 - s.1).abs() <= 1.0 }) })
+  assert_true(wrong.is_empty(), msg="read at \{Repr(seen)}, shut again at \{Repr(back)}")
 }

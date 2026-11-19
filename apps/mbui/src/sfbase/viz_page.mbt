@@ -92,6 +92,24 @@ pub(all) struct VizHears {
 }
 
 ///|
+/// Small back-and-forth height reports on an inline page (viz_said): once a page reverses direction
+/// `viz_osc_limit` times within 64 px (a ResizeObserver / sub-pixel feedback loop), hold it at the
+/// tallest height seen until a larger genuine resize arrives.
+priv struct VizOsc {
+  mut dir : Int
+  mut flips : Int
+  mut hi : Int
+  mut held : Bool
+}
+
+///|
+// kept across runs: cleared on viz_close and viz_pages_reset
+let viz_osc : Map[Int, VizOsc] = Map([])
+
+///|
+let viz_osc_limit : Int = 6
+
+///|
 /// What a page's view says, read (it says what it likes: a field that is not what it should be is let go).
 pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
   let m = match (try Some(@json.parse(words)) catch { _ => None }) {
@@ -104,9 +122,53 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
         match m.get("height") {
           Some(Number(h, ..)) if h == h && h < 1.0e9 && h > 0.0 => {
             let tall = h.ceil().to_int()
+            if f.shown && tall == f.said_height {
+              return
+            }
             // held, it stays so until its content is shorter than where it was held
             if f.grown > viz_runaway && tall >= f.said_height {
               return
+            }
+            let id = f.view.id()
+            match viz_osc.get(id) {
+              Some(o) if o.held =>
+                if (tall - o.hi).abs() <= 64 {
+                  return
+                } else {
+                  viz_osc.remove(id)
+                }
+              _ => ()
+            }
+            if f.said_height > 0 {
+              let delta = tall - f.said_height
+              if delta.abs() <= 64 {
+                let step_dir = if delta > 0 { 1 } else { -1 }
+                let o = match viz_osc.get(id) {
+                  Some(o) => o
+                  None => {
+                    let o : VizOsc = { dir: 0, flips: 0, hi: f.said_height, held: false }
+                    viz_osc[id] = o
+                    o
+                  }
+                }
+                if tall > o.hi {
+                  o.hi = tall
+                }
+                if o.dir != 0 && o.dir != step_dir {
+                  o.flips += 1
+                }
+                o.dir = step_dir
+                if o.flips >= viz_osc_limit {
+                  o.held = true
+                  f.said_height = o.hi
+                  f.height = o.hi
+                  f.shown = true
+                  f.said.set(o.hi)
+                  return
+                }
+              } else {
+                viz_osc.remove(id)
+              }
             }
             f.grown = if f.said_height > 0 && tall > f.said_height && tall - f.said_height <= 64 {
               f.grown + 1
@@ -117,8 +179,12 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
               return
             }
             f.said_height = tall
-            // only a height it did not creep to is kept: one kept mid-run would start the next load's run further on
-            if f.grown == 0 {
+            // only a height it did not creep or oscillate to is kept: one kept mid-run would start the next load's run further on
+            let oscillating = match viz_osc.get(id) {
+              Some(o) => o.flips > 0
+              None => false
+            }
+            if f.grown == 0 && !oscillating {
               viz_heights[f.html] = tall
             }
             f.height = tall
@@ -534,9 +600,14 @@ pub fn viz_close(prefix : String) -> Unit {
   let gone = []
   for k, f in viz_frames {
     if k.has_prefix(prefix) {
+      viz_osc.remove(f.view.id())
       f.view.close()
       match viz_extra_frames.get(k) {
-        Some(extras) => for extra in extras { extra.view.close() }
+        Some(extras) =>
+          for extra in extras {
+            viz_osc.remove(extra.view.id())
+            extra.view.close()
+          }
         None => ()
       }
       gone.push(k)
@@ -1039,6 +1110,7 @@ pub fn viz_pages_reset() -> Unit {
   viz_extra_frames.clear()
   viz_left_chats.clear()
   viz_heights.clear()
+  viz_osc.clear()
   viz_mbui_states_clear()
   viz_full.set(None)
   mermaid_charts.clear()

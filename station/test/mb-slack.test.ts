@@ -1,4 +1,4 @@
-// Slack's parts in MoonBit (station/mb src/slack: reader `--builder harness-slack`) held to the TypeScript they are
+// Slack's parts in MoonBit (station/mb src/slack: `stillfail-reader-harness --builder harness-slack`) held to the TypeScript they are
 // written from (src/slack/*.ts, with connects/card-ends.ts' `endedWords`): each case run by both, its answer (or what it
 // threw) the same. The functions of no connection on the same inputs: Block Kit's cards, the `/sf` form, the manifest
 // and its permissions, the overview, mrkdwn's tables, a Socket Mode event as a chat's. The rest against a stand-in for
@@ -24,7 +24,7 @@ import { endedWords } from "../src/connects/card-ends.ts";
 import { NameBook } from "../src/connects/names.ts";
 import { maskValue } from "../src/ops/agent-env.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import {
   SLACK_GROUPS, SlackApps, SlackWords, appIdOf, applySettings, botScopes, createAppUrl, exchangeInstallCode, ownerOfConfigToken,
   rotateConfigToken, settingsOf, shapeOf, slackAppLinks, slackError, slackManifest, upgraded, upsertToken, withCommand, withSocketMode, withStopEvent,
@@ -35,9 +35,10 @@ import { modelLabel, modelOf, modelOptions, modelValue, newChatBlocks, newChatVi
 import { SlackSurface, answerFiles, filesToLookUp, identityOf, messageFiles, messageText, personOf, toEvent, verifySlackTokens } from "../src/slack/surface.ts";
 import { SlackApiError, SlackClient, apiBase, field } from "../src/slack/web.ts";
 import { connectBlocked, zipOne } from "../src/slack/zip.ts";
+import { updateTooLong } from "./slack-fake.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];
@@ -712,6 +713,10 @@ function slackFor(more: (r: Req, slack: Stand, n: number) => Answer | null = () 
     let n = 0;
     return (r, slack) => {
       n += 1;
+      // (Slack's own limit: chat.update refuses a `text` over 4,000 UTF-8 bytes as Slack has changed it, though
+      // chat.postMessage takes it)
+      if (r.m === "chat.update" && updateTooLong(r.p?.find((p) => p[0] === "text")?.[1] ?? ""))
+        return { body: { ok: false, error: "msg_too_long" } };
       const said = more(r, slack, n);
       if (said !== null) return said;
       switch (r.m) {
@@ -1055,6 +1060,96 @@ test("cards pressed and closed, the /sf form, a login's code, status lines and w
   await until("names learned", () => s.learned() >= 1 && tells.some((t) => t.of === s.id));
   await s.both("knownChannel", () => s.surface.knownChannel("C1"), "C1");
   await s.both("knownPerson", () => s.surface.knownPerson("U2"), "U2");
+  s.same("what each asked of Slack");
+  await s.close();
+});
+
+test("a message over chat.update's 4,000 bytes of text changed in place: a card answered, a login's code, a card closed, an edit, where the thread stands", { skip }, async () => {
+  // 2,433 characters of Chinese, 7,300 bytes: one message as posted, and its text cut at a whole character (the rocket
+  // after the first 3,495 bytes would cross the 3,497 the cut keeps)
+  const long = `${"长".repeat(1165)}🚀${"长".repeat(1267)}`;
+  const s = await surfaces(slackFor(), { handler: () => {} });
+  const T = { channel: "C1", threadTs: "10.0" };
+  const interact = async (payload: Json, count: number, what: string) => {
+    for (const side of [s.a, s.b]) side.send({ type: "interactive", envelope_id: `i-${what}`, payload });
+    await until(what, () => s.a.log.length === count && s.b.log.length === count);
+  };
+  await s.both("post", () => s.surface.post(T, long, [], OPTIONS), T, long, [], OPTIONS);
+  await interact(
+    {
+      type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: "100.000001", thread_ts: "10.0", text: long },
+      actions: [{ action_id: "sf_answer", value: JSON.stringify({ l: OPTIONS.options.map((o: Json) => o.label) }), action_ts: "100.5" }],
+      state: { values: { b: { sf_pick: { selected_option: { value: "0" } } } } },
+    },
+    s.a.log.length + 2,
+    "answered",
+  );
+  await s.both("post", () => s.surface.post(T, long, [], { type: "login" }), T, long, [], { type: "login" });
+  await interact(
+    { type: "block_actions", user: { id: "U2" }, container: { channel_id: "C1", message_ts: "100.000002", thread_ts: "10.0" }, actions: [{ action_id: "sf_login" }], state: { values: { sf_code: { sf_code: { value: "123" } } } } },
+    s.a.log.length + 2,
+    "code entered",
+  );
+  await s.both("post", () => s.surface.post(T, long, [], { type: "text" }), T, long, [], { type: "text" });
+  await s.both("cardEnded", () => s.surface.cardEnded(T, "100.000003", long, { type: "text" }, { why: "closed" }), T, "100.000003", long, { type: "text" }, { why: "closed" });
+  await s.both("post", () => s.surface.post(T, long, []), T, long, []);
+  const stands = async (st: Json, count: number) => {
+    s.surface.standsAt(T, st);
+    await s.mb("standsAt", T, st);
+    await until(`stands ${JSON.stringify(st)}`, () => s.a.log.length === count && s.b.log.length === count);
+  };
+  await stands({ kind: "done", words: "all set" }, s.a.log.length + 1);
+  await s.both("edit", () => s.surface.edit(T, "100.000004", `${long}。`), T, "100.000004", `${long}。`);
+  await stands(null, s.a.log.length + 1);
+  s.same("what each asked of Slack");
+  const updates = s.a.log.filter((r) => r.m === "chat.update");
+  assert.equal(updates.length, 6);
+  for (const u of updates) {
+    const text = u.p!.find((p) => p[0] === "text")![1];
+    assert.equal(text, `${"长".repeat(1165)}…`);
+    assert.ok(Buffer.byteLength(text, "utf8") <= 3_500);
+    assert.ok(JSON.parse(u.p!.find((p) => p[0] === "blocks")![1])[0].text.startsWith(long), "the message itself whole");
+  }
+  await s.close();
+});
+
+test("a card answered on a message whose `&`, `<…>` and link Slack makes longer: the first chat.update fits; one of links alone tried again shorter", { skip }, async () => {
+  // as 1795075309.381569 was: over 4,000 bytes, its text cut at 4,000 grew past them once Slack escaped and linked it
+  const long = `合并 PR & 看 <这个> https://github.com/AFK-surf/Cue/pull/5440 ${"长".repeat(1400)}`;
+  assert.ok(Buffer.byteLength(long, "utf8") > 4_000);
+  // 3,300 bytes, cut to nothing, yet over 4,000 once its links and emails are made links
+  const storm = "https://e.co/x a@e.co ".repeat(150);
+  assert.ok(updateTooLong(storm));
+  const s = await surfaces(slackFor(), { handler: () => {} });
+  const T = { channel: "C1", threadTs: "10.0" };
+  const answer = async (ts: string, text: string, count: number, what: string) => {
+    const payload = {
+      type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts, thread_ts: "10.0", text },
+      actions: [{ action_id: "sf_answer", value: JSON.stringify({ l: OPTIONS.options.map((o: Json) => o.label) }), action_ts: "100.5" }],
+      state: { values: { b: { sf_pick: { selected_option: { value: "0" } } } } },
+    };
+    for (const side of [s.a, s.b]) side.send({ type: "interactive", envelope_id: `i-${what}`, payload });
+    await until(what, () => s.a.log.length === count && s.b.log.length === count);
+  };
+  const updates = () => s.a.log.filter((r) => r.m === "chat.update");
+  const param = (r: Req, k: string) => r.p!.find((p) => p[0] === k)![1];
+  await s.both("post", () => s.surface.post(T, long, [], OPTIONS), T, long, [], OPTIONS);
+  // (who answered looked up, and the update)
+  await answer("100.000001", long, s.a.log.length + 2, "answered");
+  assert.equal(updates().length, 1, "taken the first time");
+  const first = updates()[0]!;
+  assert.ok(!updateTooLong(param(first, "text")));
+  assert.ok(param(first, "text").endsWith("…"));
+  assert.ok(JSON.parse(param(first, "blocks"))[0].text.startsWith(long), "the message itself whole");
+  await s.both("post", () => s.surface.post(T, storm, [], OPTIONS), T, storm, [], OPTIONS);
+  // (the person known by now: the update refused, and tried again)
+  await answer("100.000002", storm, s.a.log.length + 2, "answered again");
+  const [refused, again] = updates().slice(1);
+  assert.equal(param(refused!, "text"), storm, "within 3,500 bytes as counted, so not cut");
+  assert.ok(Buffer.byteLength(param(again!, "text"), "utf8") <= 200);
+  assert.ok(param(again!, "text").endsWith("…"));
+  assert.equal(param(again!, "blocks"), param(refused!, "blocks"), "the same blocks, whole");
+  assert.ok(JSON.parse(param(again!, "blocks"))[0].text.startsWith(storm));
   s.same("what each asked of Slack");
   await s.close();
 });

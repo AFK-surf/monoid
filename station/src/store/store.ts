@@ -78,7 +78,7 @@ import { boundedCardEdit, boundedEditKey, LAST_MESSAGE_WITH_EDIT } from "./legac
 import { ensureRestateGuard, restateGuardSchema } from "./restate-guard.ts";
 import { ensureCardScanGuard } from "./card-scan-guard.ts";
 import { completeCardOutcome, saveWithCardOutcome, type CardEditScan, type CardOutcome } from "./card-outbox.ts";
-import { type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
+import { type ChatListFilter, type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
 import { dueChatShareRows, lapsedChatShareWorkspaces, liveChatShareRows } from "./chat-share-index.ts";
 
 /// One transcript's part for `recordUsageAll`: as `recordUsage` takes it.
@@ -1305,6 +1305,11 @@ export class Store {
     return r ? JSON.parse(r.usage) : null;
   }
 
+  /// Keys of sessions whose kept usage summary still has calls of an unpriced model, so a catalog update can price them.
+  unpricedUsageSessions(): string[] {
+    return this.#all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0").map((r) => r.session as string);
+  }
+
   /// Every session's key.
   sessionKeys(): string[] {
     return this.#all("SELECT key FROM sessions").map((r) => r.key as string);
@@ -2315,13 +2320,13 @@ export class Store {
     const keys = new Set(threads.flatMap((t) => t.sessions.map((m) => m.session)));
     const sessions = [...keys].flatMap((key) => {
       const s = this.getSession(key);
-      return s === null ? [] : [{ key: s.key, title: s.title, archivedAt: s.archivedAt, ws: s.ws }];
+      return s === null ? [] : [{ key: s.key, title: s.title, archivedAt: s.archivedAt, ws: s.ws, runtime: s.runtime, model: s.model, effort: s.effort, running: s.running, createdBy: s.createdBy }];
     });
     return { threads, sessions, total };
   }
 
-  searchChatList(ws: string | null, home: string | null, limit: number, query: string): RecentChatList {
-    return searchChats(this.db, ws, home, limit, query, (id) => this.#lastSaid(id));
+  searchChatList(ws: string | null, home: string | null, limit: number, query: string, filter?: ChatListFilter): RecentChatList {
+    return searchChats(this.db, ws, home, limit, query, (id) => this.#lastSaid(id), undefined, filter);
   }
 
   /// The thread's latest message as merged, for lists.
@@ -3955,19 +3960,23 @@ export class Store {
   setProfileQuota(profile: string, quota: Json): void {
     const at = checkedAt(quota);
     const windows = typeof quota === "object" && quota !== null && quota.state === "ok" && at !== null && at > 0 ? hourWindows(quota) : [];
-    this.#run(
+    const status = () => this.#run(
       `INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
        ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at`,
       profile, JSON.stringify(quota), at,
     );
-    if (windows.length === 0 || at === null) return;
+    if (windows.length === 0 || at === null) return void status();
+    // One commit, not three: each autocommit is an fsync on the main thread.
     const hour = Math.floor(at / HOUR_MS);
-    this.#run(
-      `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
-       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
-      profile, hour, JSON.stringify(windows), at,
-    );
-    this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+    this.#tx(() => {
+      status();
+      this.#run(
+        `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
+        profile, hour, JSON.stringify(windows), at,
+      );
+      this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+    });
   }
 
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET

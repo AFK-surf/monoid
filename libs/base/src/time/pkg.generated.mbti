@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/time"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn civil_from_days(Int64) -> (Int32, Int32, Int32)
+
+pub fn days_from_civil(Int32, Int32, Int32) -> Int64
+
+pub fn format_iso_ms(Int64) -> String
+
+pub fn format_iso_sec(Int64) -> String
+
+pub fn format_ymd(Int64) -> String
+
+pub fn parse_iso_ms(String) -> Int64?
+
+pub fn utc_ms(Int32, Int32, Int32, hour? : Int32, minute? : Int32, second? : Int32, ms? : Int32) -> Int64
+
+pub fn utc_parts(Int64) -> UtcParts
+
+// Errors
+
+// Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) struct UtcParts {
+  year : Int32
+  month : Int32
+  day : Int32
+  hour : Int32
+  minute : Int32
+  second : Int32
+  ms : Int32
+}
+pub impl Show for UtcParts
+
+// Type aliases
+
+// Traits

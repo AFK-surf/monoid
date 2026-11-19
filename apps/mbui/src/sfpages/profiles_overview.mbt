@@ -894,13 +894,8 @@ fn ov_pools_card_node(
     // 3. Deduplicated Pay-as-you-go API Balance Rows
     card.show(fn() { api_keys().length() > 0 }, fn(keys_sec) {
       keys_sec.gap(Is(2.0)) |> ignore
-      keys_sec.show(fn() { active_pool() is Some(_) }, fn(sep_wrap) {
-        sep_wrap.padding(Is((12.0, 0.0, 12.0, 2.0))) |> ignore
-        sep_wrap.box(fn(line) {
-          line.height(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore
-        })
-        |> ignore
-      })
+      // (a line between the pools and the keys: a panel's rule, the library's)
+      keys_sec.show(fn() { active_pool() is Some(_) }, fn(sep) { @sf.panel_rule_node(sep) })
       keys_sec.each(api_keys, fn(item) { text(Some(item.0), "key") }, fn(r, item_sig) {
         let kev = fn() { Some(item_sig.get().0) }
         let bal = fn() { item_sig.get().1 }

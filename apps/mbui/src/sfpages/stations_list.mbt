@@ -50,6 +50,9 @@ pub fn stations_list_node(
   let stations_by = v.keyed_by(fn() { stations().unwrap_or([]) }, fn(st) { text(Some(st), "station") })
   let rigs_now = @signals.computed(fn(_) { if stations() is Some(_) { @settings.rigs_listed(core, here()) } else { [] } }, same=jsons_same)
   let devices_now = @signals.computed(fn(_) { if stations() is Some(_) { @settings.devices_listed(core, here()) } else { [] } }, same=jsons_same)
+  // (the rigs and the devices kept by their keys once, so a row is told only as its own one changes: View::keyed_by)
+  let rigs_by = v.keyed_by(fn() { rigs_now.get() }, fn(x) { text(Some(x), "id") })
+  let devices_by = v.keyed_by(fn() { devices_now.get() }, fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") })
   let add = fn() { @settings.place_action(core, here(), "stations") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "stations") {
@@ -108,11 +111,29 @@ pub fn stations_list_node(
           )
         "first" => sl_first_node(b, core, here, add, adding)
         "devices" => @sf.section_heading_node(b, fn() { @sf.t("web-pages.devices.title") })
-        "stations" =>
-          b.each(addresses, fn(k) { k }, fn(row, k) {
+        "stations" => {
+          // (live station additions/removals open or close their card slots within this block; card-internal updates stay static)
+          b.transitions_only() |> ignore
+          let shown_addresses = @signals.signal(@signals.untracked(addresses), same=fn(a, b) { a == b })
+          b.reacts(
+            addresses,
+            fn(next) {
+              if !@view.answering_now() {
+                @view.transition(within=b, fn() { shown_addresses.set(next) })
+              } else {
+                shown_addresses.set(next)
+              }
+            },
+            at_start=false,
+          )
+          b.each(fn() { shown_addresses.get() }, fn(k) { k }, fn(row, k) {
             let address = k.untracked()
             // (its own station of the list, read by its address: told only as that one changes)
-            sl_station_card_node(row, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            row.box(fn(card) {
+              card.transitions_only() |> ignore
+              sl_station_card_node(card, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            })
+            |> ignore
             // (its menu where the pointer's other button is pressed on it: opened, its name or its address copied)
             row.on_menu(fn(m) {
               let name = text(@signals.untracked(fn() { stations_by.get(address) }), "name")
@@ -127,28 +148,27 @@ pub fn stations_list_node(
             })
             |> ignore
           })
+        }
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
-          let r = @signals.computed(fn(_) { rigs_now.get().iter().find_first(fn(x) { text(Some(x), "id") == id }) }, same=json_opt_same)
-          sl_card_node(
+          let r = fn() { rigs_by.get(id) }
+          @sf.summary_mark_card_node(
             b,
-            fn(m) { @sf.icon_node(m, "boxes", sl_mark, By(fn() { @sf.theme().p.text })) |> ignore },
-            fn() { text(r.get(), "name") },
-            fn() { @settings.rig_said(r.get()) },
+            fn(m) { @sf.icon_node(m, "boxes", @sf.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
+            fn() { text(r(), "name") },
+            fn() { @settings.rig_said(r()) },
             fn() { (core.push)(Station(here().workspace + "/" + id)) },
           )
         }
         k if k.has_prefix("device/") => {
-          let d = @signals.computed(fn(_) {
-            devices_now.get().iter().find_first(fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") == k })
-          }, same=json_opt_same)
-          sl_card_node(
+          let d = fn() { devices_by.get(k) }
+          @sf.summary_mark_card_node(
             b,
-            fn(m) { @sf.icon_node(m, "", sl_mark, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d.get()) }) |> ignore },
-            fn() { text(d.get(), "name") },
-            fn() { @settings.device_said(d.get()) },
+            fn(m) { @sf.icon_node(m, "", @sf.summary_mark_side, By(fn() { @sf.theme().p.text }), name_now=fn() { @settings.device_icon(d()) }) |> ignore },
+            fn() { text(d(), "name") },
+            fn() { @settings.device_said(d()) },
             fn() {
-              let dv = @signals.untracked(fn() { d.get() })
+              let dv = @signals.untracked(fn() { d() })
               @settings.open_device(core, @signals.untracked(here), text(dv, "station"), text(dv, "id"), Unanchored)
             },
           )
@@ -242,74 +262,6 @@ fn copy_item(label : String, words : String) -> @sf.MenuItem? {
 }
 
 ///|
-/// A card of the list in node `b`, pressed open (`press`): `mark` 28 across before its name on its first line (the mark's
-/// line as high as it), what is said of it (`said`) under the name from where the name starts, a chevron at the first
-/// line's end; `end` before the chevron, `body` under it all, on the card.
-fn sl_card_node(
-  b : @view.View,
-  mark : (@view.View) -> Unit,
-  name : () -> String,
-  said : () -> String,
-  press : () -> Unit,
-  end? : (@view.View) -> Unit,
-  body? : (@view.View) -> Unit,
-  tag? : () -> String = fn() { "" },
-) -> Unit {
-  // (a page's card, laid out by the page's arrangement, pressed whole: what it holds in one column of its own)
-  @sf.page_card_node(b, fn(card) {
-    @sf.rippled_node(card, press, @sf.card_corner, name)
-    card.box(fn(col) {
-      // (its head, then what is under it, 10 apart)
-      @sf.style_node(col, fn() { sl_col })
-      // (its head: its mark, its name, what stands at its end and its chevron on its first line, each across that
-      // line's middle, never across the lines under it (the user, 2026-11-14); what is said of it under the name from
-      // where the name starts: after a room as wide as the mark's square, whatever size that is drawn at)
-      col.box(fn(top) {
-        // (its lines 2 apart: a tag's ground after its name does not meet the line under it)
-        @sf.style_node(top, fn() { sl_top })
-        top.box(fn(head) {
-          @sf.style_node(head, fn() { sl_head })
-          head.box(fn(m) {
-            @sf.style_node(m, fn() { sl_mark_box }, in_row=true)
-            mark(m)
-          })
-          |> ignore
-          // (its name, a tag after it where it has one (本机): the tag keeps its words, the name gives way)
-          head.box(fn(n) {
-            @sf.style_node(n, fn() { sl_name_row })
-            n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            n.box(fn(w) {
-              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              @sf.words_node(w, name, fn() { sl_name }) |> ignore
-            })
-            |> ignore
-            n.show(fn() { tag() != "" }, fn(t) { @sf.pill_node(t, tag) |> ignore })
-          })
-          |> ignore
-          match end {
-            Some(e) => e(head)
-            None => ()
-          }
-          @sf.icon_node(head, "chevron-right", sl_chevron, By(fn() { @sf.theme().p.subtle })) |> ignore
-        })
-        |> ignore
-        top.show(fn() { said() != "" }, fn(s) {
-          @sf.style_node(s, fn() { sl_said_line })
-          s.box(fn(m) { @sf.style_node(m, fn() { sl_mark_room }, in_row=true) }) |> ignore
-          @sf.words_node(s, said, fn() { sl_said }).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        })
-      })
-      |> ignore
-      match body {
-        Some(f) => f(col)
-        None => ()
-      }
-    })
-    |> ignore
-  })
-}
-
-///|
 /// A station's card (station_card's) in node `b`, as `s` says it now: its mark (a server's where it has none), its name,
 /// where it joined from and what is said of it, reconnecting before its chevron; 加入安全模式 under that where its
 /// workspace's safe mode does not name it and the viewer could protect it from here; then its body.
@@ -320,14 +272,14 @@ fn sl_station_card_node(
   press : () -> Unit,
   shown? : () -> Bool = fn() { true },
 ) -> Unit {
-  sl_card_node(
+  @sf.summary_mark_card_node(
     b,
     fn(m) {
       m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(x, marked) {
         if marked {
-          @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, sl_mark, fn() { @sf.theme().p.text }, fn() { 0 })
+          @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, @sf.summary_mark_side, fn() { @sf.theme().p.text }, fn() { 0 })
         } else {
-          @sf.icon_node(x, "server", sl_mark, By(fn() { @sf.theme().p.text })) |> ignore
+          @sf.icon_node(x, "server", @sf.summary_mark_side, By(fn() { @sf.theme().p.text })) |> ignore
         }
       })
     },
@@ -441,12 +393,12 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
     body.box(fn(n) {
       n.box(fn(x) {
         x.alpha(By(fn() { seen(net() is Some(_)) })) |> ignore
-        sl_net_node(x, fn() { if net() is Some(_) { net() } else { Some(sl_net_sample) } })
+        @sf.station_net_line_node(x, net)
       })
       |> ignore
       n.show(fn() { online() && net() is None }, fn(o) {
         o.over(Is(true)) |> ignore
-        @sf.waiting_node(o, fn(w) { sl_net_node(w, fn() { Some(sl_net_sample) }) })
+        @sf.waiting_node(o, fn(w) { @sf.station_net_line_node(w, fn() { None }) })
       })
     })
     |> ignore
@@ -470,87 +422,13 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
 }
 
 ///|
-/// This device's connection to a station on its card (net_line's, as nodes), as `net` says it now, all of it in the
-/// card's small words: how it goes and packets lost, then its round trip on the left; on the right ↑ and ↓, the speed
-/// each way (under the left where the line has not the room). Short of room, what its latency is called is cut short;
-/// how it is reached and the figures are not.
-fn sl_net_node(p : @view.View, net : () -> Json?) -> Unit {
-  let has = fn(key : String) { field(net(), key) is Some(Object(_)) }
-  p.box(fn(r) {
-    @sf.style_node(r, fn() { sl_net_row })
-    r.wraps(Is(Some(sl_net_lines))) |> ignore
-    r.box(fn(left) {
-      @sf.style_node(left, fn() { sl_net_left }, in_row=true)
-      left.box(fn(l) {
-        @sf.style_node(l, fn() { sl_net_path }, in_row=true)
-        @sf.words_node(l, fn() { text(net(), "path") }, fn() { sl_net_words }) |> ignore
-        l.show(fn() { has("loss") }, fn(f) { sl_net_figure_node(f, fn() { field(net(), "loss") }) })
-      })
-      |> ignore
-      left.show(fn() { has("rtt") }, fn(x) {
-        x.box(fn(l) {
-          @sf.style_node(l, fn() { sl_net_rtt }, in_row=true)
-          @sf.words_node(l, fn() { "·" }, fn() { sl_net_words }) |> ignore
-          @sf.words_node(l, fn() { @sf.t("android-settings.stations.rtt") }, fn() { sl_net_words_cut }) |> ignore
-          sl_net_figure_node(l, fn() { field(net(), "rtt") })
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-    r.box(fn(rates) {
-      @sf.style_node(rates, fn() { sl_net_rates }, in_row=true)
-      for way in [("↑", "up"), ("↓", "down")] {
-        rates.box(fn(l) {
-          @sf.style_node(l, fn() { sl_net_rtt }, in_row=true)
-          @sf.words_node(l, fn() { way.0 }, fn() { sl_net_words }) |> ignore
-          @sf.words_node(l, fn() { text(net(), way.1) }, fn() { sl_net_figure }) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A figure of a card's network line, as `f` says it now: in the words' ink, its level's colour when off.
-fn sl_net_figure_node(p : @view.View, f : () -> Json?) -> Unit {
-  @sf.words_node(p, fn() { text(f(), "text") }, fn() {
-    match text(f(), "level") {
-      "amber" => sl_net_figure.then(@ui.text_style(color=WarnInk))
-      "red" => sl_net_figure.then(@ui.text_style(color=Danger))
-      _ => sl_net_figure
-    }
-  })
-  |> ignore
-}
-
-///|
 /// A machine's CPU, memory and disk made up, for what shows while they are read (in their bones).
 // kept across runs: a value (no field of it changes)
 let sl_meters_sample : Array[Json] = ["CPU", "RAM", "Disk"].map(fn(n) {
   Json::object({ "key": Json::string(n), "label": Json::string(n), "text": "00%", "level": "ok" })
 })
 
-///|
-/// A connection made up, for what shows while it is read (in its bones), its words in Chinese.
-let sl_net_sample : Json = Json::object({
-  "path": "直连",
-  "rtt": { "text": "0 ms", "level": "ok" },
-  "down": "0.0 KB/s",
-  "up": "0.0 KB/s",
-})
-
 // ── styles ─────────────────────────────────────────
-
-///|
-/// A card's mark's side.
-let sl_mark : Double = 28.0
-
-///|
-let sl_chevron : Double = 14.0
 
 ///|
 /// The scene over the first to add.
@@ -560,88 +438,6 @@ let sl_first_art_w : Double = 240.0
 /// The offline picture's width on a card: the room's height (the load's 20, 10, the network's two lines of 18 2 apart:
 /// 68) times the picture's 2:1 (stations.mbt's offline_picture_w).
 let sl_offline_picture_w : Double = 136.0
-
-///|
-/// A card's network line: what goes how on the left, the speeds on the right, 10 apart; 2 between its lines where it
-/// takes two.
-// kept across runs: a value (no field of it changes)
-let sl_net_row : @ui.Style = @ui.css("row w=Full gap=S2_5 align=ACenter justify=JBetween")
-
-///|
-let sl_net_lines : Double = 2.0
-
-///|
-/// How it goes and its round trip, 6 apart, cut short as a whole where the line is.
-// kept across runs: a value (no field of it changes)
-let sl_net_left : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
-
-///|
-/// How it goes and packets lost, 6 apart.
-// kept across runs: a value (no field of it changes)
-let sl_net_path : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
-
-///|
-/// Its round trip, and each way's speed: 4 apart, cut short where the line is.
-// kept across runs: a value (no field of it changes)
-let sl_net_rtt : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter")
-
-///|
-/// ↑ and ↓ side by side, 10 apart.
-// kept across runs: a value (no field of it changes)
-let sl_net_rates : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sl_net_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
-
-///|
-/// What its latency is called, cut short where the line has not the room.
-// kept across runs: a value (no field of it changes)
-let sl_net_words_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sl_net_figure : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Fg, wrap=false)
-
-///|
-/// A card's first line: its mark, its name, what stands at its end, 12 apart across the line's middle, as high as its
-/// mark (the name's line in its middle with it).
-// kept across runs: a value (no field of it changes)
-let sl_head : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter min_h=S7")
-
-///|
-/// A card's head and what is said under it, 2 apart.
-// kept across runs: a value (no field of it changes)
-let sl_top : @ui.Style = @ui.css("w=Full gap=S0_5")
-
-///|
-/// A card's name and the tag after it, on its one line, 8 apart.
-// kept across runs: a value (no field of it changes)
-let sl_name_row : @ui.Style = @ui.css("row gap=S2 align=ACenter")
-
-///|
-/// What is said of it under its name: after a room as wide as the mark's square and the 12 after it, from where the
-/// name starts.
-// kept across runs: a value (no field of it changes)
-let sl_said_line : @ui.Style = @ui.css("row w=Full gap=S3")
-
-///|
-/// The mark's square's width alone (sl_mark_box's), the room before what is said under the name.
-// kept across runs: a value (no field of it changes)
-let sl_mark_room : @ui.Style = @ui.css("w=S7")
-
-///|
-/// The mark's square: as large whatever it is (an emoji is drawn wider than an icon), the names lined up.
-// kept across runs: a value (no field of it changes)
-let sl_mark_box : @ui.Style = @ui.css("w=S7 h=S7 align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sl_name : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sl_said : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
 
 ///|
 /// Reconnecting before the chevron: the ring and its word, 5 apart.
@@ -661,11 +457,6 @@ let sl_protect : @ui.Style = @ui.css("row w=Full")
 /// The body, under the head: its load, and 10 under that its network.
 // kept across runs: a value (no field of it changes)
 let sl_body : @ui.Style = @ui.css("w=Full gap=S2_5")
-
-///|
-/// What a card holds: its head, 加入安全模式 where it has it, its body, 10 apart.
-// kept across runs: a value (no field of it changes)
-let sl_col : @ui.Style = @ui.css("w=Full gap=S2_5")
 
 ///|
 /// Offline: its picture and a line saying so, across the body's room, 12 apart.

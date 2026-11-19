@@ -72,11 +72,19 @@ export const MEMBER_VAULTS = `SELECT v.body FROM vault_member_lookup m
 
 export class VaultStore {
   readonly #db: DatabaseSync;
+  /// Moves on with each vault or box certificate written here (`version`).
+  #version = 0;
 
   constructor(db: DatabaseSync) {
     this.#db = db;
     db.exec(SCHEMA);
     initializeVaultMembers(db);
+  }
+
+  /// Moves on as a vault or a box certificate is written here: what is made of them (the vault's lock where the
+  /// workspace is not in security mode, cloud/vault-lock.ts) is made again only then.
+  version(): number {
+    return this.#version;
   }
 
   /// Every vault of a workspace held here, latest versions.
@@ -123,6 +131,7 @@ export class VaultStore {
   /// A vault's new version, in place of the one before (checked to follow it). Deleted, its items go with it: sealed
   /// under a key no one holds any more.
   putVault(v: Vault): void {
+    this.#version++;
     const save = this.#db.prepare("INSERT INTO vaults (ws, id, seq, body) VALUES (?, ?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET seq = excluded.seq, body = excluded.body");
     if (!v.deleted) {
       save.run(v.ws, v.id, v.seq, JSON.stringify(v));
@@ -143,6 +152,7 @@ export class VaultStore {
 
   /// Save only if the version checked by the caller is still the one held. `null` means there was no vault.
   putVaultIf(v: Vault, previous: string | null): boolean {
+    this.#version++;
     const body = JSON.stringify(v);
     const save = () => previous === null
       ? this.#db.prepare(`INSERT INTO vaults (ws, id, seq, body)
@@ -191,6 +201,7 @@ export class VaultStore {
     this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ? AND id = ?").run(ws, vault, id);
   }
   forgetVault(ws: string, id: string): void {
+    this.#version++;
     this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(ws, id);
     this.#db.prepare("DELETE FROM vaults WHERE ws = ? AND id = ?").run(ws, id);
   }
@@ -236,11 +247,13 @@ export class VaultStore {
   }
 
   putBox(cert: BoxCert): void {
+    this.#version++;
     this.#db.prepare("INSERT INTO vault_boxes (ws, device, body) VALUES (?, ?, ?) ON CONFLICT (ws, device) DO UPDATE SET body = excluded.body").run(cert.ws, cert.device, JSON.stringify(cert));
   }
 
   /// Do not replace a certificate written after the caller checked the one held.
   putBoxIf(cert: BoxCert, previous: string | null): boolean {
+    this.#version++;
     const body = JSON.stringify(cert);
     if (previous === null) return this.#db.prepare(`INSERT INTO vault_boxes (ws, device, body)
       SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vault_boxes WHERE ws = ? AND device = ?)`)

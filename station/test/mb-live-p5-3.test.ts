@@ -347,7 +347,8 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
   mkdirSync(join(data, "transcript-marks"), { recursive: true });
   writeFileSync(join(data, "transcript-marks", "gone.json"), JSON.stringify({ state: { path: join(data, "nowhere.jsonl") } }));
   writeFileSync(join(data, "transcript-marks", "kept.json"), JSON.stringify({ state: { path: join(data, "config.json") } }));
-  const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1", HOME: home });
+  // (no allowance read off this machine: a login of the test's is never sent out)
+  const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1", HOME: home, STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9" });
   await a.next("ready", (m) => m.ready === true);
   const door = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
@@ -369,6 +370,35 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
     const state = await parts(door, "POST", "/ask/accounts.state");
     assert.equal(state.status, 200);
     assert.equal(typeof state.body, "object");
+    // A Claude login asked again with the token its session saw refused: renewed, never given again; refused (it keeps
+    // no refresh token) as a renewal refused, by its words (agents.ts's ClaudeDriver; accounts/index.ts machineToken).
+    const later = Date.now() + 10 * 86_400_000;
+    const login = JSON.stringify({ claudeAiOauth: { accessToken: "tok-old", expiresAt: later } });
+    mkdirSync(join(data, "homes", "renew"), { recursive: true });
+    writeFileSync(join(data, "homes", "renew", ".credentials.json"), login);
+    const renew = { id: "renew", home: "homes/renew" };
+    const given = await parts(door, "POST", "/ask/accounts.claudeToken", { profile: renew });
+    assert.equal(given.status, 200, JSON.stringify(given.body));
+    assert.equal(given.body.token, "tok-old");
+    const refusedAgain = await parts(door, "POST", "/ask/accounts.claudeToken", { profile: renew, rejected: "tok-old" });
+    assert.equal(refusedAgain.status, 400, JSON.stringify(refusedAgain.body));
+    assert.equal(refusedAgain.body.kind, "RenewRefused", JSON.stringify(refusedAgain.body));
+    assert.doesNotMatch(refusedAgain.body.error, /Error: |station\/accounts_oauth/);
+    // (the machine's own login, its file in the home: not on macOS, where it is the keychain's item)
+    if (process.platform !== "darwin") {
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      writeFileSync(join(home, ".claude", ".credentials.json"), login);
+      try {
+        const machine = await parts(door, "POST", "/ask/accounts.machineToken", {});
+        assert.equal(machine.status, 200, JSON.stringify(machine.body));
+        assert.equal(machine.body.token, "tok-old");
+        const machineAgain = await parts(door, "POST", "/ask/accounts.machineToken", { rejected: "tok-old" });
+        assert.equal(machineAgain.status, 400, JSON.stringify(machineAgain.body));
+        assert.equal(machineAgain.body.kind, "RenewRefused", JSON.stringify(machineAgain.body));
+      } finally {
+        rmSync(join(home, ".claude"), { recursive: true, force: true });
+      }
+    }
 
     // ── Resources: the machine, and a chat's job's processes put to its chat ──
     const machine = await parts(door, "GET", "/overview/machine");

@@ -156,6 +156,14 @@ pub(all) suberror ExecFailed {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ExecFailed with output(self, logger) {
+  match self {
+    ExecFailed(message~, ..) => logger.write_string(message)
+  }
+}
+
+///|
 /// execFile's options as these parts give them.
 pub(all) struct ExecOptions {
   env : Env?
@@ -232,6 +240,14 @@ pub(all) struct Dirent {
 /// A file failed to be read or written: Node's message and its code (`ENOENT`, `EEXIST`…).
 pub(all) suberror FsFailed {
   FsFailed(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for FsFailed with output(self, logger) {
+  match self {
+    FsFailed(m, _) => logger.write_string(m)
+  }
 }
 
 ///|

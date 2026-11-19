@@ -18,14 +18,23 @@
 // items, the last that had the focus while it is still enabled, else the first enabled, as a group of them takes one
 // stop; else Tab passes them all by.
 //
+// Letters typed (typeahead, unless `typeahead` is false) while the keys are the menu's, as its arrows are, go to the next
+// enabled item whose label begins with what was typed: what was typed within `typeahead_ms` of the letter before it
+// together (at each key's own moment: the same at any rate of frames), the same letter again going on to the next
+// that begins with it, as a list box's do (listbox.mbt).
+//
+// An item may open a submenu (`Menu::sub_trigger`, submenu.mbt), read out expanded while it is open.
+//
 // What its look reads of an item: disabled, hovered (the pointer over it), pressed, focused (the keys on it, however
-// they came), focus shown (they came by the keys), checked (a check's or a radio's).
+// they came), focus shown (they came by the keys), checked (a check's or a radio's), open (a submenu's trigger's).
 
 ///|
 /// One item of a `Menu` as the keys go among them.
 priv struct MenuEntry {
   node : @view.View
   off : () -> Bool
+  /// (its words, as typeahead finds it: its label)
+  text : () -> String
 }
 
 ///|
@@ -43,6 +52,8 @@ pub struct Menu {
   priv off : () -> Bool
   priv items : Array[MenuEntry]
   priv stop : MenuStop?
+  /// (what was typed together, and the moment of its last letter)
+  priv typed : Ref[(String, Double)]
 }
 
 ///|
@@ -110,6 +121,13 @@ pub struct MenuItem {
   priv node : @view.View
   priv on : () -> Bool
   priv off : () -> Bool
+  priv open : () -> Bool
+}
+
+///|
+/// Whether the submenu it opens is open (a submenu's trigger's, as its caller says); any other item's never.
+pub fn MenuItem::open(self : MenuItem) -> Bool {
+  (self.open)()
 }
 
 ///|
@@ -187,7 +205,8 @@ fn focus_in(v : @view.View, or_none : Bool) -> Bool {
 /// the focus is in it; `wraps`: whether ↓ past the last item comes to the first, and ↑ before the first to the last;
 /// `disabled` while none of it takes a press or the focus; `takes_focus`: the menu itself takes the focus as it is given
 /// it (one opened by the pointer, its keys from nowhere), no key pressing it, one stop of Tab's; `roving`: Tab stops on
-/// one of its items (the last that had the focus, else the first). Its node.
+/// one of its items (the last that had the focus, else the first); `typeahead`: letters typed go to the next item whose
+/// label begins with them, `typeahead_ms` how long after a letter the next is typed with it. Its node.
 #callsite(autofill(loc))
 pub fn menu(
   parent : @view.View,
@@ -199,13 +218,15 @@ pub fn menu(
   disabled? : () -> Bool = fn() { false },
   takes_focus? : Bool = false,
   roving? : Bool = false,
+  typeahead? : Bool = true,
+  typeahead_ms? : Double = 500.0,
   in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
   let setup = fn(v : @view.View) {
     let stop : MenuStop? = if roving { Some({ last: @signals.signal(None), made: @signals.signal(0) }) } else { None }
-    let m : Menu = { node: v, off: disabled, items: [], stop }
+    let m : Menu = { node: v, off: disabled, items: [], stop, typed: Ref(("", 0.0)) }
     look(v, m)
     if takes_focus {
       v.focusable(Is(true), keys=0) |> ignore
@@ -218,7 +239,29 @@ pub fn menu(
       },
     )
     .on_key(fn(k) {
-      if k.mods != 0 || disabled() {
+      if disabled() {
+        return false
+      }
+      // (a character typed, Space aside (it presses what has the focus); with Shift as without; the keys the menu's as
+      // its arrows' are)
+      if typeahead &&
+        k.code > listbox_key_char &&
+        k.code != listbox_key_space &&
+        (k.mods == 0 || k.mods == shift_mod) {
+        // (the keys on one of its items, on itself, or nowhere where it takes no focus itself: never on what else it
+        // holds (a field in it, whose letters are its own))
+        let ours = match v.tree.focused_now().0 {
+          Some(f) => f == v.id() || m.items.iter().any(fn(e) { e.node.id() == f })
+          None => !takes_focus
+        }
+        if !ours {
+          return false
+        }
+        let live = m.live()
+        let c = (k.code - listbox_key_char).unsafe_to_char()
+        return type_ahead(m.typed, c, k.at, typeahead_ms, live.map(fn(e) { e.node }), fn(i) { (live[i].text)() })
+      }
+      if k.mods != 0 {
         return false
       }
       let closing = k.code == menu_key_escape || close_key == Some(k.code)
@@ -289,6 +332,7 @@ fn Menu::part(
   role : @view.Role,
   label : () -> String,
   check : (() -> Bool)?,
+  expanded : (() -> Bool)?,
   act : (@view.View) -> Unit,
   look : (@view.View, MenuItem) -> Unit,
   disabled : () -> Bool,
@@ -303,7 +347,7 @@ fn Menu::part(
       Some(f) => f
       None => fn() { false }
     }
-    self.items.push({ node: v, off })
+    self.items.push({ node: v, off, text: label })
     let made = fn() {
       match self.stop {
         Some(st) => st.made.set(st.made.untracked() + 1)
@@ -316,14 +360,15 @@ fn Menu::part(
       made()
     })
     |> ignore
-    look(v, { node: v, on, off })
+    look(v, { node: v, on, off, open: expanded.unwrap_or(fn() { false }) })
     v
     .presses(By(able))
     .focusable(By(able), tab=false)
     .says(By(fn() {
-      match check {
-        Some(f) => Some(@view.said(role, label=label(), check=if f() { On } else { Off }))
-        None => Some(@view.said(role, label=label()))
+      match (check, expanded) {
+        (Some(f), _) => Some(@view.said(role, label=label(), check=if f() { On } else { Off }))
+        (None, Some(e)) => Some(@view.said(role, label=label(), expanded=e()))
+        (None, None) => Some(@view.said(role, label=label()))
       }
     }))
     .on_press(fn() {
@@ -365,7 +410,7 @@ pub fn Menu::item(
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  self.part(parent, MenuItem, label, None, act, look, disabled, in_node, made_for, loc)
+  self.part(parent, MenuItem, label, None, None, act, look, disabled, in_node, made_for, loc)
 }
 
 ///|
@@ -384,7 +429,7 @@ pub fn Menu::check_item(
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  self.part(parent, MenuItemCheckbox, label, Some(checked), act, look, disabled, in_node, made_for, loc)
+  self.part(parent, MenuItemCheckbox, label, Some(checked), None, act, look, disabled, in_node, made_for, loc)
 }
 
 ///|
@@ -403,5 +448,5 @@ pub fn Menu::radio_item(
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  self.part(parent, MenuItemRadio, label, Some(checked), act, look, disabled, in_node, made_for, loc)
+  self.part(parent, MenuItemRadio, label, Some(checked), None, act, look, disabled, in_node, made_for, loc)
 }

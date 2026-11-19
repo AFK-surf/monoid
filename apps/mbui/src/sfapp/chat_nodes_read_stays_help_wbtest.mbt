@@ -144,14 +144,11 @@ fn rs_answer(k : RsCore) -> Unit {
 fn rs_open(
   s : (String, Double, Double, Int),
   skip? : Bool = false,
-  composed? : Bool = false,
 ) -> (@ui.Tester, Source, RsCore) {
   let (_, w, h, platform) = s
   new_run()
   @sf.presenters_reset()
   @sfbase.chat_page_nodes.set(true)
-  // (its composer made as nodes too where `composed` says: 试用新输入框)
-  @sfbase.composer_nodes.set(composed)
   let k : RsCore = {
     l: long_chat(),
     now: 0.0,
@@ -372,6 +369,19 @@ fn rs_cut_words() -> Array[(Double, Double)] {
 }
 
 ///|
+/// Whether words at `x`, `y` and `h` high are in a tip drawn now (one shown over the composer for what the keyboard's
+/// focus is on, its ＋'s 添加文件: no row of the chat's).
+fn rs_in_tip(t : @ui.Tester, x : Double, y : Double, h : Double) -> Bool {
+  t
+  .all(Tooltip)
+  .iter()
+  .any(fn(tp) {
+    let (tx, ty, tw, th) = tp.rect
+    x >= tx - 0.5 && x <= tx + tw + 0.5 && y >= ty - 0.5 && y + h <= ty + th + 0.5
+  })
+}
+
+///|
 /// At the list's end: how far the composer's ground stands under the lowest words drawn over it across its width (not
 /// those cut away whole: rs_cut_words).
 fn rs_end_gap(t : @ui.Tester) -> Double? {
@@ -385,7 +395,8 @@ fn rs_end_gap(t : @ui.Tester) -> Double? {
       x < gx + gw &&
       y >= 0.0 &&
       y + h <= gy + 0.5 &&
-      !cut.iter().any(fn(c) { c.0 == x && c.1 == y }) {
+      !cut.iter().any(fn(c) { c.0 == x && c.1 == y }) &&
+      !rs_in_tip(t, x, y, h) {
       if low is None || low.unwrap() < y + h {
         low = Some(y + h)
       }

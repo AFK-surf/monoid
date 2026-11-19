@@ -36,7 +36,7 @@ pub fn host_clock(host : @host.Host, wall : Double) -> Clock {
       () => fiber.interrupt()
     },
     spawn: f => ignore(
-      host.rt.fork(async fn() {
+      host.rt.fork_daemon("browser", on_error=_ => (), async fn() {
         f() catch {
           _ => ()
         }
@@ -169,7 +169,7 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
     })
     {
       send: t => ignore(
-        host.rt.fork(async fn() {
+        host.rt.fork_quiet(name="browser ws send", async fn() {
           ignore(host.shell("ws.send", { "id": Json::number(id), "text": Json::string(t) })) catch {
             _ => ()
           }
@@ -178,7 +178,7 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
       close: () => {
         fiber.interrupt()
         ignore(
-          host.rt.fork(async fn() {
+          host.rt.fork_quiet(name="browser ws close", async fn() {
             ignore(host.shell("ws.close", { "id": Json::number(id) })) catch {
               _ => ()
             }
@@ -194,24 +194,11 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
 pub fn host_net(host : @host.Host, clock : Clock) -> FarviewNet {
   {
     connect: async fn(port) {
-      let (opened, _) = host.shell("tcp.open", { "port": Json::number(port.to_double()) })
-      let id = shell_field(opened, "id").unwrap_or(Json::null())
+      let socket = host.tcp_open(port).socket
       {
-        write: async fn(b) { ignore(host.shell("tcp.write", { "id": id }, bytes=b)) },
-        read: async fn() {
-          let (said, bytes) = host.shell("tcp.read", { "id": id })
-          match (shell_field(said, "end"), bytes) {
-            (Some(True), _) | (_, None) => None
-            (_, Some(b)) => Some(b)
-          }
-        },
-        close: () => ignore(
-          host.rt.fork(async fn() {
-            ignore(host.shell("tcp.close", { "id": id })) catch {
-              _ => ()
-            }
-          }),
-        ),
+        write: async fn(b) { socket.write(b) },
+        read: async fn() { socket.read() },
+        close: () => ignore(host.rt.fork_quiet(async fn() { socket.destroy() })),
       }
     },
     clock,
@@ -249,46 +236,27 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
     end_group: procs.end_group,
     signal_group: procs.signal_group,
     free: async fn(port) {
-      match (try Some(host.shell("tcp.listen", { "port": Json::number(port.to_double()) })) catch { _ => None }) {
-        Some((answer, _)) => {
-          ignore(host.shell("conn.close", { "id": shell_field(answer, "id").unwrap_or(Json::null()) })) catch {
-            _ => ()
-          }
+      match (try Some(host.tcp_listen_local(port)) catch { _ => None }) {
+        Some(l) => {
+          host.listen_close(l.id)
           true
         }
         None => false
       }
     },
     version: async fn(port) {
-      let got = @effect.timeout(3000, async fn() {
-        host.shell("fetch", {
-          "url": Json::string("http://127.0.0.1:\{port}/json/version"),
-          "method": "GET",
-          "headers": Json::array([]),
-        })
-      }) catch {
-        _ => None
+      let got = host.fetch("http://127.0.0.1:\{port}/json/version", timeout_ms=3000) catch { _ => return None }
+      if got.status < 200 || got.status > 299 {
+        return None
       }
-      match got {
-        Some((answer, Some(body))) => {
-          let status = match shell_field(answer, "status") {
-            Some(Number(n, ..)) => n
-            _ => 0.0
+      let v = parse(from_utf8(got.body)) catch { _ => return None }
+      match at(Some(v), "webSocketDebuggerUrl") {
+        Some(Str(u)) => {
+          let agent = match at(Some(v), "User-Agent") {
+            None | Some(Null) => ""
+            a => js_str(a)
           }
-          if status < 200.0 || status > 299.0 {
-            return None
-          }
-          let v = parse(from_utf8(body)) catch { _ => return None }
-          match at(Some(v), "webSocketDebuggerUrl") {
-            Some(Str(u)) => {
-              let agent = match at(Some(v), "User-Agent") {
-                None | Some(Null) => ""
-                a => js_str(a)
-              }
-              Some((@jsjson.text(u), agent))
-            }
-            _ => None
-          }
+          Some((@jsjson.text(u), agent))
         }
         _ => None
       }

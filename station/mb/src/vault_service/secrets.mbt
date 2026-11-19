@@ -194,7 +194,23 @@ struct LostSaves {
 priv suberror DecisionChanged
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for DecisionChanged with output(self, logger) {
+  match self {
+    DecisionChanged => logger.write_string("another connection changed the decision meanwhile")
+  }
+}
+
+///|
 priv suberror DecisionCardMoved
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for DecisionCardMoved with output(self, logger) {
+  match self {
+    DecisionCardMoved => logger.write_string("the decision's card moved meanwhile")
+  }
+}
 
 ///|
 /// A plain grant's record as `vault_grants` keeps it.
@@ -659,7 +675,7 @@ fn Secrets::restore_row(self : Secrets, original : RestoreRow, first? : Json, fi
     let session = gtext(Some(request), "session")
     let item_id = gtext(Some(request), "item")
     let mut checked : (String?, String, (Json, Json)??)? = None
-    if until_or_exp(saved) > now && !self.ended(session) && (self.w.lock)(Some(r.ws)) is None {
+    if until_or_exp(saved) > now && !self.ended(session) && self.plain_held(r.ws) {
       let snapshot = self.plain.item_snapshot(r.ws, item_id)
       let item = snapshot.map(x => x.0)
       let l = get(item, "listing")
@@ -719,7 +735,7 @@ fn Secrets::restore_row(self : Secrets, original : RestoreRow, first? : Json, fi
           limit_changed ||
           !(until_or_exp(saved) > self.secs()) ||
           self.ended(session) ||
-          (self.w.lock)(Some(r.ws)) is Some(_) {
+          !self.plain_held(r.ws) {
           row = Some({ ..r, body: cur_body })
           continue
         }
@@ -1411,4 +1427,13 @@ fn Secrets::request_live(self : Secrets, r : Json, now : Double) -> Bool {
   }
   let live = coming || self.recoverable(r)
   gn(Some(r), "at").unwrap_or(@double.not_a_number) + pending_secs > now && live
+}
+
+///|
+/// Whether a plain library's grant given before still holds in `ws` (secrets.ts `#plainHeld`): no security mode there.
+fn Secrets::plain_held(self : Secrets, ws : String) -> Bool {
+  match (self.w.lock)(Some(ws)) {
+    None => true
+    Some(l) => l.open_roster()
+  }
 }

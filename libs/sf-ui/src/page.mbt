@@ -2556,7 +2556,9 @@ fn wide_in_list() -> @ui.Style {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let wide_in_list_bare : @ui.Style = @ui.css("w=Full py=S2_5 justify=JCenter").then(@ui.style(px=list_words_room))
+let wide_in_list_bare : @ui.Style = @ui.css("w=Full py=S2_5 justify=JCenter").then(
+  @ui.style(pl=list_words_room, pr=room(card_control_end)),
+)
 
 ///|
 // kept across runs: a value (no field of it changes)

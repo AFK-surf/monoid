@@ -67,6 +67,39 @@ pub let writings : Map[String, Writing] = Map([])
 pub let writing_pictures : Map[String, String] = Map([])
 
 ///|
+/// What a node of the window's tree read of writing_pictures (writing_picture_told): told as one is kept or let go.
+// kept across runs: told again by writings_reset as writing_pictures is emptied
+let writing_pictures_told : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+fn writing_pictures_tell() -> Unit {
+  writing_pictures_told.set(writing_pictures_told.untracked() + 1)
+}
+
+///|
+/// The picture of file `id` picked or pasted here (writing_pictures) read by a node of the window's tree: told as it
+/// is kept or let go, where reading the map alone tells nothing.
+pub fn writing_picture_told(id : String) -> String? {
+  writing_pictures_told.get() |> ignore
+  writing_pictures.get(id)
+}
+
+///|
+/// The picture of file `id` picked or pasted here kept (writing_pictures), what reads it by a node told.
+pub fn writing_picture_put(id : String, picture : String) -> Unit {
+  writing_pictures[id] = picture
+  writing_pictures_tell()
+}
+
+///|
+fn writing_picture_drop(id : String) -> Unit {
+  if writing_pictures.contains(id) {
+    writing_pictures.remove(id)
+    writing_pictures_tell()
+  }
+}
+
+///|
 let writing_went : Map[String, (String, String, Bytes)] = Map([])
 
 ///|
@@ -89,7 +122,7 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
       "!" => writing_unseen.remove(id)
       still => {
         writing_unseen.remove(id)
-        writing_pictures[id] = still
+        writing_picture_put(id, still)
         sent_picture_kept("upload\u{1}" + id, still)
         for _, w in writings {
           for f in writing_files(w) {
@@ -113,14 +146,14 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
 /// comes ("" while it does, none to be had: "!").
 pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
   guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {
-    return fn() { writing_pictures.get(id).unwrap_or("") }
+    return fn() { writing_picture_told(id).unwrap_or("") }
   }
   let still = bytes_first_frame_node(v, "draft/" + id, name, bytes)
   v.reacts(still, fn(k) {
     guard k != "" && writing_unseen.contains(id) else { return }
     writing_unseen.remove(id)
     if k != "!" {
-      writing_pictures[id] = k
+      writing_picture_put(id, k)
       sent_picture_kept("upload\u{1}" + id, k)
       for _, w in writings {
         for f in writing_files(w) {
@@ -178,6 +211,7 @@ pub fn writings_reset() -> Unit {
   writing_cache.val = []
   writings.clear()
   writing_pictures.clear()
+  writing_pictures_tell()
   writing_went.clear()
   writing_unseen.clear()
   writing_seeds.clear()
@@ -343,7 +377,8 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
 
 ///|
 /// Has the core do `what` to the draft (`composer.<what>`), what the page shows of it meanwhile done by `show`; `done`
-/// its answer.
+/// its answer. `moves`: what `show` does is a person's act on the draft (a file or a quote put in or taken out), its
+/// change shown on its way where the page moves only for a cause (@view.transition); else at once.
 fn writing_act(
   src : Source,
   w : Writing,
@@ -352,17 +387,26 @@ fn writing_act(
   show? : (Writing) -> Unit = fn(_) {  },
   done? : (Result[Json, Json]) -> Unit = fn(_) {  },
   bytes? : Bytes,
+  moves? : Bool = false,
 ) -> Unit {
   if src.read_only {
     toast_later(read_only_words)
     return
   }
   @signals.start_batch()
-  w.pending.set(w.pending.get() + 1)
-  show(w)
+  // (the act told whole inside its transition: what reads the draft is marked by it there, not first by `pending`)
+  let act = fn() {
+    w.pending.set(w.pending.get() + 1)
+    show(w)
+  }
+  if moves {
+    @view.transition(act)
+  } else {
+    act()
+  }
   @signals.end_batch()
   params["key"] = Json::string(w.key)
-  let answered = fn(r : Result[Json, Json]) {
+  let answered_now = fn(r : Result[Json, Json]) {
     @signals.start_batch()
     match r {
       Ok(a) =>
@@ -375,6 +419,14 @@ fn writing_act(
     w.pending.set(w.pending.get() - 1)
     done(r)
     @signals.end_batch()
+  }
+  // (the answer to a person's act on the draft (`moves`): what it settles of that act is the act's, on its way)
+  let answered = fn(r : Result[Json, Json]) {
+    if moves {
+      @view.transition(fn() { answered_now(r) })
+    } else {
+      answered_now(r)
+    }
   }
   match bytes {
     Some(b) => (src.call_bytes)("composer." + what, Json::object(params), b, answered)
@@ -441,7 +493,7 @@ pub fn writing_add(
       Some(_) => {
         let key = "mem:writing/" + id
         @ui.add_image(key, bytes)
-        writing_pictures[id] = key
+        writing_picture_put(id, key)
         // its message drawn from it, as picked, sent before it is up (it names its upload: sent.mbt)
         sent_picture_kept("upload\u{1}" + id, key)
       }
@@ -450,7 +502,7 @@ pub fn writing_add(
           "" if preview_kind(name).0 == Some(KVideo) => writing_unseen.add(id)
           "" => ()
           picture => {
-            writing_pictures[id] = picture
+            writing_picture_put(id, picture)
             sent_picture_kept("upload\u{1}" + id, picture)
           }
         }
@@ -507,6 +559,7 @@ pub fn writing_add(
       }
     },
     bytes~,
+    moves=true,
   )
 }
 
@@ -526,7 +579,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
   match host_picture(f.name, f.src) {
     "" => ()
     picture => {
-      writing_pictures[id] = picture
+      writing_picture_put(id, picture)
       sent_picture_kept("upload\u{1}" + id, picture)
     }
   }
@@ -553,6 +606,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
     "add",
     { "station": Json::string(station), "files": Json::array([Json::object(one)]) },
     show=fn(w) { w.state.files.set(w.state.files.get() + [Json::object(shown)]) },
+    moves=true,
   )
 }
 
@@ -660,7 +714,7 @@ pub fn writing_drop(src : Source, d : Writing, station : String, dropped : Array
     }
     Json::object(one)
   })
-  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, show=fn(d) {
+  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, moves=true, show=fn(d) {
     d.state.files.set(d.state.files.get() + files)
   })
 }
@@ -674,11 +728,11 @@ pub fn writing_mode(src : Source, w : Writing, id : String, mode : String) -> Un
 ///|
 /// A file out of the draft (`composer.remove`), its picture let go.
 pub fn writing_remove(src : Source, w : Writing, id : String) -> Unit {
-  writing_pictures.remove(id)
+  writing_picture_drop(id)
   writing_went.remove(id)
   writing_unseen.remove(id)
   writing_seeds.remove(id)
-  writing_act(src, w, "remove", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "remove", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.files.set(w.state.files.get().filter(fn(f) { text(Some(f), "id") != id }))
   })
 }
@@ -706,7 +760,24 @@ pub fn writing_quote(src : Source, w : Writing, quote : Json, file? : Json, pict
     }
     None => ()
   }
-  writing_act(src, w, "quote", p, show=fn(w) { if ask { w.state.focus.set(id) } })
+  // (shown at once as the core will have it (composer.ts `quote`, `quoteOf`): the quote, by its id, with what is said
+  // of it)
+  let shown : Map[String, Json] = match quote {
+    Object(m) => m.copy()
+    _ => {}
+  }
+  shown["id"] = Json::string(id)
+  if !shown.contains("comment") {
+    shown["comment"] = Json::string("")
+  }
+  writing_act(src, w, "quote", p, moves=true, show=fn(w) {
+    if !w.state.quotes.get().iter().any(fn(q) { text(Some(q), "id") == id }) {
+      w.state.quotes.set(w.state.quotes.get() + [Json::object(shown)])
+    }
+    if ask {
+      w.state.focus.set(id)
+    }
+  })
   match picture {
     Some((station, name, bytes)) => writing_add(src, w, station, name, bytes, quote=id)
     None => ()
@@ -743,12 +814,12 @@ pub fn writing_unquote(src : Source, w : Writing, id : String) -> Unit {
   match w.state.quotes.get().iter().find_first(fn(q) { text(Some(q), "id") == id }) {
     Some(q) => {
       let own = text(field(Some(q), "own"), "id")
-      writing_pictures.remove(own)
+      writing_picture_drop(own)
       writing_went.remove(own)
     }
     None => ()
   }
-  writing_act(src, w, "unquote", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "unquote", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.quotes.set(w.state.quotes.get().filter(fn(q) { text(Some(q), "id") != id }))
     if w.state.focus.get() == id {
       w.state.focus.set("")

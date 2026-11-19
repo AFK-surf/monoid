@@ -7,19 +7,6 @@
 // `SlackApiError`, `SlackWords`, else `Error`, its words kept.
 
 ///|
-fn ar_jv(j : Json) -> @api_routes.JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(xs) => Arr(xs.map(ar_jv))
-    Object(m) => Obj(m.to_array().map(kv => (kv.0, ar_jv(kv.1))))
-  }
-}
-
-///|
 /// An error of this slice's parts as the admin API's routes take it (their `Thrown`, by the kind station/src throws).
 fn p55_thrown_of(e : Error) -> Error {
   match e {
@@ -27,7 +14,7 @@ fn p55_thrown_of(e : Error) -> Error {
     @slack.SlackApiError(m, code, details) =>
       @api_routes.Thrown(
         "SlackApiError",
-        ar_jv({
+        @jsjson.JV::of_json({
           "message": Json::string(p55_said_of(e)),
           "method": Json::string(m),
           "code": Json::string(code),
@@ -37,16 +24,16 @@ fn p55_thrown_of(e : Error) -> Error {
           },
         }),
       )
-    @slack.SlackWords(key, words) => @api_routes.Thrown("SlackWords", ar_jv({ "message": Json::string(words), "key": Json::string(key) }))
-    @replica_coord.Thrown(_, _) => @api_routes.Thrown("mesh/bus.Refused", ar_jv({ "message": Json::string(p55_said_of(e)) }))
-    e => @api_routes.Thrown("Error", ar_jv({ "message": Json::string(p55_said_of(e)) }))
+    @slack.SlackWords(key, words) => @api_routes.Thrown("SlackWords", @jsjson.JV::of_json({ "message": Json::string(words), "key": Json::string(key) }))
+    @replica_coord.Thrown(_, _) => @api_routes.Thrown("mesh/bus.Refused", @jsjson.JV::of_json({ "message": Json::string(p55_said_of(e)) }))
+    e => @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(p55_said_of(e)) }))
   }
 }
 
 ///|
 /// A `{"$bytes": base64}` argument's bytes.
 fn bytes_arg(v : Json) -> Bytes {
-  @api_routes.bytes_of(ar_jv(v)).unwrap_or(b"")
+  @api_routes.bytes_of(@jsjson.JV::of_json(v)).unwrap_or(b"")
 }
 
 ///|
@@ -113,9 +100,9 @@ fn P55::connect_kind_ops(self : P55, live : ConnectsLive) -> Unit {
       let a = core_items(arg)
       let (given_, had) = (arg_at(a, 0), arg_at(a, 1))
       match kind {
-        "slack" => to_core_ar(@api_routes.slack_entry(ar_jv(given_), ar_jv(had)))
-        "feishu" => to_core_ar(@api_routes.feishu_entry(ar_jv(given_), ar_jv(had)))
-        "comma" => to_core_ar(@api_routes.comma_entry(ar_jv(given_), ar_jv(had)))
+        "slack" => to_core_ar(@api_routes.slack_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
+        "feishu" => to_core_ar(@api_routes.feishu_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
+        "comma" => to_core_ar(@api_routes.comma_entry(@jsjson.JV::of_json(given_), @jsjson.JV::of_json(had)))
         _ => group_entry(given_, had)
       }
     })

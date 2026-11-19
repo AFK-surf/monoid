@@ -48,6 +48,8 @@ pub(all) struct Fs {
   sep : String
   read_text : async (String) -> String
   read_bytes : async (String) -> Bytes
+  /// Up to `length` bytes of it from `offset` (a `FileHandle`'s `read`): a file read a piece at a time.
+  read_part : async (String, Double, Double) -> Bytes
   /// Its size in bytes (`stat`).
   size : async (String) -> Double
   write_text : async (String, String) -> Unit
@@ -124,7 +126,7 @@ pub fn not_there(e : Error) -> Bool {
 /// a promise's function does, it runs at once until it first waits (with what was ready to run already).
 pub fn spawn(f : async () -> Unit) -> Unit {
   let rt = @effect.runtime()
-  ignore(rt.fork(() => f() catch { _ => () }))
+  ignore(rt.fork_daemon("connects", on_error=_ => (), () => f() catch { _ => () }))
   ignore(rt.run_ready())
 }
 
@@ -135,7 +137,7 @@ pub fn spawn_in(scope : @effect.Scope, f : async () -> Unit) -> Unit {
   if scope.is_closed() {
     return
   }
-  ignore(scope.fork(() => f() catch { _ => () }))
+  ignore(scope.fork_daemon("connects", on_error=_ => (), () => f() catch { _ => () }))
   ignore(@effect.runtime().run_ready())
 }
 

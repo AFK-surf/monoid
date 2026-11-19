@@ -15,11 +15,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { settle } from "./hub-fakes.ts";
 import { Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { oneBytes, readBytes } from "../src/mesh/files.ts";
@@ -45,7 +46,7 @@ import { UNANSWERED } from "../src/move/module.ts";
 
 type Json = any;
 const NOW = 1_800_000_000_000;
-const binary = mbReaderBinary();
+const binary = mbHarnessBinary();
 const dirs: string[] = [];
 const programs: { close(): Promise<void> }[] = [];
 // (each program waited for till it is gone, its directories after: one still running at the file's end is a leftover)
@@ -214,7 +215,15 @@ function byKind(told: Told[]): Record<string, Told[]> {
 
 function sameTold(label: string, a: Side, b: Side) {
   if (process.env.REPLICA_COORD_DUMP) writeFileSync(join(process.env.REPLICA_COORD_DUMP, `${label}.json`), JSON.stringify({ ts: a.told, mb: b.told }, null, 1));
-  assert.deepStrictEqual(byKind(b.told), byKind(a.told), `${label}: what was asked differs`);
+  // (kind by kind, each one's both sides said whole as JSON where they differ: a failure in CI shows what differs, not
+  // util.inspect's `[Array]` past its depth)
+  const mb = byKind(b.told), ts = byKind(a.told);
+  const json = (v: unknown) => { const j = JSON.stringify(v); return j.length > 6000 ? `${j.slice(0, 6000)}… (${j.length} chars)` : j; };
+  assert.deepStrictEqual(Object.keys(mb).sort(), Object.keys(ts).sort(), `${label}: the kinds asked differ`);
+  for (const k of Object.keys(ts)) {
+    if (isDeepStrictEqual(mb[k], ts[k])) continue;
+    assert.fail(`${label}[${k}] differs (mb ${mb[k]!.length}, ts ${ts[k]!.length})\n  mb: ${json(mb[k])}\n  ts: ${json(ts[k])}`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -345,7 +354,7 @@ const tsPart = (side: Side) => (name: string, ...args: Json[]) => {
 
 // ---------------------------------------------------------------------------------------------------------------
 
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 test("the copies' functions are the TypeScript's", { skip }, async () => {
   const side = new Side("mb");

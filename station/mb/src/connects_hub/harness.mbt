@@ -179,6 +179,7 @@ fn Harness::fs(self : Harness) -> Fs {
     sep: "/",
     read_text: async fn(p) { js_text(Some(self.ask("fs.read", [js(p)]))) },
     read_bytes: async fn(p) { unhex(js_text(Some(self.ask("fs.readBytes", [js(p)])))) },
+    read_part: async fn(p, at, n) { unhex(js_text(Some(self.ask("fs.readPart", [js(p), jn(at), jn(n)])))) },
     size: async fn(p) { num_of(Some(self.ask("fs.size", [js(p)]))).unwrap_or(0.0) },
     write_text: async fn(p, t) { unit("fs.write", [js(p), js(t)]) },
     write_bytes: async fn(p, b) { unit("fs.writeBytes", [js(p), js(hex(b))]) },

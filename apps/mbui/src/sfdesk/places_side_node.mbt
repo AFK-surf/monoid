@@ -446,11 +446,7 @@ fn profile_side_row_node(
       fn() { lit(picked_as()) },
       name,
       press,
-      fn(m) {
-        m.pick(fn() { logo_c.get() }, fn(k, l) {
-          @sf.provider_logo_node(k, l.0, l.1, @sf.nav_mark_side, l.2) |> ignore
-        })
-      },
+      fn(m) { @sf.provider_mark_node(m, fn() { logo_c.get() }, @sf.nav_mark_side) },
       fn(t) {
         @sf.nav_title_node(t, name, away=fn() { !usable() }, after=fn(a) { @sf.row_tag_node(a, plan) }, after_shown=fn() {
           plan() != ""

@@ -144,7 +144,7 @@ pub fn make_comma(options : CommaOptions, io : Io, runtime : @effect.Runtime) ->
   // Update the guard before the connect manager begins its asynchronous reconciliation.
   parts.stops.push((options.config_listen)(raw => parts.configured = configured_of(raw)))
   ignore(
-    runtime.fork(async fn() {
+    runtime.fork_daemon("comma previous exited", on_error=_ => (), async fn() {
       (options.previous_exited)() catch {
         _ => return
       }
@@ -154,7 +154,7 @@ pub fn make_comma(options : CommaOptions, io : Io, runtime : @effect.Runtime) ->
   // Reconcile with a new snapshot even when the connection's configured token did not change.
   parts.stops.push(
     (options.on_scope_change)(() => ignore(
-      runtime.fork(async fn() {
+      runtime.fork_daemon("comma reconcile", on_error=e => io.warn("connects not brought in line with the workspace", [("error", Some(jstr(message_of(e))))]), async fn() {
         (options.reconcile)() catch {
           e =>
             io.warn("connects not brought in line with the workspace", [("error", Some(jstr(message_of(e))))])

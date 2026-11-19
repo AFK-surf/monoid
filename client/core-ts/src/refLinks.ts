@@ -5,6 +5,7 @@
 // keeping of a mark's link until it is sent is refs.ts's.
 
 import { bareLinks } from "./bareLinks.ts";
+import { shaped, sharedValue } from "./util.ts";
 
 /// A reference as the composer holds it.
 export const REF_MARK = /@\[([^\]\n]{1,120})\]/g;
@@ -222,6 +223,25 @@ export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo };
 /// What a person wrote, in runs (WordsRun): references to chats, and web addresses written bare (bareLinks.ts). The one
 /// reading the clients draw a person's words by (what is not a message yet: draftWords).
 export function personWords(text: string): WordsRun[] {
+  const was = wordsKept.get(text);
+  if (was !== undefined) {
+    wordsKept.delete(text);
+    wordsKept.set(text, was);
+    return was;
+  }
+  const out = wordsOf(text);
+  // (made once and shared from then on: frozen, and gone out as it is, never shaped again, as markdown.ts's trees are)
+  shaped.add(sharedValue(out));
+  wordsKept.set(text, out);
+  if (wordsKept.size > WORDS_KEPT) wordsKept.delete(wordsKept.keys().next().value!);
+  return out;
+}
+
+/// How many texts' runs `personWords` keeps (a chat's people's messages read again as it is made again, the latest first).
+const WORDS_KEPT = 512;
+const wordsKept = new Map<string, WordsRun[]>();
+
+function wordsOf(text: string): WordsRun[] {
   const out: WordsRun[] = [];
   for (const part of splitBy(text, REF_LINK)) {
     if (typeof part !== "string") {

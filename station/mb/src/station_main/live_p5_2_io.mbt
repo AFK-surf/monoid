@@ -92,43 +92,12 @@ pub fn remove_tree(path : String) -> Bool {
 
 ///|
 fn jv_of(j : Json) -> @jsjson.JValue {
-  @drive.to_jv(j)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 fn p52_json_of_jv(v : @jsjson.JValue) -> Json {
-  @drive.of_jv(v)
-}
-
-///|
-fn rv_of(j : Json) -> @api_routes.JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(a) => Arr(a.map(rv_of))
-    Object(m) => Obj(m.iter().map(kv => (kv.0, rv_of(kv.1))).to_array())
-  }
-}
-
-///|
-fn json_of_rv(v : @api_routes.JV) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(s)
-    Arr(a) => Json::array(a.map(json_of_rv))
-    Obj(f) => {
-      let m : Map[String, Json] = Map([])
-      for kv in f {
-        m[kv.0] = json_of_rv(kv.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json()
 }
 
 ///|
@@ -222,6 +191,12 @@ fn said_of(e : Error) -> String {
     @agent_drivers.Failed(m) => m
     @agent_drivers.Said(m) => if m.has_prefix("station.") { tr((p52_lang_fn.val)(), m) } else { m }
     @agent_drivers.RenewRefused(m) => m
+    @accounts_oauth.Said(m)
+    | @accounts_oauth.RenewRefused(_, m)
+    | @accounts_oauth.Failed(m)
+    | @accounts_oauth.FsError(_, m)
+    | @accounts_oauth.JsonError(m) => m
+    @accounts_pool.Thrown(_, _) => @accounts_pool.message_of(e)
     @session_hub.Refused(m) => m
     BusError(m) => m
     LiveError(m) => m
@@ -298,7 +273,7 @@ fn Pump::kick(self : Pump) -> Unit {
           let seq = self.armed_seq
           let wait = at - wall_ms().to_double()
           ignore(
-            self.host.rt.fork(name="drivers' timer", async fn() {
+            self.host.rt.fork_daemon("drivers' timer", on_error=e => @host.note("drivers' timer failed: \{e}"), async fn() {
               // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
               @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
               if self.armed_seq == seq {
@@ -329,7 +304,7 @@ async fn[T] Pump::wait(self : Pump, l : @agent_drivers.Later[T]) -> T {
 fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drivers.Later[T] {
   let l : @agent_drivers.Later[T] = @agent_drivers.Later::new(self.lp)
   ignore(
-    self.host.rt.fork(name~, async fn() {
+    self.host.rt.fork_quiet(name~, async fn() {
       let r = try {
         Ok(f())
       } catch {
@@ -337,12 +312,30 @@ fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drive
       }
       match r {
         Ok(v) => l.resolve(v)
-        Err(e) => l.reject(e)
+        Err(e) => l.reject(driver_error_of(e))
       }
       self.kick()
     }),
   )
   l
+}
+
+///|
+/// What failed on the station's side, as the drivers tell failures apart (agent_drivers `DriverError`): a sign-in's
+/// renewal refused (`ClaudeDriver::open` asks for a login again by it), words for people, or any other failure by its
+/// words alone (never `Error: …` or a constructor's path, as a log line said them).
+fn driver_error_of(e : Error) -> Error {
+  match e {
+    @agent_drivers.Failed(_) | @agent_drivers.Said(_) | @agent_drivers.RenewRefused(_) => e
+    @api_routes.Thrown("RenewRefused", _)
+    | @accounts_pool.Thrown("RenewRefused", _)
+    | @accounts_oauth.RenewRefused(_, _) => @agent_drivers.RenewRefused(said_of(e))
+    @api_routes.Thrown("Said", _) | @accounts_pool.Thrown("Said", _) | @accounts_oauth.Said(_) =>
+      @agent_drivers.Said(said_of(e))
+    // (a file system's by its code, as the machine's calls give it: `fs_failed`)
+    @drive.FsError(_) => fs_failed(e)
+    other => @agent_drivers.Failed(said_of(other))
+  }
 }
 
 ///|
@@ -491,7 +484,7 @@ fn live_log(level : String, area : String, message : String, fields : Json) -> U
 ///|
 /// A connection to a runner's socket (its path: a Unix socket, a Windows named pipe), its events told on the loop.
 fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvents) -> @agent_drivers.Socket {
-  let conn : Ref[Json?] = Ref(None)
+  let conn : Ref[@host.Conn?] = Ref(None)
   let gone = Ref(false)
   let ended = Ref(false)
   let writes : @effect.Queue[Bytes?] = @effect.Queue::unbounded()
@@ -499,34 +492,35 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
   let close_once = () => if !gone.val {
     gone.val = true
     match conn.val {
-      Some(id) => ignore(host.rt.fork(name="runner close", async fn() { ignore(host.shell("tcp.close", { "id": id })) }))
+      Some(c) => ignore(host.rt.fork_quiet(name="runner close", async fn() { c.socket.destroy() }))
       None => ()
     }
     (events.closed)()
     self.kick()
   }
   ignore(
-    host.rt.fork(name="runner socket", async fn() {
-      match (try { Ok(host.shell("unix.open", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-        Ok(({ "id": id, .. }, _)) => {
-          conn.val = Some(id)
+    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
+      match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
+        Ok(c) => {
+          let id = c.id
+          conn.val = Some(c)
           if gone.val {
-            ignore(host.shell("tcp.close", { "id": id })) catch { _ => () }
+            c.socket.destroy()
             return
           }
           (events.connected)()
           self.kick()
           // what is written goes in order
           ignore(
-            host.rt.fork(name="runner socket out", async fn() {
+            host.rt.fork_quiet(name="runner socket out", async fn() {
               while !gone.val {
                 match writes.take() {
                   Some(b) =>
-                    ignore(host.shell("tcp.write", { "id": id }, bytes=b)) catch {
+                    host.tcp_write(id, b) catch {
                       _ => break
                     }
                   None => {
-                    ignore(host.shell("tcp.end", { "id": id })) catch { _ => () }
+                    host.tcp_end(id) catch { _ => () }
                     break
                   }
                 }
@@ -534,7 +528,7 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
             }),
           )
           while !gone.val {
-            let (said, bytes) = host.shell("tcp.read", { "id": id }) catch {
+            let bytes = host.tcp_read(id) catch {
               e => {
                 if !gone.val {
                   (events.error)(said_of(e))
@@ -542,11 +536,9 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
                 break
               }
             }
-            if said is { "end": True, .. } {
-              break
-            }
+            guard bytes is Some(bytes) else { break }
             if !gone.val {
-              (events.data)(@utf8.decode_lossy(bytes.unwrap_or(b"")))
+              (events.data)(@utf8.decode_lossy(bytes))
               self.kick()
             }
           }

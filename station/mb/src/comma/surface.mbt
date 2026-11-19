@@ -127,65 +127,35 @@ pub fn question_of(card : J?, prompt : String) -> J? {
 ///|
 /// Bytes as base64 (`Buffer.toString("base64")`).
 pub fn base64(b : Bytes) -> String {
-  let a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at(v & 63).unsafe_to_char())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char('=')
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }
 
 ///|
 /// Base64 as node reads it (`Buffer.from(s, "base64")`): the URL-safe alphabet too, what is in neither skipped, up to
 /// the first `=`.
 pub fn unbase64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
+  let digits = StringBuilder::new()
+  let mut n = 0
   for i in 0..<s.length() {
     let c = s.unsafe_charcode_at(i)
-    let v = if c >= 'A' && c <= 'Z' {
-      c - 'A'
-    } else if c >= 'a' && c <= 'z' {
-      c - 'a' + 26
-    } else if c >= '0' && c <= '9' {
-      c - '0' + 52
-    } else if c == '+' || c == '-' {
-      62
-    } else if c == '/' || c == '_' {
-      63
-    } else if c == '=' {
+    if c == '=' {
       break
-    } else {
-      continue
     }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 255).to_byte())
+    if (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') ||
+      c == '+' ||
+      c == '-' ||
+      c == '/' ||
+      c == '_' {
+      digits.write_char(c.unsafe_to_char())
+      n += 1
     }
   }
-  out.to_bytes()
+  let text = digits.to_string()
+  // A lone digit past a group of four is six bits: no byte, as node leaves it.
+  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
+  @codec.base64_decode(text).unwrap_or(b"")
 }
 
 ///|
@@ -422,8 +392,16 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
       )
       self.hello()
       if self.stats is Some(_) && (self.in_scope)() {
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "stats.index", StatsWire) }))
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "task.index", TaskWire) }))
+        ignore(
+          self.runtime.fork_daemon("comma stats index", on_error=e => self.io.warn("the statistics index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "stats.index", StatsWire)
+          }),
+        )
+        ignore(
+          self.runtime.fork_daemon("comma task index", on_error=e => self.io.warn("the task index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "task.index", TaskWire)
+          }),
+        )
       }
     }
     Some("heartbeat") => self.send(jobj([("type", jstr("heartbeat"))]))
@@ -462,7 +440,7 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
       }
       let params = or_null(nullish(prop(f, "params"), Some(Obj([]))))
       ignore(
-        self.runtime.fork(async fn() {
+        self.runtime.fork_daemon("comma request", on_error=e => refuse(e), async fn() {
           let result = try {
             Ok(self.handle(method, params))
           } catch {
@@ -606,7 +584,7 @@ fn CommaSurface::hello(self : CommaSurface) -> Unit {
   }
   match asked {
     Err(e) => fail(e)
-    Ok(answer) => ignore(self.runtime.fork(async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
+    Ok(answer) => ignore(self.runtime.fork_daemon("comma answer", on_error=e => fail(e), async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
   }
 }
 
@@ -1179,7 +1157,7 @@ pub fn CommaSurface::stands_at(self : CommaSurface, channel : String, thread_ts 
     _ => self.io.tr(self.lang, if kind == "done" { "station.comma.done" } else { "station.comma.need" })
   }
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma turn state", on_error=_ => (), async fn() {
       ignore(
         self.say(channel, thread_ts, said, [], None, Some(if kind == "done" { "all_done" } else { "need_help" })),
       ) catch {

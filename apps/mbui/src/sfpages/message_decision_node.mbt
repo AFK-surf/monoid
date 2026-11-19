@@ -132,8 +132,8 @@ fn decision_login_node(
     // (who is to finish it goes with the card as the login ends, as the old view's does (decision.mbt): not left over
     // its line till the post is settled)
     let ended = fn() {
-      let l = login_of(core, login().0, login().1)
-      l is Some(_) && !flag(l, "active")
+      let l = login_followed(core, login().0, login().1)
+      l is Some(_) && !login_carded(l)
     }
     b.show(fn() { open() && !ended() && m().card.bind(fn(c) { c.assignee_text }) is Some(_) }, fn(w) {
       @sf.words_node(w, fn() { m().card.bind(fn(c) { c.assignee_text }).unwrap_or("") }, fn() { settled_line }) |> ignore
@@ -146,7 +146,7 @@ fn decision_login_node(
       s.pick(login, fn(c, at) {
         c
         .width_share(Is(1.0))
-        .lines_up(By(fn() { if flag(login_of(core, at.0, at.1), "active") { None } else { Some(Start) } }))
+        .lines_up(By(fn() { if login_carded(login_followed(core, at.0, at.1)) { None } else { Some(Start) } }))
         |> ignore
         login_card_node(c, core, at.0, at.1)
       })
@@ -182,6 +182,7 @@ fn decision_rooms_node(
   v.box(fn(rooms) {
     // (its place across all of it: the pick's place is stretched across, each side laid as the rooms were)
     @sf.style_node(rooms, fn() { under_post_room })
+    ends_on_way(rooms, settled)
     rooms.pick(settled, leave=msg_part_leave_ms, fn(side, is_settled) {
       @sf.style_node(side, fn() { decision_rooms })
       if !is_settled {
@@ -661,3 +662,21 @@ let vault_actions_room : @ui.Style = @ui.css("gap=S1_5")
 ///|
 /// How it was settled: its first line's height where the theme says none (settled_line's leading).
 let settled_line_h : Double = 18.0
+
+///|
+/// A card in node `v` coming to an end (`ended` turning true: decided, answered, signed in, whether by a press here or
+/// by the core's answer) while the app shows: a live cause of its message (chat_live_causes' fourth), so what that
+/// change does in the chat's list (the card fading where it stood, how it ended taking its room, what is under it
+/// moving) goes its way (@view.transition within the part `v` moves with). Said before what it ends (its pick), so the
+/// change is the transition's as that runs; one ended as it is made, or come so where the app does not show, is there
+/// at once.
+fn ends_on_way(v : @view.View, ended : () -> Bool) -> Unit {
+  let was = Ref(@signals.untracked(ended))
+  v.reacts(ended, at_start=false, fn(now) {
+    let before = was.val
+    was.val = now
+    if now && !before && @signals.untracked(@ui.app_visible) {
+      @view.transition(within=v.transitions_root(), fn() {  })
+    }
+  })
+}

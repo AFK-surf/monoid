@@ -418,14 +418,7 @@ pub fn col_json_text(row : Map[String, Json], name : String) -> String {
 ///|
 /// Hex of bytes, lowercase.
 pub fn hex(b : Bytes) -> String {
-  let d = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    let v = x.to_int()
-    out.write_char(d.unsafe_charcode_at(v >> 4).unsafe_to_char())
-    out.write_char(d.unsafe_charcode_at(v & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|

@@ -1,5 +1,5 @@
 // What a station's page shows of the machine and its software (still.fail web/src/components.tsx MeterDials, Dial;
-// cloud/StationCards.tsx Net, HostDetails; Versions.tsx SoftwareList, SoftwareRow; MachineLogins.tsx LoginsSection,
+// cloud/StationCards.tsx HostDetails; Versions.tsx SoftwareList, SoftwareRow; MachineLogins.tsx LoginsSection,
 // PastRow; their css.ts), all of it as the core says it.
 
 ///|
@@ -54,73 +54,9 @@ fn quota_dials_of(windows : Array[Json]) -> Array[@sf.Dial] {
 }
 
 ///|
-/// This device's connection to it (station_net's, as nodes), as `net` says it now: how it goes and packets lost, its
-/// round trip; beside them ↑ and ↓ (under them where the line has not the room).
-fn station_net_node(p : @view.View, net : () -> Json?) -> Unit {
-  let has = fn(key : String) { field(net(), key) is Some(Object(_)) }
-  p.box(fn(r) {
-    @sf.style_node(r, fn() { nt_row })
-    r.wraps(Is(Some(nt_lines))) |> ignore
-    r.box(fn(part) {
-      @sf.style_node(part, fn() { nt_part }, in_row=true)
-      part.box(fn(l) {
-        @sf.style_node(l, fn() { nt_line }, in_row=true)
-        @sf.words_node(l, fn() { text(net(), "path") }, fn() { nt_words_cut }) |> ignore
-        l.show(fn() { has("loss") }, fn(f) { figure_node(f, fn() { field(net(), "loss") }) })
-      })
-      |> ignore
-      part.show(fn() { has("rtt") }, fn(x) {
-        x.box(fn(l) {
-          @sf.style_node(l, fn() { nt_line }, in_row=true)
-          @sf.words_node(l, fn() { "·" }, fn() { nt_words }) |> ignore
-          let parts = fn() {
-            let words = @sf.t("web-pages.stations.latency", args=[("latency", "\u{0}")])
-            words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
-          }
-          @sf.words_node(l, fn() { parts().get(0).unwrap_or("") }, fn() { nt_words }) |> ignore
-          figure_node(l, fn() { field(net(), "rtt") })
-          @sf.words_node(l, fn() { parts().get(1).unwrap_or("") }, fn() { nt_words_cut }) |> ignore
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-    r.box(fn(rates) {
-      @sf.style_node(rates, fn() { nt_rates }, in_row=true)
-      for way in [("↑", "up"), ("↓", "down")] {
-        rates.box(fn(l) {
-          @sf.style_node(l, fn() { nt_rate }, in_row=true)
-          @sf.words_node(l, fn() { way.0 }, fn() { nt_words }) |> ignore
-          @sf.words_node(l, fn() { text(net(), way.1) }, fn() { nt_figure }) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A figure (figure's, as a node), as `f` says it now.
-fn figure_node(p : @view.View, f : () -> Json?) -> Unit {
-  @sf.words_node(p, fn() { text(f(), "text") }, fn() { figure_style(text(f(), "level")) }) |> ignore
-}
-
-///|
-/// A figure's words by its level: bold in the words' ink, in its level's colour when off.
-fn figure_style(level : String) -> @ui.TextStyle {
-  match level {
-    "amber" => nt_figure.then(@ui.text_style(color=WarnInk))
-    "red" => nt_figure.then(@ui.text_style(color=Danger))
-    _ => nt_figure
-  }
-}
-
-///|
 /// A figure (Figure): bold in the words' ink, in its level's colour when off.
 pub fn figure(c : @ui.Ctx, f : Json?) -> Unit {
-  c.text(text(f, "text"), style=figure_style(text(f, "level"))) |> ignore
+  c.text(text(f, "text"), style=@sf.level_figure_style(text(f, "level"), nt_figure)) |> ignore
 }
 
 ///|
@@ -161,43 +97,8 @@ let st_logins_open : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 // ── styles ──────────────────────────────────────────────────────────────
 
 ///|
-/// The connection (net: 8 apart, 8 between its lines where the speeds go under, the ui's 13 muted, its figures bold
-/// in the words' ink).
-// kept across runs: a value (no field of it changes)
-let nt_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify=JBetween")
-
-///|
-let nt_lines : Double = 8.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_part : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_line : @ui.Style = @ui.css("row gap=S1 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
-
-///|
-/// The last of a line's words, cut short where the line is (netLine's last child).
-// kept across runs: a value (no field of it changes)
-let nt_words_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false, w=Cut)
-
-///|
 // kept across runs: a value (no field of it changes)
 let nt_figure : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false)
-
-///|
-/// ↑ and ↓ side by side.
-// kept across runs: a value (no field of it changes)
-let nt_rates : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_rate : @ui.Style = @ui.css("row min_w=S16 gap=S1 align=ACenter")
 
 ///|
 /// The rest of a machine (hostDetails: its labels beside each, 14 apart, rows 8 apart, the meta's 12 muted).

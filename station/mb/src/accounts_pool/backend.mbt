@@ -50,24 +50,6 @@ pub fn kind_of(e : Error) -> String {
 }
 
 ///|
-pub let jundef : JV = Obj([("$undef", Num(1.0))])
-
-///|
-pub fn is_undef(v : JV) -> Bool {
-  v is Obj([(k, Num(_))]) && k == "$undef"
-}
-
-///|
-/// An answer as an option: undefined is None.
-pub fn defined(v : JV) -> JV? {
-  if is_undef(v) {
-    None
-  } else {
-    Some(v)
-  }
-}
-
-///|
 /// An argument that may be undefined.
 pub fn arg(v : JV?) -> JV {
   match v {

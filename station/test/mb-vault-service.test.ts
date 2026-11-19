@@ -1,4 +1,4 @@
-// The vault's service in MoonBit (station/mb src/vault_service, the reader's `--builder harness-vault-service`) held to
+// The vault's service in MoonBit (station/mb src/vault_service, `stillfail-reader-harness --builder harness-vault-service`) held to
 // the TypeScript it is the MoonBit of (src/vault/: secrets.ts, signin.ts, store.ts, plain.ts, tool.ts, run.ts, proxy.ts,
 // ssh-agent.ts, x509.ts, scrub.ts, incoming.ts and their indexes), each run beside the other on a database of its own:
 // the same clock, the same store (a fake hub of the test's, written again in the harness), the same browser, other
@@ -24,7 +24,7 @@ import { after, test } from "node:test";
 import { type Entry, type LockState, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
 import { endCommand, startCommand } from "../src/ops/processes.ts";
 import { wall } from "../src/ops/fibers.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { STILLFAIL_SURFACE } from "../src/store/store.ts";
 import { type BoxCert, type Grant, type Item, type Request, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, seal, signedBytes } from "../src/vault/crypto.ts";
 import { baseEnv } from "../src/vault/incoming.ts";
@@ -45,8 +45,8 @@ import { withoutUseReader } from "./vault-no-reader.ts";
 import { backfillNextWorkspace } from "../src/vault/use-index.ts";
 import { backfillReboxIndex } from "../src/vault/rebox-index.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const WS = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
 const VAULT = "v_01HZZZZZZZZZZZZZZZZZZZZZZZ";

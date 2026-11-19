@@ -132,8 +132,14 @@ let said_pointing : Ref[Pointing?] = Ref(None)
 /// The hand this program is pointed at with from now on, over its system's (None: its system's again): a run on one
 /// system made as another's (a phone's screens drawn on a Mac, pointed at as a phone is: sffix's MBUI_POINTING): a
 /// program's, said as it starts (a Tester's own is Tester::new's `pointing`).
+/// Said again as it runs (a component library's switch between a mouse and a finger), what reads the hand of the moment
+/// follows it from then on, as it follows the host's (pointing_said_by_host).
 pub fn set_pointing(p : Pointing?) -> Unit {
   said_pointing.val = p
+  let now = @signals.untracked(fn() { pointing() })
+  if hand.pointing.untracked() != now {
+    hand.pointing.set(now)
+  }
 }
 
 ///|
@@ -183,11 +189,28 @@ pub fn font_scale() -> Double {
 }
 
 ///|
+/// The size of words a program says, over the system's (set_font_scale); None: the system's.
+// kept across runs: put back by each Tester (reset_globals)
+let said_font_scale : Ref[Double?] = Ref(None)
+
+///|
+/// The size of words from now on, over the system's setting (None: the system's again): a component library's switch
+/// between sizes of words as it runs, or a run made at one size whatever the system's. Told at once, as the system's
+/// is as it changes (words_size_said): what read font_scale is built again and the window's words measured again.
+pub fn set_font_scale(scale : Double?) -> Unit {
+  said_font_scale.val = match scale {
+    Some(s) if s > 0.0 => Some(s)
+    _ => None
+  }
+  words_size_said.arrive()
+}
+
+///|
 /// Whether the window's buttons are in the app's top row now (@hostapi.window_inset; a Tester's `window_inset`), as
 /// the frame has it, followed (host_said.mbt): what read it is built again as it changes (a Mac's window going full
 /// screen and back), a list's row or a part kept as its nodes too.
 pub fn window_inset() -> Bool {
-  inset_said.now()
+  inset_said.val.now()
 }
 
 ///|
@@ -209,7 +232,7 @@ pub fn window_keys_own() -> Bool {
 /// Whether the window is maximized now (@hostapi.window_zoomed; a Tester's as set_window_zoomed made it), as the frame
 /// has it, followed (host_said.mbt): what read it is built again as it changes.
 pub fn window_zoomed() -> Bool {
-  zoomed_said.now()
+  zoomed_said.val.now()
 }
 
 ///|
@@ -218,7 +241,7 @@ pub fn window_zoomed() -> Bool {
 /// (host_said.mbt): what read it is built again as it changes (the button lit and held as the host says, not when
 /// something else builds it again).
 pub fn window_snap_state() -> Int {
-  snap_said.now()
+  snap_said.val.now()
 }
 
 ///|

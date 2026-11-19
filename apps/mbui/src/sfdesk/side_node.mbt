@@ -124,7 +124,13 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
         @sf.theme().p.sidebar
       }
     },
-    before: fn(_, _) { [] },
+    before: fn(_, _) {
+      let parts : Array[@sfpages.NodePart] = []
+      if @sfpages.stale_build_card_shown() {
+        parts.push({ key: "stale-build-card", make: fn(p) { @sfpages.stale_build_card_node(p, src) } })
+      }
+      parts
+    },
     after: fn(_, _) { [] },
     others: [
       fn(p) {
@@ -245,6 +251,8 @@ fn lists_band_node(
       |> ignore
       // catching up on what changed while away
       line.show(at_once=true, fn() { view().map(fn(v) { v.syncing is Some(_) }).unwrap_or(false) }, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
         @sf.sync_key_node(k, tips, update_key_side, update_key_mark, fn() {
           match view() {
             Some({ syncing: Some(y), .. }) => Some(y)
@@ -252,8 +260,14 @@ fn lists_band_node(
           }
         })
       })
-      // 更新 before the filter where one is offered (brand.mbt update_key_of)
-      line.show(at_once=true, update_shown, fn(k) { update_key_of(k, src, tips) })
+      // 更新 before the filter where one is offered (brand.mbt update_key_of); omitted in the chats band while the
+      // over-7-day upgrade card is already shown right below (still shown in the collapsed bar and other sidebars).
+      let band_update = fn() { update_shown() && !@sfpages.stale_build_card_shown() }
+      line.show(at_once=true, band_update, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
+        update_key_of(k, src, tips)
+      })
       // the stations' newer releases waiting for this person beside it, as the app's own is offered; pressed, their
       // dialog (sfpages station_updates.mbt)
       let stations_said = fn() {
@@ -263,7 +277,9 @@ fn lists_band_node(
         }
       }
       // (the app's own offered too: one key, the app's, opening the dialog of both: update_pressed)
-      line.show(at_once=true, fn() { stations_said() != "" && !update_shown() }, fn(k) {
+      line.show(at_once=true, fn() { stations_said() != "" && !band_update() }, fn(k) {
+        native_floating_schedule()
+        k.owns(native_floating_schedule) |> ignore
         @sf.update_key_node(k, tips, update_key_side, update_key_mark, stations_said, stations_said, fn() { false }, fn() { None }, fn() {
           match @signals.untracked(workspace) {
             Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
@@ -397,6 +413,7 @@ fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspac
         None => native_sidebar_items.remove(id)
       }
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -404,6 +421,7 @@ fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspac
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })
@@ -432,8 +450,13 @@ fn sidebar_glass_node(
     native_workspace_hooked()
     b.reacts(fn() { (title(), menu()) }, fn(now) {
       native_sidebar_items[id] = { id: key, title: now.0, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: now.1 }
+      native_floating_schedule()
     })
-    b.owns(fn() { native_sidebar_items.remove(id) }) |> ignore
+    b.owns(fn() {
+      native_sidebar_items.remove(id)
+      native_floating_schedule()
+    })
+    |> ignore
   })
   |> ignore
 }

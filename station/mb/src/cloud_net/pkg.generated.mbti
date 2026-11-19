@@ -260,6 +260,7 @@ pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> In
 pub async fn ControlPlane::notify(Self, Array[@json.Json], workspace? : String) -> Unit
 pub fn ControlPlane::release_base(Self) -> String?
 pub fn ControlPlane::said(Self, CloudSaid) -> Unit
+pub async fn ControlPlane::signed(Self, String, String, @json.Json) -> @json.Json?
 pub fn ControlPlane::spec(Self) -> ProviderSpec
 pub fn ControlPlane::told(Self, String, (CloudSaid) -> Unit) -> Unit
 pub async fn ControlPlane::traces(Self, Array[@json.Json]) -> Unit

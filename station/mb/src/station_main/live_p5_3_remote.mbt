@@ -67,7 +67,7 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
   let reader = @jobs_host.WorkspaceReader::new(
     () => wall_ms().to_double(),
     async fn(path, limit) { p53_workspace_size(bus, path, limit) },
-    f => ignore(host.rt.fork(name="a workspace's size", async fn() { f() })),
+    f => ignore(host.rt.fork_daemon("a workspace's size", on_error=e => @host.note("a workspace's size failed: \{e}"), async fn() { f() })),
   )
   let r : P53Remote = {
     bus,
@@ -111,7 +111,7 @@ fn P53Remote::attach(self : P53Remote) -> Unit {
   let bus = self.bus
   // (the CPUs' ticks noted now and every CPU_EVERY_MS, for how busy they were over the last minute: host.ts `follow`)
   ignore(
-    bus.host.rt.fork(name="the CPUs' ticks", async fn() {
+    bus.host.rt.fork_daemon("the CPUs' ticks", on_error=e => @host.note("the CPUs' ticks failed: \{e}"), async fn() {
       while !bus.stopped.is_done() {
         match self.cpu_ticks() {
           Some(t) => self.cpu_note(wall_ms().to_double(), t)
@@ -138,24 +138,24 @@ fn P53Remote::attach(self : P53Remote) -> Unit {
   }
   // (a task here told of by the station, stopped from the pages: its source told)
   self.jobs.remote_heard.push(id => {
-    ignore(bus.host.rt.fork(name="a task changed", async fn() {
+    ignore(bus.host.rt.fork_quiet(name="a task changed", async fn() {
       ignore(self.program.call(p53_remote_key, "pushOut", [p53_s(id[7:].to_owned())])) catch { _ => () }
     }))
   })
   bus.parts.session_ended(session => {
-    ignore(bus.host.rt.fork(name="a session's tasks", async fn() {
+    ignore(bus.host.rt.fork_quiet(name="a session's tasks", async fn() {
       ignore(self.program.call(p53_remote_key, "closeSession", [p53_s(session), p53_n(bus.store.now().to_double())])) catch { _ => () }
     }))
   })
   // (the tasks followed, what was missed told, the sweeps going: once the station before is gone; tasks of peers no
   // longer in a workspace stopped, now and as the roster or the config changes: remote.ts `followRoster`)
   ignore(
-    bus.host.rt.fork(name="remote tasks", async fn() {
+    bus.host.rt.fork_daemon("remote tasks", on_error=e => @host.note("remote tasks failed: \{e}"), async fn() {
       (bus.previous_gone)()
       ignore(self.program.call(p53_remote_key, "attached", [])) catch { _ => () }
       self.revoke()
-      ignore((bus.cloud_listen.val)(_ => ignore(bus.host.rt.fork(name="roster", async fn() { self.revoke() }))))
-      ignore((bus.config_listen.val)(_ => ignore(bus.host.rt.fork(name="roster", async fn() { self.revoke() }))))
+      ignore((bus.cloud_listen.val)(_ => ignore(bus.host.rt.fork_daemon("roster", on_error=e => @host.note("roster failed: \{e}"), async fn() { self.revoke() }))))
+      ignore((bus.config_listen.val)(_ => ignore(bus.host.rt.fork_daemon("roster", on_error=e => @host.note("roster failed: \{e}"), async fn() { self.revoke() }))))
       self.tidy_back_hourly()
     }),
   )
@@ -468,7 +468,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
         None => p53_b(false)
       }
     "node.notify" => {
-      ignore((bus.hub_ask.val)("notify", p53_obj([("session", a(0)), ("text", a(1))]))) catch { _ => () }
+      bus.hub_notify(session=s(0), text=s(1)) catch { _ => () }
       Json::null()
     }
     "node.cloudState" => p53_cloud(bus)
@@ -675,12 +675,12 @@ fn p53_sandboxes(bus : LiveBus) -> Array[@agent_runtimes.Sandbox] {
 ///|
 /// A value of the agents' runtimes' (`@jsjson.JValue`) as Json, and back.
 fn p53_from_j(v : @jsjson.JValue) -> Json {
-  (try { Ok(@json.parse(@jsjson.stringify(v))) } catch { e => Err(e) }).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 fn p53_to_j(v : Json) -> @jsjson.JValue {
-  (try { Ok(@jsjson.parse(v.stringify())) } catch { e => Err(e) }).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
@@ -726,7 +726,7 @@ async fn P53Remote::relieve(self : P53Remote, now : Double, below : Double) -> U
 /// MEASURE_UP_TO; past `limit` a lower bound, not walked further.
 async fn p53_workspace_size(bus : LiveBus, path : String, limit : Double) -> @jobs_host.WorkspaceSize {
   // (a builder nobody waits on: yields the machine, its disk too, to the foreground; mb-reader.ts BACKGROUND_BUILDERS)
-  let (program, args) = p53_backgrounded(p53_program(bus), ["--builder", "footprint", "--sep", sep()])
+  let (program, args) = backgrounded(p53_program(bus), ["--builder", "footprint", "--sep", sep()])
   let proc = spawn(bus.host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
     SysError(why) => raise P53Error(why)
   }
@@ -770,7 +770,7 @@ async fn p53_tree_bytes(bus : LiveBus, path : String) -> Double {
 /// `p53_tree_bytes` by the program at `reader`.
 async fn p53_tree_bytes_by(host : @host.Host, reader : String, path : String) -> Double {
   // (a builder nobody waits on: yields the machine, its disk too, to the foreground; mb-reader.ts BACKGROUND_BUILDERS)
-  let (program, args) = p53_backgrounded(reader, ["--builder", "footprint", "--sep", sep()])
+  let (program, args) = backgrounded(reader, ["--builder", "footprint", "--sep", sep()])
   let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
     _ => return 0.0
   }
@@ -927,21 +927,6 @@ fn p53_unhex(h : String) -> Bytes {
   let digit = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() { c - '0'.to_int() } else if c >= 'a'.to_int() && c <= 'f'.to_int() { c - 'a'.to_int() + 10 } else if c >= 'A'.to_int() && c <= 'F'.to_int() { c - 'A'.to_int() + 10 } else { 0 }
   let n = h.length() / 2
   Bytes::makei(n, i => (digit(h.unsafe_charcode_at(2 * i)) * 16 + digit(h.unsafe_charcode_at(2 * i + 1))).to_byte())
-}
-
-///|
-/// A program started as the station's background work (platform `backgrounded`: macOS's `taskpolicy -b`, Linux's
-/// `ionice` and `nice`), by what this machine has.
-fn p53_backgrounded(program : String, args : Array[String]) -> (String, Array[String]) {
-  if is_windows() {
-    return (program, args)
-  }
-  let how = @ops_platform.background_found(
-    platform() == "darwin",
-    p => (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok({ file: true, .. }),
-    p => attempt(() => @drive.realpath(p)).to_option(),
-  )
-  @ops_platform.backgrounded_on(how, program, args)
 }
 
 ///|

@@ -114,8 +114,9 @@ pub fn chat_find_open(r : ChatRef) -> Unit {
 }
 
 ///|
-/// The chat `r` in the pane; its bar the page node's (chat_bar_wide_node), its room alone here.
-fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
+/// The chat `r` in the pane; its bar the page node's (chat_bar_wide_node), its room alone here. `tape`: the frame lays
+/// it out on the tape (the new chat it became leaving over it as there: new_chat_after).
+fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tape? : Bool = false) -> Unit {
   let chat = src.topic("chat", chat_params(r)).get().value
   let view = view_of_chat(src, r).0
   let key = chat_key(r)
@@ -165,7 +166,7 @@ fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
   })
   |> ignore
   // the new chat it became leaving over it, or one left for it fading over it (newchat.mbt)
-  new_chat_after(c, src, w, r)
+  new_chat_after(c, src, w, r, tape~)
 }
 
 ///|

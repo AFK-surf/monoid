@@ -20,7 +20,7 @@
 #   stillfail/dist/admin/posthog.json                     (only the PostHog key the station reports errors with, when
 #                                                          $STILLFAIL_POSTHOG names one: scripts/posthog-key.ts; the
 #                                                          station finds its release as dist/admin's parent's parent)
-#   stillfail/VERSION, BUILD                              (the commit; the commits in its history: version 0.1.<BUILD>)
+#   stillfail/VERSION, BUILD, BUILT_AT                    (the commit; commits in its history; commit Unix ms timestamp)
 # On darwin-arm64 the native parts are signed when $STILLFAIL_SIGN_STATION is set (the station release job).
 # Its Node is the station's own: the agents' PATH never has it (a runtime installed with it would land there).
 # On win32-x64 the executables are .exe, and the command is bin/stillfail.cmd (bin/stillfail.ps1 behind it); its
@@ -95,3 +95,4 @@ printf '{"type":"module"}\n' > "$app/station/package.json"
 cp "$root/.node-version" "$app/NODE_VERSION"
 git -C "$root" rev-parse HEAD > "$app/VERSION"
 git -C "$root" rev-list --count HEAD > "$app/BUILD"
+printf '%s000\n' "$(git -C "$root" show -s --format=%ct HEAD)" > "$app/BUILT_AT"

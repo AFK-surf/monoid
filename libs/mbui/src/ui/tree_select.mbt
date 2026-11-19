@@ -434,6 +434,9 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
 fn tree_finger_menu(tree : @view.Tree, x : Double, y : Double, words : SelTarget?) -> Bool {
   guard view_down.val is Some(_) else { return false }
   let call_off : () -> Unit = match view_held.val {
+    // (a field of the tree's on Android has its own long press (tree_field_held) that picks the word there; never
+    // stolen by its secondary-button context menu, nor by an I-beam backdrop area wired with field_menu_on)
+    Some(Node(id)) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) => return false
     Some(Node(id)) => fn() { tree.hold_lost_in(id.at) }
     Some(Dragging(id)) if tree.claims_scroll(id) && words is None =>
       fn() { tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore }
@@ -442,6 +445,12 @@ fn tree_finger_menu(tree : @view.Tree, x : Double, y : Double, words : SelTarget
   }
   if tree.hold_at(x, y) is Some(_) {
     return false
+  }
+  // (even after a field's press was cancelled by the window going behind or a second finger, a touch hold over a tree
+  // field or its field_menu_on backdrop must never trigger its desktop secondary-button context menu)
+  match tree.target_at(x, y) {
+    Pressed(id) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) => return false
+    _ => ()
   }
   guard tree.menu_at(x, y, view_moment()) else { return false }
   call_off()

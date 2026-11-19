@@ -27,3 +27,34 @@ test "direct_part: the app's part call, its offset and length each read's own" {
   // (the part's own params untouched: the app's reader goes on with them)
   assert_eq(p.get("offset"), Some(Json::number(4096.0)))
 }
+
+///|
+/// A chat's video's first frame read by the host's own reader too, as the viewer's is (a phone, 2026-11-19: each part
+/// through the app held a frame 75 ms, and those still coming as the player was let go were left unheld).
+test "first_player: the host told the chat's part call, kept with the chat, each part's offset and length its own" {
+  let t = @ui.Tester::new(fn(_) {  })
+  let a = attachment_of({ "name": "clip.mp4", "path": "/up/clip.mp4", "size": 9000.0 })
+  let n = first_player(made_source(), "ws1/st1", "s1", a)
+  let said = t
+    .views()
+    .iter()
+    .find_first(fn(l) { l.has_prefix("settings \{n.id()} ") })
+    .map(fn(l) { l.exact_view(start=("settings \{n.id()} ").length()).to_owned() })
+  let direct = @json.parse(said.unwrap_or("")) catch { _ => panic() }
+  assert_eq(
+    direct,
+    {
+      "call": "station.file.part",
+      "params": {
+        "station": "ws1/st1",
+        "key": "s1",
+        "name": "clip.mp4",
+        "keep": true,
+        "size": 9000.0,
+        "stream": true,
+      },
+      "size": 9000.0,
+    },
+  )
+  n.close()
+}

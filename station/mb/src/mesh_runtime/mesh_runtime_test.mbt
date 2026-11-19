@@ -679,3 +679,66 @@ test "the front's streams' socket beside its own, by that path's separator: a Wi
   assert_eq(@mesh_runtime.dirname("C:\\a\\b.sock"), "C:\\a")
   assert_eq(@mesh_runtime.dirname("/a/b\\c.sock"), "/a/b")
 }
+
+///|
+test "a listener's next connection taken through a try that failed while it listens, none once it is gone or closed" {
+  let rt = @effect.Runtime::new()
+  let tries = []
+  let pauses = Ref(0)
+  let got = []
+  // (the machine out of descriptors for a while, then a connection: taken after a pause)
+  let answers : Array[Result[Int, Error]] = [
+    Err(Failure("Too many open files (os error 24)")),
+    Err(Failure("Software caused connection abort (os error 53)")),
+    Ok(7),
+    Err(Failure("no handle 12")),
+  ]
+  let accept = async fn() -> Int {
+    tries.push(tries.length())
+    match answers.remove(0) {
+      Ok(n) => n
+      Err(e) => raise e
+    }
+  }
+  let pause = async fn() { pauses.val += 1 }
+  ignore(rt.fork(() => {
+    got.push(@mesh_runtime.accept_through(accept, pause~))
+    // (closed here: `no handle`, the listener let go)
+    got.push(@mesh_runtime.accept_through(accept, pause~))
+  }))
+  ignore(rt.run_ready())
+  assert_eq(got, [Some(7), None])
+  assert_eq(pauses.val, 2)
+  assert_eq(tries.length(), 4)
+  // closed meanwhile: no try after its pause
+  let closed = Ref(false)
+  let later = []
+  ignore(rt.fork(() => later.push(
+    @mesh_runtime.accept_through(
+      async fn() -> Int { raise Failure("Too many open files (os error 24)") },
+      closed=() => closed.val,
+      pause=async fn() { closed.val = true },
+    ),
+  )))
+  ignore(rt.run_ready())
+  assert_eq(later, [None])
+  // the default pause: accept_again_ms on the runtime's clock
+  let waited = []
+  let failed = Ref(false)
+  ignore(rt.fork(() => waited.push(
+    @mesh_runtime.accept_through(async fn() -> Int {
+      if failed.val {
+        return 3
+      }
+      failed.val = true
+      raise Failure("Too many open files (os error 24)")
+    }),
+  )))
+  ignore(rt.run_ready())
+  rt.advance(@mesh_runtime.accept_again_ms - 1)
+  assert_eq(waited, [])
+  rt.advance(1)
+  assert_eq(waited, [Some(3)])
+  assert_true(@mesh_runtime.listener_gone(Failure("not a listening socket")))
+  assert_false(@mesh_runtime.listener_gone(Failure("Too many open files (os error 24)")))
+}

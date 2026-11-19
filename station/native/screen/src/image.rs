@@ -1,10 +1,12 @@
-// Pictures as files, with WIC: a JPEG of the screen (quality 0.8, as the Mac's), PNGs to and from the clipboard.
+// Pictures as files, with WIC: a JPEG of the screen (quality 0.8, as the Mac's), PNGs to and from the clipboard and
+// of a pointer of an app's own.
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::Graphics::Imaging::*;
 use windows::Win32::System::Com::StructuredStorage::{IPropertyBag2, PROPBAG2};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IStream, STREAM_SEEK_CUR, STREAM_SEEK_SET};
 use windows::Win32::System::Variant::{VARIANT, VT_R4};
 use windows::Win32::UI::Shell::SHCreateMemStream;
+use windows::Win32::UI::WindowsAndMessaging::HICON;
 use windows::core::{GUID, Interface, Result, w};
 
 pub struct Images {
@@ -60,6 +62,22 @@ impl Images {
     pub fn png_of_hbitmap(&self, bitmap: HBITMAP) -> Result<Vec<u8>> {
         let source = unsafe { self.factory.CreateBitmapFromHBITMAP(bitmap, Default::default(), WICBitmapIgnoreAlpha)? };
         self.encode(&GUID_ContainerFormatPng, &source.cast()?, None)
+    }
+
+    /// A pointer's picture (a colour one with its alpha, or a monochrome one's masks made so): (width, height, its
+    /// pixels BGRA top row first, a PNG of them).
+    pub fn cursor(&self, icon: HICON) -> Result<(u32, u32, Vec<u8>, Vec<u8>)> {
+        unsafe {
+            let source = self.factory.CreateBitmapFromHICON(icon)?;
+            let converter = self.factory.CreateFormatConverter()?;
+            converter.Initialize(&source, &GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom)?;
+            let (mut width, mut height) = (0, 0);
+            converter.GetSize(&mut width, &mut height)?;
+            let mut bytes = vec![0u8; (width * height * 4) as usize];
+            converter.CopyPixels(std::ptr::null(), width * 4, &mut bytes)?;
+            let png = self.encode(&GUID_ContainerFormatPng, &converter.cast()?, None)?;
+            Ok((width, height, bytes, png))
+        }
     }
 
     /// A picture's pixels, BGRA, top row first: (width, height, bytes).

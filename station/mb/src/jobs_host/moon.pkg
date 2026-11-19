@@ -1,4 +1,8 @@
 import {
+  "base/time",
+  "base/codec",
+  "base/hash",
+  "base/url",
   "station/host",
   "station/memory",
   "station/jsjson",
@@ -7,6 +11,7 @@ import {
   "station/cloud_net",
   "station/footprint",
   "mbui/effect",
+  "base/net",
   "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/base64",

@@ -12,12 +12,36 @@
 pub(all) suberror MessageWriteBusy
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for MessageWriteBusy with output(self, logger) {
+  match self {
+    MessageWriteBusy => logger.write_string("another connection writes: the message was not written, and is tried again")
+  }
+}
+
+///|
 /// An older store's session lookup of the decision checks is still being prepared (legacy-decision-session.ts).
 pub(all) suberror DecisionSessionsUnavailable
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for DecisionSessionsUnavailable with output(self, logger) {
+  match self {
+    DecisionSessionsUnavailable => logger.write_string("decision session lookup is not ready")
+  }
+}
+
+///|
 /// An old session's chat order is still being prepared (session-chat-index.ts).
 pub(all) suberror SessionChatUnavailable
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SessionChatUnavailable with output(self, logger) {
+  match self {
+    SessionChatUnavailable => logger.write_string("session chat is still being prepared")
+  }
+}
 
 ///|
 /// The copy destinations of these sessions are still being prepared (cc-thread-index.ts).
@@ -26,9 +50,25 @@ pub(all) suberror CcSessionsUnavailable {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for CcSessionsUnavailable with output(self, logger) {
+  match self {
+    CcSessionsUnavailable(_) => logger.write_string("copy destinations are still being prepared")
+  }
+}
+
+///|
 /// What the store throws as a plain Error, its words as the TypeScript's.
 pub(all) suberror StoreError {
   StoreError(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for StoreError with output(self, logger) {
+  match self {
+    StoreError(m) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -314,7 +354,6 @@ fn Store::now_json(self : Store) -> Json {
 ///|
 /// 16 random bytes in hex, as `randomBytes(16).toString("hex")`.
 fn Store::token(self : Store) -> String {
-  let hex = "0123456789abcdef"
   let out = StringBuilder()
   for _ in 0..<2 {
     // xorshift64*
@@ -324,10 +363,7 @@ fn Store::token(self : Store) -> String {
     x = x ^ (x >> 27)
     self.seed = x
     let v = x * 0x2545F4914F6CDD1DUL
-    for i in 0..<16 {
-      let d = ((v >> (60 - i * 4).to_uint64().to_int()) & 15UL).to_int()
-      out.write_char(hex[d].to_int().unsafe_to_char())
-    }
+    out.write_string(@codec.hex_encode(Bytes::makei(8, i => ((v >> (56 - i * 8)) & 255UL).to_int().to_byte())))
   }
   out.to_string()
 }

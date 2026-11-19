@@ -217,15 +217,15 @@ pub(all) struct Items {
 /// its edges and is round by the next step (mbui works its corner out: corners.mbt), or is a capsule or a circle `its
 /// half less than the container's corner` in. The theme's (Theme::corner_ladder): screen tests hold every corner with
 /// something in it, and what is there, to these.
-pub let pane_corner : Double = 42.0
+pub let pane_corner : Double = token_pane_corner
 
 ///|
-pub let corner_inset : Double = 8.0
+pub let corner_inset : Double = token_corner_inset
 
 ///|
 /// How far in from a panel's sides a card it holds stands, concentric with its corners (the user, 2026-11-03: 面板里可以
 /// 放卡片; 为什么卡片离面板那么近, and of 8 and 16 side by side, 第二套感觉还行): a panel's corner is a card's and this.
-pub let panel_card_in : Double = 16.0
+pub let panel_card_in : Double = token_panel_card_in
 
 ///|
 pub let card_corner : Double = @ui.concentric(pane_corner, panel_card_in)
@@ -767,7 +767,7 @@ pub fn foot_corner(height : Double, side : Double, foot : Double) -> @ui.Style {
 
 ///|
 /// A page card of words: this in from every side.
-pub let card_pad : Double = 24.0
+pub let card_pad : Double = token_card_pad
 
 ///|
 /// A block with a ground on a card (a field, a code block, a picture) out from the card's words to `corner_inset` in
@@ -871,7 +871,7 @@ pub let fill_chip_corner : Double = small_corner
 ///|
 /// Corners (--r-*): a field's, a card's, a dialog's, the nav's, a menu's,
 /// an option's.
-pub let r_field : Double = 12.0
+pub let r_field : Double = token_r_field
 
 ///|
 /// (a small panel's: a menu, a popover, a hover's card, and a list card: a taller row at its padding (panel_pad) the
@@ -983,19 +983,19 @@ let dark_palette : Palette = {
 
 ///|
 let wide_type : Type = {
-  caption: 11.0,
-  caption_line: 16.0,
-  meta: 12.0,
-  meta_line: 18.0,
-  ui: 13.0,
-  ui_line: 20.0,
-  body: 14.0,
-  body_line: 22.0,
-  title: 16.0,
-  title_line: 24.0,
-  heading: 22.0,
-  heading_line: 30.0,
-  display: 28.0,
+  caption: token_wide_caption,
+  caption_line: token_wide_caption_line,
+  meta: token_wide_meta,
+  meta_line: token_wide_meta_line,
+  ui: token_wide_ui,
+  ui_line: token_wide_ui_line,
+  body: token_wide_body,
+  body_line: token_wide_body_line,
+  title: token_wide_title,
+  title_line: token_wide_title_line,
+  heading: token_wide_heading,
+  heading_line: token_wide_heading_line,
+  display: token_wide_display,
   // (the body's line, the web's --leading-body 22: msgPlain's 1.55 is 21.7, off the scale)
   words: @ui.text_style(size=Body, leading=L7, color=Fg),
 }
@@ -1026,13 +1026,14 @@ pub fn row_least() -> Double {
 /// The phone's: a size up, as Android's.
 let narrow_type : Type = {
   ..wide_type,
-  caption: 12.0,
-  meta: 13.0,
-  meta_line: 18.0,
-  ui: 15.0,
-  ui_line: 22.0,
-  body: 15.0,
-  body_line: 22.0,
+  caption: token_narrow_caption,
+  caption_line: token_narrow_caption_line,
+  meta: token_narrow_meta,
+  meta_line: token_narrow_meta_line,
+  ui: token_narrow_ui,
+  ui_line: token_narrow_ui_line,
+  body: token_narrow_body,
+  body_line: token_narrow_body_line,
   words: message,
 }
 
@@ -1625,13 +1626,13 @@ pub fn mix_seen(a : Int64, share : Double, b : Int64) -> Int64 {
 /// they are, for a number standing alone in a picture (the card shared of the agents at work: Xl6 60).
 pub let text_scale : @ui.TextScale = {
   // (the roles: each screen's own, Type's, set by ui_theme: text_roles)
-  caption: (11.0, 16.0),
-  meta: (12.0, 18.0),
-  ui: (13.0, 20.0),
-  body: (14.0, 22.0),
-  title: (16.0, 24.0),
-  heading: (22.0, 30.0),
-  display: (28.0, 36.0),
+  caption: (token_wide_caption, token_wide_caption_line),
+  meta: (token_wide_meta, token_wide_meta_line),
+  ui: (token_wide_ui, token_wide_ui_line),
+  body: (token_wide_body, token_wide_body_line),
+  title: (token_wide_title, token_wide_title_line),
+  heading: (token_wide_heading, token_wide_heading_line),
+  display: (token_wide_display, token_wide_display_line),
   xs3: (10.0, 14.0),
   xs2: (11.0, 15.4),
   xs: (12.0, 16.8),
@@ -1671,10 +1672,10 @@ fn text_roles(t : Type) -> @ui.TextScale {
 /// (a lead, 106, 286; 708).
 pub let leading_scale : @ui.LeadingScale = {
   ..@ui.LeadingScale::tailwind(),
-  l4: 16.0,
-  l5: 18.0,
-  l6: 20.0,
-  l7: 22.0,
+  l4: token_leading_l4,
+  l5: token_leading_l5,
+  l6: token_leading_l6,
+  l7: token_leading_l7,
 }
 
 ///|

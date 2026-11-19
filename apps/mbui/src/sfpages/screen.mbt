@@ -54,6 +54,27 @@ priv enum Copied {
 }
 
 ///|
+/// A pointer of the station's own picture (a drawing tool's, a brush's, a crosshair of an app's): its PNG, its size in
+/// points and its hot spot in from its top left (`cursorImage`, ScreenSess::take).
+priv struct CustomCursor {
+  png : Bytes
+  w : Double
+  h : Double
+  hx : Double
+  hy : Double
+}
+
+///|
+/// How many of the station's own pointers a view keeps (the oldest let go of past it).
+let custom_cursors_most : Int = 64
+
+///|
+/// The image key a pointer the station drew itself (`custom:<hex>`) is drawn by.
+fn custom_cursor_key(shape : String) -> String {
+  "mem:sf/pointer/" + shape
+}
+
+///|
 /// A view of `screen` on `station` (its address, `<workspace>/<station>`), kept while its page is in the stack.
 priv struct ScreenSess {
   /// where it reads and writes
@@ -73,6 +94,18 @@ priv struct ScreenSess {
   /// the pointer as the page has it drawn now: on a picture's system video layer by its host (moved there as the
   /// station's pointer moves, nothing drawn for it: ScreenSess::pointer_moved), or None here, by the window's tree
   mut pointer_layer : PointerLayer?
+  /// where the station says its pointer is (0..1 of the frame) and its shape (a CSS cursor's name, `none` hidden), as
+  /// last said: by a state, or by a word of the pointer alone (`cursor`, ScreenSess::take), read without the state
+  mut cursor_pos : (Double, Double)?
+  mut cursor_shape_now : String
+  /// the station says its pointer on its own (a `cursor` word came): a state that says none of it keeps it as it was
+  mut cursor_apart : Bool
+  /// what the page draws of the pointer follows the station's word of it (not this device's mouse over the picture, nor
+  /// the trackpad's own pointer): told by the stage as either changes (screen_stage_gestures); drawn while no stage is
+  mut cursor_drawn : Bool
+  /// the pointers of the station's own pictures it said (`cursorImage`), by the shape it names them (`custom:<hex>`),
+  /// the latest few kept (custom_cursors_most)
+  custom_cursors : Map[String, CustomCursor]
   /// each copy made on the screen taken (`copied`), and each file picked or let go of (`drops`): what puts the copies on
   /// the device's clipboard and what lists the files read them as they are told
   copied_told : @signals.Signal[Int]
@@ -205,6 +238,11 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         said: @signals.signal(0),
         cursor_said: @signals.signal(0),
         pointer_layer: None,
+        cursor_pos: None,
+        cursor_shape_now: "default",
+        cursor_apart: false,
+        cursor_drawn: true,
+        custom_cursors: Map([]),
         copied_told: @signals.signal(0),
         drops_told: @signals.signal(0),
         streams_told: @signals.signal(0),
@@ -660,14 +698,37 @@ fn ScreenSess::scale(self : ScreenSess) -> (Int, Int, Array[Int])? {
 ///|
 /// Where the station says its pointer is (0..1 of the frame), when it says.
 fn ScreenSess::cursor(self : ScreenSess) -> (Double, Double)? {
-  match field(self.state, "cursor") {
-    Some(Object(_) as c) =>
-      match (field(Some(c), "x"), field(Some(c), "y")) {
+  self.cursor_pos
+}
+
+///|
+/// Where pointer word `c` (a state's `cursor`, or one said alone) says it is (0..1 of the frame), and its shape (the
+/// arrow's where it says none); none, the arrow, where it says no pointer.
+fn cursor_of(c : Json?) -> ((Double, Double)?, String) {
+  match c {
+    Some(Object(_)) => {
+      let at = match (field(c, "x"), field(c, "y")) {
         (Some(Number(x, ..)), Some(Number(y, ..))) => Some((x, y))
         _ => None
       }
-    _ => None
+      (
+        at,
+        match text(c, "shape") {
+          "" => "default"
+          shape => shape
+        },
+      )
+    }
+    _ => (None, "default")
   }
+}
+
+///|
+/// The station's pointer as word `c` says it (ScreenSess::cursor, pointer_shape read it).
+fn ScreenSess::cursor_is(self : ScreenSess, c : Json?) -> Unit {
+  let (at, shape) = cursor_of(c)
+  self.cursor_pos = at
+  self.cursor_shape_now = shape
 }
 
 ///|
@@ -806,6 +867,8 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     "maxWidth": Json::number(mw.to_double()),
     "maxHeight": Json::number(mh.to_double()),
     "passkeys": Json::boolean(@hostapi.passkeys()),
+    // (its pointer may be said on its own, `cursor`, rather than in a whole state each time it moves)
+    "cursorUpdates": Json::boolean(true),
   }
   asks_into(params, quality, fps)
   if @ui.stream_audio_here() {
@@ -988,7 +1051,60 @@ pub fn screen_value_quiet(value : Json) -> Bool {
   match o.get("state") {
     Some(Object(_) as st) if o.length() == 1 =>
       screens_open.values().any(fn(s) { s.pointer_layer is Some(_) && cursor_moved_only(s.state, st) })
-    _ => false
+    // the pointer said alone, its shape the same: on a picture's layer the host told, or not drawn from what the
+    // station says (this device's mouse, the trackpad's own, hidden), nothing drawn anew (ScreenSess::cursor_quiet)
+    _ =>
+      match o.get("cursor") {
+        Some(c) if o.length() == 1 => screens_open.values().any(fn(s) { s.cursor_quiet(c) })
+        _ => false
+      }
+  }
+}
+
+///|
+/// Whether pointer word `c`, said alone, changes nothing drawn of this view: its shape the same, and where it points
+/// drawn on a picture's layer (the host told, ScreenSess::pointer_moved), or not drawn from the station's word at all
+/// (this device's mouse over the picture, the trackpad's pointer, hidden there).
+fn ScreenSess::cursor_quiet(self : ScreenSess, c : Json) -> Bool {
+  let (_, shape) = cursor_of(Some(c))
+  shape == self.cursor_shape_now && (self.pointer_layer is Some(_) || !self.cursor_drawn || shape == "none")
+}
+
+///|
+/// A pointer the station drew itself (`cursorImage` `ci`: its shape `custom:<hex>`, its size and hot spot in points; its
+/// PNG `bytes`), kept where it is sound (1..128 points, its hot spot inside, a PNG of at most 64 KiB); what draws a
+/// pointer of its shape said already, told.
+fn ScreenSess::custom_cursor_taken(self : ScreenSess, ci : Json, bytes : Bytes?) -> Unit {
+  let shape = text(Some(ci), "shape")
+  let w = number(Some(ci), "w")
+  let h = number(Some(ci), "h")
+  let hx = number(Some(ci), "hx")
+  let hy = number(Some(ci), "hy")
+  guard shape.has_prefix("custom:") &&
+    shape.length() <= 64 &&
+    w >= 1.0 &&
+    w <= 128.0 &&
+    h >= 1.0 &&
+    h <= 128.0 &&
+    hx >= 0.0 &&
+    hx <= w &&
+    hy >= 0.0 &&
+    hy <= h else {
+    return
+  }
+  guard bytes is Some(png) && png.length() > 0 && png.length() <= 65536 && @pixels.is_png(png) else { return }
+  if !self.custom_cursors.contains(shape) {
+    if self.custom_cursors.length() >= custom_cursors_most {
+      match self.custom_cursors.keys().next() {
+        Some(old) => self.custom_cursors.remove(old)
+        None => ()
+      }
+    }
+    @ui.add_image(custom_cursor_key(shape), png)
+  }
+  self.custom_cursors[shape] = { png, w, h, hx, hy }
+  if self.cursor_shape_now == shape {
+    self.cursor_said.set(self.cursor_said.untracked() + 1)
   }
 }
 
@@ -1053,6 +1169,27 @@ pub fn screen_unread_calls() -> Array[String] {
 /// here is read by no build.
 fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
   guard value is Object(o) else { return }
+  // the station's pointer said alone (no state rebuilt, nothing compared): on a picture's layer the host told; drawn
+  // here, what draws it told; not drawn from it (the mouse's, the trackpad's, hidden) and its shape the same, nothing
+  match o.get("cursor") {
+    Some(c) => {
+      let quiet = self.cursor_quiet(c)
+      self.cursor_apart = true
+      self.cursor_is(Some(c))
+      if self.pointer_layer is Some(_) && quiet {
+        self.pointer_moved()
+      } else if !quiet {
+        self.cursor_said.set(self.cursor_said.untracked() + 1)
+      }
+    }
+    None => ()
+  }
+  // a pointer the station drew itself, its PNG in `bytes`: kept by the shape it is named (a pointer of that shape said
+  // before it came, drawn again with it)
+  match o.get("cursorImage") {
+    Some(Object(_) as ci) => self.custom_cursor_taken(ci, bytes)
+    _ => ()
+  }
   match o.get("state") {
     Some(Object(_) as s) => {
       // the station's pointer alone moved: on a picture's layer, the host told, nothing drawn (screen_value_quiet); else
@@ -1087,6 +1224,11 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       }
       self.state = Some(s)
       self.heard = true
+      // (where it says its pointer, or none; one said on its own kept where a state says nothing of it)
+      match field(self.state, "cursor") {
+        Some(c) => self.cursor_is(Some(c))
+        None => if !self.cursor_apart { self.cursor_is(None) }
+      }
       match self.fill_dismissed.untracked() {
         Some(was) if login_slot_of(self.state) != Some(was) => self.fill_dismissed.set(None)
         _ => ()

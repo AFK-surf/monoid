@@ -14,7 +14,7 @@ import {
   CHANGELOG_DEVICE, CHANGELOG_SEEN, CHAT, PEOPLE, CHAT_MESSAGES, DRIVE, LETTERS_COUNT, JOB, JOB_LOG_LINES, OPENS, OTHER_WORKSPACE, OUTLINED, PEEKS, PLAIN_WORKSPACE, SEARCH, UP, VAULT_ITEM, cardCame, changelogFeed, changelogReleased,
   chatArchived, chatRenamed, devicesAdded, devicesSaid, driveAdded, fixture, hostReading, jobLogOf, jobsMoved, lettersHeld, listedOf, liveStepped, lockApproved, memberJoined, messageAdded, more,
   netOf, outlinedEdit, outlinedLog, outlinedSaid, outlinedWorking, overviewMoved, othersPresetsChanged, othersPresetsOf, presetRecordsChanged, presetsChanged, quotaChanged, records, resourcesOf, screensMoved, screensOf, sessionMade, thingSaid, transcriptOf,
-  usageRead, vaultAdded, vaultUsed, ownPendingOf, STATIONS, MOVES_ASKED, moveOf,
+  usageRead, vaultAdded, vaultUsed, ownPendingOf, OWN_LOCK, PERSONAL_VAULT, VAULT_BOX, VAULT_SIGNER, STATIONS, MOVES_ASKED, moveOf,
 } from "./real-size.ts";
 import { logged } from "../src/log-lines.ts";
 import type { Inner } from "../src/core.ts";
@@ -28,9 +28,9 @@ import { terminalsView } from "../src/terminals.ts";
 import { sharedPlace } from "../src/station/rows-made.ts";
 import type { Store } from "../src/store.ts";
 import type { FakeHost } from "../src/testing.ts";
-import { lockView } from "../src/views/lock.ts";
+import { lockView, signerKnown } from "../src/views/lock.ts";
 import { joinable, memberships } from "../src/views/memberships.ts";
-import { itemsView, usesView, vaultsView } from "../src/views/vault.ts";
+import { boxKeyKnown, itemsView, usesView, vaultsView } from "../src/views/vault.ts";
 import { PresetViews } from "../src/views/presets.ts";
 import type { Views } from "../src/views/views.ts";
 import { waysView } from "../src/views/ways.ts";
@@ -124,8 +124,8 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   "lock": { topic: "lock", workspace: "ws" },
   // (the vault, sfpages/vault.mbt and vault_item.mbt: 36 secrets, the uses of the most used one)
   "vaults": { topic: "vaults", workspace: PLAIN_WORKSPACE },
-  "vaultItems": { topic: "vaultItems", workspace: PLAIN_WORKSPACE, vault: "plain" },
-  "vaultUses": { topic: "vaultUses", workspace: PLAIN_WORKSPACE, vault: "plain", item: VAULT_ITEM },
+  "vaultItems": { topic: "vaultItems", workspace: PLAIN_WORKSPACE, vault: PERSONAL_VAULT },
+  "vaultUses": { topic: "vaultUses", workspace: PLAIN_WORKSPACE, vault: PERSONAL_VAULT, item: VAULT_ITEM },
   // (adding a station, sfapp/settings/station_add.mbt; a station's workspaces, sfpages/station_page.mbt)
   "joinable": { topic: "joinable", workspace: "ws" },
   "memberships": { topic: "memberships", station },
@@ -186,22 +186,32 @@ export const topicOf = (name: string): Topic => {
 /// The core's parts the pages' own topics are made of (core.ts `Inner`), as far as those read them here: the account
 /// and its workspaces, what the device holds, its links to the stations all up.
 function innerOf(parts: { host: FakeHost; store: Store; data: Data; views?: Views }): Inner {
+  // (an app that keeps keys, as the device the vault's pages are measured on: views/vault.ts `able`)
+  parts.host.appKeys = true;
   const workspaces = new Workspaces(parts.host, parts.store.runner);
   workspaces.setOwners(new Map([["ws", "s1"], [OTHER_WORKSPACE.id, "s1"], ["ws-friends", "s1"]]));
   // (the person's own lock as the lock's page reads it: what is pending of it, as many as are kept)
+  // (its own lock pinned here, this device on it saying its signer: what the vault of the workspace with no safe mode
+  // goes by, views/vault.ts `personalLockOf`)
   const personal = {
     standing: () => "member",
     root: () => null,
     chain: () => null,
+    pinnedOf: () => OWN_LOCK,
+    signerUnsaid: () => false,
     pendingShown: () => ownPendingOf(parts.host.nowMs()).map((item) => ({ item, row: pendingRow(item, STATIONS.map((s) => s.name)) })),
   };
-  return {
+  const inner = {
     host: parts.host, store: parts.store, runner: parts.store.runner, data: parts.data, views: parts.views, workspaces,
     accounts: { list: () => [{ sub: "s1", email: "me@x.com", name: "左子健" }] },
     // (no station is asked here: what they said is set, as the sync would)
     stations: { seen: { read: () => {} }, link: () => ({ state: { state: "online" } }), reachable: () => false },
     provider: { kind: "stillfail" }, adb: { personal: () => personal }, meshNow: () => null,
   } as unknown as Inner;
+  // (this app's signer and its box key's public half, as the app's start reads them: views/lock.ts, views/vault.ts)
+  signerKnown(inner, VAULT_SIGNER.id);
+  boxKeyKnown(inner, VAULT_BOX);
+  return inner;
 }
 
 /// Owners of the topics no view makes, as core.ts plugs them in: a drive's places (views/browse.ts), the notices
@@ -540,7 +550,7 @@ export const CAUSES: Record<string, Cause> = {
   approved: { run: ({ t, base }) => t.data.put("lock", "ws", lockApproved(base, t.host.nowMs())) },
   // The vault's plain library: an item used once more (its uses as Maple told them again), an item added.
   used: { run: ({ t, base }) => t.data.put("vault", PLAIN_WORKSPACE, vaultUsed(base, t.host.nowMs())) },
-  item: { run: ({ t, base }) => t.data.put("vault", PLAIN_WORKSPACE, vaultAdded(base, t.host.nowMs())) },
+  item: { run: ({ t, base }) => t.data.put("vaultItems", `${PLAIN_WORKSPACE}/${PERSONAL_VAULT}`, vaultAdded(base, t.host.nowMs())) },
   // A member more in the workspace, as the cloud lists it.
   member: { run: ({ t, base }) => t.set({ topic: "workspace", workspace: "ws" }, memberJoined(base)) },
   // A session more on Maple, a Slack thread's.

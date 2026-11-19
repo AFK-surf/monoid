@@ -15,6 +15,8 @@ import { readFileSync } from "node:fs";
 export interface Budget {
   /** The test file it is in. */
   path: string;
+  /** Former paths before this table moved to another package (read from `base` when `path` is new). */
+  former?: readonly string[];
   /** The top-level `let` holding it (a Map from a key to its bars). */
   name: string;
   /** What each bar of a row counts, in order: one name for a row of one number. */
@@ -26,17 +28,33 @@ export interface Budget {
 }
 
 export const BUDGETS: readonly Budget[] = [
-  { path: "apps/mbui/src/sfapp/real_size_known_wbtest.mbt", name: "real_size_known", slots: ["made", "laid_out", "measured"], absentIsZero: false, scenes: true },
   {
-    path: "apps/mbui/src/sfapp/real_size_change_known_wbtest.mbt",
+    path: "apps/mbui/src/sfapp_realsize/real_size_known_test.mbt",
+    former: ["apps/mbui/src/sfapp/real_size_known_wbtest.mbt"],
+    name: "real_size_known",
+    slots: ["made", "laid_out", "measured"],
+    absentIsZero: false,
+    scenes: true,
+  },
+  {
+    path: "apps/mbui/src/sfapp_realsize/real_size_change_known_test.mbt",
+    former: ["apps/mbui/src/sfapp/real_size_change_known_wbtest.mbt"],
     name: "real_size_change_known",
     slots: ["made", "let_go", "laid_out", "measured", "old_built", "old_laid_out"],
     absentIsZero: false,
     scenes: true,
   },
-  { path: "apps/mbui/src/sfapp/real_size_bindings_known_wbtest.mbt", name: "real_size_bindings_known", slots: ["bindings"], absentIsZero: true, scenes: false },
   {
-    path: "apps/mbui/src/sfapp/chat_nodes_open_budget_wbtest.mbt",
+    path: "apps/mbui/src/sfapp_realsize/real_size_bindings_known_test.mbt",
+    former: ["apps/mbui/src/sfapp/real_size_bindings_known_wbtest.mbt"],
+    name: "real_size_bindings_known",
+    slots: ["bindings"],
+    absentIsZero: true,
+    scenes: false,
+  },
+  {
+    path: "apps/mbui/src/sfapp_realsize/chat_nodes_open_budget_test.mbt",
+    former: ["apps/mbui/src/sfapp/chat_nodes_open_budget_wbtest.mbt"],
     name: "chat_nodes_open_budget",
     slots: ["made", "let_go", "laid", "measured", "bindings"],
     absentIsZero: false,
@@ -218,9 +236,20 @@ export function judge(read: (path: string) => { before: string | undefined; afte
   const out: Raised[] = [];
   for (const b of BUDGETS) {
     if (!changed.includes(b.path)) continue;
-    const { before, after } = read(b.path);
-    // (a table taken away raises nothing; one new is all new rows)
+    const cur = read(b.path);
+    const after = cur.after;
+    // (a table taken away raises nothing; one moved reads its previous path so a move still enforces every bar)
     if (after === undefined) continue;
+    let before = cur.before;
+    if (before === undefined && b.former) {
+      for (const old of b.former) {
+        const prev = read(old).before;
+        if (prev !== undefined) {
+          before = prev;
+          break;
+        }
+      }
+    }
     const was = before === undefined ? new Map() : parseBudget(before, b.name, b.slots.length);
     out.push(...raised(b, was, parseBudget(after, b.name, b.slots.length), sceneChanged));
   }

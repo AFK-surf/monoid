@@ -104,7 +104,7 @@ export type Call =
   /// A link's card's picture, or a file's peek's, its bytes beside: out of what the topic's read brought (peek-pictures.ts).
   | { kind: "linkPicture"; station: string; url: string; which: LinkPicture }
   | { kind: "peekPicture"; station: string; key: string; path: string; line: number | null }
-  | { kind: "fileOpen"; station: string; key: string; path: string; range: { offset: number; length: number } | null }
+  | { kind: "fileOpen"; station: string; key: string; path: string; range: { offset: number; length: number } | null; kept: boolean; played: boolean }
   /// `keep`: what is read kept on the device and what is kept answered (drive-kept.ts), the file as its folder said it
   /// is (`mtime`, `size`; neither said, nothing kept).
   /// `quiet`: as a chat's file's part's.
@@ -1118,7 +1118,9 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
       return { kind: "driveRefresh", station: p.station as string, root: p.root as string, path: p.path as string };
     }
     // A file a message names, whole, its bytes beside the answer (as the station's op, from before, put them in it);
-    // with `offset` and `length`, a part of it.
+    // with `offset` and `length`, a part of it. With `kept`, only what this device kept of it, asking no station
+    // (`not_kept` where it keeps none): shown at once, while it is asked again without. With `played`, a video's or
+    // song's parts as played, kept as a drive's are (drive-kept.ts `played`), not with the files read whole.
     case "file.open": {
       const p = read(params, [
         ["station", S, "req"],
@@ -1126,9 +1128,11 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["path", S, "req"],
         ["offset", "u64", "opt"],
         ["length", "u64", "opt"],
+        ["kept", "bool", "opt"],
+        ["played", "bool", "opt"],
       ]);
       const range = p.offset === null && p.length === null ? null : { offset: (p.offset as number | null) ?? 0, length: (p.length as number | null) ?? FILE_OPEN_PART };
-      return { kind: "fileOpen", station: p.station as string, key: p.key as string, path: p.path as string, range };
+      return { kind: "fileOpen", station: p.station as string, key: p.key as string, path: p.path as string, range, kept: p.kept === true, played: p.played === true };
     }
     // A link's card's picture (`which`: icon, image, avatar) and a file's peek's, as their topics (`linkPreview`,
     // `filePeek`) read them last, their bytes beside `{ type }`: what those topics say of them is a token alone.

@@ -153,6 +153,10 @@ pub let tracker_gap_ms : Double
 
 pub let tracker_horizon_ms : Double
 
+pub fn transition(() -> Unit, within? : View) -> Unit
+
+pub fn transition_now() -> Bool
+
 pub fn unrubber(Double, Double) -> Double
 
 pub fn untracked_read_fault(String, Array[String], String) -> String?
@@ -272,6 +276,11 @@ pub(all) enum Check {
   Mixed
 }
 pub impl Show for Check
+
+pub struct ContainerCorner {
+  radius : () -> Double
+  inset : () -> Double
+}
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Content {
@@ -601,8 +610,11 @@ pub fn[K] ListPlace::centre(Self[K], K) -> Unit
 pub fn[K] ListPlace::follow_from(Self[K], K?, margin? : Double) -> Unit
 pub fn[K] ListPlace::new() -> Self[K]
 pub fn[K] ListPlace::on_sight(Self[K], (Sight[K]) -> Unit) -> Unit
+pub fn[K] ListPlace::rest(Self[K]) -> Unit
+pub fn[K] ListPlace::rest_unwatched(Self[K]) -> Unit
 pub fn[K] ListPlace::sight_now(Self[K]) -> Sight[K]?
 pub fn[K] ListPlace::to_end(Self[K], glide? : Bool) -> Unit
+pub fn[K] ListPlace::wake(Self[K]) -> Unit
 
 #derive(@debug.Debug)
 pub(all) struct ListSeen {
@@ -1172,6 +1184,7 @@ pub fn Tree::alive(Self) -> Int32
 pub fn Tree::allows(Self, NodeId) -> Bool
 pub fn Tree::allows_as_its_own(Self, NodeId) -> Bool
 pub fn Tree::allows_ellipsis(Self, NodeId) -> Bool
+pub fn Tree::allows_transition(Self, Int32) -> Bool
 pub fn Tree::alone(Self, NodeId) -> Bool
 pub fn Tree::answered_between(Self, Double, Double) -> Array[Int32]
 pub fn Tree::ask_action(Self, String, Double, from? : NodeId?) -> Bool
@@ -1289,6 +1302,7 @@ pub fn Tree::laid_said_of(Self, Int32) -> Double?
 pub fn Tree::leaving(Self, NodeId) -> Bool
 pub fn Tree::lift_cut(Self, NodeId) -> (Double, Double, Double, Double)?
 pub fn Tree::lift_cut_corners(Self, NodeId) -> (Double, Double, Double, Double)?
+pub fn Tree::lifted_at(Self, Int) -> Bool
 pub fn Tree::list_bring(Self, NodeId, Int32) -> Unit
 pub fn Tree::list_in_front(Self) -> ListSeen?
 pub fn Tree::list_to_end(Self, NodeId) -> Unit
@@ -1440,6 +1454,7 @@ pub struct View {
 pub fn View::alive(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::allow_ellipsis(Self, Live[Bool], loc~ : SourceLoc) -> Self
+pub fn View::allows_transition(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::alpha(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::as_ground(Self) -> Self
@@ -1470,6 +1485,11 @@ pub fn View::clear(Self) -> (Double, Double, Double, Double)
 #callsite(autofill(loc))
 pub fn View::clips(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::comes_end(Self, laid? : Bool) -> Double
+pub fn View::concentric_end_pad(Self, Double) -> Live[Double]
+pub fn View::concentric_radius(Self, () -> Double, extra_inset? : () -> Double, min_radius? : Double) -> Live[Double]
+pub fn View::container_corner(Self) -> ContainerCorner?
+pub fn View::corner_inset(Self, () -> Double) -> Self
+pub fn View::corner_scope(Self, () -> Double, inset? : () -> Double) -> Self
 #callsite(autofill(loc))
 pub fn View::corners(Self, Live[(Double, Double, Double, Double)?], loc~ : SourceLoc) -> Self
 pub fn View::corners_drawn(Self) -> (Double, Double, Double, Double)
@@ -1495,7 +1515,7 @@ pub fn View::drawn_while(Self, (Double) -> Bool) -> Double
 #callsite(autofill(loc))
 pub fn View::drops(Self, Live[Int32], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn[T : Eq, K : Hash + Eq] View::each(Self, () -> Array[T], (T) -> K, (Self, @signals.Signal[T]) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, keeps? : () -> Array[K], loc~ : SourceLoc) -> Unit
+pub fn[T : Eq, K : Hash + Eq] View::each(Self, () -> Array[T], (T) -> K, (Self, @signals.Signal[T]) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, keeps? : () -> Array[K], pop_leave? : Bool, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn[T] View::each_of(Self, () -> Array[T], (Self, T) -> Unit, leave? : Double, at_once? : Bool, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
@@ -1517,7 +1537,9 @@ pub fn View::fit_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::fits(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::flies(Self) -> Bool
 #callsite(autofill(loc))
-pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::flies_apart(Self, loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, in_list? : Bool, cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, loc~ : SourceLoc) -> Self
 pub fn View::flight_across_now(Self) -> Double
 pub fn View::flight_ends_now(Self) -> Double?
 pub fn View::flying_now(Self) -> Bool
@@ -1603,6 +1625,7 @@ pub fn View::lays_out_alone(Self) -> Self
 pub fn View::leaves_at(Self) -> Double
 pub fn View::leaves_typing(Self) -> Self
 pub fn View::leaving(Self) -> Bool
+pub fn View::leaving_now(Self) -> Bool
 pub fn View::left_out(Self) -> Bool
 pub fn[T] View::lends(Self, Lent[T], T) -> Self
 pub fn[T] View::lent(Self, Lent[T]) -> T?
@@ -1612,6 +1635,10 @@ pub fn View::lies_along(Self, Live[Lies], loc~ : SourceLoc) -> Self
 pub fn View::lines(Self, Live[Array[@paint.Line]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::lines_up(Self, Live[Along?], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::lines_up_baseline(Self, Live[Bool], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::lines_up_first_line(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::lives_with(Self, Self) -> Self
 pub fn View::logic_at(Self) -> Double
 pub fn View::made_for(Self, SourceLoc) -> Self
@@ -1660,6 +1687,7 @@ pub fn View::over_all(Self, Live[Bool]) -> Self
 #callsite(autofill(loc))
 pub fn View::over_scrim(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::owned_count(Self) -> Int32
+pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit) -> Self
 pub fn View::owns(Self, () -> Unit) -> Self
 pub fn View::owns_while(Self, () -> Unit) -> () -> Unit
 #callsite(autofill(loc))
@@ -1690,6 +1718,7 @@ pub fn View::read_from(Self) -> Self
 pub fn View::rect(Self) -> (Double, Double, Double, Double)
 pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool) -> Self
 pub fn View::reused_bool(Self, default? : Bool) -> @signals.Signal[Bool]
+pub fn View::reused_kind(Self) -> Int?
 #callsite(autofill(loc))
 pub fn View::row(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::row_order(Self) -> Int32?
@@ -1720,14 +1749,14 @@ pub fn View::shakes_while(Self, (Double) -> Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::shapes(Self, Live[Array[@paint.Shape]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, container? : Bool, up_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::shared_id(Self) -> String?
 #callsite(autofill(loc))
 pub fn View::shift(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::shorter(Self, Live[Array[String]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::show(Self, () -> Bool, (Self) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, loc~ : SourceLoc) -> Unit
+pub fn View::show(Self, () -> Bool, (Self) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, pop_leave? : Bool, loc~ : SourceLoc) -> Unit
 pub fn View::shown_across(Self, but? : Self) -> (Double, Double)?
 pub fn View::shown_by(Self, Self, (Double) -> GroundShape) -> Self
 pub fn View::shown_nowhere(Self) -> Bool
@@ -1750,6 +1779,9 @@ pub fn View::takes_back(Self, () -> Unit) -> Self
 pub fn View::takes_input(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::tint(Self, Live[Int64], loc~ : SourceLoc) -> Self
+pub fn View::transition_gate(Self) -> Bool
+pub fn View::transitions_only(Self) -> Self
+pub fn View::transitions_root(Self) -> Self
 #callsite(autofill(loc))
 pub fn View::turn(Self, Live[Double], drawn? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::twice(Self, Drag) -> Bool

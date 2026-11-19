@@ -23,6 +23,7 @@ pub(all) struct LiveBus {
   data : String
   app : String
   version : String
+  built_at : Double?
   key : @cloud_lock.StationKey
   db : @sql.Db
   store : @store_sessions.Store
@@ -30,6 +31,8 @@ pub(all) struct LiveBus {
   stopped : @effect.Deferred[String]
   /// Resolved to `http://127.0.0.1:<port>/mcp` once the previous station released `run/hub.json` and the agents' door is listening.
   door_ready : @effect.Deferred[String]
+  /// Opens the agents' door (`/mcp`) once sessions are taken up, resolving `door_ready`; idempotent.
+  open_door : Ref[async () -> String]
   handed : Bool
   mcp_token : String
   previous_pid : Int?
@@ -174,6 +177,7 @@ pub fn LiveBus::new(
     }
     raise BusError("mesh transport not attached for \{target}: \{meth}")
   }
+  let door_ready : @effect.Deferred[String] = @effect.Deferred::new()
   let b : LiveBus = {
     host,
     argv0,
@@ -181,12 +185,17 @@ pub fn LiveBus::new(
     data,
     app,
     version,
+    built_at: match build_built_at(app) {
+      Some(ms) => Some(ms)
+      None => station_built_at(args, argv0)
+    },
     key,
     db,
     store,
     parts,
     stopped,
-    door_ready: @effect.Deferred::new(),
+    door_ready,
+    open_door: Ref(async fn() { door_ready.wait() }),
     handed,
     mcp_token,
     previous_pid,
@@ -397,7 +406,7 @@ pub fn LiveBus::drain_thread_requests(self : LiveBus, threads : @store_threads.S
   }
   let prepare = (op : String, prefix : String, keys : Array[Json]) => if !keys.is_empty() {
     ignore(
-      self.host.rt.fork(name="threads prepared", async fn() {
+      self.host.rt.fork_quiet(name="threads prepared", async fn() {
         ignore((self.reader_ask.val)(op, Json::array(keys), "")) catch {
           _ => ()
         }
@@ -478,3 +487,98 @@ pub fn station_features(raw : Json, app : String) -> Array[String] {
 pub fn LiveBus::as_rig(self : LiveBus) -> Bool {
   self.args.contains("--rig") || (self.cloud_state.val)() is Some({ "rig": Object(_), .. })
 }
+
+// ── What one slice asks of another, typed ──
+// Each is asked by its name on the slice's `*_ask` (what a slice's test stands in for), its arguments named here once:
+// a caller cannot misname a field the answering slice reads (`rejected`, not `runtime`). station/test/
+// mb-station-contracts.test.ts holds every name asked here to one its slice answers.
+
+///|
+/// The agents' side ends its sessions' processes as the station stops (not handing over).
+async fn LiveBus::hub_shutdown(self : LiveBus) -> Unit {
+  ignore((self.hub_ask.val)("shutdown", Json::null()))
+}
+
+///|
+/// A session's agent told `text` (the hub's notify, which wakes it).
+async fn LiveBus::hub_notify(self : LiveBus, session~ : String, text~ : String) -> Unit {
+  ignore((self.hub_ask.val)("notify", { "session": Json::string(session), "text": Json::string(text) }))
+}
+
+///|
+/// A runtime installed or updated from the pages (agents.ts `onRuntimeChanged`): what waited for it started, its
+/// processes on the new one.
+async fn LiveBus::hub_runtime_changed(
+  self : LiveBus,
+  kind~ : String,
+  installed~ : Bool,
+  replaced~ : Bool,
+) -> Unit {
+  ignore(
+    (self.hub_ask.val)("runtimeChanged", {
+      "kind": Json::string(kind),
+      "installed": Json::boolean(installed),
+      "replaced": Json::boolean(replaced),
+    }),
+  )
+}
+
+///|
+/// The disk low: archived sessions' rooms made smaller, until `low_bytes` are free.
+async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> Unit {
+  ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes) }))
+}
+
+///|
+/// A decided card's outcome queued for the agents' side's worker (agents.ts `cardOutcomes.save`).
+async fn LiveBus::hub_card_outcomes_save(self : LiveBus, outcome : Json) -> Unit {
+  ignore((self.hub_ask.val)("cardOutcomes.save", Json::array([outcome])))
+}
+
+///|
+/// A job stopped by its id.
+async fn LiveBus::jobs_stop(self : LiveBus, id : Json) -> Unit {
+  ignore((self.jobs_ask.val)("jobs.stop", { "id": id }))
+}
+
+///|
+/// The machine's logins read again (a runtime installed or updated).
+async fn LiveBus::jobs_machine_refresh(self : LiveBus) -> Unit {
+  ignore((self.jobs_ask.val)("accounts.machineRefresh", Json::array([])))
+}
+
+///|
+/// The model catalog read again, as the control plane said it changed (`etag`, null where it gave none).
+async fn LiveBus::jobs_models_refresh(self : LiveBus, etag : Json) -> Unit {
+  ignore((self.jobs_ask.val)("models.refresh", Json::array([etag])))
+}
+
+///|
+/// `stillfail update --beta|--stable` asked by SIGHUP: the updates read its channel ask.
+async fn LiveBus::coord_updates_hup(self : LiveBus) -> Unit {
+  ignore((self.coord_ask.val)("updates.hup", Json::null()))
+}
+
+///|
+/// The machine's Claude login (accounts/index.ts `machineToken`) asked of the accounts by `ask` (the bus's `jobs_ask`, a
+/// harness's own), renewed where `rejected` is the one it gave before: `{token, expiresAt}`, null where none answers.
+async fn asked_machine_token(ask : async (String, Json) -> Json, rejected~ : String?) -> Json {
+  ask("accounts.machineToken", { "rejected": jopt(rejected) })
+}
+
+///|
+/// A subscription profile's Claude login (accounts/index.ts `claudeToken`), asked so.
+async fn asked_subscription_token(
+  ask : async (String, Json) -> Json,
+  profile : Json,
+  rejected~ : String?,
+) -> Json {
+  ask("accounts.claudeToken", { "profile": profile, "rejected": jopt(rejected) })
+}
+
+///|
+/// The Claude login another station lent a profile (sharing `lendClaude`), asked so.
+async fn asked_lent_token(ask : async (String, Json) -> Json, profile : Json, rejected~ : String?) -> Json {
+  ask("sharing.lendClaude", { "profile": profile, "rejected": jopt(rejected) })
+}
+

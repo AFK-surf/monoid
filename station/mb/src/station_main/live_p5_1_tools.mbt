@@ -31,6 +31,14 @@ priv suberror ToolFailed {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for ToolFailed with output(self, logger) {
+  match self {
+    ToolFailed(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 priv struct KeptProcess {
   id : String
   command : String
@@ -221,15 +229,8 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
       let got = if want <= 0 {
         b""
       } else {
-        let said = try {
-          host.shell_sync("fs.bytes", { "path": Json::string(p), "from": Json::number(offset.to_double()), "length": Json::number(want.to_double()) })
-        } catch {
-          e => raise ToolFailed("failed", "\{e}")
-        }
-        match said {
-          String(hex) => @cloud_lock.hex_bytes(hex)
-          _ => b""
-        }
+        let said = host.read_bytes(p, from=offset, length=want) catch { e => raise ToolFailed("failed", "\{e}") }
+        said.unwrap_or(b"")
       }
       Json::object({
         "content_base64": Json::string(@base64.encode(got)),
@@ -339,7 +340,7 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         }
       }
       ignore(
-        host.rt.fork(name="device process", async fn() {
+        host.rt.fork_daemon("device process", on_error=e => @host.note("device process failed: \{e}"), async fn() {
           while true {
             match proc.events.take() {
               Out(b) | Err(b) => take(b)

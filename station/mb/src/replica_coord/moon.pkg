@@ -1,4 +1,6 @@
 import {
+  "base/codec",
+  "base/hash",
   "station/host",
   "station/jsjson",
   "station/nodepath",
@@ -13,6 +15,5 @@ import {
   "moonbitlang/core/double",
   "moonbitlang/core/cmp",
   "moonbitlang/core/encoding/base64",
-  "moonbitlang/core/encoding/hex",
   "moonbitlang/core/encoding/utf8",
 }

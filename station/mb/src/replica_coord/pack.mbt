@@ -53,9 +53,7 @@ let stage_bytes = 262144
 
 ///|
 fn hex_bytes(hex : String) -> Bytes {
-  @hex.decode(hex) catch {
-    _ => b""
-  }
+  @codec.hex_decode(hex).unwrap_or(b"")
 }
 
 ///|
@@ -105,7 +103,7 @@ pub fn pack_bytes(fs : Fs, entries : Array[PackEntry], strict : Bool, took : Arr
     }
     staged.write_byte(tag_entry)
     staged.write_bytes(hex_bytes(f.hash))
-    let h = Sha256::new()
+    let h = @hash.Sha256::new()
     let mut at = 0.0
     while at < size {
       let n = if size - at < pack_piece { size - at } else { pack_piece }
@@ -187,7 +185,7 @@ priv struct PackIn {
   bad : Bool
   tmp : String?
   mut size : Double
-  h : Sha256?
+  h : @hash.Sha256?
 }
 
 ///|
@@ -274,14 +272,7 @@ async fn Unpacking::take(self : Unpacking, b : Bytes) -> Unit {
       }
       self.had = 0
       self.at = unpack_tag
-      let hex = StringBuilder::new()
-      let digits = "0123456789abcdef"
-      for i in 0..<32 {
-        let x = self.head[i].to_int()
-        hex.write_char(digits.unsafe_charcode_at(x >> 4).unsafe_to_char())
-        hex.write_char(digits.unsafe_charcode_at(x & 15).unsafe_to_char())
-      }
-      self.begin(hex.to_string())
+      self.begin(@codec.hex_encode(Bytes::makei(32, i => self.head[i])))
     } else if self.at == unpack_length {
       at = self.fill(b, at, 4)
       if self.had < 4 {
@@ -332,7 +323,7 @@ async fn Unpacking::begin(self : Unpacking, hash : String) -> Unit {
   }
   let tmp = "\{path}.\{self.fs.random_hex(4)}.tmp"
   self.fs.files.write(tmp, b"")
-  self.entry = Some({ hash, path, bad, tmp: Some(tmp), size: 0.0, h: Some(Sha256::new()) })
+  self.entry = Some({ hash, path, bad, tmp: Some(tmp), size: 0.0, h: Some(@hash.Sha256::new()) })
 }
 
 ///|

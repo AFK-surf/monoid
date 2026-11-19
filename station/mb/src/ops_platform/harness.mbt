@@ -289,7 +289,7 @@ fn pure_case(c : Json) -> Json raise {
     "windowsRegisterScript" =>
       js(windows_register_script(s("hidden"), s("ps1"), s("runDir"), s("task"), bool_field(c, "admin")))
     "windowsTaskOf" => {
-      let (task, admin) = windows_task_of(opt_str_field(c, "kept"))
+      let (task, admin) = windows_task_of(opt_str_field(c, "kept"), data_dir=opt_str_field(c, "dataDir").unwrap_or(""))
       { "task": js(task), "admin": jb(admin) }
     }
     "winDrives" => {

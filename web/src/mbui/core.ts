@@ -7,6 +7,7 @@ import { BUILT_AT } from "../core/built.ts";
 import { BETA } from "../channel.ts";
 import { PREVIEW_ORIGIN } from "../previewOrigin.ts";
 import { takeShare } from "./share.ts";
+import { ErrorGate, isNoise, thrownText } from "./client-error.ts";
 import { putBack, take } from "../login/signin.ts";
 import { bootGoesWithFirstFrame, bootMarkOut, fetchedAhead } from "./boot.ts";
 // the app's words' face in a browser: the web's own Inter (its Latin, as the web's pages have it), not the whole face
@@ -26,6 +27,40 @@ const host = (): MbHost | undefined => (globalThis as { __mbhost?: MbHost }).__m
 const HANDOVER = 2 ** 31;
 let handed: (() => void) | null = null;
 
+/// The ids of this page's own `client.error` calls (reportClientError): past the app's and HANDOVER's, their answers
+/// not the app's.
+const REPORT_FIRST = 2 ** 31 + 1;
+let nextReport = REPORT_FIRST;
+
+const gate = new ErrorGate();
+
+/// An error of the page's or of its core's worker, sent to the core as the app's are (its `client.error` span, mbui's
+/// reports.mbt), only while the worker runs.
+function reportClientError(source: string, message: string): void {
+  if (!worker) return;
+  const summary = gate.pass(source, message, Date.now());
+  if (summary === null) return;
+  worker.postMessage({ id: nextReport++, call: "client.error", params: { source, message: summary } });
+}
+
+let errorsHeard = false;
+
+/// The page's errors not caught and promises refused with nobody to hear it, reported (once a page).
+function hearErrors(): void {
+  if (errorsHeard) return;
+  errorsHeard = true;
+  addEventListener("error", (event: ErrorEvent) => {
+    const text = thrownText(event.error) || (event.message ?? "");
+    if (isNoise(text) || isNoise(event.message ?? "")) return;
+    reportClientError("web_error", text);
+  });
+  addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+    const text = thrownText(event.reason);
+    if (isNoise(text)) return;
+    reportClientError("web_rejection", text);
+  });
+}
+
 /// What the worker says, to the app: its JSON without the bytes, and those beside it.
 function toApp(data: unknown): void {
   if (typeof data !== "object" || data === null) return;
@@ -34,6 +69,8 @@ function toApp(data: unknown): void {
     handed?.();
     return;
   }
+  const id = (data as { id?: unknown }).id;
+  if (typeof id === "number" && id >= REPORT_FIRST) return;
   const message = data as { bytes?: unknown; retired?: boolean; rejoin?: boolean; fault?: { name: string; message: string; stack?: string } };
   // A newer build's core took over: this page is of the older build and loads the newer.
   if (message.retired) {
@@ -43,6 +80,7 @@ function toApp(data: unknown): void {
   // An error the core survived: the worker's console is out of reach, so said here.
   if (message.fault) {
     console.error("still.fail core:", message.fault.message, message.fault.stack ?? "");
+    reportClientError("core_fault", `${message.fault.name}: ${message.fault.message}`);
     return;
   }
   // (`rejoin`: another tab's worker runs the core now; the app asks it again, mbui/core's core.mbt)
@@ -63,6 +101,7 @@ function startWorker(): void {
   worker = new Worker(new URL("../core/worker.ts", import.meta.url), { type: "module", name: workerName });
   worker.onmessage = (event: MessageEvent) => toApp(event.data);
   worker.onerror = (event) => host()?.post("core", JSON.stringify({ fatal: event.message || "the core's worker failed" }));
+  hearErrors();
 }
 
 function start(): boolean {

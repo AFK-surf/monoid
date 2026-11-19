@@ -42,7 +42,7 @@ pub async fn start_live_p5_5(bus : LiveBus) -> Unit {
   let closed : @effect.Deferred[Unit] = @effect.Deferred::new()
   p55_closed.val = Some(closed)
   ignore(
-    bus.host.rt.fork(name="p5-5 close", async fn() {
+    bus.host.rt.fork_daemon("p5-5 close", on_error=e => @host.note("p5-5 close failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
       for c in p.closers.rev() {
         c() catch {

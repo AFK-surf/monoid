@@ -570,26 +570,32 @@ fn station_head_node(
           |> ignore
         }
       })
-      // its mark: its managers pick it, by what it is called (图标)
-      if manager {
-        @sf.presses_node(m, fn() {
-          let now = @signals.untracked(s)
-          let workspace = @signals.untracked(here)
-          guard flag(now, "online") else { @settings.mark_offline(core, text(now, "name")) }
-          open_mark_pick(core, text(now, "name"), text(now, "emoji"), text(now, "icon"), @sf.t("android-settings.station.emojiWhat"), fn(
-            emoji,
-            icon,
-            done,
-          ) {
-            (core.call)(
-              "workspace.renameStation",
-              obj([("workspace", str(workspace.workspace)), ("station", str(text(now, "id"))), ("emoji", str(emoji)), ("icon", str(icon)), ("account", str(workspace.sub))]),
+    },
+    // its mark: its managers pick it, by what it is called (图标)
+    mark_press?=if manager {
+      Some(
+        (
+          fn() { @sf.t("android-settings.station.emoji") },
+          fn() {
+            let now = @signals.untracked(s)
+            let workspace = @signals.untracked(here)
+            guard flag(now, "online") else { @settings.mark_offline(core, text(now, "name")) }
+            open_mark_pick(core, text(now, "name"), text(now, "emoji"), text(now, "icon"), @sf.t("android-settings.station.emojiWhat"), fn(
+              emoji,
+              icon,
               done,
-            )
-          })
-        })
-        m.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-settings.station.emoji"))) })) |> ignore
-      }
+            ) {
+              (core.call)(
+                "workspace.renameStation",
+                obj([("workspace", str(workspace.workspace)), ("station", str(text(now, "id"))), ("emoji", str(emoji)), ("icon", str(icon)), ("account", str(workspace.sub))]),
+                done,
+              )
+            })
+          },
+        ),
+      )
+    } else {
+      None
     },
     name,
     rename?=if manager { Some(fn() { station_rename(core, @signals.untracked(here), @signals.untracked(s)) }) } else { None },
@@ -744,7 +750,7 @@ fn station_resources_node(b : @view.View, core : Core, here : () -> Here, s : ()
           let net = fn() { station_part_read(core, address, station_net_ask(address)).value }
           let uses = fn() { items(station_part_read(core, address, resources_ask(here(), address)).value, "stations").get(0) }
           station_dials_node(r, fn() { field(s(), "host") })
-          r.show(fn() { net() is Some(Object(_)) }, fn(x) { station_net_node(x, net) })
+          r.show(fn() { net() is Some(Object(_)) }, fn(x) { @sf.station_net_line_node(x, net, look=Page) })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
           r.show(fn() { uses() is Some(_) }, fn(x) { station_uses_node(x, uses, processes) })
           r.show(fn() { uses() is None && items(field(s(), "overview"), "processes").length() > 0 }, fn(x) {

@@ -419,10 +419,10 @@ pub(all) struct Processes {
 }
 
 ///|
-/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the host's clock where
-/// none is given).
+/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the system's wall clock
+/// where none is given).
 pub fn Processes::shell(host : @host.Host, wall? : () -> Double) -> Processes {
-  let wall = wall.unwrap_or(() => @host.now().to_double())
+  let wall = wall.unwrap_or(() => @host.wall_ms().to_double())
   {
     signal_group: async fn(pgid, signal) {
       let sig = if starts(signal, "SIG") { from(signal, 3) } else { signal }
@@ -543,7 +543,7 @@ pub async fn JobsHost::new(
     notify_url: "",
     closing: false,
     ended: async fn(_, _, _, _) {  },
-    now: now.unwrap_or(() => @host.now().to_double()),
+    now: now.unwrap_or(() => @host.epoch_ms().to_double()),
   }
 }
 
@@ -672,8 +672,18 @@ pub async fn JobsHost::spawn(
 pub fn JobsHost::follow(self : JobsHost, id : String, pgid : Int, began : Double) -> Unit {
   let running = { pgid, gone: @effect.Deferred::new(), settled: @effect.Deferred::new() }
   self.running[id] = running
+  // (a follower that failed lets its job go from `running` as an end would, so nothing waits on it for ever)
+  let failed = (e : Error) => {
+    @host.note("job \{id} no longer followed: \{e}")
+    ignore(running.gone.succeed(()))
+    match self.running.get(id) {
+      Some(r) if physical_equal(r, running) => self.running.remove(id)
+      _ => ()
+    }
+    ignore(running.settled.succeed(()))
+  }
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("job followed", on_error=failed, async fn() {
       let exit = self.exit_file(id)
       while true {
         if there(self.host, exit) || !(self.procs.pid_alive)(pgid) {

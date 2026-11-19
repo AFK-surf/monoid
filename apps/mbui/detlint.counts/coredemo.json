@@ -1,0 +1,10 @@
+{
+  "counts": {
+    "style-literal": {
+      "src/coredemo/main.mbt": 39
+    },
+    "box-loose": {
+      "src/coredemo/main.mbt": 20
+    }
+  }
+}

@@ -828,7 +828,8 @@ pub fn fix_with_letters(v : Json) -> Json {
 ///|
 /// What wants the viewer in 待处理 (home-attention: the core's `workspaceMarks`): a decision waiting in 整理发布清单,
 /// to be let go, a failure in another chat, looked at, and a chat unread.
-pub fn fix_attention_marks() -> Json {
+/// `login`: with another chat's login card waiting for the viewer, first, as the core says it (需要你登录 gh).
+pub fn fix_attention_marks(login? : Bool = false) -> Json {
   let item = fn(kind : String, title : String, what : String, station : String, name : String, thread : Double) {
     let m : Map[String, Json] = {
       "kind": Json::string(kind),
@@ -856,7 +857,17 @@ pub fn fix_attention_marks() -> Json {
         "wait": 1,
         "unread": 1,
         "tone": "alert",
-        "items": [Json::object(wait), Json::object(failed), Json::object(unread)],
+        "items": if login {
+          let ask = item("wait", "部署到测试环境", "需要你登录 gh", "ws1/st1", "Willow", 13.0)
+          ask["session"] = Json::string("s-c2")
+          ask["seq"] = Json::number(4.0)
+          ask["login"] = Json::string("login-9")
+          // (the fixture's now is 0: 12 and a half minutes left of its 15)
+          ask["loginEnds"] = Json::number(750000.0)
+          [Json::object(ask), Json::object(wait), Json::object(failed), Json::object(unread)]
+        } else {
+          [Json::object(wait), Json::object(failed), Json::object(unread)]
+        },
         "others": "done",
       },
     },

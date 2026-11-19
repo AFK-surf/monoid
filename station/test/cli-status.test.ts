@@ -85,5 +85,9 @@ test("health.json reads only as a whole", () => {
   assert.equal(healthOf(null), null);
   assert.equal(healthOf({ pid: 1, updatedAt: 2, front: "sideways" }), null);
   assert.deepEqual(healthOf({ pid: 1, updatedAt: 2, front: "direct" }), { pid: 1, updatedAt: 2, heldMaxMs: 0, front: "direct", presenceOnline: false });
+  // Its descriptors and memory as they come, none where a release from before said none or where they are not numbers.
+  assert.deepEqual(healthOf({ pid: 1, updatedAt: 2, front: "ok", openFds: 42, rssBytes: 123_456_789 }), { pid: 1, updatedAt: 2, heldMaxMs: 0, front: "ok", presenceOnline: false, openFds: 42, rssBytes: 123_456_789 });
+  assert.deepEqual(healthOf({ pid: 1, updatedAt: 2, front: "ok", openFds: "42", rssBytes: -1 }), { pid: 1, updatedAt: 2, heldMaxMs: 0, front: "ok", presenceOnline: false });
+  assert.deepEqual(healthOf({ pid: 1, updatedAt: 2, front: "ok", openFds: 4.5, rssBytes: null }), { pid: 1, updatedAt: 2, heldMaxMs: 0, front: "ok", presenceOnline: false });
   assert.deepEqual(workingOf({ running: true, health: null, healthAlive: false, online: true, now: NOW }), { is: "normal" });
 });

@@ -1,4 +1,4 @@
-// The station's browser in MoonBit (station/mb src/browser: reader `--builder harness-browser`) held to the TypeScript
+// The station's browser in MoonBit (station/mb src/browser: `stillfail-reader-harness --builder harness-browser`) held to the TypeScript
 // it is a port of (src/browser/): the same world given to both, each part of the one and of the other driven the same
 // way, and what each did compared: what it answered, what it asked of its world (each DevTools command on each
 // connection, the Chrome host's finds, launches and kills, a sign-in form's waits) and told its station (screens added
@@ -20,7 +20,7 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { Fibers } from "../src/ops/fibers.ts";
 import { log } from "../src/ops/log.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { ScreenRefused } from "../src/screens/hub.ts";
 import type { ScreenSource, ScreenView } from "../src/screens/source.ts";
 import { StationBrowser } from "../src/browser/browser.ts";
@@ -46,8 +46,8 @@ import { childGone } from "./child-gone.ts";
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -561,7 +561,7 @@ test("Farview: its wire, its release, its config and its words", { skip }, async
   const some = farviewConfig({ browser: { farview: "/opt/fv", sessions: ["chat:a"] } });
   const every = farviewConfig({ browser: { farview: "/opt/fv", engine: "farview" } });
   await sameFn(p, "farviewFor", farviewFor, [[some, "chat:a", undefined], [some, "chat:b", undefined], [some, "chat:b", "farview"], [some, "chat:a", "chrome"], [every, "chat:x", undefined], [every, "chat:x", "chrome"], [null, "chat:a", "farview"]]);
-  await sameFn(p, "hostFileOf", hostFileOf, [[{ pid: 12, port: 4000, agent: 4001, frame: 4002 }], [{ pid: 12, port: 4000, agent: 4001 }], [{ pid: 0, port: 1, agent: 1, frame: 1 }], [{ pid: 12, port: 70000, agent: 4001, frame: 4002 }], ["x"], [{ pid: 1.5, port: 1, agent: 1, frame: 1 }], [null]]);
+  await sameFn(p, "hostFileOf", hostFileOf, [[{ pid: 12, port: 4000, agent: 4001, frame: 4002 }], [{ pid: 12, port: 4000, agent: 4001, frame: 4002, closed: true }], [{ pid: 12, port: 4000, agent: 4001, frame: 4002, closed: "yes" }], [{ pid: 12, port: 4000, agent: 4001 }], [{ pid: 0, port: 1, agent: 1, frame: 1 }], [{ pid: 12, port: 70000, agent: 4001, frame: 4002 }], ["x"], [{ pid: 1.5, port: 1, agent: 1, frame: 1 }], [null]]);
   await sameFn(p, "chatDir", chatDir, [["chat:c-1/2"], ["slack:T/C/1.2"], ["中文"], [""]]);
   await sameFn(p, "FIRST_PAGE", () => FIRST_PAGE, [[]]);
   const tabs = [{ id: "fv_abc", title: "A \"tab\"", url: "https://a.test/", attached: false, session: "chat:a", agent: 4001 }, { id: "fv_abc_1", title: "", url: "", attached: false, session: "chat:a", agent: 4002 }];
@@ -1911,21 +1911,24 @@ test("a Farview tab as a screen: its page and size heard, a view's size, a pictu
     assert.deepEqual(p.entries.filter((e) => e[0] === "heard").map((e) => e[1]), linkHeard);
     // the screen and a view of it
     const screen = new FarviewScreen({ session: "chat:c-1", port: portTs.port, n: 2 });
-    const opened: string[] = [];
-    screen.opened = (url) => { opened.push(url); wakeFarview(); };
+    const opened: Json[] = [];
+    screen.opened = (url, meta) => { opened.push([url, meta]); wakeFarview(); };
+    let closedByPage = 0;
+    screen.closedByPage = () => { closedByPage++; wakeFarview(); };
     await p.make("farviewScreen", "fs1", { session: "chat:c-1", port: portMb.port, n: 2 });
     screen.watch();
     await p.call("fs1", "watch");
     await until("the watch's connection", () => portTs.sockets.length === 2 && portMb.sockets.length === 2);
     const info = () => ({ id: screen.id, title: screen.title(), site: screen.site() ?? null, address: screen.address(), size: screen.size(), viewing: screen.viewing(), page: screen.page() });
     assert.deepEqual(await p.call("fs1", "info"), plain(info()), "before it says anything");
-    for (const m of [{ page: { url: "https://b.test/x", title: "" } }, { size: { width: 1000, height: 700, scale: 2 } }, { openTab: "https://c.test/" }, { openTab: "" }]) {
+    for (const m of [{ page: { url: "https://b.test/x", title: "" } }, { size: { width: 1000, height: 700, scale: 2 } }, { openTab: "https://c.test/" }, { openTab: "" }, { openTab: "https://oauth.test/", window: "w_1", opener: "fv_x_2", origin: "https://b.test" }, { closeTab: false }, { closeTab: true }]) {
       portTs.said(m);
       portMb.said(m);
     }
-    await until("the page heard", () => opened.length === 1 && p.entries.some((e) => e[0] === "opened"));
+    await until("the page heard", () => opened.length === 2 && closedByPage === 1 && p.entries.some((e) => e[0] === "closedByPage"));
     assert.deepEqual(await p.call("fs1", "info"), plain(info()), "its page and size");
-    assert.deepEqual(p.entries.filter((e) => e[0] === "opened").map((e) => e[1]), opened);
+    assert.deepEqual(p.entries.filter((e) => e[0] === "opened").map((e) => [e[1], e[2]]), opened);
+    assert.equal(p.entries.filter((e) => e[0] === "closedByPage").length, closedByPage);
     const options = { codecs: ["jpeg"], maxWidth: 4000, maxHeight: 4000, fit: { width: 400, height: 800, scale: 2 } };
     const view = await screen.open(options as never);
     const mbView = await p.call("fs1", "open", options);

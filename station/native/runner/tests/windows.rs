@@ -624,3 +624,29 @@ fn a_pty_runs_a_program_in_conpty_and_answers_its_screen_and_resize() {
     assert!(String::from_utf8_lossy(&out).contains("GOT:hello"), "{:?}", String::from_utf8_lossy(&out));
     assert_eq!(exit["code"], 0);
 }
+
+#[test]
+fn relay_pty_runs_a_program_on_a_conpty_of_the_size_asked_on_the_runners_pipes() {
+    // A sign-in's command that reads only from a terminal (platform/windows.ts terminalSoon): its output on the
+    // runner's stdout, the runner's stdin typed into it.
+    let mut child = Command::new(BIN)
+        .args(["--relay-pty", "--size", "1000x40"])
+        .args(cmd("mode con & set /p line=code: & echo GOT:%line%"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    // (`mode con` says the columns; the prompt after them ends no line, and comes before anything is typed)
+    while !(String::from_utf8_lossy(&out).contains("1000") && String::from_utf8_lossy(&out).contains("code:")) {
+        let n = std::io::Read::read(&mut stdout, &mut buf).unwrap();
+        assert!(n > 0, "{:?}", String::from_utf8_lossy(&out));
+        out.extend_from_slice(&buf[..n]);
+    }
+    child.stdin.as_mut().unwrap().write_all(b"hello\r\n").unwrap();
+    std::io::Read::read_to_end(&mut stdout, &mut out).unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("GOT:hello"), "{:?}", String::from_utf8_lossy(&out));
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

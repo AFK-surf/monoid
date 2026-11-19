@@ -1023,20 +1023,10 @@ fn task_box(c : @ui.Ctx, done : Bool, line : Double) -> Unit {
 }
 
 ///|
-/// A block's words as one paragraph of runs; `breaks`: on one line, its own lines kept (a formula's source shown as
-/// written).
-fn Md::words(
-  self : Md,
-  xs : Array[MdInline],
-  size : Double,
-  weight : Int,
-  ink : Int64,
-  _task : Bool?,
-  wrap? : Bool = true,
-  breaks? : Bool = false,
-  allow_ellipsis? : Bool = false,
-) -> Unit {
-  let c = self.c
+/// A block's words as the runs they are drawn in (`weight`: 600 or more bold): a bare link to a screen or a chat read as
+/// its title, a file's chip where the message marks paths, what a find found in its weight, in the faces tried and the
+/// serif face where it is told them: what Md::words draws and a table measures its cells by.
+fn Md::words_runs(self : Md, xs : Array[MdInline], weight : Int) -> Array[@ui.Run] {
   let p = theme().p
   let runs = []
   // a bare link to a screen reads as its title
@@ -1063,7 +1053,6 @@ fn Md::words(
   // bold for a heading's 700; a table's head's 500 (medium) is the paragraph's own weight
   // (a chat's mention in the accent's ink, which reads in words; the accent itself was 2.5 to 1 on the page)
   runs_of(xs, runs, weight >= 600, false, false, "", p.accent_text, titles, self.paths)
-  self.n = self.n + 1
   let runs = found_weight(runs, self.found)
   let runs = if self.text_face is None && self.code_face is None {
     runs
@@ -1076,8 +1065,32 @@ fn Md::words(
       }
     })
   }
+  if self.serif {
+    runs.map(fn(x) { if x.mono { x } else { { ..x, serif: true } } })
+  } else {
+    runs
+  }
+}
+
+///|
+/// A block's words as one paragraph of runs; `breaks`: on one line, its own lines kept (a formula's source shown as
+/// written).
+fn Md::words(
+  self : Md,
+  xs : Array[MdInline],
+  size : Double,
+  weight : Int,
+  ink : Int64,
+  _task : Bool?,
+  wrap? : Bool = true,
+  breaks? : Bool = false,
+  allow_ellipsis? : Bool = false,
+) -> Unit {
+  let c = self.c
+  let p = theme().p
+  self.n = self.n + 1
   c.rich(
-    if self.serif { runs.map(fn(x) { if x.mono { x } else { { ..x, serif: true } } }) } else { runs },
+    self.words_runs(xs, weight),
     key="sf-md/p\{self.n}",
     size~,
     wrap~,
@@ -1391,47 +1404,6 @@ let code_lang_wide : Double = 11.0
 // ── tables ──────────────────────────────────────────────────────────────
 
 ///|
-/// The narrowest a word of `s` lets it be and its width on one line, at `size` and `weight` (a browser's min- and
-/// max-content: a cell wraps between words, Chinese between any two characters).
-fn cell_widths(s : String, size : Double, weight : Int) -> (Double, Double) {
-  let whole = @ui.text_advance(s, size~, weight~)
-  let mut least = 0.0
-  let mut start = 0
-  let n = s.length()
-  let piece = fn(a : Int, b : Int) {
-    if b > a {
-      let w = @ui.text_advance(s.clamped_view(start=a, end=b).to_owned(), size~, weight~)
-      if w > least {
-        least = w
-      }
-    }
-  }
-  for i in 0..<n {
-    let u = s.at(i).to_int()
-    if u == 32 || u == 10 {
-      piece(start, i)
-      start = i + 1
-    } else if u >= 0x2E80 && u < 0xFF00 && !(u >= 0xD800 && u < 0xE000) {
-      // a CJK character breaks either side (not half of a pair, which that range holds too: an emoji stays whole
-      // in its word, where each half was once measured as a piece of its own)
-      piece(start, i)
-      piece(i, i + 1)
-      start = i + 1
-    }
-  }
-  piece(start, n)
-  (least, whole)
-}
-
-///|
-/// How narrow a table's cell (its words, `head` the head's: 12 medium, else 13) may be and its width on one line, at the
-/// system's size of words (`sp`): cell_widths of its words as they are set.
-fn table_words_extent(cell : Array[MdInline], head : Bool, sp : (Double) -> Double) -> (Double, Double) {
-  let (size, weight) = if head { (12.0, 500) } else { (13.0, 400) }
-  cell_widths(md_plain(cell), sp(size), weight)
-}
-
-///|
 /// A table's columns' widths and all of them together, its cells' extents `extents` (each row's, the head's first: how
 /// narrow it may be, its width on one line, whether it is images that keep their width) in `avail` (Md::table's rule,
 /// the one its frame and a node's table both lay out by): each at least 4em and its sides, as wide as its content
@@ -1452,7 +1424,7 @@ fn table_widths(
   let maxs = Array::make(cols, least)
   for row in extents {
     for k in 0..<cols {
-      let (lo, hi, images) = row[k]
+      let (lo, hi, images) = row.get(k).unwrap_or((0.0, 0.0, false))
       // Rich text can break an otherwise unbroken word when a cell is too narrow. Images must keep their width.
       let floor = if fit && !images { dmin(hi, readable) } else { dmax(lo, dmin(hi, readable)) }
       let pad = table_cell_pad(k, cols)
@@ -1522,17 +1494,19 @@ fn Md::table(self : Md, t : MdTable, bleed : Double) -> Unit {
     None => c.width
   }
   let avail = room
-  // (each cell's extent: a cell of only images as wide as their row; else its words as they are set, at the system's
-  // size of words)
+  // (each cell's extent: a cell of only images as wide as their row; else its words measured as they are drawn, in
+  // the runs Md::words draws them in (a file's chip whole, a bare link to a chat as its title, code in its face), at the
+  // system's size of words: as a node's table measures its cells, table_node's tracks)
   let extents = rows.mapi(fn(r, row) {
     Array::makei(cols, fn(k) {
-      match self.cell_images(row[k]) {
+      let cell = row.get(k).unwrap_or([])
+      match self.cell_images(cell) {
         Some(images) => {
           let w = cell_images_width(images)
           (w, w, true)
         }
         None => {
-          let (lo, hi) = table_words_extent(row[k], r == 0, fn(x) { c.sp(x) })
+          let (lo, hi) = c.runs_extent(self.words_runs(cell, 0), table_words_look_line(r == 0, 1.0, self.line), table_runs_look())
           (lo, hi, false)
         }
       }
@@ -1604,7 +1578,8 @@ fn Md::table_frame(
             let (pl, pr) = table_cell_pad(k, cols)
             let cell_style = @ui.style(w=Fixed(widths[k]), pl=room_of(pl * scale), pr=room_of(pr * scale), py=room_of(table_cell_y * scale), justify=JCenter)
             c.box(style=cell_style, fn() {
-              match self.cell_images(row[k]) {
+              let cell = row.get(k).unwrap_or([])
+              match self.cell_images(cell) {
                 Some(images) => {
                   // side by side, 6 apart, 4 over and under, each drawn as wide as cell_image_width says
                   let image_gap = 6.0 * scale
@@ -1623,9 +1598,9 @@ fn Md::table_frame(
               }
               c.words_smaller(scale, fn() {
                 if head {
-                  self.words(row[k], 12.0, 500, w.muted, None)
+                  self.words(cell, 12.0, 500, w.muted, None)
                 } else {
-                  self.words(row[k], 13.0, 0, self.ink, None)
+                  self.words(cell, 13.0, 0, self.ink, None)
                 }
               })
             })

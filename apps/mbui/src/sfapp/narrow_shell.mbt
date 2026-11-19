@@ -8,7 +8,8 @@
 //   - the pages: the stack (app.nav) a node, each page on it a node of its own made as it is put on and let go as it
 //     leaves (what it made forgotten), the page in it built while it shows (an island), where it is drawn bound to its
 //     slide, which sets out at its cause's moment, once the core has given what the page shows (mbui's nav_view.mbt);
-//   - over them, the bottom bar, what is open over the pages and the presenters (narrow_over, signed_in_over).
+//   - over them, the bottom bar (bar_glass_node, bar_node.mbt) and what is open over the pages, nodes too (the
+//     presenters and the loupe over all of it: app_tree's).
 //
 // Still the old frame's (the way there): which island takes a press where they lie one over another (all of them are
 // told of it), the back the islands take (a page's own, a menu's, a sheet's: said by them as they are built, in the
@@ -39,8 +40,9 @@ fn shell_is(src : Source, width : Double) -> ShellIs {
   if width <= 0.0 {
     return Unsized
   }
-  // (a window of its own: its page alone, the window's tree's frame round it: lone_tree)
-  if @sfbase.lone_page.val is Some(_) {
+  // (a window of its own: its page alone, the window's tree's frame round it: lone_tree; the first window's, as this
+  // binding may run while another window's runtime is in place: sfbase's first_lone_page)
+  if @sfbase.first_lone_page() is Some(_) {
     return Lone
   }
   // (no workspace yet, every account answered with none: the landing's nodes, entry_tree.mbt)
@@ -116,6 +118,9 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     // (a place of the bottom bar switched away from kept, its nodes put by at rest, taken back as it is switched to:
     // go_place's, sfbase's nav_root_kept)
     keeps_made=true,
+    // (a chat's page made as nodes left (gone back from, put in place of) kept, its nodes put by at rest, taken back as
+    // it is opened again: chat_page_left_key)
+    keeps_left=@sfbase.chat_page_left_key,
   )
   |> ignore
   // (none kept of another workspace: those put by left for good as the workspace in view changes)
@@ -186,32 +191,20 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     @sfpages.search_over_ground_node(k)
     @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
   })
-  @ui.old(v, fn(c) {
-    match workspace_in_view(src).0 {
-      Some(w) => {
-        narrow_over(c, src, w)
-        signed_in_over(c)
-      }
-      None => ()
-    }
-  })
-  .over(Is(true))
-  // (a press where it has nothing of its own its pages', a page made once as nodes among them: entry_tree's over's)
-  |> @ui.old_takes_own
-  |> ignore
+  // the bottom bar over the pages: its glass, a finger on it the bar's at each event's moment, the bar drawn in it
+  // (bar_node.mbt); on a place's top page with nothing over it (narrow_bar_shown); none while this device waits to be
+  // confirmed in the workspace's safe mode (its Home is the wait: lock_gate)
+  bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
   // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
   @sfdesk.switcher_node(v, src)
   // ⌘/'s shortcuts, presented as the shell's keys_open says (sfdesk's shortcuts.mbt)
   @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
-  // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
-  // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
-  bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
   // the chat being shared as a picture, and a visualization over the whole screen, over the bar: nodes of the tree's of
   // their own (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
   // an image opened over the pages, over the bar: nodes of the tree's of its own (sfbase's viewer_tree.mbt); what is
-  // opened otherwise, the old view's over them (narrow_over's preview)
+  // opened otherwise, nodes of their own over them
   // (its stage the box it is laid out in, this node's: the window's less the system's bars beside it, as the root's
   // sides say it, followed)
   @sfbase.viewer_node(v, src, fn() {
@@ -259,6 +252,9 @@ fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barre
       let (now, _, _, _) = workspace_in_view(src)
       page_view(c, src, now.unwrap_or(w), page, barred~)
     })
+    if !stack_by_finger() {
+      @sfdesk.context_page(c, whole)
+    }
     @motion.scope(c, whole, bottom=true)
   }
   c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
@@ -347,16 +343,6 @@ fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
 }
 
 ///|
-/// Over the pages laid out Small: the bottom bar (a file open over them, the chat being shared as a picture and a
-/// visualization over the whole screen are the window's tree's: sfbase viewer_tree.mbt, sfpages' publish.mbt, sfbase's
-/// viz_page.mbt).
-fn narrow_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  // the bottom bar: on a place's top page with nothing over it; none while this device waits to be confirmed in the
-  // workspace's safe mode (its Home is the wait: lock_gate)
-  bottom_bar(c, src, w, place_of(app.nav.top()), narrow_bar_shown(src, w))
-}
-
-///|
 /// Whether the bottom bar shows: on a place's top page with nothing over it; not while this device waits to be
 /// confirmed in the workspace's safe mode (its Home is the wait: lock_gate).
 fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
@@ -366,12 +352,12 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 }
 
 ///|
-/// Over the frame with a workspace in view, in every tier: the presenters, the loupe (what the devices waiting on this
-/// one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction, panels_frame).
+/// Over the tape's frame with a workspace in view (tape_shell's island): the presenters told the app is under them
+/// (what they put up is the window's tree's: presented_nodes; the loupe over all of it too, app_tree's; what the devices
+/// waiting on this one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction,
+/// panels_frame).
 fn signed_in_over(c : @ui.Ctx) -> Unit {
-  // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)
-  finger_loupe(c)
 }
 
 ///|
@@ -392,6 +378,13 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
       }
     },
     fn(said) {
+      // (while a new device's code is shown here to be read off this one, the screen stays on: gone dark as the person
+      // types it there, this device could not ask them as the code comes back, not in front)
+      let pairing = match said {
+        Some((_, prompts, _, _)) => !@settings.items(prompts, "pairing").is_empty()
+        None => false
+      }
+      @sfbase.keep_awake_by("lock-pair", pairing)
       match (said, workspace_in_view(src).0) {
         (Some((_, _, free, _)), Some(w)) => {
           let core = settings_core(src, w)
@@ -403,6 +396,45 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
       }
     },
   )
+}
+
+///|
+/// What the Small stack gives a new chat's page (newchat.mbt): its bar (新对话 in the middle), the navigation bar's
+/// room under it (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars))).
+fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
+  {
+    core: settings_core(src, w),
+    bar: fn(c) {
+      @sf.nav_bar(c, "new/cancel", tr("common.cancel"), tr("android-chat.new.title"), bg=@sf.theme().p.bg, top=status_top(), on_press=fn() {
+        @sfbase.close_page(NewChat) |> ignore
+      })
+    },
+    foot: nav_foot(),
+    in_place: true,
+    sent: fn(_) {  },
+  }
+}
+
+///|
+/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node: new_frame's): its bar (取消
+/// back to where it was opened from, 新对话 in the middle) under the status bar as the window it is in is now, the
+/// navigation bar's room under it; the chat it becomes opens in its place.
+/// `width`: the window's, which the page is as wide as.
+fn new_frame_node(src : Source, w : Workspace, width : () -> Double) -> @sfpages.NewChatNodeFrame {
+  {
+    core: settings_core(src, w),
+    ground: fn(_) { @sf.theme().p.bg },
+    width,
+    bar: fn(b) {
+      @sf.nav_bar_node(b, fn() { tr("common.cancel") }, fn() { tr("android-chat.new.title") }, fn() {
+        @sfbase.close_page(NewChat) |> ignore
+      }, top=fn() { status_top_now(b.window().0) })
+    },
+    foot: fn() { nav_foot() },
+    over: fn(_, _) {  },
+    in_place: true,
+    sent: fn(_) {  },
+  }
 }
 
 ///|
@@ -576,8 +608,11 @@ fn narrow_made_as(
               // (its bar the page's node's, over its old view: chat_bar_node)
               over=chat_bar_node,
               stint~,
-              // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
+              // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
               body=fn(col, s, r, composer, shows) {
+                if @sf.native_input() is Mouse {
+                  @sfdesk.context_node(col)
+                }
                 @sfpages.chat_page_body_node(
                   col,
                   s,
@@ -595,11 +630,17 @@ fn narrow_made_as(
                   lead=unread_lead(),
                 )
               },
-              foot=chat_foot_nodes,
               foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) })) },
               leaving=fn(c, s, r) {
                 match workspace_in_view(s).0 {
                   Some(w) => new_chat_leaving(c, s, w, r)
+                  None => ()
+                }
+              },
+              // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node, under its bar of 取消)
+              new_node=fn(n, s) {
+                match @signals.untracked(fn() { workspace_in_view(s).0 }) {
+                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window().0 }), @sf.TipLayer::new(fn() { Some(v) }))
                   None => ()
                 }
               },

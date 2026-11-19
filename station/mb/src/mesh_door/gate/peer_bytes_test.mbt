@@ -115,3 +115,21 @@ test "a request's bytes failing before its answer: the request fails, no defect"
   assert_eq(said, ["failed: stream reset (2)"])
   assert_eq(defects, [])
 }
+
+///|
+test "a peer's connection lost as a stream is awaited: serve_peer fails with it, no defect" {
+  let rt = @effect.Runtime::new()
+  let defects : Array[String] = []
+  rt.on_defect(e => defects.push(@gate.words_of(e)))
+  let (a, _b) = @door.pair("a", "b", alpn=@gate.peer_alpn)
+  // (the front's stream accepted on a connection that went: its accept fails, as `FrontStream`'s does)
+  let lost : @door.Connection = { ..a, accept_bi: fn() raise { raise @door.WireError("connection lost") } }
+  let said = []
+  ignore(rt.fork(() => {
+    @gate.serve_peer(bytes_keeper(), lost, @gate.PeerBus::new())
+    said.push("returned")
+  } catch { e => said.push("failed: " + @gate.words_of(e)) }))
+  ignore(rt.run_ready())
+  assert_eq(said, ["failed: connection lost"])
+  assert_eq(defects, [])
+}

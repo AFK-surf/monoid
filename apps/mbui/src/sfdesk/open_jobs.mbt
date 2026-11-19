@@ -230,7 +230,7 @@ let open_jobs_pop_w : Double = 280.0
 let open_jobs_pop_most : Double = 420.0
 
 ///|
-/// The groups (openJobs), each a small panel's group (@sf.panel_group: its heading's room over it).
+/// The groups (openJobs), each a small panel's group (@sf.panel_group_node: its heading's room over it).
 // kept across runs: a value (no field of it changes)
 let open_jobs_box : @ui.Style = @ui.css("w=Full")
 

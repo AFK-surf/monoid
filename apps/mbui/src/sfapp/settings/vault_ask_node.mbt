@@ -357,61 +357,68 @@ pub fn vault_foot_node(
       }
     })
   }
-  let acts = fn(at : @view.View) {
-    at.pick(fn() { answer() is Some(SetUp) }, fn(p, set_up) {
-      @sf.style_node(p, fn() { @sf.ask_foot })
-      if set_up {
-        // (kept only in a vault that is on here: the way to turn it on first)
-        @sf.button_node(p, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
-        |> ignore
-      } else {
-        @sf.button_node(
-          p,
-          fn() {
-            if signs_in() != "" {
-              tr("web-pages.vault.oauth.signIn." + signs_in())
-            } else {
-              tr(if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" })
-            }
-          },
-          approve,
-          // (one to delete the item: red, as what cannot be undone)
-          tone=if @signals.untracked(remove) { DangerSolid } else { Primary },
-          busy=fn() { busy(true) },
-          disabled=fn() { under() || empty() || !valid_time() },
-          card_words=foot,
-        )
-        |> ignore
-      }
+  // its buttons: `grouped`, one part of the foot's row (across from how long, beside them); else each a part of the
+  // foot's own row, as an ask's are (@sf.ask_buttons_node): where they have not the room on one line, the one after goes
+  // on to a line over the first, the first kept in the foot's start corner
+  let primary = fn(p : @view.View, set_up : Bool) {
+    if set_up {
+      // (kept only in a vault that is on here: the way to turn it on first)
+      @sf.button_node(p, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
+      |> ignore
+    } else {
       @sf.button_node(
         p,
-        fn() { tr(if remove() { "android-settings.vault.act.dontRemove" } else if describe() { "android-settings.vault.act.dontChange" } else if save() { "android-settings.vault.act.dontSave" } else { "android-settings.vault.act.deny" }) },
         fn() {
-          let r = @signals.untracked(request)
-          act(false, "vault.deny", tr("android-settings.vault.act.denyWhat"), obj([("workspace", str(@signals.untracked(ws))), ("request", str(r))]))
+          if signs_in() != "" {
+            tr("web-pages.vault.oauth.signIn." + signs_in())
+          } else {
+            tr(if remove() { "android-settings.vault.act.remove" } else if describe() { "android-settings.vault.act.change" } else if save() { "android-settings.vault.act.save" } else { "android-settings.vault.act.allow" })
+          }
         },
-        tone=Ghost,
-        busy=fn() { busy(false) },
-        disabled=under,
+        approve,
+        // (one to delete the item: red, as what cannot be undone)
+        tone=if @signals.untracked(remove) { DangerSolid } else { Primary },
+        busy=fn() { busy(true) },
+        disabled=fn() { under() || empty() || !valid_time() },
         card_words=foot,
       )
       |> ignore
+    }
+  }
+  let deny = fn(p : @view.View) {
+    @sf.button_node(
+      p,
+      fn() { tr(if remove() { "android-settings.vault.act.dontRemove" } else if describe() { "android-settings.vault.act.dontChange" } else if save() { "android-settings.vault.act.dontSave" } else { "android-settings.vault.act.deny" }) },
+      fn() {
+        let r = @signals.untracked(request)
+        act(false, "vault.deny", tr("android-settings.vault.act.denyWhat"), obj([("workspace", str(@signals.untracked(ws))), ("request", str(r))]))
+      },
+      tone=Ghost,
+      busy=fn() { busy(false) },
+      disabled=under,
+      card_words=foot,
+    )
+    |> ignore
+  }
+  let acts = fn(at : @view.View, grouped : Bool) {
+    at.pick(fn() { answer() is Some(SetUp) }, fn(p, set_up) {
+      if grouped {
+        @sf.style_node(p, fn() { @sf.ask_foot })
+      }
+      primary(p, set_up)
+      if grouped {
+        deny(p)
+      }
     })
+    if !grouped {
+      deny(at)
+    }
   }
   let foot_row = fn(at : @view.View, beside : Bool) {
-    at.box(fn(f) {
-      @sf.style_node(f, fn() {
-        if foot && beside && timed() {
-          // (how long, chosen in 授权时限, across from the buttons in the card's foot end corner, concentric with it)
-          @sf.ask_foot_chosen_end()
-        } else if foot {
-          @sf.ask_foot.then(@sf.foot_reach(@sf.button_height()))
-        } else {
-          @sf.ask_foot
-        }
-      }, in_row=beside)
-      f.wraps(By(fn() { Some(@sf.ask_foot_lines()) })) |> ignore
-      acts(f)
+    let body = fn(f : @view.View) {
+      // (beside how long, the buttons one part across from it: the arrangement one_of takes only where both have the
+      // room on one line)
+      acts(f, beside)
       if beside {
         choice(f)
       }
@@ -420,6 +427,26 @@ pub fn vault_foot_node(
         Some(x) => x(f)
         None => ()
       }
+    }
+    if foot && !beside {
+      // (in the card's foot corners: an ask's buttons)
+      @sf.ask_buttons_node(at, body) |> ignore
+      return
+    }
+    at.box(fn(f) {
+      @sf.style_node(f, fn() {
+        if foot && timed() {
+          // (how long, chosen in 授权时限, across from the buttons in the card's foot end corner, concentric with it)
+          @sf.ask_foot_chosen_end()
+        } else if foot {
+          @sf.ask_foot.then(@sf.foot_reach(@sf.button_height()))
+        } else {
+          @sf.ask_foot
+        }
+      }, in_row=beside)
+      // (each line over the one before it, the first at the foot: ask_buttons_node's)
+      f.wraps(By(fn() { Some(@sf.ask_foot_lines()) }), reverse=true) |> ignore
+      body(f)
     })
     |> ignore
   }

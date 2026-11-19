@@ -160,6 +160,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
     b.reacts(fn() { native_workspace_item(src, w) }, fn(item) {
       native_sidebar_items[id] = item
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -167,6 +168,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })
@@ -215,6 +217,8 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     made=fn(p) { pane_made(src, p, tips) },
     // (which show, as the stack stands whole: the page made once that shows, by its entry)
     shown=fn(ks) { fold_goes.shown = ks },
+    // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
+    keeps_left=@sfbase.chat_page_left_key,
   )
   |> ignore
 }
@@ -566,19 +570,11 @@ fn pane_made(
                 over=fn(o, src, page, stint) {
                   chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
-                // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
+                // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
                 body=fn(col, s, r, composer, shows) {
                   pane_made_chat(col, k)
+                  context_node(col)
                   chat_body_nodes(col, s, r, tips, stint, composer, shows)
-                },
-                // (the composer's old view on the page's way to another width as the side panel slides beside it, as the
-                // old page's was inside its with_side: its foot's room across the way, not stepped where it crosses its
-                // width, composer_foot_in)
-                foot=fn(c, s, r) {
-                  match @sfbase.workspace_in_view(s).0 {
-                    Some(w) => with_side(c, s, w, r, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
-                    None => chat_composer_nodes(c, s, r, wide.tape.get())
-                  }
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
                 foot_node=fn(n, s, r, shows, laid) {
@@ -586,12 +582,12 @@ fn pane_made(
                 },
                 leaving=fn(c, s, r) {
                   match @sfbase.workspace_in_view(s).0 {
-                    Some(w) => new_chat_after(c, s, w, r)
+                    Some(w) => new_chat_after(c, s, w, r, tape=wide.tape.get())
                     None => ()
                   }
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
-                narrower=fn(n) { side_narrower(src, n, k) },
+                narrower=fn(s, n) { side_narrower(s, n, k) },
                 // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
                 // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
                 aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },
@@ -600,6 +596,23 @@ fn pane_made(
                 // (bound once the block's move has first set off with a chat on the page: nothing of it at rest before,
                 // nor while a new chat, whose old view is laid out anew at each width of the move as before)
                 held_from=fn() { pane_fold_set_off() && app.nav.page_of(k) is Some((Chat(_), _)) },
+                // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node)
+                new_node=fn(n, s) {
+                  match @signals.untracked(fn() { @sfbase.workspace_in_view(s).0 }) {
+                    // (as wide as the frame gives the pane (made_k's), less its 文件 beside it at rest where that is open:
+                    // new_side_node's, laid out narrow or wide by where it comes to, not on its way)
+                    Some(w) =>
+                      @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() {
+                        let ww = n.window().0
+                        let pane = ww - fold_target(s, w, ww).1.col
+                        let beside = pane >= side_both_least &&
+                          new_files_open(s, w.id) &&
+                          new_drive_station(s, w) is Some(_)
+                        pane - (if beside { side_whole(s, n) } else { 0.0 })
+                      }), tips)
+                    None => ()
+                  }
+                },
               )
             })
             |> ignore

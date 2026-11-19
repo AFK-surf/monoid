@@ -15,6 +15,9 @@ priv struct ChatBodyList {
   row : (String) -> ChatBodyRow?
   /// how many of what was sent from here the core's rows took over, as they did (told as one more is)
   taken : () -> Int
+  /// what it worked out that nothing follows let go of what that read (read untracked as its list was laid out, told
+  /// what is in sight, or read once more as its page is left): as its page is put by at rest, and after that last read
+  rest_unwatched : () -> Unit
 }
 
 ///|
@@ -25,8 +28,16 @@ fn ChatBodyList::has(self : ChatBodyList, k : String) -> Bool {
 
 ///|
 /// The list of rows chat_body_rows made, as `made` gives them as they change (each read of a row reads all of them).
-fn ChatBodyList::of_made(made : () -> ChatBodyRows) -> ChatBodyList {
-  { keys: fn() { made().keys }, row: fn(k) { made().rows.get(k) }, taken: fn() { made() |> ignore; 0 } }
+fn ChatBodyList::of_made(made : () -> ChatBodyRows, rest? : () -> Unit = fn() {  }) -> ChatBodyList {
+  {
+    keys: fn() { made().keys },
+    row: fn(k) { made().rows.get(k) },
+    taken: fn() {
+      made() |> ignore
+      0
+    },
+    rest_unwatched: rest,
+  }
 }
 
 ///|
@@ -486,7 +497,7 @@ fn chat_body_keyed(
     },
   )
   let keys = @signals.computed(
-    fn(_) {
+    fn(was) {
       let (over, under) = ends.get()
       let out = over.keys.copy()
       for k in over.keys {
@@ -521,11 +532,43 @@ fn chat_body_keyed(
           parts.remove(mk)
         }
       }
-      out
+      // (the same keys the same object as before: worked out anew as its page is woken from rest, what lays them out
+      // finds them as it left them)
+      match was {
+        Some(prev) if physical_equal(prev, out) || prev == out => prev
+        _ => out
+      }
     },
     same=fn(a, b) { physical_equal(a, b) || a == b },
   )
+  // (what nothing follows let go of, from what reads the others down: each let go leaves what it read unread by it, so
+  // that, where nothing else reads it, is let go of next)
+  let rest_unwatched = fn() {
+    if !keys.watched() {
+      keys.dispose()
+    }
+    if !ends.watched() {
+      ends.dispose()
+    }
+    for _, p in part_keys {
+      if !p.watched() {
+        p.dispose()
+      }
+    }
+    for _, p in parts {
+      if !p.watched() {
+        p.dispose()
+      }
+    }
+    if !marks.watched() {
+      marks.dispose()
+    }
+    if !taken.watched() {
+      taken.dispose()
+    }
+  }
   {
+    rest_unwatched,
     keys: fn() { keys.get() },
     taken: fn() { taken.get().1 },
     row: fn(k) {

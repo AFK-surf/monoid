@@ -1,0 +1,682 @@
+// The model's panel beside its control (sfpages model_triple.mbt) in a desktop's window: as wide as its columns'
+// words, no wider (2026-10-26 用户「没啥内容也这么宽感觉会很奇怪」), and as wide whichever model is picked in it.
+
+///|
+/// The fixture's `mode` in a desktop's window, its model's panel open beside its control.
+fn model_pop(mode : String, font_scale? : Double = 1.0) -> @ui.Tester {
+  let src = fixture_app(mode)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  if font_scale != 1.0 {
+    t.set_font_scale(font_scale)
+  }
+  t.run_for(squeeze_opening)
+  t
+}
+
+///|
+test "the station's own and shared models are shown first; other stations are asked for and hidden again on reopening" {
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for scale in [1.0, 1.3] {
+        let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+        let held = screen_in("newchat", win, lang, font_scale=scale).audit().map(bare)
+        let t = screen_in("newchat-station-models", win, lang, font_scale=scale)
+        let here = @sf.t("web-main.model.here")
+        let label = @sf.t("web-main.model.everywhere")
+        assert_eq(t.get(Radio, label=here).check, Some(On))
+        assert_eq(t.get(Radio, label~).check, Some(Off))
+        assert_true(t.query(Button, label="Opus 5.5") is Some(_))
+        assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="already shared here")
+        assert_true(t.query(Button, label="GPT-6") is None)
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
+        t.click(Radio, label~)
+        t.run_for(squeeze_opening)
+        assert_eq(t.get(Radio, label~).check, Some(On))
+        assert_true(t.query(Button, label="GPT-6") is Some(_))
+        assert_eq(new_fix.model, "claude-opus-5-5", msg="the filter never selects a model")
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="\{win.0}-\{lang} \{scale}: \{t.audit().join("\n")}")
+        t.click(Button, label="Opus 5.5")
+        t.run_for(squeeze_opening)
+        // The Medium fixture keeps its sidebar over the new chat. Close it before opening the model panel again.
+        if t.query(Button, has="Opus 5.5") is None {
+          t.click(Button, label=@sf.t("web-main.sidebar.close"))
+          t.run_for(squeeze_opening)
+        }
+        t.click(Button, has="Opus 5.5")
+        t.run_for(squeeze_opening)
+        assert_eq(t.get(Radio, label=here).check, Some(On))
+        assert_true(t.query(Button, label="GPT-6") is None)
+      }
+    }
+  }
+}
+
+///|
+test "a model panel with none of this station's says so, and still shows those another station could lend" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    let t = screen_in("newchat-station-empty", win, "zh")
+    // (none of this station's: said so, the way to the others' beside it)
+    assert_eq(t.get(Radio, label="本机").check, Some(On))
+    assert_true(t.find("本机没有可用的模型") is Some(_))
+    assert_true(t.query(Button, label="Opus 5.5") is None && t.query(Button, label="GPT-6") is None)
+    t.click(Radio, label="所有 station")
+    t.run_for(squeeze_opening)
+    assert_true(t.query(Button, label="GPT-6") is Some(_))
+    t.click(Radio, label="本机")
+    t.run_for(squeeze_opening)
+    assert_true(t.query(Button, label="GPT-6") is None)
+    assert_eq(t.get(Radio, label="本机").check, Some(On))
+  }
+}
+
+///|
+test "wide, short names: the model's panel as wide as what it holds, not as wide as it may be" {
+  let t = model_pop("newchat-model")
+  let (px, _, pw, _) = t.get(@ui.Role::Dialog).rect
+  let effort = t.get(Radio, label="高").rect
+  // (what it holds narrow, its foot the widest of it: far narrower than the most it may be)
+  assert_true(pw < 2.0 * @sfpages.triple_models_least, msg="\{Repr(t.get(@ui.Role::Dialog).rect)}")
+  assert_true(effort.0 + effort.2 <= px + pw - @sf.panel_pad, msg="\{Repr(t.get(@ui.Role::Dialog).rect)} \{Repr(effort)}")
+  let model = t.get(Button, label="Opus 5.5").rect
+  assert_true(model.0 + model.2 <= px + pw)
+}
+
+///|
+test "choosing a frequent model fades the model words with the panel" {
+  let t = model_pop("newchat-crowded-model")
+  let (x, y, w, h) = t.get(@ui.Role::Dialog).rect
+  let heading = t.words().filter(fn(item) { item.0 == "常用搭配" }).last().unwrap()
+  let surfaces = t.drawn_rects().filter(fn(r) {
+    (r.0 - x).abs() < 0.1 && (r.1 - y).abs() < 0.1 &&
+    (r.2 - w).abs() < 0.1 && (r.3 - h).abs() < 0.1 && (r.4 & 0xFFL) > 0L
+  })
+  assert_eq(surfaces.length(), 1, msg="the model panel's surface")
+  let original = surfaces[0]
+  let in_heading = fn(g : (Double, Double, Int64)) {
+    g.0 >= heading.1 - 2.0 && g.0 < heading.1 + heading.3 + 2.0 &&
+    g.1 >= heading.2 - 2.0 && g.1 < heading.2 + heading.4 + 2.0
+  }
+  let before = t.drawn_glyphs().filter(in_heading)
+  assert_true(!before.is_empty(), msg="those used most are titled")
+  let ink = before.last().unwrap().2
+  t.click(Button, label="GPT-6 Astra · 中")
+  t.run_for(@kit.pop_out_ms / 2.0)
+  let faded = t.drawn_rects().filter(fn(r) {
+    r.4 >> 8 == original.4 >> 8 &&
+    (r.0 - original.0).abs() < 10.0 && (r.1 - original.1).abs() < 10.0 &&
+    r.2 > original.2 * 0.96 && r.3 > original.3 * 0.96
+  })
+  let words = t.drawn_glyphs().filter(fn(g) { in_heading(g) && g.2 >> 8 == ink >> 8 })
+  assert_eq(faded.length(), 1, msg="the model panel remains during its fade")
+  assert_true(!words.is_empty(), msg="their title remains during its fade")
+  let surface_alpha = faded[0].4 & 0xFFL
+  let word_alpha = words.last().unwrap().2 & 0xFFL
+  assert_true(surface_alpha > 0L && surface_alpha < 255L, msg="the surface is fading: \{surface_alpha}, its words \{word_alpha}")
+  let difference = word_alpha * (original.4 & 0xFFL) - surface_alpha * (ink & 0xFFL)
+  assert_true(difference >= -255L && difference <= 255L, msg="the model words and surface fade together")
+}
+
+///|
+test "a frequent model with a different runtime is applied as its panel leaves without the contents jumping" {
+  let t = model_pop("newchat-crowded-model")
+  let before = t.find("常用搭配").unwrap()
+  let words = fn(name : String) { t.words().filter(fn(w) { w.0 == name }).last().unwrap() }
+  let heading = words("常用搭配")
+  let row = words("SWE-2")
+  let other = words("DeepSeek V4.1 Flash")
+  assert_true(t.find("DeepSeek Harness") is Some(_))
+  t.click(Button, label="GPT-6 Astra · 中")
+  assert_eq(new_fix.model, "gpt-6-astra")
+  assert_eq(t.find("常用搭配"), Some(before), msg="the model rows stay where they were as the panel starts to close")
+  assert_true(t.find("DeepSeek Harness") is Some(_), msg="the leaving panel keeps the runtime that was shown")
+  t.run_for(@kit.pop_out_ms / 2.0)
+  // The rows' layout stays fixed while the panel fades and shrinks: drawn smaller with it, all alike (as much smaller
+  // as its words are), never laid out anew.
+  let heading_out = words("常用搭配")
+  let row_out = words("SWE-2")
+  let other_out = words("DeepSeek V4.1 Flash")
+  let k = heading_out.4 / heading.4
+  assert_true(((row_out.2 - heading_out.2) - k * (row.2 - heading.2)).abs() < 1.0, msg="the model rows keep their layout")
+  assert_true(((other_out.2 - heading_out.2) - k * (other.2 - heading.2)).abs() < 1.0, msg="the other model row keeps its layout")
+  assert_true(t.find("DeepSeek Harness") is Some(_), msg="the runtime stays with the leaving panel")
+  // Open it again while the first panel is still leaving: the new one has its own, current contents.
+  t.tap_text("GPT-6 Astra")
+  t.run_for(@kit.pop_ms)
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel opens again")
+  assert_true(t.query(Button, label="DeepSeek Harness") is None, msg="the reopened panel shows the new model")
+}
+
+///|
+test "a new chat's model panel opens where it stays: what the page has shown until its own is read, not first in its bones elsewhere" {
+  // (its own pick read a while after it opens, as a core across a thread answers it; the page's already there)
+  let held = Ref(true)
+  let base = fixture_app("newchat-crowded-model")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      @settings.fixture_followed()
+      if name == "pick" && held.val {
+        { value: None, error: None, version: -1 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  @sffixture.fix_later(120.0, fn() { held.val = false })
+  let rects : Array[(Double, Double, Double, Double)] = []
+  let till = t.time() + 400.0
+  while t.time() < till {
+    t.frame()
+    match t.query(@ui.Role::Dialog) {
+      Some(d) => if rects.last() != Some(d.rect) { rects.push(d.rect) }
+      None => ()
+    }
+  }
+  assert_true(!held.val, msg="its own read")
+  // (each frame as it ends up, only grown into it from the side it opens from as it comes in: the same corner, the
+  // same shape)
+  let (fx, fy, fw, fh) = rects.last().unwrap()
+  assert_true(
+    rects.iter().all(fn(r) {
+      (r.0 - fx).abs() < 1.0 && (r.1 + r.3 - (fy + fh)).abs() < 1.0 && (r.2 / r.3 - fw / fh).abs() < 0.02 * fw / fh
+    }),
+    msg="\{Repr(rects)}",
+  )
+}
+
+///|
+/// A model pop of the fixture's `mode` whose calls are kept in `calls` (and answered by the fixture), with `liked`
+/// starred before it opens.
+fn model_pop_calls(mode : String, calls : Array[(String, Json)], liked? : Array[String] = []) -> @ui.Tester {
+  let base = fixture_app(mode)
+  new_fix.liked.push_iter(liked.iter())
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(squeeze_opening)
+  t
+}
+
+///|
+/// What the screen of `mode` (a new chat's page, its model's panel not open) is faulted for by `Tester::audit`: what
+/// the panel's screen is held to past it.
+fn page_faults(mode : String) -> Array[String] {
+  let src = fixture_app(mode)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(squeeze_opening)
+  t.audit()
+}
+
+///|
+/// Whether the rect `r` is wholly in view in the panel: inside the part seen of every box of the panel's laid out round
+/// it (a scroller's, the panel's own), so nothing over its foot or past a scroller's edge hides any of it.
+fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool raise {
+  let (x, y, w, h) = r
+  let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
+  t
+  .boxes_held()
+  .iter()
+  .all(fn(b) {
+    let holds = b.x >= dx - 0.5 && b.x + b.w <= dx + dw + 0.5 &&
+      b.x <= x + 0.5 && x + w <= b.x + b.w + 0.5 && b.y <= y + 0.5 && y + h <= b.y + b.h + 0.5
+    let (cx, cy, cw, ch) = b.cut
+    !holds || (cx <= x + 0.5 && x + w <= cx + cw + 0.5 && cy <= y + 0.5 && y + h <= cy + ch + 0.5)
+  })
+}
+
+///|
+test "wide, crowded, the panel gone up from its control: the configuration used most wholly in view at its foot as it opens; pressed, all of it saved" {
+  // (the panel is first built as one going down and found to stand above its control once laid out: the row nearest
+  // the hand was brought into view for the other order and left a row past the scroller's foot, under the panel's)
+  let calls = []
+  let t = model_pop_calls("newchat-crowded-model", calls)
+  t.run_for(@ui.move_most_ms)
+  let first = t.get(Button, label="GPT-6 Astra · 中").rect
+  let foot = t.get(Button, label="DeepSeek Harness").rect
+  assert_true(wholly_in_view(t, first), msg="\{Repr(first)}")
+  assert_true(first.1 + first.3 <= foot.1, msg="\{Repr(first)} over the foot's \{Repr(foot)}")
+  t.click(Button, label="GPT-6 Astra · 中")
+  t.run_for(@kit.presence_in_ms)
+  let saves = calls.filter(fn(c) { c.0 == "pick.save" })
+  assert_eq(saves.length(), 1, msg="\{Repr(saves)}")
+  let p = Some(saves[0].1)
+  assert_eq((text(p, "model"), text(p, "runtime"), text(p, "effort")), ("gpt-6-astra", "codex", "medium"))
+  assert_eq((field(p, "fast"), field(p, "context")), (Some(Json::null()), Some(Json::null())))
+}
+
+///|
+/// Whether a row's rect `r` holds a model's star (喜欢 …) beside it.
+fn starred_beside(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool {
+  t.all(Button, has="喜欢").iter().any(fn(s) { s.rect.1 >= r.1 - 1.0 && s.rect.1 + s.rect.3 <= r.1 + r.3 + 1.0 })
+}
+
+///|
+/// The words `name` drawn in the rect `r`.
+fn words_in(t : @ui.Tester, r : (Double, Double, Double, Double), name : String) -> @ui.Laid? {
+  t.boxes_held().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= r.0 && b.x < r.0 + r.2 && b.y >= r.1 && b.y < r.1 + r.3 })
+}
+
+///|
+test "wide, few models: the configurations used most under 常用搭配, one model run two ways twice, a starred one's there and among the starred, none starred itself; the models over them, each its star" {
+  // (what is used most is a configuration, apart from what is starred: the user, 2026-11-10, 「收藏跟常用不一样」
+  // 「常用包括了思考深度和速度还有上下文长度」「是一种配置」)
+  let held = page_faults("newchat")
+  let calls = []
+  let t = model_pop_calls("newchat-model", calls, liked=["claude-sonnet-5"])
+  let head = t.find("常用搭配").unwrap()
+  let combos = ["Opus 5.5 · 高", "GPT-6 · 中", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低"].map(fn(l) raise { (l, t.get(Button, label=l).rect) })
+  let models = ["Opus 5.5", "GPT-6", "Sonnet 5"].map(fn(l) raise { (l, t.get(Button, label=l).rect) })
+  let effort = t.get(Radio, label="高").rect
+  // (three models: no way to all of them a step further)
+  assert_true(t.query(Button, label="全部模型") is None)
+  for c in combos {
+    // under their name, nearest what opened the panel (its foot: it opens up from the composer); no star
+    assert_true(c.1.1 > head.1, msg="\{Repr(c)} under 常用搭配 at \{Repr(head)}")
+    assert_true(!starred_beside(t, c.1), msg="\{c.0} has a star")
+  }
+  // (the most used nearest what opened it)
+  assert_true(combos[0].1.1 > combos[1].1.1 && combos[1].1.1 > combos[2].1.1, msg="\{Repr(combos)}")
+  for m in models {
+    assert_true(m.1.1 < head.1, msg="\{Repr(m)} over 常用搭配 at \{Repr(head)}")
+    assert_true(starred_beside(t, m.1), msg="\{m.0} has no star")
+    assert_true(effort.0 >= m.1.0 + m.1.2, msg="\{Repr(m)} \{Repr(effort)}")
+  }
+  // the starred one both among the starred and under 常用搭配, its star lit
+  assert_true(t.query(Button, label="喜欢 Sonnet 5") is Some(_))
+  // the one it runs on exactly drawn picked, the same model run another way not
+  let (on, off) = (combos[0].1, combos[2].1)
+  let weight = fn(r) { words_in(t, r, "Opus 5.5").map(fn(b) { b.weight }).unwrap_or(0) }
+  assert_true(weight(on) > weight(off), msg="\{weight(on)} \{weight(off)}")
+  // how it runs in its capsule after its name
+  assert_true(words_in(t, off, "高 · 300K") is Some(_), msg="Opus 5.5's 高 · 300K")
+  // pressed: all of it made what it runs on in one save, the panel closed
+  t.click(Button, label="Opus 5.5 · 高 · 300K")
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="its panel closed")
+  let saves = calls.filter(fn(c) { c.0 == "pick.save" })
+  assert_eq(saves.length(), 1, msg="\{Repr(saves)}")
+  let p = Some(saves[0].1)
+  assert_eq((text(p, "model"), text(p, "runtime"), text(p, "effort")), ("claude-opus-5-5", "claude", "high"))
+  assert_eq(field(p, "fast"), Some(Json::null()))
+  assert_eq(field(p, "context"), Some(Json::number(300000.0)))
+  assert_eq((new_fix.model, new_fix.runtime, new_fix.effort, new_fix.context), ("claude-opus-5-5", "claude", "high", "300000"))
+  assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
+}
+
+///|
+test "wide, few models: each configuration used most has what takes it out where a star would be; pressed, that one is taken out and leaves the panel, the next used most in its place, the panel open, the rest there; all taken out, 常用搭配 gone with them" {
+  // (the user, 2026-11-10: 「常用模型应该是一种特定配置，并且可以删掉，跟模型没有关系」; 2026-11-13: 「删掉常用模型，只有 x
+  // 会消失，然后关掉重新打开才能刷新」)
+  let held = page_faults("newchat")
+  let calls = []
+  let t = model_pop_calls("newchat-model", calls, liked=["claude-sonnet-5"])
+  let combos = ["Opus 5.5 · 高", "GPT-6 · 中", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低"]
+  let rects = combos.map(fn(l) raise { t.get(Button, label=l).rect })
+  for i, l in combos {
+    let forget = t.get(Button, label="从常用搭配移除 " + l).rect
+    assert_true(!starred_beside(t, rects[i]), msg="\{l} has a star")
+    assert_true(
+      forget.1 >= rects[i].1 - 1.0 && forget.1 + forget.3 <= rects[i].1 + rects[i].3 + 1.0 && forget.0 >= rects[i].0 + rects[i].2,
+      msg="\{l}: \{Repr(forget)} beside \{Repr(rects[i])}",
+    )
+  }
+  assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
+  t.click(Button, label="从常用搭配移除 GPT-6 · 中")
+  t.run_for(@ui.move_most_ms)
+  let forgets = calls.filter(fn(c) { c.0 == "pick.forget" })
+  assert_eq(forgets.length(), 1, msg="\{Repr(forgets)}")
+  let p = Some(forgets[0].1)
+  assert_eq((text(p, "model"), text(p, "runtime"), text(p, "effort")), ("gpt-6", "codex", "medium"))
+  assert_eq((field(p, "fast"), field(p, "context")), (Some(Json::null()), Some(Json::null())))
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel closed")
+  // (taken out: gone from the panel, its words too, the next used most come in its place, the rest there)
+  assert_true(t.query(Button, label="从常用搭配移除 GPT-6 · 中") is None && t.query(Button, label="GPT-6 · 中") is None)
+  assert_true(t.query(Button, label="GPT-6 · 高") is Some(_), msg="none in its place")
+  for i, l in combos {
+    if i != 1 {
+      assert_true(t.query(Button, label=l) is Some(_), msg="\{l} gone")
+    }
+  }
+  assert_true(t.query(Button, label="喜欢 Sonnet 5") is Some(_))
+  assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
+  // the rest taken out: no configuration, nor their name, the panel still open; the starred and the rest there
+  for l in ["Opus 5.5 · 高", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低", "GPT-6 · 高"] {
+    t.click(Button, label="从常用搭配移除 " + l)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel closed")
+  assert_true(t.find("常用搭配") is None, msg="常用搭配 with none under it")
+  for l in [..combos, "GPT-6 · 高"] {
+    assert_true(t.query(Button, label=l) is None, msg="\{l} still there")
+  }
+  assert_true(t.query(Button, label="Sonnet 5") is Some(_) && t.query(Button, label="喜欢 Sonnet 5") is Some(_))
+}
+
+///|
+test "wide, few models: the configuration it runs on pressed sends nothing; another, its model, runtime and how hard it thinks" {
+  let held = page_faults("newchat")
+  let calls = []
+  let t = model_pop_calls("newchat-model", calls)
+  t.click(Button, label="Opus 5.5 · 高")
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="its panel closed")
+  assert_eq(calls.filter(fn(c) { c.0 == "pick.save" }).length(), 0, msg="\{Repr(calls)}")
+  let t = model_pop_calls("newchat-model", calls)
+  t.click(Button, label="GPT-6 · 中")
+  t.run_for(@kit.presence_in_ms)
+  assert_eq((new_fix.model, new_fix.runtime, new_fix.effort, new_fix.context), ("gpt-6", "codex", "medium", ""))
+  let p = Some(calls.filter(fn(c) { c.0 == "pick.save" })[0].1)
+  assert_eq(field(p, "context"), Some(Json::null()))
+  assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
+}
+
+///|
+test "wide, many models: those used most, the way to all of them; there, a maker's models; every row's star beside it starred or not at a press, the panel open, the row where it was" {
+  let t = model_pop("newchat-providers-model")
+  assert_true(t.query(Button, label="Sonnet 5") is None, msg="neither used most nor starred: a step further")
+  t.click(Button, label="全部模型")
+  t.run_for(@kit.presence_in_ms)
+  // the makers beside a maker's models
+  assert_true(t.query(Button, label="Anthropic") is Some(_) && t.query(Button, label="OpenAI") is Some(_))
+  t.click(Button, label="Anthropic")
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(Button, label="Opus 5.5") is Some(_) && t.query(Button, label="Gemini 3 Pro") is None, msg="Anthropic's alone")
+  // its star pressed: starred (the same star on every row of the panel, in place of a box before a maker's models;
+  // the user, 2026-11-10, of a ticked box read as the model picked)
+  t.click(Button, label="喜欢 Sonnet 5")
+  t.run_for(@kit.presence_in_ms)
+  assert_eq(new_fix.liked, ["claude-sonnet-5"])
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="the panel stays open")
+  // back: Sonnet among the starred, over the configurations used most (none of them starred: a configuration is not)
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  let (sonnet, used) = (t.get(Button, label="Sonnet 5").rect.1, t.find("常用搭配").unwrap().1)
+  assert_true(sonnet < used, msg="\{sonnet} \{used}")
+  // its star pressed there: starred no more, its row where it was while the panel is open
+  t.click(Button, label="喜欢 Sonnet 5")
+  t.run_for(@kit.presence_in_ms)
+  assert_eq(new_fix.liked, [])
+  assert_eq(t.get(Button, label="Sonnet 5").rect.1, sonnet, msg="its row gone from under the hand")
+}
+
+///|
+test "wide, models of many makers: each a row of its own in the list of them, none cut short" {
+  let t = model_pop("newchat-providers-model")
+  t.click(Button, label="全部模型")
+  t.run_for(@kit.presence_in_ms)
+  for k in ["Anthropic", "OpenAI", "DeepSeek", "Google"] {
+    assert_true(t.query(Button, label=k) is Some(_), msg=k)
+  }
+  t.click(Button, label="Google")
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(Button, label="Gemini 3 Pro") is Some(_) && t.query(Button, label="Opus 5.5") is None)
+  assert_eq(t.squeeze_faults(), [])
+}
+
+///|
+test "wide, all models: the open panel makes room for a model and how it runs on one line" {
+  let t = model_pop("newchat-providers-model", font_scale=1.5)
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="OpenAI")
+  t.run_for(@ui.move_most_ms)
+  let panel = t.get(@ui.Role::Dialog).rect
+  let model = t.get(Button, label="GPT-6 Astra").rect
+  let name = words_whole(t, "GPT-6 Astra", model)
+  let runtime = words_whole(t, "Codex · 中 · Ultrafast · 1.1M", model)
+  assert_true(name is Some(n) && runtime is Some(r) && (n.1 - r.1).abs() < 4.0, msg="\{Repr((model, name, runtime))}")
+  assert_true(panel.0 >= 0.0 && panel.0 + panel.2 <= 1280.0 && panel.2 < 960.0, msg="\{Repr(panel)}")
+}
+
+///|
+test "wide, many models and Codex's efforts and speeds: the models, how hard it thinks and how fast in the right column, the runtime at the foot" {
+  let t = model_pop("newchat-tall-model")
+  let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
+  let all = t.get(Button, label="SWE-2").rect
+  // how hard it thinks, its levels one under another at the panel's right, beside the models (2026-11-02 用户「思考深度
+  // 放在整个面板的右边」「模型跟思考深度的并排的」)
+  let levels = ["最低", "低", "中", "高", "很高", "最高", "Ultra"].map(fn(l) raise { t.get(Radio, label=l).rect })
+  for i, r in levels {
+    assert_true(r.0 == levels[0].0 && r.0 >= all.0 + all.2, msg="\{Repr(levels)}, beside \{Repr(all)}")
+    assert_true(i == 0 || r.1 > levels[i - 1].1, msg="\{Repr(levels)}")
+    assert_true(r.0 + r.2 <= px + pw && r.1 + r.3 <= py + ph, msg="\{Repr(r)} past the panel")
+  }
+  // speed sits directly under effort in the right column (1-click radio rows, no 跟随订阅), runtime stays in the foot
+  let runtime = t.get(Button, label="DeepSeek Harness").rect
+  let standard = t.get(Radio, label="标准").rect
+  let fast = t.get(Radio, label="Fast").rect
+  assert_true(standard.0 == levels[0].0 && fast.0 == standard.0, msg="\{Repr(standard)} \{Repr(fast)} beside \{Repr(levels[0])}")
+  assert_true(standard.1 > levels[levels.length() - 1].1 + levels[levels.length() - 1].3, msg="\{Repr(standard)}")
+  assert_true(fast.1 > standard.1 && fast.1 + fast.3 <= runtime.1, msg="\{Repr(fast)} above foot \{Repr(runtime)}")
+  assert_true(t.words().iter().all(fn(w) { w.0 != "跟随订阅" }), msg="跟随订阅 said")
+  t.click(Radio, label="Fast")
+  t.run_for(squeeze_opening)
+  assert_eq(t.get(Radio, label="Fast").check, Some(On))
+}
+
+///|
+test "wide: how hard it thinks picked in the panel is made what it runs on at once, the panel open as wide as it opened" {
+  let t = model_pop("newchat-crowded-model")
+  let opened = t.get(@ui.Role::Dialog).rect
+  for (label, effort) in [("低", "low"), ("最高", "max")] {
+    t.click(Radio, label~)
+    t.run_for(squeeze_opening)
+    assert_eq(new_fix.effort, effort)
+    let now = t.get(@ui.Role::Dialog).rect
+    assert_true(now.0 == opened.0 && now.2 == opened.2, msg="\{label} picked: \{Repr(now)}, opened \{Repr(opened)}")
+  }
+}
+
+///|
+test "wide: how much context sits in the right column under effort; one click applies it at once" {
+  let t = model_pop("newchat-model")
+  let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
+  let high = t.get(Radio, label="高").rect
+  let context = t.get(Radio, label="完整 · 1M").rect
+  assert_true(context.0 == high.0 && context.1 > high.1 + high.3 && context.1 + context.3 <= py + ph && context.0 + context.2 <= px + pw, msg="\{Repr(context)}, effort \{Repr(high)}, the panel \{Repr((px, py, pw, ph))}")
+  assert_true(t.words().iter().any(fn(w) { w.0 == "上下文" }), msg="no name before it")
+  let steps = ["完整 · 1M", "500K", "300K", "200K"].map(fn(l) raise { (l, t.get(Radio, label=l).check) })
+  assert_eq(steps, [("完整 · 1M", Some(On)), ("500K", Some(Off)), ("300K", Some(Off)), ("200K", Some(Off))])
+  t.click(Radio, label="300K")
+  t.run_for(squeeze_opening)
+  assert_eq(new_fix.context, "300000")
+  assert_eq(t.get(Radio, label="300K").check, Some(On))
+  assert_eq(t.get(Radio, label="完整 · 1M").check, Some(Off))
+}
+
+///|
+test "wide: Devin's sidekick at the foot opens a secondary model-by-effort panel; picking a sidekick model and effort saves at once" {
+  let base = fixture_app("newchat-model")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      @settings.fixture_followed()
+      let snap = base.topic(name, params).get().snapshot()
+      if name == "pick" {
+        match snap.value {
+          Some(Object(o)) => {
+            let m = o.copy()
+            m["sidekicks"] = [
+              { "id": "", "text": "无", "model": "claude-opus-5-5" },
+              { "id": "swe-2-medium", "text": "SWE-2 · 中", "model": "fusion-claude-opus-5-5-sidekick-swe-2-medium", "maker": { "id": "devin", "name": "Cognition" } },
+              { "id": "swe-2-high", "text": "SWE-2 · 高", "model": "fusion-claude-opus-5-5-sidekick-swe-2-high", "maker": { "id": "devin", "name": "Cognition" } },
+            ]
+            m["sidekickNow"] = Json::string(
+              if new_fix.model == "fusion-claude-opus-5-5-sidekick-swe-2-medium" {
+                "swe-2-medium"
+              } else if new_fix.model == "fusion-claude-opus-5-5-sidekick-swe-2-high" {
+                "swe-2-high"
+              } else {
+                ""
+              },
+            )
+            { ..snap, value: Some(Json::object(m)) }
+          }
+          _ => snap
+        }
+      } else {
+        snap
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(squeeze_opening)
+  let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
+  let high = t.get(Radio, label="高").rect
+  let sidekick = t.get(Button, label="无").rect
+  assert_true(sidekick.1 > high.1 + high.3 && sidekick.1 + sidekick.3 <= py + ph && sidekick.0 + sidekick.2 <= px + pw, msg="\{Repr(sidekick)}, the panel \{Repr((px, py, pw, ph))}")
+  assert_true(t.words().iter().any(fn(w) { w.0 == "副模型" }), msg="no name before it")
+  t.click(Button, label="无")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="副模型") is Some(_))
+  assert_true(t.query(Button, label="SWE-2") is Some(_))
+  t.click(Button, label="SWE-2")
+  t.run_for(squeeze_opening)
+  assert_eq((new_fix.model, new_fix.runtime), ("fusion-claude-opus-5-5-sidekick-swe-2-medium", "devin"))
+  assert_eq(t.get(Radio, label="中").check, Some(On))
+  assert_eq(t.get(Radio, label="高").check, Some(Off))
+  t.click(Radio, label="高")
+  t.run_for(squeeze_opening)
+  assert_eq((new_fix.model, new_fix.runtime), ("fusion-claude-opus-5-5-sidekick-swe-2-high", "devin"))
+  assert_eq(t.get(Radio, label="高").check, Some(On))
+  t.click(Button, label="副模型")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="SWE-2 · 高") is Some(_), msg="the foot says the updated sidekick effort")
+}
+///|
+test "Ultrafast can be selected and cleared on small and large screens with larger words" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    for scale in [1.0, 1.3] {
+      let t = screen_in("newchat-ultrafast-model", win, "zh", font_scale=scale)
+      // (what is wrong already, wherever it is drawn: what opening the speeds moves keeps its fault)
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let held = t.audit().map(bare)
+      let phone = win.0 == "phone"
+      if phone {
+        t.click(Button, label="标准")
+        t.run_for(squeeze_opening)
+        assert_true(t.words().iter().any(fn(w) { w.0 == "Ultrafast" }))
+        assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+        t.click(Button, label="Ultrafast " + @sf.t("web-main.model.ultrafastNote"))
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "ultrafast")
+        t.click(Button, label="Ultrafast")
+        t.run_for(squeeze_opening)
+        t.click(Button, label="标准")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "standard")
+      } else {
+        assert_eq(t.get(Radio, label="标准").check, Some(On))
+        assert_eq(t.get(Radio, label="Ultrafast").check, Some(Off))
+        t.click(Radio, label="Ultrafast")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "ultrafast")
+        assert_eq(t.get(Radio, label="Ultrafast").check, Some(On))
+        t.click(Radio, label="标准")
+        t.run_for(squeeze_opening)
+        assert_eq(new_fix.speed, "standard")
+        assert_eq(t.get(Radio, label="标准").check, Some(On))
+      }
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+    }
+  }
+}
+
+///|
+test "Claude run mode can be changed in the model settings on small and large screens" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    let t = screen_in("newchat-tui-model", win, "zh")
+    let item : @view.Role = if win.0 == "phone" { Button } else { MenuItemRadio }
+    for mode in ["TUI", "Print"] {
+      t.click(Button, label=if mode == "TUI" { "Print" } else { "TUI" })
+      t.run_for(squeeze_opening)
+      t.click(item, label=mode)
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.tui, Some(mode == "TUI"))
+    }
+    let checkbox : @view.Role = if win.0 == "phone" { Button } else { MenuItemCheckbox }
+    for enabled in [true, false] {
+      t.click(Button, label="Print")
+      t.run_for(squeeze_opening)
+      if win.0 != "phone" {
+        assert_eq(t.get(checkbox, label="新对话默认使用 TUI").check, Some(if enabled { Off } else { On }))
+      }
+      t.click(checkbox, label="新对话默认使用 TUI")
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.default_tui, enabled)
+    }
+  }
+}
+
+///|
+test "a model row's usualText shares the first-line baseline of its model name" {
+  for scale in [1.0, 1.3] {
+    let flat = model_pop("newchat-model", font_scale=scale)
+    let flat_runs = flat.text_runs()
+    // (opening upward puts the flat model list above 常用搭配: the first GPT-6 is the model row, the last its combo row)
+    let gpt = flat_runs.filter(fn(r) { r.text == "GPT-6" })[0]
+    let gpt_usual = flat_runs.filter(fn(r) { r.x0 > gpt.x1 && (r.top - gpt.top).abs() < 10.0 && r.text == "中" })
+    assert_true(!gpt_usual.is_empty(), msg="missing usualText beside GPT-6 at scale \{scale}: \{Repr(flat_runs)}")
+    assert_true(
+      (gpt.base - gpt_usual[0].base).abs() < 0.01,
+      msg="GPT-6 baseline \{gpt.base} vs \{gpt_usual[0].text} baseline \{gpt_usual[0].base} at scale \{scale}",
+    )
+
+    let t = model_pop("newchat-providers-model", font_scale=scale)
+    t.click(Button, label="全部模型")
+    t.run_for(squeeze_opening)
+    t.click(Button, label="OpenAI")
+    t.run_for(squeeze_opening)
+    let runs = t.text_runs()
+    let astra = runs.filter(fn(r) { r.text == "GPT-6 Astra" }).last().unwrap()
+    let usual = runs.filter(fn(r) { r.x0 > astra.x1 && (r.top - astra.top).abs() < 10.0 && r.text.contains("Codex") })
+    assert_true(!usual.is_empty(), msg="missing usualText beside GPT-6 Astra at scale \{scale}: \{Repr(runs)}")
+    assert_true(
+      (astra.base - usual[0].base).abs() < 0.01,
+      msg="GPT-6 Astra baseline \{astra.base} vs \{usual[0].text} baseline \{usual[0].base} at scale \{scale}",
+    )
+  }
+}
+
+///|
+test "wide, first level: when a frequent combination is selected, no duplicate current model row appears above 常用搭配" {
+  let t = model_pop("newchat-providers-model")
+  assert_true(t.query(Button, label="DeepSeek V4.1 Flash · DSH · 高") is Some(_))
+  assert_true(t.query(Button, label="DeepSeek V4.1 Flash") is None, msg="current model duplicated above 常用搭配")
+  // natural height: panel stays compact instead of stretching to a fixed 360pt list void
+  let (_, _, _, ph) = t.get(@ui.Role::Dialog).rect
+  assert_true(ph < 380.0, msg="panel stretched with empty void: \{ph}")
+}
+
+///|
+test "wide, search: matches maker and runtime tokens, Escape clears before closing, and arrows plus Enter pick a model" {
+  let t = model_pop("newchat-providers-model")
+  t.click(TextField, label="搜索模型")
+  t.run_for(squeeze_opening)
+  // multi-token search across maker and runtime
+  t.type_text("openai codex")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="GPT-6 Astra") is Some(_), msg="maker + runtime search finds GPT-6 Astra")
+  assert_true(t.query(Button, label="Opus 5.5") is None)
+  // Escape with query clears text and keeps the panel open
+  t.key(@ui.key_escape)
+  t.run_for(squeeze_opening)
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="Escape cleared query instead of closing panel")
+  assert_true(t.query(Button, label="全部模型") is Some(_), msg="returned to first level after clearing query")
+  // search OpenAI (2 models: GPT-6 Astra, gpt-oss 2), step down to second result, Enter picks it and closes
+  t.type_text("openai")
+  t.run_for(squeeze_opening)
+  assert_true(t.query(Button, label="GPT-6 Astra") is Some(_) && t.query(Button, label="gpt-oss 2") is Some(_))
+  t.key(@ui.key_code_down)
+  t.run_for(squeeze_opening)
+  t.key(@ui.key_code_enter)
+  t.run_for(@kit.presence_in_ms)
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter closed the panel after picking")
+  assert_eq(new_fix.model, "gpt-oss-2")
+}

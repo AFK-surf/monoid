@@ -35,30 +35,29 @@ pub fn rail_card_node(
       })
       row.each(fn() { items(card(), "stats") }, fn(s) { text(Some(s), "label") }, fn(st, s) {
         let to = fn() { text(Some(s.get()), "go") }
-        @sf.style_node(st, fn() { if to() == "" { rc_stat } else { rc_stat_go } }, in_row=true)
-        st
-        .presses(By(fn() { to() != "" }))
-        .focusable(By(fn() { to() != "" }))
-        .says(By(fn() {
-          if to() == "" {
-            None
-          } else {
-            Some(@view.said(Button, label=text(Some(s.get()), "label") + " " + text(Some(s.get()), "value")))
-          }
-        }))
-        .on_press(fn() {
-          let p = @signals.untracked(to)
-          if p != "" {
-            go(p)
-          }
-        })
-        // (its ground the hover's as the hand is on it)
-        .radius(By(fn() { if to() == "" { 0.0 } else { rc_stat_corner() } }))
-        |> ignore
-        @sf.hover_ground_node(st, on=fn() { to() != "" })
-        @sf.words_node(st, fn() { text(Some(s.get()), "value") }, fn() { rc_value.then(toned(text(Some(s.get()), "tone"))) })
-        |> ignore
-        @sf.words_node(st, fn() { text(Some(s.get()), "label") }, fn() { rc_label }) |> ignore
+        @sf.style_node(st, fn() { rc_stat_cell }, in_row=true)
+        // (a figure that opens the chats it counts pressed as a whole, read out by its words; else what it shows)
+        @sf.action_box_while_node(
+          st,
+          fn() { to() != "" },
+          in_pick=true,
+          fn() { text(Some(s.get()), "label") + " " + text(Some(s.get()), "value") },
+          fn(_) {
+            let p = @signals.untracked(to)
+            if p != "" {
+              go(p)
+            }
+          },
+          fn(f) {
+            @sf.style_node(f, fn() { if to() == "" { rc_stat } else { rc_stat_go } })
+            // (its ground the hover's as the hand is on it)
+            f.radius(By(fn() { if to() == "" { 0.0 } else { rc_stat_corner() } })) |> ignore
+            @sf.hover_ground_node(f, on=fn() { to() != "" })
+            @sf.words_node(f, fn() { text(Some(s.get()), "value") }, fn() { rc_value.then(toned(text(Some(s.get()), "tone"))) })
+            |> ignore
+            @sf.words_node(f, fn() { text(Some(s.get()), "label") }, fn() { rc_label }) |> ignore
+          },
+        )
       })
     })
     b.show(fn() { items(card(), "days").length() > 0 }, fn(days) { rc_days_node(days, fn() { items(card(), "days") }) })
@@ -148,6 +147,11 @@ let rc_stats : @ui.Style = @ui.css("row w=Full gap=S3")
 /// The same of figures that are pressed, 20 apart: a pressed one's ground (rc_stat_go) reaches 10 past its words.
 // kept across runs: a value (no field of it changes)
 let rc_stats_go : @ui.Style = @ui.css("row w=Full gap=S5")
+
+///|
+/// A figure's room in its row, each as wide (what it holds, rc_stat's or rc_stat_go's, across all of it).
+// kept across runs: a value (no field of it changes)
+let rc_stat_cell : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 // kept across runs: a value (no field of it changes)

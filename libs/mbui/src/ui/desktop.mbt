@@ -607,6 +607,20 @@ pub fn Ctx::right_clicked(self : Ctx, id : Int) -> (Double, Double)? {
 }
 
 ///|
+/// Where `id` itself (the topmost target under the pointer, not a descendant inside it) was clicked with the secondary
+/// button since the last frame.
+pub fn Ctx::right_clicked_own(self : Ctx, id : Int) -> (Double, Double)? {
+  ignore(self)
+  hand_events_read()
+  for m in desk.menus {
+    if m.0.get(0) == Some(id) {
+      return Some((m.1, m.2))
+    }
+  }
+  None
+}
+
+///|
 /// Where a menu of `id` was asked for since the last frame, in the window's terms: by a mouse, its secondary button
 /// clicked on it (Ctx::right_clicked); by a finger, held on it (long_press_ms, still: the press is then no click).
 /// For a menu the web's `contextmenu` opens (a row's, a place's), on either hand. One press, one menu: a right click is
@@ -780,6 +794,17 @@ fn Ctx::secondary_press(self : Ctx, x : Double, y : Double) -> Unit {
   self.layer_keys_now()
   self.px = x
   self.py = y
+  if !field_menu_asked.is_empty() {
+    for id in under {
+      if self.editors.contains(id) {
+        if self.focus != id {
+          self.focus_on(id)
+        }
+        notify_field_menu(id, x, y, self.field_can(id))
+        break
+      }
+    }
+  }
 }
 
 ///|

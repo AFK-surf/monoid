@@ -23,6 +23,61 @@ let max_backoff_ms : Int = 60000
 let question_chars : Int = 8000
 
 ///|
+/// The most bytes a chat.update's `text` is cut to, though chat.postMessage takes 40,000 and the message's Markdown block
+/// 12,000 characters: a message posted whole is changed with its blocks whole and its `text`, only the notification's
+/// fallback, cut to fit. Slack refuses a `text` over 4,000 UTF-8 bytes (msg_too_long) as it stands after Slack's own
+/// changes to it: `&`, `<` and `>` escaped (`&amp;`, `&lt;`, `&gt;`) and bare links and emails made `<url>` /
+/// `<mailto:…|…>`. Each character is counted as escaped (`slack_text_bytes`); the 500 bytes left are for the links.
+let update_text_bytes : Int = 3500
+
+///|
+/// What `text` is cut to on a second try where Slack still found it too long (a message of nothing but links).
+let update_text_fallback_bytes : Int = 200
+
+///|
+/// A code point's bytes in a `text` as Slack measures it: `&`, `<` and `>` as their escapes, the rest as UTF-8.
+fn slack_text_bytes(cp : Int) -> Int {
+  if cp == 0x26 {
+    5
+  } else if cp == 0x3c || cp == 0x3e {
+    4
+  } else if cp <= 0x7f {
+    1
+  } else if cp <= 0x7ff {
+    2
+  } else if cp <= 0xffff {
+    3
+  } else {
+    4
+  }
+}
+
+///|
+/// `said` cut to `max_bytes` as Slack counts them (`slack_text_bytes`) at a whole code point, "…" after it where cut
+/// (slack/surface.ts `updateText`).
+fn update_text(said : String, max_bytes? : Int = update_text_bytes) -> String {
+  let mut total = 0
+  for c in said {
+    total += slack_text_bytes(c.to_int())
+  }
+  if total <= max_bytes {
+    return said
+  }
+  let out = StringBuilder::new()
+  let mut used = 0
+  for c in said {
+    let bytes = slack_text_bytes(c.to_int())
+    if used + bytes > max_bytes - 3 {
+      break
+    }
+    used += bytes
+    out.write_char(c)
+  }
+  out.write_string("…")
+  out.to_string()
+}
+
+///|
 /// What a chat's events are given to (sessions/chat.ts `Handler`): a message, an edit, a stop or a login's code, as
 /// `{type, …}`; what it raises is said as the event not taken.
 pub type Handler = async (J) -> Unit
@@ -44,9 +99,25 @@ pub(all) suberror WsRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WsRefused with output(self, logger) {
+  match self {
+    WsRefused(status, m) => logger.write_string(trim("slack refused the connection: HTTP \{status} \{m}"))
+  }
+}
+
+///|
 /// No answer at all (no way there, or none in time): what is asked again (ops/unanswered.ts).
 pub(all) suberror Unanswered {
   Unanswered(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Unanswered with output(self, logger) {
+  match self {
+    Unanswered(m) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -1505,13 +1576,7 @@ pub async fn SlackSurface::edit(self : SlackSurface, channel : String, thread_ts
     Some(b) => said.blocks + [b]
     None => said.blocks
   }
-  ignore(
-    self.client.api(
-      "chat.update",
-      [("channel", channel), ("ts", ts), ("text", message), ("blocks", stringify(ja(blocks)))],
-      self.bot_token,
-    ),
-  )
+  self.update(channel, ts, message, blocks)
   match self.stands.get(key) {
     Some((t, Some(_), block)) if t == ts => self.stands[key] = (t, Some(said), block)
     _ => ()
@@ -1617,14 +1682,28 @@ async fn SlackSurface::say_stands(self : SlackSurface, channel : String, thread_
 }
 
 ///|
+/// A message changed in place, its blocks whole; where Slack still finds the cut text too long once its links are made,
+/// once more with a text cut shorter (slack/surface.ts `update`).
 async fn SlackSurface::update(self : SlackSurface, channel : String, ts : String, said : String, blocks : Array[J]) -> Unit {
-  ignore(
-    self.client.api(
-      "chat.update",
-      [("channel", channel), ("ts", ts), ("text", said), ("blocks", stringify(ja(blocks)))],
-      self.bot_token,
-    ),
-  )
+  let call = async fn(text : String) {
+    ignore(
+      self.client.api(
+        "chat.update",
+        [("channel", channel), ("ts", ts), ("text", text), ("blocks", stringify(ja(blocks)))],
+        self.bot_token,
+      ),
+    )
+  }
+  let first = update_text(said)
+  call(first) catch {
+    e => {
+      let shorter = update_text(said, max_bytes=update_text_fallback_bytes)
+      if blocks.length() == 0 || !message_of(e).contains("msg_too_long") || shorter == first {
+        raise e
+      }
+      call(shorter)
+    }
+  }
 }
 
 ///|

@@ -9,10 +9,18 @@
 # (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to the shell's static library (client/shell), which
 # SHELL_LIB names, or scripts/native.ts gets for the target (shell-apple on the Mac, shell-station elsewhere).
 # MBUI_TOOLS, as apps/mbui's scripts have it, says where moon is when it is not on PATH.
-#   build.sh [TARGET] [OUT]
+# --harness builds the tests' program instead (src/reader_harness: every package's harness, `--builder harness-*`,
+# station/test/mb-*.test.ts), into _build/stillfail-reader-harness-TARGET by default: kept out of the reader every
+# station runs, built the same way, with the same MBC_STORE.
+#   build.sh [--harness] [TARGET] [OUT]
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$D/../.." && pwd)"
+pkg=reader name=stillfail-reader
+if [ "${1:-}" = --harness ]; then
+  pkg=reader_harness name=stillfail-reader-harness
+  shift
+fi
 [ -n "${MBUI_TOOLS:-}" ] && export MOON_HOME=$MBUI_TOOLS/moon PATH=$MBUI_TOOLS/moon/bin:$PATH
 default_target=darwin-arm64
 case "$(uname -s)-$(uname -m)" in
@@ -20,7 +28,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64|Linux-arm64) default_target=linux-arm64 ;;
 esac
 target=${1:-$default_target}
-out=${2:-$D/_build/stillfail-reader-$target}
+out=${2:-$D/_build/$name-$target}
 case "$target" in
   darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple; init_flags="-O0"
     libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip) ;;
@@ -35,10 +43,34 @@ case "$target" in
 esac
 shell_lib=${SHELL_LIB:-$(node "$ROOT/scripts/native.ts" path $part $target)/libstillfail_shell.a}
 
-work="$D/_build/link-$target-$$"
+work="$D/_build/link-$pkg-$target-$$"
 rm -rf "$work"
 mkdir -p "$work/runtime" "$work/obj" "$D/_build" "$(dirname "$out")"
-trap 'rm -rf "$work"' EXIT
+# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
+# job's 5 minutes; main and self-hosted runners stay -O2. STATION_READER_OPT says it otherwise.
+opt=-O2
+if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+  opt=-O0
+fi
+opt=${STATION_READER_OPT:-$opt}
+if [ -z "${MBC_STORE:-}" ]; then
+  if [ -d "$HOME/stillfail-ci" ]; then
+    export MBC_STORE="$HOME/stillfail-ci/reader-mbc-store"
+  else
+    export MBC_STORE="${XDG_CACHE_HOME:-$HOME/.cache}/stillfail-reader-mbc"
+  fi
+fi
+mkdir -p "$MBC_STORE"
+# A first link for Windows makes zig build MinGW's CRT, its import libraries, libunwind and compiler_rt from source
+# (~85 s on a hosted runner with ~/.cache/zig cold, the final link's 4 s otherwise): an empty program linked so in the
+# background puts them in zig's cache while moon, cprep and mbc's split run here, mostly on one core; the final link
+# waits for it.
+warm_pid=
+trap '[ -z "${warm_pid:-}" ] || kill "$warm_pid" 2>/dev/null || true; rm -rf "$work"' EXIT
+if [ "$target" = win32-x64 ]; then
+  printf 'int main(void){return 0;}\n' | "${cc[@]}" "$opt" -x c - -o "$work/warm.exe" "${libs[@]}" >/dev/null 2>&1 &
+  warm_pid=$!
+fi
 
 # Serialize moon's C generation (and any first-time build of mbc) across concurrent target builds, copying reader.c into
 # this build's own directory before releasing the lock so another target's `moon build` never rewrites reader.c under cc.
@@ -56,52 +88,66 @@ echo "$$" > "$lock/pid"
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
   # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
-  # was made (prepped-reader.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
+  # was made (prepped-$pkg.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
   gen_key=$( {
     moon version --all
     "$ROOT/libs/mbui/scripts/mbc" key
     find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
-      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
+      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/mbui/src/effect" \
       "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')
-  prepped="$D/_build/prepped-reader.c"
-  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-reader.key" 2>/dev/null)" = "$gen_key" ]; then
+  prepped="$D/_build/prepped-$pkg.c"
+  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-$pkg.key" 2>/dev/null)" = "$gen_key" ]; then
     cp "$prepped" "$work/reader.c"
-    echo "build.sh: reader.c as prepared for $gen_key" >&2
+    echo "build.sh: $pkg.c as prepared for $gen_key" >&2
     exit 0
+  fi
+  # cprep compiled for this machine, kept in MBC_STORE by what it is made of (moon, the machine, its sources): made
+  # only where none is kept, beside the reader's moon build (src/cprep reads only moonbitlang/core, in a target
+  # directory of its own in $work), not after it (~70 s of one core on a hosted Mac, 2026-11-19).
+  cprep_key=$({
+    moon version --all
+    uname -sm
+    if [ -d "$D/src/cprep" ]; then
+      find "$D/src/cprep" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+        | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
+    fi
+  } | shasum | awk '{print $1}')
+  cprep_bin="$MBC_STORE/cprep-$cprep_key.exe"
+  cprep_pid=
+  trap '[ -z "${cprep_pid:-}" ] || kill "$cprep_pid" 2>/dev/null || true; rm -rf "$lock"' EXIT
+  if [ ! -x "$cprep_bin" ]; then
+    env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$work/cprep" src/cprep >"$work/cprep-build.log" 2>&1 &
+    cprep_pid=$!
+  else
+    touch -c "$cprep_bin" 2>/dev/null || true
   fi
   # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
   if ! MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-    moon build --target native --release src/reader >"$work/moon.log" 2>&1; then
+    moon build --target native --release "src/$pkg" >"$work/moon.log" 2>&1; then
     cat "$work/moon.log" >&2
     exit 1
   fi
-  # (cprep compiled for this machine, in a build directory of its own: the reader's is moon's with the stand-ins)
-  if ! env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$D/_build/cprep" src/cprep >"$work/cprep-build.log" 2>&1; then
-    cat "$work/cprep-build.log" >&2
-    exit 1
+  if [ -n "$cprep_pid" ]; then
+    if ! wait "$cprep_pid"; then
+      cat "$work/cprep-build.log" >&2
+      exit 1
+    fi
+    cprep_pid=
+    cp "$work/cprep/native/release/build/station/cprep/cprep.exe" "$cprep_bin.$$" \
+      && mv -f "$cprep_bin.$$" "$cprep_bin"
   fi
-  "$D/_build/cprep/native/release/build/station/cprep/cprep.exe" \
-    "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
-  rm -f "$D/_build/prepped-reader.key"
+  "$cprep_bin" "$D/_build/native/release/build/station/$pkg/$pkg.c" "$prepped.tmp.$$" >&2
+  rm -f "$D/_build/prepped-$pkg.key"
   mv "$prepped.tmp.$$" "$prepped"
-  echo "$gen_key" > "$D/_build/prepped-reader.key"
+  echo "$gen_key" > "$D/_build/prepped-$pkg.key"
   cp "$prepped" "$work/reader.c"
 )
 
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
-
-if [ -z "${MBC_STORE:-}" ]; then
-  if [ -d "$HOME/stillfail-ci" ]; then
-    export MBC_STORE="$HOME/stillfail-ci/reader-mbc-store"
-  else
-    export MBC_STORE="${XDG_CACHE_HOME:-$HOME/.cache}/stillfail-reader-mbc"
-  fi
-fi
-mkdir -p "$MBC_STORE"
 
 # moonbit.h from a directory of the store named by its content, not moon's: each runner of a machine has a moon of its
 # own (CI's ci-1: actions-runner-<n>/_tool/moon-ci), and a unit's command and the headers it read are its key in the
@@ -115,13 +161,6 @@ if [ ! -f "$moon_inc/moonbit.h" ]; then
   cp "$moon_home"/include/*.h "$tmp_inc/"
   mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
 fi
-# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
-# job's 5 minutes; main and self-hosted runners stay -O2. STATION_READER_OPT says it otherwise.
-opt=-O2
-if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
-  opt=-O0
-fi
-opt=${STATION_READER_OPT:-$opt}
 flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
 cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
 
@@ -182,13 +221,17 @@ rt_key=$({
 } | cksum | tr ' ' -)
 rt_cache="$MBC_STORE/libruntime-$target-$rt_key.a"
 if [ ! -s "$rt_cache" ]; then
+  # (each waited for by its own pid: a bare wait would take the Windows warm-up's too)
+  rt_pids=()
   for c in "$moon_home"/lib/runtime/*.c; do
     "${cc[@]}" "${flags[@]}" -c "$c" -o "$work/runtime/$(basename "$c" .c).o" 2> /dev/null &
+    rt_pids+=($!)
   done
-  wait
+  for p in ${rt_pids[@]+"${rt_pids[@]}"}; do wait "$p" || true; done
   "${ar[@]}" rcs "$work/libruntime.a" "$work"/runtime/*.o
   cp "$work/libruntime.a" "$rt_cache.$$" && mv "$rt_cache.$$" "$rt_cache"
 fi
+[ -z "$warm_pid" ] || wait "$warm_pid" || true
 "${cc[@]}" "${flags[@]}" -o "$out" "${objs[@]}" ${link_extra[@]+"${link_extra[@]}"} \
   "$rt_cache" "$shell_lib" "${libs[@]}"
 echo "$out"

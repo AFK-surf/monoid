@@ -113,49 +113,14 @@ async fn Admin::sweep_staged(self : Admin, dir : String) -> Unit {
 }
 
 ///|
-fn two(n : Int32) -> String {
-  if n < 10 {
-    "0\{n}"
-  } else {
-    n.to_string()
-  }
-}
-
-///|
 /// `new Date(ms).toISOString().slice(0, 19)`.
 pub fn iso_seconds(ms : Double) -> String {
-  let secs = (ms / 1000.0).floor()
-  let days = (secs / 86400.0).floor()
-  let rest = (secs - days * 86400.0).to_int()
-  // civil from days (Howard Hinnant's)
-  let z = days.to_int() + 719468
-  let era = (if z >= 0 { z } else { z - 146096 }) / 146097
-  let doe = z - era * 146097
-  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
-  let y = yoe + era * 400
-  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
-  let mp = (5 * doy + 2) / 153
-  let d = doy - (153 * mp + 2) / 5 + 1
-  let m = if mp < 10 { mp + 3 } else { mp - 9 }
-  let year = if m <= 2 { y + 1 } else { y }
-  let ys = if year >= 0 && year < 10000 {
-    let s = year.to_string()
-    "0000".unsafe_substring(start=0, end=4 - s.length()) + s
-  } else {
-    year.to_string()
-  }
-  "\{ys}-\{two(m)}-\{two(d)}T\{two(rest / 3600)}:\{two(rest / 60 % 60)}:\{two(rest % 60)}"
+  @time.format_iso_ms(ms.floor().to_int64()).view(end_offset=19).to_string()
 }
 
 ///|
 fn hex_of(b : Bytes) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for x in b {
-    out.write_char(digits.unsafe_charcode_at(x.to_int() >> 4).unsafe_to_char())
-    out.write_char(digits.unsafe_charcode_at(x.to_int() & 15).unsafe_to_char())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
@@ -984,7 +949,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
         }
         let profiles = match i.get("profiles") {
           None => None
-          Some(Null) => Some(Null)
+          Some(Null) => Some(JV::Null)
           Some(p) =>
             if strings_or_throw(p) {
               Some(p)
@@ -999,7 +964,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           let speed = self.speed_asked(i.get("speed"))
           let context = self.context_asked(i.get("context"), r.lang)
           let preset_copy = match i.get("presetCopy") {
-            None | Some(Null) => Null
+            None | Some(Null) => JV::Null
             Some(p) => self.backend.ask("sessions/presets.presetCopyInput", [p])
           }
           let opts = jobj(
@@ -1110,13 +1075,13 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           let mine = match
             (
               if nullish(hws) {
-                Null
+                JV::Null
               } else {
                 hws
               },
               match vws {
-                None => Null
-                Some(v) => if nullish(v) { Null } else { v }
+                None => JV::Null
+                Some(v) => if nullish(v) { JV::Null } else { v }
               },
             ) {
             (Null, Null) => true
@@ -1525,11 +1490,11 @@ async fn Admin::session_action(
       let pick = (name : String) => {
         match i.get(name) {
           None => None
-          Some(Null) => Some(Null)
+          Some(Null) => Some(JV::Null)
           Some(v) => Some(js(text_of(Some(v))))
         }
       }
-      let mut change = Obj([])
+      let mut change = JV::Obj([])
       if jhas(i, "runtime") {
         match i.get("runtime") {
           Some(Str(s)) if s != "" => change = jset(change, "runtime", js(s))
@@ -1602,7 +1567,7 @@ async fn Admin::session_action(
       // With the profile it runs on now (picked again: the one picked).
       let row = self.backend.ask("hub.store.getSession", [js(key)])
       let profile = if nullish(row) {
-        Null
+        JV::Null
       } else {
         match row.get("profile") {
           Some(p) if !nullish(p) => p

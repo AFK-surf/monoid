@@ -58,6 +58,22 @@ test "code field node: digits only, as many as its boxes, each in its box; the c
 }
 
 ///|
+test "code field node: full-width digits, typed or pasted as a Chinese input method gives them, are the digits they are" {
+  let f = Field::new()
+  let told : Array[String] = []
+  let t = code_node_window(f, told)
+  t.type_text("１２３")
+  t.draw()
+  assert_eq(f.text(), "123")
+  assert_eq(told, [])
+  t.paste("４５　６")
+  t.draw()
+  assert_eq(f.text(), "123456")
+  assert_eq(told, ["123456"])
+  assert_eq(code_node_digits(t).map(fn(d) { d.0 }), ["1", "2", "3", "4", "5", "6"])
+}
+
+///|
 test "code field node: a digit taken back and typed again is told again; emptied by what holds it, the same code too" {
   let f = Field::new()
   let told : Array[String] = []

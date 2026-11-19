@@ -64,7 +64,12 @@ export async function agentHomes(agentHome: string): Promise<string[]> {
 
 /// The skills the station brings, by directory name: about its own tools, so they are rewritten at every start and
 /// change with the station (the team's own skills sit beside them).
-export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading"];
+export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading"];
+/// Skills the station brought before and brings no longer: stillfail-retire (its tool, station_retire, is switched
+/// off and hidden; station_move took its place). A copy left untouched (its SKILL.md alone) is taken away at every
+/// start, one someone added to stays; the names stay among the station's own for the shared memory (share/memory.ts
+/// `BUILTIN`), so a copy left on a station from before is never synced to the others as a team skill.
+export const RETIRED_SKILLS = ["stillfail-retire"];
 /// When to offer a bug report to the still.fail team: only from a station on the stable channel, beside the
 /// `feedback_send` tool; gone from one on the test channel (the team's own).
 export const FEEDBACK_SKILL = "stillfail-feedback";
@@ -111,12 +116,14 @@ export const MOVE_SKILL = "stillfail-move";
 
 /// Writes the station's own skills into the shared skills directory; `feedback`: the stillfail-feedback skill too
 /// (else it is taken away, unless someone added to it); `site`: the deployment's skills linked beside them
-/// (`linkSiteSkills`); `move`: stillfail-move too (else it is taken away so, as stillfail-feedback is).
+/// (`linkSiteSkills`); `move`: stillfail-move too (else it is taken away so, as stillfail-feedback is). The retired
+/// skills (`RETIRED_SKILLS`) are taken away so, always.
 export async function writeBuiltinSkills(agentHome: string, feedback: boolean, site: string | null = siteSkills(), move = true): Promise<void> {
   const [, skills] = agentHomePaths(agentHome);
   if (site !== null) await linkSiteSkills(skills, site);
   if (!feedback && (await onlySkill(join(skills, FEEDBACK_SKILL)))) await rm(join(skills, FEEDBACK_SKILL), { recursive: true, force: true });
   if (!move && (await onlySkill(join(skills, MOVE_SKILL)))) await rm(join(skills, MOVE_SKILL), { recursive: true, force: true });
+  for (const name of RETIRED_SKILLS) if (await onlySkill(join(skills, name))) await rm(join(skills, name), { recursive: true, force: true });
   for (const name of [...BUILTIN_SKILLS.filter((n) => move || n !== MOVE_SKILL), ...(feedback ? [FEEDBACK_SKILL] : [])]) {
     const { text, files } = await builtinSkill(name);
     const dir = join(skills, name);

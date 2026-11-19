@@ -153,7 +153,7 @@ fn or_new(o : JV, k : String) -> JV raise FeishuError {
     Obj(_) =>
       match o.get(k) {
         None | Some(Null) => {
-          let fresh = Obj([])
+          let fresh = JV::Obj([])
           jput(o, k, fresh)
           fresh
         }

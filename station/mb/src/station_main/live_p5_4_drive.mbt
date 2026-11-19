@@ -238,7 +238,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
         "drive/watch.follow" => {
           let fn_id = p54_get(p54_arg(a, 1), "$fn").unwrap_or(Json::null())
           let host = bus.host
-          match p54_folder_watches(bus).follow(s(0), () => ignore(host.rt.fork(name="a drive folder changed", async fn() {
+          match p54_folder_watches(bus).follow(s(0), () => ignore(host.rt.fork_quiet(name="a drive folder changed", async fn() {
             ignore(bus.call_peer("self", None, "$admin.called", { "id": fn_id, "args": [] })) catch { _ => () }
           }))) {
             Some(stop) => {
@@ -379,7 +379,7 @@ fn p54_folder_watches(bus : LiveBus) -> @drive.FolderWatches {
         let first = p54_folder_marks(dir)
         let going = Ref(true)
         ignore(
-          rt.fork(name="a drive folder watched", async fn() {
+          rt.fork_daemon("a drive folder watched", on_error=e => @host.note("a drive folder watched failed: \{e}"), async fn() {
             let mut before = first
             while going.val && !bus.stopped.is_done() {
               @effect.sleep(p54_folder_look_ms) // timer: an outside system that offers no push (a folder; the shell keeps no watch)

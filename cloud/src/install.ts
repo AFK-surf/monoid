@@ -572,7 +572,8 @@ rm -f "$data/uninstalled"
 
 if [ -n "$token" ]; then
   echo "${say("cloud.install.join")}"
-  "$app/bin/stillfail" station enroll "$origin" "$token" --stay \${lock:+--lock "$lock"} \${rig:+--rig "\${rig#rig:}"}
+  # (its data named: called as \`stillfail\`, the command takes ~/.stillfail, not another product's ~/.monoid)
+  STILLFAIL_DATA="$data" "$app/bin/stillfail" station enroll "$origin" "$token" --stay \${lock:+--lock "$lock"} \${rig:+--rig "\${rig#rig:}"}
 fi
 
 if [ -n "$handed" ]; then

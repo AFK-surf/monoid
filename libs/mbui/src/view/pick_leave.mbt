@@ -139,6 +139,10 @@ fn held_on_way(v : View, going : Bool) -> Unit {
   let told = @signals.signal(0, same=fn(a, b) { a == b })
   let share = fn() {
     told.get() |> ignore
+    // (told as its way is over, View::comes's come_done)
+    if v.live() is Some(m) && m.come_said is Some(s) {
+      s.get() |> ignore
+    }
     show_held_share(v, going, at)
   }
   v.alpha(By(fn() { row_held_at(share()).0 })) |> ignore
@@ -240,6 +244,10 @@ fn View::pick_leaving(
   let progress_of = fn(way_at : Ref[Double]) {
     fn(p : View) {
       way_told.get() |> ignore
+      // (told as its place's way is over, View::comes's come_done)
+      if p.live() is Some(m) && m.come_said is Some(s) {
+        s.get() |> ignore
+      }
       leave_held_progress(p, way_at.val)
     }
   }
@@ -293,7 +301,12 @@ fn View::pick_leaving(
         leaving_faders.retain(fn(e) { e.0.live() is Some(_) })
         // (under a page's list, its way not said at once: held by its place's way, waiting for nothing: the file's head)
         // (or in a block of one said `flips`, held by that list's way: Tree::flip_gone_of)
-        let in_list = !at_once && (tree.pick_held(p) || tree.flip_gone_of(p.at) is Some(_))
+        // (where only a transition moves it, told outside one: what showed gone at once, what it shows now seen whole
+        // at once, no way, transition.mbt)
+        let quiet = !tree.transition_gate(p.at)
+        let in_list = !at_once &&
+          !quiet &&
+          (tree.pick_held(p) || tree.flip_gone_of(p.at) is Some(_))
         // (its place's way from as big as it is now to what it holds now: down its column, or along its row; read
         // before old.fader is taken out of flow)
         let from = tree.along_now(p.at, at)
@@ -304,16 +317,52 @@ fn View::pick_leaving(
           n.flex.style.display = @flex.Display::Flex
           tree.layout_marked_at(p.at)
         }
+        // (in what is laid out nowhere (a page under the one on top): what showed gone and what shows now there at once,
+        // at rest, no way and nothing fading (Tree::nowhere_at), as it is to be when it is shown again)
+        if tree.nowhere_at(slot.at) {
+          // (and what an earlier change, made while it showed, still had on its way: gone, at rest, now)
+          for e in leaving_faders {
+            if e.0.live() is Some(_) {
+              p.leave(e.0, 0.0)
+            }
+          }
+          leaving_faders.clear()
+          if p.live() is Some(m) && m.coming {
+            (m.come_off)()
+            // (its way over now, not at the end it had: come_done waits for that end otherwise)
+            m.flex.style.come_ends = tree.cause_now()
+            come_done(tree, p, m)
+          }
+          p.leave(old.fader, 0.0)
+          let now = fader(p, k, -1.0 / 0.0)
+          had.val = Some((k, now))
+          if now.none && p.live() is Some(n) {
+            n.flex.style.display = @flex.Display::DisplayNone
+            tree.layout_marked_at(p.at)
+          }
+          return
+        }
         // (what showed: not seen yet, let go at once (nothing seen goes); else over the place where it was, taking no
         // room, fading out over `leave` from as opaque as it is)
-        let unseen = match old.held.untracked() {
-          1 =>
-            match old.fader.live() {
-              Some(n) => n.look.alpha <= 0.0
-              None => true
+        if quiet {
+          tree.answer_mark(p.at)
+          for e in leaving_faders {
+            if e.0.alive() {
+              p.leave(e.0, 0.0)
             }
-          _ => old.seen_from.untracked() > at
+          }
+          leaving_faders.clear()
+          gone_by.val = -1.0 / 0.0
         }
+        let unseen = quiet ||
+          (match old.held.untracked() {
+            1 =>
+              match old.fader.live() {
+                Some(n) => n.look.alpha <= 0.0
+                None => true
+              }
+            _ => old.seen_from.untracked() > at
+          })
         let mut last_way_at = -1.0 / 0.0
         for e in leaving_faders {
           last_way_at = e.4
@@ -373,7 +422,13 @@ fn View::pick_leaving(
             }
           })
         }
-        let waits = if in_list { at } else { dmax(gone_by.val, at) }
+        let waits = if in_list {
+          at
+        } else if quiet {
+          -1.0 / 0.0
+        } else {
+          dmax(gone_by.val, at)
+        }
         let now = fader(p, k, waits)
         if in_list {
           now.way_at.val = if unseen && last_way_at > -1.0 / 0.0 { last_way_at } else { at }

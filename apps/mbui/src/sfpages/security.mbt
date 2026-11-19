@@ -172,16 +172,14 @@ pub fn security_node(
 /// with it.
 fn lock_off_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?) -> Unit {
   @sf.page_card_node(parent, fn(k) {
-    sec_state_node(k, false, fn() { @sf.t("web-pages.security.off") })
-    k.box(fn(p) {
-      @sf.style_node(p, fn() { sec_points })
-      sec_point_node(p, "server", fn() { @sf.t("web-pages.security.now") }, rest=fn() { @sf.t("web-pages.security.nowRisk") })
-      sec_point_node(p, "key", fn() { @sf.t("web-pages.security.then") }, rest=fn() { @sf.t("web-pages.security.thenSafe") })
-      sec_point_node(p, "devices", fn() { @sf.t("web-pages.security.newDevices") }, rest=fn() {
+    @sf.status_banner_line_node(k, fn() { false }, fn() { @sf.t("web-pages.security.off") })
+    @sf.icon_points_node(k, fn(p) {
+      @sf.icon_point_row_node(p, "server", fn() { @sf.t("web-pages.security.now") }, rest=fn() { @sf.t("web-pages.security.nowRisk") })
+      @sf.icon_point_row_node(p, "key", fn() { @sf.t("web-pages.security.then") }, rest=fn() { @sf.t("web-pages.security.thenSafe") })
+      @sf.icon_point_row_node(p, "devices", fn() { @sf.t("web-pages.security.newDevices") }, rest=fn() {
         @sf.t("web-pages.security.newDevicesHow")
       })
     })
-    |> ignore
     k.pick(
       fn() {
         if !flag(lock(), "owner") {
@@ -246,53 +244,11 @@ fn signing_node(parent : @view.View) -> Unit {
 }
 
 ///|
-/// The lock's state on its line: its dot (green while `on`, else amber), what it is.
-fn sec_state_node(parent : @view.View, on : Bool, words : () -> String) -> Unit {
-  parent.box(fn(l) {
-    @sf.style_node(l, fn() { sec_state_line })
-    sec_dot_node(l, fn() { on })
-    @sf.words_node(l, words, fn() { sec_state }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A dot (dot: 7 round, the online green; amber where not `on`).
-fn sec_dot_node(parent : @view.View, on : () -> Bool) -> Unit {
-  parent.box(fn(d) { @sf.style_node(d, fn() { if on() { sec_dot_on } else { sec_dot_amber } }) }) |> ignore
-}
-
-///|
-/// What it changes, or what turning it off gives up, a line (point): its mark 18 muted on its first line, beside a line
-/// of it, its words and the rest quieter under them (`rest`, none where not given).
-fn sec_point_node(parent : @view.View, icon : String, words : () -> String, rest? : () -> String) -> Unit {
-  parent.box(fn(l) {
-    @sf.style_node(l, fn() { sec_point_line })
-    // (on its first line, across its middle: sec_point_text's)
-    @sf.first_line_node(l, Body, leading=L7, fn(i) {
-      i.width(Is(Some(sec_point_column))) |> ignore
-      @sf.icon_node(i, icon, sec_point_glyph, By(fn() { @sf.theme().p.muted })) |> ignore
-    })
-    |> ignore
-    l.box(fn(w) {
-      @sf.style_node(w, fn() { sec_point_words }, in_row=true)
-      @sf.words_node(w, words, fn() { sec_point_text }) |> ignore
-      match rest {
-        Some(r) => @sf.words_node(w, r, fn() { sec_point_rest }) |> ignore
-        None => ()
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// On (On): its state with how many sign and what it protects (a line of its own under it), what that means, and
 /// where this device does not sign, why.
 fn lock_on_node(parent : @view.View, lock : () -> Json?) -> Unit {
   @sf.page_card_node(parent, fn(k) {
-    sec_state_node(k, true, fn() { @sf.t("web-pages.security.on") })
+    @sf.status_banner_line_node(k, fn() { true }, fn() { @sf.t("web-pages.security.on") })
     @sf.words_node(
       k,
       fn() {
@@ -1102,7 +1058,7 @@ fn sec_station_lead(guarded : () -> Bool, emoji : () -> String, icon : () -> Str
   LeadLine(fn(l) {
     l.box(fn(r) {
       @sf.style_node(r, fn() { sec_station_lead_row })
-      sec_dot_node(r, guarded)
+      @sf.state_dot_node(r, fn() { if guarded() { "up" } else { "restart" } })
       r.show(fn() { @sf.has_station_mark(emoji(), icon()) }, fn(m) {
         @sf.station_mark_node(m, emoji, icon, @sf.row_mark, fn() { @sf.theme().p.text }, stint)
       })
@@ -1339,13 +1295,11 @@ pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
     @sf.t("web-pages.security.turnOffTitle"),
     description=@sf.t("web-pages.security.turnOffBody"),
     fn(v, shut) {
-      v.box(fn(l) {
-        @sf.style_node(l, fn() { sec_points })
-        sec_point_node(l, "server", fn() { @sf.t("web-pages.security.nowRisk") })
-        sec_point_node(l, "devices", fn() { @sf.t("web-pages.security.turnOffApproval") })
-        sec_point_node(l, "key", fn() { @sf.t("web-pages.security.turnOffVault") })
+      @sf.icon_points_node(v, fn(l) {
+        @sf.icon_point_row_node(l, "server", fn() { @sf.t("web-pages.security.nowRisk") })
+        @sf.icon_point_row_node(l, "devices", fn() { @sf.t("web-pages.security.turnOffApproval") })
+        @sf.icon_point_row_node(l, "key", fn() { @sf.t("web-pages.security.turnOffVault") })
       })
-      |> ignore
       let label = @sf.t("web-pages.security.turnOffType", args=[("name", name)])
       @sf.field_node(v, fn() { label }, fn(f) {
         // (written in as it opens: the keyboard's focus on it, on a sheet too, as the old dialog's focus_editor)
@@ -1370,18 +1324,7 @@ pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
 }
 
 ///|
-/// The sizes: what it changes, its marks 18 in a column of 20; a sentence's mark 16.
-let sec_point_glyph : Double = 18.0
-
-///|
-/// The column a mark of what it changes stands in (sec_point_icon's w=S5).
-let sec_point_column : Double = 20.0
-
-///|
 let sec_device_glyph : Double = 16.0
-
-///|
-let sec_dot_side : Double = 7.0
 
 ///|
 let sec_row_least : Double = 30.0
@@ -1448,10 +1391,6 @@ let sec_state_lines : @ui.TextStyle = sec_state.then(@sf.in_lines)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sec_state_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
 let sec_state_meta : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
@@ -1463,38 +1402,8 @@ let sec_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted
 let sec_actions : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
 
 ///|
-/// What it changes (points: 10 apart; each its mark in a 20 column, 8 from its words, the body's 14).
-// kept across runs: a value (no field of it changes)
-let sec_points : @ui.Style = @ui.css("w=Full gap=S2_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_point_line : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_point_words : @ui.Style = @ui.style(w=@sf.grow)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_point_text : @ui.TextStyle = @ui.text_style(size=Body, leading=L7, color=Fg, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_point_rest : @ui.TextStyle = @ui.text_style(size=Meta, leading=L7, color=Muted, w=Full)
-
-///|
 /// sec_rows' gap of before, over a pending change's piece of the card but the first (pending_node).
 let sec_rows_gap : Double = 12.0
-
-///|
-/// A station's dot (dot: 7 round, the online green, amber where it is not protected).
-// kept across runs: a value (no field of it changes)
-let sec_dot_on : @ui.Style = @ui.style(w=Fixed(sec_dot_side), h=Fixed(sec_dot_side), radius=Full, bg=Positive)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_dot_amber : @ui.Style = sec_dot_on.then(@ui.css("bg=Warn"))
 
 ///|
 /// A station's dot and mark on its name's line (sec_station_lead's: 8 apart, across its middle).

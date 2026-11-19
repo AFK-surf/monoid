@@ -7,8 +7,9 @@ import {
   ToggleGroup, Tooltip,
 } from "radix-ui";
 import { createPortal } from "preact/compat";
-import { forwardRef, Fragment, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ComponentType, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "preact/compat";
+import { forwardRef, Fragment, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "preact/compat";
 import { useBackClose } from "./backClose.ts";
+import { Button, ICON, type IconType } from "./button.tsx";
 import { Check, ChevronDown, Close, Copy, More, Search } from "./icons.tsx";
 import { t } from "./i18n.ts";
 import { shortcutKeys, useShortcuts, type Shortcut } from "./shortcuts.ts";
@@ -18,23 +19,9 @@ import * as pageCss from "./styles/page.css.ts";
 import { Spinner } from "./waiting.tsx";
 import * as partsCss from "./parts.css.ts";
 
-export const ICON = { size: 16, strokeWidth: 1.7 } as const;
-
-type IconType = ComponentType<{ size?: number; strokeWidth?: number }>;
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
-const VARIANT: Record<Variant, string> = { primary: controlsCss.btnPrimary, secondary: "", ghost: controlsCss.btnGhost, danger: controlsCss.btnDanger, "danger-solid": controlsCss.btnDangerSolid };
-
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; icon?: IconType; busy?: boolean | undefined }>(
-  function Button({ variant = "secondary", icon: Icon, busy, children, className, ...rest }, ref) {
-    return (
-      <button ref={ref} type="button" {...rest} aria-busy={busy || undefined} disabled={rest.disabled || busy}
-        className={`${controlsCss.btn} ${VARIANT[variant]}${className ? ` ${className}` : ""}`}>
-        {busy ? <Spinner /> : Icon && <Icon {...ICON} />}
-        {children}
-      </button>
-    );
-  },
-);
+export { Button, ButtonLink, buttonClass, ICON, type IconType, type Variant } from "./button.tsx";
+export { ErrorLine, FieldStack, RadioChoices, TextArea, TextInput, type Choice } from "./fields.tsx";
+export { StandActions, StandPage, type Illustration } from "./standPage.tsx";
 
 /**
  * An icon-only button; its label shows as a tooltip and names it for screen readers. `busy`: a spinner in its place, not

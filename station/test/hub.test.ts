@@ -960,6 +960,78 @@ test("a runtime not installed is said about it, and what waited goes on once it 
   await r.close();
 });
 
+test("a turn that could not start is started once on what waits, however many wakes came meanwhile; what comes after starts it again", async () => {
+  const r = new Rig();
+  const open = r.claude.open.bind(r.claude);
+  let opens = 0;
+  let stuck: (e: Error) => void = () => {};
+  let asked: () => void = () => {};
+  // (as `agy acp` that never answers initialize: the start waits, then fails; `settle` would wait on it, so its being
+  // asked is waited for instead)
+  const opening = () => new Promise<void>((resolve) => (asked = resolve));
+  r.claude.open = () => {
+    opens++;
+    asked();
+    return new Promise((_, reject) => (stuck = reject));
+  };
+  let next = opening();
+  const m = message();
+  await r.accept(m);
+  await next;
+  assert.equal(opens, 1);
+  // Woken again and again while that start waits (turns let go, a runtime installed): each queued behind it.
+  r.hub.installed("claude");
+  r.hub.hold("drain");
+  r.hub.release("drain");
+  r.hub.installed("claude");
+  stuck(new Error("no answer to init in 120 s"));
+  await settle();
+  assert.equal(opens, 1, "the wakes queued behind the start that failed start nothing on the same messages");
+  // A wake of its own after the failure tries again.
+  next = opening();
+  r.hub.installed("claude");
+  await next;
+  assert.equal(opens, 2);
+  stuck(new Error("no answer to init in 120 s"));
+  await settle();
+  // So does a message after it, with the runtime there now.
+  r.claude.open = (o, e) => (opens++, open(o, e));
+  await r.accept(message({ ts: "1700000000.000200", threadTs: m.threadTs, text: "again" }));
+  await settle();
+  assert.equal(opens, 3);
+  assert.equal(r.claude.count(), 1);
+  await r.close();
+});
+
+test("a station starting with a message waiting starts one turn on it, cut-off turns found while turns are held", async () => {
+  const r = new Rig();
+  let opens = 0;
+  r.claude.open = async () => {
+    opens++;
+    throw new Error("no answer to init in 120 s");
+  };
+  r.hub.hold("starting");
+  const m = message();
+  await r.accept(m);
+  await settle();
+  assert.equal(opens, 0);
+  // As agents.ts `start` does now: recovered while held, then let go.
+  r.hub.recover();
+  r.hub.release("starting");
+  await settle();
+  assert.equal(opens, 1);
+  // And as it did before (let go, then recovered): still once.
+  r.hub.hold("starting");
+  await r.accept(message({ ts: "1700000000.000300", threadTs: m.threadTs, text: "more" }));
+  await settle();
+  const before = opens;
+  r.hub.release("starting");
+  r.hub.recover();
+  await settle();
+  assert.equal(opens, before + 1);
+  await r.close();
+});
+
 test("claude auth recovers without replaying input, and a later turn can recover again", async () => {
   const r = new Rig();
   const m = message();
@@ -1400,6 +1472,34 @@ test("an agent that loses the station's tools is started again rather than nudge
   await r.accept(reply(m, "9999.9", "still there?"));
   await settle();
   assert.equal(r.claude.count(), 3);
+  await r.close();
+});
+
+test("an agent whose process never reached the station's tools is started again rather than nudged; one that reached them is nudged", async () => {
+  // (2026-11-19: the station out of file handles, Antigravity CLI's MCP connection failed as it opened and it said so
+  // only in words; no call of a tool failed, so nothing told the tools lost and it was nudged twice in vain)
+  const heard = new Map<string, number>();
+  const r = new Rig({ maxNudges: 2, toolsHeard: heard });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const first = r.claude.last();
+  const key = first.options.route;
+  first.says("I have no chat_post tool.");
+  first.complete();
+  await settle();
+  assert.ok(first.disposed, "the process that never reached them ends");
+  const second = r.claude.last();
+  assert.notEqual(second, first);
+  assert.equal(second.options.resume, first.sessionId);
+  assert.deepEqual(second.prompts.map(untimed), [TOOLS_LOST]);
+  // This one lists them, then ends saying no state: nudged, in the same process.
+  heard.set(key, (heard.get(key) ?? 0) + 1);
+  second.complete();
+  await settle();
+  assert.ok(!second.disposed);
+  assert.equal(r.claude.count(), 2);
+  assert.deepEqual(second.prompts.map(untimed), [TOOLS_LOST, NUDGE]);
   await r.close();
 });
 

@@ -29,7 +29,7 @@ import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
 import { FollowedTree, type Watch } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { portableName } from "../ops/paths.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL, workspaceAgentHome } from "../sessions/agent-home.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS, workspaceAgentHome } from "../sessions/agent-home.ts";
 import { MemoryProgram } from "./memory-mb.ts";
 
 type Json = any;
@@ -66,7 +66,7 @@ const FOLLOW_MOST = 1000;
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const HEX64 = /^[0-9a-f]{64}$/;
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
-const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL]);
+const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS]);
 /// A file only its owner may read (a key, a host's address kept beside a skill): this machine's alone, never shared.
 const own = (m: number) => (m & 0o077) === 0;
 

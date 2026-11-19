@@ -574,6 +574,8 @@ export interface FeishuApp {
 	domain: string;
 	/** Thread mode: each thread of a group its own conversation, answered in it. */
 	threads?: boolean;
+	/** A direct chat in threads: each message there begins one, its own conversation, answered in it. */
+	directThreads?: boolean;
 	/** The app's page in the developer console (core). */
 	console?: string;
 }
@@ -1480,6 +1482,8 @@ export interface Overview {
 	move?: StationMoveOffer;
 	/** The `beta` features it runs, by id (client/core-ts/src/features.ts `station: true`: its own channel decides them). None from a station older than it: none. */
 	features?: string[];
+	/** When this station build was built, in Unix ms (`BUILT_AT`). Absent in dev or from older stations. */
+	builtAt?: number;
 }
 
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
@@ -1887,6 +1891,8 @@ export interface PrefsView {
 	 * its own cloud); none: it sends nothing, and the app tells it nothing of it.
 	 */
 	counted?: boolean;
+	/** Whether this app build is older than 7 days (`STALE_BUILD_MS`). Absent when fresh or in dev. */
+	staleBuild?: boolean;
 	/** The product's name on this app's channel: still.fail or youdid.wtf (monoid or monoid.zone on monoid's cloud). */
 	productName?: string;
 	/**

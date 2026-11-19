@@ -117,7 +117,6 @@ fn answer_of(ask : J) -> J raise {
         ("brief", Bool(asked.brief)),
         ("logins", ja(asked.logins.map(js))),
         ("running", Bool(asked.running)),
-        ("shared", Bool(asked.shared)),
       ])
     }
     "seen" => {

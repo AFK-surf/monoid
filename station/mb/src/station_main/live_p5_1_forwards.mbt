@@ -34,8 +34,9 @@ fn forget_forward_socket(id : Json) -> Unit {
 }
 
 ///|
-/// A connection the shell holds (`tcp.open`'s, `tcp.accept`'s) as the forwards take one; `peer` where it came from.
-fn shell_socket(host : @host.Host, id : Json, peer : String) -> @gate.Socket {
+/// A connection the shell holds (`tcp.open`'s, `tcp.accept`'s) as the forwards take one; its `peer` where it came from.
+fn shell_socket(host : @host.Host, conn : @host.Conn) -> @gate.Socket {
+  let id = conn.id
   let gone = Ref(false)
   let closed : @effect.Deferred[Unit] = @effect.Deferred::new()
   let end = () => if !gone.val {
@@ -43,6 +44,7 @@ fn shell_socket(host : @host.Host, id : Json, peer : String) -> @gate.Socket {
     forget_forward_socket(id)
     ignore(closed.succeed(()))
   }
+  let peer = conn.peer
   let remote_port = match peer.rev_find(":") {
     Some(i) => @string.parse_int(peer[i + 1:].to_owned()) catch { _ => -1 }
     None => -1
@@ -51,14 +53,12 @@ fn shell_socket(host : @host.Host, id : Json, peer : String) -> @gate.Socket {
     remote_port: if remote_port > 0 { Some(remote_port) } else { None },
     abort: () => if !gone.val {
       end()
-      ignore(host.rt.fork(name="forward close", async fn() { ignore(host.shell("tcp.close", { "id": id })) catch { _ => () } }))
+      ignore(host.rt.fork_quiet(name="forward close", async fn() { conn.socket.destroy() }))
     },
     destroyed: () => gone.val,
     closed: async fn() { closed.wait() },
     pipe: async fn(stream, carry) {
-      pipe_tcp(host, id, stream, carry) catch {
-        _ => ()
-      }
+      pipe_tcp(conn.socket, stream, carry)
       end()
     },
     join: async fn(other) {
@@ -68,7 +68,7 @@ fn shell_socket(host : @host.Host, id : Json, peer : String) -> @gate.Socket {
         raise BusError("a device's connection is not the shell's")
       }
       // (carried by the shell itself, both ways)
-      ignore(host.shell("tcp.pipe", { "ids": [id, theirs] })) catch {
+      host.tcp_pipe(id, theirs) catch {
         _ => ()
       }
       end()
@@ -86,23 +86,19 @@ fn P51::machine_sockets(self : P51) -> @gate.Sockets {
   let host = self.host
   {
     listen: async fn(port, _mine, take) {
-      let (said, _) = host.shell("tcp.listen", { "port": Json::number(port.to_double()) }) catch { _ => return None }
-      guard said is { "id": lid, "port": Number(p, ..), .. } else { return None }
-      let got = p.to_int()
+      guard (try Some(host.tcp_listen_local(port)) catch { _ => None }) is Some(listening) else { return None }
+      let got = listening.port
+      let listener = host.listener_of(listening.id)
       let stopped = Ref(false)
       ignore(
-        host.rt.fork(name="forward accept", async fn() {
-          while !stopped.val {
-            let (accepted, _) = host.shell("tcp.accept", { "id": lid }) catch { _ => break }
-            guard accepted is { "id": cid, .. } else { continue }
+        host.rt.fork_quiet(name="forward accept", async fn() {
+          listener.serve(host.rt.root(), async fn(conn) {
             if stopped.val {
-              ignore(host.shell("tcp.close", { "id": cid })) catch {
-                _ => ()
-              }
-              break
+              conn.socket.destroy()
+              return
             }
-            take(shell_socket(host, cid, match accepted { { "peer": String(peer), .. } => peer; _ => "" }))
-          }
+            take(shell_socket(host, conn))
+          })
         }),
       )
       Some({
@@ -111,15 +107,10 @@ fn P51::machine_sockets(self : P51) -> @gate.Sockets {
           stopped.val = true
           // (a listener whose accept is waiting is let go once that accept ends: one connection of its own ends it)
           ignore(
-            host.rt.fork(name="forward unlisten", async fn() {
-              ignore(host.shell("tcp.close", { "id": lid })) catch {
-                _ => ()
-              }
-              match (try { Ok(host.shell("tcp.open", { "port": Json::number(got.to_double()) })) } catch { e => Err(e) }) {
-                Ok(({ "id": wake, .. }, _)) =>
-                  ignore(host.shell("tcp.close", { "id": wake })) catch {
-                    _ => ()
-                  }
+            host.rt.fork_quiet(name="forward unlisten", async fn() {
+              listener.close()
+              match (try { Ok(host.tcp_open(got)) } catch { e => Err(e) }) {
+                Ok(wake) => wake.socket.destroy()
                 _ => ()
               }
             }),
@@ -284,7 +275,7 @@ fn P51::forwards_live(self : P51) -> @gate.Forwards {
               _ => (bus.ui_ask.val)("devices.reach", { "session": Json::string(session), "device": Json::string(id) })
             }
             match reached {
-              { "id": cid, .. } => shell_socket(host, cid, "")
+              { "id": cid, .. } => shell_socket(host, host.conn(cid))
               _ => raise @gate.Refused("the device \{id} cannot be reached on this station")
             }
           })

@@ -194,8 +194,17 @@ test "a film played on an iPhone Duo, 全屏 in the system's bars: the window fi
     let t = native_chat(w, h, true, side~, mode="chat-preview-video")
     t.run_for(@ui.move_most_ms)
     assert_true(t.nav_said().contains("over/full"), msg="\{at}: \{t.nav_said()}")
+    // (beside the bars: the film edge to edge across what they leave, its controls over it, a finger's sound a key alone)
+    assert_eq(@sf.player_room(w - side), (0.0, 0.0), msg=at)
+    assert_eq(t.all(Slider, label=@sf.t("web-pages.drive.player.volume")).length(), 0, msg=at)
+    let picture = fn() { @sf.player_picture_at(viewer.get().unwrap().media.unwrap().key()).unwrap() }
+    let (_, py, pw, ph) = picture()
+    assert_true((pw - (w - side)).abs() < 0.5 && (py - (h - ph) / 2.0).abs() < 0.5, msg="\{at}: \{Repr(picture())}")
     t.post(@hostapi.system_channel, "{\"nav\":\"over/full\"}")
     t.run_for(@ui.move_most_ms)
+    // (filling the window: the film as wide as it)
+    let (_, py, pw, ph) = picture()
+    assert_true((pw - w).abs() < 0.5 && (py - (h - ph) / 2.0).abs() < 0.5, msg="\{at}: \{Repr(picture())}")
     let said = t.nav_said()
     // (the bars put away: no title, no actions)
     assert_true(said.contains("\"bare\":true") && said.contains("\"title\":\"\""), msg="\{at}: \{said}")
@@ -923,6 +932,41 @@ test "Duo sidebar glass circles share a baseline and keep their inset with a lar
 }
 
 ///|
+test "Duo sidebar glass controls track the tape slide back from the chat page" {
+  for size in [(669.0, 951.0, 0.0), (951.0, 669.0, 84.0)] {
+    let t = native_chat(size.0, size.1, true, side=size.2)
+    t.check_looks(false)
+    guard covered(t, "收起侧边栏") is Some((px, _)) else { fail("page cover missing") }
+    t.tap(px + 20.0, 400.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    assert_false(t.nav_said().contains("workspace-switch"))
+    guard covered(t, "展开侧边栏") is Some((sx, _)) else { fail("sidebar cover missing") }
+    t.tap(sx + 20.0, 400.0)
+    // Mid-slide and at rest, native floating buttons must stay aligned with the painted sidebar.
+    for span in [120.0, @ui.move_most_ms] {
+      t.run_for(span)
+      assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+      let spec = @json.parse(t.nav_said())
+      let circles = items(Some(spec), "floating")
+      assert_eq(circles.length(), 3)
+      let x = number(Some(circles[0]), "x")
+      guard t.words().filter(fn(word) { word.0 == "今天" }) is [(_, heading_x, _, _, _, _), ..] else {
+        fail("day heading not drawn")
+      }
+      assert_true((x - heading_x).abs() < 0.5, msg="\{size.0}x\{size.1} at +\{span}ms: glass edge \{x}, day heading \{heading_x}")
+    }
+    let spec = @json.parse(t.nav_said())
+    let circles = items(Some(spec), "floating")
+    let y = number(Some(circles[0]), "y")
+    for circle in circles {
+      assert_true(number(Some(circle), "x") >= 0.0, msg="off-screen floating control: \{Repr(circle)}")
+      assert_true((number(Some(circle), "y") - y).abs() < 0.5)
+    }
+  }
+}
+
+///|
 test "an iPhone Duo: the system's bars told as the app starts put the sidebar where they have it at once, moving nothing" {
   let t = native_chat(951.0, 669.0, true, side=84.0)
   assert_true(@sf.native_on())
@@ -1623,4 +1667,48 @@ test "an iPhone Duo on its side: 全屏 of a screen in the side panel fills the 
   assert_eq((views.val, cancels.val), (v0, c0), msg="the same view kept for the panel")
   duo_browser_bar(t, "after 全屏")
   assert_eq(duo_panel_audit(t), [])
+}
+
+///|
+test "an iPhone Duo: 下方栏 in the settings sets the places of the system's tabs, one bar, 侧边条 not offered" {
+  let t = native_chat(951.0, 669.0, true, side=84.0)
+  // (the tabs as before the bar is set: 对话, 文件, Station)
+  for id in ["place/chats", "place/files", "place/stations"] {
+    assert_true(t.nav_said().contains("\"id\":\"\{id}\""), msg="no \{id}: \{t.nav_said()}")
+  }
+  t.post(@hostapi.system_channel, "{\"nav\":\"settings\"}")
+  t.run_for(@ui.move_most_ms)
+  // (此设备's 下方栏 in the sidebar; what the bar holds, the row's value, left out where the sidebar has not the room)
+  assert_true(t.find("下方栏") is Some(_), msg="no 下方栏 in the settings")
+  // (外观 with no 侧边条: the places are the tabs')
+  @sfbase.open_page(Setting(@settings.Route::Appearance))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::Appearance))
+  assert_true(t.find("自定义侧边条") is None, msg="侧边条 offered beside the system's tabs")
+  // (下方栏: the one bar's places and room for a fourth, no other bar to make)
+  // (its row past the sidebar's foot unscrolled: opened as the row opens it)
+  @sfbase.open_page(Setting(@settings.Route::BarSettings))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::BarSettings), msg="下方栏 not opened")
+  // (the page brought over from beside the sidebar in use)
+  guard covered(t, "收起侧边栏") is Some((px, _)) else { fail("the page beside the sidebar not to be brought over") }
+  t.tap(px + 20.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  for words in ["对话", "文件", "Station", "添加"] {
+    assert_true(t.find(words) is Some(_), msg="下方栏 shows no \{words}")
+  }
+  assert_true(t.find("新建栏") is None, msg="another bar offered")
+  assert_true(t.find("第 1 栏") is None, msg="the one bar named")
+  assert_eq(t.audit(), [])
+  // (远程 added: a tab of its own, chosen there it is the one lit)
+  t.tap_text("添加")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("远程")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.nav_said().contains("\"id\":\"place/remote\""), msg="no 远程 tab: \{t.nav_said()}")
+  t.post(@hostapi.system_channel, "{\"nav\":\"place/remote\"}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Place("remote"), msg="远程 not gone to")
+  assert_true(t.nav_said().contains("\"selected\":\"place/remote\""), msg="远程 not lit: \{t.nav_said()}")
+  assert_eq(t.audit(), [])
 }

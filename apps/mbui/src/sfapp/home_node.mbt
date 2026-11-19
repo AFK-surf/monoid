@@ -23,6 +23,9 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
     // what the update wants of the person, over what the last one brought (until it is seen)
     before: fn(_, _) {
       let parts : Array[@sfpages.NodePart] = []
+      if @sfpages.stale_build_card_shown() {
+        parts.push({ key: "stale-build-card", make: fn(p) { @sfpages.stale_build_card_node(p, src) } })
+      }
       if @sfpages.update_card_shown() {
         parts.push({ key: "update-card", make: fn(p) { @sfpages.update_card_node(p, src) } })
       }

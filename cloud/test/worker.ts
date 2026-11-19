@@ -27,7 +27,9 @@ export class RelayLoad extends ProductionRelayLoad {
 // The moment the tests run at (harness.ts NOW_MS), unless they run on the machine's time (dev.ts). The Worker and its
 // objects share this isolate, and so the clock.
 declare const TEST_NOW_MS: number | null;
-if (TEST_NOW_MS !== null) clock.now = () => TEST_NOW_MS;
+/** How far the clock has been put forward (`/__test/later`), in ms. */
+let later = 0;
+if (TEST_NOW_MS !== null) clock.now = () => TEST_NOW_MS + later;
 
 /**
  * With TEST_MAIL (harness.ts `mail`), signing in with an email is offered, its codes (and the API's mails to people
@@ -422,6 +424,11 @@ export default {
       const { where } = (await readJson(request)) as { where: "objects" | "primary" };
       socketsAt(where);
       return reply({ where });
+    }
+    if (path === "/__test/later") {
+      // This Worker's clock (and its objects'), put forward by `seconds`; the relay's Worker keeps its own.
+      later += Number((await readJson(request)).seconds) * 1000;
+      return reply({ now: nowSeconds() });
     }
     if (path === "/__test/offline") {
       offline = !offline;

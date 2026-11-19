@@ -103,7 +103,8 @@ pub fn Secrets::status(self : Secrets, session : String, person? : String) -> St
   let (_, lock) = self.place_of(session)
   guard self.person_for(session, person) is Some(email) else { return "none" }
   guard lock is Some(lock) else { return "plain" }
-  guard member_of(lock, email) is Some(sub) else { return "none" }
+  // (no security mode: a member whose own lock this station has not heard yet turns their vault on as they keep it)
+  guard member_of(lock, email) is Some(sub) else { return if lock.open_roster() { "off" } else { "none" } }
   if self.vault_for(lock, sub) != "" {
     "on"
   } else {
@@ -275,7 +276,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     None => None
     Some(l) => member_of(l, email)
   }
-  if lock is Some(_) && sub is None {
+  if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
   }
   let lf = [("name", js(name)), ("kind", js(kind)), ("modes", jstrs(modes)), ("hosts", jstrs(hosts))]
@@ -416,7 +417,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     None => None
     Some(l) => member_of(l, email)
   }
-  if lock is Some(_) && sub is None {
+  if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
   }
   let fields = if typed { None } else { Some(fields_of(value)) }
@@ -448,7 +449,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
   let rf = [
     ("id", js(id)),
     ("ws", js(ws)),
-    ("vault", js(match lock { None => @vault_crypto.plain_id; Some(l) => self.vault_for(l, sub.unwrap()) })),
+    ("vault", js(match (lock, sub) { (None, _) => @vault_crypto.plain_id; (Some(_), None) => ""; (Some(l), Some(u)) => self.vault_for(l, u) })),
     ("item", js(item)),
     ("session", js(session)),
     ("chat", js("")),
@@ -471,7 +472,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     rf.push(("runOn", obj([("id", js(p.id)), ("name", js(p.name))])))
   }
   if lock is Some(l) && fields is Some(f) {
-    rf.push(("sealed", jarr(self.certs_of(l, sub.unwrap()).map(c => self.seal_to(c, ws, id, f)))))
+    rf.push(("sealed", jarr(match sub { Some(u) => self.certs_of(l, u).map(c => self.seal_to(c, ws, id, f)); None => [] })))
   }
   let request = obj(rf)
   let during_handover = lock is Some(_) && fields is Some(_) && !self.previous_exited

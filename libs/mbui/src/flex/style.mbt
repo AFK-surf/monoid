@@ -39,6 +39,10 @@ pub(all) enum Align {
   FlexEnd
   Stretch
   Baseline
+  // (along a row: each item's first line's middle on one line, the tallest first line's: an icon or a switch on the
+  // first line of words beside it, however many lines those come to; a node's first line is its words' (Node's
+  // first_line_mid), else its first item's, else its own middle. In a column, as FlexStart, as Baseline is)
+  FirstLineCenter
   SpaceBetween
   SpaceAround
   SpaceEvenly
@@ -1184,6 +1188,11 @@ pub(all) struct Node {
   // container, however many it holds). Never false where one is; true where none is any more only lays it out the
   // slower way (each child asked), the same layout.
   mut holds_gone : Bool
+  // Where its first line of words is, down from its top (its border box's), as its measure said it last (Node's
+  // first_line_told; NaN: it said none, holding no words of its own): that line's baseline, and its middle. What a row
+  // aligned by Baseline or FirstLineCenter lines up, read where they are, its words never laid out again to find them.
+  mut first_baseline : Double
+  mut first_line_mid : Double
 }
 
 ///|
@@ -1224,6 +1233,8 @@ pub fn Node::new() -> Node {
     pre_gen: -1,
     pre: no_pre,
     skip_gen: -1,
+    first_baseline: undef,
+    first_line_mid: undef,
   }
 }
 

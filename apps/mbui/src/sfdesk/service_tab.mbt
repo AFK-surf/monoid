@@ -50,6 +50,10 @@ fn tab_job(tab : String) -> String? {
 /// drawn (the panel shows what it showed as it slides out: sfbase's service_page_held, service_left waiting for the
 /// last node drawing it); opened again before, kept (tab_kept).
 fn tab_let_go(src : Source, r : ChatRef, tab : String) -> Unit {
+  // (in a window of its own: that window's now, let go of as it closes, tab_window_left)
+  if @signals.untracked(fn() { @sfbase.window_has_tab(r.station, r.session, tab) }) {
+    return
+  }
   // (over the whole window: back, as it is gone)
   if @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, tab) }) {
     @sfbase.tab_full_close()
@@ -86,6 +90,8 @@ fn sv_reset() -> Unit {
   jobs_handed.clear()
   held_beside.clear()
   held_full.clear()
+  held_window.clear()
+  tab_window_srcs.clear()
 }
 
 ///|
@@ -130,8 +136,18 @@ fn service_tab_node(
   full : (() -> Unit)?,
   round : FixedArray[@ui.CornerOf]?,
   tips : @sf.TipLayer,
+  beside? : (() -> Unit)? = None,
+  bar? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   let now = fn() { job_now(src, r.station, job) }
+  // (a window of its own's bar over what is said while the page is not up: `bar`; up, its page's own bar the window's,
+  // its 移到侧边 `beside`)
+  let barred = fn(b : @view.View) {
+    match bar {
+      Some(make) => make(b)
+      None => ()
+    }
+  }
   let name = fn() {
     match text(now().0, "name") {
       "" => svc("android-chat.preview.service")
@@ -152,8 +168,14 @@ fn service_tab_node(
   q.pick(at_once=true, state, fn(b, what) {
     b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     match what {
-      0 => sv_wait_node(b, fn() { @sf.t("common.connecting") })
-      1 => sv_said_node(b, fn() { svc("android-chat.preview.notFound", args=[("error", text(now().1, "message"))]) })
+      0 => {
+        sv_wait_node(b, fn() { @sf.t("common.connecting") })
+        barred(b)
+      }
+      1 => {
+        sv_said_node(b, fn() { svc("android-chat.preview.notFound", args=[("error", text(now().1, "message"))]) })
+        barred(b)
+      }
       2 => {
         @sfpages.service_view_node(
           b,
@@ -175,14 +197,17 @@ fn service_tab_node(
           full~,
           round~,
           tips~,
+          beside~,
         )
       }
-      _ =>
+      _ => {
         sv_said_node(b, fn() {
           @sf.t(if text(now().0, "state") == "failed" { "web-pages.chat.serviceFailed" } else { "web-pages.chat.serviceStopped" }, args=[
             ("name", name()),
           ])
         })
+        barred(b)
+      }
     }
   })
 }
@@ -200,8 +225,10 @@ fn file_tab_node(
   name : String,
   full : (() -> Unit)?,
   tips : @sf.TipLayer,
+  beside? : (() -> Unit)? = None,
+  bar? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
-  @sfpages.file_view_node(q, src, r.station, session, path, name, None, full~, tips~)
+  @sfpages.file_view_node(q, src, r.station, session, path, name, None, full~, tips~, beside~, bar~)
 }
 
 ///|
@@ -319,6 +346,10 @@ fn tab_beside(
     app.nav.pop() |> ignore
   } else {
     app.nav.replace(Chat(r))
+  }
+  // (in a window of its own: that window to the front instead, sfbase's tab_window_front)
+  if @sfbase.tab_window_front(r, tab) is Some(_) {
+    return
   }
   side_change_from(src, r, "open", Some(tab), now)
   if full {

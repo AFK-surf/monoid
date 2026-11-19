@@ -282,6 +282,14 @@ pub(all) suberror StoreError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for StoreError with output(self, logger) {
+  match self {
+    StoreError(m, _) => logger.write_string(m)
+  }
+}
+
+///|
 fn store_error(message : String) -> StoreError {
   StoreError(message, Json::null())
 }

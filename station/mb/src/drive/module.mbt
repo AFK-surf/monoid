@@ -5,7 +5,13 @@
 /// A refusal over the station transport (mesh/bus.ts `Refused`): the other station is told why.
 pub(all) suberror Refused {
   Refused(String)
-} derive(Show)
+}
+
+///|
+pub impl Show for Refused with output(self, logger) {
+  let Refused(m) = self
+  logger.write_string(m)
+}
 
 ///|
 /// An answer over the station transport (bus.ts): its JSON, and the bytes that follow it on its stream (`withBytes`),
@@ -34,28 +40,9 @@ fn scoped_for(drive : Drive, g : JV) -> Drive {
 }
 
 ///|
-let b64_std : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
 /// Buffer's toString("base64").
 pub fn base64(b : Bytes) -> String {
-  let url = base64url(b)
-  let out = StringBuilder::new()
-  for c in url {
-    out.write_char(
-      match c {
-        '-' => '+'
-        '_' => '/'
-        c => c
-      },
-    )
-  }
-  ignore(b64_std)
-  let pad = (4 - url.length() % 4) % 4
-  for _i = 0; _i < pad; _i = _i + 1 {
-    out.write_char('=')
-  }
-  out.to_string()
+  @codec.base64_encode(b[:])
 }
 
 ///|

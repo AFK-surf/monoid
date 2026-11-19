@@ -30,7 +30,7 @@ const arr = (v: unknown): J[] | undefined => arrU(v);
 const get = (v: unknown, k: string | number): J => getU(v, k);
 
 /// The time a value is put together for: now, and the viewer's offset from UTC.
-export type Clock = { now: number; offsetMin: number };
+export type Clock = { now: number; offsetMin: number; reached?: (at: number, later?: boolean) => boolean };
 
 /// The clock moved on to `c` (a value is put together for it): what reads a grain that changed is made again.
 export function clockAt(c: Clock): void {
@@ -615,8 +615,10 @@ export function mentions(text: string, named: [string, string][], members: J[]):
     while (len < tail.length && /[A-Z0-9]/.test(tail[len])) len++;
     if (len > 0 && tail[len] === ">") {
       const id = tail.slice(0, len);
-      const name = named.find(([b]) => b === id)?.[1] ?? memberName(members, id) ?? id;
-      out += `@${name}`;
+      // (a bot named nothing yet, as a connect not named, goes by a name heard of it, else as a member; one named with
+      // its `@` is not given another)
+      const name = named.find(([b, n]) => b === id && n !== "")?.[1] ?? memberName(members, id) ?? id;
+      out += name.startsWith("@") ? name : `@${name}`;
       rest = tail.slice(len + 1);
     } else {
       out += "<@";
@@ -1424,7 +1426,7 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     case "drive":
       return drive.shown(value, c);
     case "prefs":
-      return prefsMod.shown(value);
+      return prefsMod.shown(value, c);
   }
   if (!ticks(topic)) return value;
   const v = value as J;

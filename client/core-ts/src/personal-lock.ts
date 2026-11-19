@@ -150,6 +150,36 @@ export function grantHolds(g: J, station: string, sub: string, devices: Readonly
   }
 }
 
+/// What a person's device signs to take a chat's grant of their phone back: carried by every station of theirs it
+/// reaches, so a phone ends the grant though the station holding it goes on saying it (each phone checks it alone, as
+/// it checks a grant). Its own tag: a grant's signature is never one of these.
+export type RevokeBody = { v: 1; sub: string; station: string; request: string; exp: number };
+export type SignedRevoke = { body: RevokeBody; sig: { key: string; sig: string } };
+const revokeBytes = (body: unknown) => {
+  const tag = utf8("stillfail-phone-revoke/1\0");
+  const digest = sha256(utf8(canonical(body)));
+  const out = new Uint8Array(tag.length + digest.length);
+  out.set(tag, 0);
+  out.set(digest, tag.length);
+  return out;
+};
+
+/// What a signed taking back says, where it holds: signed for `sub` by a device on the lock pinned here, not ended
+/// (`exp`, when the grant would have ended at the latest). Null otherwise.
+export function revokeHolds(s: unknown, sub: string, devices: ReadonlyMap<string, Device>, now: number): RevokeBody | null {
+  const r = s as SignedRevoke | null | undefined;
+  if (r === null || typeof r !== "object" || r.body === null || typeof r.body !== "object") return null;
+  if (typeof r.sig?.key !== "string" || typeof r.sig.sig !== "string" || !devices.has(r.sig.key)) return null;
+  const b = r.body;
+  if (b.v !== 1 || b.sub !== sub || typeof b.station !== "string" || b.station.length === 0 || typeof b.request !== "string" || b.request.length === 0) return null;
+  if (!Number.isSafeInteger(b.exp) || b.exp <= now) return null;
+  try {
+    return verifies(r.sig.key, r.sig.sig, revokeBytes(b)) ? b : null;
+  } catch {
+    return null;
+  }
+}
+
 /// This device's standing: `none` (no lock yet: its first signature begins it), `member`, `outside` (a lock it has not
 /// joined, or that removed it), `replaced` (the cloud has another than the one pinned here: all devices lost, or forged).
 export type Standing = "none" | "member" | "outside" | "replaced";
@@ -698,10 +728,10 @@ export class PersonalLock {
     return Effect.gen({ self: this }, function* () {
       if (this.#myKey !== null) return { id: this.#myKey, seed: null };
       if (!host.appKeys || !host.secureSet) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
-      if (reason !== null && host.secureAsk) yield* Effect.mapError(host.secureAsk(reason), asCoreError);
+      if (reason !== null && host.secureAsk) yield* Effect.mapError(host.secureAsk(reason), (e) => CoreError.refused(e, "personal_no_key"));
       const seed = new Uint8Array(32);
       host.randomBytes(seed);
-      yield* Effect.mapError(host.secureSet(KEY, seed, { user: true }), asCoreError);
+      yield* Effect.mapError(host.secureSet(KEY, seed, { user: true }), (e) => CoreError.refused(e, "personal_no_key"));
       const id = `ed25519:${hex(ed25519.getPublicKey(seed))}`;
       yield* Effect.mapError(host.storageSet(KEY_ID, utf8(id)), asCoreError);
       this.#myKey = id;
@@ -714,7 +744,7 @@ export class PersonalLock {
     const { host } = this.#env;
     return Effect.gen(function* () {
       if (!host.secureGet) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
-      const seed = yield* Effect.mapError(host.secureGet(KEY, { user: true, reason }), asCoreError);
+      const seed = yield* Effect.mapError(host.secureGet(KEY, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"));
       if (seed === null || seed.length !== 32) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
       return seed;
     });
@@ -1323,6 +1353,27 @@ export class PersonalLock {
     });
   }
 
+  /// Grants taken back, signed at one go, the person asked once (none: nobody asked); refused on a device not on the
+  /// lock. `station`: the station it goes through, read of alone.
+  signRevokes(sub: string, bodies: Omit<RevokeBody, "v" | "sub">[], reason: string, station?: string): Effect.Effect<SignedRevoke[], CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      yield* Effect.result(this.refresh(sub, station, this.asked()));
+      const standing = this.standing(sub);
+      if (standing === "replaced") return yield* Effect.fail(new CoreError("personal_replaced", t("core-misc.personal.replaced")));
+      if (standing !== "member") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
+      if (bodies.length === 0) return [];
+      const seed = yield* this.#unseal(reason);
+      const within = this.asked();
+      yield* this.#signAgain(sub, seed, within);
+      yield* this.#restate(sub, seed, within);
+      yield* this.#addApproved(sub, seed, within);
+      return bodies.map((body) => {
+        const whole: RevokeBody = { v: 1, sub, ...body };
+        return { body: whole, sig: { key: this.#myKey!, sig: hex(ed25519.sign(revokeBytes(whole), seed)) } };
+      });
+    });
+  }
+
   /// Their lock begun with nobody asked where an act of theirs on it would begin it (`seedFor`'s `begins`) and this
   /// device may (`beginQuietly`'s `acted`), ahead of that act: a code shown here goes with its root (views/pair.ts
   /// `rootsOf`), and the act asks only once the code is proved. Never unseals, never asks; nothing done otherwise.
@@ -1619,7 +1670,7 @@ export class PersonalLock {
   /// A lock the person says they began anew elsewhere: this device leaves the one pinned, and joins it or begins again.
   forget(sub: string, reason: string): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#env.host.secureAsk) yield* Effect.mapError(this.#env.host.secureAsk(reason), asCoreError);
+      if (this.#env.host.secureAsk) yield* Effect.catch(this.#env.host.secureAsk(reason), (e) => (e.message === "no_device_lock" ? Effect.void : Effect.fail(CoreError.refused(e, "lock_refused"))));
       this.#pinned.delete(sub);
       this.#aside.delete(sub);
       yield* Effect.mapError(this.#env.host.storageDelete(keptAs(sub)), asCoreError);

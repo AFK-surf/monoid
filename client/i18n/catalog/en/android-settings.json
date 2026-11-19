@@ -821,7 +821,7 @@
     "one": "1 secret not yet encrypted",
     "other": "{n} secrets not yet encrypted"
   },
-  "android-settings.vault.migrate.body": "Secrets saved before security mode was turned on are still stored in plain text on the station",
+  "android-settings.vault.migrate.body": "Earlier unencrypted secrets are still stored in plain text on the station",
   "android-settings.vault.migrate.action": "Encrypt",
   "android-settings.vault.migrate.what": "encrypt secrets",
   "android-settings.vault.migrate.done": "Encrypted",

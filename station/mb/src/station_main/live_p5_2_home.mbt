@@ -81,6 +81,6 @@ fn P52::agent_home_live(self : P52) -> Unit {
     }
     running.val = false
   }
-  ignore(self.host.rt.fork(name="agents' home", round))
-  ignore((self.bus.config_listen.val)(_ => ignore(self.host.rt.fork(name="agents' home", round))))
+  ignore(self.host.rt.fork_daemon("agents' home", on_error=e => @host.note("agents' home failed: \{e}"), round))
+  ignore((self.bus.config_listen.val)(_ => ignore(self.host.rt.fork_daemon("agents' home", on_error=e => @host.note("agents' home failed: \{e}"), round))))
 }

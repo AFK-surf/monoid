@@ -6,6 +6,9 @@
 /// 「所有能看到更新的地方，一定要有三个阶段：提示更新、下载更新中、点击更新」) while it comes, failed, or wants the person,
 /// and while a check they asked for is under way.
 fn update_shown() -> Bool {
+  if @sfbase.stale_build_now() {
+    return true
+  }
   match update_now() {
     Offered(_, ..) | Coming(_, _) | Checking | Failed(_, _) => true
     _ => update_wants_you()
@@ -34,7 +37,9 @@ fn update_key_of(parent : @view.View, src : Source, tips : @sf.TipLayer) -> Unit
       }
     },
     fn() { update_pressed(src) },
-    offered=fn() { update_now() is Offered(_, ..) },
+    offered=fn() {
+      update_now() is Offered(_, ..) || (@sfbase.stale_build_now() && !(update_now() is (Coming(_, _) | Installing(_))))
+    },
   )
 }
 
@@ -101,6 +106,21 @@ fn update_said() -> (String, String, Bool) {
       let stands = @sfbase.update_stands()
       (@sf.t("desktop.update.restart"), stands.label + " · " + stands.note, false)
     }
+    _ if @sfbase.stale_build_now() =>
+      match @sfbase.stale_build_kind() {
+        "web" => {
+          let label = @sf.t("web-main.staleBuild.sidebarWeb")
+          (label, label, false)
+        }
+        "ios" => {
+          let label = @sf.t("web-main.staleBuild.sidebarIos")
+          (label, label, false)
+        }
+        _ => {
+          let label = @sf.t("web-main.staleBuild.sidebar")
+          (label, label, false)
+        }
+      }
     _ => (@sf.t("desktop.update.restart"), "", false)
   }
 }
@@ -125,9 +145,13 @@ fn update_pressed(src : Source) -> Unit {
     Some(w) if (src.asks_station_updates)() && @sfpages.station_updates_said(settings_core(src, w), w.id) != "" =>
       @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
     _ =>
-      match update_now() {
-        Coming(_, _) => @sfbase.update_dialog(src)
-        _ => update_go(src)
+      if @sfbase.stale_build_now() {
+        @sfbase.stale_build_action(src)
+      } else {
+        match update_now() {
+          Coming(_, _) => @sfbase.update_dialog(src)
+          _ => update_go(src)
+        }
       }
   }
 }

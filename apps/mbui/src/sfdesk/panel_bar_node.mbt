@@ -170,18 +170,7 @@ fn side_bar_node(
         _ => None
       }
     }
-    bar.show(at_once=true, fn() { window_page() is Some(_) }, fn(e) {
-      e.shrink(Is(0.0)) |> ignore
-      @sf.icon_button_node(e, "external", fn() { @sf.t("web-pages.screen.window") }, fn() {
-        let tab = front()
-        match station_tab_page(r, tab) {
-          Some(p) if @sfbase.open_window(p) => side_change(src, r, "close", Some(tab))
-          _ => ()
-        }
-      }, tips~, linked=bar_linked)
-      |> ignore
-    })
-    // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row under it; any other
+    // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏, before 在新窗口打开 as a screen's are (no second file toolbar row under it; any other
     // tab's is its own bar's), the tab over the whole window (tab_full_node.mbt)
     bar.show(at_once=true, fn() {
       match @sfbase.view_tab_file(front()) {
@@ -190,7 +179,21 @@ fn side_bar_node(
       }
     }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
-      tab_full_key_node(e, r, front, tips)
+      tab_full_key_node(e, r, front, tips, linked=bar_linked)
+    })
+    // 在新窗口打开, one key (one show) for what it sends: the station's screen or terminal in front to a window of its
+    // own, else a tab that goes over the whole window in front (a file, a mini-program, a web service, a
+    // visualization) to its third place (tab_full_node.mbt's tab_window_open)
+    bar.show(at_once=true, fn() { window_page() is Some(_) || tab_window_offered(r, front()) }, fn(e) {
+      e.shrink(Is(0.0)) |> ignore
+      @sf.icon_button_node(e, "external", fn() { @sf.t("web-pages.screen.window") }, fn() {
+        let tab = front()
+        match window_page() {
+          Some(p) => if @sfbase.open_window(p) { side_change(src, r, "close", Some(tab)) }
+          None => tab_window_open(src, r, tab) |> ignore
+        }
+      }, tips~, linked=bar_linked)
+      |> ignore
     })
     // the panel's switch stays in its top right corner, open or closed; in the short column, the column's
     // (histories_ticked)
@@ -233,9 +236,11 @@ fn side_mark_node(n : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
       Dot(job) =>
         m.box(fn(d) {
           @sf.style_node(d, fn() { side_tab_mark })
-          jobs_pop_dot(d, fn() {
-            text(src.topic("job", { "station": Json::string(r.station), "id": Json::string(job) }).get().value, "tone")
+          let job_held = @sfbase.topic_value_held(src, "job", {
+            "station": Json::string(r.station),
+            "id": Json::string(job),
           })
+          jobs_pop_dot(d, fn() { text(job_held.get(), "tone") })
         })
         |> ignore
     }
@@ -257,7 +262,20 @@ fn side_tabs_node(
   front : () -> String,
   tips : @sf.TipLayer,
 ) -> Unit {
-  let names = fn(tab : String) { side_tab_names(src, r, view(), tab) }
+  // each service tab's job, held as it was while a new ask of it has no answer yet (the panel taken back kept left)
+  let jobs_held : Map[String, @signals.Computed[Json?]] = Map([])
+  let job_of = fn(job : String) -> Json? {
+    let held = match jobs_held.get(job) {
+      Some(c) => c
+      None => {
+        let c = @sfbase.topic_value_held(src, "job", { "station": Json::string(r.station), "id": Json::string(job) })
+        jobs_held[job] = c
+        c
+      }
+    }
+    held.get()
+  }
+  let names = fn(tab : String) { side_tab_names(src, r, view(), tab, job_of~) }
   @sf.tab_bar_node(
     p,
     fn() { @sf.t("web-pages.screen.tabs") },

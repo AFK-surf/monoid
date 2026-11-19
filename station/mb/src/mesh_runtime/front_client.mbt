@@ -44,48 +44,33 @@ pub(all) struct Sockets {
 }
 
 ///|
-/// The shell's Unix sockets.
+/// The shell's Unix sockets (`@host`'s): each connection a `@net.Socket`, closed at the shell once.
 pub fn shell_sockets(host : @host.Host) -> Sockets {
-  let sock = (id : Json) => {
+  let sock = (c : @host.Conn) => {
     let gone = Ref(false)
     let s : Sock = {
-      read: async fn() -> Bytes? {
-        let (said, bytes) = host.shell("tcp.read", { "id": id })
-        match (said, bytes) {
-          ({ "end": True, .. }, _) => None
-          (_, Some(b)) => Some(b)
-          _ => None
-        }
-      },
-      write: async fn(b) { ignore(host.shell("tcp.write", { "id": id }, bytes=b)) },
-      end: async fn() { ignore(host.shell("tcp.end", { "id": id })) },
+      read: async fn() -> Bytes? { c.socket.read() },
+      write: async fn(b) { c.socket.write(b) },
+      end: async fn() { c.socket.end_write() },
       destroy: () => if !gone.val {
         gone.val = true
-        ignore(host.rt.fork(() => ignore(host.shell("tcp.close", { "id": id })) catch { _ => () }))
+        ignore(host.rt.fork_quiet(() => c.socket.destroy()))
       },
     }
     s
   }
   {
-    connect: async fn(path) {
-      let (said, _) = host.shell("unix.open", { "path": jstr(path) })
-      sock(field(said, "id").unwrap_or(Json::null()))
-    },
+    connect: async fn(path) { sock(host.unix_open(path)) },
     listen: async fn(path) {
-      let (said, _) = host.shell("unix.listen", { "path": jstr(path) })
-      let id = field(said, "id").unwrap_or(Json::null())
+      let listening = host.unix_listen(path)
       let closed = Ref(false)
       {
         accept: async fn() -> Sock? {
-          if closed.val {
-            return None
-          }
-          let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => return None }
-          Some(sock(field(got, "id").unwrap_or(Json::null())))
+          accept_through(closed=() => closed.val, async fn() { host.accept(listening.id) }).map(sock)
         },
         close: () => if !closed.val {
           closed.val = true
-          ignore(host.rt.fork(() => ignore(host.shell("listen.close", { "id": id })) catch { _ => () }))
+          ignore(host.rt.fork_quiet(() => host.listen_close(listening.id)))
         },
       }
     },
@@ -94,18 +79,23 @@ pub fn shell_sockets(host : @host.Host) -> Sockets {
 }
 
 ///|
-/// A socket as the front's link keeps it: whether it was let go, or its sending half ended.
+/// A socket as the front's link keeps it: whether it was let go, or its sending half ended. The shell keeps a socket
+/// until it is told to close it (`tcp.close`), even when both halves are over, so the socket is let go once its read
+/// side has ended and its sending half has been ended, as Node closes a half-open socket then by itself. Until then it
+/// stays counted as open (`on_close`, as Node's `close`), so a connection's close or the front's end still lets it go.
 priv struct Held {
   sock : Sock
   mut destroyed : Bool
   mut ended : Bool
+  mut sent_end : Bool
+  mut read_over : Bool
   mut closed : Bool
   on_close : Array[() -> Unit]
 }
 
 ///|
 fn Held::new(sock : Sock) -> Held {
-  { sock, destroyed: false, ended: false, closed: false, on_close: [] }
+  { sock, destroyed: false, ended: false, sent_end: false, read_over: false, closed: false, on_close: [] }
 }
 
 ///|
@@ -130,12 +120,25 @@ fn Held::closed_now(self : Held) -> Unit {
 }
 
 ///|
+/// Its read side ended: let go once its sending half is over too.
+fn Held::read_ended(self : Held) -> Unit {
+  self.read_over = true
+  if self.sent_end {
+    self.destroy()
+  }
+}
+
+///|
 async fn Held::end(self : Held) -> Unit {
   if self.ended || self.destroyed {
     return
   }
   self.ended = true
   (self.sock.end)() catch { _ => () }
+  self.sent_end = true
+  if self.read_over {
+    self.destroy()
+  }
 }
 
 ///|
@@ -350,7 +353,7 @@ pub async fn Front::open(sockets : Sockets, socket : String, pid : Int, rt : @ef
     on_mesh_scopes: _ => (),
   }
   ignore(
-    rt.fork(name="front control", () => {
+    rt.fork_daemon("front control", on_error=_ => (), () => {
       let lines = @wire.Lines::new()
       while (control.read)() is Some(bytes) {
         for line in lines.push(bytes[:]) {
@@ -376,15 +379,20 @@ pub async fn Front::open(sockets : Sockets, socket : String, pid : Int, rt : @ef
         }
       }
       front.end_("the front is gone")
+      // (its read side over and the link gone: nothing writes on it again, so it is let go, whichever end went first)
+      front.control.destroy()
     } catch {
-      _ => front.end_("the front is gone")
+      _ => {
+        front.end_("the front is gone")
+        front.control.destroy()
+      }
     }),
   )
   ignore(
-    rt.fork(name="front streams", () => {
+    rt.fork_daemon("front streams", on_error=_ => (), () => {
       while (server.accept)() is Some(s) {
         let held = Held::new(s)
-        ignore(rt.fork(name="front stream", () => front.took(held) catch { _ => held.destroy() }))
+        ignore(rt.fork_daemon("front stream", on_error=_ => (), () => front.took(held) catch { _ => held.destroy() }))
       }
     } catch {
       _ => ()
@@ -453,7 +461,7 @@ pub fn Front::forget(self : Front, conn : Int64) -> Unit {
   if self.conn_sockets.get(conn) is Some(held) {
     self.conn_sockets.remove(conn)
     for h in held {
-      ignore(self.rt.fork(() => h.end()))
+      ignore(self.rt.fork_quiet(name="front socket end", () => h.end()))
     }
   }
   let gone = []
@@ -510,7 +518,7 @@ async fn Front::took(self : Front, held : Held) -> Unit {
   let mut head = b""
   while true {
     guard (held.sock.read)() is Some(more) else {
-      held.closed_now()
+      held.destroy()
       return
     }
     parts.push(more)
@@ -598,13 +606,13 @@ fn Front::end_(self : Front, error : String) -> Unit {
   (self.server.close)()
   let path = self.streams_path
   let sockets = self.sockets
-  ignore(self.rt.fork(() => (sockets.remove)(path)))
+  ignore(self.rt.fork_quiet(name="front streams path", () => (sockets.remove)(path)))
 }
 
 ///|
 /// The link closed here.
 pub fn Front::close(self : Front) -> Unit {
-  ignore(self.rt.fork(() => self.control.end()))
+  ignore(self.rt.fork_quiet(name="front control end", () => self.control.end()))
   self.end_("the endpoint is closed")
 }
 
@@ -648,7 +656,10 @@ fn FrontStream::new(front : Front, id : Int64, came : Came, both : Bool) -> Fron
   }
   s.parse(came.carry)
   ignore(
-    front.rt.fork(name="front stream reads", () => {
+    front.rt.fork_daemon("front stream reads", on_error=_ => {
+        s.came(Failed("the stream's way to the front ended"))
+        s.held.destroy()
+      }, () => {
       while (s.held.sock.read)() is Some(d) {
         s.parse(d)
       }
@@ -657,11 +668,11 @@ fn FrontStream::new(front : Front, id : Int64, came : Came, both : Bool) -> Fron
         s.held.end()
       }
       s.came(Failed("the stream's way to the front ended"))
-      s.held.closed_now()
+      s.held.read_ended()
     } catch {
       _ => {
         s.came(Failed("the stream's way to the front ended"))
-        s.held.closed_now()
+        s.held.destroy()
       }
     }),
   )
@@ -858,7 +869,12 @@ fn FrontConnection::new(front : Front, seen : Json) -> FrontConnection {
     incoming: front.incoming_of(conn),
   }
   ignore(
-    front.rt.fork(name="front conn closed", () => {
+    front.rt.fork_daemon("front conn closed", on_error=e => {
+        if c.closed is None {
+          c.closed = Some(jobj([("kind", jstr("other")), ("reason", jstr(message_of(e)))]))
+        }
+        ignore(c.ended.succeed(message_of(e)))
+      }, () => {
       let info = front.ask("conn.closed", args=[("conn", jnum(conn.to_double()))]) catch {
         e => {
           if c.closed is None {
@@ -889,7 +905,7 @@ fn FrontConnection::again(self : FrontConnection) -> Unit {
   }
   self.asking = true
   ignore(
-    self.front.rt.fork(name="front conn seen", () => {
+    self.front.rt.fork_daemon("front conn seen", on_error=_ => self.asking = false, () => {
       let seen = self.front.ask("conn.seen", args=[("conn", jnum(self.conn.to_double()))]) catch {
         _ => {
           self.asking = false
@@ -957,7 +973,7 @@ fn FrontConnection::as_connection(self : FrontConnection) -> @door.Connection {
         self.closed = Some(jobj([("kind", jstr("local")), ("reason", jstr(""))]))
       }
       ignore(
-        self.front.rt.fork(() => ignore(
+        self.front.rt.fork_quiet(name="front conn close", () => ignore(
           self.front.ask(
             "conn.close",
             args=[("conn", jnum(self.conn.to_double())), ("code", jnum(code.to_double())), ("reason", jstr(reason))],
@@ -1211,7 +1227,13 @@ pub async fn FrontEndpoint::mesh_detach_leaf(self : FrontEndpoint, value : Json)
 /// The link gone while the endpoint is open: made again, a while after each try that fails.
 fn FrontEndpoint::watch(self : FrontEndpoint, front : Front) -> Unit {
   ignore(
-    self.rt.fork(name="front watch", () => {
+    self.rt.fork_daemon("front watch", on_error=e => {
+        (self.log)("warn", "mesh", "watching the front failed", jobj([("error", jstr(message_of(e)))]))
+        if self.again is Some(a) {
+          self.again = None
+          ignore(a.succeed(()))
+        }
+      }, () => {
       front.gone_wait()
       if self.closed || !physical_equal(self.front, front) {
         return
@@ -1317,7 +1339,7 @@ fn FrontEndpoint::relays_again(self : FrontEndpoint) -> Unit {
   }
   self.asking = true
   ignore(
-    self.rt.fork(name="front relays", () => {
+    self.rt.fork_daemon("front relays", on_error=_ => self.asking = false, () => {
       let r = self.ask("relayStatus") catch {
         _ => {
           self.asking = false
@@ -1402,7 +1424,7 @@ pub async fn FrontEndpoint::public_relays(self : FrontEndpoint, on : Bool) -> Un
 ///|
 /// Asked and let be (`keep`, `setCongestion`, `holdIncoming`, `addAddr`): what fails is said or let go.
 fn FrontEndpoint::tell(self : FrontEndpoint, op : String, args : Array[(String, Json)], failed : (Error) -> Unit) -> Unit {
-  ignore(self.rt.fork(() => ignore(self.ask(op, args~)) catch { e => failed(e) }))
+  ignore(self.rt.fork_daemon("front tell", on_error=e => failed(e), () => ignore(self.ask(op, args~)) catch { e => failed(e) }))
 }
 
 ///|
@@ -1496,7 +1518,7 @@ pub async fn FrontEndpoint::connect(
   let asked = Ref(0)
   if given_up is Some(g) {
     ignore(
-      self.rt.fork(() => {
+      self.rt.fork_quiet(name="front give up", () => {
         g.wait()
         ignore(front.ask("giveUp", args=[("of", jnum(asked.val.to_double()))]))
       } catch {

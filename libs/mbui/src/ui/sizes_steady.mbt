@@ -329,12 +329,23 @@ let stop_jerk : Double = 1.5
 /// (what is in such a row is measured from its top) nor by rows_steady, which walks only the old view's lists
 /// (rows_steady.mbt's rows_steady_faults: a list node of an old view's with its state); it is said today only where a
 /// drawn box round its cause steps. A round that only prints comes before the chat's page is switched.
+///|
+/// Whether an interval of `dt` ms with change `dx` is a sub-half-frame sliver across the 0.5-period bucket edge where a
+/// pixel-snapped coordinate at reference speed `v_ref` (pt/period) moves less than one device pixel `px`: a 0- or
+/// 1-pixel step over that sliver is quantization, not a dead stop or velocity spike; a real step larger than one pixel
+/// is still caught.
+fn is_pixel_sliver(dt : Double, dx : Double, v_ref : Double, period : Double, px : Double) -> Bool {
+  px > 0.0 && dt < 0.5 * period && dx.abs() <= px + 1.0e-9 && v_ref.abs() * (dt / period) < px
+}
+
+///|
 fn sizes_steady_fault(
   all : Array[(Double, Double, Double)],
   period : Double,
   turned~ : Double,
   set_out? : Double = -1.0,
   unasked? : Bool = true,
+  px? : Double = 0.0,
 ) -> (String?, Double) {
   // (the last four; the one before them, where there is one, for whether they set out from rest)
   let seen = if all.length() > 4 { all[all.length() - 4:].to_owned() } else { all }
@@ -349,9 +360,10 @@ fn sizes_steady_fault(
     seen[1].1 - seen[0].1 <= 1.5 * period &&
     seen[2].1 - seen[1].1 <= 1.5 * period &&
     !(set_out > seen[0].1 && set_out <= seen[2].1) {
+    let dt1 = seen[2].1 - seen[1].1
     let v0 = (seen[1].2 - seen[0].2) / (seen[1].1 - seen[0].1) * period
-    let v1 = (seen[2].2 - seen[1].2) / (seen[2].1 - seen[1].1) * period
-    if v0.abs() > rows_speed_least && v1.abs() <= 0.25 {
+    let v1 = (seen[2].2 - seen[1].2) / dt1 * period
+    if !is_pixel_sliver(dt1, seen[2].2 - seen[1].2, v0, period, px) && v0.abs() > rows_speed_least && v1.abs() <= 0.25 {
       return (
         Some("stepped \{v0} in its first frame then stood (\{v1}) at \{seen[1].1} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"),
         turned,
@@ -374,12 +386,14 @@ fn sizes_steady_fault(
     let on = v1 * v2 > 0.0 && v2.abs() >= 0.25 * v1.abs() && v2.abs() <= v1.abs()
     let sets_out = on && (v0.abs() < 0.5 || (rest_before && v0 * v1 > 0.0 && v0.abs() < v1.abs()))
     let off = (v1 - (v0 + v2) / 2.0).abs()
+    let sliver_end = is_pixel_sliver(seen[3].1 - seen[2].1, seen[3].2 - seen[2].2, v1, period, px)
+    let sliver_mid = is_pixel_sliver(seen[2].1 - seen[1].1, seen[2].2 - seen[1].2, dmax(v0.abs(), v2.abs()), period, px)
     // (stopped dead: going, then all but still in a frame, the speed it lost that frame more than stop_jerk times what
     // it lost in either frame before (the lesser of the two, a frame further back where there is one: where its slowing
     // set in falls between frames as it likes); slowing at one rate to rest, whatever frame its rest falls on, none
     // (the coordinator of the migration, 2026-11-11: what stops dead is a step in how fast it slows, not where its rest
     // falls among the frames; what it does after, turning back or not, no part of it))
-    if v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
+    if !sliver_end && v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
       let toward = if v1 > 0.0 { 1.0 } else { -1.0 }
       // (each loss of speed over the time between the middles of the two frames it is between, in two frames' time: a
       // slowing at one rate loses as much over the same time, a frame twice as long as the rest between them or not;
@@ -414,7 +428,13 @@ fn sizes_steady_fault(
     }
     // (at rest, or all but, then setting out: none)
     let resting = v0.abs() < least && v1.abs() < least
-    if !sets_out && !resting && (v1 - v0) * (v1 - v2) > 0.0 && (v1 - v0).abs() > least && (v1 - v2).abs() > least &&
+    if !sliver_end &&
+      !sliver_mid &&
+      !sets_out &&
+      !resting &&
+      (v1 - v0) * (v1 - v2) > 0.0 &&
+      (v1 - v0).abs() > least &&
+      (v1 - v2).abs() > least &&
       off > 0.5 * dmax(v0.abs(), v2.abs()) {
       return (Some("went \{v1} a frame between \{v0} and \{v2} at \{at} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"), turned)
     }
@@ -626,6 +646,17 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
         }
+        // (on a flight's way: drawn in the window's terms, in no row of what it is drawn among (shared.mbt), what it
+        // holds measured from it as ever)
+        match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) if tr.lifted_at(id.at) => {
+            row_at[i] = 0.0
+            col_at[i] = 0.0
+            in_row[i] = false
+            set_out[i] = -1.0
+          }
+          _ => ()
+        }
       }
     }
     puts_now.each(fn(by, at) { sizes_steady.puts[by] = at })
@@ -722,20 +753,23 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       let gy = ya[i] * ny + yb[i]
       let gh = ya[i] * nh
-      let (top0, bot0) = match self.drawn_entry(i) {
-        Some({ ground: Some((_, y, _, h, _)), .. }) => (y, y + h)
+      // (and across: where its ground starts and how wide it is drawn, the same way)
+      let (top0, bot0, ground_left, ground_w) = match self.drawn_entry(i) {
+        Some({ ground: Some((x, y, w, h, _)), .. }) => (y, y + h, x, w)
         // (a node of the window's tree: its ground as drawn, off where it is laid out (Tree::ground_drawn_of: a
-        // ground grown on a list's one way, Node's flip_in))
+        // ground grown on a list's one way, Node's flip_in, down and across))
         _ =>
           match (tree, tree_frame_ids.get(i)) {
             (Some(tr), Some(id)) => {
               let gd = tr.ground_drawn_of(id)
-              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh))
+              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh), nx + xb[i] + gd.dx, nw + gd.dw)
             }
-            _ => (gy, gy + gh)
+            _ => (gy, gy + gh, nx + xb[i], nw)
           }
       }
-      let left0 = nx + xb[i]
+      // (words are measured where they stand, their box's; a ground where it is drawn)
+      let left0 = if words { nx + xb[i] } else { ground_left }
+      let nw = if words { nw } else { ground_w }
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)
       let placed = match n.island {
         Some(id) => old_placed.iter().any(fn(p) { p.0 == id })
@@ -831,12 +865,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           seen.remove(0) |> ignore
         }
         let turned = ns.turned[slot]
+        let px = if self.scale > 0.0 { 1.0 / self.scale } else { 0.0 }
         let (fault, turn) = sizes_steady_fault(
           seen,
           period,
           turned~,
           set_out=set_out[i],
           unasked=ns.first_unasked[slot],
+          px~,
         )
         ns.turned[slot] = turn
         match fault {

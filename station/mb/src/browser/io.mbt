@@ -73,6 +73,14 @@ pub(all) suberror FsError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// The machine's files, as these parts ask them (node:fs/promises, ops/files.ts).
 pub(all) struct Files {
   /// `readFile(path, "utf8")`; None where it cannot be read.

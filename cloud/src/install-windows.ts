@@ -378,15 +378,19 @@ function CmdPath([string]$path) {
   return $null
 }
 # A .cmd that runs $target with its arguments: the path as CmdPath names it; under no such variable, written in the
-# system's OEM code page (cmd's) when that can say it; else refused, rather than a command that runs nothing.
+# system's OEM code page (cmd's) when that can say it; else refused, rather than a command that runs nothing. Another
+# product's command first sets its own data directory, which the release's command does not default to, unless the
+# caller set one (as bin/stillfail keeps one it is given); named as CmdPath names it too, so a home with other than
+# ASCII in its path gets the same ASCII file as still.fail's.
 function WriteCmd([string]$file, [string]$target) {
-  # (another product's command runs on its own data directory, which the release's command does not default to)
-  $own = if ($product -ne 'stillfail') { '@setlocal' + [char]13 + [char]10 + '@set "STILLFAIL_DATA=' + $data + '"' + [char]13 + [char]10 } else { '' }
+  $own = { param([string]$dir) if ($product -ne 'stillfail') { '@setlocal' + [char]13 + [char]10 + '@if not defined STILLFAIL_DATA set "STILLFAIL_DATA=' + $dir + '"' + [char]13 + [char]10 } else { '' } }
   $named = CmdPath $target
-  if ($named -and -not $own) { Set-Content -Path $file -Encoding ASCII -Value ('@"' + $named + '" %*'); return }
+  $namedData = if ($product -ne 'stillfail') { CmdPath $data } else { '' }
+  if ($named -and $null -ne $namedData) { Set-Content -Path $file -Encoding ASCII -Value ((& $own $namedData) + '@"' + $named + '" %*'); return }
+  $said = (& $own $data) + '@"' + $target + '" %*'
   $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
-  if ($oem.GetString($oem.GetBytes($own + $target)) -cne ($own + $target)) { Fail (__SAY(cloud.install.win.cmdPath, path=$target)) }
-  [IO.File]::WriteAllText($file, $own + '@"' + $target + '" %*' + [char]13 + [char]10, $oem)
+  if ($oem.GetString($oem.GetBytes($said)) -cne $said) { Fail (__SAY(cloud.install.win.cmdPath, path=$target)) }
+  [IO.File]::WriteAllText($file, $said + [char]13 + [char]10, $oem)
 }
 
 # The command: ~\\.local\\bin\\stillfail.cmd, that directory on the user's PATH.

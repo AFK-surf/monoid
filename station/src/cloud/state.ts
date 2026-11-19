@@ -15,6 +15,8 @@ import { type Entry, type LockState, apply, asEntry, bodyHash, canonical, entryH
 import { type BodyRefused, LockBodies } from "./lock-bodies.ts";
 import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "./log-keep.ts";
 import { PersonChains } from "../mesh/person-chains.ts";
+import { SeenDevices } from "../mesh/seen-devices.ts";
+import { type VaultsHeld, personalVaultLock } from "./vault-lock.ts";
 import { type Provider, providerOf } from "./provider.ts";
 
 export type Revocation = { kind: string; id: string; at: number };
@@ -165,6 +167,15 @@ export function personChainsOf(cloud: Cloud): PersonChains {
     if (cloud instanceof Cloud) cloud.heardPersons(c);
   }
   return c;
+}
+
+/// The members' devices that came to this station, by workspace (mesh/seen-devices.ts), made on first use as
+/// `personChainsOf`'s are.
+const seens = new WeakMap<object, SeenDevices>();
+export function seenDevicesOf(cloud: Cloud): SeenDevices {
+  let s = seens.get(cloud);
+  if (s === undefined) seens.set(cloud, (s = new SeenDevices(cloud.data === undefined ? null : join(meshDir(cloud.data), "seen-devices.json"))));
+  return s;
 }
 
 /// A workspace's state where its chain moved, as made last (Cloud `forceOf`): of which kept lock, which logs and
@@ -600,6 +611,19 @@ export class Cloud {
     if (root === undefined) return l;
     const f = this.forceOf(ws ?? null, l, root);
     return f.on === "off" ? null : f.out;
+  }
+
+  /// The lock workspace `ws`'s vault goes by: the workspace's lock in force where it is in security mode (`locked`:
+  /// one broken or waiting as it is, admitting nobody), else its members' own locks as one (cloud/vault-lock.ts),
+  /// the same object while what it is made of stands. Null for none: a station in no workspace (`ws` naming none).
+  /// `held`: the vault's own records, whose owners it names and whose signatures choose among a person's logs.
+  vaultLock(ws?: string | null, held?: VaultsHeld): LockState | null {
+    const at = ws === undefined || ws === null || ws === this.home() ? null : ws;
+    const id = this.idOf(at);
+    if (id === "") return null;
+    const l = this.locked(at);
+    if (l !== null) return l.state;
+    return personalVaultLock(this, id, { chains: personChainsOf(this), members: seenDevicesOf(this) }, held);
   }
 
   /// What says which of the stations the control plane lists in `ws` are the workspace's: the lock in force, or, where

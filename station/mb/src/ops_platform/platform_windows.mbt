@@ -149,6 +149,43 @@ pub fn win_command_candidates(
 }
 
 ///|
+/// Where `name` is on `env`'s PATH on Windows, as windows.ts `findCommand` finds it: with each of PATHEXT's extensions,
+/// never a file with none first (npm puts a POSIX `#!/bin/sh` script `codex` beside `codex.cmd`, which Windows cannot
+/// run). A name that has an extension already (`git.exe`) is looked for as it is too, before those. `there`: whether a
+/// file is at a path.
+pub fn win_find_command(
+  name : String,
+  env : Array[(String, String)],
+  delim : String,
+  join : (Array[String]) -> String,
+  there : (String) -> Bool,
+) -> String? {
+  guard win_command_candidates(name, env, delim, join) is Some(candidates) else { return None }
+  let mut last = name
+  for sep in ["\\", "/"] {
+    let parts = split_on(last, sep)
+    last = parts[parts.length() - 1]
+  }
+  let as_it_is = if has(last, ".") {
+    guard env_key_ci(env, "PATH") is Some(key) else { return None }
+    split_on(env_get(env, key).unwrap_or(""), delim).map(dir => join([if dir == "" { "." } else { dir }, name]))
+  } else {
+    []
+  }
+  for c in as_it_is {
+    if there(c) {
+      return Some(c)
+    }
+  }
+  for c in candidates {
+    if there(c) {
+      return Some(c)
+    }
+  }
+  None
+}
+
+///|
 pub(all) struct ShellCandidate {
   path : String
   beside : String?
@@ -579,9 +616,28 @@ pub fn windows_register_script(hidden : String, ps1 : String, run_dir : String, 
 }
 
 ///|
-/// windows.ts `startInstaller`'s task and admin, from windows.json's text (None where it did not read).
-pub fn windows_task_of(kept : String?) -> (String, Bool) {
-  let mut task = "still.fail station"
+/// windows.ts `defaultWindowsTask`: the station's own task where windows.json names none, its data directory's
+/// product's (`.monoid`: monoid's; any other: still.fail's).
+fn default_windows_task(data_dir : String) -> String {
+  let mut end = data_dir.length()
+  let is_sep = (c : Int) => c == 47 || c == 92 // '/' or '\\'
+  while end > 0 && is_sep(cu(data_dir, end - 1)) {
+    end -= 1
+  }
+  let mut start = end
+  while start > 0 && !is_sep(cu(data_dir, start - 1)) {
+    start -= 1
+  }
+  let leaf = lower(sub(data_dir, start, end))
+  let product = if leaf == "." + monoid_product.id { monoid_product } else { stillfail_product }
+  product.name + " station"
+}
+
+///|
+/// windows.ts `startInstaller`'s task and admin, from windows.json's text (None where it did not read) and the data
+/// directory it is in.
+pub fn windows_task_of(kept : String?, data_dir? : String = "") -> (String, Bool) {
+  let mut task = default_windows_task(data_dir)
   let mut admin = false
   match kept {
     Some(text) =>

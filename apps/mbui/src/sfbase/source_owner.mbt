@@ -16,6 +16,9 @@ priv struct ViewSourceOwner {
   mut reading : TopicReadMode
   mut topics : Array[ViewSourceTopic]
   leaving : Map[String, Bool]
+  // its view put by at rest (a page's entry kept left: Source::owned_by_parkable): what it holds of its untracked reads
+  // let go of, and none read so till it is taken back
+  mut parked : Bool
 }
 
 ///|
@@ -42,6 +45,10 @@ fn view_owner_follow(owner : ViewSourceOwner, name : String, params : Map[String
   if mode is Graph {
     return Some(scoped_topic(owner.base, name, params))
   }
+  // (put by at rest: an untracked read holds nothing and answers none, its view drawn by none of it)
+  if owner.parked {
+    return None
+  }
   let key = (owner.base.topic_key)(name, params)
   let reading = exact_topic_key(name, params)
   // Equal wire identities may still have different source-side projections, so only reuse the same raw read's value.
@@ -61,7 +68,43 @@ fn view_owner_follow(owner : ViewSourceOwner, name : String, params : Map[String
 /// A source whose reads belong to `view`. A topic is released when this view explicitly leaves it or is let go;
 /// another view or graph reader may still hold the same core subscription.
 pub fn Source::owned_by(src : Source, view : @view.View) -> Source {
-  let owner : ViewSourceOwner = { base: src, live: @signals.signal(view.alive()), reading: Raw, topics: [], leaving: {} }
+  Source::owned_by_parkable(src, view).0
+}
+
+///|
+/// Source::owned_by's, and what puts its view by at rest and takes it back (true, false: a page's entry kept left,
+/// Nav::try_park_left, and put on again): put by, what its untracked reads hold is let go of (the core's subscription
+/// held by none of it, its graph's reads at rest with its view) and none is read so till it is taken back.
+pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (Bool) -> Unit) {
+  let owner : ViewSourceOwner = {
+    base: src,
+    live: @signals.signal(view.alive()),
+    reading: Raw,
+    topics: [],
+    leaving: {},
+    parked: false,
+  }
+  // (the source made below: what it read untracked, kept by what is worked out of it, let go of as it is put by)
+  let owned_ref : Ref[Source?] = { val: None }
+  // (put by at rest once at least: only then is what it worked out let go of with it, below; a view never put by goes
+  // as a source owned by a view always went)
+  let ever_parked = Ref(false)
+  let park = fn(on : Bool) {
+    owner.parked = on
+    if on {
+      ever_parked.val = true
+      let topics = owner.topics
+      owner.topics = []
+      for t in topics {
+        t.watch.stop()
+      }
+      match owned_ref.val {
+        // (what it worked out kept, each with its value, what that read let go of: worked out anew from it as it wakes)
+        Some(owned) => kept_forget_source(owned, kept=true)
+        None => ()
+      }
+    }
+  }
   let owned : Source = {
     ..src,
     topic_alive: fn() { owner.live.get() && (src.topic_alive)() },
@@ -129,8 +172,9 @@ pub fn Source::owned_by(src : Source, view : @view.View) -> Source {
       stop()
     },
   }
+  owned_ref.val = Some(owned)
   if !view.alive() {
-    return owned
+    return (owned, park)
   }
   view.owns(fn() {
     owner.live.set(false)
@@ -139,6 +183,14 @@ pub fn Source::owned_by(src : Source, view : @view.View) -> Source {
     for t in topics {
       t.watch.stop()
     }
+    // (what was worked out of what it read, nothing following it, let go of with it where it was ever put by:
+    // kept_forget_source)
+    if ever_parked.val {
+      match owned_ref.val {
+        Some(owned) => kept_forget_source(owned)
+        None => ()
+      }
+    }
   }) |> ignore
-  owned
+  (owned, park)
 }

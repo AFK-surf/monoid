@@ -201,7 +201,7 @@ fn stories_u5(tips : @sf.TipLayer) -> Array[Story] {
         ),
       ],
     },
-  ]
+  ] + stories_u16(tips)
 }
 
 ///|

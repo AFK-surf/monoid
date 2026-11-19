@@ -117,6 +117,15 @@ pub(all) suberror Refused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Refused with output(self, logger) {
+  match self {
+    Refused(_, m) => logger.write_string(m)
+    Moved(m, _) => logger.write_string(m)
+  }
+}
+
+///|
 /// Its status and message where it is a Refused (one of the routes' or one a part threw).
 pub fn refused_of(e : Error) -> (Int32, String)? {
   match e {

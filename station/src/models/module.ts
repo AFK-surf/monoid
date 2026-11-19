@@ -11,7 +11,9 @@ import { learn, named as namedKeys } from "../accounts/catalog.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
-import { AgentsSide, ControlPlane, Paths } from "../services.ts";
+import { Agents } from "../sessions/agents.ts";
+import { AgentsSide, ControlPlane, Paths, Store } from "../services.ts";
+import { repriceUsage } from "../usage/module.ts";
 
 
 type Get = (url: string, init: RequestInit) => Promise<Response>;
@@ -25,17 +27,20 @@ export class ModelCatalog {
   readonly #origin: () => string | null;
   readonly #get: Get;
   readonly #added: (keys: string[]) => void;
+  readonly #learned: () => void;
 
   /// `file`: where it is kept; `origin`: still.fail cloud's, none when the station is in no still.fail cloud; `added`:
-  /// told the keys of the models a catalog the cloud sent names that the one before did not (none the first time).
-  constructor(file: string, origin: () => string | null, _now: () => number, get: Get = (url, init) => fetch(url, init), added: (keys: string[]) => void = () => {}) {
+  /// told the keys of the models a catalog the cloud sent names that the one before did not (none the first time);
+  /// `onLearned`: called after a catalog is learned from disk or the cloud.
+  constructor(file: string, origin: () => string | null, _now: () => number, get: Get = (url, init) => fetch(url, init), added: (keys: string[]) => void = () => {}, onLearned: () => void = () => {}) {
     this.#file = new PrivateFile(file);
     this.#origin = origin;
     this.#get = get;
     this.#added = added;
+    this.#learned = onLearned;
     try {
       const kept = JSON.parse(readFileSync(file, "utf8")); // sync: read once, before the station serves
-      learn(kept?.models);
+      if (learn(kept?.models) > 0) this.#learned();
       if (typeof kept?.etag === "string") this.#etag = kept.etag;
     } catch {
       // None kept yet, or unreadable: the station's own tables answer until the cloud does.
@@ -79,6 +84,7 @@ export class ModelCatalog {
     // Written off the station's thread; one ask at a time (`refresh`), so in order.
     await this.#file.write(JSON.stringify({ etag: this.#etag, models: body?.models ?? {} }));
     log.info("models", "the model catalog was read", { models: named });
+    this.#learned();
     if (added.length > 0) this.#added(added);
   }
 
@@ -92,11 +98,13 @@ export const ModelsLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const plane = yield* ControlPlane;
     const { data } = yield* Paths;
+    const store = yield* Store;
+    const { hub } = yield* Agents;
     const side = yield* AgentsSide;
     // On its own clock, ended with the station.
     const time = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("models")), (t) => Effect.promise(() => t.close()));
     const origin = () => (plane.spec().provider === "stillfail" ? (plane.state.state?.origin ?? null) : null);
-    const catalog = new ModelCatalog(join(data, "model-catalog.json"), origin, () => time.now(), undefined, (keys) => side.current?.accounts.newModels(keys));
+    const catalog = new ModelCatalog(join(data, "model-catalog.json"), origin, () => time.now(), undefined, (keys) => side.current?.accounts.newModels(keys), () => repriceUsage(store, hub.live));
     yield* Effect.addFinalizer(() => Effect.promise(() => catalog.written()));
     time.after(0, () => void catalog.refresh());
     plane.told("models", (said) => void catalog.refresh(said.type === "models" ? said.etag : undefined));

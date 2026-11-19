@@ -131,11 +131,10 @@ export class UsageCounter {
       return me.#readLogged(only);
     });
     // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too:
-    // the transcripts read so already are read on from where they are, a file's own first)
+    // the counter finds those sessions itself, off the main thread, and reads on each transcript from where it is)
     const timeBack = Effect.promise(async () => {
       const from = me.#clock.currentTimeMillisUnsafe() - TIMED_BACK_MS;
       await me.#readLogged(undefined, from);
-      await me.#readLogged(new Set(me.#store.usageActiveSessions(from)), from);
     });
     const loop = Effect.gen(function* () {
       yield* timeBack;

@@ -122,6 +122,10 @@ pub async fn GrantServers::reap(
 }
 
 ///|
+/// How many records' names beside them this process gave (`GrantServers::write_soon`).
+let record_seq : Ref[Int64] = { val: 0L }
+
+///|
 /// One write at a time, each of what is kept as it begins.
 fn GrantServers::write_soon(self : GrantServers) -> @effect.Deferred[Unit] {
   guard self.record is Some(record) else {
@@ -139,7 +143,14 @@ fn GrantServers::write_soon(self : GrantServers) -> @effect.Deferred[Unit] {
     }
     try {
       let pid = w.ask("process.pid", [])
-      let temp = "\{record}.\{js_text(pid)}.tmp"
+      // (a name of its own, let go of where the write fails: never one another write of this process takes, L13)
+      record_seq.val += 1L
+      let temp = "\{record}.\{js_text(pid)}.\{record_seq.val}.tmp"
+      errdefer @effect.uninterruptible(async fn() {
+        ignore(w.ask("fs.rm", [js(temp)])) catch {
+          _ => ()
+        }
+      })
       ignore(
         w.ask("fs.write", [
           js(temp),

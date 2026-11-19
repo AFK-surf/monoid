@@ -54,6 +54,9 @@ priv struct SettingsFixture {
   /// lin's own vault waiting to be keyed anew on Willow, a device holding its key taken out of the lock
   /// (settings-vault-waits): its row's `waits`
   mut vault_waits : Bool
+  /// the workspace in no safe mode, the vault its person's own (settings-vault-own-…): "" in safe mode; "off" not turned on
+  /// yet (开启 begins their own lock); "on" turned on here; "outside" this device to be approved by another of theirs
+  mut vault_own : String
   /// the skills shared (true) or no longer (false) since the run started (`skill.share`), by name
   skills_shared : Map[String, Bool]
   /// the quota's resets used on ChatGPT 团队 (`profile.resetQuota`)
@@ -101,6 +104,9 @@ priv struct SettingsFixture {
   mut lock_doing_ws : String
   /// how its prompt went: "deny" (turned away), "hide" (closed, the code still good), "" while it is up
   mut pair_ended : String
+  /// a code typed on the page that waits (fixture_pair_typed): how far it got, "" none typed; how many were typed
+  mut pair_flow : String
+  mut pair_typed : Int
   /// a device of lin's (Pixel 9) set up without the key to 林的库, waiting on this one for it (settings-vault-prompt),
   /// until given it or put away
   mut key_ask : Bool
@@ -188,6 +194,7 @@ let fx : SettingsFixture = {
   vault_off: false,
   plain_left: 0,
   vault_waits: false,
+  vault_own: "",
   skills_shared: {},
   resets_used: 0,
   reset_expiry: false,
@@ -208,6 +215,8 @@ let fx : SettingsFixture = {
   lock_doing: "",
   lock_doing_ws: "",
   pair_ended: "",
+  pair_flow: "",
+  pair_typed: 0,
   key_ask: false,
   key_ask_ended: "",
   key_giving: false,
@@ -424,6 +433,7 @@ fn fixture_reset() -> Unit {
   fx.vault_off = false
   fx.plain_left = 0
   fx.vault_waits = false
+  fx.vault_own = ""
   fx.pairing = false
   fx.pairing_personal = false
   fx.pairing_more = false
@@ -435,6 +445,8 @@ fn fixture_reset() -> Unit {
   fx.lock_doing = ""
   fx.lock_doing_ws = ""
   fx.pair_ended = ""
+  fx.pair_flow = ""
+  fx.pair_typed = 0
   fx.key_ask = false
   fx.key_ask_ended = ""
   fx.key_giving = false
@@ -620,6 +632,46 @@ pub fn fixture_lock_done() -> Unit {
   fx.lock_case = ""
   fx_changed()
 }
+
+///|
+/// A code typed on the page that waits (`lock.pairCode`), as a trusted device that asks its person takes it: checked
+/// (`checking`), then that device asking them there (fixture_pair_asking), whose person is not through its prompt the
+/// first time (the app not in front there: the same code to type again) and is the next (fixture_pair_answer). True
+/// for that call: the made-up core takes it so (src/sffixture fixture.mbt).
+pub fn fixture_pair_typed(name : String) -> Bool {
+  if name != "lock.pairCode" {
+    return false
+  }
+  fx.pair_typed += 1
+  fx.pair_flow = "checking"
+  fx_changed()
+  true
+}
+
+///|
+/// The trusted device asks its person for the code typed (fixture_pair_typed).
+pub fn fixture_pair_asking() -> Unit {
+  fx.pair_flow = "confirming"
+  fx_changed()
+}
+
+///|
+/// What came of the code typed (fixture_pair_typed): the first time not through, the next let in.
+pub fn fixture_pair_answer() -> Result[Json, Json] {
+  if fx.pair_typed < 2 {
+    fx.pair_flow = "retry"
+    fx_changed()
+    Err(obj([("code", str("pair_wrong")), ("message", str(fixture_pair_retry))]))
+  } else {
+    fx.pair_flow = "done"
+    fx_changed()
+    Ok(obj([]))
+  }
+}
+
+///|
+/// The core's words for a code right whose trusted device's person was not through its prompt (core-misc.lock.pairRetryAway).
+let fixture_pair_retry : String = "显示安全码的设备上 still.fail 不在前台，没能验证身份：在那台设备上打开 still.fail，再在这里输入一次同一个安全码"
 
 ///|
 /// The bot being made by scanning (MBUI_FIXTURE=settings-new-connect-scan) made: the wizard done on its own, the
@@ -926,6 +978,30 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-off" => fx.vault_off = true
     "settings-vault-plain" => fx.plain_left = 2
     "settings-vault-waits" => fx.vault_waits = true
+    // 密钥 with no safe mode: the vault its person's own (not turned on yet, turned on with secrets from before still in
+    // plain text, this device to be approved by another trusted device of theirs: its code typed, or their devices set
+    // up again elsewhere)
+    "settings-vault-own-off" => {
+      fx.vault_own = "off"
+      fx.vault_off = true
+      fx.plain_left = 2
+    }
+    "settings-vault-own-on" => {
+      fx.vault_own = "on"
+      fx.plain_left = 2
+    }
+    "settings-vault-own-outside" => {
+      fx.vault_own = "outside"
+      fx_adb.val = "lock-outside"
+    }
+    "settings-vault-own-code" => {
+      fx.vault_own = "outside"
+      fx_adb.val = "gate-code"
+    }
+    "settings-vault-own-replaced" => {
+      fx.vault_own = "outside"
+      fx_adb.val = "lock-replaced"
+    }
     "settings-lock-prompt" => fx.pairing = true
     // (one asking into the person's own lock: no workspace named)
     "settings-lock-prompt-personal" => {
@@ -1005,7 +1081,7 @@ pub fn fixture_page(mode : String) -> String {
       "stations"
     "settings-adb" | "settings-adb-off" | "settings-adb-unpaired" | "settings-adb-pairing" | "settings-adb-connected" | "settings-adb-failed" =>
       "adb:ws1/st1"
-    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
+    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-gate-checking" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
       "adb:"
     // the second station a phone is lent to, its first paired already
     "settings-adb-second" => "adb:ws1/st2"
@@ -1020,6 +1096,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
@@ -1865,13 +1942,15 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
 fn fx_connect_as(kind : String) -> Json {
   let feishu = kind == "feishu"
   let group = kind == "group"
-  match fx_connect("k1", if feishu { "飞书助手" } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
+  // (a Feishu one's words as the core says them in the language shown: its English picture all English)
+  let feishu_name = if @sf.language() == "en" { "Feishu Assistant" } else { "飞书助手" }
+  match fx_connect("k1", if feishu { feishu_name } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
     Object(o) => {
       o["kind"] = str(kind)
       o.remove("team")
       o.remove("slack")
       o["sessions"] = Json::number(0.0)
-      o["placeText"] = str(if feishu { "飞书" } else if group { "Group" } else { "Comma" })
+      o["placeText"] = str(if feishu { tr("web-pages.connect.feishu.name") } else if group { "Group" } else { "Comma" })
       if group {
         o["group"] = obj([
           ("server", str("3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")),
@@ -1891,12 +1970,14 @@ fn fx_connect_as(kind : String) -> Json {
           ("appId", str("cli_a7f3e9b2c41d500e")),
           ("appSecret", str("…9c2b")),
           ("domain", str("feishu")),
+          ("directThreads", Json::boolean(false)),
           ("console", str("https://open.feishu.cn/app/cli_a7f3e9b2c41d500e")),
         ])
+        o["statusText"] = str(tr("core-logic.format.connection.connected"))
         o["modeWords"] = fx_mode_words(true)
-        o["modeText"] = str("每个群一个会话")
-        o["modeLabel"] = str("每个群一个会话")
-        o["modeSentence"] = str("在群里 @ 它开始，之后群里的消息都交给这个会话；@ 它说「新会话」另开一个，话题群的每个话题各一个会话")
+        o["modeText"] = str(tr("web-main.mode.feishu.multi.label"))
+        o["modeLabel"] = str(tr("web-main.mode.feishu.multi.label"))
+        o["modeSentence"] = str(tr("web-main.mode.feishu.multi.description"))
       }
       Json::object(o)
     }
@@ -1989,11 +2070,11 @@ fn fx_mode_words_group() -> Json {
 fn fx_mode_words(feishu : Bool) -> Json {
   if feishu {
     obj([
-      ("multi", obj([("label", str("每个群一个会话")), ("description", str("在群里 @ 它开始，之后群里的消息都交给这个会话；@ 它说「新会话」另开一个，话题群的每个话题各一个会话"))])),
-      ("threads", obj([("label", str("每个 thread 一个会话")), ("description", str("在群里 @ 它就开一个 thread，回复都留在 thread 里；每个 thread 一个会话，thread 里的后续消息无需再 @"))])),
-      ("single", obj([("label", str("所有群共用一个会话")), ("description", str("它所在的群和私聊都进入同一个会话，适合长期值守的助手"))])),
-      ("mentionOn", str("被 @ 后，同一个群里的后续消息无需再 @。")),
-      ("mentionOff", str("它所在的群里的每条消息都会进入会话。")),
+      ("multi", obj([("label", str(tr("web-main.mode.feishu.multi.label"))), ("description", str(tr("web-main.mode.feishu.multi.description")))])),
+      ("threads", obj([("label", str(tr("web-main.mode.feishu.threads.label"))), ("description", str(tr("web-main.mode.feishu.threads.description")))])),
+      ("single", obj([("label", str(tr("web-main.mode.feishu.single.label"))), ("description", str(tr("web-main.mode.feishu.single.description")))])),
+      ("mentionOn", str(tr("web-pages.connect.mentionOn.feishu"))),
+      ("mentionOff", str(tr("web-pages.connect.mentionOff.feishu"))),
     ])
   } else {
     obj([
@@ -3366,7 +3447,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       Some(
         obj([
           ("available", Json::boolean(true)),
-          ("locked", Json::boolean(fx.lock_case != "root-off" && fx.lock_case != "again")),
+          // (a vault kept by its person's own devices alone is a workspace not in security mode)
+          ("locked", Json::boolean(fx.vault_own == "" && fx.lock_case != "root-off" && fx.lock_case != "again")),
           ("notice", Json::boolean(false)),
           ("role", str("owner")),
           ("manages", Json::boolean(true)),
@@ -3459,17 +3541,24 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       Some(
         obj([
           ("available", Json::boolean(true)),
-          ("locked", Json::boolean(true)),
-          ("canSign", Json::boolean(!["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case))),
+          // (no safe mode: the vault its person's own all the same, `locked` saying only safe mode's off)
+          ("locked", Json::boolean(fx.vault_own == "")),
+          (
+            "canSign",
+            Json::boolean(fx.vault_own != "outside" && !["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case)),
+          ),
           ("setUp", Json::boolean(!fx.vault_off)),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
             "vaults",
-            [fx_vault_row()],
+            if fx.vault_own == "off" || fx.vault_own == "outside" { [] } else { [fx_vault_row()] },
           ),
           (
             "requests",
-            [
+            if fx.vault_own == "off" || fx.vault_own == "outside" {
+              []
+            } else {
+              [
               obj([
                 ("id", str("r1")),
                 ("vault", str("v1")),
@@ -3486,12 +3575,13 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("howText", str("代理 · 限 api.github.com")),
                 ("at", Json::number(0.0)),
               ]),
-            ],
+              ]
+            },
           ),
           ("refused", []),
-          // (the core's words of it: its one request waits)
-          ("statusText", str("1 个待批准")),
-          ("statusBad", Json::boolean(true)),
+          // (the core's words of it: its one request waits; none where no vault of theirs is kept)
+          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else { "1 个待批准" })),
+          ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
         ] +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
@@ -3787,6 +3877,30 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
           ]),
         ),
       )
+    // 开启 with no safe mode (settings-vault-own-off): lin's own lock begun with this device on it, the vault made, the
+    // recovery words to write down, what was plain from before moved in (views/vault.ts `setup`)
+    "vault.setup" if fx.vault_own == "off" => {
+      fx.vault_own = "on"
+      fx.vault_off = false
+      fx.plain_left = 0
+      fx_changed()
+      Some(Ok(obj([("words", str(fx_words().join(" "))), ("device", str("d1")), ("stations", ["st1"]), ("made", str("v1"))])))
+    }
+    // this device asking to be approved by another trusted device of lin's (settings-vault-own-outside): the code it
+    // shows typed in here next; typed, approved, on lin's own lock (the vault 开启 here next)
+    "adb.personalJoin" if fx.vault_own == "outside" => {
+      fx_adb.val = "gate-code"
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "adb.personalCode" if fx.vault_own == "outside" => {
+      fx_adb.val = "lock-member"
+      fx.vault_own = "off"
+      fx.vault_off = true
+      fx.plain_left = 0
+      fx_changed()
+      Some(Ok(Json::null()))
+    }
     // lin's secrets from before security mode encrypted into their vault
     "vault.migrate" => {
       fx.plain_left = 0
@@ -4131,8 +4245,9 @@ fn waiting_approvers(code : Bool) -> Json {
 
 ///|
 /// The lock as a device not confirmed in it has it (MBUI_FIXTURE=lock-waiting, lock-finding, lock-code, lock-wrong,
-/// lock-wrong-gone, lock-checking, lock-none, lock-failed, lock-nocode, lock-security, each also -dark: its waiting page
-/// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked, no device found,
+/// lock-wrong-gone, lock-checking, lock-confirming, lock-none, lock-failed, lock-nocode, lock-security, each also -dark: its waiting page
+/// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked (the device showing
+/// it asking its person there), no device found,
 /// the pairing failed (lock-elsewhere: approved in another workspace, not this one), this device without
 /// its code yet; its security page): this device waiting, not a signer. lock-upgrade: in the lock but not signing (its key lost), the code being typed on its
 /// security page. lock-needs-app, lock-needs-app-security: a web page left out of an upgraded workspace that nobody can
@@ -4157,6 +4272,13 @@ fn waiting_lock(mode : String) -> Json {
     ""
   }
   let pair = match mode {
+    // (a code typed here, as the made-up core takes it: fixture_pair_typed)
+    _ if fx.pair_flow == "checking" => obj([("state", str("checking")), ("left", Json::number(3.0))])
+    _ if fx.pair_flow == "confirming" =>
+      obj([("state", str("checking")), ("left", Json::number(3.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])
+    _ if fx.pair_flow == "retry" =>
+      obj([("state", str("wrong")), ("left", Json::number(3.0)), ("error", str(fixture_pair_retry)), ("untilText", str("14:05 前有效"))])
+    _ if fx.pair_flow == "done" => obj([("state", str("done"))])
     _ if own == "restart" => obj([("state", str("none")), ("approvers", waiting_approvers(false))])
     _ if own != "" => Json::null()
     // (the devices it dials, the core's rows; one showing the code, once it does)
@@ -4167,6 +4289,9 @@ fn waiting_lock(mode : String) -> Json {
     "lock-wrong-gone" =>
       obj([("state", str("wrong")), ("left", Json::number(2.0)), ("error", str("安全码不对，或显示它的设备已断开，还可以试 2 次")), ("untilText", str("14:05 前有效"))])
     "lock-checking" => obj([("state", str("checking")), ("left", Json::number(3.0))])
+    // (the trusted device took the code and asks its person there: where to look, the core's words)
+    "lock-confirming" =>
+      obj([("state", str("checking")), ("left", Json::number(3.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])
     "lock-none" => obj([("state", str("none")), ("approvers", waiting_approvers(false))])
     "lock-failed" => obj([("state", str("failed")), ("error", str("配对超时"))])
     "lock-elsewhere" =>
@@ -4182,8 +4307,8 @@ fn waiting_lock(mode : String) -> Json {
     ("device", str("d-me")),
     ("code", str(code)),
     ("kind", str(if needs_app { "web" } else { "app" })),
-    ("confirmed", Json::boolean(upgrade)),
-    ("waiting", Json::boolean(!upgrade && !needs_app)),
+    ("confirmed", Json::boolean(upgrade || fx.pair_flow == "done")),
+    ("waiting", Json::boolean(!upgrade && !needs_app && fx.pair_flow != "done")),
     ("unsigned", Json::boolean(upgrade)),
     ("pair", pair),
   ]
@@ -4599,7 +4724,7 @@ fn fx_session_pick() -> Json {
     ("efforts", ["low", "medium", "high"]),
     ("was", ["Opus 5.5", "默认深度", "自动 · Claude 主账号"]),
     ("becomes", ["Opus 5.5", "high", "自动 · Claude 主账号"]),
-    ("accountText", str("自动分配")),
+    ("accountText", str(tr("core-logic.choose.account.auto"))),
     ("accountNote", str("Claude 主账号 · 5 小时窗口已用 62%")),
     ("repick", str("重新分配")),
     // (PickProfile: its kind, its runtime, its allowance as its chips draw it)
@@ -4879,7 +5004,13 @@ fn fx_adb_share() -> Json {
       lent("connected", [
         ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
+    // (the code typed being checked, the device showing it asking its person there)
+    "gate-checking" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+      ])
     "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
+    "lock-replaced" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("replaced")), ("devices", Json::array([]))])]))])
     // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved
     // on its own (`multi`), or set it up again elsewhere (`multi-replaced`); or the other way round (`multi-member`)
     "lock-multi" | "lock-multi-replaced" | "lock-multi-member" => {

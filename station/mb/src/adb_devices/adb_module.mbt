@@ -163,6 +163,16 @@ pub async fn Adb::new(
       }
     },
     outcomes~,
+    told_revoke=async fn(signed, owner, request, workspace) {
+      ignore(
+        w.ask("events.tell", [
+          js("adb-revoke"),
+          signed,
+          js("adb-revoke\u{0}\{owner}\u{0}\{request}"),
+          jo([("workspace", js(workspace)), ("email", js(owner))]),
+        ]),
+      )
+    },
   )
   grants_ref.val = Some(grants)
   let shares = Shares::new(
@@ -272,6 +282,8 @@ pub async fn Adb::stream(
         200,
         jo([
           ("grants", ja(self.grants.of_owner(email, workspace=ws))),
+          // (`revokes`: what their devices signed to take grants back, each phone checking it, whichever station's grant)
+          ("revokes", ja(self.grants.revokes_of_owner(email))),
           ("lasts", js("chat")),
           ("signs", jb(true)),
         ]),
@@ -279,6 +291,14 @@ pub async fn Adb::stream(
     }
     if op == "lasts" {
       return reply(200, jo([("lasts", js("chat"))]))
+    }
+    // A taking back of a grant another station holds, brought here by the owner's device to be told to their phones
+    // (the grant's own station may never say it ended).
+    if op == "revoke" && at(Some(ask), "relay") is Some(Bool(true)) {
+      return match self.grants.keep_revoke(email, at(Some(ask), "signed"), ws) {
+        None => reply(200, jo([("ok", jb(true))]))
+        Some(why) => reply(422, jo([("message", js(why))]))
+      }
     }
     let id = match at(Some(ask), "request") {
       Some(Str(_) as r) => js_text(r)
@@ -299,7 +319,7 @@ pub async fn Adb::stream(
           ws,
           signed?=at(Some(ask), "signed"),
         )
-      _ => self.grants.revoke(email, id, ws)
+      _ => self.grants.revoke(email, id, ws, signed?=at(Some(ask), "signed"))
     }
     let request = self.grants.get(id)
     return match why {

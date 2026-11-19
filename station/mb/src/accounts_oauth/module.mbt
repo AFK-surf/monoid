@@ -16,6 +16,7 @@ pub struct ModelCatalog {
   priv origin : () -> String?
   priv get : async (Request) -> Response
   priv added : (Array[String]) -> Unit
+  priv learned : () -> Unit
   priv catalog : Catalog
   priv io : Io
 }
@@ -23,7 +24,8 @@ pub struct ModelCatalog {
 ///|
 /// `file`: where it is kept; `origin`: still.fail cloud's, none when the station is in no still.fail cloud; `get`: how
 /// it is asked (the network's fetch); `added`: told the keys of the models a catalog the cloud sent names that the one
-/// before did not (none the first time). What was kept is read first.
+/// before did not (none the first time); `learned`: called after a catalog is learned from disk or the cloud. What was
+/// kept is read first.
 pub async fn ModelCatalog::open(
   io : Io,
   catalog : Catalog,
@@ -31,6 +33,7 @@ pub async fn ModelCatalog::open(
   origin : () -> String?,
   asker? : async (Request) -> Response,
   added? : (Array[String]) -> Unit = _ => (),
+  learned? : () -> Unit = () => (),
 ) -> ModelCatalog {
   let m : ModelCatalog = {
     etag: None,
@@ -44,6 +47,7 @@ pub async fn ModelCatalog::open(
       None => io.fetch
     },
     added,
+    learned,
     catalog,
     io,
   }
@@ -51,7 +55,9 @@ pub async fn ModelCatalog::open(
   let text = (io.read)(file) catch { _ => return m }
   match parse_or_none(text) {
     Some(kept) => {
-      ignore(catalog.learn(get(Some(kept), "models")))
+      if catalog.learn(get(Some(kept), "models")) > 0 {
+        (m.learned)()
+      }
       if str_of(get(Some(kept), "etag")) is Some(e) {
         m.etag = Some(e)
       }
@@ -100,33 +106,6 @@ fn ModelCatalog::start(self : ModelCatalog, etag : String?) -> @effect.Deferred[
 }
 
 ///|
-/// `encodeURIComponent`.
-fn uri_component(s : String) -> String {
-  let out = StringBuilder()
-  for b in utf8_of(s) {
-    let c = b.to_int()
-    if is_ascii_alpha(c) ||
-      is_ascii_digit(c) ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '!' ||
-      c == '~' ||
-      c == '*' ||
-      c == '\'' ||
-      c == '(' ||
-      c == ')' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex_digit(c >> 4))
-      out.write_char(hex_digit(c & 15))
-    }
-  }
-  out.to_string()
-}
-
-///|
 async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
   guard (self.origin)() is Some(origin) else { return }
   let headers = [("user-agent", "stillfail-station")]
@@ -134,7 +113,7 @@ async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
     headers.push(("if-none-match", e))
   }
   let v = match etag {
-    Some(e) => "?v=\{uri_component(e)}"
+    Some(e) => "?v=\{@url.encode_uri_component(e)}"
     None => ""
   }
   let response = (self.get)({
@@ -178,6 +157,7 @@ async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
     raise e
   }
   (self.io.log)("info", "models", "the model catalog was read", { "models": Json::number(named.to_double()) })
+  (self.learned)()
   if added.length() > 0 {
     (self.added)(added)
   }

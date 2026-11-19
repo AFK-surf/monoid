@@ -7,6 +7,8 @@ test "a new device waiting on this one's code: its panel over the page, where it
   let t = settings_tester("home", mode="settings-lock-prompt", shows="settings-lock-prompt", platform=2)
   t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting(), msg="its sheet up over the page")
+  // (the screen kept on while the code is to be read off it: gone dark, the device could not ask as the code comes)
+  assert_true(t.awake())
   assert_true(t.find("林的新设备请求批准") is Some(_))
   assert_true(t.find("Pixel 9") is Some(_))
   // where it asks to be let in, each workspace by name
@@ -22,6 +24,7 @@ test "a new device waiting on this one's code: its panel over the page, where it
   assert_false(@sf.presenting())
   assert_true(t.find("林的新设备请求批准") is None)
   assert_eq(@settings.fixture_pair_ended(), "deny")
+  assert_false(t.awake())
 }
 
 ///|
@@ -29,12 +32,14 @@ test "the panel closed by hand once the code is read: put away, not turned away 
   let t = settings_tester("home", mode="settings-lock-prompt", shows="settings-lock-prompt", platform=2)
   t.run_for(@ui.move_most_ms)
   assert_true(@sf.presenting())
+  assert_true(t.awake())
   // a tap on the page beside it
   t.tap(195.0, 60.0)
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenting())
   assert_true(t.find("林的新设备请求批准") is None)
   assert_eq(@settings.fixture_pair_ended(), "hide")
+  assert_false(t.awake())
 }
 
 ///|
@@ -42,6 +47,7 @@ test "no device waiting: no panel" {
   let t = settings_tester("home")
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenting())
+  assert_false(t.awake())
 }
 
 // With keyboard and mouse, on a wide window (a dialog in the middle there), done or turned away on another device
@@ -68,9 +74,11 @@ test "done or turned away on another device: its panel goes by itself, nothing a
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
     assert_true(t.find("林的新设备请求批准") is Some(_))
+    assert_true(t.awake(), msg="platform \{screen.0}, wide \{screen.1}")
     @settings.fixture_prompts_now(pairing=false, key_ask=false)
     t.draw()
     t.run_for(@ui.move_most_ms)
+    assert_false(t.awake(), msg="platform \{screen.0}, wide \{screen.1}")
     assert_false(@sf.presenting(), msg="platform \{screen.0}, wide \{screen.1}")
     assert_true(t.find("林的新设备请求批准") is None)
     assert_eq(@settings.fixture_pair_ended(), "")

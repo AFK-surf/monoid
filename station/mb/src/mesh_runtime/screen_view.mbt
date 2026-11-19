@@ -24,6 +24,14 @@ pub(all) suberror ScreenRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ScreenRefused with output(self, logger) {
+  match self {
+    ScreenRefused(_, key, _, _) => logger.write_string(key)
+  }
+}
+
+///|
 /// One encoded frame (source.ts `Frame`): its config before it where it changed, whether it is a key frame, its time
 /// (µs) and its bytes.
 pub(all) struct ScreenFrame {
@@ -68,6 +76,8 @@ pub(all) struct ScreenViewPort {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> () -> Unit)?
   watch_cursor : (((Json) -> Unit) -> () -> Unit)?
+  /// The picture of a pointer of an app's own `watch_cursor` said as "custom:<id>".
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Json) -> Unit) -> () -> Unit)?
   watch_windows : (((Json) -> Unit) -> () -> Unit)?
   window : ((Double?) -> Unit)?
@@ -244,62 +254,7 @@ fn upper(s : String) -> String {
 ///|
 /// `decodeURIComponent(s)`; None where it throws (a `%` not of two hex digits, bytes that are no UTF-8).
 pub fn decode_uri_component(s : String) -> String? {
-  let out = StringBuilder()
-  let n = s.length()
-  let mut i = 0
-  let hexv = (c : Int) => digit_of(c, 16)
-  let byte_at = (at : Int) => {
-    if at + 2 > n - 1 {
-      return None
-    }
-    if s.code_unit_at(at).to_int() != 0x25 {
-      return None
-    }
-    match (hexv(s.code_unit_at(at + 1).to_int()), hexv(s.code_unit_at(at + 2).to_int())) {
-      (Some(h), Some(l)) => Some(h * 16 + l)
-      _ => None
-    }
-  }
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if c != 0x25 {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    guard byte_at(i) is Some(b) else { return None }
-    i += 3
-    if b < 0x80 {
-      out.write_char(b.unsafe_to_char())
-      continue
-    }
-    let (more, least, first) = if b >= 0xc2 && b <= 0xdf {
-      (1, 0x80, b & 0x1f)
-    } else if b >= 0xe0 && b <= 0xef {
-      (2, 0x800, b & 0x0f)
-    } else if b >= 0xf0 && b <= 0xf4 {
-      (3, 0x10000, b & 0x07)
-    } else {
-      return None
-    }
-    let mut point = first
-    for _ in 0..<more {
-      guard byte_at(i) is Some(k) && (k & 0xc0) == 0x80 else { return None }
-      point = (point << 6) | (k & 0x3f)
-      i += 3
-    }
-    if point < least || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff) {
-      return None
-    }
-    if point >= 0x10000 {
-      let p = point - 0x10000
-      out.write_char((0xd800 + (p >> 10)).unsafe_to_char())
-      out.write_char((0xdc00 + (p & 0x3ff)).unsafe_to_char())
-    } else {
-      out.write_char(point.unsafe_to_char())
-    }
-  }
-  Some(out.to_string())
+  @url.decode_uri_component(s)
 }
 
 ///|
@@ -333,9 +288,11 @@ fn config_bytes(c : FrameConfig) -> Bytes {
 /// A stream whose head says `screen` (`answerScreen`): a view of a screen, for as long as both sides keep it. `carry`:
 /// what came after the head line; `viewer`: who (`{name, email, role, device}`); `up`: whether the station has started;
 /// `paths`: the ways of the connection it came on, whose counters say what of the view's link was lost (None: nothing
-/// said of it); `rt`: the view's clock (ms); `host_now`: the clock a frame's capture time is on (screen-pace.ts `hostNow`, the
-/// helpers' monotonic one; by default the view's); `stall`: how long the station's loop stood still, and its end (the
-/// live clock's alone).
+/// said of it) and where it goes (what the view starts at: `start_rate_of`); `rt`: the view's clock (ms); `host_now`:
+/// the clock a frame's capture time is on (screen-pace.ts `hostNow`, the helpers' monotonic one; by default the view's);
+/// `stall`: how long the station's loop stood still, and its end (the live clock's alone); `media_datagrams`: the
+/// stream's frames of picture and sound sent as datagrams under the client's token from now on (the shell's
+/// `istream.mediaDatagrams`), whether they are (None: a stream that cannot, on as before).
 pub async fn answer_screen(
   hub : ScreenHubPort,
   stream : @door.Stream,
@@ -349,6 +306,7 @@ pub async fn answer_screen(
   paths? : (() -> Array[LinkPath])? = None,
   host_now? : (() -> Double)? = None,
   stall? : (() -> Double, () -> Unit) = (() => 0.0, () => ()),
+  media_datagrams? : (async (Double) -> Bool)? = None,
 ) -> Unit {
   let headers = match field(head, "headers") {
     Some(Object(m)) => {
@@ -415,8 +373,14 @@ pub async fn answer_screen(
   }
   // (asked once before the view opens: a front's connection reads its paths anew as it is asked, so the loss is
   // counted from the link as the view begins)
-  if paths is Some(f) {
-    ignore(f())
+  let initial_paths = match paths {
+    Some(f) => Some(f())
+    None => None
+  }
+  // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
+  let initial_rate = match initial_paths {
+    Some(ways) if !peek => start_rate_of(ways)
+    _ => start_rate
   }
   let options = [
     ("maxWidth", field(ask, "maxWidth").unwrap()),
@@ -429,7 +393,7 @@ pub async fn answer_screen(
       options.push(("opus", Json::boolean(true)))
     }
   }
-  options.push(("bitrate", jnum(start_rate)))
+  options.push(("bitrate", jnum(initial_rate)))
   if field(ask, "fps") is Some(f) {
     options.push(("fps", f))
   }
@@ -469,8 +433,20 @@ pub async fn answer_screen(
     (view.close)()
     return refuse(404, tr(lang, "station.screen.notFound", none), [])
   }
+  // its picture and sound as datagrams where the client takes them under its token and the link carries them (the
+  // reply says so), else on the stream as before
+  let reply_headers = [("content-type", jstr(screen_type))]
+  match (field(ask, "datagrams"), media_datagrams) {
+    (Some(Number(token, ..)), Some(send)) => {
+      let sent = send(token) catch { _ => false }
+      if sent {
+        reply_headers.push((dgram_header, jstr(token.to_int64().to_string())))
+      }
+    }
+    _ => ()
+  }
   let wrote = (async fn() -> Bool {
-    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj([("content-type", jstr(screen_type))]))]))
+    js_line(stream, jobj([("status", jnum(200.0)), ("headers", jobj(reply_headers))]))
     true
   })() catch {
     _ => false
@@ -491,7 +467,7 @@ pub async fn answer_screen(
   let max_width = num_of(field(ask, "maxWidth")).unwrap_or(1920.0)
   let max_height = num_of(field(ask, "maxHeight")).unwrap_or(1080.0)
   let quality = str_of(field(ask, "quality"))
-  let pacer = Pacer::new(now, start=Some(start_rate), fps=num_of(field(ask, "fps")), stalled~)
+  let pacer = Pacer::new(now, start=Some(initial_rate), fps=num_of(field(ask, "fps")), stalled~)
   let sizer = Sizer::new(now, { max_width, max_height }, quality~)
   let session = ViewSession::new(
     hub,
@@ -521,6 +497,9 @@ pub async fn answer_screen(
     tr,
     said,
     paths,
+    initial_rate,
+    field(ask, "binaryCursor") is Some(True),
+    field(ask, "customCursor") is Some(True),
   )
   session.run() catch {
     e => {
@@ -581,6 +560,13 @@ priv struct ViewSession {
   loss : LinkLoss
   paths : (() -> Array[LinkPath])?
   sharpen : Sharpener
+  /// The rate the source was opened at.
+  start_rate : Double
+  /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
+  binary_cursor : Bool
+  /// The client draws the pointers of apps' own (asked `customCursor`), and those whose pictures it was sent.
+  custom_cursor : Bool
+  cursor_images_sent : Map[String, Bool]
   mut closed : Bool
   over : @effect.Deferred[Unit]
   /// The writes, in order: each waits for the one before.
@@ -650,6 +636,9 @@ fn ViewSession::new(
   tr : Tr,
   said : Said,
   paths : (() -> Array[LinkPath])?,
+  start_rate : Double,
+  binary_cursor : Bool,
+  custom_cursor : Bool,
 ) -> ViewSession {
   let loss = LinkLoss::new(now)
   // (its counters as the view begins: what went before is no part of it)
@@ -686,6 +675,10 @@ fn ViewSession::new(
     said,
     latency: FrameLatency::new(host_now),
     sharpen: Sharpener::new(),
+    start_rate,
+    binary_cursor,
+    custom_cursor,
+    cursor_images_sent: {},
     closed: false,
     over: @effect.Deferred::new(),
     writes: done_now(),
@@ -729,7 +722,7 @@ fn ViewSession::send(self : ViewSession, kind : Int, payload : Bytes) -> @effect
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.writes = mine
   ignore(
-    self.rt.fork(name="screen write", () => {
+    self.rt.fork_daemon("screen write", on_error=_ => ignore(mine.succeed(())), () => {
       before.wait() catch { _ => () }
       (self.stream.write)(frame(kind, payload)) catch {
         _ => self.stop(None)
@@ -738,6 +731,42 @@ fn ViewSession::send(self : ViewSession, kind : Int, payload : Bytes) -> @effect
     }),
   )
   mine
+}
+
+///|
+/// The pointer as the client is told it (`#cursorShown`): one of an app's own, its picture sent first (once a view), to
+/// a client that draws them; else, and where its source has no picture of it, "default".
+fn ViewSession::cursor_shown(self : ViewSession, cursor : Json) -> Json {
+  guard field(cursor, "shape") is Some(String(shape)) && shape.has_prefix("custom:") else { return cursor }
+  if self.custom_cursor && self.cursor_images_sent.contains(shape) {
+    return cursor
+  }
+  let image = match self.view.cursor_image {
+    Some(f) if self.custom_cursor => f(shape)
+    _ => None
+  }
+  match image {
+    Some(b) => {
+      if self.cursor_images_sent.length() >= cursor_images_most {
+        self.cursor_images_sent.clear()
+      }
+      self.cursor_images_sent[shape] = true
+      ignore(self.send(kind_cursor_image, b))
+      cursor
+    }
+    None =>
+      match cursor {
+        Object(m) => {
+          let out : Map[String, Json] = Map([])
+          for k, v in m {
+            out[k] = v
+          }
+          out["shape"] = Json::string("default")
+          Json::object(out)
+        }
+        _ => cursor
+      }
+  }
 }
 
 ///|
@@ -761,7 +790,7 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
     let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
     self.inputs = mine
     ignore(
-      self.rt.fork(name="screen input", () => {
+      self.rt.fork_daemon("screen input", on_error=_ => ignore(mine.succeed(())), () => {
         before.wait() catch { _ => () }
         if self.pending_move is Some(cur) && cur.id == slot.id {
           self.pending_move = None
@@ -779,7 +808,7 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
   let mine : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.inputs = mine
   ignore(
-    self.rt.fork(name="screen input", () => {
+    self.rt.fork_daemon("screen input", on_error=_ => ignore(mine.succeed(())), () => {
       before.wait() catch { _ => () }
       f() catch {
         e => (self.said)("info", "screens", "input not posted", jobj([("screen", jstr(self.id)), ("error", jstr(message_of(e)))]))
@@ -787,6 +816,12 @@ fn ViewSession::then_(self : ViewSession, f : async () -> Unit, move_? : Int? = 
       ignore(mine.succeed(()))
     }),
   )
+}
+
+///|
+/// What a background fiber of the view let escape, said.
+fn ViewSession::failed(self : ViewSession, what : String, e : Error) -> Unit {
+  (self.said)("info", "screens", what, jobj([("screen", jstr(self.id)), ("error", jstr(message_of(e)))]))
 }
 
 ///|
@@ -814,7 +849,7 @@ fn ViewSession::stop(self : ViewSession, reason : String?) -> Unit {
   }
   let written = self.state(jobj([("ended", jstr(r))]))
   ignore(
-    self.rt.fork(name="screen end", () => {
+    self.rt.fork_daemon("screen end", on_error=_ => ignore(self.over.succeed(())), () => {
       written.wait() catch { _ => () }
       self.writes.wait() catch { _ => () }
       (self.stream.finish)() catch { _ => () }
@@ -871,13 +906,13 @@ fn with_fields(v : Json, fields : Array[(String, Json)]) -> Json {
 
 ///|
 /// A frame went (`#still`): once the screen has been still for STILL_MS, the picture again sharper where the rate went
-/// up since.
-fn ViewSession::still(self : ViewSession) -> Unit {
+/// up since. `key`: the frame was a key frame.
+fn ViewSession::still(self : ViewSession, key : Bool) -> Unit {
   let rate = match self.view.rate {
-    Some(_) => Some(self.rate.unwrap_or(start_rate))
+    Some(_) => Some(self.rate.unwrap_or(self.start_rate))
     None => None
   }
-  self.sharpen.sent((self.now)(), rate)
+  self.sharpen.sent((self.now)(), rate, key~)
   if self.still_wait {
     return
   }
@@ -888,7 +923,7 @@ fn ViewSession::still(self : ViewSession) -> Unit {
 ///|
 fn ViewSession::still_after(self : ViewSession, ms : Double) -> Unit {
   ignore(
-    self.rt.fork(name="screen still", () => {
+    self.rt.fork_daemon("screen still", on_error=e => self.failed("sharpening a still screen failed", e), () => {
       @effect.sleep(ms.ceil().to_int())
       if self.closed {
         return
@@ -962,7 +997,7 @@ async fn ViewSession::sleep_or_wake(self : ViewSession, ms : Int?) -> Unit {
   self.wake_ = w
   if ms is Some(ms) {
     ignore(
-      self.rt.fork(name="screen wait", () => {
+      self.rt.fork_daemon("screen wait", on_error=_ => ignore(w.succeed(())), () => {
         @effect.sleep(ms)
         ignore(w.succeed(()))
       }),
@@ -1027,7 +1062,11 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
     self.pacer.sent(f.ts, f.data.length().to_double())
     self.latency.sent(f.ts)
     self.send(kind_video, video_payload(f.key, f.ts, f.data)).wait() catch { _ => () }
-    self.still()
+    self.still(f.key)
+    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's)
+    if !self.closed && self.view.rate is Some(_) && self.sharpen.due_moving((self.now)(), self.rate) {
+      (self.view.keyframe)()
+    }
   }
 }
 
@@ -1336,7 +1375,14 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
     self.unchild = watch(s => told("childScreen")(jstr(s)))
   }
   if self.view.watch_cursor is Some(watch) {
-    self.unpoint = watch(told("cursor"))
+    self.unpoint = watch(cursor => if !self.closed {
+      let cursor = self.cursor_shown(cursor)
+      if self.binary_cursor {
+        ignore(self.send(kind_cursor, cursor_payload(cursor)))
+      } else {
+        ignore(self.state(jobj([("cursor", cursor)])))
+      }
+    })
   }
   if self.view.watch_windows is Some(watch) {
     self.unwindows = watch(w => if !self.closed {
@@ -1352,7 +1398,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.control && self.source.scale is Some(scale) {
     ignore(
-      self.rt.fork(name="screen scale", () => {
+      self.rt.fork_daemon("screen scale", on_error=_ => (), () => {
         let s = scale() catch { _ => return }
         if s is Some(v) && !(v is Null) && !self.closed {
           ignore(self.state(jobj([("scale", v)])))
@@ -1362,7 +1408,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.control && self.source.resolution is Some(resolution) {
     ignore(
-      self.rt.fork(name="screen resolution", () => {
+      self.rt.fork_daemon("screen resolution", on_error=_ => (), () => {
         let r = resolution() catch { _ => return }
         if r is Some(v) && !(v is Null) && !self.closed {
           ignore(self.state(jobj([("resolution", v)])))
@@ -1371,18 +1417,18 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
     )
   }
   ignore(
-    self.rt.fork(name="screen stopped", () => {
+    self.rt.fork_daemon("screen stopped", on_error=_ => self.stop(None), () => {
       ignore((self.stream.stopped)()) catch { _ => () }
       self.stop(None)
     }),
   )
-  ignore(self.rt.fork(name="screen read", () => self.read()))
+  ignore(self.rt.fork_daemon("screen read", on_error=e => self.failed("reading a screen's viewer failed", e), () => self.read()))
   if self.audio && self.view.next_audio is Some(next_audio) {
-    ignore(self.rt.fork(name="screen audio", () => self.audio_loop(next_audio)))
+    ignore(self.rt.fork_daemon("screen audio", on_error=e => self.failed("a screen's audio failed", e), () => self.audio_loop(next_audio)))
   }
   // (a preview's card shows no figures)
   if self.paths is Some(paths) && !self.peek {
-    ignore(self.rt.fork(name="screen loss", () => self.watch_loss(paths)))
+    ignore(self.rt.fork_daemon("screen loss", on_error=e => self.failed("watching a screen's loss failed", e), () => self.watch_loss(paths)))
   }
   self.pump()
   self.over.wait()

@@ -297,6 +297,21 @@ test("a pending copy names the station cut off from still.fail cloud instead of 
   assert.deepEqual(placeOf([host, mba]), { text: "等待同步", tone: "neutral" });
 });
 
+test("an older station's copy of an account lent to another workspace is not listed here", () => {
+  const C = "c".repeat(64);
+  const own = profile("own", { runtime: "claude" });
+  const lent = profile("sh-cue", { runtime: "claude", email: "cue@example.com", serves: false, share: { id: "sh-cue", host: C, role: "user", reachable: true } });
+  const current = { ...station(A, "mine", true, [own, lent]), joined: true };
+  const listed = workspaceProfiles([current]);
+  assert.deepEqual(listed.items.flatMap((e: any) => e.members.map((m: any) => m.profileId)), ["own"]);
+  assert.equal(listed.attention, 0);
+  // The station page names its station by `address`.
+  const page = { id: A, address: current.station, name: "mine", online: true, joined: true };
+  const summary = stationProfileSummary(current.overview, page, new Map([[A, page]]));
+  assert.deepEqual(summary.profileGroups, [{ group: "claude", title: "Claude 订阅", profiles: ["own"], attention: 0 }]);
+  assert.deepEqual(summary.profileStates, {});
+});
+
 test("a share withheld from this workspace does not make its stations usable here", () => {
   const C = "c".repeat(64);
   const D = "d".repeat(64);

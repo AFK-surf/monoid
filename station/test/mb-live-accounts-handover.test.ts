@@ -182,7 +182,7 @@ function stationData(): { data: string; app: string; thread: number } {
 function nodeEvents(data: string, before: number | null) {
   let listener: (change: any) => void = () => {};
   const events = new Events({
-    readers: { read: async () => "null" } as never,
+    readers: { read: async (op: string) => (op === "sharedOf" ? JSON.stringify({ rows: [], scope: null }) : "null") } as never,
     said: () => [],
     subscribe: (l) => ((listener = l), () => {}),
     host: async () => ({}),

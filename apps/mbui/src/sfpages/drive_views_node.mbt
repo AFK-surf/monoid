@@ -296,8 +296,30 @@ pub fn rows_view_node(
     out
   }
   parent.box(fn(l) {
-    l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    let keyed = l.keyed_by(lines, fn(x) { x.key })
+    l.transitions_only().grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    let folder_loaded = fn() {
+      let (value, _) = s.b.folder(src, at)
+      value is Some(_) && s.b.arranged(src, at.path) is Some(_)
+    }
+    let shown_lines = @signals.signal(@signals.untracked(lines))
+    let was_loaded = Ref(@signals.untracked(folder_loaded))
+    l.reacts(
+      fn() { (lines(), folder_loaded()) },
+      fn(pair) {
+        let (next, loaded_now) = pair
+        let was_keys = shown_lines.untracked().map(fn(x) { x.key })
+        let next_keys = next.map(fn(x) { x.key })
+        let live = was_loaded.val && loaded_now && was_keys != next_keys && !@view.answering_now()
+        was_loaded.val = loaded_now
+        if live {
+          @view.transition(within=l, fn() { shown_lines.set(next) })
+        } else {
+          shown_lines.set(next)
+        }
+      },
+      at_start=false,
+    )
+    let keyed = l.keyed_by(fn() { shown_lines.get() }, fn(x) { x.key })
     let place : @view.ListPlace[String] = @view.ListPlace::new()
     // a row asked into view (a key moved to it), or the one being named, and that one again as the room the list has
     // changes (the soft keyboard up, the list shorter: it comes up over it): as near as it needs to come
@@ -670,8 +692,22 @@ fn column_node(
           })
         _ => {
           let list = fn() { s.b.arranged(src, at.path).unwrap_or([]) }
-          b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          let keyed = b.keyed_by(list, fn(e) { e.name })
+          b.transitions_only().grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          let shown_list = @signals.signal(@signals.untracked(list))
+          b.reacts(
+            list,
+            fn(next) {
+              let was_keys = shown_list.untracked().map(fn(e) { e.name })
+              let next_keys = next.map(fn(e) { e.name })
+              if was_keys != next_keys && !@view.answering_now() {
+                @view.transition(within=b, fn() { shown_list.set(next) })
+              } else {
+                shown_list.set(next)
+              }
+            },
+            at_start=false,
+          )
+          let keyed = b.keyed_by(fn() { shown_list.get() }, fn(e) { e.name })
           let place : @view.ListPlace[String] = @view.ListPlace::new()
           b.reacts(fn() { s.b.to_show() }, fn(want) {
             match want {

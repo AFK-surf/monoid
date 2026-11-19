@@ -1,4 +1,4 @@
-// The agents' drivers in MoonBit (station/mb src/agent_drivers: reader `--builder harness-agent-drivers`) held to the
+// The agents' drivers in MoonBit (station/mb src/agent_drivers: `stillfail-reader-harness --builder harness-agent-drivers`) held to the
 // TypeScript they replace on the same inputs: the seam's words (runtime.ts), a runner's files, its connection and
 // what a station reads again of it (runner.ts, process.ts), and Claude Code's, Codex's and Antigravity CLI's drivers
 // (claude.ts, codex.ts, agy.ts over own-process.ts and acp.ts) through the same steps: what each process is started
@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
 import { Effect } from "effect";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { wall, liveClock } from "../src/ops/fibers.ts";
 import { platform } from "../src/platform/index.ts";
 import { agentEnv, readAgentEnvFrom } from "../src/ops/agent-env.ts";
@@ -39,8 +39,8 @@ import { codexOverrides, accessKind, profileEnv, profileModel, profileVia } from
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the runners' sockets here are Unix sockets" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the runners' sockets here are Unix sockets" : false;
 
 const dirs: string[] = [];
 /// A directory of a case's own, by its real path (what a runtime is told; macOS's /tmp is /private/tmp), short enough
@@ -1320,6 +1320,8 @@ async function agyCase(name: string, setup: (data: string) => { profiles: Json[]
           return session.outlived();
         case "signInExpired":
           return session.signInExpired();
+        case "lentExpired":
+          return session.lentExpired();
         case "model":
           return { model: session.model, current: session.currentModelId };
         case "bringIn":
@@ -1403,6 +1405,7 @@ test("Antigravity CLI: a process with no models opened again after its waits; on
         { do: "open", options: o(lentP) },
         { do: "outlived", s: 1 },
         { do: "signInExpired", s: 1 },
+        { do: "lentExpired", s: 1 },
         { do: "catalog", profile: p },
         { do: "ownedRunners" },
       ],
@@ -1444,12 +1447,17 @@ test("Antigravity CLI: taken up handed over and after a crash, its conversation 
     const id3 = `agy-${keyPart(key3)}`;
     const sock3 = join(runners, `${id3}.sock`);
     put(join(runners, `${id3}.json`), JSON.stringify({ id: id3, runner: 7600, pid: 7601, pgid: 7602, startedAt: 0, program: "agy", args: [], socket: sock3 }));
+    // (one whose station went before it had said anything: stuck on initialize, no session open)
+    const key4 = "chat:d";
+    const id4 = `agy-${keyPart(key4)}`;
+    const sock4 = join(runners, `${id4}.sock`);
+    put(join(runners, `${id4}.json`), JSON.stringify({ id: id4, runner: 7700, pid: 7701, pgid: 7702, startedAt: 0, program: "agy", args: [], socket: sock4 }));
     const snapshot = { runtime: "agy", id: "conv1", runner: id1, turn: { busy: true, aborting: false }, tools: "http://old/mcp", live: { open: [], said: null, n: 2, phase: "working" }, model: "gemini-4-carbon", owner: "prompt:x", steering: [], said: null, calls: [], saidLast: "", children: [], availableModels: ["gemini-4-carbon-low"], currentModelId: "gemini-4-carbon-low", defaultModelId: null, context: { used: 5, size: 9 }, signInUntil: null };
     const o = (extra: Json = {}) => ({ key: key1, profile: p, cwd: data, instructions: "x", mcpToken: "t", mcpUrl: "http://h/mcp", route: "r", ...extra });
     return {
       profiles: [p],
-      alive: [7400, 7500, 7600],
-      sockets: { [sock1]: [], [sock2]: [JSON.stringify({ op: "attached", out: 30 })], [sock3]: [JSON.stringify({ op: "attached", out: 30 })] },
+      alive: [7400, 7500, 7600, 7700],
+      sockets: { [sock1]: [], [sock2]: [JSON.stringify({ op: "attached", out: 30 })], [sock3]: [JSON.stringify({ op: "attached", out: 30 })], [sock4]: [JSON.stringify({ op: "attached", out: 0 })] },
       replayOwn: { session: "conv2", turn: { busy: true }, live: { live: { open: [], said: null, n: 0, phase: null } }, opened: MODELS, usages: [{ sessionUpdate: "usage_update", used: 7, size: 70 }] },
       replies: {},
       steps: [
@@ -1462,9 +1470,12 @@ test("Antigravity CLI: taken up handed over and after a crash, its conversation 
         { do: "noteEmail", profile: p, text: JSON.stringify({ id_token_email: "a@b.c" }) },
         { do: "noteEmail", profile: p, text: "[1]" },
         { do: "hooks", profile: p },
+        { do: "adopt", options: o({ key: key4 }) },
       ],
     };
   });
+  // One taken up after a crash that had not opened its session is refused, its runner left for `endOrphans`.
+  assert.deepEqual(trace.results.at(-1), { error: "agy process for chat:d had not opened a session" });
   // After a crash a process keeps the address it was told unless the station's door was not open yet: then none is known,
   // and the door opening on its port is no other address to end it for (hub.ts `toolsAt`).
   assert.equal(trace.results[2].ok.mcpUrl, "http://h/mcp");

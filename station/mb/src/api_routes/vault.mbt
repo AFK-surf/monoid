@@ -23,9 +23,10 @@ fn needs_lock() -> Answer {
 }
 
 ///|
-/// The lock pinned in the asker's workspace (None: none is).
+/// The lock the asker's workspace's vault goes by (None: none): its lock in force in security mode, else its members'
+/// own (vault/module.ts `lock`, given who asks: known by it from then on).
 async fn Admin::vault_lock(self : Admin, r : Request) -> JV? {
-  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef)])
+  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef), r.viewer])
   if nullish(l) {
     None
   } else {
@@ -202,7 +203,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for attempt in 0..<3 {
         let held = v("vaultSnapshot", [ws, id])
         let prev = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -261,7 +262,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return refuse(400, "vault_invalid", js_string(Some(why)))
         }
         let body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -360,7 +361,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for _ in 0..<3 {
         let held_vault = v("vaultSnapshot", [ws, next.get("vault").unwrap()])
         let vault = if nullish(held_vault) {
-          Null
+          JV::Null
         } else {
           match held_vault.get("value") {
             Some(p) if !nullish(p) => p
@@ -381,7 +382,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           next.get("id").unwrap(),
         ])
         let prev = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -432,7 +433,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return refuse(400, "vault_invalid", js_string(Some(why)))
         }
         let item_body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -518,7 +519,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for _ in 0..<3 {
         let held = v("boxSnapshot", [ws, cert.get("device").unwrap_or(jundef)])
         let had = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -541,7 +542,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return ok(jobj([("box", had)]))
         }
         let box_body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -616,7 +617,11 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
   let locked_decision = (call : String) => {
     async fn(r : Request, _m : Array[String?]) -> Answer {
       guard self.vault_lock(r) is Some(l) else { return needs_lock() }
-      decide(r, async fn(o) { s(call, [l, r.who("sub").unwrap_or(jundef), o]) })
+      decide(r, async fn(o) {
+        // (a refusal: who turns it down, by their credential's email, where no own lock of theirs is heard yet)
+        let more = if call == "deny" { [r.who("email").unwrap_or(jundef)] } else { [] }
+        s(call, [l, r.who("sub").unwrap_or(jundef), o] + more)
+      })
     }
   }
   let plain_told = async fn(kept : JV) -> JV {
@@ -663,6 +668,10 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
           return refuse(
             409, "lock_changed", "the workspace's security mode changed while the requests were prepared; try again",
           )
+        }
+        // (its members' own locks, no security mode: nothing of this device's to admit again)
+        if current.get("genesis") is Some(Str("")) {
+          continue
         }
         let now = (self.wall_now() / 1000.0).floor()
         let admitted = try {
@@ -772,7 +781,7 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
         jnumber(prev.get("version")).unwrap_or(@double.not_a_number) + 1.0
       }
       if next.get("version") != Some(jnum(follows)) {
-        let item = if prev is Null { Null } else { shown([prev]) }
+        let item = if prev is Null { JV::Null } else { shown([prev]) }
         return refuse(
           409,
           "vault_conflict",

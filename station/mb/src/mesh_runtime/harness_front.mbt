@@ -12,11 +12,55 @@ priv struct FrontHarness {
   /// The waits between tries to link again, each held till the test lets it end (`wake`), and what waits for one.
   sleeping : Array[(Int, @effect.Deferred[Unit])]
   mut sleeper : @effect.Deferred[Unit]?
+  /// The shell's sockets the client holds (connected or accepted, not yet let go), and what waits for one let go.
+  mut live : Int
+  mut let_go : @effect.Deferred[Unit]?
 }
 
 ///|
 fn FrontHarness::new(host : @host.Host) -> FrontHarness {
-  { host, endpoints: Map([]), conns: Map([]), streams: Map([]), logs: [], sleeping: [], sleeper: None }
+  { host, endpoints: Map([]), conns: Map([]), streams: Map([]), logs: [], sleeping: [], sleeper: None, live: 0, let_go: None }
+}
+
+///|
+/// The shell's sockets, each counted from when the client has it until it lets it go (`destroy`): the shell keeps one
+/// until then, ended both ways or not.
+fn FrontHarness::counted(self : FrontHarness, sockets : Sockets) -> Sockets {
+  let held = (k : Sock) => {
+    self.live += 1
+    let gone = Ref(false)
+    let s : Sock = {
+      ..k,
+      destroy: () => {
+        if !gone.val {
+          gone.val = true
+          self.live -= 1
+          if self.let_go is Some(w) {
+            self.let_go = None
+            ignore(w.succeed(()))
+          }
+        }
+        (k.destroy)()
+      },
+    }
+    s
+  }
+  {
+    connect: async fn(path) { held((sockets.connect)(path)) },
+    listen: async fn(path) {
+      let l = (sockets.listen)(path)
+      {
+        accept: async fn() -> Sock? {
+          match (l.accept)() {
+            Some(k) => Some(held(k))
+            None => None
+          }
+        },
+        close: l.close,
+      }
+    },
+    remove: sockets.remove,
+  }
 }
 
 ///|
@@ -55,7 +99,7 @@ async fn FrontHarness::ask(self : FrontHarness, name : String, verb : String, a 
       )
       let logs = self.logs
       let e = FrontEndpoint::bind(
-        shell_sockets(self.host),
+        self.counted(shell_sockets(self.host)),
         str_of(arg(a, "socket")).unwrap_or(""),
         @host.pid(),
         bind,
@@ -140,6 +184,16 @@ async fn FrontHarness::ask(self : FrontHarness, name : String, verb : String, a 
     "close" => {
       ep().close()
       Json::null()
+    }
+    // the shell's sockets the client holds; `fewerThan`: once they are fewer than that
+    "live" => {
+      let under = num_of(arg(a, "fewerThan")).map(n => n.to_int())
+      while under is Some(n) && self.live >= n {
+        let w : @effect.Deferred[Unit] = @effect.Deferred::new()
+        self.let_go = Some(w)
+        w.wait()
+      }
+      jnum(self.live.to_double())
     }
     "logs" => {
       let out = self.logs.copy()

@@ -162,6 +162,16 @@ pub fn chat_opens(ChatRef, (String, Map[String, @json.Json]) -> TopicState) -> B
 
 pub fn chat_page_is(Page) -> Bool
 
+pub fn chat_reads_forget_from(Source, ChatRef) -> Unit
+
+pub fn chat_page_left_key(Page) -> (String, String)?
+
+pub fn entries_kept_park_due() -> Unit
+
+pub fn topic_value_held(Source, String, Map[String, @json.Json]) -> @signals.Computed[@json.Json?]
+
+pub fn station_mark_held(Source, String) -> @signals.Computed[Station?]
+
 pub fn chat_page_made(@view.View, Source, Int32, (@ui.Ctx, Source, Page) -> Unit, key? : () -> String, over? : (@view.View, Source, () -> Page?, () -> Int32) -> Unit, stint? : () -> Int32, drawn? : (Int32) -> Bool, body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit, foot? : (@ui.Ctx, Source, ChatRef) -> Unit) -> Source
 
 pub let chat_page_nodes : @signals.Signal[Bool]
@@ -543,6 +553,9 @@ pub fn file_seed(String, String, Bytes) -> String
 pub fn file_serve(FilePage, @ui.SiteRequest, @ui.SiteReply) -> Unit
 
 pub fn file_type(String) -> String
+
+pub fn film_letterboxed(Attachment) -> Bool
+pub fn first_lone_page() -> Page?
 
 pub fn first_window(Double) -> Int
 
@@ -1993,6 +2006,14 @@ pub fn whole_row(Source, ChatItem) -> ChatItem?
 
 pub fn window_front(Page) -> Bool
 
+pub fn window_gives_back(Int) -> Unit
+
+pub fn window_has_tab(String, String, String) -> Bool
+
+pub fn window_title(Page) -> String
+
+pub fn tab_window_front(ChatRef, String) -> String?
+
 pub fn window_opens_for(Page) -> Bool
 
 pub let wheel_rest_ms : Double
@@ -2000,6 +2021,8 @@ pub let wheel_rest_ms : Double
 pub fn window_page(String) -> Page?
 
 pub fn window_text(Page) -> String?
+
+pub let window_tab_left : @ref.Ref[(TabFull) -> Unit]
 
 pub let window_zoom_levels : Array[(String, Double)]
 
@@ -2044,6 +2067,10 @@ pub fn writing_mode(Source, Writing, String, String) -> Unit
 pub fn writing_paste(Source, Writing, String, String) -> Unit
 
 pub fn writing_paste_again(Source, Writing, String) -> Unit
+
+pub fn writing_picture_put(String, String) -> Unit
+
+pub fn writing_picture_told(String) -> String?
 
 pub let writing_pictures : Map[String, String]
 
@@ -2351,6 +2378,7 @@ pub struct Derived[T] {
   // private fields
 }
 pub fn[T] Derived::kept(Self[T], Map[String, @json.Json]) -> T?
+pub fn[T] Derived::forget_from(Self[T], Source, Map[String, @json.Json]) -> Unit
 pub fn[T] Derived::kept_from(Self[T], Source, Map[String, @json.Json]) -> T?
 pub fn[T] Derived::new(String, (@json.Json, T?) -> T) -> Self[T]
 pub fn[T] Derived::read(Self[T], Source, Map[String, @json.Json]) -> (T?, Topic)
@@ -2979,6 +3007,7 @@ pub(all) enum Page {
   Place(String)
   Setting(@settings.Route)
   Screen(ScreenAt)
+  SideTab(TabFull)
 }
 
 pub(all) struct PageLink {
@@ -3442,8 +3471,10 @@ pub(all) struct Source {
   reads_ahead : () -> Bool
   asks_outline : () -> Bool
 }
+pub fn Source::draft_picture_told(Self, String, String) -> String
 pub fn Source::lease_topic(Self, String, Map[String, @json.Json]) -> TopicLease
 pub fn Source::owned_by(Self, @view.View) -> Self
+pub fn Source::owned_by_parkable(Self, @view.View) -> (Self, (Bool) -> Unit)
 pub fn Source::prefetch(Self, String, Map[String, @json.Json]) -> Topic
 pub fn Source::topic(Self, String, Map[String, @json.Json]) -> @signals.Computed[TopicState]
 

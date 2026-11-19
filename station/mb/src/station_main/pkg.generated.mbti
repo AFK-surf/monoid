@@ -72,6 +72,8 @@ pub async fn file_lock(@host.Host, String) -> FileLock
 
 pub fn flag(Array[String], String) -> String?
 
+pub async fn flush_live_p5_1_log() -> Unit
+
 pub fn group_alive(Int32) -> Bool
 
 pub async fn harness(@host.Host) -> Unit
@@ -122,6 +124,8 @@ pub fn moved_to(String, String?, String, String, String) -> String
 
 pub fn on_signals(@host.Host, (String) -> Unit) -> Unit
 
+pub fn open_fds() -> Int32?
+
 pub fn out_write(String) -> Unit
 
 pub fn parent_pid() -> Int32
@@ -163,6 +167,8 @@ pub fn runner_binary(String, String, String) -> String?
 pub fn sandbox_bridge_of(Array[String]) -> Bool
 
 pub fn sandbox_bridge_shell(Array[String]) -> String
+
+pub fn self_rss_bytes() -> Double?
 
 pub fn sep() -> String
 
@@ -235,10 +241,12 @@ pub impl Show for BusError
 pub(all) suberror CommandMissing {
   CommandMissing(String)
 }
+pub impl Show for CommandMissing
 
 pub(all) suberror JoinRefused {
   JoinRefused(String, String)
 }
+pub impl Show for JoinRefused
 
 pub(all) suberror LiveError {
   LiveError(String)
@@ -253,6 +261,7 @@ pub impl Show for P54Refused
 pub(all) suberror PartTwice {
   PartTwice(String)
 }
+pub impl Show for PartTwice
 
 pub(all) suberror ReadFailed {
   ReadFailed(Int32, String)
@@ -262,6 +271,7 @@ pub impl Show for ReadFailed
 pub(all) suberror SysError {
   SysError(String)
 }
+pub impl Show for SysError
 
 // Types and methods
 pub(all) struct CardChoice {
@@ -292,6 +302,7 @@ pub(all) struct LiveBus {
   parts : StationParts
   stopped : @effect.Deferred[String]
   door_ready : @effect.Deferred[String]
+  open_door : @ref.Ref[async () -> String]
   handed : Bool
   mcp_token : String
   previous_pid : Int32?

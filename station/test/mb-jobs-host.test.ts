@@ -1,5 +1,5 @@
 // The machine's side of the background jobs, the remote tasks, the web previews and the link previews in MoonBit
-// (station/mb/src/jobs_host, the reader's `--builder harness-jobs-host`) held to the TypeScript station it replaces
+// (station/mb/src/jobs_host, `stillfail-reader-harness --builder harness-jobs-host`) held to the TypeScript station it replaces
 // (src/jobs/*, src/links/preview.ts) on the same inputs: the GPU, load and link-preview parsers compared value for
 // value; the preview proxy and WebSocket, the workspace-size state machine, the remote tasks' file transfers and the
 // jobs' process lifecycle run on the real filesystem and sockets and held to how the TypeScript behaves.
@@ -21,10 +21,10 @@ import { blobId } from "../src/jobs/dirsync.ts";
 import { hash, remoteBudget } from "../src/jobs/remote.ts";
 import { headOf, htmlText, isPublic, oembedOf } from "../src/links/preview.ts";
 import { isIP } from "node:net";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {

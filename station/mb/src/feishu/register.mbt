@@ -290,7 +290,7 @@ async fn Registrations::persist(self : Registrations) -> Unit {
     Some(e) => raise e
     None => ()
   }
-  let all = Arr(self.all.values().map(x => x.r).collect())
+  let all = JV::Arr(self.all.values().map(x => x.r).collect())
   file.write(stringify(all) + "\n").wait()
 }
 
@@ -561,8 +561,8 @@ async fn Registrations::ask(
     match (jget(Some(d), "client_id"), jget(Some(d), "client_secret")) {
       (Some(Str(id)), Some(Str(secret))) => {
         let open_id = match jget(jget(Some(d), "user_info"), "open_id") {
-          Some(Str(o)) => Str(o)
-          _ => Null
+          Some(Str(o)) => JV::Str(o)
+          _ => JV::Null
         }
         r.set(
           "app",
@@ -620,9 +620,9 @@ async fn Registrations::ask(
     }
     if error == "slow_down" {
       let next = match every {
-        Some(Num(n)) => Num(n + 5.0)
-        Some(Str(s)) => Str(s + "5")
-        other => Num(js_to_number(or_null(other)) + 5.0)
+        Some(Num(n)) => JV::Num(n + 5.0)
+        Some(Str(s)) => JV::Str(s + "5")
+        other => JV::Num(js_to_number(or_null(other)) + 5.0)
       }
       every = Some(next)
       r.set("interval", next)

@@ -64,7 +64,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
   }
   self.waiting.clear()
   ignore(
-    self.host.rt.fork(name="sessions' program", async fn() {
+    self.host.rt.fork_daemon("sessions' program", on_error=e => @host.note("sessions' program failed: \{e}"), async fn() {
       let carry = @buffer.Buffer()
       let mut head : Json? = None
       let mut wanted = 0
@@ -221,6 +221,14 @@ pub(all) suberror CommandMissing {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for CommandMissing with output(self, logger) {
+  match self {
+    CommandMissing(command) => logger.write_string("the runner did not start: \{command} is not on PATH")
+  }
+}
+
+///|
 /// The runner binary (platform/processes.ts `runnerBinary`): STILLFAIL_RUNNER, else beside the station's program in a
 /// release (`<app>/bin`, where the program is `<app>/station/stillfail-reader` or `<app>/bin/…`), else where its cargo
 /// builds it in a checkout (`station/native/runner/target/release`); on Windows run from a copy kept in `<data>/run/bin`
@@ -297,15 +305,16 @@ fn find_command(name : String, env : Array[(String, String)]) -> String? {
     Some(kv) => kv.1
     None => return None
   }
-  let delim = if is_windows() { ";" } else { ":" }
-  let exts = if is_windows() { ["", ".exe", ".cmd", ".bat"] } else { [""] }
-  for d in p.split(delim) {
+  // (Windows: by PATHEXT, as windows.ts `findCommand`: a bare name tried first found npm's POSIX script `codex` beside
+  // `codex.cmd`, which no Windows process runs)
+  if is_windows() {
+    return @ops_platform.win_find_command(name, env, ";", path, executable)
+  }
+  for d in p.split(":") {
     let dir = if d == "" { "." } else { d.to_owned() }
-    for ext in exts {
-      let on = path([dir, name + ext])
-      if executable(on) {
-        return Some(on)
-      }
+    let on = path([dir, name])
+    if executable(on) {
+      return Some(on)
     }
   }
   None
@@ -442,7 +451,7 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   self.settle()
   let again = self.sessions.values().to_array()
   ignore(
-    self.pump.host.rt.fork(name="agents' program again", async fn() {
+    self.pump.host.rt.fork_daemon("agents' program again", on_error=e => @host.note("agents' program again failed: \{e}"), async fn() {
       // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
       @effect.sleep(1000)
       if self.closed {

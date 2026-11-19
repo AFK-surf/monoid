@@ -91,6 +91,10 @@ pub(all) struct Reading {
   mut bottom_seq : Double
   /// how far that message's top is below the list's (points: above it, less than 0)
   mut top_off : Double
+  /// of a message drawn in pieces (a page made as nodes: a long message a block a piece), which of its pieces is at the
+  /// top and how far its top is under the list's (as kept: kept_place_of); -1 none (the old page's, a message of one)
+  mut top_piece : Int
+  mut top_piece_off : Double
   mut at_end : Bool
   /// where the core was last told the chat is (chat.place: "" not yet), and the screen's scale it was laid out at
   mut told_place : String
@@ -268,6 +272,8 @@ pub fn reading_of(key : String) -> Reading {
         top_seq: -1.0,
         bottom_seq: -1.0,
         top_off: 0.0,
+        top_piece: -1,
+        top_piece_off: 0.0,
         at_end: true,
         told_place: "",
         told_at: "\u{0}",
@@ -350,6 +356,11 @@ pub(all) struct KeptPlace {
   top : Double
   offset : Double
   bottom : Double
+  /// where the page that kept it draws a message in pieces (a page made as nodes): the piece at its top (0 its first,
+  /// -1 none said: the old page's, a test's, a message of one) and how far that piece's top is under the list's window's
+  /// top, as `offset` is kept; `offset` stays the whole message's, which the old page and the core read
+  piece : Int
+  piece_offset : Double
 }
 
 ///|
@@ -670,6 +681,18 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
 }
 
 ///|
+/// What was made of chat `r` from source `src` (its read, its head's), nothing following it, let go of: one read untracked
+/// holds the chat's subscription till it is. What is still read is kept.
+pub fn chat_reads_forget_from(src : Source, r : ChatRef) -> Unit {
+  let key = chat_inputs_key(r)
+  // (what reads them first, then them: each let go leaves what it read unread by it)
+  chat_heads.forget_unwatched_from(src, key)
+  chat_head_jsons.forget_unwatched_from(src, key)
+  chat_read.forget_from(src, chat_params(r))
+  chat_head_read.forget_from(src, chat_params(r))
+}
+
+///|
 /// Let one source's chat input go without invalidating another source that still reads the chat.
 pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
   let key = chat_inputs_key(r)
@@ -679,6 +702,7 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
   }
   // (what was read of it kept for its page opened again: chat_seeds_put)
   chat_seeds_put(key, chat_read.kept_from(src, chat_params(r)), chat_head_read.kept_from(src, chat_params(r)))
+  chat_reads_forget_from(src, r)
   chat_inputs.forget_from(src, key)
   chat_heads.forget_from(src, key)
   chat_head_jsons.forget_from(src, key)
@@ -1644,14 +1668,15 @@ pub fn row_keys(
     Some(i) => i.following_row
     None => false
   }
-  rd.foot_sign = if ask_clears(v) { "+ask" } else { "" }
+  let ask_sign = if ask_clears(v) { "+ask" } else { "" }
+  let foot_ver = ask_sign + rd.foot_sign
   // The same entries and message-to-outbox mapping as last time, nothing sent from here waiting for its row: what it
   // made then, its rows not gone over again. Other view fields may change without changing
   // those inputs (the chat's title, for example). Whether the list follows its end is not asked: it only lets in rows
   // not known yet, and with the same entries every row was made known then.
   // (a page read in, before the window or reaching the chat's end: what it brings was said long ago, there at once,
   // the rows it joins as they are now; only what is said while the list is at the chat's end comes and changes)
-  let watched = !v.newer && !paged_in(rd, v)
+  let watched = !v.newer && !paged_in(rd, v, flight)
   let sending = sending_of(rk)
   match rd.rows_made {
     Some(m) if rd.drawn &&
@@ -1663,7 +1688,7 @@ pub fn row_keys(
         ask_clears(m.v) == ask_clears(v))) &&
       m.rise_ms == rise_ms &&
       m.known == rd.known.length() &&
-      sending.is_empty() => return shown_rows(c, rd, m.list, m.keys, watched, flight, laid~, laid_at~, foot_way~)
+      sending.is_empty() => return shown_rows(c, rd, rk, m.list, m.keys, watched, flight, laid~, laid_at~, foot_way~, foot_ver~)
     _ => ()
   }
   let made_whole = sending.is_empty()
@@ -1915,13 +1940,21 @@ pub fn row_keys(
   // (what changes comes, goes and changes on the list's way whether the list follows its end or is read up it: the
   // row read from stays where it shows, what is over and under it moving away from it, mbui's ui/list_size.mbt; nothing
   // at once in view, 2026-10-31 the user: 「有一些是凭空出现的，有一些是凭空消失的」)
-  shown_rows(c, rd, list, keys, watched, flight, laid~, laid_at~, foot_way~)
+  shown_rows(c, rd, rk, list, keys, watched, flight, laid~, laid_at~, foot_way~, foot_ver~)
 }
 
 ///|
+/// The Foot version last given to ListRows for each chat reading (by `rk`): cleared with `readings` on reset.
+// kept across runs: cleared by pages.mbt reset alongside readings
+let foot_vers : Map[String, String] = Map([])
+
+///|
 /// Whether chat `v`'s window took in a page since its rows were last given: the page before it (its first entry
-/// earlier), or the page that reaches the chat's end (short of it till now).
-fn paged_in(rd : Reading, v : ChatView) -> Bool {
+/// earlier), or the page that reaches the chat's end (short of it till now); or its first page come into a list that
+/// had none (a chat opened before the device kept any of it, drawn empty till the station answered), none of it said
+/// as it showed and nothing of it sent from here (on its way, `flight`, in its outbox, or a message of it sent from
+/// here: a new chat's first words): what was said before it was opened, there at once.
+fn paged_in(rd : Reading, v : ChatView, flight : SendFlight?) -> Bool {
   let first = match v.first_entry {
     Some(f) => f
     None =>
@@ -1930,7 +1963,13 @@ fn paged_in(rd : Reading, v : ChatView) -> Bool {
         None => -1.0
       }
   }
-  let paged = (first >= 0.0 && rd.first_was >= 0.0 && first < rd.first_was) || (rd.newer_was && !v.newer)
+  let paged = (first >= 0.0 && rd.first_was >= 0.0 && first < rd.first_was) ||
+    (rd.newer_was && !v.newer) ||
+    (first >= 0.0 &&
+     rd.first_was < 0.0 &&
+     flight is None &&
+     v.outbox.is_empty() &&
+     !v.messages.iter().any(fn(m) { m.said || m.outgoing != "" }))
   rd.first_was = first
   rd.newer_was = v.newer
   paged
@@ -1946,6 +1985,7 @@ fn paged_in(rd : Reading, v : ChatView) -> Bool {
 fn shown_rows(
   c : @ui.Ctx,
   rd : Reading,
+  rk : String,
   list : Array[Entry],
   keys : Array[String],
   watched : Bool,
@@ -1953,6 +1993,7 @@ fn shown_rows(
   laid~ : String,
   laid_at~ : Double?,
   foot_way~ : (Double, Double)?,
+  foot_ver~ : String,
 ) -> (Array[Entry], Array[String]) {
   // words sent let go of the composer as they leave it, a share of their way on (flight_placed): their row opens
   // from then, the composer's room closes from then (flight_lets_go), as long, so that what is over them goes one way;
@@ -1985,6 +2026,8 @@ fn shown_rows(
   }
   let told_laid = laid != rd.rows_laid
   rd.rows_laid = laid
+  let told_foot_sign = foot_vers.get(rk) != Some(foot_ver)
+  foot_vers[rk] = foot_ver
   // (the composer's ground on that way now: the Foot row's change goes on it, from when it set out, as long)
   let (way_at, way_ms) = foot_way.unwrap_or((-1.0, 0.0))
   let on_way = way_at >= 0.0 && way_at + way_ms > now
@@ -1992,14 +2035,14 @@ fn shown_rows(
     c,
     // (given anew as the Foot row's version changes with them, or every row's as the list is laid out otherwise: the
     // same arrays as the frame before are not looked over)
-    if told_foot || told_laid || on_way { keys.copy() } else { keys },
+    if told_foot || told_laid || on_way || told_foot_sign { keys.copy() } else { keys },
     list,
     // (laid out at another width as a page's way sets off or is there, each row's words wrapped otherwise, as far from
     // the one before (20 or 28 narrow or not) and its picture inline or out in the margin: each its room going there on
     // the list's way, not stepped at once in one frame, rows_steady.mbt)
     fn(e) {
       match e {
-        Foot => "foot" + rd.foot_sign + "@\{way_at}" + rd.sent_foot
+        Foot => "foot" + foot_ver + "@\{way_at}" + rd.sent_foot
         Top => shown_sign(e)
         _ => shown_sign(e) + laid
       }
@@ -2285,6 +2328,8 @@ pub fn tell_place(src : Source, r : ChatRef, v : ChatView, rd : Reading, exact? 
     kept_places[r.station + "\u{1}" + r.session] = {
       top: rd.top_seq,
       offset: rd.top_off,
+      piece: -1,
+      piece_offset: 0.0,
       bottom: if rd.at_end {
         match v.messages.last() {
           Some(m) => m.seq
@@ -2604,6 +2649,7 @@ pub fn list_after(
           go_tos.remove(gk)
           go_to_passages.remove(gk)
           go_back_offsets.remove(gk)
+          go_back_pieces.remove(gk)
           find_around.val = -1.0
           if found {
             on_found(rd)
@@ -2653,6 +2699,7 @@ pub fn list_after(
             _ => {
               go_tos.remove(gk)
               go_back_offsets.remove(gk)
+              go_back_pieces.remove(gk)
             }
           }
         }

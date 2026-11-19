@@ -13,10 +13,12 @@ import { laterSleep, type Runner } from "./runtime.ts";
 export const minute = signal("");
 export const day = signal("");
 
+const MAX_SLEEP_MS = 14 * 86_400_000;
+
 export class Moments {
   readonly #now: () => number;
   readonly #runner: Runner;
-  readonly #at = new Map<string, { node: Source<boolean>; fiber: Fiber.Fiber<unknown, unknown> | null }>();
+  readonly #at = new Map<string, { at: number; node: Source<boolean>; fiber: Fiber.Fiber<unknown, unknown> | null }>();
 
   constructor(now: () => number, runner: Runner) {
     this.#now = now;
@@ -32,7 +34,8 @@ export class Moments {
     const key = `${at}${later ? "/later" : ""}`;
     let m = this.#at.get(key);
     if (!m) {
-      const made: { node: Source<boolean>; fiber: Fiber.Fiber<unknown, unknown> | null } = {
+      const made: { at: number; node: Source<boolean>; fiber: Fiber.Fiber<unknown, unknown> | null } = {
+        at,
         node: signal(false, () => {
           this.#at.delete(key);
           if (made.fiber) this.#runner.interrupt(made.fiber);
@@ -41,8 +44,16 @@ export class Moments {
       };
       m = made;
       this.#at.set(key, m);
+      const wait: Effect.Effect<void> = Effect.suspend(() => {
+        const left = at - this.#now();
+        if (left <= 0) return Effect.void;
+        const ms = Math.min(left, MAX_SLEEP_MS);
+        return (later ? laterSleep(ms) : Effect.sleep(ms)).pipe(
+          Effect.andThen(Effect.suspend(() => (this.#now() >= at ? Effect.void : wait))),
+        );
+      });
       made.fiber = this.#runner.fork(
-        Effect.suspend(() => { const ms = Math.max(at - this.#now(), 0); return later ? laterSleep(ms) : Effect.sleep(ms); }).pipe(
+        wait.pipe(
           Effect.andThen(Effect.sync(() => {
             made.fiber = null;
             this.#at.delete(key);
@@ -53,5 +64,17 @@ export class Moments {
     }
     m.node.get();
     return false;
+  }
+
+  /// Re-checks waiting moments against the wall clock (e.g. after device sleep where timers paused).
+  check(): void {
+    const now = untracked(this.#now);
+    for (const [key, m] of [...this.#at]) {
+      if (now < m.at) continue;
+      if (m.fiber) this.#runner.interrupt(m.fiber);
+      m.fiber = null;
+      this.#at.delete(key);
+      m.node.set(true);
+    }
   }
 }

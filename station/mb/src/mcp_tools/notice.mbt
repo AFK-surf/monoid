@@ -77,17 +77,6 @@ pub fn iso_string(ms : Double) -> String {
 }
 
 ///|
-fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y - 1 } else { y }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = if m > 2 { m - 3 } else { m + 9 }
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
-}
-
-///|
 /// `Date.parse(s)` for the date-time string format (ISO 8601 as ECMAScript says it); NaN for what is not one. A time
 /// with no zone is read as UTC, the station's own logs writing theirs with Z.
 pub fn parse_iso(s : String) -> Double {
@@ -218,7 +207,7 @@ pub fn parse_iso(s : String) -> Double {
     (hour == 24 && (minute > 0 || second > 0 || milli > 0.0)) {
     return nan
   }
-  let days = days_from_civil(year, month, day).to_double()
+  let days = @time.days_from_civil(year, month, day).to_double()
   days * 86400000.0 +
   hour.to_double() * 3600000.0 +
   minute.to_double() * 60000.0 +

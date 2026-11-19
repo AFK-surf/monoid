@@ -482,7 +482,9 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     finish: () => Effect.asVoid(bridge.call("istream.finish", { id })),
     stopped: () => Effect.map(bridge.call("istream.stopped", { id }), (a) => (typeof (a.json as J)?.code === "number" ? (a.json as J).code : null)),
     reset: (code) => void Effect.runFork(Effect.ignore(bridge.call("istream.reset", { id, code }))),
-    tap: (call, prefix) => Effect.map(bridge.call("istream.tap", { id, call }, prefix), (a) => (a.json as J)?.tapped === true),
+    tap: (call, prefix, cursor) =>
+      Effect.map(bridge.call("istream.tap", { id, call, ...(cursor ? { cursor: true } : {}) }, prefix), (a) => ((a.json as J)?.tapped !== true ? false : (a.json as J)?.cursor === true ? ("cursor" as const) : true)),
+    receiveMediaDatagrams: (token) => Effect.map(bridge.call("istream.receiveMediaDatagrams", { id, token }), (a) => a.json === true),
   });
   const connection = (id: number, endpointId: number): IrohConnection => ({
     remoteId: () => String(bridge.sync("conn.remoteId", { id })),
@@ -520,6 +522,14 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     opus: () => {
       try {
         return bridge.sync("tap.opus", {}) === true;
+      } catch {
+        return false;
+      }
+    },
+    // (a shell from before says no such op: none)
+    mediaDatagrams: () => {
+      try {
+        return bridge.sync("istream.datagrams", {}) === true;
       } catch {
         return false;
       }

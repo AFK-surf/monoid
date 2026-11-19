@@ -107,6 +107,10 @@ priv struct Actor {
   mut delivery_interruptions : Int
   mut recoveries : Int
   mut recovery_deferred : Bool
+  /// how many times a turn on what waited for it failed to start
+  mut start_failures : Int
+  /// what was handed to the last of those (`handed_ids`); "" once one started
+  mut failed_handed : String
   /// its waits on Node's clock, by name
   timers : Map[String, () -> Unit]
   /// what it last told Node of itself
@@ -230,7 +234,7 @@ fn Actors::after(self : Actors, ms : Double, then : () -> Unit, on? : String) ->
 fn Actors::spawn(self : Actors, work : async () -> Unit) -> Unit {
   self.active += 1
   ignore(
-    self.host.rt.fork(name="actor work", () => {
+    self.host.rt.fork_daemon("actor work", on_error=e => @host.note("actor work failed: \{e}"), () => {
       work()
       self.active -= 1
       self.quiet()
@@ -303,13 +307,15 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         delivery_interruptions: 0,
         recoveries: 0,
         recovery_deferred: false,
+        start_failures: 0,
+        failed_handed: "",
         timers: Map([]),
         mirrored: "",
       }
       self.actors[key] = a
       // (its queue: one task at a time, in order)
       ignore(
-        self.host.rt.fork(name="actor", () => {
+        self.host.rt.fork_daemon("actor", on_error=e => @host.note("actor failed: \{e}"), () => {
           while (try { Some(a.tasks.take()) } catch { _ => None }) is Some(task) {
             task()
           }
@@ -400,7 +406,7 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
   guard self.agents is Some(agents) else { return }
   guard agents.take(n, k) is Some((events, _)) else { return }
   for e in events {
-    let event = @json.parse(@jsjson.stringify(e)) catch { _ => continue }
+    let event = e.to_json()
     // (the live view takes each first, as it is: live.mbt)
     let mut read = Json::null()
     match str_of(event.value("type")) {

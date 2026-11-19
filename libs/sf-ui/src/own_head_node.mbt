@@ -13,6 +13,8 @@
 /// them from the mark's start. Narrow: its mark, its name and what it does
 /// in one line (what it does on back's line over it where the page puts back there: head_back_holds), the name a size
 /// under the page's large title on as many lines as it takes, pressed to rename it; its tags and lines under them.
+/// `mark_press`: its mark pressed to do something (what it is called, what is done: a station's managers pick its
+/// mark), a block pressed as a whole (action_box_node); else nothing to press.
 #callsite(autofill(loc))
 pub fn own_head_node(
   parent : @view.View,
@@ -29,9 +31,21 @@ pub fn own_head_node(
   dot? : () -> String = fn() { "" },
   state_shown? : () -> Bool = fn() { true },
   warnings? : () -> Array[(String, Bool)] = fn() { [] },
+  mark_press? : (() -> String, () -> Unit),
   loc~ : SourceLoc,
 ) -> Unit {
   let narrow = look_node(parent) is Narrow
+  // (its mark in `holder`, in its box of `look`, `side` its side: pressed as a whole where it is pressed)
+  let mark_in = fn(holder : @view.View, look : () -> @ui.Style, side : Double) {
+    let drawn = fn(m : @view.View) {
+      style_node(m, look)
+      mark(m, side)
+    }
+    match mark_press {
+      Some((label, press)) => action_box_node(holder, label, fn(_) { press() }, drawn) |> ignore
+      None => holder.box(drawn) |> ignore
+    }
+  }
   let shown = fn() { lines().filter(fn(l) { l != "" }) }
   let line_look = fn() { if narrow { head_line_narrow } else { head_line } }
   // what is under its name: the first line (what it is), the others, its tags, how it stands
@@ -87,11 +101,7 @@ pub fn own_head_node(
       style_node(h, fn() { if state is None || !state_shown() { head_narrow.then(head_narrow_foot) } else { head_narrow } })
       h.box(fn(top) {
         style_node(top, fn() { head_top_narrow })
-        top.box(fn(m) {
-          style_node(m, fn() { head_mark_narrow })
-          mark(m, head_mark_narrow_side)
-        })
-        |> ignore
+        mark_in(top, fn() { head_mark_narrow }, head_mark_narrow_side)
         top.box(fn(words) {
           style_node(words, fn() { pg_row_words }, in_row=true)
           words.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
@@ -137,11 +147,7 @@ pub fn own_head_node(
     // its mark, its name and what it does on the name's line, the lines under them from the mark's start
     h.box(fn(row) {
       style_node(row, fn() { head_name_row })
-      row.box(fn(m) {
-        style_node(m, fn() { head_mark_wide })
-        mark(m, head_mark_wide_side)
-      })
-      |> ignore
+      mark_in(row, fn() { head_mark_wide }, head_mark_wide_side)
       row.box(fn(l) {
         style_node(l, fn() { head_name_line.then(head_name_grow) }, in_row=true)
         l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

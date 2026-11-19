@@ -8,46 +8,43 @@ pub using @jsjson {type JValue as J}
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 pub fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
 pub fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 pub fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+  @jsjson.JValue::of_object(pairs)
 }
 
 ///|
 pub fn ja(items : Array[J]) -> J {
-  Arr(items)
+  @jsjson.JValue::of_array(items)
 }
 
 ///|
 pub fn jstrs(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 /// `o[k]` where `o` is an object (None where it is not one, or has no `k`).
 pub fn get(o : J?, k : String) -> J? {
-  match o {
-    Some(Obj(_) as obj) => obj.get(k)
-    _ => None
-  }
+  @jsjson.jval_at(o, k)
 }
 
 ///|
@@ -60,10 +57,7 @@ pub fn text(j : J?) -> String? {
 
 ///|
 pub fn num(j : J?) -> Double? {
-  match j {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(j)
 }
 
 ///|
@@ -115,77 +109,27 @@ fn int_of(v : J?) -> Int {
 }
 
 ///|
-let b64_chars : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
 /// `bytes.toString("base64")`.
 pub fn base64_of(b : Bytes) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 6) & 63).unwrap())
-    out.write_char(b64_chars.get_char(v & 63).unwrap())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(b64_chars.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_chars.get_char((v >> 6) & 63).unwrap())
-    out.write_char('=')
-  }
-  out.to_string()
-}
-
-///|
-fn b64_value(c : Int) -> Int {
-  if c >= 'A'.to_int() && c <= 'Z'.to_int() {
-    c - 'A'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'z'.to_int() {
-    c - 'a'.to_int() + 26
-  } else if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int() + 52
-  } else if c == '+'.to_int() || c == '-'.to_int() {
-    62
-  } else if c == '/'.to_int() || c == '_'.to_int() {
-    63
-  } else {
-    -1
-  }
+  @codec.base64_encode(b[:])
 }
 
 ///|
 /// `Buffer.from(s, "base64")`: either alphabet, what is not of it passed over, ended at the first `=`.
 pub fn from_base64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
-  for i in 0..<s.length() {
-    let c = s.code_unit_at(i).to_int()
-    if c == '='.to_int() {
+  let kept = StringBuilder()
+  for c in s {
+    if c == '=' {
       break
     }
-    let v = b64_value(c)
-    if v < 0 {
-      continue
-    }
-    acc = ((acc << 6) | v) & 0xFFFFFF
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 0xFF).to_byte())
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
+      kept.write_char(c)
     }
   }
-  out.to_bytes()
+  let kept = kept.to_string()
+  // (a lone letter at the end makes no byte)
+  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
+  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
 }
 
 ///|

@@ -786,9 +786,22 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
     (Some(closed_w), Some((across_w, _))) => Some((closed_w, across_w))
     _ => None
   }
+  // (as wide as it comes to once open: what failed said of it as wide as its lines are, laid out as wide as the chat
+  // lets it, never wider than that, nor than it was closed; as the chat lets it where that is not known yet: so it
+  // widens to where it rests and no further, never past it and back at once as it comes there, nor out from there as
+  // it sets out to close)
+  let goal_w = match widened {
+    Some((closed_w, across_w)) =>
+      match @motion.measured_size(c, open_key + "/detail-lines") {
+        Some((lines_w, _)) if m.notice_detail != "" && m.notice_lines.is_empty() =>
+          @sf.dmin(across_w, @sf.dmax(closed_w, lines_w + notice_pill_inset))
+        _ => across_w
+      }
+    None => 0.0
+  }
   // (as long as the way it is seen to go: its widening, else a notice's width)
   let way = match widened {
-    Some((closed_w, across_w)) => @sf.dmax(across_w - closed_w, 120.0)
+    Some((closed_w, _)) => @sf.dmax(goal_w - closed_w, 120.0)
     None => 240.0
   }
   let opened_by = @motion.animate(c, open_key, if open { 1.0 } else { 0.0 }, spec=@motion.moved(points=way))
@@ -816,8 +829,8 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
   let pill = fn() {
     // (as wide as it was closed as it sets out, as the chat lets it once open, what it holds cut to it on the way)
     let pill_style = match widened {
-      Some((closed_w, across_w)) if shown_open && opened_by < 1.0 =>
-        notice_pill_of(failed, true).then(notice_pill_cut).then(@ui.style(max_w=Fixed(closed_w + (across_w - closed_w) * opened_by)))
+      Some((closed_w, _)) if shown_open && opened_by < 1.0 =>
+        notice_pill_of(failed, true).then(notice_pill_cut).then(@ui.style(max_w=Fixed(closed_w + (goal_w - closed_w) * opened_by)))
       _ => notice_pill_of(failed, shown_open)
     }
     let p = c.box(style=pill_style, id~, fn() {
@@ -935,11 +948,17 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
         c.box(style=if cut { notice_detail_cut.then(@ui.style(max_h=Fixed(natural_h * opened_by))) } else { notice_detail_whole }, fn() {
           // (laid out as wide as it is once open all the way, cut by the pill as it widens: never laid anew at each width)
           let laid = match widened {
-            Some((_, across_w)) if cut => notice_detail_room.then(@ui.style(w=Fixed(across_w - notice_pill_inset)))
+            // (on the way, its lines as wide as they are, not as the room: how wide the pill comes to, goal_w)
+            Some((_, across_w)) if cut =>
+              notice_detail_room.then(notice_detail_lines_own).then(@ui.style(w=Fixed(across_w - notice_pill_inset)))
             _ => notice_detail_room
           }
           let d = c.box(style=laid, keep=cut, fn() {
-            c.rich([@ui.span(m.notice_detail, mono=true)], key="notice-detail/" + m.ts, style=notice_detail.then(@ui.text_style(color=ink))) |> ignore
+            // (its lines as wide as they are, broken where the chat lets it: how wide the pill comes to, goal_w)
+            let lines = c.box(style=notice_detail_lines, fn() {
+              c.rich([@ui.span(m.notice_detail, mono=true)], key="notice-detail/" + m.ts, style=notice_detail.then(@ui.text_style(color=ink))) |> ignore
+            })
+            @motion.measure(c, lines, open_key + "/detail-lines")
             notice_copy(c, m, ink)
           })
           @motion.measure(c, d, open_key + "/detail")
@@ -1512,8 +1531,11 @@ fn notice_pill_of(failed : Bool, open : Bool) -> @ui.Style {
 }
 
 ///|
+/// A notice's pill: its corner a size said, never `Full`, which is half of whatever height it is drawn at on its way
+/// and so swelled to a blob as an open pill began to close: closed Xl4, more than half its height on one line, so held
+/// to round at its ends; open Xl1_5.
 // kept across runs: a value (no field of it changes)
-let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Full bg=Hover")
+let notice_pill : @ui.Style = @ui.css("max_w=Full px=S3_5 py=S1_5 radius=Xl4 bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1553,8 +1575,10 @@ fn notice_end_strut(leading : Double, scale : Double) -> Double {
 let notice_count_words : @ui.TextStyle = @ui.text_style(size=notice_size, leading=notice_leading, weight=Medium, wrap=false)
 
 ///|
+/// Opened, its first line where it was closed: in the middle of the pill, which opens about its middle, so what was
+/// pressed never moves across as it opens or closes (what failed said of it under it, from the pill's start).
 // kept across runs: a value (no field of it changes)
-let notice_line_open : @ui.Style = @ui.css("row align=AStart")
+let notice_line_open : @ui.Style = @ui.css("row align=AStart justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1608,6 +1632,15 @@ let notice_detail : @ui.TextStyle = @ui.text_style(size=Caption)
 ///|
 // kept across runs: a value (no field of it changes)
 let notice_detail_room : @ui.Style = @ui.css("w=Full pt=S1_5 gap=S1_5")
+
+///|
+/// What failed said of a notice, its lines alone: as wide as they are.
+// kept across runs: a value (no field of it changes)
+let notice_detail_lines : @ui.Style = @ui.css("max_w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let notice_detail_lines_own : @ui.Style = @ui.css("align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)

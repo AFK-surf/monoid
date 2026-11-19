@@ -92,15 +92,15 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
     ignore(self.ask("store.setProfileCheck", [js(id), check]))
   })
   let before_models = match jget(before, "models") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let before_fusion = match jget(before, "fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let check_fusion = match check.get("fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   if json_text(before_models) != json_text(check.get("models")) ||
@@ -479,8 +479,16 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
         to_number(m.get("checkedAt"))
       None => false
     }
+    // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+    let same = match mine {
+      Some(m) => json_text(got_quota) == stringify(m)
+      None => false
+    }
     match got_quota {
-      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) && !complete_here && !older => {
+      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) &&
+        !complete_here &&
+        !same &&
+        !older => {
         self.quotas[id] = q
         self.keep_quota(id, q)
       }
@@ -815,10 +823,10 @@ async fn Accounts::lent_login_version(self : Accounts, home : String) -> String?
   guard try_parse(text) is Some(j) else { return None }
   let tokens = j.get("tokens")
   let pick = (k : String) => match jget(tokens, k) {
-    None => Null
+    None => JV::Null
     Some(v) => v
   }
-  Some(sha256_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
+  Some(@hash.sha256_utf8_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
 }
 
 ///|

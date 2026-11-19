@@ -9,7 +9,7 @@ import * as format from "../format.ts";
 import { t } from "../i18n.ts";
 import { base64, fromBase64 } from "../util.ts";
 import { Beside } from "../protocol.ts";
-import { PREVIEW_SMALL, chatKeptId, keptId, previewKeptId, sentKeptId } from "../drive-kept.ts";
+import { PREVIEW_SMALL, chatKeptId, keptId, openKeptId, previewKeptId, sentKeptId } from "../drive-kept.ts";
 import { folderOf } from "../ops.ts";
 import * as looks from "../looks.ts";
 import { buildFusion } from "../present.ts";
@@ -462,11 +462,43 @@ export function install(): void {
       catch: asCoreError,
     });
   };
+  // A file a message names: kept on this device as it is read (drive-kept.ts `openKeptId`), by the version the station
+  // says, and asked again by that version each time (it may have changed since): not changed, what is kept is answered
+  // (`same`), with none of its bytes from the station; the station not reached, what is kept all the same (`stale`).
+  // With `kept`, what is kept alone, no station asked; with `played`, kept as a video's or song's parts are. What is
+  // kept is answered by the path as named (the station's own name for it is not kept).
   handlers.fileOpen = (inner, call, _p, _a, ctx) => {
     const c = call as Extract<Call, { kind: "fileOpen" }>;
-    return Effect.flatMap(parse(c.station), (addr) =>
-      Effect.map(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx), (got) => new Beside({ name: got.name, path: got.path, type: got.type, size: got.size }, got.bytes)),
-    );
+    const id = openKeptId(c.station, c.key, c.path);
+    const named = c.path.split(/[\\/]/).filter((s) => s !== "").pop() ?? c.path;
+    return Effect.gen(function* () {
+      const addr = yield* parse(c.station);
+      const version = yield* inner.driveKept.version(id);
+      const at = c.range?.offset ?? 0;
+      const kept = version === null ? null : yield* inner.driveKept.read(id, version.mtime, version.size, at, c.range?.length ?? version.size);
+      const fromKept = (more: Record<string, boolean>) => new Beside({ name: named, path: c.path, type: kept!.type, size: version!.size, ...more }, kept!.bytes);
+      if (c.kept) {
+        if (kept === null) return yield* Effect.fail(new CoreError("not_kept", t("station.core.fileUnreadable")));
+        // (a video or song played from what is kept: asked again by its version as its start is read, so what was kept
+        // of it goes once it changed, its new start kept in its place)
+        if (c.played && at === 0) {
+          inner.runner.fork(Effect.ignore(Effect.flatMap(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, `${version!.mtime}:${version!.size}`), (said) =>
+            said.same || said.mtime === null || said.bytes.length === 0 ? Effect.void : inner.driveKept.keep(id, "played", said.mtime, said.size, said.type, 0, said.bytes.slice()))));
+        }
+        return fromKept({});
+      }
+      const have = kept === null ? undefined : `${version!.mtime}:${version!.size}`;
+      const got = yield* Effect.result(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, have));
+      if (got._tag === "Failure") {
+        if (kept !== null && (got.failure.code === "offline" || got.failure.code === "timeout" || got.failure.code === "mesh")) return fromKept({ stale: true });
+        return yield* Effect.fail(got.failure);
+      }
+      const said = got.success;
+      if (said.same && kept !== null) return fromKept({ same: true });
+      // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+      if (said.mtime !== null && !said.same && said.bytes.length > 0) inner.runner.fork(inner.driveKept.keep(id, c.played ? "played" : "file", said.mtime, said.size, said.type, at, said.bytes.slice()));
+      return new Beside({ name: said.name, path: said.path, type: said.type, size: said.size }, said.bytes);
+    });
   };
   // With `keep`: what is kept of the file as its folder said it is answered as the station would (a stream's bytes in
   // one piece), not asked of it again, and only what is not kept from the part's offset on asked of the station; what

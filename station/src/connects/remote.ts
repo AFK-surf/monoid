@@ -274,8 +274,8 @@ export class RemoteSurface implements ChatSurface {
   peopleIn(channel: string): Promise<Member[]> {
     return this.call("peopleIn", [channel]);
   }
-  begin(channel: string, message: string): Promise<{ thread: ThreadRef; ts: string }> {
-    return this.call("begin", [channel, message]);
+  begin(channel: string, message: string, title = ""): Promise<{ thread: ThreadRef; ts: string }> {
+    return this.call("begin", [channel, message, title]);
   }
   edit(thread: ThreadRef, ts: string, message: string): Promise<boolean> {
     return this.call("edit", [thread, ts, message]);

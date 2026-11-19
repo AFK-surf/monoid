@@ -5,16 +5,12 @@
 
 ///|
 fn p54_jv(j : Json) -> @jsjson.JValue {
-  @jsjson.parse(j.stringify()) catch {
-    _ => @jsjson.JValue::Null
-  }
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 fn p54_of_jv(v : @jsjson.JValue) -> Json {
-  @json.parse(@jsjson.stringify(v)) catch {
-    _ => Json::null()
-  }
+  v.to_json()
 }
 
 ///|
@@ -114,7 +110,7 @@ fn p54_after(host : @host.Host, ms : Double, f : () -> Unit) -> () -> Unit {
   let off = Ref(false)
   let wait = if ms < 0.0 { 0 } else if ms > 2147483647.0 { 2147483647 } else { ms.to_int() }
   ignore(
-    host.rt.fork(name="after", async fn() {
+    host.rt.fork_daemon("after", on_error=e => @host.note("after failed: \{e}"), async fn() {
       @effect.sleep(wait) // timer: a deadline a part set (its `after`)
       if !off.val {
         f()
@@ -160,7 +156,7 @@ fn p54_spawn(
   let proc = spawn(host, program, args, env?, cwd?, stdin_piped~, stdout=Piped, stderr=Piped, group~)
   let child = { proc, ended: None, running: true }
   ignore(
-    host.rt.fork(name="child \{program}", async fn() {
+    host.rt.fork_daemon("child \{program}", on_error=e => @host.note("child \{program} failed: \{e}"), async fn() {
       while true {
         match proc.events.take() {
           Out(b) => out(b)
@@ -202,14 +198,12 @@ priv struct P54Conn {
 
 ///|
 async fn p54_unix_open(host : @host.Host, path : String) -> P54Conn {
-  let (opened, _) = host.shell("unix.open", { "path": Json::string(path) })
-  { host, id: p54_get(Some(opened), "id").unwrap_or(Json::null()), closed: false }
+  { host, id: host.unix_open(path).id, closed: false }
 }
 
 ///|
 async fn p54_tcp_open(host : @host.Host, port : Int) -> P54Conn {
-  let (opened, _) = host.shell("tcp.open", { "port": Json::number(port.to_double()) })
-  { host, id: p54_get(Some(opened), "id").unwrap_or(Json::null()), closed: false }
+  { host, id: host.tcp_open(port).id, closed: false }
 }
 
 ///|
@@ -218,17 +212,14 @@ async fn P54Conn::read(self : P54Conn) -> Bytes? {
   if self.closed {
     return None
   }
-  let (said, bytes) = self.host.shell("tcp.read", { "id": self.id }) catch { _ => return None }
-  match (p54_get(Some(said), "end"), bytes) {
-    (Some(True), _) => None
-    (_, Some(b)) => Some(b)
-    (_, None) => None
+  self.host.tcp_read(self.id) catch {
+    _ => None
   }
 }
 
 ///|
 async fn P54Conn::write(self : P54Conn, b : Bytes) -> Unit {
-  ignore(self.host.shell("tcp.write", { "id": self.id }, bytes=b))
+  self.host.tcp_write(self.id, b)
 }
 
 ///|
@@ -239,13 +230,7 @@ fn P54Conn::close(self : P54Conn) -> Unit {
   self.closed = true
   let host = self.host
   let id = self.id
-  ignore(
-    host.rt.fork(name="conn close", async fn() {
-      ignore(host.shell("tcp.close", { "id": id })) catch {
-        _ => ()
-      }
-    }),
-  )
+  ignore(host.rt.fork_quiet(name="conn close", async fn() { host.tcp_close(id) }))
 }
 
 ///|
@@ -253,7 +238,7 @@ fn P54Conn::close(self : P54Conn) -> Unit {
 fn P54Conn::writer(self : P54Conn) -> (Bytes) -> Unit {
   let q : @effect.Queue[Bytes] = @effect.Queue::unbounded()
   ignore(
-    self.host.rt.fork(name="conn writes", async fn() {
+    self.host.rt.fork_daemon("conn writes", on_error=e => @host.note("conn writes failed: \{e}"), async fn() {
       while !self.closed {
         let b = q.take()
         self.write(b) catch {

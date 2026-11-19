@@ -18,7 +18,16 @@ fn bar_after_push(frames : Array[Double]) -> (Double, Double, Double, Double, Do
     t.frame_at(t0 + f)
   }
   t.frame_at(t0 + 160.0)
-  (bar.vis.start - t0, bar.vis.value, bar.vis.target, bar.k.x, bar.ball_x.x, bar.ball_alpha.value, bar.ball_scale.value)
+  let now = t.time()
+  (
+    bar.vis.start - t0,
+    bar.vis.at(now).0,
+    bar.vis.target,
+    bar.k.at(now).0,
+    bar.ball_x.at(now).0,
+    bar.ball_alpha.at(now).0,
+    bar.ball_scale.at(now).0,
+  )
 }
 
 ///|
@@ -64,10 +73,10 @@ fn bar_at_rest() -> (@ui.Tester, Double) {
 }
 
 ///|
-/// How lit place `key` of the bar is (1 lit, 0 not; -1 never drawn).
-fn bar_lit(key : String) -> Double {
+/// How lit place `key` of the bar is at `now` (1 lit, 0 not; -1 never told).
+fn bar_lit(key : String, now : Double) -> Double {
   match bar.tints.get("bar:" + key) {
-    Some(g) => g.value
+    Some(g) => g.at(now).0
     None => -1.0
   }
 }
@@ -108,7 +117,8 @@ fn bar_after_place(place : String, frames : Array[Double]) -> (String, Double, D
     t.frame_at(t0 + f)
   }
   t.frame_at(t0 + 160.0)
-  (m_face.val, bar.icon_swap.start - t0, bar.icon_swap.value, bar_lit(place), bar_lit("chats"), bar.ball_x.x)
+  let now = t.time()
+  (m_face.val, bar.icon_swap.start - t0, bar.icon_swap.at(now).0, bar_lit(place, now), bar_lit("chats", now), bar.ball_x.at(now).0)
 }
 
 ///|
@@ -137,7 +147,7 @@ fn bar_after_order(frames : Array[Double]) -> (Double, Double, Double) {
     t.frame_at(t0 + f)
   }
   t.frame_at(t0 + 160.0)
-  (bar.ball_x.x, bar.ball_x.to, bar.ball_x.set_at - t0)
+  (bar.ball_x.at(t.time()).0, bar.ball_x.to, bar.ball_x.set_at - t0)
 }
 
 ///|
@@ -163,7 +173,7 @@ fn ride_then_sent(ahead : Bool) -> (Double, Double, Double) {
   s.ride_on(300.0, fn(_t) { 100.0 }, at0, from, at=at0)
   let end = s.end()
   if ahead {
-    s.sample(end + 5.0)
+    ignore(s.at(end + 5.0))
   }
   let then = s.value_at(end - 5.0)
   s.go(50.0, 300.0, ball_damping(300.0), at=end - 5.0)
@@ -221,7 +231,7 @@ fn bar_drawn_up(frames : Array[Double]) -> (Double, Double, Bool, Double, Double
     t.touch_at(kind, xs[0], y + dy, t0 + at)
   }
   t.frame_at(t0 + 400.0)
-  (bar.o.value_at(t0 + 400.0), bar.o.to, bar.mode.get(), bar.ball_x.x, bar.ball_y.x)
+  (bar.o.value_at(t0 + 400.0), bar.o.to, bar.mode.get(), bar.ball_x.at(t0 + 400.0).0, bar.ball_y.at(t0 + 400.0).0)
 }
 
 ///|
@@ -453,7 +463,7 @@ test "bar: a ride set out long before what it rides on rests, off its steps from
   }
   let end = s + @motion.spring_duration(ratio, k, x - to, v, ball_rest_within)
   assert_true((r.end - end).abs() < 0.000001, msg="ends \{r.end}, the whole way \{end}")
-  let whole : Ride = { legs, k, ratio, to, end, from, stopped: false }
+  let whole : Ride = { legs, k, ratio, to, end, from }
   for at in [still - 9.0, still - 1.0, still + 9.0, still + 40.0, still + 200.0] {
     let (a, _) = r.at(at)
     let (b, _) = whole.at(at)
@@ -488,7 +498,7 @@ fn bar_tap_landing(
     t.frame_at(t1 + f)
   }
   t.frame_at(t1 + 3000.0)
-  (left, key, sent, bar.told.unwrap().active, bar.ball_x.x + 22.0, bar.ball_x.to + 22.0, bar.ball_x.end() - t1)
+  (left, key, sent, bar.told.unwrap().active, bar.ball_x.at(t.time()).0 + 22.0, bar.ball_x.to + 22.0, bar.ball_x.end() - t1)
 }
 
 ///|
@@ -574,4 +584,79 @@ test "bar: a bar chosen without a place, the place shown in it elsewhere: the ba
   // (Station first in that bar)
   assert_true((sent - xs[0]).abs() < 0.5, msg="sent to \{sent}")
   assert_true((x - xs[0]).abs() < 0.5 && (to - xs[0]).abs() < 0.5, msg="ball at \{x}, going to \{to}")
+}
+
+///|
+/// First line where two drawlists differ, for diagnostics; empty when identical.
+fn drawlist_first_diff(got : String, want : String) -> String {
+  if got == want {
+    return ""
+  }
+  let a = got.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let b = want.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  let diffs : Array[String] = []
+  for i in 0..<n {
+    if a[i] != b[i] {
+      diffs.push("line \{i + 1}:\n  got : \{a[i]}\n  want: \{b[i]}")
+      if diffs.length() >= 8 {
+        break
+      }
+    }
+  }
+  if a.length() != b.length() {
+    diffs.push("lengths: got=\{a.length()} want=\{b.length()}")
+  }
+  diffs.join("\n")
+}
+
+///|
+/// Render Home at rest starting in `start_dark` from frame 0, then when `switch_theme` is true switch system dark to
+/// `end_dark` while the bottom bar stays mounted; return its full drawlist.
+fn bar_theme_switch_drawlist(start_dark : Bool, end_dark : Bool, switch_theme : Bool) -> String {
+  new_run()
+  let src = fixture(if start_dark { "home-dark" } else { "home" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, dark=start_dark)
+  (src.call)("prefs.set", { "appearance": Json::string("system") }, @sfbase.answer_unread)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  if switch_theme {
+    t.set_dark(end_dark)
+  }
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t.drawlist()
+}
+
+///|
+test "bar: switching system theme light <-> dark or accent while mounted updates the bottom bar glass, ball and action to match a fresh run" {
+  for case in [(false, true), (true, false)] {
+    let (from_dark, to_dark) = case
+    let switched = bar_theme_switch_drawlist(from_dark, to_dark, true)
+    let fresh = bar_theme_switch_drawlist(to_dark, to_dark, false)
+    let diff = drawlist_first_diff(switched, fresh)
+    assert_eq(diff, "", msg="home \{from_dark}->\{to_dark}:\n\{diff}")
+  }
+  // switching accent while the bottom bar is mounted updates the bar's tinted glass and action disc too
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  @sfbase.accent_preview(Some("blue"))
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let switched_accent = t.drawlist()
+  new_run()
+  @sfbase.accent_preview(Some("blue"))
+  let src2 = fixture("home")
+  let t2 = @ui.Tester::new(fn(c) { view(c, src2) }, tree=app_tree(src2), w=390.0, h=844.0, platform=2)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  let fresh_accent = t2.drawlist()
+  @sfbase.accent_preview(None)
+  let diff = drawlist_first_diff(switched_accent, fresh_accent)
+  assert_eq(diff, "", msg="home accent orange->blue:\n\{diff}")
 }

@@ -16,7 +16,7 @@ import { olderMdKeys, type MdStore } from "./markdown.ts";
 import { topicKey, type Topic } from "./protocol.ts";
 import { Marks, signal, tracking, untracked, type Source as ReactiveSource } from "./reactive.ts";
 import type { Runner } from "./runtime.ts";
-import { equal, get, isObject, parseJson, toJsonBytes } from "./util.ts";
+import { equal, get, isObject, parseJson, toJsonBytes, u64 } from "./util.ts";
 import { worded, type Words } from "./chat-row.ts";
 import { rowWords } from "./station/rows-made.ts";
 import { ofAddress } from "./workspace.ts";
@@ -284,8 +284,10 @@ const CHAT_READ_LIST: readonly ChatRead<never>[] = Object.values(CHAT_READS) as 
 const readTopic = (name: string, k: ReadKey): Topic => ({ topic: name, station: k[0], key: k.slice(1).join(SEP) });
 /// What a chat's record a read found is told by (its station, whether archived, its id): every write of it.
 const CHAT_RECORD = "$chat-record";
-/// How many declared reads' answers are kept as their statements gave them, read again only as their keys are told.
-const CHAT_ANSWERS_KEPT = 64;
+/// How many declared reads' answers are kept as their statements gave them, read again only as their keys are told
+/// (a list's counts one a station: `counts`). A workspace of many stations holds several a station at once (`counts`,
+/// `atWork`, `archivedCount`, the chats each names): fewer than those, each write read them all again in turn.
+const CHAT_ANSWERS_KEPT = 512;
 
 /// How long a session counts as used lately once its chat or history was opened (`usedLately`).
 export const RECENT_MS = 3 * 86_400_000;
@@ -1303,6 +1305,18 @@ export class Data {
     return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived };
   }
 
+  /// The chat a link names (as chatNamed finds it), as a link to it is drawn: its title, its thread, whether it is
+  /// archived and whether its record is marked so (`archivedMark`), of their columns, no record read. A chat linked from
+  /// a message read its record whole for these (its JSON parsed and frozen), five to ten of them each time a chat that
+  /// leads others was made again.
+  chatLinked(station: string, id: string): { id: string; title: string | null; thread: number | undefined; archived: boolean; archivedMark: boolean } | undefined {
+    void this.listed(station, "chats");
+    void this.listed(station, "archived");
+    const f = this.chatFound(CHAT_READS.named, { station, id }, () => false)[0];
+    if (f === undefined) return undefined;
+    return { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, thread: u64(f.cols[2]), archived: f.archived, archivedMark: f.cols[3] === 1 };
+  }
+
   /// The chat a job's session is in (its job's row names none): the one its link names (as chatTitled finds it), else
   /// the first listed it is among the agents of (`chat_agent`: a chat's second agent's task); its id, its title,
   /// whether it is archived and the viewer's own, of their columns, no record read.
@@ -1780,6 +1794,12 @@ export class Data {
   messageAt(station: string, thread: number, ts: string): number | null {
     this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
     return this.of(station)?.messageAt(station, thread, ts) ?? null;
+  }
+
+  /// What people said in chat `thread` up to entry `upTo` (AccountDb.peopleEntries), told as its log is.
+  peopleEntries(station: string, thread: number, upTo: number): { held: Map<number, unknown>; edits: Map<number, number[]> } {
+    this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
+    return this.of(station)?.peopleEntries(station, thread, upTo) ?? { held: new Map(), edits: new Map() };
   }
 
   logRange(table: LogTable, station: string, id: string, from: number, to: number): Map<number, unknown> {

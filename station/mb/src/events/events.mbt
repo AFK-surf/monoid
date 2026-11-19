@@ -134,7 +134,6 @@ struct Client {
   running : Bool
   /// What is told of the sessions at work it is told as they are now meanwhile (`heldNow`), by its making.
   mut held_waits : (Int32, Map[String, Array[J]])?
-  shared : Bool
   stream : Stream
   stops : Array[() -> Unit]
 }
@@ -204,7 +203,6 @@ pub struct Events {
   mut lingering : (() -> Unit)?
   mut last : (Viewer, String)?
   mut shared_told : Map[String, String]?
-  mut shared_until : Double
   /// A read of the shared chat list under way: who waits for it.
   mut shared_reading : Array[(Bool) -> Unit]?
   mut opening_shared : Int32
@@ -245,7 +243,6 @@ pub fn Events::new(deps : Deps, run : String, taking~ : Bool = false) -> Events 
     lingering: None,
     last: None,
     shared_told: None,
-    shared_until: 0,
     shared_reading: None,
     opening_shared: 0,
     overview_told: Map([]),
@@ -412,17 +409,21 @@ pub fn Events::take_up(
                           }
                         _ => None
                       }
-                      if handed.get("shared") is Some(Obj(_) as shared) &&
-                        shared.get("until") is Some(Num(until)) &&
-                        now <= until {
-                        let rows : Map[String, String] = Map([])
-                        if shared.get("rows") is Some(Arr(pairs)) {
-                          for p in pairs {
-                            rows[string_of(at(p, 0))] = string_of(at(p, 1))
-                          }
+                      if handed.get("shared") is Some(Obj(_) as shared) {
+                        let fresh = match shared.get("until") {
+                          Some(Num(until)) => now <= until
+                          None | Some(Null) => true
+                          _ => false
                         }
-                        self.shared_told = Some(rows)
-                        self.shared_until = until
+                        if fresh {
+                          let rows : Map[String, String] = Map([])
+                          if shared.get("rows") is Some(Arr(pairs)) {
+                            for p in pairs {
+                              rows[string_of(at(p, 0))] = string_of(at(p, 1))
+                            }
+                          }
+                          self.shared_told = Some(rows)
+                        }
                       }
                       self.linger()
                       Ok(())
@@ -591,19 +592,6 @@ fn Events::listening(self : Events) -> Bool {
 }
 
 ///|
-fn Events::keeps_shared(self : Events) -> Bool {
-  if self.opening_shared > 0 || self.clients.iter().any(c => c.shared) {
-    return true
-  }
-  if self.shared_told is Some(_) && (self.deps.now)() <= self.shared_until {
-    return true
-  }
-  self.shared_told = None
-  self.shared_until = 0
-  false
-}
-
-///|
 fn rows_told(rows : Array[J]) -> Map[String, String] {
   let told : Map[String, String] = Map([])
   for r in rows {
@@ -635,7 +623,6 @@ fn Events::prepare_shared(self : Events, done : (Bool) -> Unit) -> Unit {
               _ => []
             }
             self.shared_told = Some(rows_told(rows))
-            self.shared_until = (self.deps.now)() + kept_ms
             true
           }
           None => false
@@ -677,7 +664,6 @@ fn Events::linger(self : Events) -> Unit {
       self.lingering = None
       self.log.clear()
       self.shared_told = None
-      self.shared_until = 0
       self.overview_told.clear()
     }),
   )
@@ -733,7 +719,6 @@ pub(all) struct Asked {
   brief : Bool
   logins : Array[String]
   running : Bool
-  shared : Bool
 }
 
 ///|
@@ -749,30 +734,24 @@ pub fn Events::open(
   let follows = asked.running && self.deps.held is Some(_)
   let live = if follows { [] } else { asked.live }
   let go = () => {
-    let wants_shared = asked.shared
-    let shared_history = !wants_shared ||
-      (self.keeps_shared() && self.shared_told is Some(_))
-    if wants_shared {
-      self.opening_shared += 1
-      fn again() {
-        if self.shared_told is Some(_) {
-          self.opened(viewer, lang, asked, follows, live, shared_history, done)
-        } else {
-          self.prepare_shared(ok => {
-            if ok {
-              again()
-            } else {
-              self.opening_shared -= 1
-              done(Err("the chat list is not read"))
-            }
-          })
-        }
+    let shared_history = self.shared_told is Some(_)
+    self.opening_shared += 1
+    fn again() {
+      if self.shared_told is Some(_) {
+        self.opened(viewer, lang, asked, follows, live, shared_history, done)
+      } else {
+        self.prepare_shared(ok => {
+          if ok {
+            again()
+          } else {
+            self.opening_shared -= 1
+            done(Err("the chat list is not read"))
+          }
+        })
       }
-
-      again()
-    } else {
-      self.opened(viewer, lang, asked, follows, live, shared_history, done)
     }
+
+    again()
   }
   if self.taking {
     self.taking_waiters.push(go)
@@ -800,7 +779,6 @@ fn Events::opened(
     host: asked.host,
     running: follows,
     held_waits: None,
-    shared: asked.shared,
     stream,
     stops: [],
   }
@@ -808,11 +786,7 @@ fn Events::opened(
   client.raw("retry: 3000\n\n")
   client.send(
     "made",
-    jopt([
-      ("rows", Some(Bool(true))),
-      ("marks", Some(Bool(true))),
-      ("shared", if asked.shared { Some(Bool(true)) } else { None }),
-    ]),
+    jo([("rows", Bool(true)), ("marks", Bool(true)), ("shared", Bool(true))]),
   )
   let k = viewer_key(viewer, lang)
   let resumes = asked.since is Some(since) &&
@@ -926,9 +900,7 @@ fn Events::opened(
     client.raw("id: \{self.log.at()}\n\n")
   }
   self.clients.push(client)
-  if asked.shared {
-    self.opening_shared -= 1
-  }
+  self.opening_shared -= 1
   self.last = Some((viewer, lang))
   if self.lingering is Some(stop) {
     stop()
@@ -960,9 +932,6 @@ fn Events::opened(
       ended()
     }
     self.clients = self.clients.filter(c => c.id != client.id)
-    if client.shared && !self.clients.iter().any(c => c.shared) {
-      self.shared_until = (self.deps.now)() + kept_ms
-    }
     for stop in client.stops {
       stop()
     }
@@ -1606,14 +1575,14 @@ fn shared_key(id : String, ws : J) -> String {
 ///|
 /// events.ts `tellShared`.
 fn Events::tell_shared(self : Events, dirty : Dirty, done : () -> Unit) -> Unit {
-  if !self.keeps_shared() {
+  let sessions = dirty.item_sessions.keys().to_array()
+  let threads = dirty.item_threads.values().to_array()
+  let whole = dirty.whole
+  if !whole && sessions.length() == 0 && threads.length() == 0 {
     return done()
   }
   let go = () => {
-    let sessions = dirty.item_sessions.keys().to_array()
-    let threads = dirty.item_threads.values().to_array()
-    let whole = dirty.whole
-    if !whole && sessions.length() == 0 && threads.length() == 0 {
+    if self.shared_told is None || !self.listening() {
       return done()
     }
     let args = if whole {
@@ -1640,9 +1609,8 @@ fn Events::tell_shared(self : Events, dirty : Dirty, done : () -> Unit) -> Unit 
           jo([]),
         )
         self.shared_told = None
-        self.shared_until = 0
         self.log.clear()
-        for c in self.clients.filter(c => c.shared) {
+        for c in self.clients.copy() {
           c.stream.close()
         }
         return done()
@@ -1746,20 +1714,11 @@ pub fn Events::hand_over(
       Some((viewer, lang)) =>
         jo([("viewer", without(viewer.raw, "lockDevice")), ("lang", js(lang))])
     }
-    let shared = if self.keeps_shared() && self.shared_told is Some(told) {
+    let shared = if self.shared_told is Some(told) {
       Some(
         jo([
           ("rows", ja(told.iter().map(p => ja([js(p.0), js(p.1)])).to_array())),
-          (
-            "until",
-            jn(
-              if self.clients.iter().any(c => c.shared) {
-                at + kept_ms
-              } else {
-                self.shared_until
-              },
-            ),
-          ),
+          ("until", jn(at + kept_ms)),
         ]),
       )
     } else {

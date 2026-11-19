@@ -80,6 +80,9 @@ test "实验性功能's page: its switches, each off by default and on and off a
     for label in ["试用新对话页", "Farview 原生标签页渲染", "对话列表看板视图"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
+    // (those three alone: the new chat's page and the composer made as nodes are 试用新对话页's, no switch of their own)
+    assert_eq(t.all(Switch).length(), 3, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
+    assert_true(t.query(Switch, label="试用新输入框") is None, msg="\{at}: no 试用新输入框")
     assert_true(!kept("chatPage") && !kept("farviewNative") && !kept("board"), msg="\{at}: all off by default")
     // (but the wide frame's own: the sidebar's edge over what its pane shows by 6, sfdesk/pane_view.mbt's, as
     // station_move_wbtest's move_audit has it)

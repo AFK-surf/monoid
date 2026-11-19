@@ -75,9 +75,9 @@ pub fn side_front_pressed(src : Source, r : ChatRef, tab : String) -> Unit {
   // (what it asked handed to the tab as it is first built, its reads then the tab's own: side_tab_shown_at)
   let at = side_tab_shown_at(r, tab)
   let front = fn() { side_change(src, r, "front", Some(tab)) }
-  // (an agent's history its transcript's place too, as it is opened (history_side_open): its line there from its
-  // first frame, nothing pushed down under its head after it came)
-  let w = if side_history_tab(tab) {
+  // (an agent's history its transcript's place only while 详情 is unfolded: when folded, opening does not wait on a
+  // station RPC for a hidden line)
+  let w = if side_history_tab(tab) && @signals.untracked(fn() { !history_own.shut.get() }) {
     // (a replay of a run from before asks nothing ahead: shown at once, as history_side_open)
     let path = if !src.read_only && (src.switches_ahead)() { Some(wh_transcript(src, r.station, tab)) } else { None }
     let placed = fn() {
@@ -166,6 +166,11 @@ pub fn side_ask(src : Source, r : ChatRef, action : String, tab : String?) -> Un
 /// there already (the same file, what it said of itself then aside: view_tab_file's same_file), that one brought to the
 /// front, never a second: the tab put in front.
 pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
+  // (that file in a window of its own: the window to the front, the panel left as it is: sfbase's tab_window_front)
+  match @sfbase.tab_window_front(r, tab) {
+    Some(there) => return there
+    None => ()
+  }
   let open = match @sfbase.view_tab_file(tab) {
     Some(f) =>
       side_now(src, r).0
@@ -184,12 +189,15 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
 }
 
 ///|
-/// An agent's history pressed (its mark in the bar), or the chat's files (its info's 文件): in front, closed; else
-/// opened in front, whole (side_tab_open).
+/// An agent's history pressed (its mark in the bar or its activity row), or the chat's files (its info's 文件):
+/// when already in front and visible, closed; on the tape with the panel off screen, brought into view; else opened
+/// in front, whole (side_tab_open).
 pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
   let (tabs, front) = side_now(src, r)
   if tabs.contains(tab) && front == tab {
-    side_change(src, r, "close", Some(tab))
+    if !tape_bring_side_if_hidden(r) {
+      side_change(src, r, "close", Some(tab))
+    }
   } else {
     side_tab_open(src, r, tab)
   }
@@ -202,6 +210,10 @@ pub fn side_toggle(src : Source, r : ChatRef, tab : String) -> Unit {
 /// others what they read as they are first drawn (side_tab_asks), through press_wait (sfbase's open_answered:
 /// open_hold_ms at most, given up as the chat is left); one there already, brought to the front at once.
 pub fn side_tab_open(src : Source, r : ChatRef, tab : String) -> Unit {
+  // (in a window of its own: that window to the front instead, sfbase's tab_window_front)
+  if @sfbase.tab_window_front(r, tab) is Some(_) {
+    return
+  }
   let open = fn() { side_change(src, r, "open", Some(tab)) }
   if side_history_tab(tab) {
     history_side_open(src, r, tab, open)
@@ -675,7 +687,13 @@ fn side_bars(c : @ui.Ctx, tabs : Array[String], front : String) -> (Bool, Bool, 
 ///|
 /// What a tab is called and how its close is said: an agent's by its label, a web service's by its name, a
 /// visualization's by its file's name, 任务's, 文件's, agent 往来's by theirs.
-fn side_tab_names(src : Source, r : ChatRef, v : ChatView?, tab : String) -> (String, String) {
+fn side_tab_names(
+  src : Source,
+  r : ChatRef,
+  v : ChatView?,
+  tab : String,
+  job_of? : (String) -> Json?,
+) -> (String, String) {
   match station_tab_name(src, tab) {
     Some(label) => return (label, @sf.t("web-pages.chat.close", args=[("name", label)]))
     None => ()
@@ -694,7 +712,15 @@ fn side_tab_names(src : Source, r : ChatRef, v : ChatView?, tab : String) -> (St
   }
   let agent = v.bind(fn(v) { v.agents.iter().find_first(fn(a) { a.key == tab }) })
   let service = match tab_service(tab) {
-    Some(job) => Some(job_now(src, r.station, job).0)
+    Some(job) =>
+      match job_of {
+        Some(f) =>
+          match f(job) {
+            None | Some(Null) => Some(jobs_handed.get(service_key(r.station, job)))
+            j => Some(j)
+          }
+        None => Some(job_now(src, r.station, job).0)
+      }
     None => None
   }
   let file = tab_file(tab)

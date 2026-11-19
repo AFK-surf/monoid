@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { groupAlive } from "../src/ops/group.ts";
 import type { ScreenSource, Screens } from "../src/screens/source.ts";
 import { FarviewTabs, chatDir, farviewConfig, farviewFor, farviewHowTo, hostFileOf } from "../src/browser/farview.ts";
-import { DEFAULT_SIZE, FarviewScreen, FrameLink, inputOf, sizeFor } from "../src/browser/farview-screen.ts";
+import { DEFAULT_SIZE, FarviewScreen, FrameLink, inputOf, openTabOf, sizeFor } from "../src/browser/farview-screen.ts";
 import { decodeAnswer, encodeAsk } from "../src/browser/farview-agent.ts";
 import { browserTools, type ToolBrowsers } from "../src/browser/tool.ts";
 
@@ -302,7 +302,12 @@ const listen = (on) => new Promise((r) => { const s = net.createServer(on); s.li
   const frame = await listen((s) => {
     s.on("error", () => {});
     if (url.startsWith("https://opener.test/") && !asked) asked = true, s.write(JSON.stringify({ openTab: "https://opened.test/" }) + "\\n");
+    // (a page that opens a window it holds, an OAuth popup's: its id, this tab's and this page's origin)
+    if (url.startsWith("https://popup.test/") && !asked) asked = true, s.write(JSON.stringify({ openTab: "https://oauth.test/", window: "w_popup", opener: process.env.FV_TAB_ID, origin: "https://popup.test" }) + "\\n");
+    // (a page that closes its tab once it is done, told every connection)
+    if (url.startsWith("https://oauth.test/") || url.startsWith("https://closer.test/")) s.write(JSON.stringify({ closeTab: true }) + "\\n");
   });
+  fs.writeFileSync(dir + "/ids.json", JSON.stringify({ tab: process.env.FV_TAB_ID, opener: process.env.FV_OPENER_ID, origin: process.env.FV_OPENER_ORIGIN }));
   fs.writeFileSync(dir + "/said.json", JSON.stringify({ url, profile: process.env.FV_PROFILE_DIR, newTabs: process.env.FV_NEW_TABS }));
   fs.writeFileSync(dir + "/host.json", JSON.stringify({ pid: process.pid, port, agent, frame }));
 })();
@@ -316,21 +321,31 @@ async function fakeFarview() {
   await chmod(join(root, "release", "bin", "host.exe"), 0o755);
   let raw: any = { browser: { farview: join(root, "release"), sessions: ["chat:listed"] } };
   const shown: ScreenSource[] = [];
-  const waits: { n: number; done: () => void }[] = [];
+  const waits: { ok: () => boolean; done: () => void }[] = [];
+  const look = () => {
+    for (const w of waits.filter((w) => w.ok())) waits.splice(waits.indexOf(w), 1), w.done();
+  };
   const screens = {
     add: (s: ScreenSource) => {
       shown.push(s);
-      for (const w of waits.filter((w) => shown.length >= w.n)) waits.splice(waits.indexOf(w), 1), w.done();
-      return () => void shown.splice(shown.indexOf(s), 1);
+      look();
+      return () => {
+        shown.splice(shown.indexOf(s), 1);
+        look();
+      };
     },
   } as unknown as Screens;
-  /// Once `n` screens are shown (a tab a page asked for is started by its host's word, in its own time).
-  const shownAt = (n: number) => (shown.length >= n ? Promise.resolve() : new Promise<void>((done) => void waits.push({ n, done })));
+  const when = (ok: () => boolean) => (ok() ? Promise.resolve() : new Promise<void>((done) => void waits.push({ ok, done })));
+  /// Once `n` screens are shown (a tab a page asked for is started by its host's word, in its own time), or no screen
+  /// `id` is (a tab its page closed is closed in its own time).
+  const shownAt = (n: number) => when(() => shown.length >= n);
+  const unshown = (id: string) => when(() => shown.every((s) => s.id !== id));
   const make = () => new FarviewTabs({ dir: join(root, "data"), config: () => farviewConfig(raw), screens });
-  return { root, shown, shownAt, make, set: (r: any) => (raw = r) };
+  return { root, shown, shownAt, unshown, make, set: (r: any) => (raw = r) };
 }
 
 const said = async (dir: string) => JSON.parse(await readFile(join(dir, "said.json"), "utf8"));
+const ids = async (dir: string) => JSON.parse(await readFile(join(dir, "ids.json"), "utf8"));
 const gone = async (path: string) => stat(path).then(() => false, () => true);
 
 test("a chat's Farview is for it as the config lists it or its agent chose it, the choice kept for the next station process", { skip: process.platform === "win32" && "a made-up host is a script with a #! line" }, async () => {
@@ -494,4 +509,55 @@ test("the station's asks of a Farview tab are its wire's messages, and its answe
   assert.deepEqual(decodeAnswer(body(20, "https://a.test/", "A", "outline")), { kind: "seen", url: "https://a.test/", title: "A", outline: "outline" });
   assert.deepEqual(decodeAnswer(body(21)), { kind: "taken" });
   assert.equal(decodeAnswer(body(12)), null);
+});
+
+test("a page's popup is a tab told its window id, its opener and its origin; a page that closes its tab has it closed, never the chat's first; one closed while no station held it is not taken up", { skip: process.platform === "win32" && "a made-up host is a script with a #! line" }, async () => {
+  const fv = await fakeFarview();
+  const session = "chat:listed";
+  const chat = join(fv.root, "data", chatDir(session));
+  let tabs = fv.make();
+  try {
+    await tabs.endpoint(session);
+    const id = `fv_${chatDir(session)}`;
+    // each tab's id among the profile's is its screen's; a tab of its own has no opener
+    assert.deepEqual(await ids(join(chat, "tabs", "0")), { tab: id });
+    const own = await tabs.open(session, "https://b.test/");
+    assert.deepEqual(await ids(join(chat, "tabs", "1")), { tab: own.id });
+    // a page opens a window it holds: its tab told the window's id, the opener's and the opener's origin, and closed
+    // as its page closes it (window.close(), its OAuth done)
+    const shown = fv.shown.length;
+    await tabs.open(session, "https://popup.test/");
+    await fv.shownAt(shown + 2);
+    assert.deepEqual(await ids(join(chat, "tabs", "3")), { tab: "w_popup", opener: `${id}_2`, origin: "https://popup.test" });
+    await fv.unshown(`browser:${id}_3`);
+    assert.deepEqual(tabs.tabs(session).map((t) => t.id), [id, `${id}_1`, `${id}_2`]);
+    // a first tab whose page closes it stays
+    await tabs.stop(session);
+    await writeFile(join(chat, "tabs", "0", "url"), "https://closer.test/");
+    await tabs.endpoint(session);
+    const after = await tabs.open(session, "https://later.test/");
+    assert.deepEqual(tabs.tabs(session).map((t) => t.id), [id, after.id]);
+    // a tab its page closed as no station process held it (its host.json says so): ended and gone as the next one
+    // starts, never one of its screens again
+    const k = after.id.split("_")[2]!;
+    const file = JSON.parse(await readFile(join(chat, "tabs", k, "host.json"), "utf8"));
+    tabs.close();
+    await writeFile(join(chat, "tabs", k, "host.json"), JSON.stringify({ ...file, closed: true }));
+    tabs = fv.make();
+    await tabs.resume();
+    assert.deepEqual(tabs.tabs(session).map((t) => t.id), [id]);
+    assert.equal(groupAlive(file.pid), false);
+    assert.equal(await gone(join(chat, "tabs", k)), true);
+  } finally {
+    await tabs.closeOf(session).catch(() => {});
+    await rm(fv.root, { recursive: true, force: true });
+  }
+});
+
+test("a frame port's openTab says a page's new tab and what links it to its opener", () => {
+  assert.deepEqual(openTabOf({ openTab: "https://a.test/" }), { url: "https://a.test/", meta: {} });
+  assert.deepEqual(openTabOf({ openTab: "https://a.test/", window: "w_1", opener: "fv_x", origin: "https://o.test" }), { url: "https://a.test/", meta: { window: "w_1", opener: "fv_x", origin: "https://o.test" } });
+  assert.deepEqual(openTabOf({ openTab: "https://a.test/", window: "", opener: 3 }), { url: "https://a.test/", meta: {} });
+  assert.equal(openTabOf({ openTab: "" }), null);
+  assert.equal(openTabOf({ page: {} }), null);
 });

@@ -69,6 +69,8 @@ pub(all) struct OverviewDeps {
   /// The platform's paths: whether one is absolute, and it cleaned (platform.paths `rooted`, `clean`).
   rooted : (String) -> Bool
   clean : (String) -> String
+  /// Unix ms timestamp when this station release was built (ops/version.ts `builtAt`); None in development.
+  built_at : Double?
 }
 
 ///|
@@ -725,9 +727,14 @@ pub fn overview(
                   }
                 None => None
               }
+              let built_at = match d.built_at {
+                Some(ms) if ms > 0.0 && ms == ms.floor() && ms <= 9007199254740991.0 => Some(jn(ms))
+                _ => None
+              }
               done(
                 Ok(
                   jopt([
+                    ("builtAt", built_at),
                     ("automaticDecisions", Some(decisions)),
                     ("archiving", Some(archiving_view(raw, viewer))),
                     ("viewer", Some(viewer_shown)),

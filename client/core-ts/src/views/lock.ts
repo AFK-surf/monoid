@@ -42,7 +42,7 @@ import type { SpanContext } from "../trace.ts";
 import { equal, get, hex, isObject, sha256, utf8 } from "../util.ts";
 import { type Checked, checkLock, lockChain, signerIn } from "../vault/lock-check.ts";
 import { AGAIN_MOST, againOf, hashOf, keep, links } from "../lock-keep.ts";
-import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, unsealOwn, vaultAsks, vaultCome, writePlain } from "./vault.ts";
+import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, vaultAsks, vaultCome } from "./vault.ts";
 import { laterSleep } from "../runtime.ts";
 import { Marks } from "../reactive.ts";
 import { ofAddress } from "../workspace.ts";
@@ -531,6 +531,12 @@ export function safeMode(inner: Inner, ws: string): boolean {
 }
 
 const SAFE = "lockSafe";
+
+/// Whether `ws` is in safe mode by the lock held now (`safeHeld`), never by what was kept of it (`lockSafe`): what
+/// the vault goes by (views/vault.ts `lockOf`), which reads the lock held anyway. The cloud's word only where none is.
+export function safeNow(inner: Inner, ws: string): boolean {
+  return safeHeld(inner, ws) ?? get(view(inner, ws), "locked") === true;
+}
 
 /// Whether `ws` is in safe mode by the lock held (null: none held on, the view's word then).
 function safeHeld(inner: Inner, ws: string): boolean | null {
@@ -1801,7 +1807,9 @@ export function takeOffBound(inner: Inner, sub: string, id: string): Effect.Effe
       // before a move (`Lock.append`'s `tookOut`). Left for the key's next unsealing, a device of theirs approved or
       // begun anew after it was not shown the vault at all, nor given its key (2026-11-14, the locks' end to end after
       // #6102: a vault never opened again stayed hidden on every new device, and setting one up made an empty 个人).
-      if (owner === sub && movedHere(inner, ws)) {
+      // So where the workspace is in no safe mode: its vaults go by the person's own lock alone (views/vault.ts
+      // `personalLockOf`), keyed anew as it is taken off there.
+      if (owner === sub && (movedHere(inner, ws) || !safeNow(inner, ws))) {
         tookOutMoved(inner, ws, id);
         continue;
       }
@@ -2303,7 +2311,7 @@ function heardTail(inner: Inner, ws: string, raw: unknown): void {
 }
 
 /// The stations of `sub`'s workspaces here, each once (one in two of them is asked in the first).
-function personStations(inner: Inner, sub: string): StationAddr[] {
+export function personStations(inner: Inner, sub: string): StationAddr[] {
   const out = new Map<string, StationAddr>();
   for (const [ws, owner] of inner.workspaces.owned()) {
     if (owner !== sub) continue;
@@ -2960,7 +2968,10 @@ export const pairs: {
   moved(inner: Inner, ws: string): void;
   reading(inner: Inner, ws: string): void;
   run(inner: Inner, name: string, ws: string, params: Record<string, unknown>): Effect.Effect<unknown, CoreError>;
-} = { shown: () => [], mine: () => null, deny: () => {}, hide: () => {}, moved: () => {}, reading: () => {}, run: () => Effect.fail(CoreError.invalid("no face-to-face approval here")) };
+  /// Whether this device waits in a workspace that a code shown on a trusted device approves it in by that workspace's
+  /// own entry (views/pair.ts `waitingIn`): one asked with the person's own lock then (`begin`'s `personal`).
+  waiting(inner: Inner): boolean;
+} = { shown: () => [], mine: () => null, deny: () => {}, hide: () => {}, moved: () => {}, reading: () => {}, run: () => Effect.fail(CoreError.invalid("no face-to-face approval here")), waiting: () => false };
 
 /// The draft of turning it on: the devices that came to the stations (that asked the cloud for credentials, where no
 /// station says), the stations asked whether they understand a lock (GET /lock: one from before answers 404).
@@ -3105,10 +3116,18 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         // Asked before this device knows which it is (the lock not held yet, or its person's own lock not heard of):
         // both read first, within the call's wait, as the page that waits would have them (2026-11-14, the side run
         // of f6cfdf7af1: asked a moment after the first refusal, "this device waits in no workspace").
-        if (!offOwnLock(inner, c.workspace) && (!held(inner, c.workspace)?.head || inner.adb.personal().standing(sub) === "none")) {
-          yield* within.wait(Effect.ignore(Effect.all([read(inner, c.workspace), inner.adb.personal().refresh(sub)], { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
+        // So are the person's other workspaces whose lock is not held yet while the cloud says one is: what one code is
+        // to let this device into, each by what lets it in there, is known before it is asked (below).
+        {
+          const unread = [...inner.workspaces.owned()].filter(([w, o]) => o === sub && w !== c.workspace && !held(inner, w)?.head && cloudSays(view(inner, w)) !== undefined).map(([w]) => w);
+          const here = !offOwnLock(inner, c.workspace) && (!held(inner, c.workspace)?.head || inner.adb.personal().standing(sub) === "none");
+          const reads = [...(here ? [read(inner, c.workspace), inner.adb.personal().refresh(sub)] : []), ...unread.map((w) => read(inner, w))];
+          if (reads.length > 0) yield* within.wait(Effect.ignore(Effect.all(reads, { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
         }
-        if (offOwnLock(inner, c.workspace)) return yield* inner.adb.run({ kind: "personalJoin", sub });
+        // One code for all of it (2026-11-18: a person whose upgraded workspace lets their devices in by their own lock,
+        // beside one whose chain still lets each in by its own entry, typed two codes and was asked twice): their own
+        // lock alone where nothing else waits, else the workspaces' exchange carrying it too (views/pair.ts `begin`).
+        if (offOwnLock(inner, c.workspace) && !pairs.waiting(inner)) return yield* inner.adb.run({ kind: "personalJoin", sub });
         // (its person's only trusted device since it began their lock anew, the workspace binding the one of before: no
         // approval lets it in until they are taken out, `reboundIn`; its page says whom to ask)
         if (reboundIn(inner, c.workspace)) return yield* Effect.fail(new CoreError("lock_rebound", t(get(view(inner, c.workspace), "role") === "owner" ? "core-misc.lock.reboundOwner" : "core-misc.lock.reboundMember")));
@@ -3178,7 +3197,7 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
           // `takeOffBound` does: `tookOutMoved`)
           result = yield* Effect.tap(inner.adb.personal().removeCarried(d.sub, param("device"), d.label, actText({ act: "removeDevice", name })), () =>
             Effect.sync(() => {
-              for (const [ws, owner] of inner.workspaces.owned()) if (owner === d.sub && movedHere(inner, ws)) tookOutMoved(inner, ws, param("device"));
+              for (const [ws, owner] of inner.workspaces.owned()) if (owner === d.sub && (movedHere(inner, ws) || !safeNow(inner, ws))) tookOutMoved(inner, ws, param("device"));
               touch(inner, c.workspace);
             }));
           break;
@@ -3188,25 +3207,16 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         break;
       }
       case "disable": {
-        // (where the chain moved: an `off` in the root's own log, by its person alone; their own secrets opened first, as
-        // below, then `off` signed, which asks again: two asks there, for the person's own lock asks each time it is used
-        // and one ask for both needs the host to open two sealed values under one prompt, which it does not)
+        // Off, the vaults stay as they are, encrypted and kept by each person's own devices (station/src/cloud/
+        // vault-lock.ts): nothing is opened or written out unencrypted, and on again later they go on as they were.
+        // (where the chain moved: an `off` in the root's own log, by its person alone, which asks them once)
         if (movedHere(inner, c.workspace)) {
           yield* offAllowed(inner, sub, c.workspace);
-          const secrets = yield* unsealOwn(inner, c.workspace, t("core-misc.lock.reason.disable"));
           result = yield* onOffMoved(inner, sub, c.workspace, false);
-          if (secrets.length > 0) inner.runner.fork(writePlain(inner, c.workspace, secrets));
           break;
         }
-        // The person's own secrets opened while the lock still says whose they are ( 一个库): once it is
-        // off they go into the plain library, as the dialog said. Turned down there, nothing is turned off.
-        // (the person asked once, for this: the box key's prompt says it, the vaults' keys unsealed with it; asked by
-        // itself only where none was needed. Two prompts in a row for one tap: found on Android, 2026-11-05)
-        let asked = false;
-        const secrets = yield* unsealOwn(inner, c.workspace, t("core-misc.lock.reason.disable"), () => (asked = true));
-        if (!asked) yield* askPerson(inner, t("core-misc.lock.reason.disable"));
+        yield* askPerson(inner, t("core-misc.lock.reason.disable"));
         result = yield* lock.append("disable", {});
-        if (secrets.length > 0) inner.runner.fork(writePlain(inner, c.workspace, secrets));
         break;
       }
       // The chain handed over to its people's own logs: where chains are handed over by themselves (`handsOver`; it moves

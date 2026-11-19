@@ -52,11 +52,59 @@ pub fn[K] ListPlace::on_sight(self : ListPlace[K], f : (Sight[K]) -> Unit) -> Un
 }
 
 ///|
+/// What its list worked out that nothing follows (its blocks' places, its keys, read untracked as it was laid out and
+/// told what is in sight) let go of what that read: for what reads the list one last time as its page is left, so it
+/// holds nothing of it after (as its page is put by at rest, View::on_rest does it).
+pub fn[K] ListPlace::rest_unwatched(self : ListPlace[K]) -> Unit {
+  (self.at.rest_unwatched)()
+}
+
+///|
+/// Its list put by at rest, as what holds it is (a page kept as it is left, its View::on_rest): what it has in sight
+/// told once more where that is owed, what still goes stopped where it is, then told nothing while it rests and what it
+/// worked out let go of (ListPlace::rest_unwatched). A list nothing puts so is as it ever was.
+pub fn[K] ListPlace::rest(self : ListPlace[K]) -> Unit {
+  (self.at.rest_at)()
+}
+
+///|
+/// Its list woken from rest (ListPlace::rest): told what it has in sight again.
+pub fn[K] ListPlace::wake(self : ListPlace[K]) -> Unit {
+  (self.at.wake_at)()
+}
+
+///|
 /// What was last told of what the list has in sight (ListPlace::on_sight), for a handler to read; where none is told
 /// it, what it has in sight as it is counted now; none before its first layout.
 pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {
   let now = if self.at.sight_fns.is_empty() { (self.at.sight_of)() } else { self.at.sight }
   now.map(fn(s) { s.keyed(self.ids) })
+}
+
+///|
+/// What the list has in sight at this moment as it is counted (Sight's), even while a fling glides or a notch eases on
+/// (`on_sight` and `sight_now` tell where that leaves it, at its end): for what records where the reader left the list
+/// as they leave it mid-glide, never for what is made or bound. None before its first layout or once it is let go.
+pub fn[K] ListPlace::sight_live(self : ListPlace[K]) -> Sight[K]? {
+  (self.at.sight_of)().map(fn(s) { s.keyed(self.ids) })
+}
+
+///|
+/// How far block `to`'s top lies under block `from`'s as the list counts its blocks now (measured, or `est` where not
+/// yet): read off what is counted, nothing laid out or measured. None where either is not among its keys, or the list is
+/// not made; `measured`: none as well where a block from `from` down to `to` is not measured yet (how far is then not
+/// known, only guessed).
+pub fn[K : Hash + Eq] ListPlace::span_between(
+  self : ListPlace[K],
+  from : K,
+  to : K,
+  measured? : Bool = false,
+) -> Double? {
+  // (looked up, not numbered: a key never among them gets no number for it)
+  match (self.ids.ids.get(from), self.ids.ids.get(to)) {
+    (Some(a), Some(b)) => (self.at.span_of)(a, b, measured)
+    _ => None
+  }
 }
 
 ///|

@@ -634,8 +634,7 @@ fn files_home_body(
           if reading {
             @sf.waiting_node(x, fn(w) { roots_sample_node(w) }, error=fn() { @sf.t("common.readingStations") })
           } else {
-            @sf.empty_node(x, fn(e) {
-              @sf.words_node(e, fn() { @sf.t("web-main.rail.filesNone") }, fn() { fs_empty_words }) |> ignore
+            @sf.empty_words_node(x, fn() { @sf.t("web-main.rail.filesNone") }, more=fn(e) {
               e.show(fn() { favorite_stations(src, ws).length() > 0 }, at_once=true, fn(k) {
                 @sf.button_node(k, fn() { @sf.t("web-pages.files.addFavorite") }, fn() {
                   add_favorite_folder(src, ws, favorite_stations(src, ws), picked=fn(f) {
@@ -689,8 +688,7 @@ fn roots_page_node(
     fn(b, _) {
       b.pick(shows, at_once=true, fn(x, k) {
         let empty = fn(words : String, pick : Bool) {
-          @sf.empty_node(x, fn(e) {
-            @sf.words_node(e, fn() { words }, fn() { roots_empty_words }) |> ignore
+          @sf.empty_words_node(x, fn() { words }, more=fn(e) {
             if pick {
               @sf.button_node(e, fn() { @sf.t("web-pages.files.addFavorite") }, fn() {
                 match @signals.untracked(st) {
@@ -754,14 +752,6 @@ fn roots_sample_node(parent : @view.View) -> Unit {
   let s = @sfbase.dv_station({ "station": "sample", "name": Json::string(@sf.sample_words(4)) })
   roots_section_node(parent, fn() { { ..s, roots, } }, fn(_) {  })
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let fs_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
-
-///|
-// kept across runs: a value (no field of it changes)
-let roots_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
 
 ///|
 /// The bar in a window's whole: its last button at the window's top right corner following it where the bar's buttons

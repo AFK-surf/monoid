@@ -127,7 +127,7 @@ pub async fn serve_tools(d : ToolsDeps, conn : @door.Connection, rt : @effect.Ru
   }
   while (conn.accept_bi)() is Some(stream) {
     ignore(
-      rt.fork(name="tools", () => {
+      rt.fork_daemon("tools", on_error=e => (d.said)("info", "tools stream ended", jobj([("error", jstr(message_of(e)))])), () => {
         let reader = @door.Reader::new(stream, max_line=max_tools_line)
         let reply = (async fn() -> Json {
           match @effect.timeout(tools_line_ms, () => reader.line()) {
@@ -180,6 +180,14 @@ pub fn admin_answered(status : Int, text : String) -> Result[Json, (String, Stri
 /// A refusal of the admin API's, with its code (`Object.assign(new Error(…), {code})`).
 pub(all) suberror AdminRefused {
   AdminRefused(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for AdminRefused with output(self, logger) {
+  match self {
+    AdminRefused(m, _) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -257,23 +265,7 @@ fn js_string_of(v : Json) -> String {
 ///|
 /// `encodeURIComponent(s)`.
 pub fn encode_uri_component(s : String) -> String {
-  let b = StringBuilder()
-  let hex = "0123456789ABCDEF"
-  for byte in @utf8.encode(s) {
-    let c = byte.to_int()
-    let keep = (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x61 && c <= 0x7a) ||
-      (c >= 0x30 && c <= 0x39) ||
-      c == 0x2d || c == 0x5f || c == 0x2e || c == 0x21 || c == 0x7e || c == 0x2a || c == 0x27 || c == 0x28 || c == 0x29
-    if keep {
-      b.write_char(c.unsafe_to_char())
-    } else {
-      b.write_char('%')
-      b.write_char(hex.code_unit_at(c >> 4).to_int().unsafe_to_char())
-      b.write_char(hex.code_unit_at(c & 15).to_int().unsafe_to_char())
-    }
-  }
-  b.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

@@ -1,0 +1,21 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "client_core/outbox"
+
+// Values
+
+// Errors
+
+// Types and methods
+pub struct FrameOutbox[T] {
+  // private fields
+}
+pub fn[T] FrameOutbox::new(() -> Unit) -> Self[T]
+pub fn[T] FrameOutbox::take(Self[T], most? : Int32) -> Array[T]
+pub fn[T] FrameOutbox::takes(Self[T]) -> Int32
+pub fn[T] FrameOutbox::tell(Self[T], T) -> Unit
+pub fn[T] FrameOutbox::waiting(Self[T]) -> Int32
+pub fn[T] FrameOutbox::wakes(Self[T]) -> Int32
+
+// Type aliases
+
+// Traits

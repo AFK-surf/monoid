@@ -137,22 +137,27 @@ pub async fn write_console(Io, String, ConsoleLogin) -> Unit
 pub(all) suberror Failed {
   Failed(String)
 }
+pub impl Show for Failed
 
 pub(all) suberror FsError {
   FsError(String, String)
 }
+pub impl Show for FsError
 
 pub(all) suberror JsonError {
   JsonError(String)
 }
+pub impl Show for JsonError
 
 pub(all) suberror RenewRefused {
   RenewRefused(Int32?, String)
 }
+pub impl Show for RenewRefused
 
 pub(all) suberror Said {
   Said(String)
 }
+pub impl Show for Said
 
 // Types and methods
 pub(all) struct Bound {
@@ -405,7 +410,7 @@ pub async fn MachineLogins::refresh(Self) -> Unit
 pub struct ModelCatalog {
   // private fields
 }
-pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit) -> Self
+pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit, learned? : () -> Unit) -> Self
 pub async fn ModelCatalog::refresh(Self, etag? : String) -> Unit
 pub async fn ModelCatalog::written(Self) -> Unit
 

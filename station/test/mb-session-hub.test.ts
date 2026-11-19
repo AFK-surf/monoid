@@ -1,4 +1,4 @@
-// The sessions hub in MoonBit (station/mb/src/session_hub, the reader's `--builder harness-session-hub`) against the
+// The sessions hub in MoonBit (station/mb/src/session_hub, `stillfail-reader-harness --builder harness-session-hub`) against the
 // TypeScript it is moved from, each asked the same and compared: the hub's pure parts (args.ts, model-choice.ts,
 // run-change.ts, context-cap.ts, pool.ts and what they stand on, the words of i18n.ts) on many inputs, what they give
 // or the words they refuse with; and the hub itself (hub.ts) on two databases made alike, A the TypeScript `Hub`'s, B
@@ -15,7 +15,7 @@ import { join, relative } from "node:path";
 import { sharedTranscripts } from "../src/read/transcript.ts";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import * as args from "../src/sessions/args.ts";
 import * as choice from "../src/sessions/model-choice.ts";
 import * as runChange from "../src/sessions/run-change.ts";
@@ -57,8 +57,8 @@ import { latest as latestNote } from "../src/agents/migrations.ts";
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 /// The catalog's texts as the station says them (branded with its product's name).
 function brandedCatalog(words: Record<string, Json>): Record<string, Json> {
@@ -648,6 +648,7 @@ class HubPair {
   /// What the program asked of the world as it handed over (hub.ts `handOver`: settled, frozen, settled again), with
   /// the limit it gave each.
   readonly handoverAsks: Json[] = [];
+  allLeftCalls = 0;
   readonly tsA: Store;
   readonly tsB: Store;
   hub: Hub;
@@ -831,8 +832,12 @@ class HubPair {
       case "fs.write": await mkdir(join(this.shadow(x.path), ".."), { recursive: true }); await writeFile(this.shadow(x.path), x.text); return null;
       case "fs.read": return readFile(this.shadow(x.path), "utf8").catch(() => null);
       case "fs.rm": await rm(this.shadow(x.path), { force: true }); return null;
-      case "actors.settled": case "drivers.freeze": this.handoverAsks.push([what, x.limitMs]); return {};
-      case "runners.allLeft": return {};
+      case "actors.settled": case "drivers.freeze": {
+        this.handoverAsks.push(x.skip !== undefined ? [what, x.limitMs, x.skip] : [what, x.limitMs]);
+        const next = this.scripted[what]?.shift();
+        return next ?? {};
+      }
+      case "runners.allLeft": this.allLeftCalls++; return {};
       case "runners": return this.runners;
       case "runnerId": return runnerId(x.runtime, x.key);
       case "sandboxNames.takeUp": {
@@ -1183,6 +1188,19 @@ test("holds, workspaces, held chats, recovery, idle processes and the pages' com
   await pair.call("wsOf", null);
   await pair.call("profilesIn", null);
   await pair.call("profilesIn", "ws2");
+  // One archived going idle: what it left in the background ended, then its archive cleaned, one call after the other
+  // (the program once asked its actor for a call it has not, `evictThenCleanArchive`)
+  // (no process idle meanwhile: what else idleNow lets go comes in an order of each side's own scheduling)
+  await pair.set(() => {
+    pair.a.states = {};
+  });
+  pair.both((s) => s.setArchived("w2:C1:1100.000001", true, "manual"));
+  const compareLogs = pair.compareLogs.bind(pair);
+  const idleArchived: Json[] = [];
+  pair.compareLogs = (where) => (idleArchived.push(...pair.a.log), compareLogs(where));
+  await pair.call("idleNow", "w2:C1:1100.000001");
+  pair.compareLogs = compareLogs;
+  assert.deepEqual(idleArchived.filter((e) => e[0] === "actor" && e[1] === "w2:C1:1100.000001"), [["actor", "w2:C1:1100.000001", "evict", [true]], ["actor", "w2:C1:1100.000001", "cleanArchive", []]]);
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("shutdown");
@@ -1517,7 +1535,8 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(started.answer, { result: { $undefined: true } });
   const url = "http://127.0.0.1:4750/mcp";
   const both2 = (call: string, args: Json[] = []) => [["actor", "cl:C1:1000.000001", call, args], ["actor", "w2:C1:1100.000001", call, args]];
-  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ...both2("release"), ...both2("kick"), ["agents.along", "taken"], ...both2("kick"), ["agents.jobsRelaunch", null]]);
+  // (what was cut off found while turns are held, then each session let go once: released, never kicked as well)
+  assert.deepEqual(started.did, [["agents.openDoor"], ...both2("toolsAt", [url]), ["agents.along", "taken"], ...both2("release"), ["agents.jobsRelaunch", null]]);
   // Out of a workspace it joined: its sessions end; back in it: they resume, and the parts are told each time.
   const left = await pair.callB("agents.follow", place({ joined: [] }));
   assert.deepEqual(left.did, [["actor", "w2:C1:1100.000001", "suspend", ["the station left its workspace"]], ["agents.along", "changed"]]);
@@ -1528,7 +1547,7 @@ test("the agents' side takes the sessions up and follows its workspaces, as agen
   assert.deepEqual(out.did, [["actor", "cl:C1:1000.000001", "suspend", []], ["actor", "w2:C1:1100.000001", "suspend", []], ["drivers", "shutdown", [true]], ["agents.along", "left"], ["agents.jobsStopAll", "the station was removed from its workspace"]]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: true });
   const inAgain = await pair.callB("agents.follow", place());
-  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ...both2("kick"), ["agents.jobsRelaunch", null], ...both2("release"), ...both2("kick")]);
+  assert.deepEqual(inAgain.did, [["agents.along", "joined"], ["agents.jobsRelaunch", null], ...both2("release")]);
   assert.deepEqual((await pair.callB("held", "cl:C1:1000.000001")).answer, { result: false });
   // A new home: one it had joined took over (the old home's chats said to be that one's).
   assert.deepEqual((await pair.callB("agents.follow", place({ home: "ws2", joined: [], first: "ws2" }))).did, [["live", "cl:C1:1000.000001", false]]);
@@ -1614,4 +1633,57 @@ test("whether moving to another station is on, as hub.ts gives its sessions it",
     (pair.hub as Json).options.moveOn = () => pair.moveOn!;
     assert.equal(await pair.call("moveOn"), !(moveOn ?? true));
   }
+});
+
+test("handOver: partial=false refuses on unsettled actors; partial=true skips unsettled actors, preserves the rest and detaches", { skip }, async () => {
+  const p = await opened();
+  const pair = new HubPair(p);
+  after(() => pair.close());
+  await pair.open();
+  await pair.advance(1_800_000_000_000);
+  await pair.call("accept", "cl", msg({ threadTs: "1000.000001", ts: "1000.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1100.000001", ts: "1100.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1300.000001", ts: "1300.000001" }));
+  await pair.set(() => {
+    pair.a.states = {
+      "cl:C1:1000.000001": { state: "warm", idleSince: pair.now - 1000 },
+      "cl:C1:1100.000001": { state: "cold", holds: true },
+      "cl:C1:1300.000001": { state: "running" },
+    };
+  });
+  pair.b.log.length = 0;
+  pair.handoverAsks.length = 0;
+
+  // partial=false (default, TS parity): refuses when actors do not settle, releases drain, does not detach.
+  pair.scripted["actors.settled"] = [{ error: "the sessions did not settle in 1000 ms", unsettled: ["cl:C1:1300.000001"] }];
+  const refused = await pair.callB("handOver", 1000, false);
+  assert.deepEqual(refused.answer, { error: "the sessions did not settle in 1000 ms" });
+  assert.deepEqual(pair.handoverAsks, [["actors.settled", 1000]]);
+  assert.equal((await pair.callB("holds", "drain")).answer.result, false, "drain released on refusal");
+  assert.equal(pair.allLeftCalls, 0);
+  assert.ok(!refused.did.some((d) => d[0] === "drivers" && d[1] === "detach"), "did not detach on refusal");
+
+  // partial=true: logs a warning naming the unsettled session, freezes drivers, runs second settled skipping it,
+  // closes the unsettled actor without snapshotting or disposing, snapshots the rest, detaches and waits allLeft.
+  pair.handoverAsks.length = 0;
+  pair.scripted["actors.settled"] = [
+    { error: "the sessions did not settle in 15000 ms", unsettled: ["cl:C1:1300.000001"] },
+    {},
+  ];
+  const partial = await pair.callB("handOver", 15_000, true);
+  assert.equal(partial.answer.error, undefined, JSON.stringify(partial.answer));
+  assert.deepEqual(pair.handoverAsks, [
+    ["actors.settled", 15_000],
+    ["drivers.freeze", 5_000],
+    ["actors.settled", 3_000, ["cl:C1:1300.000001"]],
+  ]);
+  const snapKeys = (partial.answer.result.sessions as Json[]).map((s) => s.key).sort();
+  assert.deepEqual(snapKeys, ["cl:C1:1000.000001", "cl:C1:1100.000001"], "only settled sessions snapshotted");
+  assert.ok(partial.did.some((d) => d[0] === "actor" && d[1] === "cl:C1:1300.000001" && d[2] === "close"), "unsettled actor closed");
+  assert.ok(!partial.did.some((d) => d[0] === "actor" && d[1] === "cl:C1:1300.000001" && (d[2] === "snapshot" || d[2] === "dispose")), "unsettled actor neither snapshotted nor disposed");
+  assert.ok(partial.did.some((d) => d[0] === "drivers" && d[1] === "detach"), "drivers detached");
+  assert.equal(pair.allLeftCalls, 1, "waited for runners.allLeft");
+  const written = JSON.parse(await readFile(pair.shadow(join(pair.dataDir, "run", "handover.json")), "utf8"));
+  assert.deepEqual((written.sessions as Json[]).map((s) => s.key).sort(), ["cl:C1:1000.000001", "cl:C1:1100.000001"]);
+  pair.a.log.length = 0;
 });

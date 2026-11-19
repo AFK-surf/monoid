@@ -4,6 +4,8 @@
 // as those change: the chat's mark, title and when it was last active; where it is when another station, and that the
 // link is its agent's execution history; the one message the link names (`messagePeek`), else where it stands or the
 // last thing said in it. One archived as its message says; one gone; its bones while the link or its row is read.
+// Drawn by the library's (@sf.peek_chat_head_node, where it is, the message it names); this is what is read for it and
+// what that says.
 
 ///|
 /// What a chat's card shows (chat_card's): an archived one as its message says it; its bones while the link or its
@@ -64,22 +66,15 @@ fn chat_card_node(
     }
   }
   parent.pick(shows, fn(b, s) {
-    @sf.style_node(b, fn() { peek_card_part })
+    @sf.style_node(b, fn() { @sf.peek_card_part })
     match s {
       Archived => {
         let l = fn() {
           linked().unwrap_or({ href: "", title: "", archived: true, note: "", thread: None })
         }
-        b.box(fn(rich) {
-          @sf.style_node(rich, fn() { peek_rich })
-          rich.box(fn(t) {
-            @sf.style_node(t, fn() { peek_chat_title })
-            peek_title_node(t, fn() { l().title })
-          })
-          |> ignore
-          rich.show(fn() { l().note != "" }, fn(n) {
-            @sf.words_node(n, fn() { l().note }, fn() { peek_excerpt }) |> ignore
-          })
+        @sf.peek_rich_node(b, fn(rich) {
+          @sf.peek_chat_head_node(rich, fn() { l().title })
+          rich.show(fn() { l().note != "" }, fn(n) { @sf.peek_excerpt_node(n, fn() { l().note }) })
           // (the message its link names, by the thread its message says it has)
           let message = fn() {
             match (named(), l().thread) {
@@ -89,14 +84,13 @@ fn chat_card_node(
           }
           message_said_node(rich, src, scope, message)
         })
-        |> ignore
       }
       // (while the link or its row is read: a made-up chat's, in its bones)
       Sample =>
         @sf.waiting_node(b, fn(bones) {
           chat_card_of_node(bones, fn() { sample_chat(0) }, fn() { false }, fn() { false }, fn() { None }, src, scope)
         })
-      Gone => @sf.words_node(b, fn() { @sf.t("web-main.chatRef.previewGone") }, fn() { peek_note }) |> ignore
+      Gone => @sf.peek_note_node(b, fn() { @sf.t("web-main.chatRef.previewGone") })
       Found => {
         let it = fn() {
           match found() {
@@ -142,47 +136,31 @@ fn chat_card_of_node(
   src : Source,
   scope : String,
 ) -> Unit {
-  parent.box(fn(rich) {
-    @sf.style_node(rich, fn() { peek_rich })
-    rich.box(fn(t) {
-      @sf.style_node(t, fn() { peek_chat_title })
-      // (none: nothing in its place, not even the room between, as chat_mark's 0)
-      let tone = fn() { @sfbase.row_tone(item()) }
-      t.show(fn() { tone() is ("busy" | "done" | "alert" | "wait") }, fn(m) { chat_mark_node(m, tone) })
-      peek_title_node(t, fn() { item().title })
-      t.show(fn() { item().ago != "" }, fn(a) { @sf.words_node(a, fn() { item().ago }, fn() { peek_meta_words }) |> ignore })
-    })
-    |> ignore
-    rich.show(fn() { elsewhere() || history() }, fn(m) {
-      @sf.style_node(m, fn() { peek_meta })
-      m.box(fn(w) {
-        @sf.style_node(w, fn() { peek_chat_where }, in_row=true)
-        w.show(elsewhere, fn(s) {
-          @sf.station_mark_node(
-            s,
-            fn() { item().station_emoji },
-            fn() { item().station_icon },
-            peek_station_mark,
-            fn() { @sf.theme().p.muted },
-            fn() { 0 },
-          )
-        })
-        @sf.words_node(
-          w,
-          fn() {
-            [
-              if elsewhere() { item().station_name } else { "" },
-              if history() { @sf.t("web-main.chatRef.previewHistory") } else { "" },
-            ]
-            .filter(fn(x) { x != "" })
-            .join(" · ")
-          },
-          fn() { peek_meta_words },
-        )
-        |> ignore
-      })
-      |> ignore
-    })
+  @sf.peek_rich_node(parent, fn(rich) {
+    // (none: nothing in its place, not even the room between, as chat_mark's 0)
+    let tone = fn() { @sfbase.row_tone(item()) }
+    @sf.peek_chat_head_node(
+      rich,
+      fn() { item().title },
+      marked=fn() { tone() is ("busy" | "done" | "alert" | "wait") },
+      mark=fn(m) { chat_mark_node(m, tone) },
+      ago=fn() { item().ago },
+    )
+    @sf.peek_chat_where_node(
+      rich,
+      fn() { elsewhere() || history() },
+      elsewhere,
+      fn() { item().station_emoji },
+      fn() { item().station_icon },
+      fn() {
+        [
+          if elsewhere() { item().station_name } else { "" },
+          if history() { @sf.t("web-main.chatRef.previewHistory") } else { "" },
+        ]
+        .filter(fn(x) { x != "" })
+        .join(" · ")
+      },
+    )
     message_said_node(rich, src, scope, message)
     // (where it names none: where it stands, else the last thing said in it)
     let said = fn() {
@@ -194,22 +172,8 @@ fn chat_card_of_node(
         _ => ""
       }
     }
-    rich.show(fn() { message() is None && said() != "" }, fn(e) {
-      @sf.words_node(e, said, fn() { peek_excerpt }) |> ignore
-    })
+    rich.show(fn() { message() is None && said() != "" }, fn(e) { @sf.peek_excerpt_node(e, said) })
   })
-  |> ignore
-}
-
-///|
-/// A card's title (peek_title, in what is left of its line, cut) in `parent`, as `title` says it now.
-fn peek_title_node(parent : @view.View, title : () -> String) -> Unit {
-  parent.box(fn(r) {
-    @sf.style_node(r, fn() { peek_ref }, in_row=true)
-    r.lines_up(Is(Some(@view.Along::Start))) |> ignore
-    @sf.words_node(r, title, fn() { peek_title }) |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -225,7 +189,7 @@ fn message_said_node(
   // (none named: nothing in its place, not even the room between)
   parent.show(fn() { message() is Some(_) }, fn(s) {
     s.pick(message, fn(b, m) {
-      @sf.style_node(b, fn() { peek_card_part })
+      @sf.style_node(b, fn() { @sf.peek_card_part })
       guard m is Some((station, thread, seq)) else { return }
       let params : Map[String, Json] = {
         "station": Json::string(station),
@@ -249,27 +213,19 @@ fn message_said_node(
         }
       }
       b.pick(shows, fn(q, k) {
-        @sf.style_node(q, fn() { peek_card_part })
+        @sf.style_node(q, fn() { @sf.peek_card_part })
         match k {
-          2 => {
-            let head = fn() {
-              let v = value()
-              [text(v, "author"), text(field(field(v, "time"), "at"), "ago")].filter(fn(w) { w != "" }).join(" · ")
-            }
-            q.show(fn() { head() != "" }, fn(h) {
-              // (as wide as it is, cut where it has not the room: not stretched across the card)
-              h.lines_up(Is(Some(@view.Along::Start))) |> ignore
-              @sf.words_node(h, head, fn() { peek_meta_words }) |> ignore
-            })
-            @sf.words_node(q, fn() { text(value(), "text") }, fn() { peek_message }) |> ignore
-          }
-          1 =>
-            @sf.waiting_node(q, fn(bones) {
-              @sf.words_node(bones, fn() { @sf.sample_words(8) }, fn() { peek_meta_words }) |> ignore
-              @sf.words_node(bones, fn() { @sf.sample_words(60) }, fn() { peek_message }) |> ignore
-            })
-          _ =>
-            @sf.words_node(q, fn() { @sf.t("web-main.chatRef.previewMessageGone") }, fn() { peek_note }) |> ignore
+          2 =>
+            @sf.peek_message_node(
+              q,
+              fn() {
+                let v = value()
+                [text(v, "author"), text(field(field(v, "time"), "at"), "ago")].filter(fn(w) { w != "" }).join(" · ")
+              },
+              fn() { text(value(), "text") },
+            )
+          1 => @sf.peek_message_bones_node(q)
+          _ => @sf.peek_note_node(q, fn() { @sf.t("web-main.chatRef.previewMessageGone") })
         }
       })
     })

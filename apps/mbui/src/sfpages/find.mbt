@@ -88,13 +88,16 @@ pub fn find_chat() -> String {
 ///|
 /// ⌘F's bar open in the chat `key` (opened again: its field takes the keyboard again, as it comes to hold it).
 pub fn find_open(key : String) -> Unit {
-  if finding.chat.untracked() != key {
-    find_close()
-    // (what was typed before, kept by the bar as it went: forgotten as it opens again)
-    finding.field.set("")
-    finding.chat.set(key)
-  }
-  finding.field.focus()
+  // (the person's ⌘F: what it changes on the chat's page goes its way, @view.transition)
+  @view.transition(fn() {
+    if finding.chat.untracked() != key {
+      find_close_now()
+      // (what was typed before, kept by the bar as it went: forgotten as it opens again)
+      finding.field.set("")
+      finding.chat.set(key)
+    }
+    finding.field.focus()
+  })
 }
 
 ///|
@@ -102,6 +105,13 @@ pub fn find_open(key : String) -> Unit {
 /// keyboard let go of. Its field's words are left as they were for the bar as it leaves (it fades out showing what it
 /// showed: find_bar_node), and emptied as it is opened again (find_open).
 pub fn find_close() -> Unit {
+  // (the person's: what it changes on the chat's page goes its way, @view.transition)
+  @view.transition(find_close_now)
+}
+
+///|
+/// find_close's work.
+fn find_close_now() -> Unit {
   finding.field.let_go()
   finding.chat.set("")
   finding.query = ""

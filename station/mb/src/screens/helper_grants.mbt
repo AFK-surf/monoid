@@ -3,7 +3,8 @@
 // and whether the station may reach the LAN it is on (macOS's Local Network). One look at them (the helper's
 // `status`) is kept for whatever asks; at most FRESH_MS old where it matters, looked at again when the helper says a
 // grant changed or comes back, and in the background once a page reads it SHOWN_MS after the last look, or after the
-// last try where the helper did not answer.
+// last try where the helper did not answer. A refresh that may be fresh (not `force`) waits SHOWN_MS after such a try
+// too: the desktop's screens listed went on starting it every few seconds (2026-11-19).
 //
 // The helper's window asks for a grant on this Mac, once: not again (nor brought forward) while it is up asking for
 // it, nor for AGAIN_MS after it was shown for it; a person's own ask (`again`) puts it up again however lately it was
@@ -201,7 +202,14 @@ fn HelperGrants::tell(self : HelperGrants) -> Unit {
 ///|
 /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
 pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -> Unit {
-  if !force && (self.now)() - self.checked < FRESH_MS {
+  // (a look under way is waited for; the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS
+  // after the last look)
+  let (last, within) = if self.unanswered is Some(_) {
+    (self.attempted, SHOWN_MS)
+  } else {
+    (self.checked, FRESH_MS)
+  }
+  if !force && !self.checking.is_going() && (self.now)() - last < within {
     return
   }
   self.checking

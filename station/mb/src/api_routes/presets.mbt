@@ -308,7 +308,7 @@ async fn Admin::stars_read(self : Admin, ws : JV, sub : JV) -> JV {
       let text = self.backend.ask("hub.store.modelStars", [ws, sub])
       let stars = try {
         if text is Null {
-          Obj([])
+          JV::Obj([])
         } else {
           self.backend.ask("core/preset-records.starsOf", [
             parse(js_string(Some(text))),

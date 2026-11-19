@@ -478,15 +478,22 @@ pub fn first_frame(c : @ui.Ctx, src : Source, station : String, key : String, a 
 /// its first frame (first_frame's, first_frame_node's).
 fn first_player(src : Source, station : String, key : String, a : Attachment) -> @ui.NativeView {
   let (_, mime, _) = preview_kind(a.name)
-  @ui.NativeView::video(mime, fn(offset, length, answer) {
+  let params = fn() -> Map[String, Json] {
     let p : Map[String, Json] = {
       "station": Json::string(station),
       "key": Json::string(key),
       "name": Json::string(base_name(a.path)),
-      "offset": Json::number(offset),
-      "length": Json::number(length.to_double()),
     }
     chat_keep(p, a.size)
+    p
+  }
+  // (its parts read by the host's own reader where it has one, as the viewer's are: through the app, each part's
+  // bytes were copied on the thread that draws, a frame held 75 ms on a phone, 2026-11-19)
+  let direct = direct_part("station.file.part", params(), a.size)
+  @ui.NativeView::video(mime, direct~, fn(offset, length, answer) {
+    let p = params()
+    p["offset"] = Json::number(offset)
+    p["length"] = Json::number(length.to_double())
     stream_part(src, "station.file.part", p, a.size, answer)
   })
 }
@@ -888,14 +895,14 @@ fn fly_way(t : Thumb, to : (Double, Double, Double, Double)?, window : (Double, 
 ///|
 /// How the viewer's picture flies from a thumbnail of a chat's page made as nodes and back into it (View::shared's
 /// `route`, said here, the app's: the user, 2026-11-17, 「应该让使用的地方去控制飞行轨迹和高度（层级）」), as the old page's
-/// flight goes (fly_way): out from under the chat's bar or composer at its own size first, as far as lift_of says, drawn
-/// under them meanwhile (FlightLevel's UnderFoot: the composer and the bar over it, as over_flight lifted them over the
-/// old page's flight), then grown to where the viewer shows it, over all of the page; one Move as long as all of it is
-/// far, the going out its share by how far it goes, the one handed to the other (route_handed) so that nothing stops or
-/// sets off in a step where they meet. The room the thumbnail is cut to (by its list, its card) opened as it grows.
-/// `window`: the window's size. With it, how far what goes with the flight it is told of is at each moment (its ground,
-/// a film's bars: Viewer::tree_way_told): none of it while the picture is under the bar or composer (drawn under the
-/// page's foot, so a ground over the page would be over it too), then in as it grows, to all of it at the viewer
+/// flight goes (fly_way): out from under the chat's bar or composer at its own size first, as far as lift_of says, what
+/// of it is seen meanwhile no more than what they leave clear (mbui's Tree::stays_bounds: never over the bar or the
+/// composer, as over_flight lifted them over the old page's flight), then grown to where the viewer shows it, over all
+/// of the page; one Move as long as all of it is far, the going out its share by how far it goes, the one handed to the
+/// other (route_handed) so that nothing stops or sets off in a step where they meet. What is seen of the thumbnail
+/// opened as it grows. `window`: the window's size. With it, how far what goes with the flight it is told of is at each
+/// moment (its ground, a film's bars: Viewer::tree_way_told): none of it while the picture is going out from under the
+/// bar or composer (still the page's, cut to what they leave clear), then in as it grows, to all of it at the viewer
 /// (route_seen).
 fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (Double) -> Double) -> (Double) -> Double) {
   // (the going out's share of the way, as the flight set out last worked it out)
@@ -933,22 +940,18 @@ fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (
       (t.x + (ox - t.x) * grown, y + (oy - y) * grown, t.w + (ow - t.w) * grown, t.h + (oh - t.h) * grown)
     },
     opened: fn(ends, p) { route_handed(from_thumb(ends, p), share.val).1 },
-    level: fn(ends, p) {
-      if route_handed(from_thumb(ends, p), share.val).0 < 1.0 {
-        UnderFoot
-      } else {
-        Held
-      }
-    },
+    // (under the bar or the composer over its thumbnail while it slides out from under it, as it lay there, till it
+    // is out: its slide not over, though it may have begun to grow)
+    in_stays: fn(ends, p) { route_handed(from_thumb(ends, p), share.val).0 < 1.0 },
   }
   (route, fn(back, along) { fn(t) { route_seen(if back { 1.0 - along(t) } else { along(t) }, share.val) } })
 }
 
 ///|
 /// How far what goes with the viewer's flight (its ground, a film's bars) is `q` of the way from the thumbnail, its
-/// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, drawn
-/// under the page's foot (a ground drawn over the page then would be drawn over it as well, the picture seen faded
-/// through it and whole again as it comes over all), then at one pace from there to all of it at the viewer.
+/// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, cut
+/// to what they leave clear (the page not yet seen to go dim under what is still part of it), then at one pace from
+/// there to all of it at the viewer.
 fn route_seen(q : Double, s : Double) -> Double {
   if s <= 0.0 {
     return dmin(1.0, dmax(0.0, q))
@@ -1247,6 +1250,17 @@ pub fn new_viewer(
 /// A file sent with a chat's message, kept by its name there (not a drive's, not one a message names by its path).
 pub fn Viewer::chat_file(self : Viewer) -> Bool {
   self.drive is None && !self.named
+}
+
+///|
+/// The id of the file a draft holds (its path `draft:<id>`, a file picked here not yet sent): None for any other.
+fn Viewer::draft_id(self : Viewer) -> String? {
+  let path = self.file.path
+  if path.has_prefix("draft:") {
+    Some(path.unsafe_substring(start=6, end=path.length()))
+  } else {
+    None
+  }
 }
 
 ///|
@@ -1551,6 +1565,47 @@ pub fn file_params(v : Viewer) -> Map[String, Json] {
 }
 
 ///|
+/// One a message names (`file.open` with `params`), read first of what this device kept of it (`kept`, no station
+/// asked) and `shown` with it at once where that is all of what is asked, then asked again as it is now (it may have
+/// changed since: the core asks by the version it kept), `renewed` with what the station answers where that differs;
+/// `otherwise`, none kept, read as it is now alone.
+fn Viewer::kept_first(
+  self : Viewer,
+  src : Source,
+  params : Map[String, Json],
+  shown : (Json, Bytes) -> Unit,
+  renewed : (Json, Bytes) -> Unit,
+  otherwise : () -> Unit,
+) -> Unit {
+  let p = named_params(self)
+  for k, v in params {
+    p[k] = v
+  }
+  p["kept"] = Json::boolean(true)
+  (src.read_bytes)("file.open", Json::object(p), fn(r) {
+    match r {
+      Ok((said, bytes)) if number(Some(said), "size") == bytes.length().to_double() => {
+        shown(said, bytes)
+        (src.read_bytes)("file.open", Json::object(params), fn(again) {
+          match again {
+            Ok((now, b)) if !(field(Some(now), "same") is Some(True)) && b != bytes => renewed(now, b)
+            _ => ()
+          }
+        })
+      }
+      _ => otherwise()
+    }
+  })
+}
+
+///|
+/// What was shown of one a message names given way to what it is now (Viewer::kept_first): its picture put up anew.
+fn Viewer::renewed(self : Viewer, b : Bytes) -> Unit {
+  self.image = ""
+  self.bytes.set(Some(b))
+}
+
+///|
 /// What a file a message names is read by (`file.open`): its path as the message has it, in its agent's session.
 pub fn named_params(v : Viewer) -> Map[String, Json] {
   {
@@ -1783,13 +1838,15 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
     @signals.end_batch()
   }
   match self.drive {
-    // one a message names: as it is now (at most 16 MB)
+    // one a message names: what this device kept of it shown at once, then as it is now (at most 16 MB)
     None if self.named =>
-      (src.read_bytes)("file.open", Json::object(named_params(self)), fn(r) {
-        match r {
-          Ok((_, bytes)) => done(Ok(bytes))
-          Err(e) => done(Err(e))
-        }
+      self.kept_first(src, named_params(self), fn(_, bytes) { done(Ok(bytes)) }, fn(_, b) { self.renewed(b) }, fn() {
+        (src.read_bytes)("file.open", Json::object(named_params(self)), fn(r) {
+          match r {
+            Ok((_, bytes)) => done(Ok(bytes))
+            Err(e) => done(Err(e))
+          }
+        })
       })
     // what else, an image too (grown from its thumbnail meanwhile): how much has come as it comes, said in its bar
     // as the web's (the core's `{loaded, total}`)
@@ -1912,10 +1969,13 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
                 }
                 None => ()
               }
-              // (one a message names: each part in one piece, `file.open` streams none)
+              // (one a message names: each part in one piece, `file.open` streams none; what this device kept of it as
+              // played answered at once, the core asking the station again by its version as its start is read)
               if v.named {
                 let gone = Ref(false)
-                v.read_part(src, offset, length, "", fn(r) {
+                let p = v.part_params(offset, length, "")
+                p["played"] = Json::boolean(true)
+                let took = fn(r : Result[(Json, Bytes), Json]) {
                   guard !gone.val else { return }
                   match r {
                     Ok((said, bytes)) => {
@@ -1923,6 +1983,14 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
                       answer(b"", number(Some(said), "size"), false)
                     }
                     Err(_) => answer(b"", -2.0, false)
+                  }
+                }
+                let kept = p.copy()
+                kept["kept"] = Json::boolean(true)
+                (src.read_bytes)("file.open", Json::object(kept), fn(r) {
+                  match r {
+                    Ok(_) => took(r)
+                    Err(_) => (src.read_bytes)("file.open", Json::object(p), took)
                   }
                 })
                 return fn() { gone.val = true }
@@ -2900,13 +2968,23 @@ pub fn Viewer::picture(self : Viewer, src : Source) -> String {
 ///|
 /// What stands in for an image until its whole picture is here and decoded: the picture its thumbnail in the chat
 /// shows (the same picture, decoded already: it flies out as the chat drew it, one sent from here the picture picked),
-/// else the station's thumbnail of it, else its likeness; "" none.
+/// else the picture it was picked as here (one sent, one still in a draft: never asked of a station), else the
+/// station's thumbnail of it, else its likeness; "" none. Read by a node, told as either comes.
 pub fn Viewer::stand_in(self : Viewer, src : Source) -> String {
   match pv_thumbs.get(self.thumb_id()) {
     Some(l) if l.picture != "" => return l.picture
     _ => ()
   }
-  let thumb = if self.chat_file() { (src.file)(self.station, self.key, self.name) } else { "" }
+  if self.chat_file() {
+    match sent_picture_told(self.station, self.file) {
+      Some(k) if k != "" && k != "!" => return k
+      _ => ()
+    }
+  }
+  let thumb = match self.draft_id() {
+    Some(id) => writing_picture_told(id).unwrap_or("")
+    None => if self.chat_file() { src.file_told(self.station, self.key, self.name) } else { "" }
+  }
   if thumb != "" && thumb != "!" {
     thumb
   } else {
@@ -3128,6 +3206,7 @@ pub fn Viewer::still(self : Viewer, src : Source) -> String {
   if !self.chat_file() {
     return ""
   }
+  pv_frame_track(self.id())
   match pv_frames.get(self.id()) {
     // (where it was left kept with no frame of it: what shows of it as before)
     Some((k, _)) if k != "" => return k
@@ -3138,13 +3217,35 @@ pub fn Viewer::still(self : Viewer, src : Source) -> String {
     Some(l) if l.picture != "" => return l.picture
     _ => ()
   }
-  match (src.poster)(self.station, self.key, self.name) {
+  // (one sent from here: the picture it was picked as, where no thumbnail of it was drawn)
+  match sent_picture_told(self.station, self.file) {
+    Some(k) if k != "" && k != "!" => return k
+    _ => ()
+  }
+  // (one still in a draft: what was picked of it, else the first frame drawn here of its bytes; never a station's)
+  match self.draft_id() {
+    Some(id) =>
+      match writing_picture_told(id) {
+        Some(k) if k != "" && k != "!" => return k
+        _ => {
+          pv_first_told.get() |> ignore
+          return match pv_first.get("draft/" + id) {
+            Some(f) if f.picture != "!" => f.picture
+            _ => ""
+          }
+        }
+      }
+    None => ()
+  }
+  match src.poster_told(self.station, self.key, self.name) {
     // none made by the station: the first frame the chat drew of it, if it did
-    "!" =>
+    "!" => {
+      pv_first_told.get() |> ignore
       match pv_first.get(self.id()) {
         Some(f) if f.picture != "!" => f.picture
         _ => ""
       }
+    }
     k => k
   }
 }

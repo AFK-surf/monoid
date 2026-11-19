@@ -16,6 +16,7 @@
 #include <android/log.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -621,6 +622,11 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_start(JNIEnv *env, jclass c) {
 // how late the frame before reached the screen, as MBView said with this one (mb_host_frame_late)
 static double frame_late;
 
+// Whether the app is to be told of what was posted and has not been yet (mb_post_wake): set as it is asked to be,
+// cleared as it is told (Native.posted) and as a frame begins (which takes all posted: messages_arrive), each before
+// what was posted is taken, so a post after the take finds it clear and asks again.
+static atomic_int post_woken;
+
 JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_frame(JNIEnv *env, jclass c, jfloat w, jfloat h,
                                                      jfloat scale, jdouble now, jdouble late) {
   frame_late = late;
@@ -635,6 +641,9 @@ JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_frame(JNIEnv *env, jclass c, jfl
   }
   want_frame = 0;
   frame_now = now;
+  // (the frame takes all that was posted as it begins: what is posted after asks to be told again; Host.posted, which
+  // tells nothing while there is no view, left none owed)
+  atomic_store_explicit(&post_woken, 0, memory_order_release);
   if (cb.frame) cb.frame(w, h, scale, now);
   return want_frame ? JNI_TRUE : JNI_FALSE;
 }
@@ -747,21 +756,40 @@ void mb_host_request_frame(void) {
   (*env)->CallStaticVoidMethod(env, host_cls, m_request_frame);
 }
 
+// A thread the VM did not know that posts (a core's own, the shell's): attached once, as it first posts, and let go
+// as it ends (a thread that ends attached aborts the process), not attached and let go at every post (a Java thread
+// made and let go each time, under the VM's locks: 0.3-1.5 ms a post on a phone). One the VM knew stays as it was.
+static pthread_key_t post_attached;
+static pthread_once_t post_attached_once = PTHREAD_ONCE_INIT;
+static void post_detach(void *unused) {
+  (void)unused;
+  (*vm)->DetachCurrentThread(vm);
+}
+static void post_attached_key(void) { pthread_key_create(&post_attached, post_detach); }
+
+static JNIEnv *post_env(void) {
+  JNIEnv *env = NULL;
+  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_OK) return env;
+  JavaVMAttachArgs args = {JNI_VERSION_1_6, "mbui post", NULL};
+  if ((*vm)->AttachCurrentThread(vm, &env, &args) != JNI_OK) return NULL;
+  pthread_once(&post_attached_once, post_attached_key);
+  pthread_setspecific(post_attached, (void *)1);
+  return env;
+}
+
 // A message posted from outside the frames (post.h), on whatever thread: the app told on its thread, between frames
 // (Host.posted: Native.posted, below), and it takes what changes only signals then (ui's messages_between), a frame
-// asked for only where something is left for one. A thread the VM does not know is attached for the call and let go
-// after.
+// asked for only where something is left for one. Asked once till it is told (post_woken).
 static void mb_post_wake(void) {
   if (!vm || !host_cls) return;
-  JNIEnv *env = NULL;
-  int attached = 0;
-  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
-    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
-    attached = 1;
+  if (atomic_exchange_explicit(&post_woken, 1, memory_order_acq_rel)) return;
+  JNIEnv *env = post_env();
+  if (!env) {
+    atomic_store_explicit(&post_woken, 0, memory_order_release);
+    return;
   }
   (*env)->CallStaticVoidMethod(env, host_cls, m_posted);
   if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-  if (attached) (*vm)->DetachCurrentThread(vm);
 }
 
 // Whether the system is in night mode (@hostapi.system_dark), as MainActivity keeps it (Host.systemDark: the
@@ -1204,6 +1232,8 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_outside(JNIEnv *env, jclass c, jint 
 // Something posted since (mb_post_wake, Host.posted: on the app's thread, between frames): the app told (MB_OUTSIDE_POSTED),
 // or, before it has said where it is told, a frame asked for.
 JNIEXPORT void JNICALL Java_dev_mbui_Native_posted(JNIEnv *env, jclass c) {
+  // (cleared before what was posted is taken: a post after the take asks again)
+  atomic_store_explicit(&post_woken, 0, memory_order_release);
   if (outside_cb) outside_cb(MB_OUTSIDE_POSTED, 0, 0);
   else mb_host_request_frame();
 }

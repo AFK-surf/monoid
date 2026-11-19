@@ -114,6 +114,108 @@ pub fn window_open_here(what : String) -> Int {
 }
 
 ///|
+/// What a window opened beside the first is opened as (window_open_spec): `role` the kind of window it is to the app
+/// (a terminal, a viewer), `title` the system's title of it, `w` × `h` its size in points and `min_w` × `min_h` the
+/// least it is made (0: the host's), `inset` whether its content goes under its title bar (None: as the host has it),
+/// `what` what it shows, as set_window_tree's maker and window_shows are given it ("": what is said here, as JSON).
+#derive(Eq, Debug)
+pub(all) struct WindowSpec {
+  role : String
+  title : String
+  w : Double
+  h : Double
+  min_w : Double
+  min_h : Double
+  inset : Bool?
+  what : String
+}
+
+///|
+pub fn WindowSpec::new(
+  what? : String = "",
+  role? : String = "",
+  title? : String = "",
+  w? : Double = 0.0,
+  h? : Double = 0.0,
+  min_w? : Double = 0.0,
+  min_h? : Double = 0.0,
+  inset? : Bool? = None,
+) -> WindowSpec {
+  { role, title, w, h, min_w, min_h, inset, what }
+}
+
+///|
+/// As the host is told it (@hostapi.window_open_id): a JSON object of what is said, nothing for what is left as the
+/// host has it ("role", "title", "w", "h", "minW", "minH", "inset", "what").
+pub fn WindowSpec::to_json_string(self : WindowSpec) -> String {
+  let m : Map[String, Json] = Map([])
+  if self.role != "" {
+    m["role"] = Json::string(self.role)
+  }
+  if self.title != "" {
+    m["title"] = Json::string(self.title)
+  }
+  if self.w > 0.0 {
+    m["w"] = Json::number(self.w)
+  }
+  if self.h > 0.0 {
+    m["h"] = Json::number(self.h)
+  }
+  if self.min_w > 0.0 {
+    m["minW"] = Json::number(self.min_w)
+  }
+  if self.min_h > 0.0 {
+    m["minH"] = Json::number(self.min_h)
+  }
+  match self.inset {
+    Some(b) => m["inset"] = Json::boolean(b)
+    None => ()
+  }
+  if self.what != "" {
+    m["what"] = Json::string(self.what)
+  }
+  Json::object(m).stringify()
+}
+
+///|
+/// A window of this run opened beside its first as `spec` says (windows_here): its id, 0 where none opened. What it
+/// shows (set_window_tree's maker, window_shows) is the spec's `what`, or the spec itself as the host was told it where
+/// it says none.
+pub fn window_open_spec(spec : WindowSpec) -> Int {
+  guard windows_here() else { return 0 }
+  let said = spec.to_json_string()
+  let wid = @hostapi.window_open_id(said)
+  if wid > 0 {
+    windows_beside[wid] = if spec.what != "" { spec.what } else { said }
+  }
+  wid
+}
+
+///|
+/// The title the window in place last told the host it has (set_window_title): each window's own (window_kept.mbt).
+let window_title_said : Ref[String] = Ref("")
+
+///|
+/// The system's title of the window in place (current_window_id: its title bar, the Dock's and the switcher's list),
+/// told the host only as it changes.
+pub fn set_window_title(title : String) -> Unit {
+  guard window_title_said.val != title else { return }
+  window_title_said.val = title
+  @hostapi.window_set_title(current_window_id(), title)
+}
+
+///|
+/// The system's title of window `wid` of the run (0 the first, or one open beside it; another is none), as
+/// set_window_title says it in that window.
+pub fn set_window_title_of(wid : Int, title : String) -> Unit {
+  if wid == current_window_id() {
+    set_window_title(title)
+  } else if wid == 0 || windows_beside.contains(wid) {
+    as_window(wid, fn() { set_window_title(title) })
+  }
+}
+
+///|
 /// Window `wid` beside the first brought to the front: whether it is open still.
 pub fn window_front_here(wid : Int) -> Bool {
   windows_beside.contains(wid) && @hostapi.window_front_id(wid)
@@ -264,6 +366,8 @@ fn windows_reset() -> Unit {
   window_trees.clear()
   window_slots.clear()
   windows_beside.clear()
+  // (the first window's title as no host was told one: the next run's host is another)
+  window_title_said.val = ""
   window_tree_maker.val = None
   window_tree_around.val = None
 }

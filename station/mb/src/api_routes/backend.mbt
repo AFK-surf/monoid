@@ -56,28 +56,9 @@ pub fn jref(name : String) -> JV {
 }
 
 ///|
-/// JavaScript's undefined, as an argument.
-pub let jundef : JV = Obj([("$undef", Num(1.0))])
-
-///|
-pub fn is_undef(v : JV) -> Bool {
-  v is Obj([(k, Num(_))]) && k == "$undef"
-}
-
-///|
 /// An answer that is undefined or null (`?? fallback`).
 pub fn nullish(v : JV) -> Bool {
   v is Null || is_undef(v)
-}
-
-///|
-/// The answer as an option: None for undefined (and null when `null_too`).
-pub fn defined(v : JV) -> JV? {
-  if is_undef(v) {
-    None
-  } else {
-    Some(v)
-  }
 }
 
 ///|

@@ -6,7 +6,11 @@
 // side panel's bar beside a chat (sfdesk's panel.mbt) and from its viewer's 控制中心 (sfpages' screen_center_node.mbt),
 // the screen leaving where it was (its view kept open for the window: window_has_screen).
 // While its window is open, every way to that screen (a chat's link, its card, the station's page) brings the window
-// to the front instead of opening it here too, a toast here saying so (window_front, open_page).
+// to the front instead of opening it here too, a toast here saying so (window_front, open_page). So do a terminal, and a
+// tab of a chat's side panel (SideTab: a file, a mini-program, a web service, a visualization; sfdesk's tab_full_node.mbt),
+// its third place beside the panel and the whole window, only in a window of this run: what it holds the run's,
+// handed over (window_has_tab), given back by its 移到侧边 (window_gives_back) or let go of as it closes (window_tab_left).
+// What starts each says how its window is made (window_spec: role, title, size and least size).
 
 ///|
 /// The page this window shows alone, as a window of its own (a window of this run beside its first: lone_window_tree;
@@ -21,7 +25,35 @@ pub let lone_page : Ref[Page?] = Ref(None)
 pub let lone_shown : Ref[@signals.Signal[Page?]] = Ref(@signals.signal(None))
 
 ///|
+/// The first window's lone_page as it was left for another window's runtime (first_lone_page's, while that is in place).
+// kept across runs: put back by pages.mbt's reset
+let first_lone : Ref[Page?] = Ref(None)
+
+///|
+/// The page the run's first window shows alone (lone_page's of window 0), whichever window's runtime is in place: what a
+/// binding of the first window's tree reads (its shell), which may run as another window's is in place, where
+/// lone_page is that one's.
+pub fn first_lone_page() -> Page? {
+  if @ui.current_window_id() == 0 {
+    lone_page.val
+  } else {
+    first_lone.val
+  }
+}
+
+///|
 fn init {
+  // (the first window's lone_page kept where its bindings read it while another window's runtime is in place: said
+  // before lone_page's own, so it is read as the first window left it)
+  @ui.window_kept(
+    fn() {
+      if @ui.current_window_id() == 0 {
+        first_lone.val = lone_page.val
+      }
+      fn() {  }
+    },
+    fn() {  },
+  )
   // (each window of the run its own page alone, and its own toast: what is said in one is said there)
   @ui.window_kept_ref(lone_page, fn() { None })
   @ui.window_kept_ref(lone_shown, fn() { @signals.signal(None) })
@@ -36,37 +68,106 @@ fn init {
 }
 
 ///|
-/// What a window of its own is started with to show `p` (window_page reads it back): a station's screen; None for a
-/// page that goes in none.
-pub fn window_text(p : Page) -> String? {
+/// The size a window of its own for `p` opens at, and the least it is made (WindowSpec: w, h, minW, minH, in points),
+/// and its role, by the kind of page: a station's screen, a terminal, a chat's tab.
+fn window_spec(p : Page) -> (String, Double, Double, Double, Double) {
   match p {
+    Terminal(_) => ("terminal", 880.0, 580.0, 420.0, 300.0)
+    SideTab(_) => ("tab", 960.0, 720.0, 420.0, 320.0)
+    _ => ("screen", 1120.0, 760.0, 480.0, 360.0)
+  }
+}
+
+///|
+/// The title of a window of its own for chat tab `f` (window_text's): the file's name, a visualization's, a web
+/// service's word, else its chat's title; never empty.
+fn side_tab_title(f : TabFull) -> String {
+  let name = match view_tab_file(f.tab) {
+    Some(v) => v.file.name
+    None =>
+      if f.tab.has_prefix("service:") {
+        svc("android-chat.preview.service")
+      } else if f.tab.has_prefix("file:") {
+        match (try Some(@json.parse(f.tab.exact_view(start="file:".length()).to_owned())) catch { _ => None }) {
+          Some(Array([_, String(path), String(name)])) => if name != "" { name } else { path }
+          _ => ""
+        }
+      } else {
+        ""
+      }
+  }
+  if name != "" {
+    name
+  } else if f.chat.title != "" {
+    f.chat.title
+  } else {
+    svc("android-chat.preview.service")
+  }
+}
+
+///|
+/// The title of a window of its own showing `p` (window_text's, and what the window says as another page is put in its
+/// place: sfapp's lone_tree): a screen's title, a terminal's folder, a chat's tab's name; never empty for those.
+pub fn window_title(p : Page) -> String {
+  match p {
+    Screen(at) => if at.title != "" { at.title } else { at.screen }
+    Terminal(at) => if at.cwd != "" { at.cwd } else { svc("web-pages.terminal.title") }
+    SideTab(f) => side_tab_title(f)
+    _ => ""
+  }
+}
+
+///|
+/// What a window of its own is started with to show `p` (window_page reads it back): a station's screen, a terminal, a
+/// chat's tab (`screen`, `terminal`, `sideTab`), and how the window is made, as every host reads it (`role`, `title`,
+/// `w`, `h`, `minW`, `minH`: window_spec); None for a page that goes in none.
+pub fn window_text(p : Page) -> String? {
+  let (what, title) : (Map[String, Json], String) = match p {
     Screen(at) =>
-      Some(
-        (
-          {
-            "screen": {
-              "station": Json::string(at.station),
-              "screen": Json::string(at.screen),
-              "title": Json::string(at.title),
-            },
-          } : Json
-        ).stringify(),
+      (
+        {
+          "screen": {
+            "station": Json::string(at.station),
+            "screen": Json::string(at.screen),
+            "title": Json::string(at.title),
+          },
+        },
+        window_title(p),
       )
     Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" =>
-      Some(
-        (
-          {
-            "terminal": {
-              "station": Json::string(at.station),
-              "terminal": Json::string(at.terminal),
-              "watch": Json::boolean(at.watch),
-              "cwd": Json::string(at.cwd),
-            },
-          } : Json
-        ).stringify(),
+      (
+        {
+          "terminal": {
+            "station": Json::string(at.station),
+            "terminal": Json::string(at.terminal),
+            "watch": Json::boolean(at.watch),
+            "cwd": Json::string(at.cwd),
+          },
+        },
+        window_title(p),
       )
-    _ => None
+    SideTab(f) if f.tab != "" && f.chat.station != "" && f.chat.session != "" =>
+      (
+        {
+          "sideTab": {
+            "station": Json::string(f.chat.station),
+            "session": Json::string(f.chat.session),
+            "chatTitle": Json::string(f.chat.title),
+            "tab": Json::string(f.tab),
+          },
+        },
+        window_title(p),
+      )
+    _ => return None
   }
+  let (role, w, h, min_w, min_h) = window_spec(p)
+  what["role"] = Json::string(role)
+  what["title"] = Json::string(title)
+  what["w"] = Json::number(w)
+  what["h"] = Json::number(h)
+  what["minW"] = Json::number(min_w)
+  what["minH"] = Json::number(min_h)
+  Some(Json::object(what).stringify())
 }
 
 ///|
@@ -85,13 +186,20 @@ pub fn window_page(s : String) -> Page? {
       Some(Screen({ station, screen, title, until_gone: false }))
     }
     _ =>
-      match m.get("terminal") {
-        Some(Object(at)) => {
+      match (m.get("terminal"), m.get("sideTab")) {
+        (Some(Object(at)), _) => {
           guard at.get("station") is Some(String(station)) && station != "" else { return None }
           guard at.get("terminal") is Some(String(terminal)) && terminal != "" else { return None }
           let watch = at.get("watch") == Some(Json::boolean(true))
           let cwd = match at.get("cwd") { Some(String(c)) => c; _ => "" }
           Some(Terminal({ station, terminal, watch, cwd }))
+        }
+        (_, Some(Object(at))) => {
+          guard at.get("station") is Some(String(station)) && station != "" else { return None }
+          guard at.get("session") is Some(String(session)) && session != "" else { return None }
+          guard at.get("tab") is Some(String(tab)) && tab != "" else { return None }
+          let title = match at.get("chatTitle") { Some(String(t)) => t; _ => "" }
+          Some(SideTab({ chat: { station, session, title, station_name: "" }, tab }))
         }
         _ => None
       }
@@ -100,9 +208,13 @@ pub fn window_page(s : String) -> Page? {
 
 ///|
 /// Whether `p` can be opened in a window of its own here: a desktop's app (not one such window already), a page that
-/// goes in one.
+/// goes in one. A chat's tab only in a window of this run (@ui.windows_here): what it shows (its viewer, its service's
+/// page and site view) is this run's, handed over to that window, never shown again by another run.
 pub fn window_opens_for(p : Page) -> Bool {
-  lone_page.val is None && @ui.window_opens() && window_text(p) is Some(_)
+  lone_page.val is None &&
+  @ui.window_opens() &&
+  window_text(p) is Some(_) &&
+  (!(p is SideTab(_)) || @ui.windows_here())
 }
 
 ///|
@@ -123,13 +235,22 @@ pub fn open_window(p : Page) -> Bool {
   match (window_text(p), window_key(p)) {
     (Some(what), Some(key)) => {
       if @ui.windows_here() {
+        // (a chat's tab: what it plays goes on there as it was, not paused as the node beside the chat goes)
+        match p {
+          SideTab(f) => tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
+          _ => ()
+        }
         let wid = @ui.window_open_here(what)
         if wid > 0 {
           windows_open[key] = Here(wid)
           windows_here_show[wid] = p
+          windows_here_told(p, wid)
           (window_page_given.val)(p, wid)
           return true
         }
+      }
+      if p is SideTab(_) {
+        return false
       }
       let opened = @ui.window_open(what)
       if opened {
@@ -151,6 +272,87 @@ let windows_open : Map[String, WindowOpened] = Map([])
 let windows_here_show : Map[Int, Page] = Map([])
 
 ///|
+/// The chats' tabs a window of this run beside its first shows, by window_key, and its id: what the panel beside the
+/// chat and the tab's own state read to know the tab is there (window_has_tab), followed.
+// kept across runs: put back by pages.mbt's reset, each entry taken out as its window closes or gives it back
+let tab_windows : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
+
+///|
+/// Window `wid` of this run shows `p` now (open_window, lone_page_replace): a chat's tab told to tab_windows.
+fn windows_here_told(p : Page, wid : Int) -> Unit {
+  match (p, window_key(p)) {
+    (SideTab(_), Some(key)) => tab_windows.set(key, wid)
+    _ => ()
+  }
+}
+
+///|
+/// Window `wid` of this run shows `p` no more: a chat's tab taken out of tab_windows.
+fn windows_here_untold(p : Page, wid : Int) -> Unit {
+  match (p, window_key(p)) {
+    (SideTab(_), Some(key)) if tab_windows.get(key) == Some(wid) => tab_windows.remove(key)
+    _ => ()
+  }
+}
+
+///|
+/// Whether a window of this run beside its first shows tab `tab` of the chat on `station` kept by session `session`
+/// now, followed: its view handed over as it opened, that window's to draw and to let go of.
+pub fn window_has_tab(station : String, session : String, tab : String) -> Bool {
+  tab_windows.contains(window_key(SideTab({ chat: { station, session, title: "", station_name: "" }, tab })).unwrap_or(""))
+}
+
+///|
+/// Chat `r`'s tab `tab` asked here (beside the chat, over the whole window) while a window of this run beside its first
+/// shows it, or a tab of the same file (view_tab_file's same_file): that window brought to the front instead, as every
+/// way to a screen in a window of its own does (window_front), never the panel opened on it here too: the tab it shows;
+/// None where no window shows it.
+pub fn tab_window_front(r : ChatRef, tab : String) -> String? {
+  let file = view_tab_file(tab)
+  let shows = fn(f : TabFull) {
+    f.chat.station == r.station &&
+    f.chat.session == r.session &&
+    (
+      f.tab == tab ||
+      (match (file, view_tab_file(f.tab)) {
+        (Some(a), Some(b)) => a.same_file(b)
+        _ => false
+      })
+    )
+  }
+  let found = windows_here_show.values().find_first(fn(p) { p is SideTab(f) && shows(f) })
+  match found {
+    Some(SideTab(f)) if window_front(SideTab(f)) => Some(f.tab)
+    _ => None
+  }
+}
+
+///|
+/// What is told as a window of this run beside its first has closed on a chat's tab (sfdesk's: the tab let go of, as
+/// its tab closed beside the chat would be), unless that window gave it back first (window_gives_back).
+// kept across runs: a wire, set once in sfdesk's fn init
+pub let window_tab_left : Ref[(TabFull) -> Unit] = Ref(fn(_) {  })
+
+///|
+/// Window `wid` of this run gives what it shows back to the first window (a chat's tab moved back beside its chat, its
+/// 移到侧边), before it closes: forgotten now, nothing told as it closes (window_tab_left, window_page_left), a way to
+/// it from then on opening it there.
+pub fn window_gives_back(wid : Int) -> Unit {
+  guard windows_here_show.get(wid) is Some(p) else { return }
+  windows_here_show.remove(wid)
+  windows_here_untold(p, wid)
+  match window_key(p) {
+    Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
+    _ => ()
+  }
+  // (a chat's tab: what it plays goes on beside the chat as it was, not paused as the window's node goes)
+  match p {
+    SideTab(f) => tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
+    _ => ()
+  }
+}
+
+///|
 /// What is told as a window of this run beside its first has closed, of the page it showed (sfpages': a screen no
 /// window shows now let go of).
 // kept across runs: a wire, set once in sfpages' fn init
@@ -168,6 +370,7 @@ fn window_key(p : Page) -> String? {
   match p {
     Screen(at) => Some("screen\n" + at.station + "\n" + at.screen)
     Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
+    SideTab(f) if f.tab != "" => Some("tab\n" + f.chat.station + "\n" + f.chat.session + "\n" + f.tab)
     _ => None
   }
 }
@@ -202,7 +405,12 @@ pub fn lone_page_replace(next : Page) -> Unit {
   lone_shown.val.set(Some(next))
   let wid = @ui.current_window_id()
   guard wid > 0 && windows_here_show.contains(wid) else { return }
+  match windows_here_show.get(wid) {
+    Some(p) => windows_here_untold(p, wid)
+    None => ()
+  }
   windows_here_show[wid] = next
+  windows_here_told(next, wid)
   match was.bind(window_key) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
@@ -218,16 +426,21 @@ pub fn lone_page_replace(next : Page) -> Unit {
 fn window_here_gone(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
   windows_here_show.remove(wid)
+  windows_here_untold(p, wid)
   match window_key(p) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
     _ => ()
   }
-  (window_page_left.val)(p)
+  match p {
+    SideTab(f) => (window_tab_left.val)(f)
+    _ => (window_page_left.val)(p)
+  }
 }
 
 ///|
 /// The window showing `p`, where one is open, brought to the front and a toast here saying so: whether it was (the
-/// page is then not to be opened here as well). A window closed since is forgotten.
+/// page is then not to be opened here as well). A window closed since is forgotten. (A chat's tab says no toast: the
+/// only words there are a screen's, and its window come to the front says it.)
 pub fn window_front(p : Page) -> Bool {
   guard lone_page.val is None && window_key(p) is Some(key) else { return false }
   guard windows_open.get(key) is Some(opened) else { return false }
@@ -236,7 +449,9 @@ pub fn window_front(p : Page) -> Bool {
     Run(what) => @ui.window_front(what)
   }
   if there {
-    toast_later(@sf.t("web-pages.screen.windowOpen"))
+    if !(p is SideTab(_)) {
+      toast_later(@sf.t("web-pages.screen.windowOpen"))
+    }
   } else {
     windows_open.remove(key)
   }

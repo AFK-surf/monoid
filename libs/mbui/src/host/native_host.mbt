@@ -136,6 +136,11 @@ impl @hostapi.Host for Native with window_current(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with window_set_title(_, wid, title) {
+  windows(5, wid, title) |> ignore
+}
+
+///|
 impl @hostapi.Host for Native with set_cursor(_, kind) {
   set_cursor(kind)
 }

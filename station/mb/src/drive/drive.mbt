@@ -31,7 +31,13 @@ pub(all) struct DriveFailure {
 ///|
 pub(all) suberror DriveError {
   DriveError(DriveFailure)
-} derive(Show)
+}
+
+///|
+pub impl Show for DriveError with output(self, logger) {
+  let DriveError(f) = self
+  logger.write_string(f.message)
+}
 
 ///|
 pub fn drive_error(code : String, message : String, have? : Double) -> DriveError {

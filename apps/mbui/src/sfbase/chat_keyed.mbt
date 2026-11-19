@@ -407,7 +407,13 @@ pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
       }
     None => ()
   }
-  view_of_chat(src, r).0
+  match view_of_chat(src, r) {
+    (Some(v), _, _) => Some(v)
+    // (none read yet where no error says why: a page taken back from the stack's kept left, its chat asked again, shows
+    // what it read last till the core's first answer, never its bones in between)
+    (None, _, None) => page_chat_view_kept(src, r)
+    _ => None
+  }
 }
 
 ///|
@@ -486,3 +492,4 @@ pub fn chat_card_answered(m : Message) -> Message {
   let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
   { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
 }
+

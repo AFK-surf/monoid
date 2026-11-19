@@ -18,6 +18,10 @@ pub const CLIP_PNG_MAX : Int32 = 8388608
 
 pub const CLIP_TEXT_MAX : Int32 = 1048576
 
+pub const CURSOR_IMAGES_MOST : Int32 = 64
+
+pub const CURSOR_PNG_MAX : Int32 = 65536
+
 pub const FLAG_ALT : Int32 = 0x80000
 
 pub const FLAG_COMMAND : Int32 = 0x100000
@@ -113,6 +117,10 @@ pub fn clip_of(@jsjson.JValue) -> Clip?
 pub fn codec_for(ViewOptions, Array[Codec]) -> Codec?
 
 pub fn codec_of(String) -> Codec?
+
+pub fn cursor_image_shape(BytesView) -> String?
+
+pub fn cursor_shape(String) -> Bool
 
 pub fn date_parse_utc(String) -> Double
 
@@ -264,22 +272,27 @@ pub fn windows_of(@jsjson.JValue?) -> Array[ScreenWindow]
 pub(all) suberror ExecFailed {
   ExecFailed(message~ : String, code~ : @jsjson.JValue, signal~ : String?, stdout~ : String, stderr~ : String)
 }
+pub impl Show for ExecFailed
 
 pub(all) suberror Failed {
   Failed(String, @jsjson.JValue)
 }
+pub impl Show for Failed
 
 pub(all) suberror FsFailed {
   FsFailed(String, String)
 }
+pub impl Show for FsFailed
 
 pub(all) suberror GrantRefused {
   GrantRefused(String)
 }
+pub impl Show for GrantRefused
 
 pub(all) suberror ScreenRefused {
   ScreenRefused(status~ : Int32, key~ : String, args~ : @jsjson.JValue, access~ : ScreenAccess?, message~ : String)
 }
+pub impl Show for ScreenRefused
 
 // Types and methods
 pub struct AbortSignal {
@@ -494,6 +507,8 @@ pub async fn Desktop::helper_back(Self) -> Unit
 pub fn Desktop::new(Io, DesktopOptions) -> Self
 pub async fn Desktop::open(Self, ViewOptions) -> ScreenView
 pub async fn Desktop::refresh(Self, force? : Bool) -> Unit
+pub async fn Desktop::resolution(Self) -> ScreenResolution?
+pub async fn Desktop::set_resolution(Self, Double, Double) -> ScreenResolution
 pub fn Desktop::size(Self) -> (Double, Double)
 pub fn Desktop::source(Self) -> ScreenSource
 pub fn Desktop::title(Self) -> String
@@ -658,6 +673,7 @@ pub struct HelperView {
 }
 pub fn HelperView::bounds(Self, Double, Double, Region?) -> Unit
 pub fn HelperView::close(Self) -> Unit
+pub fn HelperView::cursor_image(Self, String) -> Bytes?
 pub fn HelperView::has_audio(Self) -> Bool
 pub fn HelperView::input(Self, ScreenInput) -> Unit
 pub fn HelperView::keyframe(Self) -> Unit
@@ -706,6 +722,7 @@ pub struct LastingView {
 }
 pub fn LastingView::bounds(Self, Double, Double, Region?) -> Unit
 pub fn LastingView::close(Self) -> Unit
+pub fn LastingView::cursor_image(Self, String) -> Bytes?
 pub fn LastingView::input(Self, ScreenInput) -> Unit
 pub fn LastingView::keyframe(Self) -> Unit
 pub fn LastingView::new(Io, HelperView, async () -> HelperView, () -> Unit) -> Self
@@ -788,6 +805,7 @@ pub(all) struct LogStream {
 pub(all) struct LoginField {
   host : String
   field : String
+  filled : Bool
 }
 
 pub(all) struct LoginFill {
@@ -976,9 +994,11 @@ pub fn ScreenHub::close(Self) -> Unit
 pub async fn ScreenHub::close_screen(Self, String) -> Unit
 pub fn ScreenHub::debug_of(Self, String) -> SimDebug raise ScreenRefused
 pub fn ScreenHub::drive(Self, String, String, Bool, String) -> (Bool, Array[String])
+pub fn ScreenHub::driving_people(Self, String) -> Array[String]
 pub fn ScreenHub::end_view(Self, String, String, String) -> Unit raise ScreenRefused
 pub fn ScreenHub::end_views(Self, String, String) -> Int32 raise ScreenRefused
 pub fn ScreenHub::get(Self, String) -> ScreenSource?
+pub fn ScreenHub::has_taken_view(Self, String) -> Bool
 pub async fn ScreenHub::history_screen(Self, String, Int32) -> Unit
 pub fn ScreenHub::join(Self, String, Watcher) -> () -> Unit
 pub fn ScreenHub::list(Self) -> Array[ScreenSource]
@@ -999,6 +1019,7 @@ pub fn ScreenHub::take_control(Self, String, by? : String?) -> Int32 raise Scree
 pub fn ScreenHub::watch(Self, (Array[ScreenSource]) -> Unit) -> () -> Unit
 pub fn ScreenHub::watch_only(Self, String, String) -> Unit raise ScreenRefused
 pub fn ScreenHub::when_stopping(Self, () -> Unit) -> () -> Unit
+pub fn ScreenHub::yield_to_agent(Self, String, String) -> Int32
 
 pub(all) enum ScreenInput {
   Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int32)
@@ -1096,6 +1117,7 @@ pub(all) struct ScreenView {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((ScreenCursor) -> Unit) -> (() -> Unit))?
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Int32) -> Unit) -> (() -> Unit))?
   watch_windows : (((ScreenWindows) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?
@@ -1290,8 +1312,9 @@ pub(all) struct ViewOptions {
   audio : Bool
   opus : Bool
   gamut : String?
+  passkeys : Bool?
 }
-pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?) -> Self
+pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?, passkeys? : Bool?) -> Self
 
 pub(all) struct ViewShown {
   id : String
@@ -1315,11 +1338,12 @@ pub(all) struct Watcher {
   client : String?
   app : String?
   agent : Bool
+  mut taken : Bool
   end : ((String) -> Unit)?
   watch_only : ((String?) -> Unit)?
   mut at : Double
 }
-pub fn Watcher::new(String, Bool, (@jsjson.JValue) -> Unit, device? : String?, self_? : String?, client? : String?, app? : String?, agent? : Bool, end? : ((String) -> Unit)?, watch_only? : ((String?) -> Unit)?) -> Self
+pub fn Watcher::new(String, Bool, (@jsjson.JValue) -> Unit, device? : String?, self_? : String?, client? : String?, app? : String?, agent? : Bool, taken? : Bool, end? : ((String) -> Unit)?, watch_only? : ((String?) -> Unit)?) -> Self
 
 pub struct WinInput {
   // private fields

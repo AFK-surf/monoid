@@ -54,8 +54,8 @@ export type ChatEvent =
   | { type: "loginCode"; channel: string; threadTs: string; ts: string; user: string; code: string };
 
 /// A channel or group a bot is in. `kind`: a Slack channel (a new thread in it); a Feishu topic group (a new topic); a
-/// Feishu group (the group's conversation, taken over:「会话怎么分」).
-export type Place = { id: string; name: string; kind: "channel" | "topics" | "group"; private?: boolean };
+/// Feishu group (the group's conversation, taken over:「会话怎么分」); a group connect's space (a new topic of its own).
+export type Place = { id: string; name: string; kind: "channel" | "topics" | "group" | "space"; private?: boolean };
 
 /// A person in a place, as they are mentioned there (`id`, as `mention` takes it): the name people know them by, the
 /// other one they go by where it differs (`aka`: Slack's full name beside the display name), their picture.
@@ -139,8 +139,9 @@ export interface ChatSurface {
   /// The people in one of its places (bots left out), at most a couple of thousand: who a note relaying a chat there
   /// can mention.
   peopleIn?(channel: string): Promise<Member[]>;
-  /// Starts a conversation in one of its places with `message`, as the station: the thread it is from now on.
-  begin?(channel: string, message: string): Promise<{ thread: ThreadRef; ts: string }>;
+  /// Starts a conversation in one of its places with `message`, as the station: the thread it is from now on. `title`:
+  /// what the conversation is called where the platform names one (a group space's topic).
+  begin?(channel: string, message: string, title?: string): Promise<{ thread: ThreadRef; ts: string }>;
   /// Changes a message the bot posted to `message`, when it fits in one message; false, with nothing changed, when it
   /// does not.
   edit?(thread: ThreadRef, ts: string, message: string): Promise<boolean>;

@@ -327,7 +327,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
       let left = current.val.exp * 1000L - (k.now_secs)() * 1000L
       let ms = (if left < 0L { 0L } else { left }) + 50L
       let at = if ms > 2147483647L { 2147483647 } else { ms.to_int() }
-      expiry.val = Some(@door.after(rt, at, () => ignore(rt.fork(() => if !gone() { watch_expiry() }))))
+      expiry.val = Some(@door.after(rt, at, () => ignore(rt.fork_daemon("member expiry", on_error=_ => (conn.close)(3, "lock_unconfirmed"), () => if !gone() { watch_expiry() }))))
     }
     let unlisten : Ref[() -> Unit] = Ref(() => ())
     Let({
@@ -344,7 +344,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
         })
         (m.connected)()
         last_ways.val = paths_of(conn)
-        ignore(rt.fork(name="member closed", () => {
+        ignore(rt.fork_daemon("member closed", on_error=_ => (), () => {
           let why = (conn.closed)() catch { _ => return }
           let ways = paths_of(conn)
           let with_ : Map[String, Json] = {
@@ -362,14 +362,14 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
           @door.log("info", "mesh", "a device's connection ended", Json::object(with_))
         }))
         watch_expiry()
-        let on_change = () => ignore(rt.fork(() => ignore(gone())))
+        let on_change = () => ignore(rt.fork_daemon("member gone", on_error=_ => (conn.close)(3, "lock_unconfirmed"), () => ignore(gone())))
         let off_cloud = (k.listen)(on_change)
         let off_persons = (k.persons_listen)(on_change)
         unlisten.val = () => {
           off_cloud()
           off_persons()
         }
-        ignore(rt.fork(() => told(false)))
+        ignore(rt.fork_quiet(name="member told", () => told(false)))
       },
       renew: line => {
         let (a, n) = check(line, _ => ())
@@ -402,7 +402,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
           off()
         }
         (unlisten.val)()
-        ignore(rt.fork(() => told(true)))
+        ignore(rt.fork_quiet(name="member told gone", () => told(true)))
       },
     })
   }

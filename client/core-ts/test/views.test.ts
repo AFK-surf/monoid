@@ -503,7 +503,10 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   blocked.unread = true;
   const others = deciding("other", 11, 7, now - 4000, false);
   others.decision.card.assignee = "other@x.com";
-  t.set(rows("ws/st"), [blocked, deciding("k2", 8, 3, now - 2000, true), deciding("k3", 9, 4, now - 3000, false), others]);
+  // (k3 waits on a login's card: 待处理 names the login, for the app to tell them as it comes)
+  const login = deciding("k3", 9, 4, now - 3000, false);
+  login.decision.card = { ...login.decision.card, type: "login", login: "L1" };
+  t.set(rows("ws/st"), [blocked, deciding("k2", 8, 3, now - 2000, true), login, others]);
   await t.readAll([[chats, 1], [marks, 2]]);
   const v = chats.value;
   const all = v.days.flatMap((d: J) => d.items);
@@ -518,8 +521,10 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   assert.deepEqual([m.workspaces.ws.tone, m.workspaces.ws.mineTone, m.workspaces.ws.watchingTone], ["wait", "wait", undefined]);
   // 待处理 and the badge are the same: the cards waiting for them, looked at or not (k3 read: it still waits).
   assert.deepEqual([m.badge, m.workspaces.ws.badge], [2, 2]);
-  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"], ["wait", "k3", 4, "studio"]]);
-  assert.equal(m.workspaces.ws.items[0].what, "k1 要合吗？", "the same without its lead");
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k3", 4, "studio"], ["wait", "k1", 5, "studio"]]);
+  assert.equal(m.workspaces.ws.items[1].what, "k1 要合吗？", "the same without its lead");
+  // (a login waiting first: it ends by itself in minutes; named in its own words, its program not told here yet)
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.session, i.login, i.what]), [["k3", "L1", "需要你登录"], ["k1", undefined, "k1 要合吗？"]]);
 });
 
 test("a_comma_tasks_chat_is_marked_by_comma_as_a_slack_one_is_by_slack", async () => {
@@ -3872,6 +3877,49 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
     [{ name: "pic.png", path: "/ws/j/uploads/pic.png", size: 7, owner: "j" }],
     [],
   ]);
+});
+
+test("another_chats_letter_given_in_a_slack_thread_is_on_the_letters_page_not_said_in_slack_and_bots_go_by_their_names", async () => {
+  const t = setup({ all: true });
+  const u = ui();
+  const letters = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  t.subscribe(2, { topic: "chatLetters", station: "ws/a", thread: 7 });
+  const now = t.host.nowMs();
+  const bot = "U0CHCD9FPKQ";
+  // The agent's connect, its bot in the Slack thread: named with its `@`, as people name connects.
+  t.set(overview("ws/a"), overviewOf([{ ...connect("gem", "@Gemini-Monoid"), connection: { state: "connected", botUserId: bot } }], []));
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "gem" })]);
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  t.set(pageOf("ws/a", 7), page(1, ["看下这个"], null));
+  // Another chat, titled by its first words (a mention first), wrote this chat's agent (session_send).
+  const title = `<@${bot}> 你来领导 UIUX，看看上下文，现在哪些做得不对`;
+  const link = "https://app.still.fail/o/w/s/chat%3Ac-src";
+  const said = `同步一个 \`mbui words_over\` 遮挡判定假阳性问题（cc <@${bot}>）`;
+  t.set({ topic: "letters", station: "ws/a", thread: 7 }, { entries: [], whole: true, letters: [
+    { thread: 7, n: 1, kind: "message", ts: "l1", authorKind: "agent", author: "peer/chat:c-src", authorName: null, at: 5, text: `来自 [${title}](${link})：\n\n${said}`, letter: { way: "in", title, link } },
+  ] });
+  // A core from before kept that letter as said in the thread (slack_said, as Markdown).
+  t.host.sqls.get(dbName("s1"))!.run(
+    "INSERT INTO slack_said (station, session, i, k, out, call, user, who, at, dest, text, failed) VALUES (?, ?, ?, ?, 0, NULL, ?, NULL, ?, ?, ?, 0)",
+    ["ws/a", "k", 0, 0, `${title}`, 1000, "C_EXT/1795000000.000100", `来自 [\\<@${bot}> 你来领导 UIUX，看看上下文，现在哪些做得不对](${link})：\n\n同步`],
+  );
+  const given = (from: string, ts: string, body: string) => `<message via="slack" thread="C_EXT/1795000000.000100" from="${from}" bot ts="${ts}">\n${body}\n</message>`;
+  t.data.putItems("transcript", "ws/a", "k", [
+    // The letter as the agent was given it, from the Slack thread its chat is in.
+    [1, { at: "1970-01-01T00:00:02Z", kind: "user", text: given(title, "2.0", `来自 <${link}|&lt;@${bot}&gt; 你来领导 UIUX，看看上下文，现在哪些做得不对>：\n\n${said}`) }],
+    // A bot's own words in that thread, said as its mention.
+    [2, { at: "1970-01-01T00:00:03Z", kind: "user", text: given(`<@${bot}>`, "3.0", `收到，我先跟 <@${bot}> 确认一下复现用例。`) }],
+  ]);
+  await t.readAll([[u, 1], [letters, 2]]);
+  const v = u.value;
+  const elsewhere = [...v.elsewhere, ...v.messages.flatMap((m: J) => m.elsewhere ?? [])];
+  assert.deepEqual(elsewhere.map((s: J) => [s.by.name, s.text]), [["Gemini-Monoid", "收到，我先跟 @Gemini-Monoid 确认一下复现用例。"]]);
+  const page_ = letters.value;
+  assert.equal(page_.chats[0].title, "你来领导 UIUX，看看上下文，现在哪些做得不对");
+  const [letter] = page_.chats[0].letters;
+  assert.equal(letter.by.name, "「你来领导 UIUX，看看上下文，现在哪些做得不对」的 agent");
+  assert.equal(letter.text, "同步一个 `mbui words_over` 遮挡判定假阳性问题（cc @Gemini-Monoid）");
 });
 
 // ── What is shared is never written on (「谁能改什么」) ──
