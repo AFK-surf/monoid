@@ -527,6 +527,7 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
     kept_map(tree_fields),
+    kept_array(tree_fields_asked, fn() { [] }),
     kept_map(tree_field_focus_told),
     kept_map(tree_field_menu_areas),
     kept_array(field_menu_asked, fn() { [] }),

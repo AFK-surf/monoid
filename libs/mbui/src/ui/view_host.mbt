@@ -500,6 +500,7 @@ fn view_forget() -> Unit {
   for id in tree_fields.keys().collect() {
     tree_field_gone(id)
   }
+  tree_fields_asked.clear()
   // (the native views of the tree's the run before's: what opened them closes them, a new run's host none of theirs)
   tree_natives.clear()
   tree_streams.clear()
@@ -4933,6 +4934,7 @@ fn old_whole_island() -> @view.NodeId? {
 /// take no press): what an old view that may take input no more holds let go of then, at that cause (view_captures_off).
 fn view_modals_told() -> Unit {
   view_captures_off(view_moment(), fn(owner) { !old_owner_open(owner) }, back_gone=fn(owner) { !held_back_open(owner) })
+  tree_fields_asked_told()
   // (whether the app takes back: what of the tree takes it may have changed)
   g().back_told_host()
 }

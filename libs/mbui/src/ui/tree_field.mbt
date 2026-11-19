@@ -61,6 +61,29 @@ priv struct TreeField {
 let tree_fields : Map[@view.NodeId, TreeField] = Map([])
 
 ///|
+/// The fields of the window's tree whose focus was asked while their part of the tree was not in use
+/// (tree_field_kept_asked), in the order asked: the last able to take it is given it once its part is in use
+/// (tree_fields_asked_told).
+// kept across runs: put back as a run begins (view_forget); each let go with its node (tree_field_gone)
+let tree_fields_asked : Array[@view.NodeId] = []
+
+///|
+fn tree_field_ask_drop(id : @view.NodeId) -> Unit {
+  match tree_fields_asked.search(id) {
+    Some(i) => tree_fields_asked.remove(i) |> ignore
+    None => ()
+  }
+}
+
+///|
+/// Whether field node `id`'s asked focus is kept asked, not given now (as island_kept_asked keeps an old view's
+/// editor's): held from the root and taking presses under no modal layer, in a part not in use (View::in_use), to be
+/// given the focus once its part comes into use (tree_fields_asked_told).
+fn tree_field_kept_asked(tree : @view.Tree, id : @view.NodeId) -> Bool {
+  tree.holds(tree.root().id(), id) && tree.takes_presses(id) && !tree.in_use(id)
+}
+
+///|
 /// A field's words', placeholder's and caret's colours as they are now, lent by its node where it said `colors_by` (as
 /// said once where it did not), read as it is painted (paint_tree_field).
 // kept across runs: each lent value let go with the node that lends it
@@ -312,6 +335,10 @@ pub fn Field::focus(self : Field) -> Unit {
 /// focus is elsewhere, it stays.
 pub fn Field::let_go(self : Field) -> Unit {
   self.st.focus_asked = false
+  match self.st.tree_node {
+    Some(n) => tree_field_ask_drop(n)
+    None => ()
+  }
   let c = g()
   let id = match self.st.tree_node {
     Some(n) if tree_fields.contains(n) => tree_said_of.get(n).unwrap_or(0)
@@ -395,11 +422,61 @@ pub fn Ctx::focus_field(self : Ctx, field : Field) -> Unit {
 }
 ///|
 /// Field node `id` given the keyboard's focus where it can take it now (the tree's: under no modal layer that does not
-/// hold it, able to take it); else the focus where it was.
+/// hold it, able to take it); where only its part not being in use keeps it from it (View::in_use), kept asked and given
+/// as that comes into use (tree_fields_asked_told); else the focus where it was.
 fn tree_field_focus(id : @view.NodeId) -> Unit {
-  guard view_app.val is Some(tree) && tree.can_focus(id) else { return }
-  g().focus_moved(tree_said_id(id))
-  tree_field_redraw()
+  guard view_app.val is Some(tree) && tree_fields.get(id) is Some(tf) else { return }
+  tree_field_ask_drop(id)
+  if tree.can_focus(id) {
+    tf.st.focus_asked = false
+    g().focus_moved(tree_said_id(id))
+    tree_field_redraw()
+  } else if tree_field_kept_asked(tree, id) {
+    tf.st.focus_asked = true
+    tree_fields_asked.push(id)
+  } else {
+    tf.st.focus_asked = false
+  }
+}
+
+///|
+/// What may take input in the window's tree settled (view_modals_told): the last field of the tree's whose asked focus
+/// waited on its part coming into use (tree_field_kept_asked) and can now take it, given it at this cause's moment.
+fn tree_fields_asked_told() -> Unit {
+  if tree_fields_asked.is_empty() {
+    return
+  }
+  guard view_app.val is Some(tree) else {
+    tree_fields_asked.clear()
+    return
+  }
+  let root = tree.root().id()
+  let mut give : @view.NodeId? = None
+  let kept : Array[@view.NodeId] = []
+  for id in tree_fields_asked {
+    match tree_fields.get(id) {
+      Some(tf) if tf.st.focus_asked =>
+        if tree.can_focus(id) {
+          tf.st.focus_asked = false
+          give = Some(id)
+        } else if tree.holds(root, id) && tree.presses_here(id) && !tree.in_use(id) {
+          // (still in a part not in use, even while a modal layer opens and closes elsewhere: kept till its part is in use)
+          kept.push(id)
+        } else {
+          tf.st.focus_asked = false
+        }
+      _ => ()
+    }
+  }
+  tree_fields_asked.clear()
+  tree_fields_asked.append(kept)
+  match give {
+    Some(id) => {
+      g().focus_moved(tree_said_id(id))
+      tree_field_redraw()
+    }
+    None => ()
+  }
 }
 
 ///|
@@ -578,6 +655,7 @@ pub fn field_edit_now(id : Int, what : Int) -> Unit {
 ///|
 /// Field node `id` let go: its editor nobody's in the window.
 fn tree_field_gone(id : @view.NodeId) -> Unit {
+  tree_field_ask_drop(id)
   tree_field_focus_told.remove(id)
   match tree_fields.get(id) {
     Some(tf) => {
