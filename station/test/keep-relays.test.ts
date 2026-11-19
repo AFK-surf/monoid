@@ -116,31 +116,41 @@ test("every workspace turned still.fail's relays off: none of its own answering 
 
 type Probed = { ok: boolean; stage?: "probe_offline" | "endpoint_failed" } | Error;
 
-/// keepRelays watching an endpoint whose probes find `now.probe` and whose relays say `now.status`; `answering` whether
-/// the relays answer their ping. Every 30 s check is `tick()`; `t` the test's time since the start, `recovered` the
-/// times it was told unhealthy, `probes` the times it was probed.
-function watching(t: TestContext, now: { probe: Probed; status: { url: string; connected: boolean; access: string; conflict?: boolean }[]; up: boolean }) {
+/// keepRelays watching an endpoint whose probes find `now.probe` (or, by relay, `now.through`) and whose relays say
+/// `now.status`; `answering` whether the relays answer their ping (`now.pinged`: only those named). `relays` still.fail's
+/// (the first homed on). Every 30 s check is `tick()`; `t` the test's time since the start, `recovered` the times it was
+/// told unhealthy, `probes` the times it was probed, `through` the relays each was probed through.
+function watching(
+  t: TestContext,
+  now: { probe: Probed; status: { url: string; connected: boolean; access: string; conflict?: boolean }[]; up: boolean; through?: Record<string, Probed>; pinged?: string[] },
+  relays: string[] = [OURS],
+) {
   const recovered: number[] = [];
   const probes: number[] = [];
+  const through: string[] = [];
   let at = 0;
+  const bare = (u: string) => u.replace(/\/+$/, "");
   const endpoint = {
-    home: () => OURS,
+    home: () => relays[0],
     insertRelay: async () => {},
     removeRelay: async () => {},
     publicRelays: async () => {},
     keep: () => {},
     relayStatus: () => now.status,
     probeRelay: async (url: string) => {
-      assert.equal(url, OURS, "probed through the relay that answered");
+      assert.ok(relays.some((r) => bare(r) === bare(url)), "probed through a relay kept");
       probes.push(at);
-      if (now.probe instanceof Error) throw now.probe;
-      return now.probe;
+      through.push(bare(url));
+      const found = now.through?.[bare(url)] ?? now.probe;
+      if (found instanceof Error) throw found;
+      return found;
     },
   } as unknown as Endpoint;
-  const cloud = { data: mkdtempSync(join(tmpdir(), "keep-relays-")), state: null, relays: () => [OURS], memberships: () => [{ workspace: "w" }], waysSaid: () => ({ relays: [], off: [] }) };
+  const cloud = { data: mkdtempSync(join(tmpdir(), "keep-relays-")), state: null, relays: () => relays, memberships: () => [{ workspace: "w" }], waysSaid: () => ({ relays: [], off: [] }) };
   const fetched = globalThis.fetch;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (url: string) => {
     if (!now.up) throw new Error("unreachable");
+    if (now.pinged !== undefined && !now.pinged.some((r) => String(url).startsWith(bare(r)))) throw new Error("unreachable");
     return new Response("pong");
   }) as typeof fetch;
   t.after(() => void (globalThis.fetch = fetched));
@@ -155,7 +165,7 @@ function watching(t: TestContext, now: { probe: Probed; status: { url: string; c
       await settle(10);
     }
   };
-  return { recovered, probes, tick, at: () => at };
+  return { recovered, probes, through, tick, at: () => at };
 }
 
 type Status = { url: string; connected: boolean; access: string; conflict?: boolean }[];
@@ -238,4 +248,98 @@ test("a well endpoint is probed every fourth check; one its relays say is on non
   await w.tick(2);
   assert.deepEqual(w.probes.slice(4), [330_000, 360_000], "on no relay: every check");
   assert.deepEqual(w.recovered, []);
+});
+
+// ── more than one relay: a failure counts once a second relay corroborates it ──
+
+const A = "https://relay.still.example";
+const B = "https://b.still.example";
+const C = "https://c.still.example";
+const D = "https://d.still.example";
+const E = "https://e.still.example";
+const FAILED: Probed = { ok: false, stage: "endpoint_failed" };
+const OFFLINE: Probed = { ok: false, stage: "probe_offline" };
+
+test("a probe failing through one relay but answered through another never recovers it, and clears the failures so far", async (t) => {
+  const now = { probe: { ok: true } as Probed, status: CONNECTED, up: true, through: {} as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(5); // (past its first two minutes)
+  now.status = LOST;
+  now.through = { [A]: FAILED, [B]: FAILED, [C]: FAILED };
+  await w.tick(2);
+  assert.deepEqual(w.recovered, [], "two failures, each through two relays");
+  now.through = { [A]: FAILED, [B]: { ok: true } };
+  const from = w.through.length;
+  await w.tick(20);
+  assert.deepEqual(w.through.slice(from, from + 4), [A, B, A, B], "the one homed on, then the next that answers");
+  assert.deepEqual(w.recovered, [], "reached through another relay: never the endpoint's");
+  now.through = { [A]: FAILED, [B]: FAILED, [C]: FAILED };
+  await w.tick(2);
+  assert.deepEqual(w.recovered, [], "the two failures before were cleared");
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [w.at()]);
+});
+
+test("the first relay letting no probe on (over its quota), the next two failing: recovered as through one", async (t) => {
+  const now = { probe: FAILED, status: LOST, up: true, through: { [A]: OFFLINE } as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(3);
+  assert.deepEqual(w.through.slice(0, 3), [A, B, C], "past the one it could not get on, to two that answer");
+  assert.deepEqual(w.recovered, [], "three failures, but within the first two minutes");
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [2 * MIN]);
+});
+
+test("the first relay letting no probe on, the next reaching the endpoint: its failures cleared", async (t) => {
+  const now = { probe: { ok: true } as Probed, status: CONNECTED, up: true, through: {} as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(5);
+  now.status = LOST;
+  now.through = { [A]: OFFLINE, [B]: FAILED, [C]: FAILED };
+  await w.tick(2);
+  assert.deepEqual(w.recovered, []);
+  now.through = { [A]: OFFLINE, [B]: { ok: true } };
+  await w.tick(1);
+  now.through = { [A]: OFFLINE, [B]: FAILED, [C]: FAILED };
+  await w.tick(2);
+  assert.deepEqual(w.recovered, [], "the two failures before were cleared");
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [w.at()]);
+});
+
+test("two relays failing in one check count once, on the same timeline; a third is not asked", async (t) => {
+  const now = { probe: FAILED, status: LOST, up: true };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(3);
+  assert.deepEqual(w.probes, [0, 0, 30_000, 30_000, 60_000, 60_000, 90_000, 90_000], "two probes a check");
+  assert.ok(!w.through.includes(C), "two relays agreeing: no third asked");
+  assert.deepEqual(w.recovered, []);
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [2 * MIN]);
+});
+
+test("one relay failing while the next three let no probe on, more left unasked: not counted, never recovered", async (t) => {
+  const now = { probe: OFFLINE, status: LOST, up: true, through: { [A]: FAILED } as Record<string, Probed> };
+  const w = watching(t, now, [OURS, B, C, D, E]);
+  await settle(10);
+  await w.tick(60);
+  assert.deepEqual(w.through.slice(0, 4), [A, B, C, D], "four probes a check at most");
+  assert.ok(!w.through.includes(E));
+  assert.equal(w.probes.length, 61 * 4);
+  assert.deepEqual(w.recovered, []);
+});
+
+test("one relay failing while no other answers its ping: counted, as with one relay", async (t) => {
+  const now = { probe: FAILED, status: LOST, up: true, pinged: [OURS] };
+  const w = watching(t, now, [OURS, B, C]);
+  await settle(10);
+  await w.tick(3);
+  assert.deepEqual(w.probes, [0, 30_000, 60_000, 90_000]);
+  assert.deepEqual(w.recovered, []);
+  await w.tick(1);
+  assert.deepEqual(w.recovered, [2 * MIN]);
 });
