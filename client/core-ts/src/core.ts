@@ -532,6 +532,8 @@ export class Core {
       // while it was closed too).
       inner.scheduler.enqueue("cloud", "changelog", Priority.background, inner.changelog.read());
       inner.cloudSync.onOpen = () => {
+        inner.store.checkMoments();
+        inner.views.checkMoments();
         inner.scheduler.enqueue("cloud", "changelog", Priority.background, inner.changelog.read());
         inner.cloudSync.onRelease();
       };

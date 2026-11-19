@@ -348,6 +348,9 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "home-update-offered" || mode == "home-station-updates-app" || mode == "station-updates-app" {
     @sffixture.fixture_update("0.1.5640")
   }
+  if mode == "home-stale-build" {
+    @sffixture.fixture_updates()
+  }
   if mode == "home-update-coming" {
     @sffixture.fixture_update("0.1.5640")
     @sffixture.fixture_update_goes("0.1.5640", "downloading", percent=40)
@@ -489,7 +492,7 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   // (what is wrong with it under its field)
   // the stations' newer releases waiting for this person: their key over Home (home-station-updates); their dialog open
   // over it (station-updates)
-  if mode == "station-updates" || mode == "station-updates-app" {
+  if mode == "station-updates" || mode == "station-updates-app" || mode == "station-updates-stale" {
     @sfpages.station_updates_dialog(src, settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }), "ws1")
   }
   if mode == "new-workspace" {

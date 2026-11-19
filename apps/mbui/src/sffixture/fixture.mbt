@@ -1491,6 +1491,9 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       }
       // the board's (board_fixture.mbt)
       board_prefs_into(o)
+      if f.mode == "home-stale-build" {
+        o["staleBuild"] = Json::boolean(true)
+      }
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)
@@ -3150,14 +3153,25 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
       if state == "failed" {
         item["detail"] = Json::string(text(Some(u), "message"))
       }
+      if f.mode == "station-updates-stale" && state == "offered" && listed.is_empty() {
+        item["stale"] = Json::boolean(true)
+        item["detail"] = Json::string("版本已超过 7 天，请尽快升级")
+      }
       listed.push(Json::object(item))
     }
   }
   let n = listed.filter(fn(i) { text(Some(i), "state") != "updating" }).length()
+  let any_stale = listed.iter().any(fn(i) { text(Some(i), "state") != "updating" && flag(Some(i), "stale") })
   {
     "items": Json::array(listed),
     "offered": Json::number(n.to_double()),
-    "labelText": Json::string(if n > 0 { "\{n} 台 station 有新版本" } else { "" }),
+    "labelText": Json::string(
+      if n > 0 {
+        if any_stale { "\{n} 台 station 需要更新" } else { "\{n} 台 station 有新版本" }
+      } else {
+        ""
+      },
+    ),
     "titleText": "Station 更新",
   }
 }

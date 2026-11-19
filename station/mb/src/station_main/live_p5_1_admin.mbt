@@ -1099,6 +1099,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     rooted: p => p.has_prefix("/") || (p.length() > 2 && p[1] == ':'),
     clean: p => p,
+    built_at: bus.built_at,
   }
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
   @events.overview(deps, self.overview_kept, @events.Viewer::of(jv(viewer)), lang, r => match r {

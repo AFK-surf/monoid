@@ -658,7 +658,12 @@ fn update_fetch(url : String, sha256 : String, size : Double, name : String, now
 ///|
 fn update_apply(said : String) -> Unit {
   ignore(said)
+  js_reload()
 }
+
+///|
+extern "js" fn js_reload() -> Unit =
+  #|() => { if (globalThis.location && typeof globalThis.location.reload === "function") globalThis.location.reload() }
 
 ///|
 fn update_state() -> String {

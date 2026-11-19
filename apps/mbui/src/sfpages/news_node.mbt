@@ -85,3 +85,103 @@ pub fn update_card_node(parent : @view.View, src : Source) -> Unit {
   )
   |> ignore
 }
+
+///|
+/// The over-7-day upgrade prompt card in `parent` (Small, Medium, and Large): first-line aligned icon and title,
+/// platform-specific message (Desktop/Android feed, iOS TestFlight, Web refresh, or download fallback), optional
+/// download progress bar while fetching, and a primary action button in the card's concentric foot corner.
+pub fn stale_build_card_node(parent : @view.View, src : Source) -> Unit {
+  let icon = fn() { if @sfbase.stale_build_kind() == "web" { "refresh" } else { "download" } }
+  let body_text = fn() {
+    match @sfbase.stale_build_kind() {
+      "web" => @sf.t("web-main.staleBuild.web")
+      "ios" => @sf.t("web-main.staleBuild.ios")
+      "feed" =>
+        match @sfbase.update_now() {
+          Ready(_, ..) => @sf.t("web-main.staleBuild.ready")
+          Allow(_) => @sf.t("web-main.staleBuild.allow")
+          Coming(_, _) | Installing(_) => @sf.t("web-main.staleBuild.coming")
+          _ => @sf.t("web-main.staleBuild.body")
+        }
+      _ => @sf.t("web-main.staleBuild.downloadBody")
+    }
+  }
+  let button_label = fn() {
+    match @sfbase.stale_build_kind() {
+      "web" => @sf.t("web-main.staleBuild.reloadPage")
+      "ios" => @sf.t("web-main.staleBuild.openTestFlight")
+      "feed" =>
+        match @sfbase.update_now() {
+          Ready(_, ..) => @sf.t("desktop.update.restart")
+          Allow(_) => @sf.t("android-misc.updates.allow")
+          Coming(_, _) | Installing(_) => @sf.t("web-main.staleBuild.viewProgress")
+          _ => @sf.t("web-main.staleBuild.updateNow")
+        }
+      _ => @sf.t("web-main.staleBuild.download")
+    }
+  }
+  let progress_part = fn() -> Double? {
+    match @sfbase.update_now() {
+      Coming(_, part) => part
+      _ => None
+    }
+  }
+  parent.box(fn(room) {
+    @sf.style_node(room, fn() { stale_build_card_room.then(@ui.style(px=@sf.room_of(@sf.theme().chat_list.band_in))) })
+    @sf.ask_card_node(room, fn(card) {
+      card.box(fn(head) {
+        @sf.style_node(head, fn() { stale_build_head })
+        @sf.first_line_node(head, Ui, leading=L5, fn(i) {
+          i.pick(icon, fn(ic, name) { @sf.icon_node(ic, name, 16.0, By(fn() { @sf.theme().p.accent })) |> ignore })
+        })
+        |> ignore
+        head.box(fn(words) {
+          @sf.style_node(words, fn() { stale_build_words }, in_row=true)
+          words.min_width(Is(Some(0.0))) |> ignore
+          words.box(fn(t) {
+            t
+            .words_runs(By(fn() { [@ui.span(@sf.t("web-main.staleBuild.title"), weight=600, color=@sf.theme().p.text)] }))
+            .words_look(By(fn() { @ui.style_words(@sf.ask_title) }))
+            .ink(By(fn() { @ui.style_ink(@sf.ask_title) }))
+            |> ignore
+          })
+          |> ignore
+          @sf.words_node(words, body_text, fn() { @sf.ask_note }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      card.show(fn() { @sfbase.update_now() is (Coming(_, _) | Installing(_)) }, fn(p) {
+        @sf.progress_node(p, progress_part, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
+      })
+      @sf.ask_buttons_node(card, fn(f) {
+        @sf.button_node(
+          f,
+          button_label,
+          fn() { @sfbase.stale_build_action(src) },
+          tone=Primary,
+          busy=fn() { @sfbase.stale_build_kind() == "feed" && @sfbase.update.checking.get() },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Room around the over-7-day upgrade card in the chat list: matches `news_card_room`.
+// kept across runs: a value (no field of it changes)
+let stale_build_card_room : @ui.Style = @ui.css("w=Full pt=S1 pb=S2_5")
+
+///|
+/// First-line aligned icon beside the wrapping title and note.
+// kept across runs: a value (no field of it changes)
+let stale_build_head : @ui.Style = @ui.css("row w=Full gap=S1_5 align=AStart")
+
+///|
+/// Title and body column beside the icon, taking the remaining width of the card.
+// kept across runs: a value (no field of it changes)
+let stale_build_words : @ui.Style = @ui.css("gap=S1").then(@ui.style(w=@sf.grow))

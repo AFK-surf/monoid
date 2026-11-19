@@ -258,7 +258,7 @@ export const overviewProfiledOf = (j: string) => `CASE WHEN json_type(${j}) = 'o
 /// the overview, every station's whole for a few fields, as the sidebar's offer stands on every screen.
 export const overviewSoftwareOf = (j: string) => `(SELECT json_object('version', u.value -> '$.version', 'latest', u.value -> '$.latest',
       'newer', u.value -> '$.newer', 'channel', u.value -> '$.channel', 'auto', u.value -> '$.auto', 'updatable', u.value -> '$.updatable', 'state', u.value -> '$.state',
-      'percent', u.value -> '$.percent', 'progress', u.value -> '$.progress', 'message', u.value -> '$.message')
+      'percent', u.value -> '$.percent', 'progress', u.value -> '$.progress', 'message', u.value -> '$.message', 'builtAt', ${j} -> '$.builtAt')
     FROM json_each(CASE json_type(${j}, '$.updates') WHEN 'array' THEN ${j} ELSE '{"updates":[]}' END, '$.updates') AS u
     WHERE u.type = 'object' AND json_type(u.value, '$.id') = 'text' AND json_extract(u.value, '$.id') = 'station' LIMIT 1)`;
 

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 let read: string | undefined;
+let readBuiltAt: number | null | undefined;
 
 /// The release directory this code runs from.
 export const appDir = () => dirname(dirname(fileURLToPath(import.meta.url)));
@@ -19,9 +20,31 @@ export function stationVersion(app: string): string | undefined {
   }
 }
 
+/// The Unix ms timestamp when the release in `app` was built (its BUILT_AT file); undefined in development or before BUILT_AT.
+export function stationBuiltAt(app: string): number | undefined {
+  try {
+    const raw = readFileSync(join(app, "BUILT_AT"), "utf8").trim(); // sync: read once a process (kept), as it starts
+    if (raw === "" || !/^[0-9]+$/.test(raw)) return undefined;
+    const ms = Number(raw);
+    return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /// The release is the `--app` it is run with when given (a release reached through a link resolves elsewhere).
 export function version(): string {
   const at = process.argv.indexOf("--app");
   const app = at >= 0 ? process.argv[at + 1] : undefined;
   return (read ??= (app ? stationVersion(app) : undefined) ?? stationVersion(appDir()) ?? "0.1.0");
+}
+
+/// When this station's release was built (Unix ms from BUILT_AT); undefined in development.
+export function builtAt(): number | undefined {
+  if (readBuiltAt !== undefined) return readBuiltAt ?? undefined;
+  const at = process.argv.indexOf("--app");
+  const app = at >= 0 ? process.argv[at + 1] : undefined;
+  const found = (app ? stationBuiltAt(app) : undefined) ?? stationBuiltAt(appDir()) ?? null;
+  readBuiltAt = found;
+  return found ?? undefined;
 }

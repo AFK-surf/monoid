@@ -40,6 +40,8 @@ export type OverviewDeps = {
   /// A pinned root as the drive shows it (drive.ts `rootViewThrough`: one in a folder macOS protects by what still.fail
   /// Helper's grant is known to be, never listed by the station); default `rootView`.
   rootView?: (path: string) => Promise<RootView>;
+  /// Unix ms timestamp when this station release was built (ops/version.ts `builtAt`); undefined in development.
+  builtAt?: () => number | undefined;
 };
 
 /// This station's link to still.fail cloud, as the pages show it (server.rs MeshFile::status): in the viewer's workspace
@@ -156,7 +158,9 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
   // (what each profile's home says read off the thread first: accounts/index.ts `homeSays`)
   await d.accounts?.homesReadSoon?.();
   const profiles = d.accounts?.profilesView(viewer) ?? [];
+  const built = d.builtAt?.();
   return {
+    ...(typeof built === "number" && Number.isSafeInteger(built) && built > 0 ? { builtAt: built } : {}),
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
     archiving: archivingView(raw, viewer),
     viewer: { via: "mesh", ...viewer },

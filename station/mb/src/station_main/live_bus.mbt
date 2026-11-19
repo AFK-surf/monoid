@@ -23,6 +23,7 @@ pub(all) struct LiveBus {
   data : String
   app : String
   version : String
+  built_at : Double?
   key : @cloud_lock.StationKey
   db : @sql.Db
   store : @store_sessions.Store
@@ -181,6 +182,10 @@ pub fn LiveBus::new(
     data,
     app,
     version,
+    built_at: match build_built_at(app) {
+      Some(ms) => Some(ms)
+      None => station_built_at(args, argv0)
+    },
     key,
     db,
     store,

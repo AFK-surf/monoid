@@ -758,6 +758,8 @@
   "core-views.software.update_failed": "更新失败",
   "core-views.stationUpdates.title": "Station 更新",
   "core-views.stationUpdates.offered": "{n} 台 station 有新版本",
+  "core-views.stationUpdates.staleOffered": "{n} 台 station 需要更新",
+  "core-views.stationUpdates.stale": "版本已超过 7 天，请尽快升级",
   "core-views.stationUpdates.going": "{n} 台 station 正在更新",
   "core-views.stationUpdates.version": "{from} → {to}",
   "core-views.software.install_failed": "安装失败",

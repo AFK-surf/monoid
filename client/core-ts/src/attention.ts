@@ -134,7 +134,10 @@ export class Attention implements Owner {
     const attend = this.attend;
     const store = core.store;
     const self = this;
-    attend.inView = (shown) => store.inView(shown);
+    attend.inView = (shown) => {
+      store.inView(shown);
+      if (shown) core.views.checkMoments();
+    };
     // A registration kept: this device has pushes.
     core.runner.fork(
       Effect.map(Effect.orElseSucceed(core.host.storageGet(PUSH_KEY), () => null), (bytes) => {

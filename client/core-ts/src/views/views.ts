@@ -54,6 +54,7 @@ import { usageSummary } from "./usage-summary.ts";
 import { agentRates } from "./agent-rates.ts";
 import { fleetView } from "./fleet.ts";
 import { stationUpdates } from "./station-updates.ts";
+import { STALE_BUILD_MS } from "../station/oldest.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
@@ -2106,9 +2107,22 @@ export class Views implements Owner {
         const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
         const manages = role === "owner" || role === "admin";
         const data = this.#core.data;
-        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either)
+        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either unless stale > 7d)
         const dismissed = this.prefsPart(updatesDismissedIn);
-        return { ok: stationUpdates(manages ? stations.map((s) => ({ station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software: data.overviewSoftware(s.address), dismissed: str(get(dismissed, s.address)) })) : []) };
+        const now = untracked(() => this.#core.host.nowMs());
+        const list = manages
+          ? stations.map((s) => {
+              const software = data.overviewSoftware(s.address);
+              if (isObject(software) && get(software, "updatable") === true) {
+                const builtAt = get(software, "builtAt");
+                if (typeof builtAt === "number" && Number.isFinite(builtAt) && builtAt > 0) {
+                  this.#moments.reached(builtAt + STALE_BUILD_MS, true);
+                }
+              }
+              return { station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software, dismissed: str(get(dismissed, s.address)) };
+            })
+          : [];
+        return { ok: stationUpdates(list, now) };
       }
       case "railCard": {
         const scope = view.scope as string;
@@ -2241,6 +2255,11 @@ export class Views implements Owner {
   /// Has what is being computed made again in `ms` (clock.ts `reached`).
   #againIn(ms: number): void {
     if (Number.isFinite(ms)) this.#moments.reached(untracked(() => this.#core.host.nowMs()) + Math.ceil(ms));
+  }
+
+  /// Re-checks waiting deadline moments against the wall clock (e.g. after wake/reconnect).
+  checkMoments(): void {
+    this.#moments.check();
   }
 
   // ── the chat list ──

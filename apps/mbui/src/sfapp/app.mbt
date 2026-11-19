@@ -604,7 +604,10 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // made read by the core, viewer_host.mbt)
     @sf.set_viewer_host(viewer_host_of(src))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
-    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
+    root.reacts(fn() { src.topic("prefs", {}).get().value }, fn(p) {
+      @sfbase.language_from_prefs(p)
+      @sfbase.stale_build_from_prefs(p)
+    })
     // (the experimental switches of 实验性功能 (试用新对话页, Farview 原生标签页渲染, 看板), told before any page of nodes
     // is made and in the frame a switch is pressed: what is chosen here before the core answers is read with the prefs)
     root.reacts(

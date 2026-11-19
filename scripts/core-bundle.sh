@@ -24,13 +24,16 @@ mesh=$(node "$root/scripts/native.ts" file mesh "$platform")
 dir="$out/stillfail-core"
 rm -rf "$dir"
 mkdir -p "$dir"
+build=$(git -C "$root" rev-list --count HEAD)
+built_at=$(printf '%s000' "$(git -C "$root" show -s --format=%ct HEAD)")
 # The addon and ws's optional natives are not bundled (the app loads the addon beside it; ws runs without them).
 (cd "$root/client/core-ts" && pnpm exec esbuild src/hosts/node.ts --bundle --platform=node --format=cjs --target=node22 --outfile="$dir/core-ts.js" \
+  "--define:__STILLFAIL_BUILT_AT__=$built_at" \
   --external:electron --external:bufferutil --external:utf-8-validate --log-level=error)
 cp "$mesh" "$dir/mesh.node"
-build=$(git -C "$root" rev-list --count HEAD)
 git -C "$root" rev-parse HEAD > "$dir/VERSION"
 echo "$build" > "$dir/BUILD"
+echo "$built_at" > "$dir/BUILT_AT"
 cat > "$dir/package.json" <<EOF
 {
   "name": "@stillfail/core-node",

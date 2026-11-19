@@ -68,6 +68,7 @@ import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
 import { ChatShareIndexBuilder } from "../xshare/index-builder.ts";
 import { overview } from "../api/overview.ts";
+import { builtAt } from "../ops/version.ts";
 import type { ConnectKind } from "../connects/connections.ts";
 import { agentsRoutes } from "../api/admin.ts";
 import type { ChatEvent, ChatSurface } from "./chat.ts";
@@ -668,7 +669,7 @@ export const AgentsLive = (control: Control) =>
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
-      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
+      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
       // And the fields the station's parts add (parts.ts).
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
