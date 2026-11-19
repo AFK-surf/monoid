@@ -86,10 +86,12 @@ pub fn choices_node(
         }
       })
       |> ignore
-      // (its radio at its end, on its title's line)
+      // (its radio at its end, on its title's line, clear of the card's round corner: a circle by a corner's arc
+      // stands concentric with it or clear of it, and this one's corner is too square for a circle 14 in to follow it)
       on_first_line(hit, fn(m) {
         m.box(fn(r) {
           style_node(r, fn() { if on() { radio_mark_on } else { radio_mark } })
+          r.margin(Is((0.0, 0.0, choice_mark_clear(in_panel), 0.0))) |> ignore
           r.show(on, at_once=true, fn(d) { d.box(fn(dot) { style_node(dot, fn() { radio_dot }) }) |> ignore })
         })
         |> ignore
@@ -152,3 +154,15 @@ let choices_list : @ui.Style = @ui.css("w=Full")
 ///|
 /// How far a disabled choice is seen (choice_card's `disabled{opacity=O55}`).
 let choice_disabled_alpha : Double = 0.55
+
+///|
+/// How much further in than its words a choice's radio stands from the card's end, so that it stands as far in as the
+/// card's corner is round (clear of its arc): a card's corner less a card's padding in a panel, a row's corner less
+/// choice_hit's 14 elsewhere.
+fn choice_mark_clear(in_panel : Bool) -> Double {
+  if in_panel {
+    dmax(0.0, card_corner - card_pad)
+  } else {
+    dmax(0.0, row_corner - @ui.Space::px(S3_5))
+  }
+}

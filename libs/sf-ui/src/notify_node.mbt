@@ -486,15 +486,15 @@ pub fn way_tile_node(
         match (way, look) {
           (BannerWay, Phone(..)) => {
             at.padding(Is((notify_pic_in, notify_pic_in, notify_pic_in, 0.0))) |> ignore
-            notify_pic_block(at, None, notify_pic_banner_h, Base, Border)
+            notify_pic_block(at, None, notify_pic_banner_h, notify_banner_corner, Border)
           }
           (BannerWay, Windows) => {
             at.row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(End))).padding(Is((0.0, 0.0, notify_pic_in, notify_pic_in))) |> ignore
-            notify_pic_block(at, Some(notify_pic_banner_w), notify_pic_banner_h, Base, Border)
+            notify_pic_block(at, Some(notify_pic_banner_w), notify_pic_banner_h, notify_banner_corner, Border)
           }
           (BannerWay, MacOS) => {
             at.row(Is(true)).lies_along(Is(End)).padding(Is((0.0, notify_pic_in, notify_pic_in, 0.0))) |> ignore
-            notify_pic_block(at, Some(notify_pic_banner_w), notify_pic_banner_h, Base, Border)
+            notify_pic_block(at, Some(notify_pic_banner_w), notify_pic_banner_h, notify_banner_corner, Border)
           }
           (BadgeWay, _) => {
             at.row(Is(true)).lines_up(Is(Some(End))).padding(Is((notify_pic_app_left, 0.0, 0.0, notify_pic_in))) |> ignore
@@ -606,14 +606,14 @@ fn notify_pic_block(
   parent : @view.View,
   w : Double?,
   h : Double,
-  corner : @ui.Radius,
+  corner : () -> Double,
   ink : @ui.Color,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(b) {
     b
     .height(Is(Some(h)))
-    .radius(By(fn() { @ui.tree_theme().corner(corner) }))
+    .radius(By(corner))
     .ground(By(fn() { @ui.tree_theme().color(ink) }))
     |> ignore
     // (None: stretched across the column it is in)
@@ -982,3 +982,10 @@ let notify_kind_sum : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, colo
 ///|
 // kept across runs: a value (no field of it changes)
 let notify_way_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg)
+
+///|
+/// A banner drawn small in a way's picture: notify_pic_in in from the picture's edges, its corner concentric with the
+/// picture's there.
+fn notify_banner_corner() -> Double {
+  @ui.concentric(@ui.tree_theme().corner(Lg), notify_pic_in)
+}
