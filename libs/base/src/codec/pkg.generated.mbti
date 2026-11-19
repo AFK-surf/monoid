@@ -1,0 +1,33 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/codec"
+
+// Values
+pub fn base64_decode(String) -> Bytes?
+
+pub fn base64_decode_strict(String) -> Bytes?
+
+pub fn base64_encode(BytesView) -> String
+
+pub fn base64url_decode(String) -> Bytes?
+
+pub fn base64url_encode(BytesView) -> String
+
+pub fn crc32(BytesView) -> UInt32
+
+pub fn crc32_update(UInt32, BytesView) -> UInt32
+
+pub fn hex_decode(String) -> Bytes?
+
+pub fn hex_digit(Int32) -> Int32?
+
+pub fn hex_encode(BytesView) -> String
+
+pub fn hex_encode_upper(BytesView) -> String
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits
