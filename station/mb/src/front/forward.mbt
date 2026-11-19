@@ -12,9 +12,7 @@ struct Conn {
 
 ///|
 async fn Conn::close(self : Conn) -> Unit {
-  ignore(self.host.shell("tcp.close", { "id": self.id })) catch {
-    _ => ()
-  }
+  self.host.tcp_close(self.id)
 }
 
 ///|
@@ -28,13 +26,11 @@ pub struct Listening {
 /// A socket to serve: `fd` one handed down to this process (a launcher's), else one bound here on 127.0.0.1 at `port`
 /// (0: any free one).
 pub async fn listen(host : @host.Host, fd? : Int, port? : Int = 0) -> Listening {
-  let args : Json = match fd {
-    Some(fd) => { "fd": Json::number(fd.to_double()) }
-    None => { "port": Json::number(port.to_double()) }
+  let l = match fd {
+    Some(fd) => host.tcp_listen_fd(fd)
+    None => host.tcp_listen_local(port)
   }
-  let (said, _) = host.shell("tcp.listen", args)
-  guard said is { "id": id, "port": Number(p, ..), .. } else { fail("the shell gave no listening socket") }
-  { id, port: p.to_int() }
+  { id: l.id, port: l.port }
 }
 
 ///|
@@ -42,21 +38,17 @@ pub async fn listen(host : @host.Host, fd? : Int, port? : Int = 0) -> Listening 
 /// other end cannot be reached is closed. Runs till the listening socket fails.
 pub async fn forward(host : @host.Host, listening : Listening, to : Int) -> Unit {
   while true {
-    let (accepted, _) = host.shell("tcp.accept", { "id": listening.id })
-    guard accepted is { "id": id, .. } else { continue }
-    let client = { host, id }
+    let client = host.accept(listening.id)
     ignore(
-      host.rt.fork(name="forward", () => {
-        let opened = try { Ok(host.shell("tcp.open", { "port": Json::number(to.to_double()) })) } catch { e => Err(e) }
-        guard opened is Ok(({ "id": sid, .. }, _)) else {
+      host.rt.fork_daemon("forward", on_error=e => @host.note("forward: a connection failed: \{message(e)}"), () => {
+        let opened = try { Ok(host.tcp_open(to)) } catch { e => Err(e) }
+        guard opened is Ok(server) else {
           @host.note("forward: 127.0.0.1:\{to} not reached: \{match opened { Err(e) => message(e); _ => "no socket" }}")
-          client.close()
+          client.socket.destroy()
           return
         }
         // (carried by the shell itself, both ways: nothing of it passes through this program)
-        ignore(host.shell("tcp.pipe", { "ids": [client.id, sid] })) catch {
-          e => @host.note("forward: a connection failed: \{message(e)}")
-        }
+        host.tcp_pipe(client.id, server.id)
       }),
     )
   }

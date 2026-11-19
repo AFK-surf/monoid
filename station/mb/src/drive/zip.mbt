@@ -11,7 +11,12 @@
 
 ///|
 /// zip.ts `TooBig`.
-pub(all) suberror TooBig derive(Show)
+pub(all) suberror TooBig
+
+///|
+pub impl Show for TooBig with output(_, logger) {
+  logger.write_string("zip archive exceeds size limit")
+}
 
 ///|
 /// What one read of a file gives at most.

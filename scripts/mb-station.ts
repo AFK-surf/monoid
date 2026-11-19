@@ -2,11 +2,10 @@
 // its own. Refused, over every package's files but its tests' (`*_test.mbt`, `*_wbtest.mbt`), comments left out:
 //   - a `suberror` with no `impl Show for` it in its package: one with none is shown as its constructor, with its
 //     package's path (`station/<pkg>.<Type>`), wherever it is said to a person or written to a log;
-//   - a `suberror` that derives Show: what that gives is the constructor's shell (`Refused("…")`), not its words; but
-//     where DERIVES_SHOW lets one be, which only falls;
+//   - a `suberror` that derives Show: what that gives is the constructor's shell (`Refused("…")`), not its words;
 //   - a socket opened by its shell's name (`shell("tcp.…")`, `"unix.…"`, `"listen.…"`) once more in a file than
-//     RAW_SHELL_SOCKETS says: a new one goes through base/net (`Socket`, `Listener`, `pipe_duplex`). The table only
-//     falls: a file that opens fewer lowers its count there.
+//     RAW_SHELL_SOCKETS says: a new one goes through the host's binding (station/mb/src/host/net.mbt) and base/net
+//     (`Socket`, `Listener`, `pipe_duplex`). The table only falls: a file that opens fewer lowers its count there.
 // It reads the files' text, not the program. Prints each line that is not so, and fails then.
 //   node scripts/mb-station.ts
 import { readdirSync, readFileSync } from "node:fs";
@@ -15,41 +14,25 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../station/mb/src", import.meta.url));
 
-/// How many sockets each file opens by its shell's name: what was there before base/net could be used instead. This
-/// table only falls.
+/// How many sockets each file opens by its shell's name: what was there before base/net could be used instead, and the
+/// host's own binding of them (`host/net.mbt`: `Host::socket_of`, `listener_of`, `tcp_open`, …), which the rest go
+/// through. This table only falls.
 const RAW_SHELL_SOCKETS: Record<string, number> = {
-  "browser/host_io.mbt": 5,
-  "front/forward.mbt": 5,
   "front/mesh.mbt": 4,
-  "jobs_host/preview.mbt": 2,
-  "mesh_runtime/front_client.mbt": 8,
+  "host/net.mbt": 12,
   "reader/agents.mbt": 6,
   "reader/serve.mbt": 7,
-  "screens/host_io.mbt": 4,
   "station_main/claude_tui.mbt": 12,
   "station_main/harness.mbt": 2,
-  "station_main/http.mbt": 7,
   "station_main/live_p5_1_admin.mbt": 1,
-  "station_main/live_p5_1_forwards.mbt": 8,
-  "station_main/live_p5_1_local.mbt": 11,
   "station_main/live_p5_1_mesh.mbt": 1,
   "station_main/live_p5_2_io.mbt": 6,
   "station_main/live_p5_3_jobs.mbt": 4,
   "station_main/live_p5_3_sandbox.mbt": 5,
-  "station_main/live_p5_4_browser.mbt": 1,
-  "station_main/live_p5_4_devices.mbt": 10,
   "station_main/live_p5_4_terms.mbt": 4,
   "station_main/live_p5_4_util.mbt": 5,
-  "station_main/live_p5_4_vault.mbt": 7,
   "station_main/run.mbt": 6,
   "station_main/updates_platform.mbt": 4,
-};
-/// The errors that derive Show still, by their files: the drive's, written in a change of its own. This table only falls.
-const DERIVES_SHOW: Record<string, string[]> = {
-  "drive/drive.mbt": ["DriveError"],
-  "drive/module.mbt": ["Refused"],
-  "drive/sys.mbt": ["FsError"],
-  "drive/zip.mbt": ["TooBig"],
 };
 /// What a file says that this reads it for: an error, its Show, a socket opened by its shell's name.
 const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.'].map((word) => Buffer.from(word));
@@ -83,7 +66,6 @@ function code(line: string): string {
 }
 
 const seen = new Set<string>();
-const derived = new Set<string>();
 for (const pkg of packages("")) {
   const files = readdirSync(join(ROOT, pkg)).filter((name) => name.endsWith(".mbt") && !/_(wb)?test\.mbt$/.test(name)).map((name) => join(pkg, name));
   // Only the files that say any of it are read as lines (the program is 14 MB: decoding all of it alone takes longer
@@ -116,8 +98,7 @@ for (const pkg of packages("")) {
       const declared = after.slice(0, end < 0 ? after.length : end);
       const before = lines.slice(Math.max(0, line - 4), line - 1).join("\n");
       if (/\bderive\s*\([^)]*\bShow\b/.test(declared) || /#derive\s*\([^)]*\bShow\b/.test(before)) {
-        if (DERIVES_SHOW[file]?.includes(name)) derived.add(`${file} ${name}`);
-        else wrong.push(`${file}:${line}: suberror ${name} derives Show: that shows its constructor's shell, not its words; write \`impl Show for ${name}\``);
+        wrong.push(`${file}:${line}: suberror ${name} derives Show: that shows its constructor's shell, not its words; write \`impl Show for ${name}\``);
       } else if (!new RegExp(`\\bimpl\\s+Show\\s+for\\s+${name}\\b`).test(whole)) {
         wrong.push(`${file}:${line}: suberror ${name} has no Show implementation: without one it is shown as station/${pkg}.${name}`);
       }
@@ -129,9 +110,6 @@ for (const pkg of packages("")) {
     if (opened > most) wrong.push(`${file}: opens ${opened} sockets by its shell's name, and RAW_SHELL_SOCKETS (scripts/mb-station.ts) lets it ${most}: open one through base/net (Socket, Listener, pipe_duplex)`);
     else if (opened < most) wrong.push(`${file}: opens ${opened} sockets by its shell's name, and RAW_SHELL_SOCKETS (scripts/mb-station.ts) says ${most}: lower its count there${opened === 0 ? ", or take its entry out" : ""} (the table only falls)`);
   }
-}
-for (const [file, names] of Object.entries(DERIVES_SHOW)) {
-  for (const name of names) if (!derived.has(`${file} ${name}`)) wrong.push(`DERIVES_SHOW names ${name} in ${file}, which derives Show there no more: take it out (the table only falls)`);
 }
 for (const file of Object.keys(RAW_SHELL_SOCKETS)) if (!seen.has(file)) wrong.push(`RAW_SHELL_SOCKETS names a file that is not there: ${file}: take its entry out`);
 

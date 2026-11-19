@@ -6,6 +6,7 @@ import {
   "station/cloud_net",
   "station/session_chats",
   "mbui/effect",
+  "base/net",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/double",

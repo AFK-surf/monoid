@@ -91,7 +91,13 @@ pub(all) struct FsFailure {
 ///|
 pub(all) suberror FsError {
   FsError(FsFailure)
-} derive(Show)
+}
+
+///|
+pub impl Show for FsError with output(self, logger) {
+  let FsError(f) = self
+  logger.write_string(f.message)
+}
 
 ///|
 /// A failure with `code` and `message`.

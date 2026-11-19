@@ -4,11 +4,9 @@
 // sockets): one such failure ending its loop left it unanswered until the process was started again (2026-11-19).
 
 ///|
-/// Whether a failed `tcp.accept` says its listener is gone (closed here: the shell's `no handle <id>`; never one: `not a
-/// listening socket`), rather than one try failed.
+/// Whether a failed `tcp.accept` says its listener is gone (`@host.listener_gone`), rather than one try failed.
 pub fn listener_gone(e : Error) -> Bool {
-  let said = "\{e}"
-  said.contains("no handle") || said.contains("not a listening socket")
+  @host.listener_gone(e)
 }
 
 ///|

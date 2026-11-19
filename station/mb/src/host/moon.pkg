@@ -1,5 +1,6 @@
 import {
   "mbui/effect",
+  "base/net",
   "station/wire",
   "moonbitlang/core/encoding/utf8",
 }

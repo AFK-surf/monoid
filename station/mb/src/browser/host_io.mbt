@@ -194,24 +194,11 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
 pub fn host_net(host : @host.Host, clock : Clock) -> FarviewNet {
   {
     connect: async fn(port) {
-      let (opened, _) = host.shell("tcp.open", { "port": Json::number(port.to_double()) })
-      let id = shell_field(opened, "id").unwrap_or(Json::null())
+      let socket = host.tcp_open(port).socket
       {
-        write: async fn(b) { ignore(host.shell("tcp.write", { "id": id }, bytes=b)) },
-        read: async fn() {
-          let (said, bytes) = host.shell("tcp.read", { "id": id })
-          match (shell_field(said, "end"), bytes) {
-            (Some(True), _) | (_, None) => None
-            (_, Some(b)) => Some(b)
-          }
-        },
-        close: () => ignore(
-          host.rt.fork(async fn() {
-            ignore(host.shell("tcp.close", { "id": id })) catch {
-              _ => ()
-            }
-          }),
-        ),
+        write: async fn(b) { socket.write(b) },
+        read: async fn() { socket.read() },
+        close: () => ignore(host.rt.fork_quiet(async fn() { socket.destroy() })),
       }
     },
     clock,
@@ -249,11 +236,9 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
     end_group: procs.end_group,
     signal_group: procs.signal_group,
     free: async fn(port) {
-      match (try Some(host.shell("tcp.listen", { "port": Json::number(port.to_double()) })) catch { _ => None }) {
-        Some((answer, _)) => {
-          ignore(host.shell("conn.close", { "id": shell_field(answer, "id").unwrap_or(Json::null()) })) catch {
-            _ => ()
-          }
+      match (try Some(host.tcp_listen_local(port)) catch { _ => None }) {
+        Some(l) => {
+          host.listen_close(l.id)
           true
         }
         None => false

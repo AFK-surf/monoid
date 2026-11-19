@@ -516,3 +516,20 @@ test "Windows' paths: drives and shares, either separator, case aside, as window
   assert_true(path_mode.val is Posix)
   assert_eq(within("/A/b", "/a"), false)
 }
+
+///|
+test "the drive's errors are said as their words" {
+  let said = [
+    (drive_error("not_found", "no such file") : Error).to_string(),
+    (Refused("the grant is gone") : Error).to_string(),
+    (fs_error("ENOENT", "no such file or directory") : Error).to_string(),
+    (TooBig : Error).to_string(),
+  ]
+  assert_eq(said, [
+    "no such file", "the grant is gone", "no such file or directory", "zip archive exceeds size limit",
+  ])
+  for s in said {
+    assert_false(s.contains("station/"))
+    assert_false(s.contains("("))
+  }
+}

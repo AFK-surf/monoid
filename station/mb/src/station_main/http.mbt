@@ -123,11 +123,7 @@ async fn read_request(host : @host.Host, id : Json) -> Request? {
     if got_len > request_most || want > request_most {
       return None
     }
-    let (said, bytes) = host.shell("tcp.read", { "id": id }) catch { _ => return None }
-    if said is { "end": True, .. } {
-      return None
-    }
-    match bytes {
+    match (host.tcp_read(id) catch { _ => return None }) {
       Some(b) => {
         got.write_bytes(b)
         got_len += b.length()
@@ -167,15 +163,14 @@ async fn write_reply(host : @host.Host, id : Json, reply : Reply) -> Unit {
   let all = @buffer.Buffer()
   all.write_bytes(head)
   all.write_bytes(reply.body)
-  ignore(host.shell("tcp.write", { "id": id }, bytes=all.to_bytes())) catch {
+  let socket = host.socket_of(id)
+  socket.write(all.to_bytes()) catch {
     _ => ()
   }
-  ignore(host.shell("tcp.end", { "id": id })) catch {
+  socket.end_write() catch {
     _ => ()
   }
-  ignore(host.shell("tcp.close", { "id": id })) catch {
-    _ => ()
-  }
+  socket.destroy()
 }
 
 ///|
@@ -188,29 +183,24 @@ pub async fn serve_http(
 ) -> Unit {
   // (a try that failed with the listener still there, the machine out of descriptors for a while, taken again: one
   // such failure ended serving, the MCP's and the admin API's ports unanswered until the station was started again)
-  while @mesh_runtime.accept_through(async fn() { host.shell("tcp.accept", { "id": listening }).0 }) is Some(accepted) {
-    match accepted {
-      { "id": id, .. } =>
-        ignore(
-          host.rt.fork(name="http request", async fn() {
-            match read_request(host, id) {
-              Some(r) =>
-                match (try { handle(r, id) } catch { e => Some(plain(500, "\{e}")) }) {
-                  Some(reply) => write_reply(host, id, reply)
-                  None => ()
-                }
-              None => ignore(host.shell("tcp.close", { "id": id })) catch { _ => () }
-            }
-          }),
-        )
-      _ => ()
+  host
+  .listener_of(listening)
+  .serve(host.rt.root(), async fn(conn) {
+    let id = conn.id
+    match read_request(host, id) {
+      Some(r) =>
+        match (try { handle(r, id) } catch { e => Some(plain(500, "\{e}")) }) {
+          Some(reply) => write_reply(host, id, reply)
+          None => ()
+        }
+      None => conn.socket.destroy()
     }
-  }
+  })
   // (the listener closed: serving is over)
 }
 
 ///|
 /// Writes `bytes` on connection `id` (a stream's next piece); false once it is gone.
 pub async fn write_on(host : @host.Host, id : Json, bytes : Bytes) -> Bool {
-  (try { Ok(host.shell("tcp.write", { "id": id }, bytes~)) } catch { e => Err(e) }) is Ok(_)
+  (try { Ok(host.tcp_write(id, bytes)) } catch { e => Err(e) }) is Ok(_)
 }

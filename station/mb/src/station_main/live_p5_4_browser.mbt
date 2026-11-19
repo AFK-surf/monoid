@@ -270,11 +270,8 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   // (what the agent's client says, on the door's connection)
   let reader : P54WsReader = { carry: b"", pieces: @buffer.new(), first_op: 1 }
   while client_open.val {
-    let (said, bytes) = host.shell("tcp.read", { "id": conn }) catch { _ => break }
-    if p54_get(Some(said), "end") is Some(True) || bytes is None {
-      break
-    }
-    for m in reader.read(bytes.unwrap()) {
+    guard (host.tcp_read(conn) catch { _ => None }) is Some(bytes) else { break }
+    for m in reader.read(bytes) {
       match m.0 {
         8 => {
           client_open.val = false
@@ -572,7 +569,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
               c.write(carry)
             }
             ignore(
-              host.rt.fork(name="farview up", async fn() {
+              host.rt.fork_daemon("farview up", on_error=_ => (), async fn() {
                 // (a stream the device reset fails its read: the end of it as much as its end is)
                 try {
                   while (stream.read)() is Some(b) {

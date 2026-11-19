@@ -2,8 +2,10 @@
 package "station/host"
 
 import {
+  "base/net",
   "mbui/effect",
   "moonbitlang/core/json",
+  "moonbitlang/core/ref",
   "station/wire",
 }
 
@@ -12,9 +14,11 @@ pub fn args() -> Array[String]
 
 pub fn exit(Int32) -> Unit
 
+pub fn listener_gone(Error) -> Bool
+
 pub fn note(String) -> Unit
 
-pub let note_sink : Ref[((String) -> Unit)?]
+pub let note_sink : @ref.Ref[((String) -> Unit)?]
 
 pub fn now() -> Int64
 
@@ -25,19 +29,46 @@ pub fn run(shell_dir? : String, async (Host) -> Unit) -> Int32
 // Errors
 
 // Types and methods
+pub struct Conn {
+  id : @json.Json
+  peer : String
+  socket : @net.Socket
+}
+
 pub struct Host {
   rt : @effect.Runtime
   lines : @effect.Queue[String]
   // private fields
 }
+pub async fn Host::accept(Self, @json.Json) -> Conn
+pub fn Host::conn(Self, @json.Json, peer? : String) -> Conn
 pub async fn Host::line(Self) -> String?
+pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise
+pub fn Host::listener_of(Self, @json.Json, retry_ms? : Int32) -> @net.Listener[Conn]
 pub fn Host::out(Self, Bytes) -> Unit
 pub fn Host::say(Self, String) -> Unit
 pub fn Host::say_bytes(Self, Bytes) -> Unit
 pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)
 pub fn Host::shell_sync(Self, String, @json.Json) -> @json.Json raise @wire.ShellError
+pub fn Host::socket_of(Self, @json.Json) -> @net.Socket
 pub fn Host::sys_done(Self, Int64) -> Unit
 pub fn Host::sys_listen(Self, (Bytes) -> Unit) -> Int64
+pub async fn Host::tcp_close(Self, @json.Json) -> Unit noraise
+pub async fn Host::tcp_end(Self, @json.Json) -> Unit
+pub async fn Host::tcp_listen_fd(Self, Int32) -> Listening
+pub async fn Host::tcp_listen_local(Self, Int32) -> Listening
+pub async fn Host::tcp_open(Self, Int32) -> Conn
+pub async fn Host::tcp_pipe(Self, @json.Json, @json.Json) -> Unit
+pub async fn Host::tcp_read(Self, @json.Json) -> Bytes?
+pub async fn Host::tcp_write(Self, @json.Json, Bytes) -> Unit
+pub fn Host::unended(Self) -> String
+pub async fn Host::unix_listen(Self, String) -> Listening
+pub async fn Host::unix_open(Self, String) -> Conn
+
+pub struct Listening {
+  id : @json.Json
+  port : Int32
+}
 
 // Type aliases
 

@@ -760,19 +760,16 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
 /// answers written back, the connection closed where it says so; what it gives stops it and removes the socket.
 async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, Bytes) -> (Bytes, Bool)) -> () -> Unit {
   @drive.rm_force(path)
-  let (opened, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
+  let id = host.unix_listen(path).id
   let stopped = Ref(false)
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
   ignore(
     host.rt.fork(name="unix serve", async fn() {
-      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() {
-          host.shell("tcp.accept", { "id": id }).0
-        }) is Some(got) {
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
         next.val += 1
         let n = next.val
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+        let conn : P54Conn = { host, id: got.id, closed: false }
         conns[n] = conn
         ignore(
           host.rt.fork(name="unix conn", async fn() {
@@ -804,9 +801,7 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
     }
     ignore(
       host.rt.fork(name="unix close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+        host.listen_close(id)
         @drive.rm_force(path)
       }),
     )
@@ -870,9 +865,9 @@ async fn p54_proxy_listen(
   connect : async (@vault_service.ConnectAsk) -> @vault_service.ConnectDecision,
   forward : async (@vault_service.ForwardAsk) -> @vault_service.ForwardDecision,
 ) -> Int {
-  let (opened, _) = host.shell("tcp.listen", { "port": Json::number(0.0) }) // 127.0.0.1 only: the shell binds no other address
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(opened), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let id = listening.id
+  let port = listening.port
   let stopped = Ref(false)
   stop.val = () => {
     if stopped.val {
@@ -881,18 +876,14 @@ async fn p54_proxy_listen(
     stopped.val = true
     ignore(
       host.rt.fork(name="proxy close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
+        host.listen_close(id)
       }),
     )
   }
   ignore(
     host.rt.fork(name="vault proxy", async fn() {
-      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() {
-          host.shell("tcp.accept", { "id": id }).0
-        }) is Some(got) {
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+        let conn : P54Conn = { host, id: got.id, closed: false }
         ignore(
           host.rt.fork(name="proxy connection", async fn() {
             p54_proxy_connection(host, conn, connect, forward) catch {
@@ -973,7 +964,7 @@ async fn p54_proxy_connection(
             _ => break
           }
         }
-        ignore(host.shell("tcp.end", { "id": conn.id })) catch {
+        host.tcp_end(conn.id) catch {
           _ => ()
         }
       })

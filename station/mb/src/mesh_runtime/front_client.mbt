@@ -44,47 +44,33 @@ pub(all) struct Sockets {
 }
 
 ///|
-/// The shell's Unix sockets.
+/// The shell's Unix sockets (`@host`'s): each connection a `@net.Socket`, closed at the shell once.
 pub fn shell_sockets(host : @host.Host) -> Sockets {
-  let sock = (id : Json) => {
+  let sock = (c : @host.Conn) => {
     let gone = Ref(false)
     let s : Sock = {
-      read: async fn() -> Bytes? {
-        let (said, bytes) = host.shell("tcp.read", { "id": id })
-        match (said, bytes) {
-          ({ "end": True, .. }, _) => None
-          (_, Some(b)) => Some(b)
-          _ => None
-        }
-      },
-      write: async fn(b) { ignore(host.shell("tcp.write", { "id": id }, bytes=b)) },
-      end: async fn() { ignore(host.shell("tcp.end", { "id": id })) },
+      read: async fn() -> Bytes? { c.socket.read() },
+      write: async fn(b) { c.socket.write(b) },
+      end: async fn() { c.socket.end_write() },
       destroy: () => if !gone.val {
         gone.val = true
-        ignore(host.rt.fork(() => ignore(host.shell("tcp.close", { "id": id })) catch { _ => () }))
+        ignore(host.rt.fork_quiet(() => c.socket.destroy()))
       },
     }
     s
   }
   {
-    connect: async fn(path) {
-      let (said, _) = host.shell("unix.open", { "path": jstr(path) })
-      sock(field(said, "id").unwrap_or(Json::null()))
-    },
+    connect: async fn(path) { sock(host.unix_open(path)) },
     listen: async fn(path) {
-      let (said, _) = host.shell("unix.listen", { "path": jstr(path) })
-      let id = field(said, "id").unwrap_or(Json::null())
+      let listening = host.unix_listen(path)
       let closed = Ref(false)
       {
         accept: async fn() -> Sock? {
-          let got = accept_through(closed=() => closed.val, async fn() {
-            host.shell("tcp.accept", { "id": id }).0
-          })
-          got.map(got => sock(field(got, "id").unwrap_or(Json::null())))
+          accept_through(closed=() => closed.val, async fn() { host.accept(listening.id) }).map(sock)
         },
         close: () => if !closed.val {
           closed.val = true
-          ignore(host.rt.fork(() => ignore(host.shell("listen.close", { "id": id })) catch { _ => () }))
+          ignore(host.rt.fork_quiet(() => host.listen_close(listening.id)))
         },
       }
     },

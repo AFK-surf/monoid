@@ -120,20 +120,19 @@ fn plain_answer(status : Int, words : String) -> PreviewAnswer {
 /// A TCP connection of the shell's to this machine's `port`, read with what came before kept.
 priv struct Conn {
   host : @host.Host
-  id : Json
+  socket : @net.Socket
   mut carry : Bytes
   mut ended : Bool
 }
 
 ///|
 async fn Conn::open(host : @host.Host, port : Int) -> Conn raise {
-  let answer = ask(host, "tcp.open", { "port": jint(port) })
-  { host, id: field_or_null(answer, "id"), carry: b"", ended: false }
+  { host, socket: host.tcp_open(port).socket, carry: b"", ended: false }
 }
 
 ///|
 async fn Conn::write(self : Conn, bytes : Bytes) -> Unit raise {
-  ignore(self.host.shell("tcp.write", { "id": self.id }, bytes~))
+  self.socket.write(bytes)
 }
 
 ///|
@@ -142,13 +141,12 @@ async fn Conn::fill(self : Conn) -> Bool raise {
   if self.ended {
     return false
   }
-  let (said, bytes) = self.host.shell("tcp.read", { "id": self.id })
-  match (field(said, "end"), bytes) {
-    (Some(True), _) | (_, None) => {
+  match self.socket.read() {
+    None => {
       self.ended = true
       false
     }
-    (_, Some(b)) => {
+    Some(b) => {
       self.carry = concat(self.carry, b)
       true
     }
@@ -157,7 +155,7 @@ async fn Conn::fill(self : Conn) -> Bool raise {
 
 ///|
 async fn Conn::close(self : Conn) -> Unit {
-  ignore(try_ask(self.host, "tcp.close", { "id": self.id }))
+  self.socket.destroy()
 }
 
 ///|

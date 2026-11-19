@@ -93,7 +93,7 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
   }
   let net : Net = {
     connect: (target, events) => {
-      let id : Ref[Double?] = Ref(None)
+      let conn : Ref[@host.Conn?] = Ref(None)
       // Destroyed (by its owner) apart from closed (told): a destroy tells its close on a later turn, as Node's
       // socket.destroy() does, so what its owner does right after (an answer taken) comes before the close.
       let destroyed = Ref(false)
@@ -106,9 +106,9 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
       }
       ignore(
         host.rt.fork(async fn() {
-          let (opened, _) = (match target {
-            Unix(path) => host.shell("unix.open", Json::object({ "path": Json::string(path) }))
-            Tcp(port) => host.shell("tcp.open", Json::object({ "port": Json::number(port.to_double()) }))
+          let opened = (match target {
+            Unix(path) => host.unix_open(path)
+            Tcp(port) => host.tcp_open(port)
           }) catch {
             e => {
               (events.error)(match e {
@@ -119,13 +119,9 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
               return
             }
           }
-          guard opened is Object(m) && m.get("id") is Some(Number(n, ..)) else {
-            close_once()
-            return
-          }
-          id.val = Some(n)
+          conn.val = Some(opened)
           if destroyed.val {
-            ignore(host.shell("tcp.close", Json::object({ "id": Json::number(n) }))) catch { _ => () }
+            opened.socket.destroy()
             return
           }
           (events.connect)()
@@ -136,43 +132,31 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
               d.wait()
               continue
             }
-            let (said, bytes) = host.shell("tcp.read", Json::object({ "id": Json::number(n) })) catch {
+            let got = opened.socket.read() catch {
               e => {
                 (events.error)(message_of(e))
                 break
               }
             }
-            match (said, bytes) {
-              (Object(m), _) if m.get("end") is Some(True) => break
-              (_, Some(b)) => if !destroyed.val { (events.data)(b) }
-              _ => break
+            match got {
+              Some(b) => if !destroyed.val { (events.data)(b) }
+              None => break
             }
           }
           close_once()
         }),
       )
-      let send = (op : String, bytes : Bytes?) => match id.val {
-        Some(n) =>
-          ignore(
-            host.rt.fork(async fn() {
-              ignore(
-                (match bytes {
-                  Some(b) => host.shell(op, Json::object({ "id": Json::number(n) }), bytes=b)
-                  None => host.shell(op, Json::object({ "id": Json::number(n) }))
-                }) catch {
-                  _ => (Json::null(), None)
-                },
-              )
-            }),
-          )
+      // (each step on the connection a fiber of its own, in the order asked; what one fails with let go)
+      let send = (step : async (@net.Socket) -> Unit) => match conn.val {
+        Some(c) => ignore(host.rt.fork_quiet(async fn() { step(c.socket) catch { _ => () } }))
         None => ()
       }
       {
-        write: b => send("tcp.write", Some(b)),
-        end: () => send("tcp.end", None),
+        write: b => send(async fn(s) { s.write(b) }),
+        end: () => send(async fn(s) { s.end_write() }),
         destroy: () => if !destroyed.val {
           destroyed.val = true
-          send("tcp.close", None)
+          send(async fn(s) { s.destroy() })
           ignore(host.rt.fork(() => close_once()))
         },
         destroyed: () => destroyed.val,

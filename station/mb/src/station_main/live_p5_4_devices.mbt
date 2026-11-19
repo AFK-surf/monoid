@@ -58,7 +58,7 @@ fn p54_wire_of_conn(c : P54Conn) -> P54Wire {
     read: async fn() { c.read() },
     write: async fn(b) { c.write(b) },
     end: () => ignore(host.rt.fork(name="tcp end", async fn() {
-      ignore(host.shell("tcp.end", { "id": c.id })) catch {
+      host.tcp_end(c.id) catch {
         _ => ()
       }
     })),
@@ -468,27 +468,24 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
     // the sockets: this machine's own (127.0.0.1, a Unix socket's path)
     "net.freePort" => {
-      let (l, _) = host.shell("tcp.listen", { "port": Json::number(0.0) })
-      let port = p54_num(p54_get(Some(l), "port")).unwrap_or(0.0)
-      ignore(host.shell("listen.close", { "id": p54_get(Some(l), "id").unwrap_or(Json::null()) })) catch {
-        _ => ()
-      }
-      Json::number(port)
+      let l = host.tcp_listen_local(0)
+      host.listen_close(l.id)
+      Json::number(l.port.to_double())
     }
     "net.listen" => {
       let o = a(0)
-      let (l, _) = host.shell("tcp.listen", { "port": Json::number(p54_num(p54_get(o, "port")).unwrap_or(0.0)) })
+      let l = host.tcp_listen_local(p54_num(p54_get(o, "port")).unwrap_or(0.0).to_int())
       let id = self.id()
-      self.listeners[id] = p54_get(Some(l), "id").unwrap_or(Json::null())
-      { "id": Json::number(id.to_double()), "port": p54_get(Some(l), "port").unwrap_or(Json::null()) }
+      self.listeners[id] = l.id
+      { "id": Json::number(id.to_double()), "port": Json::number(l.port.to_double()) }
     }
     "net.accept" =>
       match self.listeners.get(p54_int(a(0))) {
         Some(lid) => {
-          let (got, _) = host.shell("tcp.accept", { "id": lid }) catch { _ => return @jsjson.JValue::Null }
+          let got = host.accept(lid) catch { _ => return @jsjson.JValue::Null }
           self.sock(
-            p54_wire_of_conn({ host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }),
-            remote_port=p54_peer_port(p54_text(Some(got), "peer")),
+            p54_wire_of_conn({ host, id: got.id, closed: false }),
+            remote_port=p54_peer_port(if got.peer == "" { None } else { Some(got.peer) }),
           )
         }
         None => Json::null()
@@ -497,9 +494,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       match self.listeners.get(p54_int(a(0))) {
         Some(lid) => {
           self.listeners.remove(p54_int(a(0)))
-          ignore(host.shell("listen.close", { "id": lid })) catch {
-            _ => ()
-          }
+          host.listen_close(lid)
         }
         None => ()
       }
@@ -962,26 +957,24 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   let wire = sock.conn
   w.socks.remove(n.to_int())
   // (a pair of the shell's own: one end given, the other carried to the device)
-  let (listening, _) = host.shell("tcp.listen", { "port": Json::number(0.0) })
-  let lid = p54_get(Some(listening), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(listening), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let lid = listening.id
+  let port = listening.port
   let accepting : @effect.Deferred[Json] = @effect.Deferred::new()
   ignore(
     host.rt.fork(name="device forward accept", async fn() {
-      let (accepted, _) = host.shell("tcp.accept", { "id": lid }) catch {
+      let accepted = host.accept(lid) catch {
         _ => {
           ignore(accepting.succeed(Json::null()))
           return
         }
       }
-      ignore(accepting.succeed(p54_get(Some(accepted), "id").unwrap_or(Json::null())))
+      ignore(accepting.succeed(accepted.id))
     }),
   )
   let given = p54_tcp_open(host, port)
   let inner_id = accepting.wait()
-  ignore(host.shell("tcp.close", { "id": lid })) catch {
-    _ => ()
-  }
+  host.listen_close(lid)
   if inner_id is Null {
     given.close()
     (wire.close)()
@@ -1066,7 +1059,7 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
         read: async fn() { c.read() },
         write: async fn(b) { c.write(b) },
         finish: async fn() {
-          ignore(d.world.bus.host.shell("tcp.end", { "id": c.id })) catch {
+          d.world.bus.host.tcp_end(c.id) catch {
             _ => ()
           }
         },
