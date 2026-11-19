@@ -1239,7 +1239,7 @@ let zh : Map[String, String] = {
   "web-main.relay.kind.thread": "已有 thread · agent 先读之前的消息",
   "web-main.relay.kind.topics": "话题群 · 新话题",
   "web-main.relay.lead": "在选中的频道或群里开一个新会话，由这个对话的 agent 接着做；这里的对话照常可用。",
-  "web-main.relay.noConnects": "这个站点还没有连上 Slack 或飞书",
+  "web-main.relay.noConnects": "这个站点还没有连上 Slack、飞书或 Group",
   "web-main.relay.noMatch": "没有匹配的频道或群",
   "web-main.relay.noPlaces": "机器人还没加入任何频道或群",
   "web-main.relay.note": "开头附一句（可选）",

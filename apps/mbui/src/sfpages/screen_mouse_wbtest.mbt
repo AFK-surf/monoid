@@ -454,3 +454,128 @@ test "in a chat's side panel with keyboard and mouse: one compact toolbar row (n
   assert_eq(d.t.audit(), [])
   mouse_done(d)
 }
+
+///|
+test "a window of its own driven: the keyboard the screen's at once, no press on the picture first; not beside a chat, not only looking" {
+  let r = mouse_rig()
+  r.live(others=[])
+  // what a voice input types (豆包, Typeless, the system's dictation) lands there straight away
+  assert_true(r.t.key_catching())
+  let from = r.inputs().length()
+  r.t.type_text("语音输入测试")
+  let typed = r.inputs()[from:].to_owned()
+  assert_eq(typed.length(), 1)
+  assert_eq(text(Some(typed[0]), "t"), "text")
+  assert_eq(text(Some(typed[0]), "text"), "语音输入测试")
+  mouse_done(r)
+  // only looking: nothing taken
+  let r = mouse_rig()
+  r.state("live", control=false, others=[])
+  assert_false(r.t.key_catching())
+  mouse_done(r)
+  // a tab beside a chat: the chat's field keeps the keys
+  let r = screen_rig(w=373.0, h=756.0, platform=0, in_tab=true)
+  r.t.run_for(@sf.later_ms)
+  r.live(others=[])
+  assert_false(r.t.key_catching())
+  mouse_done(r)
+}
+
+///|
+/// The page's own keys (screen_keys_in) as the key catcher hands them: a key going down or up alone.
+fn ScreenRig::key_in(self : ScreenRig, down : Bool, key : String, code : String, mods : Int) -> Unit {
+  let pg : ScreenPage = {
+    s: self.sess(),
+    u: self.ui(),
+    title: "",
+    close: fn() {  },
+    tips: @sf.TipLayer::new(fn() { None }),
+    in_tab: false,
+    own_bar: None,
+    lone: false,
+    tab_pads: None,
+    on_window: None,
+  }
+  screen_keys_in(pg, Key(down~, key~, code~, mods~))
+  self.t.draw()
+}
+
+///|
+test "⌘V on a screen that carries no clipboard: this device's text typed there; with none, ⌘V itself sent; V let go of after ⌘ sends nothing alone" {
+  let r = mouse_rig()
+  // a tab of the station's browser: no clipboard of its own
+  r.live(others=[])
+  assert_false(r.sess().pastes())
+  r.t.clipboard_gives("从语音输入粘贴")
+  let from = r.inputs().length()
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").length(), 0)
+  let typed = r.inputs()[from:].to_owned()
+  assert_eq(typed.length(), 1)
+  assert_eq(text(Some(typed[0]), "t"), "text")
+  assert_eq(text(Some(typed[0]), "text"), "从语音输入粘贴")
+  // nothing on this device's clipboard (copied on the screen itself): ⌘V goes there, down and up
+  r.t.clipboard_gives("")
+  let from = r.inputs().length()
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.draw()
+  let keys = r.inputs()[from:].to_owned()
+  assert_eq(keys.map(fn(k) { text(Some(k), "code") }), ["KeyV", "KeyV"])
+  assert_eq(keys.map(fn(k) { text(Some(k), "kind") }), ["down", "up"])
+  assert_eq(keys.map(fn(k) { number(Some(k), "mods") }), [4.0, 4.0])
+  // ⌘ let go of before V: V's going up taken with its going down, nothing of it sent alone
+  r.t.clipboard_gives("again")
+  let from = r.inputs().length()
+  r.key_in(true, "v", "KeyV", mod_meta)
+  r.key_in(false, "v", "KeyV", 0)
+  let after = r.inputs()[from:].to_owned()
+  assert_eq(after.length(), 1)
+  assert_eq(text(Some(after[0]), "t"), "text")
+  assert_eq(text(Some(after[0]), "text"), "again")
+  // a V of its own afterwards goes as it is
+  let from = r.inputs().length()
+  r.key_in(true, "v", "KeyV", 0)
+  r.key_in(false, "v", "KeyV", 0)
+  assert_eq(r.inputs()[from:].to_owned().map(fn(k) { text(Some(k), "kind") }), ["down", "up"])
+  mouse_done(r)
+}
+
+///|
+test "two pastes one on the other (two sentences of a voice input): the second asked as the first is done, never lost" {
+  let r = mouse_rig()
+  driven(r)
+  // both asked before this device's clipboard answers the first
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  assert_eq(r.t.clipboard_reads(), 1)
+  // (the host's answer taken at the next frame, the paste told as it is read)
+  r.t.clipboard_gives("第一句")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").map(fn(p) { text(Some(p), "text") }), ["第一句"])
+  // the second read as the first was done
+  assert_eq(r.t.clipboard_reads(), 2)
+  // (the host's answer taken at the next frame, the paste told as it is read)
+  r.t.clipboard_gives("第二句")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").map(fn(p) { text(Some(p), "text") }), ["第一句", "第二句"])
+  assert_false(r.sess().pasting.untracked())
+  mouse_done(r)
+}
+
+///|
+test "the station's diagonal resize pointers are this device's own over the picture" {
+  let r = mouse_rig()
+  r.live(others=[])
+  let (mx, my) = r.at(0.3, 0.3)
+  for pair in [("nwse-resize", @ui.Cursor::ResizeNWSE), ("se-resize", ResizeNWSE), ("nesw-resize", ResizeNESW), ("sw-resize", ResizeNESW)] {
+    let (shape, cursor) = pair
+    r.state("live", others=[], more={ "cursor": { "x": 0.5, "y": 0.5, "shape": Json::string(shape) } })
+    r.t.move_to(mx, my)
+    r.t.draw()
+    assert_eq(r.t.cursor(), cursor, msg=shape)
+  }
+  mouse_done(r)
+}

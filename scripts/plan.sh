@@ -87,6 +87,10 @@ decide() {
   # it is built on.
   comma_ui=false
   if has '^libs/(comma-ui|mbui)/'; then comma_ui=true; fi
+  # The liquid glass library's check (check-liquid-glass: libs/liquid-glass/scripts/check.sh): for a change to it, or to
+  # mbui, which it is built on.
+  liquid_glass=false
+  if has '^libs/(liquid-glass|mbui)/'; then liquid_glass=true; fi
   # still.fail's component library's check (check-sf-ui: libs/sf-ui/scripts/check.sh): for a change to it, or to mbui,
   # which it is built on.
   sf_ui=false
@@ -137,6 +141,7 @@ print() {
     echo "kit=$kit"
     echo "mbui=$mbui"
     echo "comma_ui=$comma_ui"
+    echo "liquid_glass=$liquid_glass"
     echo "sf_ui=$sf_ui"
     echo "station_tests=$station_tests"
     echo "core_tests=$core_tests"

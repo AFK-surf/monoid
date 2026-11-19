@@ -1084,6 +1084,7 @@ async function main() {
       put(join(home, "skills", "team-skill", "SKILL.md"), "team\n");
       put(join(home, "skills", "stillfail-jobs", "SKILL.md"), "old text\n");
       put(join(home, "skills", agentHome.FEEDBACK_SKILL, "SKILL.md"), "fb\n");
+      for (const name of agentHome.RETIRED_SKILLS) put(join(home, "skills", name, "SKILL.md"), "retired\n");
       put(join(w.root, "site", "machine", "SKILL.md"), "machine\n");
       mkdirSync(join(w.root, "site", "team-skill"), { recursive: true });
       mkdirSync(join(w.root, "site", ".hidden"), { recursive: true });
@@ -1170,6 +1171,10 @@ async function main() {
         begin: async (channel: string, text: string) => { told("begin", "lark-1", channel, text); return { thread: { channel, threadTs: "om_1" }, ts: "om_1" }; }, post: async () => "x",
         openPlaces: async () => { throw new Error("no"); },
       });
+      w.surfaces.set("grp", {
+        places: async () => [{ id: "s_1", name: "Team", kind: "space" }], workspace: () => "anchor",
+        begin: async (channel: string, text: string, title: string) => { told("begin", "grp", channel, text, title); return { thread: { channel, threadTs: "t_0123456789abcdef" }, ts: "4" }; }, post: async () => "5",
+      });
       w.surfaces.set("broken", { places: async () => { throw new Error("token revoked"); }, begin: async () => ({}) , workspace: () => null });
       w.surfaces.set("elsewhere", { places: async () => [], begin: async () => ({}), workspace: () => "" });
     });
@@ -1186,6 +1191,7 @@ async function main() {
       [{ name: "Bob", email: "bob@x" }, { link: "https://x/archives/C4/p1", connect: "slack-a" }, "thread"],
       [{ name: "Bob", email: "bob@x" }, { link: "https://x/archives/C2/p1" }, ""],
       [{ name: "Bob", email: "bob@x" }, { connect: "slack-a", channel: "C8", join: true }, ""],
+      [{ name: "Bob", email: "bob@x" }, { connect: "grp", channel: "s_1" }, "over to you"],
     ];
     for (const [who, target, note] of relays) {
       await both(`relay ${JSON.stringify(target)}`, a, b, () => relay.relay(a.hub, a.thread(1), who, target, note), "relay", (w: World) => w.thread(1), who, target, note);

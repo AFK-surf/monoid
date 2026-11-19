@@ -54,6 +54,27 @@ priv enum Copied {
 }
 
 ///|
+/// A pointer of the station's own picture (a drawing tool's, a brush's, a crosshair of an app's): its PNG, its size in
+/// points and its hot spot in from its top left (`cursorImage`, ScreenSess::take).
+priv struct CustomCursor {
+  png : Bytes
+  w : Double
+  h : Double
+  hx : Double
+  hy : Double
+}
+
+///|
+/// How many of the station's own pointers a view keeps (the oldest let go of past it).
+let custom_cursors_most : Int = 64
+
+///|
+/// The image key a pointer the station drew itself (`custom:<hex>`) is drawn by.
+fn custom_cursor_key(shape : String) -> String {
+  "mem:sf/pointer/" + shape
+}
+
+///|
 /// A view of `screen` on `station` (its address, `<workspace>/<station>`), kept while its page is in the stack.
 priv struct ScreenSess {
   /// where it reads and writes
@@ -82,6 +103,9 @@ priv struct ScreenSess {
   /// what the page draws of the pointer follows the station's word of it (not this device's mouse over the picture, nor
   /// the trackpad's own pointer): told by the stage as either changes (screen_stage_gestures); drawn while no stage is
   mut cursor_drawn : Bool
+  /// the pointers of the station's own pictures it said (`cursorImage`), by the shape it names them (`custom:<hex>`),
+  /// the latest few kept (custom_cursors_most)
+  custom_cursors : Map[String, CustomCursor]
   /// each copy made on the screen taken (`copied`), and each file picked or let go of (`drops`): what puts the copies on
   /// the device's clipboard and what lists the files read them as they are told
   copied_told : @signals.Signal[Int]
@@ -218,6 +242,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         cursor_shape_now: "default",
         cursor_apart: false,
         cursor_drawn: true,
+        custom_cursors: Map([]),
         copied_told: @signals.signal(0),
         drops_told: @signals.signal(0),
         streams_told: @signals.signal(0),
@@ -1046,6 +1071,44 @@ fn ScreenSess::cursor_quiet(self : ScreenSess, c : Json) -> Bool {
 }
 
 ///|
+/// A pointer the station drew itself (`cursorImage` `ci`: its shape `custom:<hex>`, its size and hot spot in points; its
+/// PNG `bytes`), kept where it is sound (1..128 points, its hot spot inside, a PNG of at most 64 KiB); what draws a
+/// pointer of its shape said already, told.
+fn ScreenSess::custom_cursor_taken(self : ScreenSess, ci : Json, bytes : Bytes?) -> Unit {
+  let shape = text(Some(ci), "shape")
+  let w = number(Some(ci), "w")
+  let h = number(Some(ci), "h")
+  let hx = number(Some(ci), "hx")
+  let hy = number(Some(ci), "hy")
+  guard shape.has_prefix("custom:") &&
+    shape.length() <= 64 &&
+    w >= 1.0 &&
+    w <= 128.0 &&
+    h >= 1.0 &&
+    h <= 128.0 &&
+    hx >= 0.0 &&
+    hx <= w &&
+    hy >= 0.0 &&
+    hy <= h else {
+    return
+  }
+  guard bytes is Some(png) && png.length() > 0 && png.length() <= 65536 && @pixels.is_png(png) else { return }
+  if !self.custom_cursors.contains(shape) {
+    if self.custom_cursors.length() >= custom_cursors_most {
+      match self.custom_cursors.keys().next() {
+        Some(old) => self.custom_cursors.remove(old)
+        None => ()
+      }
+    }
+    @ui.add_image(custom_cursor_key(shape), png)
+  }
+  self.custom_cursors[shape] = { png, w, h, hx, hy }
+  if self.cursor_shape_now == shape {
+    self.cursor_said.set(self.cursor_said.untracked() + 1)
+  }
+}
+
+///|
 /// Where the pointer is on a picture's system video layer, as the page has it drawn (screen_stage's
 /// screen_pointer_layer_node): the stream it is drawn over, the part of the screen that one shows (None: the whole), and
 /// whether it follows the station's pointer (not the trackpad's, nor hidden while this device's mouse drives it).
@@ -1120,6 +1183,12 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       }
     }
     None => ()
+  }
+  // a pointer the station drew itself, its PNG in `bytes`: kept by the shape it is named (a pointer of that shape said
+  // before it came, drawn again with it)
+  match o.get("cursorImage") {
+    Some(Object(_) as ci) => self.custom_cursor_taken(ci, bytes)
+    _ => ()
   }
   match o.get("state") {
     Some(Object(_) as s) => {

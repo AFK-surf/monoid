@@ -1126,5 +1126,6 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
   stories_u5(tips) +
   stories_u9() +
   stories_u13(tips) +
-  stories_u19(tips)
+  stories_u19(tips) +
+  stories_wave1(tips)
 }

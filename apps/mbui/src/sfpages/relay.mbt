@@ -325,15 +325,21 @@ fn relay_place(
 }
 
 ///|
-/// A platform's mark (ElsewhereLogo, 16) in `parent`: Feishu's for Feishu and Lark, else Slack's.
+/// A platform's mark (ElsewhereLogo, 16) in `parent`: Feishu's for Feishu and Lark, group's for a group connect, else
+/// Slack's.
 fn relay_mark(parent : @view.View, kind : () -> String) -> Unit {
-  @sf.origin_mark_node(parent, fn() {
-    match kind() {
-      "feishu" | "lark" => "feishu"
-      _ => "slack"
-    }
-  }, relay_mark_size)
+  @sf.origin_mark_node(parent, fn() { relay_origin(kind()) }, relay_mark_size)
   |> ignore
+}
+
+///|
+/// The mark a relay connect's kind is shown by (`@sf.origin_mark_name`'s): Lark is Feishu's.
+fn relay_origin(kind : String) -> String {
+  match kind {
+    "feishu" | "lark" => "feishu"
+    "group" => "group"
+    _ => "slack"
+  }
 }
 
 ///|
@@ -357,12 +363,7 @@ fn relay_avatar(parent : @view.View, src : Source, conn : () -> Json?) -> Unit {
   parent.show(fn() { picture() is None && conn() is Some(_) }, at_once=true, fn(a) {
     a.box(fn(b) {
       @sf.style_node(b, fn() { relay_avatar_box })
-      @sf.origin_mark_node(b, fn() {
-        match text(conn(), "kind") {
-          "feishu" | "lark" => "feishu"
-          _ => "slack"
-        }
-      }, relay_kind_size)
+      @sf.origin_mark_node(b, fn() { relay_origin(text(conn(), "kind")) }, relay_kind_size)
       |> ignore
     })
     |> ignore

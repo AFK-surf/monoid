@@ -118,8 +118,9 @@ fn pointer_on_layer(s : ScreenSess, over : () -> Bool) -> (@ui.Stream, Part?)? {
 fn screen_pointer_layer_node(f : @view.View, pg : ScreenPage, over : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
-  // (which picture it is on, by its place: 0 none, 1 the whole's, 2 the part's; the part; the shape; where; whether it
-  // follows the station's)
+  // (which picture it is on, by its place: 0 none, 1 the whole's, 2 the part's; the part; the shape; whether the
+  // station's picture of it came (a pointer it drew itself said before its picture); where; whether it follows the
+  // station's)
   f.reacts(
     fn() {
       match pointer_on_layer(s, over) {
@@ -129,13 +130,14 @@ fn screen_pointer_layer_node(f : @view.View, pg : ScreenPage, over : () -> Bool)
             sh => sh
           }
           let follows = !u.mouse.over.get() && !pad_points(s, u) && pointer_shape(s) != "none"
-          (if part is Some(_) { 2 } else { 1 }, part, shape, pointer_now(s, u), follows)
+          let has_custom = s.custom_cursors.contains(shape)
+          (if part is Some(_) { 2 } else { 1 }, part, shape, has_custom, pointer_now(s, u), follows)
         }
-        None => (0, None, "", None, false)
+        None => (0, None, "", false, None, false)
       }
     },
     fn(now) {
-      let (which, part, shape, at, follows) = now
+      let (which, part, shape, _, at, follows) = now
       let on = if which == 0 { None } else { @signals.untracked(fn() { pointer_layer_of(s) }) }
       s.pointer_layer = match on {
         Some((st, _)) => Some({ on: st, part, follows })
@@ -150,9 +152,14 @@ fn screen_pointer_layer_node(f : @view.View, pg : ScreenPage, over : () -> Bool)
       }
       match on {
         Some((o, _)) => {
-          let (image, png) = @sf.pointer_png_at(f.pixel_scale(), shape~)
-          let (hx, hy) = @sf.pointer_hotspot(shape)
-          o.pointer_image(image, png, @sf.pointer_size, @sf.pointer_size, hx, hy)
+          match s.custom_cursors.get(shape) {
+            Some(cc) => o.pointer_image(custom_cursor_key(shape), fn() { cc.png }, cc.w, cc.h, cc.hx, cc.hy)
+            None => {
+              let (image, png) = @sf.pointer_png_at(f.pixel_scale(), shape~)
+              let (hx, hy) = @sf.pointer_hotspot(shape)
+              o.pointer_image(image, png, @sf.pointer_size, @sf.pointer_size, hx, hy)
+            }
+          }
           o.pointer_at(at.map(fn(a) { point_on(a, part) }))
         }
         None => ()
@@ -552,7 +559,7 @@ fn screen_pointer_node(o : @view.View, pg : ScreenPage, over : () -> Bool) -> Un
         let r = u.picture_on(ptr)
         match pointer_now(s, u) {
           Some((ax, ay)) => {
-            let (hx, hy) = @sf.pointer_hotspot(shape())
+            let (_, _, _, hx, hy) = pointer_drawn(s, ptr, shape())
             (r.x + ax * r.w - hx, r.y + ay * r.h - hy)
           }
           None => (0.0, 0.0)
@@ -560,14 +567,27 @@ fn screen_pointer_node(o : @view.View, pg : ScreenPage, over : () -> Bool) -> Un
       }
       ptr
       .over(Is(true))
-      .width(Is(Some(@sf.pointer_size)))
-      .height(Is(Some(@sf.pointer_size)))
+      .width(By(fn() { Some(pointer_drawn(s, ptr, shape()).1) }))
+      .height(By(fn() { Some(pointer_drawn(s, ptr, shape()).2) }))
       .offset(By(place))
-      .image(By(fn() { Some((@sf.pointer_image_at(ptr.pixel_scale(), shape=shape()), "", 0)) }))
+      .image(By(fn() { Some((pointer_drawn(s, ptr, shape()).0, "", 0)) }))
       |> ignore
     })
     |> ignore
   })
+}
+
+///|
+/// The pointer of `shape` as `ptr` draws it: its image's key, its size (points) and its hot spot in from its top left;
+/// the station's own picture of it where it said one (`cursorImage`), else this app's, `@sf.pointer_size` square.
+fn pointer_drawn(s : ScreenSess, ptr : @view.View, shape : String) -> (String, Double, Double, Double, Double) {
+  match s.custom_cursors.get(shape) {
+    Some(cc) => (custom_cursor_key(shape), cc.w, cc.h, cc.hx, cc.hy)
+    None => {
+      let (hx, hy) = @sf.pointer_hotspot(shape)
+      (@sf.pointer_image_at(ptr.pixel_scale(), shape~), @sf.pointer_size, @sf.pointer_size, hx, hy)
+    }
+  }
 }
 
 ///|

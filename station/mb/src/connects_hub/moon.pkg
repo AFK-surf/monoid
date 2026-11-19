@@ -1,5 +1,6 @@
 import {
   "base/codec",
+  "base/hash",
   "station/host",
   "station/jsjson",
   "station/session_chats",

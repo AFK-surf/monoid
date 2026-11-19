@@ -48,6 +48,8 @@ pub(all) struct Fs {
   sep : String
   read_text : async (String) -> String
   read_bytes : async (String) -> Bytes
+  /// Up to `length` bytes of it from `offset` (a `FileHandle`'s `read`): a file read a piece at a time.
+  read_part : async (String, Double, Double) -> Bytes
   /// Its size in bytes (`stat`).
   size : async (String) -> Double
   write_text : async (String, String) -> Unit

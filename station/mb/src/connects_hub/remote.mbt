@@ -422,7 +422,7 @@ async fn RemoteSurface::call(self : RemoteSurface, name : String, args : Array[J
     }
     "userName" | "userEmail" | "userOf" | "channelName" | "peopleIn" if self.has(name) => self.ask_call(name, [js(s(0))])
     "places" if self.has(name) => self.ask_call("places", [])
-    "begin" if self.has(name) => self.ask_call("begin", [js(s(0)), js(s(1))])
+    "begin" if self.has(name) => self.ask_call("begin", [js(s(0)), js(s(1)), js(str_of(args.get(2)).unwrap_or(""))])
     "edit" if self.has(name) => self.ask_call("edit", [args.get(0).unwrap_or(Null), js(s(1)), js(s(2))])
     "history" if self.has(name) => self.ask_call("history", [args.get(0).unwrap_or(Null), js(s(1)), args.get(2).unwrap_or(Null)])
     _ => self.get(name, args)

@@ -1,4 +1,4 @@
-// A chat relayed to a channel: a person picks a Slack channel or a Feishu/Lark group one of the
+// A chat relayed to a channel: a person picks a Slack channel, a Feishu/Lark group or a group connect's space one of the
 // station's connects' bots is in, and the chat's agent goes on there too. The station starts the conversation there
 // itself (who relayed it, from which chat, their note), or joins a Slack thread a person gave the link of, makes it one of the agent's conversations, says so in the chat
 // it came from, and tells the agent, who writes people there what they need to pick it up: its first post there is
@@ -19,8 +19,8 @@ export type RelayPlace = Place & { used?: number };
 /// A connect a chat can be relayed through, with where its bot can start a conversation (or why that was not read).
 export type RelayConnect = {
   id: string;
-  /// Its platform as people know it: Lark is a Feishu connect on larksuite.com.
-  kind: "slack" | "feishu" | "lark";
+  /// Its platform as people know it: Lark is a Feishu connect on larksuite.com; group, an IM community of AFK-surf/group.
+  kind: "slack" | "feishu" | "lark" | "group";
   name: string;
   team: string | null;
   /// Its workspace's id (a Slack team's, a Feishu tenant's), once known: bots of one are in the same places.
@@ -54,11 +54,9 @@ function connectsFor(hub: Hub, session: string): { id: string; chat: ChatSurface
     .config()
     .connects.filter((c) => c.enabled && (home === null || (c.workspace ?? home) === ws))
     .flatMap((c) => {
-      // (a group connect's conversations are not offered here yet: the app's relay knows Slack's and Feishu's)
-      if (c.kind === "group") return [];
       const chat = hub.chatOf(c.id);
       if (chat === undefined || !chat.places || !chat.begin) return [];
-      const kind: RelayConnect["kind"] = c.kind === "feishu" ? (chat.platform?.() === "lark" ? "lark" : "feishu") : "slack";
+      const kind: RelayConnect["kind"] = c.kind === "group" ? "group" : c.kind === "feishu" ? (chat.platform?.() === "lark" ? "lark" : "feishu") : "slack";
       return [{ id: c.id, chat, kind, bind: c.bind }];
     });
 }
@@ -209,7 +207,8 @@ export async function relay(hub: Hub, thread: ThreadRow, relayer: Relayer, targe
   const user = (await c.chat.userOf?.(relayer.email).catch(() => null)) ?? null;
   const who = user !== null ? (c.chat.mention?.(user) ?? `<@${user}>`) : by;
   const opening = tr(lang, "station.relay.opening", { who, chat: from }) + (said === "" ? "" : `\n\n${said}`);
-  const begun = existing !== null ? { thread: existing, ts: await c.chat.post(existing, opening, []) } : await c.chat.begin!(channel, opening);
+  // (a group space's conversation is a topic of its own, called as the chat is)
+  const begun = existing !== null ? { thread: existing, ts: await c.chat.post(existing, opening, []) } : await c.chat.begin!(channel, opening, title);
   const there = hub.store.openThread(surface, begun.thread.channel, begun.thread.threadTs, null, by);
   hub.store.noteRelayed(c.id, channel);
   hub.store.joinThread(there.id, session, c.id);
@@ -240,7 +239,9 @@ export async function relay(hub: Hub, thread: ThreadRow, relayer: Relayer, targe
         ? `a new thread in Slack channel #${place.name}`
         : place.kind === "topics"
           ? `a new topic in Feishu topic group ${place.name}`
-          : `Feishu group ${place.name}, whose conversation is now yours`;
+          : place.kind === "space"
+            ? `a new topic in the group space ${place.name}`
+            : `Feishu group ${place.name}, whose conversation is now yours`;
   hub.notify(
     session,
     `${by} relayed the chat ${threadAddress(thread.channel, thread.threadTs)} to ${where}: ${to} is now one of your conversations, and replies there come to you. ` +

@@ -1258,7 +1258,7 @@ let en : Map[String, String] = {
   "web-main.relay.kind.thread": "Existing thread · the agent reads it first",
   "web-main.relay.kind.topics": "Topic group · new topic",
   "web-main.relay.lead": "Starts a conversation in the channel or group you pick, where this chat's agent goes on; this chat stays open.",
-  "web-main.relay.noConnects": "This station has no Slack or Feishu connect yet",
+  "web-main.relay.noConnects": "This station has no Slack, Feishu or Group connect yet",
   "web-main.relay.noMatch": "No channel or group matches",
   "web-main.relay.noPlaces": "The bot is in no channel or group yet",
   "web-main.relay.note": "Opening note (optional)",
