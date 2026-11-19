@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [266cf6bfe](https://github.com/AFK-surf/monoid/commit/266cf6bfe1eedaaac857c1ed4d889414abccf4dc) feat(mbui): add moduleDir, lifecycle hooks, meta s | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.17 | 65.1 | 97.44 | 119.89 |
 | [4e75126e9](https://github.com/AFK-surf/monoid/commit/4e75126e9ef6fbab8c5291cf1270c8f9ad3c1ce6) fix(station): wait for the turns that ran in two r | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.17 | 65.1 | 97.44 | 119.89 |
 | [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.54 | 124.67 |
 | [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.62 | 126.49 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65ec9344f](https://github.com/AFK-surf/monoid/commit/65ec9344f47bbd53b0ab982846b6cb4405c955d7) ci(natives): compile a branch's reader in 8 MB uni | 2.62 | 3.52 | 14.4 | 36.6 | 55.48 | 32.07 | 64.88 | 97.27 | 118.74 |
 | [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 2.62 | 3.52 | 14.4 | 36.6 | 55.48 | 32.07 | 64.88 | 97.27 | 118.74 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
-| [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [266cf6bfe](https://github.com/AFK-surf/monoid/commit/266cf6bfe1eedaaac857c1ed4d889414abccf4dc) feat(mbui): add moduleDir, lifecycle hooks, meta s | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54 |
 | [4e75126e9](https://github.com/AFK-surf/monoid/commit/4e75126e9ef6fbab8c5291cf1270c8f9ad3c1ce6) fix(station): wait for the turns that ran in two r | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
 | [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
 | [a64471c17](https://github.com/AFK-surf/monoid/commit/a64471c1771b1e9348952125ecdd8f287df095b0) feat(mbui): add desktop tray/auto-launch/hotkeys a | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65ec9344f](https://github.com/AFK-surf/monoid/commit/65ec9344f47bbd53b0ab982846b6cb4405c955d7) ci(natives): compile a branch's reader in 8 MB uni | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
 | [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
-| [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
