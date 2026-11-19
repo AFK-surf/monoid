@@ -640,14 +640,29 @@ test("an archived session put in cold storage off the station's thread, and its 
     // packing and measuring programs of their own: `--builder packed`, `--builder footprint`).
     const archived = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "POST", {});
     assert.equal(archived.status, 200, `${JSON.stringify(archived.json)}\n${a.err()}`);
-    await until("the room put in cold storage", () => existsSync(join(room, "cold")) && existsSync(join(room, "workspace.tar.zst")), () => a.err());
+    await until(
+      "the room put in cold storage",
+      () => {
+        if (!existsSync(join(room, "cold")) || !existsSync(join(room, "workspace.tar.zst")) || existsSync(join(room, "workspace.retiring"))) return false;
+        try {
+          return readdirSync(workspace).length === 0;
+        } catch {
+          return false;
+        }
+      },
+      () => a.err(),
+    );
     assert.equal(existsSync(join(workspace, "keep.txt")), false, "the workspace is in its archive");
     assert.equal(existsSync(join(workspace, "node_modules")), false);
 
     // Unarchived: the workspace written back from its archive (cold.ts `restore`), what was rebuildable not in it.
     const back = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "DELETE");
     assert.equal(back.status, 200, `${JSON.stringify(back.json)}\n${a.err()}`);
-    await until("the workspace restored", () => existsSync(join(workspace, "keep.txt")) && !existsSync(join(room, "workspace.tar.zst")), () => a.err());
+    await until(
+      "the workspace restored",
+      () => existsSync(join(workspace, "keep.txt")) && !existsSync(join(room, "workspace.tar.zst")) && !existsSync(join(room, "cold")),
+      () => a.err(),
+    );
     assert.equal(readFileSync(join(workspace, "keep.txt"), "utf8"), "kept\n");
     assert.equal(existsSync(join(workspace, "node_modules")), false);
     assert.doesNotMatch(a.err(), /an archived session's files not put away/);
