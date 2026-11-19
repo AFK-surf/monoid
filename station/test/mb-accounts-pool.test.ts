@@ -1304,6 +1304,29 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
       await alike("runtimes checked");
       // A borrowed Codex subscription: its host's status, then its allowance read with the login lent.
       await both("borrowed check", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      // Checked again while the host has not read again: the same reading is not written again; one changed at the same
+      // checkedAt is.
+      const writes = { ts: 0, mb: 0 };
+      for (const [s, k] of [[ts, "ts"], [mb, "mb"]] as const) {
+        const set = s.store.setProfileQuota.bind(s.store);
+        s.store.setProfileQuota = (id, q) => (writes[k]++, set(id, q));
+      }
+      await both("borrowed checked again, the same", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 0, mb: 0 }, "the same reading not written again");
+      const hostSaid = tsParts.shared.status;
+      const changedSaid = async (pr: Json) => {
+        const got = await hostSaid(pr);
+        return { ...got, quota: { ...got.quota, windows: [{ label: "5 小时", usedPercent: 41, resetsAt: null }] } };
+      };
+      tsParts.shared.status = changedSaid;
+      mbParts.shared.status = changedSaid;
+      await both("borrowed checked again, changed", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 1, mb: 1 }, "a changed reading at the same checkedAt written");
+      tsParts.shared.status = hostSaid;
+      mbParts.shared.status = hostSaid;
+      await both("borrowed checked again, as before", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
+      assert.deepEqual(writes, { ts: 2, mb: 2 });
+      await alike("borrowed checked again");
       reply = (url) => (url.endsWith("/wham/usage") ? { status: 200, body: { rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18000 } }, plan_type: "plus" } } : { status: 404, body: {} });
       await both("borrowed allowance", () => tsAccounts.refreshQuota("bx"), "refreshQuota", "bx");
       await both("borrowed changed", () => tsAccounts.sharedChanged("bx", true), "sharedChanged", "bx", true);

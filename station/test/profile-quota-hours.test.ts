@@ -63,6 +63,25 @@ describe("an account's last hours", () => {
     store.close();
   });
 
+  test("an allowance with windows is kept in one transaction, one without in one statement", () => {
+    const start = 550_000 * HOUR_MS;
+    const { store } = storeAt(start);
+    store.setProfileQuota("cc", quota(start - PACE_HOURS * HOUR_MS - HOUR_MS, 5));
+    const said: string[] = [];
+    const exec = store.db.exec.bind(store.db);
+    store.db.exec = (sql: string) => (said.push(sql), exec(sql));
+    store.setProfileQuota("cc", quota(start + 60_000, 20));
+    assert.deepEqual(said, ["BEGIN IMMEDIATE", "COMMIT"], "the status, its hour and the old hours' cut committed once");
+    const rows = store.db.prepare("SELECT hour FROM profile_quota_hours WHERE profile = 'cc'").all() as { hour: number }[];
+    assert.deepEqual(rows.map((r) => r.hour), [start / HOUR_MS], "the hour PACE_HOURS before it let go");
+    assert.equal((store.profileStatus().get("cc")!.quota as { checkedAt: number }).checkedAt, start + 60_000);
+    said.length = 0;
+    store.setProfileQuota("cc", { state: "unavailable", windows: [], checkedAt: start + 120_000 });
+    assert.deepEqual(said, [], "no hour to keep: a single write, no transaction");
+    assert.equal((store.profileStatus().get("cc")!.quota as { state: string }).state, "unavailable");
+    store.close();
+  });
+
   test("the calls' spending is usage_15m's, added up by hour and model, as they are written, grown, replaced and taken", () => {
     const start = 600_000 * HOUR_MS;
     const { store } = storeAt(start);

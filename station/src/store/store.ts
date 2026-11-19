@@ -3960,19 +3960,23 @@ export class Store {
   setProfileQuota(profile: string, quota: Json): void {
     const at = checkedAt(quota);
     const windows = typeof quota === "object" && quota !== null && quota.state === "ok" && at !== null && at > 0 ? hourWindows(quota) : [];
-    this.#run(
+    const status = () => this.#run(
       `INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
        ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at`,
       profile, JSON.stringify(quota), at,
     );
-    if (windows.length === 0 || at === null) return;
+    if (windows.length === 0 || at === null) return void status();
+    // One commit, not three: each autocommit is an fsync on the main thread.
     const hour = Math.floor(at / HOUR_MS);
-    this.#run(
-      `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
-       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
-      profile, hour, JSON.stringify(windows), at,
-    );
-    this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+    this.#tx(() => {
+      status();
+      this.#run(
+        `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
+        profile, hour, JSON.stringify(windows), at,
+      );
+      this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+    });
   }
 
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET

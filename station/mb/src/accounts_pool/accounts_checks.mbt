@@ -479,8 +479,16 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
         to_number(m.get("checkedAt"))
       None => false
     }
+    // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+    let same = match mine {
+      Some(m) => json_text(got_quota) == stringify(m)
+      None => false
+    }
     match got_quota {
-      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) && !complete_here && !older => {
+      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) &&
+        !complete_here &&
+        !same &&
+        !older => {
         self.quotas[id] = q
         self.keep_quota(id, q)
       }

@@ -1386,7 +1386,9 @@ export class Accounts {
       const completeHere = this.missingBorrowedResetDetails(profile, got.quota) && mine !== undefined &&
         !this.missingBorrowedResetDetails(profile, mine) && mine.resetCount === got.quota.resetCount &&
         mine.checkedAt <= now && now - mine.checkedAt < QUOTA_EVERY_MS;
-      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
+      // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+      const same = mine !== undefined && JSON.stringify(got.quota) === JSON.stringify(mine);
+      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !same && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
         this.quotas.set(profile.id, got.quota as ProfileQuota);
         this.#keepQuota(profile.id, got.quota);
       }
