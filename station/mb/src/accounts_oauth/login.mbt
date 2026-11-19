@@ -615,6 +615,8 @@ pub async fn LoginManager::start(self : LoginManager, profile : LoginProfile, la
     args = a
   } else if stage is Some(s) {
     env_set(env, "HOME", s)
+    // (Windows: its home is USERPROFILE's, HOME aside)
+    env_set(env, "USERPROFILE", s)
     for p in agy_file_tokens {
       env_set(env, p.0, p.1)
     }

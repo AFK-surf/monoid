@@ -301,6 +301,8 @@ export class LoginManager {
       [command, args] = terminal;
     } else if (stage !== null) {
       env.HOME = stage;
+      // (Windows: its home is USERPROFILE's, HOME aside)
+      env.USERPROFILE = stage;
       // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
       // what it is, which `agyAnswer` answers).
       Object.assign(env, AGY_FILE_TOKENS);
