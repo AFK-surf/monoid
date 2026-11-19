@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 96.99 | 118.37 |
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 2.62 | 3.52 | 14.37 | 36.48 | 55.39 | 31.96 | 64.62 | 97.04 | 107.97 |
 | [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.06 | 126.32 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 | [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
-| [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.9 | 97.24 | 124.54 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
 | [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
-| [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
