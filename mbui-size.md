@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.58 | 125.13 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 2.64 | 3.55 | 14.52 | 36.74 | 55.92 | 32.22 | 65.28 | 97.47 | 125.53 |
 | [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 | [8626a69df](https://github.com/AFK-surf/monoid/commit/8626a69df10482fa7d193a3eabffbabefc292c5e) fix(mbui): update profile overview share menu and  | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
-| [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 2.63 | 3.54 | 14.44 | 36.67 | 55.61 | 32.12 | 64.97 | 97.76 | 127.8 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [8626a69df](https://github.com/AFK-surf/monoid/commit/8626a69df10482fa7d193a3eabffbabefc292c5e) fix(mbui): update profile overview share menu and  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
 | [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 53.95 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
-| [1afe38ccc](https://github.com/AFK-surf/monoid/commit/1afe38ccc92c80ebf5e9211ef2dfbcd4e8b0755f) feat(storybook): add the 环境 workbench panel, state | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
