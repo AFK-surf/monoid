@@ -9,7 +9,8 @@
 // again: kept is the newest of each kind on each live ref, the rest deleted (one under a megabyte left: it frees
 // nothing). A deleted branch's caches cannot be restored by another branch, so all of its caches are removed once
 // they have not been created or read for 5 minutes, and a live branch's once not read for 2 hours. Pull request and
-// other refs keep their own existing rules.
+// other refs keep their own existing rules. Of the default branch's, a kind that is a variant of a family (an image's
+// version or an apt spec in its key) goes once its family has moved on (`stale_family_caches`).
 // What is kept after all that is held under `repo_cache_cap_bytes`: 15 branches pushed within 12 hours kept 15.8 GB,
 // the repository 23.7 GB (2026-11-17, run 44076658048 deleted none of its 152), and GitHub's eviction took main's
 // seldom read ones again (warp-1.0.21, android-image, natives-shell-apple, mbui-tool-*). Over it, the caches of refs
@@ -72,7 +73,19 @@ fn kind_of(key : String) -> String? {
   let parts = key.split("-").map(fn(p) { p.to_owned() }).to_array()
   let n = parts.length()
   if n >= 2 && parts[n - 1].length() >= 16 && is_hex(parts[n - 1]) {
-    return Some(parts[0:n - 1].join("-"))
+    // scripts/native.ts keys a part by 24-hex-digit hashes, one per part in it (natives-<os>-<arch>-<shell>-<engine>
+    // and -<shell>-<engine>-<ghostty-vt>): each is the id, or each build kept a kind of its own (28 of them, 807 MB on
+    // main, 2026-11-19); how many there are stays in the kind, as `<24>`, for the two- and three-part caches are read
+    // by different jobs. A 16-digit one before the last stays in the kind (mbui-mac-cc-<launcher>-<inputs>).
+    let mut end = n - 1
+    while end > 1 && parts[end - 1].length() == 24 && is_hex(parts[end - 1]) {
+      end -= 1
+    }
+    let mut kind = parts[0:end].join("-")
+    for _ in end..<(n - 1) {
+      kind = kind + "-<24>"
+    }
+    return Some(kind)
   }
   if n >= 3 && is_digits(parts[n - 1]) && is_digits(parts[n - 2]) && parts[n - 2].length() >= 6 {
     return Some(parts[0:n - 2].join("-"))
@@ -237,6 +250,92 @@ fn over_cap_caches(kept : Array[Cache], default_head : String, cap : Int64) -> A
     }
     out.push(c)
     bytes -= c.size
+  }
+  out
+}
+
+///|
+/// A runner image's version in a key: 20261111.127.1, 20261104.0337.1 (`ImageVersion`, YYYYMMDD.N or YYYYMMDD.N.N)
+fn is_image_version(s : String) -> Bool {
+  let parts = s.split(".").map(fn(p) { p.to_owned() }).to_array()
+  parts.length() >= 2 &&
+  parts.length() <= 3 &&
+  parts[0].length() == 8 &&
+  parts.iter().all(is_digits)
+}
+
+///|
+/// An apt cache's spec, 12 hex digits (apt-<name>-<spec>-<inputs>)
+fn is_apt_spec(s : String) -> Bool {
+  s.length() == 12 && is_hex(s)
+}
+
+///|
+/// A rolling cache's family and whether it is a variant of it: an apt cache's kind less its spec (v1's
+/// apt-<name>-<inputs> and v2's apt-<name>-<spec>-<inputs> both apt-<name>), a kind naming an image's version less it
+/// (mbui-linux-moon-x64-20261111.127.1: mbui-linux-moon-x64); any other kind is its own family, not a variant. None
+/// for a cache kept by its own name.
+fn family_of(key : String) -> (String, Bool)? {
+  if key.has_prefix("moonbit-") || key.has_prefix("pnpm-") {
+    return None
+  }
+  guard kind_of(key) is Some(k) else { return None }
+  let parts = k.split("-").map(fn(p) { p.to_owned() }).to_array()
+  if k.has_prefix("apt-") {
+    let n = parts.length()
+    let fam = if n >= 2 && is_apt_spec(parts[n - 1]) {
+      parts[0:n - 1].join("-")
+    } else {
+      k
+    }
+    return Some((fam, true))
+  }
+  if parts.iter().any(is_image_version) {
+    return Some((parts.filter(fn(p) { !is_image_version(p) }).join("-"), true))
+  }
+  Some((k, false))
+}
+
+///|
+/// The default branch's variants of a family no job reads any more, kept by `kind_of` as kinds of their own: those
+/// keyed by an image's version once the plain key replaced them (mbui-linux-moon-x64-2026111* when
+/// mbui-linux-moon-x64 came), by an image retired, and an apt cache of a spec retired. One goes when a newer of its
+/// family was read since, and it has not been read for 4 hours with its family's plain key read since, or for 12
+/// hours (two images in turn both read within that: both kept). The family's most recently read is never one of
+/// them, nor one under a megabyte (2.0 GB of main's 12.89, 2026-11-19).
+fn stale_family_caches(
+  kept : Array[Cache],
+  default_head : String,
+  now : Double,
+) -> Array[Cache] {
+  let h = 3600.0
+  let seen : Array[(Cache, String, Bool)] = []
+  let max_read : Map[String, Double] = Map([])
+  let plain_read : Map[String, Double] = Map([])
+  for c in kept {
+    if c.ref_ != default_head || c.size < 1000000L || c.accessed <= 0.0 {
+      continue
+    }
+    guard family_of(c.key) is Some((fam, variant)) else { continue }
+    seen.push((c, fam, variant))
+    if max_read.get(fam).unwrap_or(0.0) < c.accessed {
+      max_read[fam] = c.accessed
+    }
+    if !variant && plain_read.get(fam).unwrap_or(0.0) < c.accessed {
+      plain_read[fam] = c.accessed
+    }
+  }
+  let out : Array[Cache] = []
+  for s in seen {
+    let (c, fam, variant) = s
+    if !variant || c.accessed >= max_read.get(fam).unwrap_or(0.0) {
+      continue
+    }
+    let idle = now - c.accessed
+    let replaced = plain_read.get(fam).unwrap_or(0.0) > c.accessed && idle >= 4.0 * h
+    if replaced || idle >= 12.0 * h {
+      out.push(c)
+    }
   }
   out
 }
@@ -425,6 +524,14 @@ fn cache_prune(args : Array[String]) -> Int {
   }
   let going : Map[String, Bool] = Map([])
   for c in gone {
+    going[c.id] = true
+  }
+  for c in stale_family_caches(
+    caches.filter(fn(c) { !going.contains(c.id) }),
+    default_head,
+    now,
+  ) {
+    gone.push(c)
     going[c.id] = true
   }
   let kept = caches.filter(fn(c) { !going.contains(c.id) })

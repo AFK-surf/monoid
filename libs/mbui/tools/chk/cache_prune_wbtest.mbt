@@ -27,6 +27,25 @@ test "a rolling cache's kind" {
     ),
     Some("gradle-home-v1|Linux-X64|check-android[2face68063188a806d63532a8cee1e9b]"),
   )
+  // native.ts's parts by their 24-digit hashes: one kind of each count of parts, a 16-digit one before the last kept
+  let h24 = "93ac1e021fe42463dcc143f8"
+  assert_eq(
+    kind_of("natives-win32-x64-3081244fef5b6070760f83bb-\{h24}-f5c8c5a0e8181ad319943372"),
+    Some("natives-win32-x64-<24>-<24>"),
+  )
+  assert_eq(
+    kind_of("natives-win32-x64-013477436c26ce374343cc87-\{h24}"),
+    Some("natives-win32-x64-<24>"),
+  )
+  assert_eq(
+    kind_of("natives-linux-arm64-37b29033706baf9113f6e675-cbb701e1150a3dc5a2ca2edb-5a93a93cf978a3d99d45b0f3"),
+    Some("natives-linux-arm64-<24>-<24>"),
+  )
+  assert_eq(
+    kind_of("natives-shell-apple-darwin-arm64-f4c138fb22fd25afa10653dc"),
+    Some("natives-shell-apple-darwin-arm64"),
+  )
+  assert_eq(kind_of("\{h24}-\{h24}"), Some(h24))
   assert_eq(kind_of("mbui-ios-build-39731343052-1"), Some("mbui-ios-build"))
   assert_eq(kind_of("warp-1.0.21"), None)
   assert_eq(kind_of("android-image-36-google_apis-x86_64-7"), None)
@@ -237,4 +256,78 @@ test "the repository's caches are held under 7.5 GB, main's never taken for it" 
   // without the branch's, 6 GB and a little: nothing more goes
   let under = [kept[0], kept[2], kept[3]]
   assert_eq(ids_of(over_cap_caches(under, "refs/heads/main", repo_cache_cap_bytes)), [])
+}
+
+///|
+test "an image's version and an apt spec in a key" {
+  assert_true(is_image_version("20261111.127.1"))
+  assert_true(is_image_version("20261104.0337.1"))
+  assert_true(is_image_version("20261104.3"))
+  assert_false(is_image_version("20261104"))
+  assert_false(is_image_version("2026111.127.1"))
+  assert_false(is_image_version("20261111.127.1.2"))
+  assert_false(is_image_version("20261111..1"))
+  assert_false(is_image_version("5.3.3"))
+  assert_true(is_apt_spec("131ce6adc482"))
+  assert_false(is_apt_spec("20ba3079a0cbad0f"))
+  assert_eq(family_of("mbui-linux-moon-x64-20261111.127.1-909b5cbde5bde107"), Some(("mbui-linux-moon-x64", true)))
+  assert_eq(family_of("mbui-linux-moon-x64-11f095d26eab4bed"), Some(("mbui-linux-moon-x64", false)))
+  assert_eq(family_of("mbui-ios-moon-20261104.0337.1-6092813ee76aba00"), Some(("mbui-ios-moon", true)))
+  assert_eq(
+    family_of("mbui-linux-store-app-pkgs-m-20261116.133.1-a19cbafad89f7953"),
+    Some(("mbui-linux-store-app-pkgs-m", true)),
+  )
+  // v1's and v2's apt caches of a name: one family, every one a variant
+  assert_eq(family_of("apt-mbui-host-linux-20ba3079a0cbad0f"), Some(("apt-mbui-host-linux", true)))
+  assert_eq(family_of("apt-mbui-host-linux-131ce6adc482-bf9c7f2fe9dcddc1"), Some(("apt-mbui-host-linux", true)))
+  assert_eq(family_of("warp-1.0.21"), None)
+  assert_eq(family_of("android-image-34-default-x86_64-2"), None)
+  assert_eq(family_of("android-emulator-16428233"), None)
+  assert_eq(family_of("moonbit-Linux-X64-github-hosted-20261111.1-e8beca8c9bdab117"), None)
+  assert_eq(family_of("pnpm-Linux-20261111.1-81d46fa11a633eee"), None)
+}
+
+///|
+test "a family's variants go once it moved on, its newest and the fixed ones never" {
+  let h = 3600.0
+  let mb = 1000000L
+  let now = 100.0 * h
+  let main = "refs/heads/main"
+  let c : Cache = { id: "0", key: "", ref_: main, size: 180L * mb, created: 1.0, accessed: now }
+  let ids = fn(kept : Array[Cache]) { ids_of(stale_family_caches(kept, main, now)) }
+  // replaced by the plain key: gone 4 hours after its last read, kept before
+  let plain = { ..c, id: "p", key: "mbui-linux-moon-x64-11f095d26eab4bed", accessed: now - 60.0 }
+  let old = { ..c, id: "v", key: "mbui-linux-moon-x64-20261111.127.1-909b5cbde5bde107", accessed: now - 4.0 * h }
+  assert_eq(ids([plain, old]), ["v"])
+  assert_eq(ids([plain, { ..old, accessed: now - 4.0 * h + 1.0 }]), [])
+  // on another ref, or under a megabyte, or never read: not this rule's
+  assert_eq(ids([plain, { ..old, ref_: "refs/heads/feat" }]), [])
+  assert_eq(ids([plain, { ..old, size: mb - 1L }]), [])
+  assert_eq(ids([plain, { ..old, accessed: 0.0 }]), [])
+  // the variant read after the plain key: the newest of its family, kept however long ago
+  assert_eq(ids([{ ..plain, accessed: now - 30.0 * h }, { ..old, accessed: now - 20.0 * h }]), [])
+  // an image retired, no plain key: gone 12 hours after its last read, once a newer one was read
+  let a = { ..c, id: "a", key: "sf-ui-linux-store-20261111.127.1-31f2ead0acde0ce763899fed949abf18ae041228", accessed: now - 12.0 * h }
+  let b = { ..c, id: "b", key: "sf-ui-linux-store-20261116.133.1-4aa52188713df8eadf6bdb338772e50ada19c5eb", accessed: now - 60.0 }
+  assert_eq(ids([a, b]), ["a"])
+  // two images in turn, both read within 12 hours: both kept
+  assert_eq(ids([{ ..a, accessed: now - 12.0 * h + 1.0 }, b]), [])
+  // the newest of a family is never taken, however long unread
+  assert_eq(ids([{ ..b, accessed: now - 50.0 * h }]), [])
+  assert_eq(ids([{ ..a, accessed: now - 60.0 * h }, { ..b, accessed: now - 50.0 * h }]), ["a"])
+  // an apt spec retired and v1's apt cache: gone at 12 hours, the spec read last kept
+  let v1 = { ..c, id: "v1", key: "apt-mbui-host-linux-20ba3079a0cbad0f", accessed: now - 17.0 * h }
+  let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 16.0 * h }
+  let s_mid = { ..c, id: "s2", key: "apt-mbui-host-linux-875dc52b7221-bf9c7f2fe9dcddc1", accessed: now - 3.0 * h }
+  let s_new = { ..c, id: "s3", key: "apt-mbui-host-linux-131ce6adc482-bf9c7f2fe9dcddc1", accessed: now - 60.0 }
+  assert_eq(ids([v1, s_old, s_mid, s_new]), ["v1", "s1"])
+  // the ones kept by their own name and the toolchains': never
+  let fixed = [
+    { ..c, id: "w", key: "warp-1.0.21", accessed: now - 90.0 * h },
+    { ..c, id: "i", key: "android-image-34-default-x86_64-2", accessed: now - 90.0 * h },
+    { ..c, id: "e", key: "android-emulator-16428233", accessed: now - 90.0 * h },
+    { ..c, id: "m", key: "moonbit-Linux-X64-github-hosted-20261111.1-e8beca8c9bdab117", accessed: now - 90.0 * h },
+    { ..c, id: "m2", key: "moonbit-Linux-X64-github-hosted-20261116.1-e8beca8c9bdab117", accessed: now - 60.0 },
+  ]
+  assert_eq(ids(fixed), [])
 }
