@@ -11,6 +11,10 @@ import {
 }
 
 // Values
+pub let accept_again_ms : Int32
+
+pub async fn[T] accept_through(async () -> T, closed? : () -> Bool, pause? : async () -> Unit) -> T?
+
 pub fn access_shown(@json.Json?, String, (String, String, @json.Json) -> String) -> @json.Json?
 
 pub let address_most : Int32
@@ -146,6 +150,8 @@ pub let latency_every_ms : Double
 pub let latency_window_ms : Double
 
 pub fn limit_in(Int32) -> Int32
+
+pub fn listener_gone(Error) -> Bool
 
 pub let local_network_settings : String
 

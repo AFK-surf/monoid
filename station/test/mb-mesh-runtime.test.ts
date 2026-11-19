@@ -1826,6 +1826,8 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     // the front gone: linked again, the routes and disabled relays given again first
     await tsFront.drop();
     await mbFront.drop();
+    // (every socket of the link gone let go, its control socket too: the shell keeps one until it is told to close it)
+    await within("every socket of the link gone let go", front("live", { fewerThan: 1 }));
     // (what the MoonBit client said, kept: "logs" gives each once)
     const mbLogs: Json[] = [];
     const takeMbLogs = async () => (mbLogs.push(...(await front("logs"))), mbLogs);

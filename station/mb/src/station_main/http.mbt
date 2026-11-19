@@ -186,10 +186,11 @@ pub async fn serve_http(
   listening : Json,
   handle : async (Request, Json) -> Reply?,
 ) -> Unit {
-  while true {
-    let accepted = try { Ok(host.shell("tcp.accept", { "id": listening })) } catch { e => Err(e) }
+  // (a try that failed with the listener still there, the machine out of descriptors for a while, taken again: one
+  // such failure ended serving, the MCP's and the admin API's ports unanswered until the station was started again)
+  while @mesh_runtime.accept_through(async fn() { host.shell("tcp.accept", { "id": listening }).0 }) is Some(accepted) {
     match accepted {
-      Ok(({ "id": id, .. }, _)) =>
+      { "id": id, .. } =>
         ignore(
           host.rt.fork(name="http request", async fn() {
             match read_request(host, id) {
@@ -202,10 +203,10 @@ pub async fn serve_http(
             }
           }),
         )
-      // (the listener closed: serving is over)
-      _ => return
+      _ => ()
     }
   }
+  // (the listener closed: serving is over)
 }
 
 ///|

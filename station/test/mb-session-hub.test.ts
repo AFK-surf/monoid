@@ -1183,6 +1183,19 @@ test("holds, workspaces, held chats, recovery, idle processes and the pages' com
   await pair.call("wsOf", null);
   await pair.call("profilesIn", null);
   await pair.call("profilesIn", "ws2");
+  // One archived going idle: what it left in the background ended, then its archive cleaned, one call after the other
+  // (the program once asked its actor for a call it has not, `evictThenCleanArchive`)
+  // (no process idle meanwhile: what else idleNow lets go comes in an order of each side's own scheduling)
+  await pair.set(() => {
+    pair.a.states = {};
+  });
+  pair.both((s) => s.setArchived("w2:C1:1100.000001", true, "manual"));
+  const compareLogs = pair.compareLogs.bind(pair);
+  const idleArchived: Json[] = [];
+  pair.compareLogs = (where) => (idleArchived.push(...pair.a.log), compareLogs(where));
+  await pair.call("idleNow", "w2:C1:1100.000001");
+  pair.compareLogs = compareLogs;
+  assert.deepEqual(idleArchived.filter((e) => e[0] === "actor" && e[1] === "w2:C1:1100.000001"), [["actor", "w2:C1:1100.000001", "evict", [true]], ["actor", "w2:C1:1100.000001", "cleanArchive", []]]);
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("dropActor", "w2:C1:1100.000001");
   await pair.call("shutdown");

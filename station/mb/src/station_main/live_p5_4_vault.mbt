@@ -767,8 +767,9 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
   let conns : Map[Int, P54Conn] = Map([])
   ignore(
     host.rt.fork(name="unix serve", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() {
+          host.shell("tcp.accept", { "id": id }).0
+        }) is Some(got) {
         next.val += 1
         let n = next.val
         let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
@@ -888,8 +889,9 @@ async fn p54_proxy_listen(
   }
   ignore(
     host.rt.fork(name="vault proxy", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
+      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() {
+          host.shell("tcp.accept", { "id": id }).0
+        }) is Some(got) {
         let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
         ignore(
           host.rt.fork(name="proxy connection", async fn() {

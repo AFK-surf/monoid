@@ -77,11 +77,10 @@ pub fn shell_sockets(host : @host.Host) -> Sockets {
       let closed = Ref(false)
       {
         accept: async fn() -> Sock? {
-          if closed.val {
-            return None
-          }
-          let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => return None }
-          Some(sock(field(got, "id").unwrap_or(Json::null())))
+          let got = accept_through(closed=() => closed.val, async fn() {
+            host.shell("tcp.accept", { "id": id }).0
+          })
+          got.map(got => sock(field(got, "id").unwrap_or(Json::null())))
         },
         close: () => if !closed.val {
           closed.val = true
@@ -395,8 +394,13 @@ pub async fn Front::open(sockets : Sockets, socket : String, pid : Int, rt : @ef
         }
       }
       front.end_("the front is gone")
+      // (its read side over and the link gone: nothing writes on it again, so it is let go, whichever end went first)
+      front.control.destroy()
     } catch {
-      _ => front.end_("the front is gone")
+      _ => {
+        front.end_("the front is gone")
+        front.control.destroy()
+      }
     }),
   )
   ignore(

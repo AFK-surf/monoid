@@ -1113,29 +1113,46 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
 async fn p54_device_tunnel(w0 : P54DevWorld, sock_id : Json, carry : Bytes, stream : @terminals_logins.Stream) -> Unit {
   let host = w0.bus.host
   let sock = w0.sock_of(Some(sock_id))
-  if carry.length() > 0 {
-    (sock.conn.write)(carry)
+  // (either side reset or gone fails a read or a write: the tunnel's end as much as an end is, never the runtime's
+  // defect, and both are let go after it all the same)
+  let carried = try {
+    if carry.length() > 0 {
+      (sock.conn.write)(carry)
+    }
+    true
+  } catch {
+    _ => false
   }
   let down = host.rt.fork(name="device down", async fn() {
-    for c in sock.chunks {
-      match c {
-        Some(b) => (stream.write)(b) catch { _ => () }
-        None => ()
+    try {
+      for c in sock.chunks {
+        match c {
+          Some(b) => (stream.write)(b) catch { _ => () }
+          None => ()
+        }
       }
-    }
-    sock.chunks.clear()
-    while (sock.conn.read)() is Some(b) {
-      (stream.write)(b) catch {
-        _ => break
+      sock.chunks.clear()
+      while (sock.conn.read)() is Some(b) {
+        (stream.write)(b) catch {
+          _ => break
+        }
       }
+    } catch {
+      _ => ()
     }
     (stream.finish)() catch {
       _ => ()
     }
   })
-  while (stream.read)() is Some(b) {
-    (sock.conn.write)(b) catch {
-      _ => break
+  if carried {
+    try {
+      while (stream.read)() is Some(b) {
+        (sock.conn.write)(b) catch {
+          _ => break
+        }
+      }
+    } catch {
+      _ => ()
     }
   }
   (sock.conn.end)()

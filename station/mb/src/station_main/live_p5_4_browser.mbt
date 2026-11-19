@@ -573,10 +573,15 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
             }
             ignore(
               host.rt.fork(name="farview up", async fn() {
-                while (stream.read)() is Some(b) {
-                  c.write(b) catch {
-                    _ => break
+                // (a stream the device reset fails its read: the end of it as much as its end is)
+                try {
+                  while (stream.read)() is Some(b) {
+                    c.write(b) catch {
+                      _ => break
+                    }
                   }
+                } catch {
+                  _ => ()
                 }
                 c.close()
               }),
