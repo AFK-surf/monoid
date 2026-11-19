@@ -22,7 +22,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   }
   let threads = @store_threads.Store::new(bus.db, wall_ms().to_double()) catch {
     e => {
-      live_log("error", "agents", "the threads' store does not open", {
+      slice_log("error", "agents", "the threads' store does not open", {
         "error": jstr(said_of(e)),
       })
       return
@@ -41,7 +41,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       en=maps(en),
       lang=(bus.lang.val)(),
     ),
-    cwords: @session_chats.Words::new(jv_of(zh), jv_of(en)),
+    cwords: @session_chats.Words::new(to_jv(zh), to_jv(en)),
     rwords: @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
     files: p52_cold_files(bus),
     config: Json::object({
@@ -175,18 +175,18 @@ async fn P52::refresh_config(self : P52) -> Unit {
   let raw = (self.bus.config_raw.val)()
   let worked = @session_chats.hub_config(
     self.chats_world(),
-    jv_of(raw),
+    to_jv(raw),
     self.data,
     _ => None,
   ) catch {
     e => {
-      live_log("warn", "agents", "config.json's hub config not worked out", {
+      slice_log("warn", "agents", "config.json's hub config not worked out", {
         "error": jstr(said_of(e)),
       })
       return
     }
   }
-  self.config = p52_json_of_jv(worked)
+  self.config = of_jv(worked)
 }
 
 ///|
@@ -347,7 +347,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       match args {
         Object(m) =>
           for kv in m {
-            live_log(
+            slice_log(
               kv.0,
               "hub",
               match kv.1 {
@@ -375,7 +375,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         self.host.rt.fork_quiet(name="actor told", async fn() {
           ignore(self.hub_asked("actor", args)) catch {
             e =>
-              live_log("warn", "hub", "an actor's call failed", {
+              slice_log("warn", "hub", "an actor's call failed", {
                 "error": jstr(said_of(e)),
               })
           }
@@ -386,7 +386,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         self.host.rt.fork_quiet(name="chat post", async fn() {
           ignore(self.hub_asked("chat.post", args)) catch {
             e =>
-              live_log("warn", "hub", "a post failed", {
+              slice_log("warn", "hub", "a post failed", {
                 "error": jstr(said_of(e)),
               })
           }
@@ -472,14 +472,14 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       match jfield(args, "id") {
         Number(n, ..) =>
           match live_listeners.get(n.to_int()) {
-            Some(send) => send(jv_of(jfield(args, "message")))
+            Some(send) => send(to_jv(jfield(args, "message")))
             None => ()
           }
         _ => ()
       }
     "live.heldTold" =>
       match live_events.val {
-        Some(e) => e.held_told(jtext(args, "key").unwrap_or(""), jv_of(jfield(args, "message")))
+        Some(e) => e.held_told(jtext(args, "key").unwrap_or(""), to_jv(jfield(args, "message")))
         None => ()
       }
     "live.arm" => self.arm(jtext(args, "key").unwrap_or(""), jtext(args, "path").unwrap_or(""))
@@ -506,7 +506,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       if what.has_prefix("usageCheck.") || what.has_prefix("live.") {
         (self.bus.events_tell.val)(what, args, "", Json::null())
       } else {
-        live_log(
+        slice_log(
           "warn",
           "hub",
           "the hub told the station what it does not know",
@@ -695,7 +695,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
         e => {
           adopt_routers.remove(routed_by)
           actor.cancel_adopt(generation)
-          live_log("warn", "hub", "a session's process was not taken up", {
+          slice_log("warn", "hub", "a session's process was not taken up", {
             "session": jstr(key),
             "error": jstr(said_of(e)),
           })
@@ -1043,26 +1043,26 @@ async fn P52::peer_local(
     "configure" => storage.configure_for_peer(request, ws)
     "list" => storage.list_for_peer(request, ws)
     "create" =>
-      p52_json_of_jv(
+      of_jv(
         @session_chats.create_for_peer(
           w,
           peer,
-          jv_of(request),
+          to_jv(request),
           match ws {
-            Some(x) => j_s(x)
+            Some(x) => @jsjson.JValue::of_string(x)
             None => J::Null
           },
         ),
       )
     // (a turn of a chat a session here opened there ended: opened.ts `noticeForPeer`)
     "notice" =>
-      p52_json_of_jv(
+      of_jv(
         @session_chats.notice_for_peer(
           w,
           peer,
-          jv_of(request),
+          to_jv(request),
           match ws {
-            Some(x) => j_s(x)
+            Some(x) => @jsjson.JValue::of_string(x)
             None => J::Null
           },
         ),
@@ -1072,7 +1072,7 @@ async fn P52::peer_local(
       }
     // (a message to a session here: messages.ts `fromPeer`)
     _ =>
-      p52_json_of_jv(@session_chats.from_peer(w, peer, jv_of(request), ws)) catch {
+      of_jv(@session_chats.from_peer(w, peer, to_jv(request), ws)) catch {
         @session_chats.Thrown(_, m) => raise @gate.PeerRefused(m)
         e => raise e
       }
@@ -1187,7 +1187,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         self.pump.wait(
           @agent_drivers.sweep_runners(self.pump.machine(), self.data, jnum_of(arg, "now").unwrap_or(wall_ms().to_double()), orphan=info => self.pump.later(
             "an orphan runner ended",
-            async fn() { hub.end_orphan(p52_json_of_jv(info.json), wall_ms().to_double()) },
+            async fn() { hub.end_orphan(of_jv(info.json), wall_ms().to_double()) },
           )),
         ).map(Json::string),
       )
@@ -1201,8 +1201,8 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     }
     // (a message another workspace's station sent a chat shared with it: xshare's inbox, messages.ts `fromPeer`)
     "inbox" =>
-      p52_json_of_jv(
-        @session_chats.from_peer(self.chats_world(), jtext(arg, "station").unwrap_or(""), jv_of(jfield(arg, "request")), None),
+      of_jv(
+        @session_chats.from_peer(self.chats_world(), jtext(arg, "station").unwrap_or(""), to_jv(jfield(arg, "request")), None),
       )
     "codex.renewRunning" | "codex.rateLimits" =>
       match self.drivers.get("codex") {
@@ -1309,16 +1309,16 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       Json::null()
     }
     "decision.fingerprint" =>
-      Json::string(@session_chats.fingerprint(self.chats_world(), jv_of(jitems(arg).get(0).unwrap_or(Json::null()))))
+      Json::string(@session_chats.fingerprint(self.chats_world(), to_jv(jitems(arg).get(0).unwrap_or(Json::null()))))
     "decision.resolvedModel" => {
       let a = jitems(arg)
-      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
+      let at = (i : Int) => to_jv(a.get(i).unwrap_or(Json::null()))
       Json::boolean(@session_chats.resolved_model(self.chats_world(), at(0), at(1), at(2)) is Some(_))
     }
     "decision.discover" => {
       let a = jitems(arg)
-      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
-      p52_json_of_jv(@session_chats.discover(self.chats_world(), at(0), at(1)))
+      let at = (i : Int) => to_jv(a.get(i).unwrap_or(Json::null()))
+      of_jv(@session_chats.discover(self.chats_world(), at(0), at(1)))
     }
     // (sessions/archive-policy.ts `savePolicy` on the hub's store: what it changed, null where nothing)
     "policy.savePolicy" => {
@@ -1365,7 +1365,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         ignore(
           self.host.rt.fork_quiet(name="codex runtime changed", async fn() {
             ignore((d.ask)("runtimeChanged", { "replaced": jb(kind == "codex" && replaced), "drainBusy": jb(false) })) catch {
-              e => live_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
+              e => slice_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
             }
           }),
         )
@@ -1410,7 +1410,7 @@ async fn P52::runners_with_sessions(self : P52) -> Json {
   }
   Json::array(
     infos.map(i => {
-      let m = match p52_json_of_jv(i.json) {
+      let m = match of_jv(i.json) {
         Object(m) => m.copy()
         _ => {}
       }
@@ -1474,7 +1474,7 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
   // station.
   let handed = hub.hand_over(limit_ms=15_000.0, partial=true) catch {
     e => {
-      live_log("warn", "agents", "the sessions were not handed over", {
+      slice_log("warn", "agents", "the sessions were not handed over", {
         "error": jstr(said_of(e)),
       })
       // Never leave `self.closed = false` on handover failure: `hub_shutdown()` on stop would otherwise dispose
@@ -1510,7 +1510,7 @@ async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
   self.agents_side = Some(side)
   side.start(self.place()) catch {
     e =>
-      live_log("error", "agents", "the sessions were not taken up", {
+      slice_log("error", "agents", "the sessions were not taken up", {
         "error": jstr(said_of(e)),
       })
   }
@@ -1624,7 +1624,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     held_now=(keys, k) => ignore(
       host.rt.fork_quiet(name="the sessions at work now", async fn() {
         match (try { Ok(live.now_of(keys)) } catch { e => Err(e) }) {
-          Ok(v) => k(Ok(jv_of(v)))
+          Ok(v) => k(Ok(to_jv(v)))
           Err(e) => k(Err(said_of(e)))
         }
       }),

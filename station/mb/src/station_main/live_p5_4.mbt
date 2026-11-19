@@ -117,7 +117,7 @@ fn p54_test_door(bus : LiveBus) -> Unit {
   // (the admin API's callbacks, P5-1's, stood in for where none is: the uploads' place a staged file is given)
   if !bus.peer_handlers.contains("$admin.called") {
     bus.on_peer("$admin.called", async fn(_, _, params, _) {
-      let name = p54_str(p54_get(Some(params), "args").bind(x => match x { Array(a) => a.get(0); _ => None })).unwrap_or("file")
+      let name = opt_str(opt_field(Some(params), "args").bind(x => match x { Array(a) => a.get(0); _ => None })).unwrap_or("file")
       let dir = path([bus.data, "uploads", "staged"])
       @drive.mkdir(dir, true)
       ({ "safe": Json::string(name), "path": Json::string(path([dir, name])) }, None)
@@ -130,15 +130,15 @@ fn p54_test_door(bus : LiveBus) -> Unit {
         return Some(plain(401, ""))
       }
       let asked = (try { Ok(@json.parse(@utf8.decode_lossy(r.body))) } catch { e => Err(e) }).unwrap_or(Json::null())
-      let op = p54_text(Some(asked), "op").unwrap_or("")
-      let args = p54_get(Some(asked), "args").unwrap_or(Json::array([]))
+      let op = jtext(asked, "op").unwrap_or("")
+      let args = opt_field(Some(asked), "args").unwrap_or(Json::array([]))
       if op == "p54.route" {
         // (a part's route of the admin API as the admin API answers it: its method, path, viewer and body)
-        let meth = p54_arg_text(args, 0)
-        let at = p54_arg_text(args, 1)
+        let meth = call_arg_text(args, 0)
+        let at = call_arg_text(args, 1)
         for rt in bus.parts.all_routes(Json::null()) {
           if rt.meth == meth && (try { Ok(@api_routes.re(rt.path).matches(at)) } catch { e => Err(e) }) is Ok(true) {
-            let answered = (rt.answer)({ "path": Json::string(at), "viewer": p54_arg(args, 2).unwrap_or(Json::null()), "body": Json::string(p54_arg_text(args, 3)) })
+            let answered = (rt.answer)({ "path": Json::string(at), "viewer": call_arg(args, 2).unwrap_or(Json::null()), "body": Json::string(call_arg_text(args, 3)) })
             return Some(json_reply(200, { "answer": answered }))
           }
         }

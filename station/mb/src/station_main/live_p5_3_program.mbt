@@ -60,23 +60,23 @@ async fn P53Program::shell(self : P53Program, key : String, shell : P53Shell) ->
   self.shells[key] = shell
   guard self.shared else { return }
   self.bus.on_peer("$program.asked:" + key, async fn(_from, _ws, params, _bytes) {
-    let f = p53_text(params, "fn")
-    let args = match p53_get(params, "args") {
+    let f = jtext_or_empty(params, "fn")
+    let args = match jfield(params, "args") {
       Array(xs) => xs
       _ => []
     }
-    let v = (shell.asked)(f, args) catch { e => p53_obj([("$programError", p53_error_of(e))]) }
+    let v = (shell.asked)(f, args) catch { e => jobj_of([("$programError", p53_error_of(e))]) }
     (v, None)
   })
   self.bus.on_peer("$program.told:" + key, async fn(_from, _ws, params, _bytes) {
-    let args = match p53_get(params, "args") {
+    let args = match jfield(params, "args") {
       Array(xs) => xs
       _ => []
     }
-    (shell.told)(p53_text(params, "fn"), args)
+    (shell.told)(jtext_or_empty(params, "fn"), args)
     (Json::null(), None)
   })
-  ignore((self.bus.hub_ask.val)("program.shell", p53_obj([("key", p53_s(key))])))
+  ignore((self.bus.hub_ask.val)("program.shell", jobj_of([("key", jstr(key))])))
 }
 
 ///|
@@ -90,7 +90,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
   }
   let proc = spawn(
     bus.host,
-    p53_program(bus),
+    reader_program(bus),
     ["--sessions", "1", "--data", bus.data, "--sep", sep()],
     stdin_piped=true,
     stdout=Piped,
@@ -118,7 +118,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
           Err(b) =>
             for i in 0..<b.length() {
               if b[i] == b'\n' {
-                p53_log("warn", "readers", "the sessions' program said", fields=p53_obj([("line", p53_s(p53_utf8(err.to_bytes())))]))
+                slice_log("warn", "readers", "the sessions' program said", jobj_of([("line", jstr(p53_utf8(err.to_bytes())))]))
                 err.reset()
               } else {
                 err.write_byte(b[i])
@@ -132,7 +132,7 @@ async fn P53Program::start(self : P53Program) -> Unit raise P53Error {
       }
     }),
   )
-  ignore(self.post(p53_obj([("db", p53_s(@nodepath.join(sep(), [bus.data, "stillfail.db"])))])))
+  ignore(self.post(jobj_of([("db", jstr(@nodepath.join(sep(), [bus.data, "stillfail.db"])))])))
 }
 
 ///|
@@ -144,7 +144,7 @@ fn P53Program::post(self : P53Program, message : Json) -> Bool {
     Object(o) => for k, v in o { m[k] = v }
     _ => ()
   }
-  m["now"] = p53_n(self.bus.store.now().to_double())
+  m["now"] = jn(self.bus.store.now().to_double())
   self.sent += 1
   proc.write(@utf8.encode(Json::object(m).stringify() + "\n"))
 }
@@ -153,13 +153,13 @@ fn P53Program::post(self : P53Program, message : Json) -> Bool {
 /// Asks pseudo-actor `key` of the program `method` (`ActorsProgram.call`): its value, null where the program is gone.
 async fn P53Program::call(self : P53Program, key : String, method : String, args : Array[Json]) -> Json {
   if self.shared {
-    return (self.bus.hub_ask.val)("program.call", p53_obj([("actor", p53_s(key)), ("method", p53_s(method)), ("args", Json::array(args))]))
+    return (self.bus.hub_ask.val)("program.call", jobj_of([("actor", jstr(key)), ("method", jstr(method)), ("args", Json::array(args))]))
   }
   self.next += 1
   let id = self.next
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
   self.calls[id] = d
-  if !self.post(p53_obj([("call", p53_i(id)), ("actor", p53_s(key)), ("method", p53_s(method)), ("args", Json::array(args))])) {
+  if !self.post(jobj_of([("call", ji(id)), ("actor", jstr(key)), ("method", jstr(method)), ("args", Json::array(args))])) {
     self.calls.remove(id)
     return Json::null()
   }
@@ -171,21 +171,21 @@ async fn P53Program::call(self : P53Program, key : String, method : String, args
 fn P53Program::said(self : P53Program, line : String) -> Unit {
   guard line != "" else { return }
   guard attempt(() => @json.parse(line)) is Ok(said) else {
-    p53_log("warn", "readers", "the sessions' program said what is not JSON", fields=p53_obj([("line", p53_s(line))]))
+    slice_log("warn", "readers", "the sessions' program said what is not JSON", jobj_of([("line", jstr(line))]))
     return
   }
-  if p53_true(said, "ready") {
+  if jtrue(said, "ready") {
     return
   }
-  match p53_num(said, "seen") {
+  match jnum_of(said, "seen") {
     Some(n) => self.seen = n.to_int()
     None => ()
   }
-  match p53_num(said, "active") {
+  match jnum_of(said, "active") {
     Some(n) => self.active = n.to_int()
     None => ()
   }
-  match p53_get(said, "changes") {
+  match jfield(said, "changes") {
     Array(changes) => {
       for c in changes {
         self.bus.notify_store(c)
@@ -194,18 +194,18 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     }
     _ => ()
   }
-  match p53_num(said, "after") {
+  match jnum_of(said, "after") {
     Some(id) => {
       let id = id.to_int()
       let gone = Ref(false)
       self.timers[id] = gone
-      let ms = p53_num(said, "ms").unwrap_or(0.0)
+      let ms = jnum_of(said, "ms").unwrap_or(0.0)
       ignore(
         self.bus.host.rt.fork_daemon("the program's wait", on_error=e => @host.note("the program's wait failed: \{e}"), async fn() {
           @effect.sleep(ms.to_int()) // timer: the sessions' program's own wait (its retries, deadlines and sweeps), kept on the station's clock
           if !gone.val {
             self.timers.remove(id)
-            ignore(self.post(p53_obj([("due", p53_i(id))])))
+            ignore(self.post(jobj_of([("due", ji(id))])))
           }
         }),
       )
@@ -213,7 +213,7 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     }
     None => ()
   }
-  match p53_num(said, "cancel") {
+  match jnum_of(said, "cancel") {
     Some(id) => {
       match self.timers.get(id.to_int()) {
         Some(gone) => gone.val = true
@@ -224,14 +224,14 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     }
     None => ()
   }
-  match p53_num(said, "returned") {
+  match jnum_of(said, "returned") {
     Some(id) => {
       match self.calls.get(id.to_int()) {
         Some(d) => {
           self.calls.remove(id.to_int())
-          match p53_str(said, "error") {
+          match jtext(said, "error") {
             Some(e) => ignore(d.fail(P53Error(e)))
-            None => ignore(d.succeed(p53_get(said, "value")))
+            None => ignore(d.succeed(jfield(said, "value")))
           }
         }
         None => ()
@@ -240,26 +240,26 @@ fn P53Program::said(self : P53Program, line : String) -> Unit {
     }
     None => ()
   }
-  guard p53_str(said, "actor") is Some(key) && self.shells.get(key) is Some(shell) else { return }
-  let args = match p53_get(said, "args") {
+  guard jtext(said, "actor") is Some(key) && self.shells.get(key) is Some(shell) else { return }
+  let args = match jfield(said, "args") {
     Array(xs) => xs
     _ => []
   }
-  match p53_num(said, "rpc") {
+  match jnum_of(said, "rpc") {
     Some(id) => {
-      let f = p53_text(said, "fn")
+      let f = jtext_or_empty(said, "fn")
       ignore(
         self.bus.host.rt.fork_daemon("the program's ask", on_error=e => @host.note("the program's ask failed: \{e}"), async fn() {
           let answer = match (try { Ok((shell.asked)(f, args)) } catch { e => Err(e) }) {
-            Ok(v) => p53_obj([("answer", p53_n(id)), ("value", v)])
-            Err(e) => p53_obj([("answer", p53_n(id)), ("error", p53_error_of(e))])
+            Ok(v) => jobj_of([("answer", jn(id)), ("value", v)])
+            Err(e) => jobj_of([("answer", jn(id)), ("error", p53_error_of(e))])
           }
           ignore(self.post(answer))
         }),
       )
     }
     None =>
-      match p53_str(said, "tell") {
+      match jtext(said, "tell") {
         Some(f) => (shell.told)(f, args)
         None => ()
       }
@@ -280,13 +280,13 @@ fn p53_error_of(e : Error) -> Json {
     @jobs_host.Refused(m) | @jobs_host.Unreached(m) | @jobs_host.NoLink(m) | @jobs_host.NoBytes(m) => m
     _ => p53_words(e)
   }
-  p53_obj([
-    ("id", p53_i(0)),
-    ("message", p53_s(message)),
-    ("said", p53_b(false)),
-    ("missing", p53_b(false)),
-    ("runtime", p53_s("claude")),
-    ("kind", p53_s(kind)),
+  jobj_of([
+    ("id", ji(0)),
+    ("message", jstr(message)),
+    ("said", jb(false)),
+    ("missing", jb(false)),
+    ("runtime", jstr("claude")),
+    ("kind", jstr(kind)),
   ])
 }
 
@@ -306,7 +306,7 @@ fn P53Program::ended(self : P53Program, code : Int?, signal : String?) -> Unit {
   }
   self.timers.clear()
   if !asked && !self.bus.stopped.is_done() {
-    p53_log("error", "session", "the program running the sessions ended; the station ends with it, as in a crash", fields=p53_obj([("code", match code { Some(c) => p53_i(c); None => Json::null() }), ("signal", p53_opt(signal))]))
+    slice_log("error", "session", "the program running the sessions ended; the station ends with it, as in a crash", jobj_of([("code", match code { Some(c) => ji(c); None => Json::null() }), ("signal", jopt(signal))]))
     (self.bus.stop_station)("the sessions' program ended")
   }
 }

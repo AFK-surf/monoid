@@ -27,8 +27,10 @@
   its tools and door places the parts', parts.mbt), health.json and the heartbeat, `heap`, a handover (what the parts
   carry) and its taking up. It makes the composition bus once the store opens (`live_bus.mbt`: what services.ts's
   layers give each other) and starts the live slices on it, a file family each (`live_p5_<N>_*.mbt`, each its
-  `start_live_p5_<N>`): P5-1 first, then on a whole station P5-2, P5-3, P5-4 and P5-5 in that order (P5-3 finds the
-  hub's sessions' program there and mounts `#jobs` and `#remote` on it); a station that only runs tasks (`--rig`, or
+  `start_live_p5_<N>`; the JSON readers and makers, the `Json`/`JValue` conversions, the log line and the other small
+  helpers they share are `live_util.mbt`'s, never a slice's prefixed copy): P5-1 first, then on a whole station P5-2,
+  P5-3, P5-4 and P5-5 in that order (P5-3 finds the hub's sessions' program there and mounts `#jobs` and `#remote` on
+  it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
   (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
   what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,

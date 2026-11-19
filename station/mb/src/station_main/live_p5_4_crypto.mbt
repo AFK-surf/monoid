@@ -9,16 +9,6 @@
 // person granted to one command.
 
 ///|
-fn p54_hex(b : Bytes) -> String {
-  @drive.hex(b)
-}
-
-///|
-fn p54_unhex(s : String) -> Bytes {
-  @vault_crypto.unhex(s)
-}
-
-///|
 fn p54_cat(parts : Array[Bytes]) -> Bytes {
   let out = @buffer.new()
   for p in parts {
@@ -130,8 +120,8 @@ fn p54_sha256(host : @host.Host, data : Bytes) -> Bytes {
 
 ///|
 fn p54_hmac256(host : @host.Host, key : Bytes, data : Bytes) -> Bytes {
-  match (try { Ok(host.shell_sync("crypto.hmacSha256", { "key": Json::string(p54_hex(key)), "data": Json::string(p54_hex(data)) })) } catch { e => Err(e) }) {
-    Ok(String(h)) => p54_unhex(h)
+  match (try { Ok(host.shell_sync("crypto.hmacSha256", { "key": Json::string(@drive.hex(key)), "data": Json::string(@drive.hex(data)) })) } catch { e => Err(e) }) {
+    Ok(String(h)) => @vault_crypto.unhex(h)
     _ => b""
   }
 }
@@ -527,8 +517,8 @@ fn p54_key_ref(host : @host.Host, k : P54Key) -> @vault_service.KeyRef raise {
   match k {
     P256(d) => { handle, kind: "p256", public: [p54_p256_public(d)] }
     Ed(seed) => {
-      let said = host.shell_sync("ed25519.sign", { "seed": Json::string(p54_hex(seed)), "message": Json::string("") })
-      { handle, kind: "ed25519", public: [p54_unhex(p54_text(Some(said), "publicKey").unwrap_or(""))] }
+      let said = host.shell_sync("ed25519.sign", { "seed": Json::string(@drive.hex(seed)), "message": Json::string("") })
+      { handle, kind: "ed25519", public: [@vault_crypto.unhex(jtext(said, "publicKey").unwrap_or(""))] }
     }
     Rsa(parts) => { handle, kind: "rsa", public: [p54_strip(parts[1]), p54_strip(parts[0])] }
   }
@@ -610,9 +600,9 @@ fn p54_pkcs8(host : @host.Host, k : P54Key) -> Bytes raise {
 /// DigestInfo's prefix for `hash` (RFC 8017 §9.2).
 fn p54_digest_info(hash : String) -> Bytes raise {
   match hash {
-    "sha1" => p54_unhex("3021300906052b0e03021a05000414")
-    "sha256" => p54_unhex("3031300d060960864801650304020105000420")
-    "sha512" => p54_unhex("3051300d060960864801650304020305000440")
+    "sha1" => @vault_crypto.unhex("3021300906052b0e03021a05000414")
+    "sha256" => @vault_crypto.unhex("3031300d060960864801650304020105000420")
+    "sha512" => @vault_crypto.unhex("3051300d060960864801650304020305000440")
     _ => raise Failure("no RSA signature with \{hash}")
   }
 }
@@ -658,7 +648,7 @@ fn p54_key_ops(host : @host.Host) -> (
     },
     async fn(seed) { p54_key_ref(host, Ed(seed)) },
     async fn(jwk) {
-      let part = (k : String) => @vault_crypto.unb64(p54_text(Some(jwk), k).unwrap_or("").replace_all(old="-", new="+").replace_all(old="_", new="/"))
+      let part = (k : String) => @vault_crypto.unb64(jtext(jwk, k).unwrap_or("").replace_all(old="-", new="+").replace_all(old="_", new="/"))
       p54_key_ref(host, Rsa(["n", "e", "d", "p", "q", "dp", "dq", "qi"].map(k => p54_strip(part(k)))))
     },
     async fn(r) { p54_pem("PRIVATE KEY", p54_pkcs8(host, p54_key_of(r))) },
@@ -669,8 +659,8 @@ fn p54_key_ops(host : @host.Host) -> (
           p54_der_seq([p54_der_uint(p54_sub(raw, 0, 32)), p54_der_uint(p54_sub(raw, 32, 64))])
         }
         Ed(seed) => {
-          let said = host.shell_sync("ed25519.sign", { "seed": Json::string(p54_hex(seed)), "message": Json::string(p54_hex(data)) })
-          p54_unhex(p54_text(Some(said), "signature").unwrap_or(""))
+          let said = host.shell_sync("ed25519.sign", { "seed": Json::string(@drive.hex(seed)), "message": Json::string(@drive.hex(data)) })
+          @vault_crypto.unhex(jtext(said, "signature").unwrap_or(""))
         }
         Rsa(parts) => p54_rsa_sign(host, parts, hash, data)
       }

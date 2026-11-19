@@ -8,29 +8,8 @@
 using @jsjson {type JValue as J}
 
 ///|
-fn jstr_of(v : J) -> String {
-  match v {
-    Str(s) => @jsjson.text(s)
-    _ => ""
-  }
-}
-
-///|
-fn j_s(s : String) -> J {
-  Str(@jsjson.units(s))
-}
-
-///|
 fn j_undef() -> J {
   Obj([(@jsjson.units("$u"), Num(1.0))])
-}
-
-///|
-fn j_opt(s : String?) -> J {
-  match s {
-    Some(t) => j_s(t)
-    None => Null
-  }
 }
 
 ///|
@@ -111,7 +90,7 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
 /// (The listener is async and a change is told on the bus's own turn: kept there, not called there.) Not answered, it
 /// failed every state an agent recorded (`no such store method: subscribe`).
 fn P52::store_subscribe(self : P52, listener : J) -> J {
-  let id = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(listener), "$fn") }), "f")
+  let id = jv_num(listener, "$fn")
     .unwrap_or(-1.0)
     .to_int()
   let seen : Array[Json] = []
@@ -124,7 +103,7 @@ fn P52::store_subscribe(self : P52, listener : J) -> J {
     let told = chat_state.callbacks.get(id)
     chat_state.callbacks.remove(id)
     match told {
-      Some(f) => for change in seen { f([jv_of(change)]) |> ignore }
+      Some(f) => for change in seen { f([to_jv(change)]) |> ignore }
       None => ()
     }
     Null
@@ -147,7 +126,7 @@ fn P52::peers_callback(self : P52) -> J {
           Some(Str(u)) => @jsjson.text(u)
           _ => ""
         }
-        jv_of(self.storage_call("peers.call", [jstr(station), p52_json_of_jv(given.get(1).unwrap_or(Null))]))
+        to_jv(self.storage_call("peers.call", [jstr(station), of_jv(given.get(1).unwrap_or(Null))]))
       }
       chat_state.peers_cb = Some(id)
       id
@@ -181,13 +160,13 @@ async fn P52::storage_call(
     "hub.notify" => {
       self
       .the_hub()
-      .act(jtext(Json::object({ "k": a(0) }), "k").unwrap_or(""), "notify", args=[
+      .act(as_text(a(0)).unwrap_or(""), "notify", args=[
         a(1),
       ])
       Json::null()
     }
     "hub.setOpening" => {
-      chat_state.openings[a(0).stringify()] = jv_of(a(1))
+      chat_state.openings[a(0).stringify()] = to_jv(a(1))
       Json::null()
     }
     "fn.archiveChat" => {
@@ -250,10 +229,10 @@ async fn P52::storage_call(
     }
     _ =>
       if name.has_prefix("log.") {
-        live_log(
+        slice_log(
           name[4:].to_owned(),
-          jtext(Json::object({ "a": a(0) }), "a").unwrap_or("storage"),
-          jtext(Json::object({ "m": a(1) }), "m").unwrap_or(""),
+          as_text(a(0)).unwrap_or("storage"),
+          as_text(a(1)).unwrap_or(""),
           a(2),
         )
         Json::null()
@@ -261,7 +240,7 @@ async fn P52::storage_call(
         match self.storage_world(name, args) {
           Some(v) => v
           // (the rest as the conversations' world answers it: the hub's methods, its readers, the files, the deps)
-          None => p52_json_of_jv(self.chats_answer(name, args.map(jv_of), args))
+          None => of_jv(self.chats_answer(name, args.map(to_jv), args))
         }
       }
   }
@@ -275,22 +254,22 @@ fn thrown_of(e : Error, thrown : Ref[J]) -> Error {
   match e {
     @session_chats.Thrown(code, _) => {
       if code != "" {
-        thrown.val = jv_of({ "code": Json::string(code) })
+        thrown.val = to_jv({ "code": Json::string(code) })
       }
       e
     }
     _ if @sql.busy(e) => {
       // (node:sqlite's SQLITE_BUSY: conversations.mbt `state_write` takes it for StateWriteBusy)
-      thrown.val = jv_of({ "errcode": Json::number(5.0) })
+      thrown.val = to_jv({ "errcode": Json::number(5.0) })
       @session_chats.Thrown("SqliteError", said_of(e))
     }
     @drive.FsError(f) => {
-      thrown.val = jv_of({ "code": Json::string(f.code) })
+      thrown.val = to_jv({ "code": Json::string(f.code) })
       @session_chats.Thrown(f.code, f.message)
     }
     @store_threads.MessageWriteBusy => @session_chats.Thrown("MessageWriteBusy", "message write is busy")
     @store_threads.CcSessionsUnavailable(ss) => {
-      thrown.val = jv_of({ "sessions": Json::array(ss.map(Json::string)) })
+      thrown.val = to_jv({ "sessions": Json::array(ss.map(Json::string)) })
       @session_chats.Thrown("CcSessionsUnavailable", "cc sessions unavailable")
     }
     @store_threads.DecisionSessionsUnavailable =>
@@ -305,7 +284,7 @@ fn thrown_of(e : Error, thrown : Ref[J]) -> Error {
 ///|
 /// One of the names the conversations ask (session_chats `World.call`).
 async fn P52::chats_call(self : P52, name : String, args : Array[J], thrown : Ref[J]) -> J {
-  let given = args.map(x => p52_json_of_jv(x))
+  let given = args.map(x => of_jv(x))
   thrown.val = Null
   let r = Ok(self.chats_answer(name, args, given)) catch { e => Err(e) }
   match r {
@@ -335,7 +314,7 @@ async fn P52::chats_answer(
   let db = self.bus.db
   match part {
     "store" if meth == "subscribe" => self.store_subscribe(raw.get(0).unwrap_or(Null))
-    "store" => jv_of(self.store(meth, args))
+    "store" => to_jv(self.store(meth, args))
     "hub" =>
       match meth {
         "has" => {
@@ -364,13 +343,13 @@ async fn P52::chats_answer(
         "chatProp" =>
           if s(0) == @session_hub.internal_connect {
             match s(1) {
-              "botUserId" => j_s("UEMBER")
+              "botUserId" => @jsjson.JValue::of_string("UEMBER")
               _ => j_undef()
             }
           } else {
             match connect_surfaces.get(s(0)).map(c => jfield(c, s(1))) {
               Some(Null) | None => j_undef()
-              Some(v) => jv_of(v)
+              Some(v) => to_jv(v)
             }
           }
         "sameChat" => J::Bool(s(0) == s(1))
@@ -382,14 +361,14 @@ async fn P52::chats_answer(
         "hasActor" => J::Bool(self.the_hub().actors.contains(s(0)))
         "actorId" =>
           if self.the_hub().actors.contains(s(0)) {
-            j_s(s(0))
+            @jsjson.JValue::of_string(s(0))
           } else {
             Null
           }
         "latestMessages" =>
-          jv_of(@readops.latest_messages(db, { "thread": a(0), "limit": a(1) }))
+          to_jv(@readops.latest_messages(db, { "thread": a(0), "limit": a(1) }))
         "openedChatSaid" =>
-          jv_of(
+          to_jv(
             @readops.opened_chat_said(db, {
               "thread": a(0),
               "author": a(1),
@@ -397,16 +376,16 @@ async fn P52::chats_answer(
             }),
           )
         "historyMessages" =>
-          jv_of(
+          to_jv(
             @readops.chat_history_messages(db, {
               "thread": a(0),
               "before": a(1),
               "limit": a(2),
             }),
           )
-        "historyPendingCard" => jv_of(@readops.pending_card_number(db, a(0)))
+        "historyPendingCard" => to_jv(@readops.pending_card_number(db, a(0)))
         "stateQuestion" =>
-          jv_of(
+          to_jv(
             @readops.state_question(db, {
               "key": a(0),
               "threads": a(1),
@@ -414,14 +393,14 @@ async fn P52::chats_answer(
             }),
           )
         "statePendingCard" =>
-          jv_of(@readops.state_pending_card(db, { "threads": a(0) }))
+          to_jv(@readops.state_pending_card(db, { "threads": a(0) }))
         "reviewPendingCard" =>
-          jv_of(@readops.review_pending_card(db, { "thread": a(0) }))
-        "link" => j_opt((self.the_hub().world.link)(s(0)))
-        "workspaces" => J::Arr(self.the_hub().workspaces().map(j_s))
-        "station" => j_opt((self.the_hub().world.station)())
+          to_jv(@readops.review_pending_card(db, { "thread": a(0) }))
+        "link" => @jsjson.JValue::of_opt_string((self.the_hub().world.link)(s(0)))
+        "workspaces" => J::Arr(self.the_hub().workspaces().map(@jsjson.JValue::of_string))
+        "station" => @jsjson.JValue::of_opt_string((self.the_hub().world.station)())
         "wsOf" =>
-          j_opt(
+          @jsjson.JValue::of_opt_string(
             self
             .the_hub()
             .ws_of(
@@ -431,10 +410,10 @@ async fn P52::chats_answer(
               },
             ),
           )
-        "surface" => j_s(self.the_hub().surface(s(0)))
-        "nextTs" => j_s(self.the_hub().next_ts())
+        "surface" => @jsjson.JValue::of_string(self.the_hub().surface(s(0)))
+        "nextTs" => @jsjson.JValue::of_string(self.the_hub().next_ts())
         "now" => J::Num(wall_ms().to_double())
-        "config" => jv_of(self.config)
+        "config" => to_jv(self.config)
         // (hub.ts `peers()`: how a message for a chat moved to another station is carried there, messages.ts
         // `fromPeer`; one function kept, as the TypeScript's hook is one)
         "peers" => if self.bound() { self.peers_callback() } else { Null }
@@ -442,7 +421,7 @@ async fn P52::chats_answer(
           let (text, files) = self
             .the_hub()
             .fetched(s(0), s(1), s(2), args[3:].to_owned())
-          J::Arr([j_s(text), J::Arr(files.map(jv_of))])
+          J::Arr([@jsjson.JValue::of_string(text), J::Arr(files.map(to_jv))])
         }
         // (hub.ts `fork(effect)` of review.ts `suggestArchive`: the review of a chat that ended all_done, run in the
         // background on the hub's runtime, a failure of it the review's own)
@@ -458,23 +437,23 @@ async fn P52::chats_answer(
           Null
         }
         "fork" => Null
-        _ => jv_of(@session_hub.hub_call(self.the_hub(), meth, args))
+        _ => to_jv(@session_hub.hub_call(self.the_hub(), meth, args))
       }
     "chat" | "chatOf" => {
       let connect = s(0)
       if connect == @session_hub.internal_connect {
         match meth {
-          "post" => j_s(@session_hub.next_ts_at(wall_ms().to_double()))
+          "post" => @jsjson.JValue::of_string(@session_hub.next_ts_at(wall_ms().to_double()))
           "userName" =>
             match self.user_name(connect, s(1)) {
-              Some(n) => j_s(n)
+              Some(n) => @jsjson.JValue::of_string(n)
               None => Null
             }
-          "botUserId" => j_s("UEMBER")
+          "botUserId" => @jsjson.JValue::of_string("UEMBER")
           _ => j_undef()
         }
       } else {
-        jv_of(
+        to_jv(
           (self.bus.coord_ask.val)("chat." + meth, {
             "connect": jstr(connect),
             "args": Json::array(args[1:].to_owned()),
@@ -486,7 +465,7 @@ async fn P52::chats_answer(
       let key = s(0)
       guard self.actors_program is Some(p) else { return Null }
       match p.actors.get(key) {
-        Some(actor) => jv_of(actor.hub_asked(meth, args[1:].to_owned()))
+        Some(actor) => to_jv(actor.hub_asked(meth, args[1:].to_owned()))
         None => Null
       }
     }
@@ -578,7 +557,7 @@ async fn P52::chats_answer(
         _ => raise LiveError("no state op \{meth}")
       }
     "fn" => {
-      let id = jnum_of(Json::object({ "f": jfield(a(0), "$fn") }), "f")
+      let id = jnum_of(a(0), "$fn")
         .unwrap_or(-1.0)
         .to_int()
       match chat_state.callbacks.get(id) {
@@ -596,10 +575,10 @@ async fn P52::chats_answer(
         }
         "get" =>
           match db.all(sql, params) {
-            [row, ..] => jv_of(Json::object(row))
+            [row, ..] => to_jv(Json::object(row))
             _ => j_undef()
           }
-        "all" => J::Arr(db.all(sql, params).map(r => jv_of(Json::object(r))))
+        "all" => J::Arr(db.all(sql, params).map(r => to_jv(Json::object(r))))
         _ => {
           ignore(db.run(sql, params))
           Null
@@ -607,7 +586,7 @@ async fn P52::chats_answer(
       }
     }
     "log" => {
-      live_log(meth, s(0), s(1), a(2))
+      slice_log(meth, s(0), s(1), a(2))
       Null
     }
     "wall" => {
@@ -619,15 +598,15 @@ async fn P52::chats_answer(
     }
     "random" =>
       if meth == "uuid" {
-        j_s(@drive.random_uuid())
+        @jsjson.JValue::of_string(@drive.random_uuid())
       } else {
-        let n = jnum_of(Json::object({ "n": a(0) }), "n")
+        let n = as_num(a(0))
           .unwrap_or(16.0)
           .to_int()
-        j_s(@drive.hex(@drive.random_bytes(n)))
+        @jsjson.JValue::of_string(@drive.hex(@drive.random_bytes(n)))
       }
-    "fs" => jv_of(self.fs_op(meth, args))
-    "os" => j_s(homedir())
+    "fs" => to_jv(self.fs_op(meth, args))
+    "os" => @jsjson.JValue::of_string(homedir())
     "path" => {
       let parts = args.map(x => {
         match x {
@@ -649,24 +628,24 @@ async fn P52::chats_answer(
       } else {
         parts[from:].to_owned()
       }
-      j_s(@nodepath.join(sep(), base))
+      @jsjson.JValue::of_string(@nodepath.join(sep(), base))
     }
     "files" =>
       if meth == "profileFilesRead" {
         Null
       } else {
         match (self.host.read_text(s(0)) catch { _ => None }) {
-          Some(t) => j_s(t)
+          Some(t) => @jsjson.JValue::of_string(t)
           None => Null
         }
       }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
     "dep" => self.dep(meth, raw, args)
-    "presets" => jv_of(self.presets_answer(meth, args))
+    "presets" => to_jv(self.presets_answer(meth, args))
     "accounts" =>
-      jv_of((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
+      to_jv((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
     "logins" =>
-      jv_of((self.bus.ui_ask.val)("logins." + meth, Json::array(args)))
+      to_jv((self.bus.ui_ask.val)("logins." + meth, Json::array(args)))
     "places" =>
       match meth {
         "mac" => J::Bool(platform() == "darwin")
@@ -674,8 +653,8 @@ async fn P52::chats_answer(
         "file" => raw.get(0).unwrap_or(Null)
         _ => Null
       }
-    "repoIndex" => jv_of(self.repo_index_answer(meth, args))
-    "net" => jv_of(self.net_fetch(meth, args))
+    "repoIndex" => to_jv(self.repo_index_answer(meth, args))
+    "net" => to_jv(self.net_fetch(meth, args))
     // (a runtime session of its own a conversation opens, apart from any actor's: regenerate_title.mbt's, a chat's
     // new title asked of one of its agents' runtimes, regenerate-title.ts `driver.open`)
     "driver" if meth == "open" => self.side_open(s(0), a(1), raw.get(2).unwrap_or(Null))
@@ -696,7 +675,7 @@ async fn P52::chats_answer(
 /// events kept for `events` (a callback of theirs) as they come. A handle of it is answered (`{"$side": n}`).
 async fn P52::side_open(self : P52, runtime : String, options : Json, events : J) -> J {
   guard self.drivers.get(runtime) is Some(driver) else { raise LiveError("no driver for \{runtime}") }
-  let callback = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(events), "$fn") }), "f").unwrap_or(-1.0).to_int()
+  let callback = jv_num(events, "$fn").unwrap_or(-1.0).to_int()
   let told : Array[J] = []
   let wake : Ref[@effect.Deferred[Unit]] = Ref(@effect.Deferred::new())
   let agent = (driver.open)(options, event => {
@@ -712,7 +691,7 @@ async fn P52::side_open(self : P52, runtime : String, options : Json, events : J
 ///|
 /// What a conversation asks of a runtime session it opened (`agent.<meth>`, its handle `handle`).
 async fn P52::side_agent(_self : P52, meth : String, handle : Json, text : String) -> J {
-  let n = jnum_of(Json::object({ "n": jfield(handle, "$side") }), "n").unwrap_or(-1.0).to_int()
+  let n = jnum_of(handle, "$side").unwrap_or(-1.0).to_int()
   guard chat_state.sides.get(n) is Some(side) else { raise LiveError("no runtime session \{n} opened here") }
   match meth {
     "prompt" => {
@@ -894,7 +873,7 @@ async fn host_fs_op(host : @host.Host, op : String, args : Array[Json]) -> Json 
       Json::null()
     }
     "symlink" => {
-      if live_symlink_ffi(live_c(s(0)), live_c(s(1))) != 0 {
+      if live_symlink_ffi(cstr(s(0)), cstr(s(1))) != 0 {
         raise @session_chats.Thrown(
           "EEXIST",
           "EEXIST: file already exists, symlink '\{s(0)}' -> '\{s(1)}'",
@@ -973,10 +952,10 @@ async fn P52::dep(
   }
   match name {
     "USED_WITHIN_MS" => J::Num(@session_hub.used_within_ms)
-    "accessKind" => j_s(@session_hub.access_kind(a(0)))
+    "accessKind" => @jsjson.JValue::of_string(@session_hub.access_kind(a(0)))
     "agyBaseModel" => {
       let (model, effort) = @session_hub.agy_base_model(s(0))
-      jv_of(
+      to_jv(
         match effort {
           Some(e) => { "model": jstr(model), "effort": jstr(e) }
           None => { "model": jstr(model) }
@@ -985,12 +964,12 @@ async fn P52::dep(
     }
     "devinFusionBase" => {
       let model = @session_hub.devin_fusion_base(s(0))
-      jv_of({ "model": jstr(model) })
+      to_jv({ "model": jstr(model) })
     }
     "splitDevinFusion" =>
       match @session_hub.split_devin_fusion(s(0)) {
         Some((lead, effort, side)) =>
-          jv_of(
+          to_jv(
             match effort {
               Some(e) =>
                 { "lead": jstr(lead), "effort": jstr(e), "side": jstr(side) }
@@ -999,7 +978,7 @@ async fn P52::dep(
           )
         None => Null
       }
-    "askWhich" => j_s(@session_hub.ask_which(jitems(a(0)), s(1)))
+    "askWhich" => @jsjson.JValue::of_string(@session_hub.ask_which(jitems(a(0)), s(1)))
     "candidates" =>
       J::Arr(
         @session_hub.candidates(
@@ -1009,22 +988,22 @@ async fn P52::dep(
             _ => None
           },
           leads=a(2) is True,
-        ).map(jv_of),
+        ).map(to_jv),
       )
     "choose" =>
-      jv_of(@session_hub.choose(jitems(a(0)), jitems(a(1)), leads=jitems(a(2))))
+      to_jv(@session_hub.choose(jitems(a(0)), jitems(a(1)), leads=jitems(a(2))))
     "contextAsked" =>
       match @session_hub.context_asked(self.words, opt(a(0)), self.lang()) {
         None => j_undef()
         Some(None) => Null
         Some(Some(n)) => J::Num(n)
       }
-    "firstLine" => j_s(@session_hub.first_line(s(0)))
+    "firstLine" => @jsjson.JValue::of_string(@session_hub.first_line(s(0)))
     "fromBefore" => J::Bool(@session_storage.from_before(s(0)))
     "iso" =>
-      j_s(
+      @jsjson.JValue::of_string(
         @session_hub.iso(
-          jnum_of(Json::object({ "n": a(0) }), "n").unwrap_or(0.0),
+          as_num(a(0)).unwrap_or(0.0),
         ),
       )
     "isSlackMethod" => J::Bool(@session_hub.is_slack_method(s(0)))
@@ -1033,7 +1012,7 @@ async fn P52::dep(
       match @session_storage.linked_session(s(0)) {
         Some((key, n)) =>
           J::Arr([
-            j_s(key),
+            @jsjson.JValue::of_string(key),
             match n {
               Some(x) => J::Num(x.to_double())
               None => Null
@@ -1041,7 +1020,7 @@ async fn P52::dep(
           ])
         None => Null
       }
-    "linkedStation" => j_opt(@session_storage.linked_station(s(0)))
+    "linkedStation" => @jsjson.JValue::of_opt_string(@session_storage.linked_station(s(0)))
     "named" =>
       match
         storage.named(
@@ -1051,9 +1030,9 @@ async fn P52::dep(
             _ => None
           },
         ) {
-        Thread(t) => jv_of({ "type": jstr("thread"), "thread": t })
+        Thread(t) => to_jv({ "type": jstr("thread"), "thread": t })
         Session(key, n) =>
-          jv_of({
+          to_jv({
             "type": jstr("session"),
             "key": jstr(key),
             "entry": match n {
@@ -1073,8 +1052,8 @@ async fn P52::dep(
           write=a(2) is True,
         ),
       )
-    "scopeOf" => j_opt(storage.scope_of(s(0)))
-    "sessionThreadOf" => jv_of(storage.session_thread_of(s(0)))
+    "scopeOf" => @jsjson.JValue::of_opt_string(storage.scope_of(s(0)))
+    "sessionThreadOf" => to_jv(storage.session_thread_of(s(0)))
     "peersOf" =>
       match storage.peers_of(s(0)) {
         Some(call) => {
@@ -1086,7 +1065,7 @@ async fn P52::dep(
               Some(Str(u)) => @jsjson.text(u)
               _ => ""
             }
-            jv_of(call(station, p52_json_of_jv(given.get(1).unwrap_or(Null))))
+            to_jv(call(station, of_jv(given.get(1).unwrap_or(Null))))
           }
           Obj([(@jsjson.units("$fn"), Num(id.to_double()))])
         }
@@ -1105,7 +1084,7 @@ async fn P52::dep(
           }),
         )
         .map(l => {
-          jv_of({
+          to_jv({
             "path": jstr(l.path),
             "name": jstr(l.name),
             "size": jn(l.size),
@@ -1114,21 +1093,21 @@ async fn P52::dep(
       )
     "needArg" =>
       match a(0) {
-        Object(m) => j_opt(@session_hub.need_arg(m, a(1), s(2)))
+        Object(m) => @jsjson.JValue::of_opt_string(@session_hub.need_arg(m, a(1), s(2)))
         _ => Null
       }
     "stateArg" =>
       match @session_hub.state_arg(opt(a(0))) {
-        Some((state, said)) => J::Arr([jv_of(state), j_s(said)])
+        Some((state, said)) => J::Arr([to_jv(state), @jsjson.JValue::of_string(said)])
         None => Null
       }
     "cardArg" =>
       match @session_hub.card_arg(opt(a(0)), opt(a(1))) {
-        Some(c) => jv_of(c)
+        Some(c) => to_jv(c)
         None => Null
       }
-    "cardSaid" => j_s(@session_hub.card_said(a(0)))
-    "placeFigures" => j_s(@session_hub.place_figures(s(0), jitems(a(1))))
+    "cardSaid" => @jsjson.JValue::of_string(@session_hub.card_said(a(0)))
+    "placeFigures" => @jsjson.JValue::of_string(@session_hub.place_figures(s(0), jitems(a(1))))
     "slackWithFiles" => {
       let (text, rest) = @session_hub.slack_with_files(
         self.words,
@@ -1136,7 +1115,7 @@ async fn P52::dep(
         jitems(a(1)),
         s(2),
       )
-      J::Arr([j_s(text), j_s(rest)])
+      J::Arr([@jsjson.JValue::of_string(text), @jsjson.JValue::of_string(rest)])
     }
     "prepareLocalLinks" =>
       match
@@ -1151,30 +1130,30 @@ async fn P52::dep(
           s(2),
         ) {
         Ok((text, paths)) =>
-          jv_of({
+          to_jv({
             "text": jstr(text),
             "paths": Json::array(paths.map(Json::string)),
           })
         Err(why) => raise @session_chats.Thrown("", why)
       }
-    "threadsToldOf" => J::Arr(self.the_hub().threads_told_of(s(0)).map(j_s))
+    "threadsToldOf" => J::Arr(self.the_hub().threads_told_of(s(0)).map(@jsjson.JValue::of_string))
     "newSession" => {
       let (key, thread) = self.the_hub().new_session(a(0), lang=self.lang())
-      J::Arr([j_s(key), jv_of(thread)])
+      J::Arr([@jsjson.JValue::of_string(key), to_jv(thread)])
     }
     // (agents/profiles.ts `profileRuntimes`: the runtimes an account runs, by its access; not a hub config's own list)
-    "profileRuntimes" => J::Arr(@agent_runtimes.profile_runtimes(raw.get(0).unwrap_or(Null)).map(j_s))
+    "profileRuntimes" => J::Arr(@agent_runtimes.profile_runtimes(raw.get(0).unwrap_or(Null)).map(@jsjson.JValue::of_string))
     "profileEnv" => {
-      let pairs = fields_pairs(@agent_runtimes.profile_env(jv_of(a(0)), s(1)))
-      Obj(pairs.map(p => (@jsjson.units(p.0), j_s(p.1))))
+      let pairs = fields_pairs(@agent_runtimes.profile_env(to_jv(a(0)), s(1)))
+      Obj(pairs.map(p => (@jsjson.units(p.0), @jsjson.JValue::of_string(p.1))))
     }
     "usable" => J::Bool(@session_hub.usable(a(0), None))
     // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
     // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
-    "shownFactsSoon" => jv_of(shown_facts(self.host, s(0)))
-    "makeReadStore" => j_s("readStore")
+    "shownFactsSoon" => to_jv(shown_facts(self.host, s(0)))
+    "makeReadStore" => @jsjson.JValue::of_string("readStore")
     "readStateQuestion" =>
-      jv_of(
+      to_jv(
         @readops.state_question(self.bus.db, {
           "key": a(1),
           "threads": a(2),
@@ -1182,11 +1161,11 @@ async fn P52::dep(
         }),
       )
     "readStatePendingCard" =>
-      jv_of(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
+      to_jv(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
     "localeCompare" => J::Num(@drive.collate(s(0), s(1)).to_double())
-    "policyFrom" => jv_of(@session_storage.policy_from(opt(a(0))).to_json())
+    "policyFrom" => to_jv(@session_storage.policy_from(opt(a(0))).to_json())
     "policyQuestion" =>
-      jv_of(
+      to_jv(
         @session_storage.policy_question(
           @session_storage.policy_from(Some({ "policy": a(0) })),
         ),
@@ -1203,11 +1182,11 @@ async fn P52::dep(
         @session_storage.recommends(
           a(0),
           @session_storage.policy_from(Some({ "policy": a(1) })),
-          jnum_of(Json::object({ "n": a(2) }), "n").unwrap_or(0.0),
+          as_num(a(2)).unwrap_or(0.0),
         ),
       )
     "dshRoute" =>
-      match @agent_runtimes.dsh_route(jv_of(a(0))) {
+      match @agent_runtimes.dsh_route(to_jv(a(0))) {
         Some(r) => r.json()
         None => Null
       }
@@ -1230,24 +1209,24 @@ async fn P52::dep(
       }
       Obj(
         @agent_drivers.expand_route(env, s(1)).map(p => {
-          (@jsjson.units(p.0), j_s(p.1))
+          (@jsjson.units(p.0), @jsjson.JValue::of_string(p.1))
         }),
       )
     }
     "apiSource" =>
       match
-        @agent_runtimes.api_source(@agent_runtimes.profile_via(jv_of(a(0)))) {
+        @agent_runtimes.api_source(@agent_runtimes.profile_via(to_jv(a(0)))) {
         Some((_, at)) => J::Arr([Null, at.json()])
         None => j_undef()
       }
-    "given" => j_opt(jtext(a(0), "given"))
+    "given" => @jsjson.JValue::of_opt_string(jtext(a(0), "given"))
     "titleOf" => {
       let t = a(0)
       let first = match a(1) {
         String(x) => Some(x)
         _ => None
       }
-      j_s(
+      @jsjson.JValue::of_string(
         match jtext(t, "title") {
           Some(title) if title != "" => title
           _ =>
@@ -1262,7 +1241,7 @@ async fn P52::dep(
         },
       )
     }
-    "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(jv_of))
+    "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(to_jv))
     "sendAlong" => {
       let peers = storage.peers_of(s(2))
       match peers {
@@ -1278,13 +1257,13 @@ async fn P52::dep(
           J::Arr(
             storage
             .send_along(call, s(1), s(2), s(3), files)
-            .map(p => jv_of({ "id": jstr(p.0), "name": jstr(p.1) })),
+            .map(p => to_jv({ "id": jstr(p.0), "name": jstr(p.1) })),
           )
         }
         None => J::Arr([])
       }
     }
-    "keep" => J::Arr(@drive.keep(jitems(a(0)).map(jv_of), s(1), Some(codecs())))
+    "keep" => J::Arr(@drive.keep(jitems(a(0)).map(to_jv), s(1), Some(codecs())))
     "formatHistory" => {
       let names = jitems(a(4)).filter_map(p => {
         match p {
@@ -1299,13 +1278,13 @@ async fn P52::dep(
             cards[n] = {
               card: match jfield(card, "card") {
                 Null => None
-                x => Some(jv_of(x))
+                x => Some(to_jv(x))
               },
               pending: jfield(card, "pending") is True,
               chose: match jfield(card, "chose") {
                 Object(_) as ch =>
                   Some(
-                    (jtext(ch, "by").unwrap_or(""), jv_of(jfield(ch, "option"))),
+                    (jtext(ch, "by").unwrap_or(""), to_jv(jfield(ch, "option"))),
                   )
                 _ => None
               },
@@ -1313,9 +1292,9 @@ async fn P52::dep(
           _ => ()
         }
       }
-      j_s(
+      @jsjson.JValue::of_string(
         @agent_runtimes.format_history(
-          jitems(a(0)).map(jv_of),
+          jitems(a(0)).map(to_jv),
           s(1),
           s(2),
           s(3),
@@ -1326,7 +1305,7 @@ async fn P52::dep(
     }
     "fileURLToPath" => {
       let u = s(0)
-      j_s(
+      @jsjson.JValue::of_string(
         if u.has_prefix("file://") {
           @session_storage.percent_decode(u[7:].to_owned())
         } else {
@@ -1335,7 +1314,7 @@ async fn P52::dep(
       )
     }
     "opencodeGo" => j_undef()
-    "modelKey" => j_s(s(0).to_lower())
+    "modelKey" => @jsjson.JValue::of_string(s(0).to_lower())
     "parseUrl" => {
       let u = s(0)
       match u.find("://") {
@@ -1345,7 +1324,7 @@ async fn P52::dep(
             Some(j) => rest[:j].to_owned()
             None => rest
           }
-          jv_of({
+          to_jv({
             "protocol": jstr(u[:i + 1].to_owned()),
             "host": jstr(host),
             "href": jstr(u),
@@ -1417,7 +1396,7 @@ async fn P52::tools_call(
       e => raise thrown(e)
     }
   }
-  let jvx = (v : @api_routes.JV) => jv_of(@jsjson.JV::to_json(v))
+  let jvx = (v : @api_routes.JV) => to_jv(@jsjson.JV::to_json(v))
   match name {
     "mcp.resolve" =>
       match self.store("sessionKeyByToken", [jstr(s(0))]) {
@@ -1452,7 +1431,7 @@ async fn P52::tools_call(
     "sessions/conversations.target" =>
       run(async fn() {
         @jsjson.JV::of_json(
-          p52_json_of_jv(
+          of_jv(
             @session_chats.target(
               w,
               s(1),
@@ -1480,9 +1459,9 @@ async fn P52::tools_call(
         )
         chat_state.next_ref += 1
         let id = "staged.done:\{chat_state.next_ref}"
-        chat_state.refs[id] = J::Arr(copies.map(j_s))
+        chat_state.refs[id] = J::Arr(copies.map(@jsjson.JValue::of_string))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(p52_json_of_jv(given))),
+          ("args", @jsjson.JV::of_json(of_jv(given))),
           ("done", @api_routes.jobj([("$ref", rjs(id))])),
         ])
       })
@@ -1490,7 +1469,7 @@ async fn P52::tools_call(
       run(async fn() {
         let held = @session_chats.unheld(w, s(1), jvx(a(2)))
         @api_routes.jobj([
-          ("args", @jsjson.JV::of_json(p52_json_of_jv(held.args))),
+          ("args", @jsjson.JV::of_json(of_jv(held.args))),
           (
             "id",
             match held.id {
@@ -1833,7 +1812,7 @@ async fn P52::tools_call(
       }
       if name.has_prefix("staged.done:") {
         let copies = match chat_state.refs.get(name) {
-          Some(Arr(c)) => c.map(jstr_of)
+          Some(Arr(c)) => c.map(s => @jsjson.jval_str_of(Some(s)).unwrap_or(""))
           _ => []
         }
         chat_state.refs.remove(name)
@@ -1843,7 +1822,7 @@ async fn P52::tools_call(
         return Null
       }
       if name.has_prefix("ops/log.log.") {
-        live_log(name[12:].to_owned(), s(0), s(1), @jsjson.JV::to_json(a(2)))
+        slice_log(name[12:].to_owned(), s(0), s(1), @jsjson.JV::to_json(a(2)))
         return Null
       }
       // (the forwards' are the gate's (P5-1 `@gate.Forwards`), answered on the bus as `$forwards`; the jobs' part

@@ -211,7 +211,7 @@ fn shown_facts(host : @host.Host, file : String) -> Json {
     },
   }
   match @session_chats.facts_of_src(src) {
-    Some(f) => p52_json_of_jv(f.to_j())
+    Some(f) => of_jv(f.to_j())
     None => Json::null()
   }
 }
@@ -236,7 +236,7 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
         Some(ws) => Json::string(ws)
         None => jopt(first)
       }
-    "list" => Json::array(@session_chats.presets_list(w, jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+    "list" => Json::array(@session_chats.presets_list(w, to_jv(arg_or_null(args, 0))).map(of_jv))
     "isHere" => Json::boolean(@session_chats.presets_is_here(w, arg_text(args, 0)))
     "nameOf" => Json::string(@session_chats.presets_name_of(w, arg_text(args, 0), arg_opt_text(args, 1)))
     "refusal" => {
@@ -248,15 +248,15 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
       let bound = match jfield(o, "copy") {
         Null => {
           guard jtext(o, "preset") is Some(id) else { return Json::null() }
-          @session_chats.presets_get(w, jv_of(ws), id)
+          @session_chats.presets_get(w, to_jv(ws), id)
         }
-        c => jv_of(c)
+        c => to_jv(c)
       }
       if bound is Null {
         return Json::null()
       }
       let here = (self.the_hub().world.station)()
-      let asked = jv_of({ "runtime": jfield(o, "runtime"), "model": jfield(o, "model") })
+      let asked = to_jv({ "runtime": jfield(o, "runtime"), "model": jfield(o, "model") })
       jopt(@session_chats.preset_refusal(self.cwords, bound, here, asked, jtext(o, "lang").unwrap_or(self.lang())))
     }
     "keep" => {
@@ -270,11 +270,11 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
                 String(x) => Json::string(x)
                 _ => jopt(first)
               }
-              p52_json_of_jv(@session_chats.presets_keep_for(w, workspace, jv_of(ws), id))
+              of_jv(@session_chats.presets_keep_for(w, workspace, to_jv(ws), id))
             }
             None => Json::null()
           }
-        copy => p52_json_of_jv(@session_chats.keep_copy(w, workspace, jv_of(copy)))
+        copy => of_jv(@session_chats.keep_copy(w, workspace, to_jv(copy)))
       }
     }
     _ => raise LiveError("the presets have no \{meth}")
@@ -307,7 +307,7 @@ async fn P52::repo_index_repos(self : P52, walked : Json) -> Json {
     ignore(
       self.host.rt.fork_daemon("repositories' index", on_error=e => @host.note("repositories' index failed: \{e}"), async fn() {
         self.repo_index.walk(w) catch {
-          e => live_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
+          e => slice_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
         }
         self.repo_walking = false
         ignore(self.called(walked, [])) catch {
@@ -316,7 +316,7 @@ async fn P52::repo_index_repos(self : P52, walked : Json) -> Json {
       }),
     )
   }
-  Json::array(repos.map(p52_json_of_jv))
+  Json::array(repos.map(of_jv))
 }
 
 ///|
@@ -384,7 +384,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
     }
     // ── the log ──
     if op.has_prefix("ops/log.log.") {
-      live_log(op[12:].to_owned(), arg_text(args, 0), arg_text(args, 1), arg_or_null(args, 2))
+      slice_log(op[12:].to_owned(), arg_text(args, 0), arg_text(args, 1), arg_or_null(args, 2))
       return Json::null()
     }
     match op {
@@ -397,7 +397,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       // this side's; the rest as the conversations' world answers it)
       "hub.has" if ["prepareCardPosts", "prepareLatestThreads"].contains(arg_text(args, 0)) => Json::boolean(true)
       // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: who the card is said by)
-      "hub.identity" => p52_json_of_jv(self.chats_answer("actor.messageIdentity", args.map(jv_of), args))
+      "hub.identity" => of_jv(self.chats_answer("actor.messageIdentity", args.map(to_jv), args))
       // (`hub.chat(connect).post` as the vault's cards say theirs: the thread's connect, channel, ts and the text)
       "hub.post" =>
         Json::string(self.chat_post(arg_text(args, 0), arg_text(args, 1), arg_text(args, 2), arg_text(args, 3), []))
@@ -429,48 +429,48 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       }
       // ── card-place.ts and adb/title.ts, as the rigs ask them (requests.ts `hub`) ──
       "dep.postCard" =>
-        p52_json_of_jv(
-          @session_chats.post_card(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), arg_text(args, 2), jv_of(arg_or_null(args, 3)), None, None),
+        of_jv(
+          @session_chats.post_card(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), arg_text(args, 2), to_jv(arg_or_null(args, 3)), None, None),
         )
       "dep.cardPlace" =>
-        match @session_chats.card_place(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), jv_of(arg_or_null(args, 2))) {
-          Some(p) => p52_json_of_jv(p)
+        match @session_chats.card_place(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), to_jv(arg_or_null(args, 2))) {
+          Some(p) => of_jv(p)
           None => undef_json()
         }
       "dep.grantChatTitle" => jopt(self.grant_chat_title(arg_or_null(args, 0)))
-      "hub.presets.list" => Json::array(@session_chats.presets_list(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+      "hub.presets.list" => Json::array(@session_chats.presets_list(w(), to_jv(arg_or_null(args, 0))).map(of_jv))
       "hub.presets.listed" =>
-        Json::array(@session_chats.presets_listed(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+        Json::array(@session_chats.presets_listed(w(), to_jv(arg_or_null(args, 0))).map(of_jv))
       "hub.presets.kept" =>
         Json::array(
-          @session_chats.presets_kept(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1))).map(p52_json_of_jv),
+          @session_chats.presets_kept(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1))).map(of_jv),
         )
       "hub.presets.others" =>
         Json::array(
-          @session_chats.presets_others(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1))).map(p52_json_of_jv),
+          @session_chats.presets_others(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1))).map(of_jv),
         )
       "hub.presets.carry" =>
-        p52_json_of_jv(
+        of_jv(
           @session_chats.presets_carry(
             w(),
-            jv_of(arg_or_null(args, 0)),
-            jv_of(arg_or_null(args, 1)),
-            jitems(arg_or_null(args, 2)).map(jv_of),
+            to_jv(arg_or_null(args, 0)),
+            to_jv(arg_or_null(args, 1)),
+            jitems(arg_or_null(args, 2)).map(to_jv),
           ),
         )
       "hub.presets.add" =>
-        p52_json_of_jv(
-          @session_chats.presets_add(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1)), arg_text(args, 2), arg_text(args, 3)),
+        of_jv(
+          @session_chats.presets_add(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1)), arg_text(args, 2), arg_text(args, 3)),
         )
       "hub.presets.put" =>
-        p52_json_of_jv(
+        of_jv(
           @session_chats.presets_put(
             w(),
-            jv_of(arg_or_null(args, 0)),
+            to_jv(arg_or_null(args, 0)),
             arg_text(args, 1),
-            jv_of(arg_or_null(args, 2)),
+            to_jv(arg_or_null(args, 2)),
             match args.get(3) {
-              Some(x) if !is_undef_json(x) => Some(jv_of(x))
+              Some(x) if !is_undef_json(x) => Some(to_jv(x))
               _ => None
             },
           ),
@@ -478,10 +478,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.presets.delete" => {
         @session_chats.presets_delete(
           w(),
-          jv_of(arg_or_null(args, 0)),
+          to_jv(arg_or_null(args, 0)),
           arg_text(args, 1),
           match args.get(2) {
-            Some(x) if !is_undef_json(x) => Some(jv_of(x))
+            Some(x) if !is_undef_json(x) => Some(to_jv(x))
             _ => None
           },
         )
@@ -529,7 +529,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       // (move/live.ts `clonesElsewhere`: the repositories found on the machine, by their paths)
       "hub.repoClones" => {
         let (repos, _) = self.repo_index.repos(w())
-        Json::array(repos.map(p52_json_of_jv).filter_map(r => match jfield(r, "path") { String(_) as p => Some(p); _ => None }))
+        Json::array(repos.map(of_jv).filter_map(r => match jfield(r, "path") { String(_) as p => Some(p); _ => None }))
       }
       "agents.overview" =>
         self.bus.call_peer("self", None, "$overview", { "viewer": arg_or_null(args, 0), "lang": arg_or_null(args, 1) }).0
@@ -558,24 +558,24 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         let posted = @session_chats.post_card(
           w(),
           session,
-          jv_of(thread),
+          to_jv(thread),
           arg_text(args, 1),
-          jv_of(arg_or_null(args, 2)),
+          to_jv(arg_or_null(args, 2)),
           Some(m => @session_chats.Thrown("Refused", m)),
           None,
         )
-        match p52_json_of_jv(posted) {
+        match of_jv(posted) {
           String(ts) => { "thread": jfield(jfield(thread, "thread"), "id"), "ts": Json::string(ts) }
           _ => Json::null()
         }
       }
       "cards.state" => {
-        let at = @session_chats.card_place(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), jv_of(arg_or_null(args, 2))) catch {
+        let at = @session_chats.card_place(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), to_jv(arg_or_null(args, 2))) catch {
           _ => return Json::string("none")
         }
         match at {
           Some(p) =>
-            match jfield(p52_json_of_jv(p), "state") {
+            match jfield(of_jv(p), "state") {
               String(_) as s => s
               _ => Json::string("same")
             }
@@ -610,7 +610,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         }
       "agents.heldBy" => (self.bus.coord_ask.val)("connects.heldBy", Json::array(args))
       "agents/runtime.runtimeKind" =>
-        match @agent_drivers.runtime_kind(Some(jv_of(arg_or_null(args, 0)))) {
+        match @agent_drivers.runtime_kind(Some(to_jv(arg_or_null(args, 0)))) {
           Some(k) => Json::string(k)
           None => undef_json()
         }
@@ -620,10 +620,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           Some(Number(n, ..)) if n >= 0.0 && n == n && n - n == 0.0 => Json::number(n)
           _ => Json::number(1.0)
         }
-      "core/model-speed.modelSpeed" => jopt(@session_chats.model_speed(Some(jv_of(arg_or_null(args, 0)))))
+      "core/model-speed.modelSpeed" => jopt(@session_chats.model_speed(Some(to_jv(arg_or_null(args, 0)))))
       "core/preset-records.starsOf" => stars_of(arg_or_null(args, 0))
       "core/preset-records.mergeStars" => merge_stars(arg_or_null(args, 0), arg_or_null(args, 1))
-      "core/preset-records.canonical" => Json::string(@session_chats.canonical(jv_of(arg_or_null(args, 0))))
+      "core/preset-records.canonical" => Json::string(@session_chats.canonical(to_jv(arg_or_null(args, 0))))
       // ── the store's rows ──
       "rows.toEntry" => @store_threads.entry_of(arg_or_null(args, 0))
       "rows.cardOfEntry" =>
@@ -688,22 +688,22 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "sessions/footprint.roomOfSoon" => jopt(self.storage().room_of(arg_text(args, 1)))
       "sessions/image-size.shownFactsSoon" => shown_facts(self.host, arg_text(args, 0))
       "sessions/presets.presetCopyInput" =>
-        p52_json_of_jv(@session_chats.preset_copy_input(jv_of(arg_or_null(args, 0))))
+        of_jv(@session_chats.preset_copy_input(to_jv(arg_or_null(args, 0))))
       "sessions/presets.candidates" => {
         let here = arg_or_null(args, 3)
         Json::array(
           @session_chats.candidates(
             w(),
             arg_text(args, 0),
-            jitems(arg_or_null(args, 1)).map(jv_of),
-            jitems(arg_or_null(args, 2)).map(jv_of),
+            jitems(arg_or_null(args, 1)).map(to_jv),
+            jitems(arg_or_null(args, 2)).map(to_jv),
             async fn(station) { self.called(here, [Json::string(station)]) is True },
-          ).map(p52_json_of_jv),
+          ).map(of_jv),
         )
       }
       "sessions/regenerate-title.regenerateTitle" =>
         Json::string(
-          @session_chats.regenerate_title(w(), jv_of(arg_or_null(args, 0)), jitems(arg_or_null(args, 1)).map(jv_of)),
+          @session_chats.regenerate_title(w(), to_jv(arg_or_null(args, 0)), jitems(arg_or_null(args, 1)).map(to_jv)),
         )
       "sessions/relay.relay" =>
         self.storage().relay(arg_or_null(args, 0), arg_or_null(args, 1), arg_or_null(args, 2), arg_text(args, 3))
@@ -796,12 +796,12 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "sessions/cc.cc" => {
         @session_chats.cc(
           w(),
-          jv_of(arg_or_null(args, 0)),
+          to_jv(arg_or_null(args, 0)),
           arg_text(args, 1),
           arg_text(args, 2),
           arg_text(args, 3),
-          jv_of(arg_or_null(args, 4)),
-          jitems(arg_or_null(args, 5)).map(jv_of),
+          to_jv(arg_or_null(args, 4)),
+          jitems(arg_or_null(args, 5)).map(to_jv),
         )
         Json::null()
       }
@@ -818,7 +818,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           Ok(v) => v
           Err(@session_hub.Refused(m)) if m.has_prefix("no hub call") =>
             // (the hub's methods the conversations' world answers: its readers, its chats' surfaces)
-            p52_json_of_jv(self.chats_answer("hub." + name, args.map(jv_of), args))
+            of_jv(self.chats_answer("hub." + name, args.map(to_jv), args))
           Err(e) => raise e
         }
       }
@@ -851,7 +851,7 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
     let without = self.title_of(own, None, None)
     // (a given name and a still.fail chat's name do not depend on the session's most recent chat)
     let surface = jtext(own, "surface")
-    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
+    if @adb_devices.given_title(to_jv(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
       return Some(without)
     }
     let first = match self.store("firstText", [jfield(own, "id")]) {

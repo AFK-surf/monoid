@@ -34,10 +34,10 @@ async fn p5_5_harness(host : @host.Host, ask : Json) -> Result[Json, String] {
 
 ///|
 async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
-  match p55_jtext(ask, "step") {
+  match jtext_or_empty(ask, "step") {
     "start" => {
-      let data = p55_jtext(ask, "data")
-      let app = p55_jtext(ask, "app")
+      let data = jtext_or_empty(ask, "data")
+      let app = jtext_or_empty(ask, "app")
       ignore(attempt(() => @drive.mkdir(path([data, "run"]), true)))
       let key = @cloud_lock.load_key(host, data)
       let db_path = path([data, "stillfail.db"])
@@ -55,7 +55,7 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
     step => {
       guard p5_5_harnessed.val is Some(bus) else { raise BusError("start first") }
       match step {
-        "overview" => Json::object(bus.parts.overview_of(p55_jfield(ask, "viewer"), lang_in(ask)))
+        "overview" => Json::object(bus.parts.overview_of(jfield(ask, "viewer"), lang_in(ask)))
         "route" =>
           match answer_route(bus.parts.all_routes(Json::null()), ask) {
             Some(a) => a
@@ -63,34 +63,34 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
           }
         "tools" => Json::array(bus.parts.all_tools().map(t => Json::string(t.name)))
         "call" =>
-          match bus.parts.all_tools().search_by(t => t.name == p55_jtext(ask, "name")) {
-            Some(i) => (bus.parts.all_tools()[i].call)(p55_jfield(ask, "args"), p55_jfield(ask, "context"))
-            None => raise BusError("no such tool offered: \{p55_jtext(ask, "name")}")
+          match bus.parts.all_tools().search_by(t => t.name == jtext_or_empty(ask, "name")) {
+            Some(i) => (bus.parts.all_tools()[i].call)(jfield(ask, "args"), jfield(ask, "context"))
+            None => raise BusError("no such tool offered: \{jtext_or_empty(ask, "name")}")
           }
-        "coord" => (bus.coord_ask.val)(p55_jtext(ask, "name"), p55_jfield(ask, "arg"))
+        "coord" => (bus.coord_ask.val)(jtext_or_empty(ask, "name"), jfield(ask, "arg"))
         "peers" =>
           {
             "methods": Json::array(bus.peer_handlers.keys().map(Json::string(_)).collect()),
             "prefixes": Json::array(bus.peer_prefixes.map(p => Json::string(p.0))),
           }
         "peer" => {
-          let (v, _) = bus.dispatch_peer(p55_jtext(ask, "from"), p55_jstr(ask, "workspace"), p55_jtext(ask, "method"), p55_jfield(ask, "params"), None)
+          let (v, _) = bus.dispatch_peer(jtext_or_empty(ask, "from"), jtext(ask, "workspace"), jtext_or_empty(ask, "method"), jfield(ask, "params"), None)
           v
         }
         "platform" => {
-          let args = match p55_jfield(ask, "args") {
+          let args = match jfield(ask, "args") {
             Array(xs) => xs
             _ => []
           }
-          updates_platform(bus.host, bus.data, p55_jtext(ask, "name"), args).unwrap_or(Json::null())
+          updates_platform(bus.host, bus.data, jtext_or_empty(ask, "name"), args).unwrap_or(Json::null())
         }
         "config" => {
-          let next = p55_jfield(ask, "config")
+          let next = jfield(ask, "config")
           (bus.config_update.val)(_ => next)
         }
         "standIn" => {
-          let hub = p55_jfield(ask, "hub")
-          let peers = p55_jfield(ask, "peers")
+          let hub = jfield(ask, "hub")
+          let peers = jfield(ask, "peers")
           bus.hub_ask.val = fn(name, arg) {
             p5_5_stood_asked.push({ "hub": Json::string(name), "args": arg })
             for w in p5_5_stood_waits {
@@ -98,12 +98,12 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
                 ignore(w.1.succeed(()))
               }
             }
-            p55_jfield(hub, name)
+            jfield(hub, name)
           }
           bus.peer_call.val = fn(target, ws, meth, params, _bytes) raise {
-            p5_5_stood_asked.push({ "peer": Json::string(target), "workspace": p55_jopt(ws), "method": Json::string(meth), "params": params })
+            p5_5_stood_asked.push({ "peer": Json::string(target), "workspace": jopt(ws), "method": Json::string(meth), "params": params })
             match peers {
-              Object(m) if m.contains(meth) => (p55_jfield(peers, meth), None)
+              Object(m) if m.contains(meth) => (jfield(peers, meth), None)
               _ => raise BusError("\{meth}: not answered by the test's stations")
             }
           }
@@ -111,8 +111,8 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         }
         "asked" => Json::array(p5_5_stood_asked.copy())
         "heard" => {
-          let name = p55_jtext(ask, "hub")
-          if !p5_5_stood_asked.iter().any(x => p55_jstr(x, "hub") == Some(name)) {
+          let name = jtext_or_empty(ask, "hub")
+          if !p5_5_stood_asked.iter().any(x => jtext(x, "hub") == Some(name)) {
             let heard : @effect.Deferred[Unit] = @effect.Deferred::new()
             p5_5_stood_waits.push((name, heard))
             heard.wait()
@@ -120,11 +120,11 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
           Json::null()
         }
         "card" => {
-          guard bus.parts.card_choice_named(p55_jtext(ask, "key")) is Some(choice) else { raise BusError("no card choice") }
-          match p55_jtext(ask, "call") {
-            "may" => p55_jopt((choice.may)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jfield(ask, "at")))
+          guard bus.parts.card_choice_named(jtext_or_empty(ask, "key")) is Some(choice) else { raise BusError("no card choice") }
+          match jtext_or_empty(ask, "call") {
+            "may" => jopt((choice.may)(jfield(ask, "viewer"), jfield(ask, "card"), jfield(ask, "at")))
             _ => {
-              (choice.chosen)(p55_jfield(ask, "viewer"), p55_jfield(ask, "card"), p55_jtext(ask, "option"), p55_jfield(ask, "at"))
+              (choice.chosen)(jfield(ask, "viewer"), jfield(ask, "card"), jtext_or_empty(ask, "option"), jfield(ask, "at"))
               Json::null()
             }
           }

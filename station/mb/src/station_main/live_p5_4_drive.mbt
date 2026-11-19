@@ -14,7 +14,7 @@ pub(all) suberror P54Refused {
 ///|
 pub impl Show for P54Refused with output(self, logger) {
   match self {
-    P54Refused(kind, said) => logger.write_string("\{kind}: \{p54_text(Some(said), "message").unwrap_or("")}")
+    P54Refused(kind, said) => logger.write_string("\{kind}: \{jtext(said, "message").unwrap_or("")}")
   }
 }
 
@@ -51,7 +51,7 @@ fn p54_bytes_json(b : Bytes) -> Json {
 
 ///|
 fn p54_bytes_of(v : Json?) -> Bytes {
-  match p54_text(v, "$bytes") {
+  match opt_text(v, "$bytes") {
     Some(b) => @drive.from_base64(b)
     None =>
       match v {
@@ -80,9 +80,9 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
   )
   let key = @drive.grant_key(bus.data)
   let scoped = (t : @jsjson.JValue) => {
-    let o = p54_of_jv(t)
-    if p54_get(Some(o), "home") is Some(False) {
-      match p54_text(Some(o), "workspace") {
+    let o = of_jv(t)
+    if opt_field(Some(o), "home") is Some(False) {
+      match jtext(o, "workspace") {
         Some(ws) => drive.scoped(ws)
         None => drive
       }
@@ -95,13 +95,13 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
     drive_for: scoped,
     remote: t => @drive.peer_source(
       async fn(station, request) {
-        let req = p54_of_jv(request)
-        let ws = p54_text(Some(req), "workspace")
-        let meth = p54_text(Some(req), "method").unwrap_or("")
+        let req = of_jv(request)
+        let ws = jtext(req, "workspace")
+        let meth = jtext(req, "method").unwrap_or("")
         let (answer, bytes) = bus.call_peer(station, ws, meth, req)
         let given = Ref(bytes)
         {
-          json: p54_jv(answer),
+          json: to_jv(answer),
           bytes: match bytes {
             Some(_) =>
               Some((
@@ -121,12 +121,12 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
     now: () => wall_ms().to_double(),
     // (told to the asker's own streams, the latest kept for one coming back)
     changed: t => {
-      let o = p54_of_jv(t)
+      let o = of_jv(t)
       (bus.events_tell.val)(
         "drive-transfers",
-        { "transfer": p54_of_jv(@drive.shown(t)) },
-        "drive-transfer\u{0}\{p54_text(Some(o), "id").unwrap_or("")}",
-        { "email": p54_get(Some(o), "by").unwrap_or(Json::null()) },
+        { "transfer": of_jv(@drive.shown(t)) },
+        "drive-transfer\u{0}\{jtext(o, "id").unwrap_or("")}",
+        { "email": opt_field(Some(o), "by").unwrap_or(Json::null()) },
       )
     },
     rt: host.rt,
@@ -141,11 +141,11 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
       }
       _ => { "method": Json::string(meth) }
     }
-    let got = @drive.drive_for_peer(drive, key, p54_jv(request), ws, wall_ms().to_double()) catch {
+    let got = @drive.drive_for_peer(drive, key, to_jv(request), ws, wall_ms().to_double()) catch {
       @drive.Refused(why) => raise BusError(why)
     }
     match got.bytes {
-      None => (p54_of_jv(got.json), None)
+      None => (of_jv(got.json), None)
       Some((next, stop)) => {
         // (the rest of the file as it is read, until it changes: given whole)
         let all = @buffer.new()
@@ -153,7 +153,7 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
           all.write_bytes(b)
         }
         stop()
-        (p54_of_jv(got.json), Some(all.to_bytes()))
+        (of_jv(got.json), Some(all.to_bytes()))
       }
     }
   })
@@ -163,9 +163,9 @@ fn p54_drive_start(bus : LiveBus, screens : P54Screens) -> P54Drive {
 ///|
 /// What the admin API's drive and transfers routes ask (api_routes drive.mbt), by name; None where `op` is not theirs.
 async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Json? {
-  let s = (i : Int) => p54_arg_text(a, i)
-  let n = (i : Int) => p54_num(p54_arg(a, i)).unwrap_or(0.0)
-  let b = (i : Int) => p54_bool(p54_arg(a, i))
+  let s = (i : Int) => call_arg_text(a, i)
+  let n = (i : Int) => opt_num(call_arg(a, i)).unwrap_or(0.0)
+  let b = (i : Int) => opt_true(call_arg(a, i))
   let (name, call) = match op.find(".") {
     Some(i) => (op[:i].to_owned(), op[i + 1:].to_owned())
     None => (op, "")
@@ -198,7 +198,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
       }
     }
     (Some(dr), "upload") => {
-      let (size, entry) = dr.upload(s(0), s(1), s(2), n(3), n(4), p54_bytes_of(p54_arg(a, 5)), b(6), b(7))
+      let (size, entry) = dr.upload(s(0), s(1), s(2), n(3), n(4), p54_bytes_of(call_arg(a, 5)), b(6), b(7))
       { "size": Json::number(size), "entry": entry.map(p54_entry_json).unwrap_or(Json::null()) }
     }
     (Some(dr), "mkdir") => p54_entry_json(dr.mkdir(s(0), s(1), b(2)))
@@ -216,10 +216,10 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
       // give, its `$fn` called through the bus; then the copy or the zip made there)
       let entry = dr.stat(s(0), s(1), b(4))
       let name = if entry.dir && b(5) { entry.name + ".zip" } else { entry.name }
-      let fn_id = p54_get(p54_arg(a, 2), "$fn").unwrap_or(Json::null())
+      let fn_id = opt_field(call_arg(a, 2), "$fn").unwrap_or(Json::null())
       let (given, _) = bus.call_peer("self", None, "$admin.called", { "id": fn_id, "args": [Json::string(name)] })
-      let safe = p54_text(Some(given), "safe").unwrap_or(name)
-      let to = match p54_text(Some(given), "path") {
+      let safe = jtext(given, "safe").unwrap_or(name)
+      let to = match jtext(given, "path") {
         Some(p) => p
         None => raise Failure("the uploads gave no place for \{name}")
       }
@@ -236,7 +236,7 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
           Json::boolean(told.wait())
         }
         "drive/watch.follow" => {
-          let fn_id = p54_get(p54_arg(a, 1), "$fn").unwrap_or(Json::null())
+          let fn_id = opt_field(call_arg(a, 1), "$fn").unwrap_or(Json::null())
           let host = bus.host
           match p54_folder_watches(bus).follow(s(0), () => ignore(host.rt.fork_quiet(name="a drive folder changed", async fn() {
             ignore(bus.call_peer("self", None, "$admin.called", { "id": fn_id, "args": [] })) catch { _ => () }
@@ -262,9 +262,9 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
         }
         "drive/drive.rootsOf" =>
           Json::array(
-            (match p54_str(p54_arg(a, 1)) {
-              Some(ws) => @drive.roots_of(p54_arg(a, 0).unwrap_or(Json::null()), workspace=ws)
-              None => @drive.roots_of(p54_arg(a, 0).unwrap_or(Json::null()))
+            (match opt_str(call_arg(a, 1)) {
+              Some(ws) => @drive.roots_of(call_arg(a, 0).unwrap_or(Json::null()), workspace=ws)
+              None => @drive.roots_of(call_arg(a, 0).unwrap_or(Json::null()))
             }).map(Json::string),
           )
         // (a chat's files shown small: drive/thumbs.ts and posters.ts, the images' codecs this program's own)
@@ -278,13 +278,13 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
         "drive/thumbs.keep" =>
           Json::array(
             @drive.keep(
-              match p54_arg(a, 0) {
-                Some(Array(fs)) => fs.map(f => p54_jv(f))
+              match call_arg(a, 0) {
+                Some(Array(fs)) => fs.map(f => to_jv(f))
                 _ => []
               },
               s(1),
               Some(codecs()),
-            ).map(p54_of_jv),
+            ).map(of_jv),
           )
         "drive/posters.wanted" => Json::boolean(@drive.video_wanted(s(0)))
         "drive/posters.poster" =>
@@ -292,20 +292,20 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
             Some(p) => Json::string(p)
             None => Json::null()
           }
-        "drive/grants.sign" => Json::string(@drive.sign(d.key, p54_jv(p54_arg(a, 1).unwrap_or(Json::null()))))
-        "drive/transfers.shown" => p54_of_jv(@drive.shown(p54_jv(p54_arg(a, 0).unwrap_or(Json::null()))))
+        "drive/grants.sign" => Json::string(@drive.sign(d.key, to_jv(call_arg(a, 1).unwrap_or(Json::null()))))
+        "drive/transfers.shown" => of_jv(@drive.shown(to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
         "transfers.now" => Json::number(wall_ms().to_double())
-        "transfers.self" => p54_opt(p54_station_id(bus))
+        "transfers.self" => jopt(p54_station_id(bus))
         "transfers.nameOf" => {
           let id = s(0)
           let mut named = id
           match (bus.cloud_state.val)() {
             Some(st) =>
-              match p54_get(Some(st), "peers") {
+              match opt_field(Some(st), "peers") {
                 Some(Array(ps)) =>
                   for p in ps {
-                    if p54_text(Some(p), "id") == Some(id) {
-                      match p54_text(Some(p), "name") {
+                    if jtext(p, "id") == Some(id) {
+                      match jtext(p, "name") {
                         Some(nm) if nm != "" => named = nm
                         _ => ()
                       }
@@ -317,11 +317,11 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
           }
           Json::string(named)
         }
-        "transfers.start" => p54_of_jv(d.transfers.start(p54_jv(p54_arg(a, 0).unwrap_or(Json::null()))))
-        "transfers.list" => Json::array(d.transfers.list(s(0)).map(p54_of_jv))
-        "transfers.cancel" => p54_of_jv(d.transfers.cancel(s(0), s(1)))
-        "transfers.retry" => p54_of_jv(d.transfers.retry(s(0), s(1)))
-        "transfers.get" => d.transfers.get(s(0)).map(p54_of_jv).unwrap_or(Json::null())
+        "transfers.start" => of_jv(d.transfers.start(to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
+        "transfers.list" => Json::array(d.transfers.list(s(0)).map(of_jv))
+        "transfers.cancel" => of_jv(d.transfers.cancel(s(0), s(1)))
+        "transfers.retry" => of_jv(d.transfers.retry(s(0), s(1)))
+        "transfers.get" => d.transfers.get(s(0)).map(of_jv).unwrap_or(Json::null())
         _ => return None
       }
   }

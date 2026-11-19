@@ -173,27 +173,27 @@ fn of_feishu(v : @feishu.JV) -> @jsjson.JValue {
 ///|
 /// A Feishu connect as the connects hand it back (`FeishuConnect::to_jv`'s fields, flat).
 fn feishu_connect_of(j : @jsjson.JValue) -> @feishu.FeishuConnect? {
-  let c = to_core(j)
-  if p55_jtext(c, "id") == "" {
+  let c = of_jv(j)
+  if jtext_or_empty(c, "id") == "" {
     return None
   }
-  let tenant = p55_jfield(c, "tenant")
+  let tenant = jfield(c, "tenant")
   Some({
-    id: p55_jtext(c, "id"),
-    enabled: !(p55_jfield(c, "enabled") is False),
-    app_id: p55_jtext(c, "appId"),
-    app_secret: p55_jtext(c, "appSecret"),
-    domain: if p55_jtext(c, "domain") == "lark" { "lark" } else { "feishu" },
-    threads: p55_jfield(c, "threads") is True,
-    direct_threads: p55_jfield(c, "directThreads") is True,
-    bot_name: p55_jstr(c, "botName"),
-    bot_image: p55_jstr(c, "botImage"),
-    bot_open_id: p55_jstr(c, "botOpenId"),
-    tenant: match p55_jstr(tenant, "key") {
-      Some(k) => Some((k, p55_jtext(tenant, "name")))
+    id: jtext_or_empty(c, "id"),
+    enabled: !(jfield(c, "enabled") is False),
+    app_id: jtext_or_empty(c, "appId"),
+    app_secret: jtext_or_empty(c, "appSecret"),
+    domain: if jtext_or_empty(c, "domain") == "lark" { "lark" } else { "feishu" },
+    threads: jfield(c, "threads") is True,
+    direct_threads: jfield(c, "directThreads") is True,
+    bot_name: jtext(c, "botName"),
+    bot_image: jtext(c, "botImage"),
+    bot_open_id: jtext(c, "botOpenId"),
+    tenant: match jtext(tenant, "key") {
+      Some(k) => Some((k, jtext_or_empty(tenant, "name")))
       None => None
     },
-    workspace: p55_jstr(c, "workspace"),
+    workspace: jtext(c, "workspace"),
   })
 }
 
@@ -206,11 +206,11 @@ fn feishu_thread(v : @jsjson.JValue?) -> @feishu.ThreadRef {
 ///|
 fn feishu_card_end(v : @jsjson.JValue?) -> @feishu.CardEnd {
   let e = match v {
-    Some(x) => to_core(x)
+    Some(x) => of_jv(x)
     None => Json::null()
   }
-  match p55_jtext(e, "kind") {
-    "message" | "byMessage" => ByMessage(p55_jtext(e, "user"), p55_jtext(e, "text"))
+  match jtext_or_empty(e, "kind") {
+    "message" | "byMessage" => ByMessage(jtext_or_empty(e, "user"), jtext_or_empty(e, "text"))
     "replaced" => Replaced
     "withdrawn" => Withdrawn
     _ => Closed
@@ -228,15 +228,15 @@ let feishu_calls : Array[String] = [
 /// A Feishu surface and the connects' socket loop under it (connects/surface.ts `ConnectedSurface`).
 fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, book : @connects_hub.NameBook) -> @connects_hub.Connection {
   let base = @connects_hub.ConnectedSurface::new("feishu", surface_options(host, id, Some(book), binary=true), usable=i => {
-    let c = to_core(i)
+    let c = of_jv(i)
     s.usable({
-      team: p55_jtext(c, "team"),
-      team_id: p55_jtext(c, "teamId"),
-      url: p55_jtext(c, "url"),
-      bot_user_id: p55_jtext(c, "botUserId"),
-      bot_name: p55_jtext(c, "botName"),
-      bot_image: p55_jstr(c, "botImage"),
-      bot_id: p55_jtext(c, "botId"),
+      team: jtext_or_empty(c, "team"),
+      team_id: jtext_or_empty(c, "teamId"),
+      url: jtext_or_empty(c, "url"),
+      bot_user_id: jtext_or_empty(c, "botUserId"),
+      bot_name: jtext_or_empty(c, "botName"),
+      bot_image: jtext(c, "botImage"),
+      bot_id: jtext_or_empty(c, "botId"),
     })
   })
   base.hooked(identify=async fn() { of_feishu(s.identify().to_jv()) }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
@@ -256,10 +256,10 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
     }
   }, look_up_email=async fn(user) { s.look_up_email(user) })
   let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
-  let opt = (v : String?) => match v { Some(t) => of_core(Json::string(t)); None => @jsjson.JValue::Null }
+  let opt = (v : String?) => match v { Some(t) => to_jv(Json::string(t)); None => @jsjson.JValue::Null }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
-      "mention" => Some(of_core(Json::string(s.mention(txt(a, 0)))))
+      "mention" => Some(to_jv(Json::string(s.mention(txt(a, 0)))))
       "sessionLink" => Some(opt(s.session_link()))
       "knownPerson" =>
         Some(match s.known_person(txt(a, 0)) {
@@ -268,7 +268,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
         })
       "knownChannel" => Some(opt(s.known_channel(txt(a, 0))))
       "permalink" => Some(opt((try { Ok(s.permalink(feishu_thread(a.get(0)))) } catch { e => Err(e) }).to_option()))
-      "platform" => Some(of_core(Json::string(s.platform())))
+      "platform" => Some(to_jv(Json::string(s.platform())))
       "working" => {
         s.working(feishu_thread(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.text(u))); _ => None })
         Some(Null)
@@ -280,20 +280,20 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
     match name {
       "post" => {
         let files = match a.get(2) {
-          Some(Arr(xs)) => xs.map(f => ({ path: p55_jtext(to_core(f), "path"), name: p55_jtext(to_core(f), "name") } : @feishu.Attachment))
+          Some(Arr(xs)) => xs.map(f => ({ path: jv_text(f, "path").unwrap_or(""), name: jv_text(f, "name").unwrap_or("") } : @feishu.Attachment))
           _ => []
         }
         let card = match a.get(3) { Some(Null) | None => None; Some(c) => Some(feishu_jv(c)) }
-        Some(of_core(Json::string(s.post(feishu_thread(a.get(0)), txt(a, 1), files, card~))))
+        Some(to_jv(Json::string(s.post(feishu_thread(a.get(0)), txt(a, 1), files, card~))))
       }
       "cardEnded" => {
         s.card_ended(feishu_thread(a.get(0)), txt(a, 1), txt(a, 2), a.get(3).map(feishu_jv), feishu_card_end(a.get(4)))
         Some(Null)
       }
       "download" => {
-        let f = to_core(a.get(0).unwrap_or(Null))
-        let file : @feishu.InboundFile = { id: p55_jtext(f, "id"), name: p55_jtext(f, "name"), size: match p55_jfield(f, "size") { Number(n, ..) => n.to_int(); _ => 0 }, url: p55_jstr(f, "url") }
-        Some(of_core(Json::string(@drive.hex(s.download(file)))))
+        let f = of_jv(a.get(0).unwrap_or(Null))
+        let file : @feishu.InboundFile = { id: jtext_or_empty(f, "id"), name: jtext_or_empty(f, "name"), size: match jfield(f, "size") { Number(n, ..) => n.to_int(); _ => 0 }, url: jtext(f, "url") }
+        Some(to_jv(Json::string(@drive.hex(s.download(file)))))
       }
       "history" =>
         Some(Arr(s.history(feishu_thread(a.get(0)), txt(a, 1), match a.get(2) { Some(Num(n)) => n.to_int(); _ => 50 }).map(m => of_feishu(m.to_jv()))))
@@ -302,11 +302,11 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
           Some(m) => of_feishu(m.to_jv())
           None => Null
         })
-      "places" => Some(Arr(s.places().map(p => of_core({ "id": Json::string(p.id), "name": Json::string(p.name), "kind": Json::string(p.kind) }))))
-      "peopleIn" => Some(Arr(s.people_in(txt(a, 0)).map(m => of_core({ "id": Json::string(m.id), "name": Json::string(m.name) }))))
+      "places" => Some(Arr(s.places().map(p => to_jv({ "id": Json::string(p.id), "name": Json::string(p.name), "kind": Json::string(p.kind) }))))
+      "peopleIn" => Some(Arr(s.people_in(txt(a, 0)).map(m => to_jv({ "id": Json::string(m.id), "name": Json::string(m.name) }))))
       "begin" => {
         let (t, ts) = s.begin(txt(a, 0), txt(a, 1))
-        Some(of_core({ "thread": { "channel": Json::string(t.channel), "threadTs": Json::string(t.thread_ts) }, "ts": Json::string(ts) }))
+        Some(to_jv({ "thread": { "channel": Json::string(t.channel), "threadTs": Json::string(t.thread_ts) }, "ts": Json::string(ts) }))
       }
       "edit" => Some(Bool(s.edit(feishu_thread(a.get(0)), txt(a, 1), txt(a, 2))))
       "channelName" => Some(opt(s.channel_name(txt(a, 0))))
@@ -316,7 +316,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "api" =>
         Some(match s.api(txt(a, 0), feishu_jv(a.get(1).unwrap_or(Null))) {
           Data(v) => of_feishu(v)
-          File(bytes, name, kind) => of_core({ "file": Json::string(@drive.hex(bytes)), "name": Json::string(name), "type": Json::string(kind) })
+          File(bytes, name, kind) => to_jv({ "file": Json::string(@drive.hex(bytes)), "name": Json::string(name), "type": Json::string(kind) })
         })
       _ => None
     }
@@ -342,11 +342,11 @@ fn feishu_book(book : @connects_hub.NameBook) -> @feishu.NameBook {
           Some(p) => Some(of_feishu(p.to_jv()))
           None => None
         }
-      }, stale=(known, at) => stale({ name: p55_jtext(to_core(known), "name"), email: p55_jtext(to_core(known), "email") }, at)) {
-      Some(p) => Some({ name: p55_jtext(to_core(p), "name"), email: p55_jtext(to_core(p), "email") })
+      }, stale=(known, at) => stale({ name: jv_text(known, "name").unwrap_or(""), email: jv_text(known, "email").unwrap_or("") }, at)) {
+      Some(p) => Some({ name: jv_text(p, "name").unwrap_or(""), email: jv_text(p, "email").unwrap_or("") })
       None => None
     },
-    channel: (key, fetch) => match to_core(book.channel(key, async fn() { of_core(p55_jopt(fetch())) })) {
+    channel: (key, fetch) => match of_jv(book.channel(key, async fn() { to_jv(jopt(fetch())) })) {
       String(n) => Some(n)
       _ => None
     },
@@ -378,15 +378,15 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
     },
     seen: (c, i) => {
       guard feishu_connect_of(c) is Some(fc) else { return None }
-      let id = to_core(i)
+      let id = of_jv(i)
       let identity : @feishu.BotIdentity = {
-        team: p55_jtext(id, "team"),
-        team_id: p55_jtext(id, "teamId"),
-        url: p55_jtext(id, "url"),
-        bot_user_id: p55_jtext(id, "botUserId"),
-        bot_name: p55_jtext(id, "botName"),
-        bot_image: p55_jstr(id, "botImage"),
-        bot_id: p55_jtext(id, "botId"),
+        team: jtext_or_empty(id, "team"),
+        team_id: jtext_or_empty(id, "teamId"),
+        url: jtext_or_empty(id, "url"),
+        bot_user_id: jtext_or_empty(id, "botUserId"),
+        bot_name: jtext_or_empty(id, "botName"),
+        bot_image: jtext(id, "botImage"),
+        bot_id: jtext_or_empty(id, "botId"),
       }
       match @feishu.seen_patch(fc, identity) {
         Some(patch) =>
@@ -405,22 +405,22 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   })
   // (the apps being made by a scan before a restart, known before the overview lists them)
   bus.parts.overview("feishuRegistrations", async fn(viewer, _lang) {
-    to_core(of_feishu(feishu.overview(p55_jtext(viewer, "email"), p55_jstr(viewer, "workspace"))))
+    of_jv(of_feishu(feishu.overview(jtext_or_empty(viewer, "email"), jtext(viewer, "workspace"))))
   })
   ignore(feishu.registrations.on_change(() => (bus.overview_changed.val)()))
   // feishu_api for the agents (feishu/tool.ts), where the agents' part offers it not; `feishu.api` for its.
-  let is_feishu = (id : String) => connects.connects().iter().any(c => p55_jtext(to_core(c), "id") == id)
+  let is_feishu = (id : String) => connects.connects().iter().any(c => jv_text(c, "id").unwrap_or("") == id)
   let world = () => Some(self.feishu_tool_world(connects))
   let (declared, run) = feishu.tool(world, is_feishu)
   bus.parts.tools(
     [
       {
         name: "feishu_api",
-        declared: to_core(of_feishu(declared)),
+        declared: of_jv(of_feishu(declared)),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            Json::string(run(session, feishu_jv(of_core(args))))
+            Json::string(run(session, feishu_jv(to_jv(args))))
           })
         },
       },
@@ -428,7 +428,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   )
   self.op("feishu.api", async fn(arg) {
     match arg {
-      Array([String(session), args, ..]) => Json::string(run(session, feishu_jv(of_core(args))))
+      Array([String(session), args, ..]) => Json::string(run(session, feishu_jv(to_jv(args))))
       _ => raise BusError("feishu.api: [session, args]")
     }
   })
@@ -440,7 +440,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
     let (identity, errors) = @feishu.verify_feishu_app(net, words, s(0), s(1), s(2), lang=s(3))
     Json::array([
       match identity {
-        Some(i) => to_core(of_feishu(i.to_jv()))
+        Some(i) => of_jv(of_feishu(i.to_jv()))
         None => Json::null()
       },
       Json::array(errors.map(Json::string(_))),
@@ -451,7 +451,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   })
   self.op("feishu.registrations.start", async fn(arg) {
     let save = core_items(arg).get(0).unwrap_or(Json::null())
-    feishu.registrations.start(async fn(reg) { self.called_text(save, [to_core(of_feishu(reg.jv()))]) })
+    feishu.registrations.start(async fn(reg) { self.called_text(save, [of_jv(of_feishu(reg.jv()))]) })
     Json::null()
   })
   self.op("feishu.registrations.begin", async fn(arg) {
@@ -464,13 +464,13 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
       context=@feishu.JV::of_json(a.get(3).unwrap_or(Json::null())),
       workspace=s(4),
     )
-    to_core(of_feishu(reg.jv()))
+    of_jv(of_feishu(reg.jv()))
   })
   self.op("feishu.registrations.complete", async fn(arg) {
     let a = core_items(arg)
     let s = (i : Int) => match a.get(i) { Some(String(x)) => x; _ => "" }
     let save = a.get(3).unwrap_or(Json::null())
-    p55_jopt(feishu.registrations.complete(s(0), s(1), s(2), async fn(reg) { self.called_text(save, [to_core(of_feishu(reg.jv()))]) }))
+    jopt(feishu.registrations.complete(s(0), s(1), s(2), async fn(reg) { self.called_text(save, [of_jv(of_feishu(reg.jv()))]) }))
   })
   self.op("feishu.registrations.cancel", async fn(arg) {
     let a = core_items(arg)
@@ -486,7 +486,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
   let bus = self.bus
   {
     session: key => match (try { Ok(bus.store.get_session(key)) } catch { e => Err(e) }) {
-      Ok(Object(_) as row) => Some((p55_jstr(row, "connect"), p55_jtext(row, "workspace")))
+      Ok(Object(_) as row) => Some((jtext(row, "connect"), jtext_or_empty(row, "workspace")))
       _ => None
     },
     recent_connects: key => {
@@ -504,23 +504,23 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
         _ => ""
       }
       guard t.rev_find("/") is Some(cut) && cut > 0 && cut < t.length() - 1 else {
-        raise BusError("to must look like CHANNEL/THREAD_TS, got \{to_core(of_feishu(to)).stringify()}")
+        raise BusError("to must look like CHANNEL/THREAD_TS, got \{of_jv(of_feishu(to)).stringify()}")
       }
       let rows = bus.db.all(
         "SELECT ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
         [Json::string(key), Json::string(t.unsafe_substring(start=0, end=cut)), Json::string(t.unsafe_substring(start=cut + 1, end=t.length()))],
       )
       match rows {
-        [r, ..] => p55_jtext(Json::object(r), "connect")
+        [r, ..] => jtext_or_empty(Json::object(r), "connect")
         [] => raise BusError("\{t} is not a conversation of this session")
       }
     },
     chat_api: id => match connects.chats(id) {
       Some(chat) =>
         Some(async fn(meth, params) {
-          let v = to_core((chat.call)("api", [of_core(Json::string(meth)), of_feishu(params)]))
-          match p55_jstr(v, "file") {
-            Some(h) => File(hex_bytes(h), p55_jtext(v, "name"), p55_jtext(v, "type"))
+          let v = of_jv((chat.call)("api", [to_jv(Json::string(meth)), of_feishu(params)]))
+          match jtext(v, "file") {
+            Some(h) => File(hex_bytes(h), jtext_or_empty(v, "name"), jtext_or_empty(v, "type"))
             None => Data(@feishu.JV::of_json(v))
           }
         })
@@ -537,7 +537,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
 /// A callback the admin API handed as `{"$fn": id}` (P5-1's `$admin.called` on the bus): called with `args`, its
 /// answer.
 async fn P55::called(self : P55, f : Json, args : Array[Json]) -> Json {
-  match p55_jfield(f, "$fn") {
+  match jfield(f, "$fn") {
     Number(_, ..) as id => {
       let (v, _) = self.bus.call_peer("self", None, "$admin.called", { "id": id, "args": Json::array(args) })
       v
@@ -589,11 +589,11 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
   let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
-      "sessionLink" => Some(of_core(p55_jopt(s.session_link())))
+      "sessionLink" => Some(to_jv(jopt(s.session_link())))
       "standsAt" => {
         let (ch, ts) = thread_of_j(a.get(0))
-        let st = to_core(a.get(1).unwrap_or(Null))
-        s.stands_at(ch, ts, p55_jtext(st, "kind"), p55_jstr(st, "words"))
+        let st = of_jv(a.get(1).unwrap_or(Null))
+        s.stands_at(ch, ts, jtext_or_empty(st, "kind"), jtext(st, "words"))
         Some(Null)
       }
       _ => None
@@ -601,7 +601,7 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
   }
   let call = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
-      "mention" => Some(of_core(Json::string(s.mention(txt(a, 0)))))
+      "mention" => Some(to_jv(Json::string(s.mention(txt(a, 0)))))
       "knownPerson" => Some(s.known_person(txt(a, 0)))
       "post" => {
         let (ch, ts) = thread_of_j(a.get(0))
@@ -610,11 +610,11 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
           _ => []
         }
         let card = match a.get(3) { Some(Null) | None => None; c => c }
-        Some(of_core(Json::string(s.post(ch, ts, txt(a, 1), files, card~))))
+        Some(to_jv(Json::string(s.post(ch, ts, txt(a, 1), files, card~))))
       }
       "download" => {
-        let f = to_core(a.get(0).unwrap_or(Null))
-        Some(of_core(Json::string(@drive.hex(s.download(p55_jtext(f, "id"), p55_jtext(f, "name"), match p55_jfield(f, "size") { Number(n, ..) => n; _ => 0.0 })))))
+        let f = of_jv(a.get(0).unwrap_or(Null))
+        Some(to_jv(Json::string(@drive.hex(s.download(jtext_or_empty(f, "id"), jtext_or_empty(f, "name"), match jfield(f, "size") { Number(n, ..) => n; _ => 0.0 })))))
       }
       _ => None
     }
@@ -631,11 +631,11 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   let db = bus.db
   let (zh, en) = catalogs_json()
   let io = {
-    ..@comma.host_io(host, words=@comma.Words::new(of_core(zh), of_core(en)), lang=() => (bus.lang.val)(), platform=platform(), arch=arch(), hostname=hostname(), version=bus.version),
+    ..@comma.host_io(host, words=@comma.Words::new(to_jv(zh), to_jv(en)), lang=() => (bus.lang.val)(), platform=platform(), arch=arch(), hostname=hostname(), version=bus.version),
     now: () => p5_epoch_ms().to_double(),
   }
   let cloud_listeners = (f : () -> Unit) => (bus.cloud_listen.val)(_ => f())
-  let rows = (sql : String, args : Array[@jsjson.JValue]) => db.all(sql, args.map(to_core)).map(r => of_core(Json::object(r)))
+  let rows = (sql : String, args : Array[@jsjson.JValue]) => db.all(sql, args.map(of_jv)).map(r => to_jv(Json::object(r)))
   let live = @comma.CommaLive::new(
     {
       data: bus.data,
@@ -644,7 +644,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       membership: ws => match self.memberships().search_by(m => m.0 == ws) {
         Some(i) => {
           let m = self.memberships()[i]
-          of_core({ "workspace": Json::string(m.0), "workspace_name": Json::string(m.1), "name": Json::string(hostname()), "peers": Json::array(m.3) })
+          to_jv({ "workspace": Json::string(m.0), "workspace_name": Json::string(m.1), "name": Json::string(hostname()), "peers": Json::array(m.3) })
         }
         None => Null
       },
@@ -652,19 +652,19 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       cloud_listen: cloud_listeners,
       pages: () => Null,
       read: async fn(op, args, lang, _background) {
-        match (bus.reader_ask.val)(op, to_core(args), lang) {
+        match (bus.reader_ask.val)(op, of_jv(args), lang) {
           String(t) => t
           other => other.stringify()
         }
       },
       ask: async fn(station, request) {
-        let r = to_core(request)
-        let (v, _) = bus.call_peer(station, p55_jstr(r, "workspace"), p55_jtext(r, "method"), r)
-        of_core(v)
+        let r = of_jv(request)
+        let (v, _) = bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r)
+        to_jv(v)
       },
       ask_text: async fn(station, request) {
-        let r = to_core(request)
-        match bus.call_peer(station, p55_jstr(r, "workspace"), p55_jtext(r, "method"), r).0 {
+        let r = of_jv(request)
+        match bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r).0 {
           String(t) => t
           other => other.stringify()
         }
@@ -674,7 +674,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
           raise BusError("not a station of this workspace")
         }
       },
-      subscribe: f => bus.subscribe_store(change => f(p55_jtext(change, "type"))),
+      subscribe: f => bus.subscribe_store(change => f(jtext_or_empty(change, "type"))),
       hub: {
         get: async fn(sql, args) {
           match rows(sql, args) {
@@ -683,22 +683,22 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
           }
         },
         all: async fn(sql, args) { rows(sql, args) },
-        run: async fn(sql, args) { ignore(db.all(sql, args.map(to_core))) },
-        thread_sessions: async fn(thread) { core_items(self.hub("store.threadSessions", [Json::number(thread)])).map(of_core) },
+        run: async fn(sql, args) { ignore(db.all(sql, args.map(of_jv))) },
+        thread_sessions: async fn(thread) { core_items(self.hub("store.threadSessions", [Json::number(thread)])).map(to_jv) },
         get_session: async fn(key) {
           match (try { Ok(bus.store.get_session(key)) } catch { e => Err(e) }) {
-            Ok(r) => of_core(r)
+            Ok(r) => to_jv(r)
             Err(_) => Null
           }
         },
         ws_of: async fn(s) {
-          match self.hub("hub.wsOf", [to_core(s)]) {
+          match self.hub("hub.wsOf", [of_jv(s)]) {
             String(w) => Some(w)
             _ => None
           }
         },
         deliver: async fn(thread, n, sessions, text, ws) {
-          ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(Json::string(_))), Json::string(text), p55_jopt(ws)]))
+          ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(Json::string(_))), Json::string(text), jopt(ws)]))
         },
         complete_router_write: async fn(id) { self.hub("store.completeRouterWrite", [Json::string(id)]) is True },
         say: async fn(thread, author, text, _hooks) {
@@ -717,32 +717,32 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   // Another station's read of this one's statistics and its write in one of its chats (comma/peer.ts).
   let peer_read = live.peer_read()
   bus.on_peer_prefix("outflow.", async fn(from, ws, _meth, params, _bytes) {
-    let a = peer_read(from, of_core(params), ws)
+    let a = peer_read(from, to_jv(params), ws)
     (a.check)()
-    (to_core(a.head), Some(a.bytes))
+    (of_jv(a.head), Some(a.bytes))
   })
   bus.on_peer_prefix("comma.", async fn(from, ws, meth, params, _bytes) {
     if meth == "comma.say" {
-      (to_core(live.say_handler(from, of_core(params), ws)), None)
+      (of_jv(live.say_handler(from, to_jv(params), ws)), None)
     } else if meth == "comma.changed" {
-      (to_core(live.changed_handler(from, ws)), None)
+      (of_jv(live.changed_handler(from, ws)), None)
     } else {
-      let a = peer_read(from, of_core(params), ws)
+      let a = peer_read(from, to_jv(params), ws)
       (a.check)()
-      (to_core(a.head), Some(a.bytes))
+      (of_jv(a.head), Some(a.bytes))
     }
   })
   let parts_ref : Ref[@comma.CommaParts?] = Ref(None)
   let connects_ref : Ref[@connects_hub.Connects?] = Ref(None)
   let parts = live.make_comma(
     bus.data,
-    () => of_core((bus.config_raw.val)()),
-    f => (bus.config_listen.val)(raw => f(of_core(raw))),
+    () => to_jv((bus.config_raw.val)()),
+    f => (bus.config_listen.val)(raw => f(to_jv(raw))),
     options.in_workspace,
     {
       get_session: async fn(key) {
         match (try { Ok(bus.store.get_session(key)) } catch { e => Err(e) }) {
-          Ok(r) => of_core(r)
+          Ok(r) => to_jv(r)
           Err(_) => Null
         }
       },
@@ -755,7 +755,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       thread_at: async fn(surface, ch, ts) { (self.connect_threads_store().thread_at)(surface, ch, ts) },
       leave_thread: async fn(thread, key) { ignore(self.hub("store.leaveThread", [Json::number(thread), Json::string(key)])) },
       handler: async fn(event) {
-        ignore(self.hub("hub.receive", [Json::string(p55_jtext(to_core(event), "connect")), to_core(event)]))
+        ignore(self.hub("hub.receive", [Json::string(jv_text(event, "connect").unwrap_or("")), of_jv(event)]))
       },
       book_person: None,
       book_known: None,
@@ -776,8 +776,8 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   )
   parts_ref.val = Some(parts)
   let scoped = (j : @jsjson.JValue) => {
-    let id = p55_jtext(to_core(j), "id")
-    parts.connects(of_core((bus.config_raw.val)())).search_by(sc => sc.connect.id == id).map(i => parts.connects(of_core((bus.config_raw.val)()))[i])
+    let id = jv_text(j, "id").unwrap_or("")
+    parts.connects(to_jv((bus.config_raw.val)())).search_by(sc => sc.connect.id == id).map(i => parts.connects(to_jv((bus.config_raw.val)()))[i])
   }
   let connects = @connects_hub.make_connects(options, {
     kind: "comma",
@@ -870,12 +870,12 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
   }
   {
     bind: async fn(options) {
-      let o = to_core(options)
-      let key = hex_bytes(p55_jtext(o, "secretKey"))
-      let alpns = core_strs(p55_jfield(o, "alpns")).map(a => Json::string(@drive.hex(@utf8.encode(a))))
+      let o = of_jv(options)
+      let key = hex_bytes(jtext_or_empty(o, "secretKey"))
+      let alpns = core_strs(jfield(o, "alpns")).map(a => Json::string(@drive.hex(@utf8.encode(a))))
       let (bound, _) = host.shell(
         "iroh.bind",
-        { "relayUrls": p55_jfield(o, "relayUrls"), "alpns": Json::array(alpns), "discovery": Json::boolean(jtrue(o, "discovery")) },
+        { "relayUrls": jfield(o, "relayUrls"), "alpns": Json::array(alpns), "discovery": Json::boolean(jtrue(o, "discovery")) },
         bytes=key,
       )
       guard bound is { "id": endpoint, .. } else { raise BusError("the shell bound no endpoint") }
@@ -886,7 +886,7 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
       {
         id: () => id,
         connect: async fn(addr, alpn) {
-          let a = to_core(addr)
+          let a = of_jv(addr)
           match host.shell("iroh.connect", { "id": endpoint, "addr": a }, bytes=@utf8.encode(alpn)).0 {
             { "id": c, .. } => conn(c)
             _ => raise BusError("the shell made no connection")
@@ -936,7 +936,7 @@ async fn P55::start_group(self : P55, options : @connects_hub.ConnectsOptions) -
     endpoints: () => shell_endpoints(host),
     create: None,
     public_key: signer.public_key,
-    speech: { words: @replica_coord.station_words(of_core(zh), of_core(en)), lang: Ref((bus.lang.val)()) },
+    speech: { words: @replica_coord.station_words(to_jv(zh), to_jv(en)), lang: Ref((bus.lang.val)()) },
     uuid: () => @drive.random_uuid(),
     signer,
   })
@@ -957,8 +957,8 @@ fn group_entry(given : Json, had : Json) -> Json raise {
     Object(m) => m.copy()
     _ => Map([])
   }
-  match p55_jstr(given, "server") {
-    Some(server) if server.trim().to_lower() != p55_jtext(Json::object(g), "server") => {
+  match jtext(given, "server") {
+    Some(server) if server.trim().to_lower() != jtext_or_empty(Json::object(g), "server") => {
       g["server"] = Json::string(server.trim().to_lower().to_owned())
       for k in ["memberId", "name", "bound"] {
         g.remove(k)
@@ -966,11 +966,11 @@ fn group_entry(given : Json, had : Json) -> Json raise {
     }
     _ => ()
   }
-  match p55_jfield(given, "relays") {
+  match jfield(given, "relays") {
     Array(xs) => g["relays"] = Json::array(xs.filter(x => x is String(_)))
     _ => ()
   }
-  match p55_jstr(given, "code") {
+  match jtext(given, "code") {
     Some(code) if code.trim() != "" => {
       let kept = code.trim().to_upper().to_owned().replace_all(old="-", new="").replace_all(old=" ", new="")
       if kept.length() != 16 {
@@ -980,7 +980,7 @@ fn group_entry(given : Json, had : Json) -> Json raise {
     }
     _ => ()
   }
-  match p55_jfield(given, "botName") {
+  match jfield(given, "botName") {
     String(n) => if n.trim() == "" { g.remove("botName") } else { g["botName"] = Json::string(n.trim().to_owned()) }
     Null => if given is Object(m) && m.contains("botName") { g.remove("botName") }
     _ => ()

@@ -138,7 +138,7 @@ async fn tcp_port_pids(host : @host.Host, port : Int) -> Array[Int] {
   }
   let tables = []
   for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
-    if read_pseudo(host, f) is Some(t) {
+    if shell_read_text(host, f) is Some(t) {
       tables.push(t)
     }
   }

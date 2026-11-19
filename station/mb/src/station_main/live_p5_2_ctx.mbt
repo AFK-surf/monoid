@@ -75,7 +75,7 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
       let said = said_of(e)
       if said.contains("no call") {
         // What it wrote is told as the store's own writes are (the events, the readers), as P5-4's vault does
-        // (`p54_told_threads`): kept in `sent` and never told, an agent's chat_post reached no device until the app
+        // (`told_threads`): kept in `sent` and never told, an agent's chat_post reached no device until the app
         // read the chat again, and `sent` grew for good (0.1.9984).
         // (an argument left undefined, as the conversations and the rigs say it, is none: the threads' store takes a
         // hook where one is given, and ran an empty statement for card-place.ts's `insertMessage(message, undefined)`)
@@ -84,13 +84,13 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
             Json::null()
           a => a
         })
-        let answer = self.threads.call(name, given.map(jv_of)) catch {
+        let answer = self.threads.call(name, given.map(to_jv)) catch {
           e => {
-            p52_told_threads(self.bus, self.threads)
+            told_threads(self.bus, self.threads)
             raise e
           }
         }
-        p52_told_threads(self.bus, self.threads)
+        told_threads(self.bus, self.threads)
         answer
       } else {
         raise e
@@ -109,7 +109,7 @@ async fn P52::card_page(self : P52, op : String, thread : Json, target : String,
     v => v
   }
   // (a page read after the worker wrote: what it wrote told first)
-  p52_told_threads(self.bus, self.threads)
+  told_threads(self.bus, self.threads)
   page
 }
 
@@ -133,7 +133,7 @@ fn P52::outcomes_start(self : P52) -> Unit {
         }
         Err(e) => {
           worker.previous_failed(said_of(e))
-          live_log("warn", "card-outbox", "the previous station did not exit", { "error": jstr(said_of(e)) })
+          slice_log("warn", "card-outbox", "the previous station did not exit", { "error": jstr(said_of(e)) })
         }
       }
     }),
@@ -152,13 +152,13 @@ fn P52::outcomes_start(self : P52) -> Unit {
 fn P52::outcome_save(self : P52, item : Json) -> Json raise {
   guard self.card_outcomes is Some(worker) else { raise LiveError("the cards' outcomes are not kept yet") }
   self.threads.set_now(wall_ms().to_double())
-  let id = worker.save(@store_threads.CardOutcome::from_json(jv_of(item)), () => ()) catch {
+  let id = worker.save(@store_threads.CardOutcome::from_json(to_jv(item)), () => ()) catch {
     e => {
-      p52_told_threads(self.bus, self.threads)
+      told_threads(self.bus, self.threads)
       raise e
     }
   }
-  p52_told_threads(self.bus, self.threads)
+  told_threads(self.bus, self.threads)
   self.outcomes_follow()
   Json::string(id)
 }
@@ -171,7 +171,7 @@ fn P52::outcomes_follow(self : P52) -> Unit {
   guard self.card_outcomes is Some(worker) && !self.outcomes_following else { return }
   self.outcomes_following = true
   fn step() -> Unit {
-    p52_told_threads(self.bus, self.threads)
+    told_threads(self.bus, self.threads)
     let st = worker.state()
     let going = jtext(st, "cursor") != Some("0") || jfield(st, "again") is True
     let waiting = jitems(jfield(st, "deferred")).length() > 0
@@ -183,18 +183,6 @@ fn P52::outcomes_follow(self : P52) -> Unit {
     }
   }
   self.host.rt.after(0, () => step())
-}
-
-///|
-/// The threads' store's changes told to the bus's listeners.
-fn p52_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
-  let sent = threads.sent.copy()
-  threads.sent.clear()
-  for c in sent {
-    bus.notify_store(c)
-  }
-  // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
-  bus.drain_thread_requests(threads)
 }
 
 ///|
@@ -262,7 +250,7 @@ async fn P52::link_skills(self : P52, row : Json) -> String {
     let workspace = jtext(row, "workspace").unwrap_or("")
     let skills = path([@nodepath.dirname(sep(), memory_path), "skills"])
     self.files.session_skills(workspace, skills) catch {
-      e => live_log("warn", "session", "its workspace's skills not linked where it runs", { "session": jstr(key), "error": jstr(said_of(e)) })
+      e => slice_log("warn", "session", "its workspace's skills not linked where it runs", { "session": jstr(key), "error": jstr(said_of(e)) })
     }
   }
   memory
@@ -358,7 +346,7 @@ async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) ->
     Ok(Object(_) as p) => return p
     Ok(_) => ()
     Err(e) =>
-      live_log("warn", "agents", "the accounts did not say a profile; the session's own is taken", {
+      slice_log("warn", "agents", "the accounts did not say a profile; the session's own is taken", {
         "session": jstr(key),
         "error": jstr(said_of(e)),
       })
@@ -485,7 +473,7 @@ async fn P52::open_agent(
           if non_session_open_error(e) {
             raise e
           }
-          live_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
+          slice_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
           told["resumeLost"] = jb(true)
           (driver.open)(base, events)
         }
@@ -506,7 +494,7 @@ async fn P52::open_agent(
     ignore(self.store("setRuntimeSessionId", [jstr(key), jstr(id)]))
   }
   if stopped.length() > 0 {
-    told["stoppedNote"] = jstr(@agent_runtimes.background_stopped(stopped.map(jv_of), resumable))
+    told["stoppedNote"] = jstr(@agent_runtimes.background_stopped(stopped.map(to_jv), resumable))
   }
   told["generation"] = ji(gen)
   told["identity"] = { "runtime": jstr(runtime), "model": jfield(row, "model"), "effort": jfield(row, "effort") }
@@ -553,14 +541,14 @@ async fn P52::retune_agent(self : P52, key : String, agent : Agent, runtime : St
 async fn P52::post_notice(self : P52, key : String, text : String, profile : Json, runtime : Json, change : Json, where_~ : (Json) -> Unit) -> Unit {
   let latest = self.store("latestThread", [jstr(key)])
   if latest == Json::null() {
-    live_log("warn", "session", "no thread to post a notice to", { "session": jstr(key), "text": jstr(text) })
+    slice_log("warn", "session", "no thread to post a notice to", { "session": jstr(key), "text": jstr(text) })
     return
   }
   let thread = jfield(latest, "thread")
   let connect = jtext(latest, "connect").unwrap_or("")
   let ts = self.chat_post(connect, jtext(thread, "channel").unwrap_or(""), jtext(thread, "threadTs").unwrap_or(""), @session_hub.mark_notice(text), []) catch {
     e => {
-      live_log("warn", "session", "notice failed", { "session": jstr(key), "error": jstr(said_of(e)) })
+      slice_log("warn", "session", "notice failed", { "session": jstr(key), "error": jstr(said_of(e)) })
       return
     }
   }
@@ -664,7 +652,7 @@ async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, 
     None => ()
   }
   let latest = @agent_runtimes.latest().to_double()
-  let told = jnum_of(Json::object({ "n": self.store("toldNotes", [jstr(key)]) }), "n").unwrap_or(latest)
+  let told = as_num(self.store("toldNotes", [jstr(key)])).unwrap_or(latest)
   if told < latest {
     let workspace = jtext(row, "workspace")
     let full = match workspace {
@@ -825,10 +813,10 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
       special,
     }
   }
-  let text = @agent_runtimes.format_inbound(said.map(jv_of), new_threads, names, selves, posts~, cards~, self_key=key)
+  let text = @agent_runtimes.format_inbound(said.map(to_jv), new_threads, names, selves, posts~, cards~, self_key=key)
   let models = jitems(self.store("untoldWidgetModels", [jstr(key)]) catch { _ => Json::array([]) })
   let widgets = Json::array(models.map(w => Json::array([jfield(w, "path"), jfield(w, "model")])))
-  let told = @agent_runtimes.format_widget_models(models.map(jv_of))
+  let told = @agent_runtimes.format_widget_models(models.map(to_jv))
   let all = if told == "" { text } else if text == "" { told } else { text + "\n\n" + told }
   (all, widgets)
 }
@@ -890,7 +878,7 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
         None => ()
       }
     }
-    let said = @agent_runtimes.format_card_choices(chose.map(jv_of), names, wall_ms().to_double())
+    let said = @agent_runtimes.format_card_choices(chose.map(to_jv), names, wall_ms().to_double())
     (if text == "" { said } else { said + "\n\n" + text }, () => ignore(self.store("markCardChoicesTold", [jstr(key), Json::array(chose)]) catch { _ => Json::null() }))
   }
   match moved {
@@ -1048,7 +1036,7 @@ fn P52::working(self : P52, key : String, working : Array[Json], status : Json) 
 ///|
 /// Where a turn stands said where its chat shows it (Slack's assistant status): the connect's part's.
 fn P52::stands_at(self : P52, connect : Json, channel : Json, thread_ts : Json, stands : Json) -> Unit {
-  if jtext(Json::object({ "c": connect }), "c") == Some(@session_hub.internal_connect) {
+  if as_text(connect) == Some(@session_hub.internal_connect) {
     return
   }
   ignore(
@@ -1161,7 +1149,7 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       } else {
         Json::null()
       }
-    "coldAfresh" => jb(hub.goes_afresh(s(0), jnum_of(Json::object({ "n": a(1) }), "n").unwrap_or(wall_ms().to_double())))
+    "coldAfresh" => jb(hub.goes_afresh(s(0), as_num(a(1)).unwrap_or(wall_ms().to_double())))
     "longChat" => jopt(hub.told_long_chat(s(0)))
     "ranIn" => self.store("ranIn", args)
     "spend" => (self.bus.jobs_ask.val)("accounts.spend", { "key": a(0), "ranOn": a(1), "model": a(2) })
@@ -1202,6 +1190,6 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
 /// made again cleaned, the room marked cold, then its workspace and history packed, under the room's lock.
 async fn P52::cold_pack(self : P52, key : String) -> Unit {
   self.storage().cold_pack(key) catch {
-    e => live_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
+    e => slice_log("warn", "cold", "an archived session's files not put away", { "session": jstr(key), "error": jstr(said_of(e)) })
   }
 }

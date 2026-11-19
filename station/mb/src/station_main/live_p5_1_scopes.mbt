@@ -27,31 +27,10 @@ fn p51_scopes_crypto(bus : LiveBus) -> @mesh_scopes.Crypto {
       _ => ""
     },
     random: n => match (try { Ok(host.shell_sync("crypto.random", { "bytes": Json::number(n.to_double()) })) } catch { e => Err(e) }) {
-      Ok(String(h)) => p51_unhex(h)
+      Ok(String(h)) => unhex_lenient(h)
       _ => Bytes::make(n, b'\x00')
     },
   }
-}
-
-///|
-fn p51_unhex(h : String) -> Bytes {
-  let out : Array[Byte] = []
-  let digit = (c : Char) => if c >= '0' && c <= '9' {
-    c.to_int() - '0'.to_int()
-  } else if c >= 'a' && c <= 'f' {
-    c.to_int() - 'a'.to_int() + 10
-  } else if c >= 'A' && c <= 'F' {
-    c.to_int() - 'A'.to_int() + 10
-  } else {
-    0
-  }
-  let cs = h.to_array()
-  let mut i = 0
-  while i + 1 < cs.length() {
-    out.push((digit(cs[i]) * 16 + digit(cs[i + 1])).to_byte())
-    i += 2
-  }
-  Bytes::from_array(out)
 }
 
 ///|

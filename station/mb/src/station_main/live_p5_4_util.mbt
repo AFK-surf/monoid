@@ -4,104 +4,9 @@
 // `after`, the machine's processes followed as events (sys.mbt `spawn`) and a stream the shell opened.
 
 ///|
-fn p54_jv(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
-}
-
-///|
-fn p54_of_jv(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
-fn p54_obj(fields : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for f in fields {
-    m[f.0] = f.1
-  }
-  Json::object(m)
-}
-
-///|
-fn p54_get(v : Json?, k : String) -> Json? {
-  match v {
-    Some(Object(m)) => m.get(k)
-    _ => None
-  }
-}
-
-///|
-fn p54_str(v : Json?) -> String? {
-  match v {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn p54_text(v : Json?, k : String) -> String? {
-  p54_str(p54_get(v, k))
-}
-
-///|
-fn p54_num(v : Json?) -> Double? {
-  match v {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-fn p54_bool(v : Json?) -> Bool {
-  v is Some(True)
-}
-
-///|
-fn p54_opt(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
-  }
-}
-
-///|
-fn p54_strs(v : Json?) -> Array[String] {
-  match v {
-    Some(Array(a)) => a.filter_map(x => p54_str(Some(x)))
-    _ => []
-  }
-}
-
-///|
-/// The `i`th argument of a call (`[a, b, …]`), none past its end.
-fn p54_arg(args : Json, i : Int) -> Json? {
-  match args {
-    Array(a) if i < a.length() => Some(a[i])
-    Array(_) => None
-    other => if i == 0 { Some(other) } else { None }
-  }
-}
-
-///|
-fn p54_arg_text(args : Json, i : Int) -> String {
-  p54_str(p54_arg(args, i)).unwrap_or("")
-}
-
-///|
 /// The session a tool is called for (the door's context: `session`, as the agents' side gives it).
 fn p54_session(context : Json) -> String {
-  p54_text(Some(context), "session").unwrap_or("")
-}
-
-///|
-/// A tool's answer as MCP gives it: its text, an error where it failed.
-fn p54_tool_answer(text : String, error? : Bool = false) -> Json {
-  let content : Json = [{ "type": "text", "text": Json::string(text) }]
-  if error {
-    { "content": content, "isError": Json::boolean(true) }
-  } else {
-    { "content": content }
-  }
+  jtext(context, "session").unwrap_or("")
 }
 
 ///|
@@ -258,7 +163,7 @@ fn P54Conn::writer(self : P54Conn) -> (Bytes) -> Unit {
 fn p54_station_id(bus : LiveBus) -> String? {
   match (bus.cloud_state.val)() {
     Some(s) =>
-      match p54_text(Some(s), "station") {
+      match jtext(s, "station") {
         Some(id) if id != "" => Some(id)
         _ => None
       }
@@ -270,7 +175,7 @@ fn p54_station_id(bus : LiveBus) -> String? {
 fn p54_home(bus : LiveBus) -> String? {
   match (bus.cloud_state.val)() {
     Some(s) =>
-      match p54_text(Some(s), "workspace") {
+      match jtext(s, "workspace") {
         Some(w) if w != "" => Some(w)
         _ => None
       }
@@ -300,10 +205,10 @@ fn p54_session_ws(bus : LiveBus, key : String) -> String? {
 /// The session's working directory (its `cwd`, else its workspace directory).
 fn p54_session_dir(bus : LiveBus, key : String) -> String? {
   let row = p54_session_row(bus, key)
-  match p54_text(row, "cwd") {
+  match opt_text(row, "cwd") {
     Some(c) if c != "" => Some(c)
     _ =>
-      match p54_text(row, "workspace") {
+      match opt_text(row, "workspace") {
         Some(w) if w != "" => Some(w)
         _ => None
       }

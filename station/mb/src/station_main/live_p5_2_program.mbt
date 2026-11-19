@@ -53,7 +53,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
     stderr=Appended(path([self.data, "run", "sessions-program.err"])),
   ) catch {
     e => {
-      live_log("error", "agents", "the sessions' program did not start", { "error": jstr(said_of(e)) })
+      slice_log("error", "agents", "the sessions' program did not start", { "error": jstr(said_of(e)) })
       self.ended = true
       return
     }
@@ -125,7 +125,7 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
                           }
                         Ok(other) => self.tell({ head: other, body: None })
                         Err(_) =>
-                          live_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
+                          slice_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
                       }
                     }
                   }
@@ -446,7 +446,7 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   if self.closed {
     return
   }
-  live_log("warn", "agents", "the program reading agents ended; starting it again", { "code": ji(code) })
+  slice_log("warn", "agents", "the program reading agents ended; starting it again", { "code": ji(code) })
   self.on = false
   self.settle()
   let again = self.sessions.values().to_array()
@@ -589,8 +589,8 @@ fn AgentsHost::attach(self : AgentsHost, p : HostedProcess) -> Unit {
   let m : Map[String, Json] = Map([])
   m["attach"] = ji(p.n)
   m["socket"] = jstr(p.info.socket())
-  m["turn"] = p52_json_of_jv(p.turn)
-  m["live"] = p52_json_of_jv(p.live)
+  m["turn"] = of_jv(p.turn)
+  m["live"] = of_jv(p.live)
   m["kind"] = jstr(p.options.kind)
   match p.options.flavor {
     Some(f) => {
@@ -677,7 +677,7 @@ async fn AgentsHost::freeze(self : AgentsHost, only : Array[HostedProcess]) -> U
           Ok(n) =>
             match (self.sessions.get(n), kv.1) {
               (Some(p), Object(st)) if st.contains("turn") =>
-                p.froze(jv_of(st.get("turn").unwrap_or(Json::null())), jv_of(st.get("live").unwrap_or(Json::null())))
+                p.froze(to_jv(st.get("turn").unwrap_or(Json::null())), to_jv(st.get("live").unwrap_or(Json::null())))
               _ => ()
             }
           Err(_) => ()
@@ -845,7 +845,7 @@ fn HostedProcess::take(self : HostedProcess, heard : Json) -> @agent_drivers.Lat
   }
   match jfield(heard, "turn") {
     Null => ()
-    t => self.turn = jv_of(t)
+    t => self.turn = to_jv(t)
   }
   let batch = jnum_of(heard, "batch").map(b => b.to_int())
   let router = match batch {
@@ -861,7 +861,7 @@ fn HostedProcess::take(self : HostedProcess, heard : Json) -> @agent_drivers.Lat
     _ => heard
   }
   let to = jfield(heard, "to")
-  let taken = (self.options.heard)({ json: jv_of(heard) })
+  let taken = (self.options.heard)({ json: to_jv(heard) })
   let finish = () => {
     if self.gone || self.frozen {
       return
@@ -918,7 +918,7 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
     return @agent_drivers.done(lp)
   }
   if pid_alive(self.info.runner()) {
-    live_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
+    slice_log("warn", "agents::process", "another station took the runner over; letting go", { "label": jstr(self.options.label) })
     (self.options.handed)()
     self.frozen = true
     self.gone = true
@@ -1031,7 +1031,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
     say: (what, fields) => if !self.frozen {
       let m : Map[String, Json] = Map([])
       m[what] = ji(self.n)
-      match p52_json_of_jv(fields) {
+      match of_jv(fields) {
         Object(f) =>
           for kv in f {
             m[kv.0] = kv.1
@@ -1058,7 +1058,7 @@ fn HostedProcess::proc(self : HostedProcess) -> @agent_drivers.Proc {
     has_exited: () => self.exit_said is Some(_),
     handed: () => self.frozen,
     thread: (thread, live, routed) => {
-      let m : Map[String, Json] = { "codexThread": ji(self.n), "id": jstr(thread), "live": p52_json_of_jv(live) }
+      let m : Map[String, Json] = { "codexThread": ji(self.n), "id": jstr(thread), "live": of_jv(live) }
       if routed {
         m["routed"] = jb(true)
       }
@@ -1105,7 +1105,7 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
         end_runner_now(pump, data, id, options.label)
         raise LiveError("\{options.label} not started: the station's agents were let go")
       }
-      let p = HostedProcess::new(self, { json: jv_of(info) }, options, turn, @jsjson.JValue::Null)
+      let p = HostedProcess::new(self, { json: to_jv(info) }, options, turn, @jsjson.JValue::Null)
       (pre.val)(p)
       self.attach(p)
       p.proc()
@@ -1124,10 +1124,10 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
       p.proc()
     },
     replay_own: (kind, file, at, extra) => pump.later("output read again", async fn() {
-      jv_of(self.replay_own(kind, file, at, p52_json_of_jv(extra)))
+      to_jv(self.replay_own(kind, file, at, of_jv(extra)))
     }),
     replay: runs => pump.later("app-server read again", async fn() {
-      jv_of(self.replay(runs.map(r => r.map(p52_json_of_jv))))
+      to_jv(self.replay(runs.map(r => r.map(of_jv))))
     }),
     freeze: procs => pump.later("processes held", async fn() {
       let only = procs.filter_map(pr => self.sessions.values().find_first(p => physical_equal(p.info, pr.info)))

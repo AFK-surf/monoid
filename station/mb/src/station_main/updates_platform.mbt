@@ -125,7 +125,7 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
       } else {
         guard @ops_platform.unix_launcher_signal(op) is Some(signal) else { raise SysError("no such ask of the launcher: \{op}") }
         if !kill(pid, signal) {
-          raise @updates.thrown("Error", "kill ESRCH", more=[("code", of_core(Json::string("ESRCH")))])
+          raise @updates.thrown("Error", "kill ESRCH", more=[("code", to_jv(Json::string("ESRCH")))])
         }
       }
       Some(Json::null())

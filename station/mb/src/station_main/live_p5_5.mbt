@@ -136,40 +136,6 @@ fn p55_said_of(e : Error) -> String {
 
 // ── JSON at hand ──
 
-///|
-fn p55_jfield(v : Json, k : String) -> Json {
-  match v {
-    Object(m) => m.get(k).unwrap_or(Json::null())
-    _ => Json::null()
-  }
-}
-
-///|
-fn p55_jstr(v : Json, k : String) -> String? {
-  match p55_jfield(v, k) {
-    String(s) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn p55_jtext(v : Json, k : String) -> String {
-  p55_jstr(v, k).unwrap_or("")
-}
-
-///|
-fn jtrue(v : Json, k : String) -> Bool {
-  p55_jfield(v, k) is True
-}
-
-///|
-fn p55_jopt(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
-  }
-}
-
 // ── the admin API's routes as JSON (above) ──
 
 ///|
@@ -185,7 +151,7 @@ fn refused(status : Int, message : String) -> Json {
 ///|
 /// Whether a viewer manages the station's workspace (mesh/credential.ts `managesStation`: its owner or an admin).
 fn manages(viewer : Json) -> Bool {
-  match p55_jstr(viewer, "role") {
+  match jtext(viewer, "role") {
     Some("owner") | Some("admin") => true
     _ => false
   }
@@ -193,7 +159,7 @@ fn manages(viewer : Json) -> Bool {
 
 ///|
 fn lang_in(r : Json) -> String {
-  match p55_jstr(r, "lang") {
+  match jtext(r, "lang") {
     Some(l) if l != "" => l
     _ => "zh"
   }
@@ -208,8 +174,8 @@ fn p55_route(meth : String, path : String, answer : async (Json) -> Json) -> Par
 /// Whether `request` is answered by a route of `routes` (its method, its path matching the route's pattern as
 /// `pattern_matches` reads it): its answer, else None.
 pub async fn answer_route(routes : Array[PartRoute], request : Json) -> Json? {
-  let meth = p55_jtext(request, "method")
-  let p = p55_jtext(request, "path")
+  let meth = jtext_or_empty(request, "method")
+  let p = jtext_or_empty(request, "path")
   for r in routes {
     if r.meth == meth && pattern_matches(r.path, p) {
       return Some((r.answer)(request))
@@ -255,7 +221,7 @@ pub fn pattern_matches(pattern : String, p : String) -> Bool {
 ///|
 /// The segment `n` of a request's path (0: before the first `/`).
 fn path_seg(r : Json, n : Int) -> String {
-  let xs = p55_jtext(r, "path").split("/").map(x => x.to_owned()).to_array()
+  let xs = jtext_or_empty(r, "path").split("/").map(x => x.to_owned()).to_array()
   if n < xs.length() {
     xs[n]
   } else {
@@ -270,16 +236,16 @@ fn path_seg(r : Json, n : Int) -> String {
 fn P55::memberships(self : P55) -> Array[(String, String, Bool, Array[Json])] {
   let state = (self.bus.cloud_state.val)().unwrap_or(Json::null())
   let out = []
-  let home = p55_jtext(state, "workspace")
-  if home != "" && !(p55_jfield(state, "removed_at") is Number(_, ..)) {
-    out.push((home, p55_jtext(state, "workspace_name"), true, match p55_jfield(state, "peers") { Array(xs) => xs; _ => [] }))
+  let home = jtext_or_empty(state, "workspace")
+  if home != "" && !(jfield(state, "removed_at") is Number(_, ..)) {
+    out.push((home, jtext_or_empty(state, "workspace_name"), true, match jfield(state, "peers") { Array(xs) => xs; _ => [] }))
   }
-  match p55_jfield(state, "joined") {
+  match jfield(state, "joined") {
     Array(xs) =>
       for j in xs {
-        let ws = p55_jtext(j, "workspace")
+        let ws = jtext_or_empty(j, "workspace")
         if ws != "" && ws != home {
-          out.push((ws, p55_jtext(j, "workspace_name"), false, match p55_jfield(j, "peers") { Array(ps) => ps; _ => [] }))
+          out.push((ws, jtext_or_empty(j, "workspace_name"), false, match jfield(j, "peers") { Array(ps) => ps; _ => [] }))
         }
       }
     _ => ()
@@ -303,8 +269,8 @@ fn P55::roster(self : P55, ws : String) -> Array[(String, String, Bool)]? {
   for m in self.memberships() {
     if m.0 == ws {
       return Some(
-        m.3.filter_map(p => match p55_jstr(p, "id") {
-          Some(id) => Some((id, p55_jtext(p, "name"), p55_jstr(p, "mode") == Some("tasks")))
+        m.3.filter_map(p => match jtext(p, "id") {
+          Some(id) => Some((id, jtext_or_empty(p, "name"), jtext(p, "mode") == Some("tasks")))
           None => None
         }),
       )
@@ -316,15 +282,15 @@ fn P55::roster(self : P55, ws : String) -> Array[(String, String, Bool)]? {
 ///|
 /// Whether `peer` is a station of a workspace this one is in.
 fn P55::in_workspace(self : P55, peer : String) -> Bool {
-  self.memberships().iter().any(m => m.3.iter().any(p => p55_jstr(p, "id") == Some(peer)))
+  self.memberships().iter().any(m => m.3.iter().any(p => jtext(p, "id") == Some(peer)))
 }
 
 ///|
 /// The origin of still.fail cloud (or Comma's) this station is in: where its releases are (ControlPlane.releaseBase).
 fn P55::release_base(self : P55) -> String? {
   let state = (self.bus.cloud_state.val)().unwrap_or(Json::null())
-  match p55_jstr(state, "origin") {
-    Some(o) if o != "" => Some(if p55_jstr(state, "provider") == Some("comma") { "\{o}/stations" } else { o })
+  match jtext(state, "origin") {
+    Some(o) if o != "" => Some(if jtext(state, "provider") == Some("comma") { "\{o}/stations" } else { o })
     _ => None
   }
 }

@@ -30,12 +30,6 @@ fn P53Search::new(bus : LiveBus) -> P53Search {
 }
 
 ///|
-/// The program this station runs (`stillfail-reader`), as it was started.
-fn p53_program(bus : LiveBus) -> String {
-  attempt(() => @drive.realpath(bus.argv0)).unwrap_or(bus.argv0)
-}
-
-///|
 fn P53Search::attach(self : P53Search) -> Unit {
   let bus = self.bus
   bus.parts.routes([
@@ -43,51 +37,51 @@ fn P53Search::attach(self : P53Search) -> Unit {
       meth: "GET",
       path: "/search",
       answer: async fn(r) {
-        let q = p53_get(r, "query")
-        let kinds = match p53_str(q, "kinds") {
-          Some(k) if k != "" => Json::array(k.split(",").map(x => p53_s(x.to_string())).to_array())
+        let q = jfield(r, "query")
+        let kinds = match jtext(q, "kinds") {
+          Some(k) if k != "" => Json::array(k.split(",").map(x => jstr(x.to_string())).to_array())
           _ => Json::null()
         }
-        let viewer = p53_get(r, "viewer")
-        let ws = p53_either(p53_str(viewer, "workspace"), p53_home(bus)).unwrap_or("")
+        let viewer = jfield(r, "viewer")
+        let ws = either(jtext(viewer, "workspace"), p53_home(bus)).unwrap_or("")
         self.query(
-          p53_text(q, "q"),
-          p53_obj([
+          jtext_or_empty(q, "q"),
+          jobj_of([
             ("kinds", kinds),
-            ("limit", match p53_str(q, "limit") { Some(l) => p53_n(attempt(() => @string.parse_double(l)).unwrap_or(8.0)); None => Json::null() }),
-            ("asker", p53_obj([("workspace", p53_s(ws)), ("home", p53_b(Some(ws) == p53_home(bus) || ws == "")), ("scopes", Json::array([p53_s("write")]))])),
+            ("limit", match jtext(q, "limit") { Some(l) => jn(attempt(() => @string.parse_double(l)).unwrap_or(8.0)); None => Json::null() }),
+            ("asker", jobj_of([("workspace", jstr(ws)), ("home", jb(Some(ws) == p53_home(bus) || ws == "")), ("scopes", Json::array([jstr("write")]))])),
           ]),
         )
       },
     },
   ])
   bus.on_peer("search.query", async fn(_peer, ws, request, _bytes) {
-    let asked = match p53_get(request, "kinds") {
+    let asked = match jfield(request, "kinds") {
       Array(xs) => xs.filter(x => x is String(_))
       _ => []
     }
     let home = p53_home(bus)
-    let asker = p53_obj([
-      ("workspace", p53_s(p53_either(ws, home).unwrap_or(""))),
-      ("home", p53_b(ws is None || ws == home)),
-      ("scopes", Json::array([p53_s("write")])),
+    let asker = jobj_of([
+      ("workspace", jstr(either(ws, home).unwrap_or(""))),
+      ("home", jb(ws is None || ws == home)),
+      ("scopes", Json::array([jstr("write")])),
     ])
     let found = self.query(
-      p53_text(request, "query"),
-      p53_obj([
-        ("kinds", Json::array(if asked.length() > 0 { asked } else { p53_search_kinds.map(p53_s) })),
-        ("limit", p53_n(p53_num(request, "limit").unwrap_or(5.0))),
+      jtext_or_empty(request, "query"),
+      jobj_of([
+        ("kinds", Json::array(if asked.length() > 0 { asked } else { p53_search_kinds.map(jstr) })),
+        ("limit", jn(jnum_of(request, "limit").unwrap_or(5.0))),
         ("asker", asker),
       ]),
     )
-    (p53_obj([("groups", self.linked(p53_get(found, "groups"))), ("building", p53_get(found, "building"))]), None)
+    (jobj_of([("groups", self.linked(jfield(found, "groups"))), ("building", jfield(found, "building"))]), None)
   })
   // (another station of the workspace reading a skill here: skills.ts `skillForPeer`)
   bus.on_peer("skill.read", async fn(_peer, ws, request, _bytes) {
     let (name, file) = p53_skill_selection(request)
     let home = p53_home(bus)
     let catalog = self.read_catalog(if ws is None || ws == home { None } else { ws })
-    (p53_obj([("text", p53_s(p53_format_skill(catalog, name, file)))]), None)
+    (jobj_of([("text", jstr(p53_format_skill(catalog, name, file)))]), None)
   })
   bus.parts.tools([self.tool(), self.skill_tool()])
 }
@@ -99,20 +93,20 @@ async fn P53Search::linked(self : P53Search, groups : Json) -> Json {
   let out = []
   for g in gs {
     let hits = []
-    match p53_get(g, "hits") {
+    match jfield(g, "hits") {
       Array(hs) =>
         for h in hs {
-          match p53_str(h, "chat") {
+          match jtext(h, "chat") {
             Some(chat) => {
-              let link = (self.bus.hub_ask.val)("link", p53_obj([("session", p53_s(chat))])) catch { _ => Json::null() }
-              hits.push(if link is String(_) { p53_with(h, "link", link) } else { h })
+              let link = (self.bus.hub_ask.val)("link", jobj_of([("session", jstr(chat))])) catch { _ => Json::null() }
+              hits.push(if link is String(_) { jwith(h, "link", link) } else { h })
             }
             None => hits.push(h)
           }
         }
       _ => ()
     }
-    out.push(p53_with(g, "hits", Json::array(hits)))
+    out.push(jwith(g, "hits", Json::array(hits)))
   }
   Json::array(out)
 }
@@ -130,7 +124,7 @@ fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
   let data = self.bus.data
   let proc = spawn(
     self.bus.host,
-    p53_program(self.bus),
+    reader_program(self.bus),
     ["--builder", "search", "--db", @nodepath.join(sep(), [data, "stillfail.db"]), "--data", data, "--sep", sep()],
     stdin_piped=true,
     stdout=Piped,
@@ -187,17 +181,17 @@ fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
 /// A line the program said: a search's answer, or that a builder is to prepare what it needs.
 fn P53Search::answered(self : P53Search, line : String) -> Unit {
   guard attempt(() => @json.parse(line)) is Ok(answer) else { return }
-  if p53_true(answer, "scopePending") {
+  if jtrue(answer, "scopePending") {
     return self.prepare("search-scope")
   }
-  if p53_true(answer, "sessionListPending") {
+  if jtrue(answer, "sessionListPending") {
     return self.prepare("session-list")
   }
-  guard p53_num(answer, "id") is Some(id) else { return }
+  guard jnum_of(answer, "id") is Some(id) else { return }
   match self.waiting.get(id.to_int()) {
     Some(w) => {
       self.waiting.remove(id.to_int())
-      match p53_str(answer, "error") {
+      match jtext(answer, "error") {
         Some(e) => ignore(w.fail(P53Error(e)))
         None => ignore(w.succeed(answer))
       }
@@ -220,7 +214,7 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
       defer self.preparing.remove(builder)
       let proc = spawn(
         bus.host,
-        p53_program(bus),
+        reader_program(bus),
         ["--builder", builder, "--db", @nodepath.join(sep(), [bus.data, "stillfail.db"])],
         stdin_piped=true,
         stdout=Piped,
@@ -229,7 +223,7 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
         _ => return
       }
       let ask = (m : Json) => ignore(proc.write(@utf8.encode(m.stringify() + "\n")))
-      ask(p53_obj([("scope", p53_s("search"))]))
+      ask(jobj_of([("scope", jstr("search"))]))
       let line = @buffer.Buffer()
       let mut going = true
       while going {
@@ -242,13 +236,13 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
               }
               let said = attempt(() => @json.parse(p53_utf8(line.to_bytes()))).unwrap_or(Json::null())
               line.reset()
-              if p53_true(said, "take") {
-                ask(p53_obj([("permit", p53_b(true))]))
-              } else if p53_true(said, "done") || p53_str(said, "error") is Some(_) || bus.stopped.is_done() {
+              if jtrue(said, "take") {
+                ask(jobj_of([("permit", jb(true))]))
+              } else if jtrue(said, "done") || jtext(said, "error") is Some(_) || bus.stopped.is_done() {
                 going = false
               } else {
                 @effect.sleep(50) // timer: a pause between a builder's steps (REQUEST_BACKFILL_PAUSE_MS), yielding to writes
-                ask(p53_obj([("scope", p53_s("search"))]))
+                ask(jobj_of([("scope", jstr("search"))]))
               }
             }
           Err(_) => ()
@@ -270,16 +264,16 @@ async fn P53Search::query(self : P53Search, query : String, options : Json) -> J
   self.asked_at = p53_clock()
   let w : @effect.Deferred[Json] = @effect.Deferred::new()
   self.waiting[id] = w
-  let m : Map[String, Json] = { "type": p53_s("query"), "id": p53_i(id), "query": p53_s(query) }
-  m["asker"] = match p53_get(options, "asker") {
+  let m : Map[String, Json] = { "type": jstr("query"), "id": ji(id), "query": jstr(query) }
+  m["asker"] = match jfield(options, "asker") {
     Null => {
       let home = p53_home(self.bus).unwrap_or("")
-      p53_obj([("workspace", p53_s(home)), ("home", p53_b(true)), ("scopes", Json::array([p53_s("write")]))])
+      jobj_of([("workspace", jstr(home)), ("home", jb(true)), ("scopes", Json::array([jstr("write")]))])
     }
     a => a
   }
   for k in ["kinds", "limit", "offset", "archived"] {
-    match p53_get(options, k) {
+    match jfield(options, k) {
       Null => ()
       v => m[k] = v
     }
@@ -289,12 +283,12 @@ async fn P53Search::query(self : P53Search, query : String, options : Json) -> J
     raise P53Error("the search stopped")
   }
   // (the machine's files beside the rest, where they are asked for: search.ts `query`)
-  let kinds = match p53_get(options, "kinds") {
+  let kinds = match jfield(options, "kinds") {
     Array(xs) => xs.filter_map(x => if x is String(k) { Some(k) } else { None })
     _ => []
   }
-  let wants_files = (kinds.length() == 0 || kinds.contains("file")) && p53_num(options, "offset").unwrap_or(0.0) == 0.0
-  let limit = p53_num(options, "limit").unwrap_or(8.0)
+  let wants_files = (kinds.length() == 0 || kinds.contains("file")) && jnum_of(options, "offset").unwrap_or(0.0) == 0.0
+  let limit = jnum_of(options, "limit").unwrap_or(8.0)
   let files = if wants_files {
     let words = query.to_lower().split(" ").filter(w => w != "").map(w => w.to_string()).to_array()
     self.files(words, m["asker"], (if limit < 1.0 { 1.0 } else if limit > 200.0 { 200.0 } else { limit }).to_int()) catch {
@@ -306,22 +300,22 @@ async fn P53Search::query(self : P53Search, query : String, options : Json) -> J
   let only_files = kinds.length() > 0 && kinds.iter().all(k => k == "file")
   if only_files {
     self.waiting.remove(id)
-    return p53_obj([("groups", Json::array(if files is Null { [] } else { [files] })), ("building", p53_b(false))])
+    return jobj_of([("groups", Json::array(if files is Null { [] } else { [files] })), ("building", jb(false))])
   }
   match @effect.timeout(p53_search_query_ms, async fn() { w.wait() }) {
     Some(answer) => {
-      let groups = match p53_get(answer, "groups") {
+      let groups = match jfield(answer, "groups") {
         Array(g) => g.copy()
         _ => []
       }
       if !(files is Null) {
         groups.push(files)
       }
-      p53_obj([("groups", Json::array(groups)), ("building", p53_b(false))])
+      jobj_of([("groups", Json::array(groups)), ("building", jb(false))])
     }
     None => {
       self.waiting.remove(id)
-      ignore(proc.write(@utf8.encode(p53_obj([("type", p53_s("cancel")), ("id", p53_i(id))]).stringify() + "\n")))
+      ignore(proc.write(@utf8.encode(jobj_of([("type", jstr("cancel")), ("id", ji(id))]).stringify() + "\n")))
       raise P53Error("the search took too long")
     }
   }
@@ -343,43 +337,43 @@ async fn P53Search::close(self : P53Search) -> Unit {
 /// What search/tool.ts says of a hit.
 fn p53_hit_line(h : Json) -> String {
   let where_ = []
-  match p53_str(h, "chatTitle") {
+  match jtext(h, "chatTitle") {
     Some(t) if t != "" => where_.push("in “\{t}”")
     _ => ()
   }
-  match p53_str(h, "link") {
+  match jtext(h, "link") {
     Some(l) => where_.push(l)
     None => ()
   }
-  match p53_num(h, "seq") {
+  match jnum_of(h, "seq") {
     Some(n) => where_.push("message #\{n.to_int()}")
     None => ()
   }
-  match p53_num(h, "index") {
+  match jnum_of(h, "index") {
     Some(n) => where_.push("history #\{n.to_int()}")
     None => ()
   }
-  match p53_str(h, "job") {
-    Some(j) => where_.push("job \{j}\{match p53_num(h, "port") { Some(p) => " (port \{p.to_int()})"; None => "" }}")
+  match jtext(h, "job") {
+    Some(j) => where_.push("job \{j}\{match jnum_of(h, "port") { Some(p) => " (port \{p.to_int()})"; None => "" }}")
     None => ()
   }
-  match p53_str(h, "path") {
+  match jtext(h, "path") {
     Some(p) => where_.push(p)
     None => ()
   }
-  if p53_true(h, "archived") {
+  if jtrue(h, "archived") {
     where_.push("archived")
   }
-  let text = p53_text(h, "text").split(" ").flat_map(w => w.split("\n")).flat_map(w => w.split("\t")).filter(w => w != "").map(w => w.to_string()).to_array().join(" ")
+  let text = jtext_or_empty(h, "text").split(" ").flat_map(w => w.split("\n")).flat_map(w => w.split("\t")).filter(w => w != "").map(w => w.to_string()).to_array().join(" ")
   let text = if text.char_length() > 200 { String::from_array(text.to_array()[:200].to_array()) + "…" } else { text }
-  let at = match p53_num(h, "at") {
+  let at = match jnum_of(h, "at") {
     Some(t) => {
       let iso = iso_time(t)
       " (\{iso[:16].to_owned().replace(old="T", new=" ")} UTC)"
     }
     None => ""
   }
-  let title = match p53_str(h, "title") {
+  let title = match jtext(h, "title") {
     Some(t) if t != "" => "\{t}: "
     _ => ""
   }
@@ -390,17 +384,17 @@ fn p53_hit_line(h : Json) -> String {
 fn p53_search_said(name : String, groups : Json, station : String) -> String {
   guard groups is Array(gs) && gs.length() > 0 else { return "## \{name}\nNothing found." }
   let parts = gs.map(g => {
-    let kind = p53_text(g, "kind")
-    let hits = match p53_get(g, "hits") {
+    let kind = jtext_or_empty(g, "kind")
+    let hits = match jfield(g, "hits") {
       Array(hs) =>
-        hs.map(h => p53_hit_line(h) + (if kind == "skill" && p53_str(h, "skill") is Some(sk) { " — read with skill_read " + p53_obj([("station", p53_s(station)), ("name", p53_s(sk))]).stringify() } else { "" }))
+        hs.map(h => p53_hit_line(h) + (if kind == "skill" && jtext(h, "skill") is Some(sk) { " — read with skill_read " + jobj_of([("station", jstr(station)), ("name", jstr(sk))]).stringify() } else { "" }))
       _ => []
     }
-    let left = match p53_num(g, "left") {
+    let left = match jnum_of(g, "left") {
       Some(n) if n > 0.0 => "\n- … \{n.to_int()} older sessions' history not looked through (out of time): narrow the words, or ask this station alone"
       _ => ""
     }
-    let more = if p53_true(g, "more") && left == "" { "\n- … more: ask with kinds=[\"\{kind}\"] and a higher limit" } else { "" }
+    let more = if jtrue(g, "more") && left == "" { "\n- … more: ask with kinds=[\"\{kind}\"] and a higher limit" } else { "" }
     "### \{kind}\n\{hits.join("\n")}\{more}\{left}"
   })
   "## \{name}\n\{parts.join("\n")}"
@@ -413,34 +407,34 @@ fn P53Search::tool(self : P53Search) -> PartTool {
     bus,
     "search",
     "Search everything in this workspace, on all its stations at once: chats (titles, archived ones too), every message, agents' execution histories, services and tasks, skills and memory, profiles, and the files on each station's machine (names and what they say). Words are matched anywhere in the text, case aside; every word must match. Results are grouped by station and kind, with chat links to give people or read with chat_read and session_history; a skill found is read in full with skill_read. Skill stillfail-chats says more.",
-    p53_obj([
-      ("type", p53_s("object")),
+    jobj_of([
+      ("type", jstr("object")),
       (
         "properties",
-        p53_obj([
-          ("query", p53_obj([("type", p53_s("string")), ("description", p53_s("The words to find (at most 200 characters)."))])),
-          ("kinds", p53_obj([("type", p53_s("array")), ("items", p53_obj([("enum", Json::array(p53_search_kinds.map(p53_s)))])), ("description", p53_s("Only these kinds. Left out: all."))])),
-          ("limit", p53_obj([("type", p53_s("integer")), ("description", p53_s("At most this many of each kind on each station (default 5, at most 50)."))])),
-          ("station", p53_obj([("type", p53_s("string")), ("description", p53_s("Only this station, by its name or id. Left out: every station of the workspace."))])),
+        jobj_of([
+          ("query", jobj_of([("type", jstr("string")), ("description", jstr("The words to find (at most 200 characters)."))])),
+          ("kinds", jobj_of([("type", jstr("array")), ("items", jobj_of([("enum", Json::array(p53_search_kinds.map(jstr)))])), ("description", jstr("Only these kinds. Left out: all."))])),
+          ("limit", jobj_of([("type", jstr("integer")), ("description", jstr("At most this many of each kind on each station (default 5, at most 50)."))])),
+          ("station", jobj_of([("type", jstr("string")), ("description", jstr("Only this station, by its name or id. Left out: every station of the workspace."))])),
         ]),
       ),
-      ("required", Json::array([p53_s("query")])),
-      ("additionalProperties", p53_b(false)),
+      ("required", Json::array([jstr("query")])),
+      ("additionalProperties", jb(false)),
     ]),
     async fn(session, args) {
-      let query = p53_text(args, "query").trim_space().to_string()
+      let query = jtext_or_empty(args, "query").trim_space().to_string()
       if query == "" {
         raise P53Error("query is required")
       }
       if query.length() > 200 {
         raise P53Error("a search is at most 200 characters")
       }
-      let asked = match p53_get(args, "kinds") {
+      let asked = match jfield(args, "kinds") {
         Array(xs) => xs.filter(x => x is String(_))
         _ => []
       }
-      let kinds = Json::array(if asked.length() > 0 { asked } else { p53_search_kinds.map(p53_s) })
-      let limit = match p53_num(args, "limit") {
+      let kinds = Json::array(if asked.length() > 0 { asked } else { p53_search_kinds.map(jstr) })
+      let limit = match jnum_of(args, "limit") {
         Some(l) => if l < 1.0 { 1.0 } else if l > 50.0 { 50.0 } else { l.floor() }
         None => 5.0
       }
@@ -449,17 +443,17 @@ fn P53Search::tool(self : P53Search) -> PartTool {
         raise P53Error("unknown session")
       }
       let home = p53_home(bus)
-      let ws = p53_either(p53_str(row, "ws"), home).unwrap_or("")
-      let asker = p53_obj([("workspace", p53_s(ws)), ("home", p53_b(p53_str(row, "ws") is None || p53_str(row, "ws") == home)), ("scopes", Json::array([p53_s("write")]))])
+      let ws = either(jtext(row, "ws"), home).unwrap_or("")
+      let asker = jobj_of([("workspace", jstr(ws)), ("home", jb(jtext(row, "ws") is None || jtext(row, "ws") == home)), ("scopes", Json::array([jstr("write")]))])
       // (the workspace's other stations, as the mesh's roster names them: this one alone where it is in none's yet)
-      let roster = (bus.peer_call.val)("", Some(ws), "peers", p53_obj([("method", p53_s("peers")), ("workspace", p53_s(ws))]), None) catch {
+      let roster = (bus.peer_call.val)("", Some(ws), "peers", jobj_of([("method", jstr("peers")), ("workspace", jstr(ws))]), None) catch {
         _ => (Json::null(), None)
       }
       let here = p53_station_id(bus)
-      let stations : Array[(String, String, Bool)] = match p53_get(roster.0, "stations") {
+      let stations : Array[(String, String, Bool)] = match jfield(roster.0, "stations") {
         Array(xs) =>
-          xs.filter_map(e => match p53_str(e, "id") {
-            Some(id) if id != "" => Some((id, p53_str(e, "name").unwrap_or(id), id == here))
+          xs.filter_map(e => match jtext(e, "id") {
+            Some(id) if id != "" => Some((id, jtext(e, "name").unwrap_or(id), id == here))
             _ => None
           })
         _ => []
@@ -467,27 +461,27 @@ fn P53Search::tool(self : P53Search) -> PartTool {
       if !stations.iter().any(s => s.2) {
         stations.insert(0, ("", "this station", true))
       }
-      let only = match p53_str(args, "station") {
+      let only = match jtext(args, "station") {
         Some(s) => s.trim_space().to_string().to_lower()
         None => ""
       }
       let chosen = if only == "" { stations } else { stations.filter(s => s.0.to_lower() == only || s.1.to_lower() == only) }
       if chosen.length() == 0 {
-        raise P53Error("no station \{p53_get(args, "station").stringify()} in this workspace")
+        raise P53Error("no station \{jfield(args, "station").stringify()} in this workspace")
       }
       let parts = []
       for s in chosen {
         let name = if s.2 { "\{s.1} (this station)" } else { s.1 }
         let part = try {
           if s.2 {
-            let found = self.query(query, p53_obj([("kinds", kinds), ("limit", p53_n(limit)), ("asker", asker)]))
-            p53_search_said(name, self.linked(p53_get(found, "groups")), if s.0 == "" { s.1 } else { s.0 })
+            let found = self.query(query, jobj_of([("kinds", kinds), ("limit", jn(limit)), ("asker", asker)]))
+            p53_search_said(name, self.linked(jfield(found, "groups")), if s.0 == "" { s.1 } else { s.0 })
           } else {
             let answer = @effect.timeout(p53_search_query_ms, async fn() {
-              bus.call_peer(s.0, Some(ws), "search.query", p53_obj([("method", p53_s("search.query")), ("session", p53_s(session)), ("workspace", p53_s(ws)), ("query", p53_s(query)), ("kinds", kinds), ("limit", p53_n(limit))]))
+              bus.call_peer(s.0, Some(ws), "search.query", jobj_of([("method", jstr("search.query")), ("session", jstr(session)), ("workspace", jstr(ws)), ("query", jstr(query)), ("kinds", kinds), ("limit", jn(limit))]))
             })
             match answer {
-              Some((a, _)) => p53_search_said(name, p53_get(a, "groups"), s.0)
+              Some((a, _)) => p53_search_said(name, jfield(a, "groups"), s.0)
               None => raise P53Error("did not answer within \{p53_search_query_ms / 1000} s")
             }
           }
@@ -496,7 +490,7 @@ fn P53Search::tool(self : P53Search) -> PartTool {
         }
         parts.push(part)
       }
-      "Search for \{p53_s(query).stringify()}:\n\n\{parts.join("\n\n")}"
+      "Search for \{jstr(query).stringify()}:\n\n\{parts.join("\n\n")}"
     },
   )
 }
@@ -567,7 +561,7 @@ async fn p53_scan(host : @host.Host, paths : Array[String]) -> Array[Json] {
   if paths.length() == 0 {
     return []
   }
-  match (try { Ok(host.shell("fs.scan", { "paths": Json::array(paths.map(p53_s)) })) } catch { e => Err(e) }) {
+  match (try { Ok(host.shell("fs.scan", { "paths": Json::array(paths.map(jstr)) })) } catch { e => Err(e) }) {
     Ok((Array(xs), _)) => xs
     _ => paths.map(_ => Json::null())
   }
@@ -588,8 +582,8 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
   let mut left = false
   for top in tops {
     let root = p53_scan(host, [top])
-    guard root.length() == 1 && p53_str(root[0], "kind") == Some("dir") else { continue }
-    let dev = p53_get(root[0], "dev")
+    guard root.length() == 1 && jtext(root[0], "kind") == Some("dir") else { continue }
+    let dev = jfield(root[0], "dev")
     let queue = [(top, 0)]
     while queue.length() > 0 {
       let (dir, depth) = queue.remove(0)
@@ -640,7 +634,7 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
       if depth + 1 < p53_walk_depth {
         let seen = p53_scan(host, dirs)
         for i, d in dirs {
-          if i < seen.length() && p53_get(seen[i], "dev") == dev {
+          if i < seen.length() && jfield(seen[i], "dev") == dev {
             queue.push((d, depth + 1))
           }
         }
@@ -649,8 +643,8 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
       }
       let sizes = p53_scan(host, files.map(f => f.0))
       for i, f in files {
-        if i < sizes.length() && p53_num(sizes[i], "size").unwrap_or(p53_text_max + 1.0) <= p53_text_max {
-          match p53_read(host, f.0) {
+        if i < sizes.length() && jnum_of(sizes[i], "size").unwrap_or(p53_text_max + 1.0) <= p53_text_max {
+          match shell_read_text(host, f.0) {
             Some(text) if has("\{f.1}\n\{text}") => found.push(f.0)
             _ => ()
           }
@@ -666,8 +660,8 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
 /// `drive.workspaces[<ws>]`).
 fn p53_roots_of(raw : Json, workspace : String?) -> Array[String] {
   let roots = match workspace {
-    None => p53_get(p53_get(raw, "drive"), "roots")
-    Some(ws) => p53_get(p53_get(p53_get(raw, "drive"), "workspaces"), ws)
+    None => jfield(jfield(raw, "drive"), "roots")
+    Some(ws) => jfield(jfield(jfield(raw, "drive"), "workspaces"), ws)
   }
   match roots {
     Array(xs) => xs.filter_map(r => match r { String(p) if p.has_prefix("/") || (p.length() > 2 && p[1:3] == ":\\") => Some(p); _ => None })
@@ -685,17 +679,17 @@ async fn P53Search::files(self : P53Search, words : Array[String], asker : Json,
   }
   let bus = self.bus
   let raw = (bus.config_raw.val)()
-  let writer = match p53_get(asker, "scopes") {
-    Array(xs) => xs.contains(p53_s("write"))
+  let writer = match jfield(asker, "scopes") {
+    Array(xs) => xs.contains(jstr("write"))
     _ => false
   }
-  let pinned = p53_roots_of(raw, if p53_true(asker, "home") { None } else { p53_str(asker, "workspace") })
+  let pinned = p53_roots_of(raw, if jtrue(asker, "home") { None } else { jtext(asker, "workspace") })
   if !writer && pinned.length() == 0 {
     return Json::null()
   }
   let home = homedir()
   let own = ["Library/Mail", "Library/Messages", "Library/Calendars", "Library/Application Support/AddressBook", "Library/Group Containers/group.com.apple.notes", "Library/Containers/com.apple.Notes", "Library/Metadata/CoreSpotlight", "Pictures/Photos Library.photoslibrary"].map(d => @nodepath.join(sep(), [home, d]))
-  let personal = p53_true(p53_get(raw, "search"), "personal")
+  let personal = jtrue(jfield(raw, "search"), "personal")
   let skip = (bus.own_paths.val)() + (if personal { [] } else { own })
   let (paths, left) = p53_walk(bus.host, if writer { [home] } else { pinned }, words, skip)
   let listed = paths.filter(p => writer || pinned.iter().any(r => p53_under(p, r)))
@@ -707,7 +701,7 @@ async fn P53Search::files(self : P53Search, words : Array[String], asker : Json,
       continue
     }
     let st = p53_lstat(bus.host, p)
-    known.push((p, p53_str(scanned[i], "kind") == Some("dir"), p53_num(scanned[i], "size").unwrap_or(0.0), p53_num(st, "mtimeMs").unwrap_or(0.0)))
+    known.push((p, jtext(scanned[i], "kind") == Some("dir"), jnum_of(scanned[i], "size").unwrap_or(0.0), jnum_of(st, "mtimeMs").unwrap_or(0.0)))
   }
   let rank = (p : String) => if @nodepath.basename(sep(), p).to_lower().contains(first) { 0 } else { 4 }
   let depth = (p : String) => p.split(sep()).count()
@@ -722,31 +716,31 @@ async fn P53Search::files(self : P53Search, words : Array[String], asker : Json,
   let shown = (dir : String) => if p53_under(dir, home) { "~" + dir[home.length():].to_owned() } else { dir }
   let hits = known[:if known.length() > limit { limit } else { known.length() }].to_array().map(f => {
     let fields : Array[(String, Json)] = [
-      ("kind", p53_s("file")),
-      ("key", p53_s("f:\{f.0}")),
-      ("title", p53_s(@nodepath.basename(sep(), f.0))),
-      ("text", p53_s(shown(@nodepath.dirname(sep(), f.0)))),
-      ("at", p53_n(f.3.round())),
-      ("path", p53_s(f.0)),
-      ("dir", p53_b(f.1)),
-      ("size", p53_n(f.2)),
+      ("kind", jstr("file")),
+      ("key", jstr("f:\{f.0}")),
+      ("title", jstr(@nodepath.basename(sep(), f.0))),
+      ("text", jstr(shown(@nodepath.dirname(sep(), f.0)))),
+      ("at", jn(f.3.round())),
+      ("path", jstr(f.0)),
+      ("dir", jb(f.1)),
+      ("size", jn(f.2)),
     ]
     if !writer {
       match pinned.search_by(r => p53_under(f.0, r)) {
         Some(i) => {
-          fields.push(("root", p53_s(pinned[i])))
+          fields.push(("root", jstr(pinned[i])))
           let rel = f.0[pinned[i].length():].to_owned()
-          fields.push(("rel", p53_s(if rel.has_prefix(sep()) { rel[1:].to_owned() } else { rel })))
+          fields.push(("rel", jstr(if rel.has_prefix(sep()) { rel[1:].to_owned() } else { rel })))
         }
         None => ()
       }
     }
-    p53_obj(fields)
+    jobj_of(fields)
   })
   if hits.length() == 0 {
     Json::null()
   } else {
-    p53_obj([("kind", p53_s("file")), ("hits", Json::array(hits)), ("more", p53_b(known.length() > limit || left))])
+    jobj_of([("kind", jstr("file")), ("hits", Json::array(hits)), ("more", jb(known.length() > limit || left))])
   }
 }
 
@@ -757,8 +751,8 @@ async fn P53Search::files(self : P53Search, words : Array[String], asker : Json,
 /// read from. Where no readers are attached to the bus (a station run alone), read here by the same code.
 async fn P53Search::read_catalog(self : P53Search, workspace : String?) -> Json {
   let args = match workspace {
-    Some(w) => p53_obj([("workspace", p53_s(w))])
-    None => p53_obj([])
+    Some(w) => jobj_of([("workspace", jstr(w))])
+    None => jobj_of([])
   }
   let read = (self.bus.reader_ask.val)("memory", args, "zh") catch { _ => Json::null() }
   match read {
@@ -771,11 +765,11 @@ async fn P53Search::read_catalog(self : P53Search, workspace : String?) -> Json 
 ///|
 /// skills.ts `selection`: the skill's name and the file of it asked for.
 fn p53_skill_selection(args : Json) -> (String, String) raise P53Error {
-  let name = match p53_get(args, "name") {
+  let name = match jfield(args, "name") {
     String(n) if n.trim_space().to_string() != "" => n
     _ => raise P53Error("name is required: use a skill name returned by search")
   }
-  let file = match p53_get(args, "file") {
+  let file = match jfield(args, "file") {
     Null => "SKILL.md"
     String(f) if f != "" => f
     _ => raise P53Error("file must be a listed Markdown filename")
@@ -786,30 +780,30 @@ fn p53_skill_selection(args : Json) -> (String, String) raise P53Error {
 ///|
 /// skills.ts `formatSkillFromCatalog`: a skill's file as `skill_read` gives it.
 fn p53_format_skill(catalog : Json, name : String, file : String) -> String raise P53Error {
-  let skills = match p53_get(catalog, "skills") {
+  let skills = match jfield(catalog, "skills") {
     Array(xs) => xs
     _ => []
   }
-  guard skills.iter().find_first(s => p53_str(s, "name") == Some(name)) is Some(skill) else {
-    raise P53Error("No skill \{p53_s(name).stringify()} in this workspace on this station")
+  guard skills.iter().find_first(s => jtext(s, "name") == Some(name)) is Some(skill) else {
+    raise P53Error("No skill \{jstr(name).stringify()} in this workspace on this station")
   }
-  let files = match p53_get(skill, "files") {
+  let files = match jfield(skill, "files") {
     Array(xs) => xs
     _ => []
   }
   let text = if file == "SKILL.md" {
-    p53_str(skill, "text")
+    jtext(skill, "text")
   } else {
-    match files.iter().find_first(f => p53_str(f, "name") == Some(file)) {
-      Some(f) => p53_str(f, "text")
+    match files.iter().find_first(f => jtext(f, "name") == Some(file)) {
+      Some(f) => jtext(f, "text")
       None => None
     }
   }
   guard text is Some(text) else {
-    raise P53Error("No file \{p53_s(file).stringify()} in skill \{p53_s(name).stringify()}; read SKILL.md for the available files")
+    raise P53Error("No file \{jstr(file).stringify()} in skill \{jstr(name).stringify()}; read SKILL.md for the available files")
   }
-  let names = ["SKILL.md", ..files.map(f => p53_text(f, "name"))]
-  "Skill \{p53_s(name).stringify()}, file \{p53_s(file).stringify()}\nAvailable files: \{names.map(n => p53_s(n).stringify()).join(", ")}\n\n\{text}"
+  let names = ["SKILL.md", ..files.map(f => jtext_or_empty(f, "name"))]
+  "Skill \{jstr(name).stringify()}, file \{jstr(file).stringify()}\nAvailable files: \{names.map(n => jstr(n).stringify()).join(", ")}\n\n\{text}"
 }
 
 ///|
@@ -820,24 +814,24 @@ fn p53_place_of(bus : LiveBus, session : String) -> Json {
     return Json::null()
   }
   let home = p53_home(bus)
-  let ws = p53_str(row, "ws")
-  p53_obj([("workspace", p53_s(p53_either(ws, home).unwrap_or(""))), ("home", p53_b(ws is None || ws == home))])
+  let ws = jtext(row, "ws")
+  jobj_of([("workspace", jstr(either(ws, home).unwrap_or(""))), ("home", jb(ws is None || ws == home))])
 }
 
 ///|
 /// The workspace's stations (search/module.ts `stations`): each one's id, name, and whether it is this one.
 async fn p53_stations_of(bus : LiveBus, workspace : String) -> Array[Json] {
-  let (roster, _) = (bus.peer_call.val)("", Some(workspace), "peers", p53_obj([("method", p53_s("peers")), ("workspace", p53_s(workspace))]), None) catch {
+  let (roster, _) = (bus.peer_call.val)("", Some(workspace), "peers", jobj_of([("method", jstr("peers")), ("workspace", jstr(workspace))]), None) catch {
     _ => (Json::null(), None)
   }
   let here = p53_station_id(bus)
-  match p53_get(roster, "stations") {
+  match jfield(roster, "stations") {
     Array(xs) =>
-      xs.filter_map(e => match p53_str(e, "id") {
-        Some(id) if id != "" => Some(p53_obj([("id", p53_s(id)), ("name", p53_s(p53_str(e, "name").unwrap_or(id))), ("here", p53_b(id == here))]))
+      xs.filter_map(e => match jtext(e, "id") {
+        Some(id) if id != "" => Some(jobj_of([("id", jstr(id)), ("name", jstr(jtext(e, "name").unwrap_or(id))), ("here", jb(id == here))]))
         _ => None
       })
-    _ => [p53_obj([("id", p53_s(here)), ("name", p53_get(p53_cloud(bus), "name")), ("here", p53_b(true))])]
+    _ => [jobj_of([("id", jstr(here)), ("name", jfield(p53_cloud(bus), "name")), ("here", jb(true))])]
   }
 }
 
@@ -855,18 +849,18 @@ fn P53Search::skill_tool(self : P53Search) -> PartTool {
     bus,
     "skill_read",
     "Read a skill in full by its exact name: one a tool's description or your instructions name, when you do not have its file, or one found by search, with its station where that is another station of the workspace. With file, one of the Markdown reference files the reply lists. It only reads this workspace's skill catalog: nothing is installed, shared or run.",
-    p53_obj([
-      ("type", p53_s("object")),
+    jobj_of([
+      ("type", jstr("object")),
       (
         "properties",
-        p53_obj([
-          ("name", p53_obj([("type", p53_s("string")), ("description", p53_s("The skill's exact name."))])),
-          ("station", p53_obj([("type", p53_s("string")), ("description", p53_s("The station's id or unique name from search. Omit for this station."))])),
-          ("file", p53_obj([("type", p53_s("string")), ("description", p53_s("A Markdown filename listed by this skill (default SKILL.md)."))])),
+        jobj_of([
+          ("name", jobj_of([("type", jstr("string")), ("description", jstr("The skill's exact name."))])),
+          ("station", jobj_of([("type", jstr("string")), ("description", jstr("The station's id or unique name from search. Omit for this station."))])),
+          ("file", jobj_of([("type", jstr("string")), ("description", jstr("A Markdown filename listed by this skill (default SKILL.md)."))])),
         ]),
       ),
-      ("required", Json::array([p53_s("name")])),
-      ("additionalProperties", p53_b(false)),
+      ("required", Json::array([jstr("name")])),
+      ("additionalProperties", jb(false)),
     ]),
     async fn(session, args) {
       let (name, file) = p53_skill_selection(args)
@@ -874,30 +868,30 @@ fn P53Search::skill_tool(self : P53Search) -> PartTool {
       if place is Null {
         raise P53Error("unknown session")
       }
-      let ws = if p53_true(place, "home") { None } else { p53_str(place, "workspace") }
-      let only = match p53_str(args, "station") {
+      let ws = if jtrue(place, "home") { None } else { jtext(place, "workspace") }
+      let only = match jtext(args, "station") {
         Some(s) => s.trim_space().to_string().to_lower()
         None => ""
       }
       if only == "" || only == "this station" {
         return self.read_skill(ws, name, file)
       }
-      let workspace = p53_text(place, "workspace")
-      let chosen = p53_stations_of(bus, workspace).filter(s => p53_text(s, "id").to_lower() == only || p53_text(s, "name").to_lower() == only)
+      let workspace = jtext_or_empty(place, "workspace")
+      let chosen = p53_stations_of(bus, workspace).filter(s => jtext_or_empty(s, "id").to_lower() == only || jtext_or_empty(s, "name").to_lower() == only)
       if chosen.length() != 1 {
         raise P53Error(if chosen.length() > 0 { "Station name is ambiguous; use the station id from search" } else { "No such station in this workspace" })
       }
-      if p53_true(chosen[0], "here") {
+      if jtrue(chosen[0], "here") {
         return self.read_skill(ws, name, file)
       }
-      let station = p53_text(chosen[0], "id")
+      let station = jtext_or_empty(chosen[0], "id")
       let answer = @effect.timeout(p53_search_query_ms, async fn() {
-        bus.call_peer(station, Some(workspace), "skill.read", p53_obj([("method", p53_s("skill.read")), ("workspace", p53_s(workspace)), ("session", p53_s(session)), ("name", p53_s(name)), ("file", p53_s(file))]))
+        bus.call_peer(station, Some(workspace), "skill.read", jobj_of([("method", jstr("skill.read")), ("workspace", jstr(workspace)), ("session", jstr(session)), ("name", jstr(name)), ("file", jstr(file))]))
       })
       match answer {
         None => raise P53Error("Station did not answer skill.read within 20 s")
         Some((a, _)) =>
-          match p53_str(a, "text") {
+          match jtext(a, "text") {
             Some(t) => t
             None => raise P53Error("Station did not return a skill; it may need an update to support skill.read")
           }

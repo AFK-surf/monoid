@@ -20,16 +20,6 @@ async fn run_said(host : @host.Host, program : String, args : Array[String], ms 
 }
 
 ///|
-fn jv(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
-}
-
-///|
-fn of_jv(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
 priv struct AdminHostLive {
   host : @events.Host
   /// The GPUs said last, and when (jobs/gpu.ts keeps NVIDIA's ten seconds).
@@ -59,16 +49,6 @@ fn cpu_ticks() -> @events.Ticks? {
       }
       Some({ busy, total })
     }
-    _ => None
-  }
-}
-
-///|
-/// A file read to its end, as fs.readFile reads it, by the shell's `fs.read`: Linux's /proc files say no size, so
-/// what reads by the size it is told (drive's `read_all`) reads none of them.
-async fn read_pseudo(host : @host.Host, path : String) -> String? {
-  match (try { Ok(host.shell("fs.read", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-    Ok((String(s), _)) => Some(s)
     _ => None
   }
 }
@@ -126,9 +106,9 @@ async fn host_sample(host : @host.Host) -> Json {
     }
   } else {
     let (memory, model, uptime) = @ops_platform.linux_sample(
-      read_pseudo(host, "/proc/meminfo").unwrap_or(""),
-      read_pseudo(host, "/proc/cpuinfo").unwrap_or(""),
-      read_pseudo(host, "/proc/uptime").unwrap_or(""),
+      shell_read_text(host, "/proc/meminfo").unwrap_or(""),
+      shell_read_text(host, "/proc/cpuinfo").unwrap_or(""),
+      shell_read_text(host, "/proc/uptime").unwrap_or(""),
     )
     let release = run_said(host, "/bin/uname", ["-r"], 3000).unwrap_or("")
     {
@@ -246,10 +226,10 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
     now: () => wall_ms().to_double(),
     after: fork_after,
     cpu_ticks: k => k(cpu_ticks()),
-    sample: k => ignore(host.rt.fork_daemon("host sample", on_error=e => @host.note("host sample failed: \{e}"), async fn() { k(jv(host_sample(host))) })),
+    sample: k => ignore(host.rt.fork_daemon("host sample", on_error=e => @host.note("host sample failed: \{e}"), async fn() { k(to_jv(host_sample(host))) })),
     statfs: (p, k) => match disk_of(p) {
       // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
-      Some((free, total)) => k(Some(jv({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })))
+      Some((free, total)) => k(Some(to_jv({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })))
       None => k(None)
     },
     hostname: () => hostname(),
@@ -270,11 +250,11 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
           Some(l) => l.gpus = Some((@host.now(), g))
           None => ()
         }
-        k(Some(jv(g)))
+        k(Some(to_jv(g)))
       }),
     ),
     gpus_cached: Some(() => match live.val {
-      Some({ gpus: Some((_, g)), .. }) => Some(jv(g))
+      Some({ gpus: Some((_, g)), .. }) => Some(to_jv(g))
       _ => None
     }),
   }
@@ -300,13 +280,6 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
 async fn AdminHostLive::sample(self : AdminHostLive) -> Json {
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
   self.host.sample(v => ignore(d.succeed(of_jv(v))))
-  d.wait()
-}
-
-///|
-async fn AdminHostLive::recent_busy(self : AdminHostLive) -> Json {
-  let d : @effect.Deferred[Json] = @effect.Deferred::new()
-  self.host.recent_busy(v => ignore(d.succeed(of_jv(v))))
   d.wait()
 }
 
@@ -372,7 +345,7 @@ fn P51::entry_views(self : P51, entries : Array[@jsjson.JValue]) -> Array[@jsjso
       (None, Some(o)) => v["card"] = { "type": "options", "options": o }
       _ => ()
     }
-    jv(Json::object(v))
+    to_jv(Json::object(v))
   })
 }
 
@@ -384,7 +357,7 @@ fn P51::seen_store(self : P51) -> @events.SeenStore {
   {
     session_ws: key => match (try { Ok(store.session_ws(key)) } catch { e => Err(e) }) {
       Ok(Null) | Err(_) => None
-      Ok(ws) => Some(jv(ws))
+      Ok(ws) => Some(to_jv(ws))
     },
     thread_sessions: thread => match (try { Ok(db.all("SELECT session FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [Json::number(thread)])) } catch { e => Err(e) }) {
       Ok(rows) => rows.filter_map(r => match r.get("session") { Some(String(s)) => Some(s); _ => None })
@@ -404,7 +377,7 @@ fn P51::seen_store(self : P51) -> @events.SeenStore {
     },
     handed_to: key => match (try { Ok(store.handed_to(key)) } catch { e => Err(e) }) {
       Ok(Null) | Err(_) => None
-      Ok(h) => Some(jv(h))
+      Ok(h) => Some(to_jv(h))
     },
   }
 }
@@ -447,7 +420,7 @@ fn P51::events_live(self : P51) -> EventsLive {
       host.rt.fork_quiet(name="events log", async fn() {
         match (try { Ok(readers.read("jobLog", { "id": Json::string(id), "lines": Json::string(lines.to_string()) }, "zh")) } catch { e => Err(e) }) {
           Ok({ "text": text, .. } as r) =>
-            k(Some(jv({ "text": text, "outputAt": match r { Object(m) => m.get("outputAt").unwrap_or(Json::null()); _ => Json::null() } })))
+            k(Some(to_jv({ "text": text, "outputAt": match r { Object(m) => m.get("outputAt").unwrap_or(Json::null()); _ => Json::null() } })))
           _ => k(None)
         }
       }),
@@ -513,14 +486,14 @@ fn P51::events_live(self : P51) -> EventsLive {
   events.follow(overview=(viewer, lang, k) => ignore(
     host.rt.fork_quiet(name="events overview", async fn() {
       match (try { Ok(self.overview(of_jv(viewer.raw), lang)) } catch { e => Err(e) }) {
-        Ok(v) => k(Ok(jv(v)))
+        Ok(v) => k(Ok(to_jv(v)))
         Err(err) => k(Err("\{err}"))
       }
     }),
   ))
   // The store's changes, told.
-  self.stops.push(bus.subscribe_store(change => events.store_changed(jv(change))))
-  bus.events_tell.val = (event, data, key, to) => events.tell(event, jv(data), key, jv(to))
+  self.stops.push(bus.subscribe_store(change => events.store_changed(to_jv(change))))
+  bus.events_tell.val = (event, data, key, to) => events.tell(event, to_jv(data), key, to_jv(to))
   bus.overview_changed.val = () => events.overview_changed()
   // config.json changed: the overview and every chat row told again; cloud.json changed: the overview (agents.ts
   // `config.listen(() => (events.overviewChanged(), events.rowsChanged(null)))`, `cloud.listen(() => events.overviewChanged())`).
@@ -594,7 +567,7 @@ async fn EventsLive::open(
   asked : @events.Asked,
 ) -> (Array[(String, String)], Int) {
   let d : @effect.Deferred[Result[@events.Answer, String]] = @effect.Deferred::new()
-  self.events.open(@events.Viewer::of(jv(viewer)), lang, asked, r => ignore(d.succeed(r)))
+  self.events.open(@events.Viewer::of(to_jv(viewer)), lang, asked, r => ignore(d.succeed(r)))
   match d.wait() {
     Ok(answer) => {
       self.next_stream += 1

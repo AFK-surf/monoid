@@ -299,7 +299,7 @@ fn try_stop_usage_indexes(db : @sql.Db) -> Bool raise {
           raise e
         }
         // (even where the contexts cannot be kept, the old per-call writers are not left running)
-        live_log("warn", "usage", "the usage contexts could not be installed", { "error": jstr(said_of(e)) })
+        slice_log("warn", "usage", "the usage contexts could not be installed", { "error": jstr(said_of(e)) })
       }
     }
     @store_schema.stop_usage_indexes(db)
@@ -397,16 +397,16 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
 async fn P52::start_usage(self : P52) -> Unit {
   guard self.hub is Some(hub) else { return }
   ignore(@session_hub.hub_call(hub, "usageStart", [])) catch {
-    e => live_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
+    e => slice_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
   }
   ignore(
     self.host.rt.fork_daemon("usage after the station before", on_error=e => @host.note("usage after the station before failed: \{e}"), async fn() {
       (self.bus.previous_gone)()
       ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
-        e => live_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
+        e => slice_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
       }
       ignore(@session_hub.hub_call(hub, "retireUsage", [])) catch {
-        e => live_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
+        e => slice_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
       }
     }),
   )

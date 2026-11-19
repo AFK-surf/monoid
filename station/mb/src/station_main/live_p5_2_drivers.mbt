@@ -153,8 +153,8 @@ fn own_agent(
       None => ()
     },
     dispose: () => pump.wait(own.dispose()),
-    retune: o => retune(jv_of(o)),
-    snapshot: () => p52_json_of_jv(snapshot()),
+    retune: o => retune(to_jv(o)),
+    snapshot: () => of_jv(snapshot()),
     detach: () => own.detach(),
     runtime_version: () => None,
   }
@@ -188,16 +188,16 @@ fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) 
     }),
     // (a subscription profile's token: the accounts')
     subscription_token: Some(p => rejected => pump.later("profile's Claude login", async fn() {
-      let got = asked_subscription_token(ask, p52_json_of_jv(p), rejected~)
+      let got = asked_subscription_token(ask, of_jv(p), rejected~)
       match got {
         Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
         _ => raise @agent_drivers.Failed("the profile's Claude sign-in is not there (no accounts part answered)")
       }
     })),
-    lent_borrowed: Some(p => p52_borrowed(p52_json_of_jv(p))),
+    lent_borrowed: Some(p => p52_borrowed(of_jv(p))),
     // (agents.ts `lent.token`: another station's lent, a profile of this station's own the accounts')
     lent_token: Some(p => rejected => pump.later("borrowed Claude login", async fn() {
-      let prof = p52_json_of_jv(p)
+      let prof = of_jv(p)
       let got = if p52_borrowed(prof) {
         asked_lent_token(ask, prof, rejected~)
       } else {
@@ -274,13 +274,13 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
     Some(() => s.compact()),
     o => s.retune(o),
     () => s.snapshot(),
-    () => p52_json_of_jv(s.background()),
+    () => of_jv(s.background()),
     () => s.outlived(),
   )
   {
     kind: "claude",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(jv_of(options), events))) },
-    adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(jv_of(options), snap.map(jv_of), events))) },
+    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
+    adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) },
     shutdown: async fn(again) {
       for s in d.sessions.copy() {
         if again {
@@ -403,10 +403,10 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
         _ => None
       }
     }),
-    current_profile: Some(id => ctx.profiles().iter().find_first(p => jtext(p, "id") == Some(id)).map(jv_of)),
-    lent_borrowed: Some(p => borrowed_profile(ctx, p52_json_of_jv(p))),
+    current_profile: Some(id => ctx.profiles().iter().find_first(p => jtext(p, "id") == Some(id)).map(to_jv)),
+    lent_borrowed: Some(p => borrowed_profile(ctx, of_jv(p))),
     lent_write: Some(p => pump.later("lent Codex login", async fn() {
-      match (ctx.bus.jobs_ask.val)("sharing.lendCodex", { "profile": p52_json_of_jv(p) }) {
+      match (ctx.bus.jobs_ask.val)("sharing.lendCodex", { "profile": of_jv(p) }) {
         Number(n, ..) => n
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }
@@ -472,14 +472,14 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     abort: () => pump.wait(s.abort()),
     compact: () => pump.wait(s.compact()),
     dispose: () => pump.wait(s.dispose()),
-    retune: o => s.retune(jv_of(o)),
-    snapshot: () => p52_json_of_jv(s.snapshot()),
+    retune: o => s.retune(to_jv(o)),
+    snapshot: () => of_jv(s.snapshot()),
     detach: () => s.detach(),
     runtime_version: () => s.host.version,
   } : Agent)
   {
     kind: "codex",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(jv_of(options), events))) },
+    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
     adopt: async fn(options, snap, events) {
       // (its thread's events taken by its actor in the program from the first: codex.ts `addThread`'s router)
       let key = jtext(options, "key").unwrap_or("")
@@ -491,7 +491,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
           })
         None => ()
       }
-      let agent = agent_of(pump.wait(d.adopt(jv_of(options), snap.map(jv_of), events))) catch {
+      let agent = agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) catch {
         e => {
           d.adopt_routers.remove(key)
           raise e
@@ -508,11 +508,11 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     evict_idle: async fn() { pump.wait(d.evict_idle()) catch { _ => 0 } },
     ask: async fn(what, arg) {
       match what {
-        "rateLimits" => p52_json_of_jv(pump.wait(d.rate_limits(jv_of(arg))))
+        "rateLimits" => of_jv(pump.wait(d.rate_limits(to_jv(arg))))
         "renewRunning" => Json::boolean(pump.wait(d.renew_login(jtext(arg, "profile").unwrap_or(""))))
         // (the accounts' check: what the account can run, and at what efforts; codex.ts `models`)
         "models" => {
-          let c = pump.wait(d.models(jv_of(jitems(arg).get(0).unwrap_or(Json::null()))))
+          let c = pump.wait(d.models(to_jv(jitems(arg).get(0).unwrap_or(Json::null()))))
           let out : Map[String, Json] = {
             "models": Json::array(c.models.map(Json::string)),
             "efforts": Json::object(Map::from_array(c.efforts.map(e => (e.0, Json::array(e.1.map(Json::string)))))),
@@ -527,13 +527,13 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
         // (a limit's reset redeemed on the account: codex.ts `resetQuota`)
         "resetQuota" => {
           let a = jitems(arg)
-          p52_json_of_jv(
-            pump.wait(d.reset_quota(jv_of(a.get(0).unwrap_or(Json::null())), jtext(Json::object({ "k": a.get(1).unwrap_or(Json::null()) }), "k").unwrap_or(""))),
+          of_jv(
+            pump.wait(d.reset_quota(to_jv(a.get(0).unwrap_or(Json::null())), opt_str(a.get(1)).unwrap_or(""))),
           )
         }
         // (a profile's sign-in changed: its app-server let go, codex.ts `loginChanged`)
         "loginChanged" => {
-          pump.wait(d.login_changed(jtext(Json::object({ "p": jitems(arg).get(0).unwrap_or(Json::null()) }), "p").unwrap_or("")))
+          pump.wait(d.login_changed(as_text(jitems(arg).get(0).unwrap_or(Json::null())).unwrap_or("")))
           Json::null()
         }
         // (codex.ts `runtimeChanged`: its app-servers of a replaced version let go, a busy one's turns drained first)
@@ -571,9 +571,9 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
         }
       }
     }),
-    lent_borrowed: Some(p => borrowed_profile(ctx, p52_json_of_jv(p))),
+    lent_borrowed: Some(p => borrowed_profile(ctx, of_jv(p))),
     lent_write: Some(p => pump.later("lent Antigravity login", async fn() {
-      match (ctx.bus.jobs_ask.val)("sharing.lendAgy", { "profile": p52_json_of_jv(p) }) {
+      match (ctx.bus.jobs_ask.val)("sharing.lendAgy", { "profile": of_jv(p) }) {
         Number(n, ..) => n
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }
@@ -608,8 +608,8 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
   )
   {
     kind: "agy",
-    open: async fn(options, events) { agent_of(pump.wait(d.open(jv_of(options), events))) },
-    adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(jv_of(options), snap.map(jv_of), events))) },
+    open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
+    adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) },
     shutdown: async fn(again) {
       for s in d.sessions.copy() {
         ignore(pump.wait(s.acp.own.dispose())) catch { _ => () }
@@ -633,7 +633,7 @@ fn agy_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Wo
         "noteEmail" =>
           jopt(pump.wait(@agent_drivers.note_agy_email(pump.machine(), jtext(arg, "home").unwrap_or(""), jtext(arg, "text").unwrap_or(""))))
         // (the accounts' check: the models, efforts and plan its sign-in offers; agy.ts `catalog`)
-        "catalog" => p52_json_of_jv(pump.wait(d.catalog(jv_of(jitems(arg).get(0).unwrap_or(Json::null())))))
+        "catalog" => of_jv(pump.wait(d.catalog(to_jv(jitems(arg).get(0).unwrap_or(Json::null())))))
         _ => raise LiveError("agy's driver answers no \{what}")
       }
     },

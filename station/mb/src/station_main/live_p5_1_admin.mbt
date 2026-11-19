@@ -768,7 +768,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           }
         _ => ()
       }
-      match @events.runtime_view(jv(arg(0)), Some(jv(arg(1))), supported) {
+      match @events.runtime_view(to_jv(arg(0)), Some(to_jv(arg(1))), supported) {
         Omit => @jsjson.JV::of_json({ "$omit": true })
         Value(Some(v)) => @jsjson.JV::of_json(of_jv(v))
         Value(None) => @api_routes.jundef
@@ -903,12 +903,12 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
             k()
           }),
         )),
-        profiles_view: _ => jv(profiles),
-        logins_view: _ => jv(logins),
-        api_providers: () => jv(providers),
-        machine_logins: () => jv(machine),
-        decision_models: () => jv(models),
-        automatic_decisions_view: (_, _, _) => decisions.val.map(jv),
+        profiles_view: _ => to_jv(profiles),
+        logins_view: _ => to_jv(logins),
+        api_providers: () => to_jv(providers),
+        machine_logins: () => to_jv(machine),
+        decision_models: () => to_jv(models),
+        automatic_decisions_view: (_, _, _) => decisions.val.map(to_jv),
       })
     }
     _ => None
@@ -975,7 +975,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   let decisions_version = asked(bus.hub_ask.val, "store.decisionsVersion", []).unwrap_or(Json::number(0.0))
   let config_now = (bus.config_raw.val)()
   let overview_now = wall_ms().to_double()
-  let viewer_v = @events.Viewer::of(jv(viewer))
+  let viewer_v = @events.Viewer::of(to_jv(viewer))
   // (archive-policy.ts `policyView`'s parts: the week's checks counted by a reader, off the loop as agents.ts
   // `hub.policyChecks` has them, then the view given them; the decisions' models as asked above, not made again)
   let ask_decisions = async fn() {
@@ -1013,7 +1013,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   }
   let decisions_fresh = match models_asked.val {
     Some(models) =>
-      self.overview_kept.decisions_fresh(viewer_v, jv(decisions_version), jv(config_now), jv(models), overview_now)
+      self.overview_kept.decisions_fresh(viewer_v, to_jv(decisions_version), to_jv(config_now), to_jv(models), overview_now)
     None => false
   }
   if !decisions_fresh {
@@ -1023,7 +1023,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   // meanwhile, they are asked then, once: never `prepare_decision_sessions` given back at once with nothing asked)
   let decisions_asked = Ref(!decisions_fresh)
   let deps : @events.OverviewDeps = {
-    config: () => jv(config_now),
+    config: () => to_jv(config_now),
     session_counts: (v, ids) => match (try { Ok(store.overview_session_counts(of_jv(v.raw), ids.map(of_jv))) } catch { e => Err(e) }) {
       Ok({ "total": Number(total, ..), "byConnect": Array(by), .. }) => {
         let m : Map[String, Double] = {}
@@ -1056,10 +1056,10 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     session_ws: key => match (try { Ok(store.session_ws(key)) } catch { e => Err(e) }) {
       Ok(Null) | Err(_) => None
-      Ok(ws) => Some(jv(ws))
+      Ok(ws) => Some(to_jv(ws))
     },
     list_processes: () => match (try { Ok(store.list_processes()) } catch { e => Err(e) }) {
-      Ok(ps) => ps.map(jv)
+      Ok(ps) => ps.map(to_jv)
       Err(_) => []
     },
     data_dir: bus.data,
@@ -1080,22 +1080,22 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       }),
     ),
     disk_room: (p, k) => match disk_of(p) {
-      Some((free, total)) => k(jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
+      Some((free, total)) => k(to_jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
       None => k(@jsjson.JValue::Null)
     },
     store_now: () => overview_now,
     binding: id => match (try { Ok(store.binding(Json::string(id))) } catch { e => Err(e) }) {
-      Ok(b) => jv(b)
+      Ok(b) => to_jv(b)
       Err(_) => @jsjson.JValue::Null
     },
     connect_kind: kind => if kinds.contains(kind) {
       Some({
         shown: c => match of_jv(c) {
-          { "id": String(id), .. } => jv(shown.get(id).unwrap_or(Json::object({})))
+          { "id": String(id), .. } => to_jv(shown.get(id).unwrap_or(Json::object({})))
           _ => @jsjson.JValue::Obj([])
         },
         connection: c => match of_jv(c) {
-          { "id": String(id), .. } => states.get(id).map(jv)
+          { "id": String(id), .. } => states.get(id).map(to_jv)
           _ => None
         },
       })
@@ -1104,14 +1104,14 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     accounts,
     updates: match updates {
-      Some(u) => Some(_ => jv(u))
+      Some(u) => Some(_ => to_jv(u))
       None => None
     },
     slack_identities: email => match (try { Ok(store.slack_identities(Json::string(email))) } catch { e => Err(e) }) {
-      Ok(ids) => jv(Json::array(ids))
-      Err(_) => jv(Json::array([]))
+      Ok(ids) => to_jv(Json::array(ids))
+      Err(_) => to_jv(Json::array([]))
     },
-    root_view: (p, k) => k(jv(root_views.get(p).unwrap_or_else(() => @drive.root_view(p).to_json()))),
+    root_view: (p, k) => k(to_jv(root_views.get(p).unwrap_or_else(() => @drive.root_view(p).to_json()))),
     homedir: homedir(),
     has_spotlight: platform() == "darwin",
     permissions: match grants {
@@ -1119,30 +1119,30 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
         Some(v => {
           let m = g.copy()
           m["request"] = Json::boolean(!p51_read_only(of_jv(v.raw)))
-          Some(jv(Json::object(m)))
+          Some(to_jv(Json::object(m)))
         })
       _ => None
     },
     cloud_state: () => match (bus.cloud_state.val)() {
-      Some(s) => Some(jv(s))
+      Some(s) => Some(to_jv(s))
       None => None
     },
     membership: ws => match (bus.cloud_state.val)() {
       Some(s) =>
         match s {
-          { "workspace": String(w), .. } if w == ws => Some(jv(s))
+          { "workspace": String(w), .. } if w == ws => Some(to_jv(s))
           { "joined": Array(j), .. } =>
-            j.iter().find_first(x => x is { "workspace": String(w), .. } && w == ws).map(jv)
+            j.iter().find_first(x => x is { "workspace": String(w), .. } && w == ws).map(to_jv)
           _ => None
         }
       None => None
     },
     reached: () => (bus.cloud_reached.val)(),
-    catalog: () => jv(catalog),
-    decisions_version: () => jv(decisions_version),
+    catalog: () => to_jv(catalog),
+    decisions_version: () => to_jv(decisions_version),
     // (the week's checks are a reader's, given to the policy's view asked above: `ask_decisions`)
     policy_checks: None,
-    policy_view: (_, _, _, _, _) => jv(policy.val.unwrap_or(Json::null())),
+    policy_view: (_, _, _, _, _) => to_jv(policy.val.unwrap_or(Json::null())),
     prepare_decision_sessions: k => if decisions_asked.val {
       k()
     } else {
@@ -1184,7 +1184,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       match chat {
         Object(_) =>
           @adb_devices.chat_title(
-            jv(jfield(chat, "thread")),
+            to_jv(jfield(chat, "thread")),
             match jfield(chat, "firstText") {
               String(t) => Some(t)
               _ => None
@@ -1205,7 +1205,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     built_at: bus.built_at,
   }
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
-  @events.overview(deps, self.overview_kept, @events.Viewer::of(jv(viewer)), lang, r => match r {
+  @events.overview(deps, self.overview_kept, @events.Viewer::of(to_jv(viewer)), lang, r => match r {
     Ok(v) => ignore(d.succeed(of_jv(v)))
     Err(e) => ignore(d.succeed({ "error": Json::string(e) }))
   })

@@ -123,11 +123,11 @@ async fn P53Upkeep::step(self : P53Upkeep, what : String, did : Json, f : async 
         _ => false
       }
       if counted {
-        p53_log("info", "upkeep", "held to its bound", fields=p53_obj([("what", p53_s(what)), ("did", v)]))
+        slice_log("info", "upkeep", "held to its bound", jobj_of([("what", jstr(what)), ("did", v)]))
       }
       ignore(did)
     }
-    Err(e) => p53_log("warn", "upkeep", "not held to its bound", fields=p53_obj([("what", p53_s(what)), ("error", p53_s(p53_words(e)))]))
+    Err(e) => slice_log("warn", "upkeep", "not held to its bound", jobj_of([("what", jstr(what)), ("error", jstr(p53_words(e)))]))
   }
 }
 
@@ -135,7 +135,7 @@ async fn P53Upkeep::step(self : P53Upkeep, what : String, did : Json, f : async 
 /// One round (ops/storage.ts `Upkeep.#round`): what it held to its bound, by step.
 async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   if self.running {
-    return p53_obj([("running", p53_b(true))])
+    return jobj_of([("running", jb(true))])
   }
   self.running = true
   defer {
@@ -154,12 +154,12 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
       v
     })
   }
-  note("station log", async fn() { p53_b(@jobs_host.rotate_in_place(host, at(["stillfail.log"]), p53_station_log_cap)) })
-  note("update log", async fn() { p53_b(@jobs_host.rotate_in_place(host, at(["run", "update.log"]), p53_update_log_cap)) })
-  note("runners", async fn() { (bus.hub_ask.val)("sweepRunners", p53_obj([("now", p53_n(now))])) })
+  note("station log", async fn() { jb(@jobs_host.rotate_in_place(host, at(["stillfail.log"]), p53_station_log_cap)) })
+  note("update log", async fn() { jb(@jobs_host.rotate_in_place(host, at(["run", "update.log"]), p53_update_log_cap)) })
+  note("runners", async fn() { (bus.hub_ask.val)("sweepRunners", jobj_of([("now", jn(now))])) })
   note("jobs", async fn() {
     let (capped, collected) = self.jobs.upkeep(now)
-    p53_obj([("capped", p53_i(capped)), ("collected", Json::array(collected.map(p53_s)))])
+    jobj_of([("capped", ji(capped)), ("collected", Json::array(collected.map(jstr)))])
   })
   note("remote", async fn() {
     let total = match disk_of(data) {
@@ -167,23 +167,23 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
       None => None
     }
     let (expired, freed) = self.remote.upkeep(now, total)
-    p53_obj([("expired", p53_i(expired)), ("freed", p53_n(freed))])
+    jobj_of([("expired", ji(expired)), ("freed", jn(freed))])
   })
   note("database log", async fn() {
     let wal = at(["stillfail.db-wal"])
     let before = p53_size_of(host, wal)
     if before <= p53_wal_cap {
-      return p53_b(false)
+      return jb(false)
     }
     bus.db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
     let after = p53_size_of(host, wal)
-    p53_log("warn", "upkeep", "the database's log grew past its bound: written into the database", fields=p53_obj([("before", p53_n(before)), ("after", p53_n(after))]))
-    p53_b(true)
+    slice_log("warn", "upkeep", "the database's log grew past its bound: written into the database", jobj_of([("before", jn(before)), ("after", jn(after))]))
+    jb(true)
   })
   self.renewables(now, p53_thumbs_cap, p53_node_part_ms, note)
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
-  out["free"] = p53_n(free)
-  out["total"] = p53_n(total)
+  out["free"] = jn(free)
+  out["total"] = jn(total)
   Json::object(out)
 }
 
@@ -200,10 +200,10 @@ async fn P53Upkeep::renewables(
   let host = self.bus.host
   let data = self.bus.data
   let at = (parts : Array[String]) => @nodepath.join(sep(), [data] + parts)
-  note("thumbs", async fn() { p53_n(p53_cap_by_age(host, at(["thumbs"]), thumbs)) })
-  note("node parts", async fn() { Json::array(p53_remove_stale(host, at(["node"]), ".part-", parts_ms, now).map(p53_s)) })
-  note("config backups", async fn() { Json::array(p53_keep_newest(host, data, "config.json.bak-", p53_config_backups_kept).map(p53_s)) })
-  note("transcript marks", async fn() { Json::array(p53_orphan_marks(host, at(["transcript-marks"])).map(p53_s)) })
+  note("thumbs", async fn() { jn(p53_cap_by_age(host, at(["thumbs"]), thumbs)) })
+  note("node parts", async fn() { Json::array(p53_remove_stale(host, at(["node"]), ".part-", parts_ms, now).map(jstr)) })
+  note("config backups", async fn() { Json::array(p53_keep_newest(host, data, "config.json.bak-", p53_config_backups_kept).map(jstr)) })
+  note("transcript marks", async fn() { Json::array(p53_orphan_marks(host, at(["transcript-marks"])).map(jstr)) })
 }
 
 ///|
@@ -216,30 +216,30 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
     Some(d) => d
     None => {
       self.tier = "ok"
-      return p53_obj([("tier", p53_s("ok"))])
+      return jobj_of([("tier", jstr("ok"))])
     }
   }
   self.tier = p53_disk_tier(free, total)
   if self.tier != "ok" {
-    p53_log("warn", "upkeep", "the disk is getting full; making room", fields=p53_obj([("free", p53_n(free)), ("total", p53_n(total)), ("tier", p53_s(self.tier))]))
+    slice_log("warn", "upkeep", "the disk is getting full; making room", jobj_of([("free", jn(free)), ("total", jn(total)), ("tier", jstr(self.tier))]))
     self.renewables(now, p53_thumbs_cap / 4.0, 3600000.0, async fn(what, f) { self.step(what, Json::null(), f) })
     self.remote.relieve(now, p53_disk_soft(total))
   }
   match disk_of(bus.data) {
     Some((left, _)) if left < p53_disk_low_bytes =>
       bus.hub_relieve_archived(low_bytes=p53_disk_low_bytes) catch {
-        e => p53_log("warn", "hub", "making room on the disk failed", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "hub", "making room on the disk failed", jobj_of([("error", jstr(p53_words(e)))]))
       }
     _ => ()
   }
-  p53_obj([("tier", p53_s(self.tier)), ("free", p53_n(free)), ("total", p53_n(total))])
+  jobj_of([("tier", jstr(self.tier)), ("free", jn(free)), ("total", jn(total))])
 }
 
 ///|
 /// A file's size, 0 where it is not there.
 async fn p53_size_of(host : @host.Host, path : String) -> Double {
   match (try { Ok(host.shell("fs.meta", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-    Ok((m, _)) => p53_num(m, "size").unwrap_or(0.0)
+    Ok((m, _)) => jnum_of(m, "size").unwrap_or(0.0)
     Err(_) => 0.0
   }
 }
@@ -275,13 +275,13 @@ async fn p53_cap_by_age(host : @host.Host, dir : String, most : Double) -> Doubl
   for n in p53_names(host, dir) {
     let path = @nodepath.join(sep(), [dir, n])
     let st = p53_lstat(host, path)
-    if p53_str(st, "kind") == Some("file") {
-      let blocks = p53_num(st, "blocks")
+    if jtext(st, "kind") == Some("file") {
+      let blocks = jnum_of(st, "blocks")
       let bytes = match blocks {
         Some(b) if b >= 0.0 => b * 512.0
-        _ => p53_num(st, "size").unwrap_or(0.0)
+        _ => jnum_of(st, "size").unwrap_or(0.0)
       }
-      files.push((path, bytes, p53_num(st, "mtimeMs").unwrap_or(0.0)))
+      files.push((path, bytes, jnum_of(st, "mtimeMs").unwrap_or(0.0)))
     }
   }
   let mut total = files.fold(init=0.0, (n, f) => n + f.1)
@@ -311,7 +311,7 @@ async fn p53_remove_stale(host : @host.Host, dir : String, prefix : String, most
       continue
     }
     let st = p53_lstat(host, @nodepath.join(sep(), [dir, n]))
-    match p53_num(st, "mtimeMs") {
+    match jnum_of(st, "mtimeMs") {
       Some(at) if now - at >= most_ms => {
         p53_remove(host, @nodepath.join(sep(), [dir, n]))
         gone.push(n)
@@ -328,7 +328,7 @@ async fn p53_keep_newest(host : @host.Host, dir : String, prefix : String, kept 
   let dated = []
   for n in p53_names(host, dir) {
     if n.has_prefix(prefix) {
-      dated.push((n, p53_num(p53_lstat(host, @nodepath.join(sep(), [dir, n])), "mtimeMs").unwrap_or(0.0)))
+      dated.push((n, jnum_of(p53_lstat(host, @nodepath.join(sep(), [dir, n])), "mtimeMs").unwrap_or(0.0)))
     }
   }
   dated.sort_by((a, b) => b.1.compare(a.1))
@@ -352,10 +352,10 @@ async fn p53_orphan_marks(host : @host.Host, dir : String) -> Array[String] {
       continue
     }
     let file = @nodepath.join(sep(), [dir, n])
-    let path = match p53_read(host, file) {
+    let path = match shell_read_text(host, file) {
       Some(t) =>
         match attempt(() => @json.parse(t)) {
-          Ok(j) => p53_str(p53_get(j, "state"), "path")
+          Ok(j) => jtext(jfield(j, "state"), "path")
           Err(_) => None
         }
       None => None
@@ -393,7 +393,7 @@ fn P53Watch::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Watch 
 /// Whether a session is at work now (its turn running, or a job of its up).
 fn P53Watch::working(self : P53Watch, key : String) -> Bool {
   let row = p53_session_row(self.bus, key)
-  p53_true(row, "running") || (self.bus.store.session_has_up_job(p53_s(key)) catch { _ => Json::null() }) is True
+  jtrue(row, "running") || (self.bus.store.session_has_up_job(jstr(key)) catch { _ => Json::null() }) is True
 }
 
 ///|
@@ -408,8 +408,8 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
           let out = []
           let sessions = bus.store.running_sessions() catch { _ => [] }
           for s in sessions {
-            let key = p53_text(s, "key")
-            let path = p53_text(p53_session_row(bus, key), "workspace")
+            let key = jtext_or_empty(s, "key")
+            let path = jtext_or_empty(p53_session_row(bus, key), "workspace")
             if path == "" || path == "/" || path == homedir() {
               continue
             }
@@ -428,10 +428,10 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
         notify: async fn(session, text) {
           bus.hub_notify(session~, text~)
         },
-        warn: (message, detail) => p53_log("warn", "workspace-size", message, fields=p53_obj([("detail", p53_s(detail))])),
+        warn: (message, detail) => slice_log("warn", "workspace-size", message, jobj_of([("detail", jstr(detail))])),
       }) catch {
         e => {
-          p53_log("warn", "workspace-size", "the workspaces' sizes are not watched", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+          slice_log("warn", "workspace-size", "the workspaces' sizes are not watched", jobj_of([("error", jstr(p53_words(e)))]))
           return
         }
       }
@@ -484,32 +484,32 @@ fn P53Watch::tool(self : P53Watch) -> PartTool {
     self.bus,
     "workspace_limit",
     "Read or change this chat's soft workspace-size limit on one station (10 GiB by default). When a working chat exceeds its limit, the station tells its agent and repeats hourly until it cleans up or raises the limit; it never deletes files or stops work for this.",
-    p53_obj([
-      ("type", p53_s("object")),
+    jobj_of([
+      ("type", jstr("object")),
       (
         "properties",
-        p53_obj([
-          ("station", p53_obj([("type", p53_s("string")), ("description", p53_s("A station this chat has used for its remote workspace there, by name or id; omit for this station."))])),
-          ("limit_gib", p53_obj([("type", p53_s("integer")), ("minimum", p53_i(1)), ("description", p53_s("New soft limit in whole GiB; omit to read it."))])),
+        jobj_of([
+          ("station", jobj_of([("type", jstr("string")), ("description", jstr("A station this chat has used for its remote workspace there, by name or id; omit for this station."))])),
+          ("limit_gib", jobj_of([("type", jstr("integer")), ("minimum", ji(1)), ("description", jstr("New soft limit in whole GiB; omit to read it."))])),
         ]),
       ),
-      ("additionalProperties", p53_b(false)),
+      ("additionalProperties", jb(false)),
     ]),
     async fn(session, args) {
-      let named = match p53_str(args, "station") {
+      let named = match jtext(args, "station") {
         Some(s) => s.trim_space().to_string()
         None => ""
       }
       let station = self.remote.workspace_station(session, named)
       let watch = self.ready()
-      match p53_get(args, "limit_gib") {
+      match jfield(args, "limit_gib") {
         Null => ()
         Number(n, ..) => ignore(watch.set_limit(session, station, n))
         _ => raise P53Error("limit_gib must be a positive whole number of GiB")
       }
-      p53_obj([
-        ("station", p53_s(if station == "" { "this station" } else { station })),
-        ("limit_gib", p53_n(watch.limit(session, station) / @jobs_host.gib_size)),
+      jobj_of([
+        ("station", jstr(if station == "" { "this station" } else { station })),
+        ("limit_gib", jn(watch.limit(session, station) / @jobs_host.gib_size)),
       ]).stringify()
     },
   )

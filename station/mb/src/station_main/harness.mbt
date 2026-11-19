@@ -244,7 +244,7 @@ pub async fn harness(host : @host.Host) -> Unit {
         }
         let dir = s("dir")
         let helper = @screens.HelperApp::new(io, s("app"), dir, launch=Some(p54_helper_launch(host, dir, opened)))
-        let said = p54_of_jv(helper.request(p54_jv(v("ask").unwrap_or(Json::null())))) catch {
+        let said = of_jv(helper.request(to_jv(v("ask").unwrap_or(Json::null())))) catch {
           e => { "error": Json::string(said_of(e)) }
         }
         helper.quit() catch {
@@ -453,8 +453,8 @@ async fn claude_logins_asked(host : @host.Host) -> Json {
     asked.push({ "op": Json::string(op), "arg": arg })
     { "token": Json::string("tok-new-\{asked.length()}"), "expiresAt": 5.0 }
   })
-  let own = jv_of({ "id": "sub", "home": "homes/sub" })
-  let lent = jv_of({ "id": "lent", "share": { "host": "st-b" } })
+  let own = to_jv({ "id": "sub", "home": "homes/sub" })
+  let lent = to_jv({ "id": "lent", "share": { "host": "st-b" } })
   let given = []
   let took = (t : (String, Double)) => given.push(Json::string(t.0))
   took(pump.wait((logins.machine_token)(Some("tok-old"))))
@@ -487,15 +487,15 @@ async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Js
   let yielded = Ref(0)
   let w : @session_chats.World = {
     call: async fn(name, args) {
-      let a = args.map(p52_json_of_jv)
+      let a = args.map(of_jv)
       let text = (i : Int) => match a.get(i) { Some(String(t)) => t; _ => "" }
       match name {
-        "repoIndex.roots" => jv_of([Json::string(root)])
-        "repoIndex.besides" => jv_of([])
-        "repoIndex.guarded" => jv_of(false)
-        "repoIndex.file" => jv_of(Json::string(file))
-        "repoIndex.now" => jv_of(0.0)
-        "path.resolve" => jv_of(Json::string(text(0)))
+        "repoIndex.roots" => to_jv([Json::string(root)])
+        "repoIndex.besides" => to_jv([])
+        "repoIndex.guarded" => to_jv(false)
+        "repoIndex.file" => to_jv(Json::string(file))
+        "repoIndex.now" => to_jv(0.0)
+        "path.resolve" => to_jv(Json::string(text(0)))
         "repoIndex.list" => {
           lists.val += 1
           let ran = Ref(false)
@@ -504,20 +504,20 @@ async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Js
           if ran.val {
             yielded.val += 1
           }
-          jv_of(got)
+          to_jv(got)
         }
-        n if n.has_prefix("fs.") => jv_of(host_fs_op(host, n[3:].to_owned(), a))
-        _ => jv_of(Json::null())
+        n if n.has_prefix("fs.") => to_jv(host_fs_op(host, n[3:].to_owned(), a))
+        _ => to_jv(Json::null())
       }
     },
-    callback: _ => jv_of(Json::null()),
+    callback: _ => to_jv(Json::null()),
     words: @session_chats.Words::empty(),
     lang: Ref("zh"),
-    thrown: Ref(jv_of(Json::null())),
+    thrown: Ref(to_jv(Json::null())),
   }
   let index = @session_chats.RepoIndex::new()
   index.walk(w)
   let (repos, _) = index.repos(w)
-  let paths = repos.map(r => p52_json_of_jv(r)).filter_map(r => match r { { "path": String(p), .. } => Some(Json::string(p)); _ => None })
+  let paths = repos.map(r => of_jv(r)).filter_map(r => match r { { "path": String(p), .. } => Some(Json::string(p)); _ => None })
   { "repos": Json::array(paths), "lists": Json::number(lists.val.to_double()), "yielded": Json::number(yielded.val.to_double()) }
 }

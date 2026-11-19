@@ -135,16 +135,16 @@ fn P53Resources::attach(self : P53Resources) -> Unit {
       meth: "POST",
       path: "/resources/processes/:pid/end",
       answer: async fn(r) {
-        let pid = match attempt(() => @string.parse_int(p53_text(p53_get(r, "params"), "pid"))) {
+        let pid = match attempt(() => @string.parse_int(jtext_or_empty(jfield(r, "params"), "pid"))) {
           Ok(n) => n
           Err(_) => raise P53Error("no such process")
         }
-        let session = p53_text(p53_get(r, "body"), "session")
+        let session = jtext_or_empty(jfield(r, "body"), "session")
         if session == "" {
           raise P53Error("session required")
         }
         let name = self.end(pid, session)
-        p53_obj([("pid", p53_i(pid)), ("name", p53_s(name))])
+        jobj_of([("pid", ji(pid)), ("name", jstr(name))])
       },
     },
   ])
@@ -159,26 +159,26 @@ fn P53Resources::attach(self : P53Resources) -> Unit {
 async fn P53Resources::view(self : P53Resources) -> Json {
   let m = machine()
   let disk = match disk_of(self.bus.data) {
-    Some((free, total)) => p53_obj([("free", p53_n(free)), ("total", p53_n(total))])
+    Some((free, total)) => jobj_of([("free", jn(free)), ("total", jn(total))])
     None => Json::null()
   }
-  let cpus = match p53_get(m, "cpus") {
+  let cpus = match jfield(m, "cpus") {
     Array(xs) => xs.length()
     _ => 0
   }
-  p53_obj([
-    ("platform", p53_s(platform())),
-    ("arch", p53_s(arch())),
-    ("hostname", p53_s(hostname())),
-    ("cpus", p53_i(cpus)),
-    ("cpuModel", match p53_get(m, "cpus") { Array([first, ..]) => p53_get(first, "model"); _ => Json::null() }),
-    ("totalmem", p53_get(m, "totalmem")),
-    ("freemem", p53_get(m, "freemem")),
-    ("loadavg", p53_get(m, "loadavg")),
-    ("uptime", p53_get(m, "uptime")),
+  jobj_of([
+    ("platform", jstr(platform())),
+    ("arch", jstr(arch())),
+    ("hostname", jstr(hostname())),
+    ("cpus", ji(cpus)),
+    ("cpuModel", match jfield(m, "cpus") { Array([first, ..]) => jfield(first, "model"); _ => Json::null() }),
+    ("totalmem", jfield(m, "totalmem")),
+    ("freemem", jfield(m, "freemem")),
+    ("loadavg", jfield(m, "loadavg")),
+    ("uptime", jfield(m, "uptime")),
     ("disk", disk),
-    ("pressure", p53_opt(p53_pressure(self.bus.host))),
-    ("station", p53_obj([("pid", p53_i(@drive.pid())), ("rss", p53_get(m, "rss")), ("footprint", p53_get(m, "footprint"))])),
+    ("pressure", jopt(p53_pressure(self.bus.host))),
+    ("station", jobj_of([("pid", ji(@drive.pid())), ("rss", jfield(m, "rss")), ("footprint", jfield(m, "footprint"))])),
     ("resources", self.snapshot()),
   ])
 }
@@ -228,8 +228,8 @@ async fn P53Resources::runners(self : P53Resources) -> Array[(Int, Int, String?)
   let said = (self.bus.hub_ask.val)("runners", Json::null()) catch { _ => Json::null() }
   match said {
     Array(rows) =>
-      rows.filter_map(r => match (p53_num(r, "runner"), p53_num(r, "pid")) {
-        (Some(a), Some(b)) => Some((a.to_int(), b.to_int(), p53_str(r, "session")))
+      rows.filter_map(r => match (jnum_of(r, "runner"), jnum_of(r, "pid")) {
+        (Some(a), Some(b)) => Some((a.to_int(), b.to_int(), jtext(r, "session")))
         _ => None
       })
     _ => []
@@ -264,8 +264,8 @@ async fn P53Resources::whose_of(self : P53Resources, table : Array[P53Proc], run
   }
   let chat = (session : String) => { key: "chat:\{session}", kind: "chat", session: Some(session) }
   for j in self.jobs.store().jobs_up() catch { _ => [] } {
-    match p53_num(j, "pgid") {
-      Some(g) => give(table.filter(p => p.pgid == g.to_int()).map(p => p.pid), chat(p53_text(j, "sessionKey")))
+    match jnum_of(j, "pgid") {
+      Some(g) => give(table.filter(p => p.pgid == g.to_int()).map(p => p.pid), chat(jtext_or_empty(j, "sessionKey")))
       None => ()
     }
   }
@@ -276,8 +276,8 @@ async fn P53Resources::whose_of(self : P53Resources, table : Array[P53Proc], run
   give([@drive.pid()] + (if launcher > 1 { [launcher] } else { [] }), { key: "station", kind: "station", session: None })
   // (what is left naming a chat's directory, the longest it names, from the top: a script and all it runs)
   let places = (self.jobs.store().live_sessions() catch { _ => [] })
-    .filter_map(s => match p53_str(s, "workspace") {
-      Some(w) if w != "/" && w != homedir() => Some((if w.has_suffix("/") { w } else { w + "/" }, p53_text(s, "key")))
+    .filter_map(s => match jtext(s, "workspace") {
+      Some(w) if w != "/" && w != homedir() => Some((if w.has_suffix("/") { w } else { w + "/" }, jtext_or_empty(s, "key")))
       _ => None
     })
   places.sort_by((a, b) => b.0.length().compare(a.0.length()))
@@ -355,12 +355,12 @@ fn P53Resources::fresh(self : P53Resources) -> Bool {
 ///|
 fn p53_use(cpu : Double, memory : Double, read : Double, write : Double) -> Map[String, Json] {
   {
-    "cpu": p53_n(cpu),
-    "memory": p53_n(memory),
-    "netIn": p53_n(0.0),
-    "netOut": p53_n(0.0),
-    "diskRead": p53_n(read),
-    "diskWrite": p53_n(write),
+    "cpu": jn(cpu),
+    "memory": jn(memory),
+    "netIn": jn(0.0),
+    "netOut": jn(0.0),
+    "diskRead": jn(read),
+    "diskWrite": jn(write),
   }
 }
 
@@ -369,7 +369,7 @@ fn p53_add_use(to : Map[String, Json], u : Map[String, Json]) -> Unit {
   for k in ["cpu", "memory", "netIn", "netOut", "diskRead", "diskWrite"] {
     let a = match to.get(k) { Some(Number(n, ..)) => n; _ => 0.0 }
     let b = match u.get(k) { Some(Number(n, ..)) => n; _ => 0.0 }
-    to[k] = p53_n(a + b)
+    to[k] = jn(a + b)
   }
 }
 
@@ -394,10 +394,10 @@ async fn P53Resources::look(self : P53Resources) -> Unit {
   for i, p in mine {
     guard used[i] is Some(read) else { continue }
     let u : P53Used = {
-      cpu_ns: p53_num(read, "cpuNs").unwrap_or(0.0),
-      footprint: p53_num(read, "footprint").unwrap_or(p.bytes),
-      disk_read: p53_num(read, "diskRead"),
-      disk_written: p53_num(read, "diskWritten"),
+      cpu_ns: jnum_of(read, "cpuNs").unwrap_or(0.0),
+      footprint: jnum_of(read, "footprint").unwrap_or(p.bytes),
+      disk_read: jnum_of(read, "diskRead"),
+      disk_written: jnum_of(read, "diskWritten"),
       command: p.command,
     }
     self.counted = true
@@ -438,9 +438,9 @@ async fn P53Resources::look(self : P53Resources) -> Unit {
     }
     p53_add_use(g.1, use_)
     let one = use_.copy()
-    one["pid"] = p53_i(p.pid)
-    one["name"] = p53_s(@nodepath.basename("/", p.command))
-    one["endable"] = p53_b(w.kind == "chat" && !agents_own.contains(p.pid))
+    one["pid"] = ji(p.pid)
+    one["name"] = jstr(@nodepath.basename("/", p.command))
+    one["endable"] = jb(w.kind == "chat" && !agents_own.contains(p.pid))
     g.2.push(Json::object(one))
   }
   self.last = last
@@ -461,29 +461,29 @@ async fn P53Resources::look(self : P53Resources) -> Unit {
         _ => ()
       }
       self.net_last = Some((i, o))
-      total["netIn"] = p53_n(self.net_now.0)
-      total["netOut"] = p53_n(self.net_now.1)
+      total["netIn"] = jn(self.net_now.0)
+      total["netOut"] = jn(self.net_now.1)
     }
     None => self.net_read = false
   }
-  let cpu_of = (j : Json) => p53_num(j, "cpu").unwrap_or(0.0)
+  let cpu_of = (j : Json) => jnum_of(j, "cpu").unwrap_or(0.0)
   let list = groups.values().map(g => {
     p53_add_use(total, g.1)
     let o = g.1.copy()
-    o["key"] = p53_s(g.0.key)
-    o["kind"] = p53_s(g.0.kind)
-    o["session"] = p53_opt(g.0.session)
+    o["key"] = jstr(g.0.key)
+    o["kind"] = jstr(g.0.kind)
+    o["session"] = jopt(g.0.session)
     let ps = g.2.copy()
     ps.sort_by((a, b) => cpu_of(b).compare(cpu_of(a)))
     o["processes"] = Json::array(ps)
     Json::object(o)
   }).to_array()
   list.sort_by((a, b) => cpu_of(b).compare(cpu_of(a)))
-  self.now = Some(p53_obj([("at", p53_n(at)), ("groups", Json::array(list)), ("total", Json::object(total))]))
+  self.now = Some(jobj_of([("at", jn(at)), ("groups", Json::array(list)), ("total", Json::object(total))]))
   let point = total.copy()
-  point["at"] = p53_n(at)
+  point["at"] = jn(at)
   self.history.push(Json::object(point))
-  self.history = self.history.filter(p => p53_num(p, "at").unwrap_or(0.0) > at - p53_history_ms)
+  self.history = self.history.filter(p => jnum_of(p, "at").unwrap_or(0.0) > at - p53_history_ms)
 }
 
 ///|
@@ -521,14 +521,14 @@ async fn P53Resources::end(self : P53Resources, pid : Int, session : String) -> 
 /// The last look and the history, the oldest first (resources/watch.ts `snapshot`).
 fn P53Resources::snapshot(self : P53Resources) -> Json {
   let zero = Json::object(p53_use(0.0, 0.0, 0.0, 0.0))
-  p53_obj([
-    ("at", match self.now { Some(n) => p53_get(n, "at"); None => Json::null() }),
-    ("everyMs", p53_i(p53_look_every_ms)),
-    ("counted", p53_b(self.counted)),
-    ("net", p53_b(self.net_read)),
-    ("disk", p53_b(self.disk)),
-    ("total", match self.now { Some(n) => p53_get(n, "total"); None => zero }),
-    ("groups", match self.now { Some(n) => p53_get(n, "groups"); None => Json::array([]) }),
+  jobj_of([
+    ("at", match self.now { Some(n) => jfield(n, "at"); None => Json::null() }),
+    ("everyMs", ji(p53_look_every_ms)),
+    ("counted", jb(self.counted)),
+    ("net", jb(self.net_read)),
+    ("disk", jb(self.disk)),
+    ("total", match self.now { Some(n) => jfield(n, "total"); None => zero }),
+    ("groups", match self.now { Some(n) => jfield(n, "groups"); None => Json::array([]) }),
     ("history", Json::array(self.history.copy())),
   ])
 }
@@ -619,9 +619,9 @@ fn p53_programs_in(table : Array[P53Proc], pids : Array[Int]) -> Double {
 ///|
 /// The launcher's pid, where `run/station.json` names one that takes a handover (ops/restart.ts `restarter`).
 async fn P53Resources::launcher(self : P53Resources) -> Int? {
-  guard p53_read(self.bus.host, @nodepath.join(sep(), [self.bus.data, "run", "station.json"])) is Some(t) else { return None }
+  guard shell_read_text(self.bus.host, @nodepath.join(sep(), [self.bus.data, "run", "station.json"])) is Some(t) else { return None }
   guard attempt(() => @json.parse(t)) is Ok(said) else { return None }
-  guard p53_num(said, "pid") is Some(pid) && pid > 0.0 && p53_num(said, "handoff") == Some(1.0) else { return None }
+  guard jnum_of(said, "pid") is Some(pid) && pid > 0.0 && jnum_of(said, "handoff") == Some(1.0) else { return None }
   let pid = pid.to_int()
   match p53_run(self.bus.host, "/bin/ps", ["-o", "comm=", "-p", pid.to_string()]) {
     Some(comm) if @nodepath.basename("/", comm.trim_space().to_string()).has_prefix("stillfail") => Some(pid)
@@ -638,7 +638,7 @@ fn P53Resources::govern(self : P53Resources) -> Unit {
       while !bus.stopped.is_done() {
         @effect.sleep(p53_sample_ms) // timer: a sample of this machine (the station's own memory)
         ignore(self.sample()) catch {
-          e => p53_log("warn", "memory", "the station's memory not looked at", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+          e => slice_log("warn", "memory", "the station's memory not looked at", jobj_of([("error", jstr(p53_words(e)))]))
         }
       }
     }),
@@ -651,9 +651,9 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
   let bus = self.bus
   let now = p53_clock()
   let m = machine()
-  let total = p53_num(m, "totalmem").unwrap_or(0.0)
+  let total = jnum_of(m, "totalmem").unwrap_or(0.0)
   let (soft, hard_rss, hard_front) = p53_memory_limits(total)
-  let own = p53_num(m, "rss").unwrap_or(0.0)
+  let own = jnum_of(m, "rss").unwrap_or(0.0)
   let table = self.table().unwrap_or([])
   let children = p53_programs_in(table, (self.programs)())
   let launcher = self.launcher()
@@ -669,9 +669,9 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
   let whole = own + children
   let pressed = pressure == Some("high") || pressure == Some("critical")
   let out : Map[String, Json] = {
-    "wholeRssMb": p53_n((whole / p53_mib).round()),
-    "mbChildrenRssMb": p53_n((children / p53_mib).round()),
-    "pressure": p53_opt(pressure),
+    "wholeRssMb": jn((whole / p53_mib).round()),
+    "mbChildrenRssMb": jn((children / p53_mib).round()),
+    "pressure": jopt(pressure),
   }
   let relieved = match self.last_relief {
     Some(at) => now - at >= p53_relief_ms
@@ -684,11 +684,11 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
       Ok(Number(n, ..)) => n.to_int()
       _ => 0
     }
-    out["trimmed"] = p53_i(trimmed + trimmed_readers)
+    out["trimmed"] = ji(trimmed + trimmed_readers)
     if pressed {
       out["evictedWarm"] = (bus.hub_ask.val)("evictAllIdle", Json::null()) catch { _ => Json::null() }
     }
-    p53_log("info", "memory", "station trimmed idle helpers under memory pressure", fields=Json::object(out))
+    slice_log("info", "memory", "station trimmed idle helpers under memory pressure", Json::object(out))
   }
   let started = now - self.started_at >= p53_startup_ms
   self.front_over = match front {
@@ -697,13 +697,13 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
   }
   if self.front_over >= p53_sustained && started {
     self.front_over = 0
-    p53_log("warn", "memory", "mesh front exceeded sustained memory limit", fields=Json::object(out))
+    slice_log("warn", "memory", "mesh front exceeded sustained memory limit", Json::object(out))
     match bus.restart_front {
       Some(restart) => {
         restart()
-        out["front"] = p53_s("asked")
+        out["front"] = jstr("asked")
       }
-      None => out["front"] = p53_s("said")
+      None => out["front"] = jstr("said")
     }
   }
   self.over = if whole > hard_rss { self.over + 1 } else { 0 }
@@ -713,17 +713,17 @@ async fn P53Resources::sample(self : P53Resources) -> Json {
   self.over = 0
   match launcher {
     None => {
-      p53_log("warn", "memory", "station process exceeded sustained memory limit; no launcher to hand over to, trimming idle helpers", fields=Json::object(out))
-      out["trimmed"] = p53_i((self.trim_idle)())
-      out["handover"] = p53_s("none")
+      slice_log("warn", "memory", "station process exceeded sustained memory limit; no launcher to hand over to, trimming idle helpers", Json::object(out))
+      out["trimmed"] = ji((self.trim_idle)())
+      out["handover"] = jstr("none")
     }
     Some(pid) => {
       self.handed_over = true
-      p53_log("warn", "memory", "station process exceeded sustained memory limit; asking launcher to hand over", fields=Json::object(out))
+      slice_log("warn", "memory", "station process exceeded sustained memory limit; asking launcher to hand over", Json::object(out))
       if !kill(pid, "SIGUSR2") {
         self.handed_over = false
       }
-      out["handover"] = p53_s("asked")
+      out["handover"] = jstr("asked")
     }
   }
   Json::object(out)

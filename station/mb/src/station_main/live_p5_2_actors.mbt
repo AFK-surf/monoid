@@ -131,7 +131,7 @@ fn ActorsProgram::lost(self : ActorsProgram, code : Int32) -> Unit {
   if !lost {
     return
   }
-  live_log(
+  slice_log(
     "error",
     "session",
     "the program running the sessions ended; the station ends with it, as in a crash",
@@ -721,7 +721,7 @@ fn MbActor::listener(
   self : MbActor,
   generation : Int32,
 ) -> (@jsjson.JValue) -> Unit {
-  e => self.event(generation, p52_json_of_jv(e))
+  e => self.event(generation, of_jv(e))
 }
 
 ///|
@@ -761,7 +761,7 @@ async fn MbActor::hub_asked(
     "idleMs" =>
       match
         self.idle_ms(
-          jnum_of(Json::object({ "n": a(0) }), "n").unwrap_or(
+          as_num(a(0)).unwrap_or(
             self.program.now(),
           ),
         ) {
@@ -778,7 +778,7 @@ async fn MbActor::hub_asked(
       }
     "unreadIn" => {
       let thread = a(0)
-      let before = jnum_of(Json::object({ "n": a(1) }), "n").unwrap_or(0.0)
+      let before = as_num(a(1)).unwrap_or(0.0)
       Json::array(
         self.mirror.unread.filter_map(u => {
           match u {
@@ -819,9 +819,9 @@ async fn MbActor::hub_asked(
       let token = self.next
       // (and how the conversations record it: a callback of theirs, `record`, that rereads what it is about and
       // writes in one transaction of theirs: conversations.mbt `state_write`; mb-actor.ts `stateForTurn`)
-      let record = jnum_of(Json::object({ "f": jfield(a(5), "$fn") }), "f").map(n => n.to_int())
+      let record = jnum_of(a(5), "$fn").map(n => n.to_int())
       self.records[token] = (
-        jtext(Json::object({ "w": a(2) }), "w"),
+        as_text(a(2)),
         a(3),
         a(4) is True,
         record,
@@ -965,15 +965,15 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
         Object(m) => Json::object(m)
         _ => Json::object({})
       }
-      live_log(
-        jtext(Json::object({ "l": a(0) }), "l").unwrap_or("info"),
+      slice_log(
+        as_text(a(0)).unwrap_or("info"),
         "session",
-        jtext(Json::object({ "m": a(1) }), "m").unwrap_or(""),
+        as_text(a(1)).unwrap_or(""),
         fields,
       )
     }
     "node.tasks" => {
-      let tasks = match jnum_of(Json::object({ "h": a(0) }), "h") {
+      let tasks = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
             Some((_, s)) => (s.background)()
@@ -986,7 +986,7 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
     "node.working" => ctx.working(self.key, jitems(a(0)), a(1))
     "chat.standsAt" => ctx.stands_at(a(0), a(1), a(2), a(3))
     _ =>
-      live_log(
+      slice_log(
         "warn",
         "session",
         "a session told the station what it does not know",
@@ -1014,7 +1014,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     return ctx.deps(self.key, name, args)
   }
   if part == "agent" {
-    let handle = jnum_of(Json::object({ "h": a(0) }), "h")
+    let handle = as_num(a(0))
       .unwrap_or(-1.0)
       .to_int()
     guard self.agents.get(handle) is Some((_, s)) else {
@@ -1035,11 +1035,11 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         Json::null()
       }
       "prompt" => {
-        (s.prompt)(jtext(Json::object({ "t": r(0) }), "t").unwrap_or(""))
+        (s.prompt)(as_text(r(0)).unwrap_or(""))
         Json::null()
       }
       "steer" =>
-        jb((s.steer)(jtext(Json::object({ "t": r(0) }), "t").unwrap_or("")))
+        jb((s.steer)(as_text(r(0)).unwrap_or("")))
       "abort" => {
         (s.abort)()
         Json::null()
@@ -1062,7 +1062,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     }
     return jstr(
       ctx.words.tr(
-        jtext(Json::object({ "k": a(0) }), "k").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         args=args_t,
         lang=ctx.lang(),
       ),
@@ -1070,7 +1070,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
   }
   match name {
     "words" => {
-      let named = jtext(Json::object({ "n": a(0) }), "n").unwrap_or("")
+      let named = as_text(a(0)).unwrap_or("")
       let rest = args[1:].to_owned()
       // (instructions.ts's, the agent's own words; the rest actor.ts's in the station's words)
       match named {
@@ -1112,26 +1112,26 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "cardAsks" =>
       ctx.card_asks(
         self.key,
-        jtext(Json::object({ "i": a(0) }), "i").unwrap_or(""),
-        jnum_of(Json::object({ "s": a(1) }), "s"),
+        as_text(a(0)).unwrap_or(""),
+        as_num(a(1)),
       )
     "keepAsk" =>
       ctx.keep_ask(
         self.key,
-        jtext(Json::object({ "i": a(0) }), "i").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         a(1),
       )
     "timed" =>
       jstr(
         @session_hub.timed(
-          jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+          as_text(a(0)).unwrap_or(""),
           self.program.now(),
         ),
       )
     "withChoices" => {
       let (text, told) = ctx.handed_with_choices(
         self.key,
-        jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
       )
       self.next += 1
       let id = self.next
@@ -1139,7 +1139,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       { "text": jstr(text), "told": ji(id) }
     }
     "told" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i")
+      let id = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.told.get(id) {
@@ -1176,7 +1176,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         self.key,
         jitems(a(0)),
         a(1) is True,
-        jtext(Json::object({ "p": a(2) }), "p"),
+        as_text(a(2)),
         r => self.runtime = r,
         () => {
           gen.val = self.next_generation()
@@ -1199,7 +1199,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
     }
     "retune" => {
-      let handle = jnum_of(Json::object({ "h": a(0) }), "h")
+      let handle = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.agents.get(handle) {
@@ -1208,7 +1208,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
             self.key,
             s,
             self.runtime,
-            jtext(Json::object({ "p": a(1) }), "p"),
+            as_text(a(1)),
             a(2) is True,
             a(3) is True,
           )
@@ -1219,17 +1219,17 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "outlived" =>
       match
         self.agents.get(
-          jnum_of(Json::object({ "h": a(0) }), "h").unwrap_or(-1.0).to_int(),
+          as_num(a(0)).unwrap_or(-1.0).to_int(),
         ) {
         Some((_, s)) => jb((s.outlived)())
         None => jb(false)
       }
     "notice" => {
-      let about = jtext(Json::object({ "a": a(4) }), "a")
+      let about = as_text(a(4))
       let quiet = a(5) is True
       ctx.post_notice(
         self.key,
-        jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         a(1),
         a(2),
         a(3),
@@ -1257,7 +1257,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     }
     "saidLast" => ctx.last_station_said(self.key)
     "read" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i")
+      let id = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.reads.get(id) {
@@ -1272,7 +1272,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "stateWrite" => {
       let id = a(0)
       let state = a(1)
-      let token = jnum_of(Json::object({ "t": a(2) }), "t")
+      let token = as_num(a(2))
         .unwrap_or(-1.0)
         .to_int()
       guard self.records.get(token) is Some((words, about, watch, record)) else {
@@ -1308,7 +1308,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
           chat_state.next_cb += 1
           let write_id = chat_state.next_cb
           chat_state.callbacks[write_id] = async fn(given) {
-            write(p52_json_of_jv(given.get(0).unwrap_or(Null)))
+            write(of_jv(given.get(0).unwrap_or(Null)))
             Null
           }
           ignore(record_fn([Obj([(@jsjson.units("$fn"), Num(write_id.to_double()))])])) catch {
@@ -1326,8 +1326,8 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "limitAfter" => ctx.limit_after(self.key, a(0))
     "canUpdateCodex" => jb(ctx.can_update_codex())
     "codexBefore" => {
-      let id = jnum_of(Json::object({ "i": a(1) }), "i").unwrap_or(0.0).to_int()
-      let version = match jnum_of(Json::object({ "h": a(0) }), "h") {
+      let id = as_num(a(1)).unwrap_or(0.0).to_int()
+      let version = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
             Some((_, s)) => (s.runtime_version)()
@@ -1339,7 +1339,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       Json::null()
     }
     "updateCodex" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i").unwrap_or(0.0).to_int()
+      let id = as_num(a(0)).unwrap_or(0.0).to_int()
       let before = self.codex.get(id).unwrap_or(None)
       self.codex.remove(id)
       ignore(

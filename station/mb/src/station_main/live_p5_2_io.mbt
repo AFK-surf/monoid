@@ -37,13 +37,6 @@ pub fn keep_descriptors() -> Int {
 }
 
 ///|
-fn live_c(s : String) -> Bytes {
-  let b = @utf8.encode(s)
-  let out = Bytes::makei(b.length() + 1, i => if i < b.length() { b[i] } else { b'\x00' })
-  out
-}
-
-///|
 /// Whether process group `pgid` has a process left.
 pub fn group_alive(pgid : Int) -> Bool {
   live_group_alive_ffi(pgid) != 0
@@ -63,13 +56,13 @@ pub fn start_time_of(pid : Int) -> Double? {
 ///|
 /// Text appended to a file (made where it is not).
 pub fn append_text(path : String, text : String) -> Bool {
-  live_append_ffi(live_c(path), @utf8.encode(text)) == 0
+  live_append_ffi(cstr(path), @utf8.encode(text)) == 0
 }
 
 ///|
 /// A file written whole (its mode on Unix; 0: 0644).
 pub fn write_text_mode(path : String, text : String, mode : Int) -> Bool {
-  live_write_ffi(live_c(path), @utf8.encode(text), mode) == 0
+  live_write_ffi(cstr(path), @utf8.encode(text), mode) == 0
 }
 
 // ── the shell's files, off the program's thread ──
@@ -238,91 +231,12 @@ fn fs_code_said(code : String, call : String, p : String) -> String {
 // ── converting between the three JSONs the packages speak ──
 
 ///|
-fn jv_of(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
-}
-
-///|
-fn p52_json_of_jv(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
-fn jfield(v : Json, k : String) -> Json {
-  match v {
-    Object(m) => m.get(k).unwrap_or(Json::null())
-    _ => Json::null()
-  }
-}
-
-///|
-fn jtext(v : Json, k : String) -> String? {
-  match jfield(v, k) {
-    String(s) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn jnum_of(v : Json, k : String) -> Double? {
-  match jfield(v, k) {
-    Number(n, ..) => Some(n)
-    _ => None
-  }
-}
-
-///|
-fn jitems(v : Json) -> Array[Json] {
-  match v {
-    Array(a) => a
-    _ => []
-  }
-}
-
-///|
 /// At most `n` of `s`'s characters (what a log line shows of a long one).
 fn clip(s : String, n : Int) -> String {
   if s.length() <= n {
     s
   } else {
     s[:n].to_owned()
-  }
-}
-
-///|
-fn jobj_of(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
-
-///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jn(n : Double) -> Json {
-  Json::number(n)
-}
-
-///|
-fn ji(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jb(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jopt(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
   }
 }
 
@@ -547,7 +461,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       Err(e) => lfail(lp, e)
     },
     link: (to_what, p) => {
-      let e = live_symlink_ffi(live_c(to_what), live_c(p))
+      let e = live_symlink_ffi(cstr(to_what), cstr(p))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -589,7 +503,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       Err(e) => lfail(lp, e)
     },
     hard_link: (from, to) => {
-      let e = live_link_ffi(live_c(from), live_c(to))
+      let e = live_link_ffi(cstr(from), cstr(to))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -597,7 +511,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       }
     },
     link_path: (to_what, p) => {
-      let e = live_symlink_ffi(live_c(to_what), live_c(p))
+      let e = live_symlink_ffi(cstr(to_what), cstr(p))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -615,14 +529,8 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       l
     },
     now: () => wall_ms().to_double(),
-    log: (level, area, message, fields) => live_log(level, area, message, p52_json_of_jv(fields)),
+    log: (level, area, message, fields) => slice_log(level, area, message, of_jv(fields)),
   }
-}
-
-///|
-/// A line of the station's log (ops/log.ts): stderr, which the launcher keeps as stillfail.log.
-fn live_log(level : String, area : String, message : String, fields : Json) -> Unit {
-  slice_log(level, area, message, fields)
 }
 
 ///|

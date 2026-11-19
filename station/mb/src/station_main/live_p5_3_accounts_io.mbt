@@ -383,7 +383,7 @@ fn p53_source_json(s : @agent_runtimes.Source) -> Json {
 
 ///|
 fn p53_source_of(j : Json) -> @agent_runtimes.Source {
-  let s = (k : String) => match p53_get(j, k) {
+  let s = (k : String) => match jfield(j, k) {
     String(t) => Some(t)
     _ => None
   }
@@ -394,14 +394,14 @@ fn p53_source_of(j : Json) -> @agent_runtimes.Source {
     responses: s("responses"),
     anthropic: s("anthropic"),
     decision: s("decision"),
-    endpoint_required: p53_get(j, "endpointRequired") is True,
-    protocols: match p53_get(j, "protocols") {
+    endpoint_required: jfield(j, "endpointRequired") is True,
+    protocols: match jfield(j, "protocols") {
       Array(xs) => xs.filter_map(x => if x is String(t) { Some(t) } else { None })
       _ => []
     },
-    key_optional: p53_get(j, "keyOptional") is True,
+    key_optional: jfield(j, "keyOptional") is True,
     auth: s("auth").unwrap_or(""),
-    session_header: p53_get(j, "sessionHeader") is True,
+    session_header: jfield(j, "sessionHeader") is True,
   }
 }
 
@@ -417,7 +417,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
   let deps : @accounts_oauth.ProfileDeps = {
     commands: @accounts_oauth.commands_on(host, posix=!is_windows()),
     find: id => @agent_runtimes.find(id).map(p53_source_json),
-    endpoints: (src, endpoint, protocol) => @agent_runtimes.endpoints(p53_source_of(src), endpoint, protocol).map(e => p52_json_of_jv(e.json())),
+    endpoints: (src, endpoint, protocol) => @agent_runtimes.endpoints(p53_source_of(src), endpoint, protocol).map(e => of_jv(e.json())),
     profile_runtimes: (access, runtime) => {
       let m = match access {
         Object(o) => o.copy()
@@ -427,7 +427,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
         Some(String(_) as r) => m["runtime"] = r
         _ => ()
       }
-      @agent_runtimes.profile_runtimes(jv_of(Json::object(m)))
+      @agent_runtimes.profile_runtimes(to_jv(Json::object(m)))
     },
     take_back: async fn(home) { @agent_runtimes.take_back(host, home, mac) },
     file_credentials: async fn(env) {
@@ -473,7 +473,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
         None => Json::null()
       }
     },
-    devin_catalog: j => p52_json_of_jv(@agent_runtimes.devin_catalog(Some(jv_of(j)))),
+    devin_catalog: j => of_jv(@agent_runtimes.devin_catalog(Some(to_jv(j)))),
     agy_take_back: async fn(home) {
       let back = (bus.hub_ask.val)("agy.takeBack", Json::array([Json::string(home)])) catch { _ => Json::boolean(false) }
       back is True
@@ -491,19 +491,19 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     agy_plan_in: text => @agent_drivers.agy_plan_in(text),
     uuid: () => @drive.random_uuid(),
   }
-  let via = p53_get(request, "via")
+  let via = jfield(request, "via")
   let env = p53_station_env()
   let options : @accounts_oauth.CheckOptions = {
-    runtime: p53_text(request, "runtime"),
-    kind: p53_text(request, "kind"),
-    key: p53_text(request, "key"),
-    provider: p53_str(via, "provider"),
-    endpoint: p53_str(via, "endpoint"),
-    protocol: p53_str(via, "protocol"),
-    home: p53_text(request, "home"),
+    runtime: jtext_or_empty(request, "runtime"),
+    kind: jtext_or_empty(request, "kind"),
+    key: jtext_or_empty(request, "key"),
+    provider: jtext(via, "provider"),
+    endpoint: jtext(via, "endpoint"),
+    protocol: jtext(via, "protocol"),
+    home: jtext_or_empty(request, "home"),
     env,
-    machine: p53_get(request, "machine") is True,
-    login: p53_get(request, "login") is True,
+    machine: jfield(request, "machine") is True,
+    login: jfield(request, "login") is True,
     machine_token: Some(async fn(e) {
       let fields = @agent_runtimes.Fields::new()
       for k, v in e {
@@ -531,10 +531,10 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
 /// machine.ts `codexAccountIdentity`: the account and the user a Codex home's sign-in is of (`["<account>","<user>"]` as
 /// JSON text), null where its auth.json is not there, unreadable or names either not.
 async fn p53_codex_account_identity(host : @host.Host, home : String) -> @accounts_pool.JV {
-  guard p53_read(host, @nodepath.join(sep(), [home, "auth.json"])) is Some(text) else { return Null }
+  guard shell_read_text(host, @nodepath.join(sep(), [home, "auth.json"])) is Some(text) else { return Null }
   let id = match (try { Ok(@json.parse(text)) } catch { e => Err(e) }) {
     Ok(auth) =>
-      match p53_get(p53_get(auth, "tokens"), "account_id") {
+      match jfield(jfield(auth, "tokens"), "account_id") {
         String(t) if t.trim().to_string() != "" => Some(t)
         _ => None
       }
@@ -542,7 +542,7 @@ async fn p53_codex_account_identity(host : @host.Host, home : String) -> @accoun
   }
   let user = match @accounts_oauth.codex_claims_in(text) {
     Some(c) =>
-      match p53_get(c, "sub") {
+      match jfield(c, "sub") {
         String(t) if t.trim().to_string() != "" => Some(t)
         _ => None
       }
@@ -736,27 +736,27 @@ fn p53_login_manager(
         start: async fn() {
           let d = p53_json(@accounts_pool.start_kimi_device(pool_io, kimi_base, device_id))
           {
-            device_code: p53_text(d, "deviceCode"),
-            user_code: p53_text(d, "userCode"),
-            url: p53_text(d, "url"),
-            expires_in_ms: p53_num(d, "expiresInMs").unwrap_or(600000.0),
-            interval_ms: p53_num(d, "intervalMs").unwrap_or(5000.0),
+            device_code: jtext_or_empty(d, "deviceCode"),
+            user_code: jtext_or_empty(d, "userCode"),
+            url: jtext_or_empty(d, "url"),
+            expires_in_ms: jnum_of(d, "expiresInMs").unwrap_or(600000.0),
+            interval_ms: jnum_of(d, "intervalMs").unwrap_or(5000.0),
           }
         },
         ask: async fn(code) {
           let a = p53_json(@accounts_pool.kimi_device_token(pool_io, kimi_base, code, device_id))
-          match p53_get(a, "token") {
+          match jfield(a, "token") {
             Object(_) as t =>
               Signed({
-                access: p53_text(t, "access"),
-                refresh: p53_text(t, "refresh"),
-                expires_in_ms: p53_num(t, "expiresInMs").unwrap_or(0.0),
-                org: p53_str(t, "org"),
+                access: jtext_or_empty(t, "access"),
+                refresh: jtext_or_empty(t, "refresh"),
+                expires_in_ms: jnum_of(t, "expiresInMs").unwrap_or(0.0),
+                org: jtext(t, "org"),
               })
             _ =>
-              match p53_str(a, "error") {
+              match jtext(a, "error") {
                 Some(e) => Refused(e)
-                None => Pending(p53_get(a, "slowDown") is True)
+                None => Pending(jfield(a, "slowDown") is True)
               }
           }
         },
@@ -866,7 +866,7 @@ fn p53_machine_logins(
     commands: @accounts_oauth.commands_on(host, posix=!is_windows()),
     claude_credentials: async fn(env) {
       match @agent_runtimes.read_claude_credentials(host, p53_fields(env), mac) {
-        Some(t) => Some(p52_json_of_jv(t.json()))
+        Some(t) => Some(of_jv(t.json()))
         None => None
       }
     },
@@ -899,17 +899,17 @@ async fn P53Accounts::sign_in_answer(self : P53Accounts, name : String, args : A
     "logins.start" => {
       let p = at(0)
       let profile : @accounts_oauth.LoginProfile = {
-        id: p53_text(p, "id"),
-        runtime: p53_text(p, "runtime"),
-        home: p53_text(p, "home"),
-        email: p53_str(p, "email"),
-        enterprise: p53_get(p, "enterprise") is True,
+        id: jtext_or_empty(p, "id"),
+        runtime: jtext_or_empty(p, "runtime"),
+        home: jtext_or_empty(p, "home"),
+        email: jtext(p, "email"),
+        enterprise: jfield(p, "enterprise") is True,
       }
       Some(logins.start(profile, lang(1)).to_json())
     }
-    "logins.startConsole" => Some(logins.start_console(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
-    "logins.startKimi" => Some(logins.start_kimi(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
-    "logins.startCursor" => Some(logins.start_cursor(p53_text(at(0), "id"), p53_text(at(0), "home"), lang(1)).to_json())
+    "logins.startConsole" => Some(logins.start_console(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
+    "logins.startKimi" => Some(logins.start_kimi(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
+    "logins.startCursor" => Some(logins.start_cursor(jtext_or_empty(at(0), "id"), jtext_or_empty(at(0), "home"), lang(1)).to_json())
     "logins.get" => Some(p53_job(logins.get(s(0))))
     "logins.cancel" => {
       logins.cancel(s(0))

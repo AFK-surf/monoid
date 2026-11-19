@@ -453,12 +453,12 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
   let world : Ref[@updates.World?] = Ref(None)
   let config_raw = () => read_json(config_path(data)).unwrap_or(Json::object({}))
   let node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
-    let core = (i : Int) => if i < a.length() { to_core(a[i]) } else { Json::null() }
+    let core = (i : Int) => if i < a.length() { of_jv(a[i]) } else { Json::null() }
     match name {
       "cloud.fetch" =>
         match world.val {
           Some(w) => w.call("fetch", a)
-          None => of_core(Json::null())
+          None => to_jv(Json::null())
         }
       "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "wall.sleep" | "listener.changed" =>
         if name == "wall.sleep" {
@@ -466,17 +466,17 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
             Number(ms, ..) => @effect.sleep(ms.to_int())
             _ => ()
           }
-          of_core(Json::null())
+          to_jv(Json::null())
         } else {
-          of_core(Json::null())
+          to_jv(Json::null())
         }
-      "ConfigFile.raw" => of_core(config_raw())
+      "ConfigFile.raw" => to_jv(config_raw())
       "ConfigFile.update" | "config.updateSoon" => {
         let next = core(if name == "ConfigFile.update" { 1 } else { 0 })
         let text = next.stringify(indent=2) + "\n"
         ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), config_path(data)), true)))
         @drive.write_private(config_path(data), text)
-        of_core(Json::null())
+        to_jv(Json::null())
       }
       "process.kill" =>
         match core(0) {
@@ -487,18 +487,18 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
               _ => "SIGTERM"
             }
             if kill(p.to_int(), signal) {
-              of_core(Json::boolean(true))
+              to_jv(Json::boolean(true))
             } else {
               raise coded("ESRCH", "kill ESRCH")
             }
           }
-          _ => of_core(Json::boolean(false))
+          _ => to_jv(Json::boolean(false))
         }
-      "os.tmpdir" => of_core(Json::string(tmpdir()))
+      "os.tmpdir" => to_jv(Json::string(tmpdir()))
       _ =>
         // (the machine's own: updates_platform.mbt)
-        match updates_platform(host, data, name, a.map(to_core)) {
-          Some(v) => of_core(v)
+        match updates_platform(host, data, name, a.map(of_jv)) {
+          Some(v) => to_jv(v)
           None => raise coded("ENOSYS", "the station's program does not do \{name}")
         }
     }
@@ -506,7 +506,7 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
   let tell = (name : String, a : Array[@jsjson.JValue]) => match name {
     "console.log" => if a.length() > 0 { out_write(js_text(a[0]) + "\n") }
     "console.error" => if a.length() > 0 { err_write(js_text(a[0]) + "\n") }
-    _ => ignore(updates_platform_told(name, a.map(to_core)))
+    _ => ignore(updates_platform_told(name, a.map(of_jv)))
   }
   let clock : @updates.Clock = {
     now: () => wall_ms().to_double(),
@@ -518,26 +518,14 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
 }
 
 ///|
-/// A JavaScript value (jsjson's) as JSON.
-fn to_core(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
-/// JSON as a JavaScript value (jsjson's).
-fn of_core(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
-}
-
-///|
 /// An error as node's with its `code`.
 fn coded(code : String, message : String) -> Error {
-  @updates.thrown("Error", message, more=[("code", of_core(Json::string(code)))])
+  @updates.thrown("Error", message, more=[("code", to_jv(Json::string(code)))])
 }
 
 ///|
 fn js_text(v : @jsjson.JValue) -> String {
-  match to_core(v) {
+  match of_jv(v) {
     String(s) => s
     other => other.stringify()
   }

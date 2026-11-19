@@ -329,9 +329,9 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     }
     "fn.threadHistory" => {
       let seen : Array[@jsjson.JValue]? = if a(5) is True { Some([]) } else { None }
-      let text = @session_chats.thread_history(self.chats_world(), s(0), jv_of(a(1)), s(2), s(3), jv_of(a(4)), seen)
+      let text = @session_chats.thread_history(self.chats_world(), s(0), to_jv(a(1)), s(2), s(3), to_jv(a(4)), seen)
       match seen {
-        Some(got) => { "text": Json::string(text), "seen": Json::array(got.map(p52_json_of_jv)) }
+        Some(got) => { "text": Json::string(text), "seen": Json::array(got.map(of_jv)) }
         // (session_storage reads `text` of it either way: a bare string read as "", every chat_read empty)
         None => { "text": Json::string(text) }
       }
@@ -423,7 +423,7 @@ async fn P52::clone_run(self : P52, id : String, args : Array[String], env : Jso
 /// read/views.ts `titleOf`: what a thread is called, by the one rule the core names it by too.
 fn P52::title_of(self : P52, thread : Json, first : String?, channel : String?) -> String {
   @adb_devices.chat_title(
-    jv_of(thread),
+    to_jv(thread),
     first,
     channel,
     self.words.tr("station.chat.untitled"),
@@ -465,7 +465,7 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
     _ => []
   }
   let answer = (p5_oauth_io(self.host).fetch)({
-    url: jtext(Json::object({ "u": args.get(0).unwrap_or(Json::null()) }), "u").unwrap_or(""),
+    url: opt_str(args.get(0)).unwrap_or(""),
     method_: jtext(init, "method").unwrap_or("GET"),
     headers,
     body: jtext(init, "body"),
@@ -517,7 +517,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
   let bus = self.bus
   let part = @mcp_tools.feedback_live(self.tool_ctx(), env_get("HOME").unwrap_or(homedir())) catch {
     e => {
-      live_log("warn", "feedback", "the bug reports' part was not made", { "error": jstr(said_of(e)) })
+      slice_log("warn", "feedback", "the bug reports' part was not made", { "error": jstr(said_of(e)) })
       None
     }
   }

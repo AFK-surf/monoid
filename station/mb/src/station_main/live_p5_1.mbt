@@ -50,19 +50,6 @@ priv struct P51 {
 let p51_live : Ref[P51?] = Ref(None)
 
 ///|
-/// A slice's log line (P5-2 to P5-5, their parts' `log`), as P5-1's own: its time and level as log.ts writes them,
-/// and heard (the station's log sent, an error reported). Written bare, those lines had no time and none reached
-/// either (0.1.9984).
-fn slice_log(level : String, at : String, message : String, fields : Json) -> Unit {
-  let f = match fields {
-    Object(m) if m.length() > 0 => Some(fields)
-    Object(_) | Null => None
-    other => Some({ "said": other })
-  }
-  p51_log(level.to_upper(), at, message, fields?=f)
-}
-
-///|
 /// A line a part wrote through `@host.note` as a log line of the station's own: "<level> <part>: <words>",
 /// "[<level>] <part>: <words>", "[<part>] <words>" (an info) or "failed: <words>" (a runtime's warning); any other
 /// line an info of the station's.

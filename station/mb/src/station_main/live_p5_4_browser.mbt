@@ -127,7 +127,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
   let (opened, _) = host.shell("ws.open", { "url": Json::string(ws), "headers": Json::array([]) }) catch {
     e => return Some(plain(503, "the station's browser does not answer: \{p54_message(e)}"))
   }
-  let up_id = p54_get(Some(opened), "id").unwrap_or(Json::null())
+  let up_id = opt_field(Some(opened), "id").unwrap_or(Json::null())
   let head = "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: \{p54_ws_accept(key)}\r\n\r\n"
   if !write_on(host, conn, @utf8.encode(head)) {
     return None
@@ -198,7 +198,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
     host.rt.fork_daemon("browser door in", on_error=e => @host.note("browser door in failed: \{e}"), async fn() {
       while up_open.val {
         let (frame, _) = host.shell("ws.next", { "id": up_id }) catch { _ => break }
-        match p54_text(Some(frame), "text") {
+        match jtext(frame, "text") {
           Some(t) => p.from_chrome(@utf8.encode(t), false)
           None => break
         }
@@ -416,7 +416,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
   }
   let farview = @browser.FarviewTabs::new({
     dir: path([dir, "farview"]),
-    config: () => @browser.farview_config(Some(p54_jv((bus.config_raw.val)())), release_target, @browser.farview_releases(), native_cache),
+    config: () => @browser.farview_config(Some(to_jv((bus.config_raw.val)())), release_target, @browser.farview_releases(), native_cache),
     screens: Some(station_screens),
     fetch: async fn(url) {
       let r = host.fetch(url) catch { _ => return None }
@@ -445,21 +445,21 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     session => {
       let mut title = ""
       let home = bus.store.call("sessionHomeThread", [Json::string(session)]) catch { _ => Json::null() }
-      match p54_get(Some(home), "thread") {
-        Some(t) => title = p54_text(Some(t), "title").unwrap_or("").trim().to_owned()
+      match opt_field(Some(home), "thread") {
+        Some(t) => title = jtext(t, "title").unwrap_or("").trim().to_owned()
         None => ()
       }
       if title == "" {
         let recent = bus.store.call("recentSessionThreads", [Json::string(session), Json::number(1.0)]) catch { _ => Json::null() }
-        match p54_get(Some(recent), "threads") {
+        match opt_field(Some(recent), "threads") {
           Some(Array(ts)) if ts.length() > 0 =>
-            title = p54_text(p54_get(Some(ts[0]), "thread"), "title").unwrap_or("").trim().to_owned()
+            title = opt_text(opt_field(Some(ts[0]), "thread"), "title").unwrap_or("").trim().to_owned()
           _ => ()
         }
       }
       if title == "" {
         title = match p54_session_row(bus, session) {
-          Some(row) => p54_text(Some(row), "title").unwrap_or("").trim().to_owned()
+          Some(row) => jtext(row, "title").unwrap_or("").trim().to_owned()
           None => ""
         }
       }
@@ -484,8 +484,8 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     {
       door: _ => bus.parts.door({ prefix: @browser.browser_prefix, request: async fn(r, conn) { p54_browser_upgrade(host, browsers, r, conn) } }),
       streams: answer => bus.parts.streams("farview", async fn(asked) {
-        let read_only = p54_text(p54_get(Some(asked), "viewer"), "role") == Some("viewer")
-        let said = answer(read_only, p54_jv(p54_get(Some(asked), "head").unwrap_or(Json::null())))
+        let read_only = opt_text(opt_field(Some(asked), "viewer"), "role") == Some("viewer")
+        let said = answer(read_only, to_jv(opt_field(Some(asked), "head").unwrap_or(Json::null())))
         let stream = p54_member_stream(host, p54_stream_handle(asked))
         match said {
           Refuse(status, error) => {
@@ -503,7 +503,7 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
               }
             }
             (stream.write)(p54_head_line(200, "application/x-farview"))
-            let carry = p54_bytes_of(p54_get(Some(asked), "carry"))
+            let carry = p54_bytes_of(opt_field(Some(asked), "carry"))
             if carry.length() > 0 {
               c.write(carry)
             }
@@ -539,14 +539,14 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
       session_ended: f => bus.parts.session_ended(f),
       tools: tools => bus.parts.tools(
         tools.map(t => {
-          let declared = p54_of_jv(t.declaration)
+          let declared = of_jv(t.declaration)
           ({
-            name: p54_text(Some(declared), "name").unwrap_or("browser"),
+            name: jtext(declared, "name").unwrap_or("browser"),
             declared,
             call: async fn(args, context) {
-              match (try { Ok((t.run)(p54_session(context), p54_jv(args))) } catch { e => Err(e) }) {
-                Ok(text) => p54_tool_answer(text)
-                Err(e) => p54_tool_answer(@browser.message_of(e), error=true)
+              match (try { Ok((t.run)(p54_session(context), to_jv(args))) } catch { e => Err(e) }) {
+                Ok(text) => tool_answer(text)
+                Err(e) => tool_answer(@browser.message_of(e), error=true)
               }
             },
           } : PartTool)
@@ -578,53 +578,53 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
 ///|
 /// What the vault and the routes ask of the browser by name (`browser.<call>`).
 async fn p54_browser_ask(b : P54Browser, op : String, a : Json) -> Json? {
-  let s = (i : Int) => p54_arg_text(a, i)
-  let d = p54_arg(a, 1)
+  let s = (i : Int) => call_arg_text(a, i)
+  let d = call_arg(a, 1)
   let answer : Json = match op {
-    "browser.cookies" => Json::string(b.browsers.cookies(s(0), p54_strs(p54_arg(a, 1)), p54_bool(p54_arg(a, 2))))
+    "browser.cookies" => Json::string(b.browsers.cookies(s(0), opt_strs(call_arg(a, 1)), opt_true(call_arg(a, 2))))
     "browser.signIn" => {
       b.browsers.sign_in(
         s(0),
-        p54_text(d, "request").unwrap_or(""),
-        p54_text(d, "workspace"),
-        p54_strs(p54_get(d, "sites")),
-        p54_text(d, "cookies").unwrap_or(""),
-        p54_num(p54_get(d, "until")).unwrap_or(0.0),
+        opt_text(d, "request").unwrap_or(""),
+        opt_text(d, "workspace"),
+        opt_strs(opt_field(d, "sites")),
+        opt_text(d, "cookies").unwrap_or(""),
+        opt_num(opt_field(d, "until")).unwrap_or(0.0),
       )
       Json::null()
     }
     "browser.passkeysIn" => {
-      b.browsers.passkeys_in(s(0), p54_strs(p54_get(d, "sites")), p54_text(d, "cookies").unwrap_or(""))
+      b.browsers.passkeys_in(s(0), opt_strs(opt_field(d, "sites")), opt_text(d, "cookies").unwrap_or(""))
       Json::null()
     }
     "browser.extendSignIn" => {
-      b.browsers.extend_sign_in(s(0), s(1), p54_num(p54_arg(a, 2)).unwrap_or(0.0))
+      b.browsers.extend_sign_in(s(0), s(1), opt_num(call_arg(a, 2)).unwrap_or(0.0))
       Json::null()
     }
     "browser.passkeysAgain" => {
       b.browsers.passkeys_again()
       Json::null()
     }
-    "browser.tabs" => Json::array(b.browsers.tabs_j(s(0)).map(p54_of_jv))
-    "browser.status" => p54_of_jv(b.browsers.status(s(0)).to_j())
+    "browser.tabs" => Json::array(b.browsers.tabs_j(s(0)).map(of_jv))
+    "browser.status" => of_jv(b.browsers.status(s(0)).to_j())
     "browser.look" => {
       let form = b.browsers.form(s(0), s(1))
       let got = (form.look)()
       (form.close)()
-      p54_of_jv(got.to_j())
+      of_jv(got.to_j())
     }
     "browser.drive" => {
       let form = b.browsers.form(s(0), s(1))
-      let values = p54_arg(a, 3)
+      let values = call_arg(a, 3)
       let got = @browser.drive(
         form,
         s(2),
-        { username: p54_text(values, "username"), password: p54_text(values, "password"), code: p54_text(values, "code") },
-        p54_strs(p54_arg(a, 4)),
+        { username: opt_text(values, "username"), password: opt_text(values, "password"), code: opt_text(values, "code") },
+        opt_strs(call_arg(a, 4)),
         async fn(ms) { @effect.sleep(ms.to_int()) },
       )
       (form.close)()
-      p54_of_jv(got.to_j())
+      of_jv(got.to_j())
     }
     "browser.closeOf" => {
       b.browsers.close_of(s(0))

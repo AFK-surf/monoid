@@ -30,7 +30,7 @@ fn P53Share::new(bus : LiveBus, accounts : P53Accounts) -> P53Share {
     bus,
     accounts,
     files: { host: bus.host, sep: sep() },
-    log: { say: (level, part, message, fields) => p53_log(level, part, message, fields~) },
+    log: { say: (level, part, message, fields) => slice_log(level, part, message, fields) },
     clock: { ..@share_sync.Clock::live(bus.host.rt), now: () => p5_epoch_ms().to_double() },
     sharing: None,
     memory: None,
@@ -43,9 +43,9 @@ fn P53Share::new(bus : LiveBus, accounts : P53Accounts) -> P53Share {
 /// A membership as cloud.json says it (cloud/state.ts `homeMembership`, `joinedMembership`).
 fn p53_membership(m : Json) -> @share_sync.Membership {
   {
-    workspace: p53_text(m, "workspace"),
-    workspace_name: p53_text(m, "workspace_name"),
-    peers: match p53_get(m, "peers") {
+    workspace: jtext_or_empty(m, "workspace"),
+    workspace_name: jtext_or_empty(m, "workspace_name"),
+    peers: match jfield(m, "peers") {
       Array(xs) => xs
       _ => []
     },
@@ -58,13 +58,13 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
   let bus = self.bus
   let state = () => (bus.cloud_state.val)()
   let removed = () => match state() {
-    Some(s) => p53_num(s, "removed_at") is Some(_)
+    Some(s) => jnum_of(s, "removed_at") is Some(_)
     None => false
   }
   let memberships = () => match state() {
-    Some(s) if p53_text(s, "workspace") != "" && !removed() => {
+    Some(s) if jtext_or_empty(s, "workspace") != "" && !removed() => {
       let out = [p53_membership(s)]
-      match p53_get(s, "joined") {
+      match jfield(s, "joined") {
         Array(js) => for j in js { out.push(p53_membership(j)) }
         _ => ()
       }
@@ -74,9 +74,9 @@ fn P53Share::cloud(self : P53Share) -> @share_sync.Cloud {
   }
   {
     has_state: () => state() is Some(_),
-    station: () => match state() { Some(s) => p53_str(s, "station"); None => None },
-    name: () => match state() { Some(s) => p53_str(s, "name"); None => None },
-    rig: () => match state() { Some(s) => !(p53_get(s, "rig") is Null); None => false },
+    station: () => match state() { Some(s) => jtext(s, "station"); None => None },
+    name: () => match state() { Some(s) => jtext(s, "name"); None => None },
+    rig: () => match state() { Some(s) => !(jfield(s, "rig") is Null); None => false },
     peers_current: () => state() is Some(_) && !removed() && (bus.cloud_reached.val)(),
     memberships,
     membership: ws => memberships().iter().find_first(m => m.workspace == ws),
@@ -109,7 +109,7 @@ fn P53Share::config(self : P53Share) -> @share_sync.Config {
 ///|
 /// The agents' home (sessions/agents.ts `settings().agentHome`): config.json's, else `<data>/agent`.
 fn P53Share::agent_home(self : P53Share) -> String {
-  match p53_str((self.bus.config_raw.val)(), "agentHome") {
+  match jtext((self.bus.config_raw.val)(), "agentHome") {
     Some(h) if h != "" => h
     _ => @nodepath.join(sep(), [self.bus.data, "agent"])
   }
@@ -143,8 +143,8 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
               }
               continue
             }
-            match (try { Ok(host.shell("fs.meta", { "path": p53_s(full) })) } catch { e => Err(e) }) {
-              Ok((m, _)) => now[full] = "\{p53_num(m, "size").unwrap_or(0.0)}:\{p53_num(m, "mtimeMs").unwrap_or(0.0)}"
+            match (try { Ok(host.shell("fs.meta", { "path": jstr(full) })) } catch { e => Err(e) }) {
+              Ok((m, _)) => now[full] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
               Err(_) => ()
             }
           }
@@ -185,7 +185,7 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
 ///|
 /// A request to station `peer` of workspace `ws` (None: the first both are in), as the peers' bus carries it.
 async fn P53Share::ask(self : P53Share, peer : String, ws : String?, request : Json) -> Json {
-  let meth = p53_text(request, "method")
+  let meth = jtext_or_empty(request, "method")
   let (answer, _) = self.bus.call_peer(peer, ws, meth, request)
   answer
 }
@@ -211,12 +211,12 @@ fn P53Share::attach(self : P53Share) -> Unit {
       claude_token: async fn(profile, rejected) {
         let accounts = self.accounts.made()
         let got = p53_json(accounts.claude_token(@jsjson.JV::of_json(profile), rejected, true))
-        (p53_text(got, "token"), p53_num(got, "expiresAt").unwrap_or(0.0))
+        (jtext_or_empty(got, "token"), jnum_of(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {
-        (bus.hub_ask.val)("codex.renewRunning", p53_obj([("profile", p53_s(profile))])) is True
+        (bus.hub_ask.val)("codex.renewRunning", jobj_of([("profile", jstr(profile))])) is True
       },
-      agy_renew: Some(async fn(profile) { ignore((bus.hub_ask.val)("agy.renew", p53_obj([("profile", p53_s(profile))]))) }),
+      agy_renew: Some(async fn(profile) { ignore((bus.hub_ask.val)("agy.renew", jobj_of([("profile", jstr(profile))]))) }),
       status: async fn(id) {
         let accounts = self.accounts.made()
         p53_json(accounts.health(id).to_jv())
@@ -235,7 +235,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
           None => ()
         }
       }),
-      profile_gone: Some(async fn(id) { ignore((bus.hub_ask.val)("profileGone", p53_obj([("profile", p53_s(id))]))) }),
+      profile_gone: Some(async fn(id) { ignore((bus.hub_ask.val)("profileGone", jobj_of([("profile", jstr(id))]))) }),
       itself: Some(station => station == p53_station_id(bus)),
       codex_token_url: @share_sync.codex_token_url,
       fetch: async fn(url, body) {
@@ -295,7 +295,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       agent_home: () => self.agent_home(),
       workspace_agent_home: async fn(agent_home, ws, home) {
         let dir = @share_sync.workspace_agent_home_path(sep(), agent_home, ws, home)
-        ignore(bus.host.shell("fs.mkdir", { "path": p53_s(dir), "recursive": p53_b(true) }))
+        ignore(bus.host.shell("fs.mkdir", { "path": jstr(dir), "recursive": jb(true) }))
         dir
       },
       still: false,
@@ -322,7 +322,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       data: bus.data,
       store: sql.store(),
       cloud,
-      chat_ws: Some(session => match p53_session_row(bus, session) { Null => None; row => p53_either(p53_str(row, "ws"), p53_home(bus)) }),
+      chat_ws: Some(session => match p53_session_row(bus, session) { Null => None; row => either(jtext(row, "ws"), p53_home(bus)) }),
       ask: async fn(station, request) { self.ask(station, None, request) },
       link: session => match p53_home(bus) {
         Some(ws) => match p53_origin(bus) {
@@ -331,9 +331,9 @@ fn P53Share::attach(self : P53Share) -> Unit {
         }
         None => None
       },
-      title: session => p53_text(p53_session_row(bus, session), "title"),
-      touches: entry => match p53_get(entry, "session") { String(s) => [s]; _ => [] },
-      inbox: async fn(station, request) { (bus.hub_ask.val)("inbox", p53_obj([("station", p53_s(station)), ("request", request)])) },
+      title: session => jtext_or_empty(p53_session_row(bus, session), "title"),
+      touches: entry => match jfield(entry, "session") { String(s) => [s]; _ => [] },
+      inbox: async fn(station, request) { (bus.hub_ask.val)("inbox", jobj_of([("station", jstr(station)), ("request", request)])) },
       prepare_index: Some(() => index.request()),
       clock: self.clock,
       log: self.log,
@@ -352,15 +352,15 @@ fn P53Share::attach(self : P53Share) -> Unit {
     rt.fork_daemon("shares", on_error=e => @host.note("shares failed: \{e}"), async fn() {
       (bus.previous_gone)()
       sharing.load() catch {
-        e => p53_log("warn", "share", "the shared profiles were not loaded", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "share", "the shared profiles were not loaded", jobj_of([("error", jstr(p53_words(e)))]))
       }
       sharing.start()
       memory.start()
       shares.load() catch {
-        e => p53_log("warn", "xshare", "the chats shared were not loaded", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "xshare", "the chats shared were not loaded", jobj_of([("error", jstr(p53_words(e)))]))
       }
       shares.start() catch {
-        e => p53_log("warn", "xshare", "the chats shared were not set going", fields=p53_obj([("error", p53_s(p53_words(e)))]))
+        e => slice_log("warn", "xshare", "the chats shared were not set going", jobj_of([("error", jstr(p53_words(e)))]))
       }
     }),
   )
@@ -370,30 +370,30 @@ fn P53Share::attach(self : P53Share) -> Unit {
       meth: "POST",
       path: "/profiles/:id/share",
       answer: async fn(r) {
-        let body = p53_get(r, "body")
-        sharing.share_profile(p53_param(r, "id", 2), p53_true(body, "shared"), p53_get(r, "viewer"))
-        p53_obj([("ok", p53_b(true))])
+        let body = jfield(r, "body")
+        sharing.share_profile(p53_param(r, "id", 2), jtrue(body, "shared"), jfield(r, "viewer"))
+        jobj_of([("ok", jb(true))])
       },
     },
     {
       meth: "POST",
       path: "/skills/:name/share",
       answer: async fn(r) {
-        sharing.share_skill(p53_param(r, "name", 2), p53_true(p53_get(r, "body"), "shared"), p53_get(r, "viewer"))
-        p53_obj([("ok", p53_b(true))])
+        sharing.share_skill(p53_param(r, "name", 2), jtrue(jfield(r, "body"), "shared"), jfield(r, "viewer"))
+        jobj_of([("ok", jb(true))])
       },
     },
     {
       meth: "GET",
       path: "/memory/kept",
-      answer: async fn(r) { self.memory_kept(p53_either(p53_str(p53_get(r, "query"), "workspace"), p53_home(bus)).unwrap_or("")) },
+      answer: async fn(r) { self.memory_kept(either(jtext(jfield(r, "query"), "workspace"), p53_home(bus)).unwrap_or("")) },
     },
   ])
 }
 
 ///|
 fn P53Share::state(self : P53Share) -> Json {
-  p53_obj([
+  jobj_of([
     ("sharing", match self.sharing { Some(s) => s.state_json(); None => Json::null() }),
     ("xshare", self.xshare_state()),
   ])
@@ -467,7 +467,7 @@ async fn p53_readdir_types(host : @host.Host, dir : String) -> Array[(String, St
     Ok((Array(entries), _)) =>
       entries.filter_map(e => match e {
         Array([String(n), String(k), ..]) => Some((n, k))
-        Object(_) => Some((p53_text(e, "name"), p53_text(e, "kind")))
+        Object(_) => Some((jtext_or_empty(e, "name"), jtext_or_empty(e, "kind")))
         String(n) => Some((n, ""))
         _ => None
       })

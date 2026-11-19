@@ -12,8 +12,8 @@
 /// A member's stream as a part is given it (`{stream, kind}`, P5-1's `shell_handle`): the shell's own stream (`istream`,
 /// its id as it is), or one of the shell's loopback connections carrying it (`tcp`, `{"$tcp": id}`).
 fn p54_stream_handle(asked : Json) -> Json {
-  let id = p54_get(Some(asked), "stream").unwrap_or(Json::null())
-  match p54_text(Some(asked), "kind") {
+  let id = opt_field(Some(asked), "stream").unwrap_or(Json::null())
+  match jtext(asked, "kind") {
     Some("tcp") => { "$tcp": id }
     _ => id
   }
@@ -69,7 +69,7 @@ fn p54_member_stream(host : @host.Host, handle : Json) -> @terminals_logins.Stre
   {
     read: async fn() {
       let (said, bytes) = p54_stream_call(host, handle, "read") catch { _ => return None }
-      match (p54_get(Some(said), "end"), bytes) {
+      match (opt_field(Some(said), "end"), bytes) {
         (Some(True), _) => None
         (_, Some(b)) => Some(b)
         _ => None
@@ -87,11 +87,11 @@ fn p54_member_stream(host : @host.Host, handle : Json) -> @terminals_logins.Stre
 ///|
 fn p54_viewer_of(v : Json?) -> @terminals_logins.Viewer {
   {
-    name: p54_text(v, "name").unwrap_or(""),
-    email: p54_text(v, "email").unwrap_or(""),
-    role: p54_text(v, "role").unwrap_or("member"),
-    workspace: p54_text(v, "workspace").unwrap_or(""),
-    device: p54_text(v, "device").unwrap_or(""),
+    name: opt_text(v, "name").unwrap_or(""),
+    email: opt_text(v, "email").unwrap_or(""),
+    role: opt_text(v, "role").unwrap_or("member"),
+    workspace: opt_text(v, "workspace").unwrap_or(""),
+    device: opt_text(v, "device").unwrap_or(""),
   }
 }
 
@@ -99,10 +99,10 @@ fn p54_viewer_of(v : Json?) -> @terminals_logins.Viewer {
 /// A runner's info file, as `liveRunners` reads it.
 fn p54_runner_info(v : Json) -> @terminals_logins.RunnerInfo {
   {
-    id: p54_text(Some(v), "id").unwrap_or(""),
-    pty: p54_get(Some(v), "pty").map(p54_jv),
-    cols: p54_get(Some(v), "cols").map(p54_jv),
-    rows: p54_get(Some(v), "rows").map(p54_jv),
+    id: jtext(v, "id").unwrap_or(""),
+    pty: opt_field(Some(v), "pty").map(to_jv),
+    cols: opt_field(Some(v), "cols").map(to_jv),
+    rows: opt_field(Some(v), "rows").map(to_jv),
   }
 }
 
@@ -118,7 +118,7 @@ fn p54_live_runners(data : String) -> Array[(Json, @terminals_logins.RunnerInfo)
     }
     match read_json(path([dir, name])) {
       Some(Object(_) as v) =>
-        match p54_num(p54_get(Some(v), "runner")) {
+        match opt_num(opt_field(Some(v), "runner")) {
           Some(pid) if pid_alive(pid.to_int()) => out.push((v, p54_runner_info(v)))
           _ => ()
         }
@@ -249,7 +249,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
     offered,
     tell: (workspace, value) => (bus.events_tell.val)(
       "terminals",
-      p54_of_jv(value),
+      of_jv(value),
       "terminals\u{0}\{workspace}",
       { "workspace": Json::string(workspace) },
     ),
@@ -269,12 +269,12 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       }
       let env = @terminals_logins.shell_env(p54_os(), station_env).iter().map(kv => (kv.0, kv.1)).collect()
       let info = p54_start_runner(bus, id, program, args, cwd, Some((cols, rows)), env~)
-      sockets[id] = p54_text(Some(info), "socket").unwrap_or("")
+      sockets[id] = jtext(info, "socket").unwrap_or("")
       p54_runner_info(info)
     },
     live_runners: async fn() {
       p54_live_runners(bus.data).map(r => {
-        sockets[r.1.id] = p54_text(Some(r.0), "socket").unwrap_or("")
+        sockets[r.1.id] = jtext(r.0, "socket").unwrap_or("")
         r.1
       })
     },
@@ -293,15 +293,15 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
   })
   bus.parts.streams("terminal", async fn(asked) {
     let stream = p54_member_stream(host, p54_stream_handle(asked))
-    let carry = p54_bytes_of(p54_get(Some(asked), "carry"))
-    part.terminals.answer(stream, carry, p54_jv(p54_get(Some(asked), "head").unwrap_or(Json::null())), p54_viewer_of(p54_get(Some(asked), "viewer")))
+    let carry = p54_bytes_of(opt_field(Some(asked), "carry"))
+    part.terminals.answer(stream, carry, to_jv(opt_field(Some(asked), "head").unwrap_or(Json::null())), p54_viewer_of(opt_field(Some(asked), "viewer")))
   })
   bus.parts.routes([
     {
       meth: "GET",
       path: "^/terminals$",
       answer: async fn(r) {
-        let (status, body) = part.listed(p54_text(p54_get(Some(r), "viewer"), "workspace").unwrap_or(""))
+        let (status, body) = part.listed(opt_text(opt_field(Some(r), "viewer"), "workspace").unwrap_or(""))
         { "status": Json::number(status.to_double()), "body": Json::string(body) }
       },
     },
@@ -309,15 +309,15 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       meth: "POST",
       path: "^/terminals/([^/]+)/end$",
       answer: async fn(r) {
-        let raw = match p54_get(Some(r), "params") {
+        let raw = match opt_field(Some(r), "params") {
           Some(Array([String(id), ..])) => id
           _ => {
-            let p = p54_text(Some(r), "path").unwrap_or("")
+            let p = jtext(r, "path").unwrap_or("")
             let parts = p.split("/").map(x => x.to_owned()).to_array()
             if parts.length() >= 3 { parts[2] } else { "" }
           }
         }
-        let (status, body) = part.end_asked(raw, p54_viewer_of(p54_get(Some(r), "viewer")))
+        let (status, body) = part.end_asked(raw, p54_viewer_of(opt_field(Some(r), "viewer")))
         { "status": Json::number(status.to_double()), "body": Json::string(body) }
       },
     },
@@ -330,7 +330,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
 fn p54_terminals_ask(t : P54Terms, op : String, a : Json) -> Json? {
   match op {
     "terminals.offered" => Some(Json::boolean((t.offered)()))
-    "terminals.list" => Some(p54_of_jv(t.terminals.terminals.list(p54_arg_text(a, 0))))
+    "terminals.list" => Some(of_jv(t.terminals.terminals.list(call_arg_text(a, 0))))
     _ => None
   }
 }
@@ -669,17 +669,17 @@ async fn p54_logins_start(
   let part = @terminals_logins.LoginsPart::new(logins, {
     session_ws: k => p54_session_ws(bus, k),
     session_row: k => match p54_session_row(bus, k) {
-      Some(row) => Some((p54_text(Some(row), "createdBy"), p54_session_ws(bus, k)))
+      Some(row) => Some((jtext(row, "createdBy"), p54_session_ws(bus, k)))
       None => None
     },
     close_login_cards: id => {
       let got = threads.close_login_cards(Json::string(id))
-      p54_told_threads(bus, threads)
-      p54_strs(Some(got))
+      told_threads(bus, threads)
+      opt_strs(Some(got))
     },
     machine_logins: (data, limited, of) => {
-      (bus.events_tell.val)("machine-logins", p54_of_jv(data), "machine-logins\u{0}\{of}", { "readOnly": Json::boolean(false) })
-      (bus.events_tell.val)("machine-logins", p54_of_jv(limited), "machine-logins-limited\u{0}\{of}", { "readOnly": Json::boolean(true) })
+      (bus.events_tell.val)("machine-logins", of_jv(data), "machine-logins\u{0}\{of}", { "readOnly": Json::boolean(false) })
+      (bus.events_tell.val)("machine-logins", of_jv(limited), "machine-logins-limited\u{0}\{of}", { "readOnly": Json::boolean(true) })
     },
     notify: (session, text) => {
       if p54_session_row(bus, session) is None {
@@ -687,7 +687,7 @@ async fn p54_logins_start(
       }
       fork(async fn() { ignore((bus.hub_ask.val)("hub.notify", [Json::string(session), Json::string(text)])) })
     },
-    chat_title: session => p54_text(p54_session_row(bus, session), "title"),
+    chat_title: session => opt_text(p54_session_row(bus, session), "title"),
     name_of: email => cloud.person_name(email),
     place: () => match (p54_station_id(bus), p54_home(bus)) {
       (Some(s), Some(w)) => Some((s, w))
@@ -695,7 +695,7 @@ async fn p54_logins_start(
     },
     page_base: () => match ((bus.cloud_state.val)(), p54_home(bus), p54_station_id(bus)) {
       (Some(st), Some(w), Some(s)) =>
-        match p54_text(Some(st), "origin") {
+        match jtext(st, "origin") {
           Some(o) => Some((o, w, s))
           None => None
         }
@@ -707,11 +707,11 @@ async fn p54_logins_start(
       None => raise Failure("\{given} is this station: log in here without `station`")
     },
     ask: async fn(station, request) {
-      let r = p54_of_jv(request)
-      let (answer, _) = bus.call_peer(station, p54_text(Some(r), "workspace"), p54_text(Some(r), "method").unwrap_or(""), r) catch {
+      let r = of_jv(request)
+      let (answer, _) = bus.call_peer(station, jtext(r, "workspace"), jtext(r, "method").unwrap_or(""), r) catch {
         e => raise @terminals_logins.BusRefused(p54_message(e))
       }
-      p54_jv(answer)
+      to_jv(answer)
     },
     spawn: fork,
     log: (said, about) => err_write("login: \{said} \{@jsjson.stringify(about)}\n"),
@@ -725,23 +725,23 @@ async fn p54_logins_start(
       }
       _ => { "method": Json::string(meth) }
     }
-    let answer = part.heard_peer(peer, p54_jv(request), match ws {
+    let answer = part.heard_peer(peer, to_jv(request), match ws {
       Some(w) => @jsjson.JValue::Str(@jsjson.units(w))
       None => @jsjson.JValue::Null
     }) catch {
       e => raise BusError(p54_message(e))
     }
-    (p54_of_jv(answer), None)
+    (of_jv(answer), None)
   })
-  let declared = p54_of_jv(@terminals_logins.login_tool())
+  let declared = of_jv(@terminals_logins.login_tool())
   bus.parts.tools([
     {
-      name: p54_text(Some(declared), "name").unwrap_or("login"),
+      name: jtext(declared, "name").unwrap_or("login"),
       declared,
       call: async fn(args, context) {
-        match (try { Ok(@terminals_logins.run_login_tool(part.tool(), p54_session(context), p54_jv(args))) } catch { e => Err(e) }) {
-          Ok(text) => p54_tool_answer(text)
-          Err(e) => p54_tool_answer(p54_message(e), error=true)
+        match (try { Ok(@terminals_logins.run_login_tool(part.tool(), p54_session(context), to_jv(args))) } catch { e => Err(e) }) {
+          Ok(text) => tool_answer(text)
+          Err(e) => tool_answer(p54_message(e), error=true)
         }
       },
     },
@@ -751,8 +751,8 @@ async fn p54_logins_start(
 
 ///|
 fn p54_person_of(v : Json?) -> @terminals_logins.Person? {
-  match p54_text(v, "email") {
-    Some(e) => Some({ email: e, name: p54_text(v, "name").unwrap_or("") })
+  match opt_text(v, "email") {
+    Some(e) => Some({ email: e, name: opt_text(v, "name").unwrap_or("") })
     None => None
   }
 }
@@ -760,35 +760,35 @@ fn p54_person_of(v : Json?) -> @terminals_logins.Person? {
 ///|
 /// What the admin API's logins routes ask (api_routes accounts.mbt's `logins.`), by name.
 async fn p54_logins_ask(l : P54Logins, op : String, a : Json) -> Json? {
-  let s = (i : Int) => p54_arg_text(a, i)
+  let s = (i : Int) => call_arg_text(a, i)
   let answer : Json = try {
     match op {
       // (whether the station keeps logins at all: a login card's answer from a chat's platform takes one, hub.ts)
       "logins.has" => Json::boolean(true)
-      "logins.logins" => Json::array(l.logins.logins().map(p54_of_jv))
-      "logins.get" => l.logins.get(s(0)).map(p54_of_jv).unwrap_or(Json::null())
-      "logins.history" => Json::array(l.logins.history().map(p54_of_jv))
-      "logins.cancel" => p54_of_jv(l.logins.cancel(s(0), by?=p54_person_of(p54_arg(a, 1))))
-      "logins.answer" => p54_of_jv(l.logins.answer(s(0), p54_arg(a, 1).map(p54_jv), by?=p54_person_of(p54_arg(a, 2))))
-      "logins.paste" => p54_of_jv(l.logins.paste(s(0), p54_bool(p54_arg(a, 1))))
+      "logins.logins" => Json::array(l.logins.logins().map(of_jv))
+      "logins.get" => l.logins.get(s(0)).map(of_jv).unwrap_or(Json::null())
+      "logins.history" => Json::array(l.logins.history().map(of_jv))
+      "logins.cancel" => of_jv(l.logins.cancel(s(0), by?=p54_person_of(call_arg(a, 1))))
+      "logins.answer" => of_jv(l.logins.answer(s(0), call_arg(a, 1).map(to_jv), by?=p54_person_of(call_arg(a, 2))))
+      "logins.paste" => of_jv(l.logins.paste(s(0), opt_true(call_arg(a, 1))))
       "logins.callback" => {
-        let asked = p54_arg(a, 1)
+        let asked = call_arg(a, 1)
         let got = l.logins.callback(
           s(0),
           {
-            method_: p54_text(asked, "method").unwrap_or("GET"),
-            path: p54_text(asked, "path").unwrap_or("/"),
-            headers: match p54_get(asked, "headers") {
-              Some(Object(m)) => m.iter().filter_map(kv => p54_str(Some(kv.1)).map(v => (kv.0, v))).collect()
+            method_: opt_text(asked, "method").unwrap_or("GET"),
+            path: opt_text(asked, "path").unwrap_or("/"),
+            headers: match opt_field(asked, "headers") {
+              Some(Object(m)) => m.iter().filter_map(kv => as_text(kv.1).map(v => (kv.0, v))).collect()
               _ => []
             },
-            body: p54_text(asked, "body"),
+            body: opt_text(asked, "body"),
           },
-          by?=p54_person_of(p54_arg(a, 2)),
+          by?=p54_person_of(call_arg(a, 2)),
         )
-        p54_of_jv(got.to_json())
+        of_jv(got.to_json())
       }
-      "logins.openPage" => Json::string(l.logins.open_page(s(0), by?=p54_person_of(p54_arg(a, 1))))
+      "logins.openPage" => Json::string(l.logins.open_page(s(0), by?=p54_person_of(call_arg(a, 1))))
       _ => return None
     }
   } catch {

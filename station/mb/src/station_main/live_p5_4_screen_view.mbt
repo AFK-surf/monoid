@@ -53,7 +53,7 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     next_audio: v.next_audio.map(f => async fn() { f().map(a => ({ ts: a.ts, data: a.data, codec: a.codec } : @mesh_runtime.AudioPacket)) }),
     keyframe: v.keyframe,
     input: async fn(j) {
-      match @screens.input_of(p54_jv(j)) {
+      match @screens.input_of(to_jv(j)) {
         Some(i) => (v.input)(i)
         None => ()
       }
@@ -61,15 +61,15 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     rate: v.rate,
     bounds: v.bounds.map(b => (w, h, r) => b(w, h, r.map(p54_region_of))),
     regions: v.regions,
-    video: v.video.map(f => () => Some(p54_of_jv(f().to_j()))),
+    video: v.video.map(f => () => Some(of_jv(f().to_j()))),
     why: v.why,
     close: v.close,
     set_clipboard: v.set_clipboard.map(f => async fn(c, b) { f(p54_clip_of(c), b) }),
     watch_clipboard: v.watch_clipboard.map(w => (k : (@mesh_runtime.Clip) -> Unit) => w(c => k(p54_clip(c)))),
-    watch_cursor: v.watch_cursor.map(w => (k : (Json) -> Unit) => w(c => k(p54_of_jv(c.to_j())))),
+    watch_cursor: v.watch_cursor.map(w => (k : (Json) -> Unit) => w(c => k(of_jv(c.to_j())))),
     cursor_image: v.cursor_image,
     watch_turn: v.watch_turn.map(w => (k : (Json) -> Unit) => w(n => k(Json::number(n.to_double())))),
-    watch_windows: v.watch_windows.map(w => (k : (Json) -> Unit) => w(x => k(p54_of_jv(x.to_j())))),
+    watch_windows: v.watch_windows.map(w => (k : (Json) -> Unit) => w(x => k(of_jv(x.to_j())))),
     window: v.window,
     reveal: v.reveal,
     watch_login: v.watch_login.map(w => (k : (Json) -> Unit) => w(f => k(match f {
@@ -84,9 +84,9 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
     }))),
     fill: v.fill.map(f => async fn(j) {
       f({
-        host: p54_text(Some(j), "host").unwrap_or(""),
-        username: p54_text(Some(j), "username"),
-        password: p54_text(Some(j), "password"),
+        host: jtext(j, "host").unwrap_or(""),
+        username: jtext(j, "username"),
+        password: jtext(j, "password"),
       })
     }),
     watch_passkey: v.watch_passkey.map(w => (k : (Json) -> Unit) => w(a => k(match a {
@@ -101,12 +101,12 @@ fn p54_view_port(v : @screens.ScreenView) -> @mesh_runtime.ScreenViewPort {
         }
       None => Json::null()
     }))),
-    passkey: v.passkey.map(f => async fn(j) { f({ id: p54_text(Some(j), "id").unwrap_or(""), fields: p54_jv(j) }) }),
+    passkey: v.passkey.map(f => async fn(j) { f({ id: jtext(j, "id").unwrap_or(""), fields: to_jv(j) }) }),
     watch_child: v.watch_child,
     set_clipboard_marked: v.set_clipboard_marked.map(f => async fn(c, b, m) { f(p54_clip_of(c), b, m) }),
     watch_clipboard_marked: v.watch_clipboard_marked.map(w => (k : (@mesh_runtime.Clip, Int) -> Unit) => w((c, m) => k(p54_clip(c), m))),
     watch_pointer_lock: v.watch_pointer_lock,
-    watch_mic: v.watch_mic.map(w => (k : (Json) -> Unit) => w(m => k(p54_of_jv(m.to_j())))),
+    watch_mic: v.watch_mic.map(w => (k : (Json) -> Unit) => w(m => k(of_jv(m.to_j())))),
     feed_mic: v.feed_mic,
   }
 }
@@ -118,14 +118,14 @@ fn p54_source_port(src : @screens.ScreenSource) -> @mesh_runtime.ScreenSourcePor
     kind: src.kind.name(),
     title: src.title,
     open: async fn(options) {
-      let view = (src.open)(@screens.view_options_of(p54_jv(options))) catch {
+      let view = (src.open)(@screens.view_options_of(to_jv(options))) catch {
         @screens.ScreenRefused(status~, key~, args~, access~, ..) =>
-          raise @mesh_runtime.ScreenRefused(status, key, p54_of_jv(args), access.map(a => p54_of_jv(a.to_j())))
+          raise @mesh_runtime.ScreenRefused(status, key, of_jv(args), access.map(a => of_jv(a.to_j())))
         e => raise e
       }
       p54_view_port(view)
     },
-    access: src.access.map(f => () => Some(p54_of_jv(f().to_j()))),
+    access: src.access.map(f => () => Some(of_jv(f().to_j()))),
     clipboard: src.clipboard,
     reveal: src.reveal,
     peek: src.peek,
@@ -134,10 +134,10 @@ fn p54_source_port(src : @screens.ScreenSource) -> @mesh_runtime.ScreenSourcePor
     sleeping: src.sleeping,
     site: src.site,
     address: src.address.map(f => () => Some(f())),
-    scale: src.scale.map(f => async fn() { f().map(s => p54_of_jv(s.to_j())) }),
-    set_scale: src.set_scale.map(f => async fn(n) { p54_of_jv(f(n).to_j()) }),
-    resolution: src.resolution.map(f => async fn() { f().map(r => p54_of_jv(r.to_j())) }),
-    set_resolution: src.set_resolution.map(f => async fn(w, h) { p54_of_jv(f(w, h).to_j()) }),
+    scale: src.scale.map(f => async fn() { f().map(s => of_jv(s.to_j())) }),
+    set_scale: src.set_scale.map(f => async fn(n) { of_jv(f(n).to_j()) }),
+    resolution: src.resolution.map(f => async fn() { f().map(r => of_jv(r.to_j())) }),
+    set_resolution: src.set_resolution.map(f => async fn(w, h) { of_jv(f(w, h).to_j()) }),
   }
 }
 
@@ -168,7 +168,7 @@ fn p54_hub_port(s : P54Screens) -> @mesh_runtime.ScreenHubPort {
         @screens.Watcher::new(
           w.name,
           w.control,
-          j => (w.tell)(p54_of_jv(j)),
+          j => (w.tell)(of_jv(j)),
           device=Some(w.device),
           self_=w.self_,
           client=w.client,
@@ -188,13 +188,13 @@ fn p54_hub_port(s : P54Screens) -> @mesh_runtime.ScreenHubPort {
 async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
   let bus = s.bus
   let host = bus.host
-  let handle = p54_get(Some(asked), "stream").unwrap_or(Json::null())
+  let handle = opt_field(Some(asked), "stream").unwrap_or(Json::null())
   let stream_handle = p54_stream_handle(handle)
-  let carry = p54_bytes_of(p54_get(Some(handle), "carry"))
+  let carry = p54_bytes_of(opt_field(Some(handle), "carry"))
   let stream : @door.Stream = {
     read: async fn() {
       let (said, bytes) = p54_stream_call(host, stream_handle, "read") catch { _ => return None }
-      match (p54_get(Some(said), "end"), bytes) {
+      match (opt_field(Some(said), "end"), bytes) {
         (Some(True), _) => None
         (_, Some(b)) => Some(b)
         _ => None
@@ -238,8 +238,8 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
     p54_hub_port(s),
     stream,
     carry,
-    p54_get(Some(asked), "head").unwrap_or(Json::null()),
-    p54_get(Some(asked), "viewer").unwrap_or(Json::null()),
+    opt_field(Some(asked), "head").unwrap_or(Json::null()),
+    opt_field(Some(asked), "viewer").unwrap_or(Json::null()),
     () => !bus.stopped.is_done(),
     host.rt,
     words,

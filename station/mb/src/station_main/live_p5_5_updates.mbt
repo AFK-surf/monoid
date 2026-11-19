@@ -9,26 +9,26 @@
 fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
   let world : Ref[@updates.World?] = Ref(None)
   let node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
-    let core = (i : Int) => if i < a.length() { to_core(a[i]) } else { Json::null() }
+    let core = (i : Int) => if i < a.length() { of_jv(a[i]) } else { Json::null() }
     match name {
       "cloud.fetch" =>
         match world.val {
           Some(w) => w.call("fetch", a)
-          None => of_core(Json::null())
+          None => to_jv(Json::null())
         }
-      "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "listener.changed" => of_core(Json::null())
+      "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "listener.changed" => to_jv(Json::null())
       "wall.sleep" => {
         match core(0) {
           Number(ms, ..) => @effect.sleep(ms.to_int())
           _ => ()
         }
-        of_core(Json::null())
+        to_jv(Json::null())
       }
-      "ConfigFile.raw" => of_core((bus.config_raw.val)())
+      "ConfigFile.raw" => to_jv((bus.config_raw.val)())
       "ConfigFile.update" | "config.updateSoon" => {
         let next = core(if name == "ConfigFile.update" { 1 } else { 0 })
         ignore((bus.config_update.val)(_ => next))
-        of_core(Json::null())
+        to_jv(Json::null())
       }
       "process.kill" =>
         match core(0) {
@@ -39,31 +39,31 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
               _ => "SIGTERM"
             }
             if kill(p.to_int(), signal) {
-              of_core(Json::boolean(true))
+              to_jv(Json::boolean(true))
             } else {
               raise coded("ESRCH", "kill ESRCH")
             }
           }
-          _ => of_core(Json::boolean(false))
+          _ => to_jv(Json::boolean(false))
         }
-      "os.tmpdir" => of_core(Json::string(tmpdir()))
+      "os.tmpdir" => to_jv(Json::string(tmpdir()))
       // (platform/unix.ts, windows.ts `nodeBuild`: the Node release built for this machine)
       "platform.nodeBuild" => {
         let version = match core(0) { String(v) => v; _ => "" }
         let a = arch()
         if a != "arm64" && a != "x64" {
-          return of_core(Json::null())
+          return to_jv(Json::null())
         }
         if is_windows() {
           let dist = "node-v\{version}-win-\{a}"
-          of_core({ "dist": Json::string(dist), "archive": Json::string("\{dist}.zip"), "bin": "", "npm": "npm.cmd", "tar": Json::string(path([env_get("SystemRoot").unwrap_or("C:\\Windows"), "System32", "tar.exe"])) })
+          to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.zip"), "bin": "", "npm": "npm.cmd", "tar": Json::string(path([env_get("SystemRoot").unwrap_or("C:\\Windows"), "System32", "tar.exe"])) })
         } else {
           let os = platform()
           if os != "darwin" && os != "linux" {
-            return of_core(Json::null())
+            return to_jv(Json::null())
           }
           let dist = "node-v\{version}-\{os}-\{a}"
-          of_core({ "dist": Json::string(dist), "archive": Json::string("\{dist}.tar.gz"), "bin": "bin", "npm": "npm", "tar": "tar" })
+          to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.tar.gz"), "bin": "bin", "npm": "npm", "tar": "tar" })
         }
       }
       // (unix.ts `findCommandSoon`: where on the environment's PATH a command is, and that followed)
@@ -72,8 +72,8 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
         let env = if a.length() > 1 { @updates.env_of(a[1]) } else { [] }
         match find_command(name, env) {
           Some(on) =>
-            of_core({ "onPath": Json::string(on), "real": Json::string(attempt(() => @drive.realpath(on)).unwrap_or(on)) })
-          None => of_core(Json::null())
+            to_jv({ "onPath": Json::string(on), "real": Json::string(attempt(() => @drive.realpath(on)).unwrap_or(on)) })
+          None => to_jv(Json::null())
         }
       }
       "shellPath.withShellCommand" => {
@@ -83,8 +83,8 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
       }
       _ =>
         // (the machine's own: updates_platform.mbt)
-        match updates_platform(bus.host, bus.data, name, a.map(to_core)) {
-          Some(v) => of_core(v)
+        match updates_platform(bus.host, bus.data, name, a.map(of_jv)) {
+          Some(v) => to_jv(v)
           None => raise coded("ENOSYS", "the station's program does not do \{name}")
         }
     }
@@ -95,8 +95,8 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
     "shellPath.forgetShellPaths" => forget_shell_paths()
     // (the updates' log: the station's)
     "log.info" | "log.warn" | "log.error" =>
-      live_log(name[4:].to_owned(), if a.length() > 0 { js_text(a[0]) } else { "updates" }, if a.length() > 1 { js_text(a[1]) } else { "" }, if a.length() > 2 { to_core(a[2]) } else { Json::null() })
-    _ => ignore(updates_platform_told(name, a.map(to_core)))
+      slice_log(name[4:].to_owned(), if a.length() > 0 { js_text(a[0]) } else { "updates" }, if a.length() > 1 { js_text(a[1]) } else { "" }, if a.length() > 2 { of_jv(a[2]) } else { Json::null() })
+    _ => ignore(updates_platform_told(name, a.map(of_jv)))
   }
   let clock : @updates.Clock = {
     now: () => wall_ms().to_double(),
@@ -140,7 +140,7 @@ fn P55::start_features(self : P55) -> Unit raise PartTwice {
 fn lang_arg(arg : Json) -> String {
   match arg {
     Array([String(l), ..]) => l
-    Object(_) => p55_jstr(arg, "lang").unwrap_or("zh")
+    Object(_) => jtext(arg, "lang").unwrap_or("zh")
     _ => "zh"
   }
 }
@@ -152,12 +152,12 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   let bus = self.bus
   updates_setup(bus.data, bus.argv0, app=bus.app)
   let w = p5_5_updates_world(bus)
-  let config = @updates.Config::new(of_core((bus.config_raw.val)()))
+  let config = @updates.Config::new(to_jv((bus.config_raw.val)()))
   // (the station's own release only, until the agents' part says which runtimes it runs: their versions are its)
   let station_only = rig || (bus.runtimes_available.val)().is_empty()
   let running = () => if rig { 0.0 } else { match (bus.status_agents.val)() {
     Some(s) =>
-      match p55_jfield(p55_jfield(s, "agents"), "busy") {
+      match jfield(jfield(s, "agents"), "busy") {
         Number(n, ..) => n
         _ => 0.0
       }
@@ -188,7 +188,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   }
   // The config edited elsewhere (a page, `stillfail channel`, another part): heard as it changes.
   let off = (bus.config_listen.val)(raw => {
-    config.raw = of_core(raw)
+    config.raw = to_jv(raw)
     config.tell()
   })
   // What the overview shows changes: told on the event streams.
@@ -227,7 +227,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
       }
     }),
   ))
-  bus.parts.overview("updates", async fn(_viewer, lang) { to_core(@jsjson.JValue::Arr(u.get(lang))) })
+  bus.parts.overview("updates", async fn(_viewer, lang) { of_jv(@jsjson.JValue::Arr(u.get(lang))) })
   bus.parts.routes(updates_routes(u))
   // Its agents' hand on its release (tools/version.ts): updated, or put back to an earlier one.
   bus.parts.tools([
@@ -238,20 +238,20 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     },
   ])
   self.admin_ops(u)
-  self.op("agents.updates.get", async fn(arg) { to_core(@jsjson.JValue::Arr(u.get(lang_arg(arg)))) })
+  self.op("agents.updates.get", async fn(arg) { of_jv(@jsjson.JValue::Arr(u.get(lang_arg(arg)))) })
   self.op("agents.updates.channel", async fn(_arg) { Json::string(u.channel()) })
   // (agents.ts's hub: a runtime's command not found where it was asked, `runtimeMissing`; what of the machine's Codex
   // is installed; the machine's Codex updated where a session found it too old to serve, `updateOldCodex`)
   self.op("updates.runtimeMissing", async fn(arg) {
-    u.missing(match arg { Array([String(k), ..]) => k; _ => p55_jtext(arg, "runtime") })
+    u.missing(match arg { Array([String(k), ..]) => k; _ => jtext_or_empty(arg, "runtime") })
     Json::null()
   })
   self.op("updates.version", async fn(arg) {
-    let id = match arg { Array([String(k), ..]) => k; _ => p55_jtext(arg, "id") }
-    let found = u.get("zh").iter().find_first(r => to_core(r) is Object(m) && m.get("id") == Some(Json::string(id)))
+    let id = match arg { Array([String(k), ..]) => k; _ => jtext_or_empty(arg, "id") }
+    let found = u.get("zh").iter().find_first(r => of_jv(r) is Object(m) && m.get("id") == Some(Json::string(id)))
     match found {
       Some(r) =>
-        match p55_jfield(to_core(r), "version") {
+        match jfield(of_jv(r), "version") {
           String(_) as v => v
           _ => Json::null()
         }
@@ -259,7 +259,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     }
   })
   self.op("updates.updateOldCodex", async fn(arg) {
-    let before = match p55_jfield(arg, "running") {
+    let before = match jfield(arg, "running") {
       String(v) => Some(v)
       _ => None
     }
@@ -269,7 +269,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     Json::null()
   })
   self.op("updates.missing", async fn(arg) {
-    u.missing(match arg { Array([String(k), ..]) => k; _ => p55_jtext(arg, "runtime") })
+    u.missing(match arg { Array([String(k), ..]) => k; _ => jtext_or_empty(arg, "runtime") })
     Json::null()
   })
   // `stillfail update --beta|--stable` asks a running station by SIGHUP (run/channel-ask): the control channel's `hup`,
@@ -286,11 +286,11 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
 fn updates_routes(u : @updates.Updates) -> Array[PartRoute] {
   let answer = (f : async (Json) -> Unit) => async fn(r : Json) -> Json {
     let lang = lang_in(r)
-    if !manages(p55_jfield(r, "viewer")) {
+    if !manages(jfield(r, "viewer")) {
       return refused(403, @updates.tr(lang, "station.admin.updatesManagersOnly"))
     }
     match (try { Ok(f(r)) } catch { e => Err(e) }) {
-      Ok(_) => answered(200, to_core(@jsjson.JValue::Arr(u.get(lang))))
+      Ok(_) => answered(200, of_jv(@jsjson.JValue::Arr(u.get(lang))))
       Err(e) => refused(400, message_text(e))
     }
   }
@@ -298,14 +298,14 @@ fn updates_routes(u : @updates.Updates) -> Array[PartRoute] {
     p55_route("POST", "^/updates/check$", answer(async fn(_r) { u.check() })),
     p55_route("POST", "^/updates/channel$", answer(async fn(r) {
       let lang = lang_in(r)
-      match p55_jfield(p55_jfield(r, "body"), "channel") {
+      match jfield(jfield(r, "body"), "channel") {
         String(c) if @updates.channel_of_id(c) is Some(ch) => u.set_channel(ch, lang)
         _ => raise BusError(@updates.tr(lang, "station.admin.badChannel"))
       }
     })),
     p55_route("POST", "^/updates/auto$", answer(async fn(r) {
       let lang = lang_in(r)
-      match p55_jfield(p55_jfield(r, "body"), "on") {
+      match jfield(jfield(r, "body"), "on") {
         True => u.set_auto(true, lang)
         False => u.set_auto(false, lang)
         _ => raise BusError(@updates.tr(lang, "station.admin.badOn"))
@@ -313,15 +313,15 @@ fn updates_routes(u : @updates.Updates) -> Array[PartRoute] {
     })),
     p55_route("POST", "^/updates$", answer(async fn(r) {
       let lang = lang_in(r)
-      let body = p55_jfield(r, "body")
-      let id = p55_jtext(body, "id")
+      let body = jfield(r, "body")
+      let id = jtext_or_empty(body, "id")
       // The station put back to a release before it: { id, to }.
-      let to = match p55_jfield(body, "to") {
+      let to = match jfield(body, "to") {
         Null => None
         String(t) => Some(t)
         _ => raise BusError(@updates.tr(lang, "station.updates.badVersion"))
       }
-      match p55_jfield(body, "repair") {
+      match jfield(body, "repair") {
         True if id == "codex" => u.repair_codex(lang)
         Null | False => u.update(id, lang, to?)
         _ => raise BusError(@updates.tr(lang, "station.updates.codexRepairUnavailable"))
@@ -350,7 +350,7 @@ fn p55_watch_dir(bus : LiveBus, dir : String, told : (String?) -> Unit) -> async
     for e in p53_readdir_types(host, dir) {
       let full = @nodepath.join(sep(), [dir, e.0])
       match (try { Ok(host.shell("fs.meta", { "path": Json::string(full) })) } catch { e => Err(e) }) {
-        Ok((m, _)) => now[e.0] = "\{p53_num(m, "size").unwrap_or(0.0)}:\{p53_num(m, "mtimeMs").unwrap_or(0.0)}"
+        Ok((m, _)) => now[e.0] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
         Err(_) => now[e.0] = ""
       }
     }
@@ -417,29 +417,29 @@ let version_declared : String =
 /// What station_version says of the station's line (tools/version.ts `said`), and what an action does.
 async fn version_tool(u : @updates.Updates, args : Json) -> Json {
   let line = () => {
-    let v = match u.get("en").map(to_core).search_by(l => p55_jtext(l, "id") == "station") {
-      Some(i) => u.get("en").map(to_core)[i]
+    let v = match u.get("en").map(of_jv).search_by(l => jtext_or_empty(l, "id") == "station") {
+      Some(i) => u.get("en").map(of_jv)[i]
       None => return Map::new()
     }
-    let or_null = (k : String) => match p55_jfield(v, k) {
+    let or_null = (k : String) => match jfield(v, k) {
       Null => Json::null()
       x => x
     }
     let m : Map[String, Json] = {
       "version": or_null("version"),
       "latest": or_null("latest"),
-      "newer": p55_jfield(v, "newer"),
+      "newer": jfield(v, "newer"),
       "channel": or_null("channel"),
       "auto": or_null("auto"),
       "autoAfter": or_null("autoAfter"),
-      "earlier": match p55_jfield(v, "earlier") {
+      "earlier": match jfield(v, "earlier") {
         Array(_) as e => e
         _ => Json::array([])
       },
-      "state": p55_jfield(v, "state"),
+      "state": jfield(v, "state"),
     }
     for k in ["progress", "message", "note"] {
-      match p55_jfield(v, k) {
+      match jfield(v, k) {
         String(t) if t != "" => m[k] = Json::string(t)
         _ => ()
       }
@@ -453,14 +453,14 @@ async fn version_tool(u : @updates.Updates, args : Json) -> Json {
     }
     Json::object(m)
   }
-  match p55_jfield(args, "action") {
+  match jfield(args, "action") {
     String("list") => Json::object(line())
     String("update") => {
       u.update("station", "en")
       started()
     }
     String("back") => {
-      let to = match p55_jfield(args, "to") {
+      let to = match jfield(args, "to") {
         String(t) if t != "" => t
         _ => raise BusError("to: a version list names in earlier")
       }

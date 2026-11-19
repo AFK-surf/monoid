@@ -81,7 +81,7 @@ fn bridged_runtime_driver(
     options : Json,
     events : (@jsjson.JValue) -> Unit,
   ) -> Agent {
-    let o = @agent_runtimes.Options::of(jv_of(options))
+    let o = @agent_runtimes.Options::of(to_jv(options))
     let env = agent_env(ctx)
     let base = fields_of_env(env)
     let host = ctx.host
@@ -145,7 +145,7 @@ fn bridged_runtime_driver(
     kind,
     open,
     adopt: async fn(options, snap, events) {
-      agent_of(pump.wait(d.adopt(jv_of(options), snap.map(jv_of), events)))
+      agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events)))
     },
     shutdown: async fn(again) {
       ignore(pump.wait(d.own.shutdown(again~))) catch {
@@ -206,7 +206,7 @@ fn acp_runtime_driver(
     events : (@jsjson.JValue) -> Unit,
     probe : Bool,
   ) -> Agent {
-    let o = @agent_runtimes.Options::of(jv_of(options))
+    let o = @agent_runtimes.Options::of(to_jv(options))
     let base = fields_of_env(agent_env(ctx))
     let start = match kind {
       "grok" => @agent_runtimes.grok_start(ctx.host, o, base, "grok")
@@ -252,7 +252,7 @@ fn acp_runtime_driver(
       ),
     )
     let meta = match start.meta {
-      Some(mt) => [("_meta", p52_json_of_jv(mt))]
+      Some(mt) => [("_meta", of_jv(mt))]
       None => []
     }
     let opened = try {
@@ -261,7 +261,7 @@ fn acp_runtime_driver(
           session.request(
             "init",
             "initialize",
-            jv_of(
+            to_jv(
               jobj_of(
                 [
                   ("protocolVersion", ji(1)),
@@ -286,12 +286,12 @@ fn acp_runtime_driver(
             if probe {
               Json::array([])
             } else {
-              p52_json_of_jv(@agent_drivers.mcp_servers(o.mcp_url, o.mcp_token))
+              of_jv(@agent_drivers.mcp_servers(o.mcp_url, o.mcp_token))
             },
           ),
           ..match start.opening {
             Some(op) =>
-              match p52_json_of_jv(op) {
+              match of_jv(op) {
                 Object(fs) => fs.iter().to_array()
                 _ => []
               }
@@ -311,13 +311,13 @@ fn acp_runtime_driver(
             }
             other => other
           }
-          pump.wait(session.request("open", "session/load", jv_of(load)))
+          pump.wait(session.request("open", "session/load", to_jv(load)))
         }
         None => {
           let answer = pump.wait(
-            session.request("open", "session/new", jv_of(opening)),
+            session.request("open", "session/new", to_jv(opening)),
           )
-          match jtext(jfield(p52_json_of_jv(answer), "result"), "sessionId") {
+          match jtext(jfield(of_jv(answer), "result"), "sessionId") {
             Some(id) if id != "" => {
               session.named(id)
               session.began(o.cwd)
@@ -331,12 +331,12 @@ fn acp_runtime_driver(
         }
       }
       session.opened(
-        match p52_json_of_jv(answer) {
-          Object(_) as a => Some(jv_of(jfield(a, "result")))
+        match of_jv(answer) {
+          Object(_) as a => Some(to_jv(jfield(a, "result")))
           _ => None
         },
       )
-      Ok(jfield(jfield(p52_json_of_jv(answer), "result"), "models"))
+      Ok(jfield(jfield(of_jv(answer), "result"), "models"))
     } catch {
       e => Err(e)
     }
@@ -383,7 +383,7 @@ fn acp_runtime_driver(
         Ok(_) => {
           guard probes.get(key) is Some((session, said)) else { raise LiveError("Hermes Agent opened no session") }
           probes.remove(key)
-          let found = @agent_runtimes.hermes_catalog(Some(jv_of(said)), jv_of(profile))
+          let found = @agent_runtimes.hermes_catalog(Some(to_jv(said)), to_jv(profile))
           pump.wait(session.own.dispose())
           return Json::array(found.map(Json::string))
         }
