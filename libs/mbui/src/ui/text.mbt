@@ -21,8 +21,9 @@ struct Shaped {
   keys : Array[Int]
   cu : Array[Int]
   // before each cluster: 0 no line break, 1 a break opportunity, 2 a hard
-  // line break (UAX #14)
-  brk : Array[Int]
+  // line break (UAX #14); computed on demand (Shaped::breaks) so single-line
+  // text and multi-run rich paragraphs skip per-run line-break scans
+  mut brk : Array[Int]
   len : Int
   // the text's bidirectional levels, when any is not 0 (None: all left to right)
   bidi : @text.Bidi?
@@ -855,6 +856,54 @@ fn spaced_pair(a : Int, b : Int) -> Bool {
 }
 
 ///|
+/// Whether every UTF-16 unit in `text` is a standalone UAX #29 extended grapheme cluster, non-joining, and left-to-right
+/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, and CJK / kana / Hangul syllables / fullwidth
+/// punctuation without combining marks, surrogates, CR, variation selectors, or ZWJ.
+fn unit_clusters(text : String) -> Bool {
+  let n = text.length()
+  for k in 0..<n {
+    let c = text.at(k).to_int()
+    if c >= 0x20 && c <= 0x7E {
+      continue
+    }
+    if c < 0x3000 {
+      if c == 10 || c == 9 {
+        continue
+      }
+      return false
+    }
+    if c <= 0x3029 ||
+      (c >= 0x3041 && c <= 0x3096) ||
+      (c >= 0x30A1 && c <= 0x30FF) ||
+      (c >= 0x3400 && c <= 0x9FFF) ||
+      (c >= 0xAC00 && c <= 0xD7A3) ||
+      (c >= 0xFF01 && c <= 0xFF60) {
+      continue
+    }
+    return false
+  }
+  true
+}
+
+///|
+/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`.
+fn Shaped::breaks(self : Shaped, text : String) -> Array[Int] {
+  let n = self.starts.length()
+  if self.brk.length() == n {
+    return self.brk
+  }
+  let brk = Array::make(n, 0)
+  if n > 1 {
+    let b = @text.line_breaks(text)
+    for k in 1..<n {
+      brk[k] = b[self.starts[k]]
+    }
+  }
+  self.brk = brk
+  brk
+}
+
+///|
 /// With `spacing` (letter spacing, as Android's: each cluster's advance has it, half before its piece and half
 /// after), shaped with no ligatures (@hostapi.style_no_ligatures): a ligature's letters would not be spaced.
 fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? : Double = 0.0) -> Shaped {
@@ -896,83 +945,94 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           spaced_now() == @hostapi.words_spaced_here,
         )
       }
-      let lb = if m > 1 { Some(@text.line_breaks(text)) } else { None }
       // UAX #29's clusters: a host that cut one in two (a Thai vowel sign some segmenters leave on its own) is
-      // made whole again
-      // (ASCII, the most of what is shaped: every host's clusters are UAX #29's, nothing joins, nothing reads right
-      // to left)
-      let mut ascii = true
-      for k in 0..<text.length() {
-        if text.at(k).to_int() >= 0x80 {
-          ascii = false
-          break
-        }
-      }
-      let gb = if m > 1 && !ascii { Some(@text.graphemes(text)) } else { None }
-      let boundary = FixedArray::make(text.length() + 1, m <= 1 || ascii)
-      match gb {
-        Some(g) =>
-          for b in g {
-            boundary[b] = true
-          }
-        None => ()
-      }
+      // made whole again. Where every unit is a standalone non-joining LTR cluster (ASCII and nearly all CJK:
+      // unit_clusters), skip graphemes, joining, line_breaks and bidi_mixed.
+      let simple = unit_clusters(text)
+      let mut lb : FixedArray[Int]? = None
       let starts = Array(capacity=m)
       let lens = Array(capacity=m)
       let adv = Array(capacity=m)
       let keys = Array(capacity=m)
       let cu = Array(capacity=m)
-      let mut i = 0
-      while i < m {
-        let st = out[i * 4].to_int()
-        // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
-        // where a line may break)
-        let word = !ascii && joining(text, st) && out[i * 4 + 3] != -1.0
-        let mut j = i + 1
-        while j < m {
-          let sj = out[j * 4].to_int()
-          if !boundary[sj] {
-            j = j + 1
-            continue
-          }
-          let opp = match lb {
-            Some(b) => b[sj]
-            None => 0
-          }
-          if !word || opp != 0 || out[j * 4 + 3] == -1.0 || !joining(text, sj) {
-            break
-          }
-          j = j + 1
-        }
-        let k0 = out[i * 4 + 3].to_int()
-        if j - i >= 2 {
-          let end = out[(j - 1) * 4].to_int() + out[(j - 1) * 4 + 1].to_int()
-          let mut a = 0.0
-          let mut drawn = false
-          for k in i..<j {
-            a = a + out[k * 4 + 2]
-            drawn = drawn || out[k * 4 + 3] != -1.0
-          }
-          starts.push(st)
-          lens.push(end - st)
-          adv.push(a)
-          keys.push(
-            if k0 == -2 {
-              -2
-            } else if drawn && !is_nl(text.at(st).to_int()) {
-              h_text_key(text.unsafe_substring(start=st, end~), size, weight, style)
-            } else {
-              k0
-            },
-          )
-        } else {
+      if simple {
+        for i in 0..<m {
+          let st = out[i * 4].to_int()
           starts.push(st)
           lens.push(out[i * 4 + 1].to_int())
           adv.push(out[i * 4 + 2])
-          keys.push(k0)
+          keys.push(out[i * 4 + 3].to_int())
+          cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
         }
-        cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
-        i = j
+      } else {
+        let gb = if m > 1 { Some(@text.graphemes(text)) } else { None }
+        let boundary = FixedArray::make(text.length() + 1, m <= 1)
+        match gb {
+          Some(g) =>
+            for b in g {
+              boundary[b] = true
+            }
+          None => ()
+        }
+        let mut i = 0
+        while i < m {
+          let st = out[i * 4].to_int()
+          // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
+          // where a line may break)
+          let word = joining(text, st) && out[i * 4 + 3] != -1.0
+          let mut j = i + 1
+          while j < m {
+            let sj = out[j * 4].to_int()
+            if !boundary[sj] {
+              j = j + 1
+              continue
+            }
+            if !word {
+              break
+            }
+            let b = match lb {
+              Some(b) => b
+              None => {
+                let b = @text.line_breaks(text)
+                lb = Some(b)
+                b
+              }
+            }
+            if b[sj] != 0 || out[j * 4 + 3] == -1.0 || !joining(text, sj) {
+              break
+            }
+            j = j + 1
+          }
+          let k0 = out[i * 4 + 3].to_int()
+          if j - i >= 2 {
+            let end = out[(j - 1) * 4].to_int() + out[(j - 1) * 4 + 1].to_int()
+            let mut a = 0.0
+            let mut drawn = false
+            for k in i..<j {
+              a = a + out[k * 4 + 2]
+              drawn = drawn || out[k * 4 + 3] != -1.0
+            }
+            starts.push(st)
+            lens.push(end - st)
+            adv.push(a)
+            keys.push(
+              if k0 == -2 {
+                -2
+              } else if drawn && !is_nl(text.at(st).to_int()) {
+                h_text_key(text.unsafe_substring(start=st, end~), size, weight, style)
+              } else {
+                k0
+              },
+            )
+          } else {
+            starts.push(st)
+            lens.push(out[i * 4 + 1].to_int())
+            adv.push(out[i * 4 + 2])
+            keys.push(k0)
+          }
+          cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
+          i = j
+        }
       }
       // ligatures: a cluster the shaper drew as part of the one before it (-2 from the host) has that one's piece
       // drawn over it; the piece, the whole ligature, is the first's, the advance shared out evenly
@@ -1015,17 +1075,18 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           }
         }
       }
-      let brk = Array::make(n, 0)
-      if n > 1 {
-        match lb {
-          Some(b) =>
-            for k in 1..<n {
-              brk[k] = b[starts[k]]
-            }
-          None => ()
+      // (line breaks kept where a joining word already computed them; else computed once on demand in Shaped::breaks)
+      let brk = match lb {
+        Some(b) => {
+          let brk = Array::make(n, 0)
+          for k in 1..<n {
+            brk[k] = b[starts[k]]
+          }
+          brk
         }
+        None => []
       }
-      let bd = if ascii { None } else { @text.bidi_mixed(text) }
+      let bd = if simple { None } else { @text.bidi_mixed(text) }
       // L4: a bracket (or another mirrored character) reading right to left is drawn as its mirror image, ")" for
       // "(" (each cluster is drawn on its own, out of the line the shaper would have mirrored it in)
       match bd {
@@ -1593,10 +1654,10 @@ fn one_line(texts : Array[String]) -> Array[String]? {
 }
 
 ///|
-/// Whether cluster i ends a line by itself: a line terminator followed by a
-/// hard break (not CR before LF, when the host makes them two clusters).
+/// Whether cluster i ends a line by itself: a line terminator that is not CR immediately before LF (when the host
+/// emits CR and LF as two clusters).
 fn Shaped::hard_end(self : Shaped, i : Int) -> Bool {
-  is_nl(self.cu[i]) && (i + 1 >= self.starts.length() || self.brk[i + 1] == 2)
+  is_nl(self.cu[i]) && !(self.cu[i] == 13 && i + 1 < self.starts.length() && self.cu[i + 1] == 10)
 }
 
 ///|
@@ -1624,6 +1685,7 @@ fn layout_text(
       _ => ()
     }
   }
+  let brk = if wrap { s.breaks(text) } else { [] }
   let n = s.starts.length()
   let xs = Array::make(n, 0.0)
   let line_of = Array::make(n, 0)
@@ -1665,7 +1727,7 @@ fn layout_text(
       last_break = -1
       continue
     }
-    if i > ls && s.brk[i] != 0 {
+    if wrap && i > ls && brk[i] != 0 {
       last_break = i
     }
     let a = s.adv[i]
