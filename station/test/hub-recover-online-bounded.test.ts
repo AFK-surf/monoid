@@ -20,7 +20,6 @@ test("restart recovery finds a connect only for sessions with work to resume", (
       [active.key, { endedAt: null, declared: "waiting" }],
     ]);
     const hub = Object.assign(Object.create(Hub.prototype), {
-      holdsNow: new Set(),
       adopted: new Set([running.key]),
       store: {
         runningSessions: () => [running], sessionsWithPending: () => [], liveSessions: () => live,

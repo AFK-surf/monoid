@@ -76,7 +76,7 @@ test("restart recovery reads each latest turn without counting pending messages"
     store.statsOf = () => { throw new Error("counted pending deliveries"); };
     const called: string[] = [];
     const hub = {
-      store, adopted: new Set(), holdsNow: new Set(), online: () => true,
+      store, adopted: new Set(), online: () => true,
       actor: (row: { key: string }) => ({
         recover: async () => { called.push(`recover:${row.key}`); },
         kick: async () => { called.push(`kick:${row.key}`); },

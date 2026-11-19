@@ -1130,7 +1130,7 @@ export class Hub {
       void this.actor(row).recover();
     }
     // A turn resumed takes what waits for it with it; while turns are held, `release` gives the rest theirs.
-    if (this.holdsNow.size === 0) {
+    if ((this.holdsNow?.size ?? 0) === 0) {
       for (const key of this.store.sessionsWithPending()) {
         if (recovering.has(key)) continue;
         const row = this.store.getSession(key);
