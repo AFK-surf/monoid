@@ -1461,15 +1461,16 @@ function vaultRecord(now: number): J {
   return { certs, vault };
 }
 function itemOf(now: number, i: number, at: number): J {
-  const name = i < SECRETS.length ? SECRETS[i]! : `${pick(SECRETS, i)} · ${pick(["备用", "CI", "个人"], i)}`;
-  const kind = i % 7 === 3 ? "file" : i % 5 === 1 ? "login" : "token";
+  // (the one added later, `vaultAdded`: a name of its own, among the others by its letter as a person's would be)
+  const name = i === VAULT_ITEMS ? "Linear API key" : i < SECRETS.length ? SECRETS[i]! : `${pick(SECRETS, i)} · ${pick(["备用", "CI", "个人"], i)}`;
+  const kind = i === VAULT_ITEMS ? "token" : i % 7 === 3 ? "file" : i % 5 === 1 ? "login" : "token";
   const id = itemId(i);
   const plain = { kind, name, fields: kind === "login" ? { username: "deploy", password: `pw-${i}` } : kind === "file" ? { content: "e30=", filename: "sa.json" } : { value: `tok-${i}` }, domains: [], notes: i % 3 === 0 ? "轮换周期 90 天，过期前在 #infra 提醒" : "" };
   const nonce = new Uint8Array(12).fill(i);
   const ct = encryptWith(VAULT_KEY, utf8(JSON.stringify(plain)), itemContext(PLAIN_WORKSPACE, PERSONAL_VAULT, id, 1 + (i % 4), 0), nonce);
   return sign({
     v: 1 as const, ws: PLAIN_WORKSPACE, vault: PERSONAL_VAULT, id, version: 1 + (i % 4), epoch: 0, ct,
-    listing: { name, kind, modes: i % 4 === 0 ? ["proxy", "env"] : ["proxy"], hosts: hostsOf(i), ...(i % 4 === 0 ? { env: `${name.toUpperCase().replace(/[^A-Z]+/g, "_")}TOKEN` } : {}), lasts: pick(["once", "hour", "chat"], i) },
+    listing: { name, kind, modes: i % 4 === 0 ? ["proxy", "env"] : ["proxy"], hosts: i === VAULT_ITEMS ? ["api.linear.app"] : hostsOf(i), ...(i % 4 === 0 ? { env: `${name.toUpperCase().replace(/[^A-Z]+/g, "_")}TOKEN` } : {}), lasts: pick(["once", "hour", "chat"], i) },
     at: Math.floor(at / 1000),
   }, TAG.item, VAULT_SIGNER);
 }

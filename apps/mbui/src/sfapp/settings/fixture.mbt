@@ -3447,7 +3447,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       Some(
         obj([
           ("available", Json::boolean(true)),
-          ("locked", Json::boolean(fx.lock_case != "root-off" && fx.lock_case != "again")),
+          // (a vault kept by its person's own devices alone is a workspace not in security mode)
+          ("locked", Json::boolean(fx.vault_own == "" && fx.lock_case != "root-off" && fx.lock_case != "again")),
           ("notice", Json::boolean(false)),
           ("role", str("owner")),
           ("manages", Json::boolean(true)),
@@ -3554,7 +3555,10 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
           (
             "requests",
-            [
+            if fx.vault_own == "off" || fx.vault_own == "outside" {
+              []
+            } else {
+              [
               obj([
                 ("id", str("r1")),
                 ("vault", str("v1")),
@@ -3571,12 +3575,13 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("howText", str("代理 · 限 api.github.com")),
                 ("at", Json::number(0.0)),
               ]),
-            ],
+              ]
+            },
           ),
           ("refused", []),
-          // (the core's words of it: its one request waits)
-          ("statusText", str("1 个待批准")),
-          ("statusBad", Json::boolean(true)),
+          // (the core's words of it: its one request waits; none where no vault of theirs is kept)
+          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else { "1 个待批准" })),
+          ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
         ] +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)

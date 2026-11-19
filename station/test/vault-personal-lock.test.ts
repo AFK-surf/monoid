@@ -15,7 +15,7 @@ import { personalVaultLock } from "../src/cloud/vault-lock.ts";
 import { Cloud, personChainsOf, seenDevicesOf, writeState } from "../src/cloud/state.ts";
 import { routes as requestRoutes } from "../src/api/routes/vault-requests.ts";
 import { routes as vaultRoutes } from "../src/api/routes/vault.ts";
-import { type BoxCert, type Sig, type Vault, TAG, keyContext, newBoxPair, openSeal, saveContext, seal, signedBytes } from "../src/vault/crypto.ts";
+import { type BoxCert, type Sig, type Vault, TAG, certOk, keyContext, newBoxPair, openSeal, saveContext, seal, signedBytes } from "../src/vault/crypto.ts";
 import { PlainStore } from "../src/vault/plain.ts";
 import { Secrets } from "../src/vault/secrets.ts";
 import { VaultStore } from "../src/vault/store.ts";
@@ -58,7 +58,10 @@ function sources(logs: Person[], emails: Record<string, string>) {
     know: (sub: string, email: string) => (known.set(sub, email), membersVer++),
   };
 }
-const held = (vaults: Vault[] = [], boxes: BoxCert[] = []) => ({ version: () => vaults.length * 1000 + boxes.length, vaults: () => vaults, boxes: () => boxes });
+const okCert = (l: ReturnType<typeof personalVaultLock>, c: BoxCert) => certOk(l, c) === null;
+/// What a store keeps, as the vault's lock is made of it (vault/module.ts `held`).
+const heldBy = (v: VaultStore) => ({ version: () => v.version(), vaults: (w: string) => v.vaults(w), boxes: (w: string) => v.boxes(w), certOk: okCert });
+const held = (vaults: Vault[] = [], boxes: BoxCert[] = []) => ({ version: () => vaults.length * 1000 + boxes.length, vaults: () => vaults, boxes: () => boxes, certOk: okCert });
 
 test("a workspace not in security mode: its vault's lock is its members' own, of no chain, the same object while nothing it is made of changes", () => {
   const alice = person("alice");
@@ -162,18 +165,18 @@ test("a secret to keep for someone whose own lock is not heard here yet: their v
   const alice = person("alice");
   const s = sources([], { alice: "alice@x.com" });
   const owner = {};
-  const h = harness(() => personalVaultLock(owner, WS, s, h.vaults));
+  const h = harness(() => personalVaultLock(owner, WS, s, heldBy(h.vaults)));
   try {
     assert.equal(h.secrets.status("s1"), "off", "secret_list tells the agent their vault is not turned on");
     void h.secrets.save("s1", { name: "GitHub", kind: "token", reason: "ci", value: "ghp_x", cwd: h.dir });
     await tick();
-    const pending = () => h.secrets.pending(WS, personalVaultLock(owner, WS, s, h.vaults), { sub: "alice", email: "alice@x.com" });
+    const pending = () => h.secrets.pending(WS, personalVaultLock(owner, WS, s, heldBy(h.vaults)), { sub: "alice", email: "alice@x.com" });
     let [r] = pending();
     assert.deepEqual([r?.vault, r?.sealed, r?.box !== ""], ["", [], true]);
     assert.equal(h.plain.items(WS, "alice@x.com").length, 0);
     // Their app turns the vault on: its own lock heard here, its certificate published by the device itself.
     s.add(alice);
-    const put = vaultRoutes({ vaults: h.vaults, lock: () => personalVaultLock(owner, WS, s, h.vaults), boxed: (l, c) => h.secrets.boxed(l, c) })
+    const put = vaultRoutes({ vaults: h.vaults, lock: () => personalVaultLock(owner, WS, s, heldBy(h.vaults)), boxed: (l, c) => h.secrets.boxed(l, c) })
       .find((x) => x.method === "PUT" && x.pattern.test("/vault/boxes"))!;
     const viewer = { sub: "alice", workspace: WS, email: "alice@x.com", name: "Alice", role: "member", device: alice.base.hex };
     const answer = await put.handle({ method: "PUT", path: "/vault/boxes", query: [], headers: {}, body: Buffer.from(JSON.stringify(alice.cert())), viewer, lang: "en" } as never, []);

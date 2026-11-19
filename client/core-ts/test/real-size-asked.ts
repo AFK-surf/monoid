@@ -186,6 +186,8 @@ export const topicOf = (name: string): Topic => {
 /// The core's parts the pages' own topics are made of (core.ts `Inner`), as far as those read them here: the account
 /// and its workspaces, what the device holds, its links to the stations all up.
 function innerOf(parts: { host: FakeHost; store: Store; data: Data; views?: Views }): Inner {
+  // (an app that keeps keys, as the device the vault's pages are measured on: views/vault.ts `able`)
+  parts.host.appKeys = true;
   const workspaces = new Workspaces(parts.host, parts.store.runner);
   workspaces.setOwners(new Map([["ws", "s1"], [OTHER_WORKSPACE.id, "s1"], ["ws-friends", "s1"]]));
   // (the person's own lock as the lock's page reads it: what is pending of it, as many as are kept)

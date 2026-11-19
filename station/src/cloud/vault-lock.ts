@@ -10,12 +10,13 @@
 // certificate checks against, then the newest: so a log brought later takes neither their vaults nor the secrets kept
 // for them.
 import { type Device, type LockState, type Member, personFold } from "./lock.ts";
-import { type BoxCert, type Vault, certOk } from "../vault/crypto.ts";
+import type { BoxCert, Vault } from "../vault/crypto.ts";
 
 /// What the vault keeps of a workspace that this lock is made of: its vaults (whose owners and members it names, and
 /// whose signatures say which of a person's logs is theirs) and its box certificates; `version` moves on as either is
-/// written (vault/store.ts).
-export type VaultsHeld = { version(): number; vaults(ws: string): Vault[]; boxes(ws: string): BoxCert[] };
+/// written (vault/store.ts); `certOk` the vault's check of a box certificate against a lock (vault/crypto.ts, given:
+/// the platform imports none of the parts but their types).
+export type VaultsHeld = { version(): number; vaults(ws: string): Vault[]; boxes(ws: string): BoxCert[]; certOk(lock: LockState, cert: BoxCert): boolean };
 
 /// What the lock is made of besides the vault: the person logs kept and the members known.
 export type PersonalSources = {
@@ -80,7 +81,7 @@ function bare(ws: string, members: Map<string, Member>, devices: Map<string, Dev
 
 /// Which of `sub`'s logs is theirs here: the one an own vault of theirs is signed by, else the one their newest box
 /// certificate checks against, else the newest.
-function chosen(ws: string, sub: string, logs: Folded[], vaults: Vault[] | null, boxes: BoxCert[] | null): Folded {
+function chosen(ws: string, sub: string, logs: Folded[], vaults: Vault[] | null, boxes: BoxCert[] | null, certOk: (lock: LockState, cert: BoxCert) => boolean): Folded {
   if (logs.length === 1) return logs[0]!;
   for (const v of vaults ?? []) {
     if (v.owner !== sub || v.deleted) continue;
@@ -90,7 +91,7 @@ function chosen(ws: string, sub: string, logs: Folded[], vaults: Vault[] | null,
   }
   const certs = [...(boxes ?? [])].sort((a, b) => b.at - a.at);
   for (const cert of certs) {
-    const by = logs.find((l) => l.devices.some((d) => d.id === cert.device) && certOk(lockOfOne(ws, sub, l), cert) === null);
+    const by = logs.find((l) => l.devices.some((d) => d.id === cert.device) && certOk(lockOfOne(ws, sub, l), cert));
     if (by !== undefined) return by;
   }
   return [...logs].sort((a, b) => a.at - b.at).at(-1)!;
@@ -126,7 +127,7 @@ function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockSta
   const signKeys = new Map<string, string[]>();
   const persons = new Map<string, string>();
   for (const [sub, of] of logs) {
-    const f = chosen(ws, sub, of, vaults, boxes?.filter((c) => of.some((l) => l.devices.some((d) => d.id === c.device))) ?? null);
+    const f = chosen(ws, sub, of, vaults, boxes?.filter((c) => of.some((l) => l.devices.some((d) => d.id === c.device))) ?? null, held?.certOk ?? (() => false));
     name(sub);
     persons.set(sub, f.genesis);
     for (const d of f.devices) {

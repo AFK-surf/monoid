@@ -21,6 +21,8 @@ import { ofSites } from "../browser/signins.ts";
 import { plainStore, shown } from "./plain.ts";
 import { Secrets } from "./secrets.ts";
 import { vaultStore } from "./store.ts";
+import { type BoxCert, certOk } from "./crypto.ts";
+import type { LockState } from "../cloud/lock.ts";
 import { vaultWriteGate } from "./write-gate.ts";
 
 export const VaultLive = Layer.effectDiscard(
@@ -33,11 +35,13 @@ export const VaultLive = Layer.effectDiscard(
     const cloud = plane.state;
     const { hub, remote, cardOutcomes, pages } = yield* Agents;
     const vaults = vaultStore(store.db);
+    // (what the vault's lock where no safe mode is made of besides the person logs: cloud/vault-lock.ts)
+    const held = { version: () => vaults.version(), vaults: (w: string) => vaults.vaults(w), boxes: (w: string) => vaults.boxes(w), certOk: (l: LockState, c: BoxCert) => certOk(l, c) === null };
     // The lock a workspace's vault goes by (Cloud `vaultLock`): its lock in force where it is in security mode, else its
     // members' own locks; the home workspace's by null. A member who asks (`viewer`) is known by it from then on.
     const lock = (ws: string | null, viewer?: { workspace: string; sub: string; email: string }) => {
       if (viewer !== undefined) seenDevicesOf(cloud).remember(viewer.workspace, viewer.sub, viewer.email.toLowerCase());
-      return cloud.vaultLock(ws, vaults);
+      return cloud.vaultLock(ws, held);
     };
     // What the process before held may come until it is gone (it gives it as it begins to hand over).
     let coming = true;

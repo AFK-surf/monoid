@@ -224,6 +224,15 @@ fn P51::plane_live(self : P51) -> Plane {
       }
     }),
   )
+  // (a person's log taken changes the lock a workspace's vault goes by out of security mode, made of them: told as
+  // cloud.json's changes are, so the vault's lock and its waiting requests are read again: state.ts `vaultLock`)
+  ignore(
+    cloud.person_chains().listen(_ => {
+      if !writing.val {
+        p.tell()
+      }
+    }),
+  )
   // cloud.json written by another process (an enroll, a lock reset): read again as it changes.
   let stamp = Ref(file_stamp(self.fs, path([bus.data, "mesh", "cloud.json"])))
   self.every("cloud.json", 1000, async fn() { // timer: an outside system that offers no push (a file another process writes)

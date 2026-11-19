@@ -44,7 +44,7 @@ pub fn vault_node(
   // (its vaults kept by id once, as the library shows them and as the core says them: a block reads its own vault
   // by its key, told only as that one changes: View::keyed_by)
   let vaults_by = v.keyed_by(fn() { items(shown.get(), "vaults") }, vault_id)
-  let named_by = v.keyed_by(fn() { items(view().value, "vaults") }, vault_id)
+  let named_by = vault_named_by(v, view)
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.vault.title") },
@@ -628,7 +628,7 @@ pub fn vault_items_node(
   // vault's own row changed (an item more in it) runs none of what reads it)
   let first = @signals.computed(fn(_) { vault_first_keys(ws(), view().value) })
   // (its vaults kept by id once, for the names a web page shows: each its own vault, View::keyed_by)
-  let named_by = v.keyed_by(fn() { items(view().value, "vaults") }, vault_id)
+  let named_by = vault_named_by(v, view)
   let usable = fn() { first.get() is None }
   let all = vault_all_of(core, ws, fn() { view().value })
   // (its blocks worked out once for each change of what they are of, told on only as one comes, goes or moves: a
@@ -1350,8 +1350,8 @@ fn vault_named_node(b : @view.View, core : Core, ws : () -> String, rv : () -> J
 /// A vault's items known by their names only (`list`, as it is now), on a group's card `g`: each item's name (locked,
 /// that it is), how agents may ask for it under it, a green dot at its end where agents are told of it.
 fn named_rows_node(g : @view.View, list : () -> Array[Json]) -> Unit {
-  g.each(fn() { list().mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
-    let iv = fn() { Some(x.get().1) }
+  g.each(list, vault_id, fn(row, x) {
+    let iv = fn() { Some(x.get()) }
     @sf.link_row_node(
       row,
       fn() { opt_text(iv(), "name").unwrap_or(@sf.t("android-settings.vault.lockedItem")) },
@@ -1383,4 +1383,19 @@ fn vt_group_mark_node(parent : @view.View, group : String) -> Unit {
 /// A vault's key in the core's `vaults` (what its library and its names are kept by).
 fn vault_id(r : Json) -> String {
   text(Some(r), "id")
+}
+
+///|
+/// The vaults a web page names (one that keeps no keys: `available` false), kept by id once, each its own vault
+/// (View::keyed_by); none where keys are kept, so a vault's own change there runs nothing of these.
+fn vault_named_by(v : @view.View, view : () -> @settings.Read) -> @signals.KeyedList[String, Json] {
+  let named = @signals.computed(fn(_) {
+    let x = view().value
+    if x is Some(_) && !flag(x, "available") {
+      items(x, "vaults")
+    } else {
+      []
+    }
+  })
+  v.keyed_by(fn() { named.get() }, vault_id)
 }

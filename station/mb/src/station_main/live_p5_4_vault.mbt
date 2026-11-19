@@ -872,6 +872,20 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     }
     _ => return None
   }
+  // (a vault or a box certificate written where no workspace lock is pinned: the lock its vaults go by, made of its
+  // members' own locks and named by its vaults' owners and members, made again: vault/module.ts `held.version`)
+  let written = match op {
+    "vaults.putVault" | "vaults.forgetVault" => true
+    "vaults.putVaultIf" | "vaults.putBoxIf" => answer is True
+    _ => false
+  }
+  if written {
+    let w = if op == "vaults.forgetVault" { Some(s(0)) } else { p54_text(Some(j(0)), "ws") }
+    match w {
+      Some(x) if x != "" && !v.cloud.locks.contains(x) => ignore(p54_personal_lock(v.bus, v.cloud, x))
+      _ => ()
+    }
+  }
   Some(answer)
 }
 
