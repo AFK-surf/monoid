@@ -32,12 +32,13 @@ out=${2:-$D/_build/$name-$target}
 case "$target" in
   darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple; init_flags="-O0"
     libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip) ;;
-  # zig cc turns on UBSan at -O0 while the -O2 link leaves its runtime out: -fno-sanitize=undefined on moonbit_init.
-  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
+  # zig cc turns on UBSan, which traps MoonBit's unaligned uint64_t loads (BigInt, Bytes) with SIGABRT (main 8701788d7,
+  # check-station rsaSign): -fno-sanitize=undefined on every unit and the link, as Apple's cc builds them.
+  linux-x64) cc=(zig cc -target x86_64-linux-gnu.2.28 -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
+  linux-arm64) cc=(zig cc -target aarch64-linux-gnu.2.28 -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
     libs=(-lunwind -lutil -lrt -lpthread -lm -ldl -lc -Wl,--gc-sections -s) ;;
-  win32-x64) cc=(zig cc -target x86_64-windows-gnu); ar=(zig ar); part=shell-station; init_flags="-O0 -fno-sanitize=undefined"
+  win32-x64) cc=(zig cc -target x86_64-windows-gnu -fno-sanitize=undefined); ar=(zig ar); part=shell-station; init_flags="-O0"
     libs=(-lshell32 -liphlpapi -lbcrypt -ladvapi32 -lkernel32 -lntdll -luserenv -lws2_32 -ldbghelp -lunwind -s) ;;
   *) echo "build.sh: no target $target" >&2; exit 2 ;;
 esac
