@@ -720,8 +720,11 @@ fn foot_node(f : @view.View, pg : ScreenPage) -> Unit {
           m.row(Is(true)).grow(Is(2.0)).basis(Is(Some(0.0))).gap(Is(@ui.Space::S1.px())) |> ignore
           let left = @sf.t("android-misc.screen.key.mouseLeft")
           let right = @sf.t("android-misc.screen.key.mouseRight")
-          foot_action_node(m, pg, "mouse-left", fn() { left }, fn() { left }, felt=btn_primary, fn(_) { button_clicked(s, u, btn_primary) })
-          |> ignore
+          let took = Ref(false)
+          let l = foot_action_node(m, pg, "mouse-left", fn() { left }, fn() { left }, lit=fn() { u.left_locked.get() }, felt=btn_primary, fn(_) {
+            left_pressed_on(s, u, took)
+          })
+          left_hold_node(l, s, u, took)
           foot_action_node(m, pg, "mouse-right", fn() { right }, fn() { right }, felt=btn_secondary, fn(_) {
             button_clicked(s, u, btn_secondary)
           })
@@ -830,7 +833,14 @@ fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> 
         icon: k.icon,
         drop: k.drop,
         // (a modifier: solid while held for the next key, which keeps it in the row)
-        held: if k.mod_ != 0 { Some(fn() { (u.held.held_said() & k.mod_) != 0 }) } else { None },
+        // (左键 too: solid while held down from it)
+        held: if k.mod_ != 0 {
+          Some(fn() { (u.held.held_said() & k.mod_) != 0 })
+        } else if k.button == btn_primary {
+          Some(fn() { u.left_locked.get() })
+        } else {
+          None
+        },
         felt: button_felt(k.button),
         // pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what
         // is held
@@ -865,12 +875,100 @@ fn button_felt(button : Int) -> @ui.Haptic? {
 /// Mouse button `button` clicked where the pointer is (the trackpad's, else the screen's own; the station saying none,
 /// where a finger last pressed on the picture, else the trackpad's), the modifiers the keys row holds round it.
 fn button_clicked(s : ScreenSess, u : ScreenUi, button : Int) -> Unit {
+  if button == btn_primary {
+    left_pressed(s, u)
+    return
+  }
   let mods = u.held.take()
-  let at = match @signals.untracked(fn() { pointer_now(s, u) }) {
+  click(fn(j) { s.input(s.src, j) }, button_at(s, u), button, mods)
+}
+
+///|
+/// Where a mouse button of the foot clicks: where the pointer is (the trackpad's, else the screen's own; the station
+/// saying none, where a finger last pressed on the picture, else the trackpad's).
+fn button_at(s : ScreenSess, u : ScreenUi) -> (Double, Double) {
+  match @signals.untracked(fn() { pointer_now(s, u) }) {
     Some(at) => at
     None => u.tapped_at.unwrap_or(u.pad.at())
   }
-  click(fn(j) { s.input(s.src, j) }, at, button, mods)
+}
+
+///|
+/// 左键 pressed (the keys row's, the foot's or the floating one): held down from it, let go of; else a click where the
+/// pointer is, the modifiers the keys row holds round it (two quick presses a double click there, as a mouse's). The
+/// press of a button that held it (left_hold_node's `took`) comes to nothing more.
+fn left_pressed(s : ScreenSess, u : ScreenUi) -> Unit {
+  if u.left_locked.untracked() {
+    left_let_go(s, u, None)
+    return
+  }
+  let mods = u.held.take()
+  click(fn(j) { s.input(s.src, j) }, button_at(s, u), btn_primary, mods)
+}
+
+///|
+/// 左键's button `v` (the foot's, the floating one) held a press's hold (screen_hold_ms): 左键 held down where the
+/// pointer is, felt so, a finger on the stage then dragging with it (a window moved, words chosen, one hand on the
+/// button and the other on the screen) till the button or a tap on the stage lets it go; `took` set for its press,
+/// whose let go then clicks nothing (left_pressed_on). Held while it is already held: nothing.
+fn left_hold_node(v : @view.View, s : ScreenSess, u : ScreenUi, took : Ref[Bool]) -> Unit {
+  // (the moment the press under way went down; none while none is)
+  let since : @signals.Signal[Double?] = @signals.signal(None)
+  v.reacts(fn() { v.pressed() }, fn(down) {
+    since.set(if down { Some(v.cause_at()) } else { None })
+    if down {
+      took.val = false
+    }
+  }, at_start=false)
+  // (held a hold's length: the moment come as it is drawn, as a finger held on the stage is told its own)
+  v.reacts(fn() {
+    match since.get() {
+      Some(t0) => v.drawn_while(fn(now) { now < t0 + screen_hold_ms }) >= t0 + screen_hold_ms
+      None => false
+    }
+  }, fn(held) {
+    if held && !u.left_locked.untracked() && s.driving() {
+      took.val = true
+      left_hold(s, u)
+    }
+  }, at_start=false)
+}
+
+///|
+/// 左键's button pressed (let go on it): nothing where its press held 左键 down (`took`), else left_pressed.
+fn left_pressed_on(s : ScreenSess, u : ScreenUi, took : Ref[Bool]) -> Unit {
+  if took.val {
+    took.val = false
+  } else {
+    left_pressed(s, u)
+  }
+}
+
+///|
+/// 左键 held down where the pointer is, the modifiers the keys row holds round it till it is let go of.
+fn left_hold(s : ScreenSess, u : ScreenUi) -> Unit {
+  let send = fn(j) { s.input(s.src, j) }
+  let at = button_at(s, u)
+  let mods = u.held.take()
+  u.lock_at = at
+  u.lock_mods = mods
+  mods_round(send, mods, "down")
+  send(pointer_input("down", at, btn_primary))
+  u.left_locked.set(true)
+  @ui.haptic(LongPress)
+}
+
+///|
+/// 左键 held from its button let go of, at `at` (None: where the drag with it has got to, else where it went down), no
+/// button held after it (as a mouse's let go: screen_mouse_drag's), the keys held round it let go of after it; nothing
+/// while it is not held.
+fn left_let_go(s : ScreenSess, u : ScreenUi, at : (Double, Double)?) -> Unit {
+  guard u.left_locked.untracked() else { return }
+  let send = fn(j) { s.input(s.src, j) }
+  u.left_locked.set(false)
+  send(pointer_input("up", at.unwrap_or(u.lock_at), 0))
+  mods_round(send, u.lock_mods, "up")
+  u.lock_mods = 0
 }
 
 ///|
@@ -893,18 +991,41 @@ fn mouse_float_node(row : @view.View, pg : ScreenPage) -> Unit {
     end.box(fn(cap) {
       @sf.style_node(cap, fn() { mouse_pair_box }, in_row=true)
       u.mouse_pair = Some(cap)
-      for b in [
-        ("mouse-left", "android-misc.screen.key.mouseLeft", btn_primary),
-        ("mouse-right", "android-misc.screen.key.mouseRight", btn_secondary),
-      ] {
-        @sf.tool_round_node(cap, b.0, fn() { @sf.t(b.1) }, fn() { button_clicked(s, u, b.2) }, look=Floating, felt?=button_felt(b.2))
-        |> ignore
-      }
+      mouse_left_round_node(cap, s, u)
+      @sf.tool_round_node(cap, "mouse-right", fn() { @sf.t("android-misc.screen.key.mouseRight") }, fn() {
+        button_clicked(s, u, btn_secondary)
+      }, look=Floating, felt?=button_felt(btn_secondary))
+      |> ignore
       afloat_node(cap, u.mouse_moved)
     })
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// 左键 floating in `cap` (mouse_float_node's): a round tool floating over the picture as 右键 beside it is
+/// (@sf.tool_round_node's Floating look: 44, on the floating ground with its shadow, the ink at 8% pressed, its mark
+/// 20 in the ink); held down from it (left_hold_node), solid as the keys row's held key is (the ink, its mark in the
+/// page's colour, no shadow nor hover over it) and read out pressed.
+fn mouse_left_round_node(cap : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+  let held = fn() { u.left_locked.get() }
+  let took = Ref(false)
+  let label = fn() { @sf.t("android-misc.screen.key.mouseLeft") }
+  let key = @sf.action_box_node(cap, label, on=held, fn(_) { left_pressed_on(s, u, took) }, fn(v) {
+    @sf.style_node(v, fn() { mouse_round }, in_row=true)
+    v
+    .ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Floating }) }))
+    .shadow(By(fn() {
+      let t = @ui.tree_theme()
+      (2.0, 1.0, if held() { 0L } else { t.shadow })
+    }))
+    |> ignore
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() && !held() }))
+    @sf.icon_node(v, "mouse-left", round_icon, By(fn() { @ui.tree_theme().color(if held() { Bg } else { Fg }) })) |> ignore
+    button_felt_node(v, btn_primary)
+  })
+  left_hold_node(key, s, u, took)
 }
 
 ///|
