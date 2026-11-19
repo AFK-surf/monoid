@@ -11,26 +11,26 @@ fn near_rect(r : (Double, Double, Double, Double)?, x : Double, y : Double, w : 
 
 ///|
 test "fitted within a margin, never enlarged; pinched round a point that stays put; kept within the stage" {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.boxed(390.0, 844.0, at=now())
   z.natural(600.0, 400.0, at=now())
   // (390 - 24) / 600
   assert_true((z.scale - 366.0 / 600.0).abs() < 0.0001)
-  assert_true(near_rect(z.rect(cur()), 12.0, 300.0, 366.0, 244.0))
-  let small = @kit.Zoom::new()
+  assert_true(near_rect(z.rect_at(now()), 12.0, 300.0, 366.0, 244.0))
+  let small = @motion.Zoom::new()
   small.boxed(390.0, 844.0, at=now())
   small.natural(100.0, 50.0, at=now())
   assert_eq(small.scale, 1.0)
   // twice as large round (100, 422): that point of the picture stays under it
-  let (x0, _, w0, _) = z.rect(cur()).unwrap()
+  let (x0, _, w0, _) = z.rect_at(now()).unwrap()
   let u = (100.0 - x0) / w0
   z.transform(100.0, 422.0, 2.0, 0.0, 0.0, at=now())
-  let (x1, _, w1, _) = z.rect(cur()).unwrap()
+  let (x1, _, w1, _) = z.rect_at(now()).unwrap()
   assert_true((x1 + u * w1 - 100.0).abs() < 0.0001)
-  assert_true(z.zoomed(cur()))
+  assert_true(z.zoomed_at(now()))
   // panned far: no gap at its edges
   z.pan(10000.0, 0.0, at=now())
-  assert_true(z.rect(cur()).unwrap().0.abs() < 0.0001)
+  assert_true(z.rect_at(now()).unwrap().0.abs() < 0.0001)
   // no further than 16 times
   z.transform(195.0, 422.0, 1000.0, 0.0, 0.0, at=now())
   assert_true((z.scale - 16.0).abs() < 0.0001)
@@ -38,32 +38,32 @@ test "fitted within a margin, never enlarged; pinched round a point that stays p
 
 ///|
 test "a stage's own: fitted edge to edge, the keyboard up keeping the frame as large and its point in sight" {
-  let z = @kit.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true, min_scale=fn(fit) { fit }, max_scale=fn(fit) {
+  let z = @motion.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true, min_scale=fn(fit) { fit }, max_scale=fn(fit) {
     fit * 5.0
   })
   z.natural(1280.0, 720.0, at=now())
   z.boxed(800.0, 360.0, at=now())
-  assert_true(near_rect(z.rect(cur()), 80.0, 0.0, 640.0, 360.0))
+  assert_true(near_rect(z.rect_at(now()), 80.0, 0.0, 640.0, 360.0))
   z.resize_keeping(800.0, 150.0, Some((0.5, 0.9)), 40.0, when=now())
-  let (_, y, w, h) = z.rect(cur()).unwrap()
+  let (_, y, w, h) = z.rect_at(now()).unwrap()
   assert_true((w - 640.0).abs() < 0.0001)
   assert_true(y + 0.9 * h >= 0.0 && y + 0.9 * h <= 150.0)
   z.resize_keeping(800.0, 360.0, Some((0.5, 0.9)), 40.0, when=now())
-  assert_true(!z.zoomed(cur()))
+  assert_true(!z.zoomed_at(now()))
   z.fit_now(at=now())
-  assert_true(near_rect(z.rect(cur()), 80.0, 0.0, 640.0, 360.0))
+  assert_true(near_rect(z.rect_at(now()), 80.0, 0.0, 640.0, 360.0))
 }
 
 ///|
 test "a page on a canvas: free, dragged anywhere; its fitted scale by thousandths; its own bounds of scale" {
-  let z = @kit.Zoom::new(margin=fn(_) { 16.0 }, min_scale=fn(_) { 0.05 }, max_scale=fn(_) { 4.0 }, free=true, fit_step=0.001)
+  let z = @motion.Zoom::new(margin=fn(_) { 16.0 }, min_scale=fn(_) { 0.05 }, max_scale=fn(_) { 4.0 }, free=true, fit_step=0.001)
   z.boxed(390.0, 600.0, at=now())
   z.natural(1280.0, 800.0, at=now())
   // (390 - 32) / 1280 = 0.2796875, down to 0.279
   assert_true((z.scale - 0.279).abs() < 0.0000001)
   // dragged far off: it goes there
   z.pan(-1000.0, 0.0, at=now())
-  assert_true(z.rect(cur()).unwrap().0 < -800.0)
+  assert_true(z.rect_at(now()).unwrap().0 < -800.0)
   // pinched down past its least: 0.05
   z.transform(195.0, 300.0, 0.01, 0.0, 0.0, at=now())
   assert_true((z.scale - 0.05).abs() < 0.0000001)
@@ -73,30 +73,30 @@ test "a page on a canvas: free, dragged anywhere; its fitted scale by thousandth
 
 ///|
 test "what reads where a zoom shows is told as that changes, by any way it changes: resized keeping a point in place" {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(200.0, 200.0, at=now())
-  let shown = @signals.computed(fn(_) { z.rect(cur()) })
+  let shown = @signals.computed(fn(_) { shown_of(z) })
   assert_true(near_rect(shown.get(), 50.0, 50.0, 100.0, 100.0))
   // (the stage larger, the picture's middle where it was, then kept centred: nothing to bring in sight)
   z.resize_keeping(300.0, 300.0, Some((0.5, 0.5)), 0.0, when=now())
-  assert_true(near_rect(z.rect(cur()), 100.0, 100.0, 100.0, 100.0), msg="\{Repr(z.rect(cur()))}")
-  assert_eq(shown.get(), z.rect(cur()))
+  assert_true(near_rect(z.rect_at(now()), 100.0, 100.0, 100.0, 100.0), msg="\{Repr(z.rect_at(now()))}")
+  assert_eq(shown.get(), z.rect_at(now()))
 }
 
 ///|
 test "what reads where a zoom shows is not told where nothing it shows changed, nor of another zoom" {
-  let a = @kit.Zoom::new(free=true)
+  let a = @motion.Zoom::new(free=true)
   a.natural(100.0, 100.0, at=now())
   a.boxed(400.0, 400.0, at=now())
-  let b = @kit.Zoom::new(free=true)
+  let b = @motion.Zoom::new(free=true)
   b.natural(100.0, 100.0, at=now())
   b.boxed(400.0, 400.0, at=now())
-  let b_was = b.rect(cur())
+  let b_was = b.rect_at(now())
   let reads = Ref(0)
   let shown = @signals.computed(fn(_) {
     reads.val = reads.val + 1
-    a.rect(cur())
+    shown_of(a)
   })
   shown.get() |> ignore
   let first = reads.val
@@ -106,15 +106,15 @@ test "what reads where a zoom shows is not told where nothing it shows changed, 
   b.transform(200.0, 200.0, 1.5, 0.0, 0.0, at=now())
   shown.get() |> ignore
   assert_eq(reads.val, first)
-  assert_true(b.rect(cur()) != b_was, msg="\{Repr(b.rect(cur()))}")
+  assert_true(b.rect_at(now()) != b_was, msg="\{Repr(b.rect_at(now()))}")
   // (a small one kept centred in its stage, pushed against its edges, pinched by nothing: as it was, told nothing)
-  let c = @kit.Zoom::new()
+  let c = @motion.Zoom::new()
   c.natural(100.0, 100.0, at=now())
   c.boxed(400.0, 400.0, at=now())
   let c_reads = Ref(0)
   let c_shown = @signals.computed(fn(_) {
     c_reads.val = c_reads.val + 1
-    c.rect(cur())
+    shown_of(c)
   })
   c_shown.get() |> ignore
   c.pan(60.0, -20.0, at=now())
@@ -128,29 +128,29 @@ test "what reads where a zoom shows is not told where nothing it shows changed, 
 }
 
 ///|
-/// A picture gliding in from fitted (3 times, round a point off the stage's middle), frames drawn 100 ms on (its step
-/// sampling it then, or not), then told `then`: where it is.
-fn glide_cut(sampled : Bool, then : (@kit.Zoom) -> Unit) -> (Double, Double, Double, Double)? {
+/// A picture gliding in from fitted (3 times, round a point off the stage's middle), frames drawn 100 ms on (one read
+/// where it was then, or not), then told `then`: where it is.
+fn glide_cut(sampled : Bool, then : (@motion.Zoom) -> Unit) -> (Double, Double, Double, Double)? {
   let t = @ui.Tester::new(fn(_c) {  })
   t.draw()
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   z.zoom_to(3.0, 150.0, 170.0, true, at=now())
-  // (frames on, as a host draws them: none of them steps it)
+  // (frames on, as a host draws them: none of them reads it)
   t.run_for(some_frames_ms)
   if sampled {
-    z.step(cur())
+    z.rect_at(now()) |> ignore
   }
   then(z)
-  z.rect(cur())
+  z.rect_at(now())
 }
 
 ///|
 test "a glide cut short at a moment goes on from where it was then, a frame sampled it or not: panned, or sent elsewhere" {
-  let pan = fn(z : @kit.Zoom) { z.pan(10.0, 0.0, at=now()) }
-  let other = fn(z : @kit.Zoom) { z.zoom_to(1.5, 100.0, 100.0, false, at=now()) }
-  let tapped = fn(z : @kit.Zoom) { z.double_tap(200.0, 200.0, at=now()) }
+  let pan = fn(z : @motion.Zoom) { z.pan(10.0, 0.0, at=now()) }
+  let other = fn(z : @motion.Zoom) { z.zoom_to(1.5, 100.0, 100.0, false, at=now()) }
+  let tapped = fn(z : @motion.Zoom) { z.double_tap(200.0, 200.0, at=now()) }
   assert_eq(glide_cut(false, pan), glide_cut(true, pan))
   assert_eq(glide_cut(false, other), glide_cut(true, other))
   // (a double tap midway: zoomed in by then, sampled or not: back to fitted, gliding there)
@@ -164,15 +164,15 @@ test "a glide cut short at a moment goes on from where it was then, a frame samp
 test "a zoom told a command tells what reads it once, as the command leaves it: fitted again, a glide cut short by a pan" {
   let t = @ui.Tester::new(fn(_c) {  })
   t.draw()
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   z.zoom_to(2.0, 150.0, 150.0, false, at=now())
   // (what reads it, run as it is told: what it reads then)
   let seen : Array[(Bool, Bool)] = []
   let stop = @signals.effect(fn() {
-    z.rect(cur()) |> ignore
-    seen.push((z.fitted, z.zoomed(cur())))
+    z.told()
+    seen.push((z.fitted, z.zoomed_at(now())))
   })
   seen.clear()
   z.fit_now(at=now())
@@ -193,14 +193,14 @@ fn pan_after_frame(last : Double) -> (Double, Double, Double, Double)? {
   let t = @ui.Tester::new(fn(_c) {  })
   t.draw()
   let t0 = t.time()
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   z.zoom_to(3.0, 150.0, 170.0, true, at=now())
   t.frame_at(t0 + last)
   t.advance(t0 + 20.0 - t.time())
   z.pan(10.0, 0.0, at=now())
-  z.rect(cur())
+  z.rect_at(now())
 }
 
 ///|
@@ -213,10 +213,10 @@ test "a pan told at a moment between frames starts from where the glide has it t
 
 ///|
 /// A large picture zoomed in, flung across at `t0` between frames: the tester, the zoom and when the fling ends.
-fn flung() -> (@ui.Tester, @kit.Zoom, Double) {
+fn flung() -> (@ui.Tester, @motion.Zoom, Double) {
   let t = @ui.Tester::new(fn(_c) {  })
   t.draw()
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(1000.0, 1000.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   z.zoom_to(1.0, 200.0, 200.0, false, at=now())
@@ -225,12 +225,12 @@ fn flung() -> (@ui.Tester, @kit.Zoom, Double) {
 }
 
 ///|
-test "a press after a fling's end takes nothing, a frame drawn at its end (and stepped) or not; one before it, the fling" {
+test "a press after a fling's end takes nothing, a frame drawn at its end (and read) or not; one before it, the fling" {
   let after = fn(drawn : Bool) {
     let (t, z, end) = flung()
     if drawn {
       t.frame_at(end)
-      z.step(cur())
+      z.rect_at(now()) |> ignore
     }
     t.advance(end + 1.0 - t.time())
     z.stop_fling(at=now())
@@ -243,19 +243,19 @@ test "a press after a fling's end takes nothing, a frame drawn at its end (and s
 }
 
 ///|
-/// A fling, a frame drawn (and stepped) ahead past its end or none, then a pan told for a moment midway through it
+/// A fling, a frame drawn (and read) ahead past its end or none, then a pan told for a moment midway through it
 /// (50 ms in): where the pan leaves it.
 fn pan_before_end(ahead : Bool) -> (Double, Double, Double, Double)? {
   let (t, z, end) = flung()
   let t0 = t.time()
   if ahead {
     t.frame_at(end + 5.0)
-    z.step(cur())
+    z.rect_at(now()) |> ignore
   }
   // (the pan's own moment, before the frame drawn ahead: said by who tells it, and as the host's clock has it)
   t.advance(t0 + 50.0 - t.time())
   z.pan(10.0, 0.0, at=t0 + 50.0)
-  z.rect(cur())
+  z.rect_at(now())
 }
 
 ///|
@@ -268,7 +268,7 @@ test "a fling drawn ahead past its end, then told a pan at a moment before it: f
 /// A picture the window's tree sets gliding at 1050 (a moment it said, done as a frame comes at or past it), frames
 /// drawn at each of `frames` and at 1200: where it is then.
 fn glide_told_by_tree(frames : Array[Double]) -> (Double, Double, Double, Double)? {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   let t = @ui.Tester::new(fn(_c) {  }, time=1000.0, tree=fn(root : @view.View) {
@@ -279,7 +279,7 @@ fn glide_told_by_tree(frames : Array[Double]) -> (Double, Double, Double, Double
     t.frame_at(f)
   }
   t.frame_at(1200.0)
-  z.rect(cur())
+  z.rect_at(now())
 }
 
 ///|
@@ -295,7 +295,7 @@ test "a glide the window's tree tells at a moment sets out from that moment, the
 /// A picture a press on the window's tree sets gliding, the press at 1050 handed on at 1080 between frames, frames drawn
 /// at each of `frames` and at 1200: where it is then.
 fn glide_pressed_on_tree(frames : Array[Double]) -> (Double, Double, Double, Double)? {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   let t = @ui.Tester::new(fn(_c) {  }, time=1000.0, tree=fn(root : @view.View) {
@@ -317,7 +317,7 @@ fn glide_pressed_on_tree(frames : Array[Double]) -> (Double, Double, Double, Dou
     t.frame_at(f)
   }
   t.frame_at(1200.0)
-  z.rect(cur())
+  z.rect_at(now())
 }
 
 ///|
@@ -328,13 +328,13 @@ test "a glide a press on the window's tree tells sets out from the press's momen
   // (as one told to set out at 1050, read at 1200)
   let t = @ui.Tester::new(fn(_c) {  }, time=1000.0)
   t.draw()
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.natural(100.0, 100.0, at=now())
   z.boxed(400.0, 400.0, at=now())
   t.advance(happened_at - t.time())
   z.zoom_to(3.0, 150.0, 170.0, true, at=happened_at)
   t.frame_at(1200.0)
-  assert_eq(one, z.rect(cur()))
+  assert_eq(one, z.rect_at(now()))
 }
 
 ///|
@@ -350,55 +350,57 @@ let handed_on_at : Double = 1080.0
 
 ///|
 test "a bar over the stage: the fitted picture clear of it, in the middle of what is left; zoomed in, its top comes to the bar's foot" {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.boxed(1400.0, 820.0, at=now())
   z.natural(880.0, 1280.0, at=now())
   // (no bar: 32 round it)
-  assert_eq(z.rect(cur()).unwrap().1, 32.0)
+  assert_eq(z.rect_at(now()).unwrap().1, 32.0)
   z.under_bars(45.0, 0.0, at=now())
   // (16 past the bar, 32 from the foot)
-  let (_, y, _, h) = z.rect(cur()).unwrap()
+  let (_, y, _, h) = z.rect_at(now()).unwrap()
   assert_eq(y, 61.0)
   assert_eq(y + h, 788.0)
   // (panned as far down as it goes, its top no higher than the bar's foot needs; as far up, its foot at the stage's)
   z.zoom_to(2.0, 700.0, 410.0, false, at=now())
   z.pan(0.0, 10000.0, at=now())
-  assert_eq(z.rect(cur()).unwrap().1, 45.0)
+  assert_eq(z.rect_at(now()).unwrap().1, 45.0)
   z.pan(0.0, -10000.0, at=now())
-  let (_, y, _, h) = z.rect(cur()).unwrap()
+  let (_, y, _, h) = z.rect_at(now()).unwrap()
   assert_eq(y + h, 820.0)
   // (a picture short of the room: in the middle of the room between the margins, zoomed or not)
   z.reset(at=now())
   z.natural(100.0, 100.0, at=now())
   z.fit_now(at=now())
-  let (_, y, _, h) = z.rect(cur()).unwrap()
+  let (_, y, _, h) = z.rect_at(now()).unwrap()
   assert_eq(y - 61.0, 788.0 - (y + h))
 }
 
 ///|
 test "a bar over the stage's foot too: the fitted picture between them; zoomed in, its foot comes to the lower bar's top" {
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.boxed(1400.0, 820.0, at=now())
   z.natural(880.0, 1280.0, at=now())
   z.under_bars(45.0, 60.0, at=now())
-  let (_, y, _, h) = z.rect(cur()).unwrap()
+  let (_, y, _, h) = z.rect_at(now()).unwrap()
   assert_eq(y, 61.0)
   assert_eq(y + h, 744.0)
   z.zoom_to(2.0, 700.0, 410.0, false, at=now())
   z.pan(0.0, -10000.0, at=now())
-  let (_, y, _, h) = z.rect(cur()).unwrap()
+  let (_, y, _, h) = z.rect_at(now()).unwrap()
   assert_eq(y + h, 760.0)
   z.pan(0.0, 10000.0, at=now())
-  assert_eq(z.rect(cur()).unwrap().1, 45.0)
+  assert_eq(z.rect_at(now()).unwrap().1, 45.0)
 }
 
 ///|
-/// The old view these tests read a zoom as (the current one, none of their own), and its moment, what tells it.
-fn cur() -> @ui.Ctx {
-  @ui.current()
-}
-
-///|
+/// The moment a command is told at (the frame's or the input's, as the window has it): what tells it.
 fn now() -> Double {
-  cur().moment()
+  @ui.current().moment()
+}
+
+///|
+/// Where a zoom shows now, read as what is built by it reads it: told again as what it shows changes (Zoom::told).
+fn shown_of(z : @motion.Zoom) -> (Double, Double, Double, Double)? {
+  z.told()
+  z.rect_at(now())
 }

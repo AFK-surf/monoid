@@ -273,7 +273,7 @@ fn drive_player_native(
   n : @view.View,
   at : DriveAt,
   file : @sf.ViewerFile,
-  m : @kit.Media,
+  m : @player.Media,
   many : () -> Bool,
   width : () -> Double,
   back : () -> Unit,

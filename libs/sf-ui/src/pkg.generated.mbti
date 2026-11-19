@@ -7,6 +7,7 @@ import {
   "mbui/motion",
   "mbui/paint",
   "mbui/pixels",
+  "mbui/player",
   "mbui/signals",
   "mbui/text",
   "mbui/ui",
@@ -1344,7 +1345,7 @@ pub fn nav_words_node(@view.View, () -> String) -> Unit
 
 pub fn neg(Double) -> Double
 
-pub fn new_media(String) -> @kit.Media
+pub fn new_media(String) -> @player.Media
 
 pub fn next_in(String, Array[String]) -> String?
 
@@ -1671,7 +1672,7 @@ pub fn player(@ui.Ctx, String, ViewerFile, Array[ViewerEntry], back_label~ : Str
 
 pub fn player_fills_native(Double) -> Bool
 
-pub fn player_full_act(@kit.Media, Double) -> (String, Bool, () -> Unit)
+pub fn player_full_act(@player.Media, Double) -> (String, Bool, () -> Unit)
 
 pub fn player_full_native() -> Bool
 
@@ -1681,7 +1682,7 @@ pub let player_keep_ms : Double
 
 pub fn player_let_go(String) -> Unit
 
-pub fn player_media(@ui.Ctx, String, ViewerFile, Array[ViewerEntry]) -> @kit.Media
+pub fn player_media(@ui.Ctx, String, ViewerFile, Array[ViewerEntry]) -> @player.Media
 
 pub let player_next_ms : Double
 
@@ -1695,7 +1696,7 @@ pub let player_speeds : Array[Double]
 
 pub let player_track_inset : Double
 
-pub fn player_view(@ui.Ctx, @kit.Media, ViewerFile, Array[String], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit, still? : String, flying? : Bool) -> Unit
+pub fn player_view(@ui.Ctx, @player.Media, ViewerFile, Array[String], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit, still? : String, flying? : Bool) -> Unit
 
 pub fn player_view_let_go(String) -> Unit
 
@@ -2573,7 +2574,7 @@ pub fn viewer_tool_corner() -> @ui.Style
 
 pub let viewer_tool_icon : Double
 
-pub fn viewer_zoom_key(@kit.Zoom, Int32, Int32, Double) -> Bool
+pub fn viewer_zoom_key(@motion.Zoom, Int32, Int32, Double) -> Bool
 
 pub let viewer_zoom_step : Double
 
@@ -3305,7 +3306,7 @@ pub(all) struct PlacedNode {
 }
 
 pub(all) struct Playing {
-  media : @kit.Media
+  media : @player.Media
   mut file : ViewerFile?
   opened : @signals.Signal[Bool]
   mut subtitle_of : String

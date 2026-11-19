@@ -135,7 +135,7 @@ pub fn fixture_preview(mode : String) -> Unit {
 ///|
 /// How the made-up song stands: paused at 0:31 of 1:35, the same on every run.
 // kept across runs: a value (no field of it changes)
-let fixture_song_stands : @kit.MediaStatus = {
+let fixture_song_stands : @player.MediaStatus = {
   state: 1,
   duration: 95000.0,
   position: 31000.0,

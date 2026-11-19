@@ -595,7 +595,7 @@ pub fn NativeView::grabbed(self : NativeView) -> Bytes? {
 
 ///|
 /// When the grab going was asked for, by the app's clock (-1: none going): what decides how long to wait for its answer
-/// reads it (@kit.media_grab_stalled).
+/// reads it (a player's nodes, by @player.media_grab_wait_ms).
 pub fn NativeView::grab_since(self : NativeView) -> Double {
   self.grab_since
 }

@@ -35,7 +35,7 @@ pub(all) struct ViewerEntry {
 ///|
 /// A file opened. `read` reads it whole (at most `max` bytes, its progress told); `stream` reads a part of it to play
 /// it as it comes (offset, length, then its bytes as they come, the whole's size and whether more comes, stopped by
-/// what it gives back: @kit.MediaTrack's read; none: played from what `read` reads); `beside` reads a file beside it (a subtitle); `place` says where it was left on this device, as it is
+/// what it gives back: @player.MediaTrack's read; none: played from what `read` reads); `beside` reads a file beside it (a subtitle); `place` says where it was left on this device, as it is
 /// asked each frame; `keep_place` keeps where it is now (at, of); `save` saves it to the device; `facts`, what its
 /// message says of a film before it is read.
 pub(all) struct ViewerFile {
@@ -52,7 +52,7 @@ pub(all) struct ViewerFile {
   bytes : Bytes?
   read : (Int, (Got) -> Unit, (Result[Bytes, String]) -> Unit) -> Unit
   stream : ((Double, Int, (Bytes, Double, Bool) -> Unit) -> () -> Unit)?
-  /// how a host reads its `stream`'s parts itself, past the app (@kit.MediaTrack's `direct`; "": none)
+  /// how a host reads its `stream`'s parts itself, past the app (@player.MediaTrack's `direct`; "": none)
   direct : String
   beside : ((ViewerEntry, (Result[Bytes, String]) -> Unit) -> Unit)?
   place : () -> PlaceNow

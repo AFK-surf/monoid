@@ -324,6 +324,8 @@ pub fn wrap(Double, Double, Double) -> Double
 
 pub let zoom_fling_ms : Double
 
+pub let zoom_pull_least : Double
+
 // Errors
 
 // Types and methods
@@ -545,6 +547,57 @@ pub fn Way::shown_on(Self, @view.View) -> Double
 pub fn Way::starts_at(Self) -> Double
 pub fn Way::target(Self) -> Double
 pub fn Way::value_at(Self, Double) -> Double
+
+pub struct Zoom {
+  mut nw : Double
+  mut nh : Double
+  mut bw : Double
+  mut bh : Double
+  mut bar : Double
+  mut foot_bar : Double
+  mut scale : Double
+  mut x : Double
+  mut y : Double
+  mut fitted : Bool
+  margin_of : (Double) -> Double
+  enlarge : Bool
+  min_of : (Double) -> Double
+  max_of : (Double) -> Double
+  free : Bool
+  fit_step : Double
+  mut gliding : Bool
+  g_from : FixedArray[Double]
+  g_to : FixedArray[Double]
+  mut flinging : Bool
+  // private fields
+}
+pub fn Zoom::boxed(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::double_tap(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::fit(Self) -> Double
+pub fn Zoom::fit_now(Self, at~ : Double) -> Unit
+pub fn Zoom::fling(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::fling_ends(Self) -> Double
+pub fn Zoom::goes_at(Self, Double) -> Bool
+pub fn Zoom::keep(Self, (Double, Double), Double, when~ : Double) -> Unit
+pub fn Zoom::max_scale(Self) -> Double
+pub fn Zoom::min_scale(Self) -> Double
+pub fn Zoom::natural(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::new(margin? : (Double) -> Double, enlarge? : Bool, min_scale? : (Double) -> Double, max_scale? : (Double) -> Double, free? : Bool, fit_step? : Double) -> Self
+pub fn Zoom::pan(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::pull(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::pulled_at(Self, Double) -> Double
+pub fn Zoom::rect_at(Self, Double) -> (Double, Double, Double, Double)?
+pub fn Zoom::reset(Self, at~ : Double) -> Unit
+pub fn Zoom::resize_keeping(Self, Double, Double, (Double, Double)?, Double, when~ : Double) -> Unit
+pub fn Zoom::scale_at(Self, Double) -> Double
+pub fn Zoom::sized(Self) -> Bool
+pub fn Zoom::stop_fling(Self, at~ : Double) -> Bool
+pub fn Zoom::stop_glide(Self, at~ : Double) -> Unit
+pub fn Zoom::told(Self) -> Unit
+pub fn Zoom::transform(Self, Double, Double, Double, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::under_bars(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::zoom_to(Self, Double, Double, Double, Bool, at~ : Double) -> Unit
+pub fn Zoom::zoomed_at(Self, Double) -> Bool
 
 // Type aliases
 

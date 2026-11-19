@@ -61,7 +61,7 @@ fn player_tester(
   window? : (Double, Double, Int),
   subtitled? : Bool = false,
   keyed? : Bool = false,
-  pin? : @kit.MediaStatus,
+  pin? : @player.MediaStatus,
 ) -> @ui.Tester {
   let (w, h, platform) = window.unwrap_or(if narrow { (390.0, 844.0, 1) } else { (1280.0, 800.0, 0) })
   set_viewer_host(viewer_host_default())
@@ -180,7 +180,7 @@ test "a desktop's timeline dragged: paused, the picture going to the start of ea
 
 ///|
 /// How the player stands, pinned (as a fixture's): playing at `position` of 10 s, or at its end.
-fn pinned(position : Double, ended? : Bool = false) -> @kit.MediaStatus {
+fn pinned(position : Double, ended? : Bool = false) -> @player.MediaStatus {
   {
     state: 1,
     duration: 10000.0,
@@ -283,7 +283,7 @@ test "a phone's: a finger along the film moves through the time, the player sent
 test "a phone's song: its mark and name in the middle, on the page's colours, the controls staying" {
   let t = player_tester(true, "曲.mp3", [], [], [], kind="audio")
   t.draw()
-  t.run_for(@kit.media_rest_ms + @kit.media_sleep_ms)
+  t.run_for(@player.media_rest_ms + @player.media_sleep_ms)
   assert_true(t.find("0:00 / 0:10") is Some(_))
   assert_true(t.find_last("曲.mp3") is Some(_))
 }
@@ -301,7 +301,7 @@ test "a desktop's: a double click in the middle of the film plays it, as a phone
   }
   let before = plays()
   t.tap(640.0, 400.0)
-  t.run_for(@kit.media_note_ms)
+  t.run_for(@player.media_note_ms)
   assert_eq(plays(), before)
   t.tap(640.0, 400.0)
   t.advance(@ui.double_tap_ms / 2.0)
@@ -404,15 +404,15 @@ test "a frame the host never gives is given up by the app's clock, told as faile
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms / 2.0)
+  t.run_for(@player.media_grab_wait_ms / 2.0)
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms)
+  t.run_for(@player.media_grab_wait_ms)
   assert_eq(said, ["android-chat.video.saveFrame.failed"])
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"89504e47\"}"))
   t.draw()
-  t.run_for(@kit.media_grab_wait_ms * 2.0)
+  t.run_for(@player.media_grab_wait_ms * 2.0)
   assert_eq(said.length(), 1)
 }
 
@@ -452,7 +452,7 @@ test "a song's end and its failure on the page's own colours: their cards' butto
 
 ///|
 test "what it waits on is said in its bar beside its name, a phone's and a desktop's, never over the middle of the film" {
-  let buffering : @kit.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  let buffering : @player.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
   for narrow in [true, false] {
     let t = player_tester(narrow, "a.mp4", [], [], [], pin=buffering)
     t.draw()

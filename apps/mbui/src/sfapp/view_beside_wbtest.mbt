@@ -840,7 +840,7 @@ test "大屏: a film playing in a narrow tab keeps its controls after a single p
   t.run_for(@ui.move_most_ms)
   let (x, y, w, h) = film_hole(t, beside_film)
   t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@ui.double_tap_ms + @kit.media_sleep_ms + @ui.move_most_ms)
+  t.run_for(@ui.double_tap_ms + @player.media_sleep_ms + @ui.move_most_ms)
   let pause = t.get(Button, label=@sf.t("android-chat.video.pause"), disabled=false)
   let (kx, ky, kw, kh) = pause.rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
@@ -855,13 +855,13 @@ test "大屏: a film playing in a wide tab keeps its controls with the pointer n
   t.set_player(id, playing=true)
   t.run_for(@ui.move_most_ms)
   // (untouched while it plays: there all along)
-  t.run_for(@kit.media_rest_ms + @ui.move_most_ms)
+  t.run_for(@player.media_rest_ms + @ui.move_most_ms)
   assert_eq(t.all(Button, label=@sf.t("android-chat.video.pause"), disabled=false).length(), 1, msg="drawn while it plays")
   let (x, y, w, h) = film_hole(t, beside_film)
   t.tap(x + w / 2.0, y + h / 2.0)
   // the pointer far from them, in the chat
   t.move_to(600.0, 300.0)
-  t.run_for(@ui.double_tap_ms + @kit.media_sleep_ms + @ui.move_most_ms)
+  t.run_for(@ui.double_tap_ms + @player.media_sleep_ms + @ui.move_most_ms)
   let pause = t.get(Button, label=@sf.t("android-chat.video.pause"), disabled=false)
   let (kx, ky, kw, kh) = pause.rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
@@ -925,7 +925,7 @@ test "大屏: a song playing in a tab cuts no hole in it (its player placed out 
     let t = beside_tester(mode="chat-view-side-audio", w~, h~)
     let id = tab_player_view(t, beside_song)
     t.click(Button, label=@sf.t("android-chat.video.play"))
-    t.run_for(@kit.media_rest_ms + @ui.move_most_ms)
+    t.run_for(@player.media_rest_ms + @ui.move_most_ms)
     assert_true(told_playing(t, id), msg="\{w} wide: it plays")
     assert_eq(holes_beside(t, tab_left(t, beside_song)), [], msg="\{w} wide: no hole for a song")
     let f = beside_tester(mode="chat-view-side-video", w~, h~)

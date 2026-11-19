@@ -12,7 +12,7 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 ## Its parts
 
 - `libs/mbui/src/view`: retained window tree, made once. `libs/mbui/src/ui`: legacy immediate-mode `Ctx` plus shared runtime, styles (`style.mbt`, `@ui.css`), theme, text fields, Tester, and `FakeHost`.
-- `libs/mbui/src/signals`: alien-signals port. `libs/mbui/src/motion`: motion as data. `libs/mbui/src/headless`: headless tree controls. `libs/mbui/src/kit`: legacy Radix-like controls on `Ctx` (frozen except toasts).
+- `libs/mbui/src/signals`: alien-signals port. `libs/mbui/src/motion`: motion as data. `libs/mbui/src/headless`: headless tree controls. `libs/mbui/src/player`: streaming audio/video player state machine. `libs/mbui/src/kit`: legacy Radix-like controls on `Ctx` (frozen except toasts).
 - `libs/mbui/src/flex`, `text`, `shape`, `paint`, `skia`, `svg`, `pixels`: layout and drawing. `src/hostapi` and `src/host`: host interface and platform backends. `src/effect`: Effect-TS model on the frame clock.
 - `libs/mbui/tools`: MoonBit build and check tools (`detlint`, `mbc`, `wasmhost`, `chk`, `wasmgas`).
 

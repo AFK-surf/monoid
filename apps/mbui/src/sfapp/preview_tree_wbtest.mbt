@@ -390,7 +390,7 @@ fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit raise {
 /// Marking with the pen, a stroke drawn by a host's finger from `t0` (down at 10 on the picture, 4 moves 30 across,
 /// let go at 60), no frame between, then the display's next frame; `off`, called off at 60 instead.
 fn pen_stroke(t : @ui.Tester, off : Bool) -> Unit {
-  let (x, y, _, _) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, _, _) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   let t0 = t.time()
   let said = [(0, 0, x + 40.0, y + 40.0, 10.0)]
   for i in 1..=4 {
@@ -458,7 +458,7 @@ test "viewer on the tree, marking: a mark moved and called off: back where it wa
   let was = marking.shapes[0].pts.copy()
   let past = marking.past.length()
   pressed(t, Button, pv("android-chat.marks.tool.select"))
-  let (x, y, _, _) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, _, _) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   let t0 = t.time()
   told_by(t, t0, [(0, 0, x + 100.0, y + 60.0, 10.0), (1, 0, x + 140.0, y + 60.0, 20.0), (1, 0, x + 180.0, y + 60.0, 30.0), (3, 0, x + 180.0, y + 60.0, 40.0)], At([]))
   display_frame(t)
@@ -473,7 +473,7 @@ test "viewer on the tree, marking: a box's corner handle taken: the box stretche
   pressed(t, Button, @sf.t("web-main.annotate.image"))
   assert_true(marking.tool == Rect)
   let z = viewer.get().unwrap().zoom
-  let (x, y, w, _) = z.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = z.rect_at(t.time()).unwrap()
   let k = w / z.nw
   // a box drawn from 40, 40 to 160, 100 on the picture, its note left unsaid (a tap beside it closes it)
   told_by(t, t.time(), [(0, 0, x + 40.0, y + 40.0, 10.0), (1, 0, x + 100.0, y + 70.0, 20.0), (2, 0, x + 160.0, y + 100.0, 30.0)], At([]))
@@ -484,7 +484,7 @@ test "viewer on the tree, marking: a box's corner handle taken: the box stretche
   assert_eq(marking.note, -1)
   // (its note's card under the picture now, its room opened on its way: the picture moved up clear of it)
   t.run_for(@ui.move_most_ms)
-  let (x, y, _, _) = z.rect(t.ctx()).unwrap()
+  let (x, y, _, _) = z.rect_at(t.time()).unwrap()
   // picked by its left edge (a tap: nothing to undo), then its foot right handle (drawn half a reach out of the
   // corner) taken 40, 30 further
   pressed(t, Button, pv("android-chat.marks.tool.select"))
@@ -511,7 +511,7 @@ test "viewer on the tree, marking: a box's corner handle taken: the box stretche
 ///|
 test "viewer on the tree, marking: a second finger as a stroke is drawn: the stroke dropped, the two a pinch" {
   let t = pen_marking()
-  let (x, y, _, _) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, _, _) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   let t0 = t.time()
   told_by(
     t,
@@ -648,7 +648,7 @@ test "viewer on the tree, marking: the keyboard up as words are written on a gli
 test "viewer on the tree, narrow, a mouse: the secondary button on the picture opens its own menu (复制图片), never the chat's under it; off the picture none; the primary held still opens none" {
   let t = preview_tester("image", platform=0)
   assert_true(@ui.pointing() is Mouse)
-  let (x, y, w, h) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   // held still with the primary button: a mouse's, no menu of it
   t.touch(0, x + w / 2.0, y + h / 2.0)
   t.draw()
@@ -806,7 +806,7 @@ test "viewer on the tree: read the picture in front before its neighbours, wheth
 /// finger, false a mouse): for each, whether its menu opened.
 fn held_by(hands : Array[Bool]) -> Array[Bool] {
   let t = preview_tester("image", platform=2)
-  let (x, y, w, h) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   let out = []
   for finger in hands {
     t.host_says_finger(Some(finger))
@@ -998,7 +998,7 @@ test "viewer on the tree: a wheel over the picture is the picture's, never the c
 test "viewer on the tree: its picture's menu open over it, a wheel over the menu: not the picture's; the chat under it never scrolled" {
   let t = preview_tester("image", platform=0)
   let z = viewer.get().unwrap().zoom
-  let (x, y, w, h) = z.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = z.rect_at(t.time()).unwrap()
   let chat_at = (t.visible(), t.list_offset())
   // a wheel over the picture: the picture's, nothing of the chat's moved
   let before = z.scale_at(t.time())
@@ -1066,7 +1066,7 @@ test "viewer on the tree: Esc closes it and + zooms it at the key's own moment, 
   // its picture's menu open over it: Esc the menu's, then the next its
   let t = preview_tester("image", platform=0)
   let v = viewer.get().unwrap()
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@sf.presented_rest() - t.time())
   assert_true(@sf.presenting())
@@ -1081,7 +1081,7 @@ test "viewer on the tree: Esc closes it and + zooms it at the key's own moment, 
 test "viewer on the tree: back its layer's; a menu over it, back the menu's, it stays, the next back closes it" {
   let t = preview_tester("image", platform=0)
   let v = viewer.get().unwrap()
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@sf.presented_rest() - t.time())
   assert_true(@sf.presenting())
@@ -1380,7 +1380,7 @@ test "viewer on the tree, a mouse: its bar's tip shown by the keyboard's focus, 
     tabs += 1
   }
   assert_true(copy_tip_shown(t), msg="the focus on 复制, its tip shown (\{tabs} tabs)")
-  let (x, y, w, h) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@sf.presented_rest() - t.time())
   assert_true(@sf.presenting(), msg="the picture's menu open")
@@ -1616,7 +1616,7 @@ test "viewer on the tree, a wide window, a mouse: the secondary button on the pi
   let t = wide_preview()
   let v = viewer.get().unwrap()
   assert_true(v.in_tree)
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   let before = @sf.last_presented()
   t.right_click(x + w / 2.0, y + h / 2.0)
   assert_eq(@sf.last_presented() - before, 1, msg="its own menu, once")
@@ -2239,7 +2239,7 @@ test "viewer on the tree, a wide window, a mouse: the way to the one after gone 
   let t = preview_tester("step", w=1280.0, platform=0)
   let v = viewer.get().unwrap()
   let (x, y, w, h) = t.get(Button, label=@sf.t("web-main.preview.nextKey")).rect
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   t.touch(0, rx + rw / 2.0, ry + rh / 2.0)
   t.touch(2, rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@sf.sleep_ms * 2.0)
@@ -2387,7 +2387,7 @@ fn wide_pen_then_stroke(frames : Bool) -> (@sfbase.MarkTool, Array[String], Int)
   if frames {
     t.draw()
   }
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (x, y) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, x, y)
   for i in 1..=4 {
@@ -2444,7 +2444,7 @@ test "viewer on the tree, a wide window, marking: a box drawn, what to say of it
   assert_true(marking.on && marking.tool == Rect, msg="marking, the box")
   let card = pv("android-chat.annotate.quoteOnly")
   assert_true(t.find(card) is None, msg="no card yet")
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (x, y) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, x, y)
   t.touch(1, x + 60.0, y + 40.0)
@@ -2525,7 +2525,7 @@ test "viewer on the tree, a wide window, marking: its top bar the tree's; 取消
   // (nothing drawn: 下载 unable; a box drawn, able)
   let download = pv("android-chat.marks.downloadMarked")
   assert_true(t.get(Button, label=download).disabled, msg="nothing drawn: 下载 unable")
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2563,7 +2563,7 @@ test "viewer on the tree, a wide window, marking's 下载: nothing drawn, nothin
   t.draw()
   assert_eq(t.marks_drawn().length(), 0, msg="nothing drawn: nothing made")
   assert_true(!marking.busy, msg="nothing drawn: not making")
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2585,7 +2585,7 @@ test "viewer on the tree, a wide window, marking's 下载 with words being writt
   let (t, v, click) = wide_marking()
   click(pv("android-chat.marks.tool.text"))
   t.draw()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   t.touch(0, rx + rw / 3.0, ry + rh / 3.0)
   t.touch(2, rx + rw / 3.0, ry + rh / 3.0)
   t.draw()
@@ -2625,7 +2625,7 @@ test "viewer on the tree, a wide window, a picture of a chat's marked: 添加到
   t.draw()
   let v = viewer.get().unwrap()
   assert_true(marking.on && v.draft_key() == "ws1/st1:s-c1", msg="marking, a draft to put it in: \{v.draft_key()}")
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2650,7 +2650,7 @@ test "viewer on the tree, a wide window, a picture of a chat's marked: 添加到
 /// the tester, the viewer, the clicker, the box's id.
 fn wide_box_noted(said : String) -> (@ui.Tester, Viewer, (String) -> Unit raise, Int) raise {
   let (t, v, click) = wide_marking()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2723,7 +2723,7 @@ test "viewer on the tree, a wide window, marking: a note's words written and mor
 /// has come in.
 fn wide_note_first(late : Double) -> (Double, Double) raise {
   let (t, v, _) = wide_marking()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2757,7 +2757,7 @@ test "viewer on the tree, a wide window, marking: a second box's note written, i
   click(pv("android-chat.annotate.done"))
   t.draw()
   // (a second box, lower down)
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 2.0, ry + rh * 2.0 / 3.0)
   t.touch(0, px, py)
   t.touch(1, px + 60.0, py + 40.0)
@@ -2814,7 +2814,7 @@ fn wide_notes(k : Int, w? : Double = 1280.0) -> (@ui.Tester, (String) -> Unit ra
   }
   let ids = []
   for i in 0..<k {
-    let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+    let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
     let (px, py) = (rx + rw * (0.05 + 0.1 * i.to_double()), ry + rh * (0.1 + 0.08 * i.to_double()))
     t.touch(0, px, py)
     t.touch(1, px + 30.0, py + 20.0)
@@ -2999,7 +2999,7 @@ fn head_drawn() -> Double {
 test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer along the top, marking begun there, the pointer back on the picture; Escape leaves marking: the floating bar goes as hidden bars do" {
   let t = preview_tester("image", w=390.0, platform=0)
   let v = viewer.get().unwrap()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 2.0, ry + rh / 2.0)
   // (a click on a picture closes it: its bars hidden as a click on another kind hides them)
   v.toggle()
@@ -3097,7 +3097,7 @@ fn pinned() -> (@ui.Tester, Int) raise {
   marks_start()
   t.draw()
   let v = viewer.get().unwrap()
-  let (x, y, w, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = v.zoom.rect_at(t.time()).unwrap()
   let k = w / v.zoom.nw
   marking.tool = Rect
   t.drag(x + 100.0 * k, y + 100.0 * k, x + 300.0 * k, y + 200.0 * k)
@@ -3280,7 +3280,7 @@ test "viewer on the tree, marking a picture whose size is not known yet (none sa
   open_preview("ws1/st1", "s-c1", { ..a, width: 0.0, height: 0.0, thumbhash: "" }, steps=InChat(Some(1.0), "s-c1"))
   t.run_for(@ui.move_most_ms)
   let v = viewer.get().unwrap()
-  assert_true(v.zoom.rect(t.ctx()) is None, msg="where it is not known")
+  assert_true(v.zoom.rect_at(t.time()) is None, msg="where it is not known")
   marks_start()
   marking.shapes.push({ id: marking.next_id, kind: "box", color: marking.color, w: 4.0, pts: [100.0, 100.0, 300.0, 200.0], text: "" })
   marking.next_id += 1
@@ -3306,7 +3306,7 @@ test "viewer on the tree, marking a picture whose size is not known yet (none sa
 fn shaped() -> @ui.Tester raise {
   let (t, _) = pinned()
   let v = viewer.get().unwrap()
-  let (x, y, w, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = v.zoom.rect_at(t.time()).unwrap()
   let k = w / v.zoom.nw
   marking.tool = Arrow
   t.drag(x + 350.0 * k, y + 250.0 * k, x + 500.0 * k, y + 300.0 * k)
@@ -3411,7 +3411,7 @@ test "viewer on the tree, marking: the marks drawn where the picture is as each 
   // (words begun low on the picture, the keyboard up, the window laid out above it, as a host does: a keyboard tall
   // enough to cover them wherever the bars leave the picture, not one they clear by a fraction of a point)
   marking.tool = Words
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   t.touch(0, x + w / 2.0, y + h * 0.99)
   t.touch(2, x + w / 2.0, y + h * 0.99)
   assert_true(marking.writing is Some(_), msg="words begun")
@@ -3512,7 +3512,7 @@ test "viewer on the tree: the picture lying flat drawn by its node, its stand-in
   t.run_for(@ui.move_most_ms)
   // (what it shows where it lies: the source of the decode drawn there)
   let shown = fn() {
-    let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+    let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
     t.drawn_instances().filter(fn(i) { i[5] == 4.0 && (i[0] - x).abs() < 0.5 && (i[1] - y).abs() < 0.5 && (i[2] - w).abs() < 0.5 && (i[3] - h).abs() < 0.5 }).map(fn(i) { t.image_src(i[20].to_int()) })
   }
   assert_true(picture_node() is Some(_), msg="the node's")
@@ -3525,7 +3525,7 @@ test "viewer on the tree: the picture lying flat drawn by its node, its stand-in
   t.run_for(@ui.move_most_ms)
   assert_eq(shown(), ["mem:preview/" + v.id()], msg="the picture itself once decoded")
   // (drawn once: by its node alone, what draws the picture leaving it)
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   let at = drawn_pictures(t).filter(fn(d) { (d.0 - x).abs() < 0.5 && (d.1 - y).abs() < 0.5 && (d.2 - w).abs() < 0.5 && (d.3 - h).abs() < 0.5 })
   assert_eq(at.length(), 1, msg="drawn once where it lies: \{Repr(drawn_pictures(t))}")
 }
@@ -3545,7 +3545,7 @@ test "viewer on the tree: the strip put aside and still (no way going): the pict
   pv_strip.way.put(-50.0)
   t.draw()
   assert_true(!pv_strip.way.goes_at(t.time()), msg="no way going")
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   assert_true(nodes_of(main).length() == 1 && at_rect(nodes_of(main)[0], x - 50.0, y, w, h), msg="put aside: the node's, 50 aside: \{Repr(nodes_of(main))}")
   let shown = drawn_of(t, main)
   assert_true(shown.length() == 1 && at_rect(shown[0], x - 50.0, y, w, h), msg="drawn 50 aside, once: \{Repr(shown)}")
@@ -3578,7 +3578,7 @@ fn stepped_through(from : String) -> Unit raise {
   assert_eq(v.file.name, from, msg="open")
   t.run_for(@ui.move_most_ms)
   let gone = "mem:preview/" + v.id()
-  let (gx, gy, gw, gh) = v.zoom.rect(t.ctx()).unwrap()
+  let (gx, gy, gw, gh) = v.zoom.rect_at(t.time()).unwrap()
   assert_true(drawn_of(t, gone).length() == 1, msg="\{from}: drawn, once")
   t.drag(300.0, 422.0, 100.0, 422.0)
   let w2 = viewer.get().unwrap()
@@ -3603,13 +3603,13 @@ fn stepped_through(from : String) -> Unit raise {
     } else {
       assert_eq(drawn.length(), 0, msg="\{from} \{at}: the one going, out of the window, drawn: \{Repr(drawn)}")
     }
-    let (x, y, w, h) = w2.zoom.rect(t.ctx()).unwrap()
+    let (x, y, w, h) = w2.zoom.rect_at(t.time()).unwrap()
     assert_true(picture_node() == Some(come), msg="\{from} \{at}: the one come in its node's")
     let shown = drawn_of(t, come)
     assert_true(shown.length() == 1 && at_rect(shown[0], x + sx, y, w, h), msg="\{from} \{at}: the one come in drawn once, \{sx} aside: \{Repr(shown)}")
   }
   t.frame_at(end)
-  let (x, y, w, h) = w2.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = w2.zoom.rect_at(t.time()).unwrap()
   let shown = drawn_of(t, come)
   assert_true(shown.length() == 1 && at_rect(shown[0], x, y, w, h), msg="\{from}: at its end, the one come in drawn once: \{Repr(shown)}")
   assert_eq(nodes_of(l.picture).length() + drawn_of(t, gone).length(), 0, msg="\{from}: at its end, the one gone nowhere")
@@ -3666,7 +3666,7 @@ test "viewer on the tree: its picture said not to decode with the strip put asid
 ///|
 /// The pictures drawn now where viewer `v`'s lies, `dx` aside.
 fn main_pictures(t : @ui.Tester, v : Viewer, dx : Double) -> Int {
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   drawn_pictures(t).filter(fn(d) { (d.0 - (x + dx)).abs() < 0.5 && (d.1 - y).abs() < 0.5 && (d.2 - w).abs() < 0.5 && (d.3 - h).abs() < 0.5 }).length()
 }
 
@@ -3711,7 +3711,7 @@ test "viewer on the tree: its stand-in decoded and shown, then the picture itsel
   }
   t.run_for(@ui.move_most_ms)
   assert_true(picture_node() is Some(_), msg="the node's")
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   let shown = t.drawn_instances().filter(fn(i) { i[5] == 4.0 && (i[0] - x).abs() < 0.5 && (i[1] - y).abs() < 0.5 && (i[2] - w).abs() < 0.5 && (i[3] - h).abs() < 0.5 }).map(fn(i) { t.image_src(i[20].to_int()) })
   assert_true(shown.length() == 1 && shown[0] != main, msg="its stand-in shown: \{Repr(shown)}")
   assert_eq(main_pictures(t, v, 0.0), 1, msg="drawn where it lies")
@@ -3771,7 +3771,7 @@ test "viewer on the tree: a picture whose size is not known yet (none said, noth
   open_preview("ws1/st1", "s-c1", { ..a, width: 0.0, height: 0.0, thumbhash: "" }, steps=InChat(Some(1.0), "s-c1"))
   t.run_for(@ui.move_most_ms)
   let v = viewer.get().unwrap()
-  assert_true(v.zoom.rect(t.ctx()) is None, msg="where it is not known")
+  assert_true(v.zoom.rect_at(t.time()) is None, msg="where it is not known")
   let main = "mem:preview/" + v.id()
   let asks = size_asks(main)
   assert_eq(asks.length(), 1, msg="asked by the tree's node")
@@ -3790,13 +3790,13 @@ test "viewer on the tree: a picture whose size is not known yet (none said, noth
   }
   t.draw()
   t.run_for(@ui.move_most_ms)
-  assert_true(v.zoom.rect(t.ctx()) is Some(_), msg="where it lies, known")
+  assert_true(v.zoom.rect_at(t.time()) is Some(_), msg="where it lies, known")
   // (its whole decode, asked for as it is drawn where it lies, done)
   for p in t.pending() {
     t.finish(p.0, p.1)
   }
   t.draw()
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = v.zoom.rect_at(t.time()).unwrap()
   let lying = t.drawn_instances().filter(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()).has_prefix(main) && (i[0] - x).abs() < 0.5 && (i[1] - y).abs() < 0.5 && (i[2] - w).abs() < 0.5 && (i[3] - h).abs() < 0.5 })
   assert_eq(lying.length(), 1, msg="the picture itself drawn where it lies, once: \{lying.length()}")
   assert_eq(size_asks(main).length(), 0, msg="asked for no more")
@@ -3810,7 +3810,7 @@ test "viewer on the tree: a picture whose size is not known yet (none said, noth
   t.run_for(@ui.move_most_ms)
   let v = viewer.get().unwrap()
   let main = "mem:preview/" + v.id()
-  assert_true(v.zoom.rect(t.ctx()) is None, msg="its size not known")
+  assert_true(v.zoom.rect_at(t.time()) is None, msg="its size not known")
   assert_eq(size_asks(main).length(), 1, msg="its size asked for")
   // (each picture asked for said not to decode, as the host says: its own, and what would stand in for it, the
   // station's thumbnail, so no size is known of either)
@@ -3819,7 +3819,7 @@ test "viewer on the tree: a picture whose size is not known yet (none said, noth
   }
   t.draw()
   assert_eq(@ui.image_state(main), -1, msg="not to be decoded")
-  assert_true(v.zoom.rect(t.ctx()) is None, msg="its size still not known: \{v.zoom.nw} x \{v.zoom.nh}")
+  assert_true(v.zoom.rect_at(t.time()) is None, msg="its size still not known: \{v.zoom.nw} x \{v.zoom.nh}")
   let said = pv("android-chat.file.image.failed")
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == said }).length(), 1, msg="said by the tree's node, unknown")
   assert_eq(size_asks(main).length(), 0, msg="its size asked for no more once it failed")
@@ -4356,7 +4356,7 @@ test "viewer on the tree, marking on a phone and on a wide window, words being w
     marks_start()
     t.draw()
     let v = viewer.get().unwrap()
-    let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+    let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
     // (words begun on it first)
     marking.tool = Words
     t.touch(0, rx + rw / 3.0, ry + rh / 3.0)
@@ -4387,7 +4387,7 @@ test "viewer on the tree, wide: a tall picture fitted whole under the bar across
   let v = viewer.get().unwrap()
   v.zoom.natural(880.0, 1280.0, at=t.ctx().moment())
   t.draw()
-  let (_, y, _, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (_, y, _, h) = v.zoom.rect_at(t.time()).unwrap()
   assert_true(y >= @sf.viewer_bar_h, msg="clear of the bar: \{y}")
   assert_true(y + h <= 844.0, msg="whole: \{y + h}")
   pressed(t, Button, @sf.t("web-main.annotate.image"))
@@ -4395,7 +4395,7 @@ test "viewer on the tree, wide: a tall picture fitted whole under the bar across
   t.draw()
   let foot = @sfbase.marks_foot_over()
   assert_true(foot >= 44.0, msg="the tools' room: \{foot}")
-  let (_, y, _, h) = v.zoom.rect(t.ctx()).unwrap()
+  let (_, y, _, h) = v.zoom.rect_at(t.time()).unwrap()
   assert_true(y >= @sf.viewer_bar_h, msg="marking, clear of the bar: \{y}")
   assert_true(y + h <= 844.0 - foot, msg="marking, clear of the tools: \{y + h} over \{844.0 - foot}")
 }
@@ -4406,7 +4406,7 @@ test "viewer on the tree, narrow: a phone's tall picture fitted clear of the bar
   let v = viewer.get().unwrap()
   v.zoom.natural(390.0, 844.0, at=t.ctx().moment())
   t.draw()
-  let (_, y, _, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (_, y, _, _) = v.zoom.rect_at(t.time()).unwrap()
   assert_true(y >= @sf.viewer_bar_clear(390.0), msg="clear of the bar: \{y}")
 }
 

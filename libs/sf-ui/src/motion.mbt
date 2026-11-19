@@ -65,10 +65,10 @@ pub let copied_ms : Double = 1600.0
 /// What is woken by the hand over a picture or a film (the viewer's bars, the player's controls) comes in over this
 /// long, and fades as it rests over `sleep_ms`, on the ease-out (FilePreview.css.ts floating, viewer/media.css.ts: 120,
 /// 320): kit's media controls' own.
-pub let wake_ms : Double = @kit.media_wake_ms
+pub let wake_ms : Double = @player.media_wake_ms
 
 ///|
-pub let sleep_ms : Double = @kit.media_sleep_ms
+pub let sleep_ms : Double = @player.media_sleep_ms
 
 ///|
 /// One breath of what waits (waiting.css.ts breathe): 1.4 s, from whole to `low` and back on

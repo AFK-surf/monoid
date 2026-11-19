@@ -1050,7 +1050,7 @@ pub fn marks_pick_color(col : Int64) -> Unit {
 ///|
 /// Where what is being written (or the open note's box) ends on the stage, the picture at `r` (where it is at a moment
 /// of the caller's).
-pub fn marks_writing_bottom_in(z : @kit.Zoom, r : (Double, Double, Double, Double)?) -> Double? {
+pub fn marks_writing_bottom_in(z : @motion.Zoom, r : (Double, Double, Double, Double)?) -> Double? {
   marks_said()
   if !marking.on {
     return None

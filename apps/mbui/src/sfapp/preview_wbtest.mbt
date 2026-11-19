@@ -835,7 +835,7 @@ test "a swipe past a fifth of the stage goes to the next; a short one comes back
 ///|
 test "a swipe carries the picture under the finger from where it went down; a second finger takes it back, not left between two" {
   let t = preview_tester("step")
-  let (x, y, w, h) = viewer.get().unwrap().zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, h) = viewer.get().unwrap().zoom.rect_at(t.time()).unwrap()
   let at = fn(dx : Double) {
     drawn_pictures(t).any(fn(d) {
       (d.0 - (x + dx)).abs() < 0.001 && (d.1 - y).abs() < 0.001 && (d.2 - w).abs() < 0.001 && (d.3 - h).abs() < 0.001
@@ -949,7 +949,7 @@ test "the frame a swipe is let go in shows both pictures where the finger left t
 ///|
 /// The viewer's image zoomed in by a double tap in its middle (2.5 times fitted: 915 × 610 on the 390 × 844 stage, 262.5
 /// to go either way across), the next taps a double tap of their own.
-fn zoom_in_middle(t : @ui.Tester) -> @kit.Zoom raise {
+fn zoom_in_middle(t : @ui.Tester) -> @motion.Zoom raise {
   t.tap(195.0, 422.0)
   t.advance(@ui.double_tap_ms / 2.0)
   t.tap(195.0, 422.0)
@@ -984,10 +984,10 @@ test "zoomed in, let go moving it goes on that way, slowing, to its edge; a fing
   // flung harder: it stops at its edge (its right edge at the stage's), when its way said it ends
   t.drag(250.0, 422.0, 130.0, 422.0, steps=3)
   t.run_for(z.fling_ends() - t.time())
-  let (x, _, w, _) = z.rect(t.ctx()).unwrap()
+  let (x, _, w, _) = z.rect_at(t.time()).unwrap()
   assert_true((x + w - 390.0).abs() < 0.001)
   t.run_for(@motion.zoom_fling_ms)
-  assert_true((z.rect(t.ctx()).unwrap().0 - x).abs() < 0.001)
+  assert_true((z.rect_at(t.time()).unwrap().0 - x).abs() < 0.001)
 }
 
 ///|
@@ -998,7 +998,7 @@ test "zoomed in, dragged on past its edge the next comes in; a quick move that c
   t.drag(385.0, 422.0, 5.0, 422.0, steps=4)
   t.run_for(strip_rest(t))
   assert_eq(viewer.get().unwrap().file.name, "界面草图.png")
-  let (x, _, w, _) = z.rect(t.ctx()).unwrap()
+  let (x, _, w, _) = z.rect_at(t.time()).unwrap()
   assert_true((x + w - 390.0).abs() < 0.001)
   // from its edge, a short quick move on: the next
   t.drag(300.0, 422.0, 260.0, 422.0, steps=2)
@@ -1012,7 +1012,7 @@ test "zoomed in, dragged slowly far past its edge it stops there, nothing beside
   t.drag(385.0, 422.0, 5.0, 422.0, steps=20)
   t.run_for(strip_rest(t))
   assert_eq(viewer.get().unwrap().file.name, "界面草图.png")
-  let (x, _, w, _) = z.rect(t.ctx()).unwrap()
+  let (x, _, w, _) = z.rect_at(t.time()).unwrap()
   assert_true((x + w - 390.0).abs() < 0.001)
   t.drag(385.0, 422.0, 5.0, 422.0, steps=20)
   assert_eq(viewer.get().unwrap().file.name, "第二版.png")
@@ -1024,7 +1024,7 @@ test "marking: a box drawn on the picture is numbered, its note kept, its quote 
   marks_start()
   t.draw()
   let v = viewer.get().unwrap()
-  let (x, y, w, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = v.zoom.rect_at(t.time()).unwrap()
   let k = w / v.zoom.nw
   // from (100, 100) to (300, 200) in the picture's pixels
   t.drag(x + 100.0 * k, y + 100.0 * k, x + 300.0 * k, y + 200.0 * k)
@@ -1161,7 +1161,7 @@ test "marking: a box's pin up and right of its corner wherever the marks before 
   marks_start()
   t.draw()
   let v = viewer.get().unwrap()
-  let (x, y, w, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = v.zoom.rect_at(t.time()).unwrap()
   let k = w / v.zoom.nw
   // a line drawn by hand first, then a box from (100, 100) to (300, 200) in the picture's pixels
   marking.tool = Pen
@@ -1244,7 +1244,7 @@ test "marking: a note written and done, the picture put in the chat: its quote t
   marks_start()
   t.draw()
   let v = viewer.get().unwrap()
-  let (x, y, w, _) = v.zoom.rect(t.ctx()).unwrap()
+  let (x, y, w, _) = v.zoom.rect_at(t.time()).unwrap()
   let k = w / v.zoom.nw
   t.drag(x + 100.0 * k, y + 100.0 * k, x + 300.0 * k, y + 200.0 * k)
   t.run_for(note_pop_ms)
@@ -1270,13 +1270,13 @@ fn strip_rest(t : @ui.Tester) -> Double {
 
 ///|
 /// How big the picture is shown at the tester's moment (where it is drawn then: Zoom::rect_at).
-fn shown_scale(t : @ui.Tester, z : @kit.Zoom) -> Double {
+fn shown_scale(t : @ui.Tester, z : @motion.Zoom) -> Double {
   z.scale_at(t.time())
 }
 
 ///|
 /// How far across from the stage's middle the picture's middle is shown at the tester's moment.
-fn shown_x(t : @ui.Tester, z : @kit.Zoom) -> Double {
+fn shown_x(t : @ui.Tester, z : @motion.Zoom) -> Double {
   let (x, _, w, _) = z.rect_at(t.time()).unwrap()
   x + w / 2.0 - z.bw / 2.0
 }

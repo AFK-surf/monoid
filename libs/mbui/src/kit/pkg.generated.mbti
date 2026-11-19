@@ -2,7 +2,6 @@
 package "mbui/kit"
 
 import {
-  "mbui/codec",
   "mbui/motion",
   "mbui/paint",
   "mbui/ui",
@@ -136,24 +135,6 @@ pub let loupe_lift : Double
 pub let loupe_w : Double
 
 pub let loupe_zoom : Double
-
-pub fn media_decode_stalled(@ui.Ctx, @ui.NativeView?) -> Bool
-
-pub let media_decode_wait_ms : Double
-
-pub fn media_grab_stalled(@ui.Ctx, @ui.NativeView) -> Bool
-
-pub let media_grab_wait_ms : Double
-
-pub let media_note_ms : Double
-
-pub let media_rest_ms : Double
-
-pub let media_sleep_ms : Double
-
-pub fn media_status(@ui.NativeView?) -> MediaStatus
-
-pub let media_wake_ms : Double
 
 pub fn menu_check(String, Bool, label? : String, shortcut? : String, disabled? : Bool) -> Entry
 
@@ -347,10 +328,6 @@ pub let typeahead_ms : Double
 
 pub fn visually_hidden(@ui.Ctx, String) -> Unit
 
-pub let zoom_fling_ms : Double
-
-pub let zoom_pull_least : Double
-
 // Errors
 
 // Types and methods
@@ -499,109 +476,6 @@ pub(all) struct Item {
   value : String
   label : String
   disabled : Bool
-}
-
-pub struct Media {
-  // private fields
-}
-pub fn Media::close(Self) -> Unit
-pub fn Media::decode_given_up(Self) -> Unit
-pub fn Media::duration(Self) -> Double
-pub fn Media::fills(Self) -> Bool
-pub fn Media::frame(Self, @ui.Ctx) -> MediaFrame
-pub fn Media::is_sideways(Self) -> Bool
-pub fn Media::keep_awake(Self, @ui.Ctx, Int32) -> Unit
-pub fn Media::key(Self) -> String
-pub fn Media::native(Self) -> @ui.NativeView?
-pub fn Media::near(Self, Bool) -> Unit
-pub fn Media::new(key? : String, speeds? : Array[Double], nudge_ms? : Double, rest_ms? : Double, double_tap_ms? : Double, note_ms? : Double, wake_ms? : Double, sleep_ms? : Double, wait_ms? : Double) -> Self
-pub fn Media::nudge_ms(Self) -> Double
-pub fn Media::open(Self, MediaTrack, start? : Double, play? : Bool) -> Unit
-pub fn Media::pause(Self) -> Unit
-pub fn Media::picture_rect(Self, MediaStatus, Double, Double) -> (Double, Double, Double, Double)
-pub fn Media::pin(Self, MediaStatus) -> Unit
-pub fn Media::play_pause(Self) -> Unit
-pub fn Media::position(Self) -> Double
-pub fn Media::retry(Self) -> Unit
-pub fn Media::scrub_done(Self) -> Unit
-pub fn Media::scrub_resumes(Self) -> Bool
-pub fn Media::scrub_to(Self, Double) -> Unit
-pub fn Media::scrubbing(Self) -> Double?
-pub fn Media::seek(Self, Double) -> Unit
-pub fn Media::seek_by(Self, Double) -> Unit
-pub fn Media::seek_near(Self, Double) -> Unit
-pub fn Media::set_speed(Self, Double) -> Unit
-pub fn Media::set_subtitle(Self, Bool, Array[@codec.Cue]) -> Unit
-pub fn Media::set_volume(Self, Double) -> Unit
-pub fn Media::speed(Self) -> Double
-pub fn Media::speeds(Self) -> Array[Double]
-pub fn Media::stage(Self, @ui.Ctx, Int32, Double) -> Unit
-pub fn Media::started(Self) -> Bool
-pub fn Media::status(Self) -> MediaStatus
-pub fn Media::step_speed(Self) -> Unit
-pub fn Media::subtitle(Self) -> (Bool, Bool)
-pub fn Media::take_ready(Self) -> Bool
-pub fn Media::timeline(Self, @ui.Ctx, Int32, Bool, inset? : Double, snap? : (Double) -> Double) -> Unit
-pub fn Media::times(Self) -> (Double, Double, Double, Double, Double)
-pub fn Media::toggle(Self) -> Unit
-pub fn Media::toggle_fill(Self) -> Unit
-pub fn Media::toggle_mute(Self) -> Unit
-pub fn Media::toggle_sideways(Self) -> Unit
-pub fn Media::toggle_subtitle(Self) -> Unit
-pub fn Media::track(Self) -> MediaTrack?
-pub fn Media::upright(Self) -> Unit
-pub fn Media::volume(Self) -> (Double, Bool)
-pub fn Media::wake(Self) -> Unit
-
-pub(all) struct MediaFrame {
-  status : MediaStatus
-  phase : MediaPhase
-  audio : Bool
-  waited : Bool
-  rate : Double
-  shown : Double
-  on : Bool
-  note : MediaNote?
-  said : String
-}
-
-#derive(Eq, @debug.Debug)
-pub(all) enum MediaNote {
-  Back(Double)
-  Ahead(Double)
-  Paused
-  Played
-}
-
-#derive(Eq, @debug.Debug)
-pub(all) enum MediaPhase {
-  Opening
-  Buffering
-  Playing
-  Paused
-  Ended
-  Failed
-}
-
-#derive(Eq, @debug.Debug)
-pub(all) struct MediaStatus {
-  state : Int32
-  duration : Double
-  position : Double
-  buffered : Double
-  playing : Bool
-  buffering : Bool
-  ended : Bool
-  width : Double
-  height : Double
-}
-
-pub(all) struct MediaTrack {
-  name : String
-  mime : String
-  audio : Bool
-  read : (Double, Int32, (Bytes, Double, Bool) -> Unit) -> () -> Unit
-  direct : String
 }
 
 pub(all) struct Menu {
@@ -788,60 +662,6 @@ pub(all) enum Variant {
   Danger
 }
 pub impl Show for Variant
-
-pub struct Zoom {
-  mut nw : Double
-  mut nh : Double
-  mut bw : Double
-  mut bh : Double
-  mut bar : Double
-  mut foot_bar : Double
-  mut scale : Double
-  mut x : Double
-  mut y : Double
-  mut fitted : Bool
-  margin_of : (Double) -> Double
-  enlarge : Bool
-  min_of : (Double) -> Double
-  max_of : (Double) -> Double
-  free : Bool
-  fit_step : Double
-  mut gliding : Bool
-  g_from : FixedArray[Double]
-  g_to : FixedArray[Double]
-  mut flinging : Bool
-  // private fields
-}
-pub fn Zoom::boxed(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::double_tap(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::fit(Self) -> Double
-pub fn Zoom::fit_now(Self, at~ : Double) -> Unit
-pub fn Zoom::fling(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::fling_ends(Self) -> Double
-pub fn Zoom::goes_at(Self, Double) -> Bool
-pub fn Zoom::keep(Self, (Double, Double), Double, when~ : Double) -> Unit
-pub fn Zoom::max_scale(Self) -> Double
-pub fn Zoom::min_scale(Self) -> Double
-pub fn Zoom::natural(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::new(margin? : (Double) -> Double, enlarge? : Bool, min_scale? : (Double) -> Double, max_scale? : (Double) -> Double, free? : Bool, fit_step? : Double) -> Self
-pub fn Zoom::pan(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::pull(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::pulled_at(Self, Double) -> Double
-pub fn Zoom::rect(Self, @ui.Ctx) -> (Double, Double, Double, Double)?
-pub fn Zoom::rect_at(Self, Double) -> (Double, Double, Double, Double)?
-pub fn Zoom::reset(Self, at~ : Double) -> Unit
-pub fn Zoom::resize_keeping(Self, Double, Double, (Double, Double)?, Double, when~ : Double) -> Unit
-pub fn Zoom::scale_at(Self, Double) -> Double
-pub fn Zoom::sized(Self) -> Bool
-pub fn Zoom::step(Self, @ui.Ctx) -> Unit
-pub fn Zoom::stop_fling(Self, at~ : Double) -> Bool
-pub fn Zoom::stop_glide(Self, at~ : Double) -> Unit
-pub fn Zoom::told(Self) -> Unit
-pub fn Zoom::transform(Self, Double, Double, Double, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::under_bars(Self, Double, Double, at~ : Double) -> Unit
-pub fn Zoom::zoom_to(Self, Double, Double, Double, Bool, at~ : Double) -> Unit
-pub fn Zoom::zoomed(Self, @ui.Ctx) -> Bool
-pub fn Zoom::zoomed_at(Self, Double) -> Bool
 
 // Type aliases
 

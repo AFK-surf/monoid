@@ -27,7 +27,7 @@
 // the stage, the files' panel and the mouse's buttons are)
 #warnings("-unused_field")
 priv struct ScreenUi {
-  zoom : @kit.Zoom
+  zoom : @motion.Zoom
   pad : PadPointer
   held : HeldKeys
   full : @signals.Signal[Bool]

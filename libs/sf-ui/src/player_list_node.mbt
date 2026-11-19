@@ -68,7 +68,7 @@ fn PlayerNode::go(self : PlayerNode, other : String) -> Unit {
 /// folder's `siblings`, as they are listed) read once the folder names one; where it is kept every player_keep_ms
 /// while it plays. Its player, `n`'s: one opened under the key before it (a page gone that played the same file) let go
 /// first; where it is kept and it closed as `n` is let go (player_let_go).
-pub fn player_opened(n : @view.View, key : String, file : ViewerFile, siblings : () -> Array[ViewerEntry]) -> @kit.Media {
+pub fn player_opened(n : @view.View, key : String, file : ViewerFile, siblings : () -> Array[ViewerEntry]) -> @player.Media {
   if playings.get(key) is Some(was) && was.opened.untracked() {
     player_let_go(key)
   }

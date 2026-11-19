@@ -20,7 +20,7 @@ fn either_player(
   kind? : String = "video",
   facts? : FileFacts = no_facts,
   window? : (Double, Double, Int),
-) -> (@ui.Tester, @kit.Media) {
+) -> (@ui.Tester, @player.Media) {
   if !node {
     let t = player_tester(narrow, name, [], [], backs, kind~, facts~, window?)
     return (t, playing_for("k").media)
@@ -62,8 +62,8 @@ fn either_player(
 /// What step `step` does on both players, each made as `made` says: what each comes to (`seen`), the same for both.
 fn[T : Eq + Debug] both(
   what : String,
-  made : (Bool) -> (@ui.Tester, @kit.Media),
-  step : (@ui.Tester, @kit.Media) -> T raise,
+  made : (Bool) -> (@ui.Tester, @player.Media),
+  step : (@ui.Tester, @player.Media) -> T raise,
 ) -> T raise {
   let (t, m) = made(false)
   let old = step(t, m)
@@ -98,7 +98,7 @@ test "both players, a phone's and a desktop's: played, left alone 3 s, its contr
     let seen = both("left alone", fn(node) { either_player(node, narrow, "a.mp4", []) }, fn(t, m) {
       m.pin({ ..pinned(1000.0), playing: true })
       t.draw()
-      t.run_for(@kit.media_rest_ms + @kit.media_sleep_ms + 500.0)
+      t.run_for(@player.media_rest_ms + @player.media_sleep_ms + 500.0)
       let shown = t.find("0:01 / 0:10") is Some(_)
       shown
     })
@@ -180,7 +180,7 @@ test "both players, a desktop's: a double click in the film's middle plays or pa
     }
     let before = plays()
     t.tap(640.0, 400.0)
-    t.run_for(@kit.media_note_ms)
+    t.run_for(@player.media_note_ms)
     let one = plays() - before
     t.tap(640.0, 400.0)
     t.advance(@ui.double_tap_ms / 2.0)

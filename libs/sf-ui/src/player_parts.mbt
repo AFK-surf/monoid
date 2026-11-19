@@ -10,7 +10,7 @@
 // picture, and is on the page's own colours. Embedded in a page (player_node's `embedded`: a file's tab beside a
 // chat) it is part of the page, not a cinema in it: no ground of its own, its picture fitted in a room over its
 // controls, which are always there, in the page's colours and on its ground; only what lies over the picture keeps the
-// colours over a picture. How it plays is mbui's player's (@kit.Media: the system's player in a native view, its bytes
+// colours over a picture. How it plays is mbui's player's (@player.Media: the system's player in a native view, its bytes
 // asked a part at a time of the file's `stream`).
 //
 // On a desktop's layout (player_node's desk_player_node): the bar every file opened has along the top
@@ -72,15 +72,15 @@ pub let player_speeds : Array[Double] = [0.1, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0]
 ///|
 /// A player for a page (`key` keeps its widgets apart from another's), its waits said once they have waited later_ms;
 /// its controls there till a tap (a click) on its picture hides them, never going of themselves (the user, 2026-10-28).
-pub fn new_media(key : String) -> @kit.Media {
-  @kit.Media::new(key~, speeds=player_speeds, wait_ms=later_ms, rest_ms=0.0)
+pub fn new_media(key : String) -> @player.Media {
+  @player.Media::new(key~, speeds=player_speeds, wait_ms=later_ms)
 }
 
 ///|
 /// A file played, kept while its page is open: its player, whether it was opened, the subtitle asked for (its name),
 /// the places kept (each next one player_keep_ms after it).
 pub(all) struct Playing {
-  media : @kit.Media
+  media : @player.Media
   /// the file as last given (where it is is kept with it)
   mut file : ViewerFile?
   opened : @signals.Signal[Bool]
@@ -232,7 +232,7 @@ priv struct PlayerView {
   mut listing : Bool
   mut rates : Bool
   mut fulled : Bool
-  zoom : @kit.Zoom
+  zoom : @motion.Zoom
   mut grab_at : Int
   mut ended_off : String
   mut file : String
@@ -274,17 +274,15 @@ pub fn player_fills_native(width : Double) -> Bool {
 /// 全屏 among the actions in the system's bars for film `p` played `width` wide: its words, whether it is on, what it
 /// does. Laid out Small, turned sideways as a phone's player's 全屏 turns it; wider, the window filled, the bars put
 /// away (native_full).
-pub fn player_full_act(p : @kit.Media, width : Double) -> (String, Bool, () -> Unit) {
+pub fn player_full_act(p : @player.Media, width : Double) -> (String, Bool, () -> Unit) {
   if layout(width) is Small {
     let on = p.is_sideways()
     (t(if on { "android-misc.drive.player.unfull" } else { "android-misc.drive.player.full" }), on, fn() {
       p.toggle_sideways()
-      p.wake()
     })
   } else {
     (t("android-misc.drive.player.full"), false, fn() {
       native_full.set(true)
-      p.wake()
     })
   }
 }
@@ -351,7 +349,7 @@ fn view_for(key : String, margin? : Double = 0.0) -> PlayerView {
         fulled: false,
         // (a film edge to edge in its stage, enlarged as players do: no margin round it, but where a page holds it, as far
         // in as the page's pictures are: player_node's `margin`)
-        zoom: @kit.Zoom::new(margin=fn(_) { margin }, enlarge=true),
+        zoom: @motion.Zoom::new(margin=fn(_) { margin }, enlarge=true),
         grab_at: 0,
         ended_off: "",
         file: "",
@@ -402,7 +400,7 @@ priv struct Frames {
 
 ///|
 /// The frames of what `p` plays, at `pos` (ms).
-fn frames_of(p : @kit.Media, s : @kit.MediaStatus, pos : Double) -> Frames {
+fn frames_of(p : @player.Media, s : @player.MediaStatus, pos : Double) -> Frames {
   let dur = s.duration
   let (starts, read) = match p.native() {
     Some(n) =>
@@ -432,7 +430,7 @@ fn frames_of(p : @kit.Media, s : @kit.MediaStatus, pos : Double) -> Frames {
 /// A film's own facts as its bar says them (the web player's bar): its size in pixels, how long, its rate. What its
 /// message says, there from the first frame (FileFacts: the station read them from its header), else what the host
 /// has read of it (its head, and its end where its header is kept there).
-fn film_facts(said : FileFacts, s : @kit.MediaStatus, fr : Frames) -> String {
+fn film_facts(said : FileFacts, s : @player.MediaStatus, fr : Frames) -> String {
   let (w, h) = if said.width > 0.0 && said.height > 0.0 { (said.width, said.height) } else { (s.width, s.height) }
   guard w > 0.0 && h > 0.0 else { "" }
   let dur = if said.duration > 0.0 { said.duration } else { s.duration }
@@ -486,7 +484,7 @@ fn Frames::snap(self : Frames, ms : Double) -> Double {
 /// What is said of where it is: while it plays (and of a song, and of a film not ready) the time of how long; paused
 /// or moved through by a finger, the time to the millisecond, and with the file's frames read which frame of how many at what rate (not
 /// guessed: without them a step is a 60th of a second, which says nothing of the file).
-fn where_runs(p : @kit.Media, fr : Frames, s : @kit.MediaStatus, playing : Bool, picture : Bool, ink : MediaInk) -> Array[@ui.Run] {
+fn where_runs(p : @player.Media, fr : Frames, s : @player.MediaStatus, playing : Bool, picture : Bool, ink : MediaInk) -> Array[@ui.Run] {
   let at = p.scrubbing().unwrap_or(s.position)
   let long = if s.duration > 0.0 { clock(s.duration) } else { "--:--" }
   match fr.starts {
@@ -574,7 +572,7 @@ fn player_format(mime : String) -> String? {
 
 ///|
 /// What a double tap did, said a moment: 快退 15 秒, 快进 15 秒, 已暂停, 继续播放.
-fn phone_note_words(note : @kit.MediaNote) -> String {
+fn phone_note_words(note : @player.MediaNote) -> String {
   match note {
     Back(ms) => t("android-misc.drive.player.back", args=[("n", (ms / 1000.0).to_int().to_string())])
     Ahead(ms) => t("android-misc.drive.player.ahead", args=[("n", (ms / 1000.0).to_int().to_string())])

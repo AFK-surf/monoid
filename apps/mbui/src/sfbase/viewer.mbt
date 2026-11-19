@@ -1,6 +1,6 @@
 // A file of a chat opened over the whole screen (still.fail apps/android chat/screens/FilePreview.kt, VideoViewer.kt,
 // FileKinds.kt kindOf, ChatFiles.kt FileData; web/src/FilePreview.tsx): images to zoom (a double tap, the bar's − and
-// +, the wheel) and pan (mbui's @kit.Zoom); videos played by the system's player (a native view over the
+// +, the wheel) and pan (mbui's @motion.Zoom); videos played by the system's player (a native view over the
 // canvas, src/ui/native.mbt), its bytes read through the core a part at a time (`station.file.part`); PDFs drawn by the
 // system page by page; HTML in a page of its own (a native web view: its scripts on, nothing of the app's reachable);
 // Markdown rendered; CSV as a table; code and text as they are. Anything else says it cannot be shown and offers the
@@ -205,8 +205,8 @@ pub(all) struct Viewer {
   awake_told : @signals.Signal[Int]
   /// a mouse's pointer along the top, where the bar is: there while it is, hidden or not
   mut near_bar : Bool
-  zoom : @kit.Zoom
-  vzoom : @kit.Zoom
+  zoom : @motion.Zoom
+  vzoom : @motion.Zoom
   /// 源码 rather than 预览
   mut source : Bool
   /// told as `source` changes (Viewer::set_source): what shows it and what says it follow it
@@ -241,7 +241,7 @@ pub(all) struct Viewer {
   /// a read of the video's file, logged the first times
   reads : @signals.Signal[Int]
   /// how a song's player stands, pinned for a fixture's shot
-  mut pinned : @kit.MediaStatus?
+  mut pinned : @player.MediaStatus?
   /// what it steps through (an image): its chat's images, a folder's
   steps : Stepping
   /// Where this occurrence is in its chat, distinct from the file shared by other messages or quotes.
@@ -296,7 +296,7 @@ pub(all) struct Viewer {
   /// told as `flies` changes (Viewer::flies_set): what its player's nodes draw while it flies follows it
   flies_told : @signals.Signal[Int]
   /// a desktop's song: played in the player a drive's is, not the phone's strip
-  mut media : @kit.Media?
+  mut media : @player.Media?
   /// a desktop's image put on the clipboard: how many times (its check shown a while after each)
   mut copied : Int
   /// how wide the floating bar has been (it never narrows once open: @sf.viewer_frame_bar)
@@ -504,7 +504,7 @@ fn first_player(src : Source, station : String, key : String, a : Attachment) ->
 /// when it could not be). The same grab as first_frame's (pv_first, by `id`): asked once at its moment, as an old
 /// view's is once its frame is built; its answer taken as the host tells it (NativeView::grabs_told), none to be had as
 /// the host says it has no player or one that cannot read it, or once its decoder has waited media_decode_wait_ms
-/// from when all its bytes came (@kit.media_decode_stalled's): first_frame's rule, followed as it is told, not asked
+/// from when all its bytes came (decode_stalled's): first_frame's rule, followed as it is told, not asked
 /// each frame.
 pub fn first_frame_node(v : @view.View, src : Source, station : String, key : String, a : Attachment, id : String) -> () -> String {
   first_frame_by(v, id, a.name, a.size, fn() { first_player(src, station, key, a) })
@@ -569,7 +569,7 @@ fn first_frame_by(v : @view.View, id : String, name : String, size : Double, ope
             first_settled(f, n, id, name, b"")
           } else if n.state() == 2 && n.decode_since() >= 0.0 {
             (stall.val)()
-            stall.val = v.at_moment(n.decode_since() + @kit.media_decode_wait_ms, fn() {
+            stall.val = v.at_moment(n.decode_since() + @player.media_decode_wait_ms, fn() {
               if f.view is Some(m) && physical_equal(m, n) {
                 first_settled(f, n, id, name, b"")
               }
@@ -632,6 +632,22 @@ pub fn bytes_first_frame(c : @ui.Ctx, id : String, name : String, bytes : Bytes)
 }
 
 ///|
+/// Whether `n`'s decoder has waited media_decode_wait_ms from when all its bytes came, as the old view `c`'s clock has
+/// it (woken then, where it has not yet).
+fn decode_stalled(c : @ui.Ctx, n : @ui.NativeView) -> Bool {
+  if n.state() != 2 || n.decode_since() < 0.0 {
+    return false
+  }
+  let left = n.decode_since() + @player.media_decode_wait_ms - c.moment()
+  if left <= 0.0 {
+    true
+  } else {
+    c.wake_in(left)
+    false
+  }
+}
+
+///|
 /// A video's first frame (`id` naming it, `name` its file's), from the player `open` makes of it (pv_first): an image's
 /// key once here, "" while it comes, "!" when it could not be.
 fn grab_first(c : @ui.Ctx, id : String, name : String, open : () -> @ui.NativeView) -> String {
@@ -643,7 +659,7 @@ fn grab_first(c : @ui.Ctx, id : String, name : String, open : () -> @ui.NativeVi
             Some(png) => Some(png)
             // (no player here, or one that cannot read it: none to be had)
             None =>
-              if (n.state() < 0 && !n.grabbing()) || @kit.media_decode_stalled(c, Some(n)) {
+              if (n.state() < 0 && !n.grabbing()) || decode_stalled(c, n) {
                 Some(b"")
               } else {
                 None
@@ -1156,9 +1172,9 @@ pub fn new_viewer(
     near_bar: false,
     // (a tab's fitted as the whole window's is, but always as on a narrow stage: tab_picture_node lays it out so)
     zoom: if beside {
-      @kit.Zoom::new(margin=fn(_) { tab_picture_margin })
+      @motion.Zoom::new(margin=fn(_) { tab_picture_margin })
     } else {
-      @kit.Zoom::new()
+      @motion.Zoom::new()
     },
     // (a film edge to edge, enlarged, as the player puts it: what it flies to and from)
     vzoom: video_zoom(),
@@ -2679,7 +2695,7 @@ pub fn Viewer::flight_target(self : Viewer, c : @ui.Ctx, src : Source) -> (Doubl
     return None
   }
   let (nw, nh) = self.natural_size(src)
-  match self.zoom.rect(c) {
+  match self.zoom.rect_at(c.moment()) {
     Some(r) => Some(r)
     None => fitted_rect(nw, nh, c.width, c.height)
   }
@@ -3040,7 +3056,7 @@ pub fn fitted_rect(
   bar? : Double = 0.0,
 ) -> (Double, Double, Double, Double)? {
   // (a zoom of its own, told once and nothing moving on it: the same at any moment)
-  let z = @kit.Zoom::new()
+  let z = @motion.Zoom::new()
   z.boxed(bw, bh, at=0.0)
   z.under_bars(bar, 0.0, at=0.0)
   z.natural(nw, nh, at=0.0)
@@ -3104,7 +3120,7 @@ pub fn Viewer::go(self : Viewer, c : @ui.Ctx, src : Source, dir : Int, velocity 
 /// The wheel over the stage: a desktop's pans (⇧ sideways), with ⌃ or ⌘ held (or a trackpad's pinch) zooms round the
 /// pointer; a phone's zooms. (Taken by the old view still where the stage is a node of the window's tree: the tree has
 /// no wheel of its own yet.)
-pub fn Viewer::wheel(self : Viewer, c : @ui.Ctx, stage : Int, z : @kit.Zoom) -> Unit {
+pub fn Viewer::wheel(self : Viewer, c : @ui.Ctx, stage : Int, z : @motion.Zoom) -> Unit {
   let (px, py, _) = c.pointer()
   let (wx, wy, mods) = @ui.wheel_of(c, stage)
   self.wheeled(z, px, py, wx, wy, mods, c.moment())
@@ -3117,7 +3133,7 @@ pub fn Viewer::wheel(self : Viewer, c : @ui.Ctx, stage : Int, z : @kit.Zoom) -> 
 /// the pointer; a phone's zooms.
 pub fn Viewer::wheeled(
   _self : Viewer,
-  z : @kit.Zoom,
+  z : @motion.Zoom,
   px : Double,
   py : Double,
   wx : Double,
@@ -3161,7 +3177,7 @@ pub fn Viewer::wheeled(
 /// first.
 pub fn Viewer::drag_zoomed(
   self : Viewer,
-  z : @kit.Zoom,
+  z : @motion.Zoom,
   strip : @motion.Way,
   dx : Double,
   dy : Double,
@@ -3296,8 +3312,8 @@ fn Viewer::video_rect_in(self : Viewer, width : Double, at : Double) -> (Double,
 ///|
 /// How a film's picture is fitted on the stage (Viewer's vzoom, and where it flies to before that is fitted): edge to
 /// edge, no margin, made bigger where it is smaller than the stage.
-fn video_zoom() -> @kit.Zoom {
-  @kit.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true)
+fn video_zoom() -> @motion.Zoom {
+  @motion.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true)
 }
 
 ///|

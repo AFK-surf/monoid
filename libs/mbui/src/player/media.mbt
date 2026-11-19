@@ -92,30 +92,12 @@ pub(all) enum MediaNote {
 }
 
 ///|
-/// A frame of the player: how it stands, what is playing, whether it is a song, whether what it waits on has been
-/// waited on long enough to say and how fast its bytes come meanwhile (bytes a second over the wait's last whole
-/// second; -1 not waiting, or not a second yet), how far its controls show (0 … 1, coming or going) and whether they
-/// take taps, the note a double tap said (while it is said), the subtitle's words now ("" none).
-pub(all) struct MediaFrame {
-  status : MediaStatus
-  phase : MediaPhase
-  audio : Bool
-  waited : Bool
-  rate : Double
-  shown : Double
-  on : Bool
-  note : MediaNote?
-  said : String
-}
-
-///|
 /// A player: what it plays and how its controls stand. One per page that plays; `key` keeps its widgets and its clocks
 /// apart from another's.
 pub struct Media {
   priv key : String
   priv speeds : Array[Double]
   priv nudge_ms : Double
-  priv rest_ms : Double
   priv double_tap_ms : Double
   priv note_ms : Double
   priv wake_ms : Double
@@ -127,8 +109,6 @@ pub struct Media {
   priv mut decode_failed : Bool
   priv mut start_at : Double
   priv mut started : Bool
-  /// the place it opens at, owed to the player once the frame's builds are over (Media::frame)
-  priv mut seek_owed : Bool
   priv mut speed : Double
   priv mut subs_on : Bool
   priv mut subtitle : Bool
@@ -140,12 +120,6 @@ pub struct Media {
   priv mut fill : Bool
   // (turned sideways or not, as it is told: what reads it follows it, a frame round the player laid out by it)
   priv sideways : @signals.Signal[Bool]
-  priv mut awake : Bool
-  /// a mouse's pointer over where its controls or its bar are (Media::near): they show while it is
-  priv mut near : Bool
-  priv mut poke : Int
-  priv mut rest_key : String
-  priv mut note : MediaNote?
   /// where the timeline is dragged to (ms); -1: it is not
   priv mut scrub : Double
   /// where the player was last sent while it is dragged (ms; -1: not yet), whether it played when the finger came
@@ -155,18 +129,12 @@ pub struct Media {
   /// how loud (0 … 1), and its sound off, kept for what it plays next
   priv mut volume : Double
   priv mut muted : Bool
-  /// while it waits (opening, buffering): whether it does, the last whole second measured and the bytes it had been
-  /// given by then (-1: none yet), how fast they came (Media::rate_now)
-  priv mut waiting : Bool
-  priv mut rate_tick : Int
-  priv mut rate_bytes : Double
-  priv mut rate : Double
 }
 
 ///|
 /// How long a player's controls stay left alone while it plays, a note a double tap said is said
 /// (0.8 s), its controls take to come as they are woken (0.12 s) and to fade as they rest (0.32 s, both on the
-/// ease-out: still.fail's, viewer/media.css.ts): Media::new's, unless said otherwise.
+/// ease-out: still.fail's, viewer/media.css.ts): what a player's nodes go by (Media::times), unless said otherwise.
 pub let media_rest_ms : Double = 2500.0
 
 ///|
@@ -183,53 +151,18 @@ pub let media_sleep_ms : Double = 320.0
 pub let media_decode_wait_ms : Double = 20000.0
 
 ///|
-/// Whether a player has waited for its first frame long enough after all bytes were delivered. The host reports when
-/// that happened; the app's clock schedules the decision, including when no frames were drawn in between.
-pub fn media_decode_stalled(c : @ui.Ctx, view : @ui.NativeView?) -> Bool {
-  match view {
-    Some(n) if n.state() == 2 && n.decode_since() >= 0.0 => {
-      let left = n.decode_since() + media_decode_wait_ms - c.moment()
-      if left <= 0.0 {
-        true
-      } else {
-        c.wake_in(left)
-        false
-      }
-    }
-    _ => false
-  }
-}
-
-///|
 /// How long a frame asked of a player is waited for, its read and its seek together.
 pub let media_grab_wait_ms : Double = 10000.0
 
 ///|
-/// Whether the frame asked of `n` has been waited for long enough. A system player may never end a seek, with nothing
-/// said; only the app's clock can tell a grab like that from one still on its way.
-pub fn media_grab_stalled(c : @ui.Ctx, n : @ui.NativeView) -> Bool {
-  if n.grab_since() < 0.0 {
-    return false
-  }
-  let left = n.grab_since() + media_grab_wait_ms - c.moment()
-  if left <= 0.0 {
-    true
-  } else {
-    c.wake_in(left)
-    false
-  }
-}
-
-///|
 /// A player with nothing in it yet. Its ways, as Player.kt's: the speeds a tap steps through, what a double tap on a
-/// side jumps, how long its controls stay left alone while it plays (0: they stay), a double tap's second tap's time,
+/// side jumps, a double tap's second tap's time,
 /// how long a note is said, how long its controls take to come and to go, how long it waits before it says it is
 /// waiting.
 pub fn Media::new(
   key? : String = "media",
   speeds? : Array[Double] = [1.0, 1.25, 1.5, 2.0, 0.5, 0.75],
   nudge_ms? : Double = 15000.0,
-  rest_ms? : Double = media_rest_ms,
   double_tap_ms? : Double = @ui.double_tap_ms,
   note_ms? : Double = media_note_ms,
   wake_ms? : Double = media_wake_ms,
@@ -240,7 +173,6 @@ pub fn Media::new(
     key,
     speeds,
     nudge_ms,
-    rest_ms,
     double_tap_ms,
     note_ms,
     wake_ms,
@@ -251,7 +183,6 @@ pub fn Media::new(
     decode_failed: false,
     start_at: 0.0,
     started: false,
-    seek_owed: false,
     speed: 1.0,
     subs_on: true,
     subtitle: false,
@@ -260,21 +191,12 @@ pub fn Media::new(
     view_told: @signals.signal(0),
     fill: false,
     sideways: @signals.signal(false, same=fn(a, b) { a == b }),
-    awake: true,
-    near: false,
-    poke: 0,
-    rest_key: "",
-    note: None,
     scrub: -1.0,
     scrub_sent: -1.0,
     scrub_played: false,
     pinned: None,
     volume: 1.0,
     muted: false,
-    waiting: false,
-    rate_tick: 0,
-    rate_bytes: 0.0,
-    rate: -1.0,
   }
 }
 
@@ -302,10 +224,8 @@ pub fn Media::open(self : Media, track : MediaTrack, start? : Double = 0.0, play
   self.track = Some(track)
   self.start_at = start
   self.started = false
-  self.awake = true
   self.scrub = -1.0
   self.scrub_sent = -1.0
-  self.waiting = false
   @ui.log("player: open \{track.name} (\{track.mime}) from \{start.to_int()} ms")
 }
 
@@ -439,7 +359,7 @@ pub fn Media::subtitle(self : Media) -> (Bool, Bool) {
 
 ///|
 /// The subtitle's words where it is now, while they are shown ("" none): followed as it plays, as its subtitle is told
-/// and as its words are turned on or off (Media::frame's `said`, without a Ctx).
+/// and as its words are turned on or off, outside any tracking.
 pub fn Media::cue_now(self : Media) -> String {
   self.subs_told.get() |> ignore
   if self.subs_on {
@@ -463,58 +383,6 @@ pub fn Media::scrubbing(self : Media) -> Double? {
   } else {
     None
   }
-}
-
-///|
-fn Media::phase(self : Media, s : MediaStatus) -> MediaPhase {
-  if s.state < 0 {
-    Failed
-  } else if !self.started {
-    Opening
-  } else if s.ended {
-    Ended
-  } else if s.buffering {
-    Buffering
-  } else if s.playing {
-    Playing
-  } else {
-    Paused
-  }
-}
-
-///|
-fn phase_code(p : MediaPhase) -> Int {
-  match p {
-    Opening => 0
-    Buffering => 1
-    Playing => 2
-    Paused => 3
-    Ended => 4
-    Failed => 5
-  }
-}
-
-///|
-/// Its controls brought back (and kept a while again).
-pub fn Media::wake(self : Media) -> Unit {
-  self.awake = true
-  self.poke += 1
-}
-
-///|
-/// Its controls hidden while shown, shown while hidden (a click on its picture).
-pub fn Media::toggle(self : Media) -> Unit {
-  if self.awake {
-    self.awake = false
-  } else {
-    self.wake()
-  }
-}
-
-///|
-/// A mouse's pointer over where its controls or its bar are (`on`): they show while it is, hidden or not.
-pub fn Media::near(self : Media, on : Bool) -> Unit {
-  self.near = on
 }
 
 ///|
@@ -664,9 +532,8 @@ pub fn Media::toggle_sideways(self : Media) -> Unit {
 let media_start_slack_ms : Double = 100.0
 
 ///|
-/// For a player shown by nodes of the window's tree (what Media::frame does of its own with no Ctx, told as how it
-/// stands changes, outside any tracking): ready once it is, the place it opens at sought once more where the player took
-/// none before it was ready. Whether it is ready.
+/// For a player shown by nodes of the window's tree (told as how it stands changes, outside any tracking): ready once
+/// it is, the place it opens at sought once more where the player took none before it was ready. Whether it is ready.
 pub fn Media::take_ready(self : Media) -> Bool {
   let s = self.status()
   if s.state == 1 && !self.started {
@@ -689,7 +556,7 @@ pub fn Media::take_ready(self : Media) -> Bool {
 
 ///|
 /// Its decoder waited on long enough, for a player shown by nodes (media_decode_wait_ms after all its bytes came, as
-/// the node's clock has it): said unplayable from now on (Media::status's -4), as Media::frame says it.
+/// the node's clock has it): said unplayable from now on (Media::status's -4).
 pub fn Media::decode_given_up(self : Media) -> Unit {
   if self.pinned is None {
     self.decode_failed = true
@@ -702,218 +569,6 @@ pub fn Media::decode_given_up(self : Media) -> Unit {
 /// for them.
 pub fn Media::times(self : Media) -> (Double, Double, Double, Double, Double) {
   (self.wait_ms, self.double_tap_ms, self.note_ms, self.wake_ms, self.sleep_ms)
-}
-
-///|
-/// The player this frame (asked once a frame, before what shows it is built): ready once it is (the place it opens at
-/// owed to it where it took none before), its controls going once left alone `rest_ms` while it plays (a song's stay),
-/// a tap left single after `double_tap_ms` bringing them or taking them away, a note said `note_ms`.
-pub fn Media::frame(self : Media, c : @ui.Ctx) -> MediaFrame {
-  let p = self
-  if p.pinned is None && !p.decode_failed && media_decode_stalled(c, p.view) {
-    p.decode_failed = true
-  }
-  let s = p.status()
-  let name = match p.track {
-    Some(t) => t.name
-    None => ""
-  }
-  if s.state == 1 && !p.started {
-    p.started = true
-    let read = match p.view {
-      Some(n) => n.bytes().to_int()
-      None => 0
-    }
-    @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
-    // the place it opens at, once more where the player took no seek before it was ready
-    if p.start_at > 0.0 && s.position < p.start_at - media_start_slack_ms {
-      p.seek_owed = true
-    }
-  }
-  // (told the player once the frame's builds are over: by the host's say of it, once)
-  if p.seek_owed {
-    c.after_build(p.key + "/seek", fn() {
-      p.seek_owed = false
-      p.seek(p.start_at)
-    })
-  }
-  let phase = p.phase(s)
-  let known_audio = match p.track {
-    Some(t) => t.audio
-    None => false
-  }
-  // no picture: none once its host is done opening it (a video's done at its first frame shown, its size known by
-  // then); ready alone, a video's size may not be known yet (Android's ExoPlayer tells its size after it is ready)
-  let host_done = match (p.pinned, p.view) {
-    (Some(_), _) => true
-    (None, Some(n)) => n.host_done()
-    (None, None) => false
-  }
-  let audio = known_audio || (p.started && host_done && s.width <= 0.0)
-  // left alone while it plays, the controls go (a song's stay): rest_ms from when that last changed
-  let rest = "\{p.awake}|\{phase_code(phase)}|\{p.poke}|\{audio}"
-  if rest != p.rest_key {
-    p.rest_key = rest
-    after(c, p.key + "/rest", false, p.rest_ms) |> ignore
-  }
-  if after(c, p.key + "/rest", p.awake && phase == Playing && !audio && p.rest_ms > 0.0, p.rest_ms) {
-    p.awake = false
-  }
-  if p.note is Some(_) && after(c, p.key + "/note", true, p.note_ms) {
-    p.note = None
-  }
-  // what it waits on said only once it has waited wait_ms, with how fast its bytes come meanwhile
-  let waited = after(c, p.key + "/wait", phase is (Opening | Buffering), p.wait_ms)
-  let rate = p.rate_now(c, phase is (Opening | Buffering))
-  let target = if p.awake || p.near || phase != Playing || audio { 1.0 } else { 0.0 }
-  let shown = @motion.animate(c, p.key + "/shown", target, spec=@motion.tween(
-      if target > 0.0 {
-        p.wake_ms
-      } else {
-        p.sleep_ms
-      },
-      ease=Out,
-    ))
-  let said = if p.subs_on { @codec.cues_at(p.cues, s.position) } else { "" }
-  { status: s, phase, audio, waited, rate, shown, on: shown > 0.0, note: p.note, said }
-}
-
-///|
-/// How fast its bytes come while it waits (`waiting`: opening or buffering): those its player was given (the host's
-/// count, NativeView::bytes) over each whole second of the clock (Ctx::every) from the first that began after the wait
-/// did, as the last one ended; -1 when it does not wait, or before such a second is over.
-fn Media::rate_now(self : Media, c : @ui.Ctx, waiting : Bool) -> Double {
-  let bytes = match self.view {
-    Some(n) => n.bytes()
-    None => 0.0
-  }
-  if !waiting {
-    self.waiting = false
-    return -1.0
-  }
-  let k = c.every(1000.0)
-  if !self.waiting {
-    // (the second it began in counts for nothing: part of it was not waited)
-    self.waiting = true
-    self.rate_tick = k + 1
-    self.rate_bytes = -1.0
-    self.rate = -1.0
-  }
-  if k >= self.rate_tick {
-    if self.rate_bytes >= 0.0 && k > self.rate_tick {
-      let came = bytes - self.rate_bytes
-      self.rate = (if came > 0.0 { came } else { 0.0 }) / (k - self.rate_tick).to_double()
-    }
-    if self.rate_bytes < 0.0 || k > self.rate_tick {
-      self.rate_tick = k
-      self.rate_bytes = bytes
-    }
-  }
-  self.rate
-}
-
-///|
-/// The picture's stage `id`, `w` wide, tapped: a tap waits to be a single one (the controls shown or hidden, Media::frame);
-/// a second within double_tap_ms a double one: on the left third back nudge_ms, on the right on, in the middle played
-/// or paused, said a moment (MediaFrame's note).
-pub fn Media::stage(self : Media, c : @ui.Ctx, id : Int, w : Double) -> Unit {
-  // (a ground, not a control: Ctx::cursor)
-  c.cursor(id, Arrow)
-  // (the moment a tap on it is left single: declared by the first, under this player's key)
-  let single = self.key + "/tap-single"
-  c.on_press(id, fn() {
-    // a second within double_tap_ms of the first: the first's moment called off, a double one where it is let go
-    if c.call_off(single) {
-      let (x, _, _) = c.pointer()
-      let third = w / 3.0
-      if x < third {
-        self.seek_by(-self.nudge_ms)
-        self.note = Some(Back(self.nudge_ms))
-      } else if x > third * 2.0 {
-        self.seek_by(self.nudge_ms)
-        self.note = Some(Ahead(self.nudge_ms))
-      } else {
-        // (at its end, whatever its host says of its playing: played again, as play_pause does)
-        let was = self.status().playing && !self.status().ended
-        self.play_pause()
-        self.note = Some(if was { Paused } else { Played })
-      }
-      restart(c, self.key + "/note", self.note_ms)
-    } else {
-      // the first: left single once double_tap_ms has gone from it with no second (its moment the tap's: Ctx::moment),
-      // the controls shown or hidden
-      c.at_moment(single, c.moment() + self.double_tap_ms, fn() {
-        if self.awake && self.phase(self.status()) == Playing {
-          self.awake = false
-        } else {
-          self.wake()
-        }
-      })
-    }
-  })
-}
-
-///|
-/// A finger down anywhere on the controls (`id`) keeps them a while.
-pub fn Media::keep_awake(self : Media, c : @ui.Ctx, id : Int) -> Unit {
-  let (px, py, down) = c.pointer()
-  match c.rect_of(id) {
-    Some((x, y, w, h)) if down && px >= x && px < x + w && py >= y && py < y + h => self.wake()
-    _ => ()
-  }
-}
-
-///|
-/// The timeline `id` (taking taps while `on`; its track `inset` in from either side), tapped or dragged along to a time
-/// (`snap`: what is gone to for a time, e.g. the start of the frame showing then): dragged, it goes with the finger
-/// (Media::scrub_to) until let go (Media::scrub_done); tapped, there at once, played or paused as it was.
-pub fn Media::timeline(
-  self : Media,
-  c : @ui.Ctx,
-  id : Int,
-  on : Bool,
-  inset? : Double = 0.0,
-  snap? : (Double) -> Double = fn(ms) { ms },
-) -> Unit {
-  let dur = self.status().duration
-  let under = fn() -> Double? {
-    match c.rect_of(id) {
-      Some((x, _, w, _)) if dur > 0.0 => {
-        let (px, _, _) = c.pointer()
-        let track = w - 2.0 * inset
-        let k = (px - x - inset) / (if track < 1.0 { 1.0 } else { track })
-        Some(snap((if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }) * dur))
-      }
-      _ => None
-    }
-  }
-  if on && c.pressed(id) {
-    match under() {
-      Some(ms) => self.scrub_to(ms)
-      None => ()
-    }
-  } else if self.scrub >= 0.0 {
-    // let go: where it was let go (its last move and its lifting can be one frame)
-    match under() {
-      Some(ms) if on => self.scrub = ms
-      _ => ()
-    }
-    self.scrub_done()
-  }
-  // tapped (let go with no frame having seen it held, so not dragged): there at once, as it is let go
-  if on {
-    c.on_press(id, fn() {
-      if self.scrub < 0.0 {
-        match under() {
-          Some(ms) => {
-            self.seek_near(ms)
-            self.wake()
-          }
-          None => ()
-        }
-      }
-    })
-  }
 }
 
 ///|
@@ -937,7 +592,6 @@ pub fn Media::scrub_to(self : Media, ms : Double) -> Unit {
     self.scrub_sent = ms
     self.seek(ms)
   }
-  self.wake()
 }
 
 ///|
@@ -967,7 +621,6 @@ pub fn Media::scrub_done(self : Media) -> Unit {
   }
   self.scrub = -1.0
   self.scrub_sent = -1.0
-  self.wake()
 }
 
 ///|
@@ -997,9 +650,3 @@ pub fn Media::picture_rect(self : Media, s : MediaStatus, bw : Double, bh : Doub
   }
 }
 
-///|
-/// `key`'s wait (after) started now, from nothing (a note said, a tap waiting to be a double one).
-fn restart(c : @ui.Ctx, key : String, ms : Double) -> Unit {
-  after(c, key, false, ms) |> ignore
-  after(c, key, true, ms) |> ignore
-}

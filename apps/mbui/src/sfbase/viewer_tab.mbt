@@ -1,7 +1,7 @@
 // A file opened beside a chat: a tab of the wide frame's side panel (`view:[…]`, the core's chat-tabs.ts isView), the
 // same viewer as over the whole window (viewer.mbt) made for the tab (Viewer's `beside`), one a tab, kept by the chat's
 // tabs' key and the tab while the tab is open, let go as it is closed. What it shows is the whole window's: a picture
-// fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @kit.Zoom); a PDF, a page,
+// fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @motion.Zoom); a PDF, a page,
 // a table, code, words read in the reader, as the whole window's stage shows them (viewer_stage_node, by the tab's width);
 // a film or a song in the one player embedded in the stage as part of the pane (@sf.player_view's `embedded`: on the
 // pane's own ground, its picture or a song's cover fitted in the room over its controls as a tab's picture is, the
@@ -417,7 +417,7 @@ fn Viewer::play_asked(self : Viewer, asked : PlayAsked) -> Unit {
 
 ///|
 /// Player `m` at the speed and as loud as `how` says (its speed, how loud, its sound off or not).
-fn media_as(m : @kit.Media, how : (Double, Double, Bool)) -> Unit {
+fn media_as(m : @player.Media, how : (Double, Double, Bool)) -> Unit {
   let (speed, volume, muted) = how
   m.set_speed(speed)
   m.set_volume(volume)
@@ -853,7 +853,7 @@ let tab_keys_drop_contents : Int = 4
 let tab_keys_drop_download : Int = 5
 
 ///|
-/// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @kit.Zoom's),
+/// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @motion.Zoom's),
 /// and its room to be taken by the hand in from them.
 let tab_picture_margin : Double = 12.0
 

@@ -696,11 +696,11 @@ test "a device's picture fitted still once its poses take room from the stage: i
   // tall enough that the stage's height is what it is fitted to
   r.say({ "config": { "codec": "jpeg", "width": 1000.0, "height": 2040.0 } })
   r.t.draw()
-  assert_true(!r.ui().zoom.zoomed(r.t.ctx()))
+  assert_true(!r.ui().zoom.zoomed_at(r.t.time()))
   r.state("live", more={ "kind": Json::string("simulator"), "poses": Json::boolean(true) })
   r.t.draw()
   r.t.draw()
-  assert_true(!r.ui().zoom.zoomed(r.t.ctx()))
+  assert_true(!r.ui().zoom.zoomed_at(r.t.time()))
   screen_done(r.t)
 }
 

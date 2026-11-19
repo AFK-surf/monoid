@@ -6,6 +6,7 @@ import {
   "mbui/kit",
   "mbui/motion",
   "mbui/paint",
+  "mbui/player",
   "mbui/signals",
   "mbui/text",
   "mbui/ui",
@@ -1053,7 +1054,7 @@ pub fn marks_start() -> Unit
 
 pub fn marks_undo() -> Unit
 
-pub fn marks_writing_bottom_in(@kit.Zoom, (Double, Double, Double, Double)?) -> Double?
+pub fn marks_writing_bottom_in(@motion.Zoom, (Double, Double, Double, Double)?) -> Double?
 
 pub fn menu_bar(@ui.Ctx, Source) -> Unit
 
@@ -1705,7 +1706,7 @@ pub let stage_min_scale : Double
 
 pub let stage_px : Int32
 
-pub fn stage_zoom() -> @kit.Zoom
+pub fn stage_zoom() -> @motion.Zoom
 
 pub fn stamp_of(@json.Json?, String) -> Stamp?
 
@@ -3359,7 +3360,7 @@ pub(all) struct ServicePage {
   mut logged_path : String
   address : @ui.Field
   link : PageLink
-  view : @kit.Zoom
+  view : @motion.Zoom
   moving : @signals.Signal[Bool]
   mut placed : Placed?
   mut hold : StageHold?
@@ -3717,8 +3718,8 @@ pub(all) struct Viewer {
   mut awake : Bool
   awake_told : @signals.Signal[Int32]
   mut near_bar : Bool
-  zoom : @kit.Zoom
-  vzoom : @kit.Zoom
+  zoom : @motion.Zoom
+  vzoom : @motion.Zoom
   mut source : Bool
   source_told : @signals.Signal[Int32]
   mut page : @ui.NativeView?
@@ -3744,7 +3745,7 @@ pub(all) struct Viewer {
   mut pinch_y : Double
   mut pinched : Bool
   reads : @signals.Signal[Int32]
-  mut pinned : @kit.MediaStatus?
+  mut pinned : @player.MediaStatus?
   steps : Stepping
   at : String
   mut swiping : Bool
@@ -3767,7 +3768,7 @@ pub(all) struct Viewer {
   mut leaving_grab : Bool
   mut left_at : Double
   grab_told : @signals.Signal[Int32]
-  mut media : @kit.Media?
+  mut media : @player.Media?
   mut copied : Int32
   mut head_w : Double
   serial : Int32
@@ -3788,7 +3789,7 @@ pub fn Viewer::dark(Self) -> Bool
 pub fn Viewer::desk_back(Self, Source) -> String
 pub fn Viewer::download(Self, Source) -> @json.Json?
 pub fn Viewer::draft_key(Self) -> String
-pub fn Viewer::drag_zoomed(Self, @kit.Zoom, @motion.Way, Double, Double, Bool, Bool, Double) -> Unit
+pub fn Viewer::drag_zoomed(Self, @motion.Zoom, @motion.Way, Double, Double, Bool, Bool, Double) -> Unit
 pub fn Viewer::fetch(Self, @ui.Ctx, Source) -> Unit
 pub fn Viewer::finish_marks(Self, @ui.Ctx, Bool) -> Unit
 pub fn Viewer::flight_from(Self, @ui.Ctx) -> Thumb?
@@ -3842,8 +3843,8 @@ pub fn Viewer::told_of(Self) -> Bool
 pub fn Viewer::up_still(Self) -> Bool
 pub fn Viewer::view(Self) -> @ui.NativeView?
 pub fn Viewer::wake(Self) -> Unit
-pub fn Viewer::wheel(Self, @ui.Ctx, Int32, @kit.Zoom) -> Unit
-pub fn Viewer::wheeled(Self, @kit.Zoom, Double, Double, Double, Double, Int32, Double) -> Unit
+pub fn Viewer::wheel(Self, @ui.Ctx, Int32, @motion.Zoom) -> Unit
+pub fn Viewer::wheeled(Self, @motion.Zoom, Double, Double, Double, Double, Int32, Double) -> Unit
 
 #derive(Eq)
 pub(all) struct Viewport {
