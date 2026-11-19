@@ -344,22 +344,13 @@ async fn World::add(self : World, c : Json) -> Unit {
       itself: None,
       codex_token_url: self.token_url,
       fetch: async fn(url, body) {
-        let (said, bytes) = self.host.shell(
-          "fetch",
-          jobj([
-            ("url", jstr(url)),
-            ("method", jstr("POST")),
-            ("headers", jarr([jarr([jstr("content-type"), jstr("application/json")])])),
-          ]),
-          bytes=@utf8.encode(body),
+        let r = self.host.fetch(
+          url,
+          method_="POST",
+          headers=[("content-type", "application/json")],
+          body=@utf8.encode(body),
         )
-        (
-          num_or0(get(Some(said), "status")).to_int(),
-          match bytes {
-            Some(b) => @utf8.decode_lossy(b)
-            None => ""
-          },
-        )
+        (r.status, r.text())
       },
       account_email: async fn(_, _) { None },
       lang: () => "zh",
