@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 2.62 | 3.52 | 14.4 | 36.6 | 55.48 | 32.07 | 64.88 | 97.27 | 118.74 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 2.62 | 3.52 | 14.4 | 36.51 | 55.48 | 31.98 | 64.67 | 97.47 | 168.69 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 2.59 | 3.48 | 14.18 | 36.26 | 54.6 | 31.77 | 63.99 | 97.03 | 207.49 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 2.59 | 3.48 | 14.18 | 36.26 | 54.59 | 31.76 | 63.92 | 97.13 | 121.06 |
-| [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 2.58 | 3.47 | 14.17 | 36.24 | 54.53 | 31.76 | 63.92 | 97.13 | 102.26 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [91b2657cb](https://github.com/AFK-surf/monoid/commit/91b2657cb24d686b95df63a0cae773318cc37699) perf(screens): send screen frames as QUIC datagram | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [0e9c9b889](https://github.com/AFK-surf/monoid/commit/0e9c9b889205b370ed9e5c9825cd9d40bd19505f) fix(sf-ui): put a noted switch on its title's firs | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [31f2ead0a](https://github.com/AFK-surf/monoid/commit/31f2ead0acde0ce763899fed949abf18ae041228) feat(logins): say how long a login has left, start | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e8d64fae7](https://github.com/AFK-surf/monoid/commit/e8d64fae7f73cd4011cef67567c24ee70a6011b3) feat(mbui): draw the 小屏 bottom bar and the finger' | 0.44 | 0.58 | 2.22 | 3.31 | 5.32 | 1.62 | 4.38 | 54.2 |
 | [f17707546](https://github.com/AFK-surf/monoid/commit/f17707546b459eb9ae1a8df44bf10299fe2ba44c) fix(mbui): keep the search list scroll where peopl | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [921fbfdd2](https://github.com/AFK-surf/monoid/commit/921fbfdd2b1aa45b9b303f2f040517b21716b4d9) refactor(sf-ui): share a chat's list lines, notice | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
-| [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
