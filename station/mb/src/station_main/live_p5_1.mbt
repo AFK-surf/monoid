@@ -298,9 +298,12 @@ fn P51::close(self : P51) -> Unit {
   let stops = self.stops.copy()
   self.stops.clear()
   stops.rev_each(f => f())
-  match self.readers {
-    Some(r) => r.close()
-    None => ()
+  // Keep readers open until events.hand_over finishes in live_p5_1_handed so in-flight reads complete cleanly.
+  if p51_events_handed.val is None {
+    match self.readers {
+      Some(r) => r.close()
+      None => ()
+    }
   }
   self.reports.close()
   self.log_export.close()

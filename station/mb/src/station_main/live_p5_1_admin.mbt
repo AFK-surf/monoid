@@ -335,7 +335,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           _ => []
         },
         running: arg(8) is True,
-        shared: arg(9) is True,
       }
       let (headers, id) = events.open(arg(0), text(1), asked)
       a.next_stream += 1

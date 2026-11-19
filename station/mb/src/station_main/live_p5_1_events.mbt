@@ -575,8 +575,13 @@ let p51_events_handed : Ref[@effect.Deferred[Unit]?] = Ref(None)
 ///|
 /// Waits, as the process ends, for its events to be handed over: a read under way when it stopped ends first.
 pub async fn live_p5_1_handed() -> Unit {
-  guard p51_events_handed.val is Some(d) else { return }
-  ignore(@effect.timeout(5_000, async fn() { d.wait() })) // timer: a deadline to the process's end
+  if p51_events_handed.val is Some(d) {
+    ignore(@effect.timeout(5_000, async fn() { d.wait() })) // timer: a deadline to the process's end
+    match p51_live.val {
+      Some({ readers: Some(r), .. }) => r.close()
+      _ => ()
+    }
+  }
 }
 
 ///|

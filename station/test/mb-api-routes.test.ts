@@ -1398,7 +1398,7 @@ function defineCases() {
   add("closed card a part's", { method: "PUT", path: "/threads/7/closed-card", body: { n: 4, option: "go" }, viewer: MEMBER }, { world: (w) => w.handlers.set("store.entriesBetween", () => [{ n: 4, ts: "9.1", card: { retire: { at: 1 } } }]) });
   add("mark unknown thread", { method: "PUT", path: "/threads/99/read", body: { n: 1 } });
   // events.ts
-  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"]] });
+  add("events", { method: "GET", path: "/events", query: [["live", "s1"], ["from", " 3.7 "], ["last", "5"], ["live", "s9"], ["live", "zz"], ["job", "j1"], ["lines", "5000"], ["job", "j9"], ["login", "abc"], ["login", "BAD"], ["host", "1"], ["since", "e9"], ["running", "1"], ["shared", "1"]] });
   add("events for a client from before", { method: "GET", path: "/events", headers: { "stillfail-runtimes": "claude, codex,BAD" } }, {
     world: (w) => {
       const frames = [
