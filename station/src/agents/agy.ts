@@ -44,6 +44,9 @@ export const agyAccountFile = (home: string) => join(agyHome(home), "account.jso
 /// Where `agy acp` keeps its conversation databases under `--gemini-dir` once a signed-in session opens.
 export const agyConversations = (home: string) => join(geminiDir(home), "antigravity-cli", "conversations");
 
+/// How many conversations this process brought in (`agyBringIn`): the names it copies beside under.
+let bringSeq = 0;
+
 /// Conversation `id` brought into the CLI's store of profile home `home` from another home beside it (the station's
 /// `homes/`) that kept it last: its database (and `-wal`), `annotations/<id>.pbtxt` and `brain/<id>/`
 /// (replica/carry.ts `cliKept`). A chat moved from another station comes with what its CLI kept under the id of the
@@ -73,9 +76,13 @@ export async function agyBringIn(home: string, id: string): Promise<string | nul
   const db = join(here, "conversations", `${id}.db`);
   await mkdir(join(here, "conversations"), { recursive: true });
   const fromWal = (await there(join(cli, "conversations", `${id}.db-wal`))) ? join(cli, "conversations", `${id}.db-wal`) : null;
-  // (copied beside first, so that what was here goes only once all of it came)
-  await cp(join(cli, "conversations", `${id}.db`), `${db}.bringing`, { preserveTimestamps: true });
-  if (fromWal !== null) await cp(fromWal, `${db}-wal.bringing`, { preserveTimestamps: true });
+  // (copied beside first, so that what was here goes only once all of it came; under names of its own, so that two
+  // bringing it at once, or one left by a failed one, are not each other's)
+  const n = ++bringSeq;
+  const dbBringing = `${db}.${process.pid}.${n}.bringing`;
+  const walBringing = `${db}-wal.${process.pid}.${n}.bringing`;
+  await cp(join(cli, "conversations", `${id}.db`), dbBringing, { preserveTimestamps: true });
+  if (fromWal !== null) await cp(fromWal, walBringing, { preserveTimestamps: true });
   for (const [dir, entry] of [["annotations", `${id}.pbtxt`], ["brain", id]] as const) {
     await rm(join(here, dir, entry), { recursive: true, force: true });
     if (!(await there(join(cli, dir, entry)))) continue;
@@ -84,8 +91,8 @@ export async function agyBringIn(home: string, id: string): Promise<string | nul
   }
   await rm(`${db}-wal`, { force: true });
   await rm(`${db}-shm`, { force: true });
-  await rename(`${db}.bringing`, db);
-  if (fromWal !== null) await rename(`${db}-wal.bringing`, `${db}-wal`);
+  await rename(dbBringing, db);
+  if (fromWal !== null) await rename(walBringing, `${db}-wal`);
   log.info("agy", "a conversation brought into the profile's CLI from another home of the station", { id, from: name, to: home });
   return name;
 }

@@ -846,6 +846,10 @@ pub fn last_written(m : Machine, cli : String, id : String) -> Later[Double?] {
 }
 
 ///|
+/// How many conversations this process brought in (`agy_bring_in`): the names it copies beside under.
+let agy_bring_seq : Ref[Int] = { val: 0 }
+
+///|
 /// A conversation brought into a profile's CLI from another home of the station that kept it last (`agyBringIn`): the
 /// name of that home, none where nothing was brought.
 pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
@@ -890,12 +894,16 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
         let conv = m.join([here, "conversations"])
         let db = m.join([conv, "\{id}.db"])
         let from_wal = m.join([cli, "conversations", "\{id}.db-wal"])
+        // (names of its own beside, so that two bringing it at once, or one left by a failed one, are not each other's)
+        agy_bring_seq.val += 1
+        let db_bringing = "\{db}.\{agy_bring_seq.val}.bringing"
+        let wal_bringing = "\{db}-wal.\{agy_bring_seq.val}.bringing"
         m
         .make_dir(conv)
         .bind(_ => m.there(from_wal))
         .bind(has_wal => m
-          .copy(m.join([cli, "conversations", "\{id}.db"]), "\{db}.bringing")
-          .bind(_ => if has_wal { m.copy(from_wal, "\{db}-wal.bringing") } else { done(lp) })
+          .copy(m.join([cli, "conversations", "\{id}.db"]), db_bringing)
+          .bind(_ => if has_wal { m.copy(from_wal, wal_bringing) } else { done(lp) })
           .bind(_ => {
             let parts = [("annotations", "\{id}.pbtxt"), ("brain", id)]
             each_in_turn(lp, parts.length(), k => {
@@ -914,8 +922,8 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
           })
           .bind(_ => m.remove_tree("\{db}-wal"))
           .bind(_ => m.remove_tree("\{db}-shm"))
-          .bind(_ => m.rename("\{db}.bringing", db))
-          .bind(_ => if has_wal { m.rename("\{db}-wal.bringing", "\{db}-wal") } else { done(lp) })
+          .bind(_ => m.rename(db_bringing, db))
+          .bind(_ => if has_wal { m.rename(wal_bringing, "\{db}-wal") } else { done(lp) })
           .map(_ => {
             m.log(
               "info",
