@@ -1,0 +1,12 @@
+import {
+  "mbctools/png",
+  "mbctools/rjson",
+  "mbctools/sys",
+  "moonbitlang/core/cmp",
+  "moonbitlang/core/env",
+}
+
+options(
+  "is-main": true,
+  link: { "wasm-gc": { "use-js-builtin-string": true } },
+)
