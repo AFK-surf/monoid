@@ -41,10 +41,9 @@ import { Retold } from "./retold.ts";
 import { Seen } from "./seen.ts";
 import { dayOf, holdsWhole, sameDetailCoverage, usageHistoryRange, withPart } from "./usage-part.ts";
 import { threadAfter, threadAfterLetters } from "./thread-after.ts";
-import { type Marks, OwnHeld, markDismissed, markPin, markRead, markThread, marksOf, marksPut, rowShared, rowWords, rowsMade, rowsShared, sharedPlace, sharedWhole } from "./rows-made.ts";
+import { OwnHeld, marksOf, rowShared, rowWords, rowsShared, sharedPlace, sharedWhole } from "./rows-made.ts";
 import { timed } from "../spent.ts";
 import { MOVE_PAGE, moveLimit } from "../move.ts";
-import { glanced } from "../work.ts";
 import { isOwnSurface } from "../titles.ts";
 
 export { HOST_KEY, LINK_KEY, LONG_MISSES, MISSES, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_IDLE_MS, STREAM_QUIET_MS, Link } from "./link.ts";
@@ -367,7 +366,7 @@ export class StationsSync {
     ];
     const sessions = this.#enqueue(address, "sessions", p, read({ topic: "sessions", station: address }, "/sessions"));
     const threads = this.#enqueue(address, "threads", p, read({ topic: "threads", station: address }, "/threads"));
-    if (link?.shared) first.push(this.#enqueue(address, "shared", p, this.#sharedWhole(address, ctx, unread)));
+    first.push(this.#enqueue(address, "shared", p, this.#sharedWhole(address, ctx, unread)));
     const lists = Effect.flatMap(Effect.all([Deferred.await(sessions), Deferred.await(threads)], { mode: "result" }), (read) =>
       Effect.sync(() => {
         if (read.some((r) => r._tag === "Success") && link !== undefined && this.#links.get(address) === link) this.#historyStart(address);
@@ -905,8 +904,6 @@ export class StationsSync {
           this.onChange(address, "link");
         }
         this.#retell(address, read);
-        // (a list its station makes reads neither)
-        if (topic.topic === "sessions" || topic.topic === "threads") this.#remake(address, {});
         if (topic.topic === "sessions") this.unlisted(address);
         return;
       }
@@ -1872,7 +1869,6 @@ export class StationsSync {
         const taken = pending < (u64(get(held, "pending")) ?? 0);
         const now = taken ? { ...held, pending, process: "running" } : { ...held, pending };
         this.#core.data.putSummary(address, now);
-        this.#rowsAfterSession(address, key, held, now);
         return;
       }
       case "session-removed": {
@@ -1899,9 +1895,9 @@ export class StationsSync {
         const hidden = get(data, "hidden");
         if (thread === null || typeof hidden !== "boolean") return;
         const link = this.#links.get(address);
-        if (link?.marks) {
-          markThread(link.marks, link.own, "hidden", thread, hidden);
-          return this.#remake(address, { threads: [thread] });
+        if (link?.own) {
+          const whole = link.own.threadMark("hidden", thread, hidden);
+          return this.#remake(address, whole ? { whole: true } : { threads: [thread] });
         }
         for (const row of core.data.chatsOf(address, { thread })) if (isObject(row)) core.data.putChat(address, { ...row, hidden });
         return;
@@ -1911,9 +1907,9 @@ export class StationsSync {
         const muted = get(data, "muted");
         if (thread === null || typeof muted !== "boolean") return;
         const link = this.#links.get(address);
-        if (link?.marks) {
-          markThread(link.marks, link.own, "muted", thread, muted);
-          return this.#remake(address, { threads: [thread] });
+        if (link?.own) {
+          const whole = link.own.threadMark("muted", thread, muted);
+          return this.#remake(address, whole ? { whole: true } : { threads: [thread] });
         }
         for (const row of core.data.chatsOf(address, { thread })) if (isObject(row)) core.data.putChat(address, { ...row, muted });
         return;
@@ -1923,8 +1919,8 @@ export class StationsSync {
         const session = str(get(data, "session"));
         const at = u64(get(data, "at"));
         const link = this.#links.get(address);
-        if (link?.marks && session !== null) {
-          markPin(link.marks, link.own, session, at);
+        if (link?.own && session !== null) {
+          link.own.pin(session, at);
           // (a row of the list its station makes is its agent's, by its key)
           return this.#remake(address, { ids: [session] });
         }
@@ -1936,8 +1932,8 @@ export class StationsSync {
         const n = u64(get(data, "n"));
         if (thread === null || n === null) return;
         const link = this.#links.get(address);
-        if (link?.marks) {
-          markDismissed(link.marks, link.own, thread, n);
+        if (link?.own) {
+          link.own.letGo(thread, n);
           return this.#remake(address, { threads: [thread] });
         }
         return;
@@ -1947,38 +1943,30 @@ export class StationsSync {
         const thread = u64(get(data, "thread"));
         if (thread === null || typeof get(data, "kept") !== "boolean") return;
         const link = this.#links.get(address);
-        if (link?.marks) {
-          markThread(link.marks, link.own, "kept", thread, get(data, "kept") === true);
+        if (link?.own) {
+          link.own.threadMark("kept", thread, get(data, "kept") === true);
           return this.#remake(address, { threads: [thread] });
         }
         return;
       }
       case "said": {
-        // What was said in a chat: the marks it changes, and the sidebar made again (rows-made.ts).
+        // What was said in a chat: the viewer's marks read again where they may have changed, and its row made again.
         const link = this.#links.get(address);
         const id = u64(get(data, "id"));
-        if (link?.marks && id !== null) {
+        if (link?.own && id !== null) {
           const entries = ((get(data, "entries") as unknown[] | undefined) ?? []).filter(isObject);
-          // The review's marks hold while the chat stands as it looked at it; a card posted, or a person writing (what
-          // waits answered), is the station's to say.
-          // (the older path's list, walked: rows-made.ts marksPut)
-          glanced.marksWalked += link.marks.suggested.length;
-          link.marks.suggested = link.marks.suggested.filter((t) => t !== id);
-          delete link.marks.verdicts[String(id)];
           if (entries.some((e) => get(e, "card") !== undefined || get(e, "authorKind") === "person" || get(e, "kind") === "edit")) this.#marksRead(address, { threads: [id] });
           this.#remake(address, { threads: [id] });
         }
         return;
       }
       case "made": {
-        // The station keeps the marks beside the summaries (`marks`): the whole sidebar made here (rows-made.ts).
+        // Every station since build 7143 makes the shared chat list and keeps the viewer's marks beside it.
         const link = this.#links.get(address);
         if (!link) return;
         // (not while a read of them is under way already: a station read afresh reads them as its stream opens)
-        if (link.marks === null && !this.#core.scheduler.queued(address, `${address} chats`)) this.#enqueue(address, "chats", Priority.shown, this.#marksWhole(address));
-        // The chat list the station makes once for everyone: the sidebar made of it and what is the viewer's own.
-        link.shared = get(data, "shared") === true;
-        if (link.shared && link.sharedRows === null) this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address));
+        if (link.own === null && !this.#core.scheduler.queued(address, `${address} chats`)) this.#enqueue(address, "chats", Priority.shown, this.#marksWhole(address));
+        if (link.sharedRows === null && !this.#core.scheduler.queued(address, `${address} shared`)) this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address));
         return;
       }
       case "chat-shared": {
@@ -2000,7 +1988,7 @@ export class StationsSync {
         // What changes which rows there are and what they say, and only the station can say (a chat's sessions, its
         // settings, who the viewer is on Slack): those of a chat read again, or all of them.
         const thread = u64(get(data, "thread"));
-        if (this.#links.get(address)?.marks) {
+        if (this.#links.get(address)?.own) {
           // Its sessions or shares changed: its summary and marks read again; or anything (settings): all the marks.
           if (thread === null) return this.#marksRead(address, { whole: true });
           this.#markDirty(address, thread);
@@ -2015,7 +2003,7 @@ export class StationsSync {
         // from it): its rows as the station has them now, where it leaves them to the device.
         const session = str(get(data, "session"));
         const thread = u64(get(data, "thread"));
-        if (this.#links.get(address)?.marks && session !== null) this.#marksRead(address, { sessions: [session], threads: thread === null ? [] : [thread] });
+        if (this.#links.get(address)?.own && session !== null) this.#marksRead(address, { sessions: [session], threads: thread === null ? [] : [thread] });
         return;
       }
       case "job":
@@ -2052,42 +2040,17 @@ export class StationsSync {
   #onSession(address: string, summary: unknown, details = true): void {
     const key = str(get(summary, "key"));
     if (!key) return;
-    const before = this.#core.data.of(address)?.summary(address, key);
-    // (written before the sidebar is made again of it: a task enqueued may run at once)
     const again = this.#core.data.putSummary(address, summary);
-    this.#rowsAfterSession(address, key, before, summary);
-    // (a station that makes its list tells its row apart: the detail of a session nobody has open waits behind what is
-    // shown, ahead of the background; opened, it is raised as any is, topics.ts `#raise`)
-    const unseen = this.#links.get(address)?.shared === true && !this.#core.store.inUse({ topic: "session", station: address, key });
+    // (a station makes its list apart: the detail of a session nobody has open waits behind what is shown, ahead of
+    // the background; opened, it is raised as any is, topics.ts `#raise`)
+    const unseen = !this.#core.store.inUse({ topic: "session", station: address, key });
     if (again && details) this.#enqueue(address, `session/${key}`, unseen ? Priority.detail : Priority.shown, this.#session(address, key));
     // How far its transcript goes: what the device lacks of it after what it holds is read (channels.ts `settle`).
     const length = u64(get(summary, "transcriptLength"));
     if (length !== null && length > 0) this.channels.goesTo(transcriptOf(address, key), length - 1);
   }
 
-  /// A session's summary into the sidebar made here (rows-made.ts): the station's marks of it read where they may
-  /// have changed.
-  #rowsAfterSession(address: string, key: string, before: unknown, summary: unknown): void {
-    const link = this.#links.get(address);
-    if (link?.marks) {
-      // New to the device, or its last turn now asks something of a person or no longer does: the station's marks of it.
-      // Not of a list its station makes: what its rows read of the marks (where the viewer read to, what they let go,
-      // kept, hid, muted, pinned, who they are) is the viewer's doing, not a turn's; what a turn asks is in the row it
-      // tells (`chat-shared`).
-      const ask = (s: unknown) => JSON.stringify(get(s, "lastTurn") ?? null);
-      if (!link.shared && (!isObject(before) || ask(before) !== ask(summary))) {
-        const threads = (this.#core.data.shared({ topic: "threads", station: address }) as unknown[] | undefined ?? [])
-          .filter((t) => Array.isArray(get(t, "sessions")) && (get(t, "sessions") as unknown[]).some((m) => get(m, "session") === key))
-          .flatMap((t) => u64(get(t, "id")) ?? []);
-        this.#marksRead(address, { sessions: [key], threads });
-      }
-      // (a list its station makes reads no summary)
-      this.#remake(address, {});
-    }
-  }
-
-  /// The station's sidebar: made here (rows-made.ts) from the summaries held and what the station keeps beside them
-  /// (GET /chats?marks=1).
+  /// The viewer's marks beside the shared chat list (GET /chats?marks=1).
   #chats(address: string, ctx: SpanContext | null = null, unread?: () => void): Effect.Effect<void, CoreError> {
     return this.#marksWhole(address, ctx, unread);
   }
@@ -2111,7 +2074,7 @@ export class StationsSync {
         if (!current || !l || !this.reachable(address)) { this.#restoreVersions.delete(key); return; }
         const version = this.#restoreVersions.get(key);
         const query = `session=${encode(current.session)}${current.thread === null ? "" : `&thread=${current.thread}`}`;
-        const answer = yield* Effect.result(this.requests.call(l.addr, "GET", `/chats?${l.shared ? "shared=1&" : ""}${query}`, null, { quiet: true }));
+        const answer = yield* Effect.result(this.requests.call(l.addr, "GET", `/chats?shared=1&${query}`, null, { quiet: true }));
         if (this.#restoreVersions.get(key) !== version) return;
         if (this.#links.get(address) !== l) { this.#restoreVersions.delete(key); return; }
         this.#restoreVersions.delete(key);
@@ -2133,14 +2096,14 @@ export class StationsSync {
         if (present) {
           // If the row is not held yet, keep the optimistic copy until its shared-row tell arrives. If it is held,
           // the station has confirmed it: leave a quiet guard for an older removal still on its way.
-          if (l.shared && !l.sharedRows?.has(rowId)) return;
-          if (l.shared) this.#made(address, { ids: [rowId] });
+          if (!l.sharedRows?.has(rowId)) return;
+          this.#made(address, { ids: [rowId] });
           const listed = current.thread === null ? this.#core.data.chatOfSession(address, current.session) : this.#core.data.chatOfThread(address, current.thread);
           if (listed !== undefined) this.#core.views.local.guardRestore(address, current.id);
           return;
         }
         // A full shared-list read may have started before this scoped answer: replay this removal over its result.
-        if (l.shared) this.#retold.told(address, "chat-shared-removed", { id: rowId });
+        this.#retold.told(address, "chat-shared-removed", { id: rowId });
         if (l.sharedRows?.has(rowId)) this.#sharedPut(l, rowId, undefined);
         l.rows.rows.delete(rowId);
         this.#core.data.dropChat(address, rowId);
@@ -2186,7 +2149,7 @@ export class StationsSync {
       }
       const marks = marksOf(answer.success);
       if (marks === null) return yield* Effect.fail(new CoreError("bad_response", t("station.core.invalidReply")));
-      link.marks = marks;
+      link.own = new OwnHeld(marks, this.#me(address) ?? "");
       this.#made(address, { whole: true });
       this.#retell(address, asked, false, false);
     }));
@@ -2196,13 +2159,13 @@ export class StationsSync {
   /// while the read waits, one read for all of it. Then the sidebar made again.
   #marksRead(address: string, of: { sessions?: string[]; threads?: number[]; whole?: boolean }): void {
     const link = this.#links.get(address);
-    if (!link?.marks) return;
+    if (!link?.own) return;
     for (const key of of.sessions ?? []) link.marksWanted.sessions.add(key);
     for (const id of of.threads ?? []) link.marksWanted.threads.add(id);
     if (of.whole) link.marksWanted.whole = true;
     this.#enqueue(address, "marks", Priority.shown, this.#asked((asked) => Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
-      if (!link?.marks || !this.reachable(address)) return;
+      if (!link?.own || !this.reachable(address)) return;
       const whole = link.marksWanted.whole;
       const scope = { sessions: [...link.marksWanted.sessions], threads: [...link.marksWanted.threads] };
       link.marksWanted.sessions.clear();
@@ -2211,26 +2174,20 @@ export class StationsSync {
       if (!whole && scope.sessions.length === 0 && scope.threads.length === 0) return;
       const query = whole ? "" : [...scope.sessions.map((k) => `&session=${encode(k)}`), ...scope.threads.map((id) => `&thread=${id}`)].join("");
       const read = marksOf(yield* this.requests.call(link.addr, "GET", `/chats?marks=1${query}`, null, { quiet: true }));
-      if (read === null || !link.marks) return;
-      if (whole) link.marks = read;
-      else {
-        // (what is kept of them for a list its station makes, by their keys too, before whose rows they are is put:
-        // where that changed, all made again of them)
-        if (link.own !== null && link.own.marks === link.marks) link.own.scoped(read, scope);
-        marksPut(link.marks, read, scope);
-      }
-      this.#made(address, whole ? { whole: true } : { ids: scope.sessions, threads: scope.threads });
+      if (read === null || !link.own) return;
+      let remakeWhole = whole;
+      if (whole) link.own = new OwnHeld(read, this.#me(address) ?? "");
+      else if (!link.own.scoped(read, scope)) remakeWhole = true;
+      this.#made(address, remakeWhole ? { whole: true } : { ids: scope.sessions, threads: scope.threads });
       this.#retell(address, asked, false, false);
     })));
   }
 
-  /// The sidebar made again from what is held, once what is being told now is in (rows-made.ts). Of a list its station
-  /// makes, only `rows` (none where it names none: what changed is nothing such a list's rows read); else all of it, as
-  /// rowsMade makes it.
+  /// The sidebar made again from what is held, once what is being told now is in (rows-made.ts): only `rows` (none
+  /// where it names none).
   #remake(address: string, rows: Rows): void {
     const link = this.#links.get(address);
-    if (!link?.marks) return;
-    if (link.shared && !this.#wanted(link, rows)) return;
+    if (!link?.own || !this.#wanted(link, rows)) return;
     this.#enqueue(address, "remake", Priority.shown, Effect.sync(() => this.#made(address, {})));
   }
 
@@ -2256,52 +2213,43 @@ export class StationsSync {
   #made(address: string, rows: Rows): void {
     const link = this.#links.get(address);
     const me = this.#me(address);
-    if (!link?.marks || me === null) return;
+    if (!link?.own || me === null) return;
     const data = this.#core.data;
-    if (link.shared) {
-      // Of the chat list the station makes for everyone, once it is read: till then the rows held stand.
-      this.#wanted(link, rows);
-      if (link.sharedRows === null) return;
-      const w = link.rowsWanted;
-      const ids = new Set(w.ids);
-      for (const thread of w.threads) {
-        const id = link.sharedThreads.get(thread);
-        if (id !== undefined) ids.add(id);
-      }
-      const whole = w.whole;
-      w.ids.clear();
-      w.threads.clear();
-      w.whole = false;
-      const words = rowWords();
-      // Whole where what every row reads changed (the marks read whole, whose rows they are, the words) or the list was
-      // read; else each row by its key, at its place (sharedPlace), nothing else looked at.
-      const own = link.own?.of(link.marks, me) ? link.own : null;
-      if (whole || own === null || link.rows.whole !== sharedWhole(me, link.marks.selves, words)) {
-        if (own === null) link.own = new OwnHeld(link.marks, me);
-        const list = rowsShared(link.sharedRows.values(), link.marks, me, words, link.rows, link.own!);
-        return data.setChatsAt(address, list, list.map(sharedPlace));
-      }
-      for (const id of ids) {
-        const shared = link.sharedRows.get(id);
-        if (shared === undefined) {
-          link.rows.rows.delete(id);
-          data.dropChat(address, id);
-          continue;
-        }
-        const row = rowShared(shared, own, words, link.rows);
-        data.putChat(address, row, sharedPlace(row));
-      }
-      return;
+    // Of the chat list the station makes for everyone, once it is read: till then the rows held stand.
+    this.#wanted(link, rows);
+    if (link.sharedRows === null) return;
+    const w = link.rowsWanted;
+    const ids = new Set(w.ids);
+    for (const thread of w.threads) {
+      const id = link.sharedThreads.get(thread);
+      if (id !== undefined) ids.add(id);
     }
-    const sessions = data.shared({ topic: "sessions", station: address });
-    const threads = data.shared({ topic: "threads", station: address });
-    if (!Array.isArray(sessions) || !Array.isArray(threads)) return;
-    data.set({ topic: "chatRows", station: address }, rowsMade(sessions, threads, link.marks, me, rowWords(), link.rows));
+    const whole = w.whole;
+    w.ids.clear();
+    w.threads.clear();
+    w.whole = false;
+    link.own.forViewer(me);
+    const words = rowWords();
+    // Whole where what every row reads changed (the marks read whole, whose rows they are, the words) or the list was
+    // read; else each row by its key, at its place (sharedPlace), nothing else looked at.
+    if (whole || link.rows.whole !== sharedWhole(me, link.own.selves, words)) {
+      const list = rowsShared(link.sharedRows.values(), link.own, me, words, link.rows);
+      return data.setChatsAt(address, list, list.map(sharedPlace));
+    }
+    for (const id of ids) {
+      const shared = link.sharedRows.get(id);
+      if (shared === undefined) {
+        link.rows.rows.delete(id);
+        data.dropChat(address, id);
+        continue;
+      }
+      const row = rowShared(shared, link.own, words, link.rows);
+      data.putChat(address, row, sharedPlace(row));
+    }
   }
 
-  /// A chat's rows of a station made again of what is held of it (views/moved.ts: one it may list again, its chat back on
-  /// it or another station's row of it gone): of a list its station makes, its row by its id (a row's id is its agent's
-  /// session); else the list, as rowsMade makes it.
+  /// A chat's row of a station made again of what is held of it (views/moved.ts: one it may list again, its chat back on
+  /// it or another station's row of it gone): by its id (a row's id is its agent's session).
   remakeRows(address: string, session: string): void {
     this.#remake(address, { ids: [session] });
   }
@@ -2348,8 +2296,6 @@ export class StationsSync {
   /// thread goes: its channel is read if the device is behind on it.
   putThread(address: string, view: unknown): void {
     this.#core.data.putThread(address, view);
-    // (a list its station makes reads no thread's summary)
-    this.#remake(address, {});
     const id = u64(get(view, "id"));
     const last = u64(get(view, "last"));
     if (id !== null && last !== null) this.channels.goesTo(entriesOf(address, id), last);
@@ -2371,7 +2317,7 @@ export class StationsSync {
     // Where the viewer read to, theirs on the chat list's rows: as it is read here, not only once the station's stream
     // says it again (a read whose event never came left its row unread, 2026-11-10).
     const link = this.#links.get(address);
-    if (link?.shared && link.marks) markRead(link.marks, link.own, thread, n);
+    if (link?.own) link.own.read(thread, n);
     this.#remake(address, { threads: [thread] });
   }
 
@@ -2789,8 +2735,8 @@ export class StationsSync {
   readPosition(address: string, thread: number): number | null {
     const position = this.#core.data.readPosition(address, thread);
     const link = this.#links.get(address);
-    if (position === null || !link?.shared || !link.sharedThreads.has(thread) || link.marks === null) return position;
-    return Math.min(position, u64(link.marks.reads[String(thread)]) ?? 0);
+    if (position === null || !link?.sharedThreads.has(thread) || link.own === null) return position;
+    return Math.min(position, link.own.reads.get(thread) ?? 0);
   }
 
   /// Uploads, files, previews (station/transport.rs), by address.
