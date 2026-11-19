@@ -296,8 +296,10 @@ for t in $targets; do
     # 256 s of app 4/4 at 120 fps part 2/3 and 117 s of app 1/4 at 24 7 fps, which its 7 then cut at its 5 minutes,
     # main 0d56014c 43468965521, 2026-11-13) (in five since, its 中屏 and 大屏 a run each: in three, beside the first's
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
-    # Five share-card tests take about 55 s each. They moved to indices 72, 73, 74, 130, and 131 as screens were added.
-    # Give each its own run. Two together made tests 73-82 take 273 s on main (44211717525).
+    # Five share-card tests take about 55 s each. Cut by hand at their indices, new screens moved them on: three fell in
+    # tests 75-82, 202 s (ded934c144 44605217183), 328 s and cut at its 5 minutes on main 67e99adf7 (44602004555).
+    # switches_still is now cut in 32 even runs, its switches_part interleaving the screens so a run's ten tests walk
+    # screens 32 apart: no two of a row of 32 share a run.
     # send_steady has nine tests now, and tests 2-3 (22 and 27 paced sends) walk the most frames. Its 2-9 range ran
     # as one process on app 4/4, which hit the 5-minute limit at 318 s on main f855908e (44401157133). Cut it in five.
     # (chat_drive_parity's four by its tests' times the same way: 29, 35, 32 and 35 s, where by count 0-10 was 54 of
@@ -306,7 +308,7 @@ for t in $targets; do
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5 src/sfapp/chat_drive_parity_wbtest.mbt:@4@15@27
-      src/sfapp/switches_still_wbtest.mbt:@7@14@23@32@40@48@56@61@66@72@73@74@75@82@87@93@99@113@122@130@131@132@147@176@191@202@213@232@266@288@304)
+      src/sfapp/switches_still_wbtest.mbt:32)
     pages=()
     while IFS= read -r f; do
       [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f")

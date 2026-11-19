@@ -660,11 +660,15 @@ fn switches_against_known(walked : Array[String], found : Map[String, Int]) -> A
 ///|
 /// Each switch of every screen in `part` of `parts` of switches_modes (every `parts`-th from `part`: a test each, so a
 /// screen whose Tester stops on a fault of its own stops that part alone), on each screen size, at each pace, held to switches_known.
+/// Of 320 parts, test `part` walks slot (part % 10) * 32 + part / 10, so the tests scripts/test.sh runs together (its
+/// `:32`, tests 10c to 10c+9) walk slots c, c+32, …, c+288: any 32 screens in a row fall in 32 different runs, and the
+/// slow ones (the share cards', about 55 s each) stay apart wherever new screens move them.
 fn switches_part(part : Int, parts : Int) -> Unit raise {
+  let slot = if parts == 320 { (part % 10) * 32 + part / 10 } else { part }
   let found : Map[String, Int] = Map([])
   let walked = []
   for i, mode in switches_modes {
-    if i % parts != part {
+    if i % parts != slot {
       continue
     }
     for s in switches_screens {
