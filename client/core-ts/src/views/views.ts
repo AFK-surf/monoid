@@ -46,6 +46,7 @@ import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, 
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import * as logins from "../station/machine-logins.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
 import { lineForViewer, noTurnBegun, stageFields } from "../chat-stage.ts";
@@ -878,6 +879,9 @@ export type ViewsEnv = {
   resume?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
+  /// The program a login of a station's is to (gh, gcloud), as its station last told it (station/machine-logins.ts);
+  /// null where it has not been told. What 待处理 names a login's card by.
+  loginName?: (station: string, id: string) => string | null;
   /// How agents' requests about vault items are answered on this device, from the vault as the core holds it
   /// (views/vault.ts askAnswers): each `{answer, lasts?}`, in the order asked.
   vaultAnswers?: (workspace: string, asks: VaultAskOf[]) => J[];
@@ -910,6 +914,10 @@ export function envOf(core: Inner): ViewsEnv {
     data: core.data,
     waits: (topic) => core.stationTopics.waits(topic),
     held: (station, thread) => core.stationTopics.held(station, thread),
+    loginName: (station, id) => {
+      const name = logins.held(core.stations.link(station)).logins.find((l) => l.id === id)?.name;
+      return typeof name === "string" && name !== "" ? name : null;
+    },
     emailOf: (workspace) => {
       const sub = owner(workspace);
       return sub === null ? null : (core.accounts.list().find((a) => a.sub === sub)?.email ?? null);
@@ -1570,6 +1578,11 @@ export class Views implements Owner {
   /// offline to connecting made both workspaces' marks again, 4-7 ms in Hermes on a Mac Studio at a workspace of real
   /// size (2026-11-11).
   readonly #stationsNamed = new Map<string, Derived<{ address: string; name: string }[]>>();
+  /// The program a login of a station's is to, as its station last told it (null: not told).
+  loginName(station: string, id: string): string | null {
+    return this.#core.loginName?.(station, id) ?? null;
+  }
+
   stationsNamed(scope: string): { address: string; name: string }[] {
     let kept = this.#stationsNamed.get(scope);
     if (kept === undefined) {

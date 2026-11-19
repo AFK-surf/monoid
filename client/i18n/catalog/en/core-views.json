@@ -235,6 +235,8 @@
   "core-views.marks.others": "Other workspaces: {label}",
   "core-views.marks.unread": "{n} unread",
   "core-views.marks.wait": "{n} waiting for you",
+  "core-views.marks.login": "Needs you to log in to {name}",
+  "core-views.marks.loginAny": "Needs you to log in",
   "core-views.memberships.joined": "Joined",
   "core-views.memberships.home": "Home workspace",
   "core-views.named_error": "{name}: {error}",

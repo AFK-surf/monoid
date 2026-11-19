@@ -521,9 +521,10 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   assert.deepEqual([m.workspaces.ws.tone, m.workspaces.ws.mineTone, m.workspaces.ws.watchingTone], ["wait", "wait", undefined]);
   // 待处理 and the badge are the same: the cards waiting for them, looked at or not (k3 read: it still waits).
   assert.deepEqual([m.badge, m.workspaces.ws.badge], [2, 2]);
-  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"], ["wait", "k3", 4, "studio"]]);
-  assert.equal(m.workspaces.ws.items[0].what, "k1 要合吗？", "the same without its lead");
-  assert.deepEqual(m.workspaces.ws.items.map((i: J) => i.login), [undefined, "L1"]);
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k3", 4, "studio"], ["wait", "k1", 5, "studio"]]);
+  assert.equal(m.workspaces.ws.items[1].what, "k1 要合吗？", "the same without its lead");
+  // (a login waiting first: it ends by itself in minutes; named in its own words, its program not told here yet)
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.session, i.login, i.what]), [["k3", "L1", "需要你登录"], ["k1", undefined, "k1 要合吗？"]]);
 });
 
 test("a_comma_tasks_chat_is_marked_by_comma_as_a_slack_one_is_by_slack", async () => {

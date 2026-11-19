@@ -202,6 +202,8 @@
   "core-views.marks.others": "其他 workspace：{label}",
   "core-views.marks.unread": "{n} 个有新消息",
   "core-views.marks.wait": "{n} 个待你处理",
+  "core-views.marks.login": "需要你登录 {name}",
+  "core-views.marks.loginAny": "需要你登录",
   "core-views.memberships.joined": "加入的 workspace",
   "core-views.memberships.home": "主 workspace",
   "core-views.named_error": "{name}：{error}",
