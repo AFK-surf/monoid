@@ -897,7 +897,9 @@ fn body_held(which : BodyHeld) -> String {
     "an HTML page it places, as high, not compared (P12): 6",
     // (43 till a message's parts were 4 apart again and its files and how it went 8 under what is over them: its
     // rows taller, four more of the places swept have a row's picture across the list's top; no other kind came)
-    "its picture held under the list's top (c.stick): 45",
+    // (45 till a login's card said how long is left of it: chat-login's card a line taller, one more place swept has a
+    // row's picture across the list's top; no other kind came)
+    "its picture held under the list's top (c.stick): 46",
     // (chat-screens' m:ts12 drawn a block a piece since 2026-11-15, 2 of those held pictures among them)
     "a long message a block a piece, each on the list's whole pixels (meant): 6",
   ]
