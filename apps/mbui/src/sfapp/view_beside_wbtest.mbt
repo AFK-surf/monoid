@@ -403,6 +403,42 @@ test "大屏: a short Markdown beside a chat does not show 滚动到底部, keep
 }
 
 ///|
+test "大屏: a reader tab in the chat's panel widens its column to 48em (768) when the panel is wide, stays panel_w - 44 when narrower than 812, and returns to 34em (544) over the whole window" {
+  // wide window so the side panel is >= 1000 wide
+  let t = beside_tester(mode="chat-view-side", w=3000.0, h=900.0)
+  let (_, _, panel_w, _) = t.get(Toolbar, label="说明.md").rect
+  assert_true(panel_w >= 1000.0, msg="panel wide enough: \{panel_w}")
+  let col_w = fn(label : String) -> Double raise {
+    match t.words().iter().find_first(fn(w) { w.0.contains(label) }) {
+      Some((_, _, _, w, _, _)) => w
+      None => fail("no words containing \{label}")
+    }
+  }
+  let wide_w = col_w("发布前要做的")
+  assert_true((wide_w - 768.0).abs() <= 1.0, msg="panel tab column text width \{wide_w}, want 768 ±1")
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
+  assert_eq(faults, [], msg="audit faults in wide panel: \{Repr(faults)}")
+  // fullscreen over the whole window: returns to 34em (544)
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("说明.md"), msg="tab over the whole window")
+  let full_w = col_w("发布前要做的")
+  assert_true((full_w - 544.0).abs() <= 1.0, msg="fullscreen tab column text width \{full_w}, want 544 ±1")
+  // back in a panel narrower than 812: text width = panel_w - 44
+  t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
+  t.run_for(@ui.move_most_ms)
+  t.resize(1280.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, _, narrow_panel_w, _) = t.get(Toolbar, label="说明.md").rect
+  assert_true(narrow_panel_w < 812.0, msg="narrow panel width: \{narrow_panel_w}")
+  let narrow_w = col_w("发布前要做的")
+  assert_true(
+    (narrow_w - (narrow_panel_w - 44.0)).abs() <= 1.0,
+    msg="narrow panel text width \{narrow_w}, want \{narrow_panel_w - 44.0} ±1",
+  )
+}
+
+///|
 test "大屏: a file kept only while the app runs (a draft's: a Mermaid picture, an attachment waiting) asked beside opens the whole window, no tab, and its bar offers no 移到侧边" {
   let t = beside_tester()
   let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='red'/></svg>"

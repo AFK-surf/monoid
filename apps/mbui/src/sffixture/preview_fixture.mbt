@@ -34,6 +34,7 @@ pub fn preview_files() -> Array[(Attachment, () -> Bytes)] {
     (at("list.ts", 600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_code) }),
     (at("说明.md", 500.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md) }),
     (at("长说明.md", 4200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md_long) }),
+    (at("宽表格说明.md", 1600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md_wide) }),
     (at("数据.csv", 200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_csv) }),
     (at("备份.bin", 4096.0, 0.0, 0.0), fn() { Bytes::makei(4096, fn(i) { (i % 7).to_byte() }) }),
     (at("测试版.apk", 8192.0, 0.0, 0.0), fn() { Bytes::makei(8192, fn(i) { (i % 5).to_byte() }) }),
@@ -499,6 +500,27 @@ pub let fixture_md_long : String =
   #|新版本发布后持续观察崩溃率、卡顿指标与用户反馈，若发现阻断性问题立即按既定流程回退至上一个稳定版本并通知相关成员。
   #|
   #|文档末尾：所有检查项已核对完毕。
+
+///|
+/// A Markdown document with long paragraphs and a 5-column table for beside-chat panel width tests and stills.
+pub let fixture_md_wide : String =
+  #|# 跨端发布核对表
+  #|
+  #|对话旁侧栏本身已经受到面板宽度的自然约束，当用户把侧栏拉宽以便同时对照多列表格与较长的技术说明段落时，如果正文列仍然按整窗阅读器的三十四字宽上限收紧，两侧就会留下大片空白，表格列也会被过早挤压换行。放宽侧栏面板内的正文宽度上限到四十八字宽后，长段文字和五列表格都能更舒展地展开，而切到全屏或独立窗口时依然保持三十四字宽的舒适行长。
+  #|
+  #|## 平台构建与签名状态
+  #|
+  #|| 平台 | 构建目标 | 签名状态 | 帧率门禁 | 备注 |
+  #|| --- | --- | --- | --- | --- |
+  #|| macOS | arm64 / universal | 已公证 | 60 / 120 / 24 / 7 | 侧栏与独立窗口均通过 |
+  #|| Windows | x64 / arm64 | 代码签名 | 60 / 120 / 24 / 7 | 标题栏按钮对齐无告警 |
+  #|| Android | arm64-v8a | 发布密钥 | 60 / 120 / 24 / 7 | 非 debuggable 包 |
+  #|| iOS | arm64 | TestFlight | 60 / 120 / 24 / 7 | 竖横屏安全区正常 |
+  #|| Web | wasm-gc | CDN 校验 | 60 / 120 / 24 / 7 | 与客户端共用一套渲染 |
+  #|
+  #|## 布局与阅读体验说明
+  #|
+  #|在默认窗口尺寸下如果侧栏宽度低于八百一十二像素，正文区会贴合面板减去左右边距后的全部可用宽度；一旦用户将窗口放大或拖动分割线把侧栏拉宽至一千像素附近，正文区会平滑扩展至七百六十八像素上限，不再受制于五百四十四像素的整窗窄列限制。
 
 ///|
 pub let fixture_csv : String =

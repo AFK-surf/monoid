@@ -111,6 +111,17 @@ fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
 }
 
 ///|
+/// Where a reader is: a page of its own (the whole window's, a drive's), a tab beside a chat over the whole window or
+/// in a window of its own, or a tab in the chat's panel (its column wider there: panel_column_ems, the panel bounding
+/// it already).
+#derive(Eq)
+pub(all) enum ReaderHost {
+  OwnPage
+  Tab
+  PanelTab
+}
+
+///|
 /// A reader's panel: the contents, the search, the layout.
 #derive(Eq)
 pub(all) enum ReaderPanel {
@@ -892,6 +903,10 @@ let desk_reader_foot : Double = 72.0
 ///|
 /// The column's width: 34 of the text's size (34em), its margins either side.
 let desk_column_ems : Double = 34.0
+
+///|
+/// The column's width in a tab in the panel beside a chat: 48 of the text's size, the panel bounding it already.
+let panel_column_ems : Double = 48.0
 
 ///|
 /// The panel's width (PANEL).

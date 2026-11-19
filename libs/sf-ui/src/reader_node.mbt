@@ -11,8 +11,9 @@
 // right under the bar, 320 wide, the text kept clear of it (the layout's the window's tree's own: reader_layout_nodes).
 // On 小屏 its own bars that a tap on the text brings (and takes away), coming in 140 ms and going in 240, a step up or
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
-// In a tab beside a chat (`beside`) no bar of its own (the tab's tools open its panels: reader_panel_toggle), the column
-// from the tab's top, the panel over the text where the tab has not room for both.
+// In a tab beside a chat (`host` Tab or PanelTab) no bar of its own (the tab's tools open its panels:
+// reader_panel_toggle), the column from the tab's top (wider in PanelTab: panel_column_ems), the panel over the text
+// where the tab has not room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
 // reader.* (reader_bindings), at their key's moment; none of a tab's (the window's keys are the chat's).
@@ -20,8 +21,9 @@
 ///|
 /// A text read (Reader) as nodes in `parent` (all of its room): `file` (read as `key`, Markdown or not) on its paper,
 /// back to `back_label` (`on_back`); while it comes, how far it has; failed, why; empty, so said. On 小屏 a phone's bars
-/// that a tap brings, else a desktop's bar and its panels docked at its right; `beside`: in a tab beside a chat
-/// (reader_node's head), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
+/// that a tap brings, else a desktop's bar and its panels docked at its right; `host`: OwnPage for a page of its own,
+/// Tab for a tab over the whole window or in a window of its own, PanelTab for a tab in the chat's panel (wider column:
+/// panel_column_ems), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
 /// its first says so, a
 /// desktop's bar's 移到侧边 (its file to a tab beside the page), where offered.
 #callsite(autofill(loc))
@@ -32,11 +34,13 @@ pub fn reader_node(
   markdown~ : Bool,
   back_label~ : () -> String,
   on_back~ : () -> Unit,
-  beside? : Bool = false,
+  host? : ReaderHost = OwnPage,
   width? : () -> Double,
   move_beside? : (() -> Bool, () -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let beside = host != OwnPage
+  let ems = if host == PanelTab { panel_column_ems } else { desk_column_ems }
   let r = reading_for(key)
   reader_load(r, file, markdown)
   // (gone back: its layout's panel, the window's tree's, closed with it)
@@ -97,7 +101,7 @@ pub fn reader_node(
           ReaderEmpty => reader_note_node(p, fn() { t("web-pages.drive.reader.empty") }, paper)
           ReaderReads =>
             match r.book.untracked() {
-              Some(book) => reader_column_node(p, r, book, beside, wide, small, paper)
+              Some(book) => reader_column_node(p, r, book, beside, ems, wide, small, paper)
               None => ()
             }
         }
@@ -350,6 +354,7 @@ fn reader_column_node(
   r : Reading,
   book : Book,
   beside : Bool,
+  ems : Double,
   wide : () -> Bool,
   small : () -> Bool,
   paper : () -> ReaderPaper,
@@ -422,7 +427,7 @@ fn reader_column_node(
       l.scrolls_window(
         @view.Scroll::list(),
         fn() { keys },
-        fn(row, k) { reader_chunk_node(row, r, book, k, wide, small, style, paper) },
+        fn(row, k) { reader_chunk_node(row, r, book, k, ems, wide, small, style, paper) },
         est=reader_est_chars,
         slop=@ui.touch_slop(),
         bar=@ui.tree_scroll_bar(),
@@ -443,7 +448,7 @@ fn reader_column_node(
           if book.truncated {
             f.box(fn(cut) {
               style_node(cut, fn() { reader_cut_row })
-              reader_sides(cut, r, wide, style, fn(m) {
+              reader_sides(cut, r, ems, wide, style, fn(m) {
                 words_node(m, fn() { t("web-pages.drive.reader.cut", args=[("size", file_size(reader_most.to_double()))]) }, fn() {
                   reader_cut_words.then(@ui.text_style(color=Data(paper().muted)))
                 })
@@ -471,6 +476,7 @@ fn reader_column_node(
 fn reader_sides(
   row : @view.View,
   r : Reading,
+  ems : Double,
   wide : () -> Bool,
   style : () -> ReaderStyle,
   middle : (@view.View) -> Unit,
@@ -485,7 +491,7 @@ fn reader_sides(
     .shrink(Is(1.0))
     .max_width(By(fn() {
       let s = style()
-      Some(desk_column_ems * s.size.to_double() + 2.0 * s.margin.to_double())
+      Some(ems * s.size.to_double() + 2.0 * s.margin.to_double())
     }))
     .padding(By(fn() {
       let margin = style().margin.to_double()
@@ -525,6 +531,7 @@ fn reader_chunk_node(
   r : Reading,
   book : Book,
   k : Int,
+  ems : Double,
   wide : () -> Bool,
   small : () -> Bool,
   style : () -> ReaderStyle,
@@ -542,7 +549,7 @@ fn reader_chunk_node(
       None
     }
   })
-  reader_sides(row, r, wide, style, fn(m) {
+  reader_sides(row, r, ems, wide, style, fn(m) {
     let words = if book.markdown {
       markdown_node(
         m,

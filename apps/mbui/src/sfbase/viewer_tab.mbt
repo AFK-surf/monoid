@@ -599,7 +599,7 @@ pub fn viewer_tab_node(
     s.show(mbui, fn(m) { viewer_mbui_node(m, src, vw) })
     // (what its stage's nodes show of it, its words picked as a page's are: viewer_stage_node)
     s.show(fn() { !played && !picture() && stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
-      viewer_stage_node(h, src, vw, width)
+      viewer_stage_node(h, src, vw, width, panel=tools)
     })
     s.show(fn() { !played && !picture() && stage() != Hosted }, fn(note) {
       viewer_note_node(note, src, vw, stage, bars=false)
