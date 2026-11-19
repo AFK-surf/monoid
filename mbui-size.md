@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
 | [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fed4d673b](https://github.com/AFK-surf/monoid/commit/fed4d673b90d8ecaaf37f821dae0901fc923050b) fix(core): keep session_send letters out of Slack  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.97 | 97.76 | 123.48 |
 | [309c2e9eb](https://github.com/AFK-surf/monoid/commit/309c2e9eb07b593f438a4b775f1e3316abe2d607) fix(station): stop writing stillfail-retire and te | 2.63 | 3.53 | 14.43 | 36.65 | 55.57 | 32.12 | 64.97 | 97.31 | 120.39 |
 | [ec9e9f6f2](https://github.com/AFK-surf/monoid/commit/ec9e9f6f20f0209da00a86f857d72b87df303b79) ci(mbui): build mbui's Windows natives with Visual | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.4 | 117.32 |
-| [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.26 | 126.19 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fed4d673b](https://github.com/AFK-surf/monoid/commit/fed4d673b90d8ecaaf37f821dae0901fc923050b) fix(core): keep session_send letters out of Slack  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
 | [309c2e9eb](https://github.com/AFK-surf/monoid/commit/309c2e9eb07b593f438a4b775f1e3316abe2d607) fix(station): stop writing stillfail-retire and te | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
 | [ec9e9f6f2](https://github.com/AFK-surf/monoid/commit/ec9e9f6f20f0209da00a86f857d72b87df303b79) ci(mbui): build mbui's Windows natives with Visual | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
-| [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
