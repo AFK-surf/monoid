@@ -686,7 +686,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     // again in a new process, on a sign-in lent anew, the person's words its prompt.
     hostAway = false;
     await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
+    await until(() => completed >= 2 && !store.getSession(key)!.running && prompts().some((p) => /make it simpler/.test(p)));
     await settle();
     assert.deepEqual(lends, [55]);
     assert.equal(opens(), 2);
@@ -695,7 +695,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
 
     // One that lasts: the same process takes the turn after.
     await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
+    await until(() => completed >= 3 && !store.getSession(key)!.running && prompts().some((p) => /and shorter/.test(p)));
     await settle();
     assert.equal(opens(), 2);
     assert.deepEqual(lends, [55]);
@@ -706,12 +706,13 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     const { GO_ON_AFTER_AUTH } = await import("../src/agents/instructions.ts");
     const live = [...(driver as any).live][0];
     const postsBefore = chat.texts().length;
+    const completedBefore = completed;
     await hub.accept("cl", reply(m1, "2000.4", "<@UBOT> hold-turn", { addressed: true }));
     await until(() => live.busy());
     live.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.5", "<@UBOT> expire-mid-turn", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
+    await until(() => completed >= completedBefore + 2 && !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
     await settle();
     assert.deepEqual(lends, [55, 55]);
     assert.equal(store.getSession(key)!.runtimeSessionId, id);
@@ -724,6 +725,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     // also expires (`⚠ UNAUTHENTICATED (code 401):`) -> reopens process #5 on a newly lent token instead of failing.
     const live2 = [...(driver as any).live][0];
     const postsBeforeLong = chat.texts().length;
+    const completedBeforeLong = completed;
     writeFileSync(dump + ".hold-auth-retry", "1");
     await hub.accept("cl", reply(m1, "2000.6", "<@UBOT> hold-turn", { addressed: true }));
     await until(() => live2.busy());
@@ -739,7 +741,9 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     live3.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.8", "<@UBOT> unauth-mid-turn", { addressed: true }));
-    await until(() => !store.getSession(key)!.running && opens() === 5);
+    // (`running` is false between process #4's end and process #5's `begin_turn`, `opens()` 5 already: the turns
+    // ended are what says process #5's has run)
+    await until(() => completed >= completedBeforeLong + 3 && !store.getSession(key)!.running && opens() === 5);
     await settle();
     assert.deepEqual(lends, [55, 55, 55, 55]);
     assert.equal(store.getSession(key)!.runtimeSessionId, id);

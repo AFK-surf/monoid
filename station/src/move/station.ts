@@ -145,6 +145,8 @@ export class Moves {
   /// What each profile here was known by, kept as it moves away (`move/accounts-known.json`, with the accounts
   /// module's state): a chat stopped for one names it so after a start too.
   readonly #known: Map<string, AccountOf>;
+  /// The last write of `#known`, each after the one before; `close` waits for it.
+  #knownWrite: Promise<void> = Promise.resolve();
 
   /// In a turn, the stations it found gone (by id: what each later ask of one fails with at once) and those whose
   /// connection was found gone once (`PeerGone`: the next ask dials anew). Out of a turn, asks go as they are.
@@ -259,7 +261,8 @@ export class Moves {
           const a = accountOf(p, here());
           if (a !== null && JSON.stringify(this.#known.get(id)) !== JSON.stringify(a)) {
             this.#known.set(id, a);
-            void writeJsonFile(join(d.data, "move", "accounts-known.json"), Object.fromEntries(this.#known)).catch(() => {});
+            const known = Object.fromEntries(this.#known);
+            this.#knownWrite = this.#knownWrite.then(() => writeJsonFile(join(d.data, "move", "accounts-known.json"), known)).catch(() => {});
           }
           return a;
         },
@@ -499,6 +502,7 @@ export class Moves {
   async close(): Promise<void> {
     this.told.close();
     await this.handover.close();
+    await this.#knownWrite;
   }
 
   /// Share `share` hosted here again, from `from`: what a trip of this station's shared for it undone (accounts.ts).
