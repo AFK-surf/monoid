@@ -169,6 +169,8 @@ type RowMade = {
   failure: string | null;
   watch: boolean;
   block: boolean;
+  /// The login its card asking them is of, where it is a login's.
+  login: string | null;
   byPerson: boolean;
   text: [string, string];
 };
@@ -193,6 +195,7 @@ function rowMade(station: string, row: J, me: J): RowMade {
     seq: get(d, "seq"),
     tone,
     failure: tone === "alert" ? failureOf(station, row) : null,
+    login: decisions.kind(get(d, "card")) === "login" ? (str(get(get(d, "card"), "login")) ?? null) : null,
     watch: present.rowWatch(agents) !== null,
     block: get(row, "mine") === true && present.rowState(agents) === "block",
     byPerson: saidByPerson(row),
@@ -281,6 +284,7 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
         at: typeof get(row, "lastActiveAt") === "number" ? row.lastActiveAt : 0,
       };
       if (waits && typeof made.seq === "number") item.seq = made.seq;
+      if (waits && made.login !== null) item.login = made.login;
       else if (tone === "done" && typeof get(get(row, "last"), "seq") === "number") item.seq = get(row, "last").seq;
       if (tone === "alert" && failure !== null) item.failure = failure;
       items.push(item);

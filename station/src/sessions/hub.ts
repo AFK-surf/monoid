@@ -229,8 +229,8 @@ export class Hub {
   prepareSessionUpJobs: ((session: string) => Promise<void>) | null = null;
   /// The station's logins (logins/module.ts sets it): the page a Slack login card opens for one (null: no card there,
   /// as for a loopback login), and the code from that page handed to it, entered by `by` on its card. Unset: no logins
-  /// here.
-  logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void } | null = null;
+  /// here. `deadline`: when one under way runs out of time (its ask's push says so).
+  logins: { page(id: string): CardPage | null; answer(id: string, code: string, by?: Person): void; deadline?(id: string): number | null } | null = null;
   /// Stops following the store's sessions starting and stopping (live.ts `running`).
   private unlistenRunning: () => void = () => {};
   readonly actors = new Map<string, Actor>();

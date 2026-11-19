@@ -366,3 +366,53 @@ test "a code-pasting login's card in its chat and in its login sheet at once: a 
   let done = t.locate("完成")
   assert_eq(done.length(), 1, msg="\{Repr(done)}")
 }
+
+///|
+test "a login under way says how long is left to finish it while the person has a step to do, red its last minutes" {
+  let calls : Array[Made] = []
+  // (the fixture's now is 0)
+  let t = with_logins(
+    login_core(calls, login_of([("step", "open"), ("url", "https://github.com/login"), ("expiresAt", 750000.0)])),
+  )
+  assert_true(t.find("13 分钟内完成，过期后要重新发起") is Some(_))
+  let late = with_logins(
+    login_core(calls, login_of([("step", "open"), ("url", "https://github.com/login"), ("expiresAt", 30000.0)])),
+  )
+  assert_true(late.find("不到 1 分钟就过期了") is Some(_))
+  // its agent answering the command: nothing for the person to do yet, no time said
+  let waiting = with_logins(
+    login_core(calls, login_of([("step", "open"), ("waiting", true), ("url", "https://github.com/login"), ("expiresAt", 750000.0)])),
+  )
+  assert_true(waiting.find("13 分钟内完成，过期后要重新发起") is None)
+}
+
+///|
+test "a login out of time: its card says so and offers 重新发起 (machineLogin.again), with no × to cancel what has ended" {
+  let calls : Array[Made] = []
+  let t = with_logins(
+    login_core(
+      calls,
+      login_of([
+        ("state", "failed"),
+        ("active", false),
+        ("canAgain", true),
+        ("statusText", "超时了，没等到浏览器回来"),
+        ("endedText", "在 Willow 上登录 gh 超时了"),
+      ]),
+    ),
+  )
+  assert_true(t.find("超时了，没等到浏览器回来") is Some(_))
+  assert_true(t.query(Button, label="取消登录") is None, msg="nothing to cancel")
+  t.tap_text("重新发起")
+  let sent = named(calls, "machineLogin.again")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "id"), "login-1")
+  // one ended long ago (not offered again): a quiet line, no card
+  let old = with_logins(
+    login_core(
+      calls,
+      login_of([("state", "failed"), ("active", false), ("statusText", "超时了，没等到浏览器回来"), ("endedText", "在 Willow 上登录 gh 超时了")]),
+    ),
+  )
+  assert_true(old.find("重新发起") is None)
+}

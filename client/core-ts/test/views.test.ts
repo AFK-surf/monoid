@@ -503,7 +503,10 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   blocked.unread = true;
   const others = deciding("other", 11, 7, now - 4000, false);
   others.decision.card.assignee = "other@x.com";
-  t.set(rows("ws/st"), [blocked, deciding("k2", 8, 3, now - 2000, true), deciding("k3", 9, 4, now - 3000, false), others]);
+  // (k3 waits on a login's card: 待处理 names the login, for the app to tell them as it comes)
+  const login = deciding("k3", 9, 4, now - 3000, false);
+  login.decision.card = { ...login.decision.card, type: "login", login: "L1" };
+  t.set(rows("ws/st"), [blocked, deciding("k2", 8, 3, now - 2000, true), login, others]);
   await t.readAll([[chats, 1], [marks, 2]]);
   const v = chats.value;
   const all = v.days.flatMap((d: J) => d.items);
@@ -520,6 +523,7 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   assert.deepEqual([m.badge, m.workspaces.ws.badge], [2, 2]);
   assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"], ["wait", "k3", 4, "studio"]]);
   assert.equal(m.workspaces.ws.items[0].what, "k1 要合吗？", "the same without its lead");
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => i.login), [undefined, "L1"]);
 });
 
 test("a_comma_tasks_chat_is_marked_by_comma_as_a_slack_one_is_by_slack", async () => {

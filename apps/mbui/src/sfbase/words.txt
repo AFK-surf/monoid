@@ -1039,7 +1039,11 @@ web-main.letters.count
 web-main.letters.none
 web-main.letters.title
 web-main.list.separator
+web-main.logins.again
+web-main.logins.againWhat
 web-main.logins.answerWhat
+web-main.logins.asks
+web-main.logins.asksUntitled
 web-main.logins.cancelWhat
 web-main.logins.codeCopied
 web-main.logins.copyCode
@@ -1048,7 +1052,10 @@ web-main.logins.copyOpen
 web-main.logins.device
 web-main.logins.domain
 web-main.logins.finish
+web-main.logins.go
 web-main.logins.lead
+web-main.logins.left
+web-main.logins.leftLast
 web-main.logins.needsDesktop
 web-main.logins.openAgain
 web-main.logins.openPage

@@ -154,6 +154,7 @@ export interface OperationParams {
   "machineLogin.cancel": { id: string };
   "machineLogin.answer": { id: string; text: string };
   "machineLogin.browser": { id: string };
+  "machineLogin.again": { id: string };
   "workspace.create": { name?: string | null | undefined; invite_code?: string | null | undefined };
   "workspace.rename": { workspace: string; name?: string | null | undefined; emoji?: string | null | undefined; icon?: string | null | undefined };
   "workspace.setRelays": { workspace: string; relays?: string[] | null | undefined };
@@ -357,6 +358,7 @@ export function bindStationOperations(call: Call) {
     machineLoginCancel: <T = unknown>(params: OperationParams["machineLogin.cancel"]) => call("machineLogin.cancel", params) as Promise<T>,
     machineLoginAnswer: <T = unknown>(params: OperationParams["machineLogin.answer"]) => call("machineLogin.answer", params) as Promise<T>,
     machineLoginBrowser: <T = unknown>(params: OperationParams["machineLogin.browser"]) => call("machineLogin.browser", params) as Promise<T>,
+    machineLoginAgain: <T = unknown>(params: OperationParams["machineLogin.again"]) => call("machineLogin.again", params) as Promise<T>,
   };
 }
 

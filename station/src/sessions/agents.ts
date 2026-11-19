@@ -936,7 +936,7 @@ export const AgentsLive = (control: Control) =>
 
 
       // What the chats' people hear about while no client of theirs runs: pushed by the control plane.
-      const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)));
+      const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)), { now: () => hub.clock.currentTimeMillisUnsafe(), deadline: (login) => hub.logins?.deadline?.(login) ?? null });
 
       // What runs on a clock here (on the hub's): ended at the handover, below.
       const time = new Fibers("station", hub.clock);

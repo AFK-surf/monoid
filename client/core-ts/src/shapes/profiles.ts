@@ -634,6 +634,8 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["startedAt", "i64", { client: "I54" }],
     ["expiresAt", "i64", { client: "I54" }],
     ["endedAt", opt("i64"), { client: opt("I54") }],
+    ["again", opt("String"), { doc: "The login started again from it (from its card, once it failed or ran out of time): what its card shows\nfrom then on." }],
+    ["canAgain", opt("bool"), { doc: "Ended without logging in (failed, out of time among them) and not started again: its card offers 重新发起\n(`machineLogin.again`) to one who may finish it." }],
   ], { doc: "One login on a station (a command run in a terminal there, finished by a person from their client)." }),
   MachineLoginScreen: struct([
     ["rows", vec("String"), { doc: "The terminal's lines, top to bottom (200 columns: a UI wraps them to its width)." }],

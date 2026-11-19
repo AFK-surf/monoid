@@ -842,6 +842,10 @@ function baseWorld(): World {
   on("logins.get", ([id]) => (id === "l1" ? { id: "l1", command: "gh", url: "https://x", callback: "c", state: "waiting" } : null));
   on("logins.cancel", ([id]) => ({ id, cancelled: true }));
   on("logins.answer", ([id]) => ({ id, url: "u", state: "ok" }));
+  on("logins.again", ([id]) => {
+    if (id !== "l1") throw thrown("Refused", { status: 409, message: "not again" });
+    return { id: "l3", from: id, url: "u", code: "c", state: "starting" };
+  });
   on("logins.callback", () => ({ status: 200, headers: {}, body: "" }));
   on("logins.openPage", ([id]) => {
     if (id !== "l1") throw thrown("Error", { message: "no page" });
@@ -1533,6 +1537,9 @@ function defineCases() {
   add("machine login malformed", { method: "GET", path: "/machine-logins/%E0%A4%A" });
   add("machine login cancelled", { method: "DELETE", path: "/machine-logins/l1" });
   add("machine login answered", { method: "POST", path: "/machine-logins/l1/answer", body: { text: "code" } });
+  add("machine login again", { method: "POST", path: "/machine-logins/l1/again" });
+  add("machine login again refused", { method: "POST", path: "/machine-logins/l2/again" });
+  add("machine login again read-only", { method: "POST", path: "/machine-logins/l1/again", viewer: VIEWER });
   add("machine login callback", { method: "POST", path: "/machine-logins/l1/callback", body: { method: "GET", path: "/cb", headers: { a: "1", b: 2 }, body: "eA==" } });
   add("machine login callback bad", { method: "POST", path: "/machine-logins/l1/callback", body: { path: "/cb" } });
   add("machine login page", { method: "POST", path: "/machine-logins/l1/browser" });
