@@ -592,7 +592,7 @@ test("ops/paths.ts and the small ones", { skip }, async () => {
   ];
   for (const [e, c] of errs) await same({ fn: "unanswered", ...c }, unanswered(e));
   const G = 1024 ** 3;
-  for (const [free, total] of [[10 * G, 100 * G], [25 * G, 100 * G], [25 * G, 1000 * G], [40 * G, 100 * G], [200 * G, 1000 * G]]) {
+  for (const [free, total] of [[10 * G, 100 * G], [9 * G, 100 * G], [15 * G, 100 * G], [3 * G, 40 * G], [5 * G, 40 * G], [25 * G, 100 * G], [25 * G, 1000 * G], [40 * G, 100 * G], [200 * G, 1000 * G]]) {
     await same({ fn: "disk", free, total }, { soft: diskSoft(total), tier: diskTier(free, total), every: diskEvery(diskTier(free, total)) });
   }
   for (const given of [undefined, "0", "19", "20", "-1", "5.5", "abc", "", " 7 "]) {

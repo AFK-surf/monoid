@@ -65,13 +65,23 @@ fn P53Upkeep::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Upkee
 ///|
 /// Where a disk with `free` of `total` bytes free stands (ops/disk.ts `diskTier`).
 fn p53_disk_tier(free : Double, total : Double) -> String {
-  if free < p53_disk_low_bytes {
+  if free < p53_disk_low(total) {
     return "low"
   }
   if free < p53_disk_soft(total) {
     "soft"
   } else {
     "ok"
+  }
+}
+
+///|
+/// The low mark of a disk of `total` bytes (ops/disk.ts `diskLow`): a tenth of it where that is less.
+fn p53_disk_low(total : Double) -> Double {
+  if total / 10.0 < p53_disk_low_bytes {
+    total / 10.0
+  } else {
+    p53_disk_low_bytes
   }
 }
 
@@ -222,8 +232,8 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
     self.remote.relieve(now, p53_disk_soft(total))
   }
   match disk_of(bus.data) {
-    Some((left, _)) if left < p53_disk_low_bytes =>
-      bus.hub_relieve_archived(low_bytes=p53_disk_low_bytes) catch {
+    Some((left, _)) if left < p53_disk_low(total) =>
+      bus.hub_relieve_archived(low_bytes=p53_disk_low(total)) catch {
         e => slice_log("warn", "hub", "making room on the disk failed", jobj_of([("error", jstr(p53_words(e)))]))
       }
     _ => ()

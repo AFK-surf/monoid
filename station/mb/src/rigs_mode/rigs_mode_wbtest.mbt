@@ -16,6 +16,11 @@ test "a task's owner, made and read back" {
 test "the disk's marks and how often it is looked at" {
   let gib = 1073741824.0
   assert_eq(disk_tier(10.0 * gib, 1000.0 * gib), "low")
+  // (a disk of less than 200 GiB is low under a tenth of it, not under 20 GiB)
+  assert_eq(disk_low(100.0 * gib), 10.0 * gib)
+  assert_eq(disk_low(1000.0 * gib), 20.0 * gib)
+  assert_eq(disk_tier(15.0 * gib, 100.0 * gib), "soft")
+  assert_eq(disk_tier(9.0 * gib, 100.0 * gib), "low")
   assert_eq(disk_tier(25.0 * gib, 100.0 * gib), "soft")
   assert_eq(disk_tier(50.0 * gib, 1000.0 * gib), "soft")
   assert_eq(disk_tier(200.0 * gib, 1000.0 * gib), "ok")

@@ -880,11 +880,11 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       )
       Json::null()
     }
-    // (agents.ts `disk.low`: DISK_LOW_BYTES, the mark upkeep asks relieveArchived under; a lower one here left the hub
+    // (agents.ts `relieving`'s mark, `diskLow`, the one upkeep asks relieveArchived under; a lower one here left the hub
     // finding the disk not low and emptying no archived workspace until 2 GiB were left)
     "disk.low" =>
       match disk_of(self.data) {
-        Some((free, _)) => jb(free < @ops_platform.disk_low_bytes)
+        Some((free, total)) => jb(free < @ops_platform.disk_low(total))
         None => jb(false)
       }
     "places.directory" => {
