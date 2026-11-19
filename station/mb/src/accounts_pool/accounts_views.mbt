@@ -237,6 +237,7 @@ pub async fn Accounts::automatic_decisions_view(
   include_policy? : Bool = true,
   visible? : async (String) -> Bool,
   title? : async (String) -> String,
+  models? : JV,
 ) -> JV {
   if !manages_station(viewer) {
     return jobj([
@@ -323,7 +324,13 @@ pub async fn Accounts::automatic_decisions_view(
         ),
       ]),
     ),
-    ("models", self.decision_models()),
+    (
+      "models",
+      match models {
+        Some(m) => m
+        None => self.decision_models()
+      },
+    ),
     ("recent", jarr(recent)),
   ]
   if include_policy {

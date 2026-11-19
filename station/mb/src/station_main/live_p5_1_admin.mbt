@@ -876,6 +876,10 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     }
   }
   let jobs = bus.jobs_ask.val
+  // (the decisions' parts, asked only where the overview does not keep their view already: below, `decisions_fresh`)
+  let decisions : Ref[Json?] = Ref(None)
+  let policy : Ref[Json?] = Ref(None)
+  let models_asked : Ref[Json?] = Ref(None)
   let accounts : @events.AccountsDeps? = match
     (
       asked(jobs, "accounts.profilesView", [viewer]),
@@ -885,7 +889,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       asked(jobs, "accounts.decisionModels", []),
     ) {
     (Some(profiles), Some(logins), Some(providers), Some(machine), Some(models)) => {
-      let decisions = asked(jobs, "accounts.automaticDecisionsView", [viewer, Json::boolean(false)])
+      models_asked.val = Some(models)
       Some({
         // (accounts/index.ts `homesReadSoon`: the profiles' homes read again before the view is made)
         homes_read_soon: Some(k => ignore(
@@ -899,7 +903,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
         api_providers: () => jv(providers),
         machine_logins: () => jv(machine),
         decision_models: () => jv(models),
-        automatic_decisions_view: (_, _, _) => decisions.map(jv),
+        automatic_decisions_view: (_, _, _) => decisions.val.map(jv),
       })
     }
     _ => None
@@ -940,16 +944,6 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     _ => ()
   }
   let grants = if platform() == "darwin" { asked(bus.ui_ask.val, "grants.view", []) } else { None }
-  let decisions_version = asked(bus.hub_ask.val, "store.decisionsVersion", []).unwrap_or(Json::number(0.0))
-  let policy = if p51_manages(viewer) {
-    let ws = match viewer {
-      { "home": False, "workspace": String(w), .. } => Json::string(w)
-      _ => Json::null()
-    }
-    asked(bus.hub_ask.val, "storage.policyView", [ws, viewer])
-  } else {
-    None
-  }
   // (the drive's roots as P5-4 sees them, still.fail Helper's grants for a protected folder among them)
   let root_views : Map[String, Json] = {}
   let drive_of = match viewer {
@@ -969,8 +963,62 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     Some({ "models": Object(_) as m, .. }) => m
     _ => Json::object({})
   }
+  // The automatic decisions and the archive policy, last before the overview is made: what it keeps of them a minute
+  // is given again without asking (overview.ts `decisionsView`), so they are asked only where it keeps none for this
+  // viewer and stamp. One time and one config for the whole overview (`store_now`, `config`), the ones this is judged
+  // by, so `decisions_view` finds what was found here.
+  let decisions_version = asked(bus.hub_ask.val, "store.decisionsVersion", []).unwrap_or(Json::number(0.0))
+  let config_now = (bus.config_raw.val)()
+  let overview_now = wall_ms().to_double()
+  let viewer_v = @events.Viewer::of(jv(viewer))
+  // (archive-policy.ts `policyView`'s parts: the week's checks counted by a reader, off the loop as agents.ts
+  // `hub.policyChecks` has them, then the view given them; the decisions' models as asked above, not made again)
+  let ask_decisions = async fn() {
+    decisions.val = asked(jobs, "accounts.automaticDecisionsView", [
+      viewer,
+      Json::boolean(false),
+      models_asked.val.unwrap_or(Json::null()),
+    ])
+    if p51_manages(viewer) {
+      let ws = match viewer {
+        { "home": False, "workspace": String(w), .. } => Json::string(w)
+        _ => Json::null()
+      }
+      let checks = (bus.reader_ask.val)(
+        "policyChecks",
+        {
+          "since": Json::number(overview_now - 7.0 * 86_400_000.0),
+          "viewer": {
+            "workspace": match viewer {
+              { "workspace": w, .. } => w
+              _ => Json::null()
+            },
+            "home": match viewer {
+              { "home": h, .. } => h
+              _ => Json::boolean(true)
+            },
+          },
+        },
+        "zh",
+      ) catch {
+        _ => Json::null()
+      }
+      policy.val = asked(bus.hub_ask.val, "storage.policyView", [ws, viewer, checks])
+    }
+  }
+  let decisions_fresh = match models_asked.val {
+    Some(models) =>
+      self.overview_kept.decisions_fresh(viewer_v, jv(decisions_version), jv(config_now), jv(models), overview_now)
+    None => false
+  }
+  if !decisions_fresh {
+    ask_decisions()
+  }
+  // (were what is kept gone by the time the overview looks, another viewer's overview having made it again
+  // meanwhile, they are asked then, once: never `prepare_decision_sessions` given back at once with nothing asked)
+  let decisions_asked = Ref(!decisions_fresh)
   let deps : @events.OverviewDeps = {
-    config: () => jv((bus.config_raw.val)()),
+    config: () => jv(config_now),
     session_counts: (v, ids) => match (try { Ok(store.overview_session_counts(of_jv(v.raw), ids.map(of_jv))) } catch { e => Err(e) }) {
       Ok({ "total": Number(total, ..), "byConnect": Array(by), .. }) => {
         let m : Map[String, Double] = {}
@@ -1030,7 +1078,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       Some((free, total)) => k(jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
       None => k(@jsjson.JValue::Null)
     },
-    store_now: () => wall_ms().to_double(),
+    store_now: () => overview_now,
     binding: id => match (try { Ok(store.binding(Json::string(id))) } catch { e => Err(e) }) {
       Ok(b) => jv(b)
       Err(_) => @jsjson.JValue::Null
@@ -1087,10 +1135,20 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     reached: () => (bus.cloud_reached.val)(),
     catalog: () => jv(catalog),
     decisions_version: () => jv(decisions_version),
-    // (the checks are counted in the policy's view itself, session_storage `policy_view`)
+    // (the week's checks are a reader's, given to the policy's view asked above: `ask_decisions`)
     policy_checks: None,
-    policy_view: (_, _, _, _, _) => jv(policy.unwrap_or(Json::null())),
-    prepare_decision_sessions: k => k(),
+    policy_view: (_, _, _, _, _) => jv(policy.val.unwrap_or(Json::null())),
+    prepare_decision_sessions: k => if decisions_asked.val {
+      k()
+    } else {
+      decisions_asked.val = true
+      ignore(
+        host.rt.fork_quiet(name="overview decisions", async fn() {
+          ask_decisions()
+          k()
+        }),
+      )
+    },
     // (hub.ts `prepareSessionChatNames`: the cc index's chat names of these sessions, built before they are shown)
     prepare_session_chat_names: Some((keys, k) => ignore(
       host.rt.fork_quiet(name="session chat names", async fn() {

@@ -728,17 +728,34 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         )
       "storage.policyView" => {
         // (overview.ts `madeDecisionsView`: whose chats are the viewer's (`mine`), their names, as this viewer sees them)
+        // (the week's checks a reader counted, where the asker gave them: agents.ts `hub.policyChecks`; the viewer made
+        // a JV once, not once per chat asked `policy.mine` of)
         let viewer = arg_or_null(args, 1)
+        let viewer_jv = @jsjson.JV::of_json(viewer)
+        let checks = match args.get(2) {
+          Some(Object(_) as c) => Some(c)
+          _ => None
+        }
         let seen = @session_storage.Storage::new(
           @session_storage.Station::new(async fn(name, a) {
-            match self.storage_world(name, a, viewer~) {
-              Some(v) if name.has_prefix("policy.") => v
-              _ => self.storage_call(name, a)
+            match name {
+              "policy.mine" => {
+                let session = match a.get(0) {
+                  Some(String(x)) => x
+                  _ => ""
+                }
+                Json::boolean(@api_routes.sees(viewer_jv, @jsjson.JV::of_json(jopt(self.ws_of(session)))))
+              }
+              _ =>
+                match self.storage_world(name, a, viewer~) {
+                  Some(v) if name.has_prefix("policy.") => v
+                  _ => self.storage_call(name, a)
+                }
             }
           }),
           self.files,
         )
-        seen.policy_view(arg_opt_text(args, 0), viewer, None)
+        seen.policy_view(arg_opt_text(args, 0), viewer, checks)
       }
       "views.titleOf" =>
         Json::string(

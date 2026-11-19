@@ -757,6 +757,11 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
             include_policy=!(at(1, "includePolicy") is False),
             visible=async fn(session) { @events.sees(seen, jv(store.session_ws(session) catch { _ => Json::null() })) },
             title=async fn(session) { p53_text(store.get_session(session) catch { _ => Json::null() }, "title") },
+            // (the decisions' models the overview asked already, not made again: `decisionModels`)
+            models?=match at(2, "models") {
+              Array(_) as m => Some(@jsjson.JV::of_json(m))
+              _ => None
+            },
           ),
         )
       }
