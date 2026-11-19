@@ -636,6 +636,11 @@ fn take(msg : Json, bytes : Bytes?) -> Unit {
 pub let on_failed : Ref[((String) -> Unit)?] = { val: None }
 
 ///|
+/// Told once another core was started after one failed (`restart`) and takes calls: what was kept of the failure as it
+/// happened (on_failed, when the core it would go to was the one gone) is sent then.
+pub let on_restarted : Ref[(() -> Unit)?] = { val: None }
+
+///|
 /// What the app times of its topics as they are subscribed and first read (Client::time_topics).
 pub fn time_topics(f : ((Int, String, Json?, Bool) -> Unit)?) -> Unit {
   client.time_topics(f)
@@ -666,6 +671,12 @@ fn restart() -> Unit {
   client.restarted()
   // (a core started anew runs on real time until told the app's clock again)
   clock_again()
+  if engine.started {
+    match on_restarted.val {
+      Some(f) => f()
+      None => ()
+    }
+  }
 }
 
 ///|

@@ -7,7 +7,7 @@
 // the topic it was last sent to, then the others (another app's token is answered DeviceTokenNotForTopic), and the
 // topic that took it is kept with its registration (push.ts).
 import { importPKCS8, SignJWT } from "jose";
-import type { Outcome } from "./webpush";
+import { errorText, failureWorthTelling, type Outcome, type PushFailed } from "./webpush";
 
 export interface ApnsKey {
   keyId: string;
@@ -76,7 +76,7 @@ async function collapseId(tag: string): Promise<string> {
  * string) beside `aps`, where the app reads what a tap opens. The token is gone when APNs says so (410, or a token it
  * does not know); "other" when it is another app's (DeviceTokenNotForTopic).
  */
-export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, data: Record<string, string>): Promise<Outcome | "other"> {
+export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, data: Record<string, string>, told?: PushFailed): Promise<Outcome | "other"> {
   const jwt = await providerToken(key);
   const tag = data.tag ?? "";
   const host = sandbox ? "api.sandbox.push.apple.com" : "api.push.apple.com";
@@ -101,6 +101,7 @@ export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, da
   if (text.includes("DeviceTokenNotForTopic")) return "other";
   if (response.status === 410 || text.includes("BadDeviceToken")) return "gone";
   console.warn(`apns push: ${response.status} ${text.slice(0, 200)}`);
+  if (failureWorthTelling(response.status)) told?.({ status: response.status });
   return "failed";
 }
 
@@ -108,13 +109,14 @@ export async function apnsPush(key: ApnsKey, token: string, sandbox: boolean, da
  * `apnsPush` with each of `keys` in turn, the topic it was last sent to (`known`) first, till one takes it: what came
  * of it, and the topic that took it. Gone only when none took it and one said gone.
  */
-export async function apnsPushAny(keys: ApnsKey[], token: string, sandbox: boolean, known: string | undefined, data: Record<string, string>): Promise<{ outcome: Outcome; app?: string }> {
+export async function apnsPushAny(keys: ApnsKey[], token: string, sandbox: boolean, known: string | undefined, data: Record<string, string>, told?: PushFailed): Promise<{ outcome: Outcome; app?: string }> {
   const order = [...keys.filter((k) => k.topic === known), ...keys.filter((k) => k.topic !== known)];
   let failed = false, gone = false;
   for (const key of order) {
     // A transport or signing failure for one app must still let the token reach its own app.
-    const outcome = await apnsPush(key, token, sandbox, data).catch((error) => {
+    const outcome = await apnsPush(key, token, sandbox, data, told).catch((error) => {
       console.warn(`apns push: ${error}`);
+      told?.({ error: errorText(error) });
       return "failed" as const;
     });
     if (outcome === "sent") return { outcome, app: key.topic };

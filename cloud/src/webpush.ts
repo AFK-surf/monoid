@@ -129,10 +129,27 @@ export interface WebSubscription {
 export type Outcome = "sent" | "gone" | "failed";
 
 /**
+ * A push service's failure worth the operator's eye (a 5xx, our credentials refused with 401 or 403, or no answer at all),
+ * as still.fail cloud logs it (push.ts): its status or an error's text without any address in it, never the token, the
+ * subscription or what was pushed. A token or subscription the service no longer knows (400, 404, 410) is not one.
+ */
+export interface PushFailure {
+  status?: number;
+  error?: string;
+}
+export type PushFailed = (failure: PushFailure) => void;
+
+/** Whether a push service's answer `status` is a failure worth logging (PushFailure). */
+export const failureWorthTelling = (status: number) => status >= 500 || status === 401 || status === 403;
+
+/** An error's text with no address (a device's token is in APNs' path, a subscription's id in its endpoint). */
+export const errorText = (error: unknown) => String(error).replace(/\bhttps?:\/\/\S*/g, "<url>").replace(/[0-9a-fA-F]{32,}/g, "<hex>").slice(0, 200);
+
+/**
  * Pushes `payload` to a browser's subscription. `topic` names what it replaces while undelivered (one per chat: a newer
  * notice of the chat takes the older's place); it is made to fit the header's 32 base64url characters.
  */
-export async function webPush(vapid: Vapid, subscription: WebSubscription, payload: string, topic: string, ttl = 86400): Promise<Outcome> {
+export async function webPush(vapid: Vapid, subscription: WebSubscription, payload: string, topic: string, ttl = 86400, told?: PushFailed): Promise<Outcome> {
   const body = await encrypt(encoder.encode(payload), subscription.p256dh, subscription.auth);
   const topicHash = toB64url(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(topic))).slice(0, 24));
   const response = await fetch(subscription.endpoint, {
@@ -151,5 +168,6 @@ export async function webPush(vapid: Vapid, subscription: WebSubscription, paylo
   if (response.status === 404 || response.status === 410) return "gone";
   if (response.ok) return "sent";
   console.warn(`web push to ${new URL(subscription.endpoint).origin}: ${response.status}`);
+  if (failureWorthTelling(response.status)) told?.({ status: response.status });
   return "failed";
 }

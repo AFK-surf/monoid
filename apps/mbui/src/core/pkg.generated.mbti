@@ -30,6 +30,8 @@ pub fn leave_topic(String, params? : Map[String, @json.Json]) -> Unit
 
 pub let on_failed : @ref.Ref[((String) -> Unit)?]
 
+pub let on_restarted : @ref.Ref[(() -> Unit)?]
+
 pub fn own_clock(ClockRuntime) -> Unit
 
 pub fn perf_said(Double) -> String
