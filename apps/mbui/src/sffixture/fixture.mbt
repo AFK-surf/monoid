@@ -1538,31 +1538,6 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "workspaceMarks" if f.mode == "home-attention" || f.mode.has_prefix("home-shared") =>
       Some(fix_attention_marks())
     "workspaceMarks" if board_mode(f.mode) => Some(board_marks())
-    // chat-login-ask: another chat's login card waiting for the viewer (sfbase's login_asks.mbt: a toast)
-    "workspaceMarks" if f.mode == "chat-login-ask" =>
-      Some({
-        "workspaces": {
-          "ws1": {
-            "wait": 1,
-            "tone": "wait",
-            "items": [
-              {
-                "kind": "wait",
-                "workspace": "ws1",
-                "station": "ws1/st1",
-                "stationName": "Willow",
-                "session": "s-c2",
-                "title": "部署到测试环境",
-                "what": "要你登录 gh",
-                "login": "login-9",
-                "loginEnds": 750000,
-                "at": 0,
-              },
-            ],
-          },
-        },
-        "badgeKinds": { "on": true, "wait": true, "failed": true, "done": true, "message": true, "services": true },
-      })
     "workspaceMarks" =>
       Some({
         "workspaces": {

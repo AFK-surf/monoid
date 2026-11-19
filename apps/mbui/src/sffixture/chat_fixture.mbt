@@ -764,7 +764,6 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     // chat-login-station: the same, where the station's own browser can open it too
     // login-link: a loopback login opened from its Slack link (/w/<ws>/s/<station>/login/<id>) in a standalone sheet
     // chat-login-again: its login out of time, offered again from its card (重新发起)
-    // chat-login-ask: the chat open, another chat's login card waiting for the viewer, told in a toast
     "machineLogins" if f.mode == "chat-login" ||
       f.mode == "chat-login-station" ||
       f.mode == "login-link" ||

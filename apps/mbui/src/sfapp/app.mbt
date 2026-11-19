@@ -760,8 +760,6 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         })
         // what the start says of notifications, at the moment the core's notify is answered or the app shown again
         @sfbase.notices_said_node(v, src)
-        // a login card waiting for the viewer, told in a toast as it comes while they are elsewhere in the app
-        @sfbase.login_asks_node(v, src)
         // what the workspace in view opens on, asked as it comes to be in view, the splash or the shell before it
         // still shown (sfbase's opens_ahead_node): its shell's panes' (小屏's Home, home_opens; the wide frame's,
         // sfdesk's frame_opens)
