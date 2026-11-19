@@ -178,14 +178,26 @@ pub fn[P] nav_flat_view(
         let shown = if st {
           let (top, beside) = nav.top_beside()
           match beside {
+            // (one put on again from the kept left pushed over the page in place, its slide waiting for what it shows:
+            // the page beside alone shown meanwhile, it at rest till then)
+            Some(b) if nav.top_waits() && nav.waiting_taken_back(top.serial) => [b.serial]
             Some(b) => [top.serial, b.serial]
             None => [top.serial]
           }
         } else {
           [nav.flat_drawn().serial]
         }
-        let keys = nav.flat_entries()
-        { keys, shown, stacked: st, kinds: kinds_of(keys), kept: nav.kept_left.map(fn(x) { x.2.serial }) }
+        // (one put on again from the kept left whose owner waits for what it shows (the one before kept shown meanwhile):
+        // left put by as it rests, none of it laid out or woken, till it shows, taken in whole then)
+        let all = nav.flat_entries()
+        let keys = all.filter(fn(k) { shown.contains(k) || !nav.waiting_taken_back(k) })
+        let kept = nav.kept_left.map(fn(x) { x.2.serial })
+        for k in all {
+          if !shown.contains(k) && nav.waiting_taken_back(k) && !kept.contains(k) {
+            kept.push(k)
+          }
+        }
+        { keys, shown, stacked: st, kinds: kinds_of(keys), kept }
       })
     }
     let seen = @signals.signal(seen_now(), same=fn(a, b) { a == b })
@@ -325,6 +337,7 @@ pub fn[P] nav_flat_view(
                     if shows() {
                       shown.val = true
                       e.shown_once = true
+                      e.taken_back = false
                     }
                     shown.val
                   },

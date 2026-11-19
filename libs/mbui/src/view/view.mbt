@@ -6128,11 +6128,26 @@ fn Tree::rows_placed(self : Tree, at : Int, y : Double) -> Double {
 /// Each change told the tree from now on (a signal set outside or a batch of them, an event, a moment come on the
 /// timeline) laid out and placed once it is told whole (a frame drawn after or none): where things stand as the next
 /// comes is where that one left them (View::placed_window_now), for what moves from there for its cause. As long as
-/// this node lives.
+/// this node lives, and is not put by at rest (View::on_rest): none while it rests, again as it wakes.
 pub fn View::laid_before_causes(self : View) -> Unit {
   guard self.alive() else { return }
   self.tree.before_causes = self.tree.before_causes + 1
-  self.owns(fn() { self.tree.before_causes = self.tree.before_causes - 1 }) |> ignore
+  let held = Ref(true)
+  self.on_rest(
+    fn() {
+      if held.val {
+        held.val = false
+        self.tree.before_causes = self.tree.before_causes - 1
+      }
+    },
+    wake=fn() {
+      if !held.val {
+        held.val = true
+        self.tree.before_causes = self.tree.before_causes + 1
+      }
+    },
+  )
+  |> ignore
 }
 
 ///|
@@ -9057,14 +9072,15 @@ fn View::rests(self : View) -> () -> Unit {
 /// What node `at` and what it holds bind, at rest (View::park), each's waking added to `wakes`.
 fn Tree::rest_in(self : Tree, at : Int, wakes : Array[() -> Unit]) -> Unit {
   let n = self.nodes[at]
-  // (what it holds first, then it, then what it said to do at rest (View::on_rest): what binds in all of it has let go
-  // of what it read by then, so what nothing follows is known)
-  for k in n.kids {
-    self.rest_in(k, wakes)
-  }
+  // (it before what it holds, as ever: what it makes rests before what that holds, so a part's watch resting tells no
+  // structure of it still awake to make anew; then what it said to do at rest (View::on_rest), once all it holds rests
+  // and what binds in all of it has let go of what it read)
   match n.owner {
     Some(o) => wakes.push(@signals.rest(o))
     None => ()
+  }
+  for k in n.kids {
+    self.rest_in(k, wakes)
   }
   for pair in n.rests.copy() {
     (pair.0)()

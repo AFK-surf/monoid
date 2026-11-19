@@ -2307,9 +2307,9 @@ pub fn[P] Nav::top(Self[P]) -> P
 pub fn[P] Nav::top_over(Self[P]) -> Bool
 pub fn[P] Nav::top_shows(Self[P]) -> Bool
 pub fn[P] Nav::top_stay(Self[P]) -> (Int32, Int32)
-pub fn[P] Nav::top_taken_back(Self[P]) -> Bool
 pub fn[P] Nav::top_waits(Self[P]) -> Bool
 pub fn[P] Nav::under(Self[P]) -> P?
+pub fn[P] Nav::waiting_taken_back(Self[P], Int32) -> Bool
 
 type Node
 

@@ -621,12 +621,12 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) 
         let holder = followed_topics.val[i].holder
         followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
         topic_readers_drop(src, key)
-        // (its holder, read once as it was declared and by no reader since, let go of what it read, before the
-        // subscription is released: else that read still follows it as the client asks whether any does, and the client
-        // then never ends it, its unsubscribe never sent; till 2026-11-12, every switch of workspace left what was
-        // declared and never read subscribed: src/sfapp/declared_let_go_wbtest.mbt)
-        holder.dispose()
         (src.release)(name, params)
+        // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
+        // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
+        // 2026-11-12, every switch of workspace left what was declared and never read subscribed:
+        // src/sfapp/declared_let_go_wbtest.mbt)
+        holder.dispose()
       }
       _ => ()
     }
@@ -699,6 +699,7 @@ pub fn declared_unread() -> Array[String] {
 /// would (declared_let_go), not left followed by nothing into the next run (where it was taken as asked already, its
 /// subscription never sent again: a replay's pace pass after one ended before the reader came).
 fn declared_reset() -> Unit {
+  shelf_workspace.val = None
   declared_let_go()
   page_declared_let_go()
 }

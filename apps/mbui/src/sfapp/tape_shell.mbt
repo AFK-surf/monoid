@@ -19,9 +19,6 @@
 fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (on the tape's ground, the sidebar's, as the old frame's tape was: what no panel covers shows it)
   v.ground(By(fn() { @sf.theme().p.sidebar })) |> ignore
-  // (none kept of another workspace: those left put by let go for good as the workspace in view changes, as the
-  // narrow shell's)
-  v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) { app.nav.shelf_empty() })
   @ui.old(v, fn(c) { taped_under(c, src) }).over(Is(true)) |> ignore
   // a page opened in the page's panel shows once the core has given what it shows, the one before staying till then
   // (page_local_ms at most), as a page pushed on a phone slides in then
@@ -53,9 +50,6 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
 fn paned_shell(v : @view.View, src : Source) -> Unit {
   // (on the page's ground, as the old frame's row was: what nothing covers shows it)
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  // (none kept of another workspace: those left put by let go for good as the workspace in view changes, as the
-  // narrow shell's)
-  v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) { app.nav.shelf_empty() })
   @ui.old(v, fn(c) { paned_under(c, src) }).over(Is(true)) |> ignore
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)

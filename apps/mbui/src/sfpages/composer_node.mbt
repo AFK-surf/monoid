@@ -499,7 +499,23 @@ fn composer_box_node(
     made.val = Some(box)
     // (a chat's alone: what flies from it and what is set beside it find it)
     if spec.chat {
-      composer_nodes[draft] = (box, foot, sent_over, foot_shift)
+      let entry = (box, foot, sent_over, foot_shift)
+      composer_nodes[draft] = entry
+      // (none found while its page is put by at rest (a chat's page kept as it is left: drawn nowhere, where it is not
+      // the window's), nor once it is let go; found again as it wakes)
+      box.on_rest(
+        fn() {
+          if composer_nodes.get(draft) is Some(now) && now.0.id() == box.id() {
+            composer_nodes.remove(draft)
+          }
+        },
+        wake=fn() {
+          if box.alive() {
+            composer_nodes[draft] = entry
+          }
+        },
+      )
+      |> ignore
     }
     // (from where the new chat's composer stood, on the flight of what is sent from it, its foot kept to its foot; its
     // hint back once it has landed, as at rest without the cursor)

@@ -556,7 +556,8 @@ pub fn model_triple(
 pub fn model_triple_node(parent : @view.View, src : Source, station : String, of : String, saved? : String = "") -> Unit {
   let me = station + "\u{1}" + of
   let dkey = "pick.save/" + station + "/" + of
-  let v = fn() { src.topic("pick", pick_params(station, of)).get().value }
+  let v_held = @sfbase.topic_value_held(src, "pick", pick_params(station, of))
+  let v = fn() { v_held.get() }
   let value = fn() { field(v(), "value") }
   let vo = fn() { field(v(), "valueOption") }
   let account = fn() { field(v(), "account") }

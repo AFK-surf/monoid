@@ -171,11 +171,13 @@ pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 let chat_page_nodes_at_start : Bool = false
 
 ///|
-/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes,
-/// by its station and session and the kind it is made as (chat_page_kind); none other.
+/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes
+/// whole, its composer too (one an old view draws, the old composer's island, is never kept: built each frame it
+/// would read its chat at rest), by its station and session and the kind it is made as (chat_page_kind); none other.
 pub fn chat_page_left_key(p : Page) -> (String, String)? {
   match p {
-    Chat(r) if chat_page_nodes.untracked() => Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
+    Chat(r) if chat_page_nodes.untracked() && composer_nodes.untracked() =>
+      Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
     _ => None
   }
 }

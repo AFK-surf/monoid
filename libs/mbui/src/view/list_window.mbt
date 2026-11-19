@@ -806,6 +806,9 @@ fn View::scrolls_window_ids(
   let fade_undo : Ref[(Int) -> Unit] = Ref(fn(_) {  })
   let gone_quiet : Map[Int, Bool] = Map([])
   let page_was : Ref[Array[Int]] = Ref([])
+  // (its keys and its blocks' places let go of as its page was put by at rest (ListPlace::rest): worked out anew once
+  // after, what is the same as it was kept the same, nothing after them told of it; else as ever)
+  let rested_once = Ref(false)
   let keyed_now = fn() -> Array[Int] {
     fade_rev.get() |> ignore
     let ks = keys()
@@ -855,7 +858,7 @@ fn View::scrolls_window_ids(
   let keyed = @signals.computed(fn(was) {
     let res = keyed_now()
     match was {
-      Some(prev) if physical_equal(prev, res) || prev == res => prev
+      Some(prev) if rested_once.val && (physical_equal(prev, res) || prev == res) => prev
       _ => res
     }
   })
@@ -1365,7 +1368,12 @@ fn View::scrolls_window_ids(
     laid_grid.val = g
     heights_changed.clear()
     column
-  }, same=fn(_, _) { !laid_changed.val })
+  }, same=fn(_, _) {
+    // (worked out anew once after it rested: the same as it was told nothing; else told each time, as ever)
+    let kept = rested_once.val && !laid_changed.val
+    rested_once.val = false
+    kept
+  })
   // (the rows made or let go by a change of its keys that make their way in or out (View::scrolls_window's way_of),
   // each with its key and, going, the key it stands over among them (none: at their foot), till the end its way
   // declares (ways_due, below); and what ends that wait)
@@ -2106,9 +2114,11 @@ fn View::scrolls_window_ids(
   let rest_list = fn() {
     if !laid.watched() {
       laid.dispose()
+      rested_once.val = true
     }
     if !keyed.watched() {
       keyed.dispose()
+      rested_once.val = true
     }
   }
   // (what is asked of it at a cause: done as the column is laid out again, or at once where it glides there)
@@ -2195,26 +2205,28 @@ fn View::scrolls_window_ids(
         sight_tree.sight_tellers[sight_at] = fn() { p.sight_tell() }
         sight_tree.sight_owe(sight_tree.logic_said())
       }
-      // (put by at rest: what it has in sight told once more where that is owed, as it was as it was put by; then told
-      // no more while it rests (nothing of it read again for it), what that read let go of; told again as it wakes)
-      self.on_rest(
-        fn() {
-          if self.alive() && listened.val && sight_tree.sight_owed {
+      // (put by at rest, as what holds it says (ListPlace::rest, a page kept as it is left): what it has in sight told
+      // once more where that is owed, a glide, a notch or an edge still going stopped where it is this moment; then told
+      // no more while it rests (nothing of it read again for it), what that read let go of; told again as it wakes
+      // (ListPlace::wake). Nothing of it for a list nothing puts by)
+      p.rest_at = fn() {
+        if self.alive() {
+          if listened.val && sight_tree.sight_owed {
             p.sight_tell()
           }
+          s.stopped(self.tree.logic_said()) |> ignore
           if listened.val {
             sight_tree.sight_tellers.remove(sight_at)
           }
-          rest_list()
-        },
-        wake=fn() {
-          if listened.val && self.alive() {
-            sight_tree.sight_tellers[sight_at] = fn() { p.sight_tell() }
-            sight_tree.sight_owe(sight_tree.logic_said())
-          }
-        },
-      )
-      |> ignore
+        }
+        rest_list()
+      }
+      p.wake_at = fn() {
+        if listened.val && self.alive() {
+          sight_tree.sight_tellers[sight_at] = fn() { p.sight_tell() }
+          sight_tree.sight_owe(sight_tree.logic_said())
+        }
+      }
       self.owns(fn() {
         sight_tree.sight_tellers.remove(sight_at)
         p.sight_listened = fn() {  }
@@ -2307,10 +2319,12 @@ fn View::scrolls_window_ids(
         p.laid_again = fn() {  }
         p.glide = fn(_) { false }
         p.rest_unwatched = fn() {  }
+        p.rest_at = fn() {  }
+        p.wake_at = fn() {  }
       })
       |> ignore
     }
-    None => self.on_rest(rest_list) |> ignore
+    None => ()
   }
   // (which show, as the fill last left them)
   let shown_now : Array[Int] = []
@@ -5575,6 +5589,9 @@ priv struct PlaceAt {
   mut span_of : (Int, Int, Bool) -> Double?
   /// what its list worked out that nothing follows let go of (ListPlace::rest_unwatched)
   mut rest_unwatched : () -> Unit
+  /// its list put by at rest and woken again, as what holds it says (ListPlace::rest, ListPlace::wake)
+  mut rest_at : () -> Unit
+  mut wake_at : () -> Unit
 }
 
 ///|
@@ -5650,6 +5667,8 @@ pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
       sight_listened: fn() {  },
       span_of: fn(_, _, _) { None },
       rest_unwatched: fn() {  },
+      rest_at: fn() {  },
+      wake_at: fn() {  },
     },
     ids: ListKeys::new(),
   }

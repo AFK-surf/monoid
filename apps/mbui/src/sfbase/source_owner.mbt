@@ -86,9 +86,13 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (B
   }
   // (the source made below: what it read untracked, kept by what is worked out of it, let go of as it is put by)
   let owned_ref : Ref[Source?] = { val: None }
+  // (put by at rest once at least: only then is what it worked out let go of with it, below; a view never put by goes
+  // as a source owned by a view always went)
+  let ever_parked = Ref(false)
   let park = fn(on : Bool) {
     owner.parked = on
     if on {
+      ever_parked.val = true
       let topics = owner.topics
       owner.topics = []
       for t in topics {
@@ -179,10 +183,13 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (B
     for t in topics {
       t.watch.stop()
     }
-    // (what was worked out of what it read, nothing following it, let go of with it: kept_forget_source)
-    match owned_ref.val {
-      Some(owned) => kept_forget_source(owned)
-      None => ()
+    // (what was worked out of what it read, nothing following it, let go of with it where it was ever put by:
+    // kept_forget_source)
+    if ever_parked.val {
+      match owned_ref.val {
+        Some(owned) => kept_forget_source(owned)
+        None => ()
+      }
     }
   }) |> ignore
   (owned, park)

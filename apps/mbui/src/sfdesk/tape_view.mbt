@@ -80,7 +80,20 @@ let tape_goes : TapeGoes = {
 }
 
 ///|
+/// The chats' pages on the tape made as nodes whole, by their stack's serial: each its chat and the source its page reads
+/// by (chat_page_made's), its side panel made in that and kept with it (tape_side_node), let go with it.
+// kept across runs: let go of by tape_goes_reset
+let tape_chat_entries : Map[Int, (ChatRef, Source)] = Map([])
+
+///|
+/// Told as tape_chat_entries changes.
+// kept across runs: a counter
+let tape_chat_entries_rev : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
 fn tape_goes_reset() -> Unit {
+  tape_chat_entries.clear()
+  tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
   tape_bars.clear()
   (tape_goes.end_due)()
   tape_goes.end_due = fn() {  }
@@ -898,8 +911,18 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     })
     |> ignore
     // a chat's side panel, 8 from the page's, while it is open or closes
-    row.show(fn() { tape_shown_side() is Some(_) }, fn(panel) {
+    // (kept, laid out nowhere, while it shows none, once a chat's page made as nodes holds one at rest: tape_side_node)
+    let panel_made = Ref(false)
+    row.show(fn() {
+      let open = tape_shown_side() is Some(_)
+      if open {
+        panel_made.val = true
+      }
+      tape_chat_entries_rev.get() |> ignore
+      open || (panel_made.val && !tape_chat_entries.is_empty())
+    }, fn(panel) {
       panel
+      .laid_nowhere(By(fn() { tape_shown_side() is None }))
       .width(By(fn() {
         let r = tape_room_now()
         Some(bar_gap_now() + r.panel_w + r.under)
@@ -1279,9 +1302,77 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
   let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
     @ui.old(n, build, key=tape_island_key, natural~)
   }
-  pane.pick(chat, fn(q, shown) {
+  // (a chat's page made as nodes whole on the stack (tape_chat_entries): its panel read by its page's source, kept with
+  // it as it is put by on the stack's kept left and taken back with it; one on top waiting for what it shows none
+  // meanwhile; another chat's (the old page's) as ever, by the tape's source)
+  let entry_for = fn(r : ChatRef) -> (Int, Source)? {
+    tape_chat_entries_rev.get() |> ignore
+    let mut kept : (Int, Source)? = None
+    for k, e in tape_chat_entries {
+      if e.0.station == r.station && e.0.session == r.session {
+        if !app.nav.is_kept_left(k) {
+          return Some((k, e.1))
+        }
+        kept = Some((k, e.1))
+      }
+    }
+    kept
+  }
+  let shown_keys = fn() -> Array[String] {
+    match tape_shown_side() {
+      Some(ChatSide(r)) =>
+        match entry_for(r) {
+          Some((k, page_src)) =>
+            if app.nav.top_waits() && app.nav.waiting_taken_back(k) {
+              []
+            } else if tape_side_shown(page_src, r).0.length() > 0 {
+              ["e:" + k.to_string()]
+            } else {
+              ["island"]
+            }
+          None => if chat() is Some(r) { ["c:" + chat_key(r)] } else { ["island"] }
+        }
+      Some(_) => ["island"]
+      None => []
+    }
+  }
+  let kept_keys = fn() -> Array[String] {
+    tape_chat_entries_rev.get() |> ignore
+    let ks : Array[String] = []
+    for k, _ in tape_chat_entries {
+      if app.nav.page_of(k) is Some((Chat(_), _)) {
+        ks.push("e:" + k.to_string())
+      }
+    }
+    ks
+  }
+  pane.each(shown_keys, fn(id) { id }, at_once=true, keeps=kept_keys, fn(q, id_sig) {
     q.grow(Is(1.0)) |> ignore
-    guard shown is Some(r) else {
+    let id = id_sig.untracked()
+    let shown = if id.has_prefix("e:") {
+      let mut found : (ChatRef, Source)? = None
+      for k, e in tape_chat_entries {
+        if "e:" + k.to_string() == id {
+          found = Some(e)
+        }
+      }
+      match found {
+        Some((r, page_src)) => {
+          let (q_src, q_park) = page_src.owned_by_parkable(q)
+          q.on_rest(fn() { q_park(true) }, wake=fn() { q_park(false) }) |> ignore
+          Some((r, q_src))
+        }
+        None => None
+      }
+    } else if id.has_prefix("c:") {
+      match tape_shown_side() {
+        Some(ChatSide(r)) => Some((r, src.owned_by(q)))
+        _ => None
+      }
+    } else {
+      None
+    }
+    guard shown is Some((r, q_src)) else {
       island(q, fn(c) { tape_panel_built(c, src) }, false).over(Is(true)) |> ignore
       return
     }
@@ -1308,7 +1399,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         natural,
       )
     }
-    let src = src.owned_by(q)
+    let src = q_src
     let shown = fn() { tape_side_shown(src, r) }
     q.show(at_once=true, fn() {
       let (tabs, front) = shown()

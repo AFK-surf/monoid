@@ -53,7 +53,7 @@ priv struct NavPage[P] {
   // not told again as it is let go for good from there, told anew once it is put on again and leaves again
   mut told_left : Bool
   // put on again as it was put by (Nav::take_kept_left): what it shows held as it was left, nothing of it waited for
-  // as it comes back (Nav::top_taken_back)
+  // as it comes back, till it shows (Nav::waiting_taken_back)
   mut taken_back : Bool
 }
 
@@ -345,6 +345,7 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     self.gone.push(self.kept_left.remove(0).2)
   }
   e.focus_kept = 0
+  e.taken_back = false
   self.kept_left.push((key, kind, e))
   if !e.told_left {
     e.told_left = true
@@ -682,11 +683,14 @@ pub fn[P] Nav::shows_when(self : Nav[P], ready : () -> Bool, most : Double) -> U
 }
 
 ///|
-/// Whether the page on top was put on again from the stack's kept left (Nav::take_kept_left), read as it changes: it
-/// shows what it held as it was left, so a wait for what it shows (nav_view's `ready`, an owner's) waits for none of it.
-pub fn[P] Nav::top_taken_back(self : Nav[P]) -> Bool {
+/// Whether entry `serial` is the page on top, put on again from the stack's kept left (Nav::take_kept_left) and not
+/// shown yet (its owner waiting for what it shows: nav_flat_view), read as that changes: laid out where it was as it
+/// waits, out of sight, never laid out nowhere and then again.
+pub fn[P] Nav::waiting_taken_back(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
-  self.pages[self.pages.length() - 1].taken_back
+  self.shown.get() |> ignore
+  let top = self.pages[self.pages.length() - 1]
+  top.serial == serial && top.taken_back
 }
 
 ///|

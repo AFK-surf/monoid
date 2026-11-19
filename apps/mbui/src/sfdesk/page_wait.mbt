@@ -57,8 +57,7 @@ fn PageWait::follow(self : PageWait, v : @view.View, ready : (Page) -> Bool, mos
   self.reset()
   // Both reactions read the same tracked readiness. The first callback is untracked, so asking the source there
   // would briefly create and release its subscription before the second reaction could follow it.
-  // (one put on again from the stack's kept left waits for none of what it shows: it holds it as it was left)
-  let current = @signals.computed(fn(_) { (app.nav.top_stay(), app.nav.top_taken_back() || ready(app.nav.top())) })
+  let current = @signals.computed(fn(_) { (app.nav.top_stay(), ready(app.nav.top())) })
   v.reacts(fn() { current.get().0 }, fn(stay) {
     (self.due)()
     self.due = fn() {  }

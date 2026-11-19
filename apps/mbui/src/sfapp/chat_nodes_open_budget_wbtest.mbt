@@ -92,12 +92,16 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
-  "phone again": (4, 3, 62, 0, 139),
+  // (5 bindings more on a phone, 2026-11-19: what the chat's list's place watches as it is taken back, waiting for the
+  // chat's first answer to set it where it was left (sfpages chat_body_node's reopen_gen); the same at 60, 120, 24 and 7)
+  "phone again": (4, 3, 62, 0, 144),
   "wide cold": (2473, 503, 1914, 217, 2470),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
-  "wide again": (94, 116, 245, 29, 290),
+  // (2026-11-19: 大屏's side panel taken back with the chat's page kept left (sfdesk tape_side_node's each kept by
+  // entry), what it reads held while asked again; the same at 60, 120, 24 and 7: before it (94, 116, 245, 29, 290))
+  "wide again": (22, 44, 70, 4, 172),
   "phone up": (551, 358, 593, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
@@ -616,6 +620,10 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
     }
     if again.0 > chat_kept_left_made_most {
       wrong.push("\{name}: opened again made \{again.0}, over \{chat_kept_left_made_most}")
+    }
+    // (大屏's taken back laid out where it was left: its list and what is beside it, nothing of the page anew)
+    if platform == 0 && again.2 > 15 {
+      wrong.push("\{name}: opened again laid \{again.2}, over 15")
     }
     if client.peek_topic("chat", params=a_params) is None {
       wrong.push("\{name}: the chat not subscribed again as its page is opened again")

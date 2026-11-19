@@ -601,9 +601,11 @@ pub fn[K] ListPlace::centre(Self[K], K) -> Unit
 pub fn[K] ListPlace::follow_from(Self[K], K?, margin? : Double) -> Unit
 pub fn[K] ListPlace::new() -> Self[K]
 pub fn[K] ListPlace::on_sight(Self[K], (Sight[K]) -> Unit) -> Unit
+pub fn[K] ListPlace::rest(Self[K]) -> Unit
 pub fn[K] ListPlace::rest_unwatched(Self[K]) -> Unit
 pub fn[K] ListPlace::sight_now(Self[K]) -> Sight[K]?
 pub fn[K] ListPlace::to_end(Self[K], glide? : Bool) -> Unit
+pub fn[K] ListPlace::wake(Self[K]) -> Unit
 
 #derive(@debug.Debug)
 pub(all) struct ListSeen {

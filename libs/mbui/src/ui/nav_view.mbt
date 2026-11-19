@@ -226,8 +226,6 @@ pub fn[P] nav_view(
       })
       |> ignore
     }
-    // (one put on again from the kept left waits for none of what it shows: it holds it as it was left)
-    let ready = ready.map(fn(r) { fn(p) { nav.top_taken_back() || r(p) } })
     nav.held_by(s, fn() { s.laid_size() }, ready, most)
     let k = nav_views_made.val
     nav_views_made.val = k + 1
@@ -601,7 +599,8 @@ pub fn[P] Nav::page_island(
       nav.said.get() |> ignore
       nav.shown.get() |> ignore
       match nav.flat_entry(serial) {
-        Some(e) => {
+        // (none built of one put by on the kept left: at rest, it reads nothing)
+        Some(e) if !nav.is_kept_left(serial) => {
           let (owner, stint) = (c.owner, c.stint)
           c.owner = e.serial
           c.stint = e.stint
@@ -609,7 +608,7 @@ pub fn[P] Nav::page_island(
           c.owner = owner
           c.stint = stint
         }
-        None => ()
+        _ => ()
       }
     },
     // (as the page is built: what it asks of where it stands, Nav::under, its own)
