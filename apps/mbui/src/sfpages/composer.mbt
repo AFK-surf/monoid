@@ -3070,6 +3070,37 @@ fn chat_notices(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, width : Do
 }
 
 ///|
+/// Which notices over draft `draft`'s composer are active or still leaving in its foot (chat_notices / notices_gone):
+/// included in the legacy list's Foot version so a notice arriving or leaving while the chat is open eases the list's
+/// foot smoothly instead of snapping the messages in one frame.
+fn composer_notices_sign(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, draft : String) -> String {
+  let prefix = "composer/notice/" + draft + "/"
+  let parts : Array[String] = []
+  let showing = fn(mark : String, active : Bool) -> Bool {
+    if active {
+      return true
+    }
+    let key = prefix + mark
+    composing.notices_said.contains(key) &&
+    @motion.presence(c, key, false, initial=composing.notices_new, enter=@sf.waiting_in, exit=@sf.leave) is Some(_)
+  }
+  if showing("archive", v.archived) {
+    parts.push("archive")
+  }
+  if showing("wait", v.cache_cold is Some(_) && !v.archived) {
+    parts.push("wait")
+  }
+  if showing("unplug", v.offline) {
+    parts.push("unplug")
+  }
+  let replied = feedback_reports(src, r).iter().any(fn(f) { !report_dismissed(f) })
+  if showing("feedback", replied) {
+    parts.push("feedback")
+  }
+  if parts.is_empty() { "" } else { "+n:" + parts.join(",") }
+}
+
+///|
 /// The notices over chat `chat`'s composer no longer said (`now`: whether each of archive, wait, unplug, feedback is),
 /// drawn as they were while they leave (composer_notice).
 fn notices_gone(c : @ui.Ctx, width : Double, chat : String, now : Array[Bool]) -> Unit {

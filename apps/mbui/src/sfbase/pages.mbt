@@ -1763,6 +1763,7 @@ pub fn reset() -> Unit {
   sent_quotes_from_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
+  foot_vers.clear()
   kept_places.clear()
   flash_held.val = false
   at_end_env.val = -1

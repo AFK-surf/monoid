@@ -1668,7 +1668,8 @@ pub fn row_keys(
     Some(i) => i.following_row
     None => false
   }
-  rd.foot_sign = if ask_clears(v) { "+ask" } else { "" }
+  let ask_sign = if ask_clears(v) { "+ask" } else { "" }
+  let foot_ver = ask_sign + rd.foot_sign
   // The same entries and message-to-outbox mapping as last time, nothing sent from here waiting for its row: what it
   // made then, its rows not gone over again. Other view fields may change without changing
   // those inputs (the chat's title, for example). Whether the list follows its end is not asked: it only lets in rows
@@ -1687,7 +1688,7 @@ pub fn row_keys(
         ask_clears(m.v) == ask_clears(v))) &&
       m.rise_ms == rise_ms &&
       m.known == rd.known.length() &&
-      sending.is_empty() => return shown_rows(c, rd, m.list, m.keys, watched, flight, laid~, laid_at~, foot_way~)
+      sending.is_empty() => return shown_rows(c, rd, rk, m.list, m.keys, watched, flight, laid~, laid_at~, foot_way~, foot_ver~)
     _ => ()
   }
   let made_whole = sending.is_empty()
@@ -1939,8 +1940,13 @@ pub fn row_keys(
   // (what changes comes, goes and changes on the list's way whether the list follows its end or is read up it: the
   // row read from stays where it shows, what is over and under it moving away from it, mbui's ui/list_size.mbt; nothing
   // at once in view, 2026-10-31 the user: 「有一些是凭空出现的，有一些是凭空消失的」)
-  shown_rows(c, rd, list, keys, watched, flight, laid~, laid_at~, foot_way~)
+  shown_rows(c, rd, rk, list, keys, watched, flight, laid~, laid_at~, foot_way~, foot_ver~)
 }
+
+///|
+/// The Foot version last given to ListRows for each chat reading (by `rk`): cleared with `readings` on reset.
+// kept across runs: cleared by pages.mbt reset alongside readings
+let foot_vers : Map[String, String] = Map([])
 
 ///|
 /// Whether chat `v`'s window took in a page since its rows were last given: the page before it (its first entry
@@ -1979,6 +1985,7 @@ fn paged_in(rd : Reading, v : ChatView, flight : SendFlight?) -> Bool {
 fn shown_rows(
   c : @ui.Ctx,
   rd : Reading,
+  rk : String,
   list : Array[Entry],
   keys : Array[String],
   watched : Bool,
@@ -1986,6 +1993,7 @@ fn shown_rows(
   laid~ : String,
   laid_at~ : Double?,
   foot_way~ : (Double, Double)?,
+  foot_ver~ : String,
 ) -> (Array[Entry], Array[String]) {
   // words sent let go of the composer as they leave it, a share of their way on (flight_placed): their row opens
   // from then, the composer's room closes from then (flight_lets_go), as long, so that what is over them goes one way;
@@ -2018,6 +2026,8 @@ fn shown_rows(
   }
   let told_laid = laid != rd.rows_laid
   rd.rows_laid = laid
+  let told_foot_sign = foot_vers.get(rk) != Some(foot_ver)
+  foot_vers[rk] = foot_ver
   // (the composer's ground on that way now: the Foot row's change goes on it, from when it set out, as long)
   let (way_at, way_ms) = foot_way.unwrap_or((-1.0, 0.0))
   let on_way = way_at >= 0.0 && way_at + way_ms > now
@@ -2025,14 +2035,14 @@ fn shown_rows(
     c,
     // (given anew as the Foot row's version changes with them, or every row's as the list is laid out otherwise: the
     // same arrays as the frame before are not looked over)
-    if told_foot || told_laid || on_way { keys.copy() } else { keys },
+    if told_foot || told_laid || on_way || told_foot_sign { keys.copy() } else { keys },
     list,
     // (laid out at another width as a page's way sets off or is there, each row's words wrapped otherwise, as far from
     // the one before (20 or 28 narrow or not) and its picture inline or out in the margin: each its room going there on
     // the list's way, not stepped at once in one frame, rows_steady.mbt)
     fn(e) {
       match e {
-        Foot => "foot" + rd.foot_sign + "@\{way_at}" + rd.sent_foot
+        Foot => "foot" + foot_ver + "@\{way_at}" + rd.sent_foot
         Top => shown_sign(e)
         _ => shown_sign(e) + laid
       }
