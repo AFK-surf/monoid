@@ -71,10 +71,17 @@ pub fn shortcuts_node(
     if keys != "" {
       return strings(Some(a), "keys").contains(keys)
     }
-    let words = query.text().trim(chars=" \t\n").to_owned().to_lower()
-    words == "" ||
-    text(Some(a), "name").to_lower().contains(words) ||
-    text(Some(a), "text").to_lower().contains(words)
+    // (each word typed, apart by spaces, in its name or what its keys say in words)
+    let said = (text(Some(a), "name") + " " + text(Some(a), "text")).to_lower()
+    for w in query.text().to_lower().split(" ") {
+      for w in w.split("\u{3000}") {
+        let w = w.trim(chars="\t\n").to_owned()
+        if w != "" && !said.contains(w) {
+          return false
+        }
+      }
+    }
+    true
   }
   let shown_in = fn(group : String) {
     listed().filter(fn(a) { text(Some(a), "group") == group && found(a) })
@@ -159,7 +166,7 @@ pub fn shortcuts_node(
     fn(b, key) {
       match key {
         "search" => {
-          shortcuts_search_node(b, query, fn() { by_keys.set("") }, searching_keys, fn() {
+          shortcuts_search_node(b, query, fn() { by_keys.set("") }, searching_keys, stop, fn() {
             if searching_keys() {
               stop()
             } else {
@@ -234,12 +241,14 @@ pub fn shortcuts_node(
 /// 快捷键's field to look through its actions by in `parent` (@sf.search_input_node over `query`), `cleared` told as
 /// the person changes its words (what the keys pressed said there is no longer what is looked for); beside it the
 /// keyboard key (按键搜索), as tall as the field, lit while `searching` (the keys pressed are what is looked for), `press`
-/// as it is pressed.
+/// as it is pressed. The field given the focus, or its words changed or cleared, while the keys pressed are looked
+/// for: that `stop`s, the field's to type in again. Escape in it: the keys' search stopped, else its words emptied.
 fn shortcuts_search_node(
   parent : @view.View,
   query : @ui.Field,
   cleared : () -> Unit,
   searching : () -> Bool,
+  stop : () -> Unit,
   press : () -> Unit,
 ) -> Unit {
   parent.box(fn(page) {
@@ -248,7 +257,13 @@ fn shortcuts_search_node(
       // (the row's room but the key's, as narrow as that leaves it)
       f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       // (while the keys pressed are what is looked for, it says so in its own place: the field takes no typing then)
-      @sf.search_input_node(
+      let words = fn() {
+        cleared()
+        if searching() {
+          stop()
+        }
+      }
+      let typed = @sf.search_input_node(
         f,
         query,
         fn() {
@@ -258,8 +273,27 @@ fn shortcuts_search_node(
             @sf.t("web-main.shortcuts.search")
           }
         },
-        edited=fn(_) { cleared() },
+        edited=fn(_) { words() },
+        cleared=words,
+        escape=fn() {
+          if searching() {
+            stop()
+            true
+          } else if query.text() != "" {
+            query.set("")
+            cleared()
+            true
+          } else {
+            false
+          }
+        },
       )
+      // (the field come to again, by a press or Tab: the keys pressed no longer what is looked for)
+      typed.reacts(fn() { typed.focused() }, fn(on) {
+        if on && @signals.untracked(searching) {
+          stop()
+        }
+      })
       |> ignore
     })
     |> ignore
