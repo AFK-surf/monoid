@@ -115,13 +115,21 @@ pub fn quiet_first_line(c : @view.View) -> Unit {
 
 ///|
 /// A quiet row's label in its column (agent_label's) in `row`: `label` in the Meta size, muted, on a line, `width` wide
-/// as it is now (labels_across), at the row's start, on its words' first line.
+/// as it is now (labels_across), at the row's start, on the baseline of its value's first line (a Ui line, as tall as
+/// that line at least so a row on its middle keeps it there too: on_baseline).
 #callsite(autofill(loc))
 pub fn row_label_node(row : @view.View, label : String, width : () -> Double, loc~ : SourceLoc) -> Unit {
   row.box(made_for=loc, fn(l) {
-    quiet_first_line(l)
-    l.width(By(fn() { Some(width()) })).lines_up(Is(Some(Start))) |> ignore
-    words_node(l, fn() { label }, fn() { quiet_row_label }) |> ignore
+    l
+    .min_height(By(fn() {
+      l.words_redone() |> ignore
+      Some(node_sp(l, @ui.tree_theme().text_size(Ui).1))
+    }))
+    .shrink(Is(0.0))
+    .width(By(fn() { Some(width()) }))
+    .lines_up(Is(Some(Start)))
+    |> ignore
+    on_baseline(loc~, words_node(l, fn() { label }, fn() { quiet_row_label }), Ui, Meta) |> ignore
   })
   |> ignore
 }

@@ -302,8 +302,11 @@ pub fn record_row_node(
     how(t)
   })
   |> ignore
-  // (when, on its first line)
-  first_line_node(loc~, row, Ui, leading=L6, fn(w) { words_node(loc~, w, when, fn() { record_when }) |> ignore }) |> ignore
+  // (when, on its first line's baseline: on_baseline)
+  on_baseline(loc~, words_node(loc~, row, when, fn() { record_when }), Ui, Meta, leading=L6, own_leading=L5).shrink(
+    Is(0.0),
+  )
+  |> ignore
 }
 
 ///|
