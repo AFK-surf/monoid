@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [d4d8cdd53](https://github.com/AFK-surf/monoid/commit/d4d8cdd531839041e5e3ce08ca02ab84a1107aff) fix(station): keep monoid's station data apart fro | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 2.62 | 3.53 | 14.41 | 36.61 | 55.51 | 32.08 | 64.9 | 97.26 | 123.27 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.34 | 121.18 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.08 | 122.48 |
 | [d43cc0ce8](https://github.com/AFK-surf/monoid/commit/d43cc0ce8db625b84c8f83827a46c3ebb0e00db0) fix(mbc): compile test functions in test.<unit> at | 2.6 | 3.49 | 14.28 | 36.35 | 55.03 | 31.77 | 63.99 | 97.44 | 125.25 |
-| [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 2.6 | 3.49 | 14.28 | 36.35 | 55.03 | 31.77 | 63.99 | 97.44 | 125.25 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.94 |
 | [d4d8cdd53](https://github.com/AFK-surf/monoid/commit/d4d8cdd531839041e5e3ce08ca02ab84a1107aff) fix(station): keep monoid's station data apart fro | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
 | [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [68a54a553](https://github.com/AFK-surf/monoid/commit/68a54a553cf5ace31c1581e5122cd01674681f00) fix(station): keep a refused Claude renewal's kind | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [8d9eeb876](https://github.com/AFK-surf/monoid/commit/8d9eeb87690ea386020dab1c4afffaf0017df51b) fix(mbui): open and close a notice's pill in one m | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [d43cc0ce8](https://github.com/AFK-surf/monoid/commit/d43cc0ce8db625b84c8f83827a46c3ebb0e00db0) fix(mbc): compile test functions in test.<unit> at | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
-| [fd3d1d1d3](https://github.com/AFK-surf/monoid/commit/fd3d1d1d317beced89cf5125c17fdf12bc0ca651) feat(mbui): move the chat page only for a cause sa | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.04 |
