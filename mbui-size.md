@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
 | [425fafef4](https://github.com/AFK-surf/monoid/commit/425fafef4ca7f5969466b4f497b5752cee95335e) feat(vault): keep every vault encrypted on its per | 2.63 | 3.53 | 14.42 | 36.65 | 55.54 | 32.08 | 64.88 | 97.39 | 129.66 |
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
 | [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
 | [e7e555b89](https://github.com/AFK-surf/monoid/commit/e7e555b89929895651b7c016a3082f2c58bd8000) perf(mbui): read a chat's video first frame by the | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
-| [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.08 |
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [425fafef4](https://github.com/AFK-surf/monoid/commit/425fafef4ca7f5969466b4f497b5752cee95335e) feat(vault): keep every vault encrypted on its per | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
 | [e7e555b89](https://github.com/AFK-surf/monoid/commit/e7e555b89929895651b7c016a3082f2c58bd8000) perf(mbui): read a chat's video first frame by the | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
-| [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
