@@ -88,34 +88,7 @@ pub fn normalize(path : String) -> String {
 ///|
 /// node:path `dirname` (POSIX).
 pub fn dirname(path : String) -> String {
-  if windows.val is Some(_) {
-    return @nodepath.dirname("\\", path)
-  }
-  if path == "" {
-    return "."
-  }
-  let absolute = path.unsafe_charcode_at(0) == '/'
-  let mut end = -1
-  let mut matched_slash = true
-  let mut i = path.length() - 1
-  while i >= 1 {
-    if path.unsafe_charcode_at(i) == '/' {
-      if !matched_slash {
-        end = i
-        break
-      }
-    } else {
-      matched_slash = false
-    }
-    i -= 1
-  }
-  if end == -1 {
-    return if absolute { "/" } else { "." }
-  }
-  if absolute && end == 1 {
-    return "//"
-  }
-  path.unsafe_substring(start=0, end~)
+  @nodepath.dirname(if windows.val is Some(_) { "\\" } else { "/" }, path)
 }
 
 ///|

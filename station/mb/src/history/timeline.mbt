@@ -148,35 +148,10 @@ fn kept_whole(tool : String) -> Bool {
 ///|
 /// `new Date(time).toISOString()` of a finite number; raises as it throws past the dates JavaScript has.
 pub fn date_iso(time : Double) -> String raise {
-  let t = if time < 0.0 { -(-time).floor() } else { time.floor() }
-  if t.abs() > 8.64e15 {
-    fail("Invalid time value")
+  match @jsjson.js_iso_checked(time) {
+    Some(s) => s
+    None => fail("Invalid time value")
   }
-  let ms = t.to_int64()
-  let day = 86_400_000L
-  let days = if ms >= 0L { ms / day } else { -((-ms + day - 1L) / day) }
-  let rest = ms - days * day
-  let z = days + 719_468L
-  let era = if z >= 0L { z / 146_097L } else { (z - 146_096L) / 146_097L }
-  let doe = z - era * 146_097L
-  let yoe = (doe - doe / 1460L + doe / 36_524L - doe / 146_096L) / 365L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = yoe + era * 400L + (if m <= 2L { 1L } else { 0L })
-  let pad = (n : Int64, w : Int) => {
-    let s = n.to_string()
-    "0".repeat(if w > s.length() { w - s.length() } else { 0 }) + s
-  }
-  let year = if y >= 0L && y <= 9999L {
-    pad(y, 4)
-  } else if y < 0L {
-    "-" + pad(-y, 6)
-  } else {
-    "+" + pad(y, 6)
-  }
-  "\{year}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rest / 3_600_000L, 2)}:\{pad(rest / 60_000L % 60L, 2)}:\{pad(rest / 1000L % 60L, 2)}.\{pad(rest % 1000L, 3)}Z"
 }
 
 ///|

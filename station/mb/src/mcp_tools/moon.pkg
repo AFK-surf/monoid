@@ -1,6 +1,5 @@
 import {
   "base/codec",
-  "base/time",
   "base/url",
   "station/host",
   "station/jsjson",

@@ -182,26 +182,7 @@ fn sorted(xs : Array[String]) -> Array[String] {
 ///|
 /// Whether every UTF-16 surrogate in `s` is paired (`s.isWellFormed()`).
 fn well_formed(s : String) -> Bool {
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if c >= 0xd800 && c <= 0xdbff {
-      if i + 1 < n {
-        let d = s.code_unit_at(i + 1).to_int()
-        if d >= 0xdc00 && d <= 0xdfff {
-          i += 2
-          continue
-        }
-      }
-      return false
-    }
-    if c >= 0xdc00 && c <= 0xdfff {
-      return false
-    }
-    i += 1
-  }
-  true
+  @jsjson.is_well_formed(s)
 }
 
 ///|

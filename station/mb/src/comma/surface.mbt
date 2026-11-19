@@ -134,28 +134,7 @@ pub fn base64(b : Bytes) -> String {
 /// Base64 as node reads it (`Buffer.from(s, "base64")`): the URL-safe alphabet too, what is in neither skipped, up to
 /// the first `=`.
 pub fn unbase64(s : String) -> Bytes {
-  let digits = StringBuilder::new()
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c == '=' {
-      break
-    }
-    if (c >= 'A' && c <= 'Z') ||
-      (c >= 'a' && c <= 'z') ||
-      (c >= '0' && c <= '9') ||
-      c == '+' ||
-      c == '-' ||
-      c == '/' ||
-      c == '_' {
-      digits.write_char(c.unsafe_to_char())
-      n += 1
-    }
-  }
-  let text = digits.to_string()
-  // A lone digit past a group of four is six bits: no byte, as node leaves it.
-  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
-  @codec.base64_decode(text).unwrap_or(b"")
+  @codec.base64_decode_loose(s)
 }
 
 ///|

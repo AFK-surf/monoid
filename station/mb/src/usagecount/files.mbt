@@ -505,40 +505,13 @@ fn extension(sep : String, path : String) -> String? {
 ///|
 /// Node's path.basename of a path joined here.
 fn basename(sep : String, path : String) -> String {
-  let cut = last_sep(sep, path)
-  if cut < 0 {
-    path
-  } else {
-    path.view(start_offset=cut + 1).to_owned()
-  }
-}
-
-///|
-fn last_sep(sep : String, path : String) -> Int {
-  let slash = path.rev_find("/").unwrap_or(-1)
-  if sep == "\\" {
-    let back = path.rev_find("\\").unwrap_or(-1)
-    if back > slash {
-      back
-    } else {
-      slash
-    }
-  } else {
-    slash
-  }
+  @nodepath.basename(sep, path)
 }
 
 ///|
 /// Node's path.dirname of a path joined here (absolute, normalized).
 fn dirname(sep : String, path : String) -> String {
-  let cut = last_sep(sep, path)
-  if cut < 0 {
-    "."
-  } else if cut == 0 {
-    path.view(end_offset=1).to_owned()
-  } else {
-    path.view(end_offset=cut).to_owned()
-  }
+  @nodepath.dirname(sep, path)
 }
 
 ///|

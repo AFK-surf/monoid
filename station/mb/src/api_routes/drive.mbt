@@ -53,16 +53,7 @@ const GRANT_MS : Double = 604800000.0
 
 ///|
 fn base_name(p : String) -> String {
-  // node:path basename (POSIX), no suffix
-  let mut end = p.length()
-  while end > 0 && p.unsafe_charcode_at(end - 1) == '/' {
-    end -= 1
-  }
-  let trimmed = p.unsafe_substring(start=0, end~)
-  match trimmed.rev_find("/") {
-    Some(at) => trimmed.unsafe_substring(start=at + 1, end=trimmed.length())
-    None => trimmed
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|

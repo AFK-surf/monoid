@@ -348,33 +348,13 @@ fn extension(name : String) -> String? {
 ///|
 /// path.basename of a path joined here.
 fn base_name(sep : String, path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == '/' || (sep == "\\" && c == '\\') {
-      cut = i
-    }
-  }
-  path.view(start_offset=cut + 1).to_owned()
+  @nodepath.basename(sep, path)
 }
 
 ///|
 /// path.dirname of a path joined here.
 fn dir_name(sep : String, path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == '/' || (sep == "\\" && c == '\\') {
-      cut = i
-    }
-  }
-  if cut < 0 {
-    "."
-  } else if cut == 0 {
-    path.view(end_offset=1).to_owned()
-  } else {
-    path.view(end_offset=cut).to_owned()
-  }
+  @nodepath.dirname(sep, path)
 }
 
 ///|

@@ -88,19 +88,7 @@ async fn Storage::preferred_of(self : Storage, session : String, connects : Arra
 /// String.prototype.localeCompare as ICU's root order has it for what a place is named: letters by their letter
 /// first, a lower one before its upper one, the rest by their code points.
 fn locale_compare(a : String, b : String) -> Int {
-  let c = js_compare(a.to_lower(), b.to_lower())
-  if c != 0 {
-    return if c < 0 { -1 } else { 1 }
-  }
-  // (equal but for case: the lower first)
-  let d = js_compare(b, a)
-  if d < 0 {
-    -1
-  } else if d > 0 {
-    1
-  } else {
-    0
-  }
+  @jsjson.locale_compare(a, b)
 }
 
 ///|

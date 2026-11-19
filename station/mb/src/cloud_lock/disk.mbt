@@ -90,22 +90,11 @@ pub async fn Disk::put(self : Disk, path : String, bytes : Bytes) -> Unit raise 
 ///|
 /// A path's folder (node's `dirname`).
 pub fn dirname(path : String) -> String {
-  match path.rev_find("/") {
-    Some(0) => "/"
-    Some(i) => path.unsafe_substring(start=0, end=i)
-    None => "."
-  }
+  @nodepath.dirname("/", path)
 }
 
 ///|
-/// Paths joined with "/" (node's `join` of parts that are no `..`).
+/// Paths joined with "/" (node's `join`).
 pub fn join(parts : Array[String]) -> String {
-  let out = StringBuilder()
-  for i, p in parts {
-    if i > 0 && !(out.to_string().has_suffix("/")) {
-      out.write_char('/')
-    }
-    out.write_string(p)
-  }
-  out.to_string()
+  @nodepath.join("/", parts)
 }

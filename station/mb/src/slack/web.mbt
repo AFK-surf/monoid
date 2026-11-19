@@ -449,49 +449,5 @@ fn reason_phrase(status : Int) -> String {
 /// `Date.parse` of an HTTP date (IMF-fixdate, `Tue, 17 Nov 2026 04:22:23 GMT`): its milliseconds, None where it is
 /// not one.
 pub fn http_date(s : String) -> Double? {
-  let parts = trim(s).split(" ").filter(p => p != "").map(p => p.to_string()).to_array()
-  // (the weekday is optional, and read for nothing)
-  let p = if parts.length() > 0 && parts[0].has_suffix(",") { parts[1:].to_array() } else { parts }
-  if p.length() < 4 {
-    return None
-  }
-  let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-  let day = small_int(p[0])
-  let month = match months.search(lower(p[1])) {
-    Some(m) => m
-    None => return None
-  }
-  let year = small_int(p[2])
-  let hms = p[3].split(":").map(x => x.to_string()).to_array()
-  if hms.length() < 2 || hms.length() > 3 {
-    return None
-  }
-  let (h, mi, se) = (small_int(hms[0]), small_int(hms[1]), if hms.length() == 3 { small_int(hms[2]) } else { Some(0) })
-  let zone = if p.length() > 4 { p[4] } else { "GMT" }
-  let offset = match zone {
-    "GMT" | "UTC" | "UT" | "Z" => 0
-    _ => return None
-  }
-  match (day, year, h, mi, se) {
-    (Some(d), Some(y), Some(hh), Some(mm), Some(ss)) if d >= 1 && d <= 31 && hh < 24 && mm < 60 && ss < 60 => {
-      let days = @time.days_from_civil(y, month + 1, d)
-      Some(
-        ((days.to_double() * 86400.0 + (hh * 3600 + mm * 60 + ss).to_double()) * 1000.0) -
-        offset.to_double(),
-      )
-    }
-    _ => None
-  }
-}
-
-///|
-fn small_int(s : String) -> Int? {
-  if s == "" || s.length() > 6 || !s.iter().all(c => c >= '0' && c <= '9') {
-    return None
-  }
-  let mut n = 0
-  for c in s {
-    n = n * 10 + (c.to_int() - '0'.to_int())
-  }
-  Some(n)
+  @jsjson.js_parse_http_date(s)
 }

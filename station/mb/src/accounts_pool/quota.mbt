@@ -84,81 +84,14 @@ fn digits_at(s : String, i : Int, n : Int) -> Int? {
 /// `z`, `±HH:MM` or `±HHMM`, `24:00:00` the next day, a day up to 31 whatever the month; no zone: local time, by
 /// `tz_offset_ms`). None for anything else.
 pub fn date_parse(text : String, tz_offset_ms : (Double) -> Double) -> Double? {
-  guard digits_at(text, 0, 4) is Some(y) else { return None }
-  guard text.length() >= 16 else { return None }
-  if text.unsafe_charcode_at(4) != '-'.to_int() ||
-    text.unsafe_charcode_at(7) != '-'.to_int() ||
-    text.unsafe_charcode_at(10) != 'T'.to_int() ||
-    text.unsafe_charcode_at(13) != ':'.to_int() {
+  guard text.length() >= 16 &&
+    text.unsafe_get(4).to_int() == '-' &&
+    text.unsafe_get(7).to_int() == '-' &&
+    text.unsafe_get(10).to_int() == 'T' &&
+    text.unsafe_get(13).to_int() == ':' else {
     return None
   }
-  guard digits_at(text, 5, 2) is Some(mo) else { return None }
-  guard digits_at(text, 8, 2) is Some(d) else { return None }
-  guard digits_at(text, 11, 2) is Some(h) else { return None }
-  guard digits_at(text, 14, 2) is Some(mi) else { return None }
-  let mut i = 16
-  let mut s = 0
-  let mut ms = 0
-  if i < text.length() && text.unsafe_charcode_at(i) == ':'.to_int() {
-    guard digits_at(text, 17, 2) is Some(sec) else { return None }
-    s = sec
-    i = 19
-    if i < text.length() && text.unsafe_charcode_at(i) == '.'.to_int() {
-      i += 1
-      let from = i
-      while i < text.length() &&
-            text.unsafe_charcode_at(i) >= '0'.to_int() &&
-            text.unsafe_charcode_at(i) <= '9'.to_int() {
-        if i - from < 3 {
-          ms = ms * 10 + (text.unsafe_charcode_at(i) - '0'.to_int())
-        }
-        i += 1
-      }
-      if i == from {
-        return None
-      }
-      let got = i - from
-      if got == 1 {
-        ms = ms * 100
-      } else if got == 2 {
-        ms = ms * 10
-      }
-    }
-  }
-  if mo < 1 || mo > 12 || d < 1 || d > 31 || h > 24 || mi > 59 || s > 59 {
-    return None
-  }
-  if h == 24 && (mi != 0 || s != 0 || ms != 0) {
-    return None
-  }
-  let local = @time.days_from_civil(y, mo, d).to_double() * 86_400_000.0 +
-    h.to_double() * 3_600_000.0 +
-    mi.to_double() * 60_000.0 +
-    s.to_double() * 1000.0 +
-    ms.to_double()
-  if i == text.length() {
-    return Some(local - tz_offset_ms(local))
-  }
-  let c = text.unsafe_charcode_at(i)
-  if (c == 'Z'.to_int() || c == 'z'.to_int()) && i + 1 == text.length() {
-    return Some(local)
-  }
-  if c == '+'.to_int() || c == '-'.to_int() {
-    guard digits_at(text, i + 1, 2) is Some(oh) else { return None }
-    let (om, end) = if i + 3 < text.length() &&
-      text.unsafe_charcode_at(i + 3) == ':'.to_int() {
-      (digits_at(text, i + 4, 2), i + 6)
-    } else {
-      (digits_at(text, i + 3, 2), i + 5)
-    }
-    guard om is Some(om) else { return None }
-    if end != text.length() || oh > 23 || om > 59 {
-      return None
-    }
-    let off = (oh * 60 + om).to_double() * 60_000.0
-    return Some(if c == '+'.to_int() { local - off } else { local + off })
-  }
-  None
+  @jsjson.js_parse_iso(text, tz_offset_ms~)
 }
 
 ///|

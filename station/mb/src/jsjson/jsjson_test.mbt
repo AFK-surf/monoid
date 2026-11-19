@@ -390,3 +390,52 @@ test "jval_* and json_* top-level helpers" {
   inspect(@jsjson.js_ends("abc", "bc"), content="true")
   inspect(@jsjson.js_includes("abc", "b"), content="true")
 }
+
+
+///|
+test "js_iso and js_iso_checked" {
+  assert_eq(js_iso(0.0), "1970-01-01T00:00:00.000Z")
+  assert_eq(js_iso(-0.5), "1970-01-01T00:00:00.000Z")
+  assert_eq(js_iso(-1.0), "1969-12-31T23:59:59.999Z")
+  assert_eq(js_iso_checked(0.0), Some("1970-01-01T00:00:00.000Z"))
+  assert_eq(js_iso_checked(8.64e15), Some("+275760-09-13T00:00:00.000Z"))
+  assert_eq(js_iso_checked(8.64e15 + 1.0), None)
+  assert_eq(js_iso_checked(@double.not_a_number), None)
+  assert_eq(js_iso_checked(@double.infinity), None)
+}
+
+///|
+test "js_parse_iso and js_date_parse" {
+  assert_eq(js_parse_iso("1970"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01-01"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01-01T00:00:00.000Z"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01-01T00:00:00.123456Z"), Some(123.0))
+  assert_eq(js_parse_iso("1970-01-01T01:00:00+01:00"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01-01T01:00:00+0100"), Some(0.0))
+  assert_eq(js_parse_iso("1970-01-01T24:00:00.000Z"), Some(86_400_000.0))
+  assert_eq(js_parse_iso("1970-01-01T24:00:01Z"), None)
+  assert_eq(js_parse_iso("-000000-01-01"), None)
+  assert_eq(js_parse_iso("2026-02-30", strict_day=true), None)
+  assert_eq(js_parse_iso("2026-02-30", strict_day=false) is Some(_), true)
+  assert_eq(js_parse_iso("1970-01-01T02:00:00", tz_offset_ms=_ => 7_200_000.0), Some(0.0))
+  assert_eq(js_date_parse("1970-01-01 00:00:00Z"), Some(0.0))
+  assert_eq(js_date_parse("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0.0))
+  assert_eq(js_date_parse("not a date"), None)
+}
+
+///|
+test "locale_compare, without_mentions, is_well_formed" {
+  assert_eq(locale_compare("a", "B"), -1)
+  assert_eq(locale_compare("a", "A"), -1)
+  assert_eq(locale_compare("A", "a"), 1)
+  assert_eq(locale_compare("_a", "0a"), -1)
+  assert_eq(locale_compare("0a", "a"), -1)
+  assert_eq(without_mentions("<@U123> hello <@B9>"), " hello ")
+  assert_eq(without_mentions("<@bad> <@> ok"), "<@bad> <@> ok")
+  assert_true(is_well_formed("hello 😀"))
+  match try_parse_raw("\"a\\ud800b\"") {
+    Some(Str(s)) => assert_false(is_well_formed(s))
+    _ => fail("expected string")
+  }
+}

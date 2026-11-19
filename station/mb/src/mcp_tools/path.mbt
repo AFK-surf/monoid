@@ -66,31 +66,7 @@ pub fn path_resolve(base : String, parts : Array[String]) -> String {
 ///|
 /// path.dirname.
 pub fn path_dirname(p : String) -> String {
-  if p == "" {
-    return "."
-  }
-  let has_root = p.unsafe_charcode_at(0) == '/'
-  let mut end = -1
-  let mut matched_slash = true
-  let mut i = p.length() - 1
-  while i >= 1 {
-    if p.unsafe_charcode_at(i) == '/' {
-      if !matched_slash {
-        end = i
-        break
-      }
-    } else {
-      matched_slash = false
-    }
-    i -= 1
-  }
-  if end == -1 {
-    return if has_root { "/" } else { "." }
-  }
-  if has_root && end == 1 {
-    return "//"
-  }
-  slice(p, 0, to=end)
+  @nodepath.dirname("/", p)
 }
 
 ///|

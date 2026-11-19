@@ -297,34 +297,7 @@ pub fn shell_kept_key(parts : Array[Json], env : Array[(String, String)]) -> Str
 /// `a.localeCompare(b)` for the names of environment variables (letters, digits and `_`): case aside first, then
 /// small before capital, as ICU's root collation orders them.
 fn locale_compare(a : String, b : String) -> Int {
-  let key = (c : Int) => if c == 95 {
-    0
-  } else if is_digit(c) {
-    100 + c
-  } else if is_alpha(c) {
-    1000 + (if is_upper(c) { c + 32 } else { c }) * 4
-  } else {
-    100000 + c
-  }
-  let n = @cmp.minimum(a.length(), b.length())
-  for i in 0..<n {
-    let d = key(cu(a, i)) - key(cu(b, i))
-    if d != 0 {
-      return d
-    }
-  }
-  if a.length() != b.length() {
-    return a.length() - b.length()
-  }
-  // Tertiary: small before capital.
-  for i in 0..<n {
-    let x = cu(a, i)
-    let y = cu(b, i)
-    if x != y {
-      return if is_lower(x) { -1 } else { 1 }
-    }
-  }
-  0
+  @jsjson.locale_compare(a, b)
 }
 
 ///|

@@ -119,22 +119,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
 ///|
 /// A path's directory (node:path `dirname` of a path with `/` or, on Windows, `\`).
 fn dirname(path : String) -> String {
-  let chars = path.to_array()
-  let mut end = chars.length()
-  while end > 1 && (chars[end - 1] == '/' || chars[end - 1] == '\\') {
-    end -= 1
-  }
-  let mut at = end - 1
-  while at >= 0 && chars[at] != '/' && chars[at] != '\\' {
-    at -= 1
-  }
-  if at < 0 {
-    "."
-  } else if at == 0 {
-    String::from_array(chars[0:1])
-  } else {
-    String::from_array(chars[0:at])
-  }
+  @nodepath.dirname("\\", path)
 }
 
 ///|

@@ -99,35 +99,7 @@ pub fn session_key(connect : String, channel : String, thread_ts : String) -> St
 ///|
 /// read/transcript.ts `iso`: an ISO timestamp of milliseconds since the epoch, as toISOString writes it.
 pub fn iso(ms : Double) -> String {
-  let div = (a : Double, b : Double) => (a / b).floor()
-  let days = div(ms, 86_400_000.0)
-  let rest = ms - days * 86_400_000.0
-  let z = days + 719_468.0
-  let era = div(z, 146_097.0)
-  let doe = z - era * 146_097.0
-  let t = (x : Double) => if x < 0.0 { x.ceil() } else { x.floor() }
-  let yoe = t((doe - t(doe / 1460.0) + t(doe / 36_524.0) - t(doe / 146_096.0)) / 365.0)
-  let doy = doe - (365.0 * yoe + t(yoe / 4.0) - t(yoe / 100.0))
-  let mp = t((5.0 * doy + 2.0) / 153.0)
-  let d = doy - t((153.0 * mp + 2.0) / 5.0) + 1.0
-  let m = if mp < 10.0 { mp + 3.0 } else { mp - 9.0 }
-  let y = yoe + era * 400.0 + (if m <= 2.0 { 1.0 } else { 0.0 })
-  let pad = (n : Double, w : Int) => {
-    let neg = n < 0.0
-    let s = (if neg { -n } else { n }).to_int64().to_string()
-    let width = if neg { w - 1 } else { w }
-    let padded = if s.length() < width { "0".repeat(width - s.length()) + s } else { s }
-    if neg {
-      "-" + padded
-    } else {
-      padded
-    }
-  }
-  let h = t(rest / 3_600_000.0)
-  let mi = t(rest / 60_000.0) % 60.0
-  let s = t(rest / 1000.0) % 60.0
-  let milli = rest % 1000.0
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(milli, 3)}Z"
+  @jsjson.js_iso(ms)
 }
 
 ///|

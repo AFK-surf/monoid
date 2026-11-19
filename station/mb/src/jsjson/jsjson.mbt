@@ -313,33 +313,39 @@ pub fn JValue::get(self : JValue, name : String) -> JValue? {
 }
 
 ///|
-/// Well-formed UTF-16 string: lone surrogates replaced with U+FFFD, valid surrogate pairs kept.
-/// Zero-allocation fast path when no lone surrogate is present.
-pub fn sanitize_str(s : String) -> String {
+/// Whether every UTF-16 surrogate in `s` is paired (`String.prototype.isWellFormed`).
+pub fn is_well_formed(s : String) -> Bool {
   let n = s.length()
   let mut i = 0
-  let mut bad = false
   while i < n {
     let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        i += 2
-        continue
+    if c >= 0xd800 && c <= 0xdbff {
+      if i + 1 < n {
+        let d = s.unsafe_charcode_at(i + 1)
+        if d >= 0xdc00 && d <= 0xdfff {
+          i += 2
+          continue
+        }
       }
-      bad = true
-      break
-    } else if c >= 0xd800 && c <= 0xdfff {
-      bad = true
-      break
+      return false
+    } else if c >= 0xdc00 && c <= 0xdfff {
+      return false
     }
     i += 1
   }
-  if !bad {
+  true
+}
+
+///|
+/// Well-formed UTF-16 string: lone surrogates replaced with U+FFFD, valid surrogate pairs kept.
+/// Zero-allocation fast path when no lone surrogate is present.
+pub fn sanitize_str(s : String) -> String {
+  if is_well_formed(s) {
     return s
   }
+  let n = s.length()
   let out = StringBuilder::new(size_hint=n)
-  i = 0
+  let mut i = 0
   while i < n {
     let c = s.unsafe_charcode_at(i)
     i += 1

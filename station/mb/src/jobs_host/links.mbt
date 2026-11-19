@@ -903,71 +903,13 @@ fn truthy(v : Json?) -> Bool {
 /// `Date.parse` of an ISO 8601 time (as GitHub writes them: `YYYY-MM-DDTHH:MM:SS(.sss)Z` or with an offset; a date
 /// alone is UTC); None where it is not one.
 pub fn iso_time(s : String) -> Double? {
-  let n = s.length()
-  let digits = (at : Int, len : Int) => {
-    if at + len > n {
-      return None
-    }
-    let t = slice(s, at, at + len)
-    if all_digits(t) {
-      Some(digits_number(t).to_int())
-    } else {
-      None
-    }
-  }
-  guard digits(0, 4) is Some(y) && n >= 10 && s.unsafe_charcode_at(4) == '-' else { return None }
-  guard digits(5, 2) is Some(mo) && s.unsafe_charcode_at(7) == '-' else { return None }
-  guard digits(8, 2) is Some(d) else { return None }
-  if mo < 1 || mo > 12 || d < 1 || d > 31 {
+  guard s.length() >= 10 &&
+    s.unsafe_get(4).to_int() == '-' &&
+    s.unsafe_get(7).to_int() == '-' &&
+    (s.length() == 10 || s.unsafe_get(10).to_int() == 'T') else {
     return None
   }
-  let days = @time.days_from_civil(y, mo, d).to_double()
-  if n == 10 {
-    return Some(days * 86400000.0)
-  }
-  guard s.unsafe_charcode_at(10) == 'T' else { return None }
-  guard digits(11, 2) is Some(h) && n > 13 && s.unsafe_charcode_at(13) == ':' else { return None }
-  guard digits(14, 2) is Some(mi) else { return None }
-  let mut i = 16
-  let mut sec = 0
-  let mut ms = 0.0
-  if i < n && s.unsafe_charcode_at(i) == ':' {
-    guard digits(i + 1, 2) is Some(x) else { return None }
-    sec = x
-    i += 3
-    if i < n && s.unsafe_charcode_at(i) == '.' {
-      let start = i + 1
-      i = start
-      while i < n && is_digit(s.unsafe_charcode_at(i)) {
-        i += 1
-      }
-      if i == start {
-        return None
-      }
-      let frac = slice(s, start, if i - start > 3 { start + 3 } else { i })
-      ms = digits_number(frac) * (if frac.length() == 1 { 100.0 } else if frac.length() == 2 { 10.0 } else { 1.0 })
-    }
-  }
-  if h > 24 || mi > 59 || sec > 59 {
-    return None
-  }
-  let mut offset = 0.0
-  if i == n {
-    // (a time without a zone is the machine's: GitHub always says one)
-    offset = 0.0
-  } else if s.unsafe_charcode_at(i) == 'Z' && i + 1 == n {
-    offset = 0.0
-  } else if (s.unsafe_charcode_at(i) == '+' || s.unsafe_charcode_at(i) == '-') && i + 6 == n {
-    guard digits(i + 1, 2) is Some(oh) && s.unsafe_charcode_at(i + 3) == ':' else { return None }
-    guard digits(i + 4, 2) is Some(om) else { return None }
-    let sign = if s.unsafe_charcode_at(i) == '+' { 1.0 } else { -1.0 }
-    offset = sign * (oh * 60 + om).to_double() * 60000.0
-  } else {
-    return None
-  }
-  Some(
-    days * 86400000.0 + (h * 3600 + mi * 60 + sec).to_double() * 1000.0 + ms - offset,
-  )
+  @jsjson.js_parse_iso(s)
 }
 
 ///|

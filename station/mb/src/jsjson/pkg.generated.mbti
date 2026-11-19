@@ -31,6 +31,8 @@ pub fn is_safe_integer(Double) -> Bool
 
 pub fn is_undef(JValue) -> Bool
 
+pub fn is_well_formed(String) -> Bool
+
 pub fn jarr(Array[JValue]) -> JValue
 
 pub fn jat(JValue?, Int32) -> JValue?
@@ -69,17 +71,27 @@ pub fn js_all_digits(String) -> Bool
 
 pub fn js_compare(String, String) -> Int32
 
+pub fn js_date_parse(String, tz_offset_ms? : (Double) -> Double, strict_day? : Bool) -> Double?
+
 pub fn js_ends(String, String) -> Bool
 
 pub fn js_includes(String, String) -> Bool
 
 pub fn js_index_of(String, String, from? : Int32) -> Int32
 
+pub fn js_iso(Double) -> String
+
+pub fn js_iso_checked(Double) -> String?
+
 pub fn js_last_index_of(String, String) -> Int32
 
 pub fn js_less(String, String) -> Bool
 
 pub fn js_number(String) -> Double
+
+pub fn js_parse_http_date(String) -> Double?
+
+pub fn js_parse_iso(String, tz_offset_ms? : (Double) -> Double, strict_day? : Bool, space_sep? : Bool) -> Double?
 
 pub fn js_replace_all(String, String, String) -> String
 
@@ -309,6 +321,8 @@ pub fn jval_try_parse(String) -> JValue?
 
 pub fn jvalues(JValue) -> Array[JValue]
 
+pub fn locale_compare(String, String) -> Int32
+
 pub fn num_text(Double) -> String
 
 pub fn parse(String) -> JValue raise SyntaxError
@@ -344,6 +358,8 @@ pub fn utf16le(Array[Int32]) -> Array[Int32]
 pub fn utf8(String) -> Bytes
 
 pub fn utf8_text(Bytes) -> String
+
+pub fn without_mentions(String) -> String
 
 pub fn write_utf8(@buffer.Buffer, JValue) -> Unit
 

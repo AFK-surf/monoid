@@ -181,26 +181,7 @@ fn title_of(row : Map[String, Json], first_text : String?) -> String {
 ///|
 /// titles.ts `withoutMentions`: Slack's `<@U123>` taken out.
 fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(at) {
-    out.write_string(rest.view(end_offset=at).to_owned())
-    let after = rest.view(start_offset=at + 2).to_owned()
-    let end = after.find(">").unwrap_or(-1)
-    let id_ok = end > 0 &&
-      after
-      .view(end_offset=end)
-      .iter()
-      .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
-    if id_ok {
-      rest = after.view(start_offset=end + 1).to_owned()
-    } else {
-      out.write_string("<@")
-      rest = after
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
+  @jsjson.without_mentions(text)
 }
 
 ///|

@@ -823,14 +823,7 @@ fn widget_sources_unavailable(threads : Array[Json]) -> StoreError {
 ///|
 /// The last part of a path, split at either slash.
 fn base_name(path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == 0x2f || c == 0x5c {
-      cut = i
-    }
-  }
-  path.substring(start=cut + 1)
+  @nodepath.basename("\\", path)
 }
 
 ///|

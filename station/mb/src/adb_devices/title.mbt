@@ -1,51 +1,9 @@
 // adb/title.ts, with what it names a chat by (read/views.ts `titleOf`, `given`: client/core-ts/src/titles.ts).
 
 ///|
-/// titles.ts `withoutMentions`: text without Slack's `<@U123>` mentions.
-fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(at) {
-    out.write_string(js_slice(rest, 0, b=at))
-    let after = js_slice(rest, at + 2)
-    match after.find(">") {
-      Some(end) if end > 0 &&
-        js_slice(after, 0, b=end)
-        .iter()
-        .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) =>
-        rest = js_slice(after, end + 1)
-      _ => {
-        out.write_string("<@")
-        rest = after
-      }
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
-}
-
-///|
-/// A field of a thread's row as a title reads it: a string trimmed of white space, else "".
-fn titled(t : J, k : String) -> String {
-  match at(Some(t), k) {
-    Some(Str(u)) => @jscase.trim_white(@jsjson.sanitize_str(u))
-    _ => ""
-  }
-}
-
-///|
 /// titles.ts `givenTitle`: the name people gave a chat, else its agent's; None where neither did.
 pub fn given_title(t : J) -> String? {
-  let given = titled(t, "title")
-  if given != "" {
-    return Some(given)
-  }
-  let auto = titled(t, "autoTitle")
-  if auto != "" {
-    Some(auto)
-  } else {
-    None
-  }
+  @session_chats.given_title(t)
 }
 
 ///|
@@ -57,36 +15,7 @@ pub fn chat_title(
   untitled : String,
   direct : String,
 ) -> String {
-  if given_title(t) is Some(g) {
-    return g
-  }
-  let surface = text_of(at(Some(t), "surface"))
-  if at(Some(t), "surface") is Some(Str(_)) &&
-    (surface == "chat" || surface == "ember" || surface == "stillfail") {
-    return untitled
-  }
-  for line in without_mentions(first_text.unwrap_or("")).split("\n") {
-    let words = @jscase.split_by(line.to_owned(), @jscase.is_white_space).filter(w => {
-        w != ""
-      },
-    )
-    let joined = words.join(" ")
-    if joined != "" {
-      return joined
-    }
-  }
-  let name = @jscase.trim_white(channel_name.unwrap_or(""))
-  if name != "" {
-    return if surface.has_prefix("feishu:") || surface.has_prefix("group:") {
-      name
-    } else {
-      "#" + name
-    }
-  }
-  if titled(t, "channel").has_prefix("D") {
-    return direct
-  }
-  untitled
+  @session_chats.chat_title(t, first_text, channel_name, untitled, direct)
 }
 
 ///|

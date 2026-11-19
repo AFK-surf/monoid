@@ -65,6 +65,8 @@ pub async fn chat_post(World, String, @jsjson.JValue, Held) -> String
 
 pub async fn chat_state(World, String, @jsjson.JValue) -> String
 
+pub fn chat_title(@jsjson.JValue, String?, String?, String, String) -> String
+
 pub fn chat_workspace(String, String, sep? : String) -> String
 
 pub fn clean_title(String) -> String
@@ -122,6 +124,8 @@ pub async fn fingerprint(World, @jsjson.JValue) -> String
 pub fn first_chars(String, Int32) -> String
 
 pub async fn from_peer(World, String, @jsjson.JValue, String?) -> @jsjson.JValue
+
+pub fn given_title(@jsjson.JValue) -> String?
 
 pub fn gone_kept(Array[@jsjson.JValue]) -> Array[@jsjson.JValue]
 
@@ -452,6 +456,8 @@ pub fn utf8(String) -> Bytes
 pub async fn validate_decision(World, @jsjson.JValue) -> Unit
 
 pub fn without(@jsjson.JValue, Array[String]) -> @jsjson.JValue
+
+pub fn without_mentions(String) -> String
 
 // Errors
 pub(all) suberror Thrown {

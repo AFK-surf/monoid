@@ -123,26 +123,8 @@ async fn apply_title(w : World, thread : J, title : String) -> Unit {
 
 ///|
 /// titles.ts `withoutMentions`: text without Slack's `<@U123>` mentions.
-fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(i) {
-    out.write_string(slice(rest, 0, b=i))
-    let after = slice(rest, i + 2)
-    match after.find(">") {
-      Some(end) if end > 0 &&
-        slice(after, 0, b=end)
-        .iter()
-        .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) =>
-        rest = slice(after, end + 1)
-      _ => {
-        out.write_string("<@")
-        rest = after
-      }
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
+pub fn without_mentions(text : String) -> String {
+  @jsjson.without_mentions(text)
 }
 
 ///|
@@ -155,7 +137,7 @@ fn titled_field(t : J, k : String) -> String {
 
 ///|
 /// titles.ts `givenTitle`: the name people gave a chat, else its agent's; None where neither did.
-fn given_title(t : J) -> String? {
+pub fn given_title(t : J) -> String? {
   let g = titled_field(t, "title")
   if g != "" {
     return Some(g)
@@ -169,12 +151,17 @@ fn given_title(t : J) -> String? {
 }
 
 ///|
-/// views.ts `titleOf` / titles.ts `chatTitle`.
-fn title_of(w : World, t : J, first_text : String?, channel_name : String?) -> String {
+/// titles.ts `chatTitle`.
+pub fn chat_title(
+  t : J,
+  first_text : String?,
+  channel_name : String?,
+  untitled : String,
+  direct : String,
+) -> String {
   if given_title(t) is Some(g) {
     return g
   }
-  let untitled = w.words.tr("zh", "station.chat.untitled")
   let surface = str_of(at(Some(t), "surface")).unwrap_or("")
   if at(Some(t), "surface") is Some(Str(_)) &&
     (surface == "chat" || surface == "ember" || surface == "stillfail") {
@@ -197,7 +184,19 @@ fn title_of(w : World, t : J, first_text : String?, channel_name : String?) -> S
     }
   }
   if starts(titled_field(t, "channel"), "D") {
-    return w.words.tr("zh", "station.chat.directMessage")
+    return direct
   }
   untitled
+}
+
+///|
+/// views.ts `titleOf` / titles.ts `chatTitle`.
+fn title_of(w : World, t : J, first_text : String?, channel_name : String?) -> String {
+  chat_title(
+    t,
+    first_text,
+    channel_name,
+    w.words.tr("zh", "station.chat.untitled"),
+    w.words.tr("zh", "station.chat.directMessage"),
+  )
 }

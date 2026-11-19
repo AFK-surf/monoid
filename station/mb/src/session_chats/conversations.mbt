@@ -406,28 +406,12 @@ pub async fn may_stage(w : World, args : J, links : Bool) -> Bool {
 
 ///|
 fn dirname(p : String) -> String {
-  let i = last_index_of(p, "/")
-  if i < 0 {
-    "."
-  } else if i == 0 {
-    "/"
-  } else {
-    slice(p, 0, b=i)
-  }
+  @nodepath.dirname("/", p)
 }
 
 ///|
 fn basename(p : String) -> String {
-  let mut q = p
-  while q.length() > 1 && ends(q, "/") {
-    q = slice(q, 0, b=q.length() - 1)
-  }
-  let i = last_index_of(q, "/")
-  if i < 0 {
-    q
-  } else {
-    slice(q, i + 1)
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|
