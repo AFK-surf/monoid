@@ -632,7 +632,7 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 22 s before the job is, moon's
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 24 s before the job is, moon's
       # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
       # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused), 14 s in main's jobs 135458429309 and
@@ -646,7 +646,7 @@ jobs:
         id: build
         run: |
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 22)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 24)) bash -ec '
             bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
             H=$RUNNER_TEMP/ios-hermes
             if [ -f "$H/pid" ]; then
