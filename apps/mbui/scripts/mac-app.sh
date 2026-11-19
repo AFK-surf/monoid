@@ -35,25 +35,39 @@ N=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)}
 # it and it keeps that app's data, sign-in and sealed keys where they were (src/sfcore/apple_engine.m, src/host/
 # apple_core.mm electron_sealed); their feed mac (the beta's core asks mac/beta, as still.fail's beta builds do). The
 # beta's core and still.fail preview's are a beta's (MBUI_BETA): builds of every commit, the test channel's.
-case "${MBUI_VARIANT:-preview}" in
-  preview) ID=fail.still.mbui NAME="still.fail preview" FEED=mac/mbui OWN= BETA=1 SCHEMES=() ZIP_NAME=stillfail-mbui ;;
-  stable) ID=fail.still.desktop NAME=still.fail FEED=mac OWN=1 BETA= SCHEMES=(stillfail) ZIP_NAME=stillfail ;;
-  beta) ID=fail.still.desktop.beta NAME=youdid.wtf FEED=mac OWN=1 BETA=1 SCHEMES=(stillfail-beta stillfail) ZIP_NAME=stillfail-beta ;;
-  # monoid's: the same app on monoid's cloud (MONOID below), its own ids, name and links
-  monoid) ID=build.monoid.desktop NAME=monoid FEED=mac OWN=1 BETA= SCHEMES=(monoid) ZIP_NAME=monoid ;;
-  monoid-beta) ID=build.monoid.desktop.beta NAME=monoid.zone FEED=mac OWN=1 BETA=1 SCHEMES=(monoid-beta monoid) ZIP_NAME=monoid-beta ;;
-  *) echo "mac-app.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $MBUI_VARIANT" >&2; exit 1 ;;
-esac
+VARIANT=${MBUI_VARIANT:-preview}
+load_variant() {
+  local meta MBUI_APP_ID MBUI_APP_NAME MBUI_EXECUTABLE MBUI_VERSION MBUI_BUILD MBUI_VARIANT \
+    MBUI_RUNTIME MBUI_MODULE_DIR MBUI_ENTRY MBUI_SCHEMES MBUI_UPDATE_FEED MBUI_UPDATE_CHANNEL \
+    MBUI_ENV_KV MBUI_MAC_MIN_VERSION MBUI_WIN_INSTALL_DIR MBUI_WIN_COMPANY
+  meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$VARIANT" --format sh) || {
+    echo "mac-app.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $VARIANT" >&2
+    exit 1
+  }
+  eval "$meta"
+  ID=$MBUI_APP_ID
+  NAME=$MBUI_APP_NAME
+  # its program: built in the Electron app's place, named as that app's is (its name): the Electron app's updater
+  # (Squirrel.Mac) names the bundle it puts in place after the new one's program, and would leave the app renamed
+  EXE=$MBUI_EXECUTABLE
+  FEED=$MBUI_UPDATE_FEED
+  ZIP_NAME=$MBUI_WIN_INSTALL_DIR
+  ENV_KV=$MBUI_ENV_KV
+  MAC_MIN_VERSION=$MBUI_MAC_MIN_VERSION
+  OWN=
+  case ";$ENV_KV;" in *";MBUI_OWN=1;"*) OWN=1 ;; esac
+  SCHEMES=()
+  if [ -n "$MBUI_SCHEMES" ]; then
+    IFS=, read -r -a SCHEMES <<< "$MBUI_SCHEMES"
+  fi
+}
+load_variant
 OUT=$A/out/mac
 APPDIR="$OUT/$NAME.app"
 ZIP=$OUT/$ZIP_NAME-$N-arm64-mac.zip
-# its program: built in the Electron app's place, named as that app's is (its name): the Electron app's updater
-# (Squirrel.Mac) names the bundle it puts in place after the new one's program, and would leave the app renamed
-EXE=stillfail-mbui
-[ -z "$OWN" ] || EXE=$NAME
 mkdir -p "$OUT"
 t0=$(now)
-export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-12.0}
+export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-$MAC_MIN_VERSION}
 # what was built for another one goes (moon's and mbc's objects, the shell's .a: their keys do not hold it), and the
 # Rust shell builds in a target of its own for it
 if [ "$(cat _build/.macos-min 2>/dev/null)" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
@@ -93,7 +107,6 @@ if [ "${1:-build}" = sign ]; then
   exit 0
 fi
 
-VARIANT=${MBUI_VARIANT:-preview}
 case $VARIANT in beta | monoid-beta) FACE=beta ;; *) FACE=stable ;; esac
 if [ -n "${MBUI_MAC_FROM:-}" ]; then
   # Another variant's app of this build, signed or not (its .app, or its zip), made this one: the program, Hermes, the
@@ -237,7 +250,7 @@ fi
 # The Info.plist written in one go: plutil's 30-odd inserts, each its own process reading and writing the file, were
 # 2-3 s of the Mac app's job.
 rm -f "$PLIST"
-ID=$ID NAME=$NAME DISPLAY=$DISPLAY EXE=$EXE N=$N MINOS=$MINOS FEED=$FEED OWN=$OWN BETA=$BETA VARIANT=$VARIANT \
+ID=$ID NAME=$NAME DISPLAY=$DISPLAY EXE=$EXE N=$N MINOS=$MINOS FEED=$FEED ENV_KV=$ENV_KV \
   PH_HOST=$ph_host PH_KEY=$ph_key python3 - "$PLIST" "${SCHEMES[@]}" <<'PY'
 import os, plistlib, sys
 e = os.environ
@@ -266,23 +279,18 @@ p = {
 }
 # where its newer builds come from (src/stillfail main: MBUI_UPDATE_FEED; the host installs them: mac_app.m Updates),
 # the feed beta.sh mac publishes; built in still.fail's desktop app's place, still.fail's own (the device named as that
-# app named it: src/sfcore/signin.mbt MBUI_OWN), a core on the test channel a beta's (MBUI_BETA). The system gives these
-# to the app opened from the Finder, the Dock or `open`.
+# app named it: src/sfcore/signin.mbt MBUI_OWN), a core on the test channel a beta's (MBUI_BETA); monoid's cloud,
+# product and station label from apps/mbui/mbui.json (ENV_KV). The system gives these to the app opened from the
+# Finder, the Dock or `open`.
 env = p["LSEnvironment"] = {"MBUI_UPDATE_FEED": e["FEED"]}
-if e["OWN"]:
-    env["MBUI_OWN"] = "1"
-if e["BETA"]:
-    env["MBUI_BETA"] = "1"
+for item in e.get("ENV_KV", "").split(";"):
+    if "=" in item:
+        k, v = item.split("=", 1)
+        if k != "MBUI_STATION_NAME":
+            env[k] = v
 if e["PH_KEY"]:
     p["StillfailPosthogHost"] = e["PH_HOST"]
     p["StillfailPosthogKey"] = e["PH_KEY"]
-# monoid's: its cloud, its name before the core says it, its station's own directory and service (~/.monoid,
-# build.monoid.station: cloud/src/install.ts)
-if e["VARIANT"] in ("monoid", "monoid-beta"):
-    env["MBUI_CLOUD"] = "https://app.monoid.build"
-    env["MBUI_PRODUCT"] = "monoid"
-    env["MBUI_STATION_ID"] = "monoid"
-    env["MBUI_STATION_LABEL"] = "build.monoid.station"
 # the links that open it (stillfail://o/…, as still.fail's desktop app takes them: mac_app.m, then sfapp's links)
 if sys.argv[2:]:
     p["CFBundleURLTypes"] = [{"CFBundleURLName": e["NAME"], "CFBundleURLSchemes": sys.argv[2:]}]

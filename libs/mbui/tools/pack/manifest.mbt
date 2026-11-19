@@ -904,11 +904,32 @@ pub fn Manifest::summary(self : Manifest) -> String {
 }
 
 ///|
-/// Normalize a POSIX path by resolving `.` and `..` segments without OS calls.
-fn normalize_posix_path(p : String) -> String {
-  let is_abs = p.has_prefix("/")
+/// Normalize a POSIX or Windows drive path by resolving `.` and `..` segments without OS calls.
+fn normalize_posix_path(path : String) -> String {
+  let p = if path.contains("\\") {
+    path.replace_all(old="\\", new="/")
+  } else {
+    path
+  }
+  let cs = p.to_array()
+  let has_drive = cs.length() >= 2 && is_ascii_alpha(cs[0]) && cs[1] == ':'
+  let (prefix, is_abs, rest) = if has_drive {
+    if cs.length() >= 3 && cs[2] == '/' {
+      (
+        p.exact_view(end=2).to_owned() + "/",
+        true,
+        p.exact_view(start=2).to_owned(),
+      )
+    } else {
+      (p.exact_view(end=2).to_owned(), false, p.exact_view(start=2).to_owned())
+    }
+  } else if p.has_prefix("/") {
+    ("/", true, p)
+  } else {
+    ("", false, p)
+  }
   let parts : Array[String] = []
-  for part in p.split("/") {
+  for part in rest.split("/") {
     let part = part.to_owned()
     if part == "" || part == "." {
       continue
@@ -925,11 +946,15 @@ fn normalize_posix_path(p : String) -> String {
   }
   let joined = parts.join("/")
   if is_abs {
-    "/" + joined
+    prefix + joined
   } else if joined == "" {
-    "."
+    if prefix != "" {
+      prefix
+    } else {
+      "."
+    }
   } else {
-    joined
+    prefix + joined
   }
 }
 

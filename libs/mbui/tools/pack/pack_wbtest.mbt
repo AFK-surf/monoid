@@ -681,3 +681,29 @@ test "codesign commands include --keychain when non-empty" {
   assert_true(ios_kc.contains("--keychain '/tmp/ci.keychain-db'"))
   assert_true(ios_kc.contains("--sign 'Apple Dist'"))
 }
+
+///|
+test "resolve_module_dir preserves Windows drive paths" {
+  let dot_json = "{\"appId\":\"dev.example.win\",\"name\":\"WinApp\",\"moduleDir\":\".\"}"
+  let m_dot = match parse_manifest(dot_json, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail(e)
+  }
+  assert_eq(m_dot.resolve_module_dir("D:/a/b"), "D:/a/b")
+  assert_eq(m_dot.resolve_module_dir("D:\\a\\b"), "D:/a/b")
+
+  let rel_json = "{\"appId\":\"dev.example.win\",\"name\":\"WinApp\",\"moduleDir\":\"../ui\"}"
+  let m_rel = match parse_manifest(rel_json, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail(e)
+  }
+  assert_eq(m_rel.resolve_module_dir("D:/a/b"), "D:/a/ui")
+  assert_eq(m_rel.resolve_module_dir("D:\\a\\b"), "D:/a/ui")
+
+  let up_json = "{\"appId\":\"dev.example.win\",\"name\":\"WinApp\",\"moduleDir\":\"../../..\"}"
+  let m_up = match parse_manifest(up_json, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail(e)
+  }
+  assert_eq(m_up.resolve_module_dir("D:/a/b"), "D:/")
+}

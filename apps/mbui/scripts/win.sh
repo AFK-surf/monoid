@@ -42,32 +42,57 @@ if [ -z "${MBUI_IN_WIN_SH:-}" ] && [ "$APP" = stillfail ]; then
   export engine shell ghostty_vt
 fi
 core() { HERMESC=$(cygpath -m "$engine/hermesc.exe") bash "$AD/core.sh" hermes; }
-# variant: what MBUI_VARIANT builds the app as: its id, its name, its program's name where it is put (the desktop app's
-# own program's in its place), the folder it is put in (%LOCALAPPDATA%\Programs\<dir>: the desktop app's installer's,
-# its package name), and its own environment beyond those
-MONOID_ENV='MBUI_OWN=1\nMBUI_UPDATE_FEED=win\nMBUI_CLOUD=https://app.monoid.build\nMBUI_PRODUCT=monoid\nMBUI_STATION_ID=monoid\nMBUI_STATION_NAME=monoid'
+# variant: what MBUI_VARIANT builds the app as (from apps/mbui/mbui.json): its id, its name, its program's name where
+# it is put (the desktop app's own program's in its place; preview uses stillfail.exe on Windows), the folder it is put
+# in (%LOCALAPPDATA%\Programs\<dir>: the desktop app's installer's, its package name), its company, and its own
+# environment beyond those
 variant() {
-  case "${MBUI_VARIANT:-preview}" in
-    preview) id=fail.still.mbui name="still.fail preview" exe=stillfail dir=stillfail-mbui schemes= extra='MBUI_BETA=1\nMBUI_UPDATE_FEED=win/mbui' ;;
-    stable) id=fail.still.desktop name=still.fail exe=still.fail dir=stillfail schemes=stillfail extra='MBUI_OWN=1\nMBUI_UPDATE_FEED=win' ;;
-    beta) id=fail.still.desktop.beta name=youdid.wtf exe=youdid.wtf dir=stillfail-beta schemes=stillfail-beta,stillfail extra='MBUI_OWN=1\nMBUI_BETA=1\nMBUI_UPDATE_FEED=win' ;;
-    # monoid's: the same app on monoid's cloud, its station its own (~\.monoid, 「monoid station」: install-windows.ts)
-    monoid) id=build.monoid.desktop name=monoid exe=monoid dir=monoid schemes=monoid extra="$MONOID_ENV" ;;
-    monoid-beta) id=build.monoid.desktop.beta name=monoid.zone exe=monoid.zone dir=monoid-beta schemes=monoid-beta,monoid extra="$MONOID_ENV\nMBUI_BETA=1" ;;
-    *) echo "win.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $MBUI_VARIANT" >&2; return 1 ;;
-  esac
+  local v=${MBUI_VARIANT:-preview} meta kv feed
+  local MBUI_APP_ID MBUI_APP_NAME MBUI_EXECUTABLE MBUI_VERSION MBUI_BUILD MBUI_VARIANT \
+    MBUI_RUNTIME MBUI_MODULE_DIR MBUI_ENTRY MBUI_SCHEMES MBUI_UPDATE_FEED MBUI_UPDATE_CHANNEL \
+    MBUI_ENV_KV MBUI_MAC_MIN_VERSION MBUI_WIN_INSTALL_DIR MBUI_WIN_COMPANY
+  meta=$("$MBUI_DIR/scripts/mbui" meta "$A/mbui.json" --variant "$v" --format sh) || {
+    echo "win.sh: MBUI_VARIANT is preview, stable, beta, monoid or monoid-beta, not $v" >&2
+    return 1
+  }
+  meta=${meta//$'\r'/}
+  eval "$meta"
+  id=$MBUI_APP_ID
+  name=$MBUI_APP_NAME
+  exe=$MBUI_EXECUTABLE
+  [ "$v" != preview ] || exe=stillfail
+  dir=$MBUI_WIN_INSTALL_DIR
+  company=$MBUI_WIN_COMPANY
+  schemes=$MBUI_SCHEMES
+  feed=${MBUI_UPDATE_FEED/#mac/win}
+  extra="MBUI_UPDATE_FEED=$feed"
+  if [ -n "$MBUI_ENV_KV" ]; then
+    local IFS=';'
+    for kv in $MBUI_ENV_KV; do
+      case "$kv" in
+        MBUI_STATION_LABEL=*) ;;
+        *=*) extra="$extra
+$kv" ;;
+      esac
+    done
+  fi
 }
 # res: the app's resources (out/win-res/app.res), for mbui's win.sh to link into it (MBUI_WIN_RES)
 res() {
   local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)}
   local icon=$A/windows/AppIcon-$(sha256sum "$AD/mac-icon.swift" | cut -c1-12).ico
   [ -f "$icon" ] || { echo "win.sh: no $icon (scripts/mac-icon.swift changed: swift scripts/mac-icon.swift --ico $icon, on a Mac)" >&2; return 1; }
-  local id name exe dir schemes extra r=$A/out/win-res
+  local id name exe dir company schemes extra env_lines r=$A/out/win-res
   variant || return 1
-  [ -z "$schemes" ] || extra="MBUI_SCHEMES=$schemes\n$extra"
   rm -rf "$r" && mkdir -p "$r"
   cp "$icon" "$r/app.ico"
-  printf "MBUI_APP_ID=%s\nMBUI_APP_NAME=%s\n$extra\n" "$id" "$name" > "$r/app.env"
+  env_lines="MBUI_APP_ID=$id
+MBUI_APP_NAME=$name"
+  [ -z "$schemes" ] || env_lines="$env_lines
+MBUI_SCHEMES=$schemes"
+  env_lines="$env_lines
+$extra"
+  printf '%s\n' "$env_lines" > "$r/app.env"
   cat > "$r/app.rc" <<RC
 1 ICON "app.ico"
 MBUI_ENV RCDATA "app.env"
@@ -84,7 +109,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "AFK AI, Inc."
+      VALUE "CompanyName", "$company"
       VALUE "FileDescription", "$name"
       VALUE "FileVersion", "0.1.$n"
       VALUE "InternalName", "stillfail"
@@ -198,7 +223,7 @@ check_crt() {
   return "$bad"
 }
 setup() {
-  local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)} id name exe dir schemes extra
+  local n=${MBUI_BUILD:-$(git -C "$SF_SRC" rev-list --count HEAD 2>/dev/null || echo 1)} id name exe dir company schemes extra
   variant || return 1
   . "$MBUI_DIR/scripts/env.sh"
   local built=$MBUI_DIR/out/win/app/$(cd "$MBUI_DIR/out/win/app" && pkg_build $APP native ${MODE:-release}) out=${MBUI_SETUP_OUT:-$A/out/setup}
