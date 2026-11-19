@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 119.2 |
 | [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
 | [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
 | [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
 | [425fafef4](https://github.com/AFK-surf/monoid/commit/425fafef4ca7f5969466b4f497b5752cee95335e) feat(vault): keep every vault encrypted on its per | 2.63 | 3.53 | 14.42 | 36.65 | 55.54 | 32.08 | 64.88 | 97.39 | 129.66 |
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
-| [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
 | [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
 | [6cf291ea5](https://github.com/AFK-surf/monoid/commit/6cf291ea545b22f158fe80ee246f662251c72a03) fix(mbui): carry a child's edge through its holder | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [425fafef4](https://github.com/AFK-surf/monoid/commit/425fafef4ca7f5969466b4f497b5752cee95335e) feat(vault): keep every vault encrypted on its per | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
-| [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.15 |
