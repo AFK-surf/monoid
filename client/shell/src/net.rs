@@ -131,12 +131,91 @@ fn headers_of(response: &reqwest::Response) -> Value {
     Value::Array(response.headers().iter().map(|(k, v)| json!([k.as_str(), String::from_utf8_lossy(v.as_bytes())])).collect())
 }
 
+/// Backoff intervals (in ms, ~2 s total) when retrying transient Unix-socket connect failures while the socket path
+/// still exists on disk (e.g. macOS listen backlog transiently full).
+#[cfg(unix)]
+const UNIX_CONNECT_BACKOFF_MS: &[u64] = &[5, 10, 20, 40, 80, 160, 250, 250, 250, 250, 250, 250, 250];
+
+/// Listen backlog for `unix.listen` (higher than Rust std's hardcoded 128 so bursts during brief main-thread stalls do
+/// not immediately trigger ECONNREFUSED on macOS).
+#[cfg(unix)]
+const UNIX_LISTEN_BACKLOG: libc::c_int = 1024;
+
+/// Connect to a Unix domain socket at `path`, retrying transient `ConnectionRefused`/`WouldBlock`/`Interrupted` errors
+/// with bounded backoff while `path` still exists on disk. Fails immediately if `path` is missing (`NotFound`).
+#[cfg(unix)]
+pub(crate) async fn connect_unix(path: &str) -> Result<tokio::net::UnixStream, String> {
+    use std::io::ErrorKind;
+    let mut attempt = 0usize;
+    loop {
+        match tokio::net::UnixStream::connect(path).await {
+            Ok(socket) => return Ok(socket),
+            Err(e) if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                let exists = !matches!(std::fs::symlink_metadata(path), Err(meta_err) if meta_err.kind() == ErrorKind::NotFound);
+                if !exists || attempt >= UNIX_CONNECT_BACKOFF_MS.len() {
+                    return Err(err(e));
+                }
+                // timer: retry after transient Unix socket ECONNREFUSED/EAGAIN (full backlog) with bounded backoff
+                tokio::time::sleep(std::time::Duration::from_millis(UNIX_CONNECT_BACKOFF_MS[attempt])).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(err(e)),
+        }
+    }
+}
+
+/// Create, bind, and listen on a Unix domain socket at `path` with an explicit `backlog` and `FD_CLOEXEC`.
+#[cfg(unix)]
+fn listen_unix(path: &str, backlog: libc::c_int) -> Result<tokio::net::UnixListener, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
+    let path_bytes = path.as_bytes();
+    if path_bytes.contains(&0) {
+        return Err("unix socket path contains NUL".into());
+    }
+    // SAFETY: `sockaddr_un` is a plain C struct; zero-initializing leaves `sun_path` NUL-terminated.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    if path_bytes.len() >= addr.sun_path.len() {
+        return Err(format!("unix socket path too long ({} >= {})", path_bytes.len(), addr.sun_path.len()));
+    }
+    // SAFETY: `path_bytes.len() < addr.sun_path.len()` was checked above and both pointers are valid and non-overlapping.
+    unsafe {
+        std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), path_bytes.len());
+    }
+    let addr_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1) as libc::socklen_t;
+
+    // SAFETY: standard POSIX socket creation; wrapped in `OwnedFd` immediately so no error path can leak it.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+
+    // SAFETY: setting FD_CLOEXEC on our newly created descriptor.
+    if unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    let _ = std::fs::remove_file(path);
+    // SAFETY: `addr` is a properly initialized `sockaddr_un` of length `addr_len`.
+    if unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), addr_len) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
+    if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
+        return Err(err(std::io::Error::last_os_error()));
+    }
+    // SAFETY: transfers ownership of the listening AF_UNIX socket descriptor to `std::os::unix::net::UnixListener`.
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(owned.into_raw_fd()) };
+    std_listener.set_nonblocking(true).map_err(err)?;
+    tokio::net::UnixListener::from_std(std_listener).map_err(err)
+}
+
 /// A connection to the Unix socket at `path` that a stream is carried into, `head` written to it first (what tells the
 /// other side which stream it is); an error where nothing listens there or it takes nothing.
 pub(crate) async fn open_unix(path: &str, head: &[u8]) -> Result<(SocketRead, SocketWrite), String> {
     #[cfg(unix)]
     {
-        let socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        let socket = connect_unix(path).await?;
         {
             use std::os::fd::AsRawFd;
             // A stream's pieces written a megabyte ahead of the other side's reads (a Unix socket's own is 8 KiB on
@@ -162,7 +241,7 @@ pub(crate) async fn open_unix(path: &str, head: &[u8]) -> Result<(SocketRead, So
 pub(crate) async fn tell_unix(path: &str, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
-        let mut socket = tokio::net::UnixStream::connect(path).await.map_err(err)?;
+        let mut socket = connect_unix(path).await?;
         socket.write_all(bytes).await.map_err(err)?;
         shut(socket.shutdown().await)
     }
@@ -380,8 +459,7 @@ impl Inner {
                 #[cfg(unix)]
                 {
                     let path = str_of(a, "path")?;
-                    let _ = std::fs::remove_file(path);
-                    let listener = tokio::net::UnixListener::bind(path).map_err(err)?;
+                    let listener = listen_unix(path, UNIX_LISTEN_BACKLOG)?;
                     Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Unix(listener)))) })))
                 }
                 #[cfg(not(unix))]
@@ -518,5 +596,13 @@ mod tests {
         assert_eq!(tell_unix(path.to_str().unwrap(), &bytes).await, Ok(()));
         assert_eq!(reader.await.unwrap(), bytes);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listen_unix_rejects_too_long_or_nul_paths() {
+        let too_long = "a".repeat(256);
+        assert!(listen_unix(&too_long, UNIX_LISTEN_BACKLOG).is_err());
+        assert!(listen_unix("/tmp/bad\0path.sock", UNIX_LISTEN_BACKLOG).is_err());
     }
 }

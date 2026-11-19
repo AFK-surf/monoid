@@ -90,6 +90,32 @@ fn route_matches(pattern: &str, r: &str) -> bool {
     }
 }
 
+/// Skip frame header (`kind == 3`) telling `Incoming` that stream `index` on connection `on` will not arrive on `path`.
+fn skip_head(on: u64, id: u64, index: u64) -> [u8; 25] {
+    let mut skip = [0u8; 25];
+    skip[..8].copy_from_slice(&on.to_be_bytes());
+    skip[8..16].copy_from_slice(&id.to_be_bytes());
+    skip[16] = 3;
+    skip[17..25].copy_from_slice(&index.to_be_bytes());
+    skip
+}
+
+/// When an inbound QUIC stream could not be handed to `path`, keep `Incoming` from head-of-line deadlocking:
+/// - Stream 0 is the credential stream and cannot be skipped, so close the connection immediately.
+/// - For stream `index > 0`, send a `kind == 3` skip frame; if that also fails, close the connection so subsequent
+///   requests fail fast instead of hanging until their 60 s timeout.
+async fn skip_or_close(conn: &iroh::endpoint::Connection, path: &str, on: u64, id: u64, index: u64) {
+    if index == 0 {
+        conn.close(0u32.into(), b"stream not given");
+        return;
+    }
+    let skip = skip_head(on, id, index);
+    if let Err(e) = tell_unix(path, &skip).await {
+        crate::log::info(&format!("mesh: a stream's index not told: {e}"));
+        conn.close(0u32.into(), b"stream index lost");
+    }
+}
+
 impl Inner {
     fn istream_done(&self, id: u64, halves: &Halves) {
         if halves.ended.load(Ordering::Relaxed) && halves.finished.load(Ordering::Relaxed) {
@@ -569,7 +595,7 @@ impl Inner {
                     head.extend(index.to_be_bytes());
                     let start = turn;
                     turn = turn.wrapping_add(1);
-                    let (inner, path, routes, fronts) = (self.clone(), path.clone(), routes.clone(), fronts.clone());
+                    let (inner, conn, path, routes, fronts) = (self.clone(), conn.clone(), path.clone(), routes.clone(), fronts.clone());
                     tokio::spawn(async move {
                         let mut head = head;
                         if index > 0 && !fronts.is_empty() && !routes.is_empty() {
@@ -586,11 +612,12 @@ impl Inner {
                                     match open_unix(front, &head).await {
                                         Ok((read, write)) => {
                                             // Node told the index went elsewhere only once it has: else it waits for it.
-                                            let mut skip = head[..16].to_vec();
-                                            skip.push(3);
-                                            skip.extend(index.to_be_bytes());
+                                            let skip = skip_head(on, id, index);
                                             if let Err(e) = tell_unix(&path, &skip).await {
                                                 crate::log::info(&format!("mesh: a stream's index not told: {e}"));
+                                                conn.close(0u32.into(), b"stream index lost");
+                                                inner.reset_stream(id).await;
+                                                return;
                                             }
                                             inner.pipe(id, halves, read, write).await;
                                             return;
@@ -603,6 +630,7 @@ impl Inner {
                         }
                         if let Err(e) = inner.hand(id, halves, &path, &head).await {
                             crate::log::info(&format!("mesh: a stream not given: {e}"));
+                            skip_or_close(&conn, &path, on, id, index).await;
                         }
                     });
                 }
