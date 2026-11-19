@@ -750,7 +750,7 @@ export const AgentsLive = (control: Control) =>
       });
       // A runtime installed or updated from the pages: the machine's logins read again.
       updates.onRuntimeChanged((kind, installed, replaced) => {
-        void accounts.machine?.refresh();
+        void accounts.machine?.refresh().catch(() => {});
         // Installed: the sessions whose start found it missing take what waits.
         if (installed) hub.installed(kind);
         // Codex updated: its app-servers of the old version are replaced (their files are gone).

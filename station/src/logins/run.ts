@@ -160,10 +160,10 @@ export class LoginRun {
     keychainOutOfGit(env);
     const wrapped = (await platform.terminalSoon(program!, args, COLS, ROWS)) ?? [program!, args];
     if (!this.active) return;
-    const r = await platform.runnableSoon(wrapped[0], wrapped[1], env);
-    if (!this.active) return;
     let child: ChildProcess;
     try {
+      const r = await platform.runnableSoon(wrapped[0], wrapped[1], env);
+      if (!this.active) return;
       child = startCommand(r.file, r.args, { cwd: this.#o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       return this.#fail(tr(this.#o.lang, "station.machineLogin.cannotRun", { error: (e as Error).message }));

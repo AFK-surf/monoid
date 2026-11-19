@@ -2,7 +2,7 @@
 // temp homes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeCodeOf, deviceCode, LoginManager, type LoginState, stripAnsi, VERIFY_WAIT_MS } from "../src/accounts/login.ts";
 import { MachineLogins } from "../src/accounts/machine.ts";
@@ -243,4 +243,49 @@ test("a machine profile's codex home links the machine's auth.json", async () =>
   writeFileSync(join(profile, "auth.json"), "{}");
   await linkCodexAuthSoon(profile, m.env);
   assert.ok(lstatSync(join(profile, "auth.json")).isSymbolicLink());
+});
+
+test("an unexecutable claude stub does not crash MachineLogins or LoginManager", async () => {
+  const m = machine();
+  const stubText = 'echo "Error: claude native binary not installed." >&2\nexit 1\n';
+  let claudePath: string;
+  if (WINDOWS) {
+    const stubBin = join(m.bin, "node_modules", "@anthropic-ai", "claude-code", "bin");
+    mkdirSync(stubBin, { recursive: true });
+    writeFileSync(join(stubBin, "claude.exe"), stubText);
+    claudePath = join(m.bin, "claude.cmd");
+    writeFileSync(claudePath, '@ECHO off\r\n"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n');
+  } else {
+    claudePath = join(m.bin, "claude");
+    writeFileSync(claudePath, stubText);
+    chmodSync(claudePath, 0o755);
+  }
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const logins = new MachineLogins(m.env, undefined, () => "zh");
+    const done = upon((wake) => logins.changes(wake), () => {
+      const got = logins.get();
+      return got.length > 0 ? got : undefined;
+    }, "machine logins read");
+    // Triggers the background refresh from get() (where an uncaught sync execFile throw crashed Node).
+    assert.deepEqual(logins.get(), []);
+    const got = await done;
+    assert.deepEqual([got[0]!.runtime, got[0]!.installed, got[0]!.loggedIn, got[0]!.text], ["claude", true, false, "无法读取 Claude Code 的登录信息"]);
+    assert.deepEqual(unhandled, []);
+
+    const dir = temp("login-unexec");
+    const mgr = new LoginManager(dir, { claude: claudePath, codex: "x" });
+    try {
+      const failed = await mgr.start({ id: "sub", runtime: "claude", home: join(dir, "homes", "sub") }, "zh");
+      assert.equal(failed.state, "failed");
+      assert.ok(failed.error!.startsWith("无法运行登录命令"), failed.error!);
+      assert.equal(mgr.get("sub")?.state, "failed");
+    } finally {
+      await mgr.close();
+    }
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });

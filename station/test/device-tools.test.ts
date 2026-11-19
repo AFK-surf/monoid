@@ -139,6 +139,27 @@ test("runtime.probe: the runtimes on PATH, their versions, whether this machine 
     { kind: "claude", path: join(bin, claude), version: "2.1.284", signed_in: false },
     { kind: "codex", path: join(bin, codex), version: "0.46.0", signed_in: true },
   ]);
+
+  // An unexecutable stub (e.g. missing native binary) reports version null rather than crashing probe.
+  const badHome = mkdtempSync(join(tmpdir(), "probe-bad-"));
+  const badBin = join(badHome, "bin");
+  mkdirSync(badBin);
+  const badStub = 'echo "Error: claude native binary not installed." >&2\nexit 1\n';
+  let badClaude: string;
+  if (WINDOWS) {
+    const stubDir = join(badBin, "node_modules", "@anthropic-ai", "claude-code", "bin");
+    mkdirSync(stubDir, { recursive: true });
+    writeFileSync(join(stubDir, "claude.exe"), badStub);
+    badClaude = join(badBin, "claude.cmd");
+    writeFileSync(badClaude, '@ECHO off\r\n"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n');
+  } else {
+    badClaude = join(badBin, "claude");
+    writeFileSync(badClaude, badStub);
+    chmodSync(badClaude, 0o755);
+  }
+  const badProbe = await run(new DeviceTools({ home: badHome, env: { PATH: badBin, HOME: badHome } }), "runtime.probe", {}, "read");
+  assert.ok(badProbe.ok);
+  assert.deepEqual(badProbe.result.runtimes, [{ kind: "claude", path: badClaude, version: null, signed_in: false }]);
 });
 
 test("sessions: started and said to as the requester under full access, asked about under read", async () => {
