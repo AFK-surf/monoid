@@ -293,11 +293,12 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
   // (each way the same)
   assert_eq(out[1], out[0])
   assert_eq(out[2], out[0])
+  // (360 wide, its farthest edge kept within @sf's pop_max_shift, 8, as it shrinks: View::scale's max_shift)
   debug_inspect(out[0], content=(
     #|[
     #|  "alphas {255: 45} ground [255] button [] fading None..None",
-    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((615.953, 320.956))..Some((747.562, 374.796))",
-    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((615.844, 320.854))..Some((746.558, 374.328))",
+    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((615.957, 320.96))..Some((747.605, 374.816))",
+    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((615.86, 320.868))..Some((746.701, 374.394))",
     #|  "alphas {255: 24} ground [189] button [] fading None..None",
     #|  "alphas {255: 24} ground [] button [] fading None..None",
     #|]

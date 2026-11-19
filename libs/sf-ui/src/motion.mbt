@@ -62,7 +62,8 @@ pub let dur_ms : Double = 140.0
 /// what is offered) stands off where it is laid out at its farthest edge, in points (View::scale's max_shift). A tall
 /// one (600 to 750 high) gone above its anchor grows from its foot, so at 0.97 its top row would come 18 to 22.5 below
 /// where it lands on its first frame, over half a 36-high row; kept within 8, its whole way in and out narrowed alike.
-/// A short one (266 or less across) stays within it at 0.97, drawn as big as pop_in says.
+/// One whose farthest edge from where it grows (its width or its height, whichever is more) is 266 or less stays
+/// within it at 0.97, drawn as big as pop_in says; a wider one (a panel 360 wide) is kept within it as a tall one is.
 let pop_max_shift : Double = 8.0
 
 ///|
