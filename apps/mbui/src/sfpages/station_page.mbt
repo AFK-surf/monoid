@@ -243,10 +243,17 @@ fn station_kind_node(
   // (its accounts it lists that the station has, in its order, those the search's words are in)
   let found = fn() {
     let words = if searched() { query.text().trim().to_owned().to_lower() } else { "" }
-    let profiles = items(field(now(), "overview"), "profiles")
+    // (its accounts by id once, the first of an id as the station lists them, not looked for again for each)
+    let profiles : Map[String, Json] = Map([])
+    for p in items(field(now(), "overview"), "profiles") {
+      let id = text(Some(p), "id")
+      if !profiles.contains(id) {
+        profiles[id] = p
+      }
+    }
     let out : Array[String] = []
     for id in ids() {
-      match profiles.iter().find_first(fn(p) { text(Some(p), "id") == id }) {
+      match profiles.get(id) {
         Some(p) => {
           let hay = (text(Some(p), "name") + "\n" + text(Some(p), "email")).to_lower()
           if words == "" || hay.contains(words) {
@@ -258,10 +265,19 @@ fn station_kind_node(
     }
     out
   }
-  let profile = fn(id : String) {
-    items(field(now(), "overview"), "profiles").iter().find_first(fn(p) { text(Some(p), "id") == id })
-  }
-  let state = fn(id : String) { field(field(now(), "profileStates"), id) }
+  // (each account and how its check stands kept by its id once, so a row is told only as its own changes: View::keyed_by)
+  let profiles_by = v.keyed_by(fn() { items(field(now(), "overview"), "profiles") }, fn(p) { text(Some(p), "id") })
+  let states_by = v.keyed_by(
+    fn() {
+      match field(now(), "profileStates") {
+        Some(Object(m)) => m.to_array()
+        _ => []
+      }
+    },
+    fn(e) { e.0 },
+  )
+  let profile = fn(id : String) { profiles_by.get(id) }
+  let state = fn(id : String) { states_by.get(id).map(fn(e) { e.1 }) }
   let row = fn(b : @view.View, id : String) {
     station_profile_row_node(b, core, address, id, fn() { profile(id) }, fn() { state(id) }, close)
   }

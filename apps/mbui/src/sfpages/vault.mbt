@@ -41,6 +41,10 @@ pub fn vault_node(
       None => vault_library_keys(shown.get())
     }
   })
+  // (its vaults kept by id once, as the library shows them and as the core says them: a block reads its own vault
+  // by its key, told only as that one changes: View::keyed_by)
+  let vaults_by = v.keyed_by(fn() { items(shown.get(), "vaults") }, vault_id)
+  let named_by = v.keyed_by(fn() { items(view().value, "vaults") }, vault_id)
   @sf.page_node(
     v,
     fn() { @sf.t("web-pages.vault.title") },
@@ -52,14 +56,15 @@ pub fn vault_node(
     lead=fn() { @sf.t("web-pages.vault.lead") },
     fn() { keys.get() },
     fn(b, key) {
-      if vault_first_node(b, core, here, view, key, fn(s, quiet, sample) {
+      if vault_first_node(b, core, here, view, named_by, key, fn(s, quiet, sample) {
+          let sample_by = s.keyed_by(fn() { items(sample, "vaults") }, vault_id)
           s.each(fn() { vault_library_keys(sample) }, fn(k) { k }, fn(sb, k) {
-            vault_library_block(sb, quiet, ws, fn() { sample }, k.untracked())
+            vault_library_block(sb, quiet, ws, fn() { sample }, sample_by, k.untracked())
           })
         }) {
         return
       }
-      vault_library_block(b, core, ws, fn() { shown.get() }, key)
+      vault_library_block(b, core, ws, fn() { shown.get() }, vaults_by, key)
     },
   )
 }
@@ -138,8 +143,15 @@ fn vault_library_keys(v : Json?) -> Array[String] {
 
 ///|
 /// The library's block `key` (vault_library_keys') in `b`, as `v` (the core's `vaults`) says it now.
-fn vault_library_block(b : @view.View, core : Core, ws : () -> String, v : () -> Json?, key : String) -> Unit {
-  let vault_of = fn(id : String) { fn() { items(v(), "vaults").iter().find_first(fn(r) { text(Some(r), "id") == id }) } }
+fn vault_library_block(
+  b : @view.View,
+  core : Core,
+  ws : () -> String,
+  v : () -> Json?,
+  vaults : @signals.KeyedList[String, Json],
+  key : String,
+) -> Unit {
+  let vault_of = fn(id : String) { fn() { vaults.get(id) } }
   match key {
     "requests" => {
       let requests = fn() { items(v(), "requests") }
@@ -609,6 +621,8 @@ pub fn vault_items_node(
   // (what comes before the library, worked out once for each change of the vaults and told on only as it changes: a
   // vault's own row changed (an item more in it) runs none of what reads it)
   let first = @signals.computed(fn(_) { vault_first_keys(ws(), view().value) })
+  // (its vaults kept by id once, for the names a web page shows: each its own vault, View::keyed_by)
+  let named_by = v.keyed_by(fn() { items(view().value, "vaults") }, vault_id)
   let usable = fn() { first.get() is None }
   let all = vault_all_of(core, ws, fn() { view().value })
   // (its blocks worked out once for each change of what they are of, told on only as one comes, goes or moves: a
@@ -648,7 +662,7 @@ pub fn vault_items_node(
     },
     fn() { blocks.get() },
     fn(b, key) {
-      if vault_first_node(b, core, here, view, key, fn(s, quiet, sample) {
+      if vault_first_node(b, core, here, view, named_by, key, fn(s, quiet, sample) {
           vault_all_node(s, quiet, ws, fn() { sample }, tips)
         }) {
         return
@@ -691,6 +705,7 @@ fn vault_first_node(
   core : Core,
   here : () -> Here,
   view : () -> @settings.Read,
+  named : @signals.KeyedList[String, Json],
   key : String,
   shown : (@view.View, Core, Json?) -> Unit,
 ) -> Bool {
@@ -714,7 +729,7 @@ fn vault_first_node(
     "off" => vault_off_node(b, core, ws)
     k if k.has_prefix("named/") => {
       let id = k.exact_view(start=6).to_owned()
-      vault_named_node(b, core, ws, fn() { items(view().value, "vaults").iter().find_first(fn(r) { text(Some(r), "id") == id }) })
+      vault_named_node(b, core, ws, fn() { named.get(id) })
     }
     _ => return false
   }
@@ -1337,4 +1352,10 @@ fn vt_group_mark_node(parent : @view.View, group : String) -> Unit {
     "" => @sf.provider_logo_node(parent, "claude", "subscription", vt_glyph, "") |> ignore
     g => @sf.provider_logo_node(parent, g, "subscription", vt_glyph, "") |> ignore
   }
+}
+
+///|
+/// A vault's key in the core's `vaults` (what its library and its names are kept by).
+fn vault_id(r : Json) -> String {
+  text(Some(r), "id")
 }
