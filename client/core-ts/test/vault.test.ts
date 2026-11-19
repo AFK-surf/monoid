@@ -2228,6 +2228,30 @@ test("a web page keeps no keys: the vault is refused there", async () => {
   r.core.close();
 });
 
+test("a web page asked to keep an SSH key the person types in, no safe mode: its card is answered elsewhere, and turning it down here says the web app keeps no keys", async () => {
+  // (2026-11-19, a web page drew 存入 / 不存 on such a card and 不存 failed with words naming only two apps)
+  const save = { kind: "ssh_key", name: "deploy key", modes: ["file"], hosts: [], typed: true };
+  const card = { type: "options", options: [], vault: { request: "r_k", name: "deploy key", mode: "file", reason: "部署", hosts: [], save } };
+  const r = await rig(true, false, { "GET /threads/7/entries?limit=50": { last: 2, entries: [entry(1, "存一个 SSH 私钥"), { ...entry(2, "存一个 SSH 私钥"), authorKind: "agent", author: "k1", card }] } });
+  // No safe mode: no workspace lock here, the station's plain library open.
+  r.st.plainLock.on = false;
+  const request = { id: "r_k", ws: "ws", vault: "", item: "i_k", session: "k1", chat: "7", mode: "file", reason: "部署", box: "", at: 1, status: "pending", owner: "me@example.com", save } as unknown as Request;
+  r.st.requests.push(request);
+  r.push("vault-request", request);
+  const chat = await r.watch(1, { topic: "chat", station: "ws/st", thread: 7 });
+  const vaults = await r.watch(2, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500);
+  r.take();
+  assert.deepEqual(chat().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => [m.card.vault, m.card.vaultAsk.answer]), [["r_k", "elsewhere"]]);
+  assert.equal(vaults().available, false);
+  // (what to do next said: the app, which keeps keys)
+  await assert.rejects(r.ask("vault.deny", { request: "r_k" }), (e: Error & { code?: string }) => {
+    assert.deepEqual([e.code, e.message], ["vault_unavailable", "网页版不保管密钥，请在 still.fail 客户端中处理"]);
+    return true;
+  });
+  r.core.close();
+});
+
 test("a station without the lock pinned holds no vault, and says so", async () => {
   const r = await rig();
   r.putLock();

@@ -312,7 +312,7 @@
   "core-misc.screen.notPng": "Only PNG images can be pasted",
   "core-misc.screen.notDriving": "Paste into this screen while controlling it",
   "core-misc.screen.noClipboard": "This screen doesn't take this kind of clipboard",
-  "core-misc.vault.unavailable": "The vault is in the desktop and Android apps: a web page keeps no keys",
+  "core-misc.vault.unavailable": "The web app keeps no keys. Use the still.fail app for this",
   "core-misc.vault.needsLock": "The vault needs the workspace's security mode on",
   "core-misc.vault.notSigner": "This device is not confirmed in the workspace's security mode yet",
   "core-misc.vault.notTrusted": "This device is not one of your trusted devices yet: approve it on one of your trusted devices to use the vault here",
