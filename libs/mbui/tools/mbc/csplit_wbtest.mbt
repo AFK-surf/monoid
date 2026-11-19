@@ -268,6 +268,132 @@ test "units MBC_LIGHT_KEEP names stay at the program's level in a light program"
 }
 
 ///|
+/// A package's own function, its whitebox test's and its blackbox test's, by their #line's files
+let tests_src : String =
+  #|struct _M0TP1a1T;
+  #|
+  #|struct _M0TP1a1T {
+  #|  int32_t x;
+  #|};
+  #|
+  #|int32_t _M0FP1a3one(int32_t x) {
+  #|  #line 1 "/w/src/a/foo.mbt"
+  #|  return x + 1;
+  #|}
+  #|
+  #|int32_t _M0FP1a3two(int32_t x) {
+  #|  #line 1 "/w/src/a/foo_wbtest.mbt"
+  #|  return _M0FP1a3one(x) * 2;
+  #|}
+  #|
+  #|int32_t _M0FP1a5three(int32_t x) {
+  #|  #line 1 "/w/src/a/bar_test.mbt"
+  #|  return _M0FP1a3two(x) - 3;
+  #|}
+  #|
+  #|void moonbit_init() {
+  #|}
+  #|
+  #|int main(int argc, char** argv) {
+  #|  moonbit_init();
+  #|  return _M0FP1a5three(1);
+  #|}
+  #|
+
+///|
+test "a test's functions in a unit of their own, test.<unit>, compiled at MBC_TEST_OPT" {
+  let c = prelude_src + "\n" + tests_src
+  let (files, _) = sp(c)
+  let units = fn_units(files)
+  let own = units.filter(fn(n) { has(files[n], "foo.mbt") })
+  let tests = units.filter(fn(n) {
+    has(files[n], "foo_wbtest.mbt") || has(files[n], "bar_test.mbt")
+  })
+  assert_eq(own.length(), 1)
+  assert_eq(tests.length(), 1)
+  // (both tests' in it, none of the package's own; in the unit the package's own is in, named test.<that>)
+  assert_true(has(files[tests[0]], "foo_wbtest.mbt") && has(files[tests[0]], "bar_test.mbt"))
+  assert_false(has(files[tests[0]], "foo.mbt\""))
+  assert_false(has(files[own[0]], "_test.mbt"))
+  assert_eq(tests[0], "test." + own[0])
+  assert_true(is_test_unit(utf8(tests[0])))
+  assert_false(is_test_unit(utf8(own[0])))
+  assert_eq(with_level([b"-O2", b"-Wall", b"-Os"], [b"-O1"]), [b"-O1", b"-Wall"])
+  assert_eq(with_level([b"-Wall"], [b"-O1"]), [b"-Wall", b"-O1"])
+
+  let env_name = b"MBC_TEST_OPT"
+  let previous = getenv("MBC_TEST_OPT")
+  defer ignore(c_setenv(env_name, previous.unwrap_or(b"")))
+  let dir = tmp_path("test units")
+  makedirs(dir)
+  defer rmtree(dir)
+  let src = path_join(dir, b"sample.c")
+  let objs = path_join(dir, b"objects")
+  assert_true(write_file(src, utf8(c)))
+  makedirs(objs)
+  let cc = [b"clang"]
+  let flags = [b"-O2", b"-Wall"]
+  let test_flags = [b"-O1", b"-Wall"]
+  let light = [b"-Wall", b"-O0"]
+  let own_c = utf8(own[0])
+  let test_c = utf8(tests[0])
+  let job_of = fn(jobs : Array[Job], name : Bytes) -> Job {
+    jobs.search_by(fn(j) { basename(j.src) == name }).map(fn(i) { jobs[i] }).unwrap()
+  }
+  // (unset, and only blanks: every unit at the program's level)
+  for v in [b"", b" \t "] {
+    assert_eq(c_setenv(env_name, v), 1)
+    let (jobs, _) = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, false)
+    for name in [own_c, test_c] {
+      let j = job_of(jobs, name)
+      assert_eq(j.argv, compile_args(cc, flags, j.src, j.obj, false).0)
+      assert_eq(j.alt_argv, None)
+    }
+  }
+  assert_eq(c_setenv(env_name, b" -O1 "), 1)
+  let (jobs, _) = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, false)
+  let o = job_of(jobs, own_c)
+  assert_eq(o.argv, compile_args(cc, flags, o.src, o.obj, false).0)
+  assert_eq(o.alt_argv, None)
+  let t = job_of(jobs, test_c)
+  assert_eq(t.argv, compile_args(cc, test_flags, t.src, t.obj, false).0)
+  assert_eq(t.alt_argv, Some(compile_args(cc, flags, t.src, t.obj, false).0))
+  for j in jobs {
+    let name = basename(j.src)
+    if is_data(name) || is_init(name) {
+      assert_false(j.argv.contains(b"-O1"))
+    }
+  }
+  // (said the program's own level, nothing to fall back on)
+  assert_eq(c_setenv(env_name, b"-O2"), 1)
+  let (same, _) = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, false)
+  assert_eq(job_of(same, test_c).argv, compile_args(cc, flags, t.src, t.obj, false).0)
+  assert_eq(job_of(same, test_c).alt_argv, None)
+  // (a program of MBC_LIGHT_TESTS keeps its lighter level; LTO and MSVC are left as they are)
+  assert_eq(c_setenv(env_name, b"-O1"), 1)
+  let (lj, _) = split_jobs(
+    src, objs, cc, light, [], [b"-O0"], false, false, alt_flags=Some(flags),
+  )
+  let l = job_of(lj, test_c)
+  assert_eq(l.argv, compile_args(cc, light, l.src, l.obj, false).0)
+  assert_eq(l.alt_argv, Some(compile_args(cc, flags, l.src, l.obj, false).0))
+  let (tj, _) = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, true)
+  assert_false(job_of(tj, test_c).argv.contains(b"-O1"))
+  // a test unit's object stays as the units are split again; one of a unit gone goes
+  let kept = path_join(objs, cat([b"u_", sub(test_c, 0, test_c.length() - 2), b".o"]))
+  let gone = path_join(objs, b"u_test.gone.o")
+  for f in [kept, cat([kept, b".d"]), cat([kept, b".mbc"]), gone, cat([gone, b".mbc"])] {
+    assert_true(write_file(f, b"x"))
+  }
+  let _ = split_jobs(src, objs, cc, flags, [], [b"-O0"], false, false)
+  assert_true(is_file(kept))
+  assert_true(is_file(cat([kept, b".d"])))
+  assert_true(is_file(cat([kept, b".mbc"])))
+  assert_false(is_file(gone))
+  assert_false(is_file(cat([gone, b".mbc"])))
+}
+
+///|
 test "the store prefers an optimized object and falls back to the light object" {
   let dir = tmp_path("store optimization levels")
   makedirs(dir)

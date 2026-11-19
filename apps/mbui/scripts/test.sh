@@ -109,34 +109,21 @@ for t in $targets; do
   light=""
   for p in $pkgs; do
     case $p in
-      -p | stillfail/core) continue ;;
-      # (the flows' program on a branch's check-mbui replay-build, as sfapp's: its 1075 units at -O2 again for a change of
-      # sfbase or of mbui ran past that job's budget, 44284668314; main, workflow_run and schedule build it whole)
-      stillfail/sfreplay/flows)
-        if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${GITHUB_REF:-}" != refs/heads/main ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ] && [ "${GITHUB_EVENT_NAME:-}" != schedule ]; then
-          light="$light sfreplay/flows/flows.blackbox_test"
-        fi
-        continue ;;
-      stillfail/sfreplay/*) continue ;;
-      stillfail/sfapp)
-        if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${GITHUB_REF:-}" != refs/heads/main ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ] && [ "${GITHUB_EVENT_NAME:-}" != schedule ]; then
-          light="$light sfapp/sfapp.whitebox_test"
-        fi
-        continue ;;
+      # (sfapp's program and the flows' at their own level, a branch's as main's: a branch's built at -O0, its 409 units
+      # of sfpages, sfdesk, sfbase and sfapp were none of them main's once merged, which compiled them again at -O2
+      # past its app build's budget, 44452414116, 2026-11-19. Their tests' units are test.<unit>, at MBC_TEST_OPT below)
+      -p | stillfail/core | stillfail/sfreplay/* | stillfail/sfapp) continue ;;
     esac
     n=$(basename "$p")
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
-  # sfapp's program built alone (APP_GROUP=build) and light keeps mbui's and the library's units at its own level
-  # (mbc's MBC_LIGHT_KEEP): they run in every frame of its 491 tests, at -O0 2.5 times as long, and a branch that changed
-  # them, taking them from no store, ran the app's shards past five minutes (44243493008, 2026-11-18). So does the
-  # flows' program built alone (REPLAY_BUILD_OUT). Not with the small packages' programs (APP_GROUP=pkgs), which would
-  # each compile them again (40127533069).
-  case " $light " in
-    *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
-    *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
-  esac
+  # A test's functions (its *_test.mbt's, *_wbtest.mbt's) in units of their own (mbc's test.<unit>), compiled at -O1 in
+  # every program at its own level (mbc's MBC_TEST_OPT), a branch's as main's, so what a branch compiled is what main
+  # takes from the store once merged: sfapp's 526 test files are 92% of its source, beside its 43, and at -O2 a change
+  # of mbui's took main's app build past five minutes compiling them (44452414116), at -O0 its tests ran 2.5 times as
+  # long (44243493008). The program's own code at its own level, the tests running through it at full speed
+  export MBC_TEST_OPT=${MBC_TEST_OPT:--O1}
   out=$(mktemp)
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)
