@@ -15,6 +15,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
@@ -214,7 +215,15 @@ function byKind(told: Told[]): Record<string, Told[]> {
 
 function sameTold(label: string, a: Side, b: Side) {
   if (process.env.REPLICA_COORD_DUMP) writeFileSync(join(process.env.REPLICA_COORD_DUMP, `${label}.json`), JSON.stringify({ ts: a.told, mb: b.told }, null, 1));
-  assert.deepStrictEqual(byKind(b.told), byKind(a.told), `${label}: what was asked differs`);
+  // (kind by kind, each one's both sides said whole as JSON where they differ: a failure in CI shows what differs, not
+  // util.inspect's `[Array]` past its depth)
+  const mb = byKind(b.told), ts = byKind(a.told);
+  const json = (v: unknown) => { const j = JSON.stringify(v); return j.length > 6000 ? `${j.slice(0, 6000)}… (${j.length} chars)` : j; };
+  assert.deepStrictEqual(Object.keys(mb).sort(), Object.keys(ts).sort(), `${label}: the kinds asked differ`);
+  for (const k of Object.keys(ts)) {
+    if (isDeepStrictEqual(mb[k], ts[k])) continue;
+    assert.fail(`${label}[${k}] differs (mb ${mb[k]!.length}, ts ${ts[k]!.length})\n  mb: ${json(mb[k])}\n  ts: ${json(ts[k])}`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
