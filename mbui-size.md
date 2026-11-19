@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 2.61 | 3.51 | 14.35 | 36.44 | 55.29 | 31.92 | 64.53 | 97.14 | 121.21 |
 | [65266f033](https://github.com/AFK-surf/monoid/commit/65266f0330d44f08f1215ae08cbb3f6893bb1853) refactor(core-ts): retire pre-7143 sidebar compat  | 2.61 | 3.51 | 14.35 | 36.43 | 55.28 | 31.92 | 64.52 | 97.19 | 115.88 |
 | [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.13 | 125.05 |
 | [d5a741a43](https://github.com/AFK-surf/monoid/commit/d5a741a43c3a72c890a8ddcaf70dde766e11bc0b) perf(mbui): snap View::shift to whole pixels, drop | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
 | [0cf6f1b56](https://github.com/AFK-surf/monoid/commit/0cf6f1b56da535338e0ab67560de10e74bd04f2e) fix(mbui): make what a hidden page changes at rest | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
-| [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [65266f033](https://github.com/AFK-surf/monoid/commit/65266f0330d44f08f1215ae08cbb3f6893bb1853) refactor(core-ts): retire pre-7143 sidebar compat  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [d5a741a43](https://github.com/AFK-surf/monoid/commit/d5a741a43c3a72c890a8ddcaf70dde766e11bc0b) perf(mbui): snap View::shift to whole pixels, drop | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [0cf6f1b56](https://github.com/AFK-surf/monoid/commit/0cf6f1b56da535338e0ab67560de10e74bd04f2e) fix(mbui): make what a hidden page changes at rest | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.99 |
-| [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.04 |
