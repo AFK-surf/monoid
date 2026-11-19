@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [30c4f02b3](https://github.com/AFK-surf/monoid/commit/30c4f02b3bf37ec29a04868738609c735b6baff3) perf(station, core-ts): start screen views at the  | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 122.25 |
 | [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 | [01ea77285](https://github.com/AFK-surf/monoid/commit/01ea77285e1d9e05a83e8acee89ff61d921ed36e) feat: prompt to upgrade builds older than 7 days ( | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1a1756ff4](https://github.com/AFK-surf/monoid/commit/1a1756ff40a6a5bdbb7ee839e798bce606fb8251) perf(core): make a streaming chat again without re | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.74 | 63.89 | 97.11 | 129.14 |
 | [7006c0215](https://github.com/AFK-surf/monoid/commit/7006c0215bb79c59d7b4db560b82d9e71be95554) fix(mbui): keep the new chat page's place in long  | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.71 | 63.82 | 97.14 | 129.14 |
 | [981a5d730](https://github.com/AFK-surf/monoid/commit/981a5d7307c20cb4d87df705264d1648563b2d4c) fix(station, mbui): keep media facts and pictures  | 2.58 | 3.46 | 14.14 | 36.19 | 54.43 | 31.71 | 63.82 | 97.14 | 129.14 |
-| [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [30c4f02b3](https://github.com/AFK-surf/monoid/commit/30c4f02b3bf37ec29a04868738609c735b6baff3) perf(station, core-ts): start screen views at the  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
 | [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
 | [01ea77285](https://github.com/AFK-surf/monoid/commit/01ea77285e1d9e05a83e8acee89ff61d921ed36e) feat: prompt to upgrade builds older than 7 days ( | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.22 |
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1a1756ff4](https://github.com/AFK-surf/monoid/commit/1a1756ff40a6a5bdbb7ee839e798bce606fb8251) perf(core): make a streaming chat again without re | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [7006c0215](https://github.com/AFK-surf/monoid/commit/7006c0215bb79c59d7b4db560b82d9e71be95554) fix(mbui): keep the new chat page's place in long  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [981a5d730](https://github.com/AFK-surf/monoid/commit/981a5d7307c20cb4d87df705264d1648563b2d4c) fix(station, mbui): keep media facts and pictures  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.12 |
-| [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.12 |
