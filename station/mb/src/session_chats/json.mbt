@@ -111,10 +111,7 @@ pub fn bool_of(v : J?) -> Bool? {
 
 ///|
 pub fn arr_of(v : J?) -> Array[J]? {
-  match v {
-    Some(Arr(xs)) => Some(xs)
-    _ => None
-  }
+  @jsjson.jval_arr_of(v)
 }
 
 ///|
@@ -188,35 +185,18 @@ pub fn parse_js(text : String) -> J raise Thrown {
 ///|
 /// A string's code points (`Array.from(s)`).
 pub fn chars(s : String) -> Array[String] {
-  let out = []
-  for c in s {
-    out.push(c.to_string())
-  }
-  out
+  @jsjson.points(s)
 }
 
 ///|
 pub fn char_count(s : String) -> Int {
-  let mut n = 0
-  for _ in s {
-    n += 1
-  }
-  n
+  @jsjson.code_points(s)
 }
 
 ///|
 /// `Array.from(s).slice(0, n).join("")`.
 pub fn first_chars(s : String, n : Int) -> String {
-  let out = StringBuilder::new()
-  let mut i = 0
-  for c in s {
-    if i >= n {
-      break
-    }
-    out.write_char(c)
-    i += 1
-  }
-  out.to_string()
+  @jsjson.chars(s, n)
 }
 
 ///|
@@ -249,9 +229,7 @@ pub fn jincludes(xs : Array[J], v : J) -> Bool {
 ///|
 /// The value parsed, None where it does not parse.
 pub fn parse_opt(text : String) -> J? {
-  try Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
+  @jsjson.jval_try_parse(text)
 }
 
 ///|

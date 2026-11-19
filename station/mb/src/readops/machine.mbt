@@ -287,7 +287,7 @@ fn iso_num(b : Array[Int], from : Int, len : Int) -> Int64? {
 
 ///|
 /// transcript.ts `parseIso`: milliseconds of an ISO time (YYYY-MM-DDTHH:MM:SS[.fff]), read by position.
-fn parse_iso(at : String) -> Double? {
+pub fn parse_iso(at : String) -> Double? {
   let b = utf8_of(at)
   guard iso_num(b, 0, 4) is Some(y) &&
     iso_num(b, 5, 2) is Some(mo) &&

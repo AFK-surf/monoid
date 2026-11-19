@@ -1434,45 +1434,7 @@ fn search_param(u : @cloud_net.Url, name : String) -> String? {
 ///|
 /// What application/x-www-form-urlencoded says: + a space, %XX its byte, the bytes UTF-8.
 fn form_decode(s : String) -> String {
-  let bytes = @buffer.new()
-  let n = s.length()
-  let hexv = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    Some(c - '0'.to_int())
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    Some(c - 'a'.to_int() + 10)
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    Some(c - 'A'.to_int() + 10)
-  } else {
-    None
-  }
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c == '+'.to_int() {
-      bytes.write_byte(b' ')
-      i += 1
-      continue
-    }
-    if c == '%'.to_int() && i + 2 < n + 0 && i + 2 <= n - 1 {
-      match (hexv(s.unsafe_charcode_at(i + 1)), hexv(s.unsafe_charcode_at(i + 2))) {
-        (Some(a), Some(b)) => {
-          bytes.write_byte((a * 16 + b).to_byte())
-          i += 3
-          continue
-        }
-        _ => ()
-      }
-    }
-    // (one code point as UTF-8)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      bytes.write_bytes(@utf8.encode(s.unsafe_substring(start=i, end=i + 2)))
-      i += 2
-    } else {
-      bytes.write_bytes(@utf8.encode(s.unsafe_substring(start=i, end=i + 1)))
-      i += 1
-    }
-  }
-  @utf8.decode_lossy(bytes.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

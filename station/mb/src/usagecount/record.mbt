@@ -136,32 +136,8 @@ fn jkey(k : String) -> Array[Int] {
 }
 
 ///|
-fn same_units(a : Array[Int], b : Array[Int]) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    if a[i] != b[i] {
-      return false
-    }
-  }
-  true
-}
-
-///|
 fn jget(v : @jsjson.JValue?, k : String) -> @jsjson.JValue? {
-  match v {
-    Some(Obj(entries)) => {
-      let key = jkey(k)
-      for e in entries {
-        if same_units(e.0, key) {
-          return Some(e.1)
-        }
-      }
-      None
-    }
-    _ => None
-  }
+  @jsjson.jval_at(v, k)
 }
 
 ///|
@@ -170,7 +146,7 @@ fn jset(obj : @jsjson.JValue, k : String, v : @jsjson.JValue) -> Unit {
   guard obj is Obj(entries) else { return }
   let key = jkey(k)
   for i in 0..<entries.length() {
-    if same_units(entries[i].0, key) {
+    if entries[i].0 == key {
       entries[i] = (entries[i].0, v)
       return
     }
@@ -184,7 +160,7 @@ fn jdel(obj : @jsjson.JValue, k : String) -> Unit {
   guard obj is Obj(entries) else { return }
   let key = jkey(k)
   for i in 0..<entries.length() {
-    if same_units(entries[i].0, key) {
+    if entries[i].0 == key {
       ignore(entries.remove(i))
       return
     }
@@ -193,15 +169,12 @@ fn jdel(obj : @jsjson.JValue, k : String) -> Unit {
 
 ///|
 fn jstr(s : String) -> @jsjson.JValue {
-  Str(jkey(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 fn jopt_str(s : String?) -> @jsjson.JValue {
-  match s {
-    Some(v) => jstr(v)
-    None => Null
-  }
+  @jsjson.JValue::of_opt_string(s)
 }
 
 ///|
@@ -215,10 +188,7 @@ fn jopt_num(d : Double?) -> @jsjson.JValue {
 ///|
 /// A JSON value's number, as JavaScript compares one (none: not a number).
 fn jnum(v : @jsjson.JValue?) -> Double? {
-  match v {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
@@ -226,7 +196,7 @@ fn jnum(v : @jsjson.JValue?) -> Double? {
 fn jis(v : @jsjson.JValue?, s : String?) -> Bool {
   match (v, s) {
     (Some(Null), None) => true
-    (Some(Str(u)), Some(t)) => same_units(u, jkey(t))
+    (Some(Str(u)), Some(t)) => u == jkey(t)
     _ => false
   }
 }
@@ -245,10 +215,7 @@ fn units_less(a : Array[Int], b : Array[Int]) -> Bool {
 
 ///|
 fn jarray(v : @jsjson.JValue?) -> Array[@jsjson.JValue] {
-  match v {
-    Some(Arr(items)) => items
-    _ => []
-  }
+  @jsjson.jval_arr(v)
 }
 
 // ── a session's recent contexts ──

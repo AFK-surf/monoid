@@ -97,11 +97,7 @@ fn with_prop(v : J, name : String, value : J) -> J {
 ///|
 /// `{ ...v }` without `name` (`delete copy[name]`).
 fn without(v : J, name : String) -> J {
-  let key = @jsjson.units(name)
-  match v {
-    Obj(entries) => Obj(entries.filter(e => e.0 != key))
-    other => other
-  }
+  @jsjson.jval_del(v, name)
 }
 
 ///|
@@ -112,9 +108,7 @@ fn stringify(v : J) -> String {
 ///|
 /// JSON.parse; none for what is not JSON.
 fn parse(text : String) -> J? {
-  Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
+  @jsjson.jval_try_parse(text)
 }
 
 ///|
@@ -135,10 +129,7 @@ fn num_text(d : Double) -> String {
 ///|
 /// `v[i]`: none where `v` is no array or too short.
 fn at(v : J, i : Int32) -> J? {
-  match v {
-    Arr(items) if i >= 0 && i < items.length() => Some(items[i])
-    _ => None
-  }
+  @jsjson.jval_at_i(Some(v), i)
 }
 
 ///|
@@ -157,15 +148,7 @@ fn spread(v : J) -> J {
 ///|
 /// `a < b` of two strings, as JavaScript compares them: by their UTF-16 code units.
 fn js_compare(a : String, b : String) -> Int32 {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return if x < y { -1 } else { 1 }
-    }
-  }
-  a.length().compare(b.length())
+  @jsjson.js_compare(a, b)
 }
 
 ///|

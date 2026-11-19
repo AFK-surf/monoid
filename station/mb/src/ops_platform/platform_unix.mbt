@@ -326,25 +326,6 @@ pub fn descendants_of(text : String, pid : Double) -> Array[Double] {
 }
 
 ///|
-fn hex_val(s : String) -> Int {
-  let mut v = 0
-  for i in 0..<s.length() {
-    let c = cu(s, i)
-    let d = if is_digit(c) {
-      c - 48
-    } else if c >= 97 && c <= 102 {
-      c - 87
-    } else if c >= 65 && c <= 70 {
-      c - 55
-    } else {
-      return -1
-    }
-    v = v * 16 + d
-  }
-  v
-}
-
-///|
 /// `parseInt(s, 16)`: the hex digits it starts with; NaN where none.
 fn parse_hex(s : String) -> Double {
   let t = js_trim(s)

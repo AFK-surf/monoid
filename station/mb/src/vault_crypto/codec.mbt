@@ -50,19 +50,7 @@ pub fn b64(b : BytesView) -> String {
 /// `Buffer.from(s, "base64")` or `"base64url"` (Node reads both alphabets either way): what is of neither skipped, the
 /// first `=` ending it, a last character alone giving nothing.
 pub fn unb64(s : String) -> Bytes {
-  let kept = StringBuilder()
-  for c in s {
-    if c == '=' {
-      break
-    }
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
-      kept.write_char(c)
-    }
-  }
-  let kept = kept.to_string()
-  // (a lone letter at the end makes no byte)
-  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
-  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
+  @codec.base64_decode_loose(s)
 }
 
 ///|

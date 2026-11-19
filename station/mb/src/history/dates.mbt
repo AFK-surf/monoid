@@ -111,12 +111,7 @@ pub fn date_parse(s : String) -> Double? {
   if minute > 59 || second > 59 || hour > 24 || (hour == 24 && (minute > 0 || second > 0 || ms > 0.0)) {
     return None
   }
-  let (yy, mm) = if month <= 2 { (year - 1, month + 9) } else { (year, month - 3) }
-  let era = if yy >= 0 { yy / 400 } else { (yy - 399) / 400 }
-  let yoe = yy - era * 400
-  let doy = (153 * mm + 2) / 5 + day - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  let days = era.to_double() * 146_097.0 + doe.to_double() - 719_468.0
+  let days = @time.days_from_civil(year, month, day).to_double()
   let t = (days * 86_400.0 + hour.to_double() * 3600.0 + minute.to_double() * 60.0 + second.to_double() - offset.to_double() * 60.0) *
     1000.0 +
     ms

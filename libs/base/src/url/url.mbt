@@ -191,3 +191,31 @@ pub fn decode_uri_component(s : String) -> String? {
   }
   Some(out.to_string())
 }
+
+///|
+/// Percent-decoding of `s` as `URLSearchParams` / `application/x-www-form-urlencoded` (when `plus_space` is true) or
+/// lossy percent-decode: `%XX` (two hex digits) decoded as a byte, `+` as a space where `plus_space`, any other `%`
+/// kept as it is, and the resulting bytes decoded as UTF-8 lossily.
+pub fn percent_decode_lossy(s : String, plus_space? : Bool = false) -> String {
+  let bytes = @utf8.encode(s)
+  let out = Buffer()
+  let n = bytes.length()
+  let mut i = 0
+  while i < n {
+    let b = bytes[i].to_int()
+    if b == '%' &&
+      i + 2 < n &&
+      @codec.hex_digit(bytes[i + 1].to_int()) is Some(hi) &&
+      @codec.hex_digit(bytes[i + 2].to_int()) is Some(lo) {
+      out.write_byte(((hi << 4) | lo).to_byte())
+      i += 3
+    } else if plus_space && b == '+' {
+      out.write_byte(b' ')
+      i += 1
+    } else {
+      out.write_byte(bytes[i])
+      i += 1
+    }
+  }
+  @utf8.decode_lossy(out.to_bytes())
+}

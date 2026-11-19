@@ -153,27 +153,7 @@ fn to_js(v : Json) -> @jsjson.JValue {
 
 ///|
 fn of_js(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(a) => Json::array(a.map(of_js))
-    Obj(entries) => {
-      let o : Map[String, Json] = Map([])
-      // (JSON.parse's order: an integer-like key first, ascending)
-      let keys = @jsjson.JValue::Obj(entries).keys()
-      for k in keys {
-        let key = @jsjson.raw_text(k)
-        for e in entries {
-          if e.0 == k {
-            o[key] = of_js(e.1)
-          }
-        }
-      }
-      Json::object(o)
-    }
-  }
+  v.to_json()
 }
 
 ///|
@@ -218,32 +198,10 @@ fn by_bytes(a : String, b : String) -> Int32 {
 }
 
 ///|
-/// JavaScript's `<` of two strings: by their UTF-16 code units.
-fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
-}
-
-///|
 /// `[...items].sort()` of strings, as JavaScript sorts them (by code units), stably.
 fn js_sorted(items : Array[String]) -> Array[String] {
   let out = items.copy()
-  out.sort_by((a, b) => {
-    if js_less(a, b) {
-      -1
-    } else if js_less(b, a) {
-      1
-    } else {
-      0
-    }
-  })
+  out.sort_by(@jsjson.js_compare)
   out
 }
 

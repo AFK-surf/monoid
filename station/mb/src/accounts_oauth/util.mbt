@@ -308,24 +308,7 @@ pub fn form_encoded(form : Array[(String, String)]) -> String {
 ///|
 /// A form's piece decoded as URLSearchParams does: `+` a space, `%XX` a byte, the bytes read as UTF-8.
 fn form_decoded(s : String) -> String {
-  let bytes = Array::new()
-  let units = utf8_of(s)
-  let n = units.length()
-  let mut i = 0
-  while i < n {
-    let c = units[i].to_int()
-    if c == '+' {
-      bytes.push(b' ')
-    } else if c == '%' && i + 2 < n && @codec.hex_digit(units[i + 1].to_int()) is Some(h) && @codec.hex_digit(units[i + 2].to_int()) is Some(l) {
-      bytes.push((h * 16 + l).to_byte())
-      i += 3
-      continue
-    } else {
-      bytes.push(units[i])
-    }
-    i += 1
-  }
-  @utf8.decode_lossy(Bytes::from_array(bytes))
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

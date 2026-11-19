@@ -94,10 +94,7 @@ fn or_null(v : J?) -> J {
 ///|
 /// `Number.isInteger(n) && lo <= n && n <= hi`.
 fn within(v : J?, lo : Int, hi : Int) -> Bool {
-  match v {
-    Some(Num(d)) => d == d.floor() && d >= lo.to_double() && d <= hi.to_double() && !d.is_inf()
-    _ => false
-  }
+  v is Some(Num(d)) && @jsjson.is_integer(d) && d >= lo.to_double() && d <= hi.to_double()
 }
 
 ///|
@@ -117,19 +114,7 @@ pub fn base64_of(b : Bytes) -> String {
 ///|
 /// `Buffer.from(s, "base64")`: either alphabet, what is not of it passed over, ended at the first `=`.
 pub fn from_base64(s : String) -> Bytes {
-  let kept = StringBuilder()
-  for c in s {
-    if c == '=' {
-      break
-    }
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
-      kept.write_char(c)
-    }
-  }
-  let kept = kept.to_string()
-  // (a lone letter at the end makes no byte)
-  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
-  @codec.base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -201,9 +186,5 @@ pub fn[T] Listeners::each(self : Listeners[T], f : (T) -> Unit) -> Unit {
 ///|
 /// `s.trimEnd()`.
 pub fn js_trim_end(s : String) -> String {
-  let mut j = s.length()
-  while j > 0 && js_space(s.code_unit_at(j - 1).to_int()) {
-    j -= 1
-  }
-  s.unsafe_substring(start=0, end=j)
+  @jscase.trim_end(s)
 }

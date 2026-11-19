@@ -980,32 +980,7 @@ fn query_pairs(query : String) -> Array[(String, String)] {
 ///|
 /// api/request.ts `percentDecode`: `%xx` a byte, `+` a space, the rest as it is; then UTF-8, lossily.
 fn percent_decode(s : String) -> String {
-  let bytes = @utf8.encode(s)
-  let out = @buffer.new()
-  let hex = (b : Byte) => {
-    let c = b.to_int()
-    if c >= 48 && c <= 57 {
-      c - 48
-    } else if c >= 97 && c <= 102 {
-      c - 87
-    } else if c >= 65 && c <= 70 {
-      c - 55
-    } else {
-      -1
-    }
-  }
-  let mut i = 0
-  while i < bytes.length() {
-    let b = bytes[i]
-    if b == b'%' && i + 2 < bytes.length() + 0 && i + 2 <= bytes.length() - 1 && hex(bytes[i + 1]) >= 0 && hex(bytes[i + 2]) >= 0 {
-      out.write_byte((hex(bytes[i + 1]) * 16 + hex(bytes[i + 2])).to_byte())
-      i += 3
-    } else {
-      out.write_byte(if b == b'+' { b' ' } else { b })
-      i += 1
-    }
-  }
-  @utf8.decode_lossy(out.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

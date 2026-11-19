@@ -245,17 +245,7 @@ fn js_text(v : Json?) -> String {
 ///|
 /// A number as JavaScript prints it (integers without a fraction).
 fn num_text(n : Double) -> String {
-  if n.is_nan() {
-    "NaN"
-  } else if n == @double.infinity {
-    "Infinity"
-  } else if n == @double.neg_infinity {
-    "-Infinity"
-  } else if n == n.floor() && n.abs() < 1.0e21 {
-    n.to_int64().to_string()
-  } else {
-    n.to_string()
-  }
+  @jsjson.num_text(n)
 }
 
 ///|

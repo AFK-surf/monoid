@@ -5,6 +5,7 @@ import {
   "base/hash",
   "station/host",
   "station/jsjson",
+  "station/jscase",
   "station/nodepath",
   "station/ops_platform",
   "station/wire",
@@ -12,7 +13,6 @@ import {
   "base/net",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
-  "moonbitlang/core/string",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/base64",
 }

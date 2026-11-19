@@ -83,7 +83,7 @@ fn is_objectish(v : Json?) -> Bool {
 ///|
 /// Number.isSafeInteger.
 pub fn safe_int(n : Double) -> Bool {
-  n == n.floor() && n.abs() <= 9007199254740991.0
+  @jsjson.is_safe_integer(n)
 }
 
 ///|
@@ -124,22 +124,7 @@ pub fn js_string_of(v : Json?) -> String {
 ///|
 /// The index an object's key is in JavaScript's order of its keys, where it is one (an array index's form).
 fn key_index(k : String) -> Double? {
-  if k.length() == 0 || k.length() > 10 || (k.length() > 1 && k.unsafe_charcode_at(0) == 0x30) {
-    return None
-  }
-  let mut v = 0.0
-  for i in 0..<k.length() {
-    let c = k.unsafe_charcode_at(i)
-    if c < 0x30 || c > 0x39 {
-      return None
-    }
-    v = v * 10.0 + (c - 0x30).to_double()
-  }
-  if v >= 4294967295.0 {
-    None
-  } else {
-    Some(v)
-  }
+  @jsjson.index_key(k)
 }
 
 ///|
@@ -204,35 +189,13 @@ fn spread(a : Json?, b : Json?) -> Json {
 ///|
 /// Whether a character is in JavaScript's `\s`.
 fn js_space(c : Int) -> Bool {
-  c == 0x09 ||
-  c == 0x0a ||
-  c == 0x0b ||
-  c == 0x0c ||
-  c == 0x0d ||
-  c == 0x20 ||
-  c == 0xa0 ||
-  c == 0x1680 ||
-  (c >= 0x2000 && c <= 0x200a) ||
-  c == 0x2028 ||
-  c == 0x2029 ||
-  c == 0x202f ||
-  c == 0x205f ||
-  c == 0x3000 ||
-  c == 0xfeff
+  @jscase.is_space(c)
 }
 
 ///|
 /// String.prototype.trim.
 pub fn js_trim(s : String) -> String {
-  let mut a = 0
-  let mut b = s.length()
-  while a < b && js_space(s.unsafe_charcode_at(a)) {
-    a += 1
-  }
-  while b > a && js_space(s.unsafe_charcode_at(b - 1)) {
-    b -= 1
-  }
-  s.unsafe_substring(start=a, end=b)
+  @jscase.trim(s)
 }
 
 ///|
@@ -262,45 +225,9 @@ fn hex_pairs(s : String) -> Bool {
 }
 
 ///|
-fn pad(n : Int64, w : Int) -> String {
-  let s = n.to_string()
-  if s.length() >= w {
-    s
-  } else {
-    String::make(w - s.length(), '0') + s
-  }
-}
-
-///|
-fn div_floor(a : Int64, b : Int64) -> Int64 {
-  let q = a / b
-  if a % b != 0L && (a < 0L) != (b < 0L) {
-    q - 1L
-  } else {
-    q
-  }
-}
-
-///|
 /// `new Date(ms).toISOString()`.
 pub fn iso(ms : Double) -> String {
-  let ms = ms.to_int64()
-  let days = div_floor(ms, 86_400_000L)
-  let rest = ms - days * 86_400_000L
-  let z = days + 719_468L
-  let era = div_floor(z, 146_097L)
-  let doe = z - era * 146_097L
-  let yoe = (doe - doe / 1460L + doe / 36_524L - doe / 146_096L) / 365L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let y = yoe + era * 400L + (if m <= 2L { 1L } else { 0L })
-  let h = rest / 3_600_000L
-  let mi = rest / 60_000L % 60L
-  let s = rest / 1000L % 60L
-  let milli = rest % 1000L
-  "\{pad(y, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(h, 2)}:\{pad(mi, 2)}:\{pad(s, 2)}.\{pad(milli, 3)}Z"
+  @time.format_iso_ms(ms.to_int64())
 }
 
 ///|

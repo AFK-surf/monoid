@@ -154,12 +154,7 @@ fn strings_of(j : Json?) -> Array[String] {
 /// A number that is a safe integer (`Number.isSafeInteger`).
 fn safe_int(j : Json?) -> Int64? {
   match j {
-    Some(Number(n, ..)) =>
-      if n == n.floor() && n.abs() <= 9007199254740991.0 {
-        Some(n.to_int64())
-      } else {
-        None
-      }
+    Some(Number(n, ..)) if @jsjson.is_safe_integer(n) => Some(n.to_int64())
     _ => None
   }
 }
@@ -168,7 +163,7 @@ fn safe_int(j : Json?) -> Int64? {
 /// A number that is an integer (`Number.isInteger`).
 fn is_integer(j : Json?) -> Bool {
   match j {
-    Some(Number(n, ..)) => n == n.floor() && n.abs() < 1.0e308
+    Some(Number(n, ..)) => @jsjson.is_integer(n)
     _ => false
   }
 }
@@ -187,46 +182,18 @@ fn peer_id(p : Json) -> String? {
 ///|
 /// JavaScript's white space (`String.prototype.trim`, `\s`).
 fn js_space(c : Char) -> Bool {
-  let n = c.to_int()
-  (n >= 0x9 && n <= 0xD) ||
-  n == 0x20 ||
-  n == 0xA0 ||
-  n == 0x1680 ||
-  (n >= 0x2000 && n <= 0x200A) ||
-  n == 0x2028 ||
-  n == 0x2029 ||
-  n == 0x202F ||
-  n == 0x205F ||
-  n == 0x3000 ||
-  n == 0xFEFF
+  @jscase.is_space(c.to_int())
 }
 
 ///|
 fn js_trim(s : String) -> String {
-  let cs = s.to_array()
-  let mut from = 0
-  let mut to = cs.length()
-  while from < to && js_space(cs[from]) {
-    from += 1
-  }
-  while to > from && js_space(cs[to - 1]) {
-    to -= 1
-  }
-  String::from_array(cs[from:to])
+  @jscase.trim(s)
 }
 
 ///|
 /// `s` cut to its first `n` UTF-16 units (`String.prototype.slice(0, n)`).
 fn js_slice(s : String, n : Int) -> String {
-  if s.length() <= n {
-    s
-  } else {
-    let b = StringBuilder()
-    for i in 0..<n {
-      b.write_char(s.code_unit_at(i).to_int().unsafe_to_char())
-    }
-    b.to_string()
-  }
+  @jsjson.js_slice(s, 0, end=n)
 }
 
 // ── a cloud.json with no lock ──

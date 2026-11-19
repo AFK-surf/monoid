@@ -7,50 +7,6 @@ fn jvalue_of(v : Json) -> @jsjson.JValue {
 }
 
 ///|
-fn json_of_jvalue(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(xs) => Json::array(xs.map(json_of_jvalue))
-    Obj(entries) => {
-      let m : Map[String, Json] = Map([])
-      // (an object's integer-like keys first, ascending, as JSON.parse makes it)
-      let keys = jvalue_of_obj_order(entries)
-      for e in keys {
-        m[@jsjson.raw_text(e.0)] = json_of_jvalue(e.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
-fn jvalue_of_obj_order(entries : Array[(Array[Int], @jsjson.JValue)]) -> Array[(Array[Int], @jsjson.JValue)] {
-  let index = fn(k : Array[Int]) -> Double? {
-    if k.length() == 0 || k.length() > 10 || (k.length() > 1 && k[0] == 0x30) {
-      return None
-    }
-    let mut v = 0.0
-    for c in k {
-      if c < 0x30 || c > 0x39 {
-        return None
-      }
-      v = v * 10.0 + (c - 0x30).to_double()
-    }
-    if v >= 4294967295.0 {
-      None
-    } else {
-      Some(v)
-    }
-  }
-  let indexed = entries.filter(e => index(e.0) is Some(_))
-  stable_sort(indexed, (a, b) => index(a.0).unwrap().compare(index(b.0).unwrap()))
-  indexed + entries.filter(e => index(e.0) is None)
-}
-
-///|
 /// JSON.stringify(v).
 pub fn stringify(v : Json) -> String {
   @jsjson.stringify(jvalue_of(v))
@@ -65,10 +21,7 @@ pub fn stringify_pretty(v : Json) -> String {
 ///|
 /// JSON.parse(text): None where it is none.
 pub fn parse(text : String) -> Json? {
-  match (try Ok(@jsjson.parse(text)) catch { e => Err(e) }) {
-    Ok(v) => Some(json_of_jvalue(v))
-    Err(_) => None
-  }
+  @jsjson.jval_try_parse(text).map(v => v.to_json())
 }
 
 ///|
@@ -196,7 +149,7 @@ fn opt_str_json(s : String?) -> Json {
 ///|
 /// Whether a number is a safe integer (Number.isSafeInteger).
 fn safe_int(n : Double) -> Bool {
-  n == n.floor() && n.abs() <= 9007199254740991.0
+  @jsjson.is_safe_integer(n)
 }
 
 ///|

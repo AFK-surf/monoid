@@ -59,6 +59,8 @@ pub fn outflow_messages(@sql.Db, @host.Host, String, String, @json.Json) -> @jso
 
 pub fn outflow_usage(@sql.Db, @host.Host, String, String, @json.Json) -> @json.Json raise
 
+pub fn parse_iso(String) -> Double?
+
 pub fn pending_card_number(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn pending_deliveries(@sql.Db, @json.Json) -> @json.Json raise

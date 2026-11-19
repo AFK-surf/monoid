@@ -189,6 +189,24 @@ pub fn base64url_decode(text : String) -> Bytes? {
 }
 
 ///|
+/// The bytes `text` writes in Base64 as Node's `Buffer.from(text, "base64")` / `"base64url"` reads it: either
+/// alphabet (`+/` or `-_`), any other character skipped, stopped at the first `=`, and a lone trailing digit ignored.
+pub fn base64_decode_loose(text : String) -> Bytes {
+  let kept = StringBuilder()
+  for c in text {
+    if c == '=' {
+      break
+    }
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || "+/-_".contains_char(c) {
+      kept.write_char(c)
+    }
+  }
+  let kept = kept.to_string()
+  let n = kept.length() - (if kept.length() % 4 == 1 { 1 } else { 0 })
+  base64_decode(kept.unsafe_substring(start=0, end=n)).unwrap()
+}
+
+///|
 fn hex_with(data : BytesView, digits : String) -> String {
   let out = StringBuilder(capacity=data.length() * 2)
   for b in data {

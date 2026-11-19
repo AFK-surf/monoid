@@ -40,24 +40,7 @@ pub fn is_undefined(v : J) -> Bool {
 ///|
 /// Whether `key` is an array index as JavaScript keeps an object's keys: those come first, ascending.
 fn index_key(key : Array[Int]) -> Double? {
-  if key.length() == 0 || key.length() > 10 {
-    return None
-  }
-  if key.length() > 1 && key[0] == '0'.to_int() {
-    return None
-  }
-  let mut n = 0.0
-  for c in key {
-    if c < '0'.to_int() || c > '9'.to_int() {
-      return None
-    }
-    n = n * 10.0 + (c - '0'.to_int()).to_double()
-  }
-  if n >= 4294967295.0 {
-    None
-  } else {
-    Some(n)
-  }
+  @jsjson.index_key(@jsjson.raw_text(key))
 }
 
 ///|
@@ -135,24 +118,13 @@ pub fn is_object(v : J?) -> Bool {
 ///|
 /// An object's fields, none where it is no object.
 pub fn fields_of(v : J?) -> Array[(String, J)] {
-  match v {
-    Some(Obj(fs)) => fs.map(f => (@jsjson.text(f.0), f.1))
-    _ => []
-  }
+  @jsjson.jval_entries(v)
 }
 
 ///|
 /// What a value is as JavaScript's `String(v)` says it, for the few values these parts turn to words.
 pub fn js_text(v : J?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(Str(u)) => @jsjson.text(u)
-    Some(Bool(b)) => if b { "true" } else { "false" }
-    Some(Num(d)) => @session_chats.num_text(d)
-    Some(Arr(xs)) => xs.map(x => if x is Null { "" } else { js_text(Some(x)) }).join(",")
-    Some(Obj(_)) => "[object Object]"
-  }
+  @jsjson.jval_js_str(v)
 }
 
 ///|

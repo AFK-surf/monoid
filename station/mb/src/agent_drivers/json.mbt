@@ -102,10 +102,7 @@ pub fn strings_in(v : JValue?) -> Array[String] {
 
 ///|
 pub fn entries_of(v : JValue?) -> Array[(String, JValue)] {
-  match v {
-    Some(Obj(es)) => es.map(e => (@jsjson.text(e.0), e.1))
-    _ => []
-  }
+  @jsjson.jval_entries(v)
 }
 
 ///|
@@ -135,9 +132,7 @@ pub fn json_text(v : JValue) -> String {
 ///|
 /// `JSON.parse`, none for what is not JSON.
 pub fn parse_json(text : String) -> JValue? {
-  Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
+  @jsjson.jval_try_parse(text)
 }
 
 ///|
@@ -158,7 +153,7 @@ pub fn string_entries(v : JValue?) -> Array[(String, String)] {
 ///|
 /// `Number.isSafeInteger`.
 pub fn safe_integer(v : JValue?) -> Bool {
-  v is Some(Num(x)) && @jsjson.is_safe_integer(x)
+  @jsjson.jval_safe_int(v)
 }
 
 ///|

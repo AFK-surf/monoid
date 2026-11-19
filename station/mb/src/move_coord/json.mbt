@@ -80,10 +80,7 @@ pub fn is_map(j : J?) -> Bool {
 ///|
 /// Present: neither absent nor null (`v != null`).
 pub fn present(j : J?) -> Bool {
-  match j {
-    None | Some(Null) => false
-    _ => true
-  }
+  !@jsjson.jval_nullish(j)
 }
 
 ///|

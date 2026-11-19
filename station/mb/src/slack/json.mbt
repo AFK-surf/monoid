@@ -54,11 +54,7 @@ pub fn at(v : J?, name : String) -> J? {
 ///|
 /// `v?.[a]?.[b]…`.
 fn at_path(v : J?, path : Array[String]) -> J? {
-  let mut cur = v
-  for k in path {
-    cur = at(cur, k)
-  }
-  cur
+  @jsjson.jval_at_path(v, path)
 }
 
 ///|
@@ -74,12 +70,12 @@ fn str_of(v : J?) -> String? {
 ///|
 /// `typeof v === "string" ? v : ""`.
 fn text(v : J?) -> String {
-  str_of(v).unwrap_or("")
+  @jsjson.jval_text(v)
 }
 
 ///|
 fn arr(v : J?) -> Array[J] {
-  @jsjson.jval_arr_of(v).unwrap_or([])
+  @jsjson.jval_arr(v)
 }
 
 ///|
@@ -118,21 +114,7 @@ fn values_of(v : J?) -> Array[J] {
 ///|
 /// `String(v)`, `undefined` as "undefined".
 fn js_str(v : J?) -> String {
-  match v {
-    None => "undefined"
-    Some(Null) => "null"
-    Some(Str(u)) => @jsjson.text(u)
-    Some(Bool(b)) => if b { "true" } else { "false" }
-    Some(Num(_) as n) => num_text(n)
-    Some(Arr(xs)) =>
-      xs
-      .map(x => match x {
-        Null => ""
-        _ => js_str(Some(x))
-      })
-      .join(",")
-    Some(Obj(_)) => "[object Object]"
-  }
+  @jsjson.jval_js_str(v)
 }
 
 ///|
@@ -147,27 +129,7 @@ fn num_text(n : J) -> String {
 ///|
 /// `Number(v)`.
 fn js_num(v : J?) -> Double {
-  match v {
-    None => @double.not_a_number
-    Some(Null) => 0.0
-    Some(Bool(b)) => if b { 1.0 } else { 0.0 }
-    Some(Num(d)) => d
-    Some(Str(u)) => {
-      let t = @jscase.trim(@jsjson.text(u))
-      if t == "" {
-        0.0
-      } else {
-        @session_chats.js_number(js(t)).unwrap_or(@double.not_a_number)
-      }
-    }
-    Some(Arr(xs)) =>
-      match xs {
-        [] => 0.0
-        [x] => js_num(Some(Str(@jsjson.units(js_str(Some(x))))))
-        _ => @double.not_a_number
-      }
-    Some(Obj(_)) => @double.not_a_number
-  }
+  @jsjson.jval_js_num(v)
 }
 
 ///|
@@ -182,26 +144,13 @@ fn points(s : String) -> Array[Char] {
 
 ///|
 fn point_count(s : String) -> Int {
-  let mut n = 0
-  for _ in s {
-    n += 1
-  }
-  n
+  @jsjson.code_points(s)
 }
 
 ///|
 /// `[...s].slice(0, n).join("")`.
 fn first_points(s : String, n : Int) -> String {
-  let out = StringBuilder::new()
-  let mut i = 0
-  for c in s {
-    if i >= n {
-      break
-    }
-    out.write_char(c)
-    i += 1
-  }
-  out.to_string()
+  @jsjson.chars(s, n)
 }
 
 ///|

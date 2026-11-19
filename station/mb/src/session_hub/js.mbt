@@ -31,19 +31,7 @@ pub fn js_json(value : Json) -> String {
 ///|
 /// A number as JavaScript writes it (`String(n)`): integers without a point, NaN and the infinities by name.
 pub fn js_number_text(n : Double) -> String {
-  if n.is_nan() {
-    return "NaN"
-  }
-  if n.is_inf() {
-    return if n > 0.0 { "Infinity" } else { "-Infinity" }
-  }
-  if n == n.floor() && n.abs() < 1.0e21 {
-    if n == 0.0 {
-      return "0"
-    }
-    return n.to_int64().to_string()
-  }
-  Json::number(n).stringify()
+  @jsjson.num_text(n)
 }
 
 ///|
@@ -109,75 +97,31 @@ pub fn trim(s : String) -> String {
 ///|
 /// How many characters (code points) a string has, as `Array.from(s).length`.
 pub fn chars(s : String) -> Int {
-  let mut n = 0
-  for _ in s {
-    n += 1
-  }
-  n
+  @jsjson.code_points(s)
 }
 
 ///|
 /// Its first `n` characters (code points), as `Array.from(s).slice(0, n).join("")`.
 pub fn take(s : String, n : Int) -> String {
-  let b = StringBuilder()
-  let mut i = 0
-  for c in s {
-    if i >= n {
-      break
-    }
-    b.write_char(c)
-    i += 1
-  }
-  b.to_string()
+  @jsjson.chars(s, n)
 }
 
 ///|
 /// `s.slice(from, to)` by UTF-16 units.
 pub fn slice(s : String, from : Int, to? : Int = s.length()) -> String {
-  let len = s.length()
-  let a = if from < 0 { @cmp.maximum(len + from, 0) } else { @cmp.minimum(from, len) }
-  let b = if to < 0 { @cmp.maximum(len + to, 0) } else { @cmp.minimum(to, len) }
-  if a >= b {
-    ""
-  } else {
-    s.unsafe_substring(start=a, end=b)
-  }
+  @jsjson.js_slice(s, from, end=to)
 }
 
 ///|
 /// `s.indexOf(what, from)` by UTF-16 units (-1: none).
 pub fn index_of(s : String, what : String, from? : Int = 0) -> Int {
-  let n = s.length()
-  let m = what.length()
-  let mut i = @cmp.maximum(from, 0)
-  while i + m <= n {
-    let mut j = 0
-    while j < m && u(s, i + j) == u(what, j) {
-      j += 1
-    }
-    if j == m {
-      return i
-    }
-    i += 1
-  }
-  -1
+  @jsjson.js_index_of(s, what, from~)
 }
 
 ///|
 /// `s.split(sep)` (a non-empty separator).
 pub fn split(s : String, sep : String) -> Array[String] {
-  let out = []
-  let mut at = 0
-  while true {
-    let i = index_of(s, sep, from=at)
-    if i < 0 {
-      out.push(slice(s, at))
-      break
-    }
-    out.push(slice(s, at, to=i))
-    at = i + sep.length()
-  }
-  out
+  @jsjson.js_split(s, sep)
 }
 
 ///|

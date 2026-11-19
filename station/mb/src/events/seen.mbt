@@ -62,43 +62,6 @@ pub fn seen_of(store : SeenStore, viewer : Viewer, of : Of) -> Bool {
 }
 
 ///|
-fn utf8_bytes(s : String) -> Array[Int32] {
-  let out = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 &&
-      c <= 0xdbff &&
-      i < n &&
-      s.unsafe_charcode_at(i) >= 0xdc00 &&
-      s.unsafe_charcode_at(i) <= 0xdfff {
-      c = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i) - 0xdc00)
-      i += 1
-    } else if c >= 0xd800 && c <= 0xdfff {
-      c = 0xfffd
-    }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xc0 | (c >> 6))
-      out.push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      out.push(0xe0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    } else {
-      out.push(0xf0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3f))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    }
-  }
-  out
-}
-
-///|
 fn hex_value(c : Int32) -> Int32 {
   if c >= '0'.to_int() && c <= '9'.to_int() {
     c - '0'.to_int()
@@ -112,76 +75,9 @@ fn hex_value(c : Int32) -> Int32 {
 }
 
 ///|
-/// UTF-8 decoded as TextDecoder decodes it (a sequence that is not one is U+FFFD, a maximal part of one at a time).
-fn utf8_text(bytes : Array[Int32]) -> String {
-  let out = StringBuilder::new()
-  let n = bytes.length()
-  let mut i = 0
-  while i < n {
-    let b = bytes[i]
-    if b < 0x80 {
-      out.write_char(b.unsafe_to_char())
-      i += 1
-      continue
-    }
-    let (need, low, high, first) = if b >= 0xc2 && b <= 0xdf {
-      (1, 0x80, 0xbf, b & 0x1f)
-    } else if b == 0xe0 {
-      (2, 0xa0, 0xbf, b & 0x0f)
-    } else if b == 0xed {
-      (2, 0x80, 0x9f, b & 0x0f)
-    } else if b >= 0xe1 && b <= 0xef {
-      (2, 0x80, 0xbf, b & 0x0f)
-    } else if b == 0xf0 {
-      (3, 0x90, 0xbf, b & 0x07)
-    } else if b == 0xf4 {
-      (3, 0x80, 0x8f, b & 0x07)
-    } else if b >= 0xf1 && b <= 0xf3 {
-      (3, 0x80, 0xbf, b & 0x07)
-    } else {
-      (0, 0, 0, 0)
-    }
-    i += 1
-    if need == 0 {
-      out.write_char('\u{fffd}')
-      continue
-    }
-    let mut cp = first
-    let mut ok = true
-    for k in 0..<need {
-      let (lo, hi) = if k == 0 { (low, high) } else { (0x80, 0xbf) }
-      if i < n && bytes[i] >= lo && bytes[i] <= hi {
-        cp = (cp << 6) | (bytes[i] & 0x3f)
-        i += 1
-      } else {
-        ok = false
-        break
-      }
-    }
-    out.write_char(if ok { cp.unsafe_to_char() } else { '\u{fffd}' })
-  }
-  out.to_string()
-}
-
-///|
 /// request.ts `percentDecode` (a `+` is a space).
 pub fn percent_decode(s : String) -> String {
-  let bytes = utf8_bytes(s)
-  let out = []
-  let mut i = 0
-  while i < bytes.length() {
-    if bytes[i] == 0x25 &&
-      i + 2 < bytes.length() + 0 &&
-      hex_value(bytes[i + 1]) >= 0 &&
-      hex_value(bytes[i + 2]) >= 0 {
-      out.push(hex_value(bytes[i + 1]) * 16 + hex_value(bytes[i + 2]))
-      i += 3
-    } else {
-      out.push(if bytes[i] == 0x2b { 0x20 } else { bytes[i] })
-      i += 1
-    }
-  }
-  utf8_text(out)
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|
