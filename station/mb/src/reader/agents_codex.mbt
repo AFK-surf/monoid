@@ -42,7 +42,7 @@ fn Codex::new() -> Codex {
 fn Codex::states(self : Codex) -> Json {
   let out : Map[String, Json] = {}
   for k, t in self.threads {
-    out[k] = @json.parse(@jsjson.stringify(t.live.state())) catch { _ => Json::null() }
+    out[k] = t.live.state().to_json()
   }
   Json::object(out)
 }
@@ -281,7 +281,7 @@ fn Agents::codex_tell(
 fn Agents::add_thread(self : Agents, h : Hosted, thread : String, state : Json?, routed? : Bool = false) -> Unit {
   let live = match state {
     Some(Null) | None => @codex.Live::new()
-    Some(s) => @codex.Live::of_state(@jsjson.parse(s.stringify()) catch { _ => Null })
+    Some(s) => @codex.Live::of_state(@jsjson.JValue::of_json(s))
   }
   let t = { id: @jsjson.units(thread), live, routed }
   h.codex.threads[thread] = t
@@ -394,7 +394,7 @@ fn Agents::replayed(self : Agents, id : Int) -> Unit {
   let states : Map[String, Json] = {}
   if self.replays.get(id) is Some(threads) {
     for k, live in threads {
-      states[k] = @json.parse(@jsjson.stringify(live.state())) catch { _ => Json::null() }
+      states[k] = live.state().to_json()
     }
   }
   self.replays.remove(id)

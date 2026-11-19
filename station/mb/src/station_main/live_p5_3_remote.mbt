@@ -675,12 +675,12 @@ fn p53_sandboxes(bus : LiveBus) -> Array[@agent_runtimes.Sandbox] {
 ///|
 /// A value of the agents' runtimes' (`@jsjson.JValue`) as Json, and back.
 fn p53_from_j(v : @jsjson.JValue) -> Json {
-  (try { Ok(@json.parse(@jsjson.stringify(v))) } catch { e => Err(e) }).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 fn p53_to_j(v : Json) -> @jsjson.JValue {
-  (try { Ok(@jsjson.parse(v.stringify())) } catch { e => Err(e) }).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

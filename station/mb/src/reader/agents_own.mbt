@@ -22,16 +22,14 @@ priv enum Own {
 
 ///|
 fn to_json(v : @jsjson.JValue) -> Json {
-  @json.parse(@jsjson.stringify(v)) catch {
-    _ => Json::null()
-  }
+  v.to_json()
 }
 
 ///|
 fn of_json(v : Json?) -> @jsjson.JValue? {
   match v {
     None | Some(Null) => None
-    Some(x) => Some(@jsjson.parse(x.stringify()) catch { _ => Null })
+    Some(x) => Some(@jsjson.JValue::of_json(x))
   }
 }
 

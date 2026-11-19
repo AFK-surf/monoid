@@ -136,7 +136,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let turn = turn_of(m.get("turn"))
     let live = match m.get("live") {
       Some(Null) | None => @claude.Live::new()
-      Some(state) if text("kind") is (None | Some("claude")) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
+      Some(state) if text("kind") is (None | Some("claude")) => @claude.Live::of_state(@jsjson.JValue::of_json(state))
       Some(_) => @claude.Live::new()
     }
     // (taken in now: what Node says of it next is had in order, whenever its socket opens)
@@ -173,7 +173,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       } else {
         Json::object({
           "turn": turn_json(h.turn),
-          "live": @json.parse(@jsjson.stringify(h.live.state())) catch { _ => Json::null() },
+          "live": h.live.state().to_json(),
         })
       }
     }
@@ -878,7 +878,7 @@ fn turn_json_js(t : @claude.Turn) -> @jsjson.JValue {
 
 ///|
 fn turn_json(t : @claude.Turn) -> Json {
-  @json.parse(@jsjson.stringify(turn_json_js(t))) catch { _ => Json::null() }
+  turn_json_js(t).to_json()
 }
 
 ///|

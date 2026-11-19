@@ -5,16 +5,12 @@
 
 ///|
 fn p54_jv(j : Json) -> @jsjson.JValue {
-  @jsjson.parse(j.stringify()) catch {
-    _ => @jsjson.JValue::Null
-  }
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 fn p54_of_jv(v : @jsjson.JValue) -> Json {
-  @json.parse(@jsjson.stringify(v)) catch {
-    _ => Json::null()
-  }
+  v.to_json()
 }
 
 ///|

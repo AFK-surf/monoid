@@ -162,12 +162,12 @@ fn connection_of(
 
 ///|
 fn feishu_jv(j : @jsjson.JValue) -> @feishu.JV {
-  @feishu.JV::of_json(to_core(j))
+  @jsjson.JV::of_js(j)
 }
 
 ///|
 fn of_feishu(v : @feishu.JV) -> @jsjson.JValue {
-  of_core(v.to_json())
+  @jsjson.JV::to_js(v)
 }
 
 ///|

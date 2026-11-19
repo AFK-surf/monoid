@@ -537,13 +537,13 @@ pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
 ///|
 /// A JavaScript value (jsjson's) as JSON.
 fn to_core(v : @jsjson.JValue) -> Json {
-  attempt(() => @json.parse(@jsjson.stringify(v))).unwrap_or(Json::null())
+  v.to_json()
 }
 
 ///|
 /// JSON as a JavaScript value (jsjson's).
 fn of_core(j : Json) -> @jsjson.JValue {
-  attempt(() => @jsjson.parse(j.stringify())).unwrap_or(@jsjson.JValue::Null)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|

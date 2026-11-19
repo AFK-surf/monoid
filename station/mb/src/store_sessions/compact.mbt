@@ -200,7 +200,7 @@ fn context_snapshot(db : @sql.Db, session : String) -> Snapshot raise {
       match col(r, "state") {
         Null => (fresh_state(invalid), false)
         String(text) => (@jsjson.parse(text), true)
-        other => (@jsjson.parse(other.stringify()), true)
+        other => (@jsjson.JValue::of_json(other), true)
       }
     None => (fresh_state(invalid), false)
   }

@@ -545,7 +545,11 @@ pub async fn MoveAsks::chosen(
   let chose = trim_js(option)
   if chose != self.c.tr(self.c.consts.station_lang, "station.move.card.confirm") {
     a.state = "declined"
-    self.save_later()
+    // (kept before the chat is told: its file's write waits on the shell's thread, so a fiber of its own would be told
+    // after it)
+    self.save() catch {
+      _ => ()
+    }
     b.tell("move.notify", [
       js(a.session),
       js("\{email} chose \{chose} on the card: nothing was moved."),
@@ -553,7 +557,10 @@ pub async fn MoveAsks::chosen(
     return
   }
   a.state = "confirmed"
-  self.save_later()
+  // (kept before anything moves or the chat is told, as the decline is)
+  self.save() catch {
+    _ => ()
+  }
   let move_ = async fn() {
     let out = b.ask("move.scheduler.move", [
       js(a.ws),
@@ -581,17 +588,6 @@ pub async fn MoveAsks::chosen(
   self.running.push(
     @effect.runtime().fork(name="move all", async fn() {
       move_() catch {
-        _ => ()
-      }
-    }),
-  )
-}
-
-///|
-fn MoveAsks::save_later(self : MoveAsks) -> Unit {
-  self.running.push(
-    @effect.runtime().fork(name="move asks saved", async fn() {
-      self.save() catch {
         _ => ()
       }
     }),

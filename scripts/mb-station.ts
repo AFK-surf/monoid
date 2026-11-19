@@ -11,7 +11,17 @@
 //     handover). One a part starts and forgets is `fork_quiet` (best effort, its failure its own) or `fork_daemon`
 //     (a loop or a handler, its failure given to its `on_error`);
 //   - outside harnesses, a `wall` clock made of the monotonic one (`@host.now`, a runtime's `rt.now`), which counts from
-//     the machine's start: the world's time is `@host.epoch_ms()`, a time shared with other programs `@host.wall_ms()`.
+//     the machine's start: the world's time is `@host.epoch_ms()`, a time shared with other programs `@host.wall_ms()`;
+//   - outside harnesses, a file written beside under a name another write of it takes too (L13): one named by the pid
+//     alone (`"\{path}.\{@drive.pid()}.tmp"`) or by nothing (`let tmp = "\{path}.tmp"`), where two fibers writing the
+//     same file at once rename each other's away (ENOENT). `@host.Host::write_atomic` / `write_private` (`unique_tmp`)
+//     name each their own;
+//   - outside harnesses, more of the program's thread's waits on the disk in a whole station's slice
+//     (`station_main/live_*.mbt`: `@drive.read_all`, `stat`, … and `shell_sync("fs.…")`) than MAIN_THREAD_SYNC_FS lets
+//     it, which only falls: a count lower than the table's is refused too, until the table is lowered with it;
+//   - a JavaScript value made MoonBit's JSON, or back, by writing it out and reading it again
+//     (`@json.parse(@jsjson.stringify(v))`, `@jsjson.parse(j.stringify())`): `@jsjson.JValue::to_json` / `of_json` give
+//     the same with nothing written.
 // It reads the files' text, not the program. Prints each line that is not so, and fails then.
 //   node scripts/mb-station.ts
 import { readdirSync, readFileSync } from "node:fs";
@@ -25,7 +35,7 @@ const ROOT = fileURLToPath(new URL("../station/mb/src", import.meta.url));
 const HOST_NET = "host/net.mbt";
 const HOST_NET_SOCKETS = 12;
 /// What a file says that this reads it for: an error, its Show, a socket opened by its shell's name, a fork, a wall clock.
-const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.', ".fork(", "wall"].map((word) => Buffer.from(word));
+const SAYS = ["suberror", "impl Show", '"tcp.', '"unix.', '"listen.', ".fork(", "wall", ".tmp", "@drive.", "shell_sync", "@json.parse", "@jsjson.parse"].map((word) => Buffer.from(word));
 const RAW_SOCKET = /\bshell\s*\(\s*"(tcp|unix|listen)\.[^"]+"/g;
 /// A fiber forked and its handle let go (`ignore(host.rt.fork(…))`, its `(` on the next line too).
 const BARE_FORK = /\bignore\s*\(\s*[A-Za-z0-9_.()]*\.fork\s*\(/g;
@@ -33,6 +43,51 @@ const BARE_FORK = /\bignore\s*\(\s*[A-Za-z0-9_.()]*\.fork\s*\(/g;
 /// `wall? : () -> Double = fn() { @host.now().to_double() }`, `let wall = wall.unwrap_or(() => rt.now())`.
 const MONOTONIC_WALL =
   /\bwall\s*\??\s*[:=~]\s*(?:\(\s*\)\s*->\s*[A-Za-z0-9_]+\s*=\s*)?(?:[A-Za-z0-9_.]*\.unwrap_or\s*\(\s*)?(?:fn\s*\(\s*\)\s*\{\s*|\(\s*\)\s*=>\s*)?(?:@host\.now|(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+\.)*rt\.now)\b/g;
+
+/// A name beside a file that another write of it takes too (L13): the pid's alone (`"\{path}.\{@drive.pid()}.tmp"`,
+/// `"\{path}.\{js_text(pid)}.tmp"`), or none of its own (`let tmp = "\{path}.tmp"`, `(fs.rename)("\{path}.tmp", …)`).
+const SHARED_TMP = [
+  /\.\s*\\?\{[^}\n]*\bpid\b[^}\n]*\}\.tmp\b/g,
+  /\blet\s+(?:tmp|temp)\s*=\s*"\\\{[^}\n]+\}\.tmp"/g,
+  /\b(?:write_text|write|rename)\s*\)?\s*\(\s*"\\\{[^}\n]+\}\.tmp"/g,
+];
+/// A wait on the disk on the program's thread: `@drive`'s calls, and the shell's `fs.*` asked synchronously.
+const SYNC_FS =
+  /(?<![A-Za-z0-9_])@drive\.(?:read_all|read_text|write_text|write_private|write_private_bytes|stat|readdir|mkdir|remove|rename|exists|is_dir|lstat|read_bytes|copy)\s*\(|\bshell_sync\s*\(\s*"fs\.[^"]+"/g;
+/// How many of them each whole station's slice (`station_main/live_*.mbt`, its harnesses' aside) has at most; only
+/// falls. A new one reads or writes through `@host.Host::{read_bytes, read_text, file_sha256, write_atomic,
+/// write_private}` or the shell's `fs.*` asked by `host.shell`, off the program's thread.
+const MAIN_THREAD_SYNC_FS: Record<string, number> = {
+  "station_main/live_p5_1_admin.mbt": 6,
+  "station_main/live_p5_1_events.mbt": 3,
+  "station_main/live_p5_1_tools.mbt": 1,
+  "station_main/live_p5_2_chats.mbt": 9,
+  "station_main/live_p5_2_ctx.mbt": 3,
+  "station_main/live_p5_2_drivers.mbt": 1,
+  "station_main/live_p5_2_home.mbt": 1,
+  "station_main/live_p5_2_hubops.mbt": 1,
+  "station_main/live_p5_2_io.mbt": 14,
+  "station_main/live_p5_2_main.mbt": 5,
+  "station_main/live_p5_2_own.mbt": 3,
+  "station_main/live_p5_2_program.mbt": 7,
+  "station_main/live_p5_2_world.mbt": 4,
+  "station_main/live_p5_3_accounts_io.mbt": 2,
+  "station_main/live_p5_3_jobs.mbt": 2,
+  "station_main/live_p5_4.mbt": 1,
+  "station_main/live_p5_4_browser.mbt": 1,
+  "station_main/live_p5_4_devices.mbt": 8,
+  "station_main/live_p5_4_drive.mbt": 1,
+  "station_main/live_p5_4_helperfs.mbt": 1,
+  "station_main/live_p5_4_screens.mbt": 1,
+  "station_main/live_p5_4_terms.mbt": 4,
+  "station_main/live_p5_4_util.mbt": 1,
+  "station_main/live_p5_4_vault.mbt": 3,
+  "station_main/live_p5_5_connects.mbt": 6,
+  "station_main/live_p5_5_copies.mbt": 2,
+  "station_main/live_p5_5_moves.mbt": 2,
+};
+/// A JavaScript value made MoonBit's JSON, or back, by writing it out and reading it again.
+const REPARSED = [/@json\.parse\s*\(\s*@jsjson\.stringify\s*\(/g, /@jsjson\.parse\s*\(\s*[A-Za-z0-9_.]+\.stringify\s*\(\s*\)\s*\)/g];
 
 /// The line `index` is on in `text`, from 1.
 const lineAt = (text: string, index: number) => text.slice(0, index).split("\n").length;
@@ -65,6 +120,7 @@ function code(line: string): string {
 }
 
 const seen = new Set<string>();
+const syncFs = new Map<string, number>();
 for (const pkg of packages("")) {
   const files = readdirSync(join(ROOT, pkg)).filter((name) => name.endsWith(".mbt") && !/_(wb)?test\.mbt$/.test(name)).map((name) => join(pkg, name));
   // Only the files that say any of it are read as lines (the program is 14 MB: decoding all of it alone takes longer
@@ -110,7 +166,22 @@ for (const pkg of packages("")) {
     } else if (opened > 0) {
       wrong.push(`${file}: opens ${opened} socket${opened === 1 ? "" : "s"} by its shell's name: only ${HOST_NET} does; open one through it (Host::tcp_open, unix_open, tcp_listen_local, listener_of, …) and base/net (Socket, Listener, pipe_duplex)`);
     }
+    for (const pattern of REPARSED) {
+      for (const found of text.matchAll(pattern)) {
+        wrong.push(`${file}:${lineAt(text, found.index)}: a value written out and read again to be JSON (${found[0].replace(/\s+/g, " ")}…): use \`@jsjson.JValue::to_json\` / \`@jsjson.JValue::of_json\` (\`JV::of_js\` / \`JV::to_js\`), which write nothing`);
+      }
+    }
     if (/harness[^/]*\.mbt$/.test(file)) continue;
+    // Its files written beside, each under a name of its own.
+    for (const pattern of SHARED_TMP) {
+      for (const found of text.matchAll(pattern)) {
+        wrong.push(`${file}:${lineAt(text, found.index)}: a file written beside under a name another write of it takes too (${found[0]}): two fibers writing it at once rename each other's away (L13); write it with \`@host.Host::write_atomic\` / \`write_private\`, or name it by \`@host.unique_tmp\``);
+      }
+    }
+    // A whole station's slice's waits on the disk on the program's thread, which only fall.
+    if (/^station_main\/live_[^/]*\.mbt$/.test(file)) {
+      syncFs.set(file, text.match(SYNC_FS)?.length ?? 0);
+    }
     // Its fibers, each with a failure of its own.
     for (const found of text.matchAll(BARE_FORK)) {
       wrong.push(`${file}:${lineAt(text, found.index)}: a fiber forked and let go, whose failure fails the whole program: use \`fork_quiet\` (best effort, one-off) or \`fork_daemon(name, on_error=…, …)\` (a loop or a handler)`);
@@ -121,10 +192,21 @@ for (const pkg of packages("")) {
     }
   }
 }
+for (const [file, count] of syncFs) {
+  const most = MAIN_THREAD_SYNC_FS[file] ?? 0;
+  if (count > most) {
+    wrong.push(`${file}: ${count} waits on the disk on the program's thread (\`@drive.*\`, \`shell_sync("fs.*")\`), more than MAIN_THREAD_SYNC_FS's ${most} (scripts/mb-station.ts): read and write through \`@host.Host::{read_bytes, read_text, file_sha256, write_atomic, write_private}\` or \`host.shell("fs.*")\`, off the program's thread`);
+  } else if (count < most) {
+    wrong.push(`${file}: ${count} waits on the disk on the program's thread, fewer than MAIN_THREAD_SYNC_FS's ${most}: lower it to ${count} in scripts/mb-station.ts (it only falls)`);
+  }
+}
+for (const [file, most] of Object.entries(MAIN_THREAD_SYNC_FS)) {
+  if (!syncFs.has(file)) wrong.push(`${file}: in MAIN_THREAD_SYNC_FS (${most}) but not there or waiting on the disk no more: take it out of scripts/mb-station.ts`);
+}
 if (!seen.has(HOST_NET)) wrong.push(`${HOST_NET} is not there: HOST_NET (scripts/mb-station.ts) names the host's binding of the shell's sockets`);
 
 if (wrong.length > 0) {
   console.log(wrong.join("\n"));
-  console.log(`(${relative(process.cwd(), ROOT) || "station/mb/src"}: every error is said as words, a socket is opened through base/net, a fiber let go is quiet or a daemon, a wall is not the monotonic clock)`);
+  console.log(`(${relative(process.cwd(), ROOT) || "station/mb/src"}: every error is said as words, a socket is opened through base/net, a fiber let go is quiet or a daemon, a wall is not the monotonic clock, a file written beside has a name of its own, the slices' waits on the disk only fall, no value is written out to be read again)`);
   process.exit(1);
 }

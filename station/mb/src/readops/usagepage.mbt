@@ -539,9 +539,7 @@ fn config_profiles(
     }
   }
   // As JSON.stringify orders an object's keys (an index first).
-  @json.parse(@jsjson.stringify(Obj(out))) catch {
-    _ => Json::object(Map([]))
-  }
+  @jsjson.JValue::to_json(Obj(out))
 }
 
 // ── the page's year (usage.ts `usageHistory`) ──

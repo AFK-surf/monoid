@@ -491,9 +491,12 @@ if part ts; then
   # The station in MoonBit says each of its errors as words, never as its type's name (station/<package>.<Type>);
   # opens no more sockets by its shell's name than scripts/mb-station.ts's table lets each file, which only falls;
   # lets go of no fiber whose failure would fail the whole program (`fork_quiet` or `fork_daemon`, never a bare
-  # `ignore(….fork(…))`); and makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`).
+  # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
+  # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
+  # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
+  # which only falls; and makes no JavaScript value JSON by writing it out and reading it again.
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
-    step "the station in MoonBit: errors shown, raw shell sockets only fall, no bare fork, no monotonic wall" node scripts/mb-station.ts
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON" node scripts/mb-station.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.

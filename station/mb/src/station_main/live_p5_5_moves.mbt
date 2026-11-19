@@ -780,7 +780,7 @@ fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
         Null
       }
       "fs.writeFile" => {
-        @drive.write_private(s(args, 0), s(args, 1))
+        self.bus.host.write_private(s(args, 0), @utf8.encode(s(args, 1)), sep=sep())
         Null
       }
       "fs.rename" => {

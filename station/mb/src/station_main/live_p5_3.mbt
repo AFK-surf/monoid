@@ -268,13 +268,10 @@ async fn p53_write(host : @host.Host, path : String, text : String) -> Unit {
 }
 
 ///|
-/// A file of the station's user's alone written whole: beside it with mode 0600, then renamed into place.
+/// A file of the station's user's alone written whole: beside it under a name of its own with mode 0600, synced, then
+/// renamed into place (`Host::write_private`).
 async fn p53_write_private(host : @host.Host, path : String, bytes : Bytes) -> Unit {
-  ignore(host.shell("fs.mkdir", { "path": Json::string(@nodepath.dirname(sep(), path)), "recursive": Json::boolean(true) }))
-  let tmp = "\{path}.\{@drive.pid()}.tmp"
-  ignore(host.shell("fs.put", { "path": Json::string(tmp), "offset": Json::number(0.0), "truncate": Json::boolean(true), "mode": Json::number(384.0) }, bytes~))
-  ignore(host.shell("fs.chmod", { "path": Json::string(tmp), "mode": Json::number(384.0) }))
-  ignore(host.shell("fs.rename", { "from": Json::string(tmp), "to": Json::string(path) }))
+  host.write_private(path, bytes, sep=sep())
 }
 
 ///|

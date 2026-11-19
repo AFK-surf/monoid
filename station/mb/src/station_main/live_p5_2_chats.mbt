@@ -655,9 +655,9 @@ async fn P52::chats_answer(
       if meth == "profileFilesRead" {
         Null
       } else {
-        match attempt(() => @drive.read_all(s(0))) {
-          Ok(b) => j_s(@utf8.decode_lossy(b))
-          Err(_) => Null
+        match (self.host.read_text(s(0)) catch { _ => None }) {
+          Some(t) => j_s(t)
+          None => Null
         }
       }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
@@ -769,7 +769,7 @@ fn protected_place(p : String) -> Bool {
 
 ///|
 /// The files as the station's own file system answers (session_chats' `fs.*`).
-fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
+async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
   let s = (i : Int32) => {
     match args.get(i) {
       Some(String(x)) => x
@@ -793,10 +793,17 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
       other => @session_chats.Thrown("", said_of(other))
     }
   }
+  // (read off the program's thread; Node's ENOENT where it does not open, as `@drive.read_all`'s)
+  let read_whole = async fn(p : String) -> Bytes raise {
+    match (self.host.read_bytes(p) catch { e => raise fail(e) }) {
+      Some(b) => b
+      None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+    }
+  }
   match op {
     "readText" =>
       Json::string(
-        @utf8.decode_lossy(@drive.read_all(s(0)) catch { e => raise fail(e) }),
+        @utf8.decode_lossy(read_whole(s(0))),
       )
     "writeFile" => {
       // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it)
@@ -920,7 +927,7 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
     }
     "readBase64" =>
       Json::string(
-        @drive.base64(@drive.read_all(s(0)) catch { e => raise fail(e) }),
+        @drive.base64(read_whole(s(0))),
       )
     "stat" => {
       let st = @drive.stat(s(0)) catch { e => raise fail(e) }

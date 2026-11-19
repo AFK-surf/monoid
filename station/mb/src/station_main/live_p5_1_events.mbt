@@ -21,12 +21,12 @@ async fn run_said(host : @host.Host, program : String, args : Array[String], ms 
 
 ///|
 fn jv(j : Json) -> @jsjson.JValue {
-  @mesh_runtime.jvalue(j)
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 fn of_jv(v : @jsjson.JValue) -> Json {
-  @mesh_runtime.json_of(v)
+  v.to_json()
 }
 
 ///|

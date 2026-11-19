@@ -406,7 +406,7 @@ fn Actors::routed(self : Actors, a : Actor, n : Int, k : Int, generation : Int, 
   guard self.agents is Some(agents) else { return }
   guard agents.take(n, k) is Some((events, _)) else { return }
   for e in events {
-    let event = @json.parse(@jsjson.stringify(e)) catch { _ => continue }
+    let event = e.to_json()
     // (the live view takes each first, as it is: live.mbt)
     let mut read = Json::null()
     match str_of(event.value("type")) {
