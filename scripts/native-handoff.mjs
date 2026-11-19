@@ -16,20 +16,27 @@ async function transfer(url, options, consume) {
     try {
       response = await fetch(url, { ...options, redirect: "error", signal: AbortSignal.timeout(60_000) });
       if (response.ok) return await consume(response);
-      await response.body?.cancel();
-      throw new Error("HTTP " + response.status);
+      const text = (await response.text().catch(() => "")).trim().slice(0, 200);
+      throw Object.assign(new Error("HTTP " + response.status + (text ? ": " + text : "")), { status: response.status });
     } catch (error) {
       if (attempt === 3 || (response && !response.ok && response.status < 500 && response.status !== 429)) throw error;
     }
+    await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
   }
+}
+
+/** A new OIDC token of this run's, for the releases Worker. */
+async function oidcToken() {
+  const oidc = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+  oidc.searchParams.set("audience", origin);
+  const { value } = await transfer(oidc, { headers: { authorization: "Bearer " + process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN } }, (r) => r.json());
+  return value;
 }
 
 async function put(dir, manifest) {
   const files = await readdir(dir);
   if (!files.length) return;
-  const oidc = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
-  oidc.searchParams.set("audience", origin);
-  const { value: token } = await transfer(oidc, { headers: { authorization: "Bearer " + process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN } }, (r) => r.json());
+  let token = await oidcToken();
   const entries = [];
   for (const name of files) {
     if (!asset.test(name)) throw new Error("Unexpected native archive name: " + name);
@@ -37,7 +44,18 @@ async function put(dir, manifest) {
     const hash = createHash("sha256");
     for await (const bytes of createReadStream(join(dir, name), { highWaterMark: 16 * 1024 * 1024 })) {
       hash.update(bytes);
-      const part = await transfer(endpoint, { method: "PUT", headers: { authorization: "Bearer " + token }, body: bytes }, (r) => r.json());
+      // A 401 can be the Worker's clock behind GitHub's or a token run out over a long upload: a new token, twice.
+      let part;
+      for (let retry = 0; ; retry++) {
+        try {
+          part = await transfer(endpoint, { method: "PUT", headers: { authorization: "Bearer " + token }, body: bytes }, (r) => r.json());
+          break;
+        } catch (error) {
+          if (error?.status !== 401 || retry === 2) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 2000 * (retry + 1)));
+          token = await oidcToken();
+        }
+      }
       if (receipt.exec(part.receipt)?.[1] !== process.env.GITHUB_SHA) throw new Error("Invalid native upload receipt");
       chunks.push(part.receipt);
     }

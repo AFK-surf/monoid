@@ -124,19 +124,32 @@ function serviceIds(env: Env, relays: string[]): string[] {
 const passes = async (check: () => Promise<boolean>) => (await check().catch(() => false)) ? "up" : "down";
 
 const GITHUB_ACTIONS = "https://token.actions.githubusercontent.com";
-const githubKeys = createRemoteJWKSet(new URL(`${GITHUB_ACTIONS}/.well-known/jwks`));
+// (a cold isolate's first fetch of GitHub's keys has taken over jose's default 5 s, refusing a pipeline's upload)
+const githubKeys = createRemoteJWKSet(new URL(`${GITHUB_ACTIONS}/.well-known/jwks`), { timeoutDuration: 10_000 });
+/** What jose throws when the token itself is not good: anything else is GitHub's keys not being had now. */
+const REFUSED = /^ERR_(JWT|JWS)_|^ERR_JWKS_(NO_MATCHING_KEY|MULTIPLE_MATCHING_KEYS)$|^ERR_JOSE_(ALG_NOT_ALLOWED|NOT_SUPPORTED)$/;
 /** At most this much of what GitHub lists is read (20 issues, each up to its limit of some 64 KB). */
 const MAX_ISSUES = 2 * 1024 * 1024;
 
 /**
  * The claims of the OIDC token GitHub gave a workflow of STATUS_REPO_ID's repository, or null for any other's or none;
  * undefined where no repository is set. The repository is known by its id, which its renaming leaves as it was (the
- * name in `repository` and `workflow_ref` is then the new one).
+ * name in `repository` and `workflow_ref` is then the new one). "unavailable" where GitHub's keys could not be had (a
+ * timeout, an answer not 200): a 503 the workflow can try again, not a refusal. GitHub's clock may run ahead of the
+ * edge's by a second or more, so `nbf` and `iat` are given 30 s.
  */
-async function repositoryClaims(request: Request, env: Env): Promise<({ repository: string } & JWTPayload) | null | undefined> {
+async function repositoryClaims(request: Request, env: Env): Promise<({ repository: string } & JWTPayload) | null | undefined | "unavailable"> {
   if (!env.STATUS_REPO_ID) return undefined;
   const token = bearerToken(request);
-  const claims = token ? await jwtVerify(token, githubKeys, { issuer: GITHUB_ACTIONS, audience: env.PUBLIC_ORIGIN }).then((v) => v.payload, () => null) : null;
+  let claims: JWTPayload | null = null;
+  if (token) {
+    try {
+      claims = (await jwtVerify(token, githubKeys, { issuer: GITHUB_ACTIONS, audience: env.PUBLIC_ORIGIN, clockTolerance: 30 })).payload;
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !REFUSED.test(code)) return "unavailable";
+    }
+  }
   if (!claims || claims.repository_id !== env.STATUS_REPO_ID || typeof claims.repository !== "string") return null;
   return { ...claims, repository: claims.repository };
 }
@@ -145,6 +158,7 @@ async function repositoryClaims(request: Request, env: Env): Promise<({ reposito
 export async function stageNative(request: Request, env: Env): Promise<Response> {
   const claims = await repositoryClaims(request, env);
   if (claims === undefined || !env.RELEASES) return reply({ error: "not_found" }, 404);
+  if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || typeof claims.ref !== "string" || !claims.ref.startsWith("refs/heads/") || claims.ref === "refs/heads/main" ||
     (claims.event_name !== "push" && claims.event_name !== "workflow_dispatch") ||
     claims.workflow_ref !== `${claims.repository}/.github/workflows/pipeline.yml@${claims.ref}` ||
@@ -163,6 +177,7 @@ export async function stageNative(request: Request, env: Env): Promise<Response>
 export async function receiveIncidents(request: Request, env: Env): Promise<Response> {
   const claims = await repositoryClaims(request, env);
   if (claims === undefined) return reply({ error: "not_found" }, 404);
+  if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || claims.workflow_ref !== `${claims.repository}/.github/workflows/status-incidents.yml@refs/heads/main`) return denied();
   if (Number(request.headers.get("content-length") ?? 0) > MAX_ISSUES) return reply({ error: "too_large" }, 413);
   const issues: unknown = await request.json().catch(() => null);
@@ -181,6 +196,7 @@ const RELEASING = ["pipeline.yml", "stable.yml"];
 export async function receiveReleased(request: Request, env: Env): Promise<Response> {
   const claims = await repositoryClaims(request, env);
   if (claims === undefined) return reply({ error: "not_found" }, 404);
+  if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || !RELEASING.some((file) => claims.workflow_ref === `${claims.repository}/.github/workflows/${file}@refs/heads/main`)) return denied();
   await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" });
   return reply({ ok: true });
