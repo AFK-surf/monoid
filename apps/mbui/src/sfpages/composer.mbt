@@ -2468,6 +2468,7 @@ fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) 
   Some({
     words: w.field.words_at().map(fn(at) { at.0 }),
     quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
+    quote_ids: [],
     parts,
     delay: 0.0,
   })

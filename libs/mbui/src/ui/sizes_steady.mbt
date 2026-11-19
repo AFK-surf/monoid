@@ -646,6 +646,17 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
         }
+        // (on a flight's way: drawn in the window's terms, in no row of what it is drawn among (shared.mbt), what it
+        // holds measured from it as ever)
+        match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) if tr.lifted_at(id.at) => {
+            row_at[i] = 0.0
+            col_at[i] = 0.0
+            in_row[i] = false
+            set_out[i] = -1.0
+          }
+          _ => ()
+        }
       }
     }
     puts_now.each(fn(by, at) { sizes_steady.puts[by] = at })

@@ -313,20 +313,31 @@ fn ss_quote_seen(t : @ui.Tester) -> (Bool, Bool) {
 }
 
 ///|
-test "a chat's page made as nodes, 小屏 and 大屏: a quote with a comment sent: its words in the composer's card in the frame before the press, in their row whole at full ink in every frame after it, never both, never neither" {
+/// The quote's words the tree draws now, any of it seen: how opaque the most opaque copy is, and how many copies.
+fn ss_quote_inks() -> (Double, Int) {
+  let tree_n = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words.contains(quote_passage) && d.bones == 0L && d.alpha > 0.0 })
+  (tree_n.fold(init=0.0, fn(m, d) { if d.alpha > m { d.alpha } else { m } }), tree_n.length())
+}
+
+///|
+test "a chat's page made as nodes, 小屏 and 大屏: a quote with a comment sent: its words in the composer's card in the frame before the press; after it, its card flown as one box to its row's, the words of one of the two seen in every frame (the composer's going fainter till the row's take their place, half way), never both, never neither, the row's at full ink once it is there" {
   for screen in ss_screens {
     let (t, _) = ss_quoting(screen)
     t.type_text("这里要对齐")
     t.run_for(@ui.move_most_ms)
-    let seen = [ss_quote_seen(t)]
-    t.each_frame(Some(fn() { seen.push(ss_quote_seen(t)) }))
+    let first = ss_quote_seen(t)
+    let seen = [ss_quote_inks()]
+    t.each_frame(Some(fn() { seen.push(ss_quote_inks()) }))
     tap_send(t)
     t.run_shown(@ui.move_most_ms + 200.0)
     t.each_frame(None)
-    assert_eq(seen[0], (true, false), msg="\{screen.0}: before the press")
+    assert_eq(first, (true, false), msg="\{screen.0}: before the press")
     for i in 1..<seen.length() {
-      assert_eq(seen[i], (false, true), msg="\{screen.0}, frame \{i}")
+      let (most, n) = seen[i]
+      assert_true(most >= 0.5 - 1.0e-6 && n == 1, msg="\{screen.0}, frame \{i}: \{Repr(seen[i])}")
     }
+    assert_eq(seen[seen.length() - 1].1, 1, msg="\{screen.0}: at rest")
+    assert_eq(ss_quote_seen(t), (false, true), msg="\{screen.0}: at rest")
   }
 }
 

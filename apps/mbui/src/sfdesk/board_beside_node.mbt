@@ -68,8 +68,6 @@ fn board_beside_nodes(p : @view.View, src : Source, r : ChatRef, tips : @sf.TipL
     chat_body_nodes(col, retained, r, tips, fn() { 0 }, fn(n) {
       n
       .box(fn(at) {
-        // (over a picture flying out from under it, the round buttons the foot holds made before it under that picture)
-        at.flights_under() |> ignore
         @sfpages.chat_composer_node(at, retained, r, shows~, tips~, apart=fn() { false })
       })
       |> ignore

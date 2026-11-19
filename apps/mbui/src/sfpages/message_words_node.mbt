@@ -199,8 +199,14 @@ fn mine_said_node(
   // words on 窄排法))
   let flies_from = @sfbase.sent_from_take(@signals.untracked(key))
   let quotes_from = @sfbase.sent_quotes_from_take(@signals.untracked(key))
+  // (a composer made as nodes: the ids its quotes' cards were shared by, each card here flying from its own as one box)
+  let quote_ids = @sfbase.sent_quote_ids_take(@signals.untracked(key))
+  let quotes_n = if quotes_from.length() > quote_ids.length() { quotes_from.length() } else { quote_ids.length() }
+  let quotes_fly = Array::makei(quotes_n, fn(i) {
+    quotes_from.get(i).unwrap_or(None) is Some(_) || quote_ids.get(i).unwrap_or("") != ""
+  })
   let parts_flying = @sfbase.sent_parts_flying(@signals.untracked(key))
-  let has_parts = !parts_flying.is_empty() || quotes_from.iter().any(fn(q) { q is Some(_) })
+  let has_parts = !parts_flying.is_empty() || quotes_fly.iter().any(fn(q) { q })
   let made_at = v.cause_at()
   // (the node of what leads it, as it is made: what is under it comes in as that goes across, View::flight_across_now)
   // (a node handle, no value to compare: told once, as its lead is made, for the under's binding to follow)
@@ -212,7 +218,7 @@ fn mine_said_node(
     lead: sent_lead(
       flies_from is Some(_) && @signals.untracked(fn() { m().text != "" }),
       parts_flying,
-      quotes_from,
+      quotes_fly,
     ),
     led: fn(b) {
       lead_view.set(Some(b))
@@ -256,7 +262,7 @@ fn mine_said_node(
           |> ignore
         None => ()
       }
-      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, flies_of~, fly~)
+      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, shared_ids=quote_ids, flies_of~, fly~)
       message_files_node(
         col,
         src,
@@ -602,9 +608,9 @@ fn sent_quote_part(i : Int) -> String {
 ///|
 /// Which part of what was sent leads its flight (SentFly's `lead`), the old page's flight_target_key: its words where
 /// they fly (`words`); else the first of its files that flies (`parts`, as the composer held them: sfbase's
-/// sent_parts_flying); else its first quote's card that does (`quotes`, where each stood); else a quote's own picture;
+/// sent_parts_flying); else its first quote's card that does (`quotes`, whether each flies); else a quote's own picture;
 /// "" where none flies.
-fn sent_lead(words : Bool, parts : Array[String], quotes : Array[(Double, Double, Double, Double)?]) -> String {
+fn sent_lead(words : Bool, parts : Array[String], quotes : Array[Bool]) -> String {
   if words {
     return sent_words_part
   }
@@ -612,7 +618,7 @@ fn sent_lead(words : Bool, parts : Array[String], quotes : Array[(Double, Double
     Some(i) => return parts[i]
     None => ()
   }
-  match quotes.search_by(fn(q) { q is Some(_) }) {
+  match quotes.search_by(fn(q) { q }) {
     Some(i) => return sent_quote_part(i)
     None => ()
   }
@@ -645,6 +651,18 @@ fn SentFly::flies_in(
     from
   }
   v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~) |> ignore
+  if lead {
+    (self.led)(v)
+  }
+}
+
+///|
+/// Part `part` of what was sent (SentFly's keys) made as `v`, flying from the composer's that was shared by `id` as one
+/// box (mbui's View::shared, `container`: a quote's card from the composer's), with the rest of the send: on its flight,
+/// as long as its place is far (sent_far), led by its lead, its rise sent_up_late late.
+fn SentFly::shares(self : SentFly, v : @view.View, part : String, id : String) -> Unit {
+  let lead = part == self.lead
+  v.shared(Is(id), self.flight, container=true, up_late=sent_up_late, far_of=sent_far, lead~) |> ignore
   if lead {
     (self.led)(v)
   }

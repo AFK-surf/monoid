@@ -959,20 +959,6 @@ let quote_over_composer : Double = 9.0
 let quote_said_over : Double = 3.0
 
 ///|
-/// How much further in from its card's top left the words of a quote waiting in the composer stand than a message's
-/// quote card's (its source's room: quote_source_composer's against quote_box_message's and quote_source's; a pin's, of
-/// `author` and `role`, its own): what a message's card flown from where the composer's was is drawn off by, so its
-/// words set out where the composer's stood.
-pub fn quote_words_shift(author : String, role : String) -> (Double, Double) {
-  if pin_of(author, role) != "" {
-    let d = quote_pin_in_composer - quote_pin_in
-    (d, d)
-  } else {
-    (quote_in_composer.px() - (quote_card_in + quote_in), quote_over_composer - quote_card_in)
-  }
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 let quote_source_composer : @ui.Style = @ui.style(
   w=Full,

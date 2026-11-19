@@ -895,14 +895,14 @@ fn fly_way(t : Thumb, to : (Double, Double, Double, Double)?, window : (Double, 
 ///|
 /// How the viewer's picture flies from a thumbnail of a chat's page made as nodes and back into it (View::shared's
 /// `route`, said here, the app's: the user, 2026-11-17, 「应该让使用的地方去控制飞行轨迹和高度（层级）」), as the old page's
-/// flight goes (fly_way): out from under the chat's bar or composer at its own size first, as far as lift_of says, drawn
-/// under them meanwhile (FlightLevel's UnderFoot: the composer and the bar over it, as over_flight lifted them over the
-/// old page's flight), then grown to where the viewer shows it, over all of the page; one Move as long as all of it is
-/// far, the going out its share by how far it goes, the one handed to the other (route_handed) so that nothing stops or
-/// sets off in a step where they meet. The room the thumbnail is cut to (by its list, its card) opened as it grows.
-/// `window`: the window's size. With it, how far what goes with the flight it is told of is at each moment (its ground,
-/// a film's bars: Viewer::tree_way_told): none of it while the picture is under the bar or composer (drawn under the
-/// page's foot, so a ground over the page would be over it too), then in as it grows, to all of it at the viewer
+/// flight goes (fly_way): out from under the chat's bar or composer at its own size first, as far as lift_of says, what
+/// of it is seen meanwhile no more than what they leave clear (mbui's Tree::stays_bounds: never over the bar or the
+/// composer, as over_flight lifted them over the old page's flight), then grown to where the viewer shows it, over all
+/// of the page; one Move as long as all of it is far, the going out its share by how far it goes, the one handed to the
+/// other (route_handed) so that nothing stops or sets off in a step where they meet. What is seen of the thumbnail
+/// opened as it grows. `window`: the window's size. With it, how far what goes with the flight it is told of is at each
+/// moment (its ground, a film's bars: Viewer::tree_way_told): none of it while the picture is going out from under the
+/// bar or composer (still the page's, cut to what they leave clear), then in as it grows, to all of it at the viewer
 /// (route_seen).
 fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (Double) -> Double) -> (Double) -> Double) {
   // (the going out's share of the way, as the flight set out last worked it out)
@@ -940,22 +940,18 @@ fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (
       (t.x + (ox - t.x) * grown, y + (oy - y) * grown, t.w + (ow - t.w) * grown, t.h + (oh - t.h) * grown)
     },
     opened: fn(ends, p) { route_handed(from_thumb(ends, p), share.val).1 },
-    level: fn(ends, p) {
-      if route_handed(from_thumb(ends, p), share.val).0 < 1.0 {
-        UnderFoot
-      } else {
-        Held
-      }
-    },
+    // (under the bar or the composer over its thumbnail while it slides out from under it, as it lay there, till it
+    // is out: its slide not over, though it may have begun to grow)
+    in_stays: fn(ends, p) { route_handed(from_thumb(ends, p), share.val).0 < 1.0 },
   }
   (route, fn(back, along) { fn(t) { route_seen(if back { 1.0 - along(t) } else { along(t) }, share.val) } })
 }
 
 ///|
 /// How far what goes with the viewer's flight (its ground, a film's bars) is `q` of the way from the thumbnail, its
-/// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, drawn
-/// under the page's foot (a ground drawn over the page then would be drawn over it as well, the picture seen faded
-/// through it and whole again as it comes over all), then at one pace from there to all of it at the viewer.
+/// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, cut
+/// to what they leave clear (the page not yet seen to go dim under what is still part of it), then at one pace from
+/// there to all of it at the viewer.
 fn route_seen(q : Double, s : Double) -> Double {
   if s <= 0.0 {
     return dmin(1.0, dmax(0.0, q))

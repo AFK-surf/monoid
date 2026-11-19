@@ -11820,6 +11820,10 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   self.withins_owed = false
   self.laid_out(upto)
   self.laying = laying_was
+  // (what was let go of in this moment's changes and paired with nothing in them let go of: shared.mbt)
+  if !self.in_change() {
+    self.departures_kept_go()
+  }
   // (what was asked for in its layout, where it still stands: View::image_ask; in a change, as it is committed)
   if !self.in_change() {
     self.images_asked_now()
@@ -12697,27 +12701,17 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
 /// `holder` in it.
 fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   let n = self.nodes[at]
-  // (on a flight's way: drawn over the rest of its layer, put there as that ends, Tree::ordered_lifted; the one that
-  // moves of a flight with an end that stays drawn where it is held, what is drawn after it over it: Tree::lifted_over)
+  // (on a flight's way: drawn in what holds both its ends, put there after the later of them, Tree::ordered_lifted; the
+  // one that moves of a flight with an end that stays drawn where it is held, what is drawn after it over it:
+  // Tree::lifted_over)
   match n.lift {
-    Some(l) if !self.lifting && l.top != at && (self.lifted_over(n, l) || self.flies_under_foot(at)) => {
+    Some(l) if !self.lifting && l.host != at && self.lifted_over(n, l) => {
       self.tops[at] = top
       return
     }
     _ => ()
   }
   self.lifting = false
-  // (a flight drawn under this foot now (its route's level): put just before it, held by what holds it, so what is drawn
-  // over the column it pins over is over it too)
-  if self.flights.length() > 0 {
-    for f in self.flights {
-      if f.foot == at && self.alive_id(f.node) && self.under_foot(f) && f.node.at != at {
-        self.lifting = true
-        self.ordered(f.node.at, holder, top)
-      }
-    }
-    self.lifting = false
-  }
   if n.slot {
     self.tops[at] = top
     for k in n.kids {
@@ -12735,12 +12729,17 @@ fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   // (the node of the root's it is in: itself where the root holds it, through its slots alone; Tree::top_of)
   let top = if at == 0 { -1 } else if top < 0 { at } else { top }
   self.tops[at] = top
-  // (what the root holds, each by its place in the window's stack of layers: Tree::kids_in_order)
+  // (what the root holds, each by its place in the window's stack of layers: Tree::kids_in_order; what flies in it
+  // after the one it is drawn after, the rest after all it holds)
+  let flying = self.flights.length() > 0 && self.flights.iter().any(fn(f) { f.host == at })
   for k in self.kids_in_order(at) {
     self.ordered(k, me, top)
+    if flying {
+      self.ordered_lifted(at, k, me, top)
+    }
   }
-  if top == at && self.flights.length() > 0 {
-    self.ordered_lifted(at, me)
+  if flying {
+    self.ordered_lifted(at, -1, me, top)
   }
   self.order_end[me] = self.order.length()
 }
@@ -13209,6 +13208,8 @@ fn Tree::each_drawn_in_order(
   // ask at every node to know it is out of the inner again): such a list is a fault as it is made,
   // Tree::rows_list_nested_said.)
   let rg = self.rows_grid
+  // (what flies: a container's old copy draws what it holds fainter than itself, Tree::held_a)
+  let flying = self.flights.length() > 0
   let mut rows_at = -1
   let mut i = 0
   while i < len {
@@ -13271,7 +13272,11 @@ fn Tree::each_drawn_in_order(
       let bs = ws.unsafe_get(h)
       x = wx.unsafe_get(h) + bs * x
       y = wy.unsafe_get(h) + bs * y
-      a = wa.unsafe_get(h) * a
+      a = wa.unsafe_get(h) * a * (if flying { self.held_a(self.order.unsafe_get(h)) } else { 1.0 })
+      // (what flies apart from an old copy that holds it drawn nowhere in it: View::flies_apart)
+      if flying && self.apart_hidden(self.order.unsafe_get(i)) {
+        a = 0.0
+      }
       s = bs * s
       lx = ux.unsafe_get(h) + lx
       ly = uy.unsafe_get(h) + ly
@@ -13401,7 +13406,10 @@ pub fn Tree::drawn_one(
     if k < path.length() - 1 {
       nx = x + s * nx
       ny = y + s * ny
-      na = a * na
+      na = a * na * (if self.flights.length() > 0 { self.held_a(self.order[path[k + 1]]) } else { 1.0 })
+      if self.flights.length() > 0 && self.apart_hidden(self.order[path[k]]) {
+        na = 0.0
+      }
       ns = s * ns
       lx = ux + lx
       ly = uy + ly
@@ -13831,7 +13839,7 @@ fn Tree::projected(self : Tree, at : Int, drawn? : Bool = false) -> (Double, Dou
     let (ox, oy) = if drawn { m.look.drawn_off } else { (0.0, 0.0) }
     x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
     y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
-    a = a * m.la
+    a = a * m.la * (if k < chain.length() - 1 && self.flights.length() > 0 { self.held_a(chain[k + 1]) } else { 1.0 })
     s = s * m.ls
     // (on a flight's way: where the flight has it, shared.mbt)
     match m.lift {
