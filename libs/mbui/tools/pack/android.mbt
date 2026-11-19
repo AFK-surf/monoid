@@ -191,6 +191,9 @@ pub fn pack_android(
   @sys.makedirs(and_out)
   @sys.makedirs(build_out)
 
+  let mod_dir = m.resolve_module_dir(manifest_dir)
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "android", build_out, and_out)
+
   // Generate Android mipmap icons into <build_out>/android-res
   let icons_res = @sys.join(build_out, "android-res")
   if m.icon != "" {
@@ -274,6 +277,7 @@ pub fn pack_android(
           ),
         )
       }
+      run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "android", inject_dir, and_out)
       ignore(
         sh(
           "cd " + q(inject_dir) + " && zip -q -0 -r " + q(staged_apk) + " assets",
@@ -285,7 +289,7 @@ pub fn pack_android(
       let pkg = m.entry_pkg()
       let and_sh = @sys.join(mbui_dir, "scripts/android.sh")
       let quick_flag = if opts.quick { "1" } else { "0" }
-      let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+      let build_cmd = "MBUI_APP_MOD=" + q(mod_dir) +
         " MBUI_OUT=" + q(build_out) +
         " APP=" + q(pkg) +
         " ABI=" + q(abi) +
@@ -300,7 +304,10 @@ pub fn pack_android(
       if !@sys.is_file(built_apk) {
         die("built Android APK not found at \{built_apk}")
       }
+      run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "android", @sys.dirname(built_apk), and_out)
       repack_android(m, mbui_dir, built_apk, final_apk, repack_opts)
     }
   }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "android", and_out, and_out)
 }

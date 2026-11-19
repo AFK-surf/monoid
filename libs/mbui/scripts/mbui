@@ -1,14 +1,16 @@
 #!/bin/sh
 # Unified mbui app packager and scaffolding CLI (tools/pack, in MoonBit):
 #   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]
-#   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm]
+#   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]
+#   mbui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]
 #   mbui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]
 #   mbui pack [mbui.json] --target <t1,t2,...> [--variant V] [--out DIR] [--version VER] [--build N]
-#             [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...]
-#             [--sign-identity ID] [--notarize-profile P] [--ios-sdk ...] [--ios-profile ...]
+#             [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...] [--env K=V ...]
+#             [--sign-identity ID] [--keychain PATH] [--notarize-profile P] [--web-no-compress]
+#             [--ios-sdk ...] [--ios-profile ...]
 #             [--keystore ...] [--key-alias ...] [--ks-pass ...] [--key-pass ...] [--v3-signing] [--verify-cert ...]
 #             [--win-cert ...] [--win-cert-pass ...] [--win-timestamp ...] [--quick]
-#   mbui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [signing...]
+#   mbui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [--env K=V ...] [signing...]
 #   mbui publish [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [release args...]
 # Built here only when there is none built from these very sources (by content).
 D=$(cd "$(dirname "$0")" && pwd)

@@ -68,12 +68,20 @@ pub struct UpdaterConfig {
 }
 
 ///|
+pub struct HooksConfig {
+  pre_build : String
+  post_stage : String
+  post_pack : String
+}
+
+///|
 pub struct Manifest {
   app_id : String
   name : String
   executable : String
   version : String
   build : Int
+  module_dir : String
   entry : String
   icon : String
   icon_dark : String
@@ -88,6 +96,7 @@ pub struct Manifest {
   ios : IosConfig
   web : WebConfig
   updater : UpdaterConfig
+  hooks : HooksConfig
   variant : String
 }
 
@@ -98,11 +107,25 @@ pub struct CliOverrides {
   build : Int?
   app_id : String?
   runtime : String?
+  env : Array[(String, String)]
 }
 
 ///|
 pub fn CliOverrides::empty() -> CliOverrides {
-  { variant: None, version: None, build: None, app_id: None, runtime: None }
+  { variant: None, version: None, build: None, app_id: None, runtime: None, env: [] }
+}
+
+///|
+/// Parse a `--env KEY=VALUE` CLI flag into `(key, value)`.
+pub fn parse_env_override(raw : String) -> Result[(String, String), String] {
+  match raw.find("=") {
+    Some(idx) if idx > 0 => {
+      let k = raw.exact_view(start=0, end=idx).to_owned()
+      let v = raw.exact_view(start=idx + 1).to_owned()
+      Ok((k, v))
+    }
+    _ => Err("invalid --env '\{raw}': expected KEY=VALUE")
+  }
 }
 
 ///|
@@ -401,6 +424,11 @@ pub fn parse_manifest(text : String, overrides : CliOverrides) -> Result[Manifes
     return Err("field 'build' must be >= 1 (got \{build})")
   }
 
+  let module_dir = match opt_str(effective, "moduleDir", "") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+
   let entry = match opt_str(effective, "entry", "src/app") {
     Ok(s) => s
     Err(e) => return Err(e)
@@ -424,6 +452,9 @@ pub fn parse_manifest(text : String, overrides : CliOverrides) -> Result[Manifes
   let env = match opt_str_map(effective, "env") {
     Ok(m) => m
     Err(e) => return Err(e)
+  }
+  for kv in overrides.env {
+    env[kv.0] = kv.1
   }
   let resources = match opt_str_arr(effective, "resources", []) {
     Ok(a) => a
@@ -690,12 +721,36 @@ pub fn parse_manifest(text : String, overrides : CliOverrides) -> Result[Manifes
     public_key: upd_key,
   }
 
+  // hooks
+  let hooks_obj = match opt_obj(effective, "hooks") {
+    Ok(o) => o
+    Err(e) => return Err(e)
+  }
+  let hook_pre_build = match opt_str(hooks_obj, "preBuild", "") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let hook_post_stage = match opt_str(hooks_obj, "postStage", "") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let hook_post_pack = match opt_str(hooks_obj, "postPack", "") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let hooks : HooksConfig = {
+    pre_build: hook_pre_build,
+    post_stage: hook_post_stage,
+    post_pack: hook_post_pack,
+  }
+
   Ok({
     app_id,
     name,
     executable,
     version,
     build,
+    module_dir,
     entry,
     icon,
     icon_dark,
@@ -710,6 +765,7 @@ pub fn parse_manifest(text : String, overrides : CliOverrides) -> Result[Manifes
     ios,
     web,
     updater,
+    hooks,
     variant: variant_name,
   })
 }
@@ -722,6 +778,9 @@ pub fn Manifest::summary(self : Manifest) -> String {
   sb.write_string("name:       \{self.name}\n")
   sb.write_string("executable: \{self.executable}\n")
   sb.write_string("version:    \{self.version} (build \{self.build})\n")
+  if self.module_dir != "" {
+    sb.write_string("moduleDir:  \{self.module_dir}\n")
+  }
   sb.write_string("entry:      \{self.entry}\n")
   sb.write_string("runtime:    \{self.runtime}\n")
   if self.variant != "" {
@@ -827,7 +886,62 @@ pub fn Manifest::summary(self : Manifest) -> String {
       "updater:    feed=\{self.updater.feed} channel=\{self.updater.channel} key=\{self.updater.public_key}\n",
     )
   }
+  if self.hooks.pre_build != "" || self.hooks.post_stage != "" || self.hooks.post_pack != "" {
+    let hp : Array[String] = []
+    if self.hooks.pre_build != "" {
+      hp.push("preBuild")
+    }
+    if self.hooks.post_stage != "" {
+      hp.push("postStage")
+    }
+    if self.hooks.post_pack != "" {
+      hp.push("postPack")
+    }
+    let hlist = hp.join(", ")
+    sb.write_string("hooks:      [\{hlist}]\n")
+  }
   sb.to_string()
+}
+
+///|
+/// Normalize a POSIX path by resolving `.` and `..` segments without OS calls.
+fn normalize_posix_path(p : String) -> String {
+  let is_abs = p.has_prefix("/")
+  let parts : Array[String] = []
+  for part in p.split("/") {
+    let part = part.to_owned()
+    if part == "" || part == "." {
+      continue
+    }
+    if part == ".." {
+      if parts.length() > 0 && parts[parts.length() - 1] != ".." {
+        let _ = parts.pop()
+      } else if !is_abs {
+        parts.push("..")
+      }
+      continue
+    }
+    parts.push(part)
+  }
+  let joined = parts.join("/")
+  if is_abs {
+    "/" + joined
+  } else if joined == "" {
+    "."
+  } else {
+    joined
+  }
+}
+
+///|
+/// Resolve the MoonBit module directory: `moduleDir` relative to `manifest_dir`,
+/// or `manifest_dir` when `moduleDir` is empty.
+pub fn Manifest::resolve_module_dir(self : Manifest, manifest_dir : String) -> String {
+  if self.module_dir != "" {
+    normalize_posix_path(@sys.join(manifest_dir, self.module_dir))
+  } else {
+    manifest_dir
+  }
 }
 
 ///|
@@ -838,4 +952,140 @@ pub fn Manifest::entry_pkg(self : Manifest) -> String {
   } else {
     self.entry
   }
+}
+
+///|
+/// Render the resolved manifest (after variant merge and CLI overrides) as normalized JSON.
+pub fn render_meta_json(m : Manifest, manifest_dir : String) -> String {
+  let str_arr = fn(xs : Array[String]) -> @rjson.Value {
+    Arr(xs.map(fn(s) { @rjson.Value::Str(s) }))
+  }
+  let env_kvs = sorted_env_pairs(m.env).map(fn(kv) { (kv.0, @rjson.Value::Str(kv.1)) })
+  let ios_usage_kvs = m.ios.usage_descriptions.map(fn(kv) { (kv.0, @rjson.Value::Str(kv.1)) })
+  let kvs : Array[(String, @rjson.Value)] = [
+    ("appId", Str(m.app_id)),
+    ("name", Str(m.name)),
+    ("executable", Str(m.executable)),
+    ("version", Str(m.version)),
+    ("build", Num(m.build.to_string())),
+    ("variant", Str(m.variant)),
+    ("runtime", Str(m.runtime)),
+    ("moduleDir", Str(m.resolve_module_dir(manifest_dir))),
+    ("entry", Str(m.entry)),
+    ("urlSchemes", str_arr(m.url_schemes)),
+    ("env", Obj(env_kvs)),
+    (
+      "updater",
+      Obj([
+        ("feed", Str(m.updater.feed)),
+        ("channel", Str(m.updater.channel)),
+        ("publicKey", Str(m.updater.public_key)),
+      ]),
+    ),
+    (
+      "hooks",
+      Obj([
+        ("preBuild", Str(m.hooks.pre_build)),
+        ("postStage", Str(m.hooks.post_stage)),
+        ("postPack", Str(m.hooks.post_pack)),
+      ]),
+    ),
+    (
+      "macos",
+      Obj([
+        ("minVersion", Str(m.macos.min_version)),
+        ("category", Str(m.macos.category)),
+        ("entitlements", Str(m.macos.entitlements)),
+        ("formats", str_arr(m.macos.formats)),
+        ("infoPlist", Obj(m.macos.info_plist)),
+      ]),
+    ),
+    (
+      "windows",
+      Obj([
+        ("company", Str(m.windows.company)),
+        ("installDir", Str(m.windows.install_dir)),
+        ("formats", str_arr(m.windows.formats)),
+        ("rawForDelta", Bool(m.windows.raw_for_delta)),
+      ]),
+    ),
+    (
+      "linux",
+      Obj([
+        ("categories", str_arr(m.linux.categories)),
+        ("formats", str_arr(m.linux.formats)),
+      ]),
+    ),
+    (
+      "android",
+      Obj([
+        ("minSdk", Num(m.android.min_sdk.to_string())),
+        ("targetSdk", Num(m.android.target_sdk.to_string())),
+        ("compileSdk", Num(m.android.compile_sdk.to_string())),
+        ("abis", str_arr(m.android.abis)),
+        ("edgeToEdge", Bool(m.android.edge_to_edge)),
+        ("ground", Str(m.android.ground)),
+        ("permissions", str_arr(m.android.permissions)),
+        ("java", str_arr(m.android.java)),
+        ("res", str_arr(m.android.res)),
+        ("rules", str_arr(m.android.rules)),
+        ("lock", Str(m.android.lock)),
+        ("merged", str_arr(m.android.merged)),
+      ]),
+    ),
+    (
+      "ios",
+      Obj([
+        ("minVersion", Str(m.ios.min_version)),
+        ("edgeToEdge", Bool(m.ios.edge_to_edge)),
+        ("ground", Str(m.ios.ground)),
+        ("shareExtension", Bool(m.ios.share_extension)),
+        ("push", Bool(m.ios.push)),
+        ("entitlements", Str(m.ios.entitlements)),
+        ("usageDescriptions", Obj(ios_usage_kvs)),
+      ]),
+    ),
+    (
+      "web",
+      Obj([
+        ("title", Str(m.web.title)),
+        ("themeColorLight", Str(m.web.theme_color_light)),
+        ("themeColorDark", Str(m.web.theme_color_dark)),
+        ("brotli", Bool(m.web.brotli)),
+        ("pwa", Bool(m.web.pwa)),
+        ("head", Str(m.web.head)),
+      ]),
+    ),
+  ]
+  @rjson.dumps(Obj(kvs), indent=2, ensure_ascii=false) + "\n"
+}
+
+///|
+/// Render the resolved manifest as safe single-quoted POSIX shell assignments (`eval`-ready).
+pub fn render_meta_sh(m : Manifest, manifest_dir : String) -> String {
+  let sb = StringBuilder()
+  let emit = fn(k : String, v : String) -> Unit {
+    sb.write_string(k)
+    sb.write_char('=')
+    sb.write_string(q(v))
+    sb.write_char('\n')
+  }
+  let env_kv = sorted_env_pairs(m.env).map(fn(kv) { "\{kv.0}=\{kv.1}" }).join(";")
+  emit("MBUI_APP_ID", m.app_id)
+  emit("MBUI_APP_NAME", m.name)
+  emit("MBUI_EXECUTABLE", m.executable)
+  emit("MBUI_VERSION", m.version)
+  emit("MBUI_BUILD", m.build.to_string())
+  emit("MBUI_VARIANT", m.variant)
+  emit("MBUI_RUNTIME", m.runtime)
+  emit("MBUI_MODULE_DIR", m.resolve_module_dir(manifest_dir))
+  emit("MBUI_ENTRY", m.entry)
+  emit("MBUI_SCHEMES", m.url_schemes.join(","))
+  emit("MBUI_UPDATE_FEED", m.updater.feed)
+  emit("MBUI_UPDATE_CHANNEL", m.updater.channel)
+  emit("MBUI_ENV_KV", env_kv)
+  emit("MBUI_MAC_MIN_VERSION", m.macos.min_version)
+  emit("MBUI_WIN_INSTALL_DIR", m.windows.install_dir)
+  emit("MBUI_WIN_COMPANY", m.windows.company)
+  sb.to_string()
 }

@@ -1,16 +1,17 @@
 // Unified mbui app packager CLI (`libs/mbui/scripts/mbui`).
 //
 //   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]
-//   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm]
+//   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]
+//   mbui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]
 //   mbui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]
 //   mbui pack [mbui.json] --target <t1,t2,...> [--variant V] [--out DIR] [--version VER] [--build N]
-//             [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...]
-//             [--sign-identity ID] [--notarize-profile P]
+//             [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...] [--env K=V ...]
+//             [--sign-identity ID] [--keychain PATH] [--notarize-profile P] [--web-no-compress]
 //             [--keystore PATH] [--key-alias A] [--ks-pass SPEC] [--key-pass SPEC] [--v3-signing] [--verify-cert SHA256]
 //             [--win-cert PFX] [--win-cert-pass PASS] [--win-timestamp URL]
 //             [--ios-sdk iphonesimulator|iphoneos] [--ios-profile MOBILEPROVISION] [--quick]
 //   mbui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [--version VER]
-//               [--build N] [--app-id ID] [signing flags...]
+//               [--build N] [--app-id ID] [--env K=V ...] [signing flags...]
 //   mbui publish [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [release flags...]
 
 ///|
@@ -58,7 +59,10 @@ fn usage() -> String {
   sb.write_string("usage:\n")
   sb.write_string("  mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]\n")
   sb.write_string(
-    "  mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm]\n",
+    "  mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]\n",
+  )
+  sb.write_string(
+    "  mbui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]\n",
   )
   sb.write_string(
     "  mbui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]\n",
@@ -67,10 +71,13 @@ fn usage() -> String {
     "  mbui pack [mbui.json] --target <t1,t2,...> [--variant V] [--out DIR] [--version VER] [--build N]\n",
   )
   sb.write_string(
-    "            [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...]\n",
+    "            [--app-id ID] [--runtime native|wasm] [--runtime-dir DIR] [--wasm-aot] [--format ...] [--env K=V ...]\n",
   )
   sb.write_string(
-    "            [--sign-identity ID] [--notarize-profile P] [--ios-sdk iphonesimulator|iphoneos] [--ios-profile P]\n",
+    "            [--sign-identity ID] [--keychain PATH] [--notarize-profile P] [--web-no-compress]\n",
+  )
+  sb.write_string(
+    "            [--ios-sdk iphonesimulator|iphoneos] [--ios-profile P]\n",
   )
   sb.write_string(
     "            [--keystore PATH] [--key-alias A] [--ks-pass SPEC] [--key-pass SPEC] [--v3-signing] [--verify-cert SHA]\n",
@@ -79,7 +86,7 @@ fn usage() -> String {
     "            [--win-cert PFX] [--win-cert-pass PASS] [--win-timestamp URL] [--quick]\n",
   )
   sb.write_string(
-    "  mbui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [--version VER] [--build N] [--app-id ID] [signing...]\n",
+    "  mbui repack [mbui.json] --target android --in IN.apk --out OUT.apk [--variant V] [--version VER] [--build N] [--app-id ID] [--env K=V ...] [signing...]\n",
   )
   sb.write_string(
     "  mbui publish [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [release args...]\n",
@@ -169,6 +176,7 @@ fn run_check(args : Array[String]) -> Unit {
   let mut build : Int? = None
   let mut app_id : String? = None
   let mut runtime : String? = None
+  let env : Array[(String, String)] = []
   let mut i = 0
   while i < args.length() {
     match args[i] {
@@ -196,6 +204,14 @@ fn run_check(args : Array[String]) -> Unit {
         runtime = Some(next_arg(args, i, "--runtime"))
         i += 2
       }
+      "--env" => {
+        let raw = next_arg(args, i, "--env")
+        match parse_env_override(raw) {
+          Ok(kv) => env.push(kv)
+          Err(e) => die("check: \{e}")
+        }
+        i += 2
+      }
       a if a.has_prefix("-") => die("check: unknown flag \{a}")
       a => {
         if has_pos {
@@ -207,8 +223,80 @@ fn run_check(args : Array[String]) -> Unit {
       }
     }
   }
-  let (m, _) = load_manifest(manifest_path, { variant, version, build, app_id, runtime })
+  let (m, _) = load_manifest(manifest_path, { variant, version, build, app_id, runtime, env })
   @sys.out(m.summary())
+}
+
+///|
+fn run_meta(args : Array[String]) -> Unit {
+  let mut manifest_path = "mbui.json"
+  let mut has_pos = false
+  let mut variant : String? = None
+  let mut version : String? = None
+  let mut build : Int? = None
+  let mut app_id : String? = None
+  let mut runtime : String? = None
+  let env : Array[(String, String)] = []
+  let mut format = "json"
+  let mut i = 0
+  while i < args.length() {
+    match args[i] {
+      "--variant" => {
+        variant = Some(next_arg(args, i, "--variant"))
+        i += 2
+      }
+      "--version" => {
+        version = Some(next_arg(args, i, "--version"))
+        i += 2
+      }
+      "--build" => {
+        let raw = next_arg(args, i, "--build")
+        match parse_int_str(raw) {
+          Some(n) => build = Some(n)
+          None => die("invalid --build integer: \{raw}")
+        }
+        i += 2
+      }
+      "--app-id" => {
+        app_id = Some(next_arg(args, i, "--app-id"))
+        i += 2
+      }
+      "--runtime" => {
+        runtime = Some(next_arg(args, i, "--runtime"))
+        i += 2
+      }
+      "--env" => {
+        let raw = next_arg(args, i, "--env")
+        match parse_env_override(raw) {
+          Ok(kv) => env.push(kv)
+          Err(e) => die("meta: \{e}")
+        }
+        i += 2
+      }
+      "--format" => {
+        format = next_arg(args, i, "--format")
+        i += 2
+      }
+      a if a.has_prefix("-") => die("meta: unknown flag \{a}")
+      a => {
+        if has_pos {
+          die("meta: unexpected positional argument '\{a}'")
+        }
+        manifest_path = a
+        has_pos = true
+        i += 1
+      }
+    }
+  }
+  let (m, manifest_dir) = load_manifest(
+    manifest_path,
+    { variant, version, build, app_id, runtime, env },
+  )
+  match format {
+    "json" => @sys.out(render_meta_json(m, manifest_dir))
+    "sh" => @sys.out(render_meta_sh(m, manifest_dir))
+    _ => die("meta: unsupported --format '\{format}' (expected json or sh)")
+  }
 }
 
 ///|
@@ -249,7 +337,7 @@ fn run_icons(args : Array[String]) -> Unit {
   }
   let (m, manifest_dir) = load_manifest(
     manifest_path,
-    { variant, version: None, build: None, app_id: None, runtime: None },
+    { variant, version: None, build: None, app_id: None, runtime: None, env: [] },
   )
   let abs_out = @sys.abspath(out_dir)
   match generate_icons(m, manifest_dir, abs_out, platform) {
@@ -274,11 +362,14 @@ fn run_pack(args : Array[String]) -> Unit {
   let mut build : Int? = None
   let mut app_id : String? = None
   let mut runtime : String? = None
+  let env : Array[(String, String)] = []
   let mut formats : Array[String] = []
   let mut runtime_dir = ""
   let mut wasm_aot = false
   let mut quick = false
+  let mut web_no_compress = false
   let mut sign_identity = ""
+  let mut keychain = ""
   let mut notarize_profile = ""
   let mut keystore = ""
   let mut key_alias = ""
@@ -327,12 +418,24 @@ fn run_pack(args : Array[String]) -> Unit {
         runtime = Some(next_arg(args, i, "--runtime"))
         i += 2
       }
+      "--env" => {
+        let raw = next_arg(args, i, "--env")
+        match parse_env_override(raw) {
+          Ok(kv) => env.push(kv)
+          Err(e) => die("pack: \{e}")
+        }
+        i += 2
+      }
       "--runtime-dir" => {
         runtime_dir = next_arg(args, i, "--runtime-dir")
         i += 2
       }
       "--wasm-aot" => {
         wasm_aot = true
+        i += 1
+      }
+      "--web-no-compress" => {
+        web_no_compress = true
         i += 1
       }
       "--format" => {
@@ -346,6 +449,10 @@ fn run_pack(args : Array[String]) -> Unit {
       }
       "--sign-identity" => {
         sign_identity = next_arg(args, i, "--sign-identity")
+        i += 2
+      }
+      "--keychain" => {
+        keychain = next_arg(args, i, "--keychain")
         i += 2
       }
       "--notarize-profile" => {
@@ -432,7 +539,7 @@ fn run_pack(args : Array[String]) -> Unit {
   }
   let (m, manifest_dir) = load_manifest(
     manifest_path,
-    { variant, version, build, app_id, runtime },
+    { variant, version, build, app_id, runtime, env },
   )
   let abs_out = if out_dir != "" {
     @sys.abspath(out_dir)
@@ -445,7 +552,9 @@ fn run_pack(args : Array[String]) -> Unit {
     runtime_dir,
     wasm_aot,
     quick,
+    web_no_compress,
     sign_identity,
+    keychain,
     notarize_profile,
     keystore,
     key_alias,
@@ -462,7 +571,7 @@ fn run_pack(args : Array[String]) -> Unit {
   }
   for t in targets {
     match t {
-      "web" => pack_web(m, manifest_dir, root, abs_out, quick)
+      "web" => pack_web(m, manifest_dir, root, abs_out, opts)
       "mac" => pack_mac(m, manifest_dir, root, abs_out, opts)
       "win" => pack_win(m, manifest_dir, root, abs_out, opts)
       "linux" => pack_linux(m, manifest_dir, root, abs_out, opts)
@@ -484,6 +593,7 @@ fn run_repack(args : Array[String]) -> Unit {
   let mut version : String? = None
   let mut build : Int? = None
   let mut app_id : String? = None
+  let env : Array[(String, String)] = []
   let mut keystore = ""
   let mut key_alias = ""
   let mut ks_pass = ""
@@ -524,6 +634,14 @@ fn run_repack(args : Array[String]) -> Unit {
       }
       "--app-id" => {
         app_id = Some(next_arg(args, i, "--app-id"))
+        i += 2
+      }
+      "--env" => {
+        let raw = next_arg(args, i, "--env")
+        match parse_env_override(raw) {
+          Ok(kv) => env.push(kv)
+          Err(e) => die("repack: \{e}")
+        }
         i += 2
       }
       "--keystore" => {
@@ -581,7 +699,7 @@ fn run_repack(args : Array[String]) -> Unit {
   }
   let (m, _) = load_manifest(
     manifest_path,
-    { variant, version, build, app_id, runtime: None },
+    { variant, version, build, app_id, runtime: None, env },
   )
   let opts : PackOptions = {
     ..PackOptions::default(),
@@ -687,7 +805,7 @@ fn run_publish(args : Array[String]) -> Unit {
   }
   let (m, _) = load_manifest(
     manifest_path,
-    { variant, version, build, app_id, runtime: None },
+    { variant, version, build, app_id, runtime: None, env: [] },
   )
   let fwd = build_publish_args(m, passthrough)
   let quoted = fwd.map(q).join(" ")
@@ -713,6 +831,7 @@ fn main {
   match subcmd {
     "init" => run_init(rest)
     "check" => run_check(rest)
+    "meta" => run_meta(rest)
     "icons" => run_icons(rest)
     "pack" => run_pack(rest)
     "repack" => run_repack(rest)

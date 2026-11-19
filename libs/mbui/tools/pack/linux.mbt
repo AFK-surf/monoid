@@ -233,6 +233,9 @@ pub fn pack_linux(
   ignore(sh("rm -rf " + q(stage), "clean linux stage"))
   @sys.makedirs(stage)
 
+  let mod_dir = m.resolve_module_dir(manifest_dir)
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "linux", stage, lin_out)
+
   let exe_dst = @sys.join(stage, m.executable)
   let mut arch = "x64"
 
@@ -282,14 +285,14 @@ pub fn pack_linux(
     let pkg = m.entry_pkg()
     let mode = if opts.quick { "debug" } else { "release" }
     let lin_sh = @sys.join(mbui_dir, "scripts/linux.sh")
-    let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+    let build_cmd = "MBUI_APP_MOD=" + q(mod_dir) +
       " MBUI_OUT=" + q(build_out) +
       " APP=" + q(pkg) +
       " MODE=" + q(mode) +
       " bash " + q(lin_sh) + " build"
     say("building Linux binary (\{pkg}, \{mode})...")
     ignore(sh(build_cmd, "linux.sh build"))
-    let exe_src = find_linux_native_exe(build_out, manifest_dir, pkg, mode)
+    let exe_src = find_linux_native_exe(build_out, mod_dir, pkg, mode)
     ignore(
       sh(
         "cp -p " + q(exe_src) + " " + q(exe_dst) + " && chmod +x " + q(exe_dst),
@@ -351,6 +354,8 @@ pub fn pack_linux(
     Err(e) => die(e)
   }
   ignore(sh("chmod +x " + q(install_dst), "chmod +x install.sh"))
+
+  run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "linux", stage, lin_out)
 
   let desktop_tmpl_path = @sys.join(mbui_dir, "pack/linux/desktop.in")
   let desktop_tmpl = @sys.read_text(desktop_tmpl_path).unwrap_or("")
@@ -464,4 +469,6 @@ pub fn pack_linux(
       _ => die("unknown Linux format '\{fmt}' (expected tar.gz, deb, or appimage)")
     }
   }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "linux", stage, lin_out)
 }

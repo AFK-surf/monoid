@@ -40,6 +40,7 @@ libs/mbui/scripts/mbui pack ./my-app/mbui.json \
   "executable": "Acme-Client",
   "version": "1.0.0",
   "build": 1,
+  "moduleDir": "ui",
   "entry": "src/app",
   "icon": "assets/icon.png",
   "iconDark": "assets/icon-dark.png",
@@ -49,6 +50,11 @@ libs/mbui/scripts/mbui pack ./my-app/mbui.json \
     "ACME_API": "https://api.example.com"
   },
   "resources": ["assets/fonts"],
+  "hooks": {
+    "preBuild": "",
+    "postStage": "",
+    "postPack": ""
+  },
   "macos": {
     "minVersion": "13.0",
     "category": "public.app-category.productivity",
@@ -116,12 +122,36 @@ libs/mbui/scripts/mbui pack ./my-app/mbui.json \
 }
 ```
 
-### Multi-Channel & White-Label Variants (`--variant`)
+### Multi-Channel & White-Label Variants (`--variant`) & `--env`
 
-Any key under `variants.<name>` is deep-merged on top of the base manifest. CLI flags (`--version`, `--build`, `--app-id`, `--runtime`) take highest precedence:
+Any key under `variants.<name>` is deep-merged on top of the base manifest. CLI flags (`--version`, `--build`, `--app-id`, `--runtime`, and repeatable `--env K=V`) take highest precedence:
 
 ```bash
-libs/mbui/scripts/mbui pack mbui.json --variant beta --version 1.1.0 --build 42 --target mac,win
+libs/mbui/scripts/mbui pack mbui.json --variant beta --version 1.1.0 --build 42 --env ACME_API=https://beta.example.com --target mac,win
+```
+
+### Multi-Module Layout (`moduleDir`)
+
+When `mbui.json` lives at the repository root while the MoonBit UI module lives in a subdirectory (for example `ui/`), set `"moduleDir": "ui"` (also overridable per variant). MoonBit builds (`moon build`, `moon.mod`, `moon.work`, `_build/`) resolve against `moduleDir`, while manifest-relative paths (`icon`, `iconDark`, `resources`, `entitlements`, `android.*`, `hooks.*`, default `--out`) stay relative to `mbui.json`.
+
+### Lifecycle Hooks (`hooks`)
+
+Optional shell commands under `hooks` (`preBuild`, `postStage`, `postPack`, deep-merged across `variants`) run in `cwd = <manifest_dir>` via `sh -c` with standard `MBUI_*` environment variables (`MBUI_HOOK_PHASE`, `MBUI_TARGET`, `MBUI_RUNTIME`, `MBUI_VARIANT`, `MBUI_APP_ID`, `MBUI_APP_NAME`, `MBUI_EXECUTABLE`, `MBUI_VERSION`, `MBUI_BUILD`, `MBUI_MANIFEST_DIR`, `MBUI_MODULE_DIR`, `MBUI_STAGE_DIR`, `MBUI_OUT_DIR`, `MBUI_DIR`):
+
+- `preBuild`: before compiling the target (e.g., build native libraries or generate assets).
+- `postStage`: after binaries/assets/metadata are staged into `MBUI_STAGE_DIR`, **before** signing and archive compression (e.g., copy extra `.wasm`/fonts, patch `host.js` before `.gz`/`.br` compression, or copy extra `Contents/Frameworks/*.{dylib,framework}` on macOS before nested inside-out signing).
+- `postPack`: after all target formats finish packaging.
+
+### Exporting Resolved Metadata (`mbui meta`)
+
+Existing build or CI scripts can consume `mbui.json` as a single source of truth via `mbui meta`:
+
+```bash
+# Normalized JSON (after variant merge and CLI overrides)
+libs/mbui/scripts/mbui meta mbui.json --variant beta --env EXTRA_URL=https://x.test --format json
+
+# Safe single-quoted POSIX shell assignments (eval-ready)
+eval "$(libs/mbui/scripts/mbui meta mbui.json --variant beta --env EXTRA_URL=https://x.test --format sh)"
 ```
 
 ---
@@ -166,17 +196,18 @@ libs/mbui/scripts/mbui icons mbui.json --out ./dist/icons --platform all
 libs/mbui/scripts/mbui pack mbui.json --target web --out ./dist
 ```
 
-Outputs static assets (`index.html`, JS bundle, `host.js`, PWA manifest/icons, optional `.br` pre-compressed assets).
+Outputs static assets (`index.html`, JS bundle, `host.js`, PWA manifest/icons, and pre-compressed `.gz` / optional `.br` assets generated after `postStage` so hook-added or patched `.js`/`.html`/`.wasm` files stay in sync; pass `--web-no-compress` to skip compression).
 
 ### macOS (`--target mac`)
 
-Supported `--format`: `app`, `zip`, `dmg` (comma-separated).
+Supported `--format`: `app`, `zip`, `dmg` (comma-separated). Pass `--keychain <PATH>` when signing from a temporary CI keychain.
 
 ```bash
 libs/mbui/scripts/mbui pack mbui.json \
   --target mac --runtime wasm --runtime-dir ./runtime \
   --format app,dmg,zip \
   --sign-identity "Developer ID Application: Acme Inc. (TEAMID)" \
+  --keychain ./build.keychain-db \
   --notarize-profile "acme-notary" \
   --out ./dist
 ```
@@ -238,6 +269,7 @@ libs/mbui/scripts/mbui pack mbui.json \
   --target ios --runtime wasm --runtime-dir ./runtime \
   --ios-sdk iphoneos \
   --sign-identity "Apple Distribution: Acme Inc. (TEAMID)" \
+  --keychain ./build.keychain-db \
   --ios-profile ./certs/acme.mobileprovision \
   --out ./dist
 ```

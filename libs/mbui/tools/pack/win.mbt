@@ -175,6 +175,9 @@ pub fn pack_win(
   ignore(sh("rm -rf " + q(stage), "clean win stage"))
   @sys.makedirs(stage)
 
+  let mod_dir = m.resolve_module_dir(manifest_dir)
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "win", stage, win_out)
+
   // Generate app.ico if icon configured
   let mut has_icon = false
   let ico_path = @sys.join(stage, "app.ico")
@@ -258,14 +261,14 @@ pub fn pack_win(
     let pkg = m.entry_pkg()
     let mode = if opts.quick { "debug" } else { "release" }
     let win_sh = @sys.join(mbui_dir, "scripts/win.sh")
-    let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+    let build_cmd = "MBUI_APP_MOD=" + q(mod_dir) +
       " MBUI_WIN_RES=" + q(res_path) +
       " APP=" + q(pkg) +
       " MODE=" + q(mode) +
       " bash " + q(win_sh) + " build"
     say("building Windows binary (\{pkg}, \{mode})...")
     ignore(sh(build_cmd, "win.sh build"))
-    let exe_src = find_win_native_exe(mbui_dir, manifest_dir, pkg, mode)
+    let exe_src = find_win_native_exe(mbui_dir, mod_dir, pkg, mode)
     ignore(sh("cp -p " + q(exe_src) + " " + q(exe_dst), "copy windows exe"))
   }
 
@@ -278,6 +281,8 @@ pub fn pack_win(
     let dst_res = @sys.join(stage, @sys.basename(res))
     ignore(sh("cp -R " + q(src_res) + " " + q(dst_res), "copy resource"))
   }
+
+  run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "win", stage, win_out)
 
   sign_win_file(exe_dst, opts)
 
@@ -363,4 +368,6 @@ pub fn pack_win(
       _ => die("unknown Windows format '\{fmt}' (expected portable, zip, or setup)")
     }
   }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "win", stage, win_out)
 }

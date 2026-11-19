@@ -109,10 +109,26 @@ pub fn render_ios_appicon_contents_json(has_dark? : Bool = false) -> String {
 }
 
 ///|
-fn ios_sign_item(path : String, sign_identity : String, ent_arg : String) -> Unit {
+pub fn build_ios_codesign_cmd(
+  path : String,
+  sign_identity : String,
+  ent_arg : String,
+  keychain : String,
+) -> String {
   let id = if sign_identity != "" { sign_identity } else { "-" }
   let ts = if id == "-" { " --timestamp=none" } else { "" }
-  let cmd = "codesign --force --sign " + q(id) + ts + ent_arg + " " + q(path)
+  let kc = if keychain != "" { " --keychain " + q(keychain) } else { "" }
+  "codesign --force --sign " + q(id) + ts + kc + ent_arg + " " + q(path)
+}
+
+///|
+fn ios_sign_item(
+  path : String,
+  sign_identity : String,
+  ent_arg : String,
+  keychain : String,
+) -> Unit {
+  let cmd = build_ios_codesign_cmd(path, sign_identity, ent_arg, keychain)
   ignore(sh(cmd, "codesign iOS " + @sys.basename(path)))
 }
 
@@ -131,9 +147,13 @@ pub fn pack_ios(
   let ios_out = @sys.join(out_dir, "ios")
   let build_out = @sys.join(out_dir, ".build")
   let stage_meta = @sys.join(build_out, "ios-meta")
+  let app_dir = @sys.join(ios_out, m.name + ".app")
   @sys.makedirs(ios_out)
   @sys.makedirs(build_out)
   @sys.makedirs(stage_meta)
+
+  let mod_dir = m.resolve_module_dir(manifest_dir)
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "ios", app_dir, ios_out)
 
   // Generate Assets.xcassets/AppIcon.appiconset if icon configured
   let assets_dir = @sys.join(stage_meta, "Assets.xcassets")
@@ -177,7 +197,6 @@ pub fn pack_ios(
   }
   ignore(sh("plutil -lint " + q(plist_src), "plutil -lint iOS Info.plist"))
 
-  let app_dir = @sys.join(ios_out, m.name + ".app")
   ignore(sh("rm -rf " + q(app_dir), "clean iOS app bundle"))
 
   if m.runtime == "wasm" {
@@ -239,7 +258,7 @@ pub fn pack_ios(
     let pkg = m.entry_pkg()
     let ios_sh = @sys.join(mbui_dir, "scripts/ios.sh")
     let assets_env = if has_assets { " MBUI_IOS_ASSETS=" + q(assets_dir) } else { "" }
-    let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+    let build_cmd = "MBUI_APP_MOD=" + q(mod_dir) +
       " MBUI_OUT=" + q(build_out) +
       " MBUI_IOS_SDK=" + q(sdk) +
       " MBUI_IOS_ID=" + q(m.app_id) +
@@ -252,7 +271,7 @@ pub fn pack_ios(
     say("building iOS app (\{pkg}, \{sdk})...")
     ignore(sh(build_cmd, "ios.sh build"))
     let built_sub = if sdk == "iphoneos" { "out/ios-device/MBUI.app" } else { "out/ios/MBUI.app" }
-    let built_app = @sys.join(manifest_dir, built_sub)
+    let built_app = @sys.join(mod_dir, built_sub)
     if !@sys.is_dir(built_app) {
       die("built iOS app not found at \{built_app}")
     }
@@ -287,6 +306,8 @@ pub fn pack_ios(
     )
   }
 
+  run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "ios", app_dir, ios_out)
+
   // Nested signing: Frameworks first, then .app bundle
   let ent_arg = if m.ios.entitlements != "" {
     let ep = @sys.join(manifest_dir, m.ios.entitlements)
@@ -299,14 +320,16 @@ pub fn pack_ios(
   }
   let fw_dir = @sys.join(app_dir, "Frameworks")
   if @sys.is_dir(fw_dir) {
-    for entry in @sys.list_dir(fw_dir) {
+    let entries = @sys.list_dir(fw_dir)
+    entries.sort_by(fn(a, b) { @rjson.str_cmp(a, b) })
+    for entry in entries {
       if entry.has_suffix(".dylib") || entry.has_suffix(".framework") {
-        ios_sign_item(@sys.join(fw_dir, entry), opts.sign_identity, "")
+        ios_sign_item(@sys.join(fw_dir, entry), opts.sign_identity, "", opts.keychain)
       }
     }
   }
   if opts.sign_identity != "" || sdk == "iphonesimulator" {
-    ios_sign_item(app_dir, opts.sign_identity, ent_arg)
+    ios_sign_item(app_dir, opts.sign_identity, ent_arg, opts.keychain)
   }
 
   let formats = if opts.formats.length() > 0 { opts.formats } else { ["app"] }
@@ -338,4 +361,6 @@ pub fn pack_ios(
       _ => die("unknown iOS format '\{fmt}' (expected app or ipa)")
     }
   }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "ios", app_dir, ios_out)
 }

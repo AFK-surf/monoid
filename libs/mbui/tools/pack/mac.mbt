@@ -177,13 +177,29 @@ fn mac_host_triple() -> String {
 }
 
 ///|
-fn sign_mac_item(target_path : String, sign_identity : String, ent_arg : String) -> Unit {
-  let cmd = if sign_identity != "" && sign_identity != "-" {
-    "codesign --force --options runtime --timestamp" + ent_arg +
+pub fn build_mac_codesign_cmd(
+  target_path : String,
+  sign_identity : String,
+  ent_arg : String,
+  keychain : String,
+) -> String {
+  let kc_arg = if keychain != "" { " --keychain " + q(keychain) } else { "" }
+  if sign_identity != "" && sign_identity != "-" {
+    "codesign --force --options runtime --timestamp" + kc_arg + ent_arg +
     " --sign " + q(sign_identity) + " " + q(target_path)
   } else {
-    "codesign --force --sign - --timestamp=none" + ent_arg + " " + q(target_path)
+    "codesign --force --sign - --timestamp=none" + kc_arg + ent_arg + " " + q(target_path)
   }
+}
+
+///|
+fn sign_mac_item(
+  target_path : String,
+  sign_identity : String,
+  ent_arg : String,
+  keychain : String,
+) -> Unit {
+  let cmd = build_mac_codesign_cmd(target_path, sign_identity, ent_arg, keychain)
   ignore(sh(cmd, "codesign " + @sys.basename(target_path)))
 }
 
@@ -200,12 +216,15 @@ pub fn pack_mac(
   @sys.makedirs(mac_out)
   @sys.makedirs(build_out)
 
+  let mod_dir = m.resolve_module_dir(manifest_dir)
   let pkg = m.entry_pkg()
   let mode = if opts.quick { "debug" } else { "release" }
   let app_dir = @sys.join(mac_out, m.name + ".app")
   let macos_dir = @sys.join(app_dir, "Contents/MacOS")
   let frameworks_dir = @sys.join(app_dir, "Contents/Frameworks")
   let res_dir = @sys.join(app_dir, "Contents/Resources")
+
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "mac", app_dir, mac_out)
 
   ignore(sh("rm -rf " + q(app_dir), "clean app bundle"))
   @sys.makedirs(macos_dir)
@@ -249,7 +268,7 @@ pub fn pack_mac(
     ignore(sh("cp -p " + q(payload_path) + " " + q(payload_dst), "copy app." + ext))
   } else {
     let mac_sh = @sys.join(mbui_dir, "scripts/mac.sh")
-    let build_cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+    let build_cmd = "MBUI_APP_MOD=" + q(mod_dir) +
       " MBUI_OUT=" + q(build_out) +
       " APP=" + q(pkg) +
       " MODE=" + q(mode) +
@@ -258,7 +277,7 @@ pub fn pack_mac(
     say("building macOS binary (\{pkg}, \{mode})...")
     ignore(sh(build_cmd, "mac.sh build"))
 
-    let exe_src = find_native_exe(manifest_dir, pkg, mode)
+    let exe_src = find_native_exe(mod_dir, pkg, mode)
     ignore(sh("cp " + q(exe_src) + " " + q(exe_dst) + " && chmod +x " + q(exe_dst), "copy binary"))
     ignore(sh("strip -S -x " + q(exe_dst), "strip binary"))
   }
@@ -297,6 +316,22 @@ pub fn pack_mac(
   }
   ignore(sh("plutil -lint " + q(plist_path), "plutil -lint"))
 
+  run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "mac", app_dir, mac_out)
+
+  // Re-scan Contents/Frameworks after postStage so hook-added frameworks/dylibs are signed inside-out
+  if @sys.is_dir(frameworks_dir) {
+    let entries = @sys.list_dir(frameworks_dir)
+    entries.sort_by(fn(a, b) { @rjson.str_cmp(a, b) })
+    for entry in entries {
+      if entry.has_suffix(".dylib") || entry.has_suffix(".framework") {
+        let p = @sys.join(frameworks_dir, entry)
+        if !nested_to_sign.contains(p) {
+          nested_to_sign.push(p)
+        }
+      }
+    }
+  }
+
   // Codesign (strict Apple nested order: inside-out, Frameworks dylibs first, then .app bundle)
   let ent_arg = if m.macos.entitlements != "" {
     let ep = @sys.join(manifest_dir, m.macos.entitlements)
@@ -309,9 +344,9 @@ pub fn pack_mac(
   }
   say("signing \{m.name}.app...")
   for nested in nested_to_sign {
-    sign_mac_item(nested, opts.sign_identity, "")
+    sign_mac_item(nested, opts.sign_identity, "", opts.keychain)
   }
-  sign_mac_item(app_dir, opts.sign_identity, ent_arg)
+  sign_mac_item(app_dir, opts.sign_identity, ent_arg, opts.keychain)
   ignore(sh("codesign --verify --deep --strict " + q(app_dir), "codesign --verify"))
 
   // Optional notarization
@@ -382,4 +417,6 @@ pub fn pack_mac(
       _ => die("unknown macOS format '\{fmt}' (expected app, zip, or dmg)")
     }
   }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "mac", app_dir, mac_out)
 }

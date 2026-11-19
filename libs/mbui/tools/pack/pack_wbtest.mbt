@@ -100,7 +100,7 @@ test "manifest rejects invalid inputs" {
   assert_true(
     parse_manifest(
       sample_manifest,
-      { variant: Some("nonexistent"), version: None, build: None, app_id: None, runtime: None },
+      { variant: Some("nonexistent"), version: None, build: None, app_id: None, runtime: None, env: [] },
     )
     is Err(_),
   )
@@ -114,6 +114,7 @@ test "variant deep-merge preserves base env and platform fields, CLI overrides w
     build: Some(99),
     app_id: Some("dev.override.id"),
     runtime: Some("wasm"),
+    env: [],
   }
   let m = match parse_manifest(sample_manifest, overrides) {
     Ok(m) => m
@@ -483,4 +484,200 @@ test "build_publish_args enforces scripts/release subcommand and flag contract" 
   // Explicit --version/--kind on "sign" are not duplicated
   let sign_args = build_publish_args(m, ["sign", "--version", "9.9.9", "--kind", "custom.id", "a.zip"])
   assert_eq(sign_args, ["sign", "--build", "128", "--version", "9.9.9", "--kind", "custom.id", "a.zip"])
+}
+
+///|
+test "moduleDir parsing, variant override, and resolve_module_dir" {
+  let raw =
+    #|{
+    #|  "appId": "dev.example.multi",
+    #|  "name": "Multi Mod",
+    #|  "moduleDir": "ui",
+    #|  "variants": {
+    #|    "alt": {
+    #|      "moduleDir": "packages/alt-ui"
+    #|    }
+    #|  }
+    #|}
+  let m_base = match parse_manifest(raw, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_eq(m_base.module_dir, "ui")
+  assert_eq(m_base.resolve_module_dir("/workspace/repo"), "/workspace/repo/ui")
+
+  let m_alt = match
+    parse_manifest(raw, { ..CliOverrides::empty(), variant: Some("alt") }) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_eq(m_alt.module_dir, "packages/alt-ui")
+  assert_eq(m_alt.resolve_module_dir("/workspace/repo"), "/workspace/repo/packages/alt-ui")
+  assert_eq(normalize_posix_path("/workspace/repo/sub/../ui/./"), "/workspace/repo/ui")
+
+  // Empty moduleDir returns manifest_dir unchanged
+  let m_empty = match
+    parse_manifest("{\"appId\": \"dev.example.flat\", \"name\": \"Flat\"}", CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_eq(m_empty.module_dir, "")
+  assert_eq(m_empty.resolve_module_dir("/workspace/flat"), "/workspace/flat")
+}
+
+///|
+test "hooks parsing and variant deep-merge" {
+  let raw =
+    #|{
+    #|  "appId": "dev.example.hooked",
+    #|  "name": "Hooked App",
+    #|  "hooks": {
+    #|    "preBuild": "echo pre-base",
+    #|    "postStage": "echo stage-base"
+    #|  },
+    #|  "variants": {
+    #|    "beta": {
+    #|      "hooks": {
+    #|        "postStage": "echo stage-beta",
+    #|        "postPack": "echo pack-beta"
+    #|      }
+    #|    }
+    #|  }
+    #|}
+  let m_base = match parse_manifest(raw, CliOverrides::empty()) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_eq(m_base.hooks.pre_build, "echo pre-base")
+  assert_eq(m_base.hooks.post_stage, "echo stage-base")
+  assert_eq(m_base.hooks.post_pack, "")
+
+  let m_beta = match
+    parse_manifest(raw, { ..CliOverrides::empty(), variant: Some("beta") }) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  // Base preBuild preserved, postStage overridden, postPack added
+  assert_eq(m_beta.hooks.pre_build, "echo pre-base")
+  assert_eq(m_beta.hooks.post_stage, "echo stage-beta")
+  assert_eq(m_beta.hooks.post_pack, "echo pack-beta")
+}
+
+///|
+test "parse_env_override and CLI --env overrides merge onto base and variant env" {
+  assert_eq(parse_env_override("FOO=bar"), Ok(("FOO", "bar")))
+  assert_eq(parse_env_override("URL=https://x.test/a?b=1&c=2"), Ok(("URL", "https://x.test/a?b=1&c=2")))
+  assert_eq(parse_env_override("EMPTY="), Ok(("EMPTY", "")))
+  assert_true(parse_env_override("NO_EQUALS") is Err(_))
+  assert_true(parse_env_override("=missing_key") is Err(_))
+
+  let overrides : CliOverrides = {
+    ..CliOverrides::empty(),
+    variant: Some("beta"),
+    env: [("LOG_LEVEL", "trace"), ("EXTRA_URL", "https://x.test")],
+  }
+  let m = match parse_manifest(sample_manifest, overrides) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+  assert_eq(m.env.get("API_URL"), Some("https://api.example.com"))
+  assert_eq(m.env.get("BETA"), Some("1"))
+  assert_eq(m.env.get("LOG_LEVEL"), Some("trace"))
+  assert_eq(m.env.get("EXTRA_URL"), Some("https://x.test"))
+}
+
+///|
+test "render_meta_json and render_meta_sh with POSIX single-quote escaping" {
+  let raw =
+    #|{
+    #|  "appId": "dev.example.meta",
+    #|  "name": "O'Brien's $(uname) App",
+    #|  "executable": "obrien-app",
+    #|  "version": "1.5.0",
+    #|  "build": 77,
+    #|  "moduleDir": "ui",
+    #|  "entry": "src/main",
+    #|  "urlSchemes": ["meta", "meta-x"],
+    #|  "env": {
+    #|    "Z_VAL": "a'b;rm -rf /",
+    #|    "A_VAL": "plain"
+    #|  },
+    #|  "updater": {
+    #|    "feed": "https://rel.example.test/latest.json",
+    #|    "channel": "beta"
+    #|  },
+    #|  "macos": {
+    #|    "minVersion": "14.2"
+    #|  },
+    #|  "windows": {
+    #|    "company": "O'Brien Co",
+    #|    "installDir": "OBrienApp"
+    #|  }
+    #|}
+  let overrides : CliOverrides = {
+    ..CliOverrides::empty(),
+    env: [("EXTRA_URL", "https://x.test")],
+  }
+  let m = match parse_manifest(raw, overrides) {
+    Ok(m) => m
+    Err(e) => fail("unexpected error: \{e}")
+  }
+
+  let json_txt = render_meta_json(m, "/tmp/proj")
+  let parsed = try @rjson.parse(json_txt) catch {
+    @rjson.JsonError(e) => fail("invalid meta json: \{e}")
+  }
+  assert_true(parsed.get("appId") == Some(Str("dev.example.meta")))
+  assert_true(parsed.get("moduleDir") == Some(Str("/tmp/proj/ui")))
+  assert_true(parsed.get("entry") == Some(Str("src/main")))
+  assert_true(parsed.get("build") == Some(Num("77")))
+  match parsed.get("env") {
+    Some(Obj(_) as env_obj) => {
+      assert_true(env_obj.get("EXTRA_URL") == Some(Str("https://x.test")))
+      assert_true(env_obj.get("A_VAL") == Some(Str("plain")))
+    }
+    _ => fail("expected env object in meta json")
+  }
+  assert_true(parsed.get("macos") is Some(Obj(_)))
+  assert_true(parsed.get("windows") is Some(Obj(_)))
+  assert_true(parsed.get("linux") is Some(Obj(_)))
+  assert_true(parsed.get("android") is Some(Obj(_)))
+  assert_true(parsed.get("ios") is Some(Obj(_)))
+  assert_true(parsed.get("web") is Some(Obj(_)))
+
+  let sh_txt = render_meta_sh(m, "/tmp/proj")
+  assert_true(sh_txt.contains("MBUI_APP_ID='dev.example.meta'\n"))
+  // Single quotes escaped as '\'' so $(uname) and semicolons stay literal inside single quotes
+  assert_true(sh_txt.contains("MBUI_APP_NAME='O'\\''Brien'\\''s $(uname) App'\n"))
+  assert_true(sh_txt.contains("MBUI_EXECUTABLE='obrien-app'\n"))
+  assert_true(sh_txt.contains("MBUI_VERSION='1.5.0'\n"))
+  assert_true(sh_txt.contains("MBUI_BUILD='77'\n"))
+  assert_true(sh_txt.contains("MBUI_MODULE_DIR='/tmp/proj/ui'\n"))
+  assert_true(sh_txt.contains("MBUI_ENTRY='src/main'\n"))
+  assert_true(sh_txt.contains("MBUI_SCHEMES='meta,meta-x'\n"))
+  assert_true(sh_txt.contains("MBUI_UPDATE_FEED='https://rel.example.test/latest.json'\n"))
+  assert_true(sh_txt.contains("MBUI_UPDATE_CHANNEL='beta'\n"))
+  assert_true(
+    sh_txt.contains(
+      "MBUI_ENV_KV='A_VAL=plain;EXTRA_URL=https://x.test;Z_VAL=a'\\''b;rm -rf /'\n",
+    ),
+  )
+  assert_true(sh_txt.contains("MBUI_MAC_MIN_VERSION='14.2'\n"))
+  assert_true(sh_txt.contains("MBUI_WIN_INSTALL_DIR='OBrienApp'\n"))
+  assert_true(sh_txt.contains("MBUI_WIN_COMPANY='O'\\''Brien Co'\n"))
+}
+
+///|
+test "codesign commands include --keychain when non-empty" {
+  let mac_no_kc = build_mac_codesign_cmd("/tmp/App.app", "Dev ID", "", "")
+  assert_true(!mac_no_kc.contains("--keychain"))
+  let mac_kc = build_mac_codesign_cmd("/tmp/App.app", "Dev ID", "", "/tmp/ci.keychain-db")
+  assert_true(mac_kc.contains("--keychain '/tmp/ci.keychain-db'"))
+  assert_true(mac_kc.contains("--sign 'Dev ID'"))
+
+  let ios_no_kc = build_ios_codesign_cmd("/tmp/App.app", "-", "", "")
+  assert_true(!ios_no_kc.contains("--keychain"))
+  let ios_kc = build_ios_codesign_cmd("/tmp/App.app", "Apple Dist", "", "/tmp/ci.keychain-db")
+  assert_true(ios_kc.contains("--keychain '/tmp/ci.keychain-db'"))
+  assert_true(ios_kc.contains("--sign 'Apple Dist'"))
 }

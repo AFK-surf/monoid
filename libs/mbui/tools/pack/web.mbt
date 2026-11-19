@@ -155,28 +155,60 @@ pub fn render_web_manifest(m : Manifest, has_icons : Bool) -> String {
 }
 
 ///|
+fn collect_web_compressible(dir : String, out : Array[String]) -> Unit {
+  let entries = @sys.list_dir(dir)
+  entries.sort_by(fn(a, b) { @rjson.str_cmp(a, b) })
+  for entry in entries {
+    let p = @sys.join(dir, entry)
+    if @sys.is_dir(p) {
+      collect_web_compressible(p, out)
+    } else if @sys.is_file(p) &&
+      (entry.has_suffix(".js") || entry.has_suffix(".html") || entry.has_suffix(".wasm")) {
+      out.push(p)
+    }
+  }
+}
+
+///|
+fn compress_web_assets(web_out : String, brotli : Bool) -> Unit {
+  let files : Array[String] = []
+  collect_web_compressible(web_out, files)
+  if files.length() == 0 {
+    return
+  }
+  let js_script = "const z=require('node:zlib'),fs=require('node:fs');const br=process.argv[1]==='1';for(const f of process.argv.slice(2)){const b=fs.readFileSync(f);fs.writeFileSync(f+'.gz',z.gzipSync(b,{level:9}));if(br){fs.writeFileSync(f+'.br',z.brotliCompressSync(b,{params:{[z.constants.BROTLI_PARAM_QUALITY]:11,[z.constants.BROTLI_PARAM_LGWIN]:24,[z.constants.BROTLI_PARAM_SIZE_HINT]:b.length}}));}}"
+  let br_arg = if brotli { "1" } else { "0" }
+  let kind = if brotli { "gz + br" } else { "gz" }
+  let quoted_files = files.map(q).join(" ")
+  say("compressing \{files.length()} web asset(s) (\{kind})...")
+  ignore(sh("node -e " + q(js_script) + " " + q(br_arg) + " " + quoted_files, "compress web assets"))
+}
+
+///|
 pub fn pack_web(
   m : Manifest,
   manifest_dir : String,
   mbui_dir : String,
   out_dir : String,
-  quick : Bool,
+  opts : PackOptions,
 ) -> Unit {
   let web_out = @sys.join(out_dir, "web")
   let build_out = @sys.join(out_dir, ".build")
   @sys.makedirs(web_out)
   @sys.makedirs(build_out)
 
+  run_hook("preBuild", m.hooks.pre_build, m, manifest_dir, mbui_dir, "web", web_out, web_out)
+
+  let mod_dir = m.resolve_module_dir(manifest_dir)
   let pkg = m.entry_pkg()
-  let brotli_flag = if m.web.brotli && !quick { "1" } else { "0" }
-  let mode = if quick { "debug" } else { "release" }
+  let mode = if opts.quick { "debug" } else { "release" }
   let web_sh = @sys.join(mbui_dir, "scripts/web.sh")
-  let cmd = "MBUI_APP_MOD=" + q(manifest_dir) +
+  let cmd = "MBUI_APP_MOD=" + q(mod_dir) +
     " MBUI_OUT=" + q(build_out) +
     " APP=" + q(pkg) +
     " MODE=" + q(mode) +
-    " MBUI_QUICK=" + (if quick { "1" } else { "0" }) +
-    " MBUI_WEB_BROTLI=" + brotli_flag +
+    " MBUI_QUICK=" + (if opts.quick { "1" } else { "0" }) +
+    " MBUI_WEB_BROTLI=0" +
     " bash " + q(web_sh) + " bundle " + q(web_out)
   say("building web bundle (\{pkg}, \{mode})...")
   ignore(sh(cmd, "web.sh bundle"))
@@ -220,6 +252,14 @@ pub fn pack_web(
     let dst_res = @sys.join(web_out, @sys.basename(res))
     ignore(sh("cp -R " + q(src_res) + " " + q(dst_res), "copy resource"))
   }
+
+  run_hook("postStage", m.hooks.post_stage, m, manifest_dir, mbui_dir, "web", web_out, web_out)
+
+  if !opts.quick && !opts.web_no_compress {
+    compress_web_assets(web_out, m.web.brotli)
+  }
+
+  run_hook("postPack", m.hooks.post_pack, m, manifest_dir, mbui_dir, "web", web_out, web_out)
 
   say("web output ready at \{web_out}")
 }

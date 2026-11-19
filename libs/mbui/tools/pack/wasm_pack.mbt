@@ -6,7 +6,9 @@ pub struct PackOptions {
   runtime_dir : String
   wasm_aot : Bool
   quick : Bool
+  web_no_compress : Bool
   sign_identity : String
+  keychain : String
   notarize_profile : String
   keystore : String
   key_alias : String
@@ -29,7 +31,9 @@ pub fn PackOptions::default() -> PackOptions {
     runtime_dir: "",
     wasm_aot: false,
     quick: false,
+    web_no_compress: false,
     sign_identity: "",
+    keychain: "",
     notarize_profile: "",
     keystore: "",
     key_alias: "",
@@ -144,13 +148,14 @@ pub fn build_app_wasm(
   build_out : String,
   quick : Bool,
 ) -> String {
+  let mod_dir = m.resolve_module_dir(manifest_dir)
   let pkg = m.entry_pkg()
   let mode = if quick { "debug" } else { "release" }
   let flag = if quick { "" } else { " --release" }
-  let cmd = "cd " + q(manifest_dir) + " && moon build --target wasm" + flag + " src/" + q(pkg)
+  let cmd = "cd " + q(mod_dir) + " && moon build --target wasm" + flag + " src/" + q(pkg)
   say("building Wasm app (\{pkg}, \{mode})...")
   ignore(sh(cmd, "moon build --target wasm"))
-  let built = find_wasm_output(manifest_dir, pkg, mode)
+  let built = find_wasm_output(mod_dir, pkg, mode)
   let wasm_dir = @sys.join(build_out, "wasm")
   @sys.makedirs(wasm_dir)
   let dest = @sys.join(wasm_dir, @sys.basename(pkg) + ".wasm")
@@ -250,4 +255,43 @@ fn sorted_env_pairs(env : Map[String, String]) -> Array[(String, String)] {
   env.each(fn(k, _) { keys.push(k) })
   keys.sort_by(fn(a, b) { @rjson.str_cmp(a, b) })
   keys.map(fn(k) { (k, env.get(k).unwrap_or("")) })
+}
+
+///|
+/// Execute a lifecycle hook (`preBuild`, `postStage`, or `postPack`) in `manifest_dir`
+/// with standard `MBUI_*` environment variables injected. No-op when `cmd` is empty.
+pub fn run_hook(
+  phase : String,
+  cmd : String,
+  m : Manifest,
+  manifest_dir : String,
+  mbui_dir : String,
+  target : String,
+  stage_dir : String,
+  out_dir : String,
+) -> Unit {
+  if cmd.trim(chars=" \t\r\n").length() == 0 {
+    return
+  }
+  let mod_dir = m.resolve_module_dir(manifest_dir)
+  let env_prefix = "MBUI_HOOK_PHASE=" + q(phase) +
+    " MBUI_TARGET=" + q(target) +
+    " MBUI_RUNTIME=" + q(m.runtime) +
+    " MBUI_VARIANT=" + q(m.variant) +
+    " MBUI_APP_ID=" + q(m.app_id) +
+    " MBUI_APP_NAME=" + q(m.name) +
+    " MBUI_EXECUTABLE=" + q(m.executable) +
+    " MBUI_VERSION=" + q(m.version) +
+    " MBUI_BUILD=" + q(m.build.to_string()) +
+    " MBUI_MANIFEST_DIR=" + q(manifest_dir) +
+    " MBUI_MODULE_DIR=" + q(mod_dir) +
+    " MBUI_STAGE_DIR=" + q(stage_dir) +
+    " MBUI_OUT_DIR=" + q(out_dir) +
+    " MBUI_DIR=" + q(mbui_dir)
+  let full = "cd " + q(manifest_dir) + " && " + env_prefix + " sh -c " + q(cmd)
+  say("running \{phase} hook (\{target})...")
+  let out = sh(full, "hook \{phase} (\{target})")
+  if out != "" {
+    @sys.out(out)
+  }
 }
