@@ -50,23 +50,23 @@ pub fn archive_node(
   let days = fn() { items(view(), "days") }
   let wait = fn() { field(view(), "wait") }
   let reading = fn() { view() is None || (days().length() == 0 && note_waits(wait())) }
-  // (each block by what it is: each chat by its station and session; worked
-  // out once as the core's value changes)
-  let listed : @signals.Computed[(Array[String], Map[String, ArchivePart])] = @signals.computed(fn(_) {
-    let keys = []
-    let parts : Map[String, ArchivePart] = Map([])
-    for d in days() {
-      let dk = "day/" + text(Some(d), "label")
-      keys.push(dk)
-      parts[dk] = ArchiveDay(text(Some(d), "label"))
-      for it in items(Some(d), "items") {
-        let rk = "row/" + text(Some(it), "station") + "/" + text(Some(it), "session")
-        keys.push(rk)
-        parts[rk] = ArchiveRow(it)
+  // (each block by what it is: each chat by its station and session; kept by key as the core's value changes, so a
+  // block reading its own is told only as that one changes, comes or goes: View::keyed_by)
+  let listed : @signals.KeyedList[String, (String, ArchivePart)] = v.keyed_by(
+    fn() {
+      let out : Array[(String, ArchivePart)] = []
+      for d in days() {
+        let label = text(Some(d), "label")
+        out.push(("day/" + label, ArchiveDay(label)))
+        for it in items(Some(d), "items") {
+          out.push(("row/" + text(Some(it), "station") + "/" + text(Some(it), "session"), ArchiveRow(it)))
+        }
       }
-    }
-    (keys, parts)
-  })
+      out
+    },
+    fn(e) { e.0 },
+    same=archive_entry_same,
+  )
   let blocks = fn() {
     let out = ["search"]
     if reading() {
@@ -82,8 +82,33 @@ pub fn archive_node(
     if days().length() == 0 && q.get() == "" {
       out.push("empty")
     }
-    out.append(listed.get().0)
+    out.append(listed.keys())
     out
+  }
+  // (a day's heading (kind 1) or a chat (kind 0) in `b`, of the key `key()` says now, as the list says it, what it
+  // was last while its key goes)
+  let part_node = fn(b : @view.View, kind : Int, key : () -> String) {
+    if kind == 1 {
+      // (its words on the page's title's line, as its rows' words are: archive_row_node)
+      let was = Ref("")
+      @sf.day_heading_node(b, fn() {
+        match listed.get(key()) {
+          Some((_, ArchiveDay(l))) => was.val = l
+          _ => ()
+        }
+        was.val
+      }, wide_in=0.0)
+    } else {
+      let was : Ref[Json] = Ref(Json::null())
+      let row = @signals.computed(fn(_) {
+        match listed.get(key()) {
+          Some((_, ArchiveRow(i))) => was.val = i
+          _ => ()
+        }
+        was.val
+      }, same=json_same)
+      archive_row_node(b, core, fn() { row.get() }, tips?)
+    }
   }
   // (near the last it holds while the core has more: a page more, once for what was answered)
   let more = fn() { flag(view(), "more") && read().value is Some(_) }
@@ -121,33 +146,34 @@ pub fn archive_node(
           let i = key.exact_view(start=6).iter().fold(init=0, fn(n, ch) { n * 10 + (ch.to_int() - '0'.to_int()) })
           @sf.page_said_node(b, fn() { text(items(view(), "errors").get(i), "text") }, bad=true)
         }
-        _ => {
-          // (what this block is as the list says it now, told only as that changes)
-          let part = @signals.computed(fn(_) { listed.get().1.get(key) })
-          match @signals.untracked(fn() { part.get() }) {
-            Some(ArchiveDay(_)) =>
-              // (its words on the page's title's line, as its rows' words are: archive_row_node)
-              @sf.day_heading_node(b, fn() {
-                match part.get() {
-                  Some(ArchiveDay(l)) => l
-                  _ => ""
-                }
-              }, wide_in=0.0)
-            Some(ArchiveRow(first)) => {
-              let it = fn() {
-                match part.get() {
-                  Some(ArchiveRow(i)) => i
-                  _ => first
-                }
-              }
-              archive_row_node(b, core, it, tips?)
-            }
-            None => ()
-          }
-        }
+        // (made once for its key alone where the list takes none: its kind by its key)
+        _ => part_node(b, if key.has_prefix("day/") { 1 } else { 0 }, fn() { key })
       }
     },
+    // (a day's heading or a chat put by as it leaves what shows and taken by the next of its kind, reading the key it
+    // shows now)
+    reused=fn(k) {
+      if k.has_prefix("row/") {
+        Some(0)
+      } else if k.has_prefix("day/") {
+        Some(1)
+      } else {
+        None
+      }
+    },
+    make_reused=part_node,
   )
+}
+
+///|
+/// The same block of the archive's list: its key, and what it is the same (a chat's JSON as json_same says).
+fn archive_entry_same(a : (String, ArchivePart), b : (String, ArchivePart)) -> Bool {
+  a.0 == b.0 &&
+  (match (a.1, b.1) {
+    (ArchiveDay(x), ArchiveDay(y)) => x == y
+    (ArchiveRow(x), ArchiveRow(y)) => json_same(x, y)
+    _ => false
+  })
 }
 
 ///|

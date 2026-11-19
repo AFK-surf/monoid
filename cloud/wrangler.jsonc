@@ -85,6 +85,8 @@
       { "name": "SERVICE_STATUS", "class_name": "ServiceStatus" },
       // still.fail's relay process, in the relay's Worker: the cron reads its counters (src/relay-load.ts).
       { "name": "RELAY", "class_name": "Relay", "script_name": "stillfail-relay" },
+      // Its budget: what it counted today and whether it ran out (src/relay-load.ts sampleOwnRelay).
+      { "name": "RELAY_BUDGET", "class_name": "RelayBudget", "script_name": "stillfail-relay" },
     ],
   },
   // The relay's counters, every minute (src/index.ts scheduled).

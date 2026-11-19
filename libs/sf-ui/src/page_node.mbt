@@ -357,6 +357,8 @@ pub fn page_node(
   near_foot? : (Double, () -> Bool, () -> Unit),
   small? : () -> String = fn() { "" },
   back_as? : () -> String = fn() { "" },
+  reused? : (String) -> Int?,
+  make_reused? : (@view.View, Int, () -> String) -> Unit,
 ) -> Unit {
   // (what it says of itself to the frame's bar that names it, as that changes, whole: the frame's own to keep)
   match said {
@@ -397,8 +399,10 @@ pub fn page_node(
       None => own_scroll
     }
     match l {
-      Narrow => narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, near_foot, small)
-      Wide => wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, near_foot)
+      Narrow =>
+        narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, near_foot, small, reused, make_reused)
+      Wide =>
+        wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, near_foot, reused, make_reused)
     }
   })
   // (its own layer only where it has what is for by a mark to say: nothing over a page that has none)
@@ -517,6 +521,8 @@ fn narrow_page_node(
   head : ((@view.View) -> Unit)?,
   near_foot : (Double, () -> Bool, () -> Unit)?,
   small : () -> String,
+  reused : ((String) -> Int?)?,
+  make_reused : ((@view.View, Int, () -> String) -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
   // (a head of its own under back: back's line its first, what the page does at that line's end, own_head's)
@@ -578,6 +584,32 @@ fn narrow_page_node(
       goes=fn(k) { !other.val && k is Block(_) },
       near_foot?,
       place~,
+      // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, made in the
+      // page's room as `block` makes one (below), its kind and its key as it is now given `make_reused`)
+      reused?=reused.map(fn(r) {
+        fn(item) {
+          match item {
+            Block(k) => r(k)
+            _ => None
+          }
+        }
+      }),
+      make_reused?=make_reused.map(fn(m) {
+        fn(s, item) {
+          with_look(Narrow, fn() {
+            let kind = s.reused_kind().unwrap_or(0)
+            s.grow(Is(1.0)) |> ignore
+            page_block(s, fn(room) {
+              m(room, kind, fn() {
+                match item() {
+                  Block(k) => k
+                  _ => ""
+                }
+              })
+            })
+          })
+        }
+      }),
       fn(s, item) {
       with_look(Narrow, fn() {
         match item {

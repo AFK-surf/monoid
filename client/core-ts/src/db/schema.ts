@@ -125,6 +125,9 @@ export function ensureSaid(sql: Sql): void {
       );
       -- A message's edits, by the message (for when the entry its words came from goes).
       CREATE INDEX IF NOT EXISTS entry_edit ON entry (station, thread, json_extract(json, '$.target')) WHERE json_extract(json, '$.kind') = 'edit';
+      -- What people said in a chat, by number (account.ts peopleEntries: a chat's outline reads those alone, not its
+      -- agents' replies).
+      CREATE INDEX IF NOT EXISTS entry_person ON entry (station, thread, n) WHERE json_extract(json, '$.kind') = 'message' AND json_extract(json, '$.authorKind') = 'person';
       CREATE TRIGGER IF NOT EXISTS said_put AFTER INSERT ON entry WHEN ${SAYS("new")}
       BEGIN
         INSERT INTO said (station, thread, seq, n, at, text) VALUES (new.station, new.thread, ${SEQ("new")}, new.n, ${AT("new")}, ${TEXT("new")})
@@ -471,7 +474,13 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // (`chat_listed` from before `led` was among its columns: made again with it)
     const listedWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_listed'");
     if (listedWas.length > 0 && !/\bled\b/.test(String(listedWas[0]![0]))) sql.exec("DROP INDEX chat_listed");
+    // (`chat_recent`, the window's walk, as the first schema made it: of every row, archived too, and no column the
+    // window filters by, so each row it walked past (another station's, one an agent leads, not the viewer's) read the
+    // table's page, its JSON inline, 168 ms of a list made on a phone, 2026-11-18. Made again partial and covering)
+    const recentWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'");
+    if (recentWas.length > 0 && !/WHERE archived = 0/.test(String(recentWas[0]![0]))) sql.exec("DROP INDEX chat_recent");
     sql.exec(`
+      CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_made ON chat (made);
       CREATE INDEX IF NOT EXISTS chat_archived_at ON chat (station, archived, archived_mark, archived_at DESC, thread, session) WHERE archived_mark = 1;
       CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, coalesce(archived_at, 0) DESC) WHERE archived_mark = 1;

@@ -195,3 +195,57 @@ test("the cron reads still.fail's own relay's counters, and says in Cloud Loggin
     await h.close();
   }
 });
+
+// The budget reads the relay process between two of the cron's samples, and stops it once the day ran out: no sample
+// comes after, and what the samples add up to stays just under the limit (2026-11-14 to 11-18). What it counted is the
+// budget's to say, and still.fail/status shows the relay refusing for the day, not down, however long it has been stopped.
+async function ranOut(exhaust: (budget: any) => Promise<void>) {
+  const got: any[] = [];
+  const h = await harness({ telemetry: async (request) => (got.push(JSON.parse(await request.text())), new Response("{}")) });
+  const api = (await h.mf.getWorker("api")) as unknown as { scheduled(options: { cron: string; scheduledTime: Date }): Promise<{ outcome: string }> };
+  const cron = async () => assert.equal((await api.scheduled({ cron: "* * * * *", scheduledTime: EVERY_MINUTE_ONLY })).outcome, "ok");
+  const own = new URL(h.origin).host;
+  const state = async () => ((await (await h.fetch("/v1/status")).json()) as { services: { name?: string; state: string }[] }).services.find((s) => s.name === own)?.state;
+  const minute = () => {
+    const lines = got.flatMap((b) => b.resourceLogs ?? []).flatMap((r: any) => r.scopeLogs[0].logRecords).filter((l: any) => l.body.stringValue === "relay minute");
+    return Object.fromEntries(lines.at(-1).attributes.map((a: any) => [a.key, a.value.intValue ?? a.value.boolValue ?? a.value.stringValue]));
+  };
+  try {
+    await cron();
+    assert.equal(minute()["log.full"], "none");
+    assert.equal(await state(), "up");
+    const budgets: any = await h.mf.getDurableObjectNamespace("RELAY_BUDGET", "relay");
+    const budget = budgets.get(budgets.idFromName("primary"));
+    await exhaust(budget);
+    await budget.poll();
+    const relays: any = await h.mf.getDurableObjectNamespace("RELAY", "relay");
+    assert.equal(await relays.get(relays.idFromName("primary")).destroyCount(), 1);
+    const seen: Record<string, unknown>[] = [];
+    await cron();
+    seen.push({ ...minute(), state: await state() });
+    // Longer stopped than a relay whose counters stop coming is up for (status.ts RELAY_SAMPLED).
+    assert.equal((await h.fetch("/__test/later", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seconds: 360 }) })).status, 200);
+    await cron();
+    seen.push({ ...minute(), state: await state() });
+    return seen;
+  } finally {
+    await h.close();
+  }
+}
+
+test("the frames of the day run out between two samples: the minute says so from the budget's count, the status page degraded", async () => {
+  const seen = await ranOut((budget) => budget.exhaustBudget("frames"));
+  for (const at of seen) {
+    assert.deepEqual(
+      [at["log.running"], at["log.today_frames"], at["log.limit_frames"], at["log.full"], at.state],
+      [false, String(LIMITS.framesPerDay), String(LIMITS.framesPerDay), "frames", "degraded"],
+    );
+  }
+});
+
+test("a relay's Worker from before, with no standing and its own frames a day, is said to have run out all the same", async () => {
+  const seen = await ranOut((budget) => budget.exhaustedAsBefore());
+  for (const at of seen) {
+    assert.deepEqual([at["log.running"], at["log.today_frames"], at["log.limit_frames"], at["log.full"], at.state], [false, "60000000", "60000000", "frames", "degraded"]);
+  }
+});

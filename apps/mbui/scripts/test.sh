@@ -281,11 +281,13 @@ for t in $targets; do
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
     # Five share-card tests take about 55 s each. They moved to indices 72, 73, 74, 130, and 131 as screens were added.
     # Give each its own run. Two together made tests 73-82 take 273 s on main (44211717525).
+    # send_steady has nine tests now, and tests 2-3 (22 and 27 paced sends) walk the most frames. Its 2-9 range ran
+    # as one process on app 4/4, which hit the 5-minute limit at 318 s on main f855908e (44401157133). Cut it in five.
     # (chat_drive_parity's four by its tests' times the same way: 29, 35, 32 and 35 s, where by count 0-10 was 54 of
     # 130 s; each on one of the app part's four runners, app_group_of)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:6 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
-      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
+      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5 src/sfapp/chat_drive_parity_wbtest.mbt:@4@15@27
       src/sfapp/switches_still_wbtest.mbt:@7@14@23@32@40@48@56@61@66@72@73@74@75@82@87@93@99@113@122@130@131@132@147@176@191@202@213@232@266@288@304)
     pages=()
@@ -538,7 +540,10 @@ for t in $targets; do
           # chat_page_nodes run moved to contrast and group 1 (app 2/4 was cut at 292 s with 549 -O0 units,
           # mbui-w5c-composer-node 44240663495, while contrast took 112 s, 4/4 137 s and 3/4 150 s). Pages lean
           # to group 1, which had the most room at -O0 (44243280552: 1/4 174 s, 3/4 236 s, 4/4 268 s).
-          *) specs="4,4,260,1 4,4,600,1 4,4,520,1 4,4,460,1" ;;
+          # main f855908e (44401157133) cut app 4/4 at 318 s while contrast took 157 s, 1/4 185 s, 3/4 207 s and
+          # 2/4 225 s. kept_rows 3-4 and send_steady's last two ranges moved to contrast. About 145 s of pages
+          # moved from group 4 to group 1. By the table: 1103, 643, 763 and 643 s of pages (was 988, 648, 728, 788).
+          *) specs="4,4,220,1 4,4,680,1 4,4,560,1 4,4,680,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -644,18 +649,18 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast runs the wide real_size sweep, three kept_rows ranges, and both duo_side and words_large runs.
+      # At the default rate, contrast runs the wide real_size sweep, four kept_rows ranges, send_steady 3-4 and 4-9,
+      # and both duo_side and words_large runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
       "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
-      # At the default rate, group 1 takes the small-screen real_size sweep and group 4 kept_rows 3-4.
+      # At the default rate, group 1 takes the small-screen real_size sweep.
       # These runs, and contrast's kept_rows ranges, share group 3 at explicit rates.
       "src/sfapp/real_size_wbtest.mbt --index 1-2") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | \
-        "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
+        "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
         if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4") [ -z "${MBUI_TEST_FPS:-}" ] && echo 4 || echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its
       # two halves one; at 24 and at 7 the fourth has a runner for each. At the default rate and at 60 on the first:
@@ -676,6 +681,9 @@ for t in $targets; do
       # beside its four others (99-167 s), where 60-68 was 96; its tests 52-59 8-11 s each on Studio, none the most)
       "src/sfapp/switches_still_wbtest.mbt "*) echo switches ;;
       # (send_steady's three on the fourth, beside its pages on its four cores: the deal reckons them there)
+      # At the default rate its last two ranges go to contrast, which had the most room (44401157133).
+      "src/sfapp/send_steady_wbtest.mbt --index 3-4" | "src/sfapp/send_steady_wbtest.mbt --index 4-"*)
+        [ -z "${MBUI_TEST_FPS:-}" ] && echo contrast || echo 4 ;;
       "src/sfapp/send_steady_wbtest.mbt "*) echo 4 ;;
       # (chat_page_nodes' two on the fourth, the one with the most programs; reckoned there at each rate. At the
       # default rate on the second, whose pages are on two programs beside its sweeps: on the fourth beside

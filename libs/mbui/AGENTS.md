@@ -81,7 +81,9 @@ yet and you can add one, add it.
   `Scroll::beside`), a switch it keeps (`View::reused_bool`) and what it calls off as the block is taken
   (`View::on_reused`) are its key's, kept by the list as the block leaves that key and given back as one shows it again
   (`src/view/reused_state.mbt`), a part passing no key down for it. Never by a closure looked up as a frame reads where
-  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key.
+  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key. Which make a block
+  of several is, the one thing of it that never changes, is lent to all of it (`View::reused_kind`), never found by
+  reading its key untracked.
 - A page's list holds its head (`View::scrolls_window`'s `head`: over its keys, in what scrolls, never the anchor, where
   its keys start) and its foot (`foot`: pinned over the foot of what shows, as tall as it is laid out the room under
   the last block, nothing to the hand but what it holds that takes it). A page puts no row of room among its keys and

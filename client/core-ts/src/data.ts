@@ -284,8 +284,9 @@ const CHAT_READ_LIST: readonly ChatRead<never>[] = Object.values(CHAT_READS) as 
 const readTopic = (name: string, k: ReadKey): Topic => ({ topic: name, station: k[0], key: k.slice(1).join(SEP) });
 /// What a chat's record a read found is told by (its station, whether archived, its id): every write of it.
 const CHAT_RECORD = "$chat-record";
-/// How many declared reads' answers are kept as their statements gave them, read again only as their keys are told.
-const CHAT_ANSWERS_KEPT = 64;
+/// How many declared reads' answers are kept as their statements gave them, read again only as their keys are told
+/// (a list's counts one a station: `counts`).
+const CHAT_ANSWERS_KEPT = 128;
 
 /// How long a session counts as used lately once its chat or history was opened (`usedLately`).
 export const RECENT_MS = 3 * 86_400_000;
@@ -1792,6 +1793,12 @@ export class Data {
   messageAt(station: string, thread: number, ts: string): number | null {
     this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
     return this.of(station)?.messageAt(station, thread, ts) ?? null;
+  }
+
+  /// What people said in chat `thread` up to entry `upTo` (AccountDb.peopleEntries), told as its log is.
+  peopleEntries(station: string, thread: number, upTo: number): { held: Map<number, unknown>; edits: Map<number, number[]> } {
+    this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
+    return this.of(station)?.peopleEntries(station, thread, upTo) ?? { held: new Map(), edits: new Map() };
   }
 
   logRange(table: LogTable, station: string, id: string, from: number, to: number): Map<number, unknown> {

@@ -3148,6 +3148,54 @@ test "reused-untracked-key" {
 }
 
 ///|
+test "reused-untracked-key: a page's make_reused, given its kind before its key" {
+  let hits =
+    #|fn list_node(v : @view.View, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  @sf.page_node(
+    #|    v,
+    #|    fn() { "" },
+    #|    keys,
+    #|    fn(b, k) { b.words(Is(k)) |> ignore },
+    #|    on_back=fn() {  },
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, kind, key) {
+    #|      let k = @signals.untracked(key)
+    #|      let n = @signals.untracked(fn() { rows.get().get(key()) })
+    #|      b.words(By(fn() { "\{kind} \{k} \{n}" })) |> ignore
+    #|    },
+    #|  )
+    #|  page_node(v, fn() { "" }, keys, fn(_, _) {  }, on_back=fn() {  }, make_reused=fn(b, _, key) {
+    #|    b.words(Is(key.untracked())) |> ignore
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/list_node.mbt", hits)], "reused-untracked-key", 3)
+  assert_eq(lines(fs), [10, 11, 16])
+  let misses =
+    #|fn list_node(v : @view.View, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  @sf.page_node(
+    #|    v,
+    #|    fn() { "" },
+    #|    keys,
+    #|    fn(b, k) { b.words(Is(@signals.untracked(fn() { k }))) |> ignore },
+    #|    on_back=fn() {  },
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, kind, key) {
+    #|      b.words(By(fn() { rows.get().get(key()).to_string() })) |> ignore
+    #|      let first = @signals.untracked(fn() { rows.get().length() + kind })
+    #|      b.on_press(fn() { ignore(@signals.untracked(key)) }) |> ignore
+    #|      ignore(first)
+    #|    },
+    #|  )
+    #|}
+  found(
+    [("src/sfpages/fine_node.mbt", misses), ("src/sfpages/list_node_wbtest.mbt", hits)],
+    "reused-untracked-key",
+    0,
+  )
+  |> ignore
+}
+
+///|
 test "manual-fade-way" {
   let conf = conf_value()
     .set("pages", @rjson.Value::Obj([("roots", Arr([Str("src/sfpages")]))]))

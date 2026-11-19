@@ -9,6 +9,7 @@ import { bearerToken, digest, nowSeconds, reply } from "./auth";
 import type { Directory, DirectoryLoad } from "./directory";
 import type { Env } from "./env";
 import { LIMITS } from "./limits";
+import type { BudgetStanding, RelayBudget } from "./relay";
 import { relayConns, relayLoad, type Load } from "./relay-metrics";
 import { GAP, relayLoadView, relayMinute, type RelayLoadView, type RelayMinute } from "./relay-load-view";
 import { relayToTelemetry } from "./tracing";
@@ -106,6 +107,10 @@ export async function receiveLoad(request: Request, env: Env): Promise<Response>
  * (`full`): 2026-10-30 it answered every new connection 429 from 12:22 in Beijing, and nothing said whether the day's
  * bytes or the connections held had run out. Said while the process is not running too (the budget run out stops it).
  * Gives those it has reached, for still.fail/status (status.ts).
+ *
+ * The day's traffic is the budget's own count (relay.ts `standing`) where it is more than the samples here: the budget
+ * reads the process between two of them, and once it ran out and stopped it no sample comes again, the samples' sum
+ * left just under the limit (2026-11-14 to 11-18, four days of five said `none` while every connect was refused).
  */
 export async function sampleOwnRelay(env: Env): Promise<string[]> {
   if (!env.RELAY || env.RELAY_URL) return [];
@@ -114,12 +119,22 @@ export async function sampleOwnRelay(env: Env): Promise<string[]> {
   const loads = env.RELAY_LOAD.getByName("primary");
   const load = text === null ? null : relayLoad(text);
   const minute = load === null ? null : await loads.record(url, load);
-  const today = await loads.today(url);
+  const budget = env.RELAY_BUDGET ? await budgetStanding(env.RELAY_BUDGET.getByName("primary"), text !== null) : null;
+  const sampled = await loads.today(url);
+  const limitBytes = budget?.limitBytes ?? LIMITS.bytesPerDay;
+  const limitFrames = budget?.limitFrames ?? LIMITS.framesPerDay;
+  const today = { bytes: Math.max(sampled.bytes, budget?.bytes ?? 0), frames: Math.max(sampled.frames, budget?.frames ?? 0) };
   const open = load === null ? 0 : Math.max(0, load.accepts - load.disconnects);
   const connects = minute === null ? null : Math.round((minute.accepts * 60) / minute.secs);
+  const spent = [
+    ...(today.bytes >= limitBytes ? ["bytes"] : []),
+    ...(today.frames >= limitFrames ? ["frames"] : []),
+  ];
+  // The budget says it ran out though neither count reached its limit here (a limit of its own, a count at the edge):
+  // the nearer of the two is what ran out.
+  if (budget?.exhausted && spent.length === 0) spent.push(today.bytes / limitBytes >= today.frames / limitFrames ? "bytes" : "frames");
   const full = [
-    ...(today.bytes >= LIMITS.bytesPerDay ? ["bytes"] : []),
-    ...(today.frames >= LIMITS.framesPerDay ? ["frames"] : []),
+    ...spent,
     ...(open >= LIMITS.connections ? ["connections"] : []),
     ...(connects !== null && connects >= LIMITS.connectsPerMinute ? ["connects"] : []),
   ];
@@ -129,13 +144,36 @@ export async function sampleOwnRelay(env: Env): Promise<string[]> {
     open,
     today_bytes: today.bytes,
     today_frames: today.frames,
-    limit_bytes: LIMITS.bytesPerDay,
-    limit_frames: LIMITS.framesPerDay,
+    limit_bytes: limitBytes,
+    limit_frames: limitFrames,
     limit_connections: LIMITS.connections,
     limit_connects: LIMITS.connectsPerMinute,
     full: full.join(",") || "none",
   });
   return full;
+}
+
+/**
+ * What the budget counted today (relay.ts `standing`). The relay's Worker is deployed by hand, after this one: one from
+ * before has no `standing`, and holds the limits it was deployed with. With its process stopped, what it refuses a
+ * connect for says as much (`admit`, which starts nothing): refused with no connection held nor too many connects, it
+ * ran out; a count under this Worker's limits ran out under its own, which is then that count. Running, it is not asked
+ * (an admitted connect counts as one).
+ */
+async function budgetStanding(budget: DurableObjectStub<RelayBudget>, running: boolean): Promise<BudgetStanding | null> {
+  return budget.standing().catch(async () => {
+    if (running) return null;
+    const refused = await budget.admit().catch(() => null);
+    if (!refused) return null;
+    const ranOut = refused.open + refused.dialing < LIMITS.connections && refused.connects < LIMITS.connectsPerMinute;
+    return {
+      bytes: refused.bytes,
+      frames: refused.frames,
+      limitBytes: LIMITS.bytesPerDay,
+      limitFrames: ranOut && refused.bytes < LIMITS.bytesPerDay && refused.frames < LIMITS.framesPerDay ? refused.frames : LIMITS.framesPerDay,
+      exhausted: ranOut,
+    };
+  });
 }
 
 type RelayRegistry = ReturnType<Directory["relayList"]>;

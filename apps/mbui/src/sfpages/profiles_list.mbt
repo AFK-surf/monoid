@@ -53,17 +53,38 @@ pub fn profiles_list_node(
       }
     }
   }, same=jsons_same)
-  let groups = fn() { pl_groups(rows_now.get()) }
-  // the machines' own logins not used yet, a block a station up that offers one
-  let offers_now : @signals.Computed[Array[String]] = @signals.computed(fn(_) {
+  // (its sections' headings and accounts' rows, each a block by its key, kept by key as its rows change: a block reads
+  // its own, told only as that one changes, comes or goes, and none of them works its sections out again: View::keyed_by)
+  let parts : @signals.KeyedList[String, (String, PlPart)] = v.keyed_by(
+    fn() {
+      let out : Array[(String, PlPart)] = []
+      for g in pl_groups(rows_now.get()) {
+        out.push(("g/" + g.0, PlGroup(g.1)))
+        for i, e in g.2 {
+          out.push(("p/" + g.0 + "/" + pl_key(only, e), PlRow(e, @sf.card_piece_of(i, g.2.length()))))
+        }
+      }
+      out
+    },
+    fn(e) { e.0 },
+    same=pl_entry_same,
+  )
+  // the machines' own logins not used yet, a block a station up that offers one: the workspace's by station, each
+  // block reading its own
+  let offers : @signals.KeyedList[String, (Json, Array[Json])] = v.keyed_by(
+    fn() { if only == "" { @settings.profiles_offers(profiles().value) } else { [] } },
+    fn(o) { text(Some(o.0), "station") },
+    same=fn(a, b) { json_same(a.0, b.0) && jsons_same(a.1, b.1) },
+  )
+  let offers_now = fn() -> Array[String] {
     if only == "" {
-      @settings.profiles_offers(profiles().value).map(fn(o) { text(Some(o.0), "station") })
+      offers.keys()
     } else if flag(one(), "online") {
       [only]
     } else {
       []
     }
-  })
+  }
   let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "profiles") {
@@ -119,16 +140,11 @@ pub fn profiles_list_node(
           Some(_) => if rows_now.get().length() == 0 { out.push("empty") }
         }
       }
-      for g in groups() {
-        out.push("g/" + g.0)
-        for e in g.2 {
-          out.push("p/" + g.0 + "/" + pl_key(only, e))
-        }
-      }
+      out.append(parts.keys())
       if only == "" && flag(wait(), "reading") {
         out.push("reading")
       }
-      for s in offers_now.get() {
+      for s in offers_now() {
         out.push("o/" + s)
       }
       out
@@ -217,9 +233,9 @@ pub fn profiles_list_node(
         k if k.has_prefix("g/") => {
           let group = k.exact_view(start=2).to_owned()
           let title = fn() {
-            match groups().iter().find_first(fn(g) { g.0 == group }) {
-              Some(g) => g.1
-              None => ""
+            match parts.get(k) {
+              Some((_, PlGroup(t))) => t
+              _ => ""
             }
           }
           // (a station's: its kind's mark before its title, 6 from it, as its old page had it; the workspace's: its name
@@ -230,26 +246,21 @@ pub fn profiles_list_node(
             @sf.section_heading_node(b, title, lead=fn(l) { vt_group_mark_node(l, group) })
           }
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, groups, tips, k)
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k })
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
             if only != "" {
               one()
             } else {
-              @settings.profiles_offers(profiles().value).iter().find_first(fn(o) { text(Some(o.0), "station") == station }).map(fn(o) {
-                o.0
-              })
+              offers.get(station).map(fn(o) { o.0 })
             }
           }, same=json_opt_same)
           let logins = fn() {
             if only != "" {
               @settings.station_part(core, here(), only, "machineLogins")
             } else {
-              match @settings.profiles_offers(profiles().value).iter().find_first(fn(o) { text(Some(o.0), "station") == station }) {
-                Some(o) => Some(Json::array(o.1))
-                None => None
-              }
+              offers.get(station).map(fn(o) { Json::array(o.1) })
             }
           }
           pl_machine_offers_node(b, core, station, fn() { sv.get() }, logins, fn(_) { (core.push)(NewProfile(station)) }, tips)
@@ -265,7 +276,30 @@ pub fn profiles_list_node(
     tips~,
     // (from a station's page, back to it by its name, as the old page said it)
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
+    // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
+    reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key) },
   )
+}
+
+///|
+/// What a block of the profiles' list is: a section's heading (its title), or an account's row (its JSON and which
+/// piece of its section's card it is).
+#derive(Eq)
+priv enum PlPart {
+  PlGroup(String)
+  PlRow(Json, @sf.CardPiece)
+}
+
+///|
+/// The same block of the profiles' list: its key, and what it is the same (an account's JSON as json_same says).
+fn pl_entry_same(a : (String, PlPart), b : (String, PlPart)) -> Bool {
+  a.0 == b.0 &&
+  (match (a.1, b.1) {
+    (PlGroup(x), PlGroup(y)) => x == y
+    (PlRow(x, px), PlRow(y, py)) => px == py && json_same(x, y)
+    _ => false
+  })
 }
 
 ///|
@@ -293,32 +327,34 @@ fn pl_groups(list : Array[Json]) -> Array[(String, String, Array[Json])] {
 }
 
 ///|
-/// Block `key` of the profiles' list ("p/<group>/<key>"): an account's row, a piece of its section's card, as it is now
-/// (as it was last, while it goes).
+/// Block `key()` of the profiles' list ("p/<group>/<key>"), the key it shows now: an account's row, a piece of its
+/// section's card, as it is now (as it was last, while it goes).
 fn pl_row_block(
   b : @view.View,
   core : Core,
   only : String,
-  groups : () -> Array[(String, String, Array[Json])],
+  parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
-  key : String,
+  key : () -> String,
 ) -> Unit {
   let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
-  let now = fn() {
-    for g in groups() {
-      for i, e in g.2 {
-        if "p/" + g.0 + "/" + pl_key(only, e) == key {
-          last.val = Some((e, @sf.card_piece_of(i, g.2.length())))
-        }
-      }
+  let now = @signals.computed(fn(_) {
+    match parts.get(key()) {
+      Some((_, PlRow(e, piece))) => last.val = Some((e, piece))
+      _ => ()
     }
     last.val
-  }
-  let row_now = @signals.computed(fn(_) { now().map(fn(n) { n.0 }) }, same=json_opt_same)
-  guard @signals.untracked(fn() { row_now.get() }) is Some(_) else { return }
+  }, same=fn(a, b) {
+    match (a, b) {
+      (Some((x, px)), Some((y, py))) => px == py && json_same(x, y)
+      (None, None) => true
+      _ => false
+    }
+  })
+  let row_now = @signals.computed(fn(_) { now.get().map(fn(n) { n.0 }) }, same=json_opt_same)
   b.grow(Is(1.0)) |> ignore
   // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
-  @sf.card_piece_node(b, fn() { now().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
+  @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
     if only == "" {
       pl_account_row_node(card, core, fn() { row_now.get() }, tips)
     } else {

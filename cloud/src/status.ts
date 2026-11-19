@@ -205,7 +205,8 @@ export async function checkServices(env: Env, full: string[]): Promise<void> {
   const status = env.SERVICE_STATUS.getByName("primary");
   const relays = listed === null ? [] : relayUrls(listed).map(async (url, i): Promise<Check> => {
     const at = await loads.lastSampled(url);
-    const found = at === null || now - at > RELAY_SAMPLED ? "down" : i === 0 && full.length > 0 ? "degraded" : "up";
+    // Its budget run out stops the process, and its counters come no more: refusing for the day, not down.
+    const found = i === 0 && !env.RELAY_URL && full.length > 0 ? "degraded" : at === null || now - at > RELAY_SAMPLED ? "down" : "up";
     return { id: `relay:${url}`, found };
   });
   if (listed !== null) await status.keepRelays(relayUrls(listed).map((url) => ({ url, name: relayName(listed, url) })));
