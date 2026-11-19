@@ -18,7 +18,7 @@
   `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
-  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app and replay builds' 35 and 65), JOB_END written by the
+  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 65), JOB_END written by the
   job's first step, less its 5 s of setting up. The units' stores of GitHub's images are keyed by the
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
@@ -27,13 +27,15 @@
   five minutes' worth when two shared the cores), `natives-main` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
   a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
-  published (moon, mbc and zig at -O0 alone; plan's `natives_runner`, `natives_win_runner`), with no `natives-main`; `check` runs there only when
+  published (plan's `natives_runner`, `natives_win_runner`), with no `natives-main`: on GitHub's runners a reader's C
+  is compiled whole at -O0 (`MBC_SPLIT=0`; zig cc's UBSan off), which a cold runner ends in its five minutes with no
+  store of units, where the split's thousand units did not; `check` runs there only when
   the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
   of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
-  `shell-apple` is missing (cold builds there took 228 and 323 s before packing; a branch's reader compiles -O0 there); the other Apple parts,
+  `shell-apple` is missing (cold builds there took 228 and 323 s before packing; a branch's reader compiles whole at -O0 there); the other Apple parts,
   Xcode/Simulator checks (`side-mac`, iOS/macOS builds), Android's release and main's `station-update` stay on `Mini1`
   (`macos-ci`, `quick`; `vars.MINI1 = 'off'` leaves `station-update` out), the
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
