@@ -970,6 +970,17 @@ fn tree_field_asked(id : @view.NodeId, action : Action) -> Bool {
 }
 
 ///|
+/// Field node `id` right clicked at (x, y) (the secondary button, a desktop's): recorded by the id its editor is known
+/// by in the window as an old view's field's secondary press is (Ctx::secondary_press), so what reads a field right
+/// clicked (Ctx::field_right_clicked) opens its edit menu over it, and that menu's 剪切, 复制, 粘贴, 全选 are done to it
+/// (Ctx::field_edit, Ctx::field_paste: tree_fields_pasting). Not a field: nothing.
+fn tree_field_right_clicked(id : @view.NodeId, x : Double, y : Double) -> Unit {
+  guard tree_fields.contains(id) else { return }
+  desk.mutable_menus.push(([tree_said_id(id)], x, y))
+  h_frame_owed()
+}
+
+///|
 /// ⌘V's words read from the clipboard for a field of the tree's (key_in: desk.pasting, its node's said id), taken as
 /// they come (ClipboardRead::got: the host's answer told, a Tester's by the frame), once: in place of what is picked, as
 /// a paste, before the frame they come with is laid out (its height, what comes after it, where its caret is told all

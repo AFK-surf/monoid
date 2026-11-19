@@ -3662,6 +3662,11 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
             view_press_unfocused(g())
           }
           view_held.val = Some(if button == 2 { Nowhere } else { Node(id) })
+          // (a field of the tree's right clicked: told as an old view's field's is, for the edit menu the app puts up
+          // over it, Ctx::field_right_clicked)
+          if button == 2 {
+            tree_field_right_clicked(id, x, y)
+          }
           // (the hold its, called off as any is: the window behind, the node taking no press, a second finger)
           if button != 2 {
             tree.event(at, fn() { tree.hold_press(id) })
