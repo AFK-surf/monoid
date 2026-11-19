@@ -912,6 +912,9 @@ pub struct Tree {
   /// each so followed, those that follow it: placed again as it is laid out on its way
   priv shown_bys : Map[Int, (NodeId, (Double) -> GroundShape)]
   priv shown_followers : Map[Int, Array[Int]]
+  /// for each node whose boxes are followed so, the nodes whose ground is drawn by where those boxes are drawn
+  /// (View::ground_by_placed): drawn again as any of them is placed or drawn off anew
+  priv placed_followers : Map[Int, Array[Int]]
   /// what is due being done (Tree::advance)
   mut advancing : Bool
   /// where its logic stands: what is due by then done (Tree::advance), what is said from then on said as of then at the
@@ -1553,6 +1556,7 @@ pub fn Tree::new(
     old_built_waits: [],
     shown_bys: {},
     shown_followers: {},
+    placed_followers: {},
     told: 0,
     clock_came_at: -1.0e9,
     advancing: false,
@@ -12496,6 +12500,10 @@ fn Tree::shorter_in(self : Tree, at : Int) -> Unit {
 fn Tree::place(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
   n.place_due = false
+  // (what draws its ground by where the boxes beside this one are drawn: drawn again, View::ground_by_placed)
+  if self.placed_followers.length() > 0 {
+    self.placed_told(at)
+  }
   // (what moves it by how big it is laid out: by how big it is laid out now, Tree::place's own moment, View::moved_by)
   // (no pair made for each node placed where nothing moves it so, nor for its offset or its pivot: placed every time
   // anything about it is)

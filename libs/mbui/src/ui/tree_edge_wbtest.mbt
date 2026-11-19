@@ -243,3 +243,84 @@ test "a page's list's band (View::scrolls_window's `bands`): one ground from one
   t.draw()
   assert_eq(drawn(), [], msg="none listed again")
 }
+
+///|
+/// A short page's list at its foot under a head (`from_end`, `head`, as a chat's few messages over its composer), its
+/// keys `keys`, each block 40 tall, its ground its key's (band_block_ground), block 1 lit by `lit`'s band (`ink`), its
+/// blocks' changes on one way (`flips`).
+fn band_short_list(keys : @signals.Signal[Array[Int]], lit : Array[@view.ListBand[Int]], ink : Int64) -> Unit {
+  set_view_app(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        @view.Scroll::list(),
+        fn() { keys.get() },
+        fn(b, k) { b.height(Is(Some(40.0))).ground(Is(band_block_ground(k))) |> ignore },
+        from_end=true,
+        flips=true,
+        head=fn(h) { h.height(Is(Some(30.0))) |> ignore },
+        bands=(fn() { lit }, fn(v, _) { v.ground(Is(ink)) |> ignore }),
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+fn band_block_ground(k : Int) -> Int64 {
+  0x10203000L + (k + 16).to_int64() * 0x100L + 0xFFL
+}
+
+///|
+test "a page's list's band where its blocks lie at its foot, short of what shows under its head: on the block it lights, not where the blocks would be counted from the head" {
+  let t = Tester::new(fn(_c) {  })
+  t.set_rows_on_pixels(true)
+  let ink = 0x2050A01FL
+  let keys = @signals.signal([0, 1, 2])
+  band_short_list(keys, [{ from: 1, upto: 1, top: 0.0, foot: 0.0 }], ink)
+  t.draw()
+  let rs = t.drawn_rects()
+  let band = rs.filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) })
+  let block = rs.filter(fn(r) { r.4 == band_block_ground(1) }).map(fn(r) { (r.1, r.3) })
+  // (three blocks of 40 at the foot of 400: block 1 from 320 down, far under where the head's 30 would start them)
+  assert_true(block is [(y, _)] && y > 200.0, msg="block 1 at its foot: \{Repr(block)}")
+  assert_eq(band, block, msg="the band where block 1 is")
+}
+
+///|
+test "a page's list's band as its blocks go on their way (`flips`): where the block it lights is drawn in every frame, never ahead of it where it comes to rest" {
+  // (it walks its own frames to look at each: once, at the default rate)
+  if test_at_a_rate() {
+    return
+  }
+  let t = Tester::new(fn(_c) {  })
+  t.set_rows_on_pixels(true)
+  let ink = 0x2050A01FL
+  let keys = @signals.signal([0, 1, 2])
+  band_short_list(keys, [{ from: 1, upto: 1, top: 0.0, foot: 0.0 }], ink)
+  t.draw()
+  // (a block come at its foot: those over it pushed up on the list's one way, block 1 with them)
+  keys.set([0, 1, 2, 3])
+  let seen = []
+  let apart = []
+  let from = t.time()
+  while t.time() - from < 600.0 {
+    t.run_for(16.0)
+    let rs = t.drawn_rects()
+    let band = rs.filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) })
+    let block = rs.filter(fn(r) { r.4 == band_block_ground(1) }).map(fn(r) { (r.1, r.3) })
+    match block {
+      [(y, _)] => seen.push(y)
+      _ => ()
+    }
+    if band != block {
+      apart.push("\{(t.time() - from).to_int()}: band \{Repr(band)} block \{Repr(block)}")
+    }
+  }
+  // (it went: drawn at more than its start and its end)
+  let places = seen.copy()
+  places.dedup()
+  assert_true(places.length() > 2, msg="block 1 went on a way: \{Repr(seen)}")
+  assert_eq(apart, [], msg="the band where block 1 is drawn in each frame")
+}
