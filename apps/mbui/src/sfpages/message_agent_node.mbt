@@ -565,9 +565,12 @@ fn agent_out_steps(plan : AgentOutPlan) -> AgentOut {
     avatar: fn(av) {
       plan.av.val = Some(av)
       // (from where the line's picture is, or the message's before, over Float's time from the plan's Float on)
-      av.flies_in(after(@sf.dmax(plan.float_at - av.cause_at(), 0.0), plan.float_ms), fn(_) {
-        Some(plan.face_at.val.unwrap_or_else(plan.from))
-      })
+      // (from within the list to within it: drawn among its rows, under its foot and what flies from that foot)
+      av.flies_in(
+        after(@sf.dmax(plan.float_at - av.cause_at(), 0.0), plan.float_ms),
+        fn(_) { Some(plan.face_at.val.unwrap_or_else(plan.from)) },
+        in_list=true,
+      )
       |> ignore
     },
     head: fn(h) {
@@ -593,7 +596,7 @@ fn agent_out_return(face : AgentFace, plan : AgentOutPlan, ending : Bool) -> Uni
       let home = agent_face_at(face)
       // (its own picture home from where the message's is now, in this change: View::flies_in)
       match face.pic.val {
-        Some(own) if own.alive() => own.flies_in(agent_home_flight, fn(_) { Some(from) }) |> ignore
+        Some(own) if own.alive() => own.flies_in(agent_home_flight, fn(_) { Some(from) }, in_list=true) |> ignore
         _ => ()
       }
       agent_home_ms(from, home)

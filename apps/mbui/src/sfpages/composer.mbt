@@ -2451,10 +2451,9 @@ fn flying_quotes(c : @ui.Ctx, src : Source, w : Writing, station : String) -> Ar
 ///|
 /// Where what composer `w` holds stands as it is sent (SentFrom: sent_local's `from`), for its row on a chat's page made
 /// as nodes to fly from, None with motion reduced: its words where they stand in the field now (the field an old
-/// view's, so where they stand is told its row), each quote's card where it is laid out in the composer
-/// (message_quotes_node's: where it stands at rest, over the field's words, even while it still comes in, as it does a
-/// moment after it is quoted), each file from its tile and each quote's own picture from its square in its card, as
-/// the old flight takes them (flying_files, flying_quotes' quote_picture_key).
+/// view's, so where they stand is told its row) and the room of the field they are seen within, each file from its
+/// tile and each quote's own picture from its square in its card, as the old flight takes them (flying_files,
+/// flying_quotes' quote_picture_key).
 fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) -> @sfbase.SentFrom? {
   if @ui.reduced_motion() {
     return None
@@ -2467,7 +2466,8 @@ fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) 
   }
   Some({
     words: w.field.words_at().map(fn(at) { at.0 }),
-    quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
+    words_room: w.field.words_at().map(fn(at) { at.1 }),
+    quote_ids: [],
     parts,
     delay: 0.0,
   })

@@ -149,12 +149,10 @@ pub struct Scroll {
   /// how tall what lies over its top covers what it shows (the bar a page's list runs under: View::scrolls'
   /// `top_covered`), read through Scroll::top_covered
   priv mut top_cover : () -> Double
-  /// the foot pinned over what it shows (a page's list's foot: View::scrolls_window's), its node; -1 none. What flies
-  /// from a thing in it may be drawn under it (View::shared's `route`, FlightLevel's UnderFoot)
+  /// the foot pinned over what it shows (a page's list's foot: View::scrolls_window's), its node; -1 none: what of the
+  /// column it covers is not seen of a picture flying from it (Tree::stays_bounds), and what flies from a
+  /// thing in the column or in it is drawn in the list over both (Tree::incoming_host)
   mut foot_at : Int
-  /// the node in that foot what flies under it is drawn just before (View::flights_under: a page's composer, the round
-  /// buttons over the list made before it left under the flight); -1: the foot itself
-  mut under_at : Int
   /// the logic's moment it was last put at once (Scroll::put: a page's list brought to a block or to its foot, the
   /// app's put), for the Tester's judges: what it moves by its offset alone (its bar's thumb) goes there with it in the
   /// frame that takes it (Tree::scroll_put_at)
@@ -316,7 +314,6 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     foot_clear: fn() { 0.0 },
     top_cover: fn() { 0.0 },
     foot_at: -1,
-    under_at: -1,
     put_at: -1.0e9,
     wheel_at: -1.0e9,
     keys_at: -1.0e9,
@@ -1496,7 +1493,6 @@ pub fn View::scrolls(
     s.foot_clear = fn() { 0.0 }
     s.top_cover = fn() { 0.0 }
     s.foot_at = -1
-    s.under_at = -1
     s.host = None
     match self.tree.scrolls_at.get(self.at) {
       Some(o) if physical_equal(o, s) => self.tree.scrolls_at.remove(self.at)

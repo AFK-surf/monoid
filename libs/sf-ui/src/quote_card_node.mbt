@@ -154,7 +154,9 @@ fn quote_source_node(
 /// A quote waiting in the composer (quote_card's `composer`) in `parent`: as a message's card, its corner the
 /// composer's inner, its words further in, leading nowhere; its own picture where it `pictured` (`picture` makes it, in
 /// the composer's room for it); under it the line for what is said about it, made by `comment_field`; its ✕ hung on its
-/// corner (with_corner_remove_node), `remove` what a press on it does, named `remove_label`. The card's node.
+/// corner (with_corner_remove_node), `remove` what a press on it does, named `remove_label`. `whole`: given what holds
+/// the card and its ✕ as one, its ground and corners the card's (what flies as one card, ✕ and all, says so on it:
+/// mbui's View::shared). The card's node.
 #callsite(autofill(loc))
 pub fn composer_quote_card_node(
   parent : @view.View,
@@ -167,14 +169,16 @@ pub fn composer_quote_card_node(
   remove_label : () -> String,
   pictured? : () -> Bool = fn() { false },
   picture? : (@view.View) -> Unit = fn(_) {  },
+  whole? : (@view.View) -> Unit = fn(_) {  },
   loc~ : SourceLoc,
 ) -> @view.View {
   let pin = fn() { pin_of(author(), role()) }
   let made : Ref[@view.View?] = Ref(None)
-  with_corner_remove_node(parent, remove_label, composer_inner(), fn(hung) {
+  let held = with_corner_remove_node(parent, remove_label, composer_inner(), fn(hung) {
     hung.box(made_for=loc, fn(card) {
       made.val = Some(card)
-      style_node(card, fn() { quote_box_composer().then(composer_card()).then(@ui.style(clip=true)) })
+      // (its ground and corners what holds it and its ✕ draws, below: one box, which a flight of them goes as)
+      style_node(card, fn() { @ui.style(w=Full, radius=composer_inner_radius(), clip=true) })
       card.lends(@view.runs_picker, fn(_) { Is((0, 0)) }) |> ignore
       quote_source_node(card, tips, author, words, pin, fn() { false }, fn() {  }, fn() {
         if pin() != "" {
@@ -200,6 +204,9 @@ pub fn composer_quote_card_node(
   // (as wide as what waits in the composer is, its ✕ reaching past its end into the room round it, as the old
   // composer's quote_card: no room kept for it at its end)
   }, remove, hung=false)
-  |> ignore
+  // (what holds the card and its ✕, as big as the card: the card's ground and corners, the one box a flight of the two
+  // goes as)
+  style_node(held, fn() { quote_box_composer().then(composer_card()).then(@ui.style(clip=false)) })
+  whole(held)
   made.val.unwrap()
 }

@@ -35,6 +35,7 @@ let composing_node : ComposingNode = { held: @sf.LiveMap::new(), warmed: {}, sho
 ///|
 /// What composing_node keeps, forgotten as a run starts (composing_reset).
 fn composing_node_reset() -> Unit {
+  draft_sent_counts.clear()
   composing_node.held.clear()
   composing_node.warmed.clear()
   composing_node.shown = ""
@@ -1826,7 +1827,7 @@ fn composer_extras_node(
             }
           }
           let card_key = w.key + "\u{1}" + id
-          let card = @sf.composer_quote_card_node(
+          @sf.composer_quote_card_node(
             row,
             tips,
             fn() { text(v(), "author") },
@@ -1856,12 +1857,14 @@ fn composer_extras_node(
               if f.focused() {
                 w.field.focus()
               }
-              composer_quote_cards.remove(w.key + "\u{1}" + id)
               writing_unquote(src, w, id)
             },
             fn() { @sf.t("web-main.quote.remove") },
             pictured=fn() { quote_picture_now(src, w, r.station, v()) is Some(_) },
             picture=fn(b) {
+              // (its picture flies on its own as it is sent, from its square to its place in the message's card: none of
+              // it in the card flown from here, View::flies_apart)
+              b.flies_apart() |> ignore
               // (a message's video on the station: its still, as a message's file shows it: video_still_node)
               let still = quote_still_node(b, src, r.station, v)
               let tile = waiting_tile_of(
@@ -1882,14 +1885,13 @@ fn composer_extras_node(
               // (its square, for what is sent to fly from: composer_sent_parts)
               composer_sent_parts_kept(w.key + "\u{1}" + id + "\u{1}picture", tile)
             },
+            // (the card and its ✕ as one, what a message sent from here takes it to its own card as: its card flies from it
+            // as one box, its words and its ✕ seen going as the message's come, mbui's View::shared `container`)
+            whole=fn(h) {
+              let made = @signals.untracked(fn() { draft_sent_into(w.key) })
+              h.shared(By(fn() { composer_quote_shared(w.key, card_key, made) }), sent_part_flight, container=true) |> ignore
+            },
           )
-          composer_quote_cards[card_key] = card
-          card.owns(fn() {
-            match composer_quote_cards.get(card_key) {
-              Some(c) if c.id() == card.id() => composer_quote_cards.remove(card_key)
-              _ => ()
-            }
-          })
           |> ignore
           // (the one the core says asks for the focus: given it, told; none where it says none, a quote of its own with no id
           // among them)
@@ -2586,10 +2588,37 @@ fn take_in_node(v : @view.View, src : Source, r : ChatRef, w : Writing, no_files
 }
 
 ///|
-/// The cards of the quotes waiting in each draft's composer made as nodes, by its key and the quote's id: where each is
-/// laid out is said at a send (send_in_chat_node), for the sent row's cards to fly from (sfbase's sent_quotes_from_said).
-// kept across runs: each let go with its node
-let composer_quote_cards : Map[String, @view.View] = Map([])
+/// How many times each draft was sent with quotes from its composer made as nodes (composer_sent_from_node: a chat's or
+/// a new chat's), by its key.
+// kept across runs: put back by composing_node_reset
+let draft_sent_counts : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
+
+///|
+/// How many times draft `draft` was sent with quotes (draft_sent_counts'), followed as it changes.
+fn draft_sent_into(draft : String) -> Int {
+  draft_sent_counts.get(draft).unwrap_or(0)
+}
+
+///|
+/// The id a quote's card waiting in a draft's composer made as nodes is shared by (mbui's View::shared), by its key and
+/// the quote's id (`card_key`), as it changes: none ("") while it waits; once draft `draft` is sent after it was made
+/// (`made`: draft_sent_into as it was made), the one of that send (sent_quote_id), which the message's card made with it
+/// flies from as one box (composer_sent_from_node, SentFrom's `quote_ids`). So it pairs with nothing while it waits,
+/// made again as what is round it is, and one of a later send's card is another's, never one living twice.
+fn composer_quote_shared(draft : String, card_key : String, made : Int) -> String {
+  let sent = draft_sent_into(draft)
+  if sent > made {
+    sent_quote_id(card_key, sent)
+  } else {
+    ""
+  }
+}
+
+///|
+/// The id the card of the quote `card_key` sent with the `sent`-th send with quotes of its draft is shared by.
+fn sent_quote_id(card_key : String, sent : Int) -> String {
+  "sent-quote:" + card_key + "#" + sent.to_string()
+}
 
 ///|
 /// What holds each draft's composer made as nodes at the shape it had as words were sent from it (its ground drawn as
@@ -2673,22 +2702,18 @@ pub fn composer_sent_from_node(src : Source, w : Writing) -> @sfbase.SentFrom? {
   } else {
     // (its words from where they stand in the field)
     let words = w.field.words_at().map(fn(at) { at.0 })
-    // (each quote's card from where it is laid out in the composer, message_quotes_node's: where it stands at rest)
-    let quotes = @signals.untracked(fn() { w.quotes.get() }).map(fn(q) {
-      let k = w.key + "\u{1}" + text(Some(q), "id")
-      let card = composer_quote_cards.get(k)
-      composer_quote_cards.remove(k)
-      match card {
-        Some(c) if c.alive() => {
-          // (drawn off by how much further in the composer's card has its words than the message's has: those set out
-          // where these stood)
-          let (x, y, cw, ch) = c.placed_window_now()
-          let (dx, dy) = @sf.quote_words_shift(text(Some(q), "author"), text(Some(q), "role"))
-          Some((x + dx, y + dy, cw, ch))
-        }
-        _ => None
-      }
-    })
+    // (the room of the field they are seen within: what of them is scrolled out of it not seen as they set out)
+    let words_room = w.field.words_at().map(fn(at) { at.1 })
+    // (each quote's card by the id it is shared by once this is sent, this draft's next send with quotes: the message's
+    // made with it flies from it as one box, View::shared)
+    let held_quotes = @signals.untracked(fn() { w.quotes.get() })
+    let quote_ids = if held_quotes.is_empty() {
+      []
+    } else {
+      let sent = @signals.untracked(fn() { draft_sent_into(w.key) }) + 1
+      draft_sent_counts.set(w.key, sent)
+      held_quotes.map(fn(q) { sent_quote_id(w.key + "\u{1}" + text(Some(q), "id"), sent) })
+    }
     // (each of its files from its tile there, as the old composer's: its picture's or its card's, by what its row keys
     // it by (flying_key); each quote's own picture from its square in its card)
     let parts : Array[(String, (Double, Double, Double, Double))] = []
@@ -2712,7 +2737,7 @@ pub fn composer_sent_from_node(src : Source, w : Writing) -> @sfbase.SentFrom? {
         _ => ()
       }
     }
-    Some({ words, quotes, parts, delay: 0.0 })
+    Some({ words, words_room, quote_ids, parts, delay: 0.0 })
   }
 }
 

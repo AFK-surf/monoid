@@ -1,6 +1,14 @@
 import {
+  "mbui/hostapi",
+  "mbui/kit",
   "mbui/ui",
+  "moonbitlang/core/cmp",
+  "moonbitlang/core/json",
+  "stillfail/sf",
   "stillfail/sfapp",
+  "stillfail/sfapp/settings",
   "stillfail/sfbase",
+  "stillfail/sfdesk",
   "stillfail/sffixture",
+  "stillfail/sfpages",
 }

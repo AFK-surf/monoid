@@ -448,12 +448,9 @@ pub fn chat_page_made(
               b(col, retained, r, fn(n) {
                 // (its composer made as nodes in the list's foot, its height going its own way, View::resizes)
                 match foot_node {
-                  // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
-                  // buttons the foot holds made before it under that picture, as over the list they stand on)
                   Some(make) => {
                     n
                     .box(fn(at) {
-                      at.flights_under() |> ignore
                       // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
                       make(at, retained, r, fn() { drawn(serial) }, fn() {
                         match narrower {
@@ -1760,7 +1757,8 @@ pub fn reset() -> Unit {
   flights_reset()
   chat_foot_dropped.set(None)
   sent_from_at.clear()
-  sent_quotes_from_at.clear()
+  sent_words_room_at.clear()
+  sent_quote_ids_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
   kept_places.clear()

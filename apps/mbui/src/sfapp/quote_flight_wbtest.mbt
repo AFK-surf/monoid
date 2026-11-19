@@ -7,22 +7,31 @@
 let quote_passage : String = "表头先对齐第三列"
 
 ///|
-/// Where the quote's words are seen now under the bar (each copy of its card's words, not see-through): their top left.
-fn quote_seen(t : @ui.Tester) -> Array[(Double, Double)] {
-  t.words().filter(fn(w) { w.0.contains(quote_passage) && w.5 > 0.5 && w.2 > 60.0 }).map(fn(w) { (w.1, w.2) })
+/// Where the quote's words are seen now under the bar (each copy of its card's words, not see-through): their top left
+/// and how opaque.
+fn quote_seen(t : @ui.Tester) -> Array[(Double, Double, Double)] {
+  t.words().filter(fn(w) { w.0.contains(quote_passage) && w.5 > 0.5 && w.2 > 60.0 }).map(fn(w) { (w.1, w.2, w.5) })
 }
 
 ///|
-/// Where the quote's words are seen now: once (copies drawn over each other count as one), else the test fails.
+/// Where the quote's words are seen now: the most opaque copy of them (a card flown as one box from the composer's to
+/// a message's: the one's words going as the other's come, each where its card has it), else the test fails; two
+/// seen whole apart fail it too.
 fn quote_once(t : @ui.Tester) -> (Double, Double) raise {
   let at = quote_seen(t)
   guard at.length() > 0 else { fail("the quote not seen at \{t.time()}") }
+  let mut best = at[0]
   for p in at {
-    if (p.0 - at[0].0).abs() > 0.5 || (p.1 - at[0].1).abs() > 0.5 {
+    if p.2 > best.2 {
+      best = p
+    }
+  }
+  for p in at {
+    if p.2 > 0.999 && best.2 > 0.999 && ((p.0 - best.0).abs() > 0.5 || (p.1 - best.1).abs() > 0.5) {
       fail("the quote seen twice apart at \{t.time()}: \{Repr(at)}")
     }
   }
-  at[0]
+  (best.0, best.1)
 }
 
 ///|
@@ -273,17 +282,13 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
     let landed = widths[widths.length() - 1]
     assert_true(landed < wide - 40.0, msg="landed \{landed} wide, as the composer's \{wide}")
-    // (the old page's card going from the composer's width to its own on its way; made as nodes, the message's card
-    // flies at its own width all the way, from the height it stood at there: message_quotes_node's `from`, #6593)
-    if !both_nodes.val {
-      assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
-      for k in 1..<widths.length() {
-        if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
-          fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
-        }
+    // (its card going from the composer's width to its own on its way: the old page's, and made as nodes one box from
+    // the composer's card to the message's, View::shared's `container`)
+    assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
+    for k in 1..<widths.length() {
+      if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
+        fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
       }
-    } else {
-      assert_true(widths.iter().all(fn(x) { (x - landed).abs() < 0.5 }), msg="its own width all the way: \{Repr(widths)}")
     }
   })
 }
@@ -360,11 +365,11 @@ test "sent, a quote's ✕ leaves with its card and the send button fades to fain
       // over its card all the way, never under it
       assert_true(x_over_card(t), msg="the ✕ under its card at \{t.time()}")
     }
-    // the ✕: seen as it sets out, fading on (never back), gone once it has left (the old page's: made as nodes, what
-    // flies is the message's quote card, which has none, as with its comment line: decided a known difference,
-    // 2026-11-16, quote_media_departure's)
+    // the ✕: seen as it sets out, fading on (never back), gone once it has left (made as nodes, flown with its card as
+    // one box to the message's, View::shared's `container`: cut by that box's edge as it narrows, as what the card
+    // holds is, at its own size)
+    assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
     if !both_nodes.val {
-      assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
       assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
     }
     assert_eq(xs[xs.length() - 1], 0.0)

@@ -1297,6 +1297,7 @@ pub fn Tree::laid_said_of(Self, Int32) -> Double?
 pub fn Tree::leaving(Self, NodeId) -> Bool
 pub fn Tree::lift_cut(Self, NodeId) -> (Double, Double, Double, Double)?
 pub fn Tree::lift_cut_corners(Self, NodeId) -> (Double, Double, Double, Double)?
+pub fn Tree::lifted_at(Self, Int) -> Bool
 pub fn Tree::list_bring(Self, NodeId, Int32) -> Unit
 pub fn Tree::list_in_front(Self) -> ListSeen?
 pub fn Tree::list_to_end(Self, NodeId) -> Unit
@@ -1526,7 +1527,9 @@ pub fn View::fit_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::fits(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::flies(Self) -> Bool
 #callsite(autofill(loc))
-pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::flies_apart(Self, loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, in_list? : Bool, cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, loc~ : SourceLoc) -> Self
 pub fn View::flight_across_now(Self) -> Double
 pub fn View::flight_ends_now(Self) -> Double?
 pub fn View::flying_now(Self) -> Bool
@@ -1732,7 +1735,7 @@ pub fn View::shakes_while(Self, (Double) -> Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::shapes(Self, Live[Array[@paint.Shape]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::shared(Self, Live[String], Flight, stays? : Bool, with_stays? : Bool, container? : Bool, up_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::shared_id(Self) -> String?
 #callsite(autofill(loc))
 pub fn View::shift(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
