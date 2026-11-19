@@ -33,7 +33,7 @@ env:
   # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
   # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
   BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  # Windows' reader, built after natives in a job of its own on ci-1 (natives-win-reader): two readers side by side there,
+  # Windows' reader, built in a job of its own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
   # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
   BRANCH_WIN_READER: reader:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 reader:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
@@ -113,23 +113,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ vars.CI_1 }}" = off ]; then
-            if [ "$GITHUB_REF" = refs/heads/main ]; then missing=$(node scripts/native.ts missing)
-            else missing=$(node scripts/native.ts missing $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_MAC_NATIVES $BRANCH_HARNESS); fi
+            # (the non-Apple parts all in natives on macos-ci; the Apple ones in natives-mac all the same, which takes no
+            # ci-1 runner, so that desktop-build waits for those alone)
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              missing=$(node scripts/native.ts missing --linux)
+              missing_mac=$(node scripts/native.ts missing --mac)
+            else
+              missing=$(node scripts/native.ts missing $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS)
+              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
+              else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
+            fi
             missing=$(printf '%s\n' $missing | tr '\n' ' ' | xargs)
-            missing_mac=""
+            missing_mac=$(printf '%s\n' $missing_mac | tr '\n' ' ' | xargs)
             missing_win=""
-            echo "missing (all on mac): ${missing:-none}"
+            echo "missing (non-Apple, all on mac): ${missing:-none}"
+            echo "missing (mac): ${missing_mac:-none}"
             echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_mac=ready" >> "$GITHUB_OUTPUT"
+            echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
             echo "natives_win_reader=ready" >> "$GITHUB_OUTPUT"
             echo "natives_harness=ready" >> "$GITHUB_OUTPUT"
             echo "missing_list=$missing" >> "$GITHUB_OUTPUT"
-            echo "missing_mac_list=" >> "$GITHUB_OUTPUT"
+            echo "missing_mac_list=$missing_mac" >> "$GITHUB_OUTPUT"
             echo "missing_win_list=" >> "$GITHUB_OUTPUT"
             echo "missing_harness_list=" >> "$GITHUB_OUTPUT"
           else
             if [ "$GITHUB_REF" = refs/heads/main ]; then
-              # (main's Windows reader in natives-win-reader too: three readers at -O2 in one natives job took 270-300 s
+              # (main's Windows reader in natives-win-reader-main: three readers at -O2 in one natives job took 270-300 s
               # of its five minutes, and nothing but ui-windows and the station's release waits for it)
               # (and the tests' program in natives-harness, which only check-station waits for)
               all_linux=$(node scripts/native.ts missing --linux)
@@ -212,7 +221,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.natives == 'needed'
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_runner) }}
-    # (on ci-1, main's and a branch's, one after its Windows reader there, or before it: natives-win-reader)
+    # (on ci-1, a branch's one after its Windows reader there or before it, natives-win-reader; main's before it,
+    # natives-win-reader-main)
     concurrency:
       group: ${{ needs.plan.outputs.natives_runner == '["self-hosted","ci-1"]' && format('ci1-readers-{0}', github.run_id) || format('natives-{0}', github.run_id) }}
       cancel-in-progress: false
@@ -326,13 +336,13 @@ jobs:
           path: ~/.cache/stillfail-reader-mbc
           key: mbui-reader-linux-branch-v2-${{ github.sha }}
 
-  # Windows' reader (plan's missing_win_list), main's and a branch's, on ci-1 one after natives (the concurrency group
+  # Windows' reader (plan's missing_win_list), a branch's, on ci-1 one after natives or before it (the concurrency group
   # both take there), so that the readers' C does not share its cores and each has a job's five minutes, and beside it
-  # on GitHub's runners, each a machine of its own: main's published, a branch's archive staged in R2 as natives' are
-  # (natives-win-reader-<sha>), for ui-windows. With vars.CI_1 == 'off' natives builds it itself.
+  # on GitHub's runners, each a machine of its own: its archive staged in R2 as natives' are (natives-win-reader-<sha>),
+  # for ui-windows. Main's is natives-win-reader-main's. With vars.CI_1 == 'off' natives builds it itself.
   natives-win-reader:
     needs: plan
-    if: ${{ !cancelled() && vars.CI_1 != 'off' && needs.plan.outputs.natives_win_reader == 'needed' }}
+    if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref != 'refs/heads/main' && needs.plan.outputs.natives_win_reader == 'needed' }}
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_win_runner) }}
     concurrency:
       group: ${{ needs.plan.outputs.natives_win_runner != '"ubuntu-24.04"' && format('ci1-readers-{0}', github.run_id) || format('natives-win-{0}', github.run_id) }}
@@ -434,6 +444,29 @@ jobs:
         with:
           path: ~/.cache/stillfail-reader-mbc
           key: mbui-reader-win-branch-v2-${{ github.sha }}
+
+  # Main's Windows reader, published, on ci-1 after natives (its needs), never before it: taking the readers' group
+  # first there, it held natives and every job waiting for the readers 153 s (cbab7545c). Only ui-windows and the
+  # station's release wait for it.
+  natives-win-reader-main:
+    needs: [plan, natives]
+    if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_win_runner) }}
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-linux
+      - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc', farview: 'false' }
+      - name: Get or build Windows' reader
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # (one reader here: every core its)
+          STILLFAIL_NATIVE_READERS: "1"
+          MISSING_WIN: ${{ needs.plan.outputs.missing_win_list }}
+        run: node scripts/native.ts ensure --publish $MISSING_WIN
 
   # The tests' MoonBit program (plan's missing_harness_list: reader-harness, every package's harness, which only
   # check-station runs), main's and a branch's, built as natives-win-reader is but on GitHub's runner wherever
@@ -583,7 +616,8 @@ jobs:
   # 2026-11-17).
   natives-mac:
     needs: plan
-    if: vars.CI_1 != 'off' && needs.plan.outputs.natives_mac == 'needed'
+    # (with vars.CI_1 == 'off' too: it takes no ci-1 runner, and natives then builds only the non-Apple parts)
+    if: needs.plan.outputs.natives_mac == 'needed'
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_runner) }}
     timeout-minutes: 5
     permissions:
@@ -744,8 +778,8 @@ jobs:
   # carries (the native part agent-desktop) driving Notepad through the agents' computer tool, on GitHub's Windows,
   # whose runner has a signed-in person's session as a station's machine does. For a change to the station.
   ui-windows:
-    needs: [plan, natives, natives-win-reader]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && needs.plan.outputs.station == 'true' }}
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && needs.plan.outputs.station == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 5
     defaults:
@@ -1419,8 +1453,8 @@ jobs:
 
   # The station's (darwin-arm64, linux-x64, linux-arm64, win32-x64): what a station on the test channel updates to.
   station:
-    needs: [plan, natives, natives-win-reader, natives-mac]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-mac]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
     # (GitHub's Mac, as desktop's signing: on Mini1 its four packages, ~150 MB, went up to the bucket over the home
     # line in what was left of its five minutes after 31 s of building, cut there, and took that line from android's
     # upload beside it, cut too: main 44147606865, 2026-11-17)
@@ -1586,8 +1620,9 @@ jobs:
           sh .github/release-desktop.sh --product monoid
 
   desktop-build:
-    needs: [plan, natives, natives-mac]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
+    # (the Apple parts alone: shell-apple and ghostty-vt for darwin-arm64, natives-mac's, never natives' slower Linux build)
+    needs: [plan, natives-mac]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: macos-26
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     # (a run by hand compiles what main's store has none of whole: once the units' commands named mbui at libs/mbui,
@@ -1890,8 +1925,8 @@ jobs:
           key: ${{ env.MOON_KEY }}
   # The expensive build is already handed over; keep signing, notarization and release checks in their own budget.
   desktop:
-    needs: [plan, natives, natives-mac, desktop-build]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && needs.desktop-build.result == 'success' && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
+    needs: [plan, desktop-build]
+    if: ${{ !cancelled() && !failure() && needs.desktop-build.result == 'success' && ((github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true') || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: macos-26
     outputs:
       hand: ${{ steps.hand.outputs.key }}
@@ -1905,7 +1940,8 @@ jobs:
       - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh
-      - uses: ./.github/actions/setup
+      # (Node alone: signing, release-desktop.sh --out and release-put.sh through Cloudflare's API install no packages)
+      - uses: ./.github/actions/node
       - uses: actions/download-artifact@v4
         with:
           name: mac-unsigned-${{ github.sha }}
@@ -1926,14 +1962,7 @@ jobs:
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_2: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_2 }}
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
-        run: |
-          # The uploader's packages need none of the app's build; prepare them beside it.
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > "$RUNNER_TEMP/mac-put-deps.log" 2>&1) &
-          deps=$!
-          status=0
-          sh .github/release-desktop.sh --out "$RUNNER_TEMP/release" || status=$?
-          wait "$deps" || { cat "$RUNNER_TEMP/mac-put-deps.log"; status=1; }
-          exit "$status"
+        run: sh .github/release-desktop.sh --out "$RUNNER_TEMP/release"
       - name: Sign and verify the beta Mac app without publishing
         if: github.ref != 'refs/heads/main'
         env:
@@ -2307,9 +2336,20 @@ jobs:
     env:
       PART: station
       HANDED: ${{ needs.station.outputs.hand }}
+    # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
+    # on Delta.java and JZlib for Android's; no packages, no pnpm)
     steps: &deltas-steps
       - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup
+        with:
+          sparse-checkout: |
+            /scripts/
+            /station/src/updates/delta.ts
+            /.node-version
+            /.github/actions/node/
+            /libs/mbui/android/app/src/main/java/dev/mbui/Delta.java
+            /libs/mbui/android/jzlib/
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/node
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release" }
@@ -2318,7 +2358,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
           # shellcheck disable=SC2086 # names, one word each
           sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
           sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
@@ -2328,9 +2367,7 @@ jobs:
       - name: Put them (nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          [ -d cloud/node_modules ] || (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          sh scripts/release-put.sh --files "$RUNNER_TEMP/deltas"
+        run: sh scripts/release-put.sh --files "$RUNNER_TEMP/deltas"
       - uses: actions/upload-artifact@v4
         with: { name: "deltas-${{ env.PART }}-${{ github.sha }}", path: "${{ runner.temp }}/deltas", if-no-files-found: ignore, retention-days: 1 }
   deltas-android:
@@ -2387,7 +2424,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # the changelog's entries are numbered by the commits up to them
-      - uses: ./.github/actions/setup
+      # (Node alone: release-put.sh and changelog-put.sh go through Cloudflare's API with CLOUDFLARE_API_TOKEN, no packages)
+      - uses: ./.github/actions/node
       - uses: actions/download-artifact@v4
         with: { pattern: "release-*-${{ github.sha }}", path: "${{ runner.temp }}/release", merge-multiple: true }
       # what macos-ci's jobs handed through the bucket (scripts/release-put.sh --hand)
@@ -2397,7 +2435,6 @@ jobs:
           HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
         run: |
           [ -n "$(echo $HANDED)" ] || exit 0
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
           # shellcheck disable=SC2086 # names, one word each
           sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
       # the feeds with their deltas (the deltas-<part> jobs'), over the ones handed; none, and they go out without
@@ -2409,28 +2446,49 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
         run: |
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
           sh scripts/release-put.sh "$RUNNER_TEMP/release"
           # shellcheck disable=SC2086 # names, one word each
           [ -z "$(echo $HANDED)" ] || sh scripts/release-put.sh --drop $HANDED
       - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
         run: sh scripts/release-told.sh https://app.youdid.wtf https://app.still.fail
-      - name: Put changelog.json
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: sh scripts/changelog-put.sh
       # monoid's cloud reads its own account's bucket, and answers for still.fail too once CLOUD_MOVED is on: the same
-      # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13)
-      - name: Put changelog.json in monoid's bucket
-        if: vars.MONOID_CI == 'on'
+      # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13). Both side by
+      # side, each with its own account's token.
+      - name: Put changelog.json (and in monoid's bucket)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
-        run: sh scripts/changelog-put.sh
-      # The release is put and told by now: an old file Cloudflare's API would not list or delete (a 5xx, a 429, a reset)
-      # stays for the next put's prune, and holds back neither this put nor station-update.
-      - name: Delete old installers and beta blockmaps (scripts/release-prune.ts says which stay)
-        continue-on-error: true
-        env:
+          STILLFAIL_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          MONOID_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+          MONOID_CI: ${{ vars.MONOID_CI }}
+        run: |
+          CLOUDFLARE_API_TOKEN=$STILLFAIL_TOKEN sh scripts/changelog-put.sh &
+          stillfail=$!
+          if [ "$MONOID_CI" = on ]; then CLOUDFLARE_API_TOKEN=$MONOID_TOKEN sh scripts/changelog-put.sh & monoid=$!; fi
+          status=0
+          wait "$stillfail" || { echo "changelog.json not put in still.fail's bucket" >&2; status=1; }
+          if [ -n "${monoid:-}" ]; then wait "$monoid" || { echo "changelog.json not put in monoid's bucket" >&2; status=1; }; fi
+          exit "$status"
+
+  # Old installers and beta blockmaps deleted (scripts/release-prune.ts says which stay), after put and beside done and
+  # station-update, never before them: the release is put and told by then, and an old file Cloudflare's API would not
+  # list or delete (a 5xx, a 429, a reset) stays for the next run's prune, holding nothing back.
+  release-prune:
+    needs: [put]
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && needs.put.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /scripts/
+            /station/src/updates/delta.ts
+            /.node-version
+            /.github/actions/node/
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/node
+      - env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/release-prune.ts
 
@@ -2463,7 +2521,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # each entry's version is the commits up to it
-      - uses: ./.github/actions/setup
+      # (Node alone: changelog-put.sh puts through Cloudflare's API with CLOUDFLARE_API_TOKEN, no packages)
+      - uses: ./.github/actions/node
       - name: Put changelog.json
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2478,8 +2537,8 @@ jobs:
 
   # main, once all of it is out: the tag the next run's range starts from, and what is left to do by hand.
   done:
-    needs: [plan, natives, natives-win-reader, natives-harness, natives-mac, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, station, android, desktop-build, desktop, desktop-win, put]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, station, android, desktop-build, desktop, desktop-win, put]
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     permissions:
@@ -2504,7 +2563,7 @@ jobs:
   # How long this run took against its budget (scripts/ci-time.ts): in the run's summary, and a warning when over. A
   # station's watch reads the same of every run and has an agent find why one went over.
   timing:
-    needs: [plan, natives, natives-win-reader, natives-harness, natives-mac, check, check-mac, check-linux, check-station, check-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, changelog, done]
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, check, check-mac, check-linux, check-station, check-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, release-prune, changelog, done]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

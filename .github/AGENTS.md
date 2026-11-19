@@ -26,10 +26,11 @@
   of one clang and libc, each its own store, left a push's image's units hours behind main's.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
-  (any `ci-1` runner; main's and a branch's Windows reader after it in `natives-win-reader`, one concurrency group there,
-  each cold reader at -O2 a job's five minutes' worth when they shared the cores), `natives-main` and cross-platform
+  (any `ci-1` runner; a branch's Windows reader in `natives-win-reader`, one concurrency group there, each cold reader
+  at -O2 a job's five minutes' worth when they shared the cores; main's in `natives-win-reader-main`, which `needs`
+  natives: taking the group first, it held natives and every job waiting for the readers), `natives-main` and cross-platform
   `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to
-  `macos-ci`), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
+  `macos-ci` for the non-Apple parts, `natives-mac` building the Apple ones all the same), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
   `missing_win_list`, `missing_mac_list`, `missing_harness_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
   `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
@@ -77,6 +78,11 @@
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
   a part that needs more is made faster or gets fewer bases, not longer (10 bases: the owner, 2026-11-11).
+- `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts) and `desktop` for `desktop-build` alone, never
+  for `natives`' slower Linux build. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
+  alone (`.github/actions/node`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
+  token (wrangler only without it). `release-prune` deletes old files after `put` in a job of its own, which neither
+  `done` nor `station-update` waits for.
 - The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
   notary service, which can take a job's five minutes (2026-11-12, four runs in a row). Nor does Windows' (`desktop-win`): a new MoonBit's cold
   build was cut at its five minutes run after run and held every part's beta back (the user, 2026-11-17). Nor do the
