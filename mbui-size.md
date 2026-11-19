@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 97.47 | 122.6 |
 | [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 2.62 | 3.52 | 14.39 | 36.49 | 55.45 | 31.98 | 64.67 | 96.99 | 118.37 |
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 2.62 | 3.52 | 14.37 | 36.48 | 55.39 | 31.96 | 64.62 | 97.04 | 107.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 2.58 | 3.47 | 14.17 | 36.24 | 54.53 | 31.76 | 63.92 | 97.13 | 102.26 |
 | [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
-| [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0b08c552b](https://github.com/AFK-surf/monoid/commit/0b08c552b37c410779a41127f88ec609edc99677) fix(mbui): use tinted UIGlassEffect for iOS 27 pro | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 53.82 |
 | [bfcbe28c6](https://github.com/AFK-surf/monoid/commit/bfcbe28c6d49fe9e4486591f92ab8a5bfba9f0aa) refactor(mbui): extract sfapptest and sfapp_realsi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [53983853e](https://github.com/AFK-surf/monoid/commit/53983853e85aa393aeae20b4a33363c3567f2a53) feat(mbui): quiet station pointer, trackpad curve, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [81556eb15](https://github.com/AFK-surf/monoid/commit/81556eb15db6acfb1ec9fed55ea1a89d6cef3898) feat(mbui): polish execution history interactions, | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [84a34376a](https://github.com/AFK-surf/monoid/commit/84a34376ac03c82ac49ccc2592ece83224e4651a) refactor(sf-ui): share the workspaces' rows and th | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
-| [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
