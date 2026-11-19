@@ -1250,9 +1250,10 @@ function tables(db: DatabaseSync): Json {
 // ── running as administrator ────────────────────────────────────────────────────────────────────────────────────
 
 /// A station's data and app, as install.ps1 leaves them (its hidden launcher there).
-function installed(windows?: unknown) {
-  const data = mkdtempSync(join(tmpdir(), "stillfail-elevation-"));
+function installed(windows?: unknown, leaf?: string) {
+  let data = mkdtempSync(join(tmpdir(), "stillfail-elevation-"));
   dirs.push(data);
+  if (leaf !== undefined) mkdirSync((data = join(data, leaf)));
   const app = join(data, "app");
   mkdirSync(join(app, "mesh", "target", "release"), { recursive: true });
   writeFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), "");
@@ -1370,7 +1371,7 @@ test("running as administrator: what the overview says, a change asked, refused,
     };
   }
 
-  type Case = { windows?: unknown; before?: [string, string][]; probe: Json; script: (s: ElevSide, t: (l: string, v: Json) => void) => Promise<void> };
+  type Case = { windows?: unknown; leaf?: string; before?: [string, string][]; probe: Json; script: (s: ElevSide, t: (l: string, v: Json) => void) => Promise<void> };
   const viewerOf = (role: string) => ({ sub: "s", email: "m@x.com", name: "M", role, workspace: "ws", device: "d" });
   const cases: Record<string, Case> = {
     overview: { windows: { admin: true }, probe: { elevated: true, admin: true }, script: async (s, t) => {
@@ -1389,6 +1390,15 @@ test("running as administrator: what the overview says, a change asked, refused,
       t("declined", await s.op("exit", { child: 1, code: 4 }));
       t("after", await s.op("view", { manage: true }));
       t("stop", await s.op("stop"));
+    } },
+    // install.ps1 writes no windows.json for monoid's own task: the data directory says whose it is.
+    monoid: { leaf: ".monoid", probe: { elevated: false, admin: true }, script: async (s, t) => {
+      t("change", await s.op("change", { on: true }));
+      t("files", s.files());
+    } },
+    "monoid apart": { leaf: ".monoid", windows: { task: "apart" }, probe: { elevated: false, admin: true }, script: async (s, t) => {
+      t("change", await s.op("change", { on: true }));
+      t("files", s.files());
     } },
     unanswered: { probe: { elevated: false, admin: true }, script: async (s, t) => {
       t("change", await s.op("change", { on: true }));
@@ -1457,7 +1467,7 @@ test("running as administrator: what the overview says, a change asked, refused,
   };
   for (const [name, c] of Object.entries(cases)) {
     const run = async (make: typeof tsElev) => {
-      const paths = installed(c.windows);
+      const paths = installed(c.windows, c.leaf);
       if (name === "not installed") rmSync(join(paths.app, "mesh", "target", "release", "stillfail-station-w.exe"));
       for (const [path, text] of c.before ?? []) writeFileSync(join(paths.data, path), text);
       const s = await make(paths, c.probe);
@@ -1470,6 +1480,7 @@ test("running as administrator: what the overview says, a change asked, refused,
     };
     const a = await run(tsElev);
     const b = await run(mbElev);
+    if (name === "monoid") for (const side of [a, b]) assert.match(JSON.stringify(side), /Level 'monoid station' 'Highest'[\s\S]*-TaskName 'monoid station elevation'/, name);
     assert.equal(b.length, a.length, name);
     for (let i = 0; i < a.length; i++) assert.deepEqual(b[i], a[i], `${name}: step ${i} ${JSON.stringify(a[i]).slice(0, 160)}`);
   }

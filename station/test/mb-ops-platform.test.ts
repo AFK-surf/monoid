@@ -482,11 +482,19 @@ test("platform/windows.ts: Windows' paths, shims, PATH and scripts", { skip }, a
       rm: async () => {}, copyFile: async () => {}, writeFile: async () => {},
       spawn: (_: string, args: string[]) => { script = Buffer.from(args.at(-1)!, "base64").toString("utf16le"); return { on: (e: string, f: (c: number) => void) => e === "exit" && f(0) }; },
     }, `installer-${kept}`);
-    await sm.startInstaller("C:\\s.ps1", "C:\\data\\run", {}, "C:\\app");
-    const task = /-TaskName '([^']*)'/.exec(script)![1]!.replace(/''/g, "'");
-    const admin = /-RunLevel (\w+)/.exec(script)![1] === "Highest";
-    await same({ fn: "windowsTaskOf", kept }, { task, admin });
-    await same({ fn: "windowsRegisterScript", hidden: "C:\\data\\run\\stillfail-update-w.exe", ps1: "C:\\data\\run\\update.ps1", runDir: "C:\\data\\run", task, admin }, script);
+    for (const [runDir, dataDir] of [["C:\\data\\run", "C:\\data"], ["C:\\Users\\alice\\.monoid\\run", "C:\\Users\\alice\\.monoid"]]) {
+      await sm.startInstaller("C:\\s.ps1", runDir, {}, "C:\\app");
+      const task = /-TaskName '([^']*)'/.exec(script)![1]!.replace(/''/g, "'");
+      const admin = /-RunLevel (\w+)/.exec(script)![1] === "Highest";
+      // Where windows.json names none, the data directory's product's (install.ps1 writes none for its own).
+      const own = kept === null || kept === "not json" || kept === '  {"task":""}  ' || kept === '{"admin":1}';
+      if (own) assert.equal(task, `${dataDir.endsWith(".monoid") ? "monoid" : "still.fail"} station update`, `${runDir} ${kept}`);
+      await same({ fn: "windowsTaskOf", kept, dataDir }, { task, admin });
+      await same({ fn: "windowsRegisterScript", hidden: `${runDir}\\stillfail-update-w.exe`, ps1: `${runDir}\\update.ps1`, runDir, task, admin }, script);
+    }
+  }
+  for (const [dataDir, task] of [["C:\\Users\\alice\\.MONOID\\", "monoid station update"], ["/home/a/.monoid/", "monoid station update"], ["C:\\Users\\alice\\.stillfail", "still.fail station update"], ["", "still.fail station update"]]) {
+    await same({ fn: "windowsTaskOf", kept: null, dataDir }, { task, admin: false });
   }
   const there = ["C:\\", "E:\\", "Z:\\"];
   await same({ fn: "winDrives", there }, await w.drives(async (p: string) => there.includes(p)));
@@ -1491,14 +1499,15 @@ const PROCS = [
 test("resources/: what processes use, whose they are", { skip }, async () => {
   const mod = await privateOf("resources/module.ts", {}, "resources");
   const { appBundles, parseNettop, programsIn, frontIn } = await import("../src/resources/module.ts");
-  const plists: Record<string, string> = { "/Applications/still.fail.app/Contents/Info.plist": "<string>fail.still.desktop.beta</string>", "/Applications/Other.app/Contents/Info.plist": "x" };
-  const commands = ["/Applications/still.fail.app/Contents/MacOS/x", "/Applications/still.fail.app/Contents/MacOS/x", "/Applications/Other.app/Contents/MacOS/y", "/Applications/Other.app/Contents/MacOS/y", "/usr/bin/z", "/Missing.app/Contents/a"];
+  const plists: Record<string, string> = { "/Applications/still.fail.app/Contents/Info.plist": "<string>fail.still.desktop.beta</string>", "/Applications/Other.app/Contents/Info.plist": "x", "/Applications/monoid.app/Contents/Info.plist": "<string>build.monoid.desktop</string>", "/Applications/monoid beta.app/Contents/Info.plist": "<string>build.monoid.desktop.beta</string>" };
+  const commands = ["/Applications/still.fail.app/Contents/MacOS/x", "/Applications/still.fail.app/Contents/MacOS/x", "/Applications/Other.app/Contents/MacOS/y", "/Applications/Other.app/Contents/MacOS/y", "/usr/bin/z", "/Missing.app/Contents/a", "/Applications/monoid.app/Contents/MacOS/m", "/Applications/monoid.app/Contents/MacOS/m", "/Applications/monoid beta.app/Contents/MacOS/m", "/Applications/monoid beta.app/Contents/MacOS/m"];
   const isApp = appBundles(async (p) => { if (plists[p] === undefined) throw new Error("none"); return Buffer.from(plists[p]!); });
   const told: boolean[] = [];
   for (const c of commands) {
     told.push(isApp(c));
     await new Promise((r) => setImmediate(r));
   }
+  assert.deepEqual(told, [false, true, false, false, false, false, false, true, false, true], "monoid's desktop app (build.monoid.desktop) too");
   await same({ fn: "appBundles", commands, plists }, told);
   const ps = " 12 /usr/bin/node --x y\n 7 /bin/sh -c 'a b'\nbad\n  8\n 9 \n 12 again\n";
   await same({ fn: "parseArgs", text: ps }, entries(mod.parseArgs(ps)));

@@ -13,8 +13,9 @@ import { ASK_MS, Elevation, applyScript, askScript, restartScript } from "../src
 import { elevationRoutes } from "../src/elevation/module.ts";
 
 /// A station's data and app, as install.ps1 leaves them (its hidden launcher there).
-function installed(windows?: unknown) {
-  const data = realpathSync(mkdtempSync(join(tmpdir(), "stillfail-elevation-")));
+function installed(windows?: unknown, leaf?: string) {
+  let data = realpathSync(mkdtempSync(join(tmpdir(), "stillfail-elevation-")));
+  if (leaf !== undefined) mkdirSync((data = join(data, leaf)));
   const app = join(data, "app");
   mkdirSync(join(app, "mesh", "target", "release"), { recursive: true });
   writeFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), "");
@@ -62,8 +63,8 @@ function clock(start = 1_000_000) {
   };
 }
 
-async function station(o: { windows?: unknown; elevated?: boolean; admin?: boolean; data?: { data: string; app: string }; c?: ReturnType<typeof clock> }) {
-  const paths = o.data ?? installed(o.windows);
+async function station(o: { windows?: unknown; leaf?: string; elevated?: boolean; admin?: boolean; data?: { data: string; app: string }; c?: ReturnType<typeof clock> }) {
+  const paths = o.data ?? installed(o.windows, o.leaf);
   const shell = fakeShell();
   const c = o.c ?? clock();
   let changes = 0;
@@ -101,6 +102,20 @@ test("switched on: Windows asks in a PowerShell of the station's, which a refusa
   assert.equal(v.step, undefined);
   assert.equal(v.on, false, "nothing changed");
   await s.e.stop();
+});
+
+test("a monoid station (its data .monoid) with no windows.json changes monoid's task, as install.ps1 named it", async () => {
+  for (const [leaf, windows, task] of [[".monoid", undefined, "monoid station"], [".MONOID", undefined, "monoid station"], [".monoid", { task: "apart" }, "apart"], [".stillfail", undefined, "still.fail station"], [".monoid-x", undefined, "still.fail station"]] as const) {
+    const s = await station({ leaf, windows });
+    await s.e.change(true);
+    const apply = readFileSync(join(s.paths.data, "run", "elevation-apply.ps1"), "utf8");
+    assert.match(apply, new RegExp(`Level '${task}' 'Highest'`), `${leaf} ${JSON.stringify(windows)}`);
+    assert.match(apply, new RegExp(`Register-ScheduledTask -TaskName '${task} elevation'`));
+    const restart = readFileSync(join(s.paths.data, "run", "elevation-restart.ps1"), "utf8");
+    assert.match(restart, new RegExp(`\\$task = '${task}'`));
+    assert.match(restart, new RegExp(`Unregister-ScheduledTask -TaskName '${task} elevation'`));
+    await s.e.stop();
+  }
 });
 
 test("a prompt nobody answers (the secure desktop no remote screen shows) is given up, the station as it was", async () => {
