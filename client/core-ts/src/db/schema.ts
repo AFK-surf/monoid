@@ -479,11 +479,16 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // table's page, its JSON inline, 168 ms of a list made on a phone, 2026-11-18. Made again partial and covering)
     const recentWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'");
     if (recentWas.length > 0 && !/WHERE archived = 0/.test(String(recentWas[0]![0]))) sql.exec("DROP INDEX chat_recent");
+    // (`chat_archive`, the archive's walk, as it was made before: of its order alone, so each archived row it walked
+    // (another station's, one read apart, a tie of its order) read the table's page, its JSON inline: 248 ms of the
+    // archive's place on a phone, 2026-11-19. Made again partial and covering)
+    const archiveWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_archive'");
+    if (archiveWas.length > 0 && !/\bstation\b/.test(String(archiveWas[0]![0]))) sql.exec("DROP INDEX chat_archive");
     sql.exec(`
       CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_made ON chat (made);
       CREATE INDEX IF NOT EXISTS chat_archived_at ON chat (station, archived, archived_mark, archived_at DESC, thread, session) WHERE archived_mark = 1;
-      CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, coalesce(archived_at, 0) DESC) WHERE archived_mark = 1;
+      CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, archived_mark, coalesce(archived_at, 0) DESC, station, ord, id, thread, session) WHERE archived = 1 AND archived_mark = 1;
       CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, led, watched, last_active, thread, session, id) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);
       DROP INDEX IF EXISTS chat_marked;

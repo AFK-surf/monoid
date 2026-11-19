@@ -2218,11 +2218,15 @@ export class Views implements Owner {
   #archivedDays(stations: string[], from: number, offset: number): Map<string, number[]> {
     const out = new Map<string, number[]>();
     if (stations.length === 0) return out;
-    const rows = this.#core.data.chatCounted(CHAT_READS.archivedCount, { stations, threads: [], sessions: [], from, offset: offset * 60_000, day: DAY_MS });
-    for (const [station, day, n] of rows) {
-      if (day === null || typeof day !== "number") continue;
-      const at = day * DAY_MS - offset * 60_000 + DAY_MS / 2;
-      out.set(String(station), [...(out.get(String(station)) ?? []), ...Array.from({ length: Number(n) }, () => at)]);
+    // (each station's counted and kept by itself: a chat archived on one counts no other again)
+    for (const station of stations) {
+      const days: number[] = [];
+      for (const [, day, n] of this.#core.data.chatCounted(CHAT_READS.archivedCount, { station, threads: [], sessions: [], from, offset: offset * 60_000, day: DAY_MS })) {
+        if (day === null || typeof day !== "number") continue;
+        const at = day * DAY_MS - offset * 60_000 + DAY_MS / 2;
+        for (let i = 0; i < Number(n); i++) days.push(at);
+      }
+      if (days.length > 0) out.set(station, days);
     }
     return out;
   }

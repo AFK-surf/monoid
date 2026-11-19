@@ -285,8 +285,9 @@ const readTopic = (name: string, k: ReadKey): Topic => ({ topic: name, station: 
 /// What a chat's record a read found is told by (its station, whether archived, its id): every write of it.
 const CHAT_RECORD = "$chat-record";
 /// How many declared reads' answers are kept as their statements gave them, read again only as their keys are told
-/// (a list's counts one a station: `counts`).
-const CHAT_ANSWERS_KEPT = 128;
+/// (a list's counts one a station: `counts`). A workspace of many stations holds several a station at once (`counts`,
+/// `atWork`, `archivedCount`, the chats each names): fewer than those, each write read them all again in turn.
+const CHAT_ANSWERS_KEPT = 512;
 
 /// How long a session counts as used lately once its chat or history was opened (`usedLately`).
 export const RECENT_MS = 3 * 86_400_000;

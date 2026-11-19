@@ -285,7 +285,7 @@ export const CHAT_READS = {
   /// parameters were bound, where the tests' (Node's) took `chat_archive`.
   archived: {
     name: "$chat-archived", bound: "first", records: false,
-    sql: `SELECT c.station, c.archived, c.id, w.at, CASE json_type(c.json, '$.session') WHEN 'text' THEN json_extract(c.json, '$.session') END, CASE json_type(c.json, '$.thread') WHEN 'integer' THEN json_extract(c.json, '$.thread') END, c.title,
+    sql: `SELECT c.station, c.archived, c.id, w.at, c.session, c.thread, c.title,
         CASE json_type(c.json, '$.last.text') WHEN 'text' THEN json_extract(c.json, '$.last.text') END, CASE json_type(c.json, '$.archived.by') WHEN 'text' THEN json_extract(c.json, '$.archived.by') END, json_type(c.json, '$.archived.alone') IS 'true', c.ord
       FROM (SELECT c.rowid AS r, coalesce(c.archived_at, 0) AS at, instr(?1, char(1) || c.station || char(1)) AS pos, c.ord AS ord, c.id AS id
         FROM chat AS c INDEXED BY chat_archive
@@ -301,22 +301,24 @@ export const CHAT_READS = {
     // (whether it is in it; what it shows of it is read of its JSON, so a row in it written tells it, with its place)
     by: (c) => (c.archivedMark ? [c.ord, c.record] : null),
   } satisfies ChatRead<Archived>,
-  /// How many those are (the archive's but its limit), by station (rows with no day); and how many of every archived
-  /// chat marked so were archived on each local day from `from` on, by station (a day's number: its start `offset` ms
-  /// east of UTC, in days of `day` ms; format.ts localDay): of `chat_archived_at` alone.
+  /// How many those are of a station (the archive's but its limit; the row with no day); and how many of its archived
+  /// chats marked so were archived on each local day from `from` on (a day's number: its start `offset` ms east of UTC,
+  /// in days of `day` ms; format.ts localDay): of `chat_archived_at` alone. A station's by itself, as `counts` is: a
+  /// chat archived on one station counts none of the others again.
   archivedCount: {
     name: "$chat-archived-count", bound: "count", records: false,
-    sql: `SELECT station, NULL, count(*) FROM chat WHERE station IN (SELECT value FROM json_each(?1)) AND archived = 1 AND archived_mark = 1
+    sql: `SELECT station, NULL, count(*) FROM chat WHERE station = ?1 AND archived = 1 AND archived_mark = 1
         AND (?2 = '' OR thread IS NULL OR instr(?2, char(1) || station || char(2) || thread || char(1)) = 0)
         AND (?3 = '' OR session IS NULL OR instr(?3, char(1) || station || char(2) || session || char(1)) = 0)
         GROUP BY station
-      UNION ALL SELECT station, CAST((archived_at + ?4) / ?5 AS INTEGER) AS day, count(*) FROM chat WHERE station IN (SELECT value FROM json_each(?1)) AND archived = 1 AND archived_mark = 1 AND archived_at >= ?6 GROUP BY station, day`,
-    params: (p: ArchivedCount) => [JSON.stringify(p.stations), keyed(p.threads), keyed(p.sessions), p.offset, p.day, p.from],
-    keys: each,
+      UNION ALL SELECT station, CAST((archived_at + ?4) / ?5 AS INTEGER) AS day, count(*) FROM chat WHERE station = ?1 AND archived = 1 AND archived_mark = 1 AND archived_at >= ?6 GROUP BY station, day`,
+    // (those apart of its own station alone, as `counts`)
+    params: (p: StationArchivedCount) => [p.station, keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station)), p.offset, p.day, p.from],
+    keys: (p: StationArchivedCount): ReadKey[] => [[p.station]],
     of: station(true),
     // (whether it is counted, read apart, and on which day)
     by: (c) => (c.archivedMark ? [c.thread, c.session, c.archivedAt] : null),
-  } satisfies ChatRead<ArchivedCount>,
+  } satisfies ChatRead<StationArchivedCount>,
 } as const;
 
 export type ListWindow = Stations & {
@@ -337,4 +339,4 @@ const ofStation = (apart: readonly string[], station: string): string[] => apart
 type Apart = { threads: string[]; sessions: string[] };
 export type Overlaid = Stations & Apart & { archived: boolean };
 export type Archived = Stations & Apart & { limit: number };
-export type ArchivedCount = Stations & Apart & { from: number; offset: number; day: number };
+export type StationArchivedCount = { station: string; from: number; offset: number; day: number } & Apart;
