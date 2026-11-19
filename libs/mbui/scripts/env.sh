@@ -44,10 +44,16 @@ win_compiler() {
   fi
   case "${MBC_REAL_CC:-}" in
     *clang-cl|*clang-cl.exe)
-      case " ${CL:-} " in
-        *" /clang:-Wno-error=incompatible-pointer-types "*) ;;
-        *) export CL="/clang:-Wno-error=incompatible-pointer-types ${CL:-}" ;;
-      esac ;;
+      # MoonBit invokes the cl.exe shim with MSVC flags only; clang-cl does not default to MSVC's wrapping signed
+      # arithmetic or no-TBAA aliasing (unlike moon on macOS/Linux, which passes -fwrapv -fno-strict-aliasing).
+      # Without -fwrapv, wrapping Int arithmetic (e.g. demo/main.mbt's LCG) triggers signed-overflow UB in /O2.
+      # MoonBit's runtime also passes int32_t * for DWORD *.
+      for f in /clang:-fwrapv /clang:-fno-strict-aliasing /clang:-Wno-error=incompatible-pointer-types; do
+        case " ${CL:-} " in
+          *" $f "*) ;;
+          *) export CL="$f ${CL:-}" ;;
+        esac
+      done ;;
   esac
 }
 
