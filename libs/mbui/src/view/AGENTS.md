@@ -37,6 +37,7 @@
 - Declaring `View::pointed` makes a node hoverable even without taking presses (`View::points`, `Node::points_alone`). Set `points=false` for `pointer-events: none`. `Node::covers` still governs click occlusion.
 - In `View::fits` rows, hide optional direct children before shrinking `View::cuts` text down to 4 em (`cut_kept_ems`), keeping `View::keeps_held` (`fit_least_held`) until siblings also hit minimum, then shrinking text below 4 em only as a last resort (`fit_soft_held`, `libs/mbui/src/ui/fits_row_least_wbtest.mbt`).
 - Layout flows strictly one way: compute room-dependent structure inside `View::by_room` (`libs/mbui/src/view/room.mbt`) without mutating outside state. Never read layout back outside the tree (`layout-told`, use `View::moved_by`, `Scroll::tucks`, `@ui.old_given`, `@ui.old_went`, `View::pointer_piece`).
+- Derive a nested corner from the container lent to it (`View::corner_scope`, `View::corner_inset`, `View::concentric_radius`, `View::concentric_end_pad` in `libs/mbui/src/view/container_corner.mbt`) rather than subtracting constants by hand, so it follows when the container's corner changes (a window maximized).
 - Keyboard focus queries `Tree::takes_keys` (no modal cover, takes press, `in_use`) independently of pointer reach (`Tree::pressless_at`). Disable background subtrees once on their container with `View::in_use` (`libs/mbui/src/view/in_use.mbt`).
 
 ## Signals, transitions, tracing, and detlint guards

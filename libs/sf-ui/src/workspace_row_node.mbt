@@ -45,7 +45,10 @@ pub fn workspace_row_node(
       // (what stands beside its words on their first line, under a line under it as well: from its top, each on that
       // line (first_line_node); a row of one line in its middle, its least height's)
       r.lines_up(By(fn() { Some(if sub() != "" { Start } else { Middle }) })) |> ignore
-      rippled_node(r, press, if on_card { row_corner } else { card_corner }, label)
+      // (its ripple round as the card it is on less how far in it stands (workspace_card_node lends it), concentric with
+      // it; alone, a card's corner in a panel)
+      let corner = r.concentric_radius(fn() { if on_card { row_corner } else { card_corner } })
+      pressed_node(r, press, corner, Button, label)
       // (its mark, or an icon in the same square a mark stands in: the rows' words on one line, a workspace's or an
       // action's)
       let lead_square = fn(make : (@view.View) -> Unit) {
@@ -123,6 +126,8 @@ pub fn workspace_card_node(parent : @view.View, body : (@view.View) -> Unit, loc
     style_node(out, fn() { ws_current.then(panel_card_out_node(out)) })
     out.box(fn(card) {
       style_node(card, fn() { ws_card.then(@ui.style(bg=Data(theme().p.chip))) })
+      // (its rows `corner_inset` in, concentric with its corner)
+      corner_card_node(card, fn() { card_corner }, inset=fn() { corner_inset })
       body(card)
     })
     |> ignore

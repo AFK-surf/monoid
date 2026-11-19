@@ -73,6 +73,9 @@ pub fn peek_page_tile_node(
     |> ignore
   }
   parent.pick(fn() { picture() != "" }, fn(b, pictured) {
+    // (in a hover card's room: its words the panel's padding and theirs in from the card's edges, what reaches out to its
+    // corners concentric with it)
+    corner_card_node(b, fn() { r_menu }, inset=fn() { panel_pad + peek_words_in })
     if pictured {
       // (its picture over it, 16:9, in the card's top corners as the thumb is in its corner without one)
       style_node(b, fn() { peek_with_picture })
@@ -80,7 +83,9 @@ pub fn peek_page_tile_node(
         style_node(i, fn() { peek_picture })
         i
         .aspect(Is(peek_picture_aspect))
-        .radius(Is(peek_picture_r))
+        |> ignore
+        concentric_radius_node(i, fn() { peek_picture_r }, extra_inset=fn() { peek_thumb_out })
+        i
         .ground(By(fn() { theme().p.hover }))
         .image(By(fn() { Some((picture(), "", peek_image_most)) }))
         .image_covers(Is(true))

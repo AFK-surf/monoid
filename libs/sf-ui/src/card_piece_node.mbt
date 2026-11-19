@@ -120,6 +120,8 @@ pub fn card_piece_node(
       })
       k.grow(Is(1.0)).min_height(By(fn() { least(card_corner) })).corners(By(fn() { corners(card_corner) })).lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false })
       |> ignore
+      // (what lies on it concentric with the card's corner, its rows the ladder's inset in)
+      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
       held(k, fn() { if top() { corner_inset } else { 0.0 } }, fn() { if foot() { corner_inset } else { 0.0 } })
     })
     |> ignore
@@ -141,6 +143,7 @@ pub fn card_piece_node(
         .clips(Is(true))
         .lends(part_at, { ..at, list: true, card: false })
         |> ignore
+        corner_card_node(card, fn() { corner }, inset=fn() { pad })
         rows(card)
       })
       |> ignore
@@ -161,6 +164,7 @@ pub fn card_piece_node(
         .clips(Is(true))
         .lends(part_at, { ..at, list: false, card: true })
         |> ignore
+        corner_card_node(card, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
         held(card, fn() { if top() { card_pad } else { wide_gap } }, fn() { if foot() { card_pad } else { 0.0 } })
       })
       |> ignore
@@ -184,6 +188,7 @@ pub fn card_piece_node(
         .ground(By(fn() { @ui.tree_theme().color(Card) }))
         .lends(part_at, { ..at, list: true, card: false })
         |> ignore
+        corner_card_node(card, fn() { corner }, inset=fn() { pad })
         held(card, fn() { if top() { ends } else { 0.0 } }, fn() { if foot() { ends } else { desk_list_gap } })
       })
       |> ignore
@@ -212,6 +217,7 @@ pub fn card_piece_node(
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
+      corner_card_node(card, fn() { corner }, inset=fn() { pad })
       held(card, fn() { if top() { pad } else { 0.0 } }, fn() { if foot() { pad } else { 0.0 } })
     })
     |> ignore

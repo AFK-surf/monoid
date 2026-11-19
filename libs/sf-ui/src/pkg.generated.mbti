@@ -366,6 +366,11 @@ pub let composer_round : @ref.Ref[Double]
 
 pub fn composer_round_in() -> Double
 
+pub fn concentric_capsule_pad(@view.View, Double, Double) -> Double
+
+#callsite(autofill(loc))
+pub fn concentric_radius_node(@view.View, () -> Double, extra_inset? : () -> Double, loc~ : SourceLoc) -> Unit
+
 pub fn confirm(String, String, String, () -> Unit, danger? : Bool, warning? : String, from? : Anchor) -> Unit
 
 pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> String, Bool, () -> Unit, () -> Unit, warning? : String, shown? : () -> Unit, gone? : () -> Unit, dims? : () -> Bool, covered? : () -> Bool) -> Unit
@@ -374,6 +379,8 @@ pub let confirm_w : Double
 
 pub let copied_ms : Double
 
+
+pub fn corner_card_node(@view.View, () -> Double, inset? : () -> Double) -> Unit
 
 pub let corner_fit : @paint.CornerFit
 
