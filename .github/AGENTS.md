@@ -27,7 +27,7 @@
   each cold reader at -O2 a job's five minutes' worth when they shared the cores), `natives-main` and cross-platform
   `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to
   `macos-ci`), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
-  `missing_win_list`, `missing_mac_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
+  `missing_win_list`, `missing_mac_list`, `missing_harness_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
   `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
@@ -50,7 +50,10 @@
   (`macos-ci`, `quick`; `vars.MINI1 = 'off'` leaves `station-update` out), the
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
   were cut at five minutes, 2026-11-17), and
-  a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
+  a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. The tests' MoonBit program (`reader-harness`, which
+  only `check-station` runs) builds in `natives-harness` alone, never in `natives`' list or `natives-main`, on
+  `ubuntu-24.04` at -O0 wherever `shell-station` is published, main's too: a concurrency group pends one job and cancels
+  the one pending before it, so the readers' group on `ci-1` takes no third. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
   parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
 - A job that needs another job's output says that job's result in its `if:` (`contains(fromJSON('["success","skipped"]'),

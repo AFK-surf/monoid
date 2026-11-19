@@ -1,4 +1,4 @@
-// The screens and still.fail Helper's parts in MoonBit (station/mb src/screens: reader `--builder harness-screens`)
+// The screens and still.fail Helper's parts in MoonBit (station/mb src/screens: `stillfail-reader-harness --builder harness-screens`)
 // held to the TypeScript they are a port of (src/screens/, src/helper/): each scenario is played twice, on two worlds
 // made alike, once by the TypeScript and once by the program, and what each answered, what it did in its world (every
 // child process started, written to, ended and killed, every connection opened, written to and let go, every timer
@@ -27,6 +27,7 @@ import * as realZlib from "node:zlib";
 import { tmpdir as realTmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 type Json = any;
 
@@ -39,11 +40,6 @@ const ROOT = join(station, "..");
 const ZH = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/zh/station.json"), "utf8"));
 const EN = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/en/station.json"), "utf8"));
 const SCREENS_DIR = join(station, "src/screens");
-
-function readerBinary(): string | null {
-  const candidates = [process.env.STILLFAIL_MB_READER, join(station, "mb/_build/stillfail-reader-darwin-arm64"), join(station, "mb/_build/stillfail-reader-linux-x64"), join(station, "mb/_build/stillfail-reader-linux-arm64")];
-  return candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null;
-}
 
 const b64 = (b: Uint8Array | Buffer) => Buffer.from(b).toString("base64");
 const unb64 = (s: string) => Buffer.from(s, "base64");
@@ -1251,7 +1247,7 @@ class TsSide implements Side {
 // The program's side: the harness, its world the test's
 
 class MbProgram {
-  readonly child = realSpawn(readerBinary()!, ["--builder", "harness-screens", "--shell-dir", join(process.env.STILLFAIL_TEST_TMP ?? "/tmp", "mbscreens-shell")], { stdio: ["pipe", "pipe", "pipe"] });
+  readonly child = realSpawn(mbHarnessBinary()!, ["--builder", "harness-screens", "--shell-dir", join(process.env.STILLFAIL_TEST_TMP ?? "/tmp", "mbscreens-shell")], { stdio: ["pipe", "pipe", "pipe"] });
   #next = 0;
   readonly #done = new Map<number, (m: Json) => void>();
   #stderr = "";
@@ -3132,7 +3128,7 @@ async function uiScenario(s: Play) {
 }
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const skip = readerBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit screens answer as the TypeScript ones (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

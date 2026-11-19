@@ -1,4 +1,4 @@
-// The station's browser in MoonBit (station/mb src/browser: reader `--builder harness-browser`) held to the TypeScript
+// The station's browser in MoonBit (station/mb src/browser: `stillfail-reader-harness --builder harness-browser`) held to the TypeScript
 // it is a port of (src/browser/): the same world given to both, each part of the one and of the other driven the same
 // way, and what each did compared: what it answered, what it asked of its world (each DevTools command on each
 // connection, the Chrome host's finds, launches and kills, a sign-in form's waits) and told its station (screens added
@@ -20,7 +20,7 @@ import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { Fibers } from "../src/ops/fibers.ts";
 import { log } from "../src/ops/log.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { ScreenRefused } from "../src/screens/hub.ts";
 import type { ScreenSource, ScreenView } from "../src/screens/source.ts";
 import { StationBrowser } from "../src/browser/browser.ts";
@@ -46,8 +46,8 @@ import { childGone } from "./child-gone.ts";
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {

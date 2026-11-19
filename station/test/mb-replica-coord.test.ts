@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { settle } from "./hub-fakes.ts";
 import { Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { oneBytes, readBytes } from "../src/mesh/files.ts";
@@ -45,7 +45,7 @@ import { UNANSWERED } from "../src/move/module.ts";
 
 type Json = any;
 const NOW = 1_800_000_000_000;
-const binary = mbReaderBinary();
+const binary = mbHarnessBinary();
 const dirs: string[] = [];
 const programs: { close(): Promise<void> }[] = [];
 // (each program waited for till it is gone, its directories after: one still running at the file's end is a leftover)
@@ -345,7 +345,7 @@ const tsPart = (side: Side) => (name: string, ...args: Json[]) => {
 
 // ---------------------------------------------------------------------------------------------------------------
 
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 test("the copies' functions are the TypeScript's", { skip }, async () => {
   const side = new Side("mb");

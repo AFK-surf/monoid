@@ -1,4 +1,4 @@
-// The mesh's runtime in MoonBit (station/mb src/mesh_runtime, the reader's `--builder harness-mesh-runtime`) held to the
+// The mesh's runtime in MoonBit (station/mb src/mesh_runtime, `stillfail-reader-harness --builder harness-mesh-runtime`) held to the
 // TypeScript it is written from (src/mesh/settings.ts, mesh.ts `applyNetwork`, native.ts `bindStation` with its DSCP,
 // lan.ts, traces.ts, screen-pace.ts, screens.ts' wire and checks, lock-events.ts, reply-watch.ts, tools.ts, files.ts,
 // served.ts): the same inputs given both, each answer the same; what keeps state (a view's pace, its sizer, its
@@ -22,7 +22,7 @@ import { ToolError } from "../src/device/tools.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { log } from "../src/ops/log.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { ScreenRefused } from "../src/screens/hub.ts";
 import { regionOf } from "../src/screens/source.ts";
 import { fileBytes, oneBytes, readBytes, stopBytes, writeBytes } from "../src/mesh/files.ts";
@@ -45,8 +45,8 @@ import { adminSessions, presenceTools, refusal, serveTools } from "../src/mesh/t
 import { Traces, otlpBody, parseParent, route } from "../src/mesh/traces.ts";
 import { childGone } from "./child-gone.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

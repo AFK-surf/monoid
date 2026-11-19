@@ -1,4 +1,4 @@
-// The agents' tools in MoonBit (station/mb/src/mcp_tools, the reader's `--builder harness-mcp-tools`) held to the
+// The agents' tools in MoonBit (station/mb/src/mcp_tools, `stillfail-reader-harness --builder harness-mcp-tools`) held to the
 // TypeScript they replace: the MCP endpoint (src/tools/mcp.ts), the agents' door (src/tools/http.ts), every tool of
 // src/tools, src/devices/tool.ts, src/rigs/tool.ts, src/search/tool.ts and skills.ts, the device tools
 // (src/device/tools.ts), the feedback part and its notice's report (src/feedback). Each case is asked of both, each
@@ -18,7 +18,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as pathModule from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,7 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { after, mock, test } from "node:test";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 const self = fileURLToPath(import.meta.url);
 const station = fileURLToPath(new URL("..", import.meta.url));
@@ -343,14 +344,6 @@ function exportsOf(): { modules: Record<string, Exported>; runtimes: string[]; s
   const run = spawnSync(process.execPath, ["--no-warnings", "--input-type=module", "-e", code], { cwd: station, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (run.status !== 0) throw new Error(`the modules' exports were not read: ${run.stderr}`);
   return JSON.parse(run.stdout);
-}
-
-/// What the program is as the station finds it (src/read/mb-reader.ts `mbReaderBinary`, said again: importing it
-/// here would load what it imports before the mocks).
-function readerBinary(): string | null {
-  const exe = process.platform === "win32" ? "stillfail-reader.exe" : "stillfail-reader";
-  const candidates = [process.env.STILLFAIL_MB_READER, fileURLToPath(new URL(`../src/read/${exe}`, import.meta.url)), fileURLToPath(new URL("../mb/_build/stillfail-reader-darwin-arm64", import.meta.url))];
-  return candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null;
 }
 
 async function installMocks(exported: Record<string, Exported>): Promise<void> {
@@ -1597,8 +1590,8 @@ const doorShown = (a: any): Json => ({ status: a.status, type: a.headers?.["cont
 const sorted = (log: [string, Json][]) => [...log].map((x) => JSON.stringify(x)).sort();
 
 async function main() {
-  const binary = readerBinary();
-  const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const binary = mbHarnessBinary();
+  const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   const zh = (await import("../../client/i18n/catalog/zh/station.json", { with: { type: "json" } })).default;
   const en = (await import("../../client/i18n/catalog/en/station.json", { with: { type: "json" } })).default;
   process.env.TZ = "UTC";
@@ -1684,7 +1677,7 @@ async function main() {
 // ---------------------------------------------------------------------------------------------------------------
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const skip = readerBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit tools answer as the TypeScript ones (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

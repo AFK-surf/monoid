@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { liveClock } from "../src/ops/fibers.ts";
-import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { writeCompressed } from "../src/store/archive.ts";
 import { installCardOutbox, saveWithCardOutcome } from "../src/store/card-outbox.ts";
 import { repairMergedEditLookup } from "../src/store/schema.ts";
@@ -17,7 +18,7 @@ import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { stopUsageIndexes, usageIndexesLeft } from "../src/store/usage-retire.ts";
 
-const binary = mbReaderBinary();
+const binary = mbHarnessBinary();
 const NOW = 1_800_000_000_000;
 const clock = { ...liveClock, currentTimeMillisUnsafe: () => NOW };
 const root = mkdtempSync(join(tmpdir(), "mb-store-schema-"));
@@ -271,7 +272,7 @@ function writes(path: string): void {
   }
 }
 
-test("a new database: the same schema and the same first rows", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("a new database: the same schema and the same first rows", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const ts = place("new-ts"), mb = place("new-mb");
   const a = openTs(ts.path), b = await openMb(mb.path);
   assert.deepEqual(b, a);
@@ -383,7 +384,7 @@ function rust12(path: string, dir: string): void {
   ].join("\r\n"));
 }
 
-test("a database of the Rust station (version 12): brought up the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("a database of the Rust station (version 12): brought up the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("rust12", rust12);
   const a = openTs(ts.path), b = await openMb(mb.path);
   assert.deepEqual(b, a);
@@ -497,7 +498,7 @@ function older13(path: string, partly = false): void {
   }
 }
 
-test("an older 13 with large tables: its lookups prepared, its statistics and states installed the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("an older 13 with large tables: its lookups prepared, its statistics and states installed the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("older13", (path) => older13(path));
   const a = openTs(ts.path), b = await openMb(mb.path);
   assert.deepEqual(b, a);
@@ -510,7 +511,7 @@ test("an older 13 with large tables: its lookups prepared, its statistics and st
 /// An older store whose prepared lookups, and the merged view over them, were there already: opened again once a
 /// station made the native edit index, the view goes back to it; that index taken away again by a station from before,
 /// the writer repairs the view onto the prepared lookup the same.
-test("an older 13 with part of what came after: its said lookup prepared and the rest made over what is there the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("an older 13 with part of what came after: its said lookup prepared and the rest made over what is there the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("partly", (path) => older13(path, true));
   const a = openTs(ts.path), b = await openMb(mb.path);
   assert.deepEqual(b, a);
@@ -520,7 +521,7 @@ test("an older 13 with part of what came after: its said lookup prepared and the
   same(ts.path, mb.path, "an older 13 with part of what came after, after the same writes");
 });
 
-test("the decisions' session lookup whose index went: prepared anew beside it, then emptied first, the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("the decisions' session lookup whose index went: prepared anew beside it, then emptied first, the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("decisions", (path) => older13(path, true));
   openTs(ts.path);
   await openMb(mb.path);
@@ -539,7 +540,7 @@ test("the decisions' session lookup whose index went: prepared anew beside it, t
   }
 });
 
-test("an older store's prepared lookups kept, and the merged view repaired the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("an older store's prepared lookups kept, and the merged view repaired the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("prepared", (path, dir) => {
     rust12(path, dir);
     Store.open(path, null, clock).close();
@@ -575,7 +576,7 @@ test("an older store's prepared lookups kept, and the merged view repaired the s
   same(ts.path, mb.path, "the merged view repaired");
 });
 
-test("many jobs running at open: the active lookups left to their preparation the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("many jobs running at open: the active lookups left to their preparation the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("busy", (path) => {
     const db = new DatabaseSync(path);
     try {
@@ -599,7 +600,7 @@ test("many jobs running at open: the active lookups left to their preparation th
   same(ts.path, mb.path, "many jobs running");
 });
 
-test("a database of another version is refused the same, and nothing is made in it", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("a database of another version is refused the same, and nothing is made in it", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("refused", (path) => {
     const db = new DatabaseSync(path);
     try {
@@ -622,7 +623,7 @@ test("a database of another version is refused the same, and nothing is made in 
   same(ts.path, mb.path, "refused");
 });
 
-test("the card outcomes' queue made, and one from before a rig's card widened, the same", { skip: binary === null && "the MoonBit reader is not built" }, async () => {
+test("the card outcomes' queue made, and one from before a rig's card widened, the same", { skip: binary === null && "the tests' MoonBit program (stillfail-reader-harness) is not built" }, async () => {
   const { ts, mb } = twins("outbox", (path) => {
     Store.open(path, null, clock).close();
     const db = new DatabaseSync(path);

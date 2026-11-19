@@ -67,7 +67,7 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 
 ## Tests
 
-- Typecheck: `pnpm exec tsgo --noEmit`. Single test file: `node ../scripts/native.ts run mesh runner archive-rs reader launcher -- node --import ./test/setup-env.mjs --test test/<file>.test.ts` (`pnpm test` runs all). Use fake agents on `TestClock`. Put real processes, signals, and sockets in `station/side/`.
+- Typecheck: `pnpm exec tsgo --noEmit`. Single test file: `node ../scripts/native.ts run mesh runner archive-rs reader reader-harness launcher -- node --import ./test/setup-env.mjs --test test/<file>.test.ts` (`pnpm test` runs all). A package's harness (`--builder harness-*`, its package's `harness*.mbt`) is the tests' program `stillfail-reader-harness` (`station/mb/src/reader_harness`, `station/test/mb-harness.ts`), never the shipped reader: add a new one there. Use fake agents on `TestClock`. Put real processes, signals, and sockets in `station/side/`.
 - CI runs `station/test/` on Linux in slices (`scripts/check.sh`, `station-tests`). Tests must pass on Linux and macOS, or skip explicitly naming what is missing. File-backed vault tests use `station/test/vault-no-reader.ts` unless testing the separate reader process directly.
 - Wait on off-main-thread work with `settle()` (`station/test/hub-fakes.ts`), never fixed turn counts. Guard events that might never arrive with `given()` so failures report immediately instead of timing out.
 - Lock world and fork-choice tests are documented in `station/src/cloud/AGENTS.md`.

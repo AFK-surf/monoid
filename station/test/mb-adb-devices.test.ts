@@ -1,4 +1,4 @@
-// The phones lent to the station and the workspace's devices in MoonBit (station/mb src/adb_devices: reader `--builder
+// The phones lent to the station and the workspace's devices in MoonBit (station/mb src/adb_devices: `stillfail-reader-harness --builder
 // harness-adb-devices`) held to the TypeScript they are written from (src/adb/*.ts, src/devices/*.ts). Each case is
 // given to both, each on a world of its own made the same (its own database, its own fake adb and its directory, its
 // own clock, its own phone in memory), and what each answered, said, asked of its world and left in it is compared:
@@ -40,7 +40,7 @@ import { langOfCore } from "../src/api/request.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { setStationLang } from "../src/ops/i18n.ts";
 import { sizeOf } from "../src/screens/android.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { MessageWriteBusy, STILLFAIL_SURFACE } from "../src/store/store.ts";
 import { exe, script } from "./accounts-fakes.ts";
 import { log } from "../src/ops/log.ts";
@@ -54,8 +54,8 @@ import { Agents } from "../src/sessions/agents.ts";
 import { childGone } from "./child-gone.ts";
 
 type Json = any;
-const binary = mbReaderBinary();
-assert.ok(binary !== null, "the MoonBit program (stillfail-reader) is built: sh station/mb/build.sh");
+const binary = mbHarnessBinary();
+assert.ok(binary !== null, "the tests' MoonBit program (stillfail-reader-harness) is built: bash station/mb/build.sh --harness");
 
 const dirs: string[] = [];
 const fresh = (what: string) => {

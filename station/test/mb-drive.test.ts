@@ -1,4 +1,4 @@
-// The drive in MoonBit (station/mb src/drive: reader `--builder harness-drive`) held to the TypeScript it ports,
+// The drive in MoonBit (station/mb src/drive: `stillfail-reader-harness --builder harness-drive`) held to the TypeScript it ports,
 // src/drive/*, on the same inputs: what is pure (types, the order names are listed in, roots, names kept beside, a
 // grant signed and read, CRC-32, DOS times, encodeURI, ids, which folder is protected), a drive's every operation over
 // twin folders (one changed by each side; what they answered and what each folder came to compared, the folders' own
@@ -18,7 +18,7 @@ import { EventEmitter } from "node:events";
 import type { FSWatcher } from "node:fs";
 import { crc32, inflateRawSync } from "node:zlib";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { CODES, Drive, DriveError, dropFolder, rootName, rootView, rootsOf, typeOf } from "../src/drive/drive.ts";
 import { type Fs, type Protected, direct, protectedPlace, protectedPlaceSoon } from "../src/drive/fs.ts";
 import { covers, sign, verify } from "../src/drive/grants.ts";
@@ -35,8 +35,8 @@ import { tr } from "../src/ops/i18n.ts";
 import { testClock } from "./hub-fakes.ts";
 import { childGone } from "./child-gone.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {

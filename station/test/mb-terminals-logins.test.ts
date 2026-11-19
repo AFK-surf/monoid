@@ -1,4 +1,4 @@
-// The terminals and the logins in MoonBit (station/mb src/terminals_logins: reader `--builder harness-terminals-logins`)
+// The terminals and the logins in MoonBit (station/mb src/terminals_logins: `stillfail-reader-harness --builder harness-terminals-logins`)
 // held to the TypeScript they are a port of (src/terminals/, src/logins/): the same cases given to both, and what each
 // answered, told, wrote and was asked compared. What @xterm/headless made of a login's output is held on random writes;
 // a terminal's views on runners and members' streams of the test's; one login's run on its command's output given a
@@ -21,7 +21,7 @@ import { StringDecoder } from "node:string_decoder";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import xterm from "@xterm/headless";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { frame } from "../src/mesh/screens.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { programOf } from "../src/ops/command-output.ts";
@@ -49,8 +49,8 @@ type Json = any;
 
 setStationLang("en");
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const ZH = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/zh/station.json"), "utf8"));
 const EN = JSON.parse(readFileSync(join(ROOT, "client/i18n/catalog/en/station.json"), "utf8"));

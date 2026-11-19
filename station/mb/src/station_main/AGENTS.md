@@ -17,7 +17,8 @@
 - What can be tested without the shell is in `media/` (the images' codecs, local links): `moon test` links no shell
   (scripts/check.sh's station MoonBit step), and this package, which imports the host package (station/mb/src/host), links only into the
   reader. The rest is held by station/test/mb-station-e2e.test.ts through the program (`--builder
-  harness-station-main`, the commands, `run` under a launcher of the test's), each part to the TypeScript, the
+  harness-station-main` of the tests' program, `stillfail-reader-harness`; the commands and `run` under a launcher of
+  the test's of the reader), each part to the TypeScript, the
   .mjs hooks or the mesh addon it replaces.
 - `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as the program carries them: a change to the
   catalog writes it again (the e2e test fails until it is: `STILLFAIL_WRITE_WORDS=1` on that test writes it).

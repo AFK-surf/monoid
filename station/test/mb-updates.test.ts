@@ -1,4 +1,4 @@
-// The updates in MoonBit (station/mb/src/updates, the reader's `--builder harness-updates`) held to the TypeScript they
+// The updates in MoonBit (station/mb/src/updates, `stillfail-reader-harness --builder harness-updates`) held to the TypeScript they
 // replace (src/updates: versions.ts, signed.ts, keys.ts, holds.ts, delta.ts, release.ts, runtimes.ts, codex-repair.ts,
 // agy-download.ts, channel.ts, command.ts, updates.ts). Each case is run by both, each against a world of its own made
 // alike: what each answered (a function's result, or what it threw: its class and fields), every call either made of
@@ -38,6 +38,7 @@ import { createHash, generateKeyPairSync, createPublicKey, sign } from "node:cry
 import { deflateRawSync } from "node:zlib";
 import { mock, test } from "node:test";
 import { childGone } from "./child-gone.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 
 const self = fileURLToPath(import.meta.url);
 const station = fileURLToPath(new URL("..", import.meta.url));
@@ -897,16 +898,10 @@ let effectModule: any;
 type Msg = any;
 let program: { send: (c: Msg) => Promise<Msg>; stderr: () => string; end: () => void; close: () => Promise<void> } | null = null;
 
-function readerBinary(): string | null {
-  const exe = process.platform === "win32" ? "stillfail-reader.exe" : "stillfail-reader";
-  const candidates = [process.env.STILLFAIL_MB_READER, fileURLToPath(new URL(`../src/read/${exe}`, import.meta.url)), fileURLToPath(new URL("../mb/_build/stillfail-reader-darwin-arm64", import.meta.url))];
-  return candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null;
-}
-
 function harness() {
   if (program !== null) return program;
   const shell = mkdtempSync(join(tmpdir(), "mb-updates-shell-"));
-  const child = spawn(readerBinary()!, ["--builder", "harness-updates", "--shell-dir", shell], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(mbHarnessBinary()!, ["--builder", "harness-updates", "--shell-dir", shell], { stdio: ["pipe", "pipe", "pipe"] });
   // (ended once the tests are done, `closeProgram`; and with this process, where they never got there)
   process.on("exit", () => {
     child.kill();
@@ -2611,7 +2606,7 @@ function cases(o: { deltaScripts: any; signedKeys: typeof KEYS }): Case[] {
 }
 
 if (!process.execArgv.includes("--experimental-test-module-mocks")) {
-  const skip = readerBinary() === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+  const skip = mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
   test("the MoonBit updates answer as the TypeScript ones (run with module mocks)", { skip }, async () => {
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;

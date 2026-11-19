@@ -9,10 +9,18 @@
 # (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to the shell's static library (client/shell), which
 # SHELL_LIB names, or scripts/native.ts gets for the target (shell-apple on the Mac, shell-station elsewhere).
 # MBUI_TOOLS, as apps/mbui's scripts have it, says where moon is when it is not on PATH.
-#   build.sh [TARGET] [OUT]
+# --harness builds the tests' program instead (src/reader_harness: every package's harness, `--builder harness-*`,
+# station/test/mb-*.test.ts), into _build/stillfail-reader-harness-TARGET by default: kept out of the reader every
+# station runs, built the same way, with the same MBC_STORE.
+#   build.sh [--harness] [TARGET] [OUT]
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$D/../.." && pwd)"
+pkg=reader name=stillfail-reader
+if [ "${1:-}" = --harness ]; then
+  pkg=reader_harness name=stillfail-reader-harness
+  shift
+fi
 [ -n "${MBUI_TOOLS:-}" ] && export MOON_HOME=$MBUI_TOOLS/moon PATH=$MBUI_TOOLS/moon/bin:$PATH
 default_target=darwin-arm64
 case "$(uname -s)-$(uname -m)" in
@@ -20,7 +28,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64|Linux-arm64) default_target=linux-arm64 ;;
 esac
 target=${1:-$default_target}
-out=${2:-$D/_build/stillfail-reader-$target}
+out=${2:-$D/_build/$name-$target}
 case "$target" in
   darwin-arm64) cc=(cc -arch arm64 -mmacosx-version-min=11.0); ar=(ar); part=shell-apple; init_flags="-O0"
     libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip) ;;
@@ -35,7 +43,7 @@ case "$target" in
 esac
 shell_lib=${SHELL_LIB:-$(node "$ROOT/scripts/native.ts" path $part $target)/libstillfail_shell.a}
 
-work="$D/_build/link-$target-$$"
+work="$D/_build/link-$pkg-$target-$$"
 rm -rf "$work"
 mkdir -p "$work/runtime" "$work/obj" "$D/_build" "$(dirname "$out")"
 # On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
@@ -80,7 +88,7 @@ echo "$$" > "$lock/pid"
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
   # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
-  # was made (prepped-reader.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
+  # was made (prepped-$pkg.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
   gen_key=$( {
     moon version --all
     "$ROOT/libs/mbui/scripts/mbc" key
@@ -89,10 +97,10 @@ echo "$$" > "$lock/pid"
       "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')
-  prepped="$D/_build/prepped-reader.c"
-  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-reader.key" 2>/dev/null)" = "$gen_key" ]; then
+  prepped="$D/_build/prepped-$pkg.c"
+  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-$pkg.key" 2>/dev/null)" = "$gen_key" ]; then
     cp "$prepped" "$work/reader.c"
-    echo "build.sh: reader.c as prepared for $gen_key" >&2
+    echo "build.sh: $pkg.c as prepared for $gen_key" >&2
     exit 0
   fi
   # cprep compiled for this machine, kept in MBC_STORE by what it is made of (moon, the machine, its sources): made
@@ -119,7 +127,7 @@ echo "$$" > "$lock/pid"
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
   if ! MOON_CC="$ROOT/libs/mbui/scripts/mbc-stub.sh" MOON_AR="$ROOT/libs/mbui/scripts/mbc-stub.sh" \
-    moon build --target native --release src/reader >"$work/moon.log" 2>&1; then
+    moon build --target native --release "src/$pkg" >"$work/moon.log" 2>&1; then
     cat "$work/moon.log" >&2
     exit 1
   fi
@@ -132,10 +140,10 @@ echo "$$" > "$lock/pid"
     cp "$work/cprep/native/release/build/station/cprep/cprep.exe" "$cprep_bin.$$" \
       && mv -f "$cprep_bin.$$" "$cprep_bin"
   fi
-  "$cprep_bin" "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
-  rm -f "$D/_build/prepped-reader.key"
+  "$cprep_bin" "$D/_build/native/release/build/station/$pkg/$pkg.c" "$prepped.tmp.$$" >&2
+  rm -f "$D/_build/prepped-$pkg.key"
   mv "$prepped.tmp.$$" "$prepped"
-  echo "$gen_key" > "$D/_build/prepped-reader.key"
+  echo "$gen_key" > "$D/_build/prepped-$pkg.key"
   cp "$prepped" "$work/reader.c"
 )
 

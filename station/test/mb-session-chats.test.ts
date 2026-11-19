@@ -1,4 +1,4 @@
-// The chats' own logic in MoonBit (station/mb src/session_chats, the reader's `--builder harness-session-chats`) held
+// The chats' own logic in MoonBit (station/mb src/session_chats, `stillfail-reader-harness --builder harness-session-chats`) held
 // to the TypeScript it is written from (src/sessions/conversations.ts, messages.ts, chat.ts, decision.ts,
 // card-place.ts, presets.ts, opened.ts, review.ts, cc.ts, internal.ts, titles.ts, title-completion.ts,
 // regenerate-title.ts, local-links.ts, image-size.ts, page.ts, neighbours.ts, config.ts): each case run by both, its
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { sizeOf } from "../src/sessions/image-size.ts";
 import { pageOrigin, sessionPage } from "../src/sessions/page.ts";
 import { INTERNAL_BOT_USER, InternalChat, chatKey, chatWorkspace, isInternalChannel, nextTsAt } from "../src/sessions/internal.ts";
@@ -69,8 +69,8 @@ import { endpoints, find as findSource } from "../src/agents/providers.ts";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
 import enStation from "../../client/i18n/catalog/en/station.json" with { type: "json" };
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

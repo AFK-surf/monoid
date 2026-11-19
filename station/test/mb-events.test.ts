@@ -1,5 +1,5 @@
 // GET /events, the overview, the local status and the machine's sample as the MoonBit program makes them (station/mb
-// src/events, reader `--builder harness-events`) held to the TypeScript station's (api/events.ts, event-log.ts,
+// src/events, `stillfail-reader-harness --builder harness-events`) held to the TypeScript station's (api/events.ts, event-log.ts,
 // seen.ts, runtime-compat.ts, oldest.ts, routes/events.ts, overview.ts, status.ts, host.ts) on the same world: every
 // stream's text as its client heard it (each `id:`, `event:` and `data:` line, in order), each answer's headers,
 // what was read and in what order, what went over to the next process; and the overview, the status and the host's
@@ -22,7 +22,8 @@ import { runtimeView, OMIT } from "../src/read/runtime-view.ts";
 import { buildOf, coreTooOld, OLDEST_CORE } from "../src/api/oldest.ts";
 import { routes as eventRoutes } from "../src/api/routes/events.ts";
 import { sees } from "../src/store/rows.ts";
-import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir } from "node:os";
 import { overview } from "../src/api/overview.ts";
@@ -37,8 +38,8 @@ import { Fibers, wall } from "../src/ops/fibers.ts";
 import { shapesMbt } from "../mb/src/events/gen-shapes.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 type Json = any;
 const dirs: string[] = [];

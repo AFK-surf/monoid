@@ -1,4 +1,4 @@
-// The sessions hub in MoonBit (station/mb/src/session_hub, the reader's `--builder harness-session-hub`) against the
+// The sessions hub in MoonBit (station/mb/src/session_hub, `stillfail-reader-harness --builder harness-session-hub`) against the
 // TypeScript it is moved from, each asked the same and compared: the hub's pure parts (args.ts, model-choice.ts,
 // run-change.ts, context-cap.ts, pool.ts and what they stand on, the words of i18n.ts) on many inputs, what they give
 // or the words they refuse with; and the hub itself (hub.ts) on two databases made alike, A the TypeScript `Hub`'s, B
@@ -15,7 +15,7 @@ import { join, relative } from "node:path";
 import { sharedTranscripts } from "../src/read/transcript.ts";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import * as args from "../src/sessions/args.ts";
 import * as choice from "../src/sessions/model-choice.ts";
 import * as runChange from "../src/sessions/run-change.ts";
@@ -57,8 +57,8 @@ import { latest as latestNote } from "../src/agents/migrations.ts";
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 /// The catalog's texts as the station says them (branded with its product's name).
 function brandedCatalog(words: Record<string, Json>): Record<string, Json> {

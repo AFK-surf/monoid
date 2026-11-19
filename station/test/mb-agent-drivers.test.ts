@@ -1,4 +1,4 @@
-// The agents' drivers in MoonBit (station/mb src/agent_drivers: reader `--builder harness-agent-drivers`) held to the
+// The agents' drivers in MoonBit (station/mb src/agent_drivers: `stillfail-reader-harness --builder harness-agent-drivers`) held to the
 // TypeScript they replace on the same inputs: the seam's words (runtime.ts), a runner's files, its connection and
 // what a station reads again of it (runner.ts, process.ts), and Claude Code's, Codex's and Antigravity CLI's drivers
 // (claude.ts, codex.ts, agy.ts over own-process.ts and acp.ts) through the same steps: what each process is started
@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
 import { Effect } from "effect";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { wall, liveClock } from "../src/ops/fibers.ts";
 import { platform } from "../src/platform/index.ts";
 import { agentEnv, readAgentEnvFrom } from "../src/ops/agent-env.ts";
@@ -39,8 +39,8 @@ import { codexOverrides, accessKind, profileEnv, profileModel, profileVia } from
 
 type Json = any;
 
-const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the runners' sockets here are Unix sockets" : false;
+const binary = mbHarnessBinary();
+const skip = binary === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the runners' sockets here are Unix sockets" : false;
 
 const dirs: string[] = [];
 /// A directory of a case's own, by its real path (what a runtime is told; macOS's /tmp is /private/tmp), short enough

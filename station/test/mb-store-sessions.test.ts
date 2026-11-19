@@ -1,4 +1,4 @@
-// The store's sessions in MoonBit (station/mb src/store_sessions, the reader's `--builder harness-store-sessions`)
+// The store's sessions in MoonBit (station/mb src/store_sessions, `stillfail-reader-harness --builder harness-store-sessions`)
 // against the TypeScript `Store` it is moved from: two databases made alike by `Store.open`, A written by the
 // TypeScript, B by the program, each call made of both at the same time (one clock), and each answered alike: what it
 // gives back, what it told its followers (StoreChange, in order) and how often it said a session's workspace changed,
@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { latest as latestNote } from "../src/agents/migrations.ts";
-import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import * as handover from "../src/store/handover.ts";
 import { Store, type StoreChange } from "../src/store/store.ts";
 import * as stores from "../src/store/store.ts";
@@ -33,7 +34,7 @@ import { widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { chatShareIndexReady, chatShareIndexStep, installChatShareIndex } from "./reference/backfill/chat-share-index.ts";
 
-const binary = mbReaderBinary();
+const binary = mbHarnessBinary();
 const HOUR = 3_600_000;
 
 /// What a call gives, as the program says it: a Map its entries, a Set its items, undefined `{$undefined: true}`.
@@ -217,7 +218,7 @@ const session = (key: string, more: Record<string, unknown> = {}) => ({
 });
 
 async function withPair(run: (p: Pair) => Promise<void>): Promise<void> {
-  assert.notEqual(binary, null, "the MoonBit reader is built (station/mb/build.sh, or STILLFAIL_MB_READER)");
+  assert.notEqual(binary, null, "the tests' MoonBit program is built (station/mb/build.sh --harness, or STILLFAIL_MB_HARNESS)");
   const p = new Pair();
   try { await run(p); }
   finally { await p.close(); }

@@ -20,13 +20,16 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];
 // (short: a Unix socket's path is at most 104 bytes on macOS)
@@ -519,7 +522,7 @@ test("on the mesh: a member let in by its credential asks the admin API; two sta
 });
 
 test("a part's route matched as the admin API matches it: a pattern's groups, Express's segments by name", { skip }, async () => {
-  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
+  const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
   children.push(child);
   const lines = createInterface({ input: child.stdout! });
   const answers: any[] = [];
