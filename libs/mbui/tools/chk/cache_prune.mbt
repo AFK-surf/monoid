@@ -265,7 +265,7 @@ fn is_image_version(s : String) -> Bool {
 }
 
 ///|
-/// A Linux runner's compiler in a key: cc and 12 hex digits (mbui-check.yml's IMG, of clang and the libc headers)
+/// A Linux runner's compiler in a key: cc and 12 hex digits (mbui-check.yml's IMG, of clang and the C headers it preprocesses)
 fn is_cc_tag(s : String) -> Bool {
   s.length() == 14 && s.has_prefix("cc") && is_hex(s)
 }
