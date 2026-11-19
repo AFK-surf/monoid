@@ -499,6 +499,7 @@ test "控制中心's 麦克风: there driving a screen with a virtual microphone
   }
   r.state("live", others=[], clipboard=["text", "png"], drop={ "folder": "/Users/alice/Downloads", "reveal": true }, more~)
   open_center(r)
+  r.t.run_for(@ui.move_most_ms)
   assert_eq(pressed_of(r, mic), Some(false))
   assert_eq(r.t.audit(), [])
   r.tap_label(mic)
@@ -515,6 +516,7 @@ test "控制中心's 麦克风: there driving a screen with a virtual microphone
   // only looking: none
   shut(r)
   r.state("live", control=false, others=[])
+  r.t.run_for(@ui.move_most_ms)
   open_center(r)
   assert_false(center_tile(r, mic))
   shut(r)

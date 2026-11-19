@@ -144,9 +144,9 @@ fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
 /// 麦克风 as a round button in `parent`, lit while this device's microphone is shared into the screen's virtual one:
 /// there only while something on the screen records it or it is shared (ScreenSess::mic_bar_shown), so a bar says
 /// nothing of it otherwise (控制中心's tile switches it then); pressed, shared or no more.
-fn mic_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+fn mic_button_node(parent : @view.View, pg : ScreenPage, along_row? : Bool = false) -> Unit {
   let s = pg.s
-  parent.show(at_once=true, fn() { s.mic_bar_shown() }, fn(k) {
+  parent.show(along_row~, fn() { s.mic_bar_shown() }, fn(k) {
     screen_round_node(k, pg, fn() { s.mic_icon() }, fn() { s.mic_label() }, fn(_) { s.toggle_mic() }, lit=fn() {
       s.mic_on.get()
     })
@@ -309,7 +309,7 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         })
       }
     })
-    mic_button_node(bar, pg)
+    mic_button_node(bar, pg, along_row=true)
     bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
     // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
     // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
@@ -379,7 +379,7 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           })
         }
       })
-      mic_button_node(bar, pg)
+      mic_button_node(bar, pg, along_row=true)
       // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
       if pg.on_window is Some(handed) {
         let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
@@ -470,7 +470,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           t.on_press(fn() { station_sessions_open(pg, t) }) |> ignore
         })
         // (麦克风 while something on the screen records it, or this device's is shared: ScreenSess::mic_bar_shown)
-        r.show(at_once=true, fn() { s.mic_bar_shown() }, fn(k) {
+        r.show(along_row=true, fn() { s.mic_bar_shown() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: s.mic_icon(), label: s.mic_label(), on: s.mic_on.get(), disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { s.toggle_mic() }) |> ignore
         })

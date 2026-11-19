@@ -2207,6 +2207,8 @@ fn mic_said(r : ScreenRig, active : Bool, control? : Bool = true) -> Unit {
     more["mic"] = { "available": true, "active": active, "epoch": 1.0 }
   }
   r.state("live", control~, others=[], more~)
+  // (the bar's 麦克风 coming or going along its row, to its end)
+  r.t.run_for(@ui.move_most_ms)
 }
 
 ///|

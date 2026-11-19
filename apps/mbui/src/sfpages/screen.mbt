@@ -1233,6 +1233,9 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
           self.child_screen = Some(next)
         }
       }
+      // (live and heard before: the screen's virtual microphone taken or let go of now, a live cause of its own)
+      let was_live = self.heard && text(self.state, "phase") == "live"
+      let was_mic = self.mic_active()
       self.state = Some(s)
       // (shared before the view was let go of, out of sight: said again to the view opened again, once it says it is
       // there, the core's view of it made by then)
@@ -1261,6 +1264,13 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
         self.pointer_moved()
       } else if alone {
         self.cursor_said.set(self.cursor_said.untracked() + 1)
+      } else if was_live &&
+        text(self.state, "phase") == "live" &&
+        self.mic_active() != was_mic &&
+        !@view.answering_now() {
+        // (something there began or stopped recording it as it was watched: the bar's 麦克风 comes or goes along its
+        // row; what this view comes to know of it as it is first told or told again after a break is there at once)
+        @view.transition(fn() { self.said.set(self.said.untracked() + 1) })
       } else {
         self.said.set(self.said.untracked() + 1)
       }
@@ -1536,7 +1546,8 @@ fn ScreenSess::mic_icon(self : ScreenSess) -> String {
 /// while driving, shared and recorded there, in the recording the state says; the host's capture follows the same.
 fn ScreenSess::toggle_mic(self : ScreenSess) -> Unit {
   let on = !self.mic_on.untracked()
-  self.mic_on.set(on)
+  // (shared no more while nothing records it: the bar's 麦克风 goes along its row, not at once)
+  @view.transition(fn() { self.mic_on.set(on) })
   if self.call != 0 {
     screen_tell(self.src, "screen.micOn", { "view": Json::string(self.view), "on": Json::boolean(on) })
   }
