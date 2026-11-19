@@ -152,10 +152,11 @@ export class HelperGrants {
 
   /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
   refresh(force = false): Promise<void> {
-    // (the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS after the last look)
+    // (a look under way is waited for; the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS
+    // after the last look)
+    if (this.#checking !== null) return this.#checking;
     const [last, within] = this.#unanswered !== null ? [this.#attempted, SHOWN_MS] : [this.#checked, FRESH_MS];
     if (!force && this.#now() - last < within) return Promise.resolve();
-    if (this.#checking !== null) return this.#checking;
     this.#attempted = this.#now();
     this.#checking = Promise.all([
       this.#reach().then(

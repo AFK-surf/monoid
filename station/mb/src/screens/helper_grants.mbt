@@ -202,13 +202,14 @@ fn HelperGrants::tell(self : HelperGrants) -> Unit {
 ///|
 /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
 pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -> Unit {
-  // (the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS after the last look)
+  // (a look under way is waited for; the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS
+  // after the last look)
   let (last, within) = if self.unanswered is Some(_) {
     (self.attempted, SHOWN_MS)
   } else {
     (self.checked, FRESH_MS)
   }
-  if !force && (self.now)() - last < within {
+  if !force && !self.checking.is_going() && (self.now)() - last < within {
     return
   }
   self.checking
