@@ -65,8 +65,7 @@ let waiting_most : Int = 256
 ///|
 /// Serves the mesh on the Unix socket at `path`, until it fails.
 pub async fn mesh(host : @host.Host, path : String) -> Unit {
-  let (said, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  guard said is { "id": listening, .. } else { fail("the shell gave no listening socket") }
+  let listening = host.unix_listen(path)
   let mesh : Mesh = {
     host,
     endpoint: None,
@@ -93,30 +92,32 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
       @host.exit(0)
     }),
   )
-  while true {
-    let accepted = try { Ok(host.shell("tcp.accept", { "id": listening })) } catch { e => Err(e) }
-    guard accepted is Ok(({ "id": id, .. }, _)) else {
-      if accepted is Err(e) {
-        @host.note("mesh: accept failed: \{message(e)}")
-        @effect.sleep(100)
+  // (a failed accept tried again after 100 ms, one that says the listening socket is gone ending it; what serving a
+  // Node fails with noted, never a defect)
+  host
+  .listener_of(listening.id)
+  .serve(
+    host.rt.root(),
+    async fn(accepted) {
+      let client : Client = {
+        conn: { host, id: accepted.id },
+        bound: 0,
+        streams: "",
+        front: Json::array([]),
+        routes: Json::array([]),
+        alpn: Json::null(),
+        coming: @effect.Queue::unbounded(),
+        conns: Map([]),
+        calls: Map([]),
+        gone: false,
       }
-      continue
-    }
-    let client : Client = {
-      conn: { host, id },
-      bound: 0,
-      streams: "",
-      front: Json::array([]),
-      routes: Json::array([]),
-      alpn: Json::null(),
-      coming: @effect.Queue::unbounded(),
-      conns: Map([]),
-      calls: Map([]),
-      gone: false,
-    }
-    mesh.clients.push(client)
-    ignore(host.rt.fork(name="mesh client", () => mesh.serve(client)))
-  }
+      mesh.clients.push(client)
+      mesh.serve(client) catch {
+        e => @host.note("mesh: a Node's socket failed: \{message(e)}")
+      }
+    },
+    on_error=e => @host.note("mesh: accept failed: \{message(e)}"),
+  )
 }
 
 ///|
@@ -124,11 +125,13 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
 async fn Mesh::serve(self : Mesh, client : Client) -> Unit {
   let lines = @wire.Lines::new()
   while true {
-    let read = try { Ok(self.host.shell("tcp.read", { "id": client.conn.id })) } catch { e => Err(e) }
-    guard read is Ok((said, Some(bytes))) && !(said is { "end": true, .. }) else { break }
+    let read = try { Ok(self.host.tcp_read(client.conn.id)) } catch { e => Err(e) }
+    guard read is Ok(Some(bytes)) else { break }
     for line in lines.push(bytes[:]) {
       let asked = @json.parse(line) catch { _ => continue }
-      ignore(self.host.rt.fork(name="mesh ask", () => self.answer(client, asked)))
+      ignore(
+        self.host.rt.fork_daemon("mesh ask", () => self.answer(client, asked), on_error=e => @host.note("mesh: an ask failed: \{message(e)}")),
+      )
     }
   }
   self.part(client)
@@ -471,7 +474,7 @@ async fn Mesh::answer(self : Mesh, client : Client, asked : Json) -> Unit {
   }
   // (a Node that closed the endpoint is told it is closed, then nothing more)
   if !client.gone || op == "close" {
-    ignore(self.host.shell("tcp.write", { "id": client.conn.id }, bytes=@utf8.encode(line.stringify() + "\n"))) catch {
+    self.host.tcp_write(client.conn.id, @utf8.encode(line.stringify() + "\n")) catch {
       _ => ()
     }
   }

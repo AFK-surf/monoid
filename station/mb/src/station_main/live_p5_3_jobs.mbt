@@ -889,14 +889,9 @@ fn P53Jobs::watch_ready(self : P53Jobs, id : String, pgid : Int, port : Int) -> 
         if self.groups.get(id) != Some(pgid) {
           return
         }
-        let opened = try {
-          Ok(host.shell("tcp.open", { "host": p53_s("127.0.0.1"), "port": p53_i(port) }))
-        } catch {
-          e => Err(e)
-        }
-        match opened {
-          Ok(({ "id": conn, .. }, _)) => {
-            ignore(try { Ok(host.shell("tcp.close", { "id": conn })) } catch { e => Err(e) })
+        match (try { Ok(host.tcp_open(port)) } catch { e => Err(e) }) {
+          Ok(conn) => {
+            conn.socket.destroy()
             self.ready[id] = true
             p53_log("info", "jobs", "service ready", fields=p53_obj([("job", p53_s(id)), ("port", p53_i(port))]))
             return
@@ -1035,8 +1030,10 @@ async fn P53Jobs::preview(self : P53Jobs, r : Request, conn : Json) -> Reply? {
       None => break
     }
   }
-  ignore(try { Ok(self.bus.host.shell("tcp.end", { "id": conn })) } catch { e => Err(e) })
-  ignore(try { Ok(self.bus.host.shell("tcp.close", { "id": conn })) } catch { e => Err(e) })
+  self.bus.host.tcp_end(conn) catch {
+    _ => ()
+  }
+  self.bus.host.tcp_close(conn)
   None
 }
 

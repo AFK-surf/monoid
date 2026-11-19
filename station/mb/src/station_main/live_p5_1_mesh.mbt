@@ -1369,7 +1369,7 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
         }),
       )
     }
-    let close = async fn() { ignore(host.shell("tcp.close", { "id": conn })) catch { _ => () } }
+    let close = async fn() { host.tcp_close(conn) }
     let answer : @gate.LocalAnswer = {
       head: (status, raw) => {
         wrote_head.val = true

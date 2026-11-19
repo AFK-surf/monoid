@@ -374,17 +374,14 @@ async fn pipe_tcp_lost(host : @host.Host) -> Json {
   // (a bound only on what must come: one that never ends fails the test, saying so)
   let ended = @effect.timeout(10000, () => {
     while true {
-      let (said, bytes) = host.shell("tcp.read", { "id": theirs }) catch { _ => break }
-      match (said, bytes) {
-        ({ "end": True, .. }, _) | (_, None) => break
-        (_, Some(b)) => came.write_string(@utf8.decode_lossy(b))
+      match (host.tcp_read(theirs) catch { _ => break }) {
+        None => break
+        Some(b) => came.write_string(@utf8.decode_lossy(b))
       }
     }
   })
   let code = @effect.timeout(10000, () => reset.wait())
-  ignore(host.shell("tcp.close", { "id": theirs })) catch {
-    _ => ()
-  }
+  host.tcp_close(theirs)
   {
     "came": Json::string(came.to_string()),
     "ended": Json::boolean(ended is Some(_)),

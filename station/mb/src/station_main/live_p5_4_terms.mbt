@@ -26,10 +26,23 @@ async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes?
   match handle {
     { "$tcp": id, .. } =>
       match call {
-        "read" => host.shell("tcp.read", { "id": id })
-        "write" => host.shell("tcp.write", { "id": id }, bytes=bytes.unwrap_or(b""))
-        "finish" => host.shell("tcp.end", { "id": id })
-        "reset" => host.shell("tcp.close", { "id": id })
+        "read" =>
+          match host.tcp_read(id) {
+            Some(b) => (Json::null(), Some(b))
+            None => ({ "end": true }, None)
+          }
+        "write" => {
+          host.tcp_write(id, bytes.unwrap_or(b""))
+          (Json::null(), None)
+        }
+        "finish" => {
+          host.tcp_end(id)
+          (Json::null(), None)
+        }
+        "reset" => {
+          host.tcp_close(id)
+          (Json::null(), None)
+        }
         _ => (Json::null(), None)
       }
     id => {

@@ -1382,9 +1382,7 @@ async fn P51::local_admin(self : P51, a : AdminLive, r : Request, conn : Json) -
         Streamed(_, stop) => stop() catch { _ => () }
         _ => ()
       }
-      ignore(self.host.shell("tcp.close", { "id": conn })) catch {
-        _ => ()
-      }
+      self.host.tcp_close(conn)
       None
     }
   }
