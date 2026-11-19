@@ -163,7 +163,7 @@ test "a wide panel's list card holds a one-line setting's control out of its cor
   let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=760.0, h=400.0)
   @ui.set_view_app(fn(root) {
     root.box(fn(b) {
-      b.lends(pane_lent, true).lends(part_at, { look: Wide, section: false, list: false }) |> ignore
+      b.lends(pane_lent, true).lends(part_at, { look: Wide, section: false, list: false, card: false }) |> ignore
       group_node(b, fn(g) {
         setting_choice_node(g, fn() { "语言" }, fn() { ["跟随系统", "中文", "English"] }, fn() { 0 }, fn(_) {  })
       })
