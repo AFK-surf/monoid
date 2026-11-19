@@ -115,6 +115,16 @@ fn fixture_farview_view(on_value : (Json, Bytes?) -> Unit) -> Int {
   fix_farview_at.val = 0
   on_value({ "state": { "phase": "live", "opens": 1 } }, None)
   let doc = @html.parse(fix_farview_html)
+  // (the help's picture as its host has it fetched: its whole address and its size)
+  fn mark(n : @html.Node) -> Unit {
+    if n.tag == "img" {
+      n.src_url = Some("https://mail.example.test/mark.png")
+      n.natural = Some((24.0, 8.0))
+    }
+    n.children.each(mark)
+  }
+
+  mark(doc)
   let state : @doc.DocState = {
     base: "https://mail.example.test/",
     root: doc,
@@ -127,6 +137,8 @@ fn fixture_farview_view(on_value : (Json, Bytes?) -> Unit) -> Int {
   }
   on_value({ "data": true }, Some(@proto.encode_host(Meta("https://mail.example.test/login", "登录", false, false, false))))
   on_value({ "data": true }, Some(@proto.encode_host(Reset(1, 0, @doc.Mirror::new().reset(state)))))
+  // (the help's picture, a PNG: what the page's menu copies as a picture)
+  on_value({ "data": true }, Some(@proto.encode_host(Asset("https://mail.example.test/mark.png", 0, 24.0, 8.0, fix_farview_mark()))))
   on_value({ "data": true }, Some(@proto.encode_host(AgentOn(true))))
   fix_stream_ids.val += 1
   fix_stream_ids.val
@@ -144,6 +156,16 @@ fn fixture_farview_said(bytes : Bytes) -> Bool {
   while framer.next() is Some(body) {
     guard @proto.decode_client(body) is Some(Nav(kind, url)) else { continue }
     let went = fix_farview_went
+    // (an address of a file: what the page downloads, the tab staying where it is)
+    if kind == @proto.NAV_GO && url.has_suffix(".pdf") {
+      let name = match url.rev_find("/") {
+        Some(i) => url.to_array()[i + 1:].iter().fold(init="", fn(a, c) { a + c.to_string() })
+        None => url
+      }
+      tell({ "data": true }, Some(@proto.encode_host(Downloaded(name, url, "application/pdf", @utf8.encode("%PDF-1.4 Farview")))))
+      said = true
+      continue
+    }
     if kind == @proto.NAV_GO && url != "" {
       while went.length() > fix_farview_at.val + 1 {
         went.pop() |> ignore
@@ -179,7 +201,10 @@ let fix_farview_at : Ref[Int] = Ref(0)
 ///|
 let fix_farview_html : String = "<!doctype html><html><head><link rel=stylesheet href=s.css></head><body>" +
   "<main class=card><h1>登录</h1><p class=sub>继续前往邮箱</p><label>邮箱或用户名</label>" +
-  "<input class=field value=\"\"><button class=go>继续</button></main></body></html>"
+  "<input class=field value=\"\"><button class=go>继续</button>" +
+  "<p class=help>登录遇到问题？查看<a href=\"https://mail.example.test/help\">登录帮助</a>，" +
+  "或在登录帮助里找回邮箱。登录帮助也说明了两步验证。</p>" +
+  "<a href=\"https://mail.example.test/about\"><img class=mark src=mark.png alt=Mail></a></main></body></html>"
 
 ///|
 let fix_farview_css : String = "body { margin: 0; background: rgb(244, 241, 252); font-family: sans-serif } " +
@@ -187,4 +212,19 @@ let fix_farview_css : String = "body { margin: 0; background: rgb(244, 241, 252)
   "h1 { margin: 0 0 8px; font-size: 28px } .sub { margin: 0 0 24px; color: rgb(90, 90, 100) } " +
   "label { display: block; margin-bottom: 8px; font-weight: 600 } " +
   ".field { display: block; box-sizing: border-box; width: 100%; height: 44px; border: 1px solid rgb(109, 74, 255); border-radius: 8px } " +
+  ".help { margin: 24px 0 12px; color: rgb(90, 90, 100); line-height: 1.6 } .help a { color: rgb(109, 74, 255) } " +
+  ".mark { display: block; width: 96px; height: 32px } " +
   ".go { display: flex; align-items: center; justify-content: center; width: 100%; height: 44px; margin-top: 24px; border: 0; border-radius: 8px; background: rgb(109, 74, 255); color: white; font-size: 16px }"
+
+///|
+/// The help's picture: a PNG 24 by 8 of the page's violet (drawn 96 by 32: small, as a test's host holds few bytes).
+fn fix_farview_mark() -> Bytes {
+  let px = FixedArray::make(24 * 8 * 4, b'\x00')
+  for i in 0..<(24 * 8) {
+    px[i * 4] = b'\x6D'
+    px[i * 4 + 1] = b'\x4A'
+    px[i * 4 + 2] = b'\xFF'
+    px[i * 4 + 3] = b'\xFF'
+  }
+  @pixels.png(24, 8, px)
+}

@@ -15,6 +15,10 @@ priv struct FarviewRig {
   cancelled : Array[Int]
   /// how many places show the tab
   places : @signals.Signal[Int]
+  /// the station's screens as the core says them (`screens`), the calls made of it, and what the tab switched to
+  screens : @signals.Signal[Json]
+  calls : Array[(String, Json)]
+  switched : Array[@sfbase.Page]
 }
 
 ///|
@@ -38,7 +42,24 @@ fn farview_rig(
   let sent : Array[(String, Bytes)] = []
   let views : Array[(Json, (Json, Bytes?) -> Unit)] = []
   let cancelled : Array[Int] = []
-  let base = @sfbase.made_source(topic=fn(name, _) { if name == "prefs" { Some(Json::object({})) } else { None } })
+  let screens = @signals.signal(Json::object({ "screens": Json::array([]) }))
+  let calls : Array[(String, Json)] = []
+  let switched : Array[@sfbase.Page] = []
+  let base = @sfbase.made_source(
+    topic=fn(name, _) {
+      if name == "prefs" {
+        Some(Json::object({}))
+      } else if name == "screens" {
+        Some(screens.get())
+      } else {
+        None
+      }
+    },
+    call=fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  )
   let src : Source = {
     ..base,
     call_bytes: fn(name, params, bytes, done) {
@@ -68,6 +89,8 @@ fn farview_rig(
     },
     tree=fn(root) {
       @ui.set_tree_theme(@sf.ui_theme_now)
+      // (the window's keys as the app has them: the tab's own among them, settings' keymap.mbt)
+      root.keymap(Is(@settings.keymap_of(None))) |> ignore
       root.box(fn(col) {
         col.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
         col.box(fn(b) { b.height(Is(Some(over))) |> ignore }) |> ignore
@@ -76,7 +99,7 @@ fn farview_rig(
           for i in 0..<2 {
             row.show(fn() { shown.get() > i }, fn(p) {
               p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-              farview_tab_node(p, src, "ws-1/st-1", screen)
+              farview_pane_node(p, src, "ws-1/st-1", screen, on_switch=fn(next) { switched.push(next) })
             })
           }
         })
@@ -84,13 +107,14 @@ fn farview_rig(
         col.box(fn(b) { b.height(Is(Some(under))) |> ignore }) |> ignore
       })
       |> ignore
+      @sf.presented_nodes(root)
     },
     w~,
     h=844.0,
   )
   t.set_font_scale(font_scale)
   t.draw()
-  { t, sent, views, cancelled, places: shown }
+  { t, sent, views, cancelled, places: shown, screens, calls, switched }
 }
 
 ///|
@@ -482,8 +506,9 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
   assert_eq(layouts.val, 1)
   // (laid 686: the address the place's capsule, @sf.address_field_node's, as the web service's: its room and its
-  // capsule round the words, 2026-11-18)
-  assert_true(made <= 657 && let_go == 0 && laid <= 686 && measured <= 1 && bindings <= 1471, msg="whole: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // capsule round the words, 2026-11-18; 687 and 1473: the places of ⌘F's bar and of the zoom's capsule, shown
+  // while they are open)
+  assert_true(made <= 657 && let_go == 0 && laid <= 687 && measured <= 1 && bindings <= 1473, msg="whole: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
   assert_true(laid >= 550, msg="not a real page's size: laid \{laid}")
   // one badge's words: that word's node made again, nothing measured
   layouts.val = 0
@@ -493,7 +518,8 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   r.t.run_for(farview_drawn_ms)
   let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
   assert_eq(layouts.val, 1)
-  assert_true(made <= 1 && let_go <= 1 && laid <= 16 && measured == 0 && bindings <= 9, msg="a badge's words: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // (laid 17: ⌘F's bar's place in the tab's chrome, laid with it)
+  assert_true(made <= 1 && let_go <= 1 && laid <= 17 && measured == 0 && bindings <= 9, msg="a badge's words: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
   // one badge's ground: its box made again; the badges after it of the same look keyed by the how-many-th such each
   // take the place of the one before (scene.mbt's keys: one a card, 40 laid at 30 cards, 60 at 50)
   layouts.val = 0
@@ -503,7 +529,8 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   r.t.run_for(farview_drawn_ms)
   let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
   assert_eq(layouts.val, 1)
-  assert_true(made <= 1 && let_go <= 1 && laid <= 40 && measured == 0 && bindings <= 78, msg="a badge's ground: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // (laid 41: ⌘F's bar's place in the tab's chrome, laid with it)
+  assert_true(made <= 1 && let_go <= 1 && laid <= 41 && measured == 0 && bindings <= 78, msg="a badge's ground: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
   // 15 changes at one moment, each a message of its own: none laid out as it comes, the page laid out once in the
   // frame, each changed word's node made again
   layouts.val = 0
@@ -516,7 +543,8 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   r.t.run_for(farview_drawn_ms)
   let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
   assert_eq(layouts.val, 1)
-  assert_true(made <= 15 && let_go <= 15 && laid <= 44 && measured == 0 && bindings <= 95, msg="15 at once: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // (laid 45: ⌘F's bar's place in the tab's chrome, laid with it)
+  assert_true(made <= 15 && let_go <= 15 && laid <= 45 && measured == 0 && bindings <= 95, msg="15 at once: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
   assert_true(r.t.words().any(fn(w) { w.0 == "x14" }))
   @stage.phase_mark.val = fn(_) {  }
 }
@@ -573,4 +601,277 @@ test "a Farview tab: ← and → pressed only where the host says the tab can go
   press_both()
   assert_eq(navs(), [@proto.NAV_BACK, @proto.NAV_FORWARD])
   assert_eq(r.t.audit(), [])
+}
+
+///|
+/// The stage that shows tab `screen` in the rig (its first showing).
+fn farview_stage_of(screen : String) -> @stage.Stage {
+  farview_tabs.get("ws-1/st-1\n" + screen).unwrap()[0].stage
+}
+
+///|
+/// A page of words to find (one of them three times), a link and a picture.
+let farview_words_html : String = "<!doctype html><html><head><link rel=stylesheet href=s.css></head><body>" +
+  "<p id=words>apple banana apple cherry apple</p><p><a id=link href=\"https://example.test/next\">next page</a></p>" +
+  "<div id=white class=white></div></body></html>"
+
+///|
+let farview_words_css : String = "body { margin: 0; font-size: 16px } p { margin: 8px } " +
+  ".white { width: 100px; height: 40px; background: rgb(255, 255, 255) }"
+
+///|
+/// A tab live with the page of words, laid out.
+fn farview_words_rig(screen : String, w? : Double = 390.0) -> FarviewRig {
+  let r = farview_rig(screen~, w~)
+  let (_, tell) = r.views[0]
+  farview_live(tell)
+  farview_feed(tell, FarviewHost::new(html=farview_words_html, css=farview_words_css).reset())
+  r.t.run_for(farview_drawn_ms)
+  r
+}
+
+///|
+/// The audit's faults but those of the page's own words (its boxes the web's, laid out as its sheets say, and the
+/// matches ⌘F draws over them the stage's: fvclient's, not this app's parts).
+fn farview_audit(t : @ui.Tester) -> Array[String] {
+  t.audit().filter(fn(f) { !f.contains("「apple banana") && !f.contains("「next page") })
+}
+
+///|
+/// Whether words with `part` in them are drawn now.
+fn farview_drawn(t : @ui.Tester, part : String) -> Bool {
+  t.words().iter().any(fn(w) { w.0.contains(part) })
+}
+
+///|
+/// Whether a node read out as `words` is shown now.
+fn farview_shows(t : @ui.Tester, words : String) -> Bool {
+  t.semantics().iter().any(fn(n) { n.label == words && !n.hidden })
+}
+
+///|
+// ⌘F on the tab's page: its bar fades in under the tab's bar, the field taking the keys; what is typed found on the
+// page here (m/n, none where nothing is), ⌘G and Enter the next, ⇧⌘G the one before (round from the first to the
+// last), Escape closes it, the matches no longer drawn, the bar taking no press as it goes; every rule kept throughout.
+test "a Farview tab: ⌘F finds words on its page, steps through them, closes with Escape" {
+  let r = farview_words_rig("browser:fv_find")
+  let stage = farview_stage_of("browser:fv_find")
+  let m = if @ui.keys_system() == 0 { @ui.mod_cmd } else { @ui.mod_ctrl }
+  // (the focus in the tab: its address field)
+  let ((ax, ay), _) = farview_button(r.t, "web-pages.screen.goUrlShort")
+  r.t.tap(ax, ay)
+  r.t.key(@ui.key_of_char('f'), mods=m)
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(farview_shows(r.t, @sf.t("web-main.find.close")), msg="the bar is shown")
+  assert_eq(farview_audit(r.t), [])
+  assert_eq(r.t.corner_faults(), [])
+  r.t.type_text("apple")
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(stage.find_place(), (1, 3))
+  assert_true(farview_drawn(r.t, "1/3"))
+  r.t.key(@ui.key_of_char('g'), mods=m)
+  r.t.key(@ui.key_code_enter)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(stage.find_place(), (3, 3))
+  r.t.key(@ui.key_of_char('g'), mods=m | @ui.mod_shift_key)
+  r.t.key(@ui.key_code_enter, mods=@ui.mod_shift_key)
+  r.t.key(@ui.key_code_enter, mods=@ui.mod_shift_key)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(stage.find_place(), (3, 3), msg="round from the first to the last")
+  assert_eq(farview_audit(r.t), [])
+  // nothing of it on the page: none
+  r.t.type_text("z")
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(stage.find_place(), (0, 0))
+  assert_true(farview_drawn(r.t, @sf.t("web-main.find.none")))
+  // Escape: closed, the matches gone, nothing of the bar pressed as it fades
+  r.t.key(@ui.key_escape)
+  assert_eq(stage.find_place(), (0, 0))
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(!farview_shows(r.t, @sf.t("web-main.find.close")), msg="the bar is gone")
+  assert_eq(farview_audit(r.t), [])
+  assert_eq(r.t.corner_faults(), [])
+  // opened again: what was looked for found again, its words picked whole
+  r.t.key(@ui.key_of_char('f'), mods=m)
+  r.t.run_for(@ui.move_most_ms)
+  r.t.type_text("cherry")
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(stage.find_place(), (1, 1))
+}
+
+///|
+// ⌘= ⌘- ⌘0 with the focus in the tab: the page's own zoom (the stage's), how big said in the bar beside the address
+// while it is not as laid out, that capsule pressed back to as laid out, gone then; the bar as before at 100%.
+test "a Farview tab: ⌘= ⌘- ⌘0 zoom its page, a capsule in its bar saying how big while it is not 100%" {
+  let r = farview_words_rig("browser:fv_zoom")
+  let stage = farview_stage_of("browser:fv_zoom")
+  let m = if @ui.keys_system() == 0 { @ui.mod_cmd } else { @ui.mod_ctrl }
+  let reset = @sf.t("web-pages.farview.zoomReset", args=[("zoom", "100%")])
+  assert_true(!farview_shows(r.t, reset), msg="no capsule at 100%")
+  let ((ax, ay), _) = farview_button(r.t, "web-pages.screen.goUrlShort")
+  r.t.tap(ax, ay)
+  r.t.key(@ui.key_of_char('='), mods=m)
+  r.t.key(@ui.key_of_char('='), mods=m)
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(stage.zoom(), 1.25)
+  assert_true(farview_shows(r.t, reset), msg=r.t.semantics_dump())
+  assert_true(farview_drawn(r.t, "125%"))
+  assert_eq(farview_audit(r.t), [])
+  assert_eq(r.t.corner_faults(), [])
+  // pressed: as laid out again, the capsule gone
+  guard r.t.semantics().iter().find_first(fn(n) { n.label == reset && !n.hidden }) is Some(chip) else { fail("no capsule") }
+  let (zx, zy, zw, zh) = chip.rect
+  r.t.tap(zx + zw / 2.0, zy + zh / 2.0)
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(stage.zoom(), 1.0)
+  assert_true(!farview_shows(r.t, reset))
+  r.t.tap(ax, ay)
+  r.t.key(@ui.key_of_char('-'), mods=m)
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(stage.zoom(), 0.9)
+  assert_true(farview_drawn(r.t, "90%"))
+  r.t.key(@ui.key_of_char('0'), mods=m)
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(stage.zoom(), 1.0)
+  assert_eq(farview_audit(r.t), [])
+}
+
+///|
+/// A menu's items as words, a line as "—".
+fn farview_items_said(items : Array[@sf.MenuItem?]) -> Array[String] {
+  items.map(fn(i) {
+    match i {
+      Some(item) => item.label + (if item.disabled { " (off)" } else { "" })
+      None => "—"
+    }
+  })
+}
+
+///|
+// The page's menu for what is where it was asked for: a link's, a picture's (copied only where its bytes are a
+// PNG's), the words picked's, then back, forward and again (off where the tab cannot go), and the page's own; a line
+// between each part there is, never two together nor one at either end.
+test "a Farview tab's page menu: what is there offered, a line between each part and none at its ends" {
+  let r = farview_words_rig("browser:fv_menu")
+  let stage = farview_stage_of("browser:fv_menu")
+  let hit = fn(link : String, image : String, bytes : Bytes?, words : String, back : Bool) -> @stage.MenuHit {
+    { x: 10.0, y: 10.0, link, image, image_bytes: bytes, selection: words, editable: false, can_back: back, can_forward: false }
+  }
+  let png = b"\x89PNG\r\n\x1a\n"
+  let said = fn(h) { farview_items_said(farview_menu_items(stage, h, fn() {  })) }
+  let t = fn(k) { @sf.t(k) }
+  let nav = [t("web-pages.screen.back") + " (off)", t("web-pages.screen.forward") + " (off)", t("web-pages.screen.reloadShort")]
+  let page = [t("web-pages.farview.find"), t("web-pages.remote.copyUrl")]
+  // nothing there: going back and forth and the page's own
+  assert_eq(said(hit("", "", None, "", false)), nav + ["—"] + page)
+  // a link, a picture of a PNG, words picked, the tab able to go back
+  assert_eq(
+    said(hit("https://example.test/next", "https://example.test/p.png", Some(png), "apple", true)),
+    [t("web-pages.farview.openInNewTab"), t("desktop.contextMenu.copyLink"), "—", t("desktop.contextMenu.copyImage"),
+      t("web-pages.farview.copyImageLink"), "—", t("desktop.contextMenu.copy"), "—", t("web-pages.screen.back"),
+      t("web-pages.screen.forward") + " (off)", t("web-pages.screen.reloadShort"), "—"] +
+    page,
+  )
+  // a link that is not the web's (mailto:), a picture that is not a PNG: neither opened nor copied
+  assert_eq(
+    said(hit("mailto:a@example.test", "https://example.test/p.jpg", Some(b"\xff\xd8\xff"), " \n", false)),
+    [t("desktop.contextMenu.copyLink"), "—", t("web-pages.farview.copyImageLink"), "—"] + nav + ["—"] + page,
+  )
+  // a right click on the link: the menu shown there, its first item its own; chosen, the link opened in a new tab
+  guard r.t.words().iter().find_first(fn(w) { w.0.contains("next") }) is Some((_, x, y, w, h, _)) else {
+    fail(r.t.drawn_text())
+  }
+  r.t.right_click(x + w / 2.0, y + h / 2.0)
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(farview_shows(r.t, t("web-pages.farview.openInNewTab")), msg=r.t.semantics_dump())
+  assert_true(farview_shows(r.t, t("web-pages.farview.find")))
+  assert_eq(farview_audit(r.t), [])
+  r.sent.clear()
+  let ((ox, oy), _) = farview_button(r.t, "web-pages.farview.openInNewTab")
+  r.t.tap(ox, oy)
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(
+    farview_said(r.sent).any(fn(m) { m is Nav(k, u) && k == @proto.NAV_NEW_TAB && u == "https://example.test/next" }),
+  )
+  assert_true(!farview_shows(r.t, t("web-pages.farview.find")), msg="closed as chosen")
+}
+
+///|
+// A page's file input asks for a picker: the device's (the gallery's where all it accepts are pictures), what was
+// chosen given to the page (one alone where it takes one), nothing chosen its cancel; what it downloads kept in the
+// device's downloads and said, one too big to come said kept on the station.
+test "a Farview tab: a page's file picker is the device's, what it downloads kept on the device" {
+  let r = farview_words_rig("browser:fv_files")
+  let (_, tell) = r.views[0]
+  let uploads = fn() {
+    farview_said(r.sent).filter_map(fn(m) { if m is UploadFiles(id, files) { Some((id, files)) } else { None } })
+  }
+  r.t.picks([("a.png", b"\x89PNG1"), ("b.png", b"\x89PNG2")])
+  farview_feed(tell, @proto.encode_host(PickFile(7, " image/png, IMAGE/jpeg ", false)))
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(r.t.pick_asks() is [Photos])
+  assert_eq(uploads(), [(7, [("a.png", "image/png", b"\x89PNG1")])])
+  // several taken where it takes several; a file of any kind from the files
+  r.sent.clear()
+  farview_feed(tell, @proto.encode_host(PickFile(8, "image/*,.pdf", true)))
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(r.t.pick_asks() is [Photos, Files])
+  assert_eq(uploads(), [(8, [("a.png", "image/png", b"\x89PNG1"), ("b.png", "image/png", b"\x89PNG2")])])
+  // nothing chosen: its cancel
+  r.sent.clear()
+  r.t.picks([])
+  farview_feed(tell, @proto.encode_host(PickFile(9, "", false)))
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(uploads(), [(9, [])])
+  // what it downloads: in the device's downloads, said
+  farview_feed(tell, @proto.encode_host(Downloaded("报告.pdf", "https://example.test/r", "application/pdf", b"%PDF-1.4")))
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.t.kept(), [("报告.pdf", "application/pdf", b"%PDF-1.4")])
+  assert_true(r.t.kept_ways() is [(_, Downloads)])
+  assert_eq(@sfbase.toast_words(), @sf.t("web-pages.farview.downloaded", args=[("name", "报告.pdf")]))
+  farview_feed(tell, @proto.encode_host(Downloaded("big.bin", "https://example.test/big", "", b"")))
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.t.kept().length(), 1)
+  assert_eq(@sfbase.toast_words(), @sf.t("web-pages.farview.downloadedOnHost", args=[("name", "big.bin")]))
+  assert_eq(farview_audit(r.t), [])
+}
+
+///|
+/// The station's screens: Farview tabs of these ids, each on its address.
+fn farview_screens_of(tabs : Array[(String, String)]) -> Json {
+  Json::object({
+    "screens": Json::array(
+      tabs.map(fn(t) {
+        Json::object({ "id": Json::string(t.0), "kind": "browser", "farview": Json::boolean(true), "title": "", "url": Json::string(t.1) })
+      }),
+    ),
+  })
+}
+
+///|
+// A tab its page asked for (a popup): shown as it comes among the station's screens; one its page closes
+// (window.close(), its OAuth done): closed, back to another of the chat's tabs.
+test "a Farview tab: a tab its page opens is shown as it comes, one its page closes closed, back to another" {
+  let r = farview_words_rig("browser:fv_pop")
+  let (_, tell) = r.views[0]
+  r.screens.set(farview_screens_of([("browser:fv_pop", "https://example.test/"), ("browser:fv_other", "https://o.test/")]))
+  r.t.run_for(@ui.move_most_ms)
+  farview_feed(tell, @proto.encode_host(OpenTab("https://oauth.test/")))
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.switched.length(), 0, msg="not there yet")
+  r.screens.set(
+    farview_screens_of([("browser:fv_pop", "https://example.test/"), ("browser:fv_other", "https://o.test/"), ("browser:fv_pop_1", "")]),
+  )
+  r.t.run_for(@ui.move_most_ms)
+  guard r.switched is [Screen(s)] && s.screen == "browser:fv_pop_1" else { fail("switched: \{r.switched.length()}") }
+  // its page closes it: closed (the station closing it too, nothing said of its answer), back to the tab beside it
+  let p = farview_words_rig("browser:fv_pop_1")
+  let (_, tell1) = p.views[0]
+  p.screens.set(farview_screens_of([("browser:fv_pop", "https://example.test/"), ("browser:fv_pop_1", "https://oauth.test/")]))
+  p.t.run_for(@ui.move_most_ms)
+  farview_feed(tell1, @proto.encode_host(CloseTab))
+  p.t.run_for(@ui.move_most_ms)
+  assert_true(p.calls.any(fn(c) { c.0 == "screen.close" }))
+  guard p.switched is [Screen(back)] && back.screen == "browser:fv_pop" else { fail("back: \{p.switched.length()}") }
+  assert_eq(@sfbase.toast_words(), "")
 }

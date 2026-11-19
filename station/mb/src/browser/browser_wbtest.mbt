@@ -331,7 +331,13 @@ test "Chrome started headless on a profile of its own, started again with its he
 
 ///|
 /// A machine of the test's own for Farview's hosts: each started writes its host.json in its state directory.
-fn farview_machine(m : Mem, rt : @effect.Runtime, started : Array[String], alive : Map[Int, Unit]) -> Machine {
+fn farview_machine(
+  m : Mem,
+  rt : @effect.Runtime,
+  started : Array[String],
+  alive : Map[Int, Unit],
+  envs? : Map[String, Map[String, String]] = {},
+) -> Machine {
   {
     ..chrome_machine(m, rt, [], []),
     start_lasting: (_, args, cwd, env) => {
@@ -339,6 +345,7 @@ fn farview_machine(m : Mem, rt : @effect.Runtime, started : Array[String], alive
       started.push("\{cwd} \{args.join(" ")}")
       alive[pid] = ()
       let dir = env.search_by(e => e.0 == "FV_STATE_DIR").map(i => env[i].1).unwrap_or(cwd)
+      envs[dir] = Map::from_array(env.filter(e => e.0.has_prefix("FV_TAB_") || e.0.has_prefix("FV_OPENER_")))
       m.files[dir + "/host.json"] = "{\"pid\":\{pid},\"port\":\{pid + 1000},\"agent\":\{pid + 2000},\"frame\":\{pid + 3000}}"
       { pid: Some(pid), ended: () => None }
     },
@@ -356,6 +363,7 @@ fn farview_tabs(
   screens : Array[String],
   alive? : Map[Int, Unit] = {},
   connect? : async (Int) -> TcpLink,
+  envs? : Map[String, Map[String, String]] = {},
 ) -> FarviewTabs {
   m.files["/fv/bin/host.exe"] = "#!"
   m.mkdirs("/fv/bin")
@@ -384,7 +392,7 @@ fn farview_tabs(
     }),
     fetch: async fn(_) { None },
     sources: _ => [],
-    machine: farview_machine(m, rt, started, alive),
+    machine: farview_machine(m, rt, started, alive, envs~),
     files: m.files(),
     net: { connect, clock },
     release_io: { write_bytes: async fn(_, _) { () }, untar: async fn(_, _) { () }, random_hex: n => "0".repeat(n * 2) },
@@ -457,6 +465,83 @@ test "a chat's Farview: its first tab started as it asks, more numbered after th
     "+browser:" + id,
     "-browser:" + id,
   ])
+}
+
+///|
+test "a page's popup is a tab told its window id, its opener and its origin; a page that closes its tab has it closed, never the chat's first; one closed while no station held it is not taken up" {
+  let rt = @effect.Runtime::new()
+  let m = mem()
+  let started = []
+  let screens = []
+  let alive : Map[Int, Unit] = {}
+  let envs : Map[String, Map[String, String]] = {}
+  let fv = farview_tabs(m, rt, started, screens, alive~, envs~)
+  let chat = "/data/browser/farview/" + chat_dir("chat:a")
+  let id = "fv_" + chat_dir("chat:a")
+  let screen_of = (n : Int) => fv.hosts.get("chat:a").unwrap().get(n).unwrap().screen
+  ignore(
+    rt.fork(async fn() {
+      ignore(fv.endpoint("chat:a"))
+      ignore(fv.open("chat:a", "https://popup.test/"))
+    }),
+  )
+  rt.advance(1000)
+  // each tab's id among the profile's is its screen's; a tab of its own has no opener
+  assert_eq(envs.get(chat + "/tabs/0"), Some({ "FV_TAB_ID": id }))
+  assert_eq(envs.get(chat + "/tabs/1"), Some({ "FV_TAB_ID": id + "_1" }))
+  // a page opens a window it holds: its tab told the window's id, the opener's and the opener's origin
+  screen_of(1).watch_heard(
+    parse(
+      "{\"openTab\":\"https://oauth.test/\",\"window\":\"w_popup\",\"opener\":\"\{id}_1\",\"origin\":\"https://popup.test\"}",
+    ),
+  )
+  rt.advance(1000)
+  assert_eq(
+    envs.get(chat + "/tabs/2"),
+    Some({ "FV_TAB_ID": "w_popup", "FV_OPENER_ID": id + "_1", "FV_OPENER_ORIGIN": "https://popup.test" }),
+  )
+  assert_eq(fv.tabs("chat:a").map(t => t.info.id), [id, id + "_1", id + "_2"])
+  // its page closes it (window.close(), its OAuth done): closed, its host ended and its directory gone
+  let popup_pid = fv.hosts.get("chat:a").unwrap().get(2).unwrap().file.pid
+  screen_of(2).watch_heard(parse("{\"closeTab\":true}"))
+  rt.advance(10)
+  assert_eq(fv.tabs("chat:a").map(t => t.info.id), [id, id + "_1"])
+  assert_true(!alive.contains(popup_pid))
+  assert_true(!m.dirs.contains(chat + "/tabs/2"))
+  // a first tab whose page closes it stays
+  screen_of(0).watch_heard(parse("{\"closeTab\":true}"))
+  rt.advance(10)
+  assert_eq(fv.tabs("chat:a").map(t => t.info.id), [id, id + "_1"])
+  // a tab its page closed as no station process held it (its host.json says so): ended and gone as the next one
+  // starts, never one of its screens again
+  let pid1 = fv.hosts.get("chat:a").unwrap().get(1).unwrap().file.pid
+  fv.close()
+  m.files[chat + "/tabs/1/host.json"] = "{\"pid\":\{pid1},\"port\":\{pid1 + 1000},\"agent\":\{pid1 + 2000},\"frame\":\{pid1 + 3000},\"closed\":true}"
+  let next = farview_tabs(m, rt, started, screens, alive~, envs~)
+  ignore(rt.fork(async fn() { next.resume() }))
+  rt.advance(10)
+  assert_eq(next.tabs("chat:a").map(t => t.info.id), [id])
+  assert_true(!alive.contains(pid1))
+  assert_true(!m.dirs.contains(chat + "/tabs/1"))
+  assert_eq(started.length(), 3)
+}
+
+///|
+test "a frame port's openTab says a page's new tab and what links it to its opener" {
+  let shown = (s : String) => match open_tab_of(parse(s)) {
+    Some((url, meta)) => url + " " + stringify(meta.to_j())
+    None => "none"
+  }
+  assert_eq(shown("{\"openTab\":\"https://a.test/\"}"), "https://a.test/ {}")
+  assert_eq(
+    shown("{\"openTab\":\"https://a.test/\",\"window\":\"w_1\",\"opener\":\"fv_x\",\"origin\":\"https://o.test\"}"),
+    "https://a.test/ {\"window\":\"w_1\",\"opener\":\"fv_x\",\"origin\":\"https://o.test\"}",
+  )
+  assert_eq(shown("{\"openTab\":\"https://a.test/\",\"window\":\"\",\"opener\":3}"), "https://a.test/ {}")
+  assert_eq(shown("{\"openTab\":\"\"}"), "none")
+  assert_eq(shown("{\"page\":{}}"), "none")
+  assert_eq(host_file_of(Some(parse("{\"pid\":1,\"port\":2,\"agent\":3,\"frame\":4,\"closed\":true}"))).map(f => f.closed), Some(true))
+  assert_eq(host_file_of(Some(parse("{\"pid\":1,\"port\":2,\"agent\":3,\"frame\":4}"))).map(f => f.closed), Some(false))
 }
 
 ///|

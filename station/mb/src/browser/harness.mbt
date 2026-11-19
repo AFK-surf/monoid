@@ -780,7 +780,8 @@ async fn Rpc::make(self : Rpc, c : J) -> J {
         host_net(self.host, self.clock(inst)),
         self.log(inst),
       )
-      s.opened = url => self.tell(inst, "opened", [js(url)])
+      s.opened = (url, meta) => self.tell(inst, "opened", [js(url), meta.to_j()])
+      s.closed_by_page = () => self.tell(inst, "closedByPage", [])
       self.insts[inst] = FvScreenI(s)
     }
     "pass" => {

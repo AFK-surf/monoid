@@ -2259,5 +2259,12 @@
   "web-pages.cloud.connect.noWorkspaceBody": "只有工作区的所有者或管理员能添加 station。在 {name} 里新建一个工作区，或请所有者把你设为管理员，再回到 console 点一次连接。",
   "web-pages.cloud.connect.refused": "没有连接",
   "web-pages.cloud.connect.refusedBody": "这个链接不是从 {name} 认可的 console 发起的，没有发送任何东西。请回到你的 console，在机器页面重新点连接。",
-  "web-pages.cloud.connect.signInBody": "登录后会回到这一页，选好工作区就能把机器加进去。"
+  "web-pages.cloud.connect.signInBody": "登录后会回到这一页，选好工作区就能把机器加进去。",
+  "web-pages.farview.find": "页内查找",
+  "web-pages.farview.findPlaceholder": "在网页中查找",
+  "web-pages.farview.openInNewTab": "在新标签页打开",
+  "web-pages.farview.copyImageLink": "复制图片链接",
+  "web-pages.farview.zoomReset": "重置缩放（{zoom}）",
+  "web-pages.farview.downloaded": "已保存到「下载」：{name}",
+  "web-pages.farview.downloadedOnHost": "{name} 太大，已保存在 station 的下载目录"
 }

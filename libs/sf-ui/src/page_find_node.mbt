@@ -10,7 +10,9 @@
 /// Enter: `step(1)`; ⇧Enter: `step(-1)`; Escape: `close`), what `said()` says of where the reader is among what was
 /// found while it says something (in `said_look`), then the one before (`step(-1)`, while `has(-1)`), the one after
 /// (`step(1)`, while `has(1)`) and the find let go (`close`): round keys `key_side` across, their icons 16, `ink` under
-/// the hand, their tips in `tips`, named `prev_label`, `next_label` and `close_label`. The row's node.
+/// the hand, their tips in `tips`, named `prev_label`, `next_label` and `close_label`. `field_in`: how far in the
+/// field's words stand past what `frame` leaves the row (a capsule whose ends hold its keys concentric: its words clear
+/// of the round end, the row's own room even at both ends). The row's node.
 #callsite(autofill(loc))
 pub fn page_find_node(
   parent : @view.View,
@@ -35,6 +37,7 @@ pub fn page_find_node(
   prev_label? : () -> String = fn() { t("web-main.find.prev") },
   next_label? : () -> String = fn() { t("web-main.find.next") },
   close_label? : () -> String = fn() { t("web-main.find.close") },
+  field_in? : Double = 0.0,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
@@ -58,8 +61,23 @@ pub fn page_find_node(
           }
         })
         |> ignore
+        let at = if field_in > 0.0 {
+          b.box(fn(w) {
+            w
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .padding(Is((field_in, 0.0, 0.0, 0.0)))
+            .grow(Is(1.0))
+            .basis(Is(Some(0.0)))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+          })
+        } else {
+          b
+        }
         @ui.field(
-          b,
+          at,
           f,
           placeholder_by~,
           font_size=field_size,

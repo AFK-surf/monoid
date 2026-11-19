@@ -2310,5 +2310,12 @@
   "web-pages.cloud.connect.noWorkspaceBody": "Only a workspace's owners and admins add stations. Make a workspace in {name}, or ask an owner to make you an admin, then press Connect in the console again.",
   "web-pages.cloud.connect.refused": "Not connected",
   "web-pages.cloud.connect.refusedBody": "This link did not come from a console {name} knows, so nothing was sent. Go back to your console and press Connect on the machine's page again.",
-  "web-pages.cloud.connect.signInBody": "Once you are signed in you come back here: pick a workspace to add the machine to."
+  "web-pages.cloud.connect.signInBody": "Once you are signed in you come back here: pick a workspace to add the machine to.",
+  "web-pages.farview.find": "Find in page",
+  "web-pages.farview.findPlaceholder": "Find in page",
+  "web-pages.farview.openInNewTab": "Open link in new tab",
+  "web-pages.farview.copyImageLink": "Copy image address",
+  "web-pages.farview.zoomReset": "Reset zoom ({zoom})",
+  "web-pages.farview.downloaded": "Saved to Downloads: {name}",
+  "web-pages.farview.downloadedOnHost": "{name} is too large: saved in the station's downloads"
 }

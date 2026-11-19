@@ -197,6 +197,8 @@ pub fn num_text(@jsjson.JValue) -> String
 
 pub fn of_sites(String, Array[String]) -> Bool
 
+pub fn open_tab_of(@jsjson.JValue) -> (String, OpenTabMeta)?
+
 pub fn parse(String) -> @jsjson.JValue raise Thrown
 
 pub fn parse_active_port(String) -> (Int32, String)?
@@ -522,7 +524,8 @@ pub(all) struct FarviewRelease {
 pub struct FarviewScreen {
   id : String
   mut changed : () -> Unit
-  mut opened : (String) -> Unit
+  mut opened : (String, OpenTabMeta) -> Unit
+  mut closed_by_page : () -> Unit
   // private fields
 }
 pub fn FarviewScreen::address(Self) -> String
@@ -566,7 +569,7 @@ pub async fn FarviewTabs::cookies(Self, String) -> Array[@jsjson.JValue]
 pub async fn FarviewTabs::endpoint(Self, String) -> BrowserStatus
 pub async fn FarviewTabs::form(Self, String, id? : String) -> SignInForm
 pub fn FarviewTabs::new(FarviewOptions) -> Self
-pub async fn FarviewTabs::open(Self, String, String) -> FarviewTab
+pub async fn FarviewTabs::open(Self, String, String, meta? : OpenTabMeta) -> FarviewTab
 pub async fn FarviewTabs::passkeys(Self, String) -> Array[Passkey]
 pub async fn FarviewTabs::put_cookies(Self, String, Array[@jsjson.JValue]) -> Unit
 pub async fn FarviewTabs::put_passkeys(Self, String, Array[Passkey]) -> Unit
@@ -661,6 +664,7 @@ pub(all) struct HostFile {
   port : Int32
   agent : Int32
   frame : Int32
+  closed : Bool
 }
 pub fn HostFile::to_j(Self) -> @jsjson.JValue
 
@@ -706,6 +710,13 @@ pub(all) struct MachineProcs {
   browsers_soon : async () -> Array[String]
   has_display : () -> Bool
 }
+
+pub(all) struct OpenTabMeta {
+  window : String
+  opener : String
+  origin : String
+}
+pub fn OpenTabMeta::to_j(Self) -> @jsjson.JValue
 
 pub struct Owners {
   // private fields

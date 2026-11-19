@@ -213,7 +213,8 @@ pub fn farview_pane_node(
     )
     |> ignore
   }
-  let close_current_tab = fn() {
+  // (`quiet`: the page closed it, which the station closes too: its answer not said)
+  let close_tab_of = fn(quiet : Bool) {
     let scope = "fv-close/" + station
     let sub = @sfbase.hold(src, scope, "screens", { "station": Json::string(station) })
     @sfbase.press_wait(
@@ -225,7 +226,11 @@ pub fn farview_pane_node(
         (src.call)(
           "screen.close",
           Json::object({ "station": Json::string(station), "screen": Json::string(screen) }),
-          failed_said(@sf.t("web-pages.screen.closeTabWhat")),
+          if quiet {
+            @sfbase.answer_unread
+          } else {
+            failed_said(@sf.t("web-pages.screen.closeTabWhat"))
+          },
         )
         let rest = all_tabs.filter(fn(sc) { text(Some(sc), "id") != screen })
         if rest.is_empty() {
@@ -241,17 +246,86 @@ pub fn farview_pane_node(
     )
     |> ignore
   }
+  let close_current_tab = fn() { close_tab_of(false) }
+  // (a tab the page asked for (a link to a new window, window.open, an OAuth popup): shown as it comes among the
+  // station's screens, the first of this chat's tabs there that was not before (one already there on the page asked
+  // for, or on none yet, is the one it opened))
+  let follow_opened = fn(url : String) {
+    let scope = "fv-opened/" + station
+    let sub = @sfbase.hold(src, scope, "screens", { "station": Json::string(station) })
+    let base = farview_tabs_of(screen)
+    let before : Ref[Array[String]?] = Ref(None)
+    let ours = fn(sval : Json?) {
+      items(sval, "screens").filter(fn(sc) {
+        let id = text(Some(sc), "id")
+        id != screen && (id == base || id.has_prefix(base + "_"))
+      })
+    }
+    let fresh = fn(sval : Json?) {
+      let had = before.val.unwrap_or([])
+      ours(sval).iter().find_first(fn(sc) { !had.contains(text(Some(sc), "id")) })
+    }
+    @sfbase.press_wait(
+      fn() {
+        let st = sub.get()
+        if !@sfbase.opens_answered(st) {
+          return false
+        }
+        if before.val is None {
+          before.val = Some(
+            ours(st.value)
+            .filter(fn(sc) {
+              let u = text(Some(sc), "url")
+              u != url && u != "" && u != "about:blank"
+            })
+            .map(fn(sc) { text(Some(sc), "id") }),
+          )
+        }
+        fresh(st.value) is Some(_)
+      },
+      fn() {
+        let sval = @signals.untracked(fn() { sub.get().value })
+        @sfbase.let_go(src, scope)
+        match fresh(sval) {
+          Some(sc) =>
+            switch_to(@sfbase.Page::Screen({ station, screen: text(Some(sc), "id"), title: text(Some(sc), "title"), until_gone: false }))
+          None => ()
+        }
+      },
+      let_go=fn() { @sfbase.let_go(src, scope) },
+      most=farview_opened_wait_ms,
+      holds=false,
+    )
+    |> ignore
+  }
   v.box(made_for=loc, fn(p) {
     // (as tall as what holds it gives it, never what the page in it comes to: its viewport is that height)
     p.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
     let tab = farview_tab(src, station, screen)
     tab.shown = 1
     tab.open(src, station, screen)
+    let find = FarviewFind::new()
     p.owns(fn() {
       tab.shown = 0
+      tab.stage.find_clear()
       tab.close(src)
     })
     |> ignore
+    // (a file input's picker the page asks for: the device's, once an ask; what it downloads kept on the device; a tab
+    // it asks for shown as it comes, one it closes closed, back to another of the chat's)
+    let picked = Ref(0)
+    p.reacts(fn() { tab.stage.file_pick() }, fn(ask) {
+      match ask {
+        Some((n, wire_id, accept, multiple)) if n != picked.val => {
+          picked.val = n
+          farview_pick(tab.stage, wire_id, accept, multiple)
+        }
+        _ => ()
+      }
+    })
+    p.reacts(fn() { tab.stage.downloads_seq() }, fn(_) { farview_keep_downloads(tab.stage) })
+    p.reacts(fn() { tab.stage.opens_seq() }, at_start=false, fn(o) { follow_opened(o.1) })
+    p.reacts(fn() { tab.stage.closed_by_page() }, at_start=false, fn(_) { close_tab_of(true) })
     // (思源黑体 given to the page as it comes)
     p.reacts(fn() { @sfbase.page_faces().length() }, fn(_) { @sfbase.page_faces().each(fn(f) { tab.stage.add_font(f) }) })
     let address = @ui.Field::new()
@@ -282,6 +356,30 @@ pub fn farview_pane_node(
       close_current_tab()
       true
     }, can=fn() { !in_remote })
+    .on_action("farview.find", fn(_) {
+      find.show(tab.stage)
+      true
+    })
+    .on_action("farview.find_next", fn(_) {
+      find.step(tab.stage, 1)
+      true
+    })
+    .on_action("farview.find_prev", fn(_) {
+      find.step(tab.stage, -1)
+      true
+    })
+    .on_action("farview.zoom.in", fn(_) {
+      tab.stage.zoom_in()
+      true
+    })
+    .on_action("farview.zoom.out", fn(_) {
+      tab.stage.zoom_out()
+      true
+    })
+    .on_action("farview.zoom.reset", fn(_) {
+      tab.stage.zoom_reset()
+      true
+    })
     |> ignore
     let open_control = fn(from : @sf.Anchor) {
       let scope = "fv-menu/" + station
@@ -342,6 +440,48 @@ pub fn farview_pane_node(
                     icon=fn() { "web" },
                     note=fn() { bnote },
                     end=if cur { "check" } else { "" },
+                  )
+                }
+              })
+              // (the page's own: words found on it, shown bigger or smaller, back to as laid out)
+              @sf.panel_group_node(sheet, fn() { "" }, fn(g) {
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("web-pages.farview.find") },
+                  fn() {
+                    done()
+                    find.show(tab.stage)
+                  },
+                  icon=fn() { "search" },
+                )
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("desktop.menu.zoomIn") },
+                  fn() {
+                    done()
+                    tab.stage.zoom_in()
+                  },
+                  icon=fn() { "plus" },
+                )
+                @sf.panel_row_node(
+                  g,
+                  fn() { @sf.t("desktop.menu.zoomOut") },
+                  fn() {
+                    done()
+                    tab.stage.zoom_out()
+                  },
+                  icon=fn() { "minus" },
+                )
+                if @signals.untracked(fn() { farview_zoomed(tab.stage) }) {
+                  let now = farview_zoom_said(@signals.untracked(fn() { tab.stage.zoom() }))
+                  @sf.panel_row_node(
+                    g,
+                    fn() { @sf.t("web-pages.farview.zoomReset", args=[("zoom", now)]) },
+                    fn() {
+                      done()
+                      tab.stage.zoom_reset()
+                    },
+                    icon=fn() { "text-size" },
                   )
                 }
               })
@@ -513,6 +653,7 @@ pub fn farview_pane_node(
           _ => None
         }
         farview_bar_node(c, tab.stage, address, open_control, pads?=bar_pads, window?, tips?)
+        farview_find_node(c, tab.stage, find, tips?)
         c.show(fn() { tab.stage.agent() }, fn(at) {
           // (a notice in the bar, a capsule inset from its sides and from the page under it: never edge to edge with
           // the page, whose ground is the page's own; round as 接管 is, the two concentric)
@@ -556,7 +697,12 @@ pub fn farview_pane_node(
       })
       // (the page's viewport: as tall as the tab is given less what is over it, as tall as it is drawn; the window's
       // till the tab is first laid out)
-      @stage.stage_node(col, tab.stage, height=Some(fn() { (room.height().unwrap_or(col.window().1) - room.tall(chrome)).max(0.0) }))
+      @stage.stage_node(
+        col,
+        tab.stage,
+        height=Some(fn() { (room.height().unwrap_or(col.window().1) - room.tall(chrome)).max(0.0) }),
+        on_menu=Some(fn(hit) { farview_menu(tab.stage, hit, fn() { find.show(tab.stage) }) }),
+      )
       |> ignore
     })
     .grow(Is(1.0))
@@ -620,6 +766,8 @@ fn farview_bar_node(
       least=0.0,
     )
     |> ignore
+    // (how big the page is shown, while it is not as laid out: pressed, as laid out again)
+    farview_zoom_node(bar, stage, tips?)
     let more_btn = Ref(bar)
     if window is Some(handed) {
       @sf.icon_button_node(bar, "external", fn() { @sf.t("web-pages.chat.openInWindow") }, handed, tips?, linked?) |> ignore

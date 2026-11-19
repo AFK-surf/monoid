@@ -8,7 +8,11 @@
 //   from the host: {"changed":seq}  the picture changed (asked for then: nothing is polled)
 //                  {"page":{url,title}} {"size":{…}} {"taken":"agent"|"person"}
 //                  {"copied":text}  what a person's copy or cut on that view took
-//                  {"openTab":url}  the page asked for a new tab (heard on the watch's connection alone)
+//                  {"openTab":url}  the page asked for a new tab (heard on the watch's connection alone); a window
+//                                   with a handle (window.open, an OAuth popup) says its own id as `window`, this tab's
+//                                   as `opener` and the opener's origin as `origin` (the new tab's FV_TAB_ID,
+//                                   FV_OPENER_ID and FV_OPENER_ORIGIN: the two tabs talk through the profile)
+//                  {"closeTab":true}  the page closed its tab (window.close() in a window a page opened)
 
 ///|
 /// The viewport a tab is laid out at with no view saying one (a desktop's window): width, height, scale.
@@ -300,6 +304,38 @@ pub fn size_for(o : ViewOptions) -> (Double, Double, Double) {
 }
 
 ///|
+/// What a page's new tab is to the tab that asked for it: the new window's id, the asking tab's, and its origin (""
+/// each: a tab of its own, no handle to it).
+pub(all) struct OpenTabMeta {
+  window : String
+  opener : String
+  origin : String
+}
+
+///|
+pub fn OpenTabMeta::to_j(self : OpenTabMeta) -> J {
+  let out = []
+  for kv in [("window", self.window), ("opener", self.opener), ("origin", self.origin)] {
+    if kv.1 != "" {
+      out.push((kv.0, js(kv.1)))
+    }
+  }
+  jo(out)
+}
+
+///|
+/// The new tab an `openTab` line asks for: its address and what links it to the tab that asked (None: no such line).
+pub fn open_tab_of(m : J) -> (String, OpenTabMeta)? {
+  let str_of = (k : String) => match at(Some(m), k) {
+    Some(Str(u)) => @jsjson.text(u)
+    _ => ""
+  }
+  let url = str_of("openTab")
+  guard url != "" else { return None }
+  Some((url, { window: str_of("window"), opener: str_of("opener"), origin: str_of("origin") }))
+}
+
+///|
 /// What a page of a Farview tab is at: its address and title.
 pub(all) struct FramePage {
   url : String
@@ -319,8 +355,10 @@ pub struct FarviewScreen {
   priv views : Array[FarviewView]
   priv mut closed : Bool
   mut changed : () -> Unit
-  /// Hears each new tab the page asks for, by its address.
-  mut opened : (String) -> Unit
+  /// Hears each new tab the page asks for, by its address and what links it to this tab.
+  mut opened : (String, OpenTabMeta) -> Unit
+  /// Hears the page close its tab (window.close() in a window a page opened).
+  mut closed_by_page : () -> Unit
 }
 
 ///|
@@ -338,7 +376,8 @@ pub fn FarviewScreen::new(session : String, port : Int, n : Int, net : FarviewNe
     views: [],
     closed: false,
     changed: () => (),
-    opened: _ => (),
+    opened: (_, _) => (),
+    closed_by_page: () => (),
   }
 }
 
@@ -349,18 +388,26 @@ pub fn FarviewScreen::watch(self : FarviewScreen) -> Unit {
     return
   }
   let link = FrameLink::new(self.net, self.port)
-  link.heard = m => {
-    self.heard(m)
-    match at(Some(m), "openTab") {
-      Some(Str(u)) if u.length() > 0 => (self.opened)(@jsjson.text(u))
-      _ => ()
-    }
-  }
+  link.heard = m => self.watch_heard(m)
   link.ended = () => match self.watch_ {
     Some(w) if physical_equal(w, link) => self.watch_ = None
     _ => ()
   }
   self.watch_ = Some(link)
+}
+
+///|
+/// A line the watch's connection heard: what every connection hears, and the page's asks of whoever holds its tab (a
+/// new tab, its own closed), said on every connection and taken on this one alone.
+fn FarviewScreen::watch_heard(self : FarviewScreen, m : J) -> Unit {
+  self.heard(m)
+  match open_tab_of(m) {
+    Some((url, meta)) => (self.opened)(url, meta)
+    None => ()
+  }
+  if at(Some(m), "closeTab") is Some(Bool(true)) {
+    (self.closed_by_page)()
+  }
 }
 
 ///|
