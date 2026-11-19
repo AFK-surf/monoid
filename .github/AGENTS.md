@@ -19,8 +19,10 @@
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 65), JOB_END written by the
-  job's first step, less its 5 s of setting up. The units' stores of GitHub's images are keyed by the
-  image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
+  job's first step, less its 5 s of setting up. The units' stores of GitHub's Linux images are keyed by
+  their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the libc headers' packages), its Mac's
+  by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
+  of one clang and libc, each its own store, left a push's image's units hours behind main's.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
   (any `ci-1` runner; main's and a branch's Windows reader after it in `natives-win-reader`, one concurrency group there,

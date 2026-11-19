@@ -1088,9 +1088,17 @@ jobs:
     env:
       MBC_STORE: ${{ github.workspace }}/libs/sf-ui/_build/native/release/mbc-store
     steps:
-      - name: The runner's image
+      # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
+      - name: The runner's compiler
         id: img
-        run: echo "img=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({ [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version || true; dpkg-query -W -f='${Package}=${Version}\n' libc6-dev linux-libc-dev 2>/dev/null || true; } | sha256sum | cut -c1-12)"
+          fi
+          echo "img=$img" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
       - uses: actions/cache/restore@v4
