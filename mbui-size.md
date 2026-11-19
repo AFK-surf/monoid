@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.26 | 119.75 |
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 2.64 | 3.54 | 14.46 | 36.69 | 55.71 | 32.12 | 64.97 | 97.76 | 124.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 | [01ea77285](https://github.com/AFK-surf/monoid/commit/01ea77285e1d9e05a83e8acee89ff61d921ed36e) feat: prompt to upgrade builds older than 7 days ( | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 2.61 | 3.51 | 14.35 | 36.45 | 55.3 | 31.93 | 64.55 | 97.26 | 116.05 |
-| [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 2.61 | 3.51 | 14.35 | 36.44 | 55.29 | 31.92 | 64.53 | 97.14 | 121.21 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [631072c58](https://github.com/AFK-surf/monoid/commit/631072c58f4f3a3890e13da79f32b85dbad160b4) feat(screens): carry clipboard privacy marks, dete | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
 | [26ecdf479](https://github.com/AFK-surf/monoid/commit/26ecdf4790767a39cad0835b052895bbaea3caef) fix(test): take the timing out of two flaky checks | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.17 |
 | [a091b7cd2](https://github.com/AFK-surf/monoid/commit/a091b7cd2b67006e3dbeaac4aaa4a0f672f7af87) fix(station): end a front whose endpoint stops acc | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 53.95 |
 | [9c47eaad7](https://github.com/AFK-surf/monoid/commit/9c47eaad795664a278331852314d77afdcdcc9a8) fix(scripts): take sameBlocks' runs in its order a | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a032f3f2e](https://github.com/AFK-surf/monoid/commit/a032f3f2e6ba5d7b16157d3d61a72cd01eaf3c5b) fix(mbui): keep glyph phase across whole-pixel shi | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
 | [01ea77285](https://github.com/AFK-surf/monoid/commit/01ea77285e1d9e05a83e8acee89ff61d921ed36e) feat: prompt to upgrade builds older than 7 days ( | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.22 |
 | [4bca0dd4c](https://github.com/AFK-surf/monoid/commit/4bca0dd4cbc38acc60fa1f8b66e437cd57468e18) fix(station/mb): add async host fs helpers and giv | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
-| [ce9309e5e](https://github.com/AFK-surf/monoid/commit/ce9309e5e70b2f36bf09404c6e43f36fb8d98f26) refactor(station/mb): eliminate remaining bare ign | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
