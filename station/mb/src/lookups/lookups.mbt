@@ -117,21 +117,8 @@ let people : Lookup = {
 }
 
 ///|
-fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
-fn exists(db : @sql.Db, kind : String, name : String) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]) is Some(_)
-}
-
-///|
 fn meta_version(db : @sql.Db, l : Lookup) -> Int? raise {
-  match first(db, "SELECT version FROM \{l.meta} WHERE id=1", []) {
+  match db.first("SELECT version FROM \{l.meta} WHERE id=1", []) {
     Some(r) =>
       match r.get("version") {
         Some(Number(v, ..)) => Some(v.to_int())
@@ -143,13 +130,13 @@ fn meta_version(db : @sql.Db, l : Lookup) -> Int? raise {
 
 ///|
 fn native(db : @sql.Db, l : Lookup) -> Bool raise {
-  exists(db, "index", l.native)
+  db.has_schema("index", l.native)
 }
 
 ///|
 /// The lookup's tables there, of this version; of another, an error.
 fn legacy(db : @sql.Db, l : Lookup) -> Bool raise {
-  if !exists(db, "table", l.meta) {
+  if !db.has_schema("table", l.meta) {
     return false
   }
   guard meta_version(db, l) == Some(version) else {
@@ -162,10 +149,10 @@ fn legacy(db : @sql.Db, l : Lookup) -> Bool raise {
 /// A lookup made before its cleanup trigger, of this version (one of another is left alone).
 fn needs_cleanup(db : @sql.Db, l : Lookup) -> Bool raise {
   guard l.cleanup is Some((trigger, _)) else { return false }
-  if !exists(db, "table", l.meta) ||
-    exists(db, "trigger", trigger) ||
-    !exists(db, "table", "threads") ||
-    !exists(db, "table", l.scopes) {
+  if !db.has_schema("table", l.meta) ||
+    db.has_schema("trigger", trigger) ||
+    !db.has_schema("table", "threads") ||
+    !db.has_schema("table", l.scopes) {
     return false
   }
   meta_version(db, l) == Some(version)
@@ -180,7 +167,7 @@ fn install(db : @sql.Db, l : Lookup) -> Unit raise {
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   if !native(db, l) && !legacy(db, l) {
-    if first(db, "SELECT 1 FROM \{l.source} LIMIT 1 OFFSET 63", []) is None {
+    if db.first("SELECT 1 FROM \{l.source} LIMIT 1 OFFSET 63", []) is None {
       db.exec(l.native_ddl)
     } else {
       db.exec(l.schema)
@@ -194,16 +181,10 @@ fn install(db : @sql.Db, l : Lookup) -> Unit raise {
 
 ///|
 fn scope_of(db : @sql.Db, l : Lookup, thread : Json) -> Map[String, Json]? raise {
-  first(
-    db,
+  db.first(
     "SELECT CAST(last_n AS TEXT) AS last_n,CAST(end_n AS TEXT) AS end_n,complete FROM \{l.scopes} WHERE thread=?",
     [thread],
   )
-}
-
-///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
 }
 
 ///|
@@ -228,10 +209,10 @@ fn step(db : @sql.Db, l : Lookup, thread : Int64, limit : Int) -> Bool raise {
   }
   if scope_of(db, l, t) is None {
     // (a request queued before its chat was deleted does not make the chat's scope again)
-    let chats = l.cleanup is None || exists(db, "table", "threads")
+    let chats = l.cleanup is None || db.has_schema("table", "threads")
     if chats &&
-      first(db, "SELECT 1 FROM threads WHERE id=?", [t]) is None &&
-      first(db, "SELECT 1 FROM \{l.source} WHERE thread=? LIMIT 1", [t]) is None {
+      db.first("SELECT 1 FROM threads WHERE id=?", [t]) is None &&
+      db.first("SELECT 1 FROM \{l.source} WHERE thread=? LIMIT 1", [t]) is None {
       db.exec("COMMIT")
       return true
     }
@@ -243,12 +224,12 @@ fn step(db : @sql.Db, l : Lookup, thread : Int64, limit : Int) -> Bool raise {
     )
   }
   guard scope_of(db, l, t) is Some(s) else { raise Failure("\{l.name} scope is missing") }
-  if get(s, "complete") is Number(1.0, ..) {
+  if @sql.row_val(s, "complete") is Number(1.0, ..) {
     db.exec("COMMIT")
     return true
   }
-  let last = get(s, "last_n")
-  let end = get(s, "end_n")
+  let last = @sql.row_val(s, "last_n")
+  let end = @sql.row_val(s, "end_n")
   let lim = Json::number(limit.to_double())
   let rows = if end is Null {
     []
@@ -264,11 +245,11 @@ fn step(db : @sql.Db, l : Lookup, thread : Int64, limit : Int) -> Bool raise {
     )
   }
   for row in rows {
-    ignore(db.run(l.put, [t, get(row, "n")]))
+    ignore(db.run(l.put, [t, @sql.row_val(row, "n")]))
   }
   let done = rows.length() < limit
   let reached = match rows.last() {
-    Some(r) => get(r, "n")
+    Some(r) => @sql.row_val(r, "n")
     None => last
   }
   ignore(

@@ -6,19 +6,6 @@
 let version : Int = 1
 
 ///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
 fn active(row : String) -> String {
   "(\{row}.state = 'running' AND \{row}.pgid IS NOT NULL)"
 }
@@ -63,26 +50,18 @@ pub fn schema() -> String {
 
 ///|
 fn installed(db : @sql.Db) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'process_job_meta'", []) is Some(_)
+  db.first("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'process_job_meta'", []) is Some(_)
 }
 
 ///|
 fn check(db : @sql.Db) -> Unit raise {
-  let v = match first(db, "SELECT version, complete FROM process_job_meta WHERE id = 1", []) {
-    Some(m) => get(m, "version")
+  let v = match db.first("SELECT version, complete FROM process_job_meta WHERE id = 1", []) {
+    Some(m) => @sql.row_val(m, "version")
     None => Json::null()
   }
   guard v is Number(n, ..) && n.to_int() == version else {
     let said = if v is Null { "missing" } else { v.stringify() }
     raise Failure("process job index version \{said} is incompatible with \{version}")
-  }
-}
-
-///|
-fn schema_version(db : @sql.Db) -> Json raise {
-  match first(db, "PRAGMA schema_version", []) {
-    Some(r) => get(r, "schema_version")
-    None => Json::null()
   }
 }
 
@@ -97,7 +76,7 @@ pub fn install(db : @sql.Db) -> Unit raise {
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   if !installed(db) {
     db.exec(schema())
-    ignore(db.run("UPDATE process_job_meta SET schema_version = ? WHERE id = 1", [schema_version(db)]))
+    ignore(db.run("UPDATE process_job_meta SET schema_version = ? WHERE id = 1", [db.schema_version()]))
   } else {
     check(db)
   }
@@ -112,27 +91,26 @@ pub fn step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   check(db)
-  guard first(
-      db,
+  guard db.first(
       "SELECT complete, CAST(cursor AS TEXT) AS cursor, CAST(end_rowid AS TEXT) AS end_rowid, schema_version FROM process_job_meta WHERE id = 1",
       [],
     )
     is Some(meta)
-  if get(meta, "complete") is Number(1.0, ..) {
+  if @sql.row_val(meta, "complete") is Number(1.0, ..) {
     db.exec("COMMIT")
     return true
   }
-  let schema = schema_version(db)
-  let (cursor, end) = if schema != get(meta, "schema_version") {
+  let schema = db.schema_version()
+  let (cursor, end) = if schema != @sql.row_val(meta, "schema_version") {
     (
       Json::null(),
-      match first(db, last_running, []) {
-        Some(r) => get(r, "position")
+      match db.first(last_running, []) {
+        Some(r) => @sql.row_val(r, "position")
         None => Json::null()
       },
     )
   } else {
-    (get(meta, "cursor"), get(meta, "end_rowid"))
+    (@sql.row_val(meta, "cursor"), @sql.row_val(meta, "end_rowid"))
   }
   let lim = Json::number(limit.to_double())
   let rows = if end is Null {
@@ -150,11 +128,11 @@ pub fn step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   }
   let put = see("CAST(? AS INTEGER)")
   for row in rows {
-    ignore(db.run(put, [get(row, "position")]))
+    ignore(db.run(put, [@sql.row_val(row, "position")]))
   }
   let done = rows.length() < limit
   let reached = match rows.last() {
-    Some(r) => get(r, "position")
+    Some(r) => @sql.row_val(r, "position")
     None => cursor
   }
   ignore(

@@ -45,48 +45,21 @@ let triggers : String = [
 ].join("\n")
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn first_row(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
-fn schema_version(db : @sql.Db) -> Json raise {
-  first_row(db, "PRAGMA schema_version", []).map(r => value(r, "schema_version")).unwrap_or(Json::null())
-}
-
-///|
-fn sql_of(db : @sql.Db, kind : String, name : String) -> String? raise {
-  first_row(db, "SELECT sql FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]).map(r => match
-    value(r, "sql") {
-    String(s) => s
-    _ => ""
-  })
-}
-
-///|
 fn current(db : @sql.Db) -> Bool raise {
   for name in ["page_letter_meta", "page_letter_scopes", "page_letter_rows", "page_letter_dirty", "page_letter_garbage"] {
-    if sql_of(db, "table", name) is None {
+    if db.sqlite_master_sql("table", name) is None {
       return false
     }
   }
-  if sql_of(db, "index", "page_letter_scope_epoch") is None {
+  if db.sqlite_master_sql("index", "page_letter_scope_epoch") is None {
     return false
   }
-  guard first_row(db, "SELECT version FROM page_letter_meta WHERE id=1", []) is Some(meta) else { return false }
-  guard value(meta, "version") is Number(n, ..) && n.to_int() == version else {
-    fail("page letter version \{value(meta, "version").stringify()} is incompatible")
+  guard db.first("SELECT version FROM page_letter_meta WHERE id=1", []) is Some(meta) else { return false }
+  guard @sql.row_val(meta, "version") is Number(n, ..) && n.to_int() == version else {
+    fail("page letter version \{@sql.row_val(meta, "version").stringify()} is incompatible")
   }
   for name in names {
-    guard sql_of(db, "trigger", name) is Some(sql) && sql.contains(mark) else { return false }
+    guard db.sqlite_master_sql("trigger", name) is Some(sql) && sql.contains(mark) else { return false }
   }
   true
 }
@@ -106,7 +79,7 @@ pub fn Letters::new(db : @sql.Db) -> Letters {
 ///|
 fn Letters::install(self : Letters) -> Bool raise {
   let db = self.db
-  let initial = schema_version(db)
+  let initial = db.schema_version()
   if self.checked == Some(initial) {
     return true
   }
@@ -120,9 +93,9 @@ fn Letters::install(self : Letters) -> Bool raise {
     db.exec(
       "CREATE TABLE IF NOT EXISTS page_letter_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL, epoch INTEGER NOT NULL) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS page_letter_scopes(thread INTEGER PRIMARY KEY,token TEXT NOT NULL,epoch INTEGER NOT NULL, cursor_n INTEGER,end_n INTEGER,complete INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS page_letter_scope_epoch ON page_letter_scopes(epoch,thread); CREATE TABLE IF NOT EXISTS page_letter_rows(thread INTEGER NOT NULL,token TEXT NOT NULL,n INTEGER NOT NULL, PRIMARY KEY(thread,token,n)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS page_letter_dirty(thread INTEGER NOT NULL,token TEXT NOT NULL,n INTEGER NOT NULL, PRIMARY KEY(thread,token,n)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS page_letter_garbage(thread INTEGER NOT NULL,token TEXT NOT NULL, PRIMARY KEY(thread,token)) WITHOUT ROWID;",
     )
-    if first_row(db, "SELECT version FROM page_letter_meta WHERE id=1", []) is Some(m) &&
-      !(value(m, "version") is Number(n, ..) && n.to_int() == version) {
-      fail("page letter version \{value(m, "version").stringify()} is incompatible")
+    if db.first("SELECT version FROM page_letter_meta WHERE id=1", []) is Some(m) &&
+      !(@sql.row_val(m, "version") is Number(n, ..) && n.to_int() == version) {
+      fail("page letter version \{@sql.row_val(m, "version").stringify()} is incompatible")
     }
     ignore(
       db.run("INSERT INTO page_letter_meta VALUES(1,?,1) ON CONFLICT(id) DO UPDATE SET epoch=epoch+1", [
@@ -135,7 +108,7 @@ fn Letters::install(self : Letters) -> Bool raise {
     db.exec(triggers)
   }
   db.exec("COMMIT")
-  self.checked = Some(schema_version(db))
+  self.checked = Some(db.schema_version())
   true
 }
 
@@ -146,8 +119,7 @@ fn dirty_overflow(db : @sql.Db, thread : Json, token : Json) -> Bool raise {
 
 ///|
 fn scope_of(db : @sql.Db, thread : Json) -> Map[String, Json]? raise {
-  first_row(
-    db,
+  db.first(
     "SELECT token,epoch, CAST(cursor_n AS TEXT) AS cursor_n,CAST(end_n AS TEXT) AS end_n,complete FROM page_letter_scopes WHERE thread=?",
     [thread],
   )
@@ -165,14 +137,14 @@ pub fn Letters::step(self : Letters, thread : Int64, limit? : Int = 64) -> Bool 
   let t = Json::number(thread.to_double())
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
-  let epoch = first_row(db, "SELECT epoch FROM page_letter_meta WHERE id=1", []).map(r => value(r, "epoch")).unwrap_or(
+  let epoch = db.first("SELECT epoch FROM page_letter_meta WHERE id=1", []).map(r => @sql.row_val(r, "epoch")).unwrap_or(
     Json::null(),
   )
   let s = match scope_of(db, t) {
-    Some(s) if value(s, "epoch") == epoch => s
+    Some(s) if @sql.row_val(s, "epoch") == epoch => s
     old => {
       if old is Some(o) {
-        let token = value(o, "token")
+        let token = @sql.row_val(o, "token")
         ignore(
           db.run(
             "INSERT INTO page_letter_garbage(thread,token) SELECT ?,? WHERE NOT EXISTS (SELECT 1 FROM page_letter_garbage WHERE thread=? AND token=?)",
@@ -191,29 +163,29 @@ pub fn Letters::step(self : Letters, thread : Int64, limit? : Int = 64) -> Bool 
       s
     }
   }
-  let token = value(s, "token")
+  let token = @sql.row_val(s, "token")
   let lim = Json::number(limit.to_double())
-  if value(s, "complete") is Number(0.0, ..) {
-    let indexed = sql_of(db, "index", "entries_letters") is Some(_)
-    let cursor = value(s, "cursor_n")
+  if @sql.row_val(s, "complete") is Number(0.0, ..) {
+    let indexed = db.sqlite_master_sql("index", "entries_letters") is Some(_)
+    let cursor = @sql.row_val(s, "cursor_n")
     let sql = "SELECT CAST(e.n AS TEXT) AS n,e.kind,e.letter FROM entries e \{if indexed { "INDEXED BY entries_letters" } else { "" }} WHERE e.thread=?1 AND e.n<=CAST(?2 AS INTEGER) \{if cursor is Null { "" } else { "AND e.n>CAST(?3 AS INTEGER)" }} \{if indexed { "AND e.letter IS NOT NULL" } else { "" }} ORDER BY e.n LIMIT ?\{if cursor is Null { 3 } else { 4 }}"
     let rows = if cursor is Null {
-      db.all(sql, [t, value(s, "end_n"), lim])
+      db.all(sql, [t, @sql.row_val(s, "end_n"), lim])
     } else {
-      db.all(sql, [t, value(s, "end_n"), cursor, lim])
+      db.all(sql, [t, @sql.row_val(s, "end_n"), cursor, lim])
     }
     for row in rows {
-      if value(row, "kind") == Json::string("message") && !(value(row, "letter") is Null) {
+      if @sql.row_val(row, "kind") == Json::string("message") && !(@sql.row_val(row, "letter") is Null) {
         ignore(
           db.run(
             "INSERT INTO page_letter_rows(thread,token,n) VALUES(?,?,CAST(? AS INTEGER)) ON CONFLICT(thread,token,n) DO NOTHING",
-            [t, token, value(row, "n")],
+            [t, token, @sql.row_val(row, "n")],
           ),
         )
       }
     }
     let reached = match rows.last() {
-      Some(r) => value(r, "n")
+      Some(r) => @sql.row_val(r, "n")
       None => cursor
     }
     ignore(
@@ -232,7 +204,7 @@ pub fn Letters::step(self : Letters, thread : Int64, limit? : Int = 64) -> Bool 
     t, token, lim,
   ])
   for key in keys {
-    let n = value(key, "n")
+    let n = @sql.row_val(key, "n")
     ignore(db.run("DELETE FROM page_letter_rows WHERE thread=? AND token=? AND n=CAST(? AS INTEGER)", [t, token, n]))
     ignore(
       db.run(
@@ -259,9 +231,9 @@ pub fn Letters::gc_step(self : Letters, limit? : Int = 64) -> Bool raise {
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   let older = "FROM page_letter_scopes WHERE epoch<(SELECT epoch FROM page_letter_meta WHERE id=1)"
-  if first_row(db, "SELECT CAST(thread AS TEXT) AS thread,token \{older} ORDER BY page_letter_scopes.epoch,page_letter_scopes.thread LIMIT 1", [])
+  if db.first("SELECT CAST(thread AS TEXT) AS thread,token \{older} ORDER BY page_letter_scopes.epoch,page_letter_scopes.thread LIMIT 1", [])
     is Some(stale) {
-    let key = [value(stale, "thread"), value(stale, "token")]
+    let key = [@sql.row_val(stale, "thread"), @sql.row_val(stale, "token")]
     ignore(
       db.run(
         "INSERT INTO page_letter_garbage(thread,token) SELECT CAST(?1 AS INTEGER),?2 WHERE NOT EXISTS (SELECT 1 FROM page_letter_garbage WHERE thread=CAST(?1 AS INTEGER) AND token=?2)",
@@ -270,12 +242,12 @@ pub fn Letters::gc_step(self : Letters, limit? : Int = 64) -> Bool raise {
     )
     ignore(db.run("DELETE FROM page_letter_scopes WHERE thread=CAST(? AS INTEGER) AND token=?", key))
   }
-  guard first_row(db, "SELECT CAST(thread AS TEXT) AS thread,token FROM page_letter_garbage ORDER BY page_letter_garbage.thread,page_letter_garbage.token LIMIT 1", [])
+  guard db.first("SELECT CAST(thread AS TEXT) AS thread,token FROM page_letter_garbage ORDER BY page_letter_garbage.thread,page_letter_garbage.token LIMIT 1", [])
     is Some(garbage) else {
     db.exec("COMMIT")
     return true
   }
-  let key = [value(garbage, "thread"), value(garbage, "token")]
+  let key = [@sql.row_val(garbage, "thread"), @sql.row_val(garbage, "token")]
   let remove = (table : String, count : Int) => db.run(
     "DELETE FROM \{table} WHERE thread=CAST(?1 AS INTEGER) AND token=?2 AND n IN (SELECT n FROM \{table} WHERE thread=CAST(?1 AS INTEGER) AND token=?2 ORDER BY n LIMIT ?3)",
     key + [Json::number(count.to_double())],
@@ -285,8 +257,8 @@ pub fn Letters::gc_step(self : Letters, limit? : Int = 64) -> Bool raise {
   if rows + dirty < limit {
     ignore(db.run("DELETE FROM page_letter_garbage WHERE thread=CAST(? AS INTEGER) AND token=?", key))
   }
-  let remaining = first_row(db, "SELECT 1 FROM page_letter_garbage LIMIT 1", []) is Some(_) ||
-    first_row(db, "SELECT 1 \{older} ORDER BY epoch,thread LIMIT 1", []) is Some(_)
+  let remaining = db.first("SELECT 1 FROM page_letter_garbage LIMIT 1", []) is Some(_) ||
+    db.first("SELECT 1 \{older} ORDER BY epoch,thread LIMIT 1", []) is Some(_)
   db.exec("COMMIT")
   !remaining
 }
@@ -299,11 +271,11 @@ pub fn ready_token(db : @sql.Db, thread : Json) -> String? raise {
     return None
   }
   guard scope_of(db, thread) is Some(s) else { return None }
-  let epoch = first_row(db, "SELECT epoch FROM page_letter_meta WHERE id=1", []).map(m => value(m, "epoch")).unwrap_or(Json::null())
-  guard value(s, "epoch") == epoch && value(s, "complete") is Number(1.0, ..) && value(s, "token") is String(token) else {
+  let epoch = db.first("SELECT epoch FROM page_letter_meta WHERE id=1", []).map(m => @sql.row_val(m, "epoch")).unwrap_or(Json::null())
+  guard @sql.row_val(s, "epoch") == epoch && @sql.row_val(s, "complete") is Number(1.0, ..) && @sql.row_val(s, "token") is String(token) else {
     return None
   }
-  if dirty_overflow(db, thread, value(s, "token")) {
+  if dirty_overflow(db, thread, @sql.row_val(s, "token")) {
     return None
   }
   Some(token)

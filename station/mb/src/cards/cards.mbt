@@ -6,18 +6,10 @@
 let version : Int = 1
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  match row.get(name) {
-    Some(j) => j
-    None => Json::null()
-  }
-}
-
-///|
 fn check(db : @sql.Db) -> Unit raise {
   match db.all("SELECT version FROM card_post_meta WHERE id=1", []) {
     [m, ..] if m.get("version") is Some(Number(v, ..)) && v.to_int() == version => ()
-    [m, ..] => fail("card post index version \{value(m, "version").stringify()} is incompatible with \{version}")
+    [m, ..] => fail("card post index version \{@sql.row_val(m, "version").stringify()} is incompatible with \{version}")
     _ => fail("card post index version missing is incompatible with \{version}")
   }
 }
@@ -48,9 +40,9 @@ fn phase(scope : Map[String, Json]?) -> Int {
 ///|
 fn same(a : Map[String, Json]?, b : Map[String, Json]) -> Bool {
   a is Some(a) &&
-  value(a, "last_n") == value(b, "last_n") &&
-  value(a, "end_n") == value(b, "end_n") &&
-  value(a, "phase") == value(b, "phase")
+  @sql.row_val(a, "last_n") == @sql.row_val(b, "last_n") &&
+  @sql.row_val(a, "end_n") == @sql.row_val(b, "end_n") &&
+  @sql.row_val(a, "phase") == @sql.row_val(b, "phase")
 }
 
 ///|
@@ -120,8 +112,8 @@ pub fn step(db : @sql.Db, thread : Int64, limit? : Int = 128) -> Bool raise {
   } else {
     Some("options")
   }
-  let last = value(before, "last_n")
-  let end = value(before, "end_n")
+  let last = @sql.row_val(before, "last_n")
+  let end = @sql.row_val(before, "end_n")
   let lim = Json::number(limit.to_double())
   let rows = if last is Null {
     db.all(positions_query(column, false), [t, end, lim])
@@ -137,7 +129,7 @@ pub fn step(db : @sql.Db, thread : Int64, limit? : Int = 128) -> Bool raise {
   }
   let add = "INSERT INTO card_posts(thread,n) SELECT e.thread,e.n FROM entries e WHERE e.thread=?1 AND e.n=CAST(?2 AS INTEGER) AND e.kind='message' AND (e.card IS NOT NULL OR e.options IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM card_posts p WHERE p.thread=e.thread AND p.n=e.n)"
   for row in rows {
-    ignore(db.run(add, [t, value(row, "n")]))
+    ignore(db.run(add, [t, @sql.row_val(row, "n")]))
   }
   let end_of_phase = rows.length() < limit
   let next = if !end_of_phase {
@@ -151,7 +143,7 @@ pub fn step(db : @sql.Db, thread : Int64, limit? : Int = 128) -> Bool raise {
     Json::null()
   } else {
     match rows.last() {
-      Some(r) => value(r, "n")
+      Some(r) => @sql.row_val(r, "n")
       None => Json::null()
     }
   }

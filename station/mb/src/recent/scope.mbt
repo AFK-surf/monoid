@@ -39,7 +39,7 @@ fn session_threads(
           [s, after, lim],
         )
       }
-      let threads = found.map(r => get(r, "tid"))
+      let threads = found.map(r => @sql.row_val(r, "tid"))
       if found.length() == limit {
         {
           threads,
@@ -70,7 +70,7 @@ fn session_threads(
           [s, after, lim],
         )
       }
-      let members = found.map(r => get(r, "tid"))
+      let members = found.map(r => @sql.row_val(r, "tid"))
       let threads = []
       for m in members {
         if exists(
@@ -87,7 +87,7 @@ fn session_threads(
           members,
           visited: found.length(),
           phase: "members",
-          after: get(found[found.length() - 1], "r"),
+          after: @sql.row_val(found[found.length() - 1], "r"),
         }
       } else {
         {
@@ -115,12 +115,11 @@ fn workspace_sessions(
 ) -> (Array[Map[String, Json]], Json, Json, Bool) raise {
   let connect = if connect is Null {
     match
-      first(
-        db,
+      db.first(
         "SELECT connect FROM sessions INDEXED BY sessions_by_connect ORDER BY connect LIMIT 1",
         [],
       ) {
-      Some(r) => get(r, "connect")
+      Some(r) => @sql.row_val(r, "connect")
       None => Json::null()
     }
   } else {
@@ -141,15 +140,14 @@ fn workspace_sessions(
     )
   }
   if sessions.length() == limit {
-    return (sessions, connect, get(sessions[sessions.length() - 1], "r"), false)
+    return (sessions, connect, @sql.row_val(sessions[sessions.length() - 1], "r"), false)
   }
   let next = match
-    first(
-      db,
+    db.first(
       "SELECT connect FROM sessions INDEXED BY sessions_by_connect WHERE connect > ? ORDER BY connect LIMIT 1",
       [connect],
     ) {
-    Some(r) => get(r, "connect")
+    Some(r) => @sql.row_val(r, "connect")
     None => Json::null()
   }
   (sessions, next, Json::null(), next is Null)
@@ -312,14 +310,14 @@ fn workspace_total_ready(db : @sql.Db, ws : String) -> Bool raise {
     return false
   }
   let w = [text(ws)]
-  guard first(
-      db, "SELECT complete, scan_done, scan_session FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
+  guard db.first(
+      "SELECT complete, scan_done, scan_session FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
       w,
     )
     is Some(meta) else {
     return false
   }
-  if int(meta, "complete") != 1 ||
+  if @sql.row_int(meta, "complete") != 1 ||
     exists(
       db, "SELECT 1 FROM recent_scope_session_dirty WHERE kind = 1 AND ws = ? LIMIT 1",
       w,
@@ -330,12 +328,12 @@ fn workspace_total_ready(db : @sql.Db, ws : String) -> Bool raise {
     exists(db, "SELECT 1 FROM recent_scope_order_dirty WHERE ws = ? LIMIT 1", w) {
     return false
   }
-  let scanned = int(meta, "scan_done") == 1 && get(meta, "scan_session") is Null
+  let scanned = @sql.row_int(meta, "scan_done") == 1 && @sql.row_val(meta, "scan_session") is Null
   let visibility = one(db, visibility_pending, w)
-  if int(visibility, "affects") == 1 {
+  if @sql.row_int(visibility, "affects") == 1 {
     return false
   }
-  if int(visibility, "n") > 64 {
+  if @sql.row_int(visibility, "n") > 64 {
     if !scanned ||
       exists(
         db, "SELECT 1 FROM recent_scope_visibility_dirty WHERE home_ws = ? LIMIT 1",
@@ -345,22 +343,22 @@ fn workspace_total_ready(db : @sql.Db, ws : String) -> Bool raise {
     }
     for sql in [visibility_rows_small, visibility_members_small] {
       let small = one(db, sql, w)
-      if int(small, "n") > 64 || int(small, "affects") == 1 {
+      if @sql.row_int(small, "n") > 64 || @sql.row_int(small, "affects") == 1 {
         return false
       }
     }
-  } else if int(visibility, "ambiguous") == 1 {
-    if !scanned || int(one(db, visibility_ambiguous, w), "affects") == 1 {
+  } else if @sql.row_int(visibility, "ambiguous") == 1 {
+    if !scanned || @sql.row_int(one(db, visibility_ambiguous, w), "affects") == 1 {
       return false
     }
   }
   let pending = one(db, order_pending, w)
-  if int(pending, "affects") == 1 {
+  if @sql.row_int(pending, "affects") == 1 {
     return false
   }
-  if int(pending, "n") > 64 {
+  if @sql.row_int(pending, "n") > 64 {
     let small = one(db, order_small, w)
-    if int(small, "n") > 64 || int(small, "affects") == 1 {
+    if @sql.row_int(small, "n") > 64 || @sql.row_int(small, "affects") == 1 {
       return false
     }
   }
@@ -379,24 +377,23 @@ fn workspace_ready(db : @sql.Db, ws : String) -> Bool raise {
 /// session's chats, then the next session, by connection, or by rowid once connections keep arriving.
 fn scan_workspace(db : @sql.Db, ws : String, limit : Int) -> Int raise {
   let w = text(ws)
-  write(db, () => {
-    guard first(
-        db,
+  db.write(() => {
+    guard db.first(
         "SELECT scan_connect, CAST(scan_after AS TEXT) AS scan_after, scan_done, scan_session, scan_phase, CAST(scan_thread_after AS TEXT) AS scan_thread_after, CAST(scan_high AS TEXT) AS scan_high, scan_connections, scan_rowids FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
         [w],
       )
       is Some(row) else {
       fail("recent scope is not tracked")
     }
-    let mut connect = get(row, "scan_connect")
-    let mut after = get(row, "scan_after")
-    let mut done = int(row, "scan_done")
-    let mut session = get(row, "scan_session")
-    let mut phase = get(row, "scan_phase")
-    let mut thread_after = get(row, "scan_thread_after")
-    let high = get(row, "scan_high")
-    let mut connections = int(row, "scan_connections")
-    let mut by_rowid = int(row, "scan_rowids")
+    let mut connect = @sql.row_val(row, "scan_connect")
+    let mut after = @sql.row_val(row, "scan_after")
+    let mut done = @sql.row_int(row, "scan_done")
+    let mut session = @sql.row_val(row, "scan_session")
+    let mut phase = @sql.row_val(row, "scan_phase")
+    let mut thread_after = @sql.row_val(row, "scan_thread_after")
+    let high = @sql.row_val(row, "scan_high")
+    let mut connections = @sql.row_int(row, "scan_connections")
+    let mut by_rowid = @sql.row_int(row, "scan_rowids")
     let mut visited = 0
     while visited < limit {
       if session is String(key) {
@@ -434,14 +431,12 @@ fn scan_workspace(db : @sql.Db, ws : String, limit : Int) -> Int raise {
         }
         if by_rowid == 1 {
           let found = if after is Null {
-            first(
-              db,
+            db.first(
               "SELECT CAST(rowid AS TEXT) AS r, key, ws FROM sessions WHERE rowid <= CAST(?1 AS INTEGER) ORDER BY rowid LIMIT 1",
               [high],
             )
           } else {
-            first(
-              db,
+            db.first(
               "SELECT CAST(rowid AS TEXT) AS r, key, ws FROM sessions WHERE rowid > CAST(?1 AS INTEGER) AND rowid <= CAST(?2 AS INTEGER) ORDER BY rowid LIMIT 1",
               [after, high],
             )
@@ -453,9 +448,9 @@ fn scan_workspace(db : @sql.Db, ws : String, limit : Int) -> Int raise {
             }
             Some(s) => {
               done = 0
-              after = get(s, "r")
-              session = if get(s, "ws") == w {
-                get(s, "key")
+              after = @sql.row_val(s, "r")
+              session = if @sql.row_val(s, "ws") == w {
+                @sql.row_val(s, "key")
               } else {
                 Json::null()
               }
@@ -470,7 +465,7 @@ fn scan_workspace(db : @sql.Db, ws : String, limit : Int) -> Int raise {
           after = next_after
           done = if finished { 1 } else { 0 }
           session = match sessions {
-            [s, ..] => get(s, "key")
+            [s, ..] => @sql.row_val(s, "key")
             _ => Json::null()
           }
           if connect != previous {
@@ -510,15 +505,14 @@ fn scan_workspace(db : @sql.Db, ws : String, limit : Int) -> Int raise {
 
 ///|
 fn scan_finished(db : @sql.Db, ws : Json) -> Unit raise {
-  guard first(
-      db,
+  guard db.first(
       "SELECT scan_done, scan_session FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
       [ws],
     )
     is Some(p) else {
     fail("recent scope is not tracked")
   }
-  if int(p, "scan_done") != 1 || !(get(p, "scan_session") is Null) {
+  if @sql.row_int(p, "scan_done") != 1 || !(@sql.row_val(p, "scan_session") is Null) {
     fail("recent scope source scan is unfinished")
   }
 }
@@ -533,26 +527,24 @@ fn settle_workspace_session(
 ) -> Int raise {
   let w = text(ws)
   let lim = num(limit)
-  write(db, () => {
+  db.write(() => {
     scan_finished(db, w)
-    guard first(
-        db,
+    guard db.first(
         "SELECT session, CAST(revision AS TEXT) AS revision FROM recent_scope_session_dirty WHERE kind = 1 AND ws = ? ORDER BY session LIMIT 1",
         [w],
       )
       is Some(pending) else {
       return 0
     }
-    let session = get(pending, "session")
-    let revision = get(pending, "revision")
-    let work = first(
-      db,
+    let session = @sql.row_val(pending, "session")
+    let revision = @sql.row_val(pending, "revision")
+    let work = db.first(
       "SELECT CAST(revision AS TEXT) AS revision, phase, CAST(after AS TEXT) AS after FROM recent_scope_session_work WHERE ws = ? AND session = ?",
       [w, session],
     )
     let (phase0, after0) = match work {
-      Some(k) if get(k, "revision") == revision =>
-        (get(k, "phase"), get(k, "after"))
+      Some(k) if @sql.row_val(k, "revision") == revision =>
+        (@sql.row_val(k, "phase"), @sql.row_val(k, "after"))
       _ => {
         ignore(
           db.run(
@@ -587,16 +579,16 @@ fn settle_workspace_session(
       }
       for r in found {
         if name == "remove" {
-          remove_source(db, w, get(r, "tid"), session)
+          remove_source(db, w, @sql.row_val(r, "tid"), session)
         } else {
-          remove_candidate_row(db, w, get(r, "tid"), session)
+          remove_candidate_row(db, w, @sql.row_val(r, "tid"), session)
         }
       }
       if found.length() == limit {
         ignore(
           db.run(
             "UPDATE recent_scope_session_work SET after = CAST(? AS INTEGER) WHERE ws = ? AND session = ?",
-            [get(found[found.length() - 1], "tid"), w, session],
+            [@sql.row_val(found[found.length() - 1], "tid"), w, session],
           ),
         )
       } else {
@@ -613,8 +605,8 @@ fn settle_workspace_session(
       phase = text(next)
       after = Json::null()
     }
-    let now = first(db, "SELECT ws FROM sessions WHERE key = ?", [session])
-    if !(now is Some(s) && get(s, "ws") == w) {
+    let now = db.first("SELECT ws FROM sessions WHERE key = ?", [session])
+    if !(now is Some(s) && @sql.row_val(s, "ws") == w) {
       ignore(
         db.run(
           "DELETE FROM recent_scope_session_work WHERE ws = ? AND session = ?",
@@ -681,15 +673,15 @@ fn settle_workspace_members(
   limit : Int,
 ) -> Int raise {
   let w = text(ws)
-  write(db, () => {
+  db.write(() => {
     scan_finished(db, w)
     let changed = db.all(
       "SELECT CAST(thread AS TEXT) AS tid, session, CAST(revision AS TEXT) AS revision FROM recent_scope_member_dirty WHERE ws = ? ORDER BY thread, session LIMIT ?",
       [w, num(limit)],
     )
     for row in changed {
-      let thread = get(row, "tid")
-      let session = get(row, "session")
+      let thread = @sql.row_val(row, "tid")
+      let session = @sql.row_val(row, "session")
       if exists(
           db,
           "SELECT 1 FROM sessions s JOIN thread_sessions m ON m.session = s.key WHERE m.thread = CAST(?1 AS INTEGER) AND s.key = ?2 AND s.ws = ?3",
@@ -711,7 +703,7 @@ fn settle_workspace_members(
       ignore(
         db.run(
           "DELETE FROM recent_scope_member_dirty WHERE ws = ? AND thread = CAST(? AS INTEGER) AND session = ? AND revision = CAST(? AS INTEGER)",
-          [w, thread, session, get(row, "revision")],
+          [w, thread, session, @sql.row_val(row, "revision")],
         ),
       )
     }
@@ -736,33 +728,30 @@ fn next_in_turn(
     [],
   )
   let pick = "SELECT CAST(thread AS TEXT) AS tid, \{columns} FROM \{table}"
-  let mut through = get(progress, "through_thread")
-  let after = get(progress, "after_thread")
+  let mut through = @sql.row_val(progress, "through_thread")
+  let after = @sql.row_val(progress, "after_thread")
   let mut pending = if through is Null {
     None
   } else if after is Null {
-    first(
-      db,
+    db.first(
       "\{pick} WHERE thread <= CAST(? AS INTEGER) ORDER BY thread LIMIT 1",
       [through],
     )
   } else {
-    first(
-      db,
+    db.first(
       "\{pick} WHERE thread > CAST(? AS INTEGER) AND thread <= CAST(? AS INTEGER) ORDER BY thread LIMIT 1",
       [after, through],
     )
   }
   if pending is None {
-    through = get(
+    through = @sql.row_val(
       one(db, "SELECT CAST(MAX(thread) AS TEXT) AS tid FROM \{table}", []),
       "tid",
     )
     if through is Null {
       return None
     }
-    pending = first(
-      db,
+    pending = db.first(
       "\{pick} WHERE thread <= CAST(? AS INTEGER) ORDER BY thread LIMIT 1",
       [through],
     )
@@ -773,7 +762,7 @@ fn next_in_turn(
   ignore(
     db.run(
       "UPDATE \{turn} SET after_thread = CAST(? AS INTEGER), through_thread = CAST(? AS INTEGER) WHERE id = 1",
-      [get(p, "tid"), through],
+      [@sql.row_val(p, "tid"), through],
     ),
   )
   Some(p)
@@ -782,15 +771,15 @@ fn next_in_turn(
 ///|
 /// One highly shared chat's order change moved to at most `limit` of its workspaces (`dispatchRecentScopeOrderStep`).
 fn dispatch_order(db : @sql.Db, limit : Int) -> Int raise {
-  write(db, () => {
+  db.write(() => {
     guard next_in_turn(
         db, "recent_scope_order_dispatch", "recent_scope_order_turn", "after_ws",
       )
       is Some(pending) else {
       return 0
     }
-    let thread = get(pending, "tid")
-    let after = get(pending, "after_ws")
+    let thread = @sql.row_val(pending, "tid")
+    let after = @sql.row_val(pending, "after_ws")
     let found = if after is Null {
       db.all(
         "SELECT ws FROM recent_scope_rows INDEXED BY recent_scope_rows_thread WHERE thread = CAST(?1 AS INTEGER) ORDER BY ws LIMIT ?2",
@@ -806,7 +795,7 @@ fn dispatch_order(db : @sql.Db, limit : Int) -> Int raise {
       ignore(
         db.run(
           "INSERT INTO recent_scope_order_dirty(ws, thread) SELECT ?1, CAST(?2 AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM recent_scope_order_dirty WHERE ws = ?1 AND thread = CAST(?2 AS INTEGER))",
-          [get(r, "ws"), thread],
+          [@sql.row_val(r, "ws"), thread],
         ),
       )
     }
@@ -814,7 +803,7 @@ fn dispatch_order(db : @sql.Db, limit : Int) -> Int raise {
       ignore(
         db.run(
           "UPDATE recent_scope_order_dispatch SET after_ws = ? WHERE thread = CAST(? AS INTEGER)",
-          [get(found[found.length() - 1], "ws"), thread],
+          [@sql.row_val(found[found.length() - 1], "ws"), thread],
         ),
       )
     } else {
@@ -838,19 +827,18 @@ fn settle_workspace_order(
   limit : Int,
 ) -> Int raise {
   let w = text(ws)
-  write(db, () => {
+  db.write(() => {
     if !tracked(db, w) {
       fail("recent scope is not tracked")
     }
-    guard first(
-        db,
+    guard db.first(
         "SELECT CAST(thread AS TEXT) AS tid FROM recent_scope_order_dirty WHERE ws = ? ORDER BY thread LIMIT 1",
         [w],
       )
       is Some(pending) else {
       return 0
     }
-    let thread = get(pending, "tid")
+    let thread = @sql.row_val(pending, "tid")
     if exists(
         db,
         "SELECT 1 FROM recent_scope_order_dispatch WHERE thread = CAST(? AS INTEGER)",
@@ -872,7 +860,7 @@ fn settle_workspace_order(
         [w, thread, num(limit)],
       )
       for s in sources {
-        remove_source(db, w, thread, get(s, "session"))
+        remove_source(db, w, thread, @sql.row_val(s, "session"))
       }
       visited = if sources.length() > 1 { sources.length() } else { 1 }
       if sources.length() == limit {
@@ -907,15 +895,15 @@ fn settle_workspace_order(
 /// its old sources removed, then the new ones added; a home changed again between batches starts the chat over.
 fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
   let lim = num(limit)
-  write(db, () => {
+  db.write(() => {
     guard next_in_turn(
         db, "recent_scope_visibility_dirty", "recent_scope_visibility_turn", "CAST(revision AS TEXT) AS revision",
       )
       is Some(pending) else {
       return 0
     }
-    let thread = get(pending, "tid")
-    let revision = get(pending, "revision")
+    let thread = @sql.row_val(pending, "tid")
+    let revision = @sql.row_val(pending, "revision")
     // (the hint refreshed before old contributions go, so a reader of a new home cannot take this for a finished page)
     ignore(
       db.run(
@@ -923,14 +911,13 @@ fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
         [thread],
       ),
     )
-    let work = first(
-      db,
+    let work = db.first(
       "SELECT CAST(revision AS TEXT) AS revision, phase, after_ws, after_session FROM recent_scope_visibility_work WHERE thread = CAST(? AS INTEGER)",
       [thread],
     )
     let (phase, after_ws, after_session) = match work {
-      Some(k) if get(k, "revision") == revision =>
-        (get(k, "phase"), get(k, "after_ws"), get(k, "after_session"))
+      Some(k) if @sql.row_val(k, "revision") == revision =>
+        (@sql.row_val(k, "phase"), @sql.row_val(k, "after_ws"), @sql.row_val(k, "after_session"))
       _ => {
         ignore(
           db.run(
@@ -954,14 +941,14 @@ fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
         )
       }
       for s in sources {
-        remove_source(db, get(s, "ws"), thread, get(s, "session"))
+        remove_source(db, @sql.row_val(s, "ws"), thread, @sql.row_val(s, "session"))
       }
       if sources.length() == limit {
         let last = sources[sources.length() - 1]
         ignore(
           db.run(
             "UPDATE recent_scope_visibility_work SET after_ws = ?, after_session = ? WHERE thread = CAST(? AS INTEGER)",
-            [get(last, "ws"), get(last, "session"), thread],
+            [@sql.row_val(last, "ws"), @sql.row_val(last, "session"), thread],
           ),
         )
       } else {
@@ -974,19 +961,18 @@ fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
       }
       return sources.length()
     }
-    let chat = first(
-      db,
+    let chat = db.first(
       "SELECT home FROM threads WHERE id = CAST(? AS INTEGER)",
       [thread],
     )
     let mut visited = 0
     match chat {
-      Some(c) if !(get(c, "home") is Null) => {
-        let home = get(c, "home")
-        if first(db, "SELECT ws FROM sessions WHERE key = ?", [home]) is Some(s) &&
-          get(s, "ws") is String(_) &&
-          tracked(db, get(s, "ws")) {
-          put_source(db, get(s, "ws"), thread, home)
+      Some(c) if !(@sql.row_val(c, "home") is Null) => {
+        let home = @sql.row_val(c, "home")
+        if db.first("SELECT ws FROM sessions WHERE key = ?", [home]) is Some(s) &&
+          @sql.row_val(s, "ws") is String(_) &&
+          tracked(db, @sql.row_val(s, "ws")) {
+          put_source(db, @sql.row_val(s, "ws"), thread, home)
         }
         visited = 1
       }
@@ -1003,12 +989,12 @@ fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
           )
         }
         for m in members {
-          let session = get(m, "session")
-          if first(db, "SELECT ws FROM sessions WHERE key = ?", [session])
+          let session = @sql.row_val(m, "session")
+          if db.first("SELECT ws FROM sessions WHERE key = ?", [session])
             is Some(s) &&
-            get(s, "ws") is String(_) &&
-            tracked(db, get(s, "ws")) {
-            put_source(db, get(s, "ws"), thread, session)
+            @sql.row_val(s, "ws") is String(_) &&
+            tracked(db, @sql.row_val(s, "ws")) {
+            put_source(db, @sql.row_val(s, "ws"), thread, session)
           }
         }
         visited = members.length()
@@ -1016,7 +1002,7 @@ fn settle_visibility(db : @sql.Db, limit : Int) -> Int raise {
           ignore(
             db.run(
               "UPDATE recent_scope_visibility_work SET after_session = ? WHERE thread = CAST(? AS INTEGER)",
-              [get(members[members.length() - 1], "session"), thread],
+              [@sql.row_val(members[members.length() - 1], "session"), thread],
             ),
           )
           return visited

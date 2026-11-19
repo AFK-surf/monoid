@@ -5,7 +5,7 @@
 
 ///|
 fn exists(db : @sql.Db, kind : String, name : String) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?", [Json::string(kind), Json::string(name)]) is Some(_)
+  db.first("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?", [Json::string(kind), Json::string(name)]) is Some(_)
 }
 
 ///|
@@ -93,13 +93,12 @@ fn upgrade_meta(db : @sql.Db) -> Map[String, Json]? raise {
   if !exists(db, "table", "active_job_upgrade") {
     return None
   }
-  let row = first(
-    db,
+  let row = db.first(
     "SELECT version, complete, watches, others, CAST(cursor AS TEXT) AS cursor, CAST(end_rowid AS TEXT) AS end_rowid, schema_version FROM active_job_upgrade WHERE id = 1",
     [],
   )
   let v = match row {
-    Some(r) => get(r, "version")
+    Some(r) => @sql.row_val(r, "version")
     None => Json::null()
   }
   guard v is Number(n, ..) && n.to_int() == version && row is Some(r) else {
@@ -113,8 +112,8 @@ fn upgrade_meta(db : @sql.Db) -> Map[String, Json]? raise {
 fn remote_ready(db : @sql.Db) -> Bool raise {
   exists(db, "table", "active_remote_job_meta") &&
   (
-    match first(db, "SELECT version, complete FROM active_remote_job_meta WHERE id = 1", []) {
-      Some(r) => get(r, "version") is Number(1.0, ..) && get(r, "complete") is Number(1.0, ..)
+    match db.first("SELECT version, complete FROM active_remote_job_meta WHERE id = 1", []) {
+      Some(r) => @sql.row_val(r, "version") is Number(1.0, ..) && @sql.row_val(r, "complete") is Number(1.0, ..)
       None => false
     }
   )
@@ -141,7 +140,7 @@ fn install_upgrade(db : @sql.Db) -> Unit raise {
     let others = !exists(db, "table", "active_other_jobs")
     if watches || others {
       db.exec(active_schema(watches, others))
-      ignore(db.run("UPDATE active_job_upgrade SET schema_version = ? WHERE id = 1", [schema_version(db)]))
+      ignore(db.run("UPDATE active_job_upgrade SET schema_version = ? WHERE id = 1", [db.schema_version()]))
     }
   }
   db.exec("COMMIT")
@@ -186,42 +185,42 @@ fn remote_step(db : @sql.Db, limit : Int) -> Bool raise {
   }
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
-  guard first(db, "SELECT * FROM active_remote_job_meta WHERE id = 1", []) is Some(row) else {
+  guard db.first("SELECT * FROM active_remote_job_meta WHERE id = 1", []) is Some(row) else {
     raise Failure("active remote job metadata is missing")
   }
-  guard get(row, "version") is Number(1.0, ..) else {
-    raise Failure("active remote job version \{get(row, "version").stringify()} is incompatible with \{version}")
+  guard @sql.row_val(row, "version") is Number(1.0, ..) else {
+    raise Failure("active remote job version \{@sql.row_val(row, "version").stringify()} is incompatible with \{version}")
   }
-  if get(row, "complete") is Number(1.0, ..) {
+  if @sql.row_val(row, "complete") is Number(1.0, ..) {
     db.exec("COMMIT")
     return upgrade_ready(db)
   }
   let lim = Json::number(limit.to_double())
-  let rows = if get(row, "end_session") is Null {
+  let rows = if @sql.row_val(row, "end_session") is Null {
     []
-  } else if get(row, "cursor_session") is Null {
+  } else if @sql.row_val(row, "cursor_session") is Null {
     db.all(
       "SELECT session, job FROM active_other_jobs WHERE (session, job) <= (?, ?) ORDER BY session, job LIMIT ?",
-      [get(row, "end_session"), get(row, "end_job"), lim],
+      [@sql.row_val(row, "end_session"), @sql.row_val(row, "end_job"), lim],
     )
   } else {
     db.all(
       "SELECT session, job FROM active_other_jobs WHERE (session, job) > (?, ?) AND (session, job) <= (?, ?) ORDER BY session, job LIMIT ?",
-      [get(row, "cursor_session"), get(row, "cursor_job"), get(row, "end_session"), get(row, "end_job"), lim],
+      [@sql.row_val(row, "cursor_session"), @sql.row_val(row, "cursor_job"), @sql.row_val(row, "end_session"), @sql.row_val(row, "end_job"), lim],
     )
   }
   for r in rows {
     ignore(
       db.run(
         "INSERT OR IGNORE INTO active_remote_job_rows SELECT job, session FROM active_other_jobs WHERE session = ? AND job = ? AND job >= 'remote_' AND job < 'remote`'",
-        [get(r, "session"), get(r, "job")],
+        [@sql.row_val(r, "session"), @sql.row_val(r, "job")],
       ),
     )
   }
   let done = rows.length() < limit
   let (session, job) = match rows.last() {
-    Some(r) => (get(r, "session"), get(r, "job"))
-    None => (get(row, "cursor_session"), get(row, "cursor_job"))
+    Some(r) => (@sql.row_val(r, "session"), @sql.row_val(r, "job"))
+    None => (@sql.row_val(row, "cursor_session"), @sql.row_val(row, "cursor_job"))
   }
   ignore(
     db.run("UPDATE active_remote_job_meta SET cursor_session = ?, cursor_job = ?, complete = ? WHERE id = 1", [
@@ -243,27 +242,27 @@ pub fn active_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   install_upgrade(db)
   match upgrade_meta(db) {
     None => return remote_step(db, limit)
-    Some(m) if get(m, "complete") is Number(1.0, ..) => return remote_step(db, limit)
+    Some(m) if @sql.row_val(m, "complete") is Number(1.0, ..) => return remote_step(db, limit)
     _ => ()
   }
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   guard upgrade_meta(db) is Some(current) else { raise Failure("active job upgrade is missing") }
-  if get(current, "complete") is Number(1.0, ..) {
+  if @sql.row_val(current, "complete") is Number(1.0, ..) {
     db.exec("COMMIT")
     return upgrade_ready(db)
   }
-  let schema = schema_version(db)
-  let (cursor, end) = if schema != get(current, "schema_version") {
+  let schema = db.schema_version()
+  let (cursor, end) = if schema != @sql.row_val(current, "schema_version") {
     (
       Json::null(),
-      match first(db, last_running, []) {
-        Some(r) => get(r, "position")
+      match db.first(last_running, []) {
+        Some(r) => @sql.row_val(r, "position")
         None => Json::null()
       },
     )
   } else {
-    (get(current, "cursor"), get(current, "end_rowid"))
+    (@sql.row_val(current, "cursor"), @sql.row_val(current, "end_rowid"))
   }
   let lim = Json::number(limit.to_double())
   let rows = if end is Null {
@@ -279,18 +278,18 @@ pub fn active_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
       [cursor, end, lim],
     )
   }
-  let watches = get(current, "watches") is Number(1.0, ..)
-  let others = get(current, "others") is Number(1.0, ..)
+  let watches = @sql.row_val(current, "watches") is Number(1.0, ..)
+  let others = @sql.row_val(current, "others") is Number(1.0, ..)
   let puts = active_see(watches, others, "CAST(? AS INTEGER)")
   for row in rows {
     for put in puts {
-      ignore(db.run(put, [get(row, "position")]))
+      ignore(db.run(put, [@sql.row_val(row, "position")]))
     }
   }
   let finished = rows.length() < limit
   if finished {
     // (a running job without an id, from a writer before the index, cannot be in either lookup: wait until it is gone)
-    if first(db, "SELECT 1 FROM jobs INDEXED BY sqlite_autoindex_jobs_1 WHERE id IS NULL AND state = 'running' LIMIT 1", [])
+    if db.first("SELECT 1 FROM jobs INDEXED BY sqlite_autoindex_jobs_1 WHERE id IS NULL AND state = 'running' LIMIT 1", [])
       is Some(_) {
       raise Failure("a running job without an id cannot yet be indexed")
     }
@@ -302,7 +301,7 @@ pub fn active_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
     }
   }
   let reached = match rows.last() {
-    Some(r) => get(r, "position")
+    Some(r) => @sql.row_val(r, "position")
     None => cursor
   }
   ignore(

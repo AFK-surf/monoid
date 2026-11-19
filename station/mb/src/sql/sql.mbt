@@ -439,3 +439,66 @@ pub fn busy(e : Error) -> Bool {
     _ => false
   }
 }
+
+///|
+/// A statement's first row, or None where it has none.
+pub fn Db::first(self : Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise @wire.ShellError {
+  match self.all(sql, params) {
+    [r, ..] => Some(r)
+    _ => None
+  }
+}
+
+///|
+/// `f` in a write transaction (`BEGIN IMMEDIATE`), rolled back when it fails.
+pub fn[T] Db::write(self : Db, f : () -> T raise) -> T raise {
+  self.exec("BEGIN IMMEDIATE")
+  errdefer (self.exec("ROLLBACK") catch { _ => () })
+  let result = f()
+  self.exec("COMMIT")
+  result
+}
+
+///|
+/// The schema's version (`PRAGMA schema_version`), null where it gives no row.
+pub fn Db::schema_version(self : Db) -> Json raise @wire.ShellError {
+  match self.first("PRAGMA schema_version", []) {
+    Some(r) => row_val(r, "schema_version")
+    None => Json::null()
+  }
+}
+
+///|
+/// Whether the schema has the `kind` (table, index, trigger …) named `name`.
+pub fn Db::has_schema(self : Db, kind : String, name : String) -> Bool raise @wire.ShellError {
+  self.first("SELECT 1 FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)])
+  is Some(_)
+}
+
+///|
+/// The SQL of the schema's `kind` named `name`: None where there is none, "" where it has no SQL (an automatic index).
+pub fn Db::sqlite_master_sql(self : Db, kind : String, name : String) -> String? raise @wire.ShellError {
+  match self.first("SELECT sql FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]) {
+    Some(r) =>
+      match r.get("sql") {
+        Some(String(s)) => Some(s)
+        _ => Some("")
+      }
+    None => None
+  }
+}
+
+///|
+/// A row's column, null where it has none.
+pub fn row_val(row : Map[String, Json], name : String) -> Json {
+  row.get(name).unwrap_or(Json::null())
+}
+
+///|
+/// A row's small integer column (a flag, a count); -1 where it is no number (NULL).
+pub fn row_int(row : Map[String, Json], name : String) -> Int {
+  match row.get(name) {
+    Some(Number(n, ..)) => n.to_int()
+    _ => -1
+  }
+}

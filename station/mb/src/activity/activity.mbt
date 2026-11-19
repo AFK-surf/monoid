@@ -4,35 +4,13 @@
 // an older store in bounded transactions as its `…Step` does; the triggers keep what writers change meanwhile.
 
 ///|
-fn get(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn first(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
 fn complete(row : Map[String, Json]) -> Bool {
-  get(row, "complete") is Number(1.0, ..)
+  @sql.row_val(row, "complete") is Number(1.0, ..)
 }
 
 ///|
 fn flag(b : Bool) -> Json {
   Json::number(if b { 1.0 } else { 0.0 })
-}
-
-///|
-fn write(db : @sql.Db, f : () -> Bool raise) -> Bool raise {
-  db.exec("BEGIN IMMEDIATE")
-  errdefer (db.exec("ROLLBACK") catch { _ => () })
-  let result = f()
-  db.exec("COMMIT")
-  result
 }
 
 // The active sessions of a workspace.
@@ -56,19 +34,19 @@ fn next_active(after : Bool) -> String {
 ///|
 /// At most `limit` active keys of an older store brought across, with the cursor (`workspaceActivityStep`).
 pub fn activity_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
-  write(db, () => {
-    guard first(db, "SELECT cursor, complete FROM workspace_activity_meta WHERE id = 1", []) is Some(meta) else {
+  db.write(() => {
+    guard db.first("SELECT cursor, complete FROM workspace_activity_meta WHERE id = 1", []) is Some(meta) else {
       raise Failure("workspace activity metadata is missing")
     }
     if complete(meta) {
       return true
     }
-    let mut cursor = get(meta, "cursor")
+    let mut cursor = @sql.row_val(meta, "cursor")
     let mut visited = 0
     let mut done = false
     while visited < limit {
-      let key = match first(db, next_active(!(cursor is Null)), if cursor is Null { [] } else { [cursor] }) {
-        Some(r) => get(r, "session")
+      let key = match db.first(next_active(!(cursor is Null)), if cursor is Null { [] } else { [cursor] }) {
+        Some(r) => @sql.row_val(r, "session")
         None => Json::null()
       }
       if key is Null {
@@ -124,8 +102,8 @@ fn walk(
   before? : (Map[String, Json]) -> Bool raise = _ => true,
   each : (Json) -> Unit raise,
 ) -> Bool raise {
-  write(db, () => {
-    guard first(db, "SELECT cursor, complete FROM \{meta_table} WHERE id = 1", []) is Some(meta) else {
+  db.write(() => {
+    guard db.first("SELECT cursor, complete FROM \{meta_table} WHERE id = 1", []) is Some(meta) else {
       raise Failure("\{meta_table} has no row")
     }
     if complete(meta) {
@@ -134,7 +112,7 @@ fn walk(
     if !before(meta) {
       return false
     }
-    let cursor = get(meta, "cursor")
+    let cursor = @sql.row_val(meta, "cursor")
     let lim = Json::number(limit.to_double())
     let rows = if cursor is Null {
       db.all("SELECT \{column} AS k FROM \{table} ORDER BY \{column} LIMIT ?", [lim])
@@ -142,11 +120,11 @@ fn walk(
       db.all("SELECT \{column} AS k FROM \{table} WHERE \{column} > ? ORDER BY \{column} LIMIT ?", [cursor, lim])
     }
     for row in rows {
-      each(get(row, "k"))
+      each(@sql.row_val(row, "k"))
     }
     let done = rows.length() < limit
     let reached = match rows.last() {
-      Some(r) => get(r, "k")
+      Some(r) => @sql.row_val(r, "k")
       None => cursor
     }
     ignore(db.run("UPDATE \{meta_table} SET cursor = ?, complete = ? WHERE id = 1", [reached, flag(done)]))
@@ -172,7 +150,7 @@ pub fn awake_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
     "session_recover_waits",
     "session",
     limit,
-    before=_ => match first(db, "SELECT complete FROM session_recover_wait_meta WHERE id = 1", []) {
+    before=_ => match db.first("SELECT complete FROM session_recover_wait_meta WHERE id = 1", []) {
       Some(r) => complete(r)
       None => false
     },

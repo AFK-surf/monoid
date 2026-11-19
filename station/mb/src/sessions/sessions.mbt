@@ -24,29 +24,21 @@ let matches : String = "i.kind = CASE WHEN s.ws IS NULL THEN 0 ELSE 1 END AND i.
 let see_position : String = "INSERT INTO session_list_rows (session, kind, ws, archived, connect) SELECT \{values} FROM sessions s WHERE s.key = (SELECT key FROM sessions WHERE rowid = CAST(? AS INTEGER)) AND NOT EXISTS (SELECT 1 FROM session_list_rows i WHERE \{matches})"
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  match row.get(name) {
-    Some(j) => j
-    None => Json::null()
-  }
-}
-
-///|
 /// A walk over the sessions recorded in `table`'s one row (id 1): one batch of at most `limit`; whether it is done.
 fn walk(db : @sql.Db, table : String, meta : Map[String, Json], limit : Int) -> Bool raise {
   if meta.get("complete") is Some(Number(1.0, ..)) {
     return true
   }
-  let last = value(meta, "last_rowid")
-  let end = value(meta, "end_rowid")
+  let last = @sql.row_val(meta, "last_rowid")
+  let end = @sql.row_val(meta, "end_rowid")
   let lim = Json::number(limit.to_double())
   let rows = if last is Null { db.all(first, [end, lim]) } else { db.all(next, [last, end, lim]) }
   for row in rows {
-    ignore(db.run(see_position, [value(row, "position")]))
+    ignore(db.run(see_position, [@sql.row_val(row, "position")]))
   }
   let done = rows.length() < limit
   let reached = match rows.last() {
-    Some(row) => value(row, "position")
+    Some(row) => @sql.row_val(row, "position")
     None => last
   }
   ignore(
@@ -77,7 +69,7 @@ fn list_meta(db : @sql.Db) -> Map[String, Json] raise {
   }
   match meta.get("version") {
     Some(Number(v, ..)) if v.to_int() == version => ()
-    _ => fail("session list index version \{value(meta, "version").stringify()} is incompatible with \{version}")
+    _ => fail("session list index version \{@sql.row_val(meta, "version").stringify()} is incompatible with \{version}")
   }
   meta
 }
@@ -109,7 +101,7 @@ pub fn audit(db : @sql.Db, limit? : Int = 256) -> Bool raise {
   }
   match meta.get("version") {
     Some(Number(1.0, ..)) => ()
-    _ => fail("search job session audit version \{value(meta, "version").stringify()} is incompatible with 1")
+    _ => fail("search job session audit version \{@sql.row_val(meta, "version").stringify()} is incompatible with 1")
   }
   let done = walk(db, "search_job_session_audit", meta, limit)
   db.exec("COMMIT")

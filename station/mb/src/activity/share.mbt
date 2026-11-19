@@ -39,8 +39,8 @@ pub fn share_schema() -> String {
 
 ///|
 fn share_check(db : @sql.Db) -> Unit raise {
-  let v = match first(db, "SELECT version FROM chat_share_index_meta WHERE id = 1", []) {
-    Some(m) => get(m, "version")
+  let v = match db.first("SELECT version FROM chat_share_index_meta WHERE id = 1", []) {
+    Some(m) => @sql.row_val(m, "version")
     None => Json::null()
   }
   guard v is Number(n, ..) && n.to_int() == share_version else {
@@ -51,7 +51,7 @@ fn share_check(db : @sql.Db) -> Unit raise {
 
 ///|
 fn share_installed(db : @sql.Db) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_share_index_meta'", []) is Some(_)
+  db.first("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_share_index_meta'", []) is Some(_)
 }
 
 ///|
@@ -80,11 +80,11 @@ fn safe_int(x : Double) -> Bool {
 /// A saved share's targets as JavaScript reads them (`toChatShare`, `shareValues`): each workspace named, with when it
 /// was last used (else when it was shared); None where that reading is not exact.
 fn share_values(row : Map[String, Json]) -> Array[(String, Double)]? {
-  guard get(row, "shared_type") == Json::string("text") && get(row, "shared") is String(shared) else { return None }
+  guard @sql.row_val(row, "shared_type") == Json::string("text") && @sql.row_val(row, "shared") is String(shared) else { return None }
   if shared.length() > 16384 {
     return None
   }
-  let at = get(row, "at")
+  let at = @sql.row_val(row, "at")
   let parsed : Json = @json.parse(shared) catch { _ => Json::array([]) }
   let to = match parsed {
     Array(items) => items
@@ -114,15 +114,15 @@ pub fn share_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   share_check(db)
-  guard first(db, "SELECT phase, cursor, end_session FROM chat_share_index_meta WHERE id = 1", []) is Some(meta) else {
+  guard db.first("SELECT phase, cursor, end_session FROM chat_share_index_meta WHERE id = 1", []) is Some(meta) else {
     raise Failure("chat share index version missing is incompatible with \{share_version}")
   }
-  let end = get(meta, "end_session")
-  let mut phase = match get(meta, "phase") {
+  let end = @sql.row_val(meta, "end_session")
+  let mut phase = match @sql.row_val(meta, "phase") {
     Number(p, ..) => p.to_int()
     _ => 0
   }
-  let mut cursor = get(meta, "cursor")
+  let mut cursor = @sql.row_val(meta, "cursor")
   let mut visited = 0
   while visited < limit {
     let lim = Json::number((limit - visited).to_double())
@@ -146,12 +146,11 @@ pub fn share_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
       break
     }
     for key in keys {
-      let session = get(key, "session")
+      let session = @sql.row_val(key, "session")
       ignore(db.run("DELETE FROM chat_share_targets WHERE session = ?", [session]))
       ignore(db.run("DELETE FROM chat_share_uncertain WHERE session = ?", [session]))
       // (`at` only as JavaScript reads it exactly: an integer past 2^53 makes the share uncertain)
-      if first(
-          db,
+      if db.first(
           "SELECT typeof(shared) AS shared_type, shared, CASE WHEN typeof(at) IN ('integer', 'real') AND at BETWEEN -9007199254740991 AND 9007199254740991 THEN at END AS at FROM chat_shares WHERE session = ?",
           [session],
         )
@@ -179,7 +178,7 @@ pub fn share_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
     }
   }
   ignore(db.run("UPDATE chat_share_index_meta SET phase = ?, cursor = ? WHERE id = 1", [Json::number(phase.to_double()), cursor]))
-  let done = phase == 1 && first(db, "SELECT 1 FROM chat_share_dirty LIMIT 1", []) is None
+  let done = phase == 1 && db.first("SELECT 1 FROM chat_share_dirty LIMIT 1", []) is None
   db.exec("COMMIT")
   done
 }
