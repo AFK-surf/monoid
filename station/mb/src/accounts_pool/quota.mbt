@@ -80,18 +80,6 @@ fn digits_at(s : String, i : Int, n : Int) -> Int? {
 }
 
 ///|
-/// Days from 1970-01-01 to a civil date (proleptic Gregorian).
-fn days_from_civil(y : Int, m : Int, d : Int) -> Double {
-  let y2 = if m <= 2 { y - 1 } else { y }
-  let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400
-  let yoe = y2 - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  (era * 146097 + doe - 719468).to_double()
-}
-
-///|
 /// `Date.parse` of a date and time as ISO 8601 writes it (V8's: a fraction of any length cut to milliseconds, `Z`,
 /// `z`, `±HH:MM` or `±HHMM`, `24:00:00` the next day, a day up to 31 whatever the month; no zone: local time, by
 /// `tz_offset_ms`). None for anything else.
@@ -143,7 +131,7 @@ pub fn date_parse(text : String, tz_offset_ms : (Double) -> Double) -> Double? {
   if h == 24 && (mi != 0 || s != 0 || ms != 0) {
     return None
   }
-  let local = days_from_civil(y, mo, d) * 86_400_000.0 +
+  let local = @time.days_from_civil(y, mo, d).to_double() * 86_400_000.0 +
     h.to_double() * 3_600_000.0 +
     mi.to_double() * 60_000.0 +
     s.to_double() * 1000.0 +

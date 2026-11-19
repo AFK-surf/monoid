@@ -4,42 +4,9 @@
 // connect's session made (`createSession`).
 
 ///|
-let hex_digits : String = "0123456789abcdef"
-
-///|
-fn hex_bytes(hex : String) -> Array[Int] {
-  let out = []
-  let mut i = 0
-  while i + 1 < hex.length() {
-    let d = (c : Int) => if c >= 'a'.to_int() { c - 'a'.to_int() + 10 } else { c - '0'.to_int() }
-    out.push(d(u(hex, i)) * 16 + d(u(hex, i + 1)))
-    i += 2
-  }
-  out
-}
-
-///|
 /// Bytes as base64url, without padding (`toString("base64url")`).
 pub fn base64url(bytes : Array[Int]) -> String {
-  let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  let b = StringBuilder()
-  let mut i = 0
-  while i < bytes.length() {
-    let b0 = bytes[i]
-    let b1 = if i + 1 < bytes.length() { bytes[i + 1] } else { 0 }
-    let b2 = if i + 2 < bytes.length() { bytes[i + 2] } else { 0 }
-    let n = (b0 << 16) | (b1 << 8) | b2
-    b.write_char(alphabet.get_char((n >> 18) & 63).unwrap())
-    b.write_char(alphabet.get_char((n >> 12) & 63).unwrap())
-    if i + 1 < bytes.length() {
-      b.write_char(alphabet.get_char((n >> 6) & 63).unwrap())
-    }
-    if i + 2 < bytes.length() {
-      b.write_char(alphabet.get_char(n & 63).unwrap())
-    }
-    i += 3
-  }
-  b.to_string()
+  @codec.base64url_encode(Bytes::makei(bytes.length(), i => bytes[i].to_byte()))
 }
 
 ///|
@@ -57,7 +24,7 @@ pub fn Hub::new_chat_key(self : Hub) -> String {
 ///|
 /// `newToken`: the bearer token a session presents to the MCP endpoint.
 pub fn Hub::new_token(self : Hub) -> String {
-  base64url(hex_bytes((self.world.random_hex)(24)))
+  @codec.base64url_encode(@codec.hex_decode((self.world.random_hex)(24)).unwrap_or(b""))
 }
 
 ///|

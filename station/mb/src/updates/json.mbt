@@ -265,27 +265,12 @@ pub fn is_safe_integer(j : J?) -> Bool {
 ///|
 /// Lowercase hex of bytes.
 pub fn hex(b : Bytes) -> String {
-  let digits = "0123456789abcdef"
-  let sb = StringBuilder()
-  for x in b {
-    let v = x.to_int()
-    sb.write_char(digits.get_char(v >> 4).unwrap())
-    sb.write_char(digits.get_char(v & 15).unwrap())
-  }
-  sb.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
 fn hex_value(c : Int) -> Int {
-  if c >= 48 && c <= 57 {
-    c - 48
-  } else if c >= 97 && c <= 102 {
-    c - 87
-  } else if c >= 65 && c <= 70 {
-    c - 55
-  } else {
-    -1
-  }
+  @codec.hex_digit(c).unwrap_or(-1)
 }
 
 ///|
@@ -309,40 +294,22 @@ pub fn unhex(s : String) -> Bytes {
 /// Bytes of base64 as Node's `Buffer.from(s, "base64")` takes them: what is not of its alphabet (either one's, the URL's
 /// too) skipped, stopping at `=`.
 pub fn base64_bytes(s : String) -> Bytes {
-  let out = Buffer()
-  let mut acc = 0
-  let mut bits = 0
+  let digits = StringBuilder()
+  let mut n = 0
   for i in 0..<s.length() {
     let c = cu(s, i)
-    let v = if c >= 65 && c <= 90 {
-      c - 65
-    } else if c >= 97 && c <= 122 {
-      c - 71
-    } else if c >= 48 && c <= 57 {
-      c + 4
-    } else if c == 43 || c == 45 {
-      62
-    } else if c == 47 || c == 95 {
-      63
-    } else if c == 61 {
-      -2
-    } else {
-      -1
-    }
-    if v == -2 {
+    if c == 61 {
       break
     }
-    if v < 0 {
-      continue
-    }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 255).to_byte())
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c is (43 | 45 | 47 | 95) {
+      digits.write_char(c.unsafe_to_char())
+      n += 1
     }
   }
-  out.to_bytes()
+  let text = digits.to_string()
+  // A lone digit past a group of four is six bits: no byte, as Node leaves it.
+  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
+  @codec.base64_decode(text).unwrap_or(b"")
 }
 
 ///|

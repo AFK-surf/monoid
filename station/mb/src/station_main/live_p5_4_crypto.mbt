@@ -139,7 +139,7 @@ fn p54_hmac256(host : @host.Host, key : Bytes, data : Bytes) -> Bytes {
 ///|
 fn p54_hash(host : @host.Host, name : String, data : Bytes) -> Bytes raise {
   match name {
-    "sha1" => p54_sha1(data)
+    "sha1" => @hash.sha1(data)
     "sha256" => p54_sha256(host, data)
     "sha512" => p54_sha512(data)
     _ => raise Failure("no hash \{name}")
@@ -675,6 +675,6 @@ fn p54_key_ops(host : @host.Host) -> (
         Rsa(parts) => p54_rsa_sign(host, parts, hash, data)
       }
     },
-    async fn(b) { p54_sha1(b) },
+    async fn(b) { @hash.sha1(b) },
   )
 }

@@ -326,7 +326,7 @@ async fn exists(io : Io, path : String) -> Bool {
 
 ///|
 fn sha1_hex(s : String) -> String {
-  @jobs_host.sha1_hex(@utf8.encode(s))
+  @hash.sha1_utf8_hex(s)
 }
 
 ///|

@@ -127,65 +127,35 @@ pub fn question_of(card : J?, prompt : String) -> J? {
 ///|
 /// Bytes as base64 (`Buffer.toString("base64")`).
 pub fn base64(b : Bytes) -> String {
-  let a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at(v & 63).unsafe_to_char())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char('=')
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }
 
 ///|
 /// Base64 as node reads it (`Buffer.from(s, "base64")`): the URL-safe alphabet too, what is in neither skipped, up to
 /// the first `=`.
 pub fn unbase64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
+  let digits = StringBuilder::new()
+  let mut n = 0
   for i in 0..<s.length() {
     let c = s.unsafe_charcode_at(i)
-    let v = if c >= 'A' && c <= 'Z' {
-      c - 'A'
-    } else if c >= 'a' && c <= 'z' {
-      c - 'a' + 26
-    } else if c >= '0' && c <= '9' {
-      c - '0' + 52
-    } else if c == '+' || c == '-' {
-      62
-    } else if c == '/' || c == '_' {
-      63
-    } else if c == '=' {
+    if c == '=' {
       break
-    } else {
-      continue
     }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 255).to_byte())
+    if (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') ||
+      c == '+' ||
+      c == '-' ||
+      c == '/' ||
+      c == '_' {
+      digits.write_char(c.unsafe_to_char())
+      n += 1
     }
   }
-  out.to_bytes()
+  let text = digits.to_string()
+  // A lone digit past a group of four is six bits: no byte, as node leaves it.
+  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
+  @codec.base64_decode(text).unwrap_or(b"")
 }
 
 ///|

@@ -667,34 +667,7 @@ fn RevIndex::set_meta(self : RevIndex, key : String, value : String) -> Unit rai
 ///|
 /// The UTC day of `ms` (ms since the epoch) as `new Date(ms).toISOString().slice(0, 10)` says it.
 pub fn iso_day(ms : Double) -> String {
-  let days = (ms / day_ms).floor()
-  // civil from days (Howard Hinnant's)
-  let z = days + 719468.0
-  let era = ((if z >= 0.0 { z } else { z - 146096.0 }) / 146097.0).floor()
-  let doe = z - era * 146097.0
-  let yoe = ((doe - (doe / 1460.0).floor() + (doe / 36524.0).floor() - (doe / 146096.0).floor()) / 365.0).floor()
-  let y = yoe + era * 400.0
-  let doy = doe - (365.0 * yoe + (yoe / 4.0).floor() - (yoe / 100.0).floor())
-  let mp = ((5.0 * doy + 2.0) / 153.0).floor()
-  let d = doy - ((153.0 * mp + 2.0) / 5.0).floor() + 1.0
-  let m = if mp < 10.0 { mp + 3.0 } else { mp - 9.0 }
-  let year = if m <= 2.0 { y + 1.0 } else { y }
-  let pad = (v : Double, w : Int) => {
-    let s = v.abs().to_int64().to_string()
-    let mut out = s
-    while out.length() < w {
-      out = "0" + out
-    }
-    out
-  }
-  let ys = if year >= 0.0 && year <= 9999.0 {
-    pad(year, 4)
-  } else if year < 0.0 {
-    "-" + pad(year, 6)
-  } else {
-    "+" + pad(year, 6)
-  }
-  "\{ys}-\{pad(m, 2)}-\{pad(d, 2)}".unsafe_substring(start=0, end=10)
+  @time.format_iso_ms(ms.floor().to_int64()).view(end_offset=10).to_string()
 }
 
 ///|

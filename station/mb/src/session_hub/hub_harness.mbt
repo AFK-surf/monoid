@@ -52,13 +52,7 @@ pub fn HubHarness::new(host : @host.Host) -> HubHarness {
 ///|
 /// The test's random bytes (its `randomBytes` made alike): byte `i` of the `k`th ask.
 pub fn test_random_hex(k : Int, n : Int) -> String {
-  let b = StringBuilder()
-  for i in 0..<n {
-    let v = (k * 37 + i * 11 + 5) & 255
-    b.write_char(hex_digits.get_char(v >> 4).unwrap())
-    b.write_char(hex_digits.get_char(v & 15).unwrap())
-  }
-  b.to_string()
+  @codec.hex_encode(Bytes::makei(n, i => ((k * 37 + i * 11 + 5) & 255).to_byte()))
 }
 
 ///|

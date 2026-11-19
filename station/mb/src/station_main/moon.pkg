@@ -2,6 +2,8 @@ import {
   "station/host",
   "mbui/effect",
   "base/net",
+  "base/hash",
+  "base/time",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "moonbitlang/core/buffer",

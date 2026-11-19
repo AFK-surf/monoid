@@ -458,40 +458,10 @@ pub fn whole(d : Double) -> Int64 {
 /// encodeURIComponent: every code unit but `A-Za-z0-9-_.!~*'()` as its UTF-8 percent-encoded (a lone surrogate is a
 /// URIError, as JavaScript throws).
 pub fn encode_uri_component(s : String) -> String raise FeishuError {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9') ||
-      c is ('-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')') {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    let mut cp = c
-    if c >= 0xd800 && c <= 0xdbff {
-      if i + 1 < s.length() &&
-        s.unsafe_charcode_at(i + 1) >= 0xdc00 &&
-        s.unsafe_charcode_at(i + 1) <= 0xdfff {
-        cp = 0x10000 + ((c - 0xd800) << 10) + (s.unsafe_charcode_at(i + 1) - 0xdc00)
-        i += 1
-      } else {
-        raise FeishuError("URI malformed")
-      }
-    } else if c >= 0xdc00 && c <= 0xdfff {
-      raise FeishuError("URI malformed")
-    }
-    i += 1
-    for b in utf8_of_point(cp) {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(b >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(b & 15).unsafe_to_char())
-    }
+  match @url.encode_uri_component_strict(s) {
+    Some(v) => v
+    None => raise FeishuError("URI malformed")
   }
-  out.to_string()
 }
 
 ///|
