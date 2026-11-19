@@ -5,26 +5,31 @@
 // time, the process's arguments and environment). The program's main runs as the native program's does: the host's
 // run (mb_host_run) does not come back while the app is up, the program called into from inside it.
 //
-//     SHELL PROGRAM.wasm [ARGS…]      (MBUI_WASM_APP: PROGRAM.wasm, where no argument says; PROGRAM.cwasm: compiled
-//                                     ahead for this machine by wasmtime's command line, a device's)
+//     SHELL [PROGRAM.wasm|PROGRAM.cwasm] [ARGS…]
+//                                     (MBUI_WASM_APP takes priority over CLI arg; when neither is given, the shell
+//                                     auto-discovers bundled app.cwasm / app.wasm for the current platform)
 //
 // MBUI_PROFILE_FILE=<file>: a program profiled by mbui's wasmgas (scripts/wasmgas profile) run as a bench (mbui/film's
-// bench, a still.fail scene's src/sfbench), what it runs in each measured frame counted into the file (profiled, below).
+// bench), what it runs in each measured frame counted into the file (profiled, below).
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE  // (pthread_getattr_np)
 #endif
-#include "wasmhost.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #if defined(__ANDROID__) || defined(__linux__)
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <ucontext.h>
-#include <unistd.h>
 #define MBW_CRASH 1
 #endif
 #ifdef __APPLE__
@@ -33,9 +38,113 @@
 #endif
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <jni.h>
 // (Android's Java starts the program as it starts the native one: mbui_main, android_host.c's Native.start)
 #define main mbui_main
 #endif
+
+static int mbw_ends_with(const char *s, const char *suffix) {
+  size_t slen = strlen(s), suflen = strlen(suffix);
+  if (slen < suflen) return 0;
+#ifdef _WIN32
+  for (size_t i = 0; i < suflen; i++) {
+    char a = s[slen - suflen + i], b = suffix[i];
+    if (a >= 'A' && a <= 'Z') a = (char)(a + ('a' - 'A'));
+    if (b >= 'A' && b <= 'Z') b = (char)(b + ('a' - 'A'));
+    if (a != b) return 0;
+  }
+  return 1;
+#else
+  return strcmp(s + slen - suflen, suffix) == 0;
+#endif
+}
+
+static int mbw_has_wasm_ext(const char *s) {
+  return s && (mbw_ends_with(s, ".cwasm") || mbw_ends_with(s, ".wasm"));
+}
+
+static int mbw_is_regular_file(const char *path) {
+  if (!path || !*path) return 0;
+#ifdef _WIN32
+  DWORD attr = GetFileAttributesA(path);
+  return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+static void mbw_append_tried(char *tried, size_t cap, const char *cand) {
+  if (!tried || cap == 0 || !cand || !*cand) return;
+  size_t cur = strlen(tried);
+  if (cur + 1 >= cap) return;
+  snprintf(tried + cur, cap - cur, "%s%s", cur ? ", " : " ", cand);
+}
+
+static int mbw_try_file(const char *cand, char *out, size_t out_cap, char *tried, size_t tried_cap) {
+  mbw_append_tried(tried, tried_cap, cand);
+  if (mbw_is_regular_file(cand)) {
+    snprintf(out, out_cap, "%s", cand);
+    return 1;
+  }
+  return 0;
+}
+
+// Resolve the Wasm/CWasm app path with priority:
+//   1. Explicit env_app (MBUI_WASM_APP) if non-empty
+//   2. Explicit argv[1] if it is not a macOS LaunchServices -psn_* arg and ends with .cwasm or .wasm
+//   3. Platform bundle auto-discovery relative to exe_path:
+//      - macOS app bundle (.../Contents/MacOS/<exe>): ../Resources/app.cwasm, ../Resources/app.wasm
+//      - Executable directory (desktop and iOS): <dir>/app.cwasm, <dir>/app.wasm
+static int mbw_resolve_app_path(int argc, char **argv, const char *env_app, const char *exe_path, int is_macos,
+                                char *out, size_t out_cap, char *tried, size_t tried_cap) {
+  if (out && out_cap > 0) out[0] = 0;
+  if (tried && tried_cap > 0) tried[0] = 0;
+  if (env_app && *env_app) {
+    snprintf(out, out_cap, "%s", env_app);
+    return 1;
+  }
+  if (argc > 1 && argv && argv[1] && *argv[1]) {
+    const char *a = argv[1];
+    if (strncmp(a, "-psn_", 5) != 0 && mbw_has_wasm_ext(a)) {
+      snprintf(out, out_cap, "%s", a);
+      return 1;
+    }
+  }
+  if (!exe_path || !*exe_path) return 0;
+  char dir[4096];
+  snprintf(dir, sizeof dir, "%s", exe_path);
+  char *slash = strrchr(dir, '/');
+#ifdef _WIN32
+  char *bslash = strrchr(dir, '\\');
+  if (bslash && (!slash || bslash > slash)) slash = bslash;
+  char sep = (bslash && bslash == slash) ? '\\' : '/';
+#else
+  char sep = '/';
+#endif
+  if (!slash) return 0;
+  *slash = 0;
+  char cand[4160];
+  if (is_macos) {
+    const char *suffix = "/Contents/MacOS";
+    size_t dlen = strlen(dir), slen = strlen(suffix);
+    if (dlen >= slen && strcmp(dir + dlen - slen, suffix) == 0) {
+      size_t contents_len = dlen - strlen("/MacOS");
+      snprintf(cand, sizeof cand, "%.*s/Resources/app.cwasm", (int)contents_len, dir);
+      if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+      snprintf(cand, sizeof cand, "%.*s/Resources/app.wasm", (int)contents_len, dir);
+      if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+    }
+  }
+  snprintf(cand, sizeof cand, "%s%capp.cwasm", dir, sep);
+  if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+  snprintf(cand, sizeof cand, "%s%capp.wasm", dir, sep);
+  if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+  return 0;
+}
+
+#ifndef MBW_RESOLVE_TEST
+#include "wasmhost.h"
 
 // A word of the shell's: on stderr, on Android the system's log (an app's process has no stderr)
 static void say(const char *fmt, ...) {
@@ -780,6 +889,9 @@ static wasm_byte_vec_t read_file(const char *path) {
 }
 
 #ifdef __ANDROID__
+extern JavaVM *mb_android_vm(void);
+extern int32_t mb_host_app_version(void);
+
 // An Android app's files (the package's, as the process is named), `file` in them
 static const char *android_file(const char *file) {
   static char path[512];
@@ -796,38 +908,231 @@ static const char *android_file(const char *file) {
   return path;
 }
 
-// Where an Android app's program lies, unless MBUI_WASM_APP says: app.cwasm in its files (scripts/wasm-app.sh compiles it
-// for the device and puts it there)
-static const char *android_program(void) {
-  // (its own copy: android_file's is said again for the crash file and the crash test)
-  static char path[512];
-  snprintf(path, sizeof path, "%s", android_file("app.cwasm"));
-  return path;
+// Extract an APK asset (`assets/<asset_name>`) to `dest_path` atomically via JNI AssetManager.
+static int android_extract_asset(const char *asset_name, const char *dest_path) {
+  JavaVM *vm = mb_android_vm();
+  if (!vm) return 0;
+  JNIEnv *env = NULL;
+  if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK || !env) return 0;
+  int ok = 0;
+  jclass host_cls = (*env)->FindClass(env, "dev/mbui/Host");
+  if (!host_cls) {
+    (*env)->ExceptionClear(env);
+    return 0;
+  }
+  jobject ctx_obj = NULL;
+  jfieldID f_act = (*env)->GetStaticFieldID(env, host_cls, "activity", "Ldev/mbui/MainActivity;");
+  if (f_act) ctx_obj = (*env)->GetStaticObjectField(env, host_cls, f_act);
+  else (*env)->ExceptionClear(env);
+  if (!ctx_obj) {
+    jfieldID f_view = (*env)->GetStaticFieldID(env, host_cls, "view", "Ldev/mbui/MBView;");
+    if (f_view) {
+      jobject view_obj = (*env)->GetStaticObjectField(env, host_cls, f_view);
+      if (view_obj) {
+        jclass v_cls = (*env)->GetObjectClass(env, view_obj);
+        jmethodID m_ctx = (*env)->GetMethodID(env, v_cls, "getContext", "()Landroid/content/Context;");
+        if (m_ctx) ctx_obj = (*env)->CallObjectMethod(env, view_obj, m_ctx);
+        (*env)->DeleteLocalRef(env, v_cls);
+        (*env)->DeleteLocalRef(env, view_obj);
+      }
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+  }
+  if (!ctx_obj) {
+    (*env)->DeleteLocalRef(env, host_cls);
+    return 0;
+  }
+  jclass ctx_cls = (*env)->GetObjectClass(env, ctx_obj);
+  jmethodID m_assets = (*env)->GetMethodID(env, ctx_cls, "getAssets", "()Landroid/content/res/AssetManager;");
+  jobject am = m_assets ? (*env)->CallObjectMethod(env, ctx_obj, m_assets) : NULL;
+  if ((*env)->ExceptionCheck(env)) {
+    (*env)->ExceptionClear(env);
+    am = NULL;
+  }
+  if (am) {
+    jclass am_cls = (*env)->GetObjectClass(env, am);
+    jmethodID m_open = (*env)->GetMethodID(env, am_cls, "open", "(Ljava/lang/String;)Ljava/io/InputStream;");
+    jstring jname = (*env)->NewStringUTF(env, asset_name);
+    jobject stream = (m_open && jname) ? (*env)->CallObjectMethod(env, am, m_open, jname) : NULL;
+    if ((*env)->ExceptionCheck(env)) {
+      (*env)->ExceptionClear(env);
+      stream = NULL;
+    }
+    if (stream) {
+      char tmp_path[544];
+      snprintf(tmp_path, sizeof tmp_path, "%s.tmp", dest_path);
+      FILE *out = fopen(tmp_path, "wb");
+      if (out) {
+        jclass is_cls = (*env)->GetObjectClass(env, stream);
+        jmethodID m_read = (*env)->GetMethodID(env, is_cls, "read", "([B)I");
+        jmethodID m_close = (*env)->GetMethodID(env, is_cls, "close", "()V");
+        jbyteArray jbuf = (*env)->NewByteArray(env, 65536);
+        int write_ok = (m_read && jbuf) ? 1 : 0;
+        while (write_ok) {
+          jint got = (*env)->CallIntMethod(env, stream, m_read, jbuf);
+          if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            write_ok = 0;
+            break;
+          }
+          if (got <= 0) break;
+          jbyte *ptr = (*env)->GetByteArrayElements(env, jbuf, NULL);
+          if (!ptr || fwrite(ptr, 1, (size_t)got, out) != (size_t)got) write_ok = 0;
+          if (ptr) (*env)->ReleaseByteArrayElements(env, jbuf, ptr, JNI_ABORT);
+        }
+        if (fclose(out) != 0) write_ok = 0;
+        if (m_close) {
+          (*env)->CallVoidMethod(env, stream, m_close);
+          if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        }
+        if (jbuf) (*env)->DeleteLocalRef(env, jbuf);
+        (*env)->DeleteLocalRef(env, is_cls);
+        if (write_ok && rename(tmp_path, dest_path) == 0) ok = 1;
+        else remove(tmp_path);
+      }
+      (*env)->DeleteLocalRef(env, stream);
+    }
+    if (jname) (*env)->DeleteLocalRef(env, jname);
+    (*env)->DeleteLocalRef(env, am_cls);
+    (*env)->DeleteLocalRef(env, am);
+  }
+  (*env)->DeleteLocalRef(env, ctx_cls);
+  (*env)->DeleteLocalRef(env, ctx_obj);
+  (*env)->DeleteLocalRef(env, host_cls);
+  return ok;
+}
+
+// Where an Android app's program lies, unless MBUI_WASM_APP says:
+//   1. <filesDir>/app.cwasm or <filesDir>/app.wasm (development adb push override)
+//   2. Cached extraction of APK assets/app.cwasm or assets/app.wasm keyed by app version
+static int android_program(char *out, size_t out_cap, char *tried, size_t tried_cap) {
+  char cand[512];
+  const char *p = android_file("app.cwasm");
+  if (p) {
+    snprintf(cand, sizeof cand, "%s", p);
+    if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+  }
+  p = android_file("app.wasm");
+  if (p) {
+    snprintf(cand, sizeof cand, "%s", p);
+    if (mbw_try_file(cand, out, out_cap, tried, tried_cap)) return 1;
+  }
+  int32_t ver = mb_host_app_version();
+  char meta_path[512] = {0};
+  p = android_file("bundled-app.meta");
+  if (p) snprintf(meta_path, sizeof meta_path, "%s", p);
+  if (ver > 0 && meta_path[0]) {
+    FILE *mf = fopen(meta_path, "rb");
+    if (mf) {
+      char line[64] = {0};
+      size_t n = fread(line, 1, sizeof line - 1, mf);
+      fclose(mf);
+      line[n] = 0;
+      char expected[64];
+      snprintf(expected, sizeof expected, "%d:app.cwasm", (int)ver);
+      if (strcmp(line, expected) == 0) {
+        p = android_file("bundled-app.cwasm");
+        if (p && mbw_is_regular_file(p)) {
+          snprintf(out, out_cap, "%s", p);
+          return 1;
+        }
+      }
+      snprintf(expected, sizeof expected, "%d:app.wasm", (int)ver);
+      if (strcmp(line, expected) == 0) {
+        p = android_file("bundled-app.wasm");
+        if (p && mbw_is_regular_file(p)) {
+          snprintf(out, out_cap, "%s", p);
+          return 1;
+        }
+      }
+    }
+  }
+  const char *assets[2][2] = {
+      {"app.cwasm", "bundled-app.cwasm"},
+      {"app.wasm", "bundled-app.wasm"},
+  };
+  for (int i = 0; i < 2; i++) {
+    char label[64];
+    snprintf(label, sizeof label, "assets/%s", assets[i][0]);
+    mbw_append_tried(tried, tried_cap, label);
+    p = android_file(assets[i][1]);
+    if (!p) continue;
+    char dest[512];
+    snprintf(dest, sizeof dest, "%s", p);
+    if (android_extract_asset(assets[i][0], dest)) {
+      if (i == 0) {
+        p = android_file("bundled-app.traps");
+        if (p) {
+          char traps_dest[512];
+          snprintf(traps_dest, sizeof traps_dest, "%s", p);
+          if (!android_extract_asset("app.traps", traps_dest)) remove(traps_dest);
+        }
+      }
+      if (ver > 0 && meta_path[0]) {
+        FILE *mf = fopen(meta_path, "wb");
+        if (mf) {
+          fprintf(mf, "%d:%s", (int)ver, assets[i][0]);
+          fclose(mf);
+        }
+      }
+      snprintf(out, out_cap, "%s", dest);
+      return 1;
+    }
+  }
+  return 0;
 }
 #endif
 
+#ifndef __ANDROID__
+static int mbw_self_exe(char *buf, size_t cap) {
+  if (!buf || cap == 0) return 0;
+  buf[0] = 0;
 #ifdef __APPLE__
-// Where an iOS device's program lies, unless MBUI_WASM_APP says: app.cwasm beside the program, in its bundle
-static const char *beside_program(void) {
-  static char path[4096];
-  uint32_t n = sizeof path;
-  if (_NSGetExecutablePath(path, &n) != 0) return NULL;
-  char *slash = strrchr(path, '/');
-  if (!slash || (size_t)(slash - path) + 10 > sizeof path) return NULL;
-  strcpy(slash + 1, "app.cwasm");
-  return path;
+  char raw[4096];
+  uint32_t n = sizeof raw;
+  if (_NSGetExecutablePath(raw, &n) != 0) return 0;
+  char resolved[4096];
+  if (realpath(raw, resolved)) {
+    snprintf(buf, cap, "%s", resolved);
+    return 1;
+  }
+  snprintf(buf, cap, "%s", raw);
+  return 1;
+#elif defined(__linux__)
+  ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
+  if (n <= 0) return 0;
+  buf[n] = 0;
+  return 1;
+#elif defined(_WIN32)
+  DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)cap);
+  return n > 0 && n < cap;
+#else
+  return 0;
+#endif
 }
 #endif
 
 int main(int argc, char **argv) {
-  const char *path = argc > 1 ? argv[1] : getenv("MBUI_WASM_APP");
+  char path_buf[4096] = {0};
+  char tried[8192] = {0};
+  const char *env_app = getenv("MBUI_WASM_APP");
+  int found = 0;
 #ifdef __ANDROID__
-  if (!path || !*path) path = android_program();
-#elif defined(__APPLE__) && TARGET_OS_IPHONE
-  if (!path || !*path) path = beside_program();
+  found = mbw_resolve_app_path(argc, argv, env_app, NULL, 0, path_buf, sizeof path_buf, tried, sizeof tried);
+  if (!found) found = android_program(path_buf, sizeof path_buf, tried, sizeof tried);
+#else
+  char exe_buf[4096] = {0};
+  const char *exe = mbw_self_exe(exe_buf, sizeof exe_buf) ? exe_buf : NULL;
+  int is_macos = 0;
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+  is_macos = 1;
 #endif
+  found = mbw_resolve_app_path(argc, argv, env_app, exe, is_macos, path_buf, sizeof path_buf, tried, sizeof tried);
+#endif
+  const char *path = found ? path_buf : NULL;
   if (!path || !*path) {
-    say("usage: %s PROGRAM.wasm [ARGS…]\n", argv[0]);
+    say("wasm shell: no app found (usage: %s PROGRAM.wasm [ARGS…], or set MBUI_WASM_APP)\n", argv[0]);
+    if (tried[0]) say("wasm shell: searched:%s\n", tried);
     return 2;
   }
   shell_argc = argc;
@@ -857,6 +1162,7 @@ int main(int argc, char **argv) {
   {
     char traps[16] = {0};
     FILE *t = fopen(android_file("app.traps"), "rb");
+    if (!t) t = fopen(android_file("bundled-app.traps"), "rb");
     if (t) {
       size_t got = fread(traps, 1, sizeof traps - 1, t);
       fclose(t);
@@ -897,8 +1203,7 @@ int main(int argc, char **argv) {
   ctx = wasmtime_store_context(store);
   wasmtime_module_t *module = NULL;
   wasmtime_error_t *err;
-  size_t len = strlen(path);
-  if (len > 6 && strcmp(path + len - 6, ".cwasm") == 0) {
+  if (mbw_ends_with(path, ".cwasm")) {
     // (compiled ahead for this machine by wasmtime's command line, as this wasmtime would: a device's)
     err = wasmtime_module_deserialize_file(engine, path, &module);
     if (err) {
@@ -1007,3 +1312,144 @@ int main(int argc, char **argv) {
   if (err || trap) die("the program trapped", err, trap);
   return 0;
 }
+#else
+// Unit/contract tests for bundle auto-discovery and explicit path resolution priority.
+// Build and run via: cc -O2 -DMBW_RESOLVE_TEST libs/mbui/src/host/wasm_shell.c -o /tmp/wasm_resolve_test && /tmp/wasm_resolve_test
+static int fail_count;
+
+static void touch_file(const char *path) {
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    fprintf(stderr, "FAIL: cannot create %s\n", path);
+    exit(1);
+  }
+  fputs("wasm", f);
+  fclose(f);
+}
+
+static void assert_path(const char *name, int got_found, int exp_found, const char *got, const char *exp) {
+  if (got_found != exp_found || (exp_found && strcmp(got, exp) != 0)) {
+    fprintf(stderr, "FAIL [%s]: found=%d (exp %d), got='%s', exp='%s'\n",
+            name, got_found, exp_found, got ? got : "", exp ? exp : "");
+    fail_count++;
+  }
+}
+
+int main(void) {
+  char root_tmpl[] = "/tmp/mbui-wasm-resolve-XXXXXX";
+  char *root = mkdtemp(root_tmpl);
+  if (!root) {
+    perror("mkdtemp");
+    return 1;
+  }
+  char app_dir[128], contents_dir[256], macos_dir[384], res_dir[384], flat_dir[128];
+  snprintf(app_dir, sizeof app_dir, "%s/Demo.app", root);
+  snprintf(contents_dir, sizeof contents_dir, "%s/Contents", app_dir);
+  snprintf(macos_dir, sizeof macos_dir, "%s/MacOS", contents_dir);
+  snprintf(res_dir, sizeof res_dir, "%s/Resources", contents_dir);
+  snprintf(flat_dir, sizeof flat_dir, "%s/flat", root);
+  mkdir(app_dir, 0755);
+  mkdir(contents_dir, 0755);
+  mkdir(macos_dir, 0755);
+  mkdir(res_dir, 0755);
+  mkdir(flat_dir, 0755);
+
+  char mac_exe[512], flat_exe[256];
+  snprintf(mac_exe, sizeof mac_exe, "%s/mbui-runtime", macos_dir);
+  snprintf(flat_exe, sizeof flat_exe, "%s/mbui-runtime", flat_dir);
+
+  char res_cwasm[512], res_wasm[512], mac_cwasm[512], mac_wasm[512], flat_cwasm[256], flat_wasm[256];
+  snprintf(res_cwasm, sizeof res_cwasm, "%s/app.cwasm", res_dir);
+  snprintf(res_wasm, sizeof res_wasm, "%s/app.wasm", res_dir);
+  snprintf(mac_cwasm, sizeof mac_cwasm, "%s/app.cwasm", macos_dir);
+  snprintf(mac_wasm, sizeof mac_wasm, "%s/app.wasm", macos_dir);
+  snprintf(flat_cwasm, sizeof flat_cwasm, "%s/app.cwasm", flat_dir);
+  snprintf(flat_wasm, sizeof flat_wasm, "%s/app.wasm", flat_dir);
+
+  char out[4096], tried[8192];
+  char *argv_none[] = {"mbui-runtime", NULL};
+  char *argv_psn[] = {"mbui-runtime", "-psn_0_123456", NULL};
+  char *argv_flag[] = {"mbui-runtime", "--verbose", NULL};
+  char *argv_cli_wasm[] = {"mbui-runtime", "/explicit/cli.wasm", NULL};
+  char *argv_cli_cwasm[] = {"mbui-runtime", "/explicit/cli.cwasm", NULL};
+
+  // 1. Nothing exists -> returns 0 and lists all searched paths
+  int found = mbw_resolve_app_path(1, argv_none, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("mac empty", found, 0, out, "");
+  if (!strstr(tried, res_cwasm) || !strstr(tried, res_wasm) || !strstr(tried, mac_cwasm) || !strstr(tried, mac_wasm)) {
+    fprintf(stderr, "FAIL [mac empty tried]: missing candidates in '%s'\n", tried);
+    fail_count++;
+  }
+
+  // 2. Directory named app.wasm is ignored (not a regular file)
+  mkdir(flat_wasm, 0755);
+  found = mbw_resolve_app_path(1, argv_none, NULL, flat_exe, 0, out, sizeof out, tried, sizeof tried);
+  assert_path("dir ignored", found, 0, out, "");
+  rmdir(flat_wasm);
+
+  // 3. macOS bundle precedence: Resources/app.cwasm > Resources/app.wasm > MacOS/app.cwasm > MacOS/app.wasm
+  touch_file(mac_wasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("mac fallback MacOS/app.wasm", found, 1, out, mac_wasm);
+
+  touch_file(mac_cwasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("mac fallback MacOS/app.cwasm", found, 1, out, mac_cwasm);
+
+  touch_file(res_wasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("mac bundle Resources/app.wasm", found, 1, out, res_wasm);
+
+  touch_file(res_cwasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("mac bundle Resources/app.cwasm", found, 1, out, res_cwasm);
+
+  // 4. Ignore -psn_* and non-wasm CLI flags -> falls through to bundle auto-discovery
+  found = mbw_resolve_app_path(2, argv_psn, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("ignore -psn_*", found, 1, out, res_cwasm);
+
+  found = mbw_resolve_app_path(2, argv_flag, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("ignore --flag", found, 1, out, res_cwasm);
+
+  // 5. Explicit CLI .wasm / .cwasm overrides bundle
+  found = mbw_resolve_app_path(2, argv_cli_wasm, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("cli .wasm overrides bundle", found, 1, out, "/explicit/cli.wasm");
+
+  found = mbw_resolve_app_path(2, argv_cli_cwasm, NULL, mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("cli .cwasm overrides bundle", found, 1, out, "/explicit/cli.cwasm");
+
+  // 6. Explicit MBUI_WASM_APP env overrides CLI arg and bundle
+  found = mbw_resolve_app_path(2, argv_cli_wasm, "/explicit/env.wasm", mac_exe, 1, out, sizeof out, tried, sizeof tried);
+  assert_path("env overrides cli and bundle", found, 1, out, "/explicit/env.wasm");
+
+  // 7. Flat/Linux/iOS directory precedence: app.cwasm > app.wasm
+  touch_file(flat_wasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, flat_exe, 0, out, sizeof out, tried, sizeof tried);
+  assert_path("flat app.wasm", found, 1, out, flat_wasm);
+
+  touch_file(flat_cwasm);
+  found = mbw_resolve_app_path(1, argv_none, NULL, flat_exe, 0, out, sizeof out, tried, sizeof tried);
+  assert_path("flat app.cwasm", found, 1, out, flat_cwasm);
+
+  // Cleanup temp files
+  remove(res_cwasm);
+  remove(res_wasm);
+  remove(mac_cwasm);
+  remove(mac_wasm);
+  remove(flat_cwasm);
+  remove(flat_wasm);
+  rmdir(res_dir);
+  rmdir(macos_dir);
+  rmdir(contents_dir);
+  rmdir(app_dir);
+  rmdir(flat_dir);
+  rmdir(root);
+
+  if (fail_count) {
+    fprintf(stderr, "wasm_shell resolve tests: %d failed\n", fail_count);
+    return 1;
+  }
+  printf("wasm_shell resolve tests: all passed\n");
+  return 0;
+}
+#endif
