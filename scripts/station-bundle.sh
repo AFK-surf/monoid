@@ -45,6 +45,7 @@ helper=; [ "$platform" = darwin-arm64 ] && helper="$(native helper)"
 # The reader in MoonBit (station/mb).
 reader="$(native reader)"
 screen=; [ "$platform" = win32-x64 ] && screen="$(native screen)"
+screen_linux=; case "$platform" in linux-*) screen_linux="$(native screen-linux)" ;; esac
 tree=; [ "$platform" = win32-x64 ] && tree="$(native agent-desktop)"
 # The build's output is the complete set of station files for this release, not a previous build's leftover workers.
 rm -rf "$root/station/dist"
@@ -67,6 +68,7 @@ cp "$mesh" "$runner" "$app/station/"
 cp "$reader" "$app/station/"
 [ -z "$helper" ] || cp -R "$helper" "$app/station/"
 [ -z "$screen" ] || cp "$screen" "$app/station/"
+[ -z "$screen_linux" ] || cp "$screen_linux" "$app/station/"
 [ -z "$tree" ] || cp "$tree" "$app/station/"
 # macOS asks "find devices on local networks?" (the mesh's mDNS) for the launcher: Node and everything it starts are
 # its. Ad hoc, the grant was its hash's: each new launcher asked again, and every Node it started while unanswered put

@@ -31,6 +31,7 @@ import { Desktop } from "./screens/desktop.ts";
 import { Simulators } from "./screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "./screens/win-desktop.ts";
 import { LinuxDesktop } from "./screens/linux-desktop.ts";
+import { linuxScreenBinary } from "./screens/linux-native.ts";
 import { uiBinary } from "./screens/ui.ts";
 import { type Drive, droppedInto, stationDrive } from "./drive/drive.ts";
 import { stationVersion } from "./ops/version.ts";
@@ -219,7 +220,7 @@ export class ScreenRegistry extends Context.Service<ScreenRegistry, ScreenHub>()
         platform.desktopScreen === "screen"
           ? new WindowsDesktop({ binary: screenBinary(), ui: uiBinary(), changed: () => hub.changed(), title })
           : platform.desktopScreen === "x11"
-          ? new LinuxDesktop({ data, changed: () => hub.changed(), title })
+          ? new LinuxDesktop({ data, changed: () => hub.changed(), title, nativeBinary: linuxScreenBinary() })
           : new Desktop({ supported: platform.desktopScreen === "helper", helper, grants: yield* Grants, changed: () => hub.changed(), title });
       // Back after it ended by itself: the desktop asks again for a grant still missing.
       if (desktop instanceof Desktop) helper?.onBack(() => void desktop.helperBack());

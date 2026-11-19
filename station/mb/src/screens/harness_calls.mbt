@@ -43,6 +43,7 @@ async fn Harness::make(self : Harness, kind : String, a : J) -> Inst {
       let socket = Sock::create(self.io, Unix(text(arg("path")).unwrap_or("/view.sock")))
       let input = match text(arg("input")) {
         Some("win") => WinInput::new().input_ops()
+        Some("linux") => LinuxInput::new().input_ops()
         Some("sim") => SimInput::new().input_ops()
         _ => MacInput::new().input_ops()
       }
@@ -192,6 +193,22 @@ async fn Harness::make(self : Harness, kind : String, a : J) -> Inst {
           consent_wait_ms: num(arg("consentWaitMs")),
         }),
       )
+    "linuxNative" =>
+      ILinuxNative(
+        LinuxNativeDesktop::new(self.io, {
+          binary: text(arg("binary")),
+          changed: self.cb("\{name}.changed"),
+          title: match text(arg("title")) {
+            Some(t) => Some(() => t)
+            None => None
+          },
+          env: match arg("env") {
+            Some(Obj(_) as e) => Some(Env::of_j(e))
+            _ => None
+          },
+          start: None,
+        }),
+      )
     "linux" =>
       ILinux(
         LinuxDesktop::new(self.io, {
@@ -206,10 +223,13 @@ async fn Harness::make(self : Harness, kind : String, a : J) -> Inst {
             _ => None
           },
           discover: None,
+          native_binary: text(arg("nativeBinary")),
+          native_start: None,
         }),
       )
     "macInput" => IMac(MacInput::new())
     "winInput" => IWinIn(WinInput::new())
+    "linuxInput" => ILinuxIn(LinuxInput::new())
     "simInput" => ISimIn(SimInput::new())
     "androidInput" => IAndIn(AndroidInput::new())
     "scrcpy" =>
@@ -597,6 +617,20 @@ async fn Harness::call(self : Harness, name : String, f : String, a : J) -> J {
         }
         _ => self.source_call(g.source(), f, a)
       }
+    ILinuxNative(n) =>
+      match f {
+        "refresh" => {
+          n.refresh(force=bool_of(arg("force")))
+          Null
+        }
+        "available" => jb(n.available())
+        "backend" => jopt_s(n.backend())
+        "close" => {
+          n.close()
+          Null
+        }
+        _ => self.source_call(n.source(), f, a)
+      }
     ILinux(l) =>
       match f {
         "refresh" => {
@@ -637,6 +671,12 @@ async fn Harness::call(self : Harness, name : String, f : String, a : J) -> J {
       match f {
         "ops" => ja(w.ops(input_of(arg("event").unwrap_or(Null)).unwrap()))
         "release" => ja(w.release())
+        _ => raise fail("no \{f}")
+      }
+    ILinuxIn(li) =>
+      match f {
+        "ops" => ja(li.ops(input_of(arg("event").unwrap_or(Null)).unwrap()))
+        "release" => ja(li.release())
         _ => raise fail("no \{f}")
       }
     ISimIn(si) =>

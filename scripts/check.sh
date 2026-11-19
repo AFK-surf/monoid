@@ -635,7 +635,7 @@ if [ $full = 1 ]; then
   fi
   # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too;
   # STILLFAIL_SKIP_RUST_TESTS leaves these and the core's Rust below out).
-  for crate in launcher runner mesh screen; do
+  for crate in launcher runner mesh screen screen-linux; do
     also='^$'; [ $crate = mesh ] && also='^vendor/'
     if part station && rust_tests && { touches "^station/native/$crate/" || touches "$also"; }; then
       inputs="station/native/$crate"; [ $crate = mesh ] && inputs="$inputs vendor"; [ $crate = launcher ] && inputs="$inputs .node-version"

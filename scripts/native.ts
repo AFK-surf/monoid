@@ -424,6 +424,8 @@ const PARTS: Record<string, Part> = {
   runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
   // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
   screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },
+  // Linux's native display capture, OpenH264/JPEG encoding, and input helper.
+  "screen-linux": { ...stationCrate("station/native/screen-linux", () => "stillfail-screen-linux", "stillfail-screen-linux"), targets: ["linux-x64", "linux-arm64"], env: "STILLFAIL_SCREEN_LINUX" },
   // For the station's tests: the Rust station's cold storage as a command (test/cold-compat.test.ts), and a member's
   // client asking a station over iroh (tools/load: test/e2e.sh, compare.sh). This machine's only.
   "archive-rs": {
