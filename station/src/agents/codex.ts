@@ -722,8 +722,9 @@ export class CodexDriver implements AgentDriver {
   /// it: its sessions are opened again on a new one with their next turn.
   private async retireStale(key: string, installed: string | null) {
     const host = this.hosts.get(key);
-    // (one being opened on, or asked something, is not ended under its caller: replaced once its lease is let go)
-    if (!host || !host.alive() || host.turns.size > 0 || host.opening > 0 || host.pending.size > 0) return;
+    // (one a thread is being opened on is not ended under its caller: replaced once its lease is let go. A turn asked
+    // meanwhile is not waited for: `prompt` looks again after its last await, and opens again elsewhere.)
+    if (!host || !host.alive() || host.turns.size > 0 || host.opening > 0) return;
     if (host.loginStale) {
       log.info("agents::codex", "login changed; restarting its codex app-server", { profile: host.profile, key });
     } else if (this.stale(host)) {
@@ -1050,7 +1051,7 @@ export class CodexDriver implements AgentDriver {
         // The profile (or the station's variables for its agents) changed. Replace the process once no turn runs on it,
         // as when Codex was updated under it: its other threads are closed, to be opened again on the new one with their
         // next turn. Waiting for no thread at all would wait for ever: a session opened meanwhile joins the old one.
-        if (kept.turns.size === 0 && kept.opening === 0 && kept.pending.size === 0) {
+        if (kept.turns.size === 0 && kept.opening === 0) {
           log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id });
           kept.draining = true;
           this.hosts.delete(key);
