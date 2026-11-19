@@ -2722,6 +2722,8 @@ web-pages.stations.page.more
 web-pages.stations.page.openFiles
 web-pages.stations.page.part.processes
 web-pages.stations.page.resources
+web-pages.stations.page.cpuBusy
+web-pages.stations.page.cpuBusyShort
 web-pages.stations.page.runningShort
 web-pages.stations.permissions.granted
 web-pages.stations.permissions.missing

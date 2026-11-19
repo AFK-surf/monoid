@@ -48,9 +48,9 @@ fn stories_display(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             @sf.dials_node(card, fn() {
               [
-                { number: "62", unit: "%", fill: 62, level: "ok", label: "5 小时", note: "2 小时后刷新", label_short: "5h", note_short: "" },
-                { number: "18", unit: "%", fill: 18, level: "amber", label: "每周", note: "3 天后刷新", label_short: "W", note_short: "" },
-                { number: "4", unit: "%", fill: 4, level: "red", label: "Opus 每周", note: "3 天后刷新", label_short: "Opus", note_short: "" },
+                { number: "62", unit: "%", fill: 62, level: "ok", label: "5 小时", note: "2 小时后刷新", label_short: "5h", note_short: "", turns: false },
+                { number: "18", unit: "%", fill: 18, level: "amber", label: "每周", note: "3 天后刷新", label_short: "W", note_short: "", turns: false },
+                { number: "4", unit: "%", fill: 4, level: "red", label: "Opus 每周", note: "3 天后刷新", label_short: "Opus", note_short: "", turns: false },
               ]
             })
           },

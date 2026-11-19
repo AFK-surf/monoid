@@ -989,3 +989,54 @@ test "gone back, updating by itself held till a newer release says so under the 
     assert_eq(t.audit(), [], msg=at)
   }
 }
+
+///|
+/// Where the CPU's dial says its name (in its full words or its short ones), None where neither is drawn.
+fn cpu_dial_at(t : @ui.Tester, full : String, short : String) -> (Double, Double)? {
+  match t.find(full) {
+    Some(at) => Some(at)
+    None => t.find(short)
+  }
+}
+
+///|
+test "the CPU's dial pressed says how much is used, pressed again how much is idle, kept on this device" {
+  for (w, platform) in page_cases {
+    let asked : Array[Json] = []
+    let t = setting_tester(
+      Station("ws1/st1"),
+      w,
+      platform~,
+      h=2400.0,
+      over=fn(s) {
+        {
+          ..s,
+          call: fn(name, params, done) {
+            if name == "prefs.set" && field(Some(params), "cpuDial") is Some(_) {
+              asked.push(params)
+            }
+            (s.call)(name, params, done)
+          },
+        }
+      },
+    )
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} \{platform}"
+    guard cpu_dial_at(t, "CPU 空闲率", "CPU 空闲") is Some((x, y)) else { fail("no CPU dial: \{at}") }
+    assert_true(t.find("72") is Some(_), msg="idle large: \{at}")
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.map(fn(p) { p.stringify() }), ["{\"cpuDial\":\"busy\"}"], msg=at)
+    guard cpu_dial_at(t, "CPU 占用率", "CPU 占用") is Some((x, y)) else { fail("not turned to busy: \{at}") }
+    assert_true(t.find("28") is Some(_), msg="busy large: \{at}")
+    assert_true(t.find("72") is None, msg="idle no longer said: \{at}")
+    assert_eq(t.squeeze_faults(), [], msg=at)
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.length(), 2, msg=at)
+    assert_eq(asked[1].stringify(), "{\"cpuDial\":null}", msg=at)
+    assert_true(cpu_dial_at(t, "CPU 空闲率", "CPU 空闲") is Some(_), msg="back to idle: \{at}")
+    // (the memory's dial says what is left whatever the CPU's says)
+    assert_true(t.find("可用内存") is Some(_), msg=at)
+  }
+}

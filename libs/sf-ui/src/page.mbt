@@ -1565,7 +1565,8 @@ pub fn figures(c : @ui.Ctx, figures : Array[(String, String, String)]) -> Unit {
 
 ///|
 /// A dial's figure (Dial): what is left large (`number` and its `unit`), `fill` of its ten cells lit (0–100) in its
-/// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under.
+/// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under. `turns`: pressed, it
+/// says itself the other way (a CPU's idle and busy: dials_node's `press`).
 #derive(Eq)
 pub(all) struct Dial {
   number : String
@@ -1577,6 +1578,7 @@ pub(all) struct Dial {
   // what `label` and `note` say where their line has not the room ("": nothing shorter)
   label_short : String
   note_short : String
+  turns : Bool
 }
 
 ///|

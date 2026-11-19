@@ -56,6 +56,8 @@ pub(all) struct Fixture {
   /// the look the card to share is drawn in (the prefs' `shareLook`; "" none kept): share-card-<key> (but -dark) opens
   /// it in that look
   mut share_look : String
+  /// how a machine's CPU dial says it on this device (the prefs' `cpuDial`; "" none kept: idle)
+  mut cpu_dial : String
   /// each chats' list's window as it was told (`chats.window`, by fixture_window_key), as the core's views.ts keeps it:
   /// only grows; long-paged's lists give that many of their rows, 50 where untold
   windows : Map[String, Int]
@@ -1474,6 +1476,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "haptics": Json::string(f.haptics),
         "appUpdate": Json::string(f.app_update),
         "shareLook": if f.share_look == "" { Json::null() } else { Json::string(f.share_look) },
+        "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
         "fonts": fixture_fonts(f.fonts),
         "faces": fixture_faces(f.fonts),
         "keys": fixture_keys(f.keys),
@@ -2166,6 +2169,7 @@ fn made_fixture(mode : String) -> Fixture {
     tabs_shown: fixture_tabs_shown(mode),
     sidebars: {},
     windows: Map::from_array([(fixture_id_key, fixture_ids.next())]),
+    cpu_dial: "",
     share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" && mode != "share-card-motion" {
       // (share-card-<key>-coming, -failed: its files of the looks on their way, not had)
       let look = mode.unsafe_substring(start="share-card-".length(), end=mode.length())
@@ -2599,6 +2603,11 @@ pub fn fixture(mode : String) -> Source {
           }
           match field(Some(params), "shareLook") {
             Some(String(l)) => f.share_look = l
+            _ => ()
+          }
+          match field(Some(params), "cpuDial") {
+            Some(String(d)) => f.cpu_dial = d
+            Some(Null) => f.cpu_dial = ""
             _ => ()
           }
           match field(Some(params), "motion") {
