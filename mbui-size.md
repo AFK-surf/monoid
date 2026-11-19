@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.13 | 125.05 |
 | [d5a741a43](https://github.com/AFK-surf/monoid/commit/d5a741a43c3a72c890a8ddcaf70dde766e11bc0b) perf(mbui): snap View::shift to whole pixels, drop | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
 | [16aa89a96](https://github.com/AFK-surf/monoid/commit/16aa89a96bc9704cc3067d23f96daf7402e80f0a) fix(station, sf-ui): fix Slack app creation crash, | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
 | [f65dd8ee5](https://github.com/AFK-surf/monoid/commit/f65dd8ee584b511023f9c87efe3263611d1b38f9) refactor(mbui): shard detlint counts by package (# | 2.61 | 3.51 | 14.34 | 36.44 | 55.28 | 31.92 | 64.52 | 97.21 | 115.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.69 | 63.81 | 97.22 | 126.31 |
-| [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 2.58 | 3.46 | 14.13 | 36.17 | 54.38 | 31.69 | 63.81 | 97.22 | 120.26 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1dee65d49](https://github.com/AFK-surf/monoid/commit/1dee65d4902de50f3f044b30f395fb40b298e890) refactor(station): route all remaining MoonBit soc | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [d5a741a43](https://github.com/AFK-surf/monoid/commit/d5a741a43c3a72c890a8ddcaf70dde766e11bc0b) perf(mbui): snap View::shift to whole pixels, drop | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.28 |
 | [16aa89a96](https://github.com/AFK-surf/monoid/commit/16aa89a96bc9704cc3067d23f96daf7402e80f0a) fix(station, sf-ui): fix Slack app creation crash, | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54 |
 | [f65dd8ee5](https://github.com/AFK-surf/monoid/commit/f65dd8ee584b511023f9c87efe3263611d1b38f9) refactor(mbui): shard detlint counts by package (# | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.99 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.04 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.04 |
-| [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
