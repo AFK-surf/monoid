@@ -206,10 +206,10 @@ about the card), and only a grant counts. Once granted, call `device_use` again 
 - tcp: connect to 127.0.0.1:<port> as you would to its address (http, `ssh -p`, mqtt, rtsp…);
 - serial: the port's bytes both ways over 127.0.0.1:<port> (it is set raw at its baud there).
 
-With no device named it is the phone of the person you work for, as `phone_use {reason}` asks for it: they approve it
-for this chat for an hour, until it has gone unused for an hour, for eight hours, or until the chat is archived.
-Called again once granted, `phone_use` says how the phone is reached now (its adb server and serial, which other
-chats cannot reach). A grant ends when its time is up, when this chat has used the device for nothing for the idle
+`device_use {reason}` with no device named (or with a person's email) asks for the phone of the person you work for
+(or of that person): they approve it for this chat for an hour, until it has gone unused for an hour, for eight hours,
+or until the chat is archived. Called again once granted, `device_use` says how the phone is reached now (its adb
+server and serial, which other chats cannot reach). A grant ends when its time is up, when this chat has used the device for nothing for the idle
 time, when its owner takes it back, or when this chat is archived; you are told. Done with a device (what it was asked
 for is finished), hand it back with `done: true`: its port here closes and, for a phone, it is no longer lent for this
 chat and you are no longer told how it comes and goes. Hand it back only once the whole of that is done: one grant covers its time,

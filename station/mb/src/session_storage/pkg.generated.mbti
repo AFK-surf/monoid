@@ -84,6 +84,8 @@ pub fn recommends(@json.Json, ArchivePolicy, Double) -> Bool
 
 pub fn repo_name(String) -> String
 
+pub let retired_skills : Array[String]
+
 pub let runtime_kinds : Array[String]
 
 pub fn safe_url(String) -> String

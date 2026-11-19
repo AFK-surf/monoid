@@ -34,7 +34,8 @@ let retry_most_ms : Double = 600000.0
 let follow_most : Int = 1000
 
 ///|
-/// The skills the station brings, by directory name (sessions/agent-home.ts `BUILTIN_SKILLS`, `FEEDBACK_SKILL`).
+/// The skills the station brings, by directory name (sessions/agent-home.ts `BUILTIN_SKILLS`, `FEEDBACK_SKILL`), and
+/// those it brought before (`RETIRED_SKILLS`: a copy left of one is never synced as a team skill).
 pub let builtin_skills : Array[String] = [
   "stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault",
   "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading", "stillfail-feedback",

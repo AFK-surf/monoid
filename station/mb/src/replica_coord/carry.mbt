@@ -110,7 +110,7 @@ pub fn list_file(fs : Fs, scratch : String, key : String) -> String {
 ///|
 /// The agent home's skills that are the station's own: none of them goes along.
 pub fn own_skills() -> Array[String] {
-  [..@session_storage.builtin_skills, @session_storage.feedback_skill]
+  [..@session_storage.builtin_skills, @session_storage.feedback_skill, ..@session_storage.retired_skills]
 }
 
 ///|

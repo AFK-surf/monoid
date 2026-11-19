@@ -1148,7 +1148,7 @@ test("a transcript that went its own way in two homes keeps the shared place's a
   rmSync(data, { recursive: true, force: true });
 });
 
-test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only", async () => {
+test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only; a retired one taken away", async () => {
   const root = temp();
   const home = join(root, "agent");
   mkdirSync(join(home, "skills", "team-skill"), { recursive: true });
@@ -1176,6 +1176,16 @@ test("the station's own skills are written and kept as the station has them; the
   writeFileSync(join(home, "skills", "stillfail-feedback", "notes.md"), "mine");
   await writeBuiltinSkills(home, false);
   assert.ok(existsSync(join(home, "skills", "stillfail-feedback", "notes.md")));
+  // (stillfail-retire is brought no longer: a copy left as the station wrote it goes, one added to stays)
+  mkdirSync(join(home, "skills", "stillfail-retire"), { recursive: true });
+  writeFileSync(join(home, "skills", "stillfail-retire", "SKILL.md"), "---\nname: stillfail-retire\n---\n");
+  await writeBuiltinSkills(home, true);
+  assert.ok(!existsSync(join(home, "skills", "stillfail-retire")), "a retired skill left as written is taken away");
+  mkdirSync(join(home, "skills", "stillfail-retire"), { recursive: true });
+  writeFileSync(join(home, "skills", "stillfail-retire", "SKILL.md"), "---\nname: stillfail-retire\n---\n");
+  writeFileSync(join(home, "skills", "stillfail-retire", "notes.md"), "mine");
+  await writeBuiltinSkills(home, false);
+  assert.ok(existsSync(join(home, "skills", "stillfail-retire", "notes.md")), "one someone added to stays");
   rmSync(root, { recursive: true, force: true });
 });
 

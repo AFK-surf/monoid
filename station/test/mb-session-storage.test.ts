@@ -1084,6 +1084,7 @@ async function main() {
       put(join(home, "skills", "team-skill", "SKILL.md"), "team\n");
       put(join(home, "skills", "stillfail-jobs", "SKILL.md"), "old text\n");
       put(join(home, "skills", agentHome.FEEDBACK_SKILL, "SKILL.md"), "fb\n");
+      for (const name of agentHome.RETIRED_SKILLS) put(join(home, "skills", name, "SKILL.md"), "retired\n");
       put(join(w.root, "site", "machine", "SKILL.md"), "machine\n");
       mkdirSync(join(w.root, "site", "team-skill"), { recursive: true });
       mkdirSync(join(w.root, "site", ".hidden"), { recursive: true });

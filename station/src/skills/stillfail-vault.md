@@ -71,9 +71,8 @@ station's profiles), or anything the person said not to keep.
   need it (answer the chat, other work); with nothing else left, end your turn need_human about the card. Only their
   approval in the app keeps it: a yes written in the chat does not. Once kept, this chat may use it at once (the
   request's id is its grant for `secret_run`); other chats ask with `secret_use`.
-- A later chat message closes the card, but does not decide the request. If it is still needed, call
-  `secret_reask {request}` with its original request id: the same request gets a new card, without reading or capturing
-  the secret again. It will not replace another pending card.
+- The card waits until the person decides it or you withdraw it (`secret_cancel {request}`, below): a later chat
+  message does not close it, so never ask for the same secret again while its card waits.
 - Their vault not turned on (secret_list says so: security mode is on, but no device of theirs has it set up): call
   `secret_save` anyway. The card says so and offers 开启密钥库 in the app; once they turn it on, it keeps the secret.
   Tell them in a line that turning it on takes a minute and shows recovery words to write down once.
