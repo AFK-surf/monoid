@@ -49,10 +49,14 @@ test "wide: an agent's history's head as the web's: its control, 只看收发 le
   // (where its transcript is: asked once the frame is built, answered at once)
   t.frame()
   t.frame()
-  // 详情 open to begin with: what runs it, its station, where its transcript is
+  // 详情 starts folded on wide screens; clicking 详情 unfolds what runs it, its station, and its transcript
+  assert_true(t.query(Button, label="复制路径") is None)
+  t.click(Button, label="详情")
+  t.run_for(@ui.move_most_ms)
+  t.frame()
   assert_true(t.find("Willow") is Some(_))
   assert_true(t.query(Button, label="复制路径") is Some(_))
-  // (folded on a Move, as what a column lets go)
+  // (folded back on a Move, as what a column lets go)
   t.click(Button, label="详情")
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="复制路径") is None)
