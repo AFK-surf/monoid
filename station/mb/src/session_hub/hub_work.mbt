@@ -373,31 +373,84 @@ fn Hub::stop_timers(self : Hub) -> Unit {
 
 ///|
 /// Hands the sessions to the next station: turns held, every queue run out, each actor's snapshot written to
-/// <data>/run/handover.json, and the drivers let go of their processes.
-pub async fn Hub::hand_over(self : Hub, limit_ms? : Double = 30_000.0) -> Json {
+/// <data>/run/handover.json, and the drivers let go of their processes. With `partial=true`, sessions that fail to
+/// settle in time are skipped (closed without snapshotting or disposing their runners) so every other session's
+/// snapshot is still preserved and handed over.
+pub async fn Hub::hand_over(
+  self : Hub,
+  limit_ms? : Double = 30_000.0,
+  partial? : Bool = false,
+) -> Json {
   self.hold("drain")
   self.holds_runners = false
+  let skipped : Set[String] = Set([])
   let settled = (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
   if str_of(settled, "error") is Some(m) {
-    self.release("drain")
-    raise Refused(m)
+    if !partial {
+      self.release("drain")
+      raise Refused(m)
+    }
+    let names : Array[String] = []
+    for k in items(field(settled, "unsettled")) {
+      let s = js_string(k)
+      if s != "" {
+        skipped.add(s)
+        names.push(s)
+      }
+    }
+    let who = if names.length() > 0 { " (" + names.join(", ") + ")" } else { "" }
+    (self.world.tell)("log", {
+      "warn": Json::string("some sessions did not settle in time\{who}; handing over the rest"),
+    })
   }
-  let frozen = (self.world.ask)("drivers.freeze", { "limitMs": num(limit_ms) })
+  let freeze_ms = if partial && limit_ms > 5_000.0 { 5_000.0 } else { limit_ms }
+  let frozen = (self.world.ask)("drivers.freeze", { "limitMs": num(freeze_ms) })
   // What the drivers took in as they froze settled too (hub.ts: `settled` again after `freeze`), so the snapshots say
   // where each stands then.
-  let frozen = if str_of(frozen, "error") is Some(_) {
-    frozen
-  } else {
-    (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
-  }
   if str_of(frozen, "error") is Some(m) {
-    (self.world.tell)("drivers", { "call": "thaw", "args": [] })
-    self.release("drain")
-    raise Refused(m)
+    if !partial {
+      (self.world.tell)("drivers", { "call": "thaw", "args": [] })
+      self.release("drain")
+      raise Refused(m)
+    }
+    (self.world.tell)("log", {
+      "warn": Json::string("drivers did not freeze in time (\{m}); continuing handover"),
+    })
+  } else {
+    let settled2 = if partial {
+      let settle2_ms = if limit_ms > 3_000.0 { 3_000.0 } else { limit_ms }
+      let skip_json = skipped.iter().map(k => Json::string(k)).collect()
+      (self.world.ask)("actors.settled", { "limitMs": num(settle2_ms), "skip": Json::array(skip_json) })
+    } else {
+      (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
+    }
+    if str_of(settled2, "error") is Some(m) {
+      if !partial {
+        (self.world.tell)("drivers", { "call": "thaw", "args": [] })
+        self.release("drain")
+        raise Refused(m)
+      }
+      let names : Array[String] = []
+      for k in items(field(settled2, "unsettled")) {
+        let s = js_string(k)
+        if s != "" {
+          skipped.add(s)
+          names.push(s)
+        }
+      }
+      let who = if names.length() > 0 { " (" + names.join(", ") + ")" } else { "" }
+      (self.world.tell)("log", {
+        "warn": Json::string("some sessions did not settle after freeze\{who}; handing over the rest"),
+      })
+    }
   }
   self.stopping = true
   let sessions = []
   for key in self.actor_keys() {
+    if skipped.contains(key) {
+      self.act(key, "close")
+      continue
+    }
     let holds = (self.world.ask)("actor", { "key": Json::string(key), "call": "holdsState", "args": [] })
     if (self.world.process_state)(key) != "cold" || holds == Json::boolean(true) {
       sessions.push(self.ask_actor(key, "snapshot"))

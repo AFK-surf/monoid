@@ -492,7 +492,14 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
       )
       unit
     }
-    "handOver" => hub.hand_over()
+    "handOver" => {
+      let limit_ms = match arg(x, 0) {
+        Some(Number(ms, ..)) => ms
+        _ => 30_000.0
+      }
+      let partial = arg(x, 1) is Some(True)
+      hub.hand_over(limit_ms~, partial~)
+    }
     "takeUp" => {
       hub.take_up()
       unit

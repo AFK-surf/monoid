@@ -300,6 +300,7 @@ pub(all) struct LiveBus {
   parts : StationParts
   stopped : @effect.Deferred[String]
   door_ready : @effect.Deferred[String]
+  open_door : @ref.Ref[async () -> String]
   handed : Bool
   mcp_token : String
   previous_pid : Int32?

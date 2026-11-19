@@ -137,6 +137,18 @@ while IFS= read -r line; do
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
   if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/to"; else to=$(/bin/cat "$FAKE_OUT/to" 2>/dev/null); fi
+  # (asked to hold across a station handover: signals running, waits for the test's go file, then posts all_done and
+  # chat_state through the shared MCP door before ending its turn)
+  case "$line" in *HOLD-HANDOVER*)
+    : > "$FAKE_OUT/mid-running"
+    while [ ! -f "$FAKE_OUT/mid-go" ]; do /bin/sleep 0.05; done
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted across handover","kind":"all_done","done":"finished across handover"}}}' > "$FAKE_OUT/mid-post-$n.json"
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"chat_state","arguments":{"kind":"all_done","done":"finished across handover"}}}' > "$FAKE_OUT/mid-state-$n.json"
+    say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted across handover"}'
+    continue ;;
+  esac
   # (asked to ask: a card posted with no state, then need_human said with no about, which the card is; told to wait for
   # a write lock first, it says it is about to and waits for the test's word)
   case "$line" in *ASK-CARD*)
@@ -208,7 +220,7 @@ after(() => {
   for (const s of ports) s.close();
 });
 
-async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server], more: Record<string, string> = {}): Promise<Launched & { sockets: [Server, Server] }> {
+async function launch(data: string, app: string, path: string, out: string, sockets?: [Server, Server], more: Record<string, string> = {}, keepSockets = false): Promise<Launched & { sockets: [Server, Server] }> {
   const [mcp, loop] = sockets ?? [await listener(), await listener()];
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
@@ -219,9 +231,11 @@ async function launch(data: string, app: string, path: string, out: string, sock
     env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "1", ...more },
   });
   children.push(child);
-  // (the launcher's copies let go: the station alone accepts on them)
-  mcp.close();
-  loop.close();
+  // (the launcher's copies let go: the station alone accepts on them, unless the caller keeps them for a handover)
+  if (!keepSockets) {
+    mcp.close();
+    loop.close();
+  }
   const said: any[] = [];
   const waiters: (() => void)[] = [];
   createInterface({ input: (child.stdio as readonly unknown[])[5] as import("node:net").Socket }).on("line", (line) => {
@@ -803,6 +817,83 @@ test("sessions across stations over the mesh: a message to another station's cha
   }
   for (const l of launched) l.tell({ op: "stop" });
   for (const l of launched) assert.equal(await l.ended, 0, l.err());
+});
+
+test("handover of an in-flight turn: the new station takes up sessions before opening /mcp so chat_state is recorded and the runner survives", { skip }, async () => {
+  const data = fresh("h");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+    maxNudges: 1,
+  }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const sockets: [Server, Server] = [await listener(), await listener()];
+  const a = await launch(data, app, bin, out, sockets, {}, true);
+  await a.next("ready", (m) => m.ready === true);
+  const door = await a.next("the agents' door", (m) => m.serving === "mcp");
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-from", "claude", "t0", "1790000000.000001");
+    const tMid = session(store, data, "chat:c-mid", "claude", "t1", "1790000000.000002");
+
+    // Start a turn that stays in-flight across the station handover.
+    const sent = await tool(door.port, "t0", "session_send", { to: "chat:c-mid", text: "HOLD-HANDOVER please" });
+    assert.equal(sent.error, false, `${sent.text}\n${a.err()}`);
+    await until("in-flight turn running", () => existsSync(join(out, "mid-running")) && store.getSession("chat:c-mid")?.running === true, () => a.err());
+    const runnerInfos = require_json(join(data, "run", "runners"));
+    assert.ok(runnerInfos.length >= 1, "runner info present for in-flight turn");
+    const runnerPid = runnerInfos[0]!.runner;
+
+    // Launch the next station sharing the launcher's listening sockets, then hand over from `a`.
+    const b = await launch(data, app, bin, out, sockets);
+    await b.next("ready", (m) => m.ready === true);
+    await b.next("taking", (m) => m.taking === true);
+    a.tell({ op: "handover" });
+    const carry = await a.next("carry", (m) => m.carry !== undefined);
+    assert.equal(await a.ended, 0, a.err());
+    // The in-flight runner must survive `a`'s handover and exit (never killed by hub_shutdown).
+    assert.doesNotThrow(() => process.kill(runnerPid, 0), "in-flight runner survived handover");
+
+    // Release the in-flight agent right before `b` finishes taking over: its POST to the shared /mcp socket
+    // sits in the kernel accept queue and is served only after `Hub::take_up()` opens the door.
+    writeFileSync(join(out, "mid-go"), "");
+    b.tell({ op: "carried", carried: carry.carry });
+    await b.next("b's door", (m) => m.serving === "mcp");
+
+    await until("in-flight turn finished across handover", () => store.lastTurn("chat:c-mid")?.endedAt != null, () => b.err());
+    const turns = store.listTurns("chat:c-mid");
+    assert.equal(turns.length, 1, `not nudged: ${JSON.stringify(turns.map((t) => t.summary))}\n${b.err()}`);
+    assert.deepEqual(
+      [turns[0]!.summary.outcome, turns[0]!.summary.ending, turns[0]!.summary.need],
+      ["completed", "all_done", "finished across handover"],
+      b.err(),
+    );
+    const posted = JSON.parse(readFileSync(join(out, "mid-post-1.json"), "utf8"));
+    assert.notEqual(posted.result.isError, true, JSON.stringify(posted));
+    const stated = JSON.parse(readFileSync(join(out, "mid-state-1.json"), "utf8"));
+    assert.notEqual(stated.result.isError, true, JSON.stringify(stated));
+    assert.deepEqual(
+      store.messagesBefore(tMid.id, null, 20).filter((m) => m.authorKind === "agent").map((m) => m.text),
+      ["posted across handover"],
+    );
+    // Verify in `b`'s trace that drivers.adopt (inside Hub::take_up) ran before agents.openDoor.
+    const bTrace = b.err();
+    const adoptAt = bTrace.indexOf("p52 hub ask drivers.adopt");
+    const openDoorAt = bTrace.indexOf("p52 hub ask agents.openDoor");
+    assert.ok(adoptAt >= 0 && openDoorAt > adoptAt, `expected drivers.adopt before agents.openDoor:\n${bTrace}`);
+
+    b.tell({ op: "stop" });
+    assert.equal(await b.ended, 0, b.err());
+  } finally {
+    store.close();
+  }
 });
 
 /// The runners' info files there.

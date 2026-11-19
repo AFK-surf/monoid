@@ -31,6 +31,8 @@ pub(all) struct LiveBus {
   stopped : @effect.Deferred[String]
   /// Resolved to `http://127.0.0.1:<port>/mcp` once the previous station released `run/hub.json` and the agents' door is listening.
   door_ready : @effect.Deferred[String]
+  /// Opens the agents' door (`/mcp`) once sessions are taken up, resolving `door_ready`; idempotent.
+  open_door : Ref[async () -> String]
   handed : Bool
   mcp_token : String
   previous_pid : Int?
@@ -175,6 +177,7 @@ pub fn LiveBus::new(
     }
     raise BusError("mesh transport not attached for \{target}: \{meth}")
   }
+  let door_ready : @effect.Deferred[String] = @effect.Deferred::new()
   let b : LiveBus = {
     host,
     argv0,
@@ -191,7 +194,8 @@ pub fn LiveBus::new(
     store,
     parts,
     stopped,
-    door_ready: @effect.Deferred::new(),
+    door_ready,
+    open_door: Ref(async fn() { door_ready.wait() }),
     handed,
     mcp_token,
     previous_pid,

@@ -428,7 +428,7 @@ pub fn Hub::flush_threads(Self) -> Unit
 pub fn Hub::follow_accounts(Self, Array[String], Map[String, String]) -> Int32 raise
 pub fn Hub::get_session(Self, String) -> @json.Json?
 pub fn Hub::goes_afresh(Self, String, Double) -> Bool raise
-pub async fn Hub::hand_over(Self, limit_ms? : Double) -> @json.Json
+pub async fn Hub::hand_over(Self, limit_ms? : Double, partial? : Bool) -> @json.Json
 pub fn Hub::handed_over(Self, String) -> Bool
 pub fn Hub::has_pending(Self, String) -> Bool
 pub fn Hub::held(Self, String) -> Bool

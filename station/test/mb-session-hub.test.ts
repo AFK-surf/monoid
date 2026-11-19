@@ -648,6 +648,7 @@ class HubPair {
   /// What the program asked of the world as it handed over (hub.ts `handOver`: settled, frozen, settled again), with
   /// the limit it gave each.
   readonly handoverAsks: Json[] = [];
+  allLeftCalls = 0;
   readonly tsA: Store;
   readonly tsB: Store;
   hub: Hub;
@@ -831,8 +832,12 @@ class HubPair {
       case "fs.write": await mkdir(join(this.shadow(x.path), ".."), { recursive: true }); await writeFile(this.shadow(x.path), x.text); return null;
       case "fs.read": return readFile(this.shadow(x.path), "utf8").catch(() => null);
       case "fs.rm": await rm(this.shadow(x.path), { force: true }); return null;
-      case "actors.settled": case "drivers.freeze": this.handoverAsks.push([what, x.limitMs]); return {};
-      case "runners.allLeft": return {};
+      case "actors.settled": case "drivers.freeze": {
+        this.handoverAsks.push(x.skip !== undefined ? [what, x.limitMs, x.skip] : [what, x.limitMs]);
+        const next = this.scripted[what]?.shift();
+        return next ?? {};
+      }
+      case "runners.allLeft": this.allLeftCalls++; return {};
       case "runners": return this.runners;
       case "runnerId": return runnerId(x.runtime, x.key);
       case "sandboxNames.takeUp": {
@@ -1628,4 +1633,57 @@ test("whether moving to another station is on, as hub.ts gives its sessions it",
     (pair.hub as Json).options.moveOn = () => pair.moveOn!;
     assert.equal(await pair.call("moveOn"), !(moveOn ?? true));
   }
+});
+
+test("handOver: partial=false refuses on unsettled actors; partial=true skips unsettled actors, preserves the rest and detaches", { skip }, async () => {
+  const p = await opened();
+  const pair = new HubPair(p);
+  after(() => pair.close());
+  await pair.open();
+  await pair.advance(1_800_000_000_000);
+  await pair.call("accept", "cl", msg({ threadTs: "1000.000001", ts: "1000.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1100.000001", ts: "1100.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1300.000001", ts: "1300.000001" }));
+  await pair.set(() => {
+    pair.a.states = {
+      "cl:C1:1000.000001": { state: "warm", idleSince: pair.now - 1000 },
+      "cl:C1:1100.000001": { state: "cold", holds: true },
+      "cl:C1:1300.000001": { state: "running" },
+    };
+  });
+  pair.b.log.length = 0;
+  pair.handoverAsks.length = 0;
+
+  // partial=false (default, TS parity): refuses when actors do not settle, releases drain, does not detach.
+  pair.scripted["actors.settled"] = [{ error: "the sessions did not settle in 1000 ms", unsettled: ["cl:C1:1300.000001"] }];
+  const refused = await pair.callB("handOver", 1000, false);
+  assert.deepEqual(refused.answer, { error: "the sessions did not settle in 1000 ms" });
+  assert.deepEqual(pair.handoverAsks, [["actors.settled", 1000]]);
+  assert.equal((await pair.callB("holds", "drain")).answer.result, false, "drain released on refusal");
+  assert.equal(pair.allLeftCalls, 0);
+  assert.ok(!refused.did.some((d) => d[0] === "drivers" && d[1] === "detach"), "did not detach on refusal");
+
+  // partial=true: logs a warning naming the unsettled session, freezes drivers, runs second settled skipping it,
+  // closes the unsettled actor without snapshotting or disposing, snapshots the rest, detaches and waits allLeft.
+  pair.handoverAsks.length = 0;
+  pair.scripted["actors.settled"] = [
+    { error: "the sessions did not settle in 15000 ms", unsettled: ["cl:C1:1300.000001"] },
+    {},
+  ];
+  const partial = await pair.callB("handOver", 15_000, true);
+  assert.equal(partial.answer.error, undefined, JSON.stringify(partial.answer));
+  assert.deepEqual(pair.handoverAsks, [
+    ["actors.settled", 15_000],
+    ["drivers.freeze", 5_000],
+    ["actors.settled", 3_000, ["cl:C1:1300.000001"]],
+  ]);
+  const snapKeys = (partial.answer.result.sessions as Json[]).map((s) => s.key).sort();
+  assert.deepEqual(snapKeys, ["cl:C1:1000.000001", "cl:C1:1100.000001"], "only settled sessions snapshotted");
+  assert.ok(partial.did.some((d) => d[0] === "actor" && d[1] === "cl:C1:1300.000001" && d[2] === "close"), "unsettled actor closed");
+  assert.ok(!partial.did.some((d) => d[0] === "actor" && d[1] === "cl:C1:1300.000001" && (d[2] === "snapshot" || d[2] === "dispose")), "unsettled actor neither snapshotted nor disposed");
+  assert.ok(partial.did.some((d) => d[0] === "drivers" && d[1] === "detach"), "drivers detached");
+  assert.equal(pair.allLeftCalls, 1, "waited for runners.allLeft");
+  const written = JSON.parse(await readFile(pair.shadow(join(pair.dataDir, "run", "handover.json")), "utf8"));
+  assert.deepEqual((written.sessions as Json[]).map((s) => s.key).sort(), ["cl:C1:1000.000001", "cl:C1:1100.000001"]);
+  pair.a.log.length = 0;
 });

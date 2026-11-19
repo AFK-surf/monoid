@@ -987,25 +987,47 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
           t
         }
       }
-      match listen_on(host, control.mcp_fd, tries) {
-        Some((id, port)) => {
-          let shown = match control.ports {
-            Some((m, _)) => m
-            None => port
+      let door_opening = Ref(false)
+      let open_agents_door : async () -> String = async fn() {
+        if door_opening.val {
+          return bus.door_ready.wait()
+        }
+        door_opening.val = true
+        if s.stopped.is_done() {
+          return ""
+        }
+        match listen_on(host, control.mcp_fd, tries) {
+          Some((id, port)) => {
+            let shown = match control.ports {
+              Some((m, _)) => m
+              None => port
+            }
+            s.mcp_port = Some(shown)
+            let url = "http://127.0.0.1:\{shown}/mcp"
+            s.parts.door_open(url)
+            write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
+            ignore(
+              host.rt.fork_daemon("agents' door http", on_error=e => @host.note("agents' door http failed: \{e}"), async fn() {
+                serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
+              }),
+            )
+            control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
+            ignore(bus.door_ready.succeed(url))
+            url
           }
-          s.mcp_port = Some(shown)
-          let url = "http://127.0.0.1:\{shown}/mcp"
-          s.parts.door_open(url)
-          write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
-          control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
-          ignore(bus.door_ready.succeed(url))
-          ignore(host.rt.fork_daemon("take handover", on_error=e => @host.note("take handover failed: \{e}"), async fn() { (bus.take_handover.val)(handed_over) }))
-          serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
+          None => {
+            control.say({ "failed": Json::string("the agents' door is not had") })
+            s.stop("the agents' door is not had")
+            ""
+          }
         }
-        None => {
-          control.say({ "failed": Json::string("the agents' door is not had") })
-          s.stop("the agents' door is not had")
-        }
+      }
+      bus.open_door.val = open_agents_door
+      (bus.take_handover.val)(handed_over) catch {
+        e => @host.note("take handover failed: \{e}")
+      }
+      if !bus.door_ready.is_done() && !s.stopped.is_done() {
+        ignore(open_agents_door())
       }
     }),
   )

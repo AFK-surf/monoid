@@ -780,22 +780,77 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "actors.settled" => {
       guard self.actors_program is Some(p) else { return Json::object({}) }
       let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
+      let skip : Map[String, Bool] = Map([])
+      for k in jitems(jfield(args, "skip")) {
+        if k is String(s) {
+          skip[s] = true
+        }
+      }
+      let pending : Map[String, Bool] = Map([])
       let done = @effect.timeout(limit, async fn() {
         // Each session's actor alone, its queue run out and again while more came (hub.ts `settled`): the
         // program's own count of asks under way is the shells' too (`#remote`, `#jobs`), which a mirror's sync keeps
         // busy for minutes. (What a runtime said goes to an actor in the program itself, not counted here: the
         // actor's `flushed` waits for it.)
         while true {
-          let actors = p.actors.values().to_array()
-          ignore(@effect.all(actors.map(a => async fn() { ignore(a.call("flushed", [])) })))
-          if actors.iter().all(a => a.settled()) && p.actors.values().all(a => a.settled()) {
+          let entries : Array[(String, MbActor)] = []
+          pending.clear()
+          for kv in p.actors {
+            if !skip.contains(kv.0) {
+              entries.push((kv.0, kv.1))
+              pending[kv.0] = true
+            }
+          }
+          ignore(
+            @effect.all(
+              entries.map(e => async fn() {
+                ignore(e.1.call("flushed", []))
+                pending.remove(e.0)
+              }),
+            ),
+          )
+          let mut all_ok = true
+          for e in entries {
+            if !e.1.settled() {
+              all_ok = false
+              break
+            }
+          }
+          if all_ok {
+            for kv in p.actors {
+              if !skip.contains(kv.0) && !kv.1.settled() {
+                all_ok = false
+                break
+              }
+            }
+          }
+          if all_ok {
             break
           }
         }
       })
       match done {
         Some(_) => Json::object({})
-        None => { "error": jstr("the sessions did not settle in \{limit} ms") }
+        None => {
+          let unsettled : Array[Json] = []
+          let seen : Map[String, Bool] = Map([])
+          for kv in p.actors {
+            if !skip.contains(kv.0) && (pending.contains(kv.0) || !kv.1.settled()) && !seen.contains(kv.0) {
+              seen[kv.0] = true
+              unsettled.push(jstr(kv.0))
+            }
+          }
+          for kv in pending {
+            if !skip.contains(kv.0) && !seen.contains(kv.0) {
+              seen[kv.0] = true
+              unsettled.push(jstr(kv.0))
+            }
+          }
+          {
+            "error": jstr("the sessions did not settle in \{limit} ms"),
+            "unsettled": Json::array(unsettled),
+          }
+        }
       }
     }
     "runners.allLeft" => {
@@ -888,7 +943,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "agents.jobsStopAll" => (self.bus.jobs_ask.val)("jobs.stopAll", args)
     "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", { "due": args })
     "agents.openDoor" => {
-      let url = self.bus.door_ready.wait()
+      let url = (self.bus.open_door.val)()
       self.door_url = url
       jstr(url)
     }
@@ -1414,13 +1469,26 @@ fn P52::status_agents(self : P52) -> Json {
 /// sessions handed over.
 async fn P52::hand_over(self : P52) -> Array[Json] {
   guard self.hub is Some(hub) else { return [] }
-  // Within the launcher's 30 s (`Times::exit`): a session that does not settle fails the handover in time for
-  // what the parts carry to be sent.
-  let handed = hub.hand_over(limit_ms=12_000.0) catch {
+  // Within the launcher's 30 s (`Times::exit`): partial handover keeps every settled session's snapshot while
+  // skipping any that did not settle in time; its runner is detached and taken up by crash-recovery on the next
+  // station.
+  let handed = hub.hand_over(limit_ms=15_000.0, partial=true) catch {
     e => {
       live_log("warn", "agents", "the sessions were not handed over", {
         "error": jstr(said_of(e)),
       })
+      // Never leave `self.closed = false` on handover failure: `hub_shutdown()` on stop would otherwise dispose
+      // every actor and kill running agent processes. Detach drivers and close the actors' program instead.
+      match self.actors_program {
+        Some(p) => p.close()
+        None => ()
+      }
+      for d in self.drivers.values() {
+        (d.detach)()
+      }
+      all_left(5_000)
+      self.closed = true
+      self.program.release(false)
       return []
     }
   }
@@ -1430,11 +1498,9 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
 }
 
 ///|
-/// The sessions taken up once the agents' door is open (agents.ts `start`): what the process before handed over, the
-/// runners it left, turns released.
+/// The sessions taken up before opening the agents' door (agents.ts `start`): what the process before handed over, the
+/// runners it left, then the door opens and turns are released.
 async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
-  let url = self.bus.door_ready.wait()
-  self.door_url = url
   carried_handover.val = handed
   guard self.hub is Some(hub) else {
     codex_left_taken_up()
