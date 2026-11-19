@@ -12,7 +12,11 @@
 // - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt);
 // - "saidOf" {key, lang}, "log" {level, at, message}, "noted" {text}, "treeBytes" {program, path}, "helperEvict"
 //   {dir}, "helperRequest" {program, app, dir, launch, ask}, "requestedCloseInFlight" {data, program, said}: what
-//   station/test/mb-live-canary-fixes.test.ts holds of the parts live canaries found wrong.
+//   station/test/mb-live-canary-fixes.test.ts holds of the parts live canaries found wrong;
+// - "pipeTcpLost": a member's stream handed to a slice as a connection of 127.0.0.1 (live_p5_1_local.mbt
+//   `shell_handle`) whose stream is lost after its first bytes; "driverErrors": the accounts' failures as the drivers
+//   are given them (live_p5_2_io.mbt `driver_error_of`); "claudeLogins": what Claude's logins ask of the accounts
+//   (live_p5_2_drivers.mbt `p52_claude_logins`), each with the token refused: the same test's too.
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -250,6 +254,9 @@ pub async fn harness(host : @host.Host) -> Unit {
         })
       }
       "parts" => Ok(parts_exercised(host))
+      "pipeTcpLost" => Ok(pipe_tcp_lost(host))
+      "driverErrors" => Ok(driver_errors_said())
+      "claudeLogins" => Ok(claude_logins_asked(host))
       other => Err("no op \{other}")
     }
     let said : Json = match answer {
@@ -338,4 +345,106 @@ async fn parts_exercised(host : @host.Host) -> Json {
     "connected": Json::number(connected.val.to_double()),
     "doorUrl": match parts.door_url() { Some(u) => Json::string(u); None => Json::null() },
   }
+}
+
+///|
+/// A stream that gives its first bytes and is then lost (`FrontStream::read`'s `connection lost`), handed to a slice as
+/// a connection of 127.0.0.1 and read there to its end: what came, whether it ended, and the code the stream was reset
+/// with. Its fibers fail nothing: no defect is said (the test reads stderr), and the program exits 0.
+async fn pipe_tcp_lost(host : @host.Host) -> Json {
+  let reset : @effect.Deferred[Int] = @effect.Deferred::new()
+  let reads = Ref(0)
+  let stream : @door.Stream = {
+    read: fn() raise {
+      reads.val += 1
+      if reads.val == 1 {
+        Some(b"first")
+      } else {
+        raise Failure("connection lost")
+      }
+    },
+    write: fn(_b) {  },
+    finish: fn() {  },
+    stopped: fn() { None },
+    reset: fn(code) { ignore(reset.succeed(code)) },
+  }
+  let handle = shell_handle(host, stream, b"")
+  guard handle is { "kind": "tcp", "stream": theirs, .. } else { raise BusError("no connection: \{handle.stringify()}") }
+  let came = StringBuilder()
+  // (a bound only on what must come: one that never ends fails the test, saying so)
+  let ended = @effect.timeout(10000, () => {
+    while true {
+      let (said, bytes) = host.shell("tcp.read", { "id": theirs }) catch { _ => break }
+      match (said, bytes) {
+        ({ "end": True, .. }, _) | (_, None) => break
+        (_, Some(b)) => came.write_string(@utf8.decode_lossy(b))
+      }
+    }
+  })
+  let code = @effect.timeout(10000, () => reset.wait())
+  ignore(host.shell("tcp.close", { "id": theirs })) catch {
+    _ => ()
+  }
+  {
+    "came": Json::string(came.to_string()),
+    "ended": Json::boolean(ended is Some(_)),
+    "reset": match code {
+      Some(c) => Json::number(c.to_double())
+      None => Json::null()
+    },
+  }
+}
+
+///|
+/// The accounts' failures (and the routes' as P5-3 answers them) as a driver's `Later` fails with them: each one's kind
+/// and words there, and as the station says it (`said_of`, `p53_words`, its show).
+fn driver_errors_said() -> Json {
+  let errors : Array[Error] = [
+    @accounts_oauth.Said("signed out"),
+    @accounts_oauth.RenewRefused(Some(401), "refused by its server"),
+    @accounts_pool.Thrown("RenewRefused", @accounts_pool.jobj([("message", @accounts_pool.js("refused in the pool"))])),
+    @api_routes.Thrown("RenewRefused", jv_of_json({ "message": "refused through the bus", "status": 400 })),
+    @api_routes.Thrown("Said", jv_of_json({ "message": "said through the bus" })),
+    @accounts_oauth.Failed("a plain failure"),
+  ]
+  Json::array(
+    errors.map(e => {
+      let d = driver_error_of(e)
+      let kind = match d {
+        @agent_drivers.Failed(_) => "Failed"
+        @agent_drivers.Said(_) => "Said"
+        @agent_drivers.RenewRefused(_) => "RenewRefused"
+        _ => "other"
+      }
+      {
+        "kind": Json::string(kind),
+        "words": Json::string(@agent_drivers.words_of(d)),
+        "said": Json::string(said_of(e)),
+        "p53": Json::string(p53_words(e)),
+        "shown": Json::string("\{e}"),
+      }
+    }),
+  )
+}
+
+///|
+/// What Claude's logins ask of the accounts, each given the token the session saw refused: the machine's, a profile's,
+/// one lent by another station and one of this station's own asked as lent.
+async fn claude_logins_asked(host : @host.Host) -> Json {
+  let pump = Pump::new(host)
+  let asked : Array[Json] = []
+  let logins = p52_claude_logins(pump, host, fn(op, arg) {
+    asked.push({ "op": Json::string(op), "arg": arg })
+    { "token": Json::string("tok-new-\{asked.length()}"), "expiresAt": 5.0 }
+  })
+  let own = jv_of({ "id": "sub", "home": "homes/sub" })
+  let lent = jv_of({ "id": "lent", "share": { "host": "st-b" } })
+  let given = []
+  let took = (t : (String, Double)) => given.push(Json::string(t.0))
+  took(pump.wait((logins.machine_token)(Some("tok-old"))))
+  took(pump.wait((logins.subscription_token.unwrap())(own)(Some("tok-old"))))
+  took(pump.wait((logins.lent_token.unwrap())(lent)(Some("tok-old"))))
+  took(pump.wait((logins.lent_token.unwrap())(own)(Some("tok-old"))))
+  took(pump.wait((logins.machine_token)(None)))
+  { "asked": Json::array(asked), "given": Json::array(given) }
 }

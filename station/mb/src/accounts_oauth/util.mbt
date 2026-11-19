@@ -395,6 +395,13 @@ pub(all) suberror JsonError {
 }
 
 ///|
+pub impl Show for JsonError with output(self, logger) {
+  match self {
+    JsonError(m) => logger.write_string(m)
+  }
+}
+
+///|
 fn parse_or_none(text : String) -> Json? {
   try Some(parse_json(text)) catch {
     _ => None

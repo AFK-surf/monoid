@@ -222,6 +222,12 @@ fn said_of(e : Error) -> String {
     @agent_drivers.Failed(m) => m
     @agent_drivers.Said(m) => if m.has_prefix("station.") { tr((p52_lang_fn.val)(), m) } else { m }
     @agent_drivers.RenewRefused(m) => m
+    @accounts_oauth.Said(m)
+    | @accounts_oauth.RenewRefused(_, m)
+    | @accounts_oauth.Failed(m)
+    | @accounts_oauth.FsError(_, m)
+    | @accounts_oauth.JsonError(m) => m
+    @accounts_pool.Thrown(_, _) => @accounts_pool.message_of(e)
     @session_hub.Refused(m) => m
     BusError(m) => m
     LiveError(m) => m
@@ -337,12 +343,30 @@ fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drive
       }
       match r {
         Ok(v) => l.resolve(v)
-        Err(e) => l.reject(e)
+        Err(e) => l.reject(driver_error_of(e))
       }
       self.kick()
     }),
   )
   l
+}
+
+///|
+/// What failed on the station's side, as the drivers tell failures apart (agent_drivers `DriverError`): a sign-in's
+/// renewal refused (`ClaudeDriver::open` asks for a login again by it), words for people, or any other failure by its
+/// words alone (never `Error: …` or a constructor's path, as a log line said them).
+fn driver_error_of(e : Error) -> Error {
+  match e {
+    @agent_drivers.Failed(_) | @agent_drivers.Said(_) | @agent_drivers.RenewRefused(_) => e
+    @api_routes.Thrown("RenewRefused", _)
+    | @accounts_pool.Thrown("RenewRefused", _)
+    | @accounts_oauth.RenewRefused(_, _) => @agent_drivers.RenewRefused(said_of(e))
+    @api_routes.Thrown("Said", _) | @accounts_pool.Thrown("Said", _) | @accounts_oauth.Said(_) =>
+      @agent_drivers.Said(said_of(e))
+    // (a file system's by its code, as the machine's calls give it: `fs_failed`)
+    @drive.FsError(_) => fs_failed(e)
+    other => @agent_drivers.Failed(said_of(other))
+  }
 }
 
 ///|

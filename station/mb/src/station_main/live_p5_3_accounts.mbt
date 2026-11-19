@@ -377,8 +377,25 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
   let s = (i : Int) => p53_arg_s(args, i)
   let j = (i : Int) => p53_arg(args, i)
   let done = @accounts_pool.jundef
+  // (a renewal refused and words for people keep their kind, as console.ts's classes: quota.mbt `failed` and the Claude
+  // driver tell a sign-in to make again by it)
   let thrown = (e : Error) => match e {
     @accounts_pool.Thrown(_, _) => e
+    @accounts_oauth.RenewRefused(status, message) =>
+      @accounts_pool.Thrown(
+        "RenewRefused",
+        @accounts_pool.jobj([
+          ("message", @accounts_pool.js(message)),
+          (
+            "status",
+            match status {
+              Some(n) => Num(n.to_double())
+              None => Null
+            },
+          ),
+        ]),
+      )
+    @accounts_oauth.Said(message) => @accounts_pool.Thrown("Said", @accounts_pool.jobj([("message", @accounts_pool.js(message))]))
     _ => @accounts_pool.plain_error(p53_words(e))
   }
   try {
@@ -687,7 +704,14 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "state" => self.state()
       "profiles" => Json::array(self.made().profiles().map(p => p53_json(p.raw)))
       "claudeToken" => p53_json(self.made().claude_token(given(0, "profile"), str(1, "rejected"), at(2, "lent") is True))
-      "machineToken" => p53_json(self.made().machine_token(str(0, "runtime"), at(1, "lent") is True))
+      "machineToken" => {
+        // (accounts/index.ts `machineToken(env, rejected, lent)`: the token the driver saw refused, renewed, never given again)
+        let rejected = match str(0, "rejected") {
+          Some(r) => Some(r)
+          None => str(0, "runtime")
+        }
+        p53_json(self.made().machine_token(rejected, at(1, "lent") is True))
+      }
       "putProfile" => {
         self.made().put_profile(text(0, "id"), given(1, "body"), given(2, "viewer"), lang(3))
         done

@@ -717,12 +717,14 @@ pub async fn serve_peer(k : Keeper, conn : @door.Connection, remote : PeerBus) -
     e => if (k.peers_current)() { raise e }
   }
   let answering = Ref(0)
-  let next : Ref[@effect.Fiber[@door.Stream?]?] = Ref(None)
+  // (an accept's failure, the connection lost, kept in its fiber's value and raised here: a fiber that fails is the
+  // runtime's defect, told before the join takes it)
+  let next : Ref[@effect.Fiber[Result[@door.Stream?, Error]]?] = Ref(None)
   while true {
     let waiting = match next.val {
       Some(f) => f
       None => {
-        let f = rt.fork(name="peer accept", () => (conn.accept_bi)())
+        let f = rt.fork(name="peer accept", () => try { Ok((conn.accept_bi)()) } catch { e => Err(e) })
         next.val = Some(f)
         f
       }
@@ -735,8 +737,12 @@ pub async fn serve_peer(k : Keeper, conn : @door.Connection, remote : PeerBus) -
         }
         raise Refused("peer idle")
       }
-      Some(stream) => {
+      Some(accepted) => {
         next.val = None
+        let stream = match accepted {
+          Ok(stream) => stream
+          Err(e) => raise e
+        }
         guard stream is Some(stream) else { return }
         answering.val += 1
         ignore(rt.fork(name="peer stream", () => {

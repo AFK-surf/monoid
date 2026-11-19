@@ -151,6 +151,20 @@ fn p53_words(e : Error) -> String {
     BusError(s) => s
     @jobs_host.HostError(s) => s
     @accounts_pool.Thrown(_, _) => @accounts_pool.message_of(e)
+    @accounts_oauth.Said(m)
+    | @accounts_oauth.RenewRefused(_, m)
+    | @accounts_oauth.Failed(m)
+    | @accounts_oauth.FsError(_, m)
+    | @accounts_oauth.JsonError(m) => m
+    @api_routes.Thrown(kind, said) =>
+      match said {
+        Obj(_) =>
+          match said.get("message") {
+            Some(Str(m)) => m
+            _ => kind
+          }
+        _ => kind
+      }
     @jobs_host.Refused(m) | @jobs_host.Unreached(m) | @jobs_host.NoBytes(m) | @jobs_host.NoLink(m) => m
     _ => {
       // (the mesh's errors their words; anything else as it shows)
@@ -845,7 +859,21 @@ async fn p53_parts_door(bus : LiveBus, r : Request) -> Reply {
     }
     json_reply(404, p53_obj([("error", p53_s("no such place"))]))
   } catch {
-    e => json_reply(400, p53_obj([("error", p53_s(p53_words(e)))]))
+    // (a part's refusal by its kind too, as the routes take it: a renewal refused, a refusal, words for people)
+    e =>
+      json_reply(
+        400,
+        p53_obj([
+          ("error", p53_s(p53_words(e))),
+          (
+            "kind",
+            match e {
+              @api_routes.Thrown(kind, _) | @accounts_pool.Thrown(kind, _) => p53_s(kind)
+              _ => Json::null()
+            },
+          ),
+        ]),
+      )
   }
 }
 

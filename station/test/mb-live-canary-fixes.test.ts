@@ -6,7 +6,12 @@
 // told after its owner took its answer), one left holding its lock with no socket ended before the next is launched
 // (live_p5_4_screens.mbt `p54_helper_launch`), and a builder whose process answers after the station began to stop
 // (live_p5_1_readers.mbt `Requested::run`: its queue emptied by `close`, what it said last is nobody's, never a
-// panic). A job followed again through a restart (its start as the system says
+// panic). A member's stream lost after its first bytes, handed to a slice as a connection of 127.0.0.1
+// (live_p5_1_local.mbt `pipe_tcp`): the connection ended, the stream reset, no fiber's failure the runtime's defect
+// (`WARN runtime: Failure(connection lost)`, and a station exiting 1 at its next handover). The accounts' failures as
+// the drivers are given them (live_p5_2_io.mbt `driver_error_of`: a renewal refused by its kind, every one by its words,
+// never `Error: station/accounts_oauth.Said.Said`), and Claude's logins asking the accounts with the token refused
+// (live_p5_2_drivers.mbt `p52_claude_logins`). A job followed again through a restart (its start as the system says
 // it, against the wall's time it was kept at) is mb-live-p5-3.test.ts's, beside the station's other jobs.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -76,7 +81,7 @@ function harness() {
     }
     return stderr;
   };
-  return { child, ok, said };
+  return { child, ok, said, err: () => stderr };
 }
 
 test("a driver's words said by their key are said in the station's language, never as the key", { skip }, async () => {
@@ -226,3 +231,43 @@ for (const said of ["complete", "partial"]) {
     assert.equal(ended(child), false);
   });
 }
+
+test("a member's stream lost after its first bytes: the connection handed for it ends, the stream is reset, no defect", { skip }, async () => {
+  const { child, ok, err } = harness();
+  assert.deepEqual(await ok("pipeTcpLost"), { came: "first", ended: true, reset: 0 }, err());
+  // (the program goes on answering, and ends as it should: nothing failed in it)
+  assert.equal(await ok("iso", { ms: 0 }), "1970-01-01T00:00:00.000Z");
+  child.stdin!.end();
+  await exited(child);
+  assert.equal(child.exitCode, 0, err());
+  assert.doesNotMatch(err(), /WARN runtime:|failed:/);
+});
+
+test("the accounts' failures reach the drivers by their kind and their words; Claude's logins ask with the token refused", { skip }, async () => {
+  const { ok } = harness();
+  const errors: { kind: string; words: string; said: string; p53: string; shown: string }[] = await ok("driverErrors");
+  assert.deepEqual(errors.map((e) => [e.kind, e.words]), [
+    ["Said", "signed out"],
+    ["RenewRefused", "refused by its server"],
+    ["RenewRefused", "refused in the pool"],
+    ["RenewRefused", "refused through the bus"],
+    ["Said", "said through the bus"],
+    ["Failed", "a plain failure"],
+  ]);
+  for (const e of errors) {
+    assert.deepEqual([e.said, e.p53], [e.words, e.words], JSON.stringify(e));
+    assert.doesNotMatch(`${e.words} ${e.shown}`, /Error: |station\/accounts_oauth/, JSON.stringify(e));
+  }
+  const own = { id: "sub", home: "homes/sub" };
+  const lent = { id: "lent", share: { host: "st-b" } };
+  assert.deepEqual(await ok("claudeLogins"), {
+    asked: [
+      { op: "accounts.machineToken", arg: { rejected: "tok-old" } },
+      { op: "accounts.claudeToken", arg: { profile: own, rejected: "tok-old" } },
+      { op: "sharing.lendClaude", arg: { profile: lent, rejected: "tok-old" } },
+      { op: "accounts.claudeToken", arg: { profile: own, rejected: "tok-old" } },
+      { op: "accounts.machineToken", arg: { rejected: null } },
+    ],
+    given: ["tok-new-1", "tok-new-2", "tok-new-3", "tok-new-4", "tok-new-5"],
+  });
+});

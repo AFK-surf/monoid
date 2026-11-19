@@ -157,39 +157,50 @@ fn own_agent(
 }
 
 ///|
-/// Claude Code's driver (claude.ts `ClaudeDriver`).
-fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Words) -> Driver {
-  let pump = ctx.pump
-  let m = pump.machine()
+/// Claude Code's logins (agents.ts's `ClaudeDriver` options), each asked of the accounts by `ask` (the bus's
+/// `jobs_ask`) with the token the session saw refused, `rejected`, which they renew rather than give again.
+fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) -> Json) -> @agent_drivers.ClaudeLogins {
   let lp = pump.lp
-  let host = ctx.host
   let mac = platform() == "darwin"
   let stub : Ref[String?] = Ref(None)
-  let logins : @agent_drivers.ClaudeLogins = {
-    // (the machine's own login: its credentials file, or the keychain's item, renewed where it ran out)
-    machine_token: _rejected => pump.later("machine's Claude login", async fn() {
-      let fields = @agent_runtimes.Fields::new()
-      for kv in env_all() {
-        fields.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
-      }
-      match @agent_runtimes.machine_claude_token(host, fields, platform() == "darwin", wall_ms().to_double()) {
-        Ok(t) => (t.token, t.expires_at)
-        Err(why) => raise @agent_drivers.Failed(why)
+  {
+    // (the machine's own login: its credentials file, or the keychain's item, renewed where it ran out; read here only
+    // where no accounts part answers, P5-2 alone)
+    machine_token: rejected => pump.later("machine's Claude login", async fn() {
+      match ask("accounts.machineToken", { "rejected": jopt(rejected) }) {
+        Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
+        Null => {
+          let fields = @agent_runtimes.Fields::new()
+          for kv in env_all() {
+            fields.set(kv.0, @jsjson.JValue::Str(@jsjson.units(kv.1)))
+          }
+          match @agent_runtimes.machine_claude_token(host, fields, platform() == "darwin", wall_ms().to_double()) {
+            Ok(t) => (t.token, t.expires_at)
+            Err(why) => raise @agent_drivers.Failed(why)
+          }
+        }
+        _ => raise @agent_drivers.Failed("the machine's Claude login is not there")
       }
     }),
     // (a subscription profile's token: the accounts')
-    subscription_token: Some(p => _rejected => pump.later("profile's Claude login", async fn() {
-      match (ctx.bus.jobs_ask.val)("accounts.claudeToken", { "profile": p52_json_of_jv(p) }) {
-        Object(t) if t.get("token") is Some(String(tok)) =>
-          (tok, match t.get("expiresAt") { Some(Number(n, ..)) => n; _ => 0.0 })
+    subscription_token: Some(p => rejected => pump.later("profile's Claude login", async fn() {
+      let got = ask("accounts.claudeToken", { "profile": p52_json_of_jv(p), "rejected": jopt(rejected) })
+      match got {
+        Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
         _ => raise @agent_drivers.Failed("the profile's Claude sign-in is not there (no accounts part answered)")
       }
     })),
-    lent_borrowed: Some(p => borrowed_profile(ctx, p52_json_of_jv(p))),
-    lent_token: Some(p => _rejected => pump.later("borrowed Claude login", async fn() {
-      match (ctx.bus.jobs_ask.val)("sharing.lendClaude", { "profile": p52_json_of_jv(p) }) {
-        Object(t) if t.get("token") is Some(String(tok)) =>
-          (tok, match t.get("expiresAt") { Some(Number(n, ..)) => n; _ => 0.0 })
+    lent_borrowed: Some(p => p52_borrowed(p52_json_of_jv(p))),
+    // (agents.ts `lent.token`: another station's lent, a profile of this station's own the accounts')
+    lent_token: Some(p => rejected => pump.later("borrowed Claude login", async fn() {
+      let prof = p52_json_of_jv(p)
+      let got = if p52_borrowed(prof) {
+        ask("sharing.lendClaude", { "profile": prof, "rejected": jopt(rejected) })
+      } else {
+        ask("accounts.claudeToken", { "profile": prof, "rejected": jopt(rejected) })
+      }
+      match got {
+        Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
         _ => raise @agent_drivers.Failed("the lent sign-in is not there")
       }
     })),
@@ -210,6 +221,15 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
       @agent_runtimes.take_back_missing(host, home, mac)
     }),
   }
+}
+
+///|
+/// Claude Code's driver (claude.ts `ClaudeDriver`).
+fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Words) -> Driver {
+  let pump = ctx.pump
+  let m = pump.machine()
+  let host = ctx.host
+  let logins = p52_claude_logins(pump, host, (op, arg) => (ctx.bus.jobs_ask.val)(op, arg))
   let d = @agent_drivers.ClaudeDriver::new(
     m,
     ctx.data,
@@ -279,8 +299,22 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
 }
 
 ///|
+/// A token's `expiresAt` as the accounts answer it, 0 where they say none.
+fn p52_expires_at(t : Map[String, Json]) -> Double {
+  match t.get("expiresAt") {
+    Some(Number(n, ..)) => n
+    _ => 0.0
+  }
+}
+
+///|
 /// Whether a profile is another station's, borrowed (share/index.ts `borrowedSubscription`).
 fn borrowed_profile(_ctx : P52, p : Json) -> Bool {
+  p52_borrowed(p)
+}
+
+///|
+fn p52_borrowed(p : Json) -> Bool {
   jfield(p, "share") != Json::null() && jtext(jfield(p, "share"), "host") is Some(_)
 }
 

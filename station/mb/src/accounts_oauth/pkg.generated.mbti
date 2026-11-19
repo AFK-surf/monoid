@@ -137,22 +137,27 @@ pub async fn write_console(Io, String, ConsoleLogin) -> Unit
 pub(all) suberror Failed {
   Failed(String)
 }
+pub impl Show for Failed
 
 pub(all) suberror FsError {
   FsError(String, String)
 }
+pub impl Show for FsError
 
 pub(all) suberror JsonError {
   JsonError(String)
 }
+pub impl Show for JsonError
 
 pub(all) suberror RenewRefused {
   RenewRefused(Int32?, String)
 }
+pub impl Show for RenewRefused
 
 pub(all) suberror Said {
   Said(String)
 }
+pub impl Show for Said
 
 // Types and methods
 pub(all) struct Bound {

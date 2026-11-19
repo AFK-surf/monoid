@@ -29,30 +29,72 @@ fn shell_stream_id(s : @door.Stream) -> Json? {
 
 ///|
 /// A TCP connection to 127.0.0.1:`port` carried both ways to `stream` (what came on it first, `carry`, given it
-/// first), until either ends.
+/// first), until either ends (peer-forward.ts `pipeTcp`): each side's end passed on as the other's half-close, a
+/// failure of either (the stream lost, the connection reset) closing the connection and resetting the stream. Nothing
+/// of it fails its caller or its fiber: a fiber of the runtime that fails is its defect (`rt.on_defect`, a log's
+/// `WARN runtime:` and a station that exits failed at its next handover).
 async fn pipe_tcp(host : @host.Host, conn : Json, stream : @door.Stream, carry : Bytes) -> Unit {
+  let over = Ref(false)
+  let fail = async fn() {
+    if !over.val {
+      over.val = true
+      ignore(host.shell("tcp.close", { "id": conn })) catch {
+        _ => ()
+      }
+      (stream.reset)(0) catch {
+        _ => ()
+      }
+    }
+  }
+  // (the stream to the connection)
   let up = host.rt.fork(name="tcp up", async fn() {
-    if carry.length() > 0 {
-      ignore(host.shell("tcp.write", { "id": conn }, bytes=carry))
-    }
-    while (stream.read)() is Some(b) {
-      ignore(host.shell("tcp.write", { "id": conn }, bytes=b))
-    }
-    ignore(host.shell("tcp.end", { "id": conn })) catch {
-      _ => ()
+    try {
+      if carry.length() > 0 {
+        ignore(host.shell("tcp.write", { "id": conn }, bytes=carry))
+      }
+      while !over.val && (stream.read)() is Some(b) {
+        if over.val {
+          return
+        }
+        ignore(host.shell("tcp.write", { "id": conn }, bytes=b))
+      }
+      if !over.val {
+        ignore(host.shell("tcp.end", { "id": conn })) catch {
+          _ => fail()
+        }
+      }
+    } catch {
+      _ => fail()
     }
   })
   defer up.interrupt()
-  while true {
-    let (said, bytes) = host.shell("tcp.read", { "id": conn }) catch { _ => break }
+  // (the connection to the stream)
+  while !over.val {
+    let (said, bytes) = host.shell("tcp.read", { "id": conn }) catch {
+      _ => {
+        fail()
+        break
+      }
+    }
     match (said, bytes) {
-      ({ "end": True, .. }, _) | (_, None) => break
-      (_, Some(b)) => (stream.write)(b) catch { _ => break }
+      ({ "end": True, .. }, _) | (_, None) => {
+        if !over.val {
+          (stream.finish)() catch {
+            _ => fail()
+          }
+        }
+        break
+      }
+      (_, Some(b)) =>
+        (stream.write)(b) catch {
+          _ => {
+            fail()
+            break
+          }
+        }
     }
   }
-  (stream.finish)() catch {
-    _ => ()
-  }
+  // (what the stream still sends delivered, or the connection closed under it: its write fails, `fail`)
   ignore(up.wait())
   ignore(host.shell("tcp.close", { "id": conn })) catch {
     _ => ()
@@ -75,7 +117,13 @@ async fn shell_handle(host : @host.Host, stream : @door.Stream, carry : Bytes) -
         _ => ()
       }
       guard opened is { "id": theirs, .. } && accepted is { "id": ours, .. } else { raise BusError("no handle for a stream") }
-      ignore(host.rt.fork(name="stream handle", async fn() { pipe_tcp(host, ours, stream, carry) }))
+      ignore(
+        host.rt.fork(name="stream handle", async fn() {
+          pipe_tcp(host, ours, stream, carry) catch {
+            _ => ()
+          }
+        }),
+      )
       { "kind": "tcp", "stream": theirs, "carry": { "$bytes": "" } }
     }
   }

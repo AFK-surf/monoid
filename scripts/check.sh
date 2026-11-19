@@ -592,7 +592,7 @@ if [ $full = 1 ]; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),
     # in one moon test (a call a package checked their shared dependencies again each time).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/events src/api_routes src/vault_crypto src/jobs_host'
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.
