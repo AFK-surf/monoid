@@ -731,13 +731,13 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     live2.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.7", "<@UBOT> unauth-mid-turn", { addressed: true }));
-    await until(() => opens() === 4 && [...(driver as any).live][0]?.busy() === true);
-    const live3 = [...(driver as any).live][0];
+    // The fake consumes the marker once it holds the `auth_retry` prompt; `busy()` alone is set before it reads it.
+    await until(() => opens() === 4 && !existsSync(dump + ".hold-auth-retry") && [...(driver as any).live].some((s) => s !== live2 && s.busy()));
+    const live3 = [...(driver as any).live].find((s) => s !== live2)!;
     // Simulate the `auth_retry` turn running for 55 min until its newly lent token also expires.
     live3.signInOpenedAt = Date.now() - 55 * 60_000;
     live3.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
-    rmSync(dump + ".hold-auth-retry", { force: true });
     await hub.accept("cl", reply(m1, "2000.8", "<@UBOT> unauth-mid-turn", { addressed: true }));
     await until(() => !store.getSession(key)!.running && opens() === 5);
     await settle();
@@ -757,8 +757,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     live4.signInUntil = Date.now() - 60_000;
     writeFileSync(agyToken(home), signIn(-1));
     await hub.accept("cl", reply(m1, "2000.10", "<@UBOT> unauth-mid-turn", { addressed: true }));
-    await until(() => opens() === 6 && [...(driver as any).live][0]?.busy() === true);
-    rmSync(dump + ".hold-auth-retry", { force: true });
+    await until(() => opens() === 6 && !existsSync(dump + ".hold-auth-retry") && [...(driver as any).live].some((s) => s !== live4 && s.busy()));
     // Do NOT expire live5's fresh token: an immediate 401 must stop instead of retrying again.
     await hub.accept("cl", reply(m1, "2000.11", "<@UBOT> unauth-mid-turn", { addressed: true }));
     await until(() => !store.getSession(key)!.running && chat.texts().some((t) => t.includes("UNAUTHENTICATED")));

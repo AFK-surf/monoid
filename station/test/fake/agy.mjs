@@ -9,7 +9,7 @@
 // (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
 // every model refused after (counted in FAKE_DUMP.offline). FAKE_AGY_SILENT: initialize never answered (its backend out of
 // reach as it starts), nothing written.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -242,7 +242,9 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (text === 'quota') { say({ id: m.id, error: { code: -32603, message: 'RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 4h.' } }); held = null; continue; }
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });
-    if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn') || (dump && existsSync(dump + '.hold-auth-retry') && text.includes('authentication error'))) continue;
+    if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn')) continue;
+    // Held once: the marker is consumed here, so the test sees the hold only after this process read the prompt.
+    if (dump && existsSync(dump + '.hold-auth-retry') && text.includes('authentication error')) { try { unlinkSync(dump + '.hold-auth-retry'); } catch {} continue; }
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
     update({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } });
     update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] });
