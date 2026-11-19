@@ -16,7 +16,7 @@ import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { TIMED_BACK_MS, UsageCounter } from "../src/usage/counter.ts";
-import { ReferenceUsageCounter, claudeProject } from "./usage-counter-reference.ts";
+import { ReferenceUsageCounter, UNTIMED_SESSIONS, claudeProject } from "./usage-counter-reference.ts";
 import { keepUsage } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
 
@@ -319,10 +319,19 @@ test("as a counter starts it finds itself, off the station's thread, the session
   const p6 = join(w.data, "transcripts/claude", claudeProject(ws6), "r6.jsonl");
   append(p7, [asked(t0 + 1_000), claudeLine("h1", t0 + 3_000, "claude-opus-5-5", usage(1, 0, 0, 0, 10))]);
   append(p6, [JSON.stringify({ type: "summary", summary: "s", leafUuid: "l" })]);
-  assert.equal(await w.read(undefined, "read and timed"), 1);
+  // Antigravity's calls are not timed: its transcript read before is not read again for it.
+  session(w, "agy-a", join(w.data, "w-agy"), t0 - 1_000, "agy", "agy");
+  runtimeSession(w, "agy-a", "agy-id", "agy");
+  w.each((s) => s.startTurn("ta", "agy-a", "input"));
+  append(join(w.data, "transcripts/agy", "agy-id.jsonl"), [
+    JSON.stringify({ type: "usage", run: "r1", time: t0 + 4, model: "agy-model", calls: 1, context: 9, window: 200000, usage: { inputTokens: 1, outputTokens: 2 } }),
+  ]);
+  assert.equal(await w.read(undefined, "read and timed"), 2);
+  assert.equal((w.mb.db.prepare("SELECT COUNT(*) AS n FROM usage_files WHERE speed IS NULL").get() as { n: number }).n, 0, "read now: none left as read before calls were timed");
   w.each((s) => {
     s.endTurn("t7", "completed", null, null, null);
     s.endTurn("t6", "completed", null, null, null);
+    s.endTurn("ta", "completed", null, null, null);
   });
   await w.time.adjust(2 * 86_400_000);
   // As a station from before the calls were timed left them, its last sweep after both turns ended: no session ran
@@ -347,16 +356,21 @@ test("as a counter starts it finds itself, off the station's thread, the session
   };
   await starts();
   assert.deepEqual(dump(w.mb), dump(w.ts), "timed back alike");
-  assert.deepEqual(timed(w.mb), [["h1", 2_000, 10]]);
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 2_000, 10]]);
   const kept = speeds(w.mb);
-  assert.equal(kept.length, 2);
-  assert.ok(kept.every(([, speed]) => speed !== null), "where each one's reading stands kept");
+  assert.equal(kept.length, 3);
+  assert.notEqual(new Map(kept as [string, string][]).get(p7) ?? null, null, "where its reading stands kept");
   assert.equal(new Map(kept as [string, string][]).get(p6), ",,,", "nothing found to time: kept as none");
+  assert.deepEqual(w.mb.db.prepare(UNTIMED_SESSIONS).all(w.now() - TIMED_BACK_MS), [], "none left to time back");
+  // Read on with still nothing to time: kept so.
+  append(p6, [JSON.stringify({ type: "summary", summary: "t", leafUuid: "m" })]);
+  assert.equal(await w.read(["chat:c-6"], "read on, nothing to time"), 0);
+  assert.equal(new Map(speeds(w.mb) as [string, string][]).get(p6), ",,,", "read on: still kept as none");
   // Started again: each timed already, none read again (its calls' times, lost since, not found again).
   w.each((s) => s.db.exec("UPDATE usage SET gen_ms = 0, gen_output = 0"));
   await starts();
   assert.deepEqual(dump(w.mb), dump(w.ts), "not timed again alike");
-  assert.deepEqual(timed(w.mb), [["h1", 0, 0]], "not timed again");
+  assert.deepEqual(timed(w.mb).filter(([id]) => id === "h1"), [["h1", 0, 0]], "not timed again");
   assert.deepEqual(speeds(w.mb), kept);
 });
 

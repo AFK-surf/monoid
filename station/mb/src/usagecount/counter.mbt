@@ -325,6 +325,36 @@ async fn Counter::read_file(
       path,
     }
   }
+  // Read before calls were timed, of a runtime whose calls are not timed (a chat that left Claude Code or Codex):
+  // nothing to time, kept so, its reading on as it is.
+  if self.time_from is Some(_) &&
+    was is Some(w) &&
+    w.speed is None &&
+    !replaced &&
+    before.offset > 0.0 &&
+    sized == before.offset &&
+    runtime != "claude" &&
+    runtime != "codex" {
+    let db = self.db
+    db.exec("BEGIN IMMEDIATE")
+    errdefer (db.exec("ROLLBACK") catch { _ => () })
+    ignore(
+      db.run("UPDATE usage_files SET speed = ?1 WHERE (path = ?2 OR path = ?3) AND offset = ?4", [
+        Json::string(",,,"),
+        Json::string(path),
+        Json::string(w.path),
+        Json::number(before.offset),
+      ]),
+    )
+    db.exec("COMMIT")
+    if self.files is Some(files) {
+      for name in [path, w.path] {
+        if files.get(name) is Some(f) {
+          files[name] = { ..f, speed: Some(",,,") }
+        }
+      }
+    }
+  }
   if archived && !replaced && sized == before.offset {
     return 0
   }
@@ -347,7 +377,7 @@ async fn Counter::read_file(
     (runtime == "claude" || runtime == "codex") {
     state.speed = self.timed_again(path, w.path, runtime, subagent, session.key, before.offset, cut, time_from)
     // (none found to time, kept as `,,,`: read as none (`speed_of`), and not timed again at the next start)
-    let saved_speed = speed_text(state.speed).unwrap_or(",,,")
+    let saved_speed = kept_speed(state.speed)
     if self.files is Some(files) {
       if files.get(path) is Some(f) {
         files[path] = { ..f, speed: Some(saved_speed) }
@@ -375,7 +405,7 @@ async fn Counter::read_file(
         }
       }
       let model_before = state.model
-      let speed_before = speed_text(state.speed)
+      let speed_before = Some(kept_speed(state.speed))
       let from_known_suffix = was is Some(_) && !replaced && from.to_double() >= known_suffix_from
       let calls = calls_of(runtime, bytes, subagent, state).filter(c => c.at >= session.created_at - skew_ms &&
         (followed || c.at >= first_new_at || from_known_suffix))
@@ -409,7 +439,7 @@ async fn Counter::read_file(
           session: Some(session.key),
           offset: if complete { offset.to_double() } else { from.to_double() },
           model: if complete { state.model } else { model_before },
-          speed: if complete { speed_text(state.speed) } else { speed_before },
+          speed: if complete { Some(kept_speed(state.speed)) } else { speed_before },
         }
         let end = if i + write_batch < with_for.length() { i + write_batch } else { with_for.length() }
         let batch = if i < end { with_for[i:end].to_array() } else { [] }
@@ -501,7 +531,7 @@ async fn Counter::timed_again(
     ReadEnough => ()
     e => raise e
   }
-  let saved_speed = speed_text(state.speed).unwrap_or(",,,")
+  let saved_speed = kept_speed(state.speed)
   let db = self.db
   let mut earliest = @double.infinity
   let total = if timed.length() > 1 { timed.length() } else { 1 }
@@ -580,10 +610,13 @@ fn sections_of(part : Part, cutoff : Double) -> Array[(BytesView, Int64, Int64, 
 }
 
 ///|
-/// The sessions run since `?` with a transcript read before its calls were timed (reference `UNTIMED_SESSIONS`).
+/// The sessions run since `?` with a transcript read before its calls were timed, of those that ran a runtime whose
+/// calls are timed (reference `UNTIMED_SESSIONS`).
 let untimed_sessions : String =
-  #|SELECT DISTINCT u.session AS session_key FROM usage_files u
-  #|  WHERE u.speed IS NULL AND u.offset > 0 AND u.session IS NOT NULL
+  #|SELECT DISTINCT u.session AS session_key FROM usage_files u JOIN sessions s ON s.key = u.session
+  #|  WHERE u.speed IS NULL AND u.offset > 0
+  #|    AND (s.runtime IN ('claude', 'codex') OR s.original_runtime IN ('claude', 'codex')
+  #|      OR EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.runtime IN ('claude', 'codex')))
   #|    AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
   #|      WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))
 

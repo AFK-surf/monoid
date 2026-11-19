@@ -27,9 +27,12 @@ const CHUNK = 1 << 20;
 const ANCHOR = 256;
 /// How many calls are recorded in one transaction before the event loop is let through.
 const WRITE_BATCH = 64;
-/// The sessions run since `?` with a transcript read before its calls were timed (counter.mbt `untimed_sessions`).
-const UNTIMED_SESSIONS = `SELECT DISTINCT u.session AS session_key FROM usage_files u
-  WHERE u.speed IS NULL AND u.offset > 0 AND u.session IS NOT NULL
+/// The sessions run since `?` with a transcript read before its calls were timed, of those that ran a runtime whose
+/// calls are timed (counter.mbt `untimed_sessions`).
+export const UNTIMED_SESSIONS = `SELECT DISTINCT u.session AS session_key FROM usage_files u JOIN sessions s ON s.key = u.session
+  WHERE u.speed IS NULL AND u.offset > 0
+    AND (s.runtime IN ('claude', 'codex') OR s.original_runtime IN ('claude', 'codex')
+      OR EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.runtime IN ('claude', 'codex')))
     AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
       WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))`;
 
@@ -54,6 +57,9 @@ export function speedText(s: Speed): string | null {
   const n = (v: number | null) => (v === null ? "" : String(v));
   return `${n(s.since)},${n(s.openStart)},${n(s.ended)},${s.openId ?? ""}`;
 }
+/// usage_files.speed as the counter keeps it (speed.mbt `kept_speed`): none known kept as ",,," (speedOf: none), so that
+/// null is only ever a transcript read before calls were timed, timed again as a counter starts.
+export const keptSpeed = (s: Speed): string => speedText(s) ?? ",,,";
 export function speedOf(text: string | null | undefined): Speed {
   if (text == null) return noSpeed();
   const [a = "", b = "", c = "", ...d] = text.split(",");
@@ -683,7 +689,7 @@ export class ReferenceUsageCounter {
       }
     }
     // (none found to time, kept as ",,,": read as none (speedOf), and not timed again at the next start)
-    const savedSpeed = speedText(state.speed!) ?? ",,,";
+    const savedSpeed = keptSpeed(state.speed!);
     const db = this.#store.db;
     let earliest = Infinity;
     for (let i = 0; i < Math.max(1, timed.length); i += WRITE_BATCH) {
@@ -908,12 +914,27 @@ export class ReferenceUsageCounter {
       cutoff = this.#store.beginUsageCounterFile(path, before, { cutoff: replaced ? size : (cutoff ?? size), anchor }, replaced).cutoff;
     }
     this.#files?.set(path, { ...before, cutoff, anchor, path });
+    // Read before calls were timed, of a runtime whose calls are not timed (a chat that left Claude Code or Codex):
+    // nothing to time, kept so, its reading on as it is.
+    if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && size === before.offset
+      && runtime !== "claude" && runtime !== "codex") {
+      const db = this.#store.db;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare("UPDATE usage_files SET speed = ?1 WHERE (path = ?2 OR path = ?3) AND offset = ?4").run(",,,", path, was.path, before.offset);
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+      for (const name of new Set([path, was.path])) {
+        const kept = this.#files?.get(name);
+        if (kept !== undefined) this.#files!.set(name, { ...kept, speed: ",,," });
+      }
+    }
     if (archived && !replaced && size === before.offset) return 0;
     const state: CallState = { model: before.model, codexId: null, speed: speedOf(before.speed) };
     // Read before its calls were timed: those from `timeFrom` on timed now, its reading on from where that left.
     if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && (runtime === "claude" || runtime === "codex")) {
       state.speed = await this.#timedAgain(path, was.path, runtime, subagent, session.key, before.offset, cutoff, this.#timeFrom);
-      const savedSpeed = speedText(state.speed) ?? ",,,";
+      const savedSpeed = keptSpeed(state.speed);
       for (const name of new Set([path, was.path])) {
         const kept = this.#files?.get(name);
         if (kept !== undefined) this.#files!.set(name, { ...kept, speed: savedSpeed });
@@ -936,7 +957,7 @@ export class ReferenceUsageCounter {
           : Buffer.concat([Buffer.from(anchor, "hex"), section.bytes]).subarray(-ANCHOR)).toString("hex");
         // What ran before the station had the session (a terminal's, continued here) is not the station's.
         const modelBefore = state.model;
-        const speedBefore = speedText(state.speed!);
+        const speedBefore = keptSpeed(state.speed!);
         const fromKnownSuffix = was !== undefined && !replaced && section.from >= before.offset;
         const calls = callsOf(runtime, section.text, subagent, state).filter((c) => c.at >= session.createdAt - SKEW_MS && (section.followed || c.at >= firstNewAt || fromKnownSuffix));
         // The turns they were made in, those alone (store/usage.ts usageTurns).
@@ -961,7 +982,7 @@ export class ReferenceUsageCounter {
           if (this.#abort.signal.aborted) throw new Stopped();
           const complete = i + WRITE_BATCH >= withFor.length;
           const file = { session: session.key, offset: complete ? section.offset : section.from, model: complete ? state.model : modelBefore,
-            speed: complete ? speedText(state.speed!) : speedBefore };
+            speed: complete ? keptSpeed(state.speed!) : speedBefore };
           const batch = withFor.slice(i, i + WRITE_BATCH);
           const changed = { from: Infinity };
           const savedAnchor = complete ? nextAnchor : anchor;
