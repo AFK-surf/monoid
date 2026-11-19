@@ -587,7 +587,7 @@ fn wide_back_what(src : Source) -> WideBack {
 /// A step of back on the wide frame (its node's: tape_view's, pane_view's), at its moment: what it does chosen as a gesture begins, the whole
 /// gesture's (`held`, while it goes), or as a back with no gesture comes (wide_back_what); each step to that alone,
 /// whatever changed meanwhile.
-fn wide_back_step(src : Source, held : Ref[WideBack?], step : @ui.BackStep) -> Unit {
+fn wide_back_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @ui.BackStep) -> Unit {
   let what = match (step, held.val) {
     (Began(_, _), _) => {
       let w = wide_back_what(src)
@@ -603,7 +603,7 @@ fn wide_back_step(src : Source, held : Ref[WideBack?], step : @ui.BackStep) -> U
   }
   match what {
     Follows(p) => tape_back(p, step)
-    Once(f) => if step is (LetGo(_, _) | Back) { f() }
+    Once(f) => if hint.step(step) { f() }
     Nothing => ()
   }
 }
@@ -611,9 +611,10 @@ fn wide_back_step(src : Source, held : Ref[WideBack?], step : @ui.BackStep) -> U
 ///|
 /// The wide frame's node taking back let go at `at` (back no longer its: the tree tells it nothing more of a gesture
 /// going on to it): the gesture it held let go, a panel of the tape it pulled over back where it was in use, from there.
-fn wide_back_left(held : Ref[WideBack?], at : Double) -> Unit {
+fn wide_back_left(held : Ref[WideBack?], hint : BackHint, at : Double) -> Unit {
   guard held.val is Some(_) else { return }
   held.val = None
+  hint.clear()
   // (the tape itself let go with it: nothing of it moves, what it held let go as the tape is: tape_view)
   if wide.tape_backing && tape_goes.node is Some(_) {
     tape_moves_from(at, fn() {
@@ -833,11 +834,12 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // view in one of them says takes back (a page's own stack) taking it before it, what is over them too; whose it is
   // said at the cause that changes it, each step taken at its moment (wide_back_step)
   let held : Ref[WideBack?] = Ref(None)
+  let hint = back_hint_new(v)
   v.show(at_once=true, fn() { wide_takes_back(src) }, fn(b) {
-    b.follows_back(fn(step) { wide_back_step(src, held, step) }) |> ignore
+    b.follows_back(fn(step) { wide_back_step(src, held, hint, step) }) |> ignore
     // (let go as a gesture goes on to it, as what it takes back by is (told nothing more): what it held of it let go
     // here, the tape back where it was in use)
-    b.owns(fn() { wide_back_left(held, v.cause_at()) }) |> ignore
+    b.owns(fn() { wide_back_left(held, hint, v.cause_at()) }) |> ignore
   })
   v.box(fn(row) {
     tape_goes.parts.clear()
@@ -967,6 +969,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     |> ignore
   })
   |> ignore
+  back_hint_node(v, hint)
 }
 
 ///|

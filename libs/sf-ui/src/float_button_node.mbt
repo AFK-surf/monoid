@@ -122,10 +122,10 @@ pub fn float_button_node(
 
 ///|
 /// How high the button is drawn (float_side), its icon, and the room round it it is pressed in too (44 in all).
-let float_button_side : Double = 32.0
+pub let float_button_side : Double = 32.0
 
 ///|
-let float_button_icon : Double = 16.0
+pub let float_button_icon : Double = 16.0
 
 ///|
 pub let float_button_reach : Double = 6.0
@@ -136,6 +136,14 @@ pub let float_button_reach : Double = 6.0
 // kept across runs: a value (no field of it changes)
 let float_button_look : @ui.Style = @ui.css((
   #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full border=B1 border_color=Line bg=Surface shadow=Md align=ACenter justify=JCenter
+))
+
+///|
+/// The round floating badge look matching float_button_look (same diameter, full radius and Md shadow) without fixed
+/// ground/border so callers can animate fill and border on state transitions.
+// kept across runs: a value (no field of it changes)
+pub let float_badge_look : @ui.Style = @ui.css((
+  #|row w=S8 h=S8 radius=Full shadow=Md align=ACenter justify=JCenter
 ))
 
 ///|
