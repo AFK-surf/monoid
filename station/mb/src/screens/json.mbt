@@ -8,78 +8,63 @@ pub using @jsjson {type JValue as J}
 
 ///|
 fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
 fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+  @jsjson.JValue::of_object(pairs)
 }
 
 ///|
 fn ja(items : Array[J]) -> J {
-  Arr(items)
+  @jsjson.JValue::of_array(items)
 }
 
 ///|
 fn jstrs(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 fn jopt_s(v : String?) -> J {
-  match v {
-    Some(s) => js(s)
-    None => Null
-  }
+  @jsjson.JValue::of_opt_string(v)
 }
 
 ///|
 /// `o[k]` where `o` is an object.
 fn get(o : J?, k : String) -> J? {
-  match o {
-    Some(Obj(_) as obj) => obj.get(k)
-    _ => None
-  }
+  @jsjson.jval_at(o, k)
 }
 
 ///|
 fn text(j : J?) -> String? {
-  match j {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  @jsjson.jval_str_of(j)
 }
 
 ///|
 fn num(j : J?) -> Double? {
-  match j {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(j)
 }
 
 ///|
 fn arr(j : J?) -> Array[J]? {
-  match j {
-    Some(Arr(a)) => Some(a)
-    _ => None
-  }
+  @jsjson.jval_arr_of(j)
 }
 
 
@@ -87,35 +72,14 @@ fn arr(j : J?) -> Array[J]? {
 ///|
 /// `o[k] = v` on a copy: in its place where `o` has it, else last.
 fn set(o : J, k : String, v : J) -> J {
-  let u = @jsjson.units(k)
-  match o {
-    Obj(ps) => {
-      let out = ps.copy()
-      match out.search_by(p => p.0 == u) {
-        Some(i) => out[i] = (u, v)
-        None => out.push((u, v))
-      }
-      Obj(out)
-    }
-    _ => Obj([(u, v)])
-  }
+  @jsjson.jval_set_or_new(o, k, v)
 }
 
 
 ///|
 /// `{ ...a, ...b }`.
 fn spread(a : J, b : J) -> J {
-  let mut out = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
-  match b {
-    Obj(ps) => for p in ps {
-      out = set(out, @jsjson.text(p.0), p.1)
-    }
-    _ => ()
-  }
-  out
+  @jsjson.jval_spread(a, b)
 }
 
 ///|
@@ -153,15 +117,7 @@ fn parse_or_null(b : BytesView) -> J {
 ///|
 /// A number as JavaScript's `String(n)` says it.
 fn num_text(d : Double) -> String {
-  if d.is_nan() {
-    "NaN"
-  } else if d.is_pos_inf() {
-    "Infinity"
-  } else if d.is_neg_inf() {
-    "-Infinity"
-  } else {
-    stringify(Num(d))
-  }
+  @jsjson.num_text(d)
 }
 
 ///|
@@ -227,7 +183,7 @@ fn core_json(v : J) -> Json {
 ///|
 /// `Number.isInteger(v)`.
 fn is_integer(d : Double) -> Bool {
-  d.is_finite() && d.floor() == d
+  @jsjson.is_integer(d)
 }
 
 ///|
