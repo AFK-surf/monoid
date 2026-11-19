@@ -278,12 +278,26 @@ test("an unexecutable claude stub does not crash MachineLogins or LoginManager",
     const dir = temp("login-unexec");
     const mgr = new LoginManager(dir, { claude: claudePath, codex: "x" });
     try {
-      const failed = await mgr.start({ id: "sub", runtime: "claude", home: join(dir, "homes", "sub") }, "zh");
+      const waitFailed = upon((wake) => mgr.changes(wake), () => (mgr.get("sub")?.state === "failed" ? mgr.get("sub") : undefined), "stub login failed");
+      const startedJob = await mgr.start({ id: "sub", runtime: "claude", home: join(dir, "homes", "sub") }, "zh");
+      // macOS/Windows fail spawn synchronously; Linux execvp falls back to /bin/sh and exits 1.
+      const failed = startedJob.state === "failed" ? startedJob : await waitFailed;
       assert.equal(failed.state, "failed");
-      assert.ok(failed.error!.startsWith("无法运行登录命令"), failed.error!);
+      assert.ok(failed.error!.startsWith("无法运行登录命令") || failed.error!.includes("claude native binary not installed"), failed.error!);
       assert.equal(mgr.get("sub")?.state, "failed");
     } finally {
       await mgr.close();
+    }
+
+    // A synchronous spawn throw (on every OS, including Linux) fails the login cleanly.
+    const syncFail = new LoginManager(dir, { claude: join(dir, "bad\0claude"), codex: "x" });
+    try {
+      const failed = await syncFail.start({ id: "sub2", runtime: "claude", home: join(dir, "homes", "sub2") }, "zh");
+      assert.equal(failed.state, "failed");
+      assert.ok(failed.error!.startsWith("无法运行登录命令"), failed.error!);
+      assert.equal(syncFail.get("sub2")?.state, "failed");
+    } finally {
+      await syncFail.close();
     }
   } finally {
     process.off("unhandledRejection", onUnhandled);
