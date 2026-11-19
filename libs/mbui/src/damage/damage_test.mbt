@@ -220,6 +220,25 @@ test "glass: the part reaching what its capture copies takes all of that in" {
 }
 
 ///|
+test "glass: a Backdrop lens's spot packed below 0 in its 23 reaches no further than none" {
+  // liquid glass (6) bending by 6 over a ground, its capture -1; the dot under its margin changed
+  let lens = fn(rim : Double) {
+    let a = frame([(0.0, 0.0, 400.0, 300.0, 0), (186.0, 10.0, 4.0, 4.0, 0), (100.0, 20.0, 80.0, 20.0, 6)])
+    a[120 + 14] = -1.0
+    a[120 + 20] = -1.0
+    a[120 + 21] = 6.0
+    a[120 + 23] = rim
+    let d = seen(a)
+    let b = copy(a)
+    b[60] = 184.0
+    next(d, b)
+  }
+  assert_eq(lens(-8388607.0), lens(0.0))
+  // (a radius said as ever reaches that much further)
+  assert_true(lens(8.0) != lens(0.0))
+}
+
+///|
 test "parts far apart: each its own, up to four; near: one" {
   let a = frame([
     (0.0, 0.0, 400.0, 300.0, 0),

@@ -11,6 +11,7 @@ pub using @paint {
   vector_shapes,
   dashed_outlines,
   type Glass,
+  type BackdropHighlight,
   type CornerOf,
   type CornerFit,
   type CornerRoots,
