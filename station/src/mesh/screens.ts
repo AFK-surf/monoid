@@ -626,7 +626,7 @@ class ViewSession {
         if (scale !== null && !this.#closed) void this.#state({ scale });
       });
     }
-    // Its resolution too (a source whose resolution is changed: Windows' desktop).
+    // Its resolution too (a source whose resolution is changed: Windows' desktop, the Mac's).
     if (this.control && this.source.resolution) {
       void this.source.resolution().then((resolution) => {
         if (resolution !== null && !this.#closed) void this.#state({ resolution });

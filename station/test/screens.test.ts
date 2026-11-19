@@ -1793,6 +1793,11 @@ class FakeHelperApp {
   asking = false;
   restartOnce = false;
   status: any;
+  /// The display's mode (`resolution`) and the sizes it has; null: a helper from before it, which knows no such op.
+  resolution: { width: number; height: number; modeID: number } | null = null;
+  modes: { width: number; height: number }[] = [];
+  /// The ops asked, in order (`resolution` with what it set).
+  asked: any[] = [];
   #server: net.Server | null = null;
   #where: { path: string; token: string } | null = null;
   #conns = new Set<net.Socket>();
@@ -1862,7 +1867,19 @@ class FakeHelperApp {
       const ask = JSON.parse(carry.subarray(0, at).toString());
       const rest = carry.subarray(at + 1);
       if (ask.token !== token) return line({ error: "not the station's token" });
+      const { token: _, ...asked } = ask;
+      this.asked.push(asked);
       switch (ask.op) {
+        case "resolution": {
+          if (this.resolution === null) break;
+          if (ask.width !== undefined) {
+            if (!this.modes.some((m) => m.width === ask.width && m.height === ask.height)) return line({ error: `${ask.width}×${ask.height} is not a mode of this display` });
+            // (a Retina display's: its pixels twice its points)
+            this.resolution = { width: ask.width, height: ask.height, modeID: ask.modeID ?? 100 + this.modes.findIndex((m) => m.width === ask.width) };
+            this.status = { ...this.status, display: { ...this.status.display, width: ask.width * 2, height: ask.height * 2 } };
+          }
+          return line({ ...this.resolution, modes: this.modes });
+        }
         case "hello":
           return line({ ok: true, v: 1 });
         case "status":
@@ -1935,6 +1952,8 @@ class FakeHelperApp {
           return;
         }
       }
+      // (as the Helper answers an op it does not know)
+      line({ error: `unknown op ${ask.op}` });
     });
   }
 }
@@ -2048,6 +2067,54 @@ test("the desktop's view: a connection to the helper, asked for each frame, its 
   wide.close();
   await desktop.close();
   fake.close();
+});
+
+test("the Mac's display's resolution: set while viewed, put back as it was (its mode by its id) once the last view ends or the station stops, before the helper quits; none from a helper from before it", { skip: WINDOWS }, async () => {
+  const { app, dir } = helperRelease();
+  const fake = new FakeHelperApp({ capture: true, control: true, display, live: { capture: true, control: true } });
+  let changed = 0;
+  const desktop = new Desktop({ supported: true, helper: new HelperApp({ app, dir, launch: fake.launch }), changed: () => changed++ });
+  const sized = () => fake.asked.filter((a) => a.op === "resolution" && a.width !== undefined);
+  try {
+    // A helper from before it: none told, nothing set (nothing to put back after).
+    assert.equal(await desktop.resolution(), null);
+    await assert.rejects(desktop.setResolution(1280, 800), /unknown op resolution/);
+    const modes = [{ width: 1800, height: 1169 }, { width: 1512, height: 982 }, { width: 1352, height: 878 }];
+    fake.resolution = { width: 1512, height: 982, modeID: 7 };
+    fake.modes = modes;
+    const a = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    const b = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    assert.deepEqual(await desktop.resolution(), { width: 1512, height: 982, modes });
+    // The display the views are of; its size in pixels had again, the screens listed anew.
+    const before = changed;
+    assert.deepEqual(await desktop.setResolution(1800.4, 1169), { width: 1800, height: 1169, modes });
+    assert.equal(desktop.size().width, 3600);
+    assert.ok(changed > before);
+    assert.deepEqual(await desktop.setResolution(1352, 878), { width: 1352, height: 878, modes });
+    await assert.rejects(desktop.setResolution(1024, 768), /1024×768 is not a mode/);
+    // One still viewing: kept; the last one gone: put back, to the mode it was in.
+    a.close();
+    assert.equal((await desktop.resolution())?.width, 1352);
+    b.close();
+    assert.deepEqual(await desktop.resolution(), { width: 1512, height: 982, modes });
+    assert.equal(desktop.size().width, 3024);
+    assert.deepEqual(sized(), [
+      { op: "resolution", width: 1800, height: 1169, display: 1 },
+      { op: "resolution", width: 1352, height: 878, display: 1 },
+      { op: "resolution", width: 1024, height: 768, display: 1 },
+      { op: "resolution", width: 1512, height: 982, modeID: 7, display: 1 },
+    ]);
+    // Changed, and the station stops while it is viewed: put back before the helper quits.
+    await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    await desktop.setResolution(1800, 1169);
+    fake.asked = [];
+    await desktop.close();
+    assert.deepEqual(fake.resolution, { width: 1512, height: 982, modeID: 7 });
+    const ops = fake.asked.map((a) => a.op);
+    assert.ok(ops.indexOf("resolution") >= 0 && ops.indexOf("resolution") < ops.lastIndexOf("quit"), ops.join(" "));
+  } finally {
+    fake.close();
+  }
 });
 
 test("the desktop for a view without H.264 (an agent's): JPEG pictures, its config without a description", { skip: WINDOWS }, async () => {
