@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [b7ddfb6b0](https://github.com/AFK-surf/monoid/commit/b7ddfb6b0705b80613db82a7bad380eb507a100b) feat(mbui): compound list slices, sticky parts, pa | 2.64 | 3.55 | 14.51 | 36.72 | 55.87 | 32.18 | 65.12 | 97.73 | 119.57 |
 | [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 2.64 | 3.54 | 14.47 | 36.69 | 55.74 | 32.18 | 65.12 | 97.73 | 117.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 | [d4d8cdd53](https://github.com/AFK-surf/monoid/commit/d4d8cdd531839041e5e3ce08ca02ab84a1107aff) fix(station): keep monoid's station data apart fro | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
-| [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 2.62 | 3.53 | 14.41 | 36.61 | 55.51 | 32.08 | 64.9 | 97.26 | 123.27 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [231e1925f](https://github.com/AFK-surf/monoid/commit/231e1925fe0c7450207dc3a2a21552b6c168164a) feat(screens): share the microphone, controllers a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [b7ddfb6b0](https://github.com/AFK-surf/monoid/commit/b7ddfb6b0705b80613db82a7bad380eb507a100b) feat(mbui): compound list slices, sticky parts, pa | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
 | [073c68c51](https://github.com/AFK-surf/monoid/commit/073c68c51bc94a4df102f4df8fe10d57554931d7) feat(mbui): add headless dialog, popover, hover ca | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.94 |
 | [d4d8cdd53](https://github.com/AFK-surf/monoid/commit/d4d8cdd531839041e5e3ce08ca02ab84a1107aff) fix(station): keep monoid's station data apart fro | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
-| [fedda4bd5](https://github.com/AFK-surf/monoid/commit/fedda4bd54f42c1d7303d2285a374bb09eee7e87) refactor(cloud): split directory durable object in | 0.44 | 0.58 | 2.23 | 3.32 | 5.36 | 1.64 | 4.41 | 53.84 |
