@@ -779,7 +779,10 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     path: pattern,
     answer: async fn(r) {
       let asked = jtext(r, "path").unwrap_or("")
-      let body = jtext(r, "body").unwrap_or("")
+      let body = match jtext(r, "rawBody") {
+        Some(b) => b
+        None => jtext(r, "body").unwrap_or("")
+      }
       match devices.route(meth, asked, to_jv(opt_field(Some(r), "viewer").unwrap_or(Json::null())), body) {
         Some((status, value)) => { "status": Json::number(status.to_double()), "body": Json::string(@jsjson.stringify(value)) }
         None => { "status": Json::number(404.0), "body": Json::string("{\"error\":\"no such route\"}") }
