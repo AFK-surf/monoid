@@ -345,9 +345,16 @@ async fn Counter::read_file(
     !replaced &&
     before.offset > 0.0 &&
     (runtime == "claude" || runtime == "codex") {
-    state.speed = self.timed_again(path, runtime, subagent, session.key, before.offset, cut, time_from)
-    if self.files is Some(files) && files.get(path) is Some(f) {
-      files[path] = { ..f, speed: speed_text(state.speed) }
+    state.speed = self.timed_again(path, w.path, runtime, subagent, session.key, before.offset, cut, time_from)
+    // (none found to time, kept as `,,,`: read as none (`speed_of`), and not timed again at the next start)
+    let saved_speed = speed_text(state.speed).unwrap_or(",,,")
+    if self.files is Some(files) {
+      if files.get(path) is Some(f) {
+        files[path] = { ..f, speed: Some(saved_speed) }
+      }
+      if w.path != path && files.get(w.path) is Some(f) {
+        files[w.path] = { ..f, speed: Some(saved_speed) }
+      }
     }
   }
   // Each part recorded as it is read, before the next is read.
@@ -455,11 +462,14 @@ impl Show for ReadEnough with output(self, logger) {
 
 ///|
 /// reference `timedAgain`: a transcript read again up to `upto`, where it was read to before its calls were timed:
-/// each of its calls made from `time_from` on given the time it took (only longer, never a call more), and where its
-/// reading of that stands kept with its position, in one write. Where its reading stands at `upto`.
+/// each of its calls made from `time_from` on given the time it took (only longer, never a call more), `write_batch`
+/// calls a write so that no write holds the database long, and where its reading of that stands kept with its position
+/// (at `path` and at `was_path`, where it was read before through another place) in the last. Where its reading stands
+/// at `upto`.
 async fn Counter::timed_again(
   self : Counter,
   path : String,
+  was_path : String,
   runtime : String,
   subagent : Bool,
   session : String,
@@ -491,34 +501,39 @@ async fn Counter::timed_again(
     ReadEnough => ()
     e => raise e
   }
+  let saved_speed = speed_text(state.speed).unwrap_or(",,,")
   let db = self.db
-  db.exec("BEGIN IMMEDIATE")
-  errdefer (db.exec("ROLLBACK") catch { _ => () })
   let mut earliest = @double.infinity
-  for t in timed {
-    let (id, at, gen_ms) = t
-    let changed = db.run(
-      (
-        #|UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END
-        #|  WHERE id = ?1 AND gen_ms < ?2
-      ),
-      [Json::string(id), Json::number(gen_ms)],
-    )
-    if changed > 0 && at < earliest {
-      earliest = at
+  let total = if timed.length() > 1 { timed.length() } else { 1 }
+  for i = 0; i < total; i = i + write_batch {
+    let end = if i + write_batch < timed.length() { i + write_batch } else { timed.length() }
+    db.exec("BEGIN IMMEDIATE")
+    errdefer (db.exec("ROLLBACK") catch { _ => () })
+    for j in i..<end {
+      let (id, at, gen_ms) = timed[j]
+      let changed = db.run(
+        (
+          #|UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END
+          #|  WHERE id = ?1 AND gen_ms < ?2
+        ),
+        [Json::string(id), Json::number(gen_ms)],
+      )
+      if changed > 0 && at < earliest {
+        earliest = at
+      }
     }
+    if i + write_batch >= timed.length() {
+      ignore(
+        db.run("UPDATE usage_files SET speed = ?1 WHERE (path = ?2 OR path = ?3) AND offset = ?4", [
+          Json::string(saved_speed),
+          Json::string(path),
+          Json::string(was_path),
+          Json::number(upto),
+        ]),
+      )
+    }
+    db.exec("COMMIT")
   }
-  ignore(
-    db.run("UPDATE usage_files SET speed = ?1 WHERE path = ?2 AND offset = ?3", [
-      match speed_text(state.speed) {
-        Some(t) => Json::string(t)
-        None => Json::null()
-      },
-      Json::string(path),
-      Json::number(upto),
-    ]),
-  )
-  db.exec("COMMIT")
   if earliest != @double.infinity {
     if !self.counted.contains(session) {
       self.counted.push(session)
@@ -563,6 +578,14 @@ fn sections_of(part : Part, cutoff : Double) -> Array[(BytesView, Int64, Int64, 
   }
   out
 }
+
+///|
+/// The sessions run since `?` with a transcript read before its calls were timed (reference `UNTIMED_SESSIONS`).
+let untimed_sessions : String =
+  #|SELECT DISTINCT u.session AS session_key FROM usage_files u
+  #|  WHERE u.speed IS NULL AND u.offset > 0 AND u.session IS NOT NULL
+  #|    AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
+  #|      WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))
 
 ///|
 /// counter.ts `#read`: one read, of the sessions in `only`, or (none) of those that ran since the last sweep (`last`,
@@ -615,10 +638,21 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
       .filter_map(r => text_of(field(r, "session_key")))
     }
   }
+  let recent_any = keys.length() > 0
   for k in keys {
     if !seen_keys.contains(k) {
       seen_keys.add(k)
       wanted.push(k)
+    }
+  }
+  // Timing back (`time_from`), of all: the sessions run since then whose transcripts were read before calls were timed
+  // too, though none ran since the last sweep (none left, no turn read).
+  if only is None && self.time_from is Some(tf) {
+    for r in db.all(untimed_sessions, [Json::number(tf)]) {
+      if text_of(field(r, "session_key")) is Some(k) && !seen_keys.contains(k) {
+        seen_keys.add(k)
+        wanted.push(k)
+      }
     }
   }
   let sessions = if wanted.length() == 0 {
@@ -784,7 +818,7 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
     }
   }
   added += self.flush()
-  if only is None && wanted.length() > 0 {
+  if only is None && recent_any {
     db.exec("BEGIN IMMEDIATE")
     errdefer (db.exec("ROLLBACK") catch { _ => () })
     ignore(db.run("UPDATE usage_counter SET through = MAX(through, ?) WHERE id = 1", [Json::number(started)]))

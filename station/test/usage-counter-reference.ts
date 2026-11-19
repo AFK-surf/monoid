@@ -27,6 +27,11 @@ const CHUNK = 1 << 20;
 const ANCHOR = 256;
 /// How many calls are recorded in one transaction before the event loop is let through.
 const WRITE_BATCH = 64;
+/// The sessions run since `?` with a transcript read before its calls were timed (counter.mbt `untimed_sessions`).
+const UNTIMED_SESSIONS = `SELECT DISTINCT u.session AS session_key FROM usage_files u
+  WHERE u.speed IS NULL AND u.offset > 0 AND u.session IS NOT NULL
+    AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
+      WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))`;
 
 type Runtime = RuntimeKind;
 
@@ -660,9 +665,11 @@ export class ReferenceUsageCounter {
   }
 
   /// A transcript read again up to `upto`, where it was read to before its calls were timed: each of its calls made
-  /// from `timeFrom` on given the time it took (only longer, never a call more), and where its reading of that stands
-  /// kept with its position, in one write. Where its reading stands at `upto` (mb/src/usagecount counter.mbt).
-  async #timedAgain(path: string, runtime: Runtime, subagent: boolean, session: string, upto: number, cutoff: number, timeFrom: number): Promise<Speed> {
+  /// from `timeFrom` on given the time it took (only longer, never a call more), WRITE_BATCH calls a write so that no
+  /// write holds the database long, and where its reading of that stands kept with its position (at `path` and at
+  /// `wasPath`, where it was read before through another place) in the last. Where its reading stands at `upto`
+  /// (mb/src/usagecount counter.mbt).
+  async #timedAgain(path: string, wasPath: string, runtime: Runtime, subagent: boolean, session: string, upto: number, cutoff: number, timeFrom: number): Promise<Speed> {
     const state: CallState = { model: null, codexId: runtime === "codex" ? (await codexMeta(path))?.[0] ?? null : null, speed: noSpeed() };
     const timed: [string, number, number][] = [];
     reading: for await (const part of readFrom(path, 0)) {
@@ -675,17 +682,25 @@ export class ReferenceUsageCounter {
         }
       }
     }
+    // (none found to time, kept as ",,,": read as none (speedOf), and not timed again at the next start)
+    const savedSpeed = speedText(state.speed!) ?? ",,,";
     const db = this.#store.db;
     let earliest = Infinity;
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const update = db.prepare("UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END WHERE id = ?1 AND gen_ms < ?2");
-      for (const [id, at, genMs] of timed) {
-        if (Number(update.run(id, genMs).changes) > 0) earliest = Math.min(earliest, at);
-      }
-      db.prepare("UPDATE usage_files SET speed = ?1 WHERE path = ?2 AND offset = ?3").run(speedText(state.speed!), path, upto);
-      db.exec("COMMIT");
-    } catch (error) { db.exec("ROLLBACK"); throw error; }
+    for (let i = 0; i < Math.max(1, timed.length); i += WRITE_BATCH) {
+      if (this.#abort.signal.aborted) throw new Stopped();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const update = db.prepare("UPDATE usage SET gen_ms = ?2, gen_output = CASE WHEN ?2 > 0 THEN output ELSE 0 END WHERE id = ?1 AND gen_ms < ?2");
+        for (const [id, at, genMs] of timed.slice(i, i + WRITE_BATCH)) {
+          if (Number(update.run(id, genMs).changes) > 0) earliest = Math.min(earliest, at);
+        }
+        if (i + WRITE_BATCH >= timed.length) {
+          db.prepare("UPDATE usage_files SET speed = ?1 WHERE (path = ?2 OR path = ?3) AND offset = ?4").run(savedSpeed, path, wasPath, upto);
+        }
+        db.exec("COMMIT");
+      } catch (error) { db.exec("ROLLBACK"); throw error; }
+      if (i + WRITE_BATCH < timed.length) await breathe();
+    }
     if (Number.isFinite(earliest)) {
       this.#counted.add(session);
       this.#from = Math.min(this.#from, earliest);
@@ -699,7 +714,14 @@ export class ReferenceUsageCounter {
     if (only === null) this.#first = last === 0;
     const store = this.#store;
     const cursor = store.usageCounter();
-    const wanted = only !== null ? new Set(only) : new Set(store.usageActiveSessions(Math.max(cursor.since, (last || cursor.through) - MARGIN_MS)));
+    const recent = only !== null ? [] : store.usageActiveSessions(Math.max(cursor.since, (last || cursor.through) - MARGIN_MS));
+    const recentAny = recent.length > 0;
+    const wanted = only !== null ? new Set(only) : new Set(recent);
+    // Timing back, of all: the sessions run since then whose transcripts were read before calls were timed too, though
+    // none ran since the last sweep.
+    if (only === null && this.#timeFrom !== null) {
+      for (const r of store.db.prepare(UNTIMED_SESSIONS).all(this.#timeFrom) as { session_key: string }[]) wanted.add(r.session_key);
+    }
     const sessions: SessionRow[] = store.sessionsOf([...wanted]);
     const known = (this.#files ??= new Map<string, CountedFile>());
     const config = this.#config();
@@ -822,7 +844,7 @@ export class ReferenceUsageCounter {
     }
     added += this.#flush();
     if (only === null) {
-      if (wanted.size > 0) store.advanceUsageCounter(started);
+      if (recentAny) store.advanceUsageCounter(started);
       this.#last = started;
       this.#first = false;
     }
@@ -890,9 +912,12 @@ export class ReferenceUsageCounter {
     const state: CallState = { model: before.model, codexId: null, speed: speedOf(before.speed) };
     // Read before its calls were timed: those from `timeFrom` on timed now, its reading on from where that left.
     if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && (runtime === "claude" || runtime === "codex")) {
-      state.speed = await this.#timedAgain(path, runtime, subagent, session.key, before.offset, cutoff, this.#timeFrom);
-      const kept = this.#files?.get(path);
-      if (kept !== undefined) this.#files!.set(path, { ...kept, speed: speedText(state.speed) });
+      state.speed = await this.#timedAgain(path, was.path, runtime, subagent, session.key, before.offset, cutoff, this.#timeFrom);
+      const savedSpeed = speedText(state.speed) ?? ",,,";
+      for (const name of new Set([path, was.path])) {
+        const kept = this.#files?.get(name);
+        if (kept !== undefined) this.#files!.set(name, { ...kept, speed: savedSpeed });
+      }
     }
     // A session created after the counter began can have its first call timestamped just before that boundary when
     // the runtime's clock is behind. Use the same clock-skew allowance already used to attribute calls to a session.
