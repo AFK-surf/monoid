@@ -14,6 +14,8 @@ pub(all) struct FeishuConnect {
   domain : String
   /// Thread mode: each thread of a group its own conversation (only where each conversation has its own session).
   threads : Bool
+  /// A direct chat's words in threads too: each message begins a thread, answered in it, its own conversation.
+  direct_threads : Bool
   bot_name : String?
   bot_image : String?
   bot_open_id : String?
@@ -30,6 +32,7 @@ pub fn FeishuConnect::to_jv(self : FeishuConnect) -> JV {
     ("appSecret", Some(js(self.app_secret))),
     ("domain", Some(js(self.domain))),
     ("threads", Some(Bool(self.threads))),
+    ("directThreads", Some(Bool(self.direct_threads))),
     ("botName", Some(jopt(self.bot_name))),
     ("botImage", Some(jopt(self.bot_image))),
     ("botOpenId", Some(jopt(self.bot_open_id))),
@@ -71,6 +74,7 @@ pub fn feishu_connects(raw : JV) -> Array[FeishuConnect] {
       domain: domain_of(jget(Some(f), "domain")),
       threads: jget(Some(f), "threads") == Some(Bool(true)) &&
       jget(Some(c), "mode") != Some(Str("single-session")),
+      direct_threads: jget(Some(f), "directThreads") == Some(Bool(true)),
       bot_name: non_empty(jget(Some(f), "botName")),
       bot_image: non_empty(jget(Some(f), "botImage")),
       bot_open_id: non_empty(jget(Some(f), "botOpenId")),
@@ -103,7 +107,7 @@ pub fn credentials(c : FeishuConnect) -> String? {
   if c.app_id == "" || c.app_secret == "" {
     None
   } else {
-    Some("\{c.domain}\n\{c.app_id}\n\{c.app_secret}\n\{c.threads}")
+    Some("\{c.domain}\n\{c.app_id}\n\{c.app_secret}\n\{c.threads}\n\{c.direct_threads}")
   }
 }
 
@@ -183,6 +187,10 @@ pub fn shown(raw : JV, live : BotIdentity?) -> JV {
           ("appSecret", Some(js(mask_secret(text(jget(Some(f), "appSecret")))))),
           ("domain", Some(js(domain_of(jget(Some(f), "domain"))))),
           ("threads", Some(Bool(jget(Some(f), "threads") == Some(Bool(true))))),
+          (
+            "directThreads",
+            Some(Bool(jget(Some(f), "directThreads") == Some(Bool(true)))),
+          ),
         ]),
       ),
     ),
@@ -247,6 +255,7 @@ pub fn Feishu::create(
     domain: c.domain,
     threads: self.threads,
     thread_mode: c.threads,
+    direct_threads: c.direct_threads,
     book,
     client: None,
     net: self.net,

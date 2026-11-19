@@ -9,7 +9,7 @@
 ## Sync row construction (`client/core-ts/test/rows-changed.test.ts`)
 
 - Build station rows through the link memo (`client/core-ts/src/station/rows-made.ts` `RowsMemo`, returning frozen previous rows when inputs match by reference) and write against `#chatsHeld` (`client/core-ts/src/db/account.ts`, holding row object and place, not JSON). One single-chat event builds and serializes 1-2 rows, reads no extra chat JSON, stays constant at 3x chats, and matches a cold rebuild.
-- For stations serving shared lists (`link.shared`, build 7143+), keep updates keyed end to end: `#remake` targets specific rows (`rowShared`, viewer marks in `OwnHeld`) and writes each row at its own `sharedPlace` (`#placeChatRow` when only place changes). All `glanced` counters stay 0 except legacy mark lists (`SHARED_MARKS_WALKED`) and older `rowsMade` (`OLDER_GLANCED`), both only falling.
+- Every station (`OLDEST_STATION = 7143`) serves shared lists (`GET /chats?shared=1`). Keep updates keyed end to end: `#remake` targets specific rows (`rowShared`, viewer marks in `OwnHeld`) and writes each row at its own `sharedPlace` (`#placeChatRow` when only place changes). All `glanced` counters stay 0 on single-chat changes.
 - `CAUSES` emit keyed list events (`client/core-ts/test/real-size-asked.ts` `listTold`). Whole-list writes happen only at initial fixture load (`UNTOLD` lists exceptions).
 
 ## A chat on another station now

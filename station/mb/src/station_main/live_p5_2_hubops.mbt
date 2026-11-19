@@ -305,7 +305,7 @@ async fn P52::repo_index_repos(self : P52, walked : Json) -> Json {
   if due && !self.repo_walking {
     self.repo_walking = true
     ignore(
-      self.host.rt.fork(name="repositories' index", async fn() {
+      self.host.rt.fork_daemon("repositories' index", on_error=e => @host.note("repositories' index failed: \{e}"), async fn() {
         self.repo_index.walk(w) catch {
           e => live_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
         }
@@ -327,7 +327,7 @@ fn P52::wall_every(self : P52, ms : Double, f : Json) -> Json {
   let going = Ref(true)
   self.everies[handle] = going
   ignore(
-    self.host.rt.fork(name="a route's heartbeat", async fn() {
+    self.host.rt.fork_daemon("a route's heartbeat", on_error=e => @host.note("a route's heartbeat failed: \{e}"), async fn() {
       while going.val {
         @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a heartbeat a route keeps (usage.ts)
         if !going.val {
@@ -652,7 +652,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         }
         let f = arg_or_null(args, 1)
         ignore(
-          self.host.rt.fork(name="a route's later", async fn() {
+          self.host.rt.fork_quiet(name="a route's later", async fn() {
             @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a retry after a failure (a route's own)
             ignore(self.called(f, [])) catch {
               _ => ()

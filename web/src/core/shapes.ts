@@ -574,6 +574,8 @@ export interface FeishuApp {
 	domain: string;
 	/** Thread mode: each thread of a group its own conversation, answered in it. */
 	threads?: boolean;
+	/** A direct chat in threads: each message there begins one, its own conversation, answered in it. */
+	directThreads?: boolean;
 	/** The app's page in the developer console (core). */
 	console?: string;
 }

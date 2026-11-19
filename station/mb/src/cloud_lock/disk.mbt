@@ -71,7 +71,9 @@ pub fn Disk::mkdir(self : Disk, path : String) -> Unit {
 /// Bytes written whole, readable by this user alone (writePrivate of a Buffer).
 pub async fn Disk::put(self : Disk, path : String, bytes : Bytes) -> Unit raise Failure {
   self.mkdir(dirname(path))
-  let tmp = "\{path}.\{@host.pid()}.tmp"
+  // (a name of its own: two fibers writing one file at once each rename theirs, L13; let go of where this fails)
+  let tmp = @host.unique_tmp(path)
+  errdefer self.remove(tmp)
   let (answer, _) = self.host.shell(
     "fs.put",
     { "path": Json::string(tmp), "truncate": true, "sync": true, "mode": Json::number(384.0) },

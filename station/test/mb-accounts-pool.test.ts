@@ -286,9 +286,9 @@ describe("accounts_pool: functions", { skip }, () => {
       return p;
     });
     const connects = Array.from({ length: r.int(3) }, (_, i) => {
-      const c: Json = { id: r.next() < 0.1 ? `C${i}` : `c${i}`, bind: { runtime: r.pick(["claude", "codex", "pi", "x", undefined]) } };
+      const c: Json = { id: r.next() < 0.1 ? `C${i}` : `c${i}`, bind: { runtime: r.pick(["claude", "codex", "agy", "cursor", "pi", "x", undefined]) } };
       if (r.next() < 0.5) c.bind.model = r.pick(MODELS);
-      if (r.next() < 0.3) c.bind.effort = r.pick(["low", "max", "xhigh", "weird", ""]);
+      if (r.next() < 0.3) c.bind.effort = r.pick(["none", "minimal", "low", "high", "max", "xhigh", "weird", ""]);
       if (r.next() < 0.3) c.bind.profiles = r.next() < 0.1 ? [1] : ["p0", " p1 ", ""];
       if (r.next() < 0.3) c.mode = r.pick(["single-session", "multi-session", "other"]);
       if (r.next() < 0.3) c.kind = r.pick(["slack", "feishu", "comma", "group", "irc"]);
@@ -326,6 +326,13 @@ describe("accounts_pool: functions", { skip }, () => {
         assert.equal(await p.ask("billedPerUse", plain), billedPerUse(plain), `seed ${seed}: billed`);
         assert.equal(await p.ask("takesFast", pr), takesFast(pr), `seed ${seed}: fast`);
       }
+    }
+    for (const raw of [
+      { connects: [{ id: "c", bind: { runtime: "agy", effort: "high" } }] },
+      { connects: [{ id: "c", bind: { runtime: "agy", effort: "ultra" } }] },
+      { connects: [{ id: "c", bind: { runtime: "cursor", effort: "high" } }] },
+    ]) {
+      same(await p.said("checkConfig", raw, "/data"), await tsSaid(() => checkConfig(raw, "/data")), JSON.stringify(raw));
     }
   });
 

@@ -484,7 +484,7 @@ async fn P55::start_connects(self : P55) -> Unit {
       }
     }
     ignore(
-      bus.host.rt.fork(name="connects' surfaces told", async fn() {
+      bus.host.rt.fork_quiet(name="connects' surfaces told", async fn() {
         ignore((bus.hub_ask.val)("surfaces", Json::object(all))) catch {
           _ => ()
         }
@@ -569,7 +569,7 @@ async fn P55::start_connects(self : P55) -> Unit {
           }
         _ => Json::object({})
       }
-      let st = match k.state(of_core({ "id": Json::string(id) })) {
+      let st = match k.state(of_core(Json::string(id))) {
         Some(s) => to_core(s)
         None => Json::null()
       }
@@ -587,7 +587,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     for kind, k in kinds {
       for c in k.connects() {
         let id = p55_jtext(to_core(c), "id")
-        let st = match k.state(of_core({ "id": Json::string(id) })) {
+        let st = match k.state(of_core(Json::string(id))) {
           Some(s) => to_core(s)
           None => Json::null()
         }

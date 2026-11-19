@@ -26,10 +26,23 @@ async fn p54_stream_call(host : @host.Host, handle : Json, call : String, bytes?
   match handle {
     { "$tcp": id, .. } =>
       match call {
-        "read" => host.shell("tcp.read", { "id": id })
-        "write" => host.shell("tcp.write", { "id": id }, bytes=bytes.unwrap_or(b""))
-        "finish" => host.shell("tcp.end", { "id": id })
-        "reset" => host.shell("tcp.close", { "id": id })
+        "read" =>
+          match host.tcp_read(id) {
+            Some(b) => (Json::null(), Some(b))
+            None => ({ "end": true }, None)
+          }
+        "write" => {
+          host.tcp_write(id, bytes.unwrap_or(b""))
+          (Json::null(), None)
+        }
+        "finish" => {
+          host.tcp_end(id)
+          (Json::null(), None)
+        }
+        "reset" => {
+          host.tcp_close(id)
+          (Json::null(), None)
+        }
         _ => (Json::null(), None)
       }
     id => {
@@ -130,7 +143,7 @@ fn p54_runner_socket(host : @host.Host, socket_path : String) -> @terminals_logi
   }
   let write_now : Ref[(Bytes) -> Unit] = Ref(b => pending.push(b))
   ignore(
-    host.rt.fork(name="runner socket", async fn() {
+    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
       let c = p54_unix_open(host, socket_path) catch {
         _ => {
           close_all()
@@ -266,7 +279,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
     },
     wire: info => @terminals_logins.runner_wire(p54_runner_socket(host, sockets.get(info.id).unwrap_or(""))),
     now: () => wall_ms().to_double(),
-    spawn: f => ignore(host.rt.fork(name="terminal", async fn() { f() catch { _ => () } })),
+    spawn: f => ignore(host.rt.fork_quiet(name="terminal", async fn() { f() catch { _ => () } })),
     log: (said, about) => err_write("terminal: \{said} \{@jsjson.stringify(about)}\n"),
   })
   bus.parts.streams("terminal", async fn(asked) {
@@ -466,7 +479,7 @@ async fn p54_logins_start(
 ) -> P54Logins {
   let host = bus.host
   let mac = platform() == "darwin"
-  let fork = (f : async () -> Unit) => ignore(host.rt.fork(name="login", async fn() { f() catch { _ => () } }))
+  let fork = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="login", async fn() { f() catch { _ => () } }))
   let env_map = () => {
     let m : Map[String, String] = Map([])
     for kv in env_all() {

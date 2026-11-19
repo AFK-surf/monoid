@@ -239,7 +239,7 @@ pub fn ScopeSync::new(
   }
   changed.val = s => sync.changed(s)
   failed.val = e => sync.failed(e)
-  let again = () => ignore(rt.fork(name="mesh roster", async fn() { sync.roster() }))
+  let again = () => ignore(rt.fork_daemon("mesh roster", on_error=e => sync.failed(e), async fn() { sync.roster() }))
   sync.offs = [(parts.cloud.listen)(again), parts.ways.listen(_ => again())]
   again()
   sync
@@ -394,7 +394,7 @@ fn ScopeSync::retry_roster(self : ScopeSync, epoch : Int, e : Error) -> Unit {
   }
   // timer: a retry after a failure, with a backoff (the endpoint's directory not applied)
   self.roster_retry = Some(
-    (self.parts.after)(self.roster_wait, () => ignore(self.rt.fork(name="mesh roster", async fn() { self.roster() }))),
+    (self.parts.after)(self.roster_wait, () => ignore(self.rt.fork_daemon("mesh roster", on_error=e => self.failed(e), async fn() { self.roster() }))),
   )
 }
 
@@ -452,7 +452,7 @@ fn ScopeSync::pump(self : ScopeSync) -> Unit {
       (self.parts.call)(job.peer, job.workspace, Json::object(body))
     }
     ignore(
-      self.rt.fork(name="mesh exchange", async fn() {
+      self.rt.fork_daemon("mesh exchange", on_error=e => self.failed(e), async fn() {
         let result = try {
           // (who may relay arrives before any relay's address)
           exchange_signed_records(

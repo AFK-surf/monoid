@@ -17,6 +17,7 @@ test("a_slack_agents_page_brings_its_history_first_and_is_not_empty_meanwhile", 
   const prompt = `<message via="slack" connect="c1" you="Bot (<@UB>)" thread="C1/100.0" from="Ann (U1)" ts="100.0">\nhello there\n</message>`;
   const items = [{ at: "2026-11-11T08:00:00.000Z", kind: "user", text: prompt }];
   answers["GET /threads"] = [];
+  answers["GET /chats?shared=1"] = [];
   // Every history but k1's waits, as a station far away answers a long sweep: k1's is answered once asked.
   const asked: string[] = [];
   const s = await started(answers, 0, undefined, (f) => {

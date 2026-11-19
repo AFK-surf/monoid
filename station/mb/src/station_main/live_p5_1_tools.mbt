@@ -347,7 +347,7 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         }
       }
       ignore(
-        host.rt.fork(name="device process", async fn() {
+        host.rt.fork_daemon("device process", on_error=e => @host.note("device process failed: \{e}"), async fn() {
           while true {
             match proc.events.take() {
               Out(b) | Err(b) => take(b)

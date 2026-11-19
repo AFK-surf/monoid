@@ -45,12 +45,9 @@ pub fn icon_well_node(
   action_box_node(loc~, parent, label, fn(_) { press() }, fn(a) {
     style_node(loc~, a, fn() { icon_well }, in_row=true)
     a.ground(By(ground)).clips(Is(true)) |> ignore
-    a.pick(shown, fn(s, now) {
+    a.pick(shown, at_once=true, fn(s, now) {
       if now != "" {
-        s.box(fn(img) {
-          img.over(Is(true)).image(Is(Some((now, "", px)))).image_covers(Is(true)).image_fades(Is(false)) |> ignore
-        })
-        |> ignore
+        s.over(Is(true)).image(Is(Some((now, "", px)))).image_covers(Is(true)).image_fades(Is(false)) |> ignore
       } else {
         s.box(fn(e) {
           style_node(loc~, e, fn() { icon_well_empty })

@@ -36,7 +36,7 @@ pub fn host_clock(host : @host.Host, wall : Double) -> Clock {
       () => fiber.interrupt()
     },
     spawn: f => ignore(
-      host.rt.fork(async fn() {
+      host.rt.fork_daemon("browser", on_error=_ => (), async fn() {
         f() catch {
           _ => ()
         }
@@ -169,7 +169,7 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
     })
     {
       send: t => ignore(
-        host.rt.fork(async fn() {
+        host.rt.fork_quiet(name="browser ws send", async fn() {
           ignore(host.shell("ws.send", { "id": Json::number(id), "text": Json::string(t) })) catch {
             _ => ()
           }
@@ -178,7 +178,7 @@ pub fn host_cdp_open(host : @host.Host) -> async (String, CdpLink) -> CdpSocket 
       close: () => {
         fiber.interrupt()
         ignore(
-          host.rt.fork(async fn() {
+          host.rt.fork_quiet(name="browser ws close", async fn() {
             ignore(host.shell("ws.close", { "id": Json::number(id) })) catch {
               _ => ()
             }

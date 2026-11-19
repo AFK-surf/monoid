@@ -346,7 +346,7 @@ pub fn follow_lock(k : Keeper, call : PeerCall, rt : @effect.Runtime) -> () -> U
       return
     }
     going.push(key)
-    ignore(rt.fork(name="lock level", () => {
+    ignore(rt.fork_daemon("lock level", on_error=e => @door.log("warn", "lock", "the lock was not brought level", { "error": Json::string(words_of(e)) }), () => {
       let ok = try {
         match off {
           None => sync_with(k, call, peer, ws)
@@ -389,7 +389,7 @@ pub fn follow_lock(k : Keeper, call : PeerCall, rt : @effect.Runtime) -> () -> U
       None => false
     }
     if !going.contains(key) && !waits {
-      ignore(rt.fork(name="lock pin", () => pin_once(k, call, workspace, peers, key, retry, going, retries, stopped, schedule)))
+      ignore(rt.fork_daemon("lock pin", on_error=e => @door.log("warn", "lock", "a lock pin was not offered", { "error": Json::string(words_of(e)) }), () => pin_once(k, call, workspace, peers, key, retry, going, retries, stopped, schedule)))
     }
   }
   let look = async fn() {
@@ -454,7 +454,7 @@ pub fn follow_lock(k : Keeper, call : PeerCall, rt : @effect.Runtime) -> () -> U
       }
     }
   }
-  look_ref.val = () => ignore(rt.fork(name="lock look", () => look() catch { _ => () }))
+  look_ref.val = () => ignore(rt.fork_daemon("lock look", on_error=_ => (), () => look() catch { _ => () }))
   (look_ref.val)()
   let unlisten = (k.listen)(() => (look_ref.val)())
   () => {

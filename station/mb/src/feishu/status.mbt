@@ -68,7 +68,7 @@ pub fn StatusLine::say(
   }
   self.timer = true
   ignore(
-    self.rt.fork(async fn() {
+    self.rt.fork_daemon("feishu status", on_error=_ => self.timer = false, async fn() {
       let now = @effect.now()
       let wait = if status == "" {
         0L

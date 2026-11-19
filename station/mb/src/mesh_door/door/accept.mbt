@@ -21,7 +21,7 @@ pub async fn accept(next : async () -> Connection?, how : Taken, scope : @effect
   while next() is Some(conn) {
     (how.arrived)(conn)
     ignore(
-      scope.fork(name="mesh connection", () => {
+      scope.fork_daemon("mesh connection", on_error=e => log("info", "mesh", "connection ended", { "error": Json::string(message_of(e)) }), () => {
         defer (conn.close)(0, how.closing)
         (how.serve)(conn) catch {
           e =>

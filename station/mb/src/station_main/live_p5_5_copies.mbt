@@ -138,7 +138,7 @@ fn P55::replica_world(self : P55, answer : async (String, Array[@jsjson.JValue])
     log: (level, part, words, fields) => slice_log(level, part, words, to_core(fields)),
     words: @replica_coord.station_words(of_core(zh), of_core(en)),
     lang: Ref((bus.lang.val)()),
-    fork: f => ignore(bus.host.rt.fork(async fn() { f() catch { e => err_write("copies: \{e}\n") } })),
+    fork: f => ignore(bus.host.rt.fork_quiet(async fn() { f() catch { e => err_write("copies: \{e}\n") } })),
     tell: told,
   }
 }

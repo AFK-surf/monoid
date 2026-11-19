@@ -185,6 +185,7 @@ fn feishu_connect_of(j : @jsjson.JValue) -> @feishu.FeishuConnect? {
     app_secret: p55_jtext(c, "appSecret"),
     domain: if p55_jtext(c, "domain") == "lark" { "lark" } else { "feishu" },
     threads: p55_jfield(c, "threads") is True,
+    direct_threads: p55_jfield(c, "directThreads") is True,
     bot_name: p55_jstr(c, "botName"),
     bot_image: p55_jstr(c, "botImage"),
     bot_open_id: p55_jstr(c, "botOpenId"),

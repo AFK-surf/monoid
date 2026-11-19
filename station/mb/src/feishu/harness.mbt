@@ -676,6 +676,7 @@ async fn surface_case(c : JV) -> JV {
     domain: text(jget(Some(c), "domain")),
     threads,
     thread_mode: jget(Some(c), "threadMode") == Some(Bool(true)),
+    direct_threads: jget(Some(c), "directThreads") == Some(Bool(true)),
     book,
     client: Some(
       FeishuClient::new(

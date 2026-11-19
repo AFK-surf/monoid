@@ -151,7 +151,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       h.codex.orphans = Some(Map([]))
     }
     self.sessions[h.n] = h
-    ignore(self.host.rt.fork(name="agent", () => self.attach(h, socket)))
+    ignore(self.host.rt.fork_daemon("agent", on_error=e => @host.note("agent failed: \{e}"), () => self.attach(h, socket)))
   }
   if num("freeze") is Some(id) {
     let states : Map[String, Json] = {}
@@ -184,7 +184,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let at = num("at").unwrap_or(0.0).to_int64()
     let path = text("path").unwrap_or("")
     let kind = text("kind").unwrap_or("claude")
-    ignore(self.host.rt.fork(name="agent replay", () => self.own_replay(id.to_int(), kind, path, at, m)))
+    ignore(self.host.rt.fork_daemon("agent replay", on_error=e => @host.note("agent replay failed: \{e}"), () => self.own_replay(id.to_int(), kind, path, at, m)))
     return
   }
   let ops = [
@@ -421,31 +421,32 @@ fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, kind~ : String) -> 
 ///|
 async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
   let n = h.n
-  let opened = try { Ok(self.host.shell("unix.open", { "path": Json::string(socket) })) } catch { e => Err(e) }
-  guard opened is Ok(({ "id": conn, .. }, _)) else {
+  let opened = try { Ok(self.host.unix_open(socket)) } catch { e => Err(e) }
+  guard opened is Ok(opened) else {
     self.sessions.remove(n)
     self.host.say(({ "closed": Json::number(n.to_double()) } : Json).stringify())
     return
   }
-  h.conn = conn
+  h.conn = opened.id
+  let socket = opened.socket
   // (what is written to it, one at a time in order)
   ignore(
-    self.host.rt.fork(name="agent write", () => {
+    self.host.rt.fork_quiet(name="agent write", () => {
       // (attached first: what Node said meanwhile comes after)
-      ignore(self.host.shell("tcp.write", { "id": conn }, bytes=@utf8.encode(({ "op": "attach" } : Json).stringify() + "\n"))) catch {
+      socket.write(@utf8.encode(({ "op": "attach" } : Json).stringify() + "\n")) catch {
         _ => ()
       }
       while (try { h.outq.take() } catch { _ => None }) is Some(bytes) {
-        ignore(self.host.shell("tcp.write", { "id": conn }, bytes~)) catch { _ => () }
+        socket.write(bytes) catch { _ => () }
       }
-      ignore(self.host.shell("tcp.end", { "id": conn })) catch { _ => () }
+      socket.end_write() catch { _ => () }
     }),
   )
   // (the runner's messages, each a line: only what a read brought is looked through for their ends)
   let carry = @pieces.Pieces::new()
   while true {
-    let read = try { Ok(self.host.shell("tcp.read", { "id": conn })) } catch { e => Err(e) }
-    guard read is Ok((said, Some(bytes))) && !(said is { "end": true, .. }) && bytes.length() > 0 else { break }
+    let read = try { Ok(socket.read()) } catch { e => Err(e) }
+    guard read is Ok(Some(bytes)) && bytes.length() > 0 else { break }
     for line in carry.lines(bytes) {
       let message = @json.parse(@utf8.decode_lossy(line)) catch { _ => Json::null() }
       if !h.left {
@@ -453,7 +454,7 @@ async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
       }
     }
   }
-  ignore(self.host.shell("tcp.close", { "id": conn })) catch { _ => () }
+  socket.destroy()
   if h.left || h.exited {
     self.sessions.remove(n)
   }
@@ -748,7 +749,7 @@ fn Agents::soon(self : Agents, h : Hosted) -> Unit {
   }
   h.later = true
   ignore(
-    self.host.rt.fork(name="agent deltas", () => {
+    self.host.rt.fork_daemon("agent deltas", on_error=e => @host.note("agent deltas failed: \{e}"), () => {
       @effect.sleep(DELTAS_MS)
       h.later = false
       self.flush(h)

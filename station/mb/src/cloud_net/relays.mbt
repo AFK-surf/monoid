@@ -225,7 +225,7 @@ pub async fn keep_relays(
   }
   @effect.scoped(scope => {
     ignore(
-      scope.fork(async fn() {
+      scope.fork_daemon("relays kept", on_error=e => log("the relays kept are no longer followed: \{error_words(e)}"), async fn() {
         while true {
           changes.take()
           let now = wanted_relays(ways)

@@ -84,7 +84,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   ignore(
     (bus.config_listen.val)(_ => {
       ignore(
-        host.rt.fork(name="hub config", async fn() { ctx.refresh_config() }),
+        host.rt.fork_daemon("hub config", on_error=e => @host.note("hub config failed: \{e}"), async fn() { ctx.refresh_config() }),
       )
     }),
   )
@@ -156,7 +156,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   ignore(
     (bus.cloud_listen.val)(_ => {
       ignore(
-        host.rt.fork(name="agents follow", async fn() {
+        host.rt.fork_daemon("agents follow", on_error=e => @host.note("agents follow failed: \{e}"), async fn() {
           match ctx.agents_side {
             Some(side) => side.follow(ctx.place())
             None => ()
@@ -166,7 +166,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     }),
   )
   // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
-  ignore(host.rt.fork(name="lifecycle", async fn() { ctx.lifecycle() }))
+  ignore(host.rt.fork_daemon("lifecycle", on_error=e => @host.note("lifecycle failed: \{e}"), async fn() { ctx.lifecycle() }))
 }
 
 ///|
@@ -372,7 +372,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       }
     "actor" =>
       ignore(
-        self.host.rt.fork(name="actor told", async fn() {
+        self.host.rt.fork_quiet(name="actor told", async fn() {
           ignore(self.hub_asked("actor", args)) catch {
             e =>
               live_log("warn", "hub", "an actor's call failed", {
@@ -383,7 +383,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       )
     "chat.post" =>
       ignore(
-        self.host.rt.fork(name="chat post", async fn() {
+        self.host.rt.fork_quiet(name="chat post", async fn() {
           ignore(self.hub_asked("chat.post", args)) catch {
             e =>
               live_log("warn", "hub", "a post failed", {
@@ -402,7 +402,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
           "thaw" => (d.thaw)()
           "shutdown" =>
             ignore(
-              self.host.rt.fork(name="driver shutdown", async fn() {
+              self.host.rt.fork_daemon("driver shutdown", on_error=e => @host.note("driver shutdown failed: \{e}"), async fn() {
                 (d.shutdown)(again)
               }),
             )
@@ -495,7 +495,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
     // (agents.ts `follow`: due to be a rig with nothing asked of it, `rig_due` dropped)
     "agents.rigDueDropped" =>
       ignore(
-        self.host.rt.fork(name="rig due dropped", async fn() {
+        self.host.rt.fork_quiet(name="rig due dropped", async fn() {
           ignore((self.bus.cloud_call.val)("dropRigDue", Json::null())) catch {
             _ => ()
           }
@@ -1080,7 +1080,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         },
         fn(t, args) {
           ignore(
-            self.host.rt.fork(name="shell's tell", async fn() {
+            self.host.rt.fork_daemon("shell's tell", on_error=e => @host.note("shell's tell failed: \{e}"), async fn() {
               ignore(
                 bus.call_peer("self", None, "$program.told:" + key, {
                   "fn": jstr(t),
@@ -1219,7 +1219,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           }
           let ran : Json = { "was": @session_hub.run_shown(was, named), "now": @session_hub.run_shown(now, named) }
           ignore(
-            self.host.rt.fork(name="a session moved", async fn() {
+            self.host.rt.fork_quiet(name="a session moved", async fn() {
               ignore(hub.ask_actor(hub.actor(now), "runChanged", args=[ran])) catch {
                 _ => ()
               }
@@ -1305,7 +1305,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       // Codex updated: its app-servers of the old version are replaced (their files are gone).
       if self.drivers.get("codex") is Some(d) {
         ignore(
-          self.host.rt.fork(name="codex runtime changed", async fn() {
+          self.host.rt.fork_quiet(name="codex runtime changed", async fn() {
             ignore((d.ask)("runtimeChanged", { "replaced": jb(kind == "codex" && replaced), "drainBusy": jb(false) })) catch {
               e => live_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
             }
@@ -1553,7 +1553,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     },
     held=() => live.held_now(),
     held_now=(keys, k) => ignore(
-      host.rt.fork(name="the sessions at work now", async fn() {
+      host.rt.fork_quiet(name="the sessions at work now", async fn() {
         match (try { Ok(live.now_of(keys)) } catch { e => Err(e) }) {
           Ok(v) => k(Ok(jv_of(v)))
           Err(e) => k(Err(said_of(e)))
@@ -1562,7 +1562,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     ),
     process_state=key => Some(hub.process_state(key)),
     followed=() => ignore(
-      host.rt.fork(name="followed again", async fn() {
+      host.rt.fork_quiet(name="followed again", async fn() {
         ignore((bus.jobs_ask.val)("accounts.followed", Json::array([]))) catch {
           _ => ()
         }

@@ -1,0 +1,90 @@
+{
+  "counts": {
+    "at-rest-wait": {
+      "src/sfapp/service_link_wbtest.mbt": 1
+    },
+    "style-literal": {
+      "src/sfapp/app.mbt": 2,
+      "src/sfapp/chat.mbt": 46,
+      "src/sfapp/home.mbt": 3,
+      "src/sfapp/settings/parts.mbt": 2,
+      "src/sfapp/settings/run_more.mbt": 1,
+      "src/sfapp/settings/stations.mbt": 17,
+      "src/sfapp/share.mbt": 2,
+      "src/sfapp/sheets.mbt": 4
+    },
+    "box-loose": {
+      "src/sfapp/app.mbt": 1,
+      "src/sfapp/chat.mbt": 30,
+      "src/sfapp/home.mbt": 2,
+      "src/sfapp/settings/parts.mbt": 3,
+      "src/sfapp/settings/stations.mbt": 13
+    },
+    "page-hand": {
+      "src/sfapp/app.mbt": 1
+    },
+    "tier-outside-shell": {
+      "src/sfapp/chat.mbt": 3,
+      "src/sfapp/settings/core.mbt": 3,
+      "src/sfapp/viewer_host.mbt": 2
+    },
+    "ui-current": {
+      "src/sfapp/app.mbt": 5,
+      "src/sfapp/bars.mbt": 2,
+      "src/sfapp/narrow_shell.mbt": 1
+    },
+    "build-motion": {
+      "src/sfapp/chat.mbt": 1
+    },
+    "old-island": {
+      "src/sfapp/app.mbt": 1,
+      "src/sfapp/narrow_shell.mbt": 1,
+      "src/sfapp/tape_shell.mbt": 4
+    },
+    "submitted-read": {
+      "src/sfapp/settings/vault_ask.mbt": 1
+    },
+    "frame-walk": {
+      "src/sfapp/bar_places_kept_wbtest.mbt": 1,
+      "src/sfapp/bar_places_today_wbtest.mbt": 1,
+      "src/sfapp/cards_order_wbtest.mbt": 1,
+      "src/sfapp/cards_wbtest.mbt": 2,
+      "src/sfapp/chat_bar_wide_wbtest.mbt": 1,
+      "src/sfapp/composer_hint_wbtest.mbt": 2,
+      "src/sfapp/composer_parts_wbtest.mbt": 1,
+      "src/sfapp/composer_wbtest.mbt": 2,
+      "src/sfapp/desk_composer_wbtest.mbt": 1,
+      "src/sfapp/emit_way_wbtest.mbt": 1,
+      "src/sfapp/emit_wbtest.mbt": 2,
+      "src/sfapp/files_favorite_motion_wbtest.mbt": 1,
+      "src/sfapp/floor_wbtest.mbt": 1,
+      "src/sfapp/home_wbtest.mbt": 1,
+      "src/sfapp/image_corners_chat_wbtest.mbt": 1,
+      "src/sfapp/linger_wbtest.mbt": 1,
+      "src/sfapp/makes_way_wbtest.mbt": 1,
+      "src/sfapp/model_pop_wbtest.mbt": 1,
+      "src/sfapp/motion_wbtest.mbt": 2,
+      "src/sfapp/new_workspace_wbtest.mbt": 1,
+      "src/sfapp/newchat_send_wbtest.mbt": 4,
+      "src/sfapp/newchat_wbtest.mbt": 1,
+      "src/sfapp/preview_wbtest.mbt": 1,
+      "src/sfapp/quote_flight_wbtest.mbt": 2,
+      "src/sfapp/quote_image_wbtest.mbt": 1,
+      "src/sfapp/send_hold_wbtest.mbt": 5,
+      "src/sfapp/send_steady_wbtest.mbt": 5,
+      "src/sfapp/sent_first_wbtest.mbt": 2,
+      "src/sfapp/viewer_flight_wbtest.mbt": 1
+    },
+    "pick-loop": {
+      "src/sfapp/chat_bar_node.mbt": 1,
+      "src/sfapp/settings/run_more.mbt": 1,
+      "src/sfapp/settings/vault_ask.mbt": 1
+    },
+    "page-at-moment": {
+      "src/sfapp/app.mbt": 3,
+      "src/sfapp/bar_timing.mbt": 1,
+      "src/sfapp/narrow_shell.mbt": 1,
+      "src/sfapp/settings/station_parts.mbt": 1
+    }
+  }
+}

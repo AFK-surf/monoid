@@ -148,21 +148,7 @@ fn row_json(r : Map[String, Json]) -> Json {
 
 ///|
 fn to_js(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(to_js))
-    Object(o) => {
-      let entries = []
-      for k, x in o {
-        entries.push((@jsjson.units(k), to_js(x)))
-      }
-      Obj(entries)
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|

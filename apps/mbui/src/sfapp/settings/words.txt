@@ -1071,6 +1071,13 @@ web-main.mode.feishu.multi.description
 web-main.mode.feishu.multi.label
 web-main.mode.feishu.single.description
 web-main.mode.feishu.single.label
+core-logic.format.connection.connected
+web-pages.connect.feishu.name
+web-main.mode.feishu.threads.label
+web-main.mode.feishu.threads.description
+web-pages.connect.mentionOn.feishu
+web-pages.connect.mentionOff.feishu
+core-logic.choose.account.auto
 web-main.owner.none
 web-main.owner.you
 web-main.shortcuts.hint

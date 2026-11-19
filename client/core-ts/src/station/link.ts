@@ -5,7 +5,7 @@
 // something else. What comes on it and what is read as it opens is the sync's (sync.ts), told here as `Told`: a stream
 // opens either afresh (nothing says what the device missed: the station is read again) or going on from where the
 // device was in the station's log of events (cursor.ts: what changed meanwhile is told first).
-import { type Marks, type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
+import { type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
 import { record, said, stationTag } from "../record.ts";
 import { Deferred, Effect, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
@@ -172,17 +172,13 @@ export class Link {
   /// Since the usage held was read: when the earliest call the station recorded since was made, as it said (what is
   /// read again of it, from that day on); null where it said a change without when (all of it), none where it said none.
   usageFrom: number | null | undefined = undefined;
-  /// What the station keeps beside the summaries that the sidebar is made of here (rows-made.ts): null while it is not
-  /// read.
-  marks: Marks | null = null;
-  /// Whether its sidebar is made of the chat list the station makes once for everyone (`shared`, chat-row.ts), as its
-  /// stream said; and that list as read and told since, by row id (null till read).
-  shared = false;
+  /// The chat list the station makes once for everyone (`GET /chats?shared=1`, chat-row.ts), by row id (null till read).
   sharedRows: Map<string, Record<string, any>> | null = null;
   /// What its sidebar's rows were last made of (rows-made.ts RowsMemo), so a remake makes again only those that changed.
   readonly rows: RowsMemo = rowsMemo();
   /// Of that list, which row is each thread's, kept as its rows are read and told; and the viewer's own of the marks
-  /// kept beside them (rows-made.ts OwnHeld): so that a row is made by its key, and nothing else is looked at.
+  /// kept beside them (rows-made.ts OwnHeld, null till read): so that a row is made by its key, and nothing else is
+  /// looked at.
   readonly sharedThreads = new Map<number, string>();
   own: OwnHeld | null = null;
   /// The rows of that list to make again (sync.ts #remake): by their ids, their threads', or all of them (`whole`),

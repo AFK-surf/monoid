@@ -203,6 +203,46 @@ function post(port: number, path: string, body: unknown, token?: string): Promis
     req.end(JSON.stringify(body));
   });
 }
+function getJson(port: number, path: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, method: "GET" }, (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => resolve(JSON.parse(text)));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+function watchOverviews(port: number, path: string): { opened: Promise<number>; close: () => void; latest: () => any } {
+  let buf = "";
+  let event = "";
+  let latest: any = null;
+  let close = () => {};
+  const opened = new Promise<number>((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path }, (res) => {
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => {
+        buf += chunk;
+        for (let at = buf.indexOf("\n"); at !== -1; at = buf.indexOf("\n")) {
+          const line = buf.slice(0, at).replace(/\r$/, "");
+          buf = buf.slice(at + 1);
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:") && event === "overview") {
+            try { latest = JSON.parse(line.slice(5)); } catch {}
+            poke();
+          } else if (line === "") event = "";
+        }
+      });
+      resolve(res.statusCode!);
+    });
+    req.on("error", reject);
+    close = () => req.destroy();
+    req.end();
+  });
+  closers.push(() => close());
+  return { opened, close: () => close(), latest: () => latest };
+}
 // (the whole station's tools, as a session's bearer lists them: those of the connects' and the updates' parts)
 const PARTS_TOOLS = new Set(["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
 const toolNames = async (port: number, token: string) => {
@@ -221,12 +261,15 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
     connects: [
       { id: "c1", kind: "slack", enabled: true, bind: { runtime: "claude" }, slack: { appToken: "xapp-1", botToken: "xoxb-1" } },
       { id: "f1", kind: "feishu", enabled: true, bind: { runtime: "claude" }, feishu: { appId: "cli_test", appSecret: "sec-1", domain: "feishu" } },
+      { id: "c-off", kind: "slack", enabled: false, bind: { runtime: "claude" }, slack: { appToken: "xapp-off", botToken: "xoxb-off" } },
     ],
   });
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(cloudOf(id, feed.origin)));
-  const a = await launch(data, app, { STILLFAIL_SLACK_API: slack.base, STILLFAIL_FEISHU_API: feishu.base, STILLFAIL_RELEASE_KEYS: RAW });
+  const a = await launch(data, app, { STILLFAIL_SLACK_API: slack.base, STILLFAIL_FEISHU_API: feishu.base, STILLFAIL_RELEASE_KEYS: RAW, STILLFAIL_LOCAL_ADMIN: "1" });
   await a.next("ready", (m) => m.ready === true);
   const mcp = await a.next("the agents' door", (m) => m.serving === "mcp");
+  const stream = watchOverviews(mcp.port, "/admin-api/events");
+  assert.equal(await stream.opened, 200);
   // the Slack connect: who the bot is asked, its socket opened (once the sessions are taken up: the door open)
   await until("the Slack socket open", () => slack.sockets.length >= 1, 20_000, () => `asked ${JSON.stringify(slack.asked.map((x) => x.m))}; stderr ${a.err()}`);
   assert.ok(slack.asked.some((x) => x.m === "auth.test" && x.auth === "Bearer xoxb-1"), "who the bot is, asked with its token");
@@ -239,6 +282,22 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   const frame = feishu.message({ id: "om_1", text: "hi", at: true });
   await until("the Feishu event acknowledged", () => feishu.acks.length >= 1, 20_000, () => a.err());
   assert.ok(feishu.ack(frame) !== undefined, "the acknowledgement names the frame it took");
+  // the overview reports each enabled connect's live connection state (connected, not disabled) and keeps disabled ones disabled
+  const stateOf = (cs: any[], cid: string) => cs.find((x: any) => x.id === cid)?.connection?.state;
+  await until(
+    "overview reports c1 and f1 connected",
+    () => {
+      const cs = stream.latest()?.connects ?? [];
+      return stateOf(cs, "c1") === "connected" && stateOf(cs, "f1") === "connected";
+    },
+    20_000,
+    () => `${JSON.stringify(stream.latest()?.connects)}; stderr ${a.err()}`,
+  );
+  const ov = await getJson(mcp.port, "/admin-api/overview");
+  assert.equal(stateOf(ov.connects, "c1"), "connected", JSON.stringify(ov.connects));
+  assert.equal(stateOf(ov.connects, "f1"), "connected", JSON.stringify(ov.connects));
+  assert.equal(stateOf(ov.connects, "c-off"), "disabled", JSON.stringify(ov.connects));
+  stream.close();
   // the station's latest release, read from the stable channel's feed, verified by the test's key
   await until("the stable feed read", () => feed.asked.includes("/releases/station.json"), 20_000, () => a.err());
   assert.equal(feed.asked.includes("/releases/station-beta.json"), false);
@@ -478,6 +537,23 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   // the copies' and a retirement's on coord_ask: a refusal thrown as the routes take it, its words kept
   const retireCoord = await h.send({ step: "coord", name: "retire.retire", arg: ["w1", "b".repeat(64), "o@x.y"] });
   assert.ok(retireCoord.error !== undefined, JSON.stringify(retireCoord));
+  // connects.overview and connects.states look up each connect by id rather than passing a bare {id} object
+  await h.ok({
+    step: "config",
+    config: {
+      updateChannel: "stable",
+      connects: [
+        { id: "s-on", kind: "slack", enabled: true, bind: { runtime: "claude" }, slack: {} },
+        { id: "s-off", kind: "slack", enabled: false, bind: { runtime: "claude" }, slack: {} },
+      ],
+    },
+  });
+  const ovConnects = (await h.ok({ step: "coord", name: "connects.overview", arg: [] })).connects;
+  assert.equal(ovConnects.find((x: any) => x.id === "s-on")?.connection?.state, "no_tokens", JSON.stringify(ovConnects));
+  assert.equal(ovConnects.find((x: any) => x.id === "s-off")?.connection?.state, "disabled", JSON.stringify(ovConnects));
+  const stConnects = await h.ok({ step: "coord", name: "connects.states", arg: [] });
+  assert.equal(stConnects.find((x: any) => x.id === "s-on")?.connection?.state, "no_tokens", JSON.stringify(stConnects));
+  assert.equal(stConnects.find((x: any) => x.id === "s-off")?.connection?.state, "disabled", JSON.stringify(stConnects));
   await h.ok({ step: "stop" });
   h.child.stdin!.end();
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);

@@ -711,7 +711,7 @@ fn rich_prep_one(
     pre,
     keys: s.keys,
     cu: s.cu,
-    brk: s.brk,
+    brk: s.breaks(run.text),
     run_of: Array::make(n, 0),
     len: run.text.length(),
     base_asc,

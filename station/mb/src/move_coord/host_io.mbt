@@ -39,7 +39,9 @@ pub fn host_disk(host : @host.Host) -> Disk {
         e => raise Failed(e.to_string())
       }
     },
-    spawn: f => ignore(host.rt.fork(f)),
+    spawn: f => ignore(
+      host.rt.fork_daemon("move_coord", f, on_error=e => @host.note("move_coord: background work failed: \{e}")),
+    ),
   }
 }
 
@@ -141,7 +143,7 @@ pub fn host_fs(host : @host.Host) -> Fs {
 pub fn host_clock(host : @host.Host) -> Clock {
   let rt = host.rt
   {
-    now: () => @host.now(),
+    now: () => @host.epoch_ms(),
     after: (ms, f) => {
       let fiber = rt.fork(async fn() {
         @effect.sleep(ms)
@@ -160,7 +162,9 @@ pub fn host_clock(host : @host.Host) -> Clock {
       })
       () => fiber.interrupt()
     },
-    spawn: f => ignore(rt.fork(f)),
+    spawn: f => ignore(
+      rt.fork_daemon("move_coord", f, on_error=e => @host.note("move_coord: background work failed: \{e}")),
+    ),
   }
 }
 

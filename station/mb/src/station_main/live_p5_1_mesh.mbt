@@ -111,7 +111,7 @@ fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
   let closed_info : Ref[Json?] = Ref(None)
   let ended : @effect.Deferred[String] = @effect.Deferred::new()
   ignore(
-    host.rt.fork(name="conn closed", async fn() {
+    host.rt.fork_daemon("conn closed", on_error=e => @host.note("conn closed failed: \{e}"), async fn() {
       let info = host.shell("conn.closed", { "id": id }).0 catch {
         e => { "kind": "other", "reason": Json::string("\{e}") }
       }
@@ -197,7 +197,7 @@ fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
         closed_info.val = Some({ "kind": "local", "reason": "" })
       }
       ignore(
-        host.rt.fork(name="conn close", async fn() {
+        host.rt.fork_quiet(name="conn close", async fn() {
           ignore(host.shell("conn.close", { "id": id, "code": Json::number(code.to_double()), "reason": Json::string(reason) })) catch {
             _ => ()
           }
@@ -264,7 +264,7 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
       match given_up {
         Some(g) =>
           ignore(
-            host.rt.fork(name="dial given up", async fn() {
+            host.rt.fork_daemon("dial given up", on_error=e => @host.note("dial given up failed: \{e}"), async fn() {
               g.wait()
               if call.val != 0L {
                 ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
@@ -290,7 +290,7 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
     insert_relay: async fn(url) { ignore(op("insertRelay", [("url", Json::string(url))])) },
     remove_relay: async fn(url) { ignore(op("removeRelay", [("url", Json::string(url))])) },
     keep: urls => ignore(
-      host.rt.fork(name="keep relays", async fn() {
+      host.rt.fork_quiet(name="keep relays", async fn() {
         ignore(op("keep", [("urls", Json::array(urls.map(u => Json::string(u))))])) catch {
           _ => ()
         }
@@ -298,7 +298,7 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
     ),
     public_relays: async fn(on) { ignore(op("publicRelays", [("on", Json::boolean(on))])) },
     set_congestion: c => ignore(
-      host.rt.fork(name="congestion", async fn() {
+      host.rt.fork_quiet(name="congestion", async fn() {
         ignore(op("setCongestion", [("congestion", Json::string(c))])) catch {
           _ => ()
         }
@@ -762,8 +762,8 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
 // ── put together ──
 
 ///|
-/// mesh/mesh.ts MeshLive (a rig's too: `rig`), kept running: started again after a backoff where it fails.
-async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
+/// mesh/mesh.ts MeshLive, wired on the bus; `mesh_start` forks its accept loop once the other slices are up.
+fn P51::mesh_live(self : P51) -> MeshLive {
   let bus = self.bus
   let peers = @gate.PeerBus::new()
   // Inbound: what the station's parts answer, by method (the bus's handlers).
@@ -815,6 +815,18 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
     }
     None => Json::null()
   }
+  self.stops.push(() => match m.endpoint {
+    Some(e) => ignore(self.host.rt.fork_daemon("mesh close", on_error=e => @host.note("mesh close failed: \{e}"), async fn() { (e.close)() }))
+    None => ()
+  })
+  m
+}
+
+///|
+/// Starts the mesh accept loop once the station's other parts (P5-2 to P5-5) have registered their ops and handlers.
+fn P51::mesh_start(self : P51, rig : Bool) -> Unit {
+  guard self.mesh is Some(m) else { return }
+  let bus = self.bus
   self.fork("mesh", async fn() {
     let mut backoff = 1000
     while !bus.stopped.is_done() {
@@ -848,11 +860,6 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
       backoff = if backoff * 2 > 30000 { 30000 } else { backoff * 2 }
     }
   })
-  self.stops.push(() => match m.endpoint {
-    Some(e) => ignore(self.host.rt.fork(name="mesh close", async fn() { (e.close)() }))
-    None => ()
-  })
-  m
 }
 
 ///|
@@ -1046,7 +1053,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   // The locks kept level with the other stations, their changes told to the devices; the ways and the marks too.
   let peer_cb : @cloud_net.PeerCall = {
     call: (target, ws, request, k) => ignore(
-      host.rt.fork(name="peer call", async fn() {
+      host.rt.fork_quiet(name="peer call", async fn() {
         match (try { Ok((call.call)(target, ws, request, None)) } catch { e => Err(e) }) {
           Ok((answer, _)) => k(Ok(answer))
           Err(e) => k(Err("\{e}"))
@@ -1068,7 +1075,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   // The device tools (the control plane's gateways), here and on the presence socket.
   let tools = self.tools_deps(plane)
   plane.tool_calls.val = Some((request, k) => ignore(
-    host.rt.fork(name="presence tools", async fn() {
+    host.rt.fork_daemon("presence tools", on_error=e => @host.note("presence tools failed: \{e}"), async fn() {
       k(Ok(@mesh_runtime.presence_tools(tools, Some(request))))
     }),
   ))
@@ -1106,12 +1113,12 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     storms.watch(conn)
     let alpn = (conn.alpn)()
     if alpn == @gate.alpn {
-      ignore(host.rt.fork(name="superseded", async fn() { superseded.arrived(conn) }))
+      ignore(host.rt.fork_daemon("superseded", on_error=e => @host.note("superseded failed: \{e}"), async fn() { superseded.arrived(conn) }))
     } else if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn || alpn == @gate.peer_http_alpn {
       (call.arrived)(conn)
     }
     ignore(
-      host.rt.fork(name="mesh connection", async fn() {
+      host.rt.fork_daemon("mesh connection", on_error=e => @host.note("mesh connection failed: \{e}"), async fn() {
         let served = try {
           if alpn == @gate.peer_bytes_alpn || alpn == @gate.peer_alpn {
             @gate.serve_peer(keeper, conn, m.peers)
@@ -1319,7 +1326,7 @@ async fn P51::member_admin(self : P51, ask : @gate.AdminAsk) -> @door.Answer {
       {
         status: answer.status,
         headers,
-        body: Coming({ next, stop: () => ignore(self.host.rt.fork(name="stream stop", async fn() { stop() catch { _ => () } })) }),
+        body: Coming({ next, stop: () => ignore(self.host.rt.fork_quiet(name="stream stop", async fn() { stop() catch { _ => () } })) }),
       }
   }
 }
@@ -1360,7 +1367,7 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
     let pump = () => if !pumping.val {
       pumping.val = true
       ignore(
-        host.rt.fork(name="peer answer", async fn() {
+        host.rt.fork_daemon("peer answer", on_error=e => @host.note("peer answer failed: \{e}"), async fn() {
           while queue.length() > 0 {
             let step = queue.remove(0)
             step()
@@ -1369,7 +1376,7 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
         }),
       )
     }
-    let close = async fn() { ignore(host.shell("tcp.close", { "id": conn })) catch { _ => () } }
+    let close = async fn() { host.tcp_close(conn) }
     let answer : @gate.LocalAnswer = {
       head: (status, raw) => {
         wrote_head.val = true

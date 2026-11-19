@@ -217,7 +217,7 @@ fn P51::rigs_live(self : P51) -> Unit {
         None => raise @rigs_mode.Refused(what)
       }
     },
-    spawn: f => ignore(host.rt.fork(name="rigs", async fn() { f() catch { e => p51_log("WARN", "rigs", "\{e}") } })),
+    spawn: f => ignore(host.rt.fork_quiet(name="rigs", async fn() { f() catch { e => p51_log("WARN", "rigs", "\{e}") } })),
     id: () => @rigs_mode.request_id_of(wall_ms().to_double(), @drive.hex(@drive.random_bytes(3))),
   }) catch {
     e => {
@@ -388,7 +388,7 @@ fn P51::elevation_live(self : P51) -> Unit {
       Ok(p) => {
         let exits : Array[(Int?) -> Unit] = []
         ignore(
-          host.rt.fork(name="elevation script", async fn() {
+          host.rt.fork_daemon("elevation script", on_error=e => @host.note("elevation script failed: \{e}"), async fn() {
             let (code, _, _, _) = p.finished()
             for f in exits {
               f(code)
@@ -399,7 +399,7 @@ fn P51::elevation_live(self : P51) -> Unit {
       }
       Err(_) => {
         let failed : Array[() -> Unit] = []
-        ignore(host.rt.fork(name="elevation failed", async fn() { for f in failed { f() } }))
+        ignore(host.rt.fork_quiet(name="elevation failed", async fn() { for f in failed { f() } }))
         { kill: () => (), on_error: f => failed.push(f), on_exit: _ => () }
       }
     },
@@ -467,7 +467,7 @@ fn P51::rig_live(self : P51) -> Unit {
   let cloud = plane.cloud
   let store = bus.store
   let clock : @rigs_mode.Clock = { now: () => wall_ms().to_double(), after: (ms, f) => self.after(ms.to_int(), f) }
-  let spawn_ = (f : async () -> Unit) => ignore(host.rt.fork(name="rig", async fn() { f() catch { e => p51_log("WARN", "rig", "\{e}") } }))
+  let spawn_ = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="rig", async fn() { f() catch { e => p51_log("WARN", "rig", "\{e}") } }))
   let jobs_ask = async fn(op : String, arg : Json) -> Json { (bus.jobs_ask.val)(op, arg) }
   let rig = @rigs_mode.Rig::new({
     data: bus.data,
@@ -523,7 +523,7 @@ fn P51::rig_live(self : P51) -> Unit {
       _ => hub_before(op, arg)
     }
   }
-  self.stops.push(() => ignore(host.rt.fork(name="rig close", async fn() { rig.close() })))
+  self.stops.push(() => ignore(host.rt.fork_daemon("rig close", on_error=e => @host.note("rig close failed: \{e}"), async fn() { rig.close() })))
   // What a station asks of it: through its grants first, its own `rig.` asked of it.
   bus.on_peer_prefix("rig.", async fn(peer, ws, _meth, params, _) { (rig.heard(peer, params, ws.unwrap_or(cloud.home().unwrap_or(""))), None) })
   let main = @rigs_mode.RigMain::new(
@@ -553,7 +553,7 @@ fn P51::rig_live(self : P51) -> Unit {
         }
         (port, url)
       },
-      set_notify_url: url => ignore(host.rt.fork(name="notify url", async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) })),
+      set_notify_url: url => ignore(host.rt.fork_daemon("notify url", on_error=e => @host.note("notify url failed: \{e}"), async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) })),
       mcp_fd: None,
       shown_port: Some(0),
       serving: (_, _) => (),

@@ -121,7 +121,7 @@ export const glanced = {
   chatRowsWalked: 0,
   /// Chat rows put in this device's words as a list given whole (data.ts `inWords`).
   chatRowsWorded: 0,
-  /// Chat rows a station's sidebar was made of as a whole (station/rows-made.ts `rowsShared`, `rowsMade`): each made, or
+  /// Chat rows a station's sidebar was made of as a whole (station/rows-made.ts `rowsShared`): each made, or
   /// taken as made before.
   chatRowsMapped: 0,
   /// Entries of a station's marks walked to make the viewer's own of them (station/rows-made.ts `OwnHeld`).

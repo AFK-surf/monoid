@@ -78,7 +78,7 @@ fn enoent(op : String, path : String) -> FsFailed {
 /// The ports on `host`: `procs` (how a child is started and run), `os` (what the machine is) and `words` (the
 /// station's) given by the caller; the wall's time as the station tells it (`now`).
 pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : (() -> Double)? = None) -> Io {
-  let wall = now.unwrap_or(() => @host.now().to_double())
+  let wall = now.unwrap_or(() => @host.wall_ms().to_double())
   let clock : Clock = {
     now: wall,
     after: (ms, f) => {
@@ -105,7 +105,10 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
         (events.close)()
       }
       ignore(
-        host.rt.fork(async fn() {
+        host.rt.fork_daemon("screens.connect", on_error=e => {
+          (events.error)(message_of(e))
+          close_once()
+        }, async fn() {
           let opened = (match target {
             Unix(path) => host.unix_open(path)
             Tcp(port) => host.tcp_open(port)
@@ -143,6 +146,11 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
               None => break
             }
           }
+          // The far end gone (or a read failed) with no destroy asked: the connection let go here, as Node's socket
+          // is once it ends, never left open in the shell (a destroy asked already let it go; another is nothing).
+          if !destroyed.val {
+            opened.socket.destroy()
+          }
           close_once()
         }),
       )
@@ -157,7 +165,7 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
         destroy: () => if !destroyed.val {
           destroyed.val = true
           send(async fn(s) { s.destroy() })
-          ignore(host.rt.fork(() => close_once()))
+          ignore(host.rt.fork_quiet(() => close_once()))
         },
         destroyed: () => destroyed.val,
         pause: () => paused.val = true,
@@ -355,7 +363,9 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
   }
   {
     clock,
-    spawn: f => ignore(host.rt.fork(f)),
+    spawn: f => ignore(
+      host.rt.fork_daemon("screens", f, on_error=e => @host.note("screens: background work failed: \{e}")),
+    ),
     procs,
     net,
     fs,

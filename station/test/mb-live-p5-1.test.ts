@@ -220,6 +220,11 @@ test("an enrolled station on the plane: its presence, its config, the machine, t
   const presence = await given("presence.json online", () => readJson(join(data, "run", "presence.json"))?.online === true && readJson(join(data, "run", "presence.json")));
   assert.equal(presence.error, null);
   await given("health.json presenceOnline", () => readJson(join(data, "run", "health.json"))?.presenceOnline === true);
+  // the times it keeps and signs are the world's (ms since 1970, now), never the monotonic clock's (a day of 1970)
+  const health = readJson(join(data, "run", "health.json"));
+  for (const [what, at] of [["health.json updatedAt", Number(health.updatedAt)], ["the presence socket's x-stillfail-ts", Number(ts) * 1000]] as const) {
+    assert.ok(at > 1_700_000_000_000 && Math.abs(at - Date.now()) < 10 * 60_000, `${what}: ${at}`);
+  }
   const status = await given("the status socket says reached", async () => {
     const s = JSON.parse((await ask({ socket: join(data, "run", "status.sock") }, "/v1/status")).body);
     return s.reached === true && s.health?.presenceOnline === true ? s : null;

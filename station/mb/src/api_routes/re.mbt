@@ -449,7 +449,75 @@ fn ReRun::go(self : ReRun, n : ReNode, i : Int32, k : (Int32) -> Bool) -> Bool {
       }
       false
     }
-    Rep(inner, min, max, greedy) => self.rep(inner, min, max, greedy, 0, i, k)
+    Rep(inner, min, max, greedy) =>
+      match unwrap_single(inner) {
+        Some(atom) => self.rep_single(atom, min, max, greedy, i, k)
+        None => self.rep(inner, min, max, greedy, 0, i, k)
+      }
+  }
+}
+
+///|
+fn unwrap_single(n : ReNode) -> ReNode? {
+  match n {
+    Unit(_) | AnyUnit | Klass(_, _) => Some(n)
+    Plain(inner) => unwrap_single(inner)
+    _ => None
+  }
+}
+
+///|
+fn ReRun::match_single(self : ReRun, n : ReNode, i : Int32) -> Bool {
+  let s = self.s
+  if i >= s.length() {
+    return false
+  }
+  let c = s.unsafe_charcode_at(i)
+  match n {
+    Unit(u) => c == u || (self.re.fold && fold_unit(c) == fold_unit(u))
+    AnyUnit => c != 0x0a && c != 0x0d && c != 0x2028 && c != 0x2029
+    Klass(ranges, neg) => self.unit_in(c, ranges) != neg
+    _ => false
+  }
+}
+
+///|
+/// Iterative repetition for single-unit atoms (Unit, AnyUnit, Klass) so matching long strings (such as base64 icons)
+/// runs in O(1) stack instead of recursing per character.
+fn ReRun::rep_single(
+  self : ReRun,
+  atom : ReNode,
+  min : Int32,
+  max : Int32,
+  greedy : Bool,
+  i : Int32,
+  k : (Int32) -> Bool,
+) -> Bool {
+  let mut matched = 0
+  while (max < 0 || matched < max) && self.match_single(atom, i + matched) {
+    matched += 1
+  }
+  if matched < min {
+    return false
+  }
+  if greedy {
+    let mut n = matched
+    while n >= min {
+      if k(i + n) {
+        return true
+      }
+      n -= 1
+    }
+    false
+  } else {
+    let mut n = min
+    while n <= matched {
+      if k(i + n) {
+        return true
+      }
+      n += 1
+    }
+    false
   }
 }
 

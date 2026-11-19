@@ -164,7 +164,6 @@ jobs:
           git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-      - run: bash scripts/git-history.sh
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
       - uses: ./.github/actions/apt
         with:
@@ -175,40 +174,6 @@ jobs:
       # (mbc and chk alone, as pipeline.yml's desktop-build: the other tools' keys and caches were a step's 12 s)
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc chk' }
-      # mbc's units and the core's bytecode: main's newest, and on a branch its own last push's over them (m- and b-, as
-      # check-mbui keeps its own). With main's alone, every push of a branch compiled all it had changed since main
-      # again: presets' two pushes 273 and 276 of 480 units, 78 s of each Linux x64 build (41288956328, 41289661355,
-      # 2026-11-01; a branch restores its own after main's, then main's newest units over it).
-      - uses: actions/cache/restore@v4
-        id: store
-        with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-${{ github.sha }}
-          # (m- alone: GitHub tries every restore key on the branch's own caches before main's, so a wider name took the
-          # branch's last push for main's newest, a push after main's moved compiling it all again. This image's first,
-          # else another's)
-          restore-keys: |
-            mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-
-            mbui-linux-${{ matrix.arch }}-m-
-      - if: github.ref != 'refs/heads/main'
-        run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-main"
-      - uses: actions/cache/restore@v4
-        id: own
-        if: github.ref != 'refs/heads/main'
-        with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-${{ github.sha }}
-          restore-keys: |
-            mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-
-            mbui-linux-${{ matrix.arch }}-b-
-      - if: github.ref != 'refs/heads/main'
-        run: |
-          mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-main"
-          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
       # (the Linux engine, shell and libghostty-vt, which apps/mbui/scripts/linux.sh links, in the native cache, as a run
       # before fetched them, as the windows job keeps its own: one download from the store took 84 s for 2.9 MB, main
       # 9440b484, 40668393099)
@@ -225,29 +190,10 @@ jobs:
           node scripts/native.ts fetch engine linux-${{ matrix.arch }}
           node scripts/native.ts fetch shell linux-${{ matrix.arch }}
           node scripts/native.ts fetch ghostty-vt linux-${{ matrix.arch }}
-      # core.hbc by its inputs (HBC_CACHE) in a cache of its own, as the windows job's, not of the image's: GitHub giving
-      # the runs two images in turn, the store of the other image held no core.hbc made with the same hermesc, and pnpm and
-      # Hermes ran again, ~25 s (x64 44367062557, arm64 44369994771, 2026-11-18). The names in it are their contents' keys.
-      - uses: actions/cache/restore@v4
-        id: hbc
-        with:
-          path: .ci/hbc
-          key: mbui-linux-hbc-${{ matrix.arch }}-${{ github.sha }}
-          restore-keys: mbui-linux-hbc-${{ matrix.arch }}-
-      # (the core's packages only for a core.hbc not kept for this commit's inputs, as the ios job's: asked with the
-      # hermesc linux.sh's core step makes it with. Kept, pnpm's install and its store's restore were time taken from the
-      # build's own limit for nothing it used: Linux x64's build cut at 163 s, core.hbc kept, 44040854948, 2026-11-17)
-      - id: core
-        run: if HERMESC="$(node scripts/native.ts path engine linux-${{ matrix.arch }})/hermesc" bash apps/mbui/scripts/core.sh hermes-kept; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
-      - if: steps.core.outputs.kept != 'true'
-        uses: ./.github/actions/setup
-      - name: The core's packages
-        if: steps.core.outputs.kept != 'true'
-        run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
       # (moon's own build of mbui's and the app's copies, libs/mbui/scripts/linux.sh's out/linux/mod and out/linux/app:
       # mirrored by content there so that moon, going by mtimes, builds again only what changed, but made from nothing
       # on every runner, ~75 s of moonc before mbc's units were asked: 578a45fe4's linux (x64) cut at its reserve. main's
-      # newest, saved below; mbc's units are the store's above, left out here)
+      # newest, saved below; mbc's units are the store's below, left out here)
       - uses: actions/cache/restore@v4
         id: moon
         with:
@@ -263,33 +209,134 @@ jobs:
       # build restored only what changed: without it every checkout's new mtimes had moon build sf-ui's and farview's
       # packages and all over them again, 75-90 s of moonc, Linux cut at its 5 minutes, 44365395131, 2026-11-18)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
-      - run: touch "$RUNNER_TEMP/start"
+      # The app built in the background from here on (MBUI_LINUX_CORE=0: the core's bytecode is the steps' below, put
+      # beside it once built), as mbui-check.yml's app build and the windows job's: moonc's 50-80 s needs nothing of
+      # git's history, the units' store, core.hbc or pnpm, which were 68 s before it one after another, the build left
+      # 186 s and cut 6 s short of its 995 units (preview 44464002952, 2026-11-19). mbc waits for the units' store
+      # (MBC_STORE_WAIT) until the steps below have restored it and handed it over whole.
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
       # restored, nothing taken out, so the next run goes on from there. Saved only at the job's end, a store too far
       # behind to be caught up in five minutes was never saved again: Linux x64's on main, cut at its limit on nearly
       # every run from 11:50 UTC on 2026-11-15, after #6483 made every unit new, 746 of 992 units compiled where it got
       # through, its beta not put all that while)
-      # (cut before the job is: a branch's 35 s, what follows a build done there (the keys and the save ~6 s, beta.sh
-      # linux ~16 s, its upload ~2 s, post steps ~4 s), the stop, the key and the save after a cut some 30 s; main's
-      # 45 s, beta.sh publish after those, which puts the package at least (~15 s) whatever its deltas get)
-      - name: Build (APP=stillfail)
-        id: build
+      # (cut before the job is: a branch's 35 s, what follows a build done there (the put, the keys and the save ~6 s,
+      # beta.sh linux ~16 s, its upload ~2 s, post steps ~4 s), the stop, the key and the save after a cut some 30 s;
+      # main's 42 s, beta.sh publish after those, its deltas given only what leaves the moon build's save its room)
+      - name: Build (APP=stillfail), started
+        id: start
         run: |
+          B=$RUNNER_TEMP/build
+          rm -rf "$B" "$RUNNER_TEMP/ci-live" "$RUNNER_TEMP/linux-store-pending.failed"
+          mkdir -p "$B" "$RUNNER_TEMP/ci-live"
+          : > "$RUNNER_TEMP/linux-store-pending"
+          touch "$RUNNER_TEMP/start"
           # (every process of the build's carries this mark, for the step after to stop what is left of it when it was
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 45 || echo 35)
-          bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash apps/mbui/scripts/linux.sh build
+          export MBUI_LINUX_CORE=0 MBC_STORE="$RUNNER_TEMP/ci-live/mbc-store" MBC_STORE_WAIT="$RUNNER_TEMP/linux-store-pending"
+          reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 42 || echo 35)
+          nohup bash -c 'set +e; bash scripts/with-timeout.sh "@$1" bash apps/mbui/scripts/linux.sh build > "$0/log" 2>&1; code=$?; printf "%s\n" "$code" > "$0/status.tmp"; mv "$0/status.tmp" "$0/status"; exit "$code"' "$B" "$((JOB_END - reserve))" > "$B/worker.log" 2>&1 < /dev/null &
+          echo "$!" > "$B/pid"
+      - run: bash scripts/git-history.sh
+      # mbc's units: main's newest, and on a branch its own last push's over them (m- and b-, as check-mbui keeps its
+      # own). With main's alone, every push of a branch compiled all it had changed since main again: presets' two
+      # pushes 273 and 276 of 480 units, 78 s of each Linux x64 build (41288956328, 41289661355, 2026-11-01; a branch
+      # restores its own after main's, then main's newest units over it).
+      # (.ci/hbc in the paths for the caches' version alone, which is of the paths: the caches saved before kept
+      # core.hbc's 51 MB beside the units, and are still taken. Saved now without it (the save below), it is kept in
+      # its own cache alone: hbc below)
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-${{ github.sha }}
+          # (m- alone: GitHub tries every restore key on the branch's own caches before main's, so a wider name took the
+          # branch's last push for main's newest, a push after main's moved compiling it all again. This image's first,
+          # else another's)
+          restore-keys: |
+            mbui-linux-${{ matrix.arch }}-m-${{ env.IMG }}-
+            mbui-linux-${{ matrix.arch }}-m-
+      - if: github.ref != 'refs/heads/main'
+        run: mkdir -p .ci/mbc-store && mv .ci/mbc-store "$RUNNER_TEMP/store-main"
+      - uses: actions/cache/restore@v4
+        id: own
+        if: github.ref != 'refs/heads/main'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-linux-${{ matrix.arch }}-b-${{ env.IMG }}-
+            mbui-linux-${{ matrix.arch }}-b-
+      # (handed over whole, as mbui-check.yml's: the store moved where the build reads it (MBC_STORE) and its wait taken
+      # away; main's units linked in beside a branch's, not copied: a unit's files are never written again once kept)
+      - name: The units, handed to the build
+        if: always() && steps.start.outcome == 'success'
+        run: |
+          mkdir -p .ci/mbc-store
+          if [ -d "$RUNNER_TEMP/store-main" ]; then
+            cp -a -l -n "$RUNNER_TEMP/store-main/." .ci/mbc-store/ && rm -rf "$RUNNER_TEMP/store-main"
+          fi
+          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
+          L=$RUNNER_TEMP/ci-live/mbc-store
+          if [ -d "$L" ]; then cp -a -l -n .ci/mbc-store/. "$L/" && rm -rf .ci/mbc-store; else mv .ci/mbc-store "$L"; fi
+          rm -f "$RUNNER_TEMP/linux-store-pending"
+      # core.hbc by its inputs (HBC_CACHE) in a cache of its own, as the windows job's, not of the image's: GitHub giving
+      # the runs two images in turn, the store of the other image held no core.hbc made with the same hermesc, and pnpm and
+      # Hermes ran again, ~25 s (x64 44367062557, arm64 44369994771, 2026-11-18). The names in it are their contents' keys.
+      - uses: actions/cache/restore@v4
+        id: hbc
+        with:
+          path: .ci/hbc
+          key: mbui-linux-hbc-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: mbui-linux-hbc-${{ matrix.arch }}-
+      # (the core's packages only for a core.hbc not kept for this commit's inputs, as the ios job's: asked with the
+      # hermesc linux.sh's core step makes it with)
+      - id: core
+        run: if HERMESC="$(node scripts/native.ts path engine linux-${{ matrix.arch }})/hermesc" bash apps/mbui/scripts/core.sh hermes-kept; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.core.outputs.kept != 'true'
+        uses: ./.github/actions/setup
+      - name: The core's packages
+        if: steps.core.outputs.kept != 'true'
+        run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+      - name: The core's bytecode (Hermes)
+        run: bash apps/mbui/scripts/linux.sh core
+      # (the build's own exit status, 124 where it was cut; done, the core's bytecode put beside it)
+      - name: Build (APP=stillfail)
+        id: build
+        run: |
+          B=$RUNNER_TEMP/build
+          while [ ! -s "$B/status" ]; do
+            if [ "$(date +%s)" -ge "$((JOB_END - 20))" ]; then
+              echo "::error::the build did not say how it ended before the job's end"
+              tail -80 "$B/log" "$B/worker.log" 2>/dev/null || true
+              exit 124
+            fi
+            if ! kill -0 "$(cat "$B/pid")" 2>/dev/null; then
+              [ ! -s "$B/status" ] || break
+              cat "$B/worker.log" "$B/log" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$B/log"
+          code=$(cat "$B/status")
+          [ "$code" = 0 ] || exit "$code"
+          bash apps/mbui/scripts/linux.sh put
       # (what a cut build left running stopped on main and a branch alike; a branch's store saved only of a build that
       # went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
       # main's cut keeps what it compiled)
       - name: The caches' keys, by what they hold
-        if: always() && steps.build.outcome != 'skipped'
+        if: always() && steps.start.outcome == 'success'
         run: |
-          if [ "${{ steps.build.outcome }}" = success ]; then
-            sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
-          else
+          ok=${{ steps.build.outcome == 'success' && '1' || '' }}
+          if [ -z "$ok" ]; then
+            # (a build still waiting for the store told it is not coming)
+            [ ! -f "$RUNNER_TEMP/linux-store-pending" ] || touch "$RUNNER_TEMP/linux-store-pending.failed"
             # (what the build left running (moon, mbc, clang) stopped first, so the store is still as it is tarred:
             # mbui-check.yml's native job's save failed so, 43839505847)
             t=$(cat "$RUNNER_TEMP/build-tree" 2>/dev/null || true)
@@ -301,13 +348,24 @@ jobs:
               kill -KILL $p 2>/dev/null || true
               sleep 1
             done
+          fi
+          # (the store back where the caches keep it: their version is of the paths)
+          L=$RUNNER_TEMP/ci-live/mbc-store
+          if [ -d "$L" ]; then
+            mkdir -p .ci/mbc-store && cp -a -l -n "$L/." .ci/mbc-store/ && rm -rf "$L"
+          fi
+          if [ -n "$ok" ]; then
+            sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
+          else
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
             [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
             # (a cut run's store keeps what no run used for four hours no longer, as mbui-check.yml's: saved whole, a cut
             # store grew run after run, its save 29 s, 44370994879)
             [ ! -d .ci/mbc-store ] || find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
           fi
-          echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+          echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store)" >> "$GITHUB_ENV"
+          # (core.hbc out of the store's save, kept in its own cache: put back after it, below)
+          [ ! -d .ci/hbc ] || mv .ci/hbc "$RUNNER_TEMP/hbc-held"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
@@ -317,8 +375,11 @@ jobs:
           key: ${{ env.STORE_KEY }}
       # (main's core.hbc kept on its own, read by every image's runs: hbc above)
       - name: The core's bytecode's key
-        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
-        run: '[ -z "$(ls -A .ci/hbc 2>/dev/null)" ] || echo "HBC_KEY=mbui-linux-hbc-${{ matrix.arch }}-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"'
+        if: always() && steps.start.outcome == 'success'
+        run: |
+          [ ! -d "$RUNNER_TEMP/hbc-held" ] || { rm -rf .ci/hbc && mv "$RUNNER_TEMP/hbc-held" .ci/hbc; }
+          [ "$GITHUB_REF" = refs/heads/main ] || exit 0
+          [ -z "$(ls -A .ci/hbc 2>/dev/null)" ] || echo "HBC_KEY=mbui-linux-hbc-${{ matrix.arch }}-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
@@ -326,22 +387,29 @@ jobs:
           key: ${{ env.HBC_KEY }}
       - name: Tarred with its installer
         run: bash apps/mbui/scripts/beta.sh linux
+      # (its deltas given 25 s at most, and what leaves 45 s of the job after them: the put and its checks ~12 s, then
+      # moon's build saved. With beta.sh's own 35 s, the deltas and the put took all but 11 s and moon's build was not
+      # saved on any run that made deltas, preview 44465102170, 2026-11-19)
       - name: Put it, check it, then its feed
         if: github.ref == 'refs/heads/main'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: bash apps/mbui/scripts/beta.sh publish ${{ matrix.part }}
+        run: |
+          dl=$(( JOB_END - $(date +%s) - 45 ))
+          [ "$dl" -le 25 ] || dl=25
+          STILLFAIL_DELTAS_SECONDS=$dl bash apps/mbui/scripts/beta.sh publish ${{ matrix.part }}
       # (moon's build saved last, after the package is put and only where the job has the time left for it: a save cut
-      # by the job's limit would cancel a job whose beta was out. Kept once moonc has made the app's C (stillfail.c),
-      # a cut build's too: kept only of a build that went through, main's cut in its -O2 C kept none and every run did
-      # moonc's ~75 s again, cut again (2026-11-18, 44310664729, 44312202811). Keyed by that C, as pipeline.yml's
-      # "Moon's build, once moonc made the app's C": one the same is not saved again; mbc's units are not moon's.)
+      # by the job's limit would cancel a job whose beta was out, and a save that fails fails nothing (its 177 MB took
+      # 4 s). Kept once moonc has made the app's C (stillfail.c), a cut build's too: kept only of a build that went
+      # through, main's cut in its -O2 C kept none and every run did moonc's ~75 s again, cut again (2026-11-18,
+      # 44310664729, 44312202811). Keyed by that C, as pipeline.yml's "Moon's build, once moonc made the app's C": one
+      # the same is not saved again; mbc's units are not moon's.)
       - id: moon-room
-        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
+        if: always() && github.ref == 'refs/heads/main' && steps.start.outcome == 'success'
         run: |
           c=libs/mbui/out/linux/app/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ -s "$c" ] && [ "$left" -gt 25 ]; then
+          if [ -s "$c" ] && [ "$left" -gt 14 ]; then
             find libs/mbui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-linux-moon-${{ matrix.arch }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
@@ -349,6 +417,7 @@ jobs:
           fi
       - if: always() && steps.moon-room.outputs.key != '' && steps.moon-room.outputs.key != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
         with:
           path: |
             libs/mbui/out/linux/mod

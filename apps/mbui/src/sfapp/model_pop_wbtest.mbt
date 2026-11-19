@@ -603,3 +603,33 @@ test "Claude run mode can be changed in the model settings on small and large sc
     }
   }
 }
+
+///|
+test "a model row's usualText shares the first-line baseline of its model name" {
+  for scale in [1.0, 1.3] {
+    let flat = model_pop("newchat-model", font_scale=scale)
+    let flat_runs = flat.text_runs()
+    // (opening upward puts the flat model list above 常用搭配: the first GPT-6 is the model row, the last its combo row)
+    let gpt = flat_runs.filter(fn(r) { r.text == "GPT-6" })[0]
+    let gpt_usual = flat_runs.filter(fn(r) { r.x0 > gpt.x1 && (r.top - gpt.top).abs() < 10.0 && r.text == "中" })
+    assert_true(!gpt_usual.is_empty(), msg="missing usualText beside GPT-6 at scale \{scale}: \{Repr(flat_runs)}")
+    assert_true(
+      (gpt.base - gpt_usual[0].base).abs() < 0.01,
+      msg="GPT-6 baseline \{gpt.base} vs \{gpt_usual[0].text} baseline \{gpt_usual[0].base} at scale \{scale}",
+    )
+
+    let t = model_pop("newchat-providers-model", font_scale=scale)
+    t.click(Button, label="全部模型")
+    t.run_for(squeeze_opening)
+    t.click(Button, label="OpenAI")
+    t.run_for(squeeze_opening)
+    let runs = t.text_runs()
+    let astra = runs.filter(fn(r) { r.text == "GPT-6 Astra" }).last().unwrap()
+    let usual = runs.filter(fn(r) { r.x0 > astra.x1 && (r.top - astra.top).abs() < 10.0 && r.text.contains("Codex") })
+    assert_true(!usual.is_empty(), msg="missing usualText beside GPT-6 Astra at scale \{scale}: \{Repr(runs)}")
+    assert_true(
+      (astra.base - usual[0].base).abs() < 0.01,
+      msg="GPT-6 Astra baseline \{astra.base} vs \{usual[0].text} baseline \{usual[0].base} at scale \{scale}",
+    )
+  }
+}

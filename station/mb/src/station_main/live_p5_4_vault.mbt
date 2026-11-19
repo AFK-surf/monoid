@@ -330,7 +330,7 @@ fn p54_vault_world(
     None => None
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   ({
     hub: {
       store: p54_vault_store(bus, threads),
@@ -433,7 +433,7 @@ async fn p54_vault_live(
   db : @vault_crypto.Db,
 ) -> P54Vault {
   let host = bus.host
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   let vault = @vault_service.Vault::new(world, db, crypto, {
     tell: (ev, data, key, to) => (bus.events_tell.val)(ev, data, key, to),
     tabs: session => p54_browser_tabs(session),
@@ -765,14 +765,14 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
   ignore(
-    host.rt.fork(name="unix serve", async fn() {
+    host.rt.fork_daemon("unix serve", on_error=e => @host.note("unix serve failed: \{e}"), async fn() {
       while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
         next.val += 1
         let n = next.val
         let conn : P54Conn = { host, id: got.id, closed: false }
         conns[n] = conn
         ignore(
-          host.rt.fork(name="unix conn", async fn() {
+          host.rt.fork_daemon("unix conn", on_error=e => @host.note("unix conn failed: \{e}"), async fn() {
             while conn.read() is Some(chunk) {
               let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
               if reply.length() > 0 {
@@ -800,7 +800,7 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
       c.close()
     }
     ignore(
-      host.rt.fork(name="unix close", async fn() {
+      host.rt.fork_daemon("unix close", on_error=e => @host.note("unix close failed: \{e}"), async fn() {
         host.listen_close(id)
         @drive.rm_force(path)
       }),
@@ -875,17 +875,17 @@ async fn p54_proxy_listen(
     }
     stopped.val = true
     ignore(
-      host.rt.fork(name="proxy close", async fn() {
+      host.rt.fork_daemon("proxy close", on_error=e => @host.note("proxy close failed: \{e}"), async fn() {
         host.listen_close(id)
       }),
     )
   }
   ignore(
-    host.rt.fork(name="vault proxy", async fn() {
+    host.rt.fork_daemon("vault proxy", on_error=e => @host.note("vault proxy failed: \{e}"), async fn() {
       while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
         let conn : P54Conn = { host, id: got.id, closed: false }
         ignore(
-          host.rt.fork(name="proxy connection", async fn() {
+          host.rt.fork_quiet(name="proxy connection", async fn() {
             p54_proxy_connection(host, conn, connect, forward) catch {
               _ => ()
             }
@@ -1034,7 +1034,7 @@ fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault
       }
       p54_told_threads(bus, threads)
       ignore(
-        bus.host.rt.fork(name="card outcome", async fn() {
+        bus.host.rt.fork_quiet(name="card outcome", async fn() {
           ignore((bus.hub_ask.val)("cardOutcomes.wake", Json::array([]))) catch {
             _ => ()
           }

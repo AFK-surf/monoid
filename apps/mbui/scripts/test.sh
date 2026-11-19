@@ -304,6 +304,10 @@ for t in $targets; do
         # corners_wbtest ran its three at 120 and 60 with the motion counted on one runner, cut at its 5 minutes,
         # lock-upgrade-page 43559278519, 2026-11-14)
         case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt | */chat_drive_parity_wbtest.mbt) continue ;; esac
+        # (send_steady's one run: at a rate eight of its nine tests return at once, the file 1 s (page-seconds.txt),
+        # where its five cuts moved the app part's count so that chat_page_nodes' two halves fell on part 3/3 and part
+        # 1/3 and part 3/3 at 60 was cut at 318 s; one run here, part 1/3, the halves on part 2/3 and part 3/3)
+        case $f in */send_steady_wbtest.mbt) k=1 ;; esac
       fi
       # (in k runs of its tests by their index: moon test FILE --index FROM-TO, the tests in the file's order)
       m=$(grep -c '^test "' "$f")
@@ -413,7 +417,9 @@ for t in $targets; do
           # second's 289 s of its 5 minutes on a slow runner with 621, reckoned too few; the third's one program near
           # empty. The first reckoned 320, the second 300, the third 900: by the table the first's pages 418 s, the
           # second's 437, the fourth's 2093 on its twelve)
-          60) specs="4,4,320,1 4,4,300,1 1,4,900,1 12,12,120,1" ;;
+          # (the third's 86 s at 60 with no page, its one program near empty: reckoned 600, it takes 131 s of the table's
+          # pages, the fourth's 2129 s down to 2035 on its twelve, reckoned 160)
+          60) specs="4,4,320,1 4,4,300,1 1,4,600,1 12,12,160,1" ;;
           # (the first's packages' programs at 120 275 s beside its pages' 263, the job 295 s of its 5 minutes, main
           # 436755fc 43074044573, 2026-11-11: reckoned 160 s of its cores, they take some 500 now)
           # (the second's and the fourth's on three runners each at 120, twelve programs (mbui-check.yml's app-rates
@@ -747,9 +753,11 @@ for t in $targets; do
           # 3/3 148-200 s, main a6881ee25 44395572349, 2026-11-18. At 120 the first two reckoned 250 and 280 were too
           # many: 136-169 s where the third was 294 on a3a444e19 44391836965. By the table, at 60 the parts' pages
           # 645, 644 and 804 s, at 120 512, 491 and 661)
+          # (at 60 since send_steady is one run there: the first part has its 1 s, the second and third each half of
+          # chat_page_nodes' tests (160 s of one core), the three parts some 785 core-s each by the table)
           if [ "${APP_GROUP:-}" = 4/4 ] && [ "${APP_PART#*/}" = 3 ]; then
             case "${MBUI_TEST_FPS:-}" in
-              60) specs="4,4,160,1 4,4,160,1 4,4,0,1" ;;
+              60) specs="4,4,0,1 4,4,160,1 4,4,160,1" ;;
               120) specs="4,4,150,1 4,4,170,1 4,4,0,1" ;;
             esac
           fi

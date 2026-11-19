@@ -170,7 +170,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           Some(n) => {
             id.val = None
             ignore(
-              host.rt.fork(async fn() {
+              host.rt.fork_quiet(name="cloud ws close", async fn() {
                 ignore(host.shell("ws.close", { "id": Json::number(n.to_double()) })) catch {
                   _ => ()
                 }
@@ -186,7 +186,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
         send: text => match id.val {
           Some(n) =>
             ignore(
-              host.rt.fork(async fn() {
+              host.rt.fork_quiet(name="cloud ws send", async fn() {
                 ignore(
                   host.shell("ws.send", {
                     "id": Json::number(n.to_double()),
@@ -220,7 +220,7 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
   }
   let writing : @effect.Queue[String] = @effect.Queue::unbounded()
   ignore(
-    host.rt.fork(async fn() {
+    host.rt.fork_daemon("cloud file writes", on_error=e => @host.note("\{path} no longer written: \{error_words(e)}"), async fn() {
       while true {
         let t = writing.take()
         ignore(

@@ -210,7 +210,7 @@ fn Worker::tick(self : Worker) -> Unit {
 fn Worker::start_scan(self : Worker, key : String, item : CardOutcome) -> Unit {
   self.scanning[key] = true
   ignore(
-    self.rt.fork(
+    self.rt.fork_quiet(
       async fn() noraise {
         let done = try self.scan(item) catch {
           e => {

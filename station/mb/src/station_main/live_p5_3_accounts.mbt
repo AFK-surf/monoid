@@ -170,14 +170,14 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
     }
   })
   ignore(
-    bus.host.rt.fork(name="accounts", async fn() {
+    bus.host.rt.fork_daemon("accounts", on_error=e => @host.note("accounts failed: \{e}"), async fn() {
       let rt = bus.host.rt
       let clock : @accounts_pool.Clock = {
         now: () => wall_ms().to_double(),
         after: (ms, f) => {
           let gone = Ref(false)
           ignore(
-            rt.fork(name="accounts' timer", async fn() {
+            rt.fork_daemon("accounts' timer", on_error=e => @host.note("accounts' timer failed: \{e}"), async fn() {
               @effect.sleep(ms.to_int()) // timer: the accounts' own (a token's renewal, a quota's poll: a provider's, which offers no push)
               if !gone.val {
                 f()
@@ -215,14 +215,14 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       made.set_hub_accounts(sa)
       ignore((bus.config_listen.val)(next => made.config_said(@jsjson.JV::of_json(next))))
       // (accounts/index.ts `start`: a sign-in's change, and the machine's logins read again, told the accounts)
-      ignore(self.logins.changes(id => ignore(rt.fork(name="a sign-in changed", async fn() {
+      ignore(self.logins.changes(id => ignore(rt.fork_quiet(name="a sign-in changed", async fn() {
         made.login_changed(id) catch {
           e => p53_log("warn", "accounts", "a sign-in's change was not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
         }
       }))))
       match self.machine {
         Some(m) =>
-          ignore(m.changes(() => ignore(rt.fork(name="the machine's logins changed", async fn() {
+          ignore(m.changes(() => ignore(rt.fork_quiet(name="the machine's logins changed", async fn() {
             made.machine_changed() catch {
               e => p53_log("warn", "accounts", "the machine's logins were not taken", fields=p53_obj([("error", p53_s(p53_words(e)))]))
             }
@@ -894,7 +894,7 @@ fn P53Models::learned(self : P53Models) -> Unit {
   self.accounts.pool_catalog.models = models
   if !self.bus.as_rig() {
     ignore(
-      self.bus.host.rt.fork(name="reprice session usage", async fn() {
+      self.bus.host.rt.fork_quiet(name="reprice session usage", async fn() {
         ignore((self.bus.hub_ask.val)("usage.reprice", Json::array([]))) catch {
           _ => ()
         }
@@ -913,7 +913,7 @@ fn P53Models::attach(self : P53Models) -> Unit {
     fields=p53_obj([("error", p53_s(p53_words(e)))]),
   )
   ignore(
-    bus.host.rt.fork(name="model catalog", async fn() {
+    bus.host.rt.fork_daemon("model catalog", on_error=e => @host.note("model catalog failed: \{e}"), async fn() {
       let catalog = @accounts_oauth.ModelCatalog::open(
         self.accounts.oauth_io,
         self.told,

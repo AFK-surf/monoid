@@ -225,7 +225,7 @@ pub fn router_says_after(
 ) -> async (String?, RouterSay) -> Double {
   let ready = Ref(false)
   ignore(
-    runtime.fork(async fn() {
+    runtime.fork_daemon("comma previous exited", on_error=_ => (), async fn() {
       previous_exited() catch {
         _ => return
       }

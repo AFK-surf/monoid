@@ -7,45 +7,42 @@ using @jsjson {type JValue as J}
 
 ///|
 pub fn js(s : String) -> J {
-  Str(@jsjson.units(s))
+  @jsjson.JValue::of_string(s)
 }
 
 ///|
 pub fn jn(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|
 pub fn ji(i : Int) -> J {
-  Num(i.to_double())
+  @jsjson.JValue::of_int(i)
 }
 
 ///|
 pub fn jb(b : Bool) -> J {
-  Bool(b)
+  @jsjson.JValue::of_bool(b)
 }
 
 ///|
 pub fn jo(fields : Array[(String, J)]) -> J {
-  Obj(fields.map(f => (@jsjson.units(f.0), f.1)))
+  @jsjson.JValue::of_object(fields)
 }
 
 ///|
 pub fn ja(items : Array[J]) -> J {
-  Arr(items)
+  @jsjson.JValue::of_array(items)
 }
 
 ///|
 fn jsa(items : Array[String]) -> J {
-  Arr(items.map(js))
+  @jsjson.JValue::of_strings(items)
 }
 
 ///|
 fn jopt(s : String?) -> J {
-  match s {
-    Some(t) => js(t)
-    None => Null
-  }
+  @jsjson.JValue::of_opt_string(s)
 }
 
 ///|
@@ -79,18 +76,12 @@ fn at_path(v : J?, path : Array[String]) -> J? {
 
 ///|
 fn at_i(v : J?, i : Int) -> J? {
-  match v {
-    Some(Arr(xs)) => if i >= 0 && i < xs.length() { Some(xs[i]) } else { None }
-    _ => None
-  }
+  @jsjson.jval_at_i(v, i)
 }
 
 ///|
 pub fn str_of(v : J?) -> String? {
-  match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  @jsjson.jval_str_of(v)
 }
 
 ///|
@@ -101,26 +92,17 @@ fn text(v : J?) -> String {
 
 ///|
 fn num_of(v : J?) -> Double? {
-  match v {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(v)
 }
 
 ///|
 fn bool_of(v : J?) -> Bool? {
-  match v {
-    Some(Bool(b)) => Some(b)
-    _ => None
-  }
+  @jsjson.jval_bool_of(v)
 }
 
 ///|
 fn arr(v : J?) -> Array[J] {
-  match v {
-    Some(Arr(xs)) => xs
-    _ => []
-  }
+  @jsjson.jval_arr_of(v).unwrap_or([])
 }
 
 ///|
@@ -137,26 +119,18 @@ fn is_object(v : J?) -> Bool {
 ///|
 /// `v == null`.
 fn nullish(v : J?) -> Bool {
-  match v {
-    None | Some(Null) => true
-    _ => false
-  }
+  @jsjson.jval_nullish(v)
 }
 
 ///|
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Num(n)) => n != 0.0 && !n.is_nan()
-    Some(Str(u)) => u.length() > 0
-    Some(_) => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|
 /// `v === true`.
 fn is_true(v : J?) -> Bool {
-  v is Some(Bool(true))
+  @jsjson.jval_is_true(v)
 }
 
 ///|
@@ -183,9 +157,7 @@ pub fn js_str(v : J?) -> String {
 /// A number as `String(n)` says it.
 pub fn num_text(n : J) -> String {
   match n {
-    Num(d) if d.is_nan() => "NaN"
-    Num(d) if d == @double.infinity => "Infinity"
-    Num(d) if d == -@double.infinity => "-Infinity"
+    Num(d) => @jsjson.num_text(d)
     _ => @jsjson.stringify(n)
   }
 }
@@ -225,64 +197,31 @@ fn js_num(v : J?) -> Double {
 ///|
 /// `Number.isInteger(v)`.
 fn is_integer(v : J?) -> Bool {
-  match v {
-    Some(Num(d)) => !d.is_nan() && !d.is_inf() && d.floor() == d
-    _ => false
-  }
+  v is Some(Num(d)) && @jsjson.is_integer(d)
 }
 
 ///|
 /// `Number.isSafeInteger(v)`.
 fn is_safe_integer(v : J?) -> Bool {
-  match v {
-    Some(Num(d)) => is_integer(v) && d.abs() <= 9007199254740991.0
-    _ => false
-  }
+  v is Some(Num(d)) && @jsjson.is_safe_integer(d)
 }
 
 ///|
 /// `o[k] = v` (in its place where it is there, at its end where not); anything but an object stays as it is.
 fn put(o : J, k : String, v : J) -> J {
-  match o {
-    Obj(fs) => {
-      let ku = @jsjson.units(k)
-      let out = fs.copy()
-      match out.search_by(f => f.0 == ku) {
-        Some(i) => out[i] = (ku, v)
-        None => out.push((ku, v))
-      }
-      Obj(out)
-    }
-    other => other
-  }
+  @jsjson.jval_set(o, k, v)
 }
 
 ///|
 /// `{ ...a, ...b }` of two objects (what is not one spreads nothing).
 fn spread(a : J, b : J) -> J {
-  let mut out = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
-  match b {
-    Obj(fs) => for f in fs {
-      out = put(out, @jsjson.text(f.0), f.1)
-    }
-    _ => ()
-  }
-  out
+  @jsjson.jval_spread(a, b)
 }
 
 ///|
 /// `delete o[k]`.
 fn drop_key(o : J, k : String) -> J {
-  match o {
-    Obj(fs) => {
-      let ku = @jsjson.units(k)
-      Obj(fs.filter(f => f.0 != ku))
-    }
-    other => other
-  }
+  @jsjson.jval_del(o, k)
 }
 
 ///|
@@ -567,19 +506,19 @@ pub fn from_base64url(s : String) -> Bytes {
 ///|
 /// UTF-8 bytes of `s` (a lone surrogate as U+FFFD, as Buffer.from does).
 pub fn utf8(s : String) -> Bytes {
-  @utf8.encode(s)
+  @jsjson.utf8(s)
 }
 
 ///|
 /// `Buffer.toString("utf8")`.
 pub fn from_utf8(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
+  @jsjson.utf8_text(b)
 }
 
 ///|
 /// A number of milliseconds as a JSON number.
 fn jms(d : Double) -> J {
-  Num(d)
+  @jsjson.JValue::of_double(d)
 }
 
 ///|

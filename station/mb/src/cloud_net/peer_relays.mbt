@@ -109,7 +109,7 @@ pub fn PeerRelays::new(
     supported: true,
   }
   let again = () => ignore(
-    rt.fork(async fn() {
+    rt.fork_daemon("disabled relays", on_error=e => log("disabled relays could not be updated: \{error_words(e)}"), async fn() {
       p.again() catch {
         e => log("disabled relays could not be updated: \{error_words(e)}")
       }

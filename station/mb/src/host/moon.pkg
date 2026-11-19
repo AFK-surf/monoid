@@ -1,6 +1,8 @@
 import {
   "mbui/effect",
+  "base/hash",
   "base/net",
+  "station/nodepath",
   "station/wire",
   "moonbitlang/core/encoding/utf8",
 }
