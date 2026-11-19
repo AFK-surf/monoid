@@ -364,6 +364,8 @@ priv struct Incoming {
   in_list : Bool
   /// what of where it sets out is seen, given where it goes (View::flies_in's `cut_from`)
   cut_from : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
+  /// flown as a container box: outer box morphs smoothly without stretching children (Lift's `box`)
+  container : Bool
 }
 
 ///|
@@ -411,10 +413,11 @@ pub fn View::flies_in(
   lead? : Bool = false,
   in_list? : Bool = false,
   cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
+  container? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   ignore(loc)
-  guard self.live() is Some(n) && self.tree.in_change() else { return self }
+  guard self.live() is Some(n) && (self.tree.in_change() || (container && self.tree.laying)) else { return self }
   n.in_flight = Some(flight)
   self.tree.incoming.push({
     node: { at: self.at, gen: self.gen },
@@ -426,6 +429,7 @@ pub fn View::flies_in(
     lead,
     in_list,
     cut_from,
+    container,
   })
   self.tree.pairs_due()
   self
@@ -491,6 +495,7 @@ fn Tree::incoming_now(
       after=in_after,
       cut_fn=i.cut_from,
       from_cut=i.cut_from.bind(fn(c) { c(to) }),
+      container=i.container,
     )
     |> ignore
   }
@@ -2017,6 +2022,7 @@ fn Tree::fly_from(
   after? : Int = -1,
   cut_fn? : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)? = None,
   from_cut? : (Double, Double, Double, Double)? = None,
+  container? : Bool = false,
 ) -> Bool {
   // (one flying in from what is none of the tree's on that way of its own, View::flies_in; else as it flies with
   // another of its id, View::shared)
@@ -2105,14 +2111,15 @@ fn Tree::fly_from(
   // (one whose node comes on a way its page said (a list key's `comes_way`, the flight's own rise): off its node by
   // where it set out, going with it, so that it and the list rise as one; any other from its fixed start)
   let fixed = if stays is None && !self.rides_said_way(to.at) { Some(from) } else { None }
+  let hang_to = if container { self.hang_of(to.at) } else { (0.0, 0.0, 0.0, 0.0) }
   self.nodes[to.at].lift = Some({
     follow: to.at,
     top,
     host,
-    box: false,
+    box: container,
     kids_a: 1.0,
     old: false,
-    hang: (0.0, 0.0, 0.0, 0.0),
+    hang: hang_to,
     d: dd,
     late,
     k: 1.0,
@@ -2310,7 +2317,7 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
       Some(l) => {
         l.k = k
         l.ky = ky
-        l.a = if l.box { if p >= 0.5 { 1.0 } else { 0.0 } } else if f.fades { a_in } else { 1.0 }
+        l.a = if l.box && f.ghost is Some(_) { if p >= 0.5 { 1.0 } else { 0.0 } } else if f.fades { a_in } else { 1.0 }
         // (one with an end that stays whose route says where it goes: drawn under what covers that end's column while it
         // slides out from under it or back (FlightRoute's `in_stays`, Tree::stays_scroll_slot), over the rest of its
         // layer else; the order made again where that changes)

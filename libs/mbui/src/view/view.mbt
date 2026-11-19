@@ -11869,6 +11869,13 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   self.withins_owed = false
   self.laid_out(upto)
   self.laying = laying_was
+  // (container flies_in queued while building inside by_room during layout: pair once layout has placed the node)
+  if !self.in_change() && self.pairs_asked {
+    let was = self.cause_at
+    self.cause_at = upto
+    self.pairs_now()
+    self.cause_at = was
+  }
   // (what was let go of in this moment's changes and paired with nothing in them let go of: shared.mbt)
   if !self.in_change() {
     self.departures_kept_go()

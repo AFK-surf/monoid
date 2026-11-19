@@ -339,12 +339,18 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     let title = "想让 agent 做什么？"
     new_chat_sent(t, "把发布说明写一下") |> ignore
     let at = seen_once(t, title)
-    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was, half faded
+    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was (or drifting gently
+    // upward on the node choreography), half faded
     t.run_for(new_leave_ms / 2.0)
     assert_true(app.nav.top() is Chat(_))
     match t.words().filter(fn(w) { w.0 == title }) {
       [w] => {
-        assert_at(at, (w.1, w.2))
+        if @sfbase.chat_page_nodes.get() {
+          assert_true((w.1 - at.0).abs() <= 0.5, msg="x drifted from \{at.0} to \{w.1}")
+          assert_true(w.2 <= at.1 + 0.5 && w.2 >= at.1 - 10.5, msg="y drift out of range: \{at.1} -> \{w.2}")
+        } else {
+          assert_at(at, (w.1, w.2))
+        }
         assert_true(w.5 > 0.05 && w.5 < 0.95, msg="fading: \{w.5}")
       }
       ws => fail("「\{title}」 seen \{ws.length()} times")

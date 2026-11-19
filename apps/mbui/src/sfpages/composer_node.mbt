@@ -33,9 +33,32 @@ priv struct ComposingNode {
 let composing_node : ComposingNode = { held: @sf.LiveMap::new(), warmed: {}, shown: "", quiet: false, quiet_n: @signals.signal(0), focus_waits: "" }
 
 ///|
+/// Dedicated flight for the wide-layout composer moving between center (NewChat) and foot (Chat): uses `@ui.move_ms`
+/// with `Ease::Move` and zero `up_late` so movement begins on frame 0 without the send-word stall.
+// kept across runs: pure curve function
+let composer_move_flight : @view.Flight = @motion.flight_scaled(
+  fn(far) { if far <= 0.5 { 0.0 } else { @ui.move_ms(far) } },
+  ease=Move,
+)
+
+///|
+/// Last departed composer box `(was_new_chat, rect)` on wide layout, used as a fallback handoff when unmount precedes
+/// `page_switch_to` during sidebar `NewChat <-> Chat` switches; cleared on `composer_node_left` and `composing_node_reset`.
+// kept across runs: cleared in composing_node_reset and composer_node_left
+let composer_departed : Ref[(Bool, (Double, Double, Double, Double))?] = Ref(None)
+
+///|
+/// Clear wide-layout node composer handoff state when switching to a page without a composer.
+pub fn composer_node_left() -> Unit {
+  composer_departed.val = None
+}
+
+///|
 /// What composing_node keeps, forgotten as a run starts (composing_reset).
 fn composing_node_reset() -> Unit {
   draft_sent_counts.clear()
+  composer_extra_heights.clear()
+  composer_departed.val = None
   composing_node.held.clear()
   composing_node.warmed.clear()
   composing_node.shown = ""
@@ -361,14 +384,33 @@ fn composer_node_of(
         })
       Some(_) => ()
     }
-    // (the new chat it was, become it on 宽排法: its composer flies in from where the new chat's stood (sfbase's
-    // fresh_composer_at, taken once), as the words sent from it do; a chat's alone, not the new chat's own)
-    let from_at = if made is None &&
-      @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) &&
-      @signals.untracked(fn() { room.width() }) >= @sf.page_narrow_most {
-      let was = @signals.untracked(fn() { @sfbase.fresh_composer_at.get() })
-      @sfbase.fresh_composer_at.set(None)
-      was
+    // (wide-layout composer handoff: NewChat -> Chat on send via fresh_composer_at, or bidirectional sidebar
+    // NewChat <-> Chat via composer_handoff_at / composer_departed; both use container=true morph on composer_move_flight)
+    let from_at = if @signals.untracked(fn() { room.width() }) >= @sf.page_narrow_most {
+      if made is None && @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) {
+        let was = @signals.untracked(fn() { @sfbase.fresh_composer_at.get() })
+        @sfbase.fresh_composer_at.set(None)
+        @sfbase.composer_handoff_at.set(None)
+        composer_departed.val = None
+        was
+      } else {
+        let was = @signals.untracked(fn() { @sfbase.composer_handoff_at.get() })
+        @sfbase.composer_handoff_at.set(None)
+        match was {
+          Some(rect) => {
+            composer_departed.val = None
+            Some(rect)
+          }
+          None =>
+            match composer_departed.val {
+              Some((was_new, rect)) if was_new != (made is Some(_)) => {
+                composer_departed.val = None
+                Some(rect)
+              }
+              _ => None
+            }
+        }
+      }
     } else {
       None
     }
@@ -734,32 +776,99 @@ fn composer_box_node(
     if spec.chat {
       let entry = (box, foot, sent_over, foot_shift)
       composer_nodes[draft] = entry
+      let extra_fn = fn() {
+        let (box_was, box_speed) = box.height_going_now()
+        let was = if box_speed != 0.0 {
+          box_was
+        } else {
+          let mut dh = 0.0
+          for rm_opt in [quotes_room.val, files_room.val] {
+            if rm_opt is Some(rm) {
+              let (rh, rv) = rm.height_going_now()
+              if rv != 0.0 {
+                dh = dh + (rh - rm.placed_now().3)
+              }
+            }
+          }
+          box_was + dh
+        }
+        let wide = (stand.wide)()
+        let one = stand.at(fn() { node_open_room(stand, wide) - 12.0 - composer_foot_at(wide) })
+        @sf.dmax(0.0, was - one)
+      }
+      composer_extra_heights[draft] = extra_fn
       // (none found while its page is put by at rest (a chat's page kept as it is left: drawn nowhere, where it is not
       // the window's), nor once it is let go; found again as it wakes)
       box.on_rest(
         fn() {
           if composer_nodes.get(draft) is Some(now) && now.0.id() == box.id() {
+            if !@ui.reduced_motion() && box.was_placed() {
+              composer_departed.val = Some((own is Some(_), box.placed_window_now()))
+            }
             composer_nodes.remove(draft)
+            composer_extra_heights.remove(draft)
           }
         },
         wake=fn() {
           if box.alive() {
             composer_nodes[draft] = entry
+            composer_extra_heights[draft] = extra_fn
+            // (kept chat page woken from a wide NewChat sidebar switch: morph composer from departed box)
+            if !@ui.reduced_motion() && @signals.untracked(stand.wide) >= @sf.page_narrow_most {
+              let wake_from = match @signals.untracked(fn() { @sfbase.composer_handoff_at.get() }) {
+                Some(rect) => {
+                  @sfbase.composer_handoff_at.set(None)
+                  composer_departed.val = None
+                  Some(rect)
+                }
+                None =>
+                  match composer_departed.val {
+                    Some((was_new, rect)) if was_new != (own is Some(_)) => {
+                      composer_departed.val = None
+                      Some(rect)
+                    }
+                    _ => None
+                  }
+              }
+              match wake_from {
+                Some((fx, fy, fw, fh)) =>
+                  box.flies_in(
+                    composer_move_flight,
+                    fn(_) { Some((fx, fy, fw, fh)) },
+                    up_late=0.0,
+                    container=true,
+                    far_of=sent_far,
+                  )
+                  |> ignore
+                None => ()
+              }
+            }
           }
         },
       )
       |> ignore
     }
-    // (from where the new chat's composer stood, on the flight of what is sent from it, its foot kept to its foot; its
-    // hint back once it has landed, as at rest without the cursor)
+    // (narrow NewChat -> Chat height handoff: preserve multi-line / attachment / quote height on frame 0 and collapse
+    // smoothly with the same sent_out_hold_ms + Ease::Flight curve as in-chat sends)
+    if own is None && @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) {
+      let handoff_over = @signals.untracked(fn() { @sfbase.fresh_composer_over.get() })
+      @sfbase.fresh_composer_over.set(0.0)
+      if handoff_over > 0.5 && !@ui.reduced_motion() {
+        let hold = @sfbase.sent_out_hold_ms
+        sent_over.put(handoff_over)
+        sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
+      }
+    }
+    // (true container morph from the departing composer's full (fx, fy, fw, fh) on composer_move_flight with
+    // up_late=0.0 and container=true: no top-cut, no initial stall, children kept 1:1)
     match from_at {
       Some((fx, fy, fw, fh)) => {
         let start_at = box.cause_at()
         box.flies_in(
-          sent_part_flight,
+          composer_move_flight,
           fn(to) {
-            let from = (fx, fy + fh - to.3, fw, to.3)
-            let (dur, _) = (sent_part_flight.way)(sent_far(from, to))
+            let from = (fx, fy, fw, fh)
+            let (dur, _) = (composer_move_flight.way)(sent_far(from, to))
             let ms = @sf.dmax(1.0, dur)
             let holds = fn() { w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0 }
             if !@signals.untracked(fn() { focused() || w.field.parked() || (held() && !holds()) }) {
@@ -767,13 +876,14 @@ fn composer_box_node(
                 foot,
                 0.0,
                 1.0,
-                @motion.tween(@sf.hint_back_ms, ease=Out, delay=@sf.dmax(ms, @sfbase.flight_most_ms)),
+                @motion.tween(@sf.hint_back_ms, ease=Out, delay=ms),
                 start_at,
               )
             }
             Some(from)
           },
-          up_late=sent_up_late,
+          up_late=0.0,
+          container=true,
           far_of=sent_far,
         )
         |> ignore
@@ -898,7 +1008,11 @@ fn composer_box_node(
     box.owns(fn() {
       match composer_nodes.get(draft) {
         Some((b, _, _, _)) if b.id() == box.id() => {
+        if !@ui.reduced_motion() && box.was_placed() {
+          composer_departed.val = Some((own is Some(_), box.placed_window_now()))
+        }
         composer_nodes.remove(draft)
+        composer_extra_heights.remove(draft)
         composer_sent_holds.remove(draft)
       }
         _ => ()
@@ -2998,6 +3112,17 @@ fn ref_menu_node(box : @view.View, src : Source, r : ChatRef, w : Writing) -> Un
 /// composer_box_node's sent_over), let go with it.
 // kept across runs: each let go with its node
 let composer_nodes : Map[String, (@view.View, @view.View, @motion.NodeWay, @motion.NodeWay)] = Map([])
+
+///|
+/// Per-draft extra height (was - one) reader for narrow NewChat -> Chat composer height handoff.
+// kept across runs: cleared in composing_node_reset and on node rest/unmount
+let composer_extra_heights : Map[String, () -> Double] = Map([])
+
+///|
+/// Extra height above one-line open height (multi-line text, attachments, or quotes) for draft `draft`'s composer node.
+pub fn composer_node_extra_height(draft : String) -> Double {
+  composer_extra_heights.get(draft).map(fn(f) { f() }).unwrap_or(0.0)
+}
 
 ///|
 /// How much taller than it is laid out composer `c`'s ground is drawn at `at` (what it holds of the shape it had as

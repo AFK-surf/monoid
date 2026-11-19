@@ -47,17 +47,10 @@ priv enum NewKind {
 /// it was sent: the view it showed, fresh.scene; nothing of it pressed: View::leaving). Its tips in `tips`.
 pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewChatNodeFrame, tips : @sf.TipLayer) -> Unit {
   let going = fn() { v.leaving() }
-  // (made anew as its chat was not made, its leaving over by then: what it shows coming back from gone, as it left;
-  // fresh_back)
-  let back = @motion.NodeWay::new(0.0)
-  let back_fade = @motion.NodeWay::new(0.0)
+  // (made anew after its leaving finished because newChat.create failed: arm the reversing choreography on this node)
   if @sfbase.fresh_back.val {
-    back.put(1.0)
-    back.go_ms(v, 0.0, @sfbase.new_leave_ms, ease=Out)
-    back_fade.put(1.0)
-    back_fade.go_ms(v, 0.0, @sfbase.new_fade_ms, ease=Out)
+    @sfbase.fresh_choreo.val.arm(v)
   }
-  let gone = fn(n : @view.View, fade : Bool) { new_gone_on(v, n, fade, if fade { back_fade } else { back }) }
   let topic = fn() { src.topic("newChat", new_chat_asked(w.id)).get() }
   // (as it was sent while it leaves: what the core says of it since is the chat's)
   let view = fn() {
@@ -87,9 +80,12 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
   }
   // (its ground none as it leaves: what is left of it seen over the chat it became, as new_chat_left's)
   v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
-  // (its bar gone at once as it becomes its chat, its room kept: the chat has its own)
+  // (its bar fades out smoothly along bar_out while non-interactive, crossfading with the chat bar's bar_in)
   v.box(fn(b) {
-    b.alpha(By(fn() { if going() { 0.0 } else { 1.0 } })).hides(By(going)) |> ignore
+    b
+    .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(b, "bar_out") }))
+    .points(By(fn() { !going() }))
+    |> ignore
     (frame.bar)(b)
   })
   |> ignore
@@ -98,7 +94,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
     room.pick(kind, at_once=true, fn(p, k) {
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       match k {
-        On => new_on_node(p, src, w, frame, tips, topic, view, going, gone)
+        On => new_on_node(p, v, src, w, frame, tips, topic, view, going)
         Blocked => new_blocked_node(p, src, w, frame, tips, view)
         First =>
           new_alone_node(p, "illus_no_station", fn() { @sf.t("android-settings.station.first") }, fn() {
@@ -123,6 +119,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
 /// be read, as `view` and `topic` say them now.
 fn new_on_node(
   v : @view.View,
+  page : @view.View,
   src : Source,
   w : Workspace,
   frame : NewChatNodeFrame,
@@ -130,7 +127,6 @@ fn new_on_node(
   topic : () -> @sfbase.TopicState,
   view : () -> Json?,
   going : () -> Bool,
-  gone : (@view.View, Bool) -> Double,
 ) -> Unit {
   // (its stations not read yet: why they could not be ("" while they are read))
   let held = fn() { !(field(view(), "stations") is Some(Array(_))) }
@@ -145,7 +141,7 @@ fn new_on_node(
     }
   }
   let station = fn() { if held() { None } else { field(view(), "station") } }
-  let on : NewOn = { src, w, frame, tips, view, held, error, station, going, gone }
+  let on : NewOn = { page, src, w, frame, tips, view, held, error, station, going }
   new_on_tree(v, on)
 }
 
@@ -231,7 +227,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
         .min_height(Is(Some(0.0)))
         .lines_up(Is(Some(Middle)))
         .lies_along(By(fn() { if wide() { End } else { Start } }))
-        .alpha(By(fn() { 1.0 - (on.gone)(s, false) }))
+        .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(s, "scene_out") }))
+        .offset(By(fn() { (0.0, -10.0 * @sfbase.fresh_progress(s, "scene_out")) }))
         |> ignore
         new_scene_node(s, on, wide)
       })
@@ -241,21 +238,26 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     // (the band at the foot narrow; wide, the composer alone)
     col.by_room(fn(band, room) {
       band
-      .glass(By(fn() { if wide() { None } else { Some(@sf.glass_foot()) } }))
+      // (remove duplicate bottom glass band over the incoming chat composer once going, while notices & floating choices
+      // fade out smoothly along choices_out)
+      .glass(By(fn() { if wide() || (on.going)() { None } else { Some(@sf.glass_foot()) } }))
       .lines_up(Is(Some(Middle)))
       .padding(By(fn() { (0.0, if wide() { 0.0 } else { composer_foot_at(room.width()) }, 0.0, 0.0) }))
-      // (gone at once as the page becomes its chat: what is sent rises from the composer through where the choices
-      // were, never over them; back on its way where the chat was not made)
-      .alpha(By(fn() { if (on.going)() { 0.0 } else { 1.0 - (on.gone)(band, true) } }))
       |> ignore
       let width = fn() { composer_width(room.width()) }
       // (narrow alone: there at once as the page is laid out another way, no way in or out, #5767)
       band.show(fn() { !wide() }, at_once=true, fn(o) {
         @sf.style_node(o, fn() { new_over })
-        o.show(fn() { !(on.going)() }, at_once=true, fn(n) {
-          n.lines_up(Is(Some(Middle))) |> ignore
-          new_notices_node(n, on, width)
-        })
+        o
+        .lines_up(Is(Some(Middle)))
+        .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(o, "choices_out") }))
+        .offset(By(fn() {
+          let p = @sfbase.fresh_progress(o, "choices_out")
+          let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+          (0.0, dy)
+        }))
+        |> ignore
+        new_notices_node(o, on, width)
       })
       band.box(fn(c) {
         c.width(By(fn() { Some(room.width()) })) |> ignore
@@ -271,7 +273,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
       .basis(Is(Some(0.0)))
       .gap(Is(@ui.Space::px(S2_5)))
       .lines_up(Is(Some(Middle)))
-      .alpha(By(fn() { 1.0 - (on.gone)(under, true) }))
+      .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(under, "under_out") }))
+      .offset(By(fn() { (0.0, 6.0 * @sfbase.fresh_progress(under, "under_out")) }))
       |> ignore
       under.by_room(fn(held, room) {
         held.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S2_5))) |> ignore
@@ -350,6 +353,7 @@ fn new_scene_node(s : @view.View, on : NewOn, wide : () -> Bool) -> Unit {
 ///|
 /// What the page on a station reads (new_on_node's), handed to its parts.
 priv struct NewOn {
+  page : @view.View
   src : Source
   w : Workspace
   frame : NewChatNodeFrame
@@ -359,7 +363,6 @@ priv struct NewOn {
   error : () -> String
   station : () -> Json?
   going : () -> Bool
-  gone : (@view.View, Bool) -> Double
 }
 
 ///|
@@ -374,20 +377,6 @@ fn NewOn::address(self : NewOn) -> String {
   } else {
     text((self.station)(), "station")
   }
-}
-
-///|
-/// How far its scene has left (0 … 1) as node `n` draws it, and what is by its composer (`fade`: sooner, over
-/// new_fade_ms): page `page` leaving as its first words set out (View::going: of new_leave_ms), on its curve, or come
-/// back as it was where the chat was not made (on its own way, `back`, where it was made anew so).
-fn new_gone_on(page : @view.View, n : @view.View, fade : Bool, back : @motion.NodeWay) -> Double {
-  let t = page.going()
-  let k = if fade {
-    @sf.dmin(1.0, t * @sfbase.new_leave_ms / @sfbase.new_fade_ms)
-  } else {
-    t
-  }
-  @sf.dmax(@ui.Ease::Leave.at(k), back.shown(n))
 }
 
 ///|
@@ -683,8 +672,19 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
         },
         send: fn(d) { new_send_node(on, address, name(), d) },
         starting: fn() { @sfbase.fresh.starting.get() },
-        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens)
-        over_it: Some(fn(r) { new_choosers_node(r, on, true) }),
+        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; fades along
+        // choices_out while offsetting by -fresh_over_held - 4pt so capsules never drop into a multi-line composer)
+        over_it: Some(fn(r) {
+          r
+          .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(r, "choices_out") }))
+          .offset(By(fn() {
+            let p = @sfbase.fresh_progress(r, "choices_out")
+            let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+            (0.0, dy)
+          }))
+          |> ignore
+          new_choosers_node(r, on, true)
+        }),
         over_tall: @sf.glass_chooser_h.points().unwrap_or(0.0) + @ui.Space::px(S1_5),
         away,
       },
@@ -845,6 +845,7 @@ fn new_blocked_node(
         })
         acts.show(fn() { items(view(), "stations").length() > 1 }, fn(s) {
           let on : NewOn = {
+            page: v,
             src,
             w,
             frame,
@@ -854,7 +855,6 @@ fn new_blocked_node(
             error: fn() { "" },
             station,
             going: fn() { false },
-            gone: fn(_, _) { 0.0 },
           }
           new_station_control_node(s, on, station, view, false)
         })
@@ -903,22 +903,33 @@ fn new_send_node(on : NewOn, station : String, name : String, d : Writing) -> Un
   // chat's own)
   let from = composer_sent_from_node(src, d)
   let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
-  // (beside where the chat opens: its composer flies from where this one stands, roomy in the page's middle, to the
-  // chat's foot, one composer going there as the old page's did)
-  @sfbase.fresh_fly_after.set(if !on.frame.in_place { 0.0 } else { @sfbase.flight_carry_after_ms })
-  if !on.frame.in_place && !@ui.reduced_motion() {
+  // (start unified choreography for actual layout width: wide morphs the roomy composer from middle to foot; narrow
+  // hands off any multi-line/attachment extra height so frame 0 never collapses)
+  let wide = @signals.untracked(fn() { (on.frame.width)() >= @sf.page_narrow_most })
+  let at = on.page.cause_at()
+  @sfbase.fresh_choreo_start(wide, at)
+  @sfbase.fresh_choreo.val.arm(on.page)
+  if wide && !@ui.reduced_motion() {
     @sfbase.fresh_composer_at.set(composer_node_box(d.key))
+  } else if !wide && !@ui.reduced_motion() {
+    let extra = composer_node_extra_height(d.key)
+    @sfbase.fresh_composer_over.set(extra)
+    @sfbase.fresh_over_held.set(extra)
   }
   // (the cursor in its field as it is sent: in the chat's composer as that comes, the keyboard as it was, this page's
   // field let go as it leaves (composer_take_focus, as the chat's composer asks it); sent without it, none)
   if d.field.focused() {
     composer_take_focus()
   }
-  // (its scene leaving as the page does, as it becomes the chat (chat_page_made's show); the chat not made, the page
-  // the new chat again in that answer's change, come back as it was or made anew coming back (fresh_back); the
-  // cursor back in its field where it was, new_send_go's)
+  // (its scene leaving as the page does, as it becomes the chat (chat_page_made's show); the chat not made, reverse
+  // choreography smoothly back from current mid-flight values (or arm anew if page remounts via fresh_back))
   new_send_go(src, on.frame.sent, v, station, key, make, d, rk, row, r, fn() {  }, fn() {  }, fn() {
-    @sfbase.fresh_back.val = true
-    @ui.after_frame(fn() { @sfbase.fresh_back.val = false })
+    @sfbase.fresh_choreo_reverse(on.page.cause_at())
+    if on.page.alive() {
+      @sfbase.fresh_choreo.val.arm(on.page)
+    } else {
+      @sfbase.fresh_back.val = true
+      @ui.after_frame(fn() { @sfbase.fresh_back.val = false })
+    }
   })
 }

@@ -219,6 +219,17 @@ fn open_where(src : Source, p : Page) -> Unit {
   if (p is Chat(_) || p is NewChat) && !@sfdesk.page_goes_on() && @sfbase.board_on_now(src) {
     @sfbase.board_set(src, false)
   }
+  // (wide NewChat <-> Chat switch: snapshot the departing composer's box before nav replacement unmounts it)
+  if !@ui.reduced_motion() {
+    match (app.nav.top(), p) {
+      (NewChat, Chat(r)) =>
+        if @signals.untracked(fn() { @sfbase.fresh.became.get() }) != Some(r) {
+          @sfbase.composer_handoff_at.set(@sfpages.composer_node_shown(0.0))
+        }
+      (Chat(_), NewChat) => @sfbase.composer_handoff_at.set(@sfpages.composer_node_shown(0.0))
+      _ => ()
+    }
+  }
   match p {
     Chat(r) => open_chat_beside(r)
     NewChat => new_chat_beside()

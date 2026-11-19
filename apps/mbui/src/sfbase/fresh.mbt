@@ -32,10 +32,94 @@ pub(all) struct FreshChat {
 pub let fresh_composer_at : @signals.Signal[(Double, Double, Double, Double)?] = @signals.signal(None)
 
 ///|
+/// Extra height (was - one) of the narrow new-chat composer as its first words were sent (multi-line / attachments /
+/// quotes), handed off to the chat's composer so frame 0 keeps continuous height before collapsing smoothly.
+// kept across runs: cleared on fresh_reset and as composer_node takes it
+pub let fresh_composer_over : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+
+///|
+/// Retained extra height of the narrow new-chat composer during its leaving choreography (cleared only on fresh_reset,
+/// never consumed by chat_composer_node), so over_it capsules and notices offset upward and never drop into the
+/// multi-line chat composer when the new-chat draft clears.
+// kept across runs: cleared on fresh_reset
+pub let fresh_over_held : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+
+///|
+/// Wide-layout sidebar switch handoff box (NewChat <-> Chat): recorded on departure, consumed by the arriving
+/// composer_node, and cleared when leaving to a non-chat page (composer_page_left).
+// kept across runs: cleared on composer_page_left and as composer_node takes it
+pub let composer_handoff_at : @signals.Signal[(Double, Double, Double, Double)?] = @signals.signal(None)
+
+///|
 /// How long after they were sent its first words set out from where they were typed: 窄排法, as the scene's foot fades
-/// first, flight_carry_after_ms; 宽排法, none (became_starts).
-// kept across runs: cleared on fresh_reset and set by became_starts
+/// first; 宽排法, none (became_starts / fresh_choreo_start).
+// kept across runs: cleared on fresh_reset and set by became_starts / fresh_choreo_start
 pub let fresh_fly_after : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+
+///|
+/// Multi-track choreography for the node-based NewChat -> Chat transition: staggered bar, choices/under, scene, and
+/// message flight delay (single source of truth via `track_delay("flight")`).
+pub fn fresh_transition(wide : Bool) -> @motion.Choreography {
+  if wide {
+    @motion.Choreography::new([
+      { name: "scene_out", forward: @motion.tween(new_leave_ms, ease=Leave), backward: @motion.tween(new_leave_ms, ease=Out) },
+      { name: "under_out", forward: @motion.tween(110.0, ease=Leave), backward: @motion.tween(100.0, ease=Out) },
+      { name: "flight", forward: @motion.tween(flight_desk_ms, ease=Flight, delay=0.0), backward: @motion.Spec::Snap(0.0) },
+    ])
+  } else {
+    @motion.Choreography::new([
+      { name: "bar_out", forward: @motion.tween(110.0, ease=Leave), backward: @motion.tween(110.0, ease=Out) },
+      { name: "bar_in", forward: @motion.tween(140.0, ease=Out, delay=40.0), backward: @motion.tween(100.0, ease=Out) },
+      { name: "choices_out", forward: @motion.tween(100.0, ease=Leave), backward: @motion.tween(100.0, ease=Out) },
+      { name: "scene_out", forward: @motion.tween(new_leave_ms, ease=Leave), backward: @motion.tween(new_leave_ms, ease=Out) },
+      { name: "flight", forward: @motion.tween(flight_desk_ms, ease=Flight, delay=40.0), backward: @motion.Spec::Snap(0.0) },
+    ])
+  }
+}
+
+///|
+/// Active choreography for the node-based NewChat -> Chat transition.
+// kept across runs: stopped and reset by fresh_reset
+pub let fresh_choreo : Ref[@motion.Choreography] = Ref(fresh_transition(false))
+
+///|
+/// Generation signal bumped whenever `fresh_choreo` is replaced, started, reversed, or reset, so bindings reading
+/// `fresh_progress` / `fresh_active` automatically re-subscribe to the active Choreography's tracks.
+// kept across runs: bumped by fresh_reset / fresh_choreo_start / fresh_choreo_reverse
+let fresh_choreo_gen : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+/// Start the node-based NewChat -> Chat choreography from cause moment `at` for `wide` (宽排法) or narrow (窄排法),
+/// publishing the flight track's delay as `fresh_fly_after`.
+pub fn fresh_choreo_start(wide : Bool, at : Double) -> Unit {
+  fresh_choreo.val.stop()
+  let ch = fresh_transition(wide)
+  ch.start(at)
+  fresh_choreo.val = ch
+  fresh_fly_after.set(if chat_page_nodes.untracked() { ch.track_delay("flight") } else { new_fade_ms })
+  fresh_choreo_gen.set(fresh_choreo_gen.untracked() + 1)
+}
+
+///|
+/// Reverse the active NewChat -> Chat choreography from cause moment `at` (e.g. when `newChat.create` fails).
+pub fn fresh_choreo_reverse(at : Double) -> Unit {
+  fresh_choreo.val.reverse(at)
+  fresh_choreo_gen.set(fresh_choreo_gen.untracked() + 1)
+}
+
+///|
+/// Reactive progress (0.0 .. 1.0) of track `name` on the active NewChat -> Chat choreography.
+pub fn fresh_progress(n : @view.View, name : String) -> Double {
+  fresh_choreo_gen.get() |> ignore
+  fresh_choreo.val.progress(n, name)
+}
+
+///|
+/// Whether the active NewChat -> Chat choreography is currently running at `n`'s logic moment.
+pub fn fresh_active(n : @view.View) -> Bool {
+  fresh_choreo_gen.get() |> ignore
+  fresh_choreo.val.active(n)
+}
 
 ///|
 pub let fresh : FreshChat = {
@@ -63,7 +147,12 @@ pub fn fresh_reset() -> Unit {
   fresh.room.set(0.0)
   fresh.foot.set(0.0)
   fresh_composer_at.set(None)
+  fresh_composer_over.set(0.0)
+  fresh_over_held.set(0.0)
   fresh_fly_after.set(0.0)
+  fresh_choreo.val.stop()
+  fresh_choreo.val = fresh_transition(false)
+  fresh_choreo_gen.set(fresh_choreo_gen.untracked() + 1)
   fresh_back.val = false
 }
 
