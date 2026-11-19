@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.45 | 125.81 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.4 | 124.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
-| [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.32 | 124.83 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [93b262a9d](https://github.com/AFK-surf/monoid/commit/93b262a9df771d6097b92a7e7384a6a192d800e2) refactor(station): one set of live slice helpers i | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.17 |
 | [365a36487](https://github.com/AFK-surf/monoid/commit/365a364872e9e2246418c5c926c27415f1c41853) fix(mbui): write the mac entitlements plist with p | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [863e54da5](https://github.com/AFK-surf/monoid/commit/863e54da529268a1061330c142532434835c2073) ci(mbui): rebalance app 1/4..4/4 pages at the defa | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
 | [4f2cc450a](https://github.com/AFK-surf/monoid/commit/4f2cc450a4fe0a855a7b3ac627ad5ff2310d7835) feat(mbui): add apps/mbui/mbui.json and read varia | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 54.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.15 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.12 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
-| [2a03a298a](https://github.com/AFK-surf/monoid/commit/2a03a298a4d2ee8efa6758e6b9d3be239b3a5fff) feat(station): set the Mac's display resolution fr | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
