@@ -59,6 +59,8 @@ priv struct TriplePanel {
   mut names_most : Double
   /// whether it is a small panel beside what opened it, as its body found as it was made (what its foot goes by)
   mut small : Bool
+  /// the search result index highlighted by ↑/↓ for Enter to pick (0 when typing changes)
+  search_at : @signals.Signal[Int]
 }
 
 ///|
@@ -309,6 +311,7 @@ pub fn open_triple_panel(
     up,
     names_most: 0.0,
     small: false,
+    search_at: @signals.signal(0),
   }
   pick_draft(src, station, of, { "open": Json::boolean(true) })
   @sf.panel_nodes(
@@ -839,14 +842,49 @@ fn triple_body_node(
     }
   }
   let searching = fn() { words() != "" }
+  let kinds = fn() { items(v(), "makers") }
   let listed = fn() {
     let w = words()
+    if w == "" {
+      return options()
+    }
+    let maker_titles : Map[String, String] = Map([])
+    for k in kinds() {
+      maker_titles[text(Some(k), "id")] = text(Some(k), "title").to_lower()
+    }
+    let tokens : Array[String] = []
+    for part in w.split(" ") {
+      let s = part.to_owned()
+      if s != "" {
+        tokens.push(s)
+      }
+    }
     options().filter(fn(o) {
-      let o = Some(o)
-      w == "" ||
-      text(o, "name").to_lower().contains(w) ||
-      text(o, "model").to_lower().contains(w) ||
-      items(o, "ids").iter().any(fn(i) { i is String(s) && s.to_lower().contains(w) })
+      let ov = Some(o)
+      let name = text(ov, "name").to_lower()
+      let model = text(ov, "model").to_lower()
+      let family = text(ov, "family").to_lower()
+      let raw_maker = text(field(ov, "maker"), "id")
+      let maker_id = raw_maker.to_lower()
+      let maker_title = maker_titles.get(raw_maker).unwrap_or("")
+      let ids = items(ov, "ids")
+      let runtimes = items(ov, "runtimes")
+      tokens.iter().all(fn(tok) {
+        name.contains(tok) ||
+        model.contains(tok) ||
+        family.contains(tok) ||
+        maker_id.contains(tok) ||
+        maker_title.contains(tok) ||
+        ids.iter().any(fn(i) { i is String(s) && s.to_lower().contains(tok) }) ||
+        runtimes.iter().any(fn(r) {
+          r is String(s) &&
+          (
+            s.to_lower().contains(tok) ||
+            @settings.runtime_short(s).to_lower().contains(tok) ||
+            @settings.runtime_label(s).to_lower().contains(tok)
+          )
+        })
+      })
     })
   }
   let model_of = fn(id : String) { triple_model_of(options(), id) }
@@ -869,7 +907,6 @@ fn triple_body_node(
       }
     })
   }
-  let kinds = fn() { items(v(), "makers") }
   let kind_of = fn(o : Json) -> String { text(field(Some(o), "maker"), "id") }
   // all of them in one list while they are few, no level past it (2026-11-10: a station of six models went through
   // 全部模型 and its makers to reach one); more, those used most and starred first and the rest a level further, by
@@ -980,12 +1017,87 @@ fn triple_body_node(
   // configuration under their name (常用搭配), then every starred model, the one picked where it is not starred after
   // them where the rest are a level further, so it is always in sight as a model; each stays where it was while the
   // panel is open, starred or not since (contents' `first`)
+  let combo_selected = fn() -> Bool {
+    combos().iter().any(fn(x) { flag(Some(x), "selected") })
+  }
+  let has_speed = fn() { flag(v(), "fastAvailable") }
+  let all_speeds = fn() -> Array[(String, String)] {
+    let cs = [("standard", @sf.t("web-main.model.standard")), ("fast", "Fast")]
+    if flag(v(), "ultrafastAvailable") {
+      cs.push(("ultrafast", "Ultrafast"))
+    }
+    cs
+  }
+  let speed_now = fn() {
+    let speed = text(field(v(), "draft"), "speed")
+    if speed != "" {
+      speed
+    } else {
+      match field(field(v(), "draft"), "fast") {
+        Some(True) => "fast"
+        Some(False) => "standard"
+        _ => if flag(v(), "fastPlan") { "fast" } else { "standard" }
+      }
+    }
+  }
+  let pick_speed = fn(k : String) {
+    if k == "ultrafast" {
+      pick_save(src, station, of, { "speed": Json::string(k) })
+    } else {
+      pick_save(src, station, of, { "fast": Json::boolean(k == "fast") })
+    }
+  }
+  let all_contexts = fn() -> Array[(String, String)] {
+    items(v(), "contexts").map(fn(o) { (text(Some(o), "id"), text(Some(o), "text")) })
+  }
+  let context_now = fn() { text(v(), "contextNow") }
+  let pick_context = fn(k : String) {
+    pick_save(src, station, of, { "context": if k == "" { Json::null() } else { Json::string(k) } })
+  }
+  let has_params = fn() { !all_efforts().is_empty() || has_speed() || !all_contexts().is_empty() }
+  let pick_model = fn(id : String, oo : Json?) {
+    let vv = @signals.untracked(v)
+    if text(oo, "availability") == "borrowable" {
+      pick_draft(src, station, of, { "model": Json::string(id) })
+    } else {
+      triple.open = ""
+      close()
+      if text(vv, "option") != id || text(field(vv, "value"), "model") != text(field(vv, "draft"), "model") {
+        let p : Map[String, Json] = { "model": Json::string(id) }
+        match field(oo, "usual") {
+          Some(Object(u)) =>
+            for k in ["runtime", "effort", "fast", "speed", "tui", "context"] {
+              if of != "new" || k != "tui" { p[k] = u.get(k).unwrap_or(Json::null()) }
+            }
+          _ => ()
+        }
+        pick_save(src, station, of, p, done=saved)
+      }
+    }
+  }
+  let search_step = fn(delta : Int) {
+    guard @signals.untracked(searching) else { return }
+    let n = @signals.untracked(listed).length()
+    guard n > 0 else { return }
+    let cur = contents.search_at.untracked()
+    let clamped = if cur < 0 || cur >= n { 0 } else { cur }
+    contents.search_at.set((clamped + delta + n) % n)
+  }
+  let search_enter = fn() {
+    guard @signals.untracked(searching) else { return }
+    let ls = @signals.untracked(listed)
+    guard !ls.is_empty() else { return }
+    let cur = contents.search_at.untracked()
+    let idx = if cur < 0 || cur >= ls.length() { 0 } else { cur }
+    let o = ls[idx]
+    pick_model(text(Some(o), "model"), Some(o))
+  }
   let first_ids = fn() -> (Array[String], Array[String]) {
     let f = flat()
     let lk = liked()
     let now_used : Array[String] = []
     match model_of(picked()) {
-      Some(o) if !f && !lk.contains(o) => now_used.push(picked())
+      Some(o) if !f && !lk.contains(o) && !combo_selected() => now_used.push(picked())
       _ => ()
     }
     let now_liked = lk.map(fn(o) { text(Some(o), "model") })
@@ -993,11 +1105,6 @@ fn triple_body_node(
       Some(was) => {
         // (one starred a level further is with them once come back; in the one list of a few it stays where it is)
         if !f {
-          for id in now_used {
-            if !was.0.contains(id) && !was.1.contains(id) {
-              was.0.push(id)
-            }
-          }
           for id in now_liked {
             if !was.0.contains(id) && !was.1.contains(id) {
               was.1.push(id)
@@ -1058,7 +1165,7 @@ fn triple_body_node(
   // station's 全部模型 as each level was as tall as it held). The way to all of them then at the room's foot, the models
   // from its top (2026-11-02 用户「全部模型的位置需要讲究一下」: level with the last of the levels beside them, as a
   // list's 「查看全部」 is).
-  let level_h = fn() { !sheet && !flat() }
+  let level_h = fn() { false }
   // a step in, in a sheet or a dialog in steps: what `to` names of the models, its foot as every step's
   let step = fn(title : String, to : String) {
     @sf.panel_go_nodes(
@@ -1127,8 +1234,28 @@ fn triple_body_node(
     .min_height(Is(Some(0.0)))
     |> ignore
   }
-  let model_row = fn(r : @view.View, id : String) {
-    triple_model_row_node(r, src, station, of, v, fn() { model_of(id) }, id, picked, names_w, saved, close, tips)
+  let model_row = fn(
+    r : @view.View,
+    id : String,
+    show_picked : () -> Bool,
+    active : () -> Bool,
+  ) {
+    triple_model_row_node(
+      r,
+      src,
+      station,
+      of,
+      v,
+      fn() { model_of(id) },
+      id,
+      picked,
+      names_w,
+      saved,
+      close,
+      tips,
+      show_picked~,
+      active~,
+    )
     brought(r, "model/" + id)
   }
   // a level's models (all that match what is typed), scrolling by themselves, under their series' names where those
@@ -1151,12 +1278,27 @@ fn triple_body_node(
         }
         out
       }
+      let active_is = col.selected(fn() {
+        if searching() {
+          let ls = listed()
+          if ls.is_empty() {
+            None
+          } else {
+            let cur = contents.search_at.get()
+            let idx = if cur < 0 || cur >= ls.length() { 0 } else { cur }
+            Some(text(Some(ls[idx]), "model"))
+          }
+        } else {
+          None
+        }
+      })
       col.each(keys, fn(k) { k }, at_once=true, fn(r, k) {
         let k = k.untracked()
         if k.has_prefix("series/") {
           triple_column_head_node(r, k.exact_view(start=7).to_owned())
         } else if k.has_prefix("model/") {
-          model_row(r, k.exact_view(start=6).to_owned())
+          let id = k.exact_view(start=6).to_owned()
+          model_row(r, id, fn() { true }, fn() { active_is(id) })
         } else {
           r.box(fn(e) {
             @sf.style_node(e, fn() { triple_empty })
@@ -1371,7 +1513,7 @@ fn triple_body_node(
             } else if k.has_prefix("apart/") {
               r.box(fn(a) { @sf.style_node(a, fn() { triple_apart }) }) |> ignore
             } else if k.has_prefix("model/") {
-              model_row(r, k.exact_view(start=6).to_owned())
+              model_row(r, k.exact_view(start=6).to_owned(), fn() { !combo_selected() }, fn() { false })
             } else {
               let combo = fn() {
                 match combos_by.get(k) {
@@ -1404,16 +1546,33 @@ fn triple_body_node(
           })
         })
       })
-      room.show(fn() { !flat() }, to_all)
+      room.show(fn() { !flat() }, fn(ta) {
+        ta.show(at_once=true, fn() { !first_keys().is_empty() }, fn(d) {
+          @sf.style_node(d, fn() { triple_to_all_rule })
+          d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
+        })
+        to_all(ta)
+      })
     })
     |> ignore
   }
   // all of them: typed, those that match; else beside what opened it the makers and a maker's models side by side, a
   // way back over them to the first level where there is one; in a sheet the makers, a maker's models a step past them
+  let param_min_h = fn() {
+    guard !sheet && has_params() else { return None }
+    let mut rows = all_efforts().length()
+    if has_speed() {
+      rows += all_speeds().length() + (if rows > 0 { 1 } else { 0 })
+    }
+    if !all_contexts().is_empty() {
+      rows += all_contexts().length() + (if rows > 0 { 1 } else { 0 })
+    }
+    Some(dmin(list_most(), rows.to_double() * row_h() + 24.0))
+  }
   let all_level = fn(parent : @view.View) {
     parent.box(fn(room) {
       @sf.style_node(room, fn() { triple_room })
-      room.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      room.shrink(Is(1.0)).min_height(By(fn() { param_min_h().unwrap_or(0.0) |> Some })) |> ignore
       room.height(By(fn() { if level_h() { Some(triple_list_h) } else { None } })) |> ignore
       // (the way back: beside what opened it a row over them; a step's head has its back key)
       let back_to = fn() { !searching() && !sheet && has_first() }
@@ -1461,7 +1620,7 @@ fn triple_body_node(
     |> ignore
   }
   let models = fn(parent : @view.View) {
-    parent.pick(at_once=true, all, fn(x, a) {
+    parent.pick(at_once=sheet, all, fn(x, a) {
       x.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       if a {
         all_level(x)
@@ -1473,7 +1632,10 @@ fn triple_body_node(
   let plain_head = fn(parent : @view.View) {
     parent.pick(fn() { options().length() > 8 }, fn(x, finds) {
       if finds {
-        @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }, end=fn(e) { triple_find_node(e, contents) }) |> ignore
+        @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }, end=fn(e) {
+          triple_find_node(e, contents, on_enter=search_enter, on_step=search_step)
+        })
+        |> ignore
       } else {
         @sf.panel_head_node(x, fn() { @sf.t("android-chat.new.model") }) |> ignore
       }
@@ -1507,7 +1669,7 @@ fn triple_body_node(
         y.show(fn() { options().length() > 8 }, fn(e) {
           e.box(fn(f) {
             @sf.style_node(f, fn() { triple_search })
-            triple_find_node(f, contents)
+            triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
           })
           |> ignore
         })
@@ -1527,15 +1689,35 @@ fn triple_body_node(
     names_w() + 14.0 + @sf.icon_button_side + 4.0 * @ui.Space::px(S1_5) + 2.0 * @ui.Space::px(S2_5) + @ui.Space::px(S3_5)
   }
   let h_effort = @sf.t("web-main.model.effort")
-  let effort_w = fn() {
-    let efforts = all_efforts()
-    guard !efforts.is_empty() else { return 0.0 }
+  let h_speed = @sf.t("web-main.model.speed")
+  let h_context = @sf.t("web-main.model.context")
+  let param_w = fn() {
+    guard has_params() else { return 0.0 }
     b.words_redone() |> ignore
     let size = @sf.node_sp(b, @sf.theme().t.ui)
-    let title = @sf.node_words_w(h_effort, size, weight=600)
-    let choice = efforts.fold(init=0.0, fn(w, e) { dmax(w, @sf.node_words_w(e.1, size, weight=500)) })
     let padding = 2.0 * @ui.Space::px(S2_5)
-    dmax(title + padding, choice + padding + @ui.Space::px(S1_5) + @ui.Space::px(S3_5)).ceil()
+    let check_room = @ui.Space::px(S1_5) + @ui.Space::px(S3_5)
+    let mut w = 0.0
+    if !all_efforts().is_empty() {
+      w = dmax(w, @sf.node_words_w(h_effort, size, weight=600) + padding)
+      for e in all_efforts() {
+        w = dmax(w, @sf.node_words_w(e.1, size, weight=500) + padding + check_room)
+      }
+    }
+    if has_speed() {
+      w = dmax(w, @sf.node_words_w(h_speed, size, weight=600) + padding)
+      for s in all_speeds() {
+        let ic = if s.0 == "standard" { 0.0 } else { 14.0 + @ui.Space::px(S1_5) }
+        w = dmax(w, @sf.node_words_w(s.1, size, weight=500) + padding + ic + check_room)
+      }
+    }
+    if !all_contexts().is_empty() {
+      w = dmax(w, @sf.node_words_w(h_context, size, weight=600) + padding)
+      for c in all_contexts() {
+        w = dmax(w, @sf.node_words_w(c.1, size, weight=500) + padding + check_room)
+      }
+    }
+    w.ceil()
   }
   let side_mode = fn() {
     if sheet {
@@ -1574,7 +1756,7 @@ fn triple_body_node(
           body.show(fn() { options().length() > 8 }, fn(s) {
             s.box(fn(sb) {
               @sf.style_node(sb, fn() { triple_search })
-              triple_find_node(sb, contents)
+              triple_find_node(sb, contents, on_enter=search_enter, on_step=search_step)
             })
             |> ignore
           })
@@ -1623,7 +1805,7 @@ fn triple_body_node(
           |> ignore
         })
       } else {
-        // (the models and how hard it thinks side by side, each titled alike over it, the line between them up to the
+        // (the models and model parameters side by side, each titled alike over it, the line between them up to the
         // panel's top: 「上面的分割线试试到顶」)
         body.box(fn(side) {
           @sf.style_node(side, fn() { triple_side_by_side })
@@ -1636,9 +1818,9 @@ fn triple_body_node(
             if !browsing_makers() {
               None
             } else {
-              let efforts = effort_w()
-              let makers = @ui.Space::px(S48) + 2.0 * @ui.Space::px(S1_5) + 1.0
-              let beside = if efforts > 0.0 { efforts + @ui.Space::px(S2) } else { 0.0 }
+              let params = param_w()
+              let makers = @ui.Space::px(S40) + 2.0 * @ui.Space::px(S1_5) + 1.0
+              let beside = if params > 0.0 { params + @ui.Space::px(S2) } else { 0.0 }
               Some(dmin(makers + row_least() + beside, room_w()))
             }
           }))
@@ -1650,13 +1832,11 @@ fn triple_body_node(
             models(mc)
           })
           |> ignore
-          side.show(fn() { all_efforts().length() > 0 }, fn(ec) {
+          side.show(has_params, fn(ec) {
             ec.box(fn(col) {
               @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
-              col.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              // (as tall as the models beside it, its line from the panel's top to its foot's)
-              let measured_effort_w : @view.Live[Double?] = By(fn() { if browsing_makers() { Some(effort_w()) } else { None } })
-              col.grow(Is(1.0)).width(measured_effort_w).max_width(measured_effort_w) |> ignore
+              let pw : @view.Live[Double?] = By(fn() { Some(param_w()) })
+              col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).width(pw).max_width(pw) |> ignore
               // (the line between them out of their flow, in the middle of the room between them, from the panel's top
               // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
               col.box(fn(rule) {
@@ -1668,8 +1848,57 @@ fn triple_body_node(
                 |> ignore
               })
               |> ignore
-              @sf.panel_head_node(col, fn() { h_effort }) |> ignore
-              triple_choices_node(col, h_effort, all_efforts, effort_now, pick_effort)
+              let param_head = fn(parent : @view.View, title : String, first : () -> Bool) {
+                parent.pick(at_once=true, first, fn(h, is_first) {
+                  if is_first {
+                    @sf.panel_head_node(h, fn() { title }) |> ignore
+                  } else {
+                    h.box(fn(d) {
+                      @sf.style_node(d, fn() { triple_param_rule })
+                      d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
+                    })
+                    |> ignore
+                    h.box(fn(b) {
+                      @sf.style_node(b, fn() { triple_param_head_box })
+                      @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+              }
+              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, fn(sc) {
+                @sf.style_node(sc, fn() { triple_effort_column })
+                sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
+                  param_head(sec, h_effort, fn() { true })
+                  triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
+                })
+                sc.show(at_once=true, has_speed, fn(sec) {
+                  param_head(sec, h_speed, fn() { all_efforts().is_empty() })
+                  triple_choices_node(
+                    sec,
+                    h_speed,
+                    all_speeds,
+                    speed_now,
+                    pick_speed,
+                    icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
+                    tip_of=fn(w) {
+                      match w {
+                        "Fast" => @sf.t("web-main.model.fastNote")
+                        "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
+                        _ => ""
+                      }
+                    },
+                    tips?,
+                  )
+                })
+                sc.show(at_once=true, fn() { !all_contexts().is_empty() }, fn(sec) {
+                  param_head(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() })
+                  triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
+                })
+              })
+              .shrink(Is(1.0))
+              .min_height(Is(Some(0.0)))
+              |> ignore
             })
             |> ignore
           })
@@ -1752,8 +1981,42 @@ fn triple_names_w(v : @view.View, pick : Json?, combos : Array[Json], efforts : 
 /// The models' search where there are more than 8 of them in node `parent`: round, on the words' tint, no line round it,
 /// its glass before its words, its ground deeper pointed at or typed in (2026-10-30 用户「搜索也优化一下」「感觉它不应该
 /// 单独一行」: beside what opened it, at the end of the panel's head, beside its title), as tall as a small panel's rows.
-fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
+fn triple_find_node(
+  parent : @view.View,
+  contents : TriplePanel,
+  on_enter~ : () -> Unit,
+  on_step~ : (Int) -> Unit,
+) -> Unit {
   parent.box(fn(f) {
+    // (↓/↑ from inside the field come via Finder keymap actions; Escape clears text first before closing the panel)
+    f
+    .key_context("Finder")
+    .on_action("finder.down", fn(_) {
+      if contents.field.text() != "" {
+        on_step(1)
+        true
+      } else {
+        false
+      }
+    })
+    .on_action("finder.up", fn(_) {
+      if contents.field.text() != "" {
+        on_step(-1)
+        true
+      } else {
+        false
+      }
+    })
+    .on_key(fn(k) {
+      if k.code == @ui.key_escape && contents.field.text() != "" {
+        contents.field.set("")
+        contents.search_at.set(0)
+        true
+      } else {
+        false
+      }
+    })
+    |> ignore
     @sf.icon_node(f, "search", triple_find_icon, By(fn() { @sf.theme().p.muted })) |> ignore
     let field = @ui.field(
       f,
@@ -1762,6 +2025,9 @@ fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
       line=@sf.theme().t.ui_line,
       max_lines=1,
       enter_sends=true,
+      leaves=[@ui.key_escape],
+      edited=fn(_) { contents.search_at.set(0) },
+      submitted=fn(_) { on_enter() },
       size_by=fn() { @sf.theme().t.ui },
       colors_by=fn() {
         let th = @ui.tree_theme()
@@ -1769,6 +2035,22 @@ fn triple_find_node(parent : @view.View, contents : TriplePanel) -> Unit {
       },
     )
     field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    f.show(at_once=true, fn() { contents.field.text() != "" }, fn(cl) {
+      // (concentric with the pill's right end: same inset from the right edge as from top and bottom)
+      cl.margin(By(fn() { (0.0, 0.0, (@sf.menu_row_min - 20.0) / 2.0 - @ui.Space::px(S3), 0.0) })) |> ignore
+      @sf.icon_button_node(
+        cl,
+        "close",
+        fn() { @sf.t("web-pages.drive.pickClear") },
+        fn() {
+          contents.field.set("")
+          contents.search_at.set(0)
+        },
+        size=20.0,
+        icon_size=12.0,
+      )
+      |> ignore
+    })
     // (its ground deeper pointed at or typed in)
     @sf.style_node(f, fn() {
       (if @sf.hovered_node(f) || field.focused() { triple_find_hot } else { triple_find }).then(@ui.style(h=Fixed(@sf.menu_row_min)))
@@ -1935,10 +2217,8 @@ fn triple_foot_node(
         )
         |> ignore
       })
-      // how fast it runs (2026-11-02 用户「速度放在面板下面，跟账号差不多的位置」): its name and how fast it runs; pressed,
-      // the speeds the station offers in a pick. None picked, how fast its account runs it, said as that (`fastPlan`; 2026-11-02 用户
-      // 「谁知道订阅是什么，应该直接显示具体值」)
-      row.show(fn() { flag(v(), "fastAvailable") }, fn(x) {
+      // how fast it runs: on 小屏 a footer capsule; on 中屏/大屏 shown directly in the right parameter column
+      row.show(fn() { sheet && flag(v(), "fastAvailable") }, fn(x) {
         let head = @sf.t("web-main.model.speed")
         let choices = fn() {
           let cs = [
@@ -1996,10 +2276,8 @@ fn triple_foot_node(
         })
         |> ignore
       })
-      // how much context it is kept to, after how fast (2026-11-03 用户「把 opus5.5 上下文长度限制在 500k 或者 300k」
-      // 「直接放最下面跟速度一样吧」): its name and the step picked; pressed, the steps in a pick, its whole window first,
-      // as the core offers them (none where its runtime cannot)
-      row.show(fn() { !items(v(), "contexts").is_empty() }, fn(x) {
+      // how much context it is kept to: on 小屏 a footer capsule; on 中屏/大屏 shown directly in the right parameter column
+      row.show(fn() { sheet && !items(v(), "contexts").is_empty() }, fn(x) {
         let head = @sf.t("web-main.model.context")
         let choices = fn() { items(v(), "contexts").map(fn(o) { @sf.choice(text(Some(o), "id"), text(Some(o), "text")) }) }
         let now = fn() { text(v(), "contextNow") }
@@ -2257,8 +2535,11 @@ fn triple_model_row_node(
   saved : String,
   close : () -> Unit,
   tips : @sf.TipLayer?,
+  show_picked? : () -> Bool = fn() { true },
+  active? : () -> Bool = fn() { false },
 ) -> Unit {
-  let picked = fn() { picked_id() == id }
+  let is_current = fn() { picked_id() == id }
+  let picked = fn() { is_current() && show_picked() }
   let name = fn() { text(o(), "name") }
   let runs = fn() {
     match items(o(), "runtimes").get(0) {
@@ -2269,7 +2550,7 @@ fn triple_model_row_node(
   // how it would run picked, after its name (the core's: as it last ran here; one never run here, how it was set by
   // hand in the panel since it opened; the user, 2026-11-10: 「常用模型按理说是包括思考深度的」); nothing after the one
   // picked, whose own is what the panel shows beside the models
-  let usual = fn() { if picked() { "" } else { text(o(), "usualText") } }
+  let usual = fn() { if is_current() { "" } else { text(o(), "usualText") } }
   let liked = fn() { flag(o(), "liked") }
   // pressed: picked
   let go = fn() {
@@ -2359,8 +2640,7 @@ fn triple_model_row_node(
             })
           })
         },
-        tip=fn() { items(o(), "ids").filter_map(fn(i) { if i is String(s) { Some(s) } else { None } }).join("\n") },
-        tips?,
+        active~,
         press=go,
       )
       |> ignore
@@ -2567,12 +2847,20 @@ fn triple_choices_node(
   choices : () -> Array[(String, String)],
   now : () -> String,
   pick : (String) -> Unit,
+  icon_of? : (String) -> String = fn(_) { "" },
+  tip_of? : (String) -> String = fn(_) { "" },
+  tips? : @sf.TipLayer,
 ) -> Unit {
   // (@sf.radio_rows_node's: one radio group named by its column's head, one stop of Tab's, ↑ ↓ picking along it; its
   // rows the column's hair apart, triple_effort_column's)
   @sf.radio_rows_node(parent, fn() { label }, choices, now, pick, gap=@ui.Space::SPx.px(), fn(b, words, row) {
     @sf.style_node(b, fn() { triple_option_look(row.picked() || row.lit()) })
     b.min_width(Is(Some(0.0))) |> ignore
+    let w0 = @signals.untracked(words)
+    let ic = icon_of(w0)
+    if ic != "" {
+      @sf.icon_node(b, ic, 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    }
     @sf.words_node(b, words, fn() { if row.picked() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
     b.box(fn(e) {
       @sf.style_node(e, fn() { triple_end }, in_row=true)
@@ -2586,6 +2874,13 @@ fn triple_choices_node(
       })
     })
     |> ignore
+    let tip_text = tip_of(w0)
+    if tip_text != "" {
+      match tips {
+        Some(layer) => @sf.tip_node(layer, b, fn() { tip_text }) |> ignore
+        None => ()
+      }
+    }
   })
   |> ignore
 }
@@ -2615,19 +2910,18 @@ fn triple_option_node(
   tip? : () -> String,
   tips? : @sf.TipLayer,
   checks? : Bool = true,
+  active? : () -> Bool = fn() { false },
   press~ : () -> Unit,
   able? : () -> Bool = fn() { true },
 ) -> @view.View {
   parent.box(fn(b) {
     // (across its column, as wide as its words need at least: what the column needs, the panel's columns laid out by it)
-    @sf.style_node(b, fn() { triple_option_look(on() || @sf.lit_node(b)) })
+    @sf.style_node(b, fn() { triple_option_look(on() || active() || @sf.lit_node(b)) })
     b.min_width(Is(Some(0.0))) |> ignore
     b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
     @sf.presses_node(b, press, on=able)
     body(b)
-    // what is at its end, at the end: the room left, never less than it needs; the check's room kept while it is not
-    // picked
-    let small = @sf.in_small_panel_node(b)
+    // what is at its end, at the end: the room left, never less than it needs
     b.box(fn(e) {
       @sf.style_node(e, fn() { triple_end }, in_row=true)
       // (never less than what it holds: the words before it give way first)
@@ -2640,10 +2934,6 @@ fn triple_option_node(
         e.pick(on, fn(x, checked) {
           if checked {
             @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
-          } else if small {
-            // (its room kept beside what opened the panel, which is as wide as its rows; a sheet's rows are the sheet's
-            // width, and the room goes to their words)
-            x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
           }
         })
       }
@@ -3131,7 +3421,7 @@ let triple_browse : @ui.Style = @ui.css("row w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_kinds_column : @ui.Style = @ui.css("w=S48")
+let triple_kinds_column : @ui.Style = @ui.css("w=S40")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3206,12 +3496,30 @@ let triple_borrow : @ui.Style = @ui.css("w=Full px=S2_5 py=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-// Keep the first and last capsules at the panel's side insets when the body is wider than their words.
-let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter, justify=JBetween, gap=S2)
+let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter, justify=JStart, gap=S2)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_mode_room : @ui.Style = triple_who_room.then(@ui.css("justify=JBetween"))
+let triple_mode_room : @ui.Style = triple_who_room
+
+///|
+/// Hairline separator between the first-level list and 「全部模型 >」.
+// kept across runs: a value (no field of it changes)
+let triple_to_all_rule : @ui.Style = @ui.css("w=Full py=S1")
+
+///|
+/// Hairline separator between sections (`思考深度` / `速度` / `上下文`) in the wide right column.
+// kept across runs: a value (no field of it changes)
+let triple_param_rule : @ui.Style = @ui.css("w=Full pt=S2 pb=S1")
+
+///|
+/// Subsequent section heading in the wide right parameter column (`速度`, `上下文`).
+// kept across runs: a value (no field of it changes)
+let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1 pb=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let triple_param_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=Fg, wrap=false)
 
 ///|
 /// Who runs it, a capsule at the foot's start as tall as the foot's buttons (@sf.button_height), so standing in the
