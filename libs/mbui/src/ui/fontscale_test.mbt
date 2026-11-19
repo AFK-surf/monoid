@@ -58,3 +58,39 @@ test "a line in ems follows the drawn size for plain and rich words" {
   assert_true(near(t.rect_of("Plain words").unwrap().3, height))
   assert_true(near(t.rect_of("Rich words").unwrap().3, height))
 }
+
+///|
+test "a program's size of words over the system's: said between frames, words measured at it in the next; None, the system's again" {
+  let t = @ui.Tester::new(fn(c) {
+    c.box(dir=Row, fn() { c.text("Said words", size=15.0, line=20.0, wrap=false) |> ignore }) |> ignore
+  })
+  let (_, _, w1, _) = t.rect_of("Said words").unwrap()
+  @ui.set_font_scale(Some(1.3))
+  assert_true(near(@ui.font_scale(), 1.3), msg="read at once: \{@ui.font_scale()}")
+  t.draw()
+  let (_, _, w2, h2) = t.rect_of("Said words").unwrap()
+  assert_true(near(h2, 23.6), msg="\{h2}")
+  assert_true((w2 / w1 - 1.3).abs() < 0.02, msg="\{w1} \{w2}")
+  // (over the system's: the system's changed, the program's still holds)
+  t.set_font_scale(1.5)
+  t.draw()
+  assert_true(near(t.rect_of("Said words").unwrap().3, 23.6))
+  @ui.set_font_scale(None)
+  t.draw()
+  assert_true(near(@ui.font_scale(), 1.5), msg="the system's again: \{@ui.font_scale()}")
+  t.set_font_scale(1.0)
+  t.draw()
+  assert_true(near(t.rect_of("Said words").unwrap().3, 20.0))
+}
+
+///|
+test "a program's hand said as it runs is what pointing reads at once; None, the system's again" {
+  let t = @ui.Tester::new(fn(c) { c.text("Hand", size=15.0) |> ignore }, platform=0)
+  assert_true(@ui.pointing() is Mouse)
+  @ui.set_pointing(Some(@ui.Pointing::Finger))
+  assert_true(@ui.pointing() is Finger)
+  t.draw()
+  assert_true(@ui.pointing() is Finger)
+  @ui.set_pointing(None)
+  assert_true(@ui.pointing() is Mouse)
+}

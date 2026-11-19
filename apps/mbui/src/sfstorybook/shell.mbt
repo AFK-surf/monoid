@@ -24,6 +24,12 @@ priv struct Story {
 let widths : Array[(String, Double?)] = [("390", Some(390.0)), ("768", Some(768.0)), ("全宽", None)]
 
 ///|
+/// How wide the list at the side is: 248, wider as the words grow past 1.3× (at 2×, its title on one line still).
+fn side_width() -> Double {
+  248.0 * @sf.dmax(1.0, @ui.font_scale() / 1.3)
+}
+
+///|
 /// Whether a window this wide shows the list at its side (else a sheet the bar's button opens).
 fn side_shown(w : Double) -> Bool {
   w >= 720.0
@@ -56,14 +62,16 @@ fn stories_made(root : @view.View, first : String) -> Unit {
   // (the library's words, the app's catalog's: what its parts say themselves, 取消 and the like)
   @sf.set_words(@sfbase.fill)
   @ui.set_tree_theme(@sf.ui_theme_now)
-  let all = foundations() + stories(@sf.TipLayer::new(fn() { Some(root) }))
+  // (the workbench's size of words, input and language, as MBUI_FONT_SCALE, MBUI_POINTING and MBUI_LANG say: matrix.mbt)
+  let env = env_started()
+  let all = foundations() + stories(@sf.TipLayer::new(fn() { Some(root) })) + workbench_stories(env)
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
   let wide = fn() { side_shown(root.window().0) }
   // (the list's width; what is left of the window the parts', said as a width so that what shares its room by it (a
   // filled segmented) is given that room, not what it holds)
-  let side_w = fn() { if wide() { 248.0 } else { 0.0 } }
+  let side_w = fn() { if wide() { side_width() } else { 0.0 } }
   let main_w = fn() { Some(@sf.dmax(0.0, root.window().0 - side_w())) }
   // (the bar's 跳转, what the jump goes beside however it is asked: by its button or by ⌘K / Ctrl+K)
   let jump : Ref[@view.View?] = Ref(None)
@@ -82,7 +90,7 @@ fn stories_made(root : @view.View, first : String) -> Unit {
     page.show(wide, at_once=true, fn(side) { side_node(side, all, chosen, query) })
     page.box(fn(main) {
       main.width(By(main_w)) |> ignore
-      bar_node(main, all, chosen, width, query, wide, jump)
+      bar_node(main, all, chosen, width, query, wide, jump, env)
       main.box(fn(held) {
         held.grow(Is(1.0)).min_height(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         held.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
@@ -201,7 +209,7 @@ fn search_node(v : @view.View, query : @signals.Signal[String]) -> Unit {
 ///|
 /// The list at the side: the library's name, the search, the rows.
 fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int], query : @signals.Signal[String]) -> Unit {
-  side.width(Is(Some(248.0))).ground(By(fn() { @sf.theme().p.sidebar })) |> ignore
+  side.width(By(fn() { Some(side_width()) })).ground(By(fn() { @sf.theme().p.sidebar })) |> ignore
   side.box(fn(head) {
     head.padding(Is((20.0, 20.0, 20.0, 8.0))).gap(Is(4.0)) |> ignore
     @sf.words_node(head, fn() { "still.fail 组件" }, fn() { @sf.title }) |> ignore
@@ -233,7 +241,8 @@ fn side_node(side : @view.View, all : Array[Story], chosen : @signals.Signal[Int
 ///|
 /// The bar over what is shown: in a narrow window the button that opens the list; its name and file; the width the
 /// parts are shown at (where the window has the room for it to mean anything); the jump to any page (⌘K); the colour
-/// theme's dots in a panel of their own; light or dark. `jump` says what the jump goes beside, its button.
+/// theme's dots in a panel of their own; light or dark. `jump` says what the jump goes beside, its button. Before the
+/// jump, the workbench's 环境 (matrix.mbt): its words saying what is chosen where the bar has the room, else its icon.
 fn bar_node(
   main : @view.View,
   all : Array[Story],
@@ -242,7 +251,10 @@ fn bar_node(
   query : @signals.Signal[String],
   wide : () -> Bool,
   jump : Ref[@view.View?],
+  env : Env,
 ) -> Unit {
+  // (the room for 环境's words beside the width's choice and the bar's buttons, more chosen said longer)
+  let env_worded = fn() { main.window().0 >= 1008.0 }
   main.box(fn(bar) {
     bar
     .row(Is(true))
@@ -264,7 +276,8 @@ fn bar_node(
       |> ignore
     })
     bar.box(fn(name) {
-      name.grow(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
+      // (what the bar's buttons leave, never what its words would want: at 2× words its file is wider than a phone)
+      name.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
       @sf.words_node(
         name,
         fn() {
@@ -275,7 +288,7 @@ fn bar_node(
             all[i].name
           }
         },
-        fn() { @sf.desk_strong },
+        fn() { bar_name },
       )
       |> ignore
       @sf.words_node(
@@ -295,6 +308,13 @@ fn bar_node(
     |> ignore
     bar.show(wide, at_once=true, fn(w) {
       @sf.seg_node(w, fn() { widths.map(fn(w) { w.0 }) }, fn() { width.get() }, fn(i) { width.set(i) }, said="宽度") |> ignore
+    })
+    bar.show(env_worded, at_once=true, fn(e) {
+      @sf.button_opens_node(e, fn() { env.words() }, fn(opener) { env_open(opener, env) }, tone=Ghost, icon="devices")
+      |> ignore
+    })
+    bar.show(fn() { !env_worded() }, at_once=true, fn(e) {
+      @sf.icon_button_opens_node(e, "devices", fn() { env.words() }, fn(opener) { env_open(opener, env) }) |> ignore
     })
     jump.val = Some(
       @sf.icon_button_node(bar, "search", fn() { "跳转到页面" }, fn() { jump_open(all, chosen, jump) }, shortcut="⌘K"),
@@ -336,7 +356,13 @@ let library_path : String = "libs/sf-ui/src/"
 ///|
 /// The bar's file under the part's name: as the page's meta, on one line, cut short where the bar has not the room.
 // kept across runs: a value (no field of it changes)
-let bar_file : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+let bar_file : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Cut, wrap=false)
+
+///|
+/// The bar's part's name: as a desk's strong words, on one line, cut short where the bar has not the room (a phone's
+/// at 2× words).
+// kept across runs: a value (no field of it changes)
+let bar_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Semibold, color=Fg, w=Cut, wrap=false)
 
 ///|
 /// The colour themes (@sf.accents, and a hue of one's own) as the app's 外观 offers them, its dots in their own colours:

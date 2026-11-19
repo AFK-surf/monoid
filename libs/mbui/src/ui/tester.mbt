@@ -257,6 +257,8 @@ fn reset_globals() -> Unit {
   outside_told.val = @hostapi.set_outside(fn(k, id, st) { on_outside(k, id, st) })
   // (the hand as its fake host says it first: @ui.pointing)
   host_pointing.val = None
+  // (the size of words a test said over its fake host's: set_font_scale)
+  said_font_scale.val = None
   commit_counts[0] = 0
   commit_counts[1] = 0
   commit_counts[2] = 0
