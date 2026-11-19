@@ -489,3 +489,64 @@ test "window tree: a flat stack's made page put in place of over its root kept, 
     assert_eq((made, gone, left), (["mA", "mB"], [], ["mA", "mB"]), msg="\{owned}")
   }
 }
+
+///|
+test "window tree: a made page with a focused tree field covered by another page: returning by pop or by back_gesture restores focus and ime to the field" {
+  let nav = Nav::new("a")
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m1" {
+          Some(
+            (
+              "m",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) {
+                  h.height(Is(Some(60.0))) |> ignore
+                  field(h, f, placeholder="页内字段", label="页内字段") |> ignore
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  pushed(t, nav, "m1")
+  f.focus()
+  t.draw()
+  t.type_text("a")
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused before push: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  // (push a page over m1 until settled: m1 is laid out nowhere and loses focus)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime")
+  // (return by nav.pop(): focus and ime restored to the tree field)
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after pop: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("b")
+  t.draw()
+  assert_eq(f.text(), "ab", msg="typing after pop")
+  // (push again until settled, then return by back_gesture: focus and ime restored too)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime before back_gesture")
+  t.back_gesture(200.0, true)
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after back_gesture: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("c")
+  t.draw()
+  assert_eq(f.text(), "abc", msg="typing after back_gesture")
+}

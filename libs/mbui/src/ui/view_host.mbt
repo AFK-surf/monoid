@@ -542,6 +542,7 @@ fn view_forget() -> Unit {
   tree_finger_off()
   old_focus_shown.val = 0
   old_focus_parked.val = None
+  nav_focus_due.val = None
   old_show_due.val = None
   view_handed.val = None
   view_point.val = None
@@ -3408,8 +3409,9 @@ fn Ctx::focus_allowed(self : Ctx) -> Int {
     Some({ node: Some(n), .. }) => tree.allows_as_its_own(n) && tree.keys_own(n)
     _ =>
       match tree_said_ids.get(self.focus) {
-        // (a node of the tree's: the modal layers over it the tree's to keep it from (Tree::takes_focus_under))
-        Some(n) => tree.keys_own(n)
+        // (a node of the tree's: kept from input by the modal layers over it too, as an old view is, when one leaves
+        // the focus in a field under it: View::leaves_typing)
+        Some(n) => tree.allows_as_its_own(n) && tree.keys_own(n)
         None =>
           match self.old_focus_island(self.focus) {
             // (not in an old view laid out nowhere, leaving, in its bones, not in use or put by: what it was built in
@@ -4934,6 +4936,7 @@ fn old_whole_island() -> @view.NodeId? {
 /// take no press): what an old view that may take input no more holds let go of then, at that cause (view_captures_off).
 fn view_modals_told() -> Unit {
   view_captures_off(view_moment(), fn(owner) { !old_owner_open(owner) }, back_gone=fn(owner) { !held_back_open(owner) })
+  nav_focus_due_told()
   tree_fields_asked_told()
   // (whether the app takes back: what of the tree takes it may have changed)
   g().back_told_host()
@@ -6183,8 +6186,49 @@ fn focus_told_tree(c : Ctx) -> Unit {
   // view_outs_told)
   if c.focus != 0 {
     old_focus_parked.val = None
+    nav_focus_due.val = None
   }
   old_focus_shown.val = c.focus
+}
+
+///|
+/// A node of the window's tree's focus kept by a page stack as a page was put over it (Nav::focus_follows), waiting
+/// for the stack's change (`told_once`) to commit what makes its page take input again (view_modals_told), and where
+/// its page was laid out nowhere meanwhile, for the next layout to bring it back (Tree::focus_park).
+// kept across runs: put back as a run begins (view_forget); let go of as the focus comes to anything (focus_told_tree)
+let nav_focus_due : Ref[(@view.NodeId, Bool)?] = Ref(None)
+
+///|
+fn nav_focus_give_back(c : Ctx, kept : Int) -> Unit {
+  match (view_app.val, tree_said_ids.get(kept)) {
+    (Some(t), Some(nid)) =>
+      if @signals.untracked(fn() { t.can_focus(nid) }) {
+        c.focus_moved(kept)
+      } else {
+        let visible = c.focus_visible
+        if c.focus != 0 {
+          c.focus_moved(0)
+        }
+        nav_focus_due.val = Some((nid, visible))
+      }
+    _ => c.focus_moved(kept)
+  }
+}
+
+///|
+fn nav_focus_due_told() -> Unit {
+  guard nav_focus_due.val is Some((nid, visible)) else { return }
+  nav_focus_due.val = None
+  guard view_app.val is Some(t) else { return }
+  let c = g()
+  if c.focus != 0 || !t.holds(t.root().id(), nid) {
+    return
+  }
+  if t.can_focus(nid) {
+    c.focus_moved(tree_said_id(nid), visible~)
+  } else if t.laid_out_nowhere(nid) && t.allows(nid) && t.in_use(nid) {
+    t.focus_park(nid, visible)
+  }
 }
 
 ///|
@@ -6360,14 +6404,17 @@ fn layer_focus_holding(t : @view.Tree, id : Int) -> @view.NodeId? {
 /// fixture's question; or in the change that opened it), what that layer gives back as it goes, as an old overlay built
 /// over the page in that frame has what the page gave the focus to before it (Ctx::overlay's layer_return, recorded as
 /// it opens); asked after, what it had as it opened kept (the old overlay's, recorded once).
-fn view_focus_kept_for(c : Ctx, id : Int) -> Bool {
-  guard view_app.val is Some(t) && c.island_said() is Some(island) else { return false }
-  if @signals.untracked(fn() { t.allows_as_its_own(island) }) {
+fn tree_focus_kept_for(node : @view.NodeId, id : Int) -> Bool {
+  guard view_app.val is Some(t) else { return false }
+  if @signals.untracked(fn() { t.allows_as_its_own(node) }) {
+    return false
+  }
+  if !@signals.untracked(fn() { t.holds(t.root().id(), node) && t.presses_here(node) && t.in_use(node) }) {
     return false
   }
   // (the layer just over it: the lowest open that does not hold it, over the one that does, if one does)
-  let under = layer_focus_open.iter().find_first(fn(l) { t.holds(l.layer, island) }).map(fn(l) { l.layer })
-  match layer_focus_open.search_by(fn(l) { !t.holds(l.layer, island) && l.back_in == under }) {
+  let under = layer_focus_open.iter().find_first(fn(l) { t.holds(l.layer, node) }).map(fn(l) { l.layer })
+  match layer_focus_open.search_by(fn(l) { !t.holds(l.layer, node) && l.back_in == under }) {
     Some(i) => {
       // (asked as the frame it opened in builds it: what it gives back; asked after: what had it as it opened kept)
       if layer_focus_open[i].fresh {
@@ -6377,6 +6424,12 @@ fn view_focus_kept_for(c : Ctx, id : Int) -> Bool {
     }
     None => false
   }
+}
+
+///|
+fn view_focus_kept_for(c : Ctx, id : Int) -> Bool {
+  guard c.island_said() is Some(island) else { return false }
+  tree_focus_kept_for(island, id)
 }
 
 ///|

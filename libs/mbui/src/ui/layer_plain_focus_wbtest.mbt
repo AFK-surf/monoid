@@ -116,3 +116,75 @@ test "an old view let go while a field of it held the focus, even with a modal l
   t.draw()
   assert_true(!g().field_focused() && !t.ime().0, msg="disposed old island drops focus and ime: field_focused=\{g().field_focused()} ime=\{Repr(t.ime())}")
 }
+
+///|
+test "a tree field with the focus, a modal layer of the tree's opened over it that leaves what is typed to it: focus and ime kept while over it, typing goes to it, tapping outside to close keeps focus and ime" {
+  let open = @signals.signal(false)
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.grow(Is(1.0)) |> ignore
+      field(h, f, placeholder="树字段", label="树字段") |> ignore
+    })
+    |> ignore
+    root.show(fn() { open.get() }, fn(l) {
+      l
+      .over(Is(true))
+      .modal(Is(true))
+      .presses(Is(true))
+      .leaves_typing()
+      .on_press(fn() { open.set(false) })
+      |> ignore
+      l.box(fn(x) {
+        x.width(Is(Some(80.0))).height(Is(Some(40.0))).presses(Is(true)).on_press(fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused before layer: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  open.set(true)
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focus and ime kept under leaves_typing: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("ab")
+  t.draw()
+  assert_eq((f.text(), t.ime().1), ("ab", "ab"), msg="typing goes to tree field")
+  // (tapping outside the panel on the modal layer closes it without dropping the field's focus or ime)
+  t.tap(300.0, 200.0)
+  t.draw()
+  assert_eq(open.get(), false, msg="modal layer closed by outside tap")
+  assert_true(f.focused() && t.ime().0, msg="focus and ime kept after outside tap: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+}
+
+///|
+test "a tree field's holder let go while it held the focus, even with a modal layer keeping what is typed open: focus cleared and input method put away" {
+  let (shown, open) = (@signals.signal(true), @signals.signal(false))
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.show(fn() { shown.get() }, fn(h) {
+      h.grow(Is(1.0)) |> ignore
+      field(h, f, placeholder="树字段", label="树字段") |> ignore
+    })
+    root.show(fn() { open.get() }, fn(l) {
+      l.over(Is(true)).modal(Is(true)).presses(Is(true)).leaves_typing() |> ignore
+      l.box(fn(x) { x.width(Is(Some(80.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    })
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused while shown: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  open.set(true)
+  shown.set(false)
+  t.draw()
+  assert_true(
+    !f.focused() && !g().field_focused() && !t.ime().0,
+    msg="disposed holder drops focus and ime: focused=\{f.focused()} field_focused=\{g().field_focused()} ime=\{Repr(t.ime())}",
+  )
+}

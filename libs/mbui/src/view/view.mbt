@@ -6997,7 +6997,9 @@ fn Tree::modals_now(self : Tree) -> Unit {
       _ => ()
     }
     match self.focused {
-      Some(h) if !self.allows(h) => self.focus_lost_in(0)
+      // (a node under a modal layer that leaves what is typed to a field under it keeps the focus while its own part
+      // still takes keys: View::leaves_typing)
+      Some(h) if !self.allows(h) && !(self.typing_left_under() && self.keys_own(h)) => self.focus_lost_in(0)
       _ => ()
     }
     match self.backing {
@@ -7014,7 +7016,7 @@ fn Tree::modals_now(self : Tree) -> Unit {
 }
 
 ///|
-/// Whether the topmost modal layer now leaves what is typed to the field of an old view under it that has the focus
+/// Whether the topmost modal layer now leaves what is typed to the field under it that has the focus
 /// (View::leaves_typing).
 pub fn Tree::typing_left_under(self : Tree) -> Bool {
   match self.modal_top() {

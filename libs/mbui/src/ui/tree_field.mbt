@@ -427,6 +427,10 @@ pub fn Ctx::focus_field(self : Ctx, field : Field) -> Unit {
 fn tree_field_focus(id : @view.NodeId) -> Unit {
   guard view_app.val is Some(tree) && tree_fields.get(id) is Some(tf) else { return }
   tree_field_ask_drop(id)
+  if tree_focus_kept_for(id, tree_said_id(id)) {
+    tf.st.focus_asked = false
+    return
+  }
   if tree.can_focus(id) {
     tf.st.focus_asked = false
     g().focus_moved(tree_said_id(id))

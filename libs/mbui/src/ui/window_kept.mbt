@@ -626,6 +626,7 @@ fn window_kept_ui_9() -> Array[WindowKept] {
     kept_ref(old_show_due, fn() { None }),
     kept_ref(old_focus_shown, fn() { 0 }),
     kept_ref(old_focus_parked, fn() { None }),
+    kept_ref(nav_focus_due, fn() { None }),
     kept_array(layer_focus_open, fn() { [] }),
     kept_map(leaving_ime_nodes),
     kept_ref(view_shape_of, fn() { OfOld }),

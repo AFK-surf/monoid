@@ -860,14 +860,17 @@ fn Ctx::a11y_tree_pass(self : Ctx, tree : @view.Tree, full : Bool, out : Array[A
     return 0
   }
   match tree_said_ids.get(self.focus) {
-    Some(id) => {
-      let n = a11y_tree_num(id)
-      if told.mirror.nodes.contains(n) || out.iter().any(fn(o) { o.id == n }) {
-        n
+    Some(id) =>
+      if tree.holds(tree.root().id(), id) && tree.reads_out(id) && tree.stack_of(id) > old_modal {
+        let n = a11y_tree_num(id)
+        if told.mirror.nodes.contains(n) || out.iter().any(fn(o) { o.id == n }) {
+          n
+        } else {
+          0
+        }
       } else {
         0
       }
-    }
     None => self.a11y_old_focus(old, out)
   }
 }
