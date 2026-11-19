@@ -134,33 +134,15 @@ fn farview_zoomed(stage : @stage.Stage) -> Bool {
 fn farview_zoom_node(bar : @view.View, stage : @stage.Stage, tips? : @sf.TipLayer) -> Unit {
   bar.show(along_row=true, fn() { farview_zoomed(stage) }, fn(z) {
     let label = fn() { @sf.t("web-pages.farview.zoomReset", args=[("zoom", "100%")]) }
-    @headless.button(z, label, fn(_) { stage.zoom_reset() }, fn(v, b) {
-      let lit = fn() { b.hovered() || b.pressed() || b.focus_shown() }
-      // (as high as the bar's keys beside it)
-      let high = fn() { @sf.icon_button_side }
-      v
-      .focus_ring_theme()
-      .row(Is(true))
-      .height(By(fn() { Some(high()) }))
-      .padding(Is((farview_words_in, 0.0, farview_words_in, 0.0)))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .radius(By(fn() { high() / 2.0 }))
-      .ground(By(fn() {
-        let p = @sf.theme().p
-        if lit() {
-          p.hover
-        } else {
-          p.neutral_bg
-        }
-      }))
-      |> ignore
-      @sf.words_node(v, fn() { farview_zoom_said(stage.zoom()) }, fn() { farview_zoom_words }) |> ignore
-      match tips {
-        Some(tl) => @sf.tip_node(tl, v, label) |> ignore
-        None => ()
-      }
-    })
+    @sf.capsule_words_button_node(
+      z,
+      fn() { farview_zoom_said(stage.zoom()) },
+      label,
+      fn() { stage.zoom_reset() },
+      fn() { farview_zoom_words },
+      room=farview_words_in,
+      tips?,
+    )
     |> ignore
   })
 }

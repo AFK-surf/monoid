@@ -227,6 +227,8 @@ pub fn capsule_fit_room(Double, Double, Double, less? : Double) -> @ui.Space
 
 pub fn capsule_room(Double, Double, less? : Double) -> @ui.Space
 
+pub fn capsule_words_button_node(@view.View, () -> String, () -> String, () -> Unit, () -> @ui.TextStyle, room? : Double, tips? : TipLayer, loc~ : SourceLoc) -> @view.View
+
 pub let caption : @ui.TextStyle
 
 pub fn card(@ui.Ctx, gap? : Double, fill? : Bool, ground? : Int64, () -> Unit) -> Int32
