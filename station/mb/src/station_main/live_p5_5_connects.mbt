@@ -25,6 +25,7 @@ fn connects_fs(host : @host.Host) -> @connects_hub.Fs {
         None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
       }
     },
+    read_part: async fn(p, at, n) { (@drive.read_part(p, at, n) catch { e => raise fail(e) }).0 },
     size: async fn(p) { (@drive.stat(p) catch { e => raise fail(e) }).size },
     write_text: async fn(p, t) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))

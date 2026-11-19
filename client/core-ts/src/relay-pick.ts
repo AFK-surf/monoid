@@ -9,13 +9,13 @@
 // the bot let join: channels:join), not in it, or (a private one) only a person there can invite it. Asked of the core as
 // `chat.relayView`; self-contained.
 
-/// A place a connect's bot is in: a channel (a new thread there), a topic group (a new topic) or a group (its
-/// conversation taken over); `used`, when it was last relayed to (ms).
-export type RelayPlace = { id: string; name: string; kind: "channel" | "topics" | "group"; private?: boolean; used?: number };
+/// A place a connect's bot is in: a channel (a new thread there), a topic group (a new topic), a group (its
+/// conversation taken over) or a group connect's space (a new topic of its own); `used`, when it was last relayed to (ms).
+export type RelayPlace = { id: string; name: string; kind: "channel" | "topics" | "group" | "space"; private?: boolean; used?: number };
 /// A connect a chat can be relayed through, with its places (none, and why, when they could not be read).
 export type RelayConnect = {
   id: string;
-  kind: "slack" | "feishu" | "lark";
+  kind: "slack" | "feishu" | "lark" | "group";
   name: string;
   team: string | null;
   /// Its workspace's id (a Slack team's, a Feishu tenant's): the places of bots of one are the same places.
@@ -75,9 +75,9 @@ export function slackLink(typed: string): string | null {
 /** A place as people know it: a channel's `#name` (🔒 before a private one's), else its name. */
 export const placeName = (p: RelayPlace): string => (p.kind === "channel" ? `${p.private ? "🔒 " : ""}#${p.name}` : p.name);
 
-/** What relaying to a place does: a new thread, a new topic, or the group's conversation taken over. */
+/** What relaying to a place does: a new thread, a new topic, the group's conversation taken over, or a space's new topic. */
 export const kindNote = (p: RelayPlace, t: Words): string =>
-  t(p.kind === "channel" ? "web-main.relay.kind.channel" : p.kind === "topics" ? "web-main.relay.kind.topics" : "web-main.relay.kind.group");
+  t(p.kind === "channel" ? "web-main.relay.kind.channel" : p.kind === "topics" ? "web-main.relay.kind.topics" : p.kind === "space" ? "web-main.relay.kind.space" : "web-main.relay.kind.group");
 
 /** The bot it goes on through: the one picked (`chosen`), else the chat's own (the station's preferred), else the first. */
 export function relayBot(connects: readonly RelayConnect[], chosen: string | null): RelayConnect | null {
@@ -204,9 +204,9 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 export function readConnects(v: unknown): RelayConnect[] {
   if (!Array.isArray(v)) return [];
   return v.filter(isObj).map((c) => {
-    const kind = c.kind === "feishu" || c.kind === "lark" ? c.kind : "slack";
+    const kind = c.kind === "feishu" || c.kind === "lark" || c.kind === "group" ? c.kind : "slack";
     const places = (Array.isArray(c.places) ? c.places : []).filter(isObj).map((p) => {
-      const place: RelayPlace = { id: str(p.id), name: str(p.name), kind: p.kind === "topics" || p.kind === "group" ? p.kind : "channel" };
+      const place: RelayPlace = { id: str(p.id), name: str(p.name), kind: p.kind === "topics" || p.kind === "group" || p.kind === "space" ? p.kind : "channel" };
       if (p.private === true) place.private = true;
       if (typeof p.used === "number" && Number.isFinite(p.used)) place.used = p.used;
       return place;

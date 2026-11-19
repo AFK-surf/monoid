@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { extname, join, relative } from "node:path";
 import { createInterface } from "node:readline";
@@ -248,6 +248,22 @@ async function mbFs(name: string, args: Json[]): Promise<Json> {
       return readFile(p, "utf8").catch(enoent);
     case "fs.readBytes":
       return (await readFile(p).catch(enoent)).toString("hex");
+    case "fs.readPart": {
+      const [at, n] = [args[1] as number, args[2] as number];
+      const handle = await open(p, "r").catch(enoent);
+      try {
+        const piece = Buffer.alloc(n);
+        let got = 0;
+        while (got < n) {
+          const { bytesRead } = await handle.read(piece, got, n - got, at + got);
+          if (bytesRead === 0) break;
+          got += bytesRead;
+        }
+        return piece.subarray(0, got).toString("hex");
+      } finally {
+        await handle.close();
+      }
+    }
     case "fs.size":
       return (await stat(p).catch(enoent)).size;
     case "fs.write":
@@ -1963,9 +1979,28 @@ test("a group connect (im/2): let in by its code, its spaces and topics taken on
       else assert.deepEqual(n("mb", got), n("ts", want), `${name} ${JSON.stringify(args("ts")).slice(0, 100)}`);
     };
     for (const dir of [w.tsDir, w.mbDir]) await writeFile(join(dir, "note.txt"), "the words of a file");
+    // (two pieces and a half, a picture's head first: put a piece at a time, a megabyte and a hundred bytes of it there)
+    // (each its own bytes: an anchor that has a file whole already takes it again at once, of whoever put it)
+    const big = { ts: Buffer.concat([pngOf(320, 200), randomBytes(2.5 * 1024 * 1024)]), mb: Buffer.concat([pngOf(320, 200), randomBytes(2.5 * 1024 * 1024)]) };
+    const shaOf = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    await writeFile(join(w.tsDir, "big.png"), big.ts);
+    await writeFile(join(w.mbDir, "big.png"), big.mb);
+    alias({ ts: shaOf(big.ts), mb: shaOf(big.mb) }, "<big>");
     const lobby = thread(g);
     await surfaceCall("post", (side) => [lobby[side], "plain words", [], null]);
     await surfaceCall("post", (side) => [lobby[side], "with a file", [{ name: "note.txt", path: join(side === "ts" ? w.tsDir : w.mbDir, "note.txt") }], null]);
+    const pieceAsks = () => server.asked.filter((a) => a.includes("/uploads/") || a.includes("&sha256="));
+    const before = pieceAsks().length;
+    for (const [bot, side] of [[botT, "ts"], [botM, "mb"]] as const) server.parts.set(`${shaOf(big[side])}.part.${bot}`, big[side].subarray(0, 1024 * 1024 + 100));
+    await surfaceCall("post", (side) => [lobby[side], "a large one", [{ name: "big.png", path: join(side === "ts" ? w.tsDir : w.mbDir, "big.png") }], null]);
+    const asks = pieceAsks().slice(before).map((a) => a.split(shaOf(big.ts)).join("<sha>").split(shaOf(big.mb)).join("<sha>").replace(/spaces\/s_[0-9a-f]+\//, "spaces/<space>/"));
+    assert.deepEqual(asks.slice(3), asks.slice(0, 3), "each put it alike");
+    assert.deepEqual(asks.slice(0, 3).map((a) => new URL(a.split(" ")[1]!, "im://a").searchParams.get("from")), [null, String(1024 * 1024 + 100), String(2 * 1024 * 1024 + 100)]);
+    for (const dir of [w.tsDir, w.mbDir]) await writeFile(join(dir, "huge.bin"), "");
+    for (const dir of [w.tsDir, w.mbDir]) await truncate(join(dir, "huge.bin"), 512 * 1024 * 1024 + 1);
+    await surfaceCall("post", (side) => [lobby[side], "too large", [{ name: "huge.bin", path: join(side === "ts" ? w.tsDir : w.mbDir, "huge.bin") }], null]);
+    // (not kept: what each wrote in its data directory is held to the same below, read as words)
+    for (const dir of [w.tsDir, w.mbDir]) for (const f of ["huge.bin", "big.png"]) await rm(join(dir, f));
     await surfaceCall("post", (side) => [lobby[side], "x".repeat(12000), [], null]);
     await surfaceCall("post", (side) => [lobby[side], "Which one?", [], { type: "options", options: [{ label: "Merge", recommended: true }, { label: "Wait", detail: "a day" }] }]);
     await settle();
@@ -2072,7 +2107,13 @@ test("a group connect (im/2): let in by its code, its spaces and topics taken on
     await surfaceCall("post", (side) => [lobby[side], "after its count went back", [], null]);
     await settle();
     assert.equal(server.refusals.filter((r) => r === "dseq").length - refusedBefore, 2, "each refused once for its count, synced, said again");
-    await surfaceCall("begin", (side) => [g[side], "a new thread"]);
+    // a chat relayed there: a topic of its own, called as the chat is (what is not seen in a title left out)
+    const begun = { ts: wire(await ts.begin(g.ts, "a new thread", " Plan\n[v2]\u200b ")), mb: await p.ok({ op: "gsurface.call", h, name: "call", args: ["begin", [g.mb, "a new thread", " Plan\n[v2]\u200b "]] }) };
+    alias({ ts: begun.ts.thread.threadTs, mb: begun.mb.thread.threadTs }, "<relayed>");
+    assert.deepEqual(w.aliased(begun.mb, "mb"), w.aliased(begun.ts, "ts"));
+    assert.match(begun.ts.thread.threadTs, /^t_[0-9a-f]{16}$/);
+    assert.match(begun.mb.thread.threadTs, /^t_[0-9a-f]{16}$/);
+    for (const side of ["ts", "mb"] as const) assert.deepEqual([server.spaces.get(g[side])!.topics.get(begun[side].thread.threadTs)?.title, server.messages(g[side], begun[side].thread.threadTs).map((m) => m.text)], ["Plan [v2]", ["a new thread"]]);
     await settle();
     // what each posted, as the anchor keeps it
     const posted = (space: string) => server.messages(space).map((m) => ({ aseq: m.aseq, n: m.n, kind: m.kind, mine: m.author === botT || m.author === botM, text: m.text, files: m.files.map((f: Json) => ({ name: f.name, mime: f.mime, size: f.size, width: f.width, height: f.height })), open: m.open, options: m.options }));

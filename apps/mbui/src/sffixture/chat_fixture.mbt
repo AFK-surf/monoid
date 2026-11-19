@@ -3723,7 +3723,8 @@ pub fn fixture_station_overview() -> Json {
 }
 
 ///|
-/// The places the made-up station's one bot is in (`chat.relayPlaces`): one relayed to before, a private one.
+/// The places the made-up station's bots are in (`chat.relayPlaces`): its Slack bot's, one relayed to before and a
+/// private one; its group connect's space (a new topic there).
 pub fn fix_relay_places() -> Json {
   {
     "connects": [
@@ -3736,6 +3737,14 @@ pub fn fix_relay_places() -> Json {
           { "id": "C1", "name": "dev", "kind": "channel", "used": 20 },
           { "id": "C2", "name": "ops", "kind": "channel", "private": true },
         ],
+      },
+      {
+        "id": "group-1",
+        "kind": "group",
+        "name": "星火助手",
+        "team": null,
+        "teamId": "anchor-1",
+        "places": [{ "id": "s_team", "name": "研发群", "kind": "space" }],
       },
     ],
   }

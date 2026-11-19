@@ -427,7 +427,7 @@ test "接力到频道 on each screen: its places being read, not read, none conn
     relay_cancelled(t, at)
     // none connected
     let t = relay_over(relay_src([], places=Some(Ok({ "connects": [] }))), platform~, wide~)
-    assert_true(t.find("这个站点还没有连上 Slack 或飞书") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
+    assert_true(t.find("这个站点还没有连上 Slack、飞书或 Group") is Some(_), msg="\{at}: \{t.words().map(fn(w) { w.0 }).join("|")}")
     relay_cancelled(t, at)
     // the bot in none: the core says so (the kept answer for the fixture's one bot lists two; this one, none)
     let calls : Array[Made] = []

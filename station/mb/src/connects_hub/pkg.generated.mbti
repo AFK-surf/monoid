@@ -373,6 +373,7 @@ pub(all) struct Fs {
   sep : String
   read_text : async (String) -> String
   read_bytes : async (String) -> Bytes
+  read_part : async (String, Double, Double) -> Bytes
   size : async (String) -> Double
   write_text : async (String, String) -> Unit
   write_bytes : async (String, Bytes) -> Unit
@@ -439,7 +440,7 @@ pub struct GroupSurface {
   device_id : String
   // private fields
 }
-pub async fn GroupSurface::begin(Self, String, String) -> @jsjson.JValue
+pub async fn GroupSurface::begin(Self, String, String, String) -> @jsjson.JValue
 pub fn GroupSurface::card_ended(Self, @jsjson.JValue, String) -> Unit
 pub fn GroupSurface::channel_name(Self, String) -> @jsjson.JValue
 pub fn GroupSurface::connection(Self) -> Connection
