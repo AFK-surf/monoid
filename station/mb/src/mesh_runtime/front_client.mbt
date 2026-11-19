@@ -94,18 +94,22 @@ pub fn shell_sockets(host : @host.Host) -> Sockets {
 }
 
 ///|
-/// A socket as the front's link keeps it: whether it was let go, or its sending half ended.
+/// A socket as the front's link keeps it: whether it was let go, or its sending half ended. The shell keeps a socket
+/// until it is told to close it (`tcp.close`), even when both halves are over, so the socket is let go once its read
+/// side has ended and its sending half has been ended, as Node closes a half-open socket then by itself.
 priv struct Held {
   sock : Sock
   mut destroyed : Bool
   mut ended : Bool
+  mut sent_end : Bool
+  mut read_over : Bool
   mut closed : Bool
   on_close : Array[() -> Unit]
 }
 
 ///|
 fn Held::new(sock : Sock) -> Held {
-  { sock, destroyed: false, ended: false, closed: false, on_close: [] }
+  { sock, destroyed: false, ended: false, sent_end: false, read_over: false, closed: false, on_close: [] }
 }
 
 ///|
@@ -130,12 +134,27 @@ fn Held::closed_now(self : Held) -> Unit {
 }
 
 ///|
+/// Its read side ended: let go once its sending half is over too, else only no longer counted as open.
+fn Held::read_ended(self : Held) -> Unit {
+  self.read_over = true
+  if self.sent_end {
+    self.destroy()
+  } else {
+    self.closed_now()
+  }
+}
+
+///|
 async fn Held::end(self : Held) -> Unit {
   if self.ended || self.destroyed {
     return
   }
   self.ended = true
   (self.sock.end)() catch { _ => () }
+  self.sent_end = true
+  if self.read_over {
+    self.destroy()
+  }
 }
 
 ///|
@@ -510,7 +529,7 @@ async fn Front::took(self : Front, held : Held) -> Unit {
   let mut head = b""
   while true {
     guard (held.sock.read)() is Some(more) else {
-      held.closed_now()
+      held.destroy()
       return
     }
     parts.push(more)
@@ -657,11 +676,11 @@ fn FrontStream::new(front : Front, id : Int64, came : Came, both : Bool) -> Fron
         s.held.end()
       }
       s.came(Failed("the stream's way to the front ended"))
-      s.held.closed_now()
+      s.held.read_ended()
     } catch {
       _ => {
         s.came(Failed("the stream's way to the front ended"))
-        s.held.closed_now()
+        s.held.destroy()
       }
     }),
   )
