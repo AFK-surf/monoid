@@ -141,10 +141,7 @@ async fn read_request(host : @host.Host, id : Json) -> Request? {
   let headers = []
   for k = 1; k < lines.length(); k = k + 1 {
     let l = lines[k]
-    match l.find(":") {
-      Some(c) => headers.push((l[:c].to_owned().to_lower().trim().to_owned(), l[c + 1:].to_owned().trim().to_owned()))
-      None => ()
-    }
+    if l.find(":") is Some(c) { headers.push((l[:c].to_owned().to_lower().trim().to_owned(), l[c + 1:].to_owned().trim().to_owned())) }
   }
   let body = all[e + 4:want].to_owned()
   Some({ meth: first[0], target: first[1], headers, body })

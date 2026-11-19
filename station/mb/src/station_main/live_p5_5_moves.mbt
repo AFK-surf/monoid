@@ -91,7 +91,7 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
       let (said, bytes) = host.shell("fs.bytes", { "path": Json::string(p), "from": Json::number(from.to_double()), "length": Json::number(len.to_double()) })
       match (said, bytes) {
         (_, Some(b)) => Some(b)
-        (String(h), None) => Some(hex_bytes(h))
+        (String(h), None) => Some(unhex_lenient(h))
         _ => Some(b"")
       }
     }
@@ -408,10 +408,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     share_moves: Some({
       move: async fn(id, to, made) {
         let v = self.jobs("sharing.moveProfile", [Json::string(id), Json::string(to)])
-        match jtext(v, "share") {
-          Some(share) => made(share)
-          None => ()
-        }
+        if jtext(v, "share") is Some(share) { made(share) }
         to_jv(v)
       },
       unshare: async fn(share, stations) { self.jobs("sharing.unshareMoved", [Json::string(share), Json::array(stations.map(Json::string(_)))]) is True },
@@ -759,26 +756,22 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
 fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
   let (zh, en) = catalogs_json()
   let words = @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en))
-  let s = (args : Array[@api_routes.JV], i : Int) => match args.get(i) { Some(Str(x)) => x; _ => "" }
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
     match op {
-      "fs.readFileSync" =>
-        match read_text(s(args, 0)) {
-          Some(t) => Str(t)
-          None => raise BusError("ENOENT: no such file, open '\{s(args, 0)}'")
-        }
-      "fs.mkdir" => {
-        @drive.mkdir(s(args, 0), true)
-        Null
-      }
-      "fs.writeFile" => {
-        self.bus.host.write_private(s(args, 0), @utf8.encode(s(args, 1)), sep=sep())
-        Null
-      }
-      "fs.rename" => {
-        @drive.rename(s(args, 0), s(args, 1))
-        Null
-      }
+      "fs.readFileSync" | "fs.mkdir" | "fs.rename" =>
+        @jsjson.JV::of_json(
+          host_fs_op(self.bus.host, op[3:].to_owned(), args.map(@jsjson.JV::to_json)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
+      "fs.writeFile" =>
+        @jsjson.JV::of_json(
+          host_fs_op(self.bus.host, "writePrivate", args.map(@jsjson.JV::to_json)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
       "crypto.randomBytes" =>
         @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
       _ =>
@@ -815,16 +808,4 @@ async fn move_tool_said(f : async () -> @api_routes.JV) -> @api_routes.JV {
     @mcp_tools.Refusal(m) | @mcp_tools.Failed(m) => raise BusError(m)
     e => raise e
   }
-}
-
-///|
-fn hex_bytes(h : String) -> Bytes {
-  let out = @buffer.Buffer()
-  let v = (c : Int) => if c >= 48 && c <= 57 { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { 0 }
-  let mut i = 0
-  while i + 1 < h.length() {
-    out.write_byte((v(h.unsafe_charcode_at(i)) * 16 + v(h.unsafe_charcode_at(i + 1))).to_byte())
-    i += 2
-  }
-  out.to_bytes()
 }

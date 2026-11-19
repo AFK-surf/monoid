@@ -298,10 +298,7 @@ fn file_stamp(fs : @ops_platform.Fs, file : String) -> String {
 async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
   let text = (k : String) => match arg {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   match op {
@@ -330,10 +327,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
       Json::null()
     }
     "releaseBase" =>
-      match self.control.release_base() {
-        Some(b) => Json::string(b)
-        None => Json::null()
-      }
+      jopt(self.control.release_base())
     "credential" => {
       let c = self.control.credential()
       {
@@ -348,10 +342,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     "memberships" => Json::array(self.cloud.memberships())
     "membership" => self.cloud.membership(text("workspace").unwrap_or("")).unwrap_or(Json::null())
     "home" =>
-      match self.cloud.home() {
-        Some(h) => Json::string(h)
-        None => Json::null()
-      }
+      jopt(self.cloud.home())
     "removed" => Json::boolean(self.cloud.removed())
     "reload" => {
       self.cloud.reload(tell=true)
@@ -485,14 +476,8 @@ fn lock_state_json(st : @lock.LockState) -> Json {
   let devices : Map[String, Json] = {}
   for id, d in st.devices {
     let m : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(d.sub), "kind": Json::string(d.kind) }
-    match d.by {
-      Some(b) => m["by"] = Json::string(b)
-      None => ()
-    }
-    match d.sign_key {
-      Some(k) => m["sign_key"] = Json::string(k)
-      None => ()
-    }
+    if d.by is Some(b) { m["by"] = Json::string(b) }
+    if d.sign_key is Some(k) { m["sign_key"] = Json::string(k) }
     devices[id] = Json::object(m)
   }
   let members : Map[String, Json] = {}
@@ -512,10 +497,7 @@ fn lock_state_json(st : @lock.LockState) -> Json {
     "members": Json::object(members),
     "stations": Json::array(st.stations.keys().map(k => Json::string(k)).collect()),
     "persons": Json::object(persons),
-    "moved": match st.moved {
-      Some(m) => Json::string(m)
-      None => Json::null()
-    },
+    "moved": jopt(st.moved),
   }
   Json::object(out)
 }

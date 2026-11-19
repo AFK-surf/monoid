@@ -63,92 +63,90 @@ fn SessionsProgram::ensure(self : SessionsProgram) -> Unit {
     ignore(p.write(@utf8.encode(line)))
   }
   self.waiting.clear()
-  ignore(
-    self.host.rt.fork_daemon("sessions' program", on_error=e => @host.note("sessions' program failed: \{e}"), async fn() {
-      let carry = @buffer.Buffer()
-      let mut head : Json? = None
-      let mut wanted = 0
-      let body = @buffer.Buffer()
-      while true {
-        match p.events.take() {
-          Out(bytes) => {
-            let mut at = 0
-            let n = bytes.length()
-            while at < n {
-              match head {
-                Some(h) => {
-                  let take = if wanted - body.length() < n - at { wanted - body.length() } else { n - at }
-                  body.write_bytes(bytes[at:at + take].to_owned())
-                  at += take
-                  if body.length() >= wanted {
-                    let b = body.to_bytes()
-                    body.reset()
-                    head = None
-                    self.tell({ head: h, body: Some(b) })
+  fork_bg(self.host, "sessions' program", async fn() {
+    let carry = @buffer.Buffer()
+    let mut head : Json? = None
+    let mut wanted = 0
+    let body = @buffer.Buffer()
+    while true {
+      match p.events.take() {
+        Out(bytes) => {
+          let mut at = 0
+          let n = bytes.length()
+          while at < n {
+            match head {
+              Some(h) => {
+                let take = if wanted - body.length() < n - at { wanted - body.length() } else { n - at }
+                body.write_bytes(bytes[at:at + take].to_owned())
+                at += take
+                if body.length() >= wanted {
+                  let b = body.to_bytes()
+                  body.reset()
+                  head = None
+                  self.tell({ head: h, body: Some(b) })
+                }
+              }
+              None => {
+                let mut end = -1
+                for i = at; i < n; i = i + 1 {
+                  if bytes[i] == b'\n' {
+                    end = i
+                    break
                   }
                 }
-                None => {
-                  let mut end = -1
-                  for i = at; i < n; i = i + 1 {
-                    if bytes[i] == b'\n' {
-                      end = i
-                      break
-                    }
-                  }
-                  if end < 0 {
-                    carry.write_bytes(bytes[at:n].to_owned())
-                    at = n
-                  } else {
-                    carry.write_bytes(bytes[at:end].to_owned())
-                    at = end + 1
-                    let line = @utf8.decode_lossy(carry.to_bytes())
-                    carry.reset()
-                    if line != "" {
-                      match attempt(() => @json.parse(line)) {
-                        Ok(Object(m) as parsed) =>
-                          match m.get("bytes") {
-                            Some(Number(k, ..)) if k >= 0.0 && k == k.floor() => {
-                              let rest : Map[String, Json] = Map([])
-                              for kv in m {
-                                if kv.0 != "bytes" {
-                                  rest[kv.0] = kv.1
-                                }
-                              }
-                              if k == 0.0 {
-                                self.tell({ head: Json::object(rest), body: Some(b"") })
-                              } else {
-                                head = Some(Json::object(rest))
-                                wanted = k.to_int()
+                if end < 0 {
+                  carry.write_bytes(bytes[at:n].to_owned())
+                  at = n
+                } else {
+                  carry.write_bytes(bytes[at:end].to_owned())
+                  at = end + 1
+                  let line = @utf8.decode_lossy(carry.to_bytes())
+                  carry.reset()
+                  if line != "" {
+                    match attempt(() => @json.parse(line)) {
+                      Ok(Object(m) as parsed) =>
+                        match m.get("bytes") {
+                          Some(Number(k, ..)) if k >= 0.0 && k == k.floor() => {
+                            let rest : Map[String, Json] = Map([])
+                            for kv in m {
+                              if kv.0 != "bytes" {
+                                rest[kv.0] = kv.1
                               }
                             }
-                            _ => self.tell({ head: parsed, body: None })
+                            if k == 0.0 {
+                              self.tell({ head: Json::object(rest), body: Some(b"") })
+                            } else {
+                              head = Some(Json::object(rest))
+                              wanted = k.to_int()
+                            }
                           }
-                        Ok(other) => self.tell({ head: other, body: None })
-                        Err(_) =>
-                          slice_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
-                      }
+                          _ => self.tell({ head: parsed, body: None })
+                        }
+                      Ok(other) => self.tell({ head: other, body: None })
+                      Err(_) =>
+                        slice_log("warn", "readers", "a MoonBit program said what is not JSON", { "line": jstr(clip(line, 200)) })
                     }
                   }
                 }
               }
             }
           }
-          Err(_) => ()
-          Exit(code, _) => {
-            let asked = self.ended
-            self.ended = true
-            self.proc = None
-            if !asked {
-              for u in self.users.copy() {
-                (u.exited)(code.unwrap_or(-1))
-              }
+        }
+        Err(_) => ()
+        Exit(code, _) => {
+          let asked = self.ended
+          self.ended = true
+          self.proc = None
+          if !asked {
+            for u in self.users.copy() {
+              (u.exited)(code.unwrap_or(-1))
             }
-            break
           }
+          break
         }
       }
-    }),
-  )
+    }
+  })
 }
 
 ///|
@@ -183,10 +181,7 @@ fn SessionsProgram::post(self : SessionsProgram, message : Json) -> Unit {
 ///|
 /// `user` lets it go: it ends once none uses it.
 fn SessionsProgram::release(self : SessionsProgram, actors : Bool) -> Unit {
-  match self.users.search_by(u => u.actors == actors) {
-    Some(i) => ignore(self.users.remove(i))
-    None => ()
-  }
+  if self.users.search_by(u => u.actors == actors) is Some(i) { ignore(self.users.remove(i)) }
   if self.users.length() > 0 || self.ended {
     return
   }
@@ -205,10 +200,7 @@ fn SessionsProgram::release(self : SessionsProgram, actors : Bool) -> Unit {
 /// Ended at once (the station's process ends).
 fn SessionsProgram::kill_now(self : SessionsProgram) -> Unit {
   self.ended = true
-  match self.proc {
-    Some(p) => ignore(kill(p.pid, "SIGKILL"))
-    None => ()
-  }
+  if self.proc is Some(p) { ignore(kill(p.pid, "SIGKILL")) }
   self.proc = None
 }
 
@@ -450,24 +442,22 @@ fn AgentsHost::exited(self : AgentsHost, code : Int) -> Unit {
   self.on = false
   self.settle()
   let again = self.sessions.values().to_array()
-  ignore(
-    self.pump.host.rt.fork_daemon("agents' program again", on_error=e => @host.note("agents' program again failed: \{e}"), async fn() {
-      // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
-      @effect.sleep(1000)
-      if self.closed {
-        return
+  fork_bg(self.pump.host, "agents' program again", async fn() {
+    // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
+    @effect.sleep(1000)
+    if self.closed {
+      return
+    }
+    for p in again {
+      if !p.gone {
+        self.attach(p)
       }
-      for p in again {
-        if !p.gone {
-          self.attach(p)
-        }
-      }
-      let held = again.filter(p => !p.gone && self.held.contains(p.n))
-      if held.length() > 0 {
-        self.post({ "freeze": ji(self.number()), "only": Json::array(held.map(p => ji(p.n))) })
-      }
-    }),
-  )
+    }
+    let held = again.filter(p => !p.gone && self.held.contains(p.n))
+    if held.length() > 0 {
+      self.post({ "freeze": ji(self.number()), "only": Json::array(held.map(p => ji(p.n))) })
+    }
+  })
 }
 
 ///|
@@ -475,10 +465,7 @@ fn AgentsHost::said(self : AgentsHost, said : ProgramSaid) -> Unit {
   let h = said.head
   match jnum_of(h, "ownReplayed") {
     Some(id) => {
-      match self.own_replays.get(id.to_int()) {
-        Some(d) => ignore(d.succeed(h))
-        None => ()
-      }
+      if self.own_replays.get(id.to_int()) is Some(d) { ignore(d.succeed(h)) }
       self.own_replays.remove(id.to_int())
       self.idle_if_none()
       return
@@ -614,10 +601,7 @@ fn AgentsHost::attach(self : AgentsHost, p : HostedProcess) -> Unit {
 ///|
 fn AgentsHost::forget(self : AgentsHost, p : HostedProcess) -> Unit {
   self.sessions.remove(p.n)
-  match self.held.search(p.n) {
-    Some(i) => ignore(self.held.remove(i))
-    None => ()
-  }
+  if self.held.search(p.n) is Some(i) { ignore(self.held.remove(i)) }
   self.idle_if_none()
 }
 
@@ -690,10 +674,7 @@ async fn AgentsHost::freeze(self : AgentsHost, only : Array[HostedProcess]) -> U
 ///|
 fn AgentsHost::thaw(self : AgentsHost, only : Array[HostedProcess]) -> Unit {
   for p in only {
-    match self.held.search(p.n) {
-      Some(i) => ignore(self.held.remove(i))
-      None => ()
-    }
+    if self.held.search(p.n) is Some(i) { ignore(self.held.remove(i)) }
     match self.sessions.get(p.n) {
       Some(q) if physical_equal(q, p) => {
         p.frozen_state = None
@@ -938,10 +919,7 @@ fn HostedProcess::closed_(self : HostedProcess, stderr : String) -> @agent_drive
 ///|
 fn HostedProcess::left_(self : HostedProcess) -> Unit {
   self.host.forget(self)
-  match self.left {
-    Some(f) => f()
-    None => ()
-  }
+  if self.left is Some(f) { f() }
 }
 
 ///|

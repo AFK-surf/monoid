@@ -86,10 +86,7 @@ fn p51_log(level : String, at : String, message : String, fields? : Json) -> Uni
   let now = wall_ms().to_double()
   // (the line ends with its own newline)
   err_write(@ops_platform.log_line(now, level, at, message, fields))
-  match p51_live.val {
-    Some(p) => p.heard(now, level, at, message, fields)
-    None => ()
-  }
+  if p51_live.val is Some(p) { p.heard(now, level, at, message, fields) }
 }
 
 ///|
@@ -149,11 +146,7 @@ fn P51::every(self : P51, name : String, ms : Int, f : async () -> Unit) -> Unit
 ///|
 /// `f` once after `ms`; the function returned calls it off.
 fn P51::after(self : P51, ms : Int, f : () -> Unit) -> () -> Unit {
-  let fiber = self.host.rt.fork(name="after", async fn() {
-    @effect.sleep(ms)
-    f()
-  })
-  () => fiber.interrupt()
+  bus_after(self.host, ms.to_double(), f)
 }
 
 // ── before the store: a lost station's chats taken back ──
@@ -254,23 +247,18 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
   }
   p.mesh = Some(p.mesh_live())
   // Everything P5-1 made let go as the station stops.
-  ignore(
-    host.rt.fork_daemon("p5-1 stop", on_error=e => @host.note("p5-1 stop failed: \{e}"), async fn() {
-      ignore(bus.stopped.wait())
-      // (the log's last lines sent first: why it stopped)
-      flush_live_p5_1_log()
-      p.close()
-    }),
-  )
+  fork_bg(host, "p5-1 stop", async fn() {
+    ignore(bus.stopped.wait())
+    // (the log's last lines sent first: why it stopped)
+    flush_live_p5_1_log()
+    p.close()
+  })
 }
 
 ///|
 /// Starts the mesh listener after all live slices have registered their ops, routes and peer handlers.
 fn start_live_p5_1_mesh(bus : LiveBus) -> Unit {
-  match p51_live.val {
-    Some(p) => p.mesh_start(bus.as_rig())
-    None => ()
-  }
+  if p51_live.val is Some(p) { p.mesh_start(bus.as_rig()) }
 }
 
 ///|
@@ -286,10 +274,7 @@ pub async fn flush_live_p5_1_log() -> Unit {
 ///|
 /// What P5-1 started let go of at once (its processes ended, what it hands over written), as `run` returns.
 pub fn stop_live_p5_1() -> Unit {
-  match p51_live.val {
-    Some(p) => p.close()
-    None => ()
-  }
+  if p51_live.val is Some(p) { p.close() }
 }
 
 ///|
@@ -299,10 +284,7 @@ fn P51::close(self : P51) -> Unit {
   stops.rev_each(f => f())
   // Keep readers open until events.hand_over finishes in live_p5_1_handed so in-flight reads complete cleanly.
   if p51_events_handed.val is None {
-    match self.readers {
-      Some(r) => r.close()
-      None => ()
-    }
+    if self.readers is Some(r) { r.close() }
   }
   self.reports.close()
   self.log_export.close()
@@ -402,41 +384,39 @@ fn ErrorReports::report(self : ErrorReports, log : String, error : String?) -> U
     return
   }
   self.sending = true
-  ignore(
-    self.host.rt.fork_daemon("error reports", on_error=e => @host.note("error reports failed: \{e}"), async fn() {
-      defer {
-        self.sending = false
+  fork_bg(self.host, "error reports", async fn() {
+    defer {
+      self.sending = false
+    }
+    guard self.key is Some((h, k, _)) else { return }
+    let http = @cloud_net.host_http(self.host)
+    while self.queue.length() > 0 {
+      let batch = self.queue.copy()
+      self.queue.clear()
+      let mut base = h
+      while base.has_suffix("/") {
+        base = base[:base.length() - 1].to_owned()
       }
-      guard self.key is Some((h, k, _)) else { return }
-      let http = @cloud_net.host_http(self.host)
-      while self.queue.length() > 0 {
-        let batch = self.queue.copy()
-        self.queue.clear()
-        let mut base = h
-        while base.has_suffix("/") {
-          base = base[:base.length() - 1].to_owned()
+      let body : Json = { "api_key": Json::string(k), "batch": Json::array(batch) }
+      let headers = @cloud_net.Headers::new()
+      headers.set("content-type", "application/json")
+      let sent : Result[Unit, String] = try {
+        let r = (http.fetch)({ url: base + "/batch/", http_method: "POST", headers, body: Some(body.stringify()), timeout_ms: 10000 })
+        if r.status < 200 || r.status >= 300 {
+          Err("answered \{r.status}")
+        } else {
+          Ok(())
         }
-        let body : Json = { "api_key": Json::string(k), "batch": Json::array(batch) }
-        let headers = @cloud_net.Headers::new()
-        headers.set("content-type", "application/json")
-        let sent : Result[Unit, String] = try {
-          let r = (http.fetch)({ url: base + "/batch/", http_method: "POST", headers, body: Some(body.stringify()), timeout_ms: 10000 })
-          if r.status < 200 || r.status >= 300 {
-            Err("answered \{r.status}")
-          } else {
-            Ok(())
-          }
-        } catch {
-          e => Err("\{e}")
-        }
-        match sent {
-          Ok(_) => ()
-          // (not through the log: that would report itself)
-          Err(why) => err_write("\{iso_time(wall_ms().to_double())}  WARN telemetry: error reports not sent error=\{why}\n")
-        }
+      } catch {
+        e => Err("\{e}")
       }
-    }),
-  )
+      match sent {
+        Ok(_) => ()
+        // (not through the log: that would report itself)
+        Err(why) => err_write("\{iso_time(wall_ms().to_double())}  WARN telemetry: error reports not sent error=\{why}\n")
+      }
+    }
+  })
 }
 
 ///|
@@ -542,10 +522,7 @@ fn P51::awake_live(self : P51) -> Unit {
                 Array([String(k), t]) => {
                   let num = (f : String) => match t {
                     Object(m) =>
-                      match m.get(f) {
-                        Some(Number(n, ..)) => Some(n)
-                        _ => None
-                      }
+                      opt_num(m.get(f))
                     _ => None
                   }
                   let declared = match t {

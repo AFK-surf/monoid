@@ -62,10 +62,7 @@ priv struct DeviceTools {
 fn tool_str(a : Json, k : String) -> String? {
   match a {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
 }
@@ -244,7 +241,7 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         Some(c) => try { @base64.decode(c) } catch { _ => raise ToolFailed("invalid_request", "content_base64 is not base64") }
         None => raise ToolFailed("invalid_request", "content_base64 is required")
       }
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), p), true)))
+      host_mkdir_quiet(host, @nodepath.dirname(sep(), p))
       let append = a is { "append": True, .. }
       let offset = if append {
         match (try { Ok(self.p.fs.lstat(p)) } catch { e => Err(e) }) {
@@ -339,20 +336,18 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
           held -= dropped.length()
         }
       }
-      ignore(
-        host.rt.fork_daemon("device process", on_error=e => @host.note("device process failed: \{e}"), async fn() {
-          while true {
-            match proc.events.take() {
-              Out(b) | Err(b) => take(b)
-              Exit(code, _) => {
-                kept.exited = true
-                kept.exit_code = code
-                break
-              }
+      fork_bg(host, "device process", async fn() {
+        while true {
+          match proc.events.take() {
+            Out(b) | Err(b) => take(b)
+            Exit(code, _) => {
+              kept.exited = true
+              kept.exit_code = code
+              break
             }
           }
-        }),
-      )
+        }
+      })
       self.processes.push(kept)
       Json::object({ "process_id": Json::string(id) })
     }

@@ -67,166 +67,9 @@ pub fn write_text_mode(path : String, text : String, mode : Int) -> Bool {
 
 // ── the shell's files, off the program's thread ──
 // A folder walked or a tree removed on the program's thread held every fiber while it ran (a repository index's pass
-// over a home of many folders, 28–40 s, 2026-11-19): each is the shell's `fs.*` instead, answered on its own threads.
-
-///|
-/// A folder's names with their kinds as the folder says them ("file", "dir", "link" or "other", links not followed);
-/// none where it does not read.
-async fn host_readdir_types(host : @host.Host, dir : String) -> Array[(String, String)]? {
-  let (said, _) = host.shell("fs.readdir", { "path": Json::string(dir), "types": Json::boolean(true) })
-  match said {
-    Array(items) =>
-      Some(
-        items.filter_map(it => match it {
-          [String(name), String(kind)] => Some((name, kind))
-          _ => None
-        }),
-      )
-    _ => None
-  }
-}
-
-///|
-/// A folder's names; none where it does not read.
-async fn host_readdir_names(host : @host.Host, dir : String) -> Array[String]? {
-  let (said, _) = host.shell("fs.readdir", { "path": Json::string(dir) })
-  match said {
-    Array(items) =>
-      Some(
-        items.filter_map(it => match it {
-          String(name) => Some(name)
-          _ => None
-        }),
-      )
-    _ => None
-  }
-}
-
-///|
-/// What lstat says of `p` (its kind, size and mtime in ms); none where nothing is there.
-async fn host_lstat(host : @host.Host, p : String) -> (String, Double, Double)? {
-  let (said, _) = host.shell("fs.lstat", { "path": Json::string(p) })
-  match said {
-    { "kind": String(kind), "size": Number(size, ..), "mtimeMs": Number(mtime, ..), .. } => Some((kind, size, mtime))
-    _ => None
-  }
-}
-
-///|
-/// What stat says of `p`, its links followed (a link that names nothing is not there, as stat's ENOENT).
-async fn host_stat_follow(host : @host.Host, p : String) -> (String, Double, Double)? {
-  match host_lstat(host, p) {
-    Some(("link", _, _)) => {
-      let (real, _) = host.shell("fs.realpath", { "path": Json::string(p) })
-      match real {
-        String(r) =>
-          match host_lstat(host, r) {
-            Some(("link", _, _)) => None
-            other => other
-          }
-        _ => None
-      }
-    }
-    other => other
-  }
-}
-
-///|
-/// What is at `p` removed, a folder with all it holds; what is not there, or does not go, let go.
-async fn host_remove_tree(host : @host.Host, p : String) -> Unit {
-  ignore(host.shell("fs.remove", { "path": Json::string(p), "recursive": Json::boolean(true) })) catch {
-    _ => ()
-  }
-}
-
-///|
-/// node's `copyFile` through the shell: `to` replaced where it is there (a link there replaced, not written through),
-/// never `from` itself; `from`'s absence is the shell's failure (os error 2).
-async fn host_copy_over(host : @host.Host, from : String, to : String) -> Unit {
-  let (kind, _) = host.shell("fs.stat", { "path": Json::string(from) })
-  if kind is Null {
-    raise @wire.ShellError("No such file or directory (os error 2)")
-  }
-  if from == to {
-    return
-  }
-  match host_lstat(host, to) {
-    Some((kind, _, _)) if kind != "dir" =>
-      ignore(host.shell("fs.remove", { "path": Json::string(to) })) catch {
-        _ => ()
-      }
-    _ => ()
-  }
-  ignore(host.shell("fs.copy", { "from": Json::string(from), "to": Json::string(to) }))
-}
-
-///|
-/// The code Node gives a failure of the shell's `fs.*` (its `… (os error N)`, Windows' numbers as libuv maps them);
-/// `EIO` where it says none.
-fn shell_fs_code(e : Error) -> String {
-  let said = said_of(e)
-  let n = match said.find("(os error ") {
-    Some(i) => {
-      let digits = StringBuilder()
-      for c in said[i + 10:] {
-        if c >= '0' && c <= '9' {
-          digits.write_char(c)
-        } else {
-          break
-        }
-      }
-      @string.parse_int(digits.to_string()) catch {
-        _ => -1
-      }
-    }
-    None => -1
-  }
-  if platform() == "win32" {
-    match n {
-      2 | 3 | 123 => "ENOENT"
-      5 | 32 | 33 => "EPERM"
-      80 | 183 => "EEXIST"
-      112 => "ENOSPC"
-      145 => "ENOTEMPTY"
-      267 => "ENOTDIR"
-      17 => "EXDEV"
-      _ => "EIO"
-    }
-  } else {
-    match n {
-      1 => "EPERM"
-      2 => "ENOENT"
-      13 => "EACCES"
-      16 => "EBUSY"
-      17 => "EEXIST"
-      18 => "EXDEV"
-      20 => "ENOTDIR"
-      21 => "EISDIR"
-      28 => "ENOSPC"
-      39 | 66 => "ENOTEMPTY"
-      _ => "EIO"
-    }
-  }
-}
-
-///|
-/// Node's words for a file system's code, as it throws it: `<code>: <words>, <call> '<p>'`.
-fn fs_code_said(code : String, call : String, p : String) -> String {
-  let words = match code {
-    "EPERM" => "operation not permitted"
-    "ENOENT" => "no such file or directory"
-    "EACCES" => "permission denied"
-    "EBUSY" => "resource busy or locked"
-    "EEXIST" => "file already exists"
-    "EXDEV" => "cross-device link not permitted"
-    "ENOTDIR" => "not a directory"
-    "EISDIR" => "illegal operation on a directory"
-    "ENOSPC" => "no space left on device"
-    "ENOTEMPTY" => "directory not empty"
-    _ => "i/o error"
-  }
-  "\{code}: \{words}, \{call} '\{p}'"
-}
+// over a home of many folders, 28–40 s, 2026-11-19): each is the shell's `fs.*` instead, answered on its own threads
+// (see `live_dispatch.mbt` `host_readdir_types`, `host_readdir_names`, `host_lstat`, `host_stat_follow`,
+// `host_remove_tree`, `host_copy_over`, `shell_fs_code`, `fs_code_said`).
 
 // ── converting between the three JSONs the packages speak ──
 
@@ -333,16 +176,14 @@ fn Pump::kick(self : Pump) -> Unit {
           self.armed_seq += 1
           let seq = self.armed_seq
           let wait = at - wall_ms().to_double()
-          ignore(
-            self.host.rt.fork_daemon("drivers' timer", on_error=e => @host.note("drivers' timer failed: \{e}"), async fn() {
-              // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
-              @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
-              if self.armed_seq == seq {
-                self.armed = None
-                self.kick()
-              }
-            }),
-          )
+          fork_bg(self.host, "drivers' timer", async fn() {
+            // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
+            @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
+            if self.armed_seq == seq {
+              self.armed = None
+              self.kick()
+            }
+          })
         }
       }
   }
@@ -550,61 +391,55 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
     (events.closed)()
     self.kick()
   }
-  ignore(
-    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
-      match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
-        Ok(c) => {
-          let id = c.id
-          conn.val = Some(c)
-          if gone.val {
-            c.socket.destroy()
-            return
-          }
-          (events.connected)()
-          self.kick()
-          // what is written goes in order
-          ignore(
-            host.rt.fork_quiet(name="runner socket out", async fn() {
-              while !gone.val {
-                match writes.take() {
-                  Some(b) =>
-                    host.tcp_write(id, b) catch {
-                      _ => break
-                    }
-                  None => {
-                    host.tcp_end(id) catch { _ => () }
-                    break
+  fork_bg(host, "runner socket", async fn() {
+    match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
+      Ok(c) => {
+        let id = c.id
+        conn.val = Some(c)
+        if gone.val {
+          c.socket.destroy()
+          return
+        }
+        (events.connected)()
+        self.kick()
+        // what is written goes in order
+        ignore(
+          host.rt.fork_quiet(name="runner socket out", async fn() {
+            while !gone.val {
+              match writes.take() {
+                Some(b) =>
+                  host.tcp_write(id, b) catch {
+                    _ => break
                   }
+                None => {
+                  host.tcp_end(id) catch { _ => () }
+                  break
                 }
-              }
-            }),
-          )
-          while !gone.val {
-            let bytes = host.tcp_read(id) catch {
-              e => {
-                if !gone.val {
-                  (events.error)(said_of(e))
-                }
-                break
               }
             }
-            guard bytes is Some(bytes) else { break }
-            if !gone.val {
-              (events.data)(@utf8.decode_lossy(bytes))
-              self.kick()
+          }),
+        )
+        while !gone.val {
+          let bytes = host.tcp_read(id) catch {
+            e => {
+              if !gone.val { (events.error)(said_of(e)) }
+              break
             }
           }
-          close_once()
-        }
-        _ => {
+          guard bytes is Some(bytes) else { break }
           if !gone.val {
-            (events.error)("ENOENT")
+            (events.data)(@utf8.decode_lossy(bytes))
+            self.kick()
           }
-          close_once()
         }
+        close_once()
       }
-    }),
-  )
+      _ => {
+        if !gone.val { (events.error)("ENOENT") }
+        close_once()
+      }
+    }
+  })
   {
     write: text => if !gone.val && !ended.val { ignore(writes.try_offer(Some(@utf8.encode(text)))) },
     end: () => if !gone.val && !ended.val {

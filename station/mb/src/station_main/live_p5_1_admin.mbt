@@ -87,14 +87,8 @@ fn p51_piece_answered(file : String, said : Json) -> Bytes raise {
 /// one it starts with).
 fn p51_mime(p : String) -> String {
   let mut name = p
-  match name.rev_find("/") {
-    Some(i) => name = name[i + 1:].to_owned()
-    None => ()
-  }
-  match name.rev_find("\\") {
-    Some(i) => name = name[i + 1:].to_owned()
-    None => ()
-  }
+  if name.rev_find("/") is Some(i) { name = name[i + 1:].to_owned() }
+  if name.rev_find("\\") is Some(i) { name = name[i + 1:].to_owned() }
   let dot = name.rev_find(".").unwrap_or(-1)
   if dot <= 0 {
     return "application/octet-stream"
@@ -128,22 +122,12 @@ fn p51_read_only(viewer : Json) -> Bool {
 /// A file system's failure as the routes take it (fs.mbt: an `Error` with its `code`), anything else as it was.
 fn p51_fs_thrown(e : Error) -> Error {
   match e {
+    DispatchFsError(code, message) =>
+      @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(message), "code": Json::string(code) }))
     @drive.FsError(f) =>
       @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(f.message), "code": Json::string(f.code) }))
     other => other
   }
-}
-
-///|
-/// Node's error of code `code` for `call` on `p`, as it throws it.
-fn p51_code_thrown(code : String, call : String, p : String) -> Error {
-  @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(fs_code_said(code, call, p)), "code": Json::string(code) }))
-}
-
-///|
-/// A failure of the shell's `fs.*` in `call` on `p`, as Node throws it.
-fn p51_shell_thrown(e : Error, call : String, p : String) -> Error {
-  p51_code_thrown(shell_fs_code(e), call, p)
 }
 
 ///|
@@ -251,15 +235,13 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     match self.restart_pid() {
       Some(pid) => {
         let front = bus.restart_front
-        ignore(
-          self.host.rt.fork_daemon("restart", on_error=e => @host.note("restart failed: \{e}"), async fn() {
-            @effect.sleep(150) // timer: a deadline (the answer's time to leave before the process ends)
-            match front {
-              Some(f) => f()
-              None => ignore(kill(pid, "SIGUSR2"))
-            }
-          }),
-        )
+        fork_bg(self.host, "restart", async fn() {
+          @effect.sleep(150) // timer: a deadline (the answer's time to leave before the process ends)
+          match front {
+            Some(f) => f()
+            None => ignore(kill(pid, "SIGUSR2"))
+          }
+        })
       }
       None => ()
     }
@@ -285,7 +267,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       Null
     }
-    "clock.currentTimeMillisUnsafe" => Num(wall_ms().to_double())
     "crypto.randomBytes" => {
       let n = match args.get(0) {
         Some(Num(n)) => n.to_int()
@@ -299,29 +280,9 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       a.handles[handle] = @buffer.new()
       @api_routes.jref(handle)
     }
-    "os.homedir" => Str(homedir())
-    "os.totalmem" =>
-      match machine() {
-        { "totalmem": Number(n, ..), .. } => Num(n)
-        _ => Num(0.0)
-      }
-    "os.cpus" =>
-      match machine() {
-        { "cpus": Array(c), .. } => @jsjson.JV::of_json(Json::array(c))
-        _ => Arr([])
-      }
-    "config.raw" => @jsjson.JV::of_json((bus.config_raw.val)())
-    "config.updateSoon" => {
-      let next = arg(0)
-      ignore((bus.config_update.val)(_ => next))
-      Null
-    }
+    "clock.currentTimeMillisUnsafe" | "os.homedir" | "os.totalmem" | "os.cpus" | "config.raw" | "config.updateSoon" | "cloud.memberships" | "cloud.reload" | "events.overviewChanged" | "events.tell" =>
+      @jsjson.JV::of_json(dispatch_infra(bus, name, args.map(@jsjson.JV::to_json)).unwrap_or(Json::null()))
     "host.sample" => @jsjson.JV::of_json((bus.host_sample.val)())
-    "cloud.memberships" => @jsjson.JV::of_json((bus.cloud_call.val)("memberships", Json::null()))
-    "cloud.reload" => {
-      ignore((bus.cloud_call.val)("reload", Json::null()))
-      Null
-    }
     "events.open" => {
       guard self.events is Some(events) else { raise @api_routes.Thrown("HttpError", @jsjson.JV::of_json({ "message": "events not ready", "status": 503 })) }
       let live = match arg(3) {
@@ -345,10 +306,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         host: arg(2) is True,
         live,
         logs,
-        since: match arg(5) {
-          String(s) => Some(s)
-          _ => None
-        },
+        since: as_text(arg(5)),
         brief: arg(6) is True,
         logins: match arg(7) {
           Array(l) => l.filter_map(x => match x { String(s) => Some(s); _ => None })
@@ -372,19 +330,8 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       @jsjson.JV::of_json({ "status": 200, "headers": Json::object(h), "body": { "$stream": Json::number(sid.to_double()) } })
     }
-    "events.overviewChanged" => {
-      (bus.overview_changed.val)()
-      Null
-    }
     "events.presetsChanged" => {
-      match self.events {
-        Some(e) => e.events.presets_changed()
-        None => ()
-      }
-      Null
-    }
-    "events.tell" => {
-      (bus.events_tell.val)(text(0), arg(1), text(2), arg(3))
+      if self.events is Some(e) { e.events.presets_changed() }
       Null
     }
     "$stream.next" => {
@@ -463,100 +410,28 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Object(o) =>
           (
             o.get("flag") is Some(String("wx" | "xw")),
-            match o.get("mode") {
-              Some(Number(m, ..)) => m.to_int()
-              _ => 0
-            },
+            opt_num(o.get("mode")).map(n => n.to_int()).unwrap_or(0),
           )
         _ => (false, 0)
       }
-      // (made with `mode` where it is not, 0644 where none is given; a mode given set on it where it was, as fchmod)
-      let put : Json = {
-        "path": Json::string(text(0)),
-        "offset": Json::number(0.0),
-        "truncate": Json::boolean(true),
-        "exclusive": Json::boolean(excl),
-        "mode": Json::number((if mode > 0 { mode } else { 0o644 }).to_double()),
-      }
-      ignore(self.host.shell("fs.put", put, bytes=data)) catch {
-        e => raise p51_shell_thrown(e, "open", text(0))
-      }
-      if mode > 0 {
-        ignore(self.host.shell("fs.chmod", { "path": Json::string(text(0)), "mode": Json::number(mode.to_double()) })) catch {
-          _ => ()
-        }
+      host_write_file(self.host, text(0), data, excl~, mode~) catch {
+        e => raise p51_fs_thrown(e)
       }
       Null
     }
     "fs.appendFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
-      ignore(self.host.shell("fs.put", { "path": Json::string(text(0)), "mode": Json::number(0o644.to_double()) }, bytes=data)) catch {
-        e => raise p51_shell_thrown(e, "open", text(0))
+      host_append_file(self.host, text(0), data) catch {
+        e => raise p51_fs_thrown(e)
       }
       Null
     }
-    "fs.access" => {
-      let (kind, _) = self.host.shell("fs.stat", { "path": Json::string(text(0)) }) catch {
-        e => raise p51_shell_thrown(e, "access", text(0))
+    "fs.access" | "fs.readdir" | "fs.copyFile" | "fs.rename" | "fs.rm" | "fs.statfs" | "fs.mkdir" => {
+      let got = host_fs_op(self.host, name[3:].to_owned(), args.map(@jsjson.JV::to_json), strict_rm=true, readdir_file_field=true) catch {
+        e => raise p51_fs_thrown(e)
       }
-      if kind is Null {
-        raise p51_code_thrown("ENOENT", "access", text(0))
-      }
-      Null
+      @jsjson.JV::of_json(got)
     }
-    "fs.readdir" => {
-      let dir = text(0)
-      if arg(1) is { "withFileTypes": True, .. } {
-        // (a Dirent as the routes take it, `{name, file, dir}`: a link is neither, as Node's isFile and isDirectory)
-        guard host_readdir_types(self.host, dir) is Some(entries) else { raise p51_code_thrown("ENOENT", "scandir", dir) }
-        @jsjson.JV::of_json(
-          Json::array(
-            entries.map(e => {
-              { "name": Json::string(e.0), "file": Json::boolean(e.1 == "file"), "dir": Json::boolean(e.1 == "dir") }
-            }),
-          ),
-        )
-      } else {
-        guard host_readdir_names(self.host, dir) is Some(names) else { raise p51_code_thrown("ENOENT", "scandir", dir) }
-        Arr(names.map(n => @api_routes.JV::Str(n)))
-      }
-    }
-    "fs.copyFile" => {
-      // (Node's mode: COPYFILE_EXCL, 1, only where nothing is; else what is there replaced, FICLONE or not)
-      let mode = match args.get(2) {
-        Some(Num(n)) => n.to_int()
-        _ => 0
-      }
-      if (mode & 1) != 0 {
-        @drive.copy_file(text(0), text(1)) catch {
-          e => raise p51_fs_thrown(e)
-        }
-      } else {
-        host_copy_over(self.host, text(0), text(1)) catch {
-          e => raise p51_shell_thrown(e, "copyfile", text(0))
-        }
-      }
-      Null
-    }
-    "fs.rename" => {
-      ignore(self.host.shell("fs.rename", { "from": Json::string(text(0)), "to": Json::string(text(1)) })) catch {
-        e => raise p51_shell_thrown(e, "rename", text(0))
-      }
-      Null
-    }
-    "fs.rm" => {
-      if !(arg(1) is { "force": True, .. }) && host_lstat(self.host, text(0)) is None {
-        raise p51_code_thrown("ENOENT", "lstat", text(0))
-      }
-      host_remove_tree(self.host, text(0))
-      Null
-    }
-    "fs.statfs" =>
-      match disk_of(text(0)) {
-        Some((free, total)) =>
-          @jsjson.JV::of_json({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })
-        None => raise p51_code_thrown("ENOENT", "statfs", text(0))
-      }
     "fs.open" => {
       let p = text(0)
       match (try { Ok(self.fs.lstat(p)) } catch { e => Err(e) }) {
@@ -590,10 +465,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
         }
         let d : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(who_of(arg(1)).sub), "kind": Json::string("app") }
-        match sign_key {
-          Some(k) => d["sign_key"] = Json::string(k)
-          None => ()
-        }
+        if sign_key is Some(k) { d["sign_key"] = Json::string(k) }
         return @jsjson.JV::of_json({ "device": Json::object(d), "role": Json::string(role) })
       }
       let ws = match arg(0) {
@@ -611,14 +483,8 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
       }
       let d : Map[String, Json] = { "id": Json::string(device.id), "sub": Json::string(device.sub), "kind": Json::string(device.kind) }
-      match device.by {
-        Some(b) => d["by"] = Json::string(b)
-        None => ()
-      }
-      match device.sign_key {
-        Some(k) => d["sign_key"] = Json::string(k)
-        None => ()
-      }
+      if device.by is Some(b) { d["by"] = Json::string(b) }
+      if device.sign_key is Some(k) { d["sign_key"] = Json::string(k) }
       @jsjson.JV::of_json({ "device": Json::object(d), "role": Json::string(role) })
     }
     "read/sessions.mime" => Str(p51_mime(text(0)))
@@ -636,10 +502,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
       }
       @jsjson.JV::of_json(joined)
-    }
-    "fs.mkdir" => {
-      ignore(attempt(() => @drive.mkdir(text(0), true)))
-      Null
     }
     "fs.createReadStream" => {
       let file = text(0)
@@ -699,62 +561,14 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Some(_) => @api_routes.jref("restart.go")
         None => Null
       }
-    "store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
-    "hub.store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
     "store.sessionWs" =>
       match bus.store.session_ws(text(0)) {
         Null => @api_routes.jundef
         ws => @jsjson.JV::of_json(ws)
       }
-    "store.getJob" => @jsjson.JV::of_json(bus.store.get_job(arg(0)))
-    "store.handedTo" => @jsjson.JV::of_json(bus.store.handed_to(text(0)))
-    "store.homeChat" => @jsjson.JV::of_json(bus.store.home_chat(arg(0)))
-    "store.threadSessions" => {
-      let rows = bus.db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [arg(0)])
-      Arr(
-        rows.map(r => {
-          @jsjson.JV::of_json({
-            "thread": r.get("thread").unwrap_or(Json::null()),
-            "session": r.get("session").unwrap_or(Json::null()),
-            "connect": r.get("connect").unwrap_or(Json::null()),
-            "joinedAt": r.get("joined_at").unwrap_or(Json::null()),
-            "leftAt": r.get("left_at").unwrap_or(Json::null()),
-          })
-        }),
-      )
-    }
-    "store.told" => {
-      match arg(0) {
-        Array(changes) => bus.store.told(changes)
-        c => bus.store.told([c])
-      }
-      Null
-    }
-    "hub.store.binding" => @jsjson.JV::of_json(bus.store.binding(arg(0)))
-    "store.getThread" =>
-      match bus.db.all("SELECT * FROM threads WHERE id = ?", [arg(0)]) {
-        [r, ..] => {
-          let c = (k : String) => r.get(k).unwrap_or(Json::null())
-          @jsjson.JV::of_json({
-            "id": c("id"),
-            "surface": c("surface"),
-            "channel": c("channel"),
-            "threadTs": c("thread_ts"),
-            "title": c("title"),
-            "autoTitle": c("auto_title"),
-            "createdBy": c("created_by"),
-            "createdAt": c("created_at"),
-            "home": c("home"),
-            "hiddenAt": c("hidden_at"),
-            "hiddenBy": c("hidden_by"),
-            "shownAt": c("shown_at"),
-          })
-        }
-        _ => Null
-      }
-    "store.setThreadTitle" => {
-      bus.store.set_thread_title(arg(0), arg(1))
-      Null
+    "store.getSession" | "hub.store.getSession" | "store.getJob" | "store.handedTo" | "store.homeChat" | "store.threadSessions" | "store.told" | "hub.store.binding" | "store.getThread" | "store.setThreadTitle" => {
+      let meth = if name.has_prefix("hub.store.") { name[10:].to_owned() } else { name[6:].to_owned() }
+      @jsjson.JV::of_json(dispatch_store(bus, meth, args.map(@jsjson.JV::to_json)))
     }
     "runtimeView.runtimeView" => {
       // (what a client from before takes of a shape: the runtimes it knows, events/compat.mbt)
@@ -867,10 +681,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       t
     }
   }
-  match threads {
-    Some(t) => t.set_now(wall_ms().to_double())
-    None => ()
-  }
+  if threads is Some(t) { t.set_now(wall_ms().to_double()) }
   // What the other slices say of it, asked first (the overview's own reads are synchronous): the accounts' views
   // (P5-3), the updates and the connects' connections (P5-5), Helper's grants (P5-4), the archive policy and the
   // decisions' version (P5-2), the model catalog as the cloud gave it.
@@ -1185,10 +996,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
         Object(_) =>
           @adb_devices.chat_title(
             to_jv(jfield(chat, "thread")),
-            match jfield(chat, "firstText") {
-              String(t) => Some(t)
-              _ => None
-            },
+            as_text(jfield(chat, "firstText")),
             None,
             tr(lang, "station.chat.untitled"),
             tr(lang, "station.chat.directMessage"),
@@ -1377,10 +1185,7 @@ async fn P51::admin_answer(self : P51, a : AdminLive, r : @api_routes.Request) -
       "params": params,
       "query": Json::object(query),
       "queryPairs": Json::array(r.query.map(q => Json::array([Json::string(q.0), Json::string(q.1)]))),
-      "search": match r.search {
-        Some(s) => Json::string(s)
-        None => Json::null()
-      },
+      "search": jopt(r.search),
       "headers": Json::object(Map::from_array(r.headers.map(h => (h.0, Json::string(h.1))))),
       "body": if body_text == "" {
         Json::null()

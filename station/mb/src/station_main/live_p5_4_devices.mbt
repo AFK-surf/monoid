@@ -236,10 +236,7 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
 /// machine's own time zone.
 async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
   ignore(host)
-  match start_time_of(pid) {
-    Some(ms) => Json::number(ms)
-    None => Json::null()
-  }
+  (start_time_of(pid)).map(jn).unwrap_or(Json::null())
 }
 
 ///|
@@ -247,10 +244,7 @@ async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
 fn p54_adb_path() -> String? {
   let env : Map[String, Json] = Map([])
   for k in ["PATH", "PATHEXT", "ANDROID_HOME", "ANDROID_SDK_ROOT", "HOME", "LOCALAPPDATA"] {
-    match env_get(k) {
-      Some(v) => env[k] = Json::string(v)
-      None => ()
-    }
+    if env_get(k) is Some(v) { env[k] = Json::string(v) }
   }
   let exe = if is_windows() { "adb.exe" } else { "adb" }
   let delimiter = if is_windows() { ";" } else { ":" }
@@ -283,10 +277,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     "clock.cancel" => {
-      match self.timers.get(p54_int(a(0))) {
-        Some(stop) => stop()
-        None => ()
-      }
+      if self.timers.get(p54_int(a(0))) is Some(stop) { stop() }
       Json::null()
     }
     "log.info" | "log.warn" | "log.error" => {
@@ -294,9 +285,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     // the machine
-    "process.pid" => Json::number(@drive.pid().to_double())
-    "platform.sep" => Json::string(sep())
-    "platform.os" => Json::string(p54_os())
+    "process.pid" | "platform.sep" | "platform.os" | "remote.ask" | "cloud.station" | "cloud.home" | "cloud.removed" | "events.tell" =>
+      dispatch_infra(bus, name, args).unwrap_or(Json::null())
     "platform.startTimeOf" => p54_start_time(host, p54_int(a(0)))
     "platform.tcpPortPids" => p54_port_pids(host, p54_int(a(0)))
     "platform.processTable" => p54_process_table(host)
@@ -344,49 +334,10 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::null()
     }
     // the files
-    "fs.read" =>
-      match host.read_text(s(0)) {
-        Some(t) => Json::string(t)
-        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
-      }
-    "fs.write" => {
-      host.write_private(s(0), @utf8.encode(s(1)), sep=sep())
-      Json::null()
-    }
-    "fs.rename" => {
-      @drive.rename(s(0), s(1))
-      Json::null()
-    }
-    "fs.rm" => {
-      ignore(host.shell("fs.remove", { "path": Json::string(s(0)), "recursive": Json::boolean(true) })) catch {
-        _ => ()
-      }
-      Json::null()
-    }
-    "fs.mkdir" => {
-      @drive.mkdir(s(0), true)
-      Json::null()
-    }
-    "fs.copy" => {
-      // (copyFile: what a send cut short left at `<to>` replaced)
-      copy_file_over(s(0), s(1))
-      Json::null()
-    }
-    "fs.realpath" => Json::string(@drive.realpath(s(0)))
-    "fs.size" => Json::number(@drive.stat(s(0)).size)
-    "fs.stat" => {
-      let st = @drive.stat(s(0))
-      { "isFile": Json::boolean(st.file), "size": Json::number(st.size) }
-    }
-    "fs.mkdtemp" => {
-      let dir = path([tmpdir(), s(0) + @drive.hex(@drive.random_bytes(4))])
-      @drive.mkdir(dir, true, mode=0o700)
-      Json::string(dir)
-    }
-    "fs.sha256" =>
-      match host.file_sha256(s(0)) {
-        Some(h) => Json::string(h)
-        None => raise @drive.fs_error("ENOENT", "ENOENT: no such file or directory, open '\{s(0)}'")
+    "fs.read" | "fs.write" | "fs.rename" | "fs.rm" | "fs.mkdir" | "fs.copy" | "fs.realpath" | "fs.size" | "fs.stat" | "fs.mkdtemp" | "fs.sha256" =>
+      host_fs_op(host, name[3:].to_owned(), args) catch {
+        DispatchFsError(c, m) => raise @drive.fs_error(c, m)
+        e => raise e
       }
     // the processes
     "proc.signal" => {
@@ -435,10 +386,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         out=b => said.write_string(@utf8.decode_lossy(b)),
         err=b => said.write_string(@utf8.decode_lossy(b)),
         close=(code, _) => {
-          match self.procs.get(id) {
-            Some(p) => p.code = code
-            None => ()
-          }
+          if self.procs.get(id) is Some(p) { p.code = code }
           ignore(closed.succeed(()))
         },
       )
@@ -456,17 +404,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         None => Json::null()
       }
     "proc.kill" => {
-      match self.procs.get(p54_int(a(0))) {
-        Some(p) => ignore(kill(p.child.proc.pid, opt_str(a(1)).unwrap_or("SIGTERM"), group=true))
-        None => ()
-      }
+      if self.procs.get(p54_int(a(0))) is Some(p) { ignore(kill(p.child.proc.pid, opt_str(a(1)).unwrap_or("SIGTERM"), group=true)) }
       Json::null()
     }
     "proc.closed" => {
-      match self.procs.get(p54_int(a(0))) {
-        Some(p) => p.closed.wait()
-        None => ()
-      }
+      if self.procs.get(p54_int(a(0))) is Some(p) { p.closed.wait() }
       Json::null()
     }
     "proc.pid" =>
@@ -545,13 +487,11 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       let sk = self.sock_of(a(0))
       sk.kept = true
       sk.chunks.clear()
-      ignore(
-        host.rt.fork_daemon("socket kept", on_error=e => @host.note("socket kept failed: \{e}"), async fn() {
-          while !sk.destroyed {
-            self.fill(sk)
-          }
-        }),
-      )
+      fork_bg(host, "socket kept", async fn() {
+        while !sk.destroyed {
+          self.fill(sk)
+        }
+      })
       Json::null()
     }
     "net.read" => {
@@ -632,8 +572,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         from.destroyed = true
         ignore(from.closed.succeed(()))
       }
-      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(one, two) }))
-      ignore(host.rt.fork_daemon("join", on_error=e => @host.note("join failed: \{e}"), async fn() { carry(two, one) }))
+      fork_bg(host, "join", async fn() { carry(one, two) })
+      fork_bg(host, "join", async fn() { carry(two, one) })
       Json::null()
     }
     // a member's connection on the mesh and its streams (the shell's)
@@ -690,57 +630,15 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     }
     // the store's chats and cards
     "store.has" => Json::boolean(["latestThreadIfReady", "pendingCardHeaderIfReady"].contains(s(0)))
-    "store.getSession" => p54_session_row(bus, s(0)).unwrap_or(Json::null())
-    "store.starter" => self.threads.starter(a(0).unwrap_or(Json::null()))
-    "store.firstText" => self.threads.first_text(a(0).unwrap_or(Json::null()))
-    "store.latestThread" => {
-      let v = self.threads.latest_thread(a(0).unwrap_or(Json::null()))
-      bus.drain_thread_requests(self.threads)
-      v
-    }
-    "store.latestThreadIfReady" => {
-      let v = self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
-      bus.drain_thread_requests(self.threads)
-      v
-    }
-    "store.sessionThreadById" => self.threads.session_thread_by_id(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()))
-    "store.pendingCardHeader" => self.threads.pending_card_header(a(0).unwrap_or(Json::null()))
-    "store.pendingCardHeaderIfReady" => self.threads.pending_card_header_if_ready(a(0).unwrap_or(Json::null()))
-    "store.insertMessage" => {
-      // (what is checked inside the write is run first, its refusal the write's)
-      match fn_of(a(1)) {
-        Some(f) => ignore(f([]))
-        None => ()
-      }
-      let got = self.threads.insert_message(to_jv(a(0).unwrap_or(Json::null())))
-      told_threads(bus, self.threads)
-      got
-    }
-    "store.withdrawCard" => {
-      let got = self.threads.withdraw_card(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()))
-      told_threads(bus, self.threads)
-      got
-    }
-    "store.restateCard" => {
-      let now = self.threads.card_at(a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()))
-      let next = match fn_of(a(3)) {
-        Some(f) => of_jv(f([to_jv(now)]))
-        None => now
-      }
-      let got = self.threads.restate_card(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()), a(2).unwrap_or(Json::null()), _ => to_jv(next))
-      told_threads(bus, self.threads)
-      got
-    }
+    "store.getSession" => bus_session_row(bus, s(0))
+    "store.starter" | "store.firstText" | "store.latestThread" | "store.latestThreadIfReady" | "store.sessionThreadById" | "store.pendingCardHeader" | "store.pendingCardHeaderIfReady" | "store.insertMessage" | "store.withdrawCard" | "store.restateCard" | "cardOutcomes.save" =>
+      dispatch_threads_card(bus, self.threads, name, args, async fn(cb, cb_args) {
+        match fn_of(Some(cb)) {
+          Some(f) => Some(of_jv(f(cb_args.map(to_jv))))
+          None => None
+        }
+      }).unwrap_or(Json::null())
     "store.sessionChat" | "store.sessionThread" => (bus.hub_ask.val)(name, jarr)
-    // (card-outbox-worker.ts `save`: the request's write, then its outcome queued for the agents' side's worker, which
-    // closes and restates the card)
-    "cardOutcomes.save" => {
-      match fn_of(a(1)) {
-        Some(f) => ignore(f([]))
-        None => ()
-      }
-      bus.hub_card_outcomes_save(a(0).unwrap_or(Json::null()))
-    }
     // the hub and the agents' side (P5-2's)
     "hub.has" => Json::boolean(["prepareCardPosts", "prepareLatestThreads"].contains(s(0)))
     "hub.identity" => (bus.hub_ask.val)(name, jarr)
@@ -755,14 +653,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         Err(e) => raise e
       }
     "rigs.list" | "rigs.use" | "rigs.done" => bus.rigs_call(name, args)
-    "remote.ask" => {
-      let req = a(1)
-      let (got, _) = bus.call_peer(s(0), opt_text(req, "workspace"), opt_text(req, "method").unwrap_or(""), req.unwrap_or(Json::null()))
-      got
-    }
     // the control plane's workspaces
-    "cloud.station" => jopt(p54_station_id(bus))
-    "cloud.home" => jopt(p54_home(bus))
     "cloud.memberships" => Json::array(self.cloud.memberships)
     "cloud.peers" =>
       match self.cloud.memberships.iter().find_first(m => jtext(m, "workspace") == Some(s(0))) {
@@ -788,23 +679,14 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
       Json::string(named)
     }
-    "cloud.removed" =>
-      Json::boolean(match (bus.cloud_state.val)() {
-        Some(st) => opt_num(opt_field(Some(st), "removed_at")) is Some(_)
-        None => false
-      })
     "cloud.removedLater" => {
       // (said once the station is taken out of its workspace: not before it stops here)
       ignore(bus.stopped.wait())
       Json::null()
     }
     "cloud.unlisten" => Json::null()
-    "grants.home" => jopt(p54_home(bus))
+    "grants.home" => jopt(bus_home(bus))
     "grants.id" => Json::null()
-    "events.tell" => {
-      (bus.events_tell.val)(s(0), a(1).unwrap_or(Json::null()), s(2), a(3).unwrap_or(Json::null()))
-      Json::null()
-    }
     "sources.changed" => {
       (bus.overview_changed.val)()
       Json::null()
@@ -966,17 +848,15 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
   let lid = listening.id
   let port = listening.port
   let accepting : @effect.Deferred[Json] = @effect.Deferred::new()
-  ignore(
-    host.rt.fork_daemon("device forward accept", on_error=e => @host.note("device forward accept failed: \{e}"), async fn() {
-      let accepted = host.accept(lid) catch {
-        _ => {
-          ignore(accepting.succeed(Json::null()))
-          return
-        }
+  fork_bg(host, "device forward accept", async fn() {
+    let accepted = host.accept(lid) catch {
+      _ => {
+        ignore(accepting.succeed(Json::null()))
+        return
       }
-      ignore(accepting.succeed(accepted.id))
-    }),
-  )
+    }
+    ignore(accepting.succeed(accepted.id))
+  })
   let given = p54_tcp_open(host, port)
   let inner_id = accepting.wait()
   host.listen_close(lid)
@@ -986,31 +866,27 @@ async fn p54_reach_forward(d : P54Devices, reach : Json) -> Json {
     raise Failure("the device's connection was not made")
   }
   let inner : P54Conn = { host, id: inner_id, closed: false }
-  ignore(
-    host.rt.fork_daemon("device forward in", on_error=e => @host.note("device forward in failed: \{e}"), async fn() {
-      let read = wire.read
-      while true {
-        let got = read() catch { _ => None }
-        guard got is Some(b) else { break }
-        inner.write(b) catch {
-          _ => break
-        }
+  fork_bg(host, "device forward in", async fn() {
+    let read = wire.read
+    while true {
+      let got = read() catch { _ => None }
+      guard got is Some(b) else { break }
+      inner.write(b) catch {
+        _ => break
       }
-      inner.close()
-    }),
-  )
-  ignore(
-    host.rt.fork_daemon("device forward out", on_error=e => @host.note("device forward out failed: \{e}"), async fn() {
-      let write = wire.write
-      while inner.read() is Some(b) {
-        write(b) catch {
-          _ => break
-        }
+    }
+    inner.close()
+  })
+  fork_bg(host, "device forward out", async fn() {
+    let write = wire.write
+    while inner.read() is Some(b) {
+      write(b) catch {
+        _ => break
       }
-      (wire.close)()
-      inner.close()
-    }),
-  )
+    }
+    (wire.close)()
+    inner.close()
+  })
   { "id": given.id }
 }
 
@@ -1035,10 +911,7 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
         Some(Array(xs)) => xs.filter_map(x => as_num(x).map(n => n.to_int()))
         _ => []
       }
-      match @adb_devices.session_gate(d.dev, s(0), holders, "this device's port is another chat's: ask for the device with device_use in this chat") {
-        Some(why) => Json::string(why)
-        None => Json::null()
-      }
+      jopt(@adb_devices.session_gate(d.dev, s(0), holders, "this device's port is another chat's: ask for the device with device_use in this chat"))
     }
     // (P5-1's rigs open a device's forward here once a chat may use it: sources.ts `forward`)
     "sources.hasForward" => Json::boolean(true)
@@ -1089,10 +962,7 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
       let opened = @effect.timeout(ms, async fn() { p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int()) }) catch {
         _ => None
       }
-      match opened {
-        Some(n) => n.close()
-        None => ()
-      }
+      if opened is Some(n) { n.close() }
       Json::number(p54io_held_ffi().to_double())
     }
     _ =>

@@ -28,7 +28,11 @@
   carry) and its taking up. It makes the composition bus once the store opens (`live_bus.mbt`: what services.ts's
   layers give each other) and starts the live slices on it, a file family each (`live_p5_<N>_*.mbt`, each its
   `start_live_p5_<N>`; the JSON readers and makers, the `Json`/`JValue` conversions, the log line and the other small
-  helpers they share are `live_util.mbt`'s, never a slice's prefixed copy): P5-1 first, then on a whole station P5-2,
+  helpers they share are `live_util.mbt`'s, never a slice's prefixed copy; shared cross-slice infrastructure dispatch
+  and async FS/store/clock/process primitives live in `live_dispatch.mbt` — `host_fs_op`/`host_*`, `dispatch_store`,
+  `dispatch_store_threads`, `dispatch_threads_card`, `dispatch_infra`, `build_updates_world`, `fork_bg`, `bus_after`,
+  `bus_pty_terminal` — any new slice adapter must reuse them rather than re-implementing `fs.*`/`store.*`/`config.*`/
+  `cloud.*`/`events.*`/`os.*`/`platform.*`/`crypto.*` dispatch or adding main-thread sync FS calls): P5-1 first, then on a whole station P5-2,
   P5-3, P5-4 and P5-5 in that order (P5-3 finds the hub's sessions' program there and mounts `#jobs` and `#remote` on
   it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus

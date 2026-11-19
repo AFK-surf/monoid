@@ -171,18 +171,12 @@ pub fn loopback_answer(path : String, query : String?, ready : Bool, place : Jso
   }
   let text = (k : String) => match place {
     Some(Object(m)) =>
-      match m.get(k) {
-        Some(String(s)) => s
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let removed_at = match place {
     Some(Object(m)) =>
-      match m.get("removed_at") {
-        Some(Number(n, ..)) => Some(n)
-        _ => None
-      }
+      opt_num(m.get("removed_at"))
     _ => None
   }
   if place is Some(_) && removed_at is None && text("origin") != "" && text("workspace") != "" {
@@ -384,10 +378,7 @@ fn Station::status(self : Station) -> Json {
       match (b.status_agents.val)() {
         Some(Object(m)) =>
           for k in ["agents", "waiting", "tasks"] {
-            match m.get(k) {
-              Some(v) => status[k] = v
-              None => ()
-            }
+            if m.get(k) is Some(v) { status[k] = v }
           }
         _ => ()
       }
@@ -433,10 +424,7 @@ async fn Station::mcp(self : Station, r : Request) -> Reply {
   // (the agents' side's own, where it says it: its auth, listings, what is outward, `station_tool`)
   match self.bus {
     Some(b) =>
-      match b.mcp_handle.val {
-        Some(h) => return h(r)
-        None => ()
-      }
+      if b.mcp_handle.val is Some(h) { return h(r) }
     None => ()
   }
   guard r.meth == "POST" else { return plain(405, "") }
@@ -631,22 +619,20 @@ fn Station::told(self : Station, line : String) -> Unit {
       // inside a task", at the handover from 0.1.9977 to 0.1.9984, so the next process started over as after a crash.
       match what {
         Object(kept) =>
-          ignore(self.host.rt.fork_daemon("carried", on_error=e => @host.note("carried failed: \{e}"), async fn() { self.parts.take_up(kept) }))
+          fork_bg(self.host, "carried", async fn() { self.parts.take_up(kept) })
         _ => ()
       }
     }
     { "op": String("stop"), .. } => self.stop("asked to stop")
-    { "op": String("handover"), .. } => ignore(self.host.rt.fork_daemon("handover", on_error=e => @host.note("handover failed: \{e}"), async fn() { self.hand_over() }))
+    { "op": String("handover"), .. } => fork_bg(self.host, "handover", async fn() { self.hand_over() })
     { "op": String("drain"), .. } =>
-      ignore(
-        self.host.rt.fork_daemon("drain", on_error=e => @host.note("drain failed: \{e}"), async fn() {
-          let d = match self.bus {
-            Some(b) => (b.drain_wait.val)()
-            None => "idle"
-          }
-          self.control.say({ "drained": Json::string(d) })
-        }),
-      )
+      fork_bg(self.host, "drain", async fn() {
+        let d = match self.bus {
+          Some(b) => (b.drain_wait.val)()
+          None => "idle"
+        }
+        self.control.say({ "drained": Json::string(d) })
+      })
     { "op": String("hup"), .. } => {
       self.lang = station_lang(self.data)
       self.read_place()
@@ -768,35 +754,31 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   }
   match pipe_conn.val {
     Some(conn) => {
-      ignore(
-        host.rt.fork_daemon("launcher pipe out", on_error=e => @host.note("launcher pipe out failed: \{e}"), async fn() {
-          while true {
-            let line = writes.take()
-            conn.socket.write(@utf8.encode(line)) catch {
-              _ => ()
+      fork_bg(host, "launcher pipe out", async fn() {
+        while true {
+          let line = writes.take()
+          conn.socket.write(@utf8.encode(line)) catch {
+            _ => ()
+          }
+        }
+      })
+      fork_bg(host, "launcher pipe in", async fn() {
+        let carry = StringBuilder()
+        while true {
+          let bytes = conn.socket.read() catch { _ => break }
+          guard bytes is Some(bytes) else { break }
+          for ch in @utf8.decode_lossy(bytes) {
+            if ch == '\n' {
+              s.told(carry.to_string())
+              carry.reset()
+            } else {
+              carry.write_char(ch)
             }
           }
-        }),
-      )
-      ignore(
-        host.rt.fork_daemon("launcher pipe in", on_error=e => @host.note("launcher pipe in failed: \{e}"), async fn() {
-          let carry = StringBuilder()
-          while true {
-            let bytes = conn.socket.read() catch { _ => break }
-            guard bytes is Some(bytes) else { break }
-            for ch in @utf8.decode_lossy(bytes) {
-              if ch == '\n' {
-                s.told(carry.to_string())
-                carry.reset()
-              } else {
-                carry.write_char(ch)
-              }
-            }
-          }
-          conn.socket.destroy()
-          s.stop("the launcher is gone")
-        }),
-      )
+        }
+        conn.socket.destroy()
+        s.stop("the launcher is gone")
+      })
     }
     None => ()
   }
@@ -928,13 +910,11 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
       s.admin_port = Some(shown)
       write_whole(path([data, "run", "ports.json"]), "{\"admin\":\{shown}}\n")
       control.say({ "serving": Json::string("admin"), "port": Json::number(port.to_double()) })
-      ignore(
-        host.rt.fork_daemon("loopback", on_error=e => @host.note("loopback failed: \{e}"), async fn() {
-          serve_http(host, id, async fn(r, _conn) {
-            Some(loopback_answer(r.path(), r.query(), s.up && !s.stopped.is_done(), s.place, lang_of_browser(r)))
-          })
-        }),
-      )
+      fork_bg(host, "loopback", async fn() {
+        serve_http(host, id, async fn(r, _conn) {
+          Some(loopback_answer(r.path(), r.query(), s.up && !s.stopped.is_done(), s.place, lang_of_browser(r)))
+        })
+      })
     }
     None => p51_log("WARN", "station", "the loopback port is not had")
   }
@@ -950,127 +930,116 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
     }
   }
   // The agents' door, once the process before is gone (the one handing over writes its handover first).
-  ignore(
-    host.rt.fork_daemon("agents' door", on_error=e => @host.note("agents' door failed: \{e}"), async fn() {
-      let mut waited = 0
-      // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
-      while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
-        // (still taking over, and getting on with it: said now and then, the launcher's limit far off)
-        if waited % 25 == 0 {
-          control.say({ "taking": Json::boolean(true) })
-        }
-        waited += 1
-        @effect.sleep(200) // timer: a retry until the process before is gone (it says nothing when it ends)
-      }
-      if s.stopped.is_done() {
-        return
-      }
-      write_whole(path([data, "run", "hub.json"]), "{\"pid\":\{@drive.pid()}}\n")
-      let handover = path([data, "run", "handover.json"])
-      let handed_over = read_json(handover)
-      if read_text(handover) is Some(_) {
+  fork_bg(host, "agents' door", async fn() {
+    let mut waited = 0
+    // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
+    while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
+      // (still taking over, and getting on with it: said now and then, the launcher's limit far off)
+      if waited % 25 == 0 {
         control.say({ "taking": Json::boolean(true) })
-        @drive.rm_force(handover)
       }
-      let remembered = match read_json(path([data, "run", "mcp.json"])) {
-        Some({ "port": Number(p, ..), .. }) if p > 0.0 && p < 65536.0 => Some(p.to_int())
-        _ => None
+      waited += 1
+      @effect.sleep(200) // timer: a retry until the process before is gone (it says nothing when it ends)
+    }
+    if s.stopped.is_done() {
+      return
+    }
+    write_whole(path([data, "run", "hub.json"]), "{\"pid\":\{@drive.pid()}}\n")
+    let handover = path([data, "run", "handover.json"])
+    let handed_over = read_json(handover)
+    if read_text(handover) is Some(_) {
+      control.say({ "taking": Json::boolean(true) })
+      @drive.rm_force(handover)
+    }
+    let remembered = match read_json(path([data, "run", "mcp.json"])) {
+      Some({ "port": Number(p, ..), .. }) if p > 0.0 && p < 65536.0 => Some(p.to_int())
+      _ => None
+    }
+    let tries = match control.ports {
+      Some(_) => [0]
+      None => {
+        let t = []
+        if remembered is Some(r) { t.push(r) }
+        if own_data(data) {
+          t.push(4750)
+        }
+        t.push(0)
+        t
       }
-      let tries = match control.ports {
-        Some(_) => [0]
+    }
+    let door_opening = Ref(false)
+    let open_agents_door : async () -> String = async fn() {
+      if door_opening.val {
+        return bus.door_ready.wait()
+      }
+      door_opening.val = true
+      if s.stopped.is_done() {
+        return ""
+      }
+      match listen_on(host, control.mcp_fd, tries) {
+        Some((id, port)) => {
+          let shown = match control.ports {
+            Some((m, _)) => m
+            None => port
+          }
+          s.mcp_port = Some(shown)
+          let url = "http://127.0.0.1:\{shown}/mcp"
+          s.parts.door_open(url)
+          write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
+          fork_bg(host, "agents' door http", async fn() {
+            serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
+          })
+          control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
+          ignore(bus.door_ready.succeed(url))
+          url
+        }
         None => {
-          let t = []
-          match remembered {
-            Some(r) => t.push(r)
-            None => ()
-          }
-          if own_data(data) {
-            t.push(4750)
-          }
-          t.push(0)
-          t
+          control.say({ "failed": Json::string("the agents' door is not had") })
+          s.stop("the agents' door is not had")
+          ""
         }
       }
-      let door_opening = Ref(false)
-      let open_agents_door : async () -> String = async fn() {
-        if door_opening.val {
-          return bus.door_ready.wait()
-        }
-        door_opening.val = true
-        if s.stopped.is_done() {
-          return ""
-        }
-        match listen_on(host, control.mcp_fd, tries) {
-          Some((id, port)) => {
-            let shown = match control.ports {
-              Some((m, _)) => m
-              None => port
-            }
-            s.mcp_port = Some(shown)
-            let url = "http://127.0.0.1:\{shown}/mcp"
-            s.parts.door_open(url)
-            write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")
-            ignore(
-              host.rt.fork_daemon("agents' door http", on_error=e => @host.note("agents' door http failed: \{e}"), async fn() {
-                serve_http(host, id, async fn(r, conn) { s.door(r, conn) })
-              }),
-            )
-            control.say({ "serving": Json::string("mcp"), "port": Json::number(port.to_double()) })
-            ignore(bus.door_ready.succeed(url))
-            url
-          }
-          None => {
-            control.say({ "failed": Json::string("the agents' door is not had") })
-            s.stop("the agents' door is not had")
-            ""
-          }
-        }
-      }
-      bus.open_door.val = open_agents_door
-      (bus.take_handover.val)(handed_over) catch {
-        e => @host.note("take handover failed: \{e}")
-      }
-      if !bus.door_ready.is_done() && !s.stopped.is_done() {
-        ignore(open_agents_door())
-      }
-    }),
-  )
+    }
+    bus.open_door.val = open_agents_door
+    (bus.take_handover.val)(handed_over) catch {
+      e => @host.note("take handover failed: \{e}")
+    }
+    if !bus.door_ready.is_done() && !s.stopped.is_done() {
+      ignore(open_agents_door())
+    }
+  })
   // How it is, said every HELD_EVERY_MS from its loop: health.json, the launcher's heartbeat, `stillfail heap`.
-  ignore(
-    host.rt.fork_daemon("heartbeat", on_error=e => @host.note("heartbeat failed: \{e}"), async fn() {
-      let every = held_every_ms()
-      let forewarn = @ops_platform.Forewarn::new()
-      while !s.stopped.is_done() {
-        let started = @host.now()
-        @effect.sleep(every) // timer: a sample of this thread (main.ts HELD_EVERY_MS)
-        let late = (@host.now() - started).to_double() - every.to_double()
-        s.held_ms = if late > 0.0 { late } else { 0.0 }
-        if s.stopped.is_done() {
-          break
-        }
-        s.sampled(late, every)
-        s.forewarned(forewarn)
-        if control.heartbeats {
-          control.say({ "heartbeat": Json::boolean(true) })
-        }
-        s.say_health()
-        ignore(answer_heap_request(data, () => s.heap()))
+  fork_bg(host, "heartbeat", async fn() {
+    let every = held_every_ms()
+    let forewarn = @ops_platform.Forewarn::new()
+    while !s.stopped.is_done() {
+      let started = @host.now()
+      @effect.sleep(every) // timer: a sample of this thread (main.ts HELD_EVERY_MS)
+      let late = (@host.now() - started).to_double() - every.to_double()
+      s.held_ms = if late > 0.0 { late } else { 0.0 }
+      if s.stopped.is_done() {
+        break
       }
-    }),
-  )
+      s.sampled(late, every)
+      s.forewarned(forewarn)
+      if control.heartbeats {
+        control.say({ "heartbeat": Json::boolean(true) })
+      }
+      s.say_health()
+      ignore(answer_heap_request(data, () => s.heap()))
+    }
+  })
   // Where the memory goes, and what runs out: every ten minutes, or every ten seconds with STILLFAIL_MEMLOG (main.ts).
-  ignore(
-    host.rt.fork_daemon("memory", on_error=e => @host.note("memory failed: \{e}"), async fn() {
-      let every = if env_get("STILLFAIL_MEMLOG") is Some(_) { 10_000 } else { 600_000 }
-      while !s.stopped.is_done() {
-        @effect.sleep(every) // timer: a sample of this process and its machine (main.ts `memory: now`)
-        if s.stopped.is_done() {
-          break
-        }
-        s.memory_now()
+  fork_bg(host, "memory", async fn() {
+    let every = if env_get("STILLFAIL_MEMLOG") is Some(_) { 10_000 } else { 600_000 }
+    while !s.stopped.is_done() {
+      @effect.sleep(every) // timer: a sample of this process and its machine (main.ts `memory: now`)
+      if s.stopped.is_done() {
+        break
       }
-    }),
-  )
+      s.memory_now()
+    }
+  })
   // A heap request left while no station ran.
   ignore(answer_heap_request(data, () => s.heap()))
   let why = s.stopped.wait()

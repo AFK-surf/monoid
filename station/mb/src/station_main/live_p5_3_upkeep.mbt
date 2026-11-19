@@ -88,25 +88,21 @@ fn p53_disk_soft(total : Double) -> Double {
 ///|
 fn P53Upkeep::attach(self : P53Upkeep) -> Unit {
   let bus = self.bus
-  ignore(
-    bus.host.rt.fork_daemon("upkeep", on_error=e => @host.note("upkeep failed: \{e}"), async fn() {
-      @effect.sleep(p53_upkeep_first_ms) // timer: a sample of this machine (its disk)
-      while !bus.stopped.is_done() {
-        ignore(self.pass())
-        @effect.sleep(p53_upkeep_every_ms) // timer: a sample of this machine (its disk)
-      }
-    }),
-  )
-  ignore(
-    bus.host.rt.fork_daemon("disk", on_error=e => @host.note("disk failed: \{e}"), async fn() {
-      @effect.sleep(p53_disk_every_ms) // timer: a sample of this machine (its disk)
-      while !bus.stopped.is_done() {
-        ignore(self.relieving())
-        let every = if self.tier == "ok" { p53_disk_every_ms } else { p53_disk_soft_every_ms }
-        @effect.sleep(every) // timer: a sample of this machine (its disk)
-      }
-    }),
-  )
+  fork_bg(bus.host, "upkeep", async fn() {
+    @effect.sleep(p53_upkeep_first_ms) // timer: a sample of this machine (its disk)
+    while !bus.stopped.is_done() {
+      ignore(self.pass())
+      @effect.sleep(p53_upkeep_every_ms) // timer: a sample of this machine (its disk)
+    }
+  })
+  fork_bg(bus.host, "disk", async fn() {
+    @effect.sleep(p53_disk_every_ms) // timer: a sample of this machine (its disk)
+    while !bus.stopped.is_done() {
+      ignore(self.relieving())
+      let every = if self.tier == "ok" { p53_disk_every_ms } else { p53_disk_soft_every_ms }
+      @effect.sleep(every) // timer: a sample of this machine (its disk)
+    }
+  })
 }
 
 ///|
@@ -256,15 +252,12 @@ async fn p53_lstat(host : @host.Host, path : String) -> Json {
 ///|
 /// A directory's names, none where it is not read.
 async fn p53_names(host : @host.Host, dir : String) -> Array[String] {
-  match (try { Ok(host.shell("fs.readdir", { "path": Json::string(dir) })) } catch { e => Err(e) }) {
-    Ok((Array(xs), _)) => xs.filter_map(x => if x is String(n) { Some(n) } else { None })
-    _ => []
-  }
+  host_readdir_names(host, dir).unwrap_or([])
 }
 
 ///|
 async fn p53_remove(host : @host.Host, path : String) -> Unit {
-  ignore(try { Ok(host.shell("fs.remove", { "path": Json::string(path), "recursive": Json::boolean(true) })) } catch { e => Err(e) })
+  host_remove_tree(host, path)
 }
 
 ///|
@@ -361,7 +354,7 @@ async fn p53_orphan_marks(host : @host.Host, dir : String) -> Array[String] {
       None => None
     }
     let there = match path {
-      Some(p) => p53_exists(host, p)
+      Some(p) => host_exists(host, p)
       None => false
     }
     if !there {
@@ -399,52 +392,50 @@ fn P53Watch::working(self : P53Watch, key : String) -> Bool {
 ///|
 fn P53Watch::attach(self : P53Watch) -> Unit {
   let bus = self.bus
-  ignore(
-    bus.host.rt.fork_daemon("workspace watch", on_error=e => @host.note("workspace watch failed: \{e}"), async fn() {
-      let me : Ref[@jobs_host.WorkspaceWatch?] = Ref(None)
-      let watch = @jobs_host.WorkspaceWatch::new(bus.host, bus.data, {
-        now: () => wall_ms().to_double(),
-        readings: async fn() {
-          let out = []
-          let sessions = bus.store.running_sessions() catch { _ => [] }
-          for s in sessions {
-            let key = jtext_or_empty(s, "key")
-            let path = jtext_or_empty(p53_session_row(bus, key), "workspace")
-            if path == "" || path == "/" || path == homedir() {
-              continue
-            }
-            let limit = match me.val {
-              Some(w) => w.limit(key, "")
-              None => @jobs_host.default_limit
-            }
-            match self.remote.reader.size(path, limit~) {
-              Some(size) => out.push(@jobs_host.WorkspaceReading::{ session: key, station: "", name: "this station", path, bytes: size.bytes, complete: size.complete })
-              None => ()
-            }
+  fork_bg(bus.host, "workspace watch", async fn() {
+    let me : Ref[@jobs_host.WorkspaceWatch?] = Ref(None)
+    let watch = @jobs_host.WorkspaceWatch::new(bus.host, bus.data, {
+      now: () => wall_ms().to_double(),
+      readings: async fn() {
+        let out = []
+        let sessions = bus.store.running_sessions() catch { _ => [] }
+        for s in sessions {
+          let key = jtext_or_empty(s, "key")
+          let path = jtext_or_empty(p53_session_row(bus, key), "workspace")
+          if path == "" || path == "/" || path == homedir() {
+            continue
           }
-          out
-        },
-        working: key => self.working(key),
-        notify: async fn(session, text) {
-          bus.hub_notify(session~, text~)
-        },
-        warn: (message, detail) => slice_log("warn", "workspace-size", message, jobj_of([("detail", jstr(detail))])),
-      }) catch {
-        e => {
-          slice_log("warn", "workspace-size", "the workspaces' sizes are not watched", jobj_of([("error", jstr(p53_words(e)))]))
-          return
+          let limit = match me.val {
+            Some(w) => w.limit(key, "")
+            None => @jobs_host.default_limit
+          }
+          match self.remote.reader.size(path, limit~) {
+            Some(size) => out.push(@jobs_host.WorkspaceReading::{ session: key, station: "", name: "this station", path, bytes: size.bytes, complete: size.complete })
+            None => ()
+          }
         }
+        out
+      },
+      working: key => self.working(key),
+      notify: async fn(session, text) {
+        bus.hub_notify(session~, text~)
+      },
+      warn: (message, detail) => slice_log("warn", "workspace-size", message, jobj_of([("detail", jstr(detail))])),
+    }) catch {
+      e => {
+        slice_log("warn", "workspace-size", "the workspaces' sizes are not watched", jobj_of([("error", jstr(p53_words(e)))]))
+        return
       }
-      me.val = Some(watch)
-      self.watch = Some(watch)
-      ignore(self.made.succeed(()))
-      (bus.previous_gone)()
-      ignore(watch.start(bus.host.rt))
-    }),
-  )
+    }
+    me.val = Some(watch)
+    self.watch = Some(watch)
+    ignore(self.made.succeed(()))
+    (bus.previous_gone)()
+    ignore(watch.start(bus.host.rt))
+  })
   bus.parts.tools([self.tool()])
   bus.parts.session_ended(session => match self.watch {
-    Some(w) => ignore(bus.host.rt.fork_daemon("a workspace no longer watched", on_error=e => @host.note("a workspace no longer watched failed: \{e}"), async fn() { w.forget(session) }))
+    Some(w) => fork_bg(bus.host, "a workspace no longer watched", async fn() { w.forget(session) })
     None => ()
   })
 }

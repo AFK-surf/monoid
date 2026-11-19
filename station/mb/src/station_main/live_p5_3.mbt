@@ -100,11 +100,8 @@ fn p53_session_of(bus : LiveBus, context : Json) -> String raise P53Error {
 }
 
 ///|
-/// A session's record, or null.
 fn p53_session_row(bus : LiveBus, key : String) -> Json {
-  bus.store.get_session(key) catch {
-    _ => Json::null()
-  }
+  bus_session_row(bus, key)
 }
 
 ///|
@@ -151,21 +148,13 @@ fn p53_cloud(bus : LiveBus) -> Json {
 }
 
 ///|
-/// The station's id in its workspaces (cloud.json `station`), else its key's.
 fn p53_station_id(bus : LiveBus) -> String {
-  match jtext(p53_cloud(bus), "station") {
-    Some(s) if s != "" => s
-    _ => bus.key.id
-  }
+  bus_station_id_opt(bus).unwrap_or(bus.key.id)
 }
 
 ///|
-/// The home workspace (cloud.json `workspace`), none where the station is in none.
 fn p53_home(bus : LiveBus) -> String? {
-  match jtext(p53_cloud(bus), "workspace") {
-    Some(s) if s != "" => Some(s)
-    _ => None
-  }
+  bus_home(bus)
 }
 
 ///|
@@ -236,10 +225,7 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
         if url == "" {
           raise P53Error("no url")
         }
-        match p.links.preview(url, wall_ms().to_double()) {
-          Some(v) => v
-          None => Json::null()
-        }
+        (p.links.preview(url, wall_ms().to_double())).unwrap_or(Json::null())
       },
     },
   ])
@@ -250,25 +236,21 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
     bus.parts.door({ prefix: "parts", request: async fn(r, _conn) { Some(p53_parts_door(bus, r)) } })
   }
   // (the station stops: the jobs go on, what follows them here ends; the parts' programs and timers let go)
-  ignore(
-    bus.host.rt.fork_daemon("p5-3 stop", on_error=e => @host.note("p5-3 stop failed: \{e}"), async fn() {
-      ignore(bus.stopped.wait())
-      p.jobs.shutdown()
-      ignore(p.program.call(p53_remote_key, "close", [])) catch { _ => () }
-      p.share.close()
-      p.models.written() catch { _ => () }
-      p.accounts.close()
-      p.search.close()
-      p.program.close()
-    }),
-  )
+  fork_bg(bus.host, "p5-3 stop", async fn() {
+    ignore(bus.stopped.wait())
+    p.jobs.shutdown()
+    ignore(p.program.call(p53_remote_key, "close", [])) catch { _ => () }
+    p.share.close()
+    p.models.written() catch { _ => () }
+    p.accounts.close()
+    p.search.close()
+    p.program.close()
+  })
   // (what waits for the agents' door: a job's notify place, the jobs taken up)
-  ignore(
-    bus.host.rt.fork_daemon("p5-3 door", on_error=e => @host.note("p5-3 door failed: \{e}"), async fn() {
-      let url = bus.door_ready.wait()
-      p.jobs.door_open(url)
-    }),
-  )
+  fork_bg(bus.host, "p5-3 door", async fn() {
+    let url = bus.door_ready.wait()
+    p.jobs.door_open(url)
+  })
 }
 
 ///|
@@ -281,15 +263,9 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     Array(xs) => if i < xs.length() { xs[i] } else { Json::null() }
     _ => jfield(arg, key)
   }
-  let str = (i : Int, key : String) => match at(i, key) {
-    String(t) => Some(t)
-    _ => None
-  }
+  let str = (i : Int, key : String) => as_text(at(i, key))
   let text = (i : Int, key : String) => str(i, key).unwrap_or("")
-  let num = (i : Int, key : String) => match at(i, key) {
-    Number(n, ..) => Some(n)
-    _ => None
-  }
+  let num = (i : Int, key : String) => as_num(at(i, key))
   let strs = (v : Json) => match v {
     Array(xs) => xs.filter_map(x => if x is String(t) { Some(t) } else { None })
     _ => []
@@ -339,10 +315,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "jobs.json" => @jobs_host.job_json(at(0, "job"))
     "jobs.log" => jstr(self.jobs.log(text(0, "id"), num(1, "lines").unwrap_or(50.0).to_int()))
     "jobs.workspace" =>
-      match jtext(p53_session_row(self.bus, text(0, "session")), "workspace") {
-        Some(w) => jstr(w)
-        None => Json::null()
-      }
+      jopt(jtext(p53_session_row(self.bus, text(0, "session")), "workspace"))
     "jobs.say" => {
       self.jobs.tell_session(text(0, "session"), text(1, "text"))
       Json::null()
@@ -473,10 +446,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
       Json::null()
     }
     "links/preview.linkPreview" =>
-      match p53_link_previews(self.bus).preview(text(0, "url"), wall_ms().to_double()) {
-        Some(v) => v
-        None => Json::null()
-      }
+      (p53_link_previews(self.bus).preview(text(0, "url"), wall_ms().to_double())).unwrap_or(Json::null())
     "jobs/preview.proxyPreview" => {
       // [method, headers [[name, value]], body {$bytes} or null, port, target, lang]
       let headers = match at(1, "headers") {

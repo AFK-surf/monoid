@@ -35,10 +35,7 @@ fn core_strs(v : Json) -> Array[String] {
 
 ///|
 fn core_items(v : Json) -> Array[Json] {
-  match v {
-    Array(xs) => xs
-    _ => []
-  }
+  jitems(v)
 }
 
 ///|
@@ -122,13 +119,7 @@ fn P55::replica_world(self : P55, answer : async (String, Array[@jsjson.JValue])
     },
     clock: {
       now: () => wall_ms().to_double(),
-      after: (ms, f) => {
-        let fiber = bus.host.rt.fork(async fn() {
-          @effect.sleep(if ms > 0.0 { ms.to_int() } else { 0 }) // timer: the copies' own (a retry's backoff, a deadline)
-          f()
-        })
-        () => fiber.interrupt()
-      },
+      after: (ms, f) => bus_after(bus.host, ms, f),
     },
     log: (level, part, words, fields) => slice_log(level, part, words, of_jv(fields)),
     words: @replica_coord.station_words(to_jv(zh), to_jv(en)),
@@ -237,10 +228,7 @@ async fn P55::start_copies(self : P55) -> Unit {
       say: async fn(session, text) { ignore(self.jobs("jobs.say", [Json::string(session), Json::string(text)])) },
     }),
     agent_home: Some(async fn(ws) {
-      match self.hub("hub.agentHome", [Json::string(ws)]) {
-        String(h) => Some(h)
-        _ => None
-      }
+      as_text(self.hub("hub.agentHome", [Json::string(ws)]))
     }),
     drives: (station, session) => match asks_ref.val {
       Some(a) => a.drives(station, session)
@@ -376,10 +364,7 @@ async fn P55::start_copies(self : P55) -> Unit {
 
 ///|
 fn at_thread(at : Json) -> Double {
-  match jfield(at, "thread") {
-    Number(n, ..) => n
-    _ => 0.0
-  }
+  as_num(jfield(at, "thread")).unwrap_or(0.0)
 }
 
 ///|
@@ -650,10 +635,7 @@ fn P55::export_runner(self : P55, db : String, replica : String, data : String, 
         let p = spawn(host, program, argv, stdin_piped=true, stdout=Piped, stderr=Ignored)
         proc.val = Some(p)
         pending.reset()
-        match places.val {
-          Some(pl) => ignore(ask_now(p, "places", [("places", pl)]))
-          None => ()
-        }
+        if places.val is Some(pl) { ignore(ask_now(p, "places", [("places", pl)])) }
         p
       }
     }

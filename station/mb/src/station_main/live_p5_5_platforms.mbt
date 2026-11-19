@@ -520,7 +520,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
         Some(async fn(meth, params) {
           let v = of_jv((chat.call)("api", [to_jv(Json::string(meth)), of_feishu(params)]))
           match jtext(v, "file") {
-            Some(h) => File(hex_bytes(h), jtext_or_empty(v, "name"), jtext_or_empty(v, "type"))
+            Some(h) => File(unhex_lenient(h), jtext_or_empty(v, "name"), jtext_or_empty(v, "type"))
             None => Data(@feishu.JV::of_json(v))
           }
         })
@@ -689,20 +689,14 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
           }
         },
         ws_of: async fn(s) {
-          match self.hub("hub.wsOf", [of_jv(s)]) {
-            String(w) => Some(w)
-            _ => None
-          }
+          as_text(self.hub("hub.wsOf", [of_jv(s)]))
         },
         deliver: async fn(thread, n, sessions, text, ws) {
           ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(Json::string(_))), Json::string(text), jopt(ws)]))
         },
         complete_router_write: async fn(id) { self.hub("store.completeRouterWrite", [Json::string(id)]) is True },
         say: async fn(thread, author, text, _hooks) {
-          match self.hub("hub.say", [Json::number(thread), Json::string(author), Json::string(text)]) {
-            Number(n, ..) => n
-            _ => 0.0
-          }
+          as_num(self.hub("hub.say", [Json::number(thread), Json::string(author), Json::string(text)])).unwrap_or(0.0)
         },
       },
       previous_exited: async fn() { (bus.previous_gone)() },
@@ -744,10 +738,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
         }
       },
       pending_count: async fn(key) {
-        match self.hub("store.pendingCount", [Json::string(key)]) {
-          Number(n, ..) => n
-          _ => 0.0
-        }
+        as_num(self.hub("store.pendingCount", [Json::string(key)])).unwrap_or(0.0)
       },
       thread_at: async fn(surface, ch, ts) { (self.connect_threads_store().thread_at)(surface, ch, ts) },
       leave_thread: async fn(thread, key) { ignore(self.hub("store.leaveThread", [Json::number(thread), Json::string(key)])) },
@@ -759,16 +750,10 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
     },
     _connect => [],
     async fn() {
-      match connects_ref.val {
-        Some(c) => c.reconcile()
-        None => ()
-      }
+      if connects_ref.val is Some(c) { c.reconcile() }
     },
     async fn() {
-      match connects_ref.val {
-        Some(c) => c.stop_all()
-        None => ()
-      }
+      if connects_ref.val is Some(c) { c.stop_all() }
     },
   )
   parts_ref.val = Some(parts)
@@ -868,7 +853,7 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
   {
     bind: async fn(options) {
       let o = of_jv(options)
-      let key = hex_bytes(jtext_or_empty(o, "secretKey"))
+      let key = unhex_lenient(jtext_or_empty(o, "secretKey"))
       let alpns = core_strs(jfield(o, "alpns")).map(a => Json::string(@drive.hex(@utf8.encode(a))))
       let (bound, _) = host.shell(
         "iroh.bind",

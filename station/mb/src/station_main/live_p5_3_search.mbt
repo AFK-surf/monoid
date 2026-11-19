@@ -114,10 +114,7 @@ async fn P53Search::linked(self : P53Search, groups : Json) -> Json {
 ///|
 /// The program looking, started where it is not (its answers each given to the search it is for).
 fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
-  match self.proc {
-    Some(p) => return p
-    None => ()
-  }
+  if self.proc is Some(p) { return p }
   if self.closed {
     raise P53Error("the search is stopped")
   }
@@ -133,47 +130,43 @@ fn P53Search::looker(self : P53Search) -> Proc raise P53Error {
     SysError(why) => raise P53Error(why)
   }
   self.proc = Some(proc)
-  ignore(
-    self.bus.host.rt.fork_daemon("the search's answers", on_error=e => @host.note("the search's answers failed: \{e}"), async fn() {
-      let line = @buffer.Buffer()
-      while true {
-        match proc.events.take() {
-          Out(b) =>
-            for i in 0..<b.length() {
-              if b[i] == b'\n' {
-                self.answered(p53_utf8(line.to_bytes()))
-                line.reset()
-              } else {
-                line.write_byte(b[i])
-              }
+  fork_bg(self.bus.host, "the search's answers", async fn() {
+    let line = @buffer.Buffer()
+    while true {
+      match proc.events.take() {
+        Out(b) =>
+          for i in 0..<b.length() {
+            if b[i] == b'\n' {
+              self.answered(p53_utf8(line.to_bytes()))
+              line.reset()
+            } else {
+              line.write_byte(b[i])
             }
-          Err(_) => ()
-          Exit(_, _) => break
-        }
+          }
+        Err(_) => ()
+        Exit(_, _) => break
       }
-      if self.proc is Some(p) && physical_equal(p, proc) {
-        self.proc = None
-      }
-      for id, w in self.waiting {
-        ignore(w.fail(P53Error("the search stopped")))
-        ignore(id)
-      }
-      self.waiting.clear()
-    }),
-  )
+    }
+    if self.proc is Some(p) && physical_equal(p, proc) {
+      self.proc = None
+    }
+    for id, w in self.waiting {
+      ignore(w.fail(P53Error("the search stopped")))
+      ignore(id)
+    }
+    self.waiting.clear()
+  })
   // (let go once none was asked for IDLE_MS)
-  ignore(
-    self.bus.host.rt.fork_daemon("the search's idle", on_error=e => @host.note("the search's idle failed: \{e}"), async fn() {
-      while self.proc is Some(p) && physical_equal(p, proc) {
-        @effect.sleep(p53_search_idle_ms / 4) // timer: a deadline (an idle program's process let go)
-        if self.waiting.length() == 0 && p53_clock() - self.asked_at >= p53_search_idle_ms.to_double() {
-          proc.end_input()
-          ignore(kill(proc.pid, "SIGTERM"))
-          break
-        }
+  fork_bg(self.bus.host, "the search's idle", async fn() {
+    while self.proc is Some(p) && physical_equal(p, proc) {
+      @effect.sleep(p53_search_idle_ms / 4) // timer: a deadline (an idle program's process let go)
+      if self.waiting.length() == 0 && p53_clock() - self.asked_at >= p53_search_idle_ms.to_double() {
+        proc.end_input()
+        ignore(kill(proc.pid, "SIGTERM"))
+        break
       }
-    }),
-  )
+    }
+  })
   proc
 }
 
@@ -209,50 +202,48 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
   }
   self.preparing[builder] = true
   let bus = self.bus
-  ignore(
-    bus.host.rt.fork_daemon("search's builder", on_error=e => @host.note("search's builder failed: \{e}"), async fn() {
-      defer self.preparing.remove(builder)
-      let proc = spawn(
-        bus.host,
-        reader_program(bus),
-        ["--builder", builder, "--db", @nodepath.join(sep(), [bus.data, "stillfail.db"])],
-        stdin_piped=true,
-        stdout=Piped,
-        stderr=Ignored,
-      ) catch {
-        _ => return
-      }
-      let ask = (m : Json) => ignore(proc.write(@utf8.encode(m.stringify() + "\n")))
-      ask(jobj_of([("scope", jstr("search"))]))
-      let line = @buffer.Buffer()
-      let mut going = true
-      while going {
-        match proc.events.take() {
-          Out(b) =>
-            for i in 0..<b.length() {
-              if b[i] != b'\n' {
-                line.write_byte(b[i])
-                continue
-              }
-              let said = attempt(() => @json.parse(p53_utf8(line.to_bytes()))).unwrap_or(Json::null())
-              line.reset()
-              if jtrue(said, "take") {
-                ask(jobj_of([("permit", jb(true))]))
-              } else if jtrue(said, "done") || jtext(said, "error") is Some(_) || bus.stopped.is_done() {
-                going = false
-              } else {
-                @effect.sleep(50) // timer: a pause between a builder's steps (REQUEST_BACKFILL_PAUSE_MS), yielding to writes
-                ask(jobj_of([("scope", jstr("search"))]))
-              }
+  fork_bg(bus.host, "search's builder", async fn() {
+    defer self.preparing.remove(builder)
+    let proc = spawn(
+      bus.host,
+      reader_program(bus),
+      ["--builder", builder, "--db", @nodepath.join(sep(), [bus.data, "stillfail.db"])],
+      stdin_piped=true,
+      stdout=Piped,
+      stderr=Ignored,
+    ) catch {
+      _ => return
+    }
+    let ask = (m : Json) => ignore(proc.write(@utf8.encode(m.stringify() + "\n")))
+    ask(jobj_of([("scope", jstr("search"))]))
+    let line = @buffer.Buffer()
+    let mut going = true
+    while going {
+      match proc.events.take() {
+        Out(b) =>
+          for i in 0..<b.length() {
+            if b[i] != b'\n' {
+              line.write_byte(b[i])
+              continue
             }
-          Err(_) => ()
-          Exit(_, _) => going = false
-        }
+            let said = attempt(() => @json.parse(p53_utf8(line.to_bytes()))).unwrap_or(Json::null())
+            line.reset()
+            if jtrue(said, "take") {
+              ask(jobj_of([("permit", jb(true))]))
+            } else if jtrue(said, "done") || jtext(said, "error") is Some(_) || bus.stopped.is_done() {
+              going = false
+            } else {
+              @effect.sleep(50) // timer: a pause between a builder's steps (REQUEST_BACKFILL_PAUSE_MS), yielding to writes
+              ask(jobj_of([("scope", jstr("search"))]))
+            }
+          }
+        Err(_) => ()
+        Exit(_, _) => going = false
       }
-      proc.end_input()
-      ignore(kill(proc.pid, "SIGTERM"))
-    }),
-  )
+    }
+    proc.end_input()
+    ignore(kill(proc.pid, "SIGTERM"))
+  })
 }
 
 ///|
@@ -341,10 +332,7 @@ fn p53_hit_line(h : Json) -> String {
     Some(t) if t != "" => where_.push("in “\{t}”")
     _ => ()
   }
-  match jtext(h, "link") {
-    Some(l) => where_.push(l)
-    None => ()
-  }
+  if jtext(h, "link") is Some(l) { where_.push(l) }
   match jnum_of(h, "seq") {
     Some(n) => where_.push("message #\{n.to_int()}")
     None => ()
@@ -357,10 +345,7 @@ fn p53_hit_line(h : Json) -> String {
     Some(j) => where_.push("job \{j}\{match jnum_of(h, "port") { Some(p) => " (port \{p.to_int()})"; None => "" }}")
     None => ()
   }
-  match jtext(h, "path") {
-    Some(p) => where_.push(p)
-    None => ()
-  }
+  if jtext(h, "path") is Some(p) { where_.push(p) }
   if jtrue(h, "archived") {
     where_.push("archived")
   }
@@ -591,7 +576,7 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
         left = true
         break
       }
-      let listed = p53_readdir_types(host, dir)
+      let listed = host_readdir_types(host, dir).unwrap_or([])
       let dirs = []
       let files = []
       for e in listed {
@@ -780,17 +765,11 @@ fn p53_skill_selection(args : Json) -> (String, String) raise P53Error {
 ///|
 /// skills.ts `formatSkillFromCatalog`: a skill's file as `skill_read` gives it.
 fn p53_format_skill(catalog : Json, name : String, file : String) -> String raise P53Error {
-  let skills = match jfield(catalog, "skills") {
-    Array(xs) => xs
-    _ => []
-  }
+  let skills = jitems(jfield(catalog, "skills"))
   guard skills.iter().find_first(s => jtext(s, "name") == Some(name)) is Some(skill) else {
     raise P53Error("No skill \{jstr(name).stringify()} in this workspace on this station")
   }
-  let files = match jfield(skill, "files") {
-    Array(xs) => xs
-    _ => []
-  }
+  let files = jitems(jfield(skill, "files"))
   let text = if file == "SKILL.md" {
     jtext(skill, "text")
   } else {

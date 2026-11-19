@@ -92,10 +92,7 @@ let transcript_watch_ms : Int = 200
 /// live.ts `#arm`: the transcript written to now (its file, or its `.zst` while packed) watched, each change said to
 /// the program (`soon`). The shell keeps no watch of a file: its size and time looked at every TRANSCRIPT_WATCH_MS.
 fn P52::arm(self : P52, key : String, file : String) -> Unit {
-  match transcript_watches.get(key) {
-    Some(going) => going.val = false
-    None => ()
-  }
+  if transcript_watches.get(key) is Some(going) { going.val = false }
   let going = Ref(true)
   transcript_watches[key] = going
   let host = self.host
@@ -106,25 +103,23 @@ fn P52::arm(self : P52, key : String, file : String) -> Unit {
       Err(_) => ""
     }
   }
-  ignore(
-    host.rt.fork_daemon("a transcript watched", on_error=e => @host.note("a transcript watched failed: \{e}"), async fn() {
-      let mut before = stamp()
-      while going.val && !self.closed {
-        @effect.sleep(transcript_watch_ms) // timer: an outside system that offers no push (a runtime's transcript; the shell keeps no watch)
-        if !going.val {
-          break
-        }
-        let now = stamp()
-        if now != before {
-          before = now
-          match self.actors_program {
-            Some(p) => ignore(p.post({ "call": ji(0), "actor": jstr("#live"), "method": jstr("soon"), "args": Json::array([jstr(key)]) }))
-            None => ()
-          }
+  fork_bg(host, "a transcript watched", async fn() {
+    let mut before = stamp()
+    while going.val && !self.closed {
+      @effect.sleep(transcript_watch_ms) // timer: an outside system that offers no push (a runtime's transcript; the shell keeps no watch)
+      if !going.val {
+        break
+      }
+      let now = stamp()
+      if now != before {
+        before = now
+        match self.actors_program {
+          Some(p) => ignore(p.post({ "call": ji(0), "actor": jstr("#live"), "method": jstr("soon"), "args": Json::array([jstr(key)]) }))
+          None => ()
         }
       }
-    }),
-  )
+    }
+  })
 }
 
 ///|
@@ -240,14 +235,8 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
 /// parts by their TypeScript names. None where it is the conversations' world's to answer.
 async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewer? : Json) -> Json? {
   let a = (i : Int) => args.get(i).unwrap_or(Json::null())
-  let s = (i : Int) => match a(i) {
-    String(x) => x
-    _ => ""
-  }
-  let opt = (i : Int) => match a(i) {
-    String(x) => Some(x)
-    _ => None
-  }
+  let s = (i : Int) => as_text(a(i)).unwrap_or("")
+  let opt = (i : Int) => as_text(a(i))
   let reader = self.bus.reader_ask.val
   let hub = self.the_hub()
   let answered = match name {
@@ -290,14 +279,8 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       match request.get("$file") {
         Some(f) => {
           request.remove("$file")
-          let from = match jfield(f, "offset") {
-            Number(n, ..) => n
-            _ => 0.0
-          }
-          let end = match jfield(f, "end") {
-            Number(n, ..) => n
-            _ => 0.0
-          }
+          let from = as_num(jfield(f, "offset")).unwrap_or(0.0)
+          let end = as_num(jfield(f, "end")).unwrap_or(0.0)
           let piece = p51_file_piece(self.host, jtext(f, "path").unwrap_or(""), from, (end - from).to_int())
           request["$bytes"] = Json::string(@base64.encode(piece))
         }
@@ -352,10 +335,7 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     "clones.indexRepos" => self.repo_index_repos(Json::null())
     "clones.run" => self.clone_run(s(0), jitems(a(1)).filter_map(x => match x { String(t) => Some(t); _ => None }), a(2))
     "clones.kill" => {
-      match clones_running.get(s(0)) {
-        Some(pid) => ignore(kill(pid, "SIGKILL"))
-        None => ()
-      }
+      if clones_running.get(s(0)) is Some(pid) { ignore(kill(pid, "SIGKILL")) }
       Json::null()
     }
     "clones.changed" => {
@@ -440,10 +420,7 @@ fn P52::chat_title_of(self : P52, session : String) -> String {
     Object(_) =>
       self.title_of(
         jfield(chat, "thread"),
-        match jfield(chat, "firstText") {
-          String(t) => Some(t)
-          _ => None
-        },
+        as_text(jfield(chat, "firstText")),
         None,
       )
     _ =>
@@ -486,27 +463,25 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
 /// agents.ts `hub.onClose`, as the parts it names are here: each on the bus but the screens' hands, this side's own.
 fn P52::on_closed(self : P52, key : String) -> Unit {
   let bus = self.bus
-  ignore(
-    self.host.rt.fork_daemon("a session closed", on_error=e => @host.note("a session closed failed: \{e}"), async fn() {
-      ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
+  fork_bg(self.host, "a session closed", async fn() {
+    ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
+      _ => ()
+    }
+    let gone = (self.store("getSession", [Json::string(key)]) catch { _ => Json::null() }) is Null
+    if gone {
+      ignore((bus.jobs_ask.val)("workspaceWatch.forget", Json::array([Json::string(key)]))) catch {
         _ => ()
       }
-      let gone = (self.store("getSession", [Json::string(key)]) catch { _ => Json::null() }) is Null
-      if gone {
-        ignore((bus.jobs_ask.val)("workspaceWatch.forget", Json::array([Json::string(key)]))) catch {
-          _ => ()
-        }
-      }
-      match self.computer {
-        Some(c) => c.close_session(key) catch { _ => () }
-        None => ()
-      }
-      ignore(bus.forwards_call("forwards.closeSession", [Json::string(key)])) catch {
-        _ => ()
-      }
-      bus.parts.end_session(key)
-    }),
-  )
+    }
+    match self.computer {
+      Some(c) => c.close_session(key) catch { _ => () }
+      None => ()
+    }
+    ignore(bus.forwards_call("forwards.closeSession", [Json::string(key)])) catch {
+      _ => ()
+    }
+    bus.parts.end_session(key)
+  })
 }
 
 ///|
@@ -528,10 +503,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
       meth: rr.verb,
       path: rr.pattern,
       answer: async fn(asked : Json) -> Json {
-        let params = jitems(jfield(asked, "params")).map(p => match p {
-          String(s) => Some(s)
-          _ => None
-        })
+        let params = jitems(jfield(asked, "params")).map(p => as_text(p))
         let ask : @mcp_tools.ReportAsk = {
           body: @utf8.encode(jtext(asked, "rawBody").unwrap_or("")),
           lang: jtext(asked, "lang").unwrap_or(self.lang()),
@@ -554,7 +526,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
   bus.parts.overview("feedback", async fn(_viewer, _lang) { Json::boolean((part.overview)()) }) catch {
     _ => ()
   }
-  let tell = () => ignore(self.host.rt.fork_daemon("fixed bug reports", on_error=e => @host.note("fixed bug reports failed: \{e}"), async fn() { (part.telling_fixed)() }))
+  let tell = () => fork_bg(self.host, "fixed bug reports", async fn() { (part.telling_fixed)() })
   ignore(
     self.host.rt.fork_daemon("fixed bug reports, later", on_error=e => @host.note("fixed bug reports, later failed: \{e}"), async fn() {
       @effect.sleep(part.told_after_ms) // timer: a deadline (what came out while the station was not running, a while after it starts)

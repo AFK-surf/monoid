@@ -22,10 +22,7 @@ fn arg_or_null(args : Array[Json], i : Int) -> Json {
 
 ///|
 fn arg_opt_text(args : Array[Json], i : Int) -> String? {
-  match args.get(i) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
+  opt_str(args.get(i))
 }
 
 ///|
@@ -304,17 +301,15 @@ async fn P52::repo_index_repos(self : P52, walked : Json) -> Json {
   let (repos, due) = self.repo_index.repos(w)
   if due && !self.repo_walking {
     self.repo_walking = true
-    ignore(
-      self.host.rt.fork_daemon("repositories' index", on_error=e => @host.note("repositories' index failed: \{e}"), async fn() {
-        self.repo_index.walk(w) catch {
-          e => slice_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
-        }
-        self.repo_walking = false
-        ignore(self.called(walked, [])) catch {
-          _ => ()
-        }
-      }),
-    )
+    fork_bg(self.host, "repositories' index", async fn() {
+      self.repo_index.walk(w) catch {
+        e => slice_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
+      }
+      self.repo_walking = false
+      ignore(self.called(walked, [])) catch {
+        _ => ()
+      }
+    })
   }
   Json::array(repos.map(of_jv))
 }
@@ -326,19 +321,17 @@ fn P52::wall_every(self : P52, ms : Double, f : Json) -> Json {
   let handle = "wall.every.stop:\{self.ids_seq.val}"
   let going = Ref(true)
   self.everies[handle] = going
-  ignore(
-    self.host.rt.fork_daemon("a route's heartbeat", on_error=e => @host.note("a route's heartbeat failed: \{e}"), async fn() {
-      while going.val {
-        @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a heartbeat a route keeps (usage.ts)
-        if !going.val {
-          break
-        }
-        ignore(self.called(f, [])) catch {
-          _ => ()
-        }
+  fork_bg(self.host, "a route's heartbeat", async fn() {
+    while going.val {
+      @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a heartbeat a route keeps (usage.ts)
+      if !going.val {
+        break
       }
-    }),
-  )
+      ignore(self.called(f, [])) catch {
+        _ => ()
+      }
+    }
+  })
   { "$ref": Json::string(handle) }
 }
 
@@ -515,10 +508,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
             self.bus.db,
             arg_or_null(args, 0),
             arg_or_null(args, 1),
-            match args.get(2) {
-              Some(Number(n, ..)) => n.to_int()
-              _ => 10
-            },
+            opt_num(args.get(2)).map(n => n.to_int()).unwrap_or(10),
           ),
         )
       "fn.threadRefs" => Json::array(@store_sessions.thread_refs(self.bus.db, arg_or_null(args, 0), jitems(arg_or_null(args, 1))))
@@ -740,10 +730,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           @session_storage.Station::new(async fn(name, a) {
             match name {
               "policy.mine" => {
-                let session = match a.get(0) {
-                  Some(String(x)) => x
-                  _ => ""
-                }
+                let session = opt_str(a.get(0)).unwrap_or("")
                 Json::boolean(@api_routes.sees(viewer_jv, @jsjson.JV::of_json(jopt(self.ws_of(session)))))
               }
               _ =>
@@ -854,10 +841,7 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
     if @adb_devices.given_title(to_jv(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
       return Some(without)
     }
-    let first = match self.store("firstText", [jfield(own, "id")]) {
-      String(t) => Some(t)
-      _ => None
-    }
+    let first = as_text(self.store("firstText", [jfield(own, "id")]))
     let with_text = self.title_of(own, first, None)
     if with_text == without {
       return Some(without)

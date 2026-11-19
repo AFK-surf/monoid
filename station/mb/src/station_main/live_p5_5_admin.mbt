@@ -52,16 +52,8 @@ fn slack_error_of(v : Json) -> Error {
 }
 
 ///|
-fn arg_at(a : Array[Json], i : Int) -> Json {
-  a.get(i).unwrap_or(Json::null())
-}
-
-///|
 fn text_at(a : Array[Json], i : Int) -> String {
-  match a.get(i) {
-    Some(String(s)) => s
-    _ => ""
-  }
+  arg_str(a, i)
 }
 
 ///|

@@ -92,58 +92,17 @@ fn P53Jobs::get(self : P53Jobs, id : String) -> Json {
 
 ///|
 fn p53_a(args : Array[Json], i : Int) -> Json {
-  if i < args.length() {
-    args[i]
-  } else {
-    Json::null()
-  }
+  arg_at(args, i)
 }
 
 ///|
 fn p53_as(args : Array[Json], i : Int) -> String {
-  match p53_a(args, i) {
-    String(s) => s
-    _ => ""
-  }
+  arg_str(args, i)
 }
 
 ///|
 fn p53_ai(args : Array[Json], i : Int) -> Int {
-  match p53_a(args, i) {
-    Number(n, ..) => n.to_int()
-    _ => 0
-  }
-}
-
-///|
-/// The jobs' asks of the store (store.ts's, by their names) the program makes, shared by the remote tasks'.
-fn p53_store_asked(store : @store_sessions.Store, f : String, args : Array[Json]) -> Json raise {
-  let a = (i : Int) => p53_a(args, i)
-  match f {
-    "now" => jn(store.now().to_double())
-    "getJob" => store.get_job(a(0))
-    "jobByToken" => store.job_by_token(a(0))
-    "jobEnded" => {
-      store.job_ended(a(0), a(1), a(2))
-      Json::null()
-    }
-    "addJobNotice" => {
-      store.add_job_notice(a(0), a(1))
-      Json::null()
-    }
-    "runningJobsAtLeast" => jb(store.running_jobs_at_least(a(0), as_num(a(1)).unwrap_or(0.0)))
-    "jobAtPort" => store.job_at_port(a(0))
-    "remoteQueueJobs" => Json::array(store.remote_queue_jobs())
-    "forgetProcess" => {
-      store.forget_process(a(0))
-      Json::null()
-    }
-    "jobsUp" => Json::array(store.jobs_up())
-    "jobNotices" => Json::array(store.job_notices(a(0), a(1)))
-    "getSession" => store.get_session(p53_as(args, 0))
-    "liveSessions" => Json::array(store.live_sessions())
-    _ => raise P53Error("no store method \{f}")
-  }
+  arg_int(args, i)
 }
 
 ///|
@@ -151,12 +110,12 @@ fn p53_store_asked(store : @store_sessions.Store, f : String, args : Array[Json]
 async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json {
   let host = self.bus.host
   if f.has_prefix("store.") {
-    return p53_store_asked(self.store(), f[6:].to_owned(), args)
+    return dispatch_store(self.bus, f[6:].to_owned(), args)
   }
-  let a = (i : Int) => p53_a(args, i)
-  let s = (i : Int) => p53_as(args, i)
+  let a = (i : Int) => arg_at(args, i)
+  let s = (i : Int) => arg_str(args, i)
   match f {
-    "node.isDir" => jb(p53_is_dir(host, s(0)))
+    "node.isDir" => jb(host_is_dir(host, s(0)))
     "node.newJob" => self.made(s(0), s(1), s(2), s(3), a(4), a(5) is True, a(6), a(7), a(8))
     "node.spawn" => {
       let extra : Map[String, String] = Map([])
@@ -176,17 +135,14 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
     }
     "node.pressure" => jopt(p53_pressure(host))
     "node.inputIdle" =>
-      match p53_input_idle(host) {
-        Some(ms) => jn(ms)
-        None => Json::null()
-      }
+      (p53_input_idle(host)).map(jn).unwrap_or(Json::null())
     "node.pidAlive" => jb(pid_alive(p53_ai(args, 0)))
     "node.keepClaims" => {
       self.machine.keep_claims(a(0))
       Json::null()
     }
     "node.tail" => jstr(@jobs_host.tail(host, s(0), p53_ai(args, 1)))
-    "node.lost" => jb(p53_exists(host, self.machine.lost_file(s(0))))
+    "node.lost" => jb(host_exists(host, self.machine.lost_file(s(0))))
     "node.append" => {
       p53_append(host, s(0), s(1))
       Json::null()
@@ -233,17 +189,11 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
       let started = jnum_of(job, "startedAt").unwrap_or(now)
       self.machine.follow(id, pgid, now - (if now - started > 0.0 { now - started } else { 0.0 }))
       self.groups[id] = pgid
-      match jnum_of(job, "port") {
-        Some(p) => self.watch_ready(id, pgid, p.to_int())
-        None => ()
-      }
+      if jnum_of(job, "port") is Some(p) { self.watch_ready(id, pgid, p.to_int()) }
       Json::null()
     }
     "node.readExit" =>
-      match self.machine.read_exit(s(0)) {
-        Some(c) => jn(c)
-        None => Json::null()
-      }
+      (self.machine.read_exit(s(0))).map(jn).unwrap_or(Json::null())
     _ => raise P53Error("no jobs' ask \{f}")
   }
 }
@@ -255,7 +205,7 @@ fn P53Jobs::told(self : P53Jobs, f : String, args : Array[Json]) -> Unit {
     "log" => slice_log(p53_as(args, 0), "jobs", p53_as(args, 1), p53_a(args, 2))
     "node.endGroup" => {
       let pgid = p53_ai(args, 0)
-      ignore(self.bus.host.rt.fork_daemon("a group left behind", on_error=e => @host.note("a group left behind failed: \{e}"), async fn() { self.machine.end_group(pgid, @jobs_host.stop_grace_ms) }))
+      fork_bg(self.bus.host, "a group left behind", async fn() { self.machine.end_group(pgid, @jobs_host.stop_grace_ms) })
     }
     _ => ()
   }
@@ -434,7 +384,7 @@ fn P53Jobs::attach(self : P53Jobs) -> Unit {
   // (a web service on this machine, through its preview's path: any method, its answer as it comes)
   bus.parts.door({ prefix: "preview", request: async fn(r, conn) { self.preview(r, conn) } })
   bus.parts.session_ended(session => {
-    ignore(bus.host.rt.fork_daemon("jobs of a session ended", on_error=e => @host.note("jobs of a session ended failed: \{e}"), async fn() { self.session_ended(session) }))
+    fork_bg(bus.host, "jobs of a session ended", async fn() { self.session_ended(session) })
   })
   bus.parts.routes([
     {
@@ -557,10 +507,7 @@ async fn P53Jobs::queue_of(self : P53Jobs, id : String) -> Json {
 
 ///|
 async fn P53Jobs::screen_holder(self : P53Jobs, except : String?) -> String? {
-  match self.program.call(p53_jobs_key, "screenHolder", [jopt(except)]) {
-    String(s) => Some(s)
-    _ => None
-  }
+  as_text(self.program.call(p53_jobs_key, "screenHolder", [jopt(except)]))
 }
 
 ///|
@@ -682,10 +629,7 @@ async fn P53Jobs::start_moved(self : P53Jobs, j : Json) -> Map[String, Json] {
   let cwd = match jtext(j, "cwd") {
     Some(c) => c
     None =>
-      match jtext(p53_session_row(self.bus, session), "workspace") {
-        Some(w) => w
-        None => self.bus.data
-      }
+      (jtext(p53_session_row(self.bus, session), "workspace")).unwrap_or(self.bus.data)
   }
   self.start(session, jtext_or_empty(j, "name"), jtext_or_empty(j, "command"), cwd, jnum_of(j, "port"), jtrue(j, "watch"), None, false, Json::null())
 }
@@ -865,7 +809,7 @@ async fn P53Jobs::launch(
   }
   self.machine.follow(job.id, proc.pid, self.now())
   // (what the child says of its end is the follower's to read: its exit file, its group gone)
-  ignore(host.rt.fork_daemon("job's shell", on_error=e => @host.note("job's shell failed: \{e}"), async fn() { ignore(proc.finished()) }))
+  fork_bg(host, "job's shell", async fn() { ignore(proc.finished()) })
   proc.pid
 }
 
@@ -882,27 +826,25 @@ async fn p53_file_is(host : @host.Host, path : String) -> Bool {
 /// A service's port looked at until it answers (or its group ends, or P53_READY_MS pass): then it is ready.
 fn P53Jobs::watch_ready(self : P53Jobs, id : String, pgid : Int, port : Int) -> Unit {
   let host = self.bus.host
-  ignore(
-    host.rt.fork_daemon("service ready", on_error=e => @host.note("service ready failed: \{e}"), async fn() {
-      let mut waited = 0
-      while waited < p53_ready_ms && !self.closing {
-        if self.groups.get(id) != Some(pgid) {
+  fork_bg(host, "service ready", async fn() {
+    let mut waited = 0
+    while waited < p53_ready_ms && !self.closing {
+      if self.groups.get(id) != Some(pgid) {
+        return
+      }
+      match (try { Ok(host.tcp_open(port)) } catch { e => Err(e) }) {
+        Ok(conn) => {
+          conn.socket.destroy()
+          self.ready[id] = true
+          slice_log("info", "jobs", "service ready", jobj_of([("job", jstr(id)), ("port", ji(port))]))
           return
         }
-        match (try { Ok(host.tcp_open(port)) } catch { e => Err(e) }) {
-          Ok(conn) => {
-            conn.socket.destroy()
-            self.ready[id] = true
-            slice_log("info", "jobs", "service ready", jobj_of([("job", jstr(id)), ("port", ji(port))]))
-            return
-          }
-          _ => ()
-        }
-        @effect.sleep(p53_ready_every_ms) // timer: a retry until the service's port answers (it says nothing when it listens)
-        waited += p53_ready_every_ms
+        _ => ()
       }
-    }),
-  )
+      @effect.sleep(p53_ready_every_ms) // timer: a retry until the service's port answers (it says nothing when it listens)
+      waited += p53_ready_every_ms
+    }
+  })
 }
 
 ///|
@@ -1219,16 +1161,6 @@ fn P53Jobs::tools(self : P53Jobs) -> Array[PartTool] {
   ]
 }
 
-///|
-/// Whether `path` is a directory.
-async fn p53_is_dir(host : @host.Host, path : String) -> Bool {
-  match (try { Ok(host.shell("fs.stat", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-    Ok((String("dir"), _)) => true
-    _ => false
-  }
-}
-
-///|
 fn p53_has_port(job : Json) -> Bool {
   jnum_of(job, "port") is Some(_)
 }

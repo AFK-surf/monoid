@@ -113,10 +113,7 @@ async fn p54_cloud_refresh(bus : LiveBus, c : P54Cloud) -> Unit {
   }
   c.memberships = ms
   let wss : Array[String] = []
-  match home {
-    Some(h) => wss.push(h)
-    None => ()
-  }
+  if home is Some(h) { wss.push(h) }
   for m in ms {
     match jtext(m, "workspace") {
       Some(w) if !wss.contains(w) => wss.push(w)
@@ -658,10 +655,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
   let answer : Json = match op {
     // the lock pinned in a workspace (null: none), the write gate, a certificate's boxes
     "vault.lock" => {
-      let ws = match some(j(0)) {
-        Some(String(w)) => Some(w)
-        _ => None
-      }
+      let ws = opt_str(some(j(0)))
       // (who asks is known by its members' own locks from then on: vault/module.ts `lock`'s `viewer`)
       match (ws, some(j(1))) {
         (Some(w), Some(viewer)) =>
@@ -878,33 +872,25 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
   let stopped = Ref(false)
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
-  ignore(
-    host.rt.fork_daemon("unix serve", on_error=e => @host.note("unix serve failed: \{e}"), async fn() {
-      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
-        next.val += 1
-        let n = next.val
-        let conn : P54Conn = { host, id: got.id, closed: false }
-        conns[n] = conn
-        ignore(
-          host.rt.fork_daemon("unix conn", on_error=e => @host.note("unix conn failed: \{e}"), async fn() {
-            while conn.read() is Some(chunk) {
-              let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
-              if reply.length() > 0 {
-                conn.write(reply) catch {
-                  _ => break
-                }
-              }
-              if close {
-                break
-              }
-            }
-            conn.close()
-            conns.remove(n)
-          }),
-        )
-      }
-    }),
-  )
+  fork_bg(host, "unix serve", async fn() {
+    while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+      next.val += 1
+      let n = next.val
+      let conn : P54Conn = { host, id: got.id, closed: false }
+      conns[n] = conn
+      fork_bg(host, "unix conn", async fn() {
+        while conn.read() is Some(chunk) {
+          let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
+          if reply.length() > 0 {
+            conn.write(reply) catch { _ => break }
+          }
+          if close { break }
+        }
+        conn.close()
+        conns.remove(n)
+      })
+    }
+  })
   () => {
     if stopped.val {
       return
@@ -913,12 +899,10 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
     for _, c in conns {
       c.close()
     }
-    ignore(
-      host.rt.fork_daemon("unix close", on_error=e => @host.note("unix close failed: \{e}"), async fn() {
-        host.listen_close(id)
-        @drive.rm_force(path)
-      }),
-    )
+    fork_bg(host, "unix close", async fn() {
+      host.listen_close(id)
+      @drive.rm_force(path)
+    })
   }
 }
 
@@ -988,27 +972,23 @@ async fn p54_proxy_listen(
       return
     }
     stopped.val = true
-    ignore(
-      host.rt.fork_daemon("proxy close", on_error=e => @host.note("proxy close failed: \{e}"), async fn() {
-        host.listen_close(id)
-      }),
-    )
+    fork_bg(host, "proxy close", async fn() {
+      host.listen_close(id)
+    })
   }
-  ignore(
-    host.rt.fork_daemon("vault proxy", on_error=e => @host.note("vault proxy failed: \{e}"), async fn() {
-      while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
-        let conn : P54Conn = { host, id: got.id, closed: false }
-        ignore(
-          host.rt.fork_quiet(name="proxy connection", async fn() {
-            p54_proxy_connection(host, conn, connect, forward) catch {
-              _ => ()
-            }
-            conn.close()
-          }),
-        )
-      }
-    }),
-  )
+  fork_bg(host, "vault proxy", async fn() {
+    while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+      let conn : P54Conn = { host, id: got.id, closed: false }
+      ignore(
+        host.rt.fork_quiet(name="proxy connection", async fn() {
+          p54_proxy_connection(host, conn, connect, forward) catch {
+            _ => ()
+          }
+          conn.close()
+        }),
+      )
+    }
+  })
   port
 }
 

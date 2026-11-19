@@ -12,17 +12,7 @@ fn p54_session(context : Json) -> String {
 ///|
 /// `f` once, `ms` from now on the program's runtime; what it gives calls it off.
 fn p54_after(host : @host.Host, ms : Double, f : () -> Unit) -> () -> Unit {
-  let off = Ref(false)
-  let wait = if ms < 0.0 { 0 } else if ms > 2147483647.0 { 2147483647 } else { ms.to_int() }
-  ignore(
-    host.rt.fork_daemon("after", on_error=e => @host.note("after failed: \{e}"), async fn() {
-      @effect.sleep(wait) // timer: a deadline a part set (its `after`)
-      if !off.val {
-        f()
-      }
-    }),
-  )
-  () => off.val = true
+  bus_after(host, ms, f)
 }
 
 ///|
@@ -60,22 +50,20 @@ fn p54_spawn(
 ) -> P54Child raise SysError {
   let proc = spawn(host, program, args, env?, cwd?, stdin_piped~, stdout=Piped, stderr=Piped, group~)
   let child = { proc, ended: None, running: true }
-  ignore(
-    host.rt.fork_daemon("child \{program}", on_error=e => @host.note("child \{program} failed: \{e}"), async fn() {
-      while true {
-        match proc.events.take() {
-          Out(b) => out(b)
-          Err(b) => err(b)
-          Exit(code, signal) => {
-            child.ended = Some((code, signal))
-            child.running = false
-            close(code, signal)
-            return
-          }
+  fork_bg(host, "child \{program}", async fn() {
+    while true {
+      match proc.events.take() {
+        Out(b) => out(b)
+        Err(b) => err(b)
+        Exit(code, signal) => {
+          child.ended = Some((code, signal))
+          child.running = false
+          close(code, signal)
+          return
         }
       }
-    }),
-  )
+    }
+  })
   child
 }
 
@@ -88,9 +76,7 @@ async fn p54_run(
   env? : Array[(String, String)],
   cwd? : String,
 ) -> (Int?, String, String) {
-  let proc = spawn(host, program, args, env?, cwd?, stdout=Piped, stderr=Piped)
-  let (code, _, out, err) = proc.finished()
-  (code, @utf8.decode_lossy(out), @utf8.decode_lossy(err))
+  run_cmd(host, program, args, env?, cwd?)
 }
 
 ///|
@@ -142,77 +128,43 @@ fn P54Conn::close(self : P54Conn) -> Unit {
 /// Writes in their order, none waiting on the caller: a queue taken by a fiber of its own.
 fn P54Conn::writer(self : P54Conn) -> (Bytes) -> Unit {
   let q : @effect.Queue[Bytes] = @effect.Queue::unbounded()
-  ignore(
-    self.host.rt.fork_daemon("conn writes", on_error=e => @host.note("conn writes failed: \{e}"), async fn() {
-      while !self.closed {
-        let b = q.take()
-        self.write(b) catch {
-          _ => {
-            self.close()
-            return
-          }
+  fork_bg(self.host, "conn writes", async fn() {
+    while !self.closed {
+      let b = q.take()
+      self.write(b) catch {
+        _ => {
+          self.close()
+          return
         }
       }
-    }),
-  )
+    }
+  })
   b => ignore(q.try_offer(b))
 }
 
 ///|
-/// The station's id and its workspaces' memberships (mesh/cloud.json's, the control plane's as P5-1 keeps it).
 fn p54_station_id(bus : LiveBus) -> String? {
-  match (bus.cloud_state.val)() {
-    Some(s) =>
-      match jtext(s, "station") {
-        Some(id) if id != "" => Some(id)
-        _ => None
-      }
-    None => None
-  }
+  bus_station_id_opt(bus)
 }
 
 ///|
 fn p54_home(bus : LiveBus) -> String? {
-  match (bus.cloud_state.val)() {
-    Some(s) =>
-      match jtext(s, "workspace") {
-        Some(w) if w != "" => Some(w)
-        _ => None
-      }
-    None => None
-  }
+  bus_home(bus)
 }
 
 ///|
-/// A session's row as the store has it (none where there is none).
 fn p54_session_row(bus : LiveBus, key : String) -> Json? {
-  match (try { Ok(bus.store.get_session(key)) } catch { e => Err(e) }) {
-    Ok(Object(_) as row) => Some(row)
-    _ => None
-  }
+  bus_session_row_opt(bus, key)
 }
 
 ///|
-/// The session's workspace (the store's), else the station's home.
 fn p54_session_ws(bus : LiveBus, key : String) -> String? {
-  match (try { Ok(bus.store.session_ws(key)) } catch { e => Err(e) }) {
-    Ok(String(w)) if w != "" => Some(w)
-    _ => p54_home(bus)
-  }
+  bus_session_ws(bus, key)
 }
 
 ///|
-/// The session's working directory (its `cwd`, else its workspace directory).
 fn p54_session_dir(bus : LiveBus, key : String) -> String? {
-  let row = p54_session_row(bus, key)
-  match opt_text(row, "cwd") {
-    Some(c) if c != "" => Some(c)
-    _ =>
-      match opt_text(row, "workspace") {
-        Some(w) if w != "" => Some(w)
-        _ => None
-      }
-  }
+  bus_session_dir(bus, key)
 }
 
 ///|
@@ -233,9 +185,5 @@ fn p54_runner_binary(bus : LiveBus) -> String? {
 ///|
 /// The system as the TypeScript station's platform names it (`platform.os`): macos, linux, windows.
 fn p54_os() -> String {
-  match platform() {
-    "darwin" => "macos"
-    "win32" => "windows"
-    p => p
-  }
+  platform_os()
 }

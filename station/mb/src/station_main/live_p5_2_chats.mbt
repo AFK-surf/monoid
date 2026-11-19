@@ -302,10 +302,7 @@ async fn P52::chats_answer(
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
   let s = (i : Int32) => {
-    match a(i) {
-      String(x) => x
-      _ => ""
-    }
+    as_text(a(i)).unwrap_or("")
   }
   let (part, meth) = match name.find(".") {
     Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
@@ -404,10 +401,7 @@ async fn P52::chats_answer(
             self
             .the_hub()
             .ws_of(
-              match a(0) {
-                String(x) => Some(x)
-                _ => None
-              },
+              as_text(a(0)),
             ),
           )
         "surface" => @jsjson.JValue::of_string(self.the_hub().surface(s(0)))
@@ -493,26 +487,17 @@ async fn P52::chats_answer(
         "heldDeleteOldest" => {
           match chat_state.held.get(s(0)) {
             Some(m) =>
-              match m.keys().next() {
-                Some(k) => m.remove(k)
-                None => ()
-              }
+              if m.keys().next() is Some(k) { m.remove(k) }
             None => ()
           }
           Null
         }
         "heldSet" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) => m[s(1)] = raw.get(2).unwrap_or(Null)
-            None => ()
-          }
+          if chat_state.held.get(s(0)) is Some(m) { m[s(1)] = raw.get(2).unwrap_or(Null) }
           Null
         }
         "heldDelete" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) => m.remove(s(1))
-            None => ()
-          }
+          if chat_state.held.get(s(0)) is Some(m) { m.remove(s(1)) }
           Null
         }
         "heldCountNext" => {
@@ -609,10 +594,7 @@ async fn P52::chats_answer(
     "os" => @jsjson.JValue::of_string(homedir())
     "path" => {
       let parts = args.map(x => {
-        match x {
-          String(t) => t
-          _ => ""
-        }
+        as_text(x).unwrap_or("")
       })
       let start = parts
         .rev()
@@ -749,181 +731,9 @@ fn protected_place(p : String) -> Bool {
 ///|
 /// The files as the station's own file system answers (session_chats' `fs.*`).
 async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
-  host_fs_op(self.host, op, args)
-}
-
-///|
-/// What `P52::fs_op` answers, each call the shell's `fs.*` off the program's thread but `symlink`, `statfs`, `readHead`
-/// and an exclusive `copyFile`.
-async fn host_fs_op(host : @host.Host, op : String, args : Array[Json]) -> Json raise {
-  let s = (i : Int32) => {
-    match args.get(i) {
-      Some(String(x)) => x
-      _ => ""
-    }
-  }
-  // What to write: a string's UTF-8, or the bytes a route gave (`{"$bytes": base64}`).
-  let data = (i : Int32) => {
-    match args.get(i) {
-      Some(String(x)) => @utf8.encode(x)
-      Some(Object({ "$bytes": String(b), .. })) =>
-        @base64.decode(b) catch {
-          _ => b""
-        }
-      _ => b""
-    }
-  }
-  let fail = (e : Error) => {
-    match e {
-      @drive.FsError(f) => @session_chats.Thrown(f.code, f.message)
-      other => @session_chats.Thrown("", said_of(other))
-    }
-  }
-  // (the shell's `fs.*` failing, by Node's code and words for `call` on `p`)
-  let shell_fail = (e : Error, call : String, p : String) => {
-    let code = shell_fs_code(e)
-    @session_chats.Thrown(code, fs_code_said(code, call, p))
-  }
-  let missing = (call : String, p : String) => @session_chats.Thrown("ENOENT", fs_code_said("ENOENT", call, p))
-  // (read off the program's thread; Node's ENOENT where it does not open, as `@drive.read_all`'s)
-  let read_whole = async fn(p : String) -> Bytes raise {
-    match (host.read_bytes(p) catch { e => raise fail(e) }) {
-      Some(b) => b
-      None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
-    }
-  }
-  match op {
-    "readText" =>
-      Json::string(
-        @utf8.decode_lossy(read_whole(s(0))),
-      )
-    "writeFile" => {
-      // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it; made only where none is)
-      let excl = args.get(2) is Some(Object({ "flag": String("wx"), .. }))
-      let put : Json = {
-        "path": jstr(s(0)),
-        "offset": jn(0.0),
-        "truncate": jb(true),
-        "exclusive": jb(excl),
-        "mode": jn(0o644.to_double()),
-      }
-      ignore(host.shell("fs.put", put, bytes=data(1))) catch {
-        e => raise shell_fail(e, "open", s(0))
-      }
-      Json::null()
-    }
-    "appendFile" => {
-      // (the hub's uploads add each part at the file's end, making it with the first)
-      ignore(host.shell("fs.put", { "path": jstr(s(0)), "mode": jn(0o644.to_double()) }, bytes=data(1))) catch {
-        e => raise shell_fail(e, "open", s(0))
-      }
-      Json::null()
-    }
-    "access" => {
-      let (kind, _) = host.shell("fs.stat", { "path": jstr(s(0)) }) catch {
-        e => raise shell_fail(e, "access", s(0))
-      }
-      if kind is Null {
-        raise missing("access", s(0))
-      }
-      Json::null()
-    }
-    "statfs" =>
-      // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
-      match disk_of(s(0)) {
-        Some((free, total)) =>
-          { "blocks": jn(total), "bavail": jn(free), "bsize": jn(1.0) }
-        None =>
-          raise @session_chats.Thrown(
-            "ENOENT",
-            "ENOENT: no such file or directory, statfs '\{s(0)}'",
-          )
-      }
-    "rename" => {
-      ignore(host.shell("fs.rename", { "from": jstr(s(0)), "to": jstr(s(1)) })) catch {
-        e => raise shell_fail(e, "rename", s(0))
-      }
-      Json::null()
-    }
-    "mkdir" => {
-      ignore(host.shell("fs.mkdir", { "path": jstr(s(0)) })) catch {
-        e => raise shell_fail(e, "mkdir", s(0))
-      }
-      Json::null()
-    }
-    "rm" => {
-      host_remove_tree(host, s(0))
-      Json::null()
-    }
-    "copyFile" => {
-      // (node's copyFile replaces what is there unless its mode says COPYFILE_EXCL (1); the drive's never does)
-      let excl = match args.get(2) {
-        Some(Number(m, ..)) => (m.to_int() & 1) == 1
-        _ => false
-      }
-      if excl {
-        @drive.copy_file(s(0), s(1)) catch {
-          e => raise fail(e)
-        }
-      } else {
-        host_copy_over(host, s(0), s(1)) catch {
-          e => raise shell_fail(e, "copyfile", s(0))
-        }
-      }
-      Json::null()
-    }
-    "symlink" => {
-      if live_symlink_ffi(cstr(s(0)), cstr(s(1))) != 0 {
-        raise @session_chats.Thrown(
-          "EEXIST",
-          "EEXIST: file already exists, symlink '\{s(0)}' -> '\{s(1)}'",
-        )
-      }
-      Json::null()
-    }
-    "readdir" =>
-      // (`withFileTypes`: each entry's name and whether it is a folder, as the routes read it)
-      if args.get(1) is Some(Object({ "withFileTypes": True, .. })) {
-        guard host_readdir_types(host, s(0)) is Some(entries) else { raise missing("scandir", s(0)) }
-        Json::array(entries.map(e => ({ "name": jstr(e.0), "dir": jb(e.1 == "dir") } : Json)))
-      } else {
-        guard host_readdir_names(host, s(0)) is Some(names) else { raise missing("scandir", s(0)) }
-        Json::array(names.map(Json::string))
-      }
-    "readdirTypes" => {
-      // (the kinds the folder gives, a link neither a file nor a folder, as lstat says: no call for each entry)
-      guard host_readdir_types(host, s(0)) is Some(entries) else { raise missing("scandir", s(0)) }
-      Json::array(
-        entries.map(e => ({ "name": jstr(e.0), "isFile": jb(e.1 == "file"), "isDirectory": jb(e.1 == "dir") } : Json)),
-      )
-    }
-    "readBase64" =>
-      Json::string(
-        @drive.base64(read_whole(s(0))),
-      )
-    "stat" => {
-      guard host_stat_follow(host, s(0)) is Some((kind, size, mtime)) else { raise missing("stat", s(0)) }
-      { "isFile": jb(kind == "file"), "isDirectory": jb(kind == "dir"), "size": jn(size), "mtimeMs": jn(mtime) }
-    }
-    "readHead" => {
-      let want = match args.get(1) {
-        Some(Number(n, ..)) => n
-        _ => 0.0
-      }
-      let show = match args.get(2) {
-        Some(Number(n, ..)) => n.to_int()
-        _ => want.to_int()
-      }
-      let (bytes, _, _) = @drive.read_part(s(0), 0.0, want) catch {
-        e => raise fail(e)
-      }
-      let cut = if bytes.length() < show { bytes.length() } else { show }
-      {
-        "text": jstr(@utf8.decode_lossy(bytes[0:cut].to_owned())),
-        "got": ji(bytes.length()),
-      }
-    }
-    _ => raise @session_chats.Thrown("", "no fs op \{op}")
+  host_fs_op(self.host, op, args) catch {
+    DispatchFsError(c, m) => raise @session_chats.Thrown(c, m)
+    e => raise e
   }
 }
 
@@ -937,10 +747,7 @@ async fn P52::dep(
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
   let s = (i : Int32) => {
-    match a(i) {
-      String(x) => x
-      _ => ""
-    }
+    as_text(a(i)).unwrap_or("")
   }
   let storage = self.storage()
   let opt = (v : Json) => {
@@ -983,10 +790,7 @@ async fn P52::dep(
       J::Arr(
         @session_hub.candidates(
           jitems(a(0)),
-          match a(1) {
-            String(r) => Some(r)
-            _ => None
-          },
+          as_text(a(1)),
           leads=a(2) is True,
         ).map(to_jv),
       )
@@ -1025,10 +829,7 @@ async fn P52::dep(
       match
         storage.named(
           s(0),
-          match a(1) {
-            String(w) => Some(w)
-            _ => None
-          },
+          as_text(a(1)),
         ) {
         Thread(t) => to_jv({ "type": jstr("thread"), "thread": t })
         Session(key, n) =>
@@ -1045,10 +846,7 @@ async fn P52::dep(
       J::Bool(
         storage.reachable(
           s(0),
-          match a(1) {
-            String(w) => Some(w)
-            _ => None
-          },
+          as_text(a(1)),
           write=a(2) is True,
         ),
       )
@@ -1077,10 +875,7 @@ async fn P52::dep(
         .sendable(
           s(0),
           jitems(a(1)).map(x => {
-            match x {
-              String(t) => t
-              _ => ""
-            }
+            as_text(x).unwrap_or("")
           }),
         )
         .map(l => {
@@ -1122,10 +917,7 @@ async fn P52::dep(
         prepare_local_links(
           s(0),
           jitems(a(1)).map(x => {
-            match x {
-              String(t) => t
-              _ => ""
-            }
+            as_text(x).unwrap_or("")
           }),
           s(2),
         ) {
@@ -1198,10 +990,7 @@ async fn P52::dep(
           .map(kv => {
             (
               kv.0,
-              match kv.1 {
-                String(v) => v
-                _ => ""
-              },
+              as_text(kv.1).unwrap_or(""),
             )
           })
           .to_array()
@@ -1222,10 +1011,7 @@ async fn P52::dep(
     "given" => @jsjson.JValue::of_opt_string(jtext(a(0), "given"))
     "titleOf" => {
       let t = a(0)
-      let first = match a(1) {
-        String(x) => Some(x)
-        _ => None
-      }
+      let first = as_text(a(1))
       @jsjson.JValue::of_string(
         match jtext(t, "title") {
           Some(title) if title != "" => title

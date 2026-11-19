@@ -309,10 +309,7 @@ pub fn status_text(host : @host.Host, data : String, now : Double) -> String {
   if @cloud_lock.read_lock(disk, @cloud_lock.Crypto::of_host(host), data, None) is Some(_) {
     out.push(lock_command(host, data, "status", None))
   }
-  let removed_at = match st.get("removed_at") {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
+  let removed_at = opt_num(st.get("removed_at"))
   match removed_at {
     Some(at) => {
       let how = match st.get("removed_code") {
@@ -450,71 +447,18 @@ pub fn answer_heap_request(data : String, what : () -> Json) -> Bool {
 ///|
 /// The updates' world on this machine with no Node (updates/host_io.mbt's, what it asks of Node answered here).
 pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
-  let world : Ref[@updates.World?] = Ref(None)
   let config_raw = () => read_json(config_path(data)).unwrap_or(Json::object({}))
-  let node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
-    let core = (i : Int) => if i < a.length() { of_jv(a[i]) } else { Json::null() }
-    match name {
-      "cloud.fetch" =>
-        match world.val {
-          Some(w) => w.call("fetch", a)
-          None => to_jv(Json::null())
-        }
-      "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "wall.sleep" | "listener.changed" =>
-        if name == "wall.sleep" {
-          match core(0) {
-            Number(ms, ..) => @effect.sleep(ms.to_int())
-            _ => ()
-          }
-          to_jv(Json::null())
-        } else {
-          to_jv(Json::null())
-        }
-      "ConfigFile.raw" => to_jv(config_raw())
-      "ConfigFile.update" | "config.updateSoon" => {
-        let next = core(if name == "ConfigFile.update" { 1 } else { 0 })
-        let text = next.stringify(indent=2) + "\n"
-        ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), config_path(data)), true)))
-        @drive.write_private(config_path(data), text)
-        to_jv(Json::null())
-      }
-      "process.kill" =>
-        match core(0) {
-          Number(p, ..) => {
-            let signal = match core(1) {
-              String(s) => s
-              Number(0.0, ..) => "0"
-              _ => "SIGTERM"
-            }
-            if kill(p.to_int(), signal) {
-              to_jv(Json::boolean(true))
-            } else {
-              raise coded("ESRCH", "kill ESRCH")
-            }
-          }
-          _ => to_jv(Json::boolean(false))
-        }
-      "os.tmpdir" => to_jv(Json::string(tmpdir()))
-      _ =>
-        // (the machine's own: updates_platform.mbt)
-        match updates_platform(host, data, name, a.map(of_jv)) {
-          Some(v) => to_jv(v)
-          None => raise coded("ENOSYS", "the station's program does not do \{name}")
-        }
-    }
+  let config_update = async fn(next : Json) {
+    let text = next.stringify(indent=2) + "\n"
+    ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), config_path(data)), true)))
+    @drive.write_private(config_path(data), text)
   }
   let tell = (name : String, a : Array[@jsjson.JValue]) => match name {
     "console.log" => if a.length() > 0 { out_write(js_text(a[0]) + "\n") }
     "console.error" => if a.length() > 0 { err_write(js_text(a[0]) + "\n") }
     _ => ignore(updates_platform_told(name, a.map(of_jv)))
   }
-  let clock : @updates.Clock = {
-    now: () => wall_ms().to_double(),
-    sleep: async fn(ms) { @effect.sleep(ms.to_int()) },
-  }
-  let w = @updates.host_world(host, node, tell, clock, async fn(_dir, _told) { async fn() {  } })
-  world.val = Some(w)
-  w
+  build_updates_world(host, data, config_raw, config_update, tell~)
 }
 
 ///|
@@ -646,10 +590,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
   }
   let field = (k : String) => match body {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => s
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let id12 = key.id[:12].to_owned()
@@ -706,10 +647,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
   let relay_url = match field("relay_url") {
     "" =>
       if provider == "comma" && relays.length() > 0 {
-        match relays[0] {
-          String(r) => r
-          _ => ""
-        }
+        as_text(relays[0]).unwrap_or("")
       } else {
         ""
       }
@@ -750,10 +688,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
       }
       let rf = (k : String) => match r {
         Some(Object(o)) =>
-          match o.get(k) {
-            Some(String(s)) => s
-            _ => ""
-          }
+          opt_str(o.get(k)).unwrap_or("")
         _ => ""
       }
       if rf("owner") == "" {
@@ -919,10 +854,7 @@ pub async fn join_workspace(
   let body = redeem(host, key, s.text("origin"), token, plane_name, join_path, prefixes, version, locks=true, rig=false)
   let field = (k : String) => match body {
     Object(m) =>
-      match m.get(k) {
-        Some(String(v)) => v
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let ws = field("workspace")

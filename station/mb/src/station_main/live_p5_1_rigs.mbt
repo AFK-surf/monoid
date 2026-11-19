@@ -13,10 +13,7 @@ priv struct RigsLive {
 fn rigs_viewer(v : Json) -> @rigs_mode.Viewer {
   let t = (k : String) => match v {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   { workspace: t("workspace").unwrap_or(""), sub: t("sub").unwrap_or(""), role: t("role").unwrap_or(""), email: t("email"), name: t("name") }
@@ -74,93 +71,31 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
       t
     }
   }
-  let told = (t : @store_threads.Store) => {
-    let sent = t.sent.copy()
-    t.sent.clear()
-    for c in sent {
-      bus.notify_store(c)
-    }
-    // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
-    bus.drain_thread_requests(t)
-  }
   {
     call: async fn(name, args) {
-      let arg = (i : Int) => args.get(i).unwrap_or(Json::null())
+      let arg = (i : Int) => arg_at(args, i)
+      let run_cb = (cb : Json, cb_args : Array[Json]) => match fn_of(cb) {
+        Some(f) => Some(f(cb_args))
+        None => None
+      }
       match name {
-        // (requests.ts `#saveAndRestate`: the request written, then its outcome queued for the agents' side's worker
-        // (card-outbox-worker.ts), which closes the card and restates its `rig.outcome`)
         "cardOutcomes.save" => {
-          match fn_of(arg(1)) {
-            Some(f) => ignore(f([]))
-            None => ()
-          }
-          ignore(bus.hub_card_outcomes_save(arg(0)))
+          ignore(dispatch_threads_card(bus, threads_of(), name, args, run_cb))
           @rigs_mode.undefined_json()
         }
-        "store.withdrawCard" => {
-          let t = threads_of()
-          let got = t.withdraw_card(arg(0), arg(1), arg(2)) catch {
-            e => {
-              told(t)
-              raise e
-            }
-          }
-          told(t)
-          rigs_answer(got)
-        }
-        "store.restateCard" => {
-          let t = threads_of()
-          let was = t.card_at(arg(1), arg(2))
-          let made = match fn_of(arg(3)) {
-            Some(f) => f([was])
-            None => was
-          }
-          let got = t.restate_card(arg(0), arg(1), arg(2), _ => @drive.to_jv(made)) catch {
-            e => {
-              told(t)
-              raise e
-            }
-          }
-          told(t)
-          rigs_answer(got)
-        }
-        "remote.ask" => {
-          let station = match arg(0) {
-            String(s) => s
-            _ => ""
-          }
-          let request = arg(1)
-          let ws = match request {
-            { "workspace": String(w), .. } => Some(w)
-            _ => None
-          }
-          let meth = match request {
-            { "method": String(m), .. } => m
-            _ => ""
-          }
-          let (answer, _) = bus.call_peer(station, ws, meth, request) catch {
+        "store.withdrawCard" | "store.restateCard" =>
+          rigs_answer(dispatch_threads_card(bus, threads_of(), name, args, run_cb).unwrap_or(Json::null()))
+        "remote.ask" =>
+          bus_remote_ask(bus, arg_str(args, 0), arg(1)) catch {
             @gate.PeerRefused(m) => raise @rigs_mode.Refused(m)
             e => raise e
           }
-          answer
-        }
         "events.tell" => {
-          (bus.events_tell.val)(
-            match arg(0) {
-              String(s) => s
-              _ => ""
-            },
-            arg(1),
-            match arg(2) {
-              String(s) => s
-              _ => ""
-            },
-            arg(3),
-          )
+          ignore(dispatch_infra(bus, name, args))
           @rigs_mode.undefined_json()
         }
         "store.getSession" =>
-          match bus.store.get_session(match arg(0) { String(s) => s; _ => "" }) {
+          match bus.store.get_session(arg_str(args, 0)) {
             Null => @rigs_mode.undefined_json()
             s => s
           }
@@ -236,10 +171,7 @@ fn P51::rigs_live(self : P51) -> Unit {
       { "args": Array(a), .. } => a
       _ => []
     }
-    let s = (i : Int) => match args.get(i) {
-      Some(String(x)) => x
-      _ => ""
-    }
+    let s = (i : Int) => opt_str(args.get(i)).unwrap_or("")
     let said : Json = match params {
       { "op": "rigs.list", .. } => Json::array(rigs.device_entries(s(0), s(1)))
       { "op": "rigs.use", .. } =>
@@ -273,10 +205,7 @@ fn P51::rigs_live(self : P51) -> Unit {
   let answer = async fn(r : Json) -> Json {
     let t = (k : String) => match r {
       Object(m) =>
-        match m.get(k) {
-          Some(String(s)) => s
-          _ => ""
-        }
+        opt_str(m.get(k)).unwrap_or("")
       _ => ""
     }
     let query = match r {
@@ -387,14 +316,12 @@ fn P51::elevation_live(self : P51) -> Unit {
     run: script => match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
       Ok(p) => {
         let exits : Array[(Int?) -> Unit] = []
-        ignore(
-          host.rt.fork_daemon("elevation script", on_error=e => @host.note("elevation script failed: \{e}"), async fn() {
-            let (code, _, _, _) = p.finished()
-            for f in exits {
-              f(code)
-            }
-          }),
-        )
+        fork_bg(host, "elevation script", async fn() {
+          let (code, _, _, _) = p.finished()
+          for f in exits {
+            f(code)
+          }
+        })
         { kill: () => ignore(kill(p.pid, "SIGKILL")), on_error: _ => (), on_exit: f => exits.push(f) }
       }
       Err(_) => {
@@ -414,10 +341,7 @@ fn P51::elevation_live(self : P51) -> Unit {
       answer: async fn(r) {
         let t = (k : String) => match r {
           Object(m) =>
-            match m.get(k) {
-              Some(String(s)) => s
-              _ => ""
-            }
+            opt_str(m.get(k)).unwrap_or("")
           _ => ""
         }
         let viewer = match r {
@@ -523,7 +447,7 @@ fn P51::rig_live(self : P51) -> Unit {
       _ => hub_before(op, arg)
     }
   }
-  self.stops.push(() => ignore(host.rt.fork_daemon("rig close", on_error=e => @host.note("rig close failed: \{e}"), async fn() { rig.close() })))
+  self.stops.push(() => fork_bg(host, "rig close", async fn() { rig.close() }))
   // What a station asks of it: through its grants first, its own `rig.` asked of it.
   bus.on_peer_prefix("rig.", async fn(peer, ws, _meth, params, _) { (rig.heard(peer, params, ws.unwrap_or(cloud.home().unwrap_or(""))), None) })
   let main = @rigs_mode.RigMain::new(
@@ -553,7 +477,7 @@ fn P51::rig_live(self : P51) -> Unit {
         }
         (port, url)
       },
-      set_notify_url: url => ignore(host.rt.fork_daemon("notify url", on_error=e => @host.note("notify url failed: \{e}"), async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) })),
+      set_notify_url: url => fork_bg(host, "notify url", async fn() { ignore(jobs_ask("setNotifyUrl", { "url": Json::string(url) })) }),
       mcp_fd: None,
       shown_port: Some(0),
       serving: (_, _) => (),

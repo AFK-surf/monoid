@@ -169,69 +169,56 @@ fn P53Accounts::attach(self : P53Accounts) -> Unit {
       Err(e) => Some(p53_words(e))
     }
   })
-  ignore(
-    bus.host.rt.fork_daemon("accounts", on_error=e => @host.note("accounts failed: \{e}"), async fn() {
-      let rt = bus.host.rt
-      let clock : @accounts_pool.Clock = {
-        now: () => wall_ms().to_double(),
-        after: (ms, f) => {
-          let gone = Ref(false)
-          ignore(
-            rt.fork_daemon("accounts' timer", on_error=e => @host.note("accounts' timer failed: \{e}"), async fn() {
-              @effect.sleep(ms.to_int()) // timer: the accounts' own (a token's renewal, a quota's poll: a provider's, which offers no push)
-              if !gone.val {
-                f()
-              }
-            }),
-          )
-          () => gone.val = true
-        },
+  fork_bg(bus.host, "accounts", async fn() {
+    let rt = bus.host.rt
+    let clock : @accounts_pool.Clock = {
+      now: () => wall_ms().to_double(),
+      after: (ms, f) => bus_after(bus.host, ms, f),
+    }
+    let raw = (bus.config_raw.val)()
+    let made = @accounts_pool.Accounts::new(
+      self.backend,
+      self.ctx,
+      @accounts_pool.Given::of_jv(@jsjson.JV::of_json(p53_given(machine=self.machine is Some(_))), bus.data),
+      rt,
+      clock,
+      @jsjson.JV::of_json(raw),
+      self.pool_catalog,
+    ) catch {
+      e => {
+        slice_log("error", "accounts", "the accounts were not made", jobj_of([("error", jstr(p53_words(e)))]))
+        return
       }
-      let raw = (bus.config_raw.val)()
-      let made = @accounts_pool.Accounts::new(
-        self.backend,
-        self.ctx,
-        @accounts_pool.Given::of_jv(@jsjson.JV::of_json(p53_given(machine=self.machine is Some(_))), bus.data),
-        rt,
-        clock,
-        @jsjson.JV::of_json(raw),
-        self.pool_catalog,
-      ) catch {
-        e => {
-          slice_log("error", "accounts", "the accounts were not made", jobj_of([("error", jstr(p53_words(e)))]))
-          return
-        }
+    }
+    self.accounts = Some(made)
+    let sa = @accounts_pool.SessionAccounts::new(
+      self.backend,
+      self.ctx.words,
+      self.ctx.station_lang,
+      async fn() { made.hub_config() },
+      () => wall_ms().to_double(),
+      rt,
+    )
+    self.sessions = Some(sa)
+    made.set_hub_accounts(sa)
+    ignore((bus.config_listen.val)(next => made.config_said(@jsjson.JV::of_json(next))))
+    // (accounts/index.ts `start`: a sign-in's change, and the machine's logins read again, told the accounts)
+    ignore(self.logins.changes(id => ignore(rt.fork_quiet(name="a sign-in changed", async fn() {
+      made.login_changed(id) catch {
+        e => slice_log("warn", "accounts", "a sign-in's change was not taken", jobj_of([("error", jstr(p53_words(e)))]))
       }
-      self.accounts = Some(made)
-      let sa = @accounts_pool.SessionAccounts::new(
-        self.backend,
-        self.ctx.words,
-        self.ctx.station_lang,
-        async fn() { made.hub_config() },
-        () => wall_ms().to_double(),
-        rt,
-      )
-      self.sessions = Some(sa)
-      made.set_hub_accounts(sa)
-      ignore((bus.config_listen.val)(next => made.config_said(@jsjson.JV::of_json(next))))
-      // (accounts/index.ts `start`: a sign-in's change, and the machine's logins read again, told the accounts)
-      ignore(self.logins.changes(id => ignore(rt.fork_quiet(name="a sign-in changed", async fn() {
-        made.login_changed(id) catch {
-          e => slice_log("warn", "accounts", "a sign-in's change was not taken", jobj_of([("error", jstr(p53_words(e)))]))
-        }
-      }))))
-      match self.machine {
-        Some(m) =>
-          ignore(m.changes(() => ignore(rt.fork_quiet(name="the machine's logins changed", async fn() {
-            made.machine_changed() catch {
-              e => slice_log("warn", "accounts", "the machine's logins were not taken", jobj_of([("error", jstr(p53_words(e)))]))
-            }
-          }))))
-        None => ()
-      }
-      made.start()
-    }),
-  )
+    }))))
+    match self.machine {
+      Some(m) =>
+        ignore(m.changes(() => ignore(rt.fork_quiet(name="the machine's logins changed", async fn() {
+          made.machine_changed() catch {
+            e => slice_log("warn", "accounts", "the machine's logins were not taken", jobj_of([("error", jstr(p53_words(e)))]))
+          }
+        }))))
+      None => ()
+    }
+    made.start()
+  })
   let a = (r : Json) => (self.made(), r)
   let viewer_of = (r : Json) => @jsjson.JV::of_json(jfield(r, "viewer"))
   let lang_of = (r : Json) => jtext(r, "lang").unwrap_or((bus.lang.val)())
@@ -318,18 +305,12 @@ async fn P53Accounts::profiles_view(self : P53Accounts) -> Json {
 
 ///|
 fn P53Accounts::new_models(self : P53Accounts, keys : Array[String]) -> Unit {
-  match self.accounts {
-    Some(a) => a.new_models(keys)
-    None => ()
-  }
+  if self.accounts is Some(a) { a.new_models(keys) }
 }
 
 ///|
 async fn P53Accounts::close(self : P53Accounts) -> Unit {
-  match self.accounts {
-    Some(a) => a.close()
-    None => ()
-  }
+  if self.accounts is Some(a) { a.close() }
 }
 
 ///|
@@ -343,10 +324,7 @@ fn p53_arg(args : Array[@accounts_pool.JV], i : Int) -> Json {
 
 ///|
 fn p53_arg_s(args : Array[@accounts_pool.JV], i : Int) -> String {
-  match p53_arg(args, i) {
-    String(s) => s
-    _ => ""
-  }
+  as_text(p53_arg(args, i)).unwrap_or("")
 }
 
 ///|
@@ -380,57 +358,28 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
     _ => @accounts_pool.plain_error(p53_words(e))
   }
   try {
-    match self.machine_answer(name, args) {
-      Some(v) => return v
-      None => ()
-    }
+    if self.machine_answer(name, args) is Some(v) { return v }
+    let jargs = args.map(p53_json)
     match name {
       // ── the files ──
-      "fs.readFile" =>
-        match shell_read_text(host, s(0)) {
-          Some(t) => Str(t)
-          None => raise @accounts_pool.Thrown("Error", @accounts_pool.jobj([("message", @accounts_pool.js("ENOENT: no such file, open '\{s(0)}'")), ("code", @accounts_pool.js("ENOENT"))]))
+      "fs.readFile" | "fs.writePrivate" | "fs.mkdir" | "fs.rm" | "fs.rename" | "fs.readdir" | "fs.exists" | "fs.stamp" => {
+        let got = host_fs_op(host, name[3:].to_owned(), jargs) catch {
+          DispatchFsError(c, m) => raise @accounts_pool.Thrown("Error", @accounts_pool.jobj([("message", @accounts_pool.js(m)), ("code", @accounts_pool.js(c))]))
+          e => raise e
         }
-      "fs.writePrivate" => {
-        p53_write_private(host, s(0), @utf8.encode(s(1)))
-        done
-      }
-      "fs.mkdir" => {
-        ignore(host.shell("fs.mkdir", { "path": jstr(s(0)), "recursive": jb(true) }))
-        done
-      }
-      "fs.rm" => {
-        ignore(host.shell("fs.remove", { "path": jstr(s(0)), "recursive": jb(true) }))
-        done
-      }
-      "fs.rename" => {
-        ignore(host.shell("fs.rename", { "from": jstr(s(0)), "to": jstr(s(1)) }))
-        done
-      }
-      "fs.readdir" =>
-        match host.shell("fs.readdir", { "path": jstr(s(0)) }) {
-          (Array(xs), _) => @jsjson.JV::of_json(Json::array(xs))
-          _ => Arr([])
+        if name == "fs.writePrivate" || name == "fs.mkdir" || name == "fs.rm" || name == "fs.rename" {
+          done
+        } else {
+          @jsjson.JV::of_json(got)
         }
-      "fs.exists" => Bool(p53_exists(host, s(0)))
-      "fs.stamp" =>
-        match (try { Ok(host.shell("fs.meta", { "path": jstr(s(0)) })) } catch { e => Err(e) }) {
-          Ok((m, _)) => Str("\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}")
-          Err(_) => Str("")
-        }
-      // ── the machine ──
-      "crypto.randomHex" => Str(@drive.hex(@drive.random_bytes(as_num(j(0)).unwrap_or(16.0).to_int())))
-      "crypto.randomUUID" => Str(p53_uuid())
-      "os.info" =>
-        @jsjson.JV::of_json(jobj_of([("platform", jstr(platform())), ("arch", jstr(arch())), ("hostname", jstr(hostname())), ("homedir", jstr(homedir()))]))
-      "platform.hasKeychain" => Bool(platform() == "darwin")
-      "wall.now" => Num(wall_ms().to_double())
-      "paths.join" => Str(@nodepath.join(sep(), args.map(a => p53_json(a)).filter_map(x => if x is String(t) { Some(t) } else { None })))
+      }
+      // ── the machine & config.json ──
+      "crypto.randomHex" | "crypto.randomUUID" | "os.info" | "platform.hasKeychain" | "wall.now" | "log.info" | "log.warn" | "log.error" | "config.raw" | "config.put" => {
+        let got = dispatch_infra(bus, name, jargs).unwrap_or(Json::null())
+        if name.has_prefix("log.") { done } else { @jsjson.JV::of_json(got) }
+      }
+      "paths.join" => Str(@nodepath.join(sep(), jargs.filter_map(x => if x is String(t) { Some(t) } else { None })))
       "station.env" => @jsjson.JV::of_json(Json::object(Map::from_array(env_all().map(kv => (kv.0, jstr(kv.1))))))
-      "log.info" | "log.warn" | "log.error" => {
-        slice_log(name[4:].to_owned(), s(0), s(1), j(2))
-        done
-      }
       "fetch" => {
         let r = j(0)
         let headers = match jfield(r, "headers") {
@@ -448,50 +397,13 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
         })
         @jsjson.JV::of_json(jobj_of([("status", ji(answer.status)), ("text", jstr(answer.body))]))
       }
-      // ── config.json ──
-      "config.raw" => @jsjson.JV::of_json((bus.config_raw.val)())
-      "config.put" => {
-        let next = j(0)
-        @jsjson.JV::of_json((bus.config_update.val)(_ => next))
-      }
       // ── the store ──
-      "store.now" => Num(store.now().to_double())
-      "store.getSession" => @jsjson.JV::of_json(store.get_session(s(0)))
-      "store.setSessionProfile" => {
-        store.set_session_profile(s(0), j(1), j(2) is True, if args.length() > 3 { Some(j(3)) } else { None })
-        done
-      }
-      "store.setSessionRuntime" => {
-        store.set_session_runtime(s(0), j(1), j(2), j(3) is True, j(4), j(5), if args.length() > 6 { Some(j(6)) } else { None }, j(7), if args.length() > 8 { Some(j(8)) } else { None })
-        done
-      }
-      "store.setSessionContextBefore" => {
-        store.set_session_context_before(s(0), j(1))
-        done
-      }
-      "store.ranIn" => {
-        store.ran_in(s(0), j(1), j(2))
-        done
-      }
-      "store.profileStatus" => @jsjson.JV::of_json(store.profile_status())
-      "store.setProfileCheck" => {
-        store.set_profile_check(j(0), j(1))
-        done
-      }
-      "store.setProfileQuota" => {
-        store.set_profile_quota(j(0), j(1))
-        done
-      }
-      "store.profileHours" => @jsjson.JV::of_json(store.profile_hours(as_num(j(0)).unwrap_or(0.0)))
-      "store.forgetProfileHours" => {
-        store.forget_profile_hours(j(0))
-        done
-      }
-      "store.lastTurn" => @jsjson.JV::of_json(store.last_turn(j(0)))
-      "store.lastContexts" => @jsjson.JV::of_json(Json::array(store.last_contexts(s(0), as_num(j(1)).unwrap_or(1.0).to_int())))
-      "store.recentlyCompacted" => Bool(store.recently_compacted(s(0)))
-      "store.compactionPoints" => @jsjson.JV::of_json(store.compaction_points(j(0)))
-      "store.compactionsReady" => Bool(store.compactions_ready())
+      _ if name.has_prefix("store.") =>
+        match (try { Ok(dispatch_store(bus, name[6:].to_owned(), jargs)) } catch { e => Err(e) }) {
+          Ok(v) => @jsjson.JV::of_json(v)
+          Err(e) if said_of(e).contains("no call") => @jsjson.JV::of_json((bus.hub_ask.val)(name, Json::array(jargs)))
+          Err(e) => raise e
+        }
       // ── the shared profiles (this slice's Sharing) ──
       "shared.lendCodex" => Num(self.sharing().lend_codex(j(0), rejected=j(1) is True))
       "shared.lendAgy" => Num(self.sharing().lend_agy(j(0), rejected=j(1) is True))
@@ -515,10 +427,7 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
         }
       "shared.hostName" => {
         let host_id = s(0)
-        let peers = match jfield(p53_cloud(bus), "peers") {
-          Array(xs) => xs
-          _ => []
-        }
+        let peers = jitems(jfield(p53_cloud(bus), "peers"))
         match peers.search_by(p => jtext(p, "id") == Some(host_id)) {
           Some(i) => Str(jtext_or_empty(peers[i], "name"))
           None => Str(host_id)
@@ -555,10 +464,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
     String(_) | Number(_, ..) | True | False if i == 0 => arg
     _ => jfield(arg, key)
   }
-  let str = (i : Int, key : String) => match at(i, key) {
-    String(t) => Some(t)
-    _ => None
-  }
+  let str = (i : Int, key : String) => as_text(at(i, key))
   let text = (i : Int, key : String) => str(i, key).unwrap_or("")
   let given = (i : Int, key : String) => match at(i, key) {
     Null => @jsjson.JV::of_json(Json::object({}))
@@ -767,10 +673,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "machineLogins" => p53_json(self.made().machine_logins())
       // (agents.ts `accounts.machine?.refresh()`: a runtime installed or updated, the machine's logins read again)
       "machineRefresh" => {
-        match self.machine {
-          Some(m) => m.refresh()
-          None => ()
-        }
+        if self.machine is Some(m) { m.refresh() }
         done
       }
       "apiProviders" => p53_json(@accounts_pool.api_providers())
@@ -791,10 +694,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
         done
       }
       "accountEmail" =>
-        match self.made().account_email(text(0, "runtime"), text(1, "home")) {
-          Some(e) => jstr(e)
-          None => Json::null()
-        }
+        jopt(self.made().account_email(text(0, "runtime"), text(1, "home")))
       _ => raise P53Error("no accounts' ask \{m}")
     }
   } catch {
@@ -808,32 +708,6 @@ fn P53Accounts::sharing(self : P53Accounts) -> @share_sync.Sharing raise P53Erro
     Some(s) => s
     None => raise P53Error("the shared profiles are not ready yet")
   }
-}
-
-///|
-/// Whether there is something at `path`.
-async fn p53_exists(host : @host.Host, path : String) -> Bool {
-  match (try { Ok(host.shell("fs.stat", { "path": Json::string(path) })) } catch { e => Err(e) }) {
-    Ok((String(_), _)) => true
-    _ => false
-  }
-}
-
-///|
-/// A random UUID (v4), as crypto.randomUUID makes one.
-fn p53_uuid() -> String {
-  let b = @drive.random_bytes(16)
-  let h = @drive.hex(b).to_array()
-  // (its version and variant)
-  h[12] = '4'
-  h[16] = match h[16] {
-    '0' | '4' | '8' | 'c' => '8'
-    '1' | '5' | '9' | 'd' => '9'
-    '2' | '6' | 'a' | 'e' => 'a'
-    _ => 'b'
-  }
-  let s = String::from_array(h)
-  "\{s[0:8]}-\{s[8:12]}-\{s[12:16]}-\{s[16:20]}-\{s[20:32]}"
 }
 
 // ── the model catalog (models/module.ts) ──
@@ -912,39 +786,37 @@ fn P53Models::attach(self : P53Models) -> Unit {
     "the model catalog was not read",
     jobj_of([("error", jstr(p53_words(e)))]),
   )
-  ignore(
-    bus.host.rt.fork_daemon("model catalog", on_error=e => @host.note("model catalog failed: \{e}"), async fn() {
-      let catalog = @accounts_oauth.ModelCatalog::open(
-        self.accounts.oauth_io,
-        self.told,
-        @nodepath.join(sep(), [bus.data, "model-catalog.json"]),
-        () => p53_origin(bus),
-        added=keys => {
-          self.learned()
-          self.accounts.new_models(keys)
-        },
-        learned=() => self.learned(),
-      ) catch {
-        e => {
-          not_read(e)
-          return
-        }
+  fork_bg(bus.host, "model catalog", async fn() {
+    let catalog = @accounts_oauth.ModelCatalog::open(
+      self.accounts.oauth_io,
+      self.told,
+      @nodepath.join(sep(), [bus.data, "model-catalog.json"]),
+      () => p53_origin(bus),
+      added=keys => {
+        self.learned()
+        self.accounts.new_models(keys)
+      },
+      learned=() => self.learned(),
+    ) catch {
+      e => {
+        not_read(e)
+        return
       }
-      self.catalog = Some(catalog)
-      self.learned()
-      // (asked for in the background at the start, and as the cloud says it changed: its presence socket, `models`)
-      self.refresh(None) catch {
+    }
+    self.catalog = Some(catalog)
+    self.learned()
+    // (asked for in the background at the start, and as the cloud says it changed: its presence socket, `models`)
+    self.refresh(None) catch {
+      e => not_read(e)
+    }
+    // (what the cloud said meanwhile, while what was kept was read)
+    if self.pending is Some(etag) {
+      self.pending = None
+      self.refresh(etag) catch {
         e => not_read(e)
       }
-      // (what the cloud said meanwhile, while what was kept was read)
-      if self.pending is Some(etag) {
-        self.pending = None
-        self.refresh(etag) catch {
-          e => not_read(e)
-        }
-      }
-    }),
-  )
+    }
+  })
   // (the readers' prices are the catalog's as well: read/pool.ts `give`)
   bus.model_catalog.val = () => self.told.snapshot()
   bus.parts.routes([

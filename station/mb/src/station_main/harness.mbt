@@ -471,7 +471,7 @@ async fn fs_op_said(host : @host.Host, name : String, args : Array[Json]) -> Jso
   try {
     { "ok": host_fs_op(host, name, args) }
   } catch {
-    @session_chats.Thrown(code, message) => { "code": Json::string(code), "message": Json::string(message) }
+    DispatchFsError(code, message) | @session_chats.Thrown(code, message) => { "code": Json::string(code), "message": Json::string(message) }
     e => { "code": Json::string(""), "message": Json::string(said_of(e)) }
   }
 }

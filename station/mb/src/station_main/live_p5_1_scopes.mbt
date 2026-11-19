@@ -141,10 +141,7 @@ fn P51::mesh_scopes(
           Set::from_array([bus.key.id]),
         ),
       )
-      match m.scopes {
-        Some(sync) => sync.registration(signed)
-        None => ()
-      }
+      if m.scopes is Some(sync) { sync.registration(signed) }
     },
     sync: m.scopes,
     crypto,

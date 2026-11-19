@@ -7,63 +7,26 @@
 /// The updates' world on this machine (cli.mbt `updates_world`'s), its config the bus's: an edit goes through
 /// `config_update` and is heard by every part, not written beside them.
 fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
-  let world : Ref[@updates.World?] = Ref(None)
-  let node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
+  let extra_node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     let core = (i : Int) => if i < a.length() { of_jv(a[i]) } else { Json::null() }
     match name {
-      "cloud.fetch" =>
-        match world.val {
-          Some(w) => w.call("fetch", a)
-          None => to_jv(Json::null())
-        }
-      "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "listener.changed" => to_jv(Json::null())
-      "wall.sleep" => {
-        match core(0) {
-          Number(ms, ..) => @effect.sleep(ms.to_int())
-          _ => ()
-        }
-        to_jv(Json::null())
-      }
-      "ConfigFile.raw" => to_jv((bus.config_raw.val)())
-      "ConfigFile.update" | "config.updateSoon" => {
-        let next = core(if name == "ConfigFile.update" { 1 } else { 0 })
-        ignore((bus.config_update.val)(_ => next))
-        to_jv(Json::null())
-      }
-      "process.kill" =>
-        match core(0) {
-          Number(p, ..) => {
-            let signal = match core(1) {
-              String(s) => s
-              Number(0.0, ..) => "0"
-              _ => "SIGTERM"
-            }
-            if kill(p.to_int(), signal) {
-              to_jv(Json::boolean(true))
-            } else {
-              raise coded("ESRCH", "kill ESRCH")
-            }
-          }
-          _ => to_jv(Json::boolean(false))
-        }
-      "os.tmpdir" => to_jv(Json::string(tmpdir()))
       // (platform/unix.ts, windows.ts `nodeBuild`: the Node release built for this machine)
       "platform.nodeBuild" => {
         let version = match core(0) { String(v) => v; _ => "" }
         let a = arch()
         if a != "arm64" && a != "x64" {
-          return to_jv(Json::null())
+          return Some(to_jv(Json::null()))
         }
         if is_windows() {
           let dist = "node-v\{version}-win-\{a}"
-          to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.zip"), "bin": "", "npm": "npm.cmd", "tar": Json::string(path([env_get("SystemRoot").unwrap_or("C:\\Windows"), "System32", "tar.exe"])) })
+          Some(to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.zip"), "bin": "", "npm": "npm.cmd", "tar": Json::string(path([env_get("SystemRoot").unwrap_or("C:\\Windows"), "System32", "tar.exe"])) }))
         } else {
           let os = platform()
           if os != "darwin" && os != "linux" {
-            return to_jv(Json::null())
+            return Some(to_jv(Json::null()))
           }
           let dist = "node-v\{version}-\{os}-\{a}"
-          to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.tar.gz"), "bin": "bin", "npm": "npm", "tar": "tar" })
+          Some(to_jv({ "dist": Json::string(dist), "archive": Json::string("\{dist}.tar.gz"), "bin": "bin", "npm": "npm", "tar": "tar" }))
         }
       }
       // (unix.ts `findCommandSoon`: where on the environment's PATH a command is, and that followed)
@@ -72,21 +35,16 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
         let env = if a.length() > 1 { @updates.env_of(a[1]) } else { [] }
         match find_command(name, env) {
           Some(on) =>
-            to_jv({ "onPath": Json::string(on), "real": Json::string(attempt(() => @drive.realpath(on)).unwrap_or(on)) })
-          None => to_jv(Json::null())
+            Some(to_jv({ "onPath": Json::string(on), "real": Json::string(attempt(() => @drive.realpath(on)).unwrap_or(on)) }))
+          None => Some(to_jv(Json::null()))
         }
       }
       "shellPath.withShellCommand" => {
         let name = match core(0) { String(n) => n; _ => "" }
         let env = if a.length() > 1 { @updates.env_of(a[1]) } else { [] }
-        @updates.env_j(with_shell_command(bus.host, name, env))
+        Some(@updates.env_j(with_shell_command(bus.host, name, env)))
       }
-      _ =>
-        // (the machine's own: updates_platform.mbt)
-        match updates_platform(bus.host, bus.data, name, a.map(of_jv)) {
-          Some(v) => to_jv(v)
-          None => raise coded("ENOSYS", "the station's program does not do \{name}")
-        }
+      _ => None
     }
   }
   let tell = (name : String, a : Array[@jsjson.JValue]) => match name {
@@ -98,13 +56,15 @@ fn p5_5_updates_world(bus : LiveBus) -> @updates.World {
       slice_log(name[4:].to_owned(), if a.length() > 0 { js_text(a[0]) } else { "updates" }, if a.length() > 1 { js_text(a[1]) } else { "" }, if a.length() > 2 { of_jv(a[2]) } else { Json::null() })
     _ => ignore(updates_platform_told(name, a.map(of_jv)))
   }
-  let clock : @updates.Clock = {
-    now: () => wall_ms().to_double(),
-    sleep: async fn(ms) { @effect.sleep(ms.to_int()) },
-  }
-  let w = @updates.host_world(bus.host, node, tell, clock, async fn(dir, told) { p55_watch_dir(bus, dir, told) })
-  world.val = Some(w)
-  w
+  build_updates_world(
+    bus.host,
+    bus.data,
+    () => (bus.config_raw.val)(),
+    async fn(next) { ignore((bus.config_update.val)(_ => next)) },
+    extra_node=Some(extra_node),
+    tell~,
+    watch=Some(async fn(dir, told) { p55_watch_dir(bus, dir, told) }),
+  )
 }
 
 ///|
@@ -157,10 +117,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   let station_only = rig || (bus.runtimes_available.val)().is_empty()
   let running = () => if rig { 0.0 } else { match (bus.status_agents.val)() {
     Some(s) =>
-      match jfield(jfield(s, "agents"), "busy") {
-        Number(n, ..) => n
-        _ => 0.0
-      }
+      as_num(jfield(jfield(s, "agents"), "busy")).unwrap_or(0.0)
     None => 0.0
   } }
   let env : Array[(String, String)] = env_all()
@@ -259,10 +216,7 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
     }
   })
   self.op("updates.updateOldCodex", async fn(arg) {
-    let before = match jfield(arg, "running") {
-      String(v) => Some(v)
-      _ => None
-    }
+    let before = as_text(jfield(arg, "running"))
     u.update_old_codex(before, (bus.lang.val)()) catch {
       e => return { "error": Json::string(p55_said_of(e)) }
     }
@@ -347,7 +301,7 @@ fn p55_watch_dir(bus : LiveBus, dir : String, told : (String?) -> Unit) -> async
   let going = Ref(true)
   let look = async fn() -> Map[String, String] {
     let now : Map[String, String] = Map([])
-    for e in p53_readdir_types(host, dir) {
+    for e in host_readdir_types(host, dir).unwrap_or([]) {
       let full = @nodepath.join(sep(), [dir, e.0])
       match (try { Ok(host.shell("fs.meta", { "path": Json::string(full) })) } catch { e => Err(e) }) {
         Ok((m, _)) => now[e.0] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
@@ -356,29 +310,27 @@ fn p55_watch_dir(bus : LiveBus, dir : String, told : (String?) -> Unit) -> async
     }
     now
   }
-  ignore(
-    host.rt.fork_daemon("a watched directory", on_error=e => @host.note("a watched directory failed: \{e}"), async fn() {
-      let mut before = look()
-      while going.val && !bus.stopped.is_done() {
-        @effect.sleep(p55_watch_ms) // timer: an outside system that offers no push (another process's files; the shell keeps no watch)
-        if !going.val {
-          break
-        }
-        let now = look()
-        for k, v in now {
-          if before.get(k) != Some(v) {
-            told(Some(k))
-          }
-        }
-        for k, _ in before {
-          if !now.contains(k) {
-            told(Some(k))
-          }
-        }
-        before = now
+  fork_bg(host, "a watched directory", async fn() {
+    let mut before = look()
+    while going.val && !bus.stopped.is_done() {
+      @effect.sleep(p55_watch_ms) // timer: an outside system that offers no push (another process's files; the shell keeps no watch)
+      if !going.val {
+        break
       }
-    }),
-  )
+      let now = look()
+      for k, v in now {
+        if before.get(k) != Some(v) {
+          told(Some(k))
+        }
+      }
+      for k, _ in before {
+        if !now.contains(k) {
+          told(Some(k))
+        }
+      }
+      before = now
+    }
+  })
   async fn() { going.val = false }
 }
 
@@ -487,14 +439,12 @@ pub async fn start_rig_updates(bus : LiveBus) -> Unit {
   p.start_updates(rig=true) catch {
     e => err_write("station: the updates part is not made: \{p55_said_of(e)}\n")
   }
-  ignore(
-    bus.host.rt.fork_daemon("rig updates close", on_error=e => @host.note("rig updates close failed: \{e}"), async fn() {
-      ignore(bus.stopped.wait())
-      for c in p.closers.rev() {
-        c() catch {
-          _ => ()
-        }
+  fork_bg(bus.host, "rig updates close", async fn() {
+    ignore(bus.stopped.wait())
+    for c in p.closers.rev() {
+      c() catch {
+        _ => ()
       }
-    }),
-  )
+    }
+  })
 }

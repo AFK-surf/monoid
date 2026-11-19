@@ -478,23 +478,21 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
   let exit : Ref[Json?] = Ref(None)
   let done = Ref(false)
   // (until the far side is first heard, SILENT_MS at the least: a shortened silence is for a connection once made)
-  ignore(
-    host.rt.fork_daemon("the bridge's pings", on_error=e => @host.note("the bridge's pings failed: \{e}"), async fn() {
-      let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
-      while !done.val {
-        @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
-        if done.val {
-          break
-        }
-        let limit = if reached.val { silent } else if silent > p53_silent_ms { silent } else { p53_silent_ms }
-        if wall_ms().to_double() - heard.val > limit.to_double() {
-          ignore(kill(ssh.pid, "SIGKILL"))
-        } else {
-          send(p53_t_ping, 0, b"")
-        }
+  fork_bg(host, "the bridge's pings", async fn() {
+    let every = if silent / 3 < p53_ping_ms { silent / 3 } else { p53_ping_ms }
+    while !done.val {
+      @effect.sleep(if every < 1 { 1 } else { every }) // timer: a heartbeat that keeps the connection, and measures it
+      if done.val {
+        break
       }
-    }),
-  )
+      let limit = if reached.val { silent } else if silent > p53_silent_ms { silent } else { p53_silent_ms }
+      if wall_ms().to_double() - heard.val > limit.to_double() {
+        ignore(kill(ssh.pid, "SIGKILL"))
+      } else {
+        send(p53_t_ping, 0, b"")
+      }
+    }
+  })
   if run {
     // (a job's stdin is nothing: its end said at once)
     send(p53_t_stdin_end, 0, b"")
@@ -502,10 +500,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
       send(p53_t_signal, 0, @utf8.encode(name))
     })
   }
-  let ports = match jfield(spec, "ports") {
-    Array(xs) => xs
-    _ => []
-  }
+  let ports = jitems(jfield(spec, "ports"))
   let sockets : Map[Int, Int64] = Map([])
   let pending = @buffer.Buffer()
   let mut ended : (Int?, String?) = (None, None)
@@ -594,21 +589,19 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
                       _ => 0L
                     }
                     sockets[stream] = id
-                    ignore(
-                      host.rt.fork_daemon("a connection through the bridge", on_error=e => @host.note("a connection through the bridge failed: \{e}"), async fn() {
-                        while true {
-                          match (try { Ok(host.tcp_read(Json::number(id.to_double()))) } catch { e => Err(e) }) {
-                            Ok(Some(b)) if b.length() > 0 => send(p53_t_data, stream, b)
-                            _ => break
-                          }
+                    fork_bg(host, "a connection through the bridge", async fn() {
+                      while true {
+                        match (try { Ok(host.tcp_read(Json::number(id.to_double()))) } catch { e => Err(e) }) {
+                          Ok(Some(b)) if b.length() > 0 => send(p53_t_data, stream, b)
+                          _ => break
                         }
-                        if sockets.get(stream) == Some(id) {
-                          sockets.remove(stream)
-                          send(p53_t_close, stream, b"")
-                        }
-                        host.tcp_close(Json::number(id.to_double()))
-                      }),
-                    )
+                      }
+                      if sockets.get(stream) == Some(id) {
+                        sockets.remove(stream)
+                        send(p53_t_close, stream, b"")
+                      }
+                      host.tcp_close(Json::number(id.to_double()))
+                    })
                   }
                   Err(_) => send(p53_t_close, stream, b"")
                 }
@@ -704,10 +697,7 @@ async fn p53_bridge_exchange(
       Array(xs) if i < xs.length() => xs[i]
       _ => Json::null()
     }
-    let num = (v : Json) => match v {
-      Number(n, ..) => n
-      _ => 0.0
-    }
+    let num = (v : Json) => as_num(v).unwrap_or(0.0)
     for path, v in mine {
       let kind = at(v, 0)
       let other = there.get(map(path))
