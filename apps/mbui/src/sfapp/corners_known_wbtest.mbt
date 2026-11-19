@@ -80,7 +80,7 @@ let corners_tape_rail : Array[String] = [
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
   "chat-history-side", "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job", "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters",
   "chat-letters-info", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-things",
-  "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-login-again", "chat-long", "chat-md",
+  "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
   "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk",
   "chat-preview-audio", "chat-preview-code", "chat-preview-csv", "chat-preview-html", "chat-preview-image",
   "chat-preview-md", "chat-preview-none", "chat-preview-pdf", "chat-preview-step", "chat-preview-swipe",
