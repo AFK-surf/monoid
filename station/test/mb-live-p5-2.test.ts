@@ -129,6 +129,8 @@ n=0
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
   n=$((n+1))
+  # (each prompt it was given, as it came: what a test reads of what woke it)
+  printf '%s\\n' "$line" >> "$FAKE_OUT/prompts"
   # (its init as Claude Code says it: once a turn is given it, never before its first message, which the station reads
   # as a turn begun: said at its start, it was read before the station's first prompt on a busy machine, and that prompt
   # was refused as a turn already running, 1 run in 16 or so)
@@ -892,6 +894,43 @@ test("handover of an in-flight turn: the new station takes up sessions before op
   } finally {
     store.close();
   }
+});
+
+test("a cold session woken by its job's stillfail-job notify: the hub makes its actor before telling it (hub.ts `notify`)", { skip }, async () => {
+  const data = fresh("n");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out);
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    // A session no message ever reached since this process started: no actor of it in the sessions' program.
+    session(store, data, "chat:c-cold", "claude", "t-cold", "1790000000.000007");
+    assert.equal(store.listTurns("chat:c-cold").length, 0);
+    // Its job says a word on the way (`stillfail-job notify`, the agents' door's /jobs/notify, the hub's `notify`):
+    // the session is woken by it, a turn whose prompt carries the word. (`stillfail-job` posts with curl, which
+    // the station's PATH here does not name: it names only the fakes' directory.)
+    const started = await tool(door, "t-cold", "job_start", { name: "waker", command: "PATH=/usr/bin:/bin:$PATH stillfail-job notify COLD-WAKE-WORD" });
+    assert.equal(started.error, false, `${started.text}\n${a.err()}`);
+    const job = JSON.parse(started.text);
+    await until("the job's word kept", () => store.jobNotices(job.id, 5).some((n) => n.text === "COLD-WAKE-WORD"), () => a.err());
+    await until("the cold session's turn ended", () => store.listTurns("chat:c-cold").some((t) => t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-cold").map((t) => t.summary))}\n${a.err()}`);
+    const prompts = readFileSync(join(out, "prompts"), "utf8");
+    assert.match(prompts, /COLD-WAKE-WORD/, prompts);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
 });
 
 /// The runners' info files there.

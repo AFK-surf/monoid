@@ -157,14 +157,7 @@ async fn P52::storage_call(
     return self.store(name[6:].to_owned(), args)
   }
   match name {
-    "hub.notify" => {
-      self
-      .the_hub()
-      .act(as_text(a(0)).unwrap_or(""), "notify", args=[
-        a(1),
-      ])
-      Json::null()
-    }
+    "hub.notify" => self.the_hub().command(as_text(a(0)).unwrap_or(""), "notify", [a(1)])
     "hub.setOpening" => {
       chat_state.openings[a(0).stringify()] = to_jv(a(1))
       Json::null()
@@ -1514,7 +1507,7 @@ async fn P52::tools_call(
     "ops/agent-env.agentEnv" =>
       @jsjson.JV::of_json(Json::object(Map::from_array(@ops_platform.agent_env((self.bus.config_raw.val)()).map(kv => (kv.0, Json::string(kv.1))))))
     "agents.hub.notify" => {
-      self.the_hub().act(s(0), "notify", args=[jstr(s(1))])
+      ignore(self.the_hub().command(s(0), "notify", [jstr(s(1))]))
       Null
     }
     // (the fixed reports told a while after the station starts and as each release is out: this side's own timers,

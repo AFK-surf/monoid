@@ -1114,10 +1114,8 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       Json::null()
     }
     // ── what the other slices ask by an object of its fields ──
-    "notify" => {
-      hub.act(jtext(arg, "session").unwrap_or(""), "notify", args=[jfield(arg, "text")])
-      Json::null()
-    }
+    // (hub.ts `notify`: the session's actor made where it is cold, an unknown session refused to the one telling)
+    "notify" => hub.command(jtext(arg, "session").unwrap_or(""), "notify", [jfield(arg, "text")])
     "link" => jopt(self.page_of(jtext(arg, "session").unwrap_or("")))
     "runners" => self.runners_with_sessions()
     "sweepRunners" =>
