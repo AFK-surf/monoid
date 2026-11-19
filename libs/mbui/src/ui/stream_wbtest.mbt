@@ -249,3 +249,50 @@ test "a stream shown by its layer has its route's frames taken by the host while
   assert_eq(routes().length(), 3)
   s.close()
 }
+
+///|
+test "stream host events carry optional wait_us through both normal and quiet paths" {
+  let cell : Ref[Stream?] = Ref(None)
+  let t = Tester::new(
+    fn(c) {
+      match cell.val {
+        Some(s) => c.stream(s, w=Px(320.0), h=Px(180.0), layer=true) |> ignore
+        None => ()
+      }
+    },
+    h264=true,
+  )
+  t.set_stream_layers(true)
+  let acks : Array[(Double, Double)] = []
+  let s = Stream::new(
+    shown=fn(ts) {
+      let w = cell.val.map(fn(st) { st.wait_us() }).unwrap_or(-1.0)
+      acks.push((ts, w))
+    },
+    broken=fn() {  },
+    layer=true,
+    quiet=Some(fn(_) { true }),
+  )
+  cell.val = Some(s)
+  s.h264(wb_avcc, 640, 360)
+  t.draw()
+  // Normal path: first frame with wait_us, plus a dropped frame with wait_us and one without.
+  s.frame(b"\x00\x00\x00\x01\x65", true, 1.0)
+  fake_said(t.fake, s.id(), "f 1 640 360 45000")
+  s.frame(b"\x00\x00\x00\x01\x41", false, 2.0)
+  fake_said(t.fake, s.id(), "d 2 12000")
+  s.frame(b"\x00\x00\x00\x01\x41", false, 3.0)
+  fake_said(t.fake, s.id(), "d 3")
+  t.draw()
+  assert_eq(acks, [(1.0, 45000.0), (2.0, 12000.0), (3.0, 0.0)])
+  assert_eq(s.wait_us(), 0.0)
+  // Quiet path (stream shows itself on its layer): wait_us preserved on both f and d.
+  s.frame(b"\x00\x00\x00\x01\x41", false, 4.0)
+  fake_said(t.fake, s.id(), "f 4 640 360 33000")
+  s.frame(b"\x00\x00\x00\x01\x41", false, 5.0)
+  fake_said(t.fake, s.id(), "d 5 8500")
+  t.frame_at(t.fake.time + said_frame_ms)
+  assert_eq(acks, [(1.0, 45000.0), (2.0, 12000.0), (3.0, 0.0), (4.0, 33000.0), (5.0, 8500.0)])
+  assert_eq(s.wait_us(), 0.0)
+  s.close()
+}

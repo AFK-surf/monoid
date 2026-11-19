@@ -59,7 +59,7 @@ export type ScreenCall =
   /// `cursorUpdates`: the page takes the pointer as `{cursor}` alone as it moves, not a whole state each time.
   /// `chroma444`: the UI decodes full-chroma video: asked of the station while the 画质 is 原画, as it opens and as it changes.
   | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean; cursorUpdates?: true; chroma444?: true }
-  | { kind: "ack"; view: string; ts: number }
+  | { kind: "ack"; view: string; ts: number; waitUs?: number }
   | { kind: "keyframe"; view: string }
   /// The view's sound on, or off (muted here: the station sends none till it is on again).
   | { kind: "sound"; view: string; on: boolean }
@@ -145,7 +145,8 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
     case "screen.ack": {
       const ts = get(params, "ts");
       if (!finite(ts) || ts < 0) throw CoreError.invalid(t("core-misc.params.missing", { field: "ts" }));
-      return { kind: "ack", view: text(params, "view"), ts };
+      const waitUs = get(params, "waitUs");
+      return { kind: "ack", view: text(params, "view"), ts, ...(finite(waitUs) && waitUs > 0 ? { waitUs } : {}) };
     }
     case "screen.keyframe":
       return { kind: "keyframe", view: text(params, "view") };
@@ -569,7 +570,7 @@ export function accessOf(v: unknown): J | null {
 type Open = {
   station: string;
   screen: string;
-  ack(ts: number): void;
+  ack(ts: number, waitUs?: number): void;
   keyframe(): void;
   sound(on: boolean): void;
   micOn(on: boolean): void;
@@ -639,7 +640,7 @@ export function install(): void {
     if (!target) return c.kind === "ack" || c.kind === "keyframe" || c.kind === "sound" || c.kind === "micOn" || c.kind === "mic" || c.kind === "look" ? Effect.succeed(null) : Effect.fail(new CoreError("not_found", t("core-misc.screen.closed")));
     switch (c.kind) {
       case "ack":
-        target.ack(c.ts);
+        target.ack(c.ts, c.waitUs);
         break;
       case "keyframe":
         target.keyframe();
@@ -830,7 +831,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     open.set(name, {
       station,
       screen: c.screen,
-      ack: (ts) => write(ackFrame(ts)),
+      ack: (ts, waitUs) => write(ackFrame(ts, waitUs ?? 0)),
       keyframe: () => write(keyframeFrame()),
       // Said to each stream as it opens too, while off.
       sound: (on) => {

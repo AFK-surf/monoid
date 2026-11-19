@@ -26,6 +26,9 @@ pub fn queue_ms(rtt : Double) -> Double {
 pub let rtt_window_ms : Double = 10_000.0
 
 ///|
+pub let viewer_hold_limit_ms : Double = 100.0
+
+///|
 pub let delivery_window_ms : Double = 1000.0
 
 ///|
@@ -272,6 +275,7 @@ pub struct Through {
 pub struct Pacer {
   out : Array[Out]
   trips : Array[Trip]
+  viewer_waits : Array[Trip]
   through : Array[Through]
   mut rate : Double?
   mut ceiling : Double?
@@ -293,6 +297,7 @@ pub fn Pacer::new(now : () -> Double, start? : Double? = None, fps? : Double? = 
   {
     out: [],
     trips: [],
+    viewer_waits: [],
     through: [],
     rate: start,
     ceiling: None,
@@ -348,7 +353,8 @@ pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double) -> Unit {
 
 ///|
 /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
-pub fn Pacer::acked(self : Pacer, ts : Double) -> Unit {
+/// `viewer_wait_ms`: how long (ms) the client held the frame before showing or dropping it.
+pub fn Pacer::acked(self : Pacer, ts : Double, viewer_wait_ms? : Double = 0.0) -> Unit {
   let now = (self.now)()
   let mut newest : Out? = None
   while self.out.length() > 0 && self.out[0].ts <= ts {
@@ -361,16 +367,39 @@ pub fn Pacer::acked(self : Pacer, ts : Double) -> Unit {
   while self.through.length() > 0 && self.through[0].at < now - delivery_window_ms {
     self.through.remove(0) |> ignore
   }
-  let trip = dmax(0.0, now - newest.at - ((self.stalled)() - newest.stall))
+  let total_trip = dmax(0.0, now - newest.at - ((self.stalled)() - newest.stall))
+  let wait = if !viewer_wait_ms.is_nan() && !viewer_wait_ms.is_inf() && viewer_wait_ms > 0.0 && viewer_wait_ms <= total_trip {
+    viewer_wait_ms
+  } else {
+    0.0
+  }
+  self.viewer_waits.push({ at: now, ms: wait })
+  while self.viewer_waits.length() > 1 && self.viewer_waits[0].at < now - rtt_window_ms {
+    self.viewer_waits.remove(0) |> ignore
+  }
+  let net_trip = dmax(0.0, total_trip - wait)
   let base = self.rtt()
-  self.trips.push({ at: now, ms: trip })
+  self.trips.push({ at: now, ms: net_trip })
   while self.trips.length() > 1 && self.trips[0].at < now - rtt_window_ms {
     self.trips.remove(0) |> ignore
   }
   match base {
-    Some(b) if trip > b + queue_ms(b) => self.queuing(now)
+    Some(b) if net_trip > b + queue_ms(b) => self.queuing(now)
     _ => self.steady(now)
   }
+}
+
+///|
+/// Recent viewer hold time (ms) credited to the in-flight window, capped at `viewer_hold_limit_ms`.
+pub fn Pacer::viewer_wait(self : Pacer) -> Double {
+  if self.viewer_waits.length() == 0 {
+    return 0.0
+  }
+  let mut m = 0.0
+  for w in self.viewer_waits {
+    m = dmax(m, w.ms)
+  }
+  dmin(viewer_hold_limit_ms, m)
 }
 
 ///|
@@ -394,7 +423,7 @@ pub fn Pacer::may(self : Pacer) -> Bool {
   }
   guard self.rtt() is Some(rtt) else { return self.out.length() < start_unacked }
   let now = (self.now)()
-  let may = self.out.length() < max_unacked && self.waited(now) <= rtt + queue_ms(rtt)
+  let may = self.out.length() < max_unacked && self.waited(now) <= rtt + self.viewer_wait() + queue_ms(rtt)
   if !may {
     if self.since is None {
       self.since = Some(now)
@@ -412,7 +441,7 @@ pub fn Pacer::backlogged(self : Pacer) -> Bool {
     return false
   }
   match self.rtt() {
-    Some(rtt) => self.waited((self.now)()) > rtt + queue_ms(rtt)
+    Some(rtt) => self.waited((self.now)()) > rtt + self.viewer_wait() + queue_ms(rtt)
     None => false
   }
 }

@@ -313,7 +313,8 @@ fn ScreenSess::part_stream(self : ScreenSess) -> @ui.Stream {
     None => {
       let st = @ui.Stream::new(
         shown=fn(ts) {
-          screen_ack(self.src, self, ts)
+          let wait_us = self.part.map(fn(s) { s.wait_us() }).unwrap_or(0.0)
+          screen_ack(self.src, self, ts, wait_us~)
           self.shown_told()
         },
         broken=fn() { screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) }) },
@@ -421,7 +422,8 @@ fn ScreenSess::own_stream(self : ScreenSess) -> Unit {
       shown=fn(ts) {
         let first = !self.shown_any
         self.shown_any = true
-        screen_ack(self.src, self, ts)
+        let wait_us = self.stream.map(fn(s) { s.wait_us() }).unwrap_or(0.0)
+        screen_ack(self.src, self, ts, wait_us~)
         if first {
           self.part_told.set(self.part_told.untracked() + 1)
         }
@@ -446,17 +448,21 @@ fn screen_tell(src : Source, name : String, params : Map[String, Json]) -> Unit 
 }
 
 ///|
-fn screen_ack(src : Source, s : ScreenSess, ts : Double) -> Unit {
+fn screen_ack(src : Source, s : ScreenSess, ts : Double, wait_us? : Double = 0.0) -> Unit {
   if ts <= s.acked {
     return
   }
   s.acked = ts
   // (its call: where the engine's shell reads the view itself, the ack goes from there: src/stillfail's call)
-  screen_tell(src, "screen.ack", {
+  let params : Map[String, Json] = {
     "view": Json::string(s.view),
     "ts": Json::number(ts),
     "call": Json::number(s.call.to_double()),
-  })
+  }
+  if wait_us > 0.0 {
+    params["waitUs"] = Json::number(wait_us)
+  }
+  screen_tell(src, "screen.ack", params)
 }
 
 ///|

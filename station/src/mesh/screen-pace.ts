@@ -26,6 +26,8 @@ export const QUEUE_SHARE = 0.5;
 export const queueMs = (rtt: number) => Math.max(QUEUE_MS, rtt * QUEUE_SHARE);
 /// How long a round trip counts towards the quickest (the link changes: another way, a relay).
 export const RTT_WINDOW_MS = 10_000;
+/// Most client-side jitter hold time (ms) credited to the viewer's in-flight budget before pacing pauses.
+export const VIEWER_HOLD_LIMIT_MS = 100;
 /// What went through is counted over this long.
 export const DELIVERY_WINDOW_MS = 1000;
 /// The lowest bit rate asked; down to `DOWN` of what went through (and no lower than `CUT` of what it was) once frames
@@ -151,8 +153,10 @@ export class Pacer {
   /// The frames sent and not acknowledged, oldest first: their timestamps, sizes, when they went and how long the
   /// loop had stood still by then.
   readonly #out: { ts: number; bytes: number; at: number; stall: number }[] = [];
-  /// Round trips measured, oldest first.
+  /// Round trips measured (net of viewer wait), oldest first.
   #trips: { at: number; ms: number }[] = [];
+  /// Client-reported viewer wait times (ms) over RTT_WINDOW_MS, oldest first.
+  #viewerWaits: { at: number; ms: number }[] = [];
   /// The frames acknowledged lately: when, and their sizes.
   #through: { at: number; bytes: number }[] = [];
   /// The bit rate asked of the source, and the most it is asked (its own); null before its size is known.
@@ -206,7 +210,8 @@ export class Pacer {
   }
 
   /// The client decoded every frame up to `ts`; the newest of them gives a round trip.
-  acked(ts: number) {
+  /// `viewerWaitMs`: how long (ms) the client held the frame (e.g. jitter buffer) before showing or dropping it.
+  acked(ts: number, viewerWaitMs = 0) {
     const now = this.#now();
     let newest: { at: number; stall: number } | null = null;
     while (this.#out.length > 0 && this.#out[0]!.ts <= ts) {
@@ -217,13 +222,25 @@ export class Pacer {
     if (newest === null) return;
     this.#first = Math.min(this.#first, now);
     while (this.#through.length > 0 && this.#through[0]!.at < now - DELIVERY_WINDOW_MS) this.#through.shift();
-    const trip = Math.max(0, now - newest.at - (this.#stalled() - newest.stall));
+    const totalTrip = Math.max(0, now - newest.at - (this.#stalled() - newest.stall));
+    const wait = Number.isFinite(viewerWaitMs) && viewerWaitMs > 0 && viewerWaitMs <= totalTrip ? viewerWaitMs : 0;
+    this.#viewerWaits.push({ at: now, ms: wait });
+    while (this.#viewerWaits.length > 1 && this.#viewerWaits[0]!.at < now - RTT_WINDOW_MS) this.#viewerWaits.shift();
+    const netTrip = Math.max(0, totalTrip - wait);
     const base = this.rtt();
-    this.#trips.push({ at: now, ms: trip });
+    this.#trips.push({ at: now, ms: netTrip });
     // The latest is kept however old: a still screen sends nothing for long.
     while (this.#trips.length > 1 && this.#trips[0]!.at < now - RTT_WINDOW_MS) this.#trips.shift();
-    if (base !== null && trip > base + queueMs(base)) this.#queuing(now);
+    if (base !== null && netTrip > base + queueMs(base)) this.#queuing(now);
     else this.#steady(now);
+  }
+
+  /// Recent viewer hold time (ms) credited to the in-flight window, capped at VIEWER_HOLD_LIMIT_MS.
+  viewerWait(): number {
+    if (this.#viewerWaits.length === 0) return 0;
+    let max = 0;
+    for (const w of this.#viewerWaits) if (w.ms > max) max = w.ms;
+    return Math.min(VIEWER_HOLD_LIMIT_MS, max);
   }
 
   /// The quickest round trip lately, or null before one.
@@ -237,7 +254,7 @@ export class Pacer {
     const rtt = this.rtt();
     if (rtt === null) return this.#out.length < START_UNACKED;
     const now = this.#now();
-    const may = this.#out.length < MAX_UNACKED && this.#waited(now) <= rtt + queueMs(rtt);
+    const may = this.#out.length < MAX_UNACKED && this.#waited(now) <= rtt + this.viewerWait() + queueMs(rtt);
     if (!may) {
       // A frame held back: the link carries less than the frames (an acknowledgement late alone, a screen still or
       // changing little, holds nothing back and lowers nothing).
@@ -254,7 +271,7 @@ export class Pacer {
   backlogged(): boolean {
     if (this.#out.length <= 1) return false;
     const rtt = this.rtt();
-    return rtt !== null && this.#waited(this.#now()) > rtt + queueMs(rtt);
+    return rtt !== null && this.#waited(this.#now()) > rtt + this.viewerWait() + queueMs(rtt);
   }
 
   /// How long the oldest frame not acknowledged has waited, the station's own loop standing still left out.

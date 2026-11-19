@@ -279,6 +279,23 @@ test("frames go unacknowledged while the link keeps up: two before its round tri
   await v.stream.write(frame(KIND.ack, Buffer.alloc(3)));
   await settle();
   assert.equal(view.asked, 1 + 2 * MAX_UNACKED);
+  // A 12-byte ack carries optional viewer_wait_us (u32 BE): credited to the in-flight window.
+  const ack12 = (ts: number, waitUs: number) => {
+    const b = Buffer.alloc(12);
+    b.writeBigUInt64BE(BigInt(ts), 0);
+    b.writeUInt32BE(waitUs, 8);
+    return b;
+  };
+  const before12 = view.asked;
+  await time.adjust(60);
+  await v.stream.write(frame(KIND.ack, ack12(before12 * 1000, 60_000)));
+  await settle();
+  assert.equal(view.asked, before12 + MAX_UNACKED);
+  // Waiting 50ms (past QUEUE_MS=30ms, but within viewerWait=60ms + QUEUE_MS=30ms) still lets frames go.
+  await time.adjust(50);
+  await v.stream.write(frame(KIND.ack, ack12((before12 + 1) * 1000, 50_000)));
+  await settle();
+  assert.equal(view.asked, before12 + MAX_UNACKED + 1);
   // A key frame asked for goes to the source.
   await v.stream.write(frame(KIND.keyframe, Buffer.alloc(0)));
   await settle();
