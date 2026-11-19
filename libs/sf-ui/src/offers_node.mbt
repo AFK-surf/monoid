@@ -320,7 +320,7 @@ pub fn offers_node(
         .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label~))))
         // (a press on it its own, not outside it: on what of it takes none, nothing)

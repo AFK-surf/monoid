@@ -190,3 +190,136 @@ test "a menu closed half way in draws back from where it got to, never first who
   t.run_for(@motion.pop_out_ms)
   assert_eq(side_words_alpha(t, "一"), -1.0)
 }
+
+///|
+/// A window 400 by 800 with a button 开 near its foot (at 740, 36 high), opening a menu of `rows` rows (行 00, 行 01,
+/// …) under it, which has not the room there and goes above it, grown from its foot; open, `pop_ms` on.
+fn foot_menu_tester(rows : Int, open : @signals.Signal[Bool]) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=800.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.padding(Is((100.0, 740.0, 0.0, 0.0))) |> ignore
+    let opener = root.box(fn(o) {
+      o
+      .width(Is(Some(120.0)))
+      .height(Is(Some(36.0)))
+      .presses(Is(true))
+      .on_press(fn() { open.set(true) })
+      .says(Is(Some(@view.said(Button, label="开"))))
+      |> ignore
+    })
+    root.box(fn(l) {
+      l.over(Is(true)) |> ignore
+      menu_node(
+        l,
+        fn() { open.get() },
+        fn(_) { opener },
+        fn() {
+          Array::makei(rows, fn(i) {
+            Some(menu_item_of("行 \{if i < 10 { "0" } else { "" }}\{i}", fn() {  }))
+          })
+        },
+        "",
+        Start,
+        8.0,
+        false,
+        false,
+        fn(_) { open.set(false) },
+        fn() { open.set(false) },
+      )
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+/// Where the menu's panel (the biggest drawn with its corner) and the words `first` are drawn now: the panel's top and
+/// height, the words' top and how opaque they are (None: not drawn).
+fn foot_menu_drawn(first : String) -> ((Double, Double)?, (Double, Double)?) {
+  let drawn = @ui.view_tree().unwrap().drawn()
+  let mut panel : (Double, Double)? = None
+  let mut words : (Double, Double)? = None
+  for d in drawn {
+    if d.radius == r_menu && d.words == "" && (panel is None || d.h > panel.unwrap().1) {
+      panel = Some((d.y, d.h))
+    }
+    if d.words == first && words is None {
+      words = Some((d.y, d.alpha))
+    }
+  }
+  (panel, words)
+}
+
+///|
+test "a tall menu gone above what opened it comes in from its foot kept within pop_max_shift: its top row 8 or less from where it lands on its first frame, in and out smoothly" {
+  let open = @signals.signal(false)
+  let t = foot_menu_tester(18, open)
+  open.set(true)
+  t.draw()
+  let (p0, w0) = foot_menu_drawn("行 00")
+  t.run_for(@motion.pop_ms)
+  let (p1, w1) = foot_menu_drawn("行 00")
+  let (py, ph) = p1.unwrap()
+  let (y1, a1) = w1.unwrap()
+  assert_true(py + ph < 740.0, msg="above what opened it: \{py}, \{ph}")
+  // (tall enough that 0.97 about its foot would leave its top more than 8 below)
+  assert_true(ph * (1.0 - @motion.pop_in.scale) > pop_max_shift + 4.0, msg="tall: \{ph}")
+  assert_eq(a1, 1.0)
+  let (y0, _) = w0.unwrap()
+  let first = y0 - y1
+  assert_true(first > 0.0 && first <= pop_max_shift + 0.5, msg="its top row on its first frame: \{first} below")
+  let (q0, h0) = p0.unwrap()
+  assert_true((q0 + h0 - (py + ph)).abs() < 0.5, msg="grown from its foot: \{q0 + h0} and \{py + ph}")
+  assert_true(h0 < ph && ph - h0 <= pop_max_shift + 0.5, msg="its panel \{h0} of \{ph}")
+  // (back to its first frame, then in: never further off than the frame before, never past where it lands)
+  open.set(false)
+  t.run_for(@motion.pop_out_ms)
+  assert_true(foot_menu_drawn("行 00").1 is None, msg="gone")
+  open.set(true)
+  t.draw()
+  let mut last = pop_max_shift + 0.5
+  for i in 1..=7 {
+    t.run_for(@motion.pop_ms / 7.0)
+    let (y, _) = foot_menu_drawn("行 00").1.unwrap()
+    let off = y - y1
+    assert_true(off >= -1.0e-6 && off <= last + 1.0e-6, msg="in, \{i}: \{off} after \{last}")
+    last = off
+  }
+  assert_true(last.abs() < 1.0e-6, msg="in: where it lands (\{last})")
+  // (out: drawn back toward its foot, never further off than at its first frame)
+  open.set(false)
+  t.draw()
+  let mut last = 0.0
+  for i in 1..=4 {
+    t.run_for(@motion.pop_out_ms / 5.0)
+    match foot_menu_drawn("行 00").1 {
+      Some((y, _)) => {
+        let off = y - y1
+        assert_true(off >= last - 1.0e-6 && off <= pop_max_shift + 0.5, msg="out, \{i}: \{off} after \{last}")
+        last = off
+      }
+      None => ()
+    }
+  }
+  t.run_for(@motion.pop_out_ms / 5.0)
+  assert_true(foot_menu_drawn("行 00").1 is None, msg="gone")
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "a short menu gone above what opened it comes in at pop_in's own 0.97, within pop_max_shift as it is" {
+  let open = @signals.signal(false)
+  let t = foot_menu_tester(3, open)
+  open.set(true)
+  t.draw()
+  let (p0, _) = foot_menu_drawn("行 00")
+  t.run_for(@motion.pop_ms)
+  let (py, ph) = foot_menu_drawn("行 00").0.unwrap()
+  assert_true(py + ph < 740.0, msg="above what opened it: \{py}, \{ph}")
+  assert_true(ph <= 266.0, msg="short: \{ph}")
+  let (_, h0) = p0.unwrap()
+  assert_true((h0 / ph - @motion.pop_in.scale).abs() < 1.0e-9, msg="as big as pop_in says: \{h0 / ph}")
+  assert_eq(t.audit(), [])
+}

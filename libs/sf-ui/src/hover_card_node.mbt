@@ -194,7 +194,7 @@ pub fn hover_card_node(
       .max_width(By(fn() { Some(if tile { dmin(hover_tile_most_px, over_room(t).0 - 16.0) } else { over_room(t).0 - 16.0 }) }))
       .max_height(By(fn() { Some(dmax(0.0, over_room(t).1 - 16.0)) }))
       .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside)
+      .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
       .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Group))))
       // (closed with the focus in it: back to what it is of, not to what had it as it opened)

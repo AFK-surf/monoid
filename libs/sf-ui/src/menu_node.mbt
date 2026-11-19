@@ -402,7 +402,7 @@ fn menu_node_by(
             .shadow(By(fn() { float_shadow() }))
             .clips(Is(true))
             .alpha(By(fn() { look().alpha }))
-            .scale(By(fn() { look().sx }), about=FromBeside)
+            .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
             // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
             // nothing, not outside it)
             |> ground_node
