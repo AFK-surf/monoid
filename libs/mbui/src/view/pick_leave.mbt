@@ -355,6 +355,7 @@ fn View::pick_leaving(
           gone_by.val = -1.0 / 0.0
         }
         let unseen = quiet ||
+          old.none ||
           (match old.held.untracked() {
             1 =>
               match old.fader.live() {

@@ -352,6 +352,9 @@ let seg_runs : Array[(Int, Array[Double], SegPack)] = []
 /// Pieces `segs`, the same as the last time `pack` went with them, put after the frame's: packed as they were, each
 /// frame only copied (Ctx::emit_segs).
 fn Ctx::segs_put(self : Ctx, segs : Array[Double], pack : SegPack) -> Unit {
+  if segs.is_empty() {
+    return
+  }
   self.segs_whole()
   let at = self.segs.length() / 4
   self.segs.append(segs)
