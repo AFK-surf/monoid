@@ -3,10 +3,13 @@
 // advances.
 
 ///|
-// generation_asks and view_reads are read by tests alone
-#warnings("-unused_field")
+// generation_asks and view_reads are read by tests alone; present_ms is set by tests alone
+#warnings("-unused_field-unused_mut")
 struct FakeHost {
   mut time : Double
+  /// how long presenting a frame takes (its clock moved on by it as each is presented, as a device's GPU may hold a
+  /// frame's present: 0 by default, presenting taking no time)
+  mut present_ms : Double
   /// how late the frame drawn at `late_after` reached the screen, as said of it (Tester::frame_late, a run's LATE line):
   /// what the first frame drawn after then says (frame `late_frame`, once it is drawn); every other frame's was on time
   mut late : Double
@@ -512,12 +515,14 @@ fn h_event_finger() -> Int {
 ///|
 /// When the input event being handled happened (the host's, else now; in a frame the frame's logic's moment,
 /// view_logic_at: the frame goes no further than that however long its work takes, on a device's host as under a
-/// Tester's, whose clock does not move in a frame).
+/// Tester's, whose clock does not move in a frame). So too a scripted run's step acting on the frame just presented
+/// (drive_frame, drive_acting): what it hands the app has no host time of its own and meets the tree at that frame's
+/// moment, where it found what it acts on, however long presenting the frame took.
 fn h_event_time() -> Double {
   let t = @hostapi.event_time()
   if t >= 0.0 {
     t
-  } else if in_frame.val {
+  } else if in_frame.val || drive_acting.val {
     view_logic_at.val
   } else {
     @hostapi.now()

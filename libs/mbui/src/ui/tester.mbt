@@ -579,6 +579,7 @@ fn tester_make(
     late: 0.0,
     late_after: -1.0,
     late_frame: -1,
+    present_ms: 0.0,
     wall: tester_wall - time,
     scale,
     wants: false,

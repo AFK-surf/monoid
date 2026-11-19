@@ -292,7 +292,14 @@ fn runner_said(done : Map[String, String], j : String) -> Unit {
 }
 
 ///|
+/// Whether `drive_steps` is acting on the frame just presented: what it hands the app has no host timestamp of its
+/// own and meets the tree at that frame's logic moment (`view_logic_at`), however long presenting the frame took.
+// kept across runs: true only while drive_steps runs in drive_frame
+let drive_acting : Ref[Bool] = Ref(false)
+
+///|
 fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
+  drive_acting.val = false
   // (the answers heard counted from the run's start, as the waits ended are)
   heard_answers.clear()
   let steps = script.split("\n").map(fn(l) { l.trim(chars=" \t\r").to_owned() }).to_array()
@@ -778,6 +785,7 @@ fn h_drive(kind : Int, text : String) -> Bool {
 fn drive_end(code : Int) -> Unit {
   h_log(if code == 0 { "DRIVE PASS" } else { "DRIVE END \{code}" })
   driver.val = None
+  drive_acting.val = false
   if code == 0 && h_env("MBUI_DRIVE_KEEP_OPEN") == "1" {
     return
   }
@@ -892,7 +900,9 @@ fn drive_frame(c : Ctx) -> Unit {
     Some(d) if d.wid != window_now.now => return
     _ => ()
   }
+  drive_acting.val = true
   drive_steps(c)
+  drive_acting.val = false
   guard driver.val is Some(d) else { return }
   // (on the frames that come after it, none asked for of its own: what the wheel set moving draws them)
   wheel_followed(d)
@@ -1001,7 +1011,7 @@ fn wheel_said(
     words + "; moving: " + (if moving.length() == 0 { "nothing" } else { moving.join("; ") }),
   )
   d.wheel_follow = match near {
-    Some((id, w, wy)) => Some((id, w, wy, wy, h_now()))
+    Some((id, w, wy)) => Some((id, w, wy, wy, view_logic_at.val))
     None => None
   }
 }
@@ -1012,7 +1022,7 @@ fn wheel_said(
 /// moves, so none drawn means nothing moved).
 fn wheel_followed(d : Driver) -> Unit {
   guard d.wheel_follow is Some((id, words, y0, last, t0)) else { return }
-  let after = (h_now() - t0).to_int()
+  let after = (view_logic_at.val - t0).to_int()
   let drawn = match view_app.val {
     Some(tree) => tree.drawn().iter().find_first(fn(e) { e.id == id })
     None => None
@@ -1028,7 +1038,7 @@ fn wheel_followed(d : Driver) -> Unit {
         h_log("DRIVE wheel +\{after} ms: \"\{words}\" at y \{y}")
         d.wheel_follow = Some((id, words, y0, y, t0))
       }
-      if h_now() > t0 + wheel_follow_ms {
+      if view_logic_at.val > t0 + wheel_follow_ms {
         h_log("DRIVE wheel +\{after} ms: \"\{words}\" ends at y \{y}, from \{y0}")
         d.wheel_follow = None
       }
@@ -1043,7 +1053,8 @@ let shot_taker_ms : Double = 1500.0
 ///|
 fn drive_steps(c : Ctx) -> Unit {
   guard driver.val is Some(d) else { return }
-  let now = h_now()
+  // (the frame's logic moment, where it found what it acts on: not the clock after presenting it, h_event_time)
+  let now = view_logic_at.val
   if d.release_at >= 0.0 {
     if now < d.release_at {
       return

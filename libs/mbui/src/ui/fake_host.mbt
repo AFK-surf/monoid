@@ -1824,6 +1824,10 @@ impl @hostapi.Host for FakeHost with present(self, _, _, _, _, _) {
   // (what the window's tree keeps against what working it out whole gives, as it is presented: held at the frame's
   // end, tester.mbt)
   kept_at_present()
+  // (presenting it taking the time said: its clock moved on by it, as a device's GPU may hold a frame)
+  if self.present_ms > 0.0 {
+    self.time = self.time + self.present_ms
+  }
 }
 
 ///|
