@@ -67,7 +67,7 @@ pub fn message_header(
 
 ///|
 async fn sender_title(w : World, row : J, thread : J) -> String {
-  let named = if thread is Null { None } else { str_of(Some(w.dep("given", [thread]))) }
+  let named = if thread is Null { None } else { given_title(thread) }
   let own = match str_of(at(Some(row), "title")) {
     Some(t) if trim(t) != "" => Some(trim(t))
     _ => None
@@ -89,7 +89,7 @@ async fn sender_title(w : World, row : J, thread : J) -> String {
           if thread is Null {
             str_of(at(Some(row), "key")).unwrap_or("")
           } else {
-            str_of(Some(w.dep("titleOf", [thread, first, Null]))).unwrap_or("")
+            title_of(w, thread, str_of(Some(first)), None)
           }
       }
   }
@@ -163,16 +163,19 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
   }
   let (title, link) = sender(w, key)
   let here = match link {
-    Some(l) => str_of(Some(w.dep("linkedStation", [js(l)])))
+    Some(l) => @session_storage.linked_station(l)
     None => None
   }
-  let linked_to = str_of(Some(w.dep("linkedStation", [js(to)])))
-  let linked_session = w.dep("linkedSession", [js(to)])
-  let named0 = str_of(at_i(Some(linked_session), 0)).unwrap_or(to)
+  let linked_to = @session_storage.linked_station(to)
+  let linked_session = @session_storage.linked_session(to)
+  let named0 = match linked_session {
+    Some((k, _)) => k
+    None => to
+  }
   let handed = if linked_to is None || linked_to == here { w.store("handedTo", [js(named0)]) } else { J::Null }
   let there = if handed is Null { linked_to } else { str_of(at(Some(handed), "station")) }
   if there is Some(st) && there != here {
-    let target = if handed is Null { str_of(at_i(Some(linked_session), 0)) } else { Some(named0) }
+    let target = if handed is Null { linked_session.map(p => p.0) } else { Some(named0) }
     guard target is Some(target) else { raise fail_("\{to} names no chat") }
     let call = w.dep("peersOf", [js(key)])
     if call is Null {
@@ -194,7 +197,7 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
     } catch {
       e => {
         let old = thrown_message(e)
-        if thrown_kind(e) == "Refused" && w.dep("fromBefore", [js(old)]) is Bool(true) {
+        if thrown_kind(e) == "Refused" && @session_storage.from_before(old) {
           raise fail_("not sent to \{to}: that station is not updated yet and takes no \{if files.length() > 0 { "files" } else { "messages" }}")
         }
         if thrown_kind(e) == "Refused" {
@@ -367,9 +370,9 @@ pub async fn post_from(
         if none || page is None || !thrown_message(e).contains("missing_scope") {
           raise e
         }
-        let pair = w.dep("slackWithFiles", [js(said), files, js(page.unwrap())])
-        let sent = w.chat(connect, "post", [here, at_i(Some(pair), 0).unwrap_or(Null), ja([])])
-        said = str_of(at_i(Some(pair), 1)).unwrap_or("")
+        let (posted_text, rest) = @session_hub.slack_with_files(w.words.to_hub(w.lang.val), said, json_items(files), page.unwrap())
+        let sent = w.chat(connect, "post", [here, js(posted_text), ja([])])
+        said = rest
         sent
       }
     }

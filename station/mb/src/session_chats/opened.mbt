@@ -171,7 +171,7 @@ async fn bound_here(w : World, ws : J, pm : J, name : String) -> (J, J) {
   let runtime = match str_of(at(Some(pm), "runtime")) {
     Some(r) => Some(r)
     None => {
-      let cands = arr_of(Some(w.dep("candidates", [w.hub("profilesIn", [ws]), Null]))).unwrap_or([])
+      let cands = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), None).map(@jsjson.JValue::of_json)
       let mut found = None
       for c in cands {
         match str_of(at(Some(c), "model")) {
@@ -248,7 +248,7 @@ async fn copy_for(w : World, p : J, here : String, there : String) -> J {
 
 ///|
 async fn used_within(w : World) -> Double {
-  w.now() - num_of(Some(w.dep("USED_WITHIN_MS", []))).unwrap_or(2592000000.0)
+  w.now() - @session_hub.used_within_ms
 }
 
 ///|
@@ -262,20 +262,21 @@ async fn usual_effort(w : World, created_by : J, runtime : J, model : J) -> J {
 
 ///|
 async fn chosen_here(w : World, created_by : J, ws : J, runtime : J) -> J {
-  let cands = w.dep("candidates", [w.hub("profilesIn", [ws]), runtime])
-  if arr_of(Some(cands)).unwrap_or([]).length() == 0 {
+  let rt = str_of(Some(runtime))
+  let cands = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), rt)
+  if cands.length() == 0 {
     raise fail_(
-      match str_of(Some(runtime)) {
+      match rt {
         Some(r) => "no \{r} profile on the station it is opened on"
         None => "no profile on the station it is opened on"
       },
     )
   }
-  let used = w.store("modelsUsedBy", [created_by, jn(used_within(w))])
-  let leads = w.dep("candidates", [w.hub("profilesIn", [ws]), runtime, jb(true)])
-  let c = w.dep("choose", [cands, used, leads])
+  let used = json_items(w.store("modelsUsedBy", [created_by, jn(used_within(w))]))
+  let leads = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), rt, leads=true)
+  let c = @jsjson.JValue::of_json(@session_hub.choose(cands, used, leads~))
   match at(Some(c), "ask") {
-    Some(ask) => raise fail_(str_of(Some(w.dep("askWhich", [ask, js("the station it is opened on")]))).unwrap_or(""))
+    Some(ask) => raise fail_(@session_hub.ask_which(json_items(ask), "the station it is opened on"))
     None => ()
   }
   let pick = at(Some(c), "pick")
@@ -292,7 +293,7 @@ async fn station_named(w : World, key : String, named : String?) -> String? {
   guard named is Some(named) else { return None }
   let link = str_of(Some(w.hub("link", [js(key)])))
   let here = match link {
-    Some(l) => str_of(Some(w.dep("linkedStation", [js(l)])))
+    Some(l) => @session_storage.linked_station(l)
     None => None
   }
   if Some(named) == here {
@@ -426,8 +427,8 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
   if !nullish(at(Some(args), "speed")) && speed is None {
     raise fail_("speed must be standard, fast or ultrafast")
   }
-  let context = match w.dep("contextAsked", [match at(Some(args), "context") { None | Some(Null) => jo([("$u", ji(1))]); Some(c) => c }, js(w.lang.val)]) {
-    Num(_) as n => n
+  let context = match hub_ok(() => @session_hub.context_asked(w.words.to_hub(w.lang.val), opt_json(at(Some(args), "context")), w.lang.val)) {
+    Some(Some(n)) => jn(n)
     _ => J::Null
   }
   let preset_name = given_arg(args, "preset")
@@ -603,7 +604,7 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
       } catch {
         e => {
           let why = thrown_message(e)
-          if thrown_kind(e) == "Refused" && w.dep("fromBefore", [js(why)]) is Bool(true) {
+          if thrown_kind(e) == "Refused" && @session_storage.from_before(why) {
             raise fail_(
               "station \{there} is not updated yet: chats cannot be opened there\{if !(preset is Null) { " with a preset" } else { "" }}\{if speed is Some(_) || preset_speed { " at the requested speed" } else { "" }}",
             )
@@ -723,8 +724,8 @@ pub async fn create_for_peer(w : World, peer : String, request : J, ws : J) -> J
     ("speed", jopt(model_speed(at(Some(request), "speed")))),
     (
       "context",
-      match w.dep("contextAsked", [match at(Some(request), "context") { None | Some(Null) => jo([("$u", ji(1))]); Some(c) => c }, js(w.lang.val)]) {
-        Num(_) as n => n
+      match hub_ok(() => @session_hub.context_asked(w.words.to_hub(w.lang.val), opt_json(at(Some(request), "context")), w.lang.val)) {
+        Some(Some(n)) => jn(n)
         _ => J::Null
       },
     ),

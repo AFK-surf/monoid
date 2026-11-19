@@ -12,12 +12,11 @@ pub async fn title_completion(w : World, profile : J, model : String?, session :
   if !runtimes.iter().any(r => str_of(Some(r)) == Some("dsh")) {
     return None
   }
-  let route = w.dep("dshRoute", [profile])
-  if route is Null {
-    return None
+  let route = match @agent_runtimes.dsh_route(profile) {
+    Some(r) => r
+    None => return None
   }
-  let kind = str_of(at(Some(route), "kind")).unwrap_or("")
-  if kind == "pi" && str_of(at(Some(route), "api")) != Some("openai-completions") {
+  if route is Pi(p) && p.api != "openai-completions" {
     return None
   }
   let chosen = match model {
@@ -29,13 +28,16 @@ pub async fn title_completion(w : World, profile : J, model : String?, session :
     _ =>
       match str_of(at(Some(profile), "model")) {
         Some(m) => Some(m)
-        None => if kind == "deepseek" { Some("deepseek-v4-flash") } else { None }
+        None => if route is Deepseek { Some("deepseek-v4-flash") } else { None }
       }
   }
   guard chosen is Some(chosen) && chosen != "" else { return None }
-  let env = w.dep("profileEnv", [profile, js("dsh")])
-  let key = if kind == "deepseek" { at(Some(env), "DEEPSEEK_API_KEY") } else { at(Some(env), dsh_key) }
-  let base = if kind == "deepseek" { js("https://api.deepseek.com") } else { at(Some(route), "baseURL").unwrap_or(Null) }
+  let env = @agent_runtimes.profile_env(profile, "dsh")
+  let key = if route is Deepseek { env.get("DEEPSEEK_API_KEY") } else { env.get(dsh_key) }
+  let base = match route {
+    Deepseek => js("https://api.deepseek.com")
+    Pi(p) => js(p.base_url)
+  }
   let url = w.dep("parseUrl", [base])
   if url is Null {
     return None
@@ -47,10 +49,15 @@ pub async fn title_completion(w : World, profile : J, model : String?, session :
   if !(protocol == "https:" || (protocol == "http:" && local)) || !empty("username") || !empty("password") || !empty("search") || !empty("hash") {
     return None
   }
-  let headers = if kind == "pi" {
-    w.dep("expandRoute", [match at(Some(route), "headers") { Some(Obj(_) as h) => h; _ => J::Obj([]) }, js(session)])
-  } else {
-    J::Obj([])
+  let headers = match route {
+    Pi(p) => {
+      let pairs : Array[(String, String)] = match p.headers {
+        Some(h) => h.keys.map(k => (k, str_of(h.values.get(k)).unwrap_or("")))
+        None => []
+      }
+      jo(@agent_drivers.expand_route(pairs, session).map(kv => (kv.0, js(kv.1))))
+    }
+    Deepseek => J::Obj([])
   }
   let mut href = str_of(at(Some(url), "href")).unwrap_or("")
   while ends(href, "/") {

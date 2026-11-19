@@ -635,7 +635,7 @@ async fn P52::chats_answer(
       }
     }
     "drivers" => J::Bool(self.drivers.contains(s(0)))
-    "dep" => self.dep(meth, raw, args)
+    "dep" => self.dep(meth, args)
     "presets" => to_jv(self.presets_answer(meth, args))
     "accounts" =>
       to_jv((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
@@ -751,11 +751,10 @@ async fn P52::fs_op(self : P52, op : String, args : Array[Json]) -> Json raise {
 }
 
 ///|
-/// The deps of src/sessions the conversations ask by name, as their MoonBit.
+/// The deps of src/sessions the conversations ask by name (stateful/IO/platform ops).
 async fn P52::dep(
   self : P52,
   name : String,
-  raw : Array[J],
   args : Array[Json],
 ) -> J {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
@@ -771,73 +770,6 @@ async fn P52::dep(
     }
   }
   match name {
-    "USED_WITHIN_MS" => J::Num(@session_hub.used_within_ms)
-    "accessKind" => @jsjson.JValue::of_string(@session_hub.access_kind(a(0)))
-    "agyBaseModel" => {
-      let (model, effort) = @session_hub.agy_base_model(s(0))
-      to_jv(
-        match effort {
-          Some(e) => { "model": jstr(model), "effort": jstr(e) }
-          None => { "model": jstr(model) }
-        },
-      )
-    }
-    "devinFusionBase" => {
-      let model = @session_hub.devin_fusion_base(s(0))
-      to_jv({ "model": jstr(model) })
-    }
-    "splitDevinFusion" =>
-      match @session_hub.split_devin_fusion(s(0)) {
-        Some((lead, effort, side)) =>
-          to_jv(
-            match effort {
-              Some(e) =>
-                { "lead": jstr(lead), "effort": jstr(e), "side": jstr(side) }
-              None => { "lead": jstr(lead), "side": jstr(side) }
-            },
-          )
-        None => Null
-      }
-    "askWhich" => @jsjson.JValue::of_string(@session_hub.ask_which(jitems(a(0)), s(1)))
-    "candidates" =>
-      J::Arr(
-        @session_hub.candidates(
-          jitems(a(0)),
-          as_text(a(1)),
-          leads=a(2) is True,
-        ).map(to_jv),
-      )
-    "choose" =>
-      to_jv(@session_hub.choose(jitems(a(0)), jitems(a(1)), leads=jitems(a(2))))
-    "contextAsked" =>
-      match @session_hub.context_asked(self.words, opt(a(0)), self.lang()) {
-        None => j_undef()
-        Some(None) => Null
-        Some(Some(n)) => J::Num(n)
-      }
-    "firstLine" => @jsjson.JValue::of_string(@session_hub.first_line(s(0)))
-    "fromBefore" => J::Bool(@session_storage.from_before(s(0)))
-    "iso" =>
-      @jsjson.JValue::of_string(
-        @session_hub.iso(
-          as_num(a(0)).unwrap_or(0.0),
-        ),
-      )
-    "isSlackMethod" => J::Bool(@session_hub.is_slack_method(s(0)))
-    "isSlackWrite" => J::Bool(@mcp_tools.is_slack_write(s(0)))
-    "linkedSession" =>
-      match @session_storage.linked_session(s(0)) {
-        Some((key, n)) =>
-          J::Arr([
-            @jsjson.JValue::of_string(key),
-            match n {
-              Some(x) => J::Num(x.to_double())
-              None => Null
-            },
-          ])
-        None => Null
-      }
-    "linkedStation" => @jsjson.JValue::of_opt_string(@session_storage.linked_station(s(0)))
     "named" =>
       match
         storage.named(
@@ -899,32 +831,6 @@ async fn P52::dep(
           })
         }),
       )
-    "needArg" =>
-      match a(0) {
-        Object(m) => @jsjson.JValue::of_opt_string(@session_hub.need_arg(m, a(1), s(2)))
-        _ => Null
-      }
-    "stateArg" =>
-      match @session_hub.state_arg(opt(a(0))) {
-        Some((state, said)) => J::Arr([to_jv(state), @jsjson.JValue::of_string(said)])
-        None => Null
-      }
-    "cardArg" =>
-      match @session_hub.card_arg(opt(a(0)), opt(a(1))) {
-        Some(c) => to_jv(c)
-        None => Null
-      }
-    "cardSaid" => @jsjson.JValue::of_string(@session_hub.card_said(a(0)))
-    "placeFigures" => @jsjson.JValue::of_string(@session_hub.place_figures(s(0), jitems(a(1))))
-    "slackWithFiles" => {
-      let (text, rest) = @session_hub.slack_with_files(
-        self.words,
-        s(0),
-        jitems(a(1)),
-        s(2),
-      )
-      J::Arr([@jsjson.JValue::of_string(text), @jsjson.JValue::of_string(rest)])
-    }
     "prepareLocalLinks" =>
       match
         prepare_local_links(
@@ -946,13 +852,6 @@ async fn P52::dep(
       let (key, thread) = self.the_hub().new_session(a(0), lang=self.lang())
       J::Arr([@jsjson.JValue::of_string(key), to_jv(thread)])
     }
-    // (agents/profiles.ts `profileRuntimes`: the runtimes an account runs, by its access; not a hub config's own list)
-    "profileRuntimes" => J::Arr(@agent_runtimes.profile_runtimes(raw.get(0).unwrap_or(Null)).map(@jsjson.JValue::of_string))
-    "profileEnv" => {
-      let pairs = fields_pairs(@agent_runtimes.profile_env(to_jv(a(0)), s(1)))
-      Obj(pairs.map(p => (p.0, @jsjson.JValue::of_string(p.1))))
-    }
-    "usable" => J::Bool(@session_hub.usable(a(0), None))
     // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
     // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
     "shownFactsSoon" => to_jv(shown_facts(self.host, s(0)))
@@ -967,79 +866,6 @@ async fn P52::dep(
       )
     "readStatePendingCard" =>
       to_jv(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
-    "localeCompare" => J::Num(@drive.collate(s(0), s(1)).to_double())
-    "policyFrom" => to_jv(@session_storage.policy_from(opt(a(0))).to_json())
-    "policyQuestion" =>
-      to_jv(
-        @session_storage.policy_question(
-          @session_storage.policy_from(Some({ "policy": a(0) })),
-        ),
-      )
-    "archiveMass" =>
-      J::Num(
-        @session_storage.archive_mass(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-        ),
-      )
-    "recommends" =>
-      J::Bool(
-        @session_storage.recommends(
-          a(0),
-          @session_storage.policy_from(Some({ "policy": a(1) })),
-          as_num(a(2)).unwrap_or(0.0),
-        ),
-      )
-    "dshRoute" =>
-      match @agent_runtimes.dsh_route(to_jv(a(0))) {
-        Some(r) => r.json()
-        None => Null
-      }
-    "expandRoute" => {
-      let env = match a(0) {
-        Object(m) =>
-          m
-          .iter()
-          .map(kv => {
-            (
-              kv.0,
-              as_text(kv.1).unwrap_or(""),
-            )
-          })
-          .to_array()
-        _ => []
-      }
-      Obj(
-        @agent_drivers.expand_route(env, s(1)).map(p => {
-          (p.0, @jsjson.JValue::of_string(p.1))
-        }),
-      )
-    }
-    "apiSource" =>
-      match
-        @agent_runtimes.api_source(@agent_runtimes.profile_via(to_jv(a(0)))) {
-        Some((_, at)) => J::Arr([Null, at.json()])
-        None => j_undef()
-      }
-    "given" => @jsjson.JValue::of_opt_string(jtext(a(0), "given"))
-    "titleOf" => {
-      let t = a(0)
-      let first = as_text(a(1))
-      @jsjson.JValue::of_string(
-        match jtext(t, "title") {
-          Some(title) if title != "" => title
-          _ =>
-            match first {
-              Some(f) => @session_hub.first_line(f)
-              None =>
-                @agent_runtimes.thread_address(
-                  jtext(t, "channel").unwrap_or(""),
-                  jtext(t, "threadTs").unwrap_or(""),
-                )
-            }
-        },
-      )
-    }
     "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(to_jv))
     "sendAlong" => {
       let peers = storage.peers_of(s(2))
@@ -1063,45 +889,6 @@ async fn P52::dep(
       }
     }
     "keep" => J::Arr(@drive.keep(jitems(a(0)).map(to_jv), s(1), Some(codecs())))
-    "formatHistory" => {
-      let names = jitems(a(4)).filter_map(p => {
-        match p {
-          Array([String(k), String(v), ..]) => Some((k, v))
-          _ => None
-        }
-      })
-      let cards : Map[Double, @agent_runtimes.HistoryCard] = Map([])
-      for c in jitems(a(5)) {
-        match c {
-          Array([Number(n, ..), card, ..]) =>
-            cards[n] = {
-              card: match jfield(card, "card") {
-                Null => None
-                x => Some(to_jv(x))
-              },
-              pending: jfield(card, "pending") is True,
-              chose: match jfield(card, "chose") {
-                Object(_) as ch =>
-                  Some(
-                    (jtext(ch, "by").unwrap_or(""), to_jv(jfield(ch, "option"))),
-                  )
-                _ => None
-              },
-            }
-          _ => ()
-        }
-      }
-      @jsjson.JValue::of_string(
-        @agent_runtimes.format_history(
-          jitems(a(0)).map(to_jv),
-          s(1),
-          s(2),
-          s(3),
-          names,
-          cards~,
-        ),
-      )
-    }
     "fileURLToPath" => {
       let u = s(0)
       @jsjson.JValue::of_string(
@@ -1113,7 +900,6 @@ async fn P52::dep(
       )
     }
     "opencodeGo" => j_undef()
-    "modelKey" => @jsjson.JValue::of_string(s(0).to_lower())
     "parseUrl" => {
       let u = s(0)
       match u.find("://") {
@@ -1132,13 +918,11 @@ async fn P52::dep(
         None => Null
       }
     }
-    _ => {
-      ignore(raw)
+    _ =>
       raise @session_chats.Thrown(
         "",
         "the conversations asked for dep.\{name}, which the station does not have",
       )
-    }
   }
 }
 

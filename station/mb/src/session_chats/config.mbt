@@ -118,7 +118,7 @@ fn js_trunc(x : Double) -> Double {
 ///|
 /// config.json (parsed) as the hub reads it: parse_config's defaults and derivations. `found`: the models a profile's
 /// last check found (by its id).
-pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) -> Array[String]?) -> J {
+pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String) -> Array[String]?) -> J {
   let profiles = []
   for p in arr_of(at(Some(raw), "profiles")).unwrap_or([]) {
     let seen : Array[String] = []
@@ -131,18 +131,18 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
       }
     }
     let base = spread(p, jo([("home", js(under(data_dir, js_string_of(match at(Some(p), "home") { Some(Null) | None => Some(js("")); v => v }))))]))
-    let runtimes = arr_of(Some(w.dep("profileRuntimes", [base]))).unwrap_or([])
+    let runtimes = @agent_runtimes.profile_runtimes(base)
     let runs = models.copy()
     if runtimes.length() > 0 {
       let has : Array[String] = []
       for m in models {
-        has.push(str_of(Some(w.dep("modelKey", [js(m)]))).unwrap_or(""))
+        has.push(@readops.model_key(m))
       }
       for m in found(js_string_of(at(Some(p), "id"))).unwrap_or([]) {
         if m == "" {
           continue
         }
-        let k = str_of(Some(w.dep("modelKey", [js(m)]))).unwrap_or("")
+        let k = @readops.model_key(m)
         if has.contains(k) {
           continue
         }
@@ -165,8 +165,8 @@ pub async fn hub_config(w : World, raw : J, data_dir : String, found : (String) 
     let mut out = base
     out = put(out, "id", at(Some(p), "id"))
     out = put(out, "name", Some(name))
-    out = put(out, "runtime", Some(if runtimes.length() > 0 { runtimes[0] } else { js("claude") }))
-    out = put(out, "runtimes", Some(ja(runtimes)))
+    out = put(out, "runtime", Some(js(if runtimes.length() > 0 { runtimes[0] } else { "claude" })))
+    out = put(out, "runtimes", Some(jsa(runtimes)))
     out = put(out, "models", Some(jsa(runs)))
     out = put(out, "named", Some(jsa(models)))
     out = put(out, "model", match non_empty(at(Some(p), "model")) { Some(m) => Some(js(m)); None => None })
@@ -295,12 +295,12 @@ fn strings(v : J?) -> Array[String] {
 
 ///|
 /// shapes model.rs `same`: two spellings are one model.
-pub async fn same_model(w : World, a : String, b : String) -> Bool {
-  a == b || str_of(Some(w.dep("modelKey", [js(a)]))) == str_of(Some(w.dep("modelKey", [js(b)])))
+pub async fn same_model(_w : World, a : String, b : String) -> Bool {
+  a == b || @readops.model_key(a) == @readops.model_key(b)
 }
 
 ///|
-async fn find_model(models : Array[String], ok : async (String) -> Bool) -> String? {
+fn find_model(models : Array[String], ok : (String) -> Bool) -> String? {
   for m in models {
     if ok(m) {
       return Some(m)
@@ -310,43 +310,48 @@ async fn find_model(models : Array[String], ok : async (String) -> Bool) -> Stri
 }
 
 ///|
+fn same_model_sync(a : String, b : String) -> Bool {
+  a == b || @readops.model_key(a) == @readops.model_key(b)
+}
+
+///|
 /// Its own spelling of a model it runs, however the model is spelled.
-pub async fn spelling(w : World, profile : J, model : String) -> String? {
+pub async fn spelling(_w : World, profile : J, model : String) -> String? {
   let models = strings(at(Some(profile), "models"))
   let runtimes = strings(at(Some(profile), "runtimes"))
-  match find_model(models, async fn(m) { m == model }) {
+  match find_model(models, m => m == model) {
     Some(d) => return Some(d)
     None => ()
   }
-  match find_model(models, async fn(m) { same_model(w, m, model) }) {
+  match find_model(models, m => same_model_sync(m, model)) {
     Some(d) => return Some(d)
     None => ()
   }
   if runtimes.contains("agy") {
-    let base = str_of(at(Some(w.dep("agyBaseModel", [js(model)])), "model")).unwrap_or("")
-    return find_model(models, async fn(m) {
+    let (base, _) = @session_hub.agy_base_model(model)
+    return find_model(models, m => {
       m == base ||
-      same_model(w, m, base) ||
-      str_of(at(Some(w.dep("agyBaseModel", [js(m)])), "model")) == Some(base)
+      same_model_sync(m, base) ||
+      @session_hub.agy_base_model(m).0 == base
     })
   }
   if runtimes.contains("devin") {
-    let split = w.dep("splitDevinFusion", [js(model)])
-    if split is Obj(_) {
-      let lead = str_of(at(Some(split), "lead")).unwrap_or("")
-      let side = str_of(at(Some(split), "side")).unwrap_or("")
-      let base = "fusion-\{lead}-sidekick-\{side}"
-      let matched = find_model(models, async fn(m) {
-        m == base ||
-        same_model(w, m, base) ||
-        str_of(at(Some(w.dep("devinFusionBase", [js(m)])), "model")) == Some(base)
-      })
-      if matched is Some(_) {
-        return Some(base)
+    match @session_hub.split_devin_fusion(model) {
+      Some((lead, _, side)) => {
+        let base = "fusion-\{lead}-sidekick-\{side}"
+        let matched = find_model(models, m => {
+          m == base ||
+          same_model_sync(m, base) ||
+          @session_hub.devin_fusion_base(m) == base
+        })
+        if matched is Some(_) {
+          return Some(base)
+        }
+        if find_model(models, m => m == lead || same_model_sync(m, lead)) is Some(_) {
+          return Some(base)
+        }
       }
-      if find_model(models, async fn(m) { m == lead || same_model(w, m, lead) }) is Some(_) {
-        return Some(base)
-      }
+      None => ()
     }
   }
   None

@@ -300,26 +300,26 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     Some(Arr(xs)) => xs.map(js_string)
     _ => []
   }
-  let given = w.dep("stateArg", [at(Some(args), "kind").unwrap_or(jo([("$u", ji(1))]))])
-  let card = w.dep("cardArg", [at(Some(args), "card").unwrap_or(jo([("$u", ji(1))])), at(Some(args), "options").unwrap_or(jo([("$u", ji(1))]))])
-  let given_kind = at_i(Some(given), 0)
-  let given_said = str_of(at_i(Some(given), 1))
+  let given = hub_ok(() => @session_hub.state_arg(opt_json(at(Some(args), "kind"))))
+  let card = match hub_ok(() => @session_hub.card_arg(opt_json(at(Some(args), "card")), opt_json(at(Some(args), "options")))) {
+    Some(c) => @jsjson.JValue::of_json(c)
+    None => Null
+  }
+  let (kind, given_said) = match given {
+    Some((k_json, said)) => (@jsjson.JValue::of_json(k_json), Some(said))
+    None => (Null, None)
+  }
   if given_said == Some("decision") && card is Null {
     raise fail_(
       "need_decision carries options: a card {\"type\": \"options\", \"options\": [...]} people pick from (or end with kind \"need_human\" and say in need what they have to decide)",
     )
   }
-  let kind = match given_kind {
-    Some(k) => k
-    None => Null
+  let mut need = match given {
+    None => need_arg_of(args, { "kind": Json::string("waiting"), "seconds": Json::number(0.0) }, "now")
+    Some((k_json, said)) => need_arg_of(args, k_json, said)
   }
-  let mut need = if given is Null {
-    w.dep("needArg", [args, jo([("kind", js("waiting")), ("seconds", ji(0))]), js("now")])
-  } else {
-    w.dep("needArg", [args, kind, at_i(Some(given), 1).unwrap_or(Null)])
-  }
-  if need is Null && !(given is Null) && kind_kind(kind) == "need_help" && given_said != Some("now") && !(card is Null) {
-    let line = str_of(Some(w.dep("firstLine", [js(text)]))).unwrap_or("")
+  if need is Null && !(given is None) && kind_kind(kind) == "need_help" && given_said != Some("now") && !(card is Null) {
+    let line = @session_hub.first_line(text)
     if line != "" {
       need = js(line)
     }
@@ -476,15 +476,15 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       if slack {
         try {
           posted = w.chat(connect, "post", [here, js(text), files, shown])
-          text = str_of(Some(w.dep("placeFigures", [js(text), files]))).unwrap_or("")
+          text = @session_hub.place_figures(text, json_items(files))
         } catch {
           e => {
             if !thrown_message(e).contains("missing_scope") {
               raise e
             }
-            let pair = w.dep("slackWithFiles", [js(text), files, js(link())])
-            posted = w.chat(connect, "post", [here, at_i(Some(pair), 0).unwrap_or(Null), ja([])])
-            text = str_of(at_i(Some(pair), 1)).unwrap_or("")
+            let (posted_text, rest) = @session_hub.slack_with_files(w.words.to_hub(w.lang.val), text, json_items(files), link())
+            posted = w.chat(connect, "post", [here, js(posted_text), ja([])])
+            text = rest
           }
         }
       } else {
@@ -509,7 +509,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let offered = if card is Null {
     ""
   } else {
-    "\{str_of(Some(w.dep("cardSaid", [card]))).unwrap_or("")} Card message ts: \{js_string_of(Some(posted))}."
+    "\{@session_hub.card_said(card.to_json())} Card message ts: \{js_string_of(Some(posted))}."
   }
   w.hub("shared", [tid, n, js(key), js(text)]) |> ignore
   let actor = if guarded { question_actor } else { actor_id(w, key) }

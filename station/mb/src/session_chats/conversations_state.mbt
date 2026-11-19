@@ -186,17 +186,17 @@ pub async fn chat_state(w : World, key : String, args : J) -> String {
     kind = jo([("kind", js("waiting")), ("seconds", jn(@cmp.minimum(max_wait_seconds, @cmp.maximum(min_wait_seconds, whole))))])
     words = js(what)
   } else {
-    let given = w.dep("stateArg", [kind_arg.unwrap_or(jo([("$u", ji(1))]))])
-    if given is Null {
+    let given = hub_ok(() => @session_hub.state_arg(opt_json(kind_arg)))
+    guard given is Some((k_json, said)) else {
       raise fail_("kind is required")
     }
-    if str_of(at_i(Some(given), 1)) == Some("decision") {
+    if said == "decision" {
       raise fail_(
         "need_decision is posted with chat_post: the question in the text, its options in a card; then the turn ends need_human",
       )
     }
-    kind = at_i(Some(given), 0).unwrap_or(Null)
-    words = w.dep("needArg", [args, kind, at_i(Some(given), 1).unwrap_or(Null)])
+    kind = @jsjson.JValue::of_json(k_json)
+    words = need_arg_of(args, k_json, said)
   }
   let ts = about_ts(args)
   let need_help = kind_kind(kind) == "need_help"
@@ -367,7 +367,8 @@ pub async fn thread_history(
       None => ()
     }
   }
-  let cards : Array[(J, J)] = []
+  let cards : Map[Double, @agent_runtimes.HistoryCard] = Map([])
+  let card_ns : Array[J] = []
   let ns = messages.map(m => at(Some(m), "n").unwrap_or(Null))
   for e in arr_of(Some(w.store("messagePageEntries", [tid, ja(ns)]))).unwrap_or([]) {
     if str_of(at(Some(e), "kind")) != Some("message") {
@@ -381,11 +382,11 @@ pub async fn thread_history(
       J::Null
     }
     if !(card is Null) {
-      let n = at(Some(e), "n").unwrap_or(Null)
-      let entry = jo([("card", card), ("pending", jb(false))])
-      match cards.search_by(c => jeq(c.0, n)) {
-        Some(i) => cards[i] = (n, entry)
-        None => cards.push((n, entry))
+      if num_of(at(Some(e), "n")) is Some(n) {
+        if !cards.contains(n) {
+          card_ns.push(jn(n))
+        }
+        cards[n] = { card: Some(card), pending: false, chose: None }
       }
     }
   }
@@ -399,40 +400,28 @@ pub async fn thread_history(
         None => Null
       }
     }
-    if !(pending is Null) {
-      match cards.search_by(c => jeq(c.0, pending)) {
-        Some(i) => cards[i] = (cards[i].0, set_field(cards[i].1, "pending", jb(true)))
-        None => ()
-      }
+    if num_of(Some(pending)) is Some(p) && cards.get(p) is Some(entry) {
+      cards[p] = { ..entry, pending: true }
     }
-    for pair in arr_of(Some(w.store("cardChoices", [tid, ja(cards.map(c => c.0))]))).unwrap_or([]) {
-      let n = at_i(Some(pair), 0).unwrap_or(Null)
+    for pair in arr_of(Some(w.store("cardChoices", [tid, ja(card_ns)]))).unwrap_or([]) {
       let c = at_i(Some(pair), 1)
       let by = str_of(at(c, "by")).unwrap_or("")
       let name = str_of(Some(w.ask("chatOf.userName", [js(connect), js(by)])))
-      let chose = jo([
-        ("by", js(match name { Some(x) => "\{x} (\{by})"; None => by })),
-        ("option", at(c, "option").unwrap_or(Null)),
-      ])
-      match cards.search_by(x => jeq(x.0, n)) {
-        Some(i) => cards[i] = (cards[i].0, set_field(cards[i].1, "chose", chose))
-        None => ()
+      let who = match name { Some(x) => "\{x} (\{by})"; None => by }
+      if num_of(at_i(Some(pair), 0)) is Some(n) && cards.get(n) is Some(entry) {
+        cards[n] = { ..entry, chose: Some((who, at(c, "option").unwrap_or(Null))) }
       }
     }
   }
-  let surface = at(Some(thread), "surface").unwrap_or(Null)
-  str_of(
-    Some(
-      w.dep("formatHistory", [
-        ja(messages),
-        surface,
-        js(address_of_row(Some(thread))),
-        js(key),
-        ja(names.map(p => jsa([p.0, p.1]))),
-        ja(cards.map(c => ja([c.0, c.1]))),
-      ]),
-    ),
-  ).unwrap_or("")
+  let surface = str_of(at(Some(thread), "surface")).unwrap_or("")
+  @agent_runtimes.format_history(
+    messages,
+    surface,
+    address_of_row(Some(thread)),
+    key,
+    names,
+    cards~,
+  )
 }
 
 ///|
@@ -511,7 +500,7 @@ pub async fn slack_api(
   save_files : Bool,
 ) -> String {
   let identity = message_identity(w, key)
-  if !(w.dep("isSlackMethod", [js(method)]) is Bool(true)) {
+  if !@session_hub.is_slack_method(method) {
     raise fail_("not a Slack method: \{quoted(method)}")
   }
   if starts(method, "admin.") || starts(method, "apps.") || starts(method, "oauth.") || method == "auth.revoke" {
@@ -527,7 +516,7 @@ pub async fn slack_api(
     None => text_of("channel_id")
   }
   let surface = w.hub("surface", [js(connect)])
-  let write = w.dep("isSlackWrite", [js(method)]) is Bool(true)
+  let write = @mcp_tools.is_slack_write(method)
   let named = text_of("thread_ts")
   let about = match text_of("ts") {
     Some(t) => Some(t)

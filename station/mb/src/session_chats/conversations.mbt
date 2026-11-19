@@ -558,7 +558,7 @@ pub async fn attach(w : World, key : String, paths : Array[String], into : Strin
       raise fail_("too large (over 50 MB): \{given}")
     }
     let name = basename(path)
-    let iso = str_of(Some(w.dep("iso", [jn(w.now())]))).unwrap_or("")
+    let iso = @session_hub.iso(w.now())
     let stamp = replace_all(replace_all(slice(iso, 0, b=19), ":", "-"), ".", "-")
     let safe = StringBuilder::new()
     for c in name {
