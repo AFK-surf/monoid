@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 2.62 | 3.53 | 14.4 | 36.6 | 55.48 | 32.08 | 64.88 | 97.39 | 119.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
 | [5ade5b9e6](https://github.com/AFK-surf/monoid/commit/5ade5b9e61bd10131bcc341a0e7c80e9f2432a4d) feat(effect): add quiet and daemon fiber forks (#7 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.4 | 127.7 |
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
-| [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 120.29 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbf2a2b52](https://github.com/AFK-surf/monoid/commit/bbf2a2b529a36c9819059160e47d6ba9448438ed) feat(mbui): fly shared nodes in the layer both end | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
 | [8990d5ddc](https://github.com/AFK-surf/monoid/commit/8990d5ddc7a684bddf0300f1fb5036cbb55d1ec0) feat(mbui): add headless submenus, menu typeahead, | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.15 |
 | [df2adfbca](https://github.com/AFK-surf/monoid/commit/df2adfbca01f23634fe31d79766afa57031e4be4) ci: prune main's superseded native and image-versi | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 54.12 |
 | [7debbde75](https://github.com/AFK-surf/monoid/commit/7debbde75841b92ef01ffaab81d1f5f5470e7d1f) fix(station): name monoid's Windows tasks and desk | 0.45 | 0.58 | 2.24 | 3.33 | 5.37 | 1.64 | 4.41 | 53.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d888ba627](https://github.com/AFK-surf/monoid/commit/d888ba62744cb3c5ed3cac369616c6e5c229ed56) fix(station): price session usage from model catal | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [5ade5b9e6](https://github.com/AFK-surf/monoid/commit/5ade5b9e61bd10131bcc341a0e7c80e9f2432a4d) feat(effect): add quiet and daemon fiber forks (#7 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
 | [d2df00612](https://github.com/AFK-surf/monoid/commit/d2df00612c04058ce13629b12945b9235115b34e) fix(station): keep chat.update's text within Slack | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 53.99 |
-| [d75900a3e](https://github.com/AFK-surf/monoid/commit/d75900a3e785f03d484be8e0199d0168e4af4063) ci: resolve MoonBit and Node downloads directly vi | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
