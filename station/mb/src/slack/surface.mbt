@@ -23,6 +23,50 @@ let max_backoff_ms : Int = 60000
 let question_chars : Int = 8000
 
 ///|
+/// The most UTF-8 bytes chat.update takes in `text` (more is msg_too_long), though chat.postMessage takes 40,000 and the
+/// message's Markdown block 12,000 characters: a message posted whole is changed with its blocks whole and its `text`,
+/// only the notification's fallback, cut to fit.
+let update_text_bytes : Int = 4000
+
+///|
+fn utf8_bytes(cp : Int) -> Int {
+  if cp <= 0x7f {
+    1
+  } else if cp <= 0x7ff {
+    2
+  } else if cp <= 0xffff {
+    3
+  } else {
+    4
+  }
+}
+
+///|
+/// `said` cut to `update_text_bytes` of UTF-8 at a whole code point, "…" after it where cut (slack/surface.ts
+/// `updateText`).
+fn update_text(said : String) -> String {
+  let mut total = 0
+  for c in said {
+    total += utf8_bytes(c.to_int())
+  }
+  if total <= update_text_bytes {
+    return said
+  }
+  let out = StringBuilder::new()
+  let mut used = 0
+  for c in said {
+    let bytes = utf8_bytes(c.to_int())
+    if used + bytes > update_text_bytes - 3 {
+      break
+    }
+    used += bytes
+    out.write_char(c)
+  }
+  out.write_string("…")
+  out.to_string()
+}
+
+///|
 /// What a chat's events are given to (sessions/chat.ts `Handler`): a message, an edit, a stop or a login's code, as
 /// `{type, …}`; what it raises is said as the event not taken.
 pub type Handler = async (J) -> Unit
@@ -1505,13 +1549,7 @@ pub async fn SlackSurface::edit(self : SlackSurface, channel : String, thread_ts
     Some(b) => said.blocks + [b]
     None => said.blocks
   }
-  ignore(
-    self.client.api(
-      "chat.update",
-      [("channel", channel), ("ts", ts), ("text", message), ("blocks", stringify(ja(blocks)))],
-      self.bot_token,
-    ),
-  )
+  self.update(channel, ts, message, blocks)
   match self.stands.get(key) {
     Some((t, Some(_), block)) if t == ts => self.stands[key] = (t, Some(said), block)
     _ => ()
@@ -1621,7 +1659,7 @@ async fn SlackSurface::update(self : SlackSurface, channel : String, ts : String
   ignore(
     self.client.api(
       "chat.update",
-      [("channel", channel), ("ts", ts), ("text", said), ("blocks", stringify(ja(blocks)))],
+      [("channel", channel), ("ts", ts), ("text", update_text(said)), ("blocks", stringify(ja(blocks)))],
       self.bot_token,
     ),
   )

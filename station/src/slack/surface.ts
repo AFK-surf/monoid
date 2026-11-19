@@ -256,6 +256,27 @@ export type SlackSurfaceOptions = {
 /// The most of a question's words its card carries (Slack takes 12,000 characters of Markdown in a message, and long
 /// options are listed with them).
 const QUESTION_CHARS = 8_000;
+/// The most UTF-8 bytes chat.update takes in `text` (more is msg_too_long), though chat.postMessage takes 40,000 and the
+/// message's Markdown block 12,000 characters: a message posted whole is changed with its blocks whole and its `text`,
+/// only the notification's fallback, cut to fit.
+const UPDATE_TEXT_BYTES = 4_000;
+
+/// `said` cut to UPDATE_TEXT_BYTES of UTF-8 at a whole code point, "…" after it where cut (mb slack `update_text`).
+export function updateText(said: string): string {
+  const bytesOf = (cp: number) => (cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4);
+  let total = 0;
+  for (const c of said) total += bytesOf(c.codePointAt(0)!);
+  if (total <= UPDATE_TEXT_BYTES) return said;
+  let used = 0;
+  let out = "";
+  for (const c of said) {
+    const bytes = bytesOf(c.codePointAt(0)!);
+    if (used + bytes > UPDATE_TEXT_BYTES - 3) break;
+    used += bytes;
+    out += c;
+  }
+  return `${out}…`;
+}
 /// How long the workspace's people are kept for (peopleIn).
 export const PEOPLE_MS = 10 * 60_000;
 
@@ -558,16 +579,7 @@ export class SlackSurface extends ConnectedSurface {
     if (this.stands.get(key)?.ts === asked) this.stands.delete(key);
     const end = this.ends.get(key);
     if (end?.ts === asked && end.mine !== null) end.mine = { text: asking, blocks: entered };
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", asked],
-        ["text", asking],
-        ["blocks", JSON.stringify(entered)],
-      ],
-      this.botToken,
-    );
+    await this.update(channel, asked, asking, entered);
   }
 
   /// What a pressed card says, to be shown again under its answer: its message's text, and its words (cards.ts `Words`):
@@ -628,16 +640,7 @@ export class SlackSurface extends ConnectedSurface {
     if (this.stands.get(key)?.ts === asked) this.stands.delete(key);
     const end = this.ends.get(key);
     if (end?.ts === asked && end.mine !== null) end.mine = { text: asking, blocks: answered };
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", asked],
-        ["text", asking],
-        ["blocks", JSON.stringify(answered)],
-      ],
-      this.botToken,
-    );
+    await this.update(channel, asked, asking, answered);
   }
 
   /// A question that stopped waiting other than by its button (connects/card-ends.ts), a login's field among them:
@@ -827,16 +830,7 @@ export class SlackSurface extends ConnectedSurface {
     const said: Said = { text: message, blocks: [markdown(message)] };
     const stands = this.stands.get(key);
     const under = stands?.ts === ts && stands.mine !== null ? stands.block : null;
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", thread.channel],
-        ["ts", ts],
-        ["text", message],
-        ["blocks", JSON.stringify(under !== null ? [...said.blocks, under] : said.blocks)],
-      ],
-      this.botToken,
-    );
+    await this.update(thread.channel, ts, message, under !== null ? [...said.blocks, under] : said.blocks);
     if (stands?.ts === ts && stands.mine !== null) stands.mine = said;
     const end = this.ends.get(key);
     if (end?.ts === ts && end.mine !== null) end.mine = said;
@@ -913,7 +907,7 @@ export class SlackSurface extends ConnectedSurface {
       [
         ["channel", channel],
         ["ts", ts],
-        ["text", said],
+        ["text", updateText(said)],
         ["blocks", JSON.stringify(blocks)],
       ],
       this.botToken,

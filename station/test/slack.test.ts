@@ -503,6 +503,84 @@ describe("slack", { concurrency: true }, () => {
     }
   });
 
+  test("a message over chat.update's 4,000 bytes of text changes in place all the same: its blocks whole, its text cut at a whole character", async () => {
+    const fake = await FakeSlack.start();
+    bot(fake);
+    const surface = new SlackSurface({ appToken: "xapp-1", botToken: "xoxb-1", client: new SlackClient(fake.base), pingMs: PING, staleMs: STALE * 5 });
+    const heard: ChatEvent[] = [];
+    // 2,600 characters of Chinese, 7,800 bytes: posted as one message; the rocket after the first 3,996 bytes would
+    // cross the 3,997 the cut keeps before its "…"
+    const long = `${"长".repeat(1332)}🚀${"长".repeat(1267)}`;
+    const cut = `${"长".repeat(1332)}…`;
+    const blocks = (c: { params: Record<string, string> }) => JSON.parse(c.params.blocks!);
+    const fits = (c: { params: Record<string, string> }) => {
+      assert.equal(c.params.text, cut);
+      assert.ok(Buffer.byteLength(c.params.text!, "utf8") <= 4_000);
+    };
+    const thread = { channel: "C1", threadTs: "1.1" };
+    try {
+      await surface.start(async (event) => void heard.push(event));
+      await fake.until("a socket", () => fake.sockets.length === 1 && surface.socket().connected);
+      // (a) an options card answered
+      const asked = await surface.post(thread, long, [], { type: "options", options: [{ label: "合并", recommended: true }, { label: "先不" }] });
+      assert.equal(fake.calls("chat.postMessage").at(-1)!.params.text, long, "posted whole");
+      fake.send({
+        type: "interactive",
+        envelope_id: "i1",
+        payload: {
+          type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: asked, thread_ts: "1.1", text: long },
+          actions: [{ action_id: "sf_answer", value: '{"l":["先不","合并"]}', action_ts: "9.5" }],
+          state: { values: { b1: { sf_pick: { selected_option: { value: "1" } } } } },
+        },
+      });
+      await fake.until("the card changed", () => fake.calls("chat.update").length === 1);
+      const answered = fake.calls("chat.update")[0]!;
+      fits(answered);
+      assert.deepEqual(blocks(answered).map((b: any) => b.type), ["markdown", "context"], "nothing to press any more");
+      assert.equal(blocks(answered)[0].text, long, "the question whole");
+      assert.match(answered.params.blocks!, /Ada 回答：合并/);
+      // (b) a login's code entered, and a card closed otherwise
+      const login = await surface.post(thread, long, [], { type: "login", login: "l1" });
+      fake.send({
+        type: "interactive",
+        envelope_id: "i2",
+        payload: {
+          type: "block_actions", user: { id: "U1" }, channel: { id: "C1" }, message: { ts: login, thread_ts: "1.1", text: long },
+          actions: [{ action_id: "sf_login", action_ts: "9.6" }], state: { values: { sf_code: { sf_code: { value: "4/0Ab-code" } } } },
+        },
+      });
+      await fake.until("the login card changed", () => fake.calls("chat.update").length === 2);
+      const entered = fake.calls("chat.update")[1]!;
+      fits(entered);
+      assert.deepEqual([entered.params.ts, blocks(entered).map((b: any) => b.type), blocks(entered)[0].text], [login, ["markdown", "context"], long]);
+      const field = await surface.post(thread, long, [], { type: "text" });
+      await surface.cardEnded(thread, field, long, { type: "text" }, { why: "withdrawn" });
+      const ended = fake.calls("chat.update")[2]!;
+      fits(ended);
+      assert.deepEqual([ended.params.ts, blocks(ended).map((b: any) => b.type), blocks(ended)[0].text], [field, ["markdown", "context"], long]);
+      // (c) a plain message: where the thread stands said under it, the message edited, the line taken back
+      const said = await surface.post(thread, long, []);
+      surface.standsAt(thread, { kind: "done", words: "好了" });
+      await fake.until("the line added", () => fake.calls("chat.update").length === 4);
+      const added = fake.calls("chat.update")[3]!;
+      fits(added);
+      assert.deepEqual([added.params.ts, blocks(added).map((b: any) => b.type), blocks(added)[0].text], [said, ["markdown", "context"], long]);
+      assert.equal(await surface.edit(thread, said, `${long}。`), true);
+      const edited = fake.calls("chat.update")[4]!;
+      fits(edited);
+      assert.deepEqual([blocks(edited).map((b: any) => b.type), blocks(edited)[0].text], [["markdown", "context"], `${long}。`]);
+      surface.working(thread, "1.5", "正在思考…");
+      await fake.until("the line taken back", () => fake.calls("chat.update").length === 6);
+      const back = fake.calls("chat.update")[5]!;
+      fits(back);
+      assert.deepEqual(blocks(back), [{ type: "markdown", text: `${long}。` }]);
+      assert.deepEqual(heard.map((e) => e.type), ["message", "loginCode"]);
+    } finally {
+      await surface.stop();
+      await fake.close();
+    }
+  });
+
   test("a question's card: radio buttons with the recommended one last and chosen, details under them; long ones listed whole; a field", () => {
     const q = questionBlocks("选一个", { type: "options", options: [{ label: "合并", detail: "squash 合进 main", recommended: true }, { label: "先不", detail: "留着分支" }] }, "zh");
     assert.deepEqual(q[0], { type: "markdown", text: "选一个" });
