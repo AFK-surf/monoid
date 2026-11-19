@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.06 | 126.32 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
 | [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
 | [d5f7b63a0](https://github.com/AFK-surf/monoid/commit/d5f7b63a06b9c6cfa31901152178ac7d67f469d3) feat(station): add chat_configure tool, enhance ch | 2.61 | 3.51 | 14.36 | 36.46 | 55.32 | 31.94 | 64.57 | 97.22 | 127.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
 | [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.9 | 97.24 | 124.54 |
 | [e118c93e1](https://github.com/AFK-surf/monoid/commit/e118c93e127a7c27194f8f121ca94bc19beb9f2e) perf(client): stop host and way readings from rebu | 2.58 | 3.47 | 14.15 | 36.22 | 54.46 | 31.74 | 63.89 | 97.27 | 119.67 |
-| [5a092fb5f](https://github.com/AFK-surf/monoid/commit/5a092fb5f3934840747770df5b4fc85694792eaf) fix(ci): keep put green when the prune fails, and  | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.74 | 63.89 | 97.21 | 129.14 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4aa521887](https://github.com/AFK-surf/monoid/commit/4aa52188713df8eadf6bdb338772e50ada19c5eb) refactor(core-ts): split shapes schema into domain | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [9e26c535e](https://github.com/AFK-surf/monoid/commit/9e26c535eb1be6ba936c29567f855b244eb60d8c) fix(mbui): apply pixel-sliver guard to the n == 3  | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.04 |
 | [7950d8399](https://github.com/AFK-surf/monoid/commit/7950d839914a95329b74e196a3e3d2aa9405e4a6) perf(station): encode H.264 at High, look at macOS | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.31 |
 | [d5f7b63a0](https://github.com/AFK-surf/monoid/commit/d5f7b63a06b9c6cfa31901152178ac7d67f469d3) feat(station): add chat_configure tool, enhance ch | 0.44 | 0.58 | 2.23 | 3.32 | 5.34 | 1.63 | 4.4 | 54.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [c0070ab30](https://github.com/AFK-surf/monoid/commit/c0070ab308ff3163070bde3700e86dd2578c04dd) fix(mbui): settle chat_bar_node's second row at on | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [e118c93e1](https://github.com/AFK-surf/monoid/commit/e118c93e127a7c27194f8f121ca94bc19beb9f2e) perf(client): stop host and way readings from rebu | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
-| [5a092fb5f](https://github.com/AFK-surf/monoid/commit/5a092fb5f3934840747770df5b4fc85694792eaf) fix(ci): keep put green when the prune fails, and  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
