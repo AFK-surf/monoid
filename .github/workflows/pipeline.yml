@@ -63,6 +63,8 @@ jobs:
       natives_mac: ${{ steps.natives.outputs.natives_mac }}
       natives_win_reader: ${{ steps.natives.outputs.natives_win_reader }}
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
+      natives_runner: ${{ steps.natives.outputs.natives_runner }}
+      natives_win_runner: ${{ steps.natives.outputs.natives_win_runner }}
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
       launcher_windows: ${{ steps.plan.outputs.launcher_windows }}
       kit: ${{ steps.plan.outputs.kit }}
@@ -124,12 +126,28 @@ jobs:
             echo "natives_win_reader=$([ -n "$missing_win" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh, shell-apple or reader. On macos-26 a cold reader took 223 s before packing; the job hit its deadline
-          # before upload (run 44160716571). The lighter parts and every run while vars.MINI1 is 'off' use macos-26.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
+          # mesh or shell-apple (cold builds there took 228 and 323 s before packing). A branch's reader goes on
+          # macos-26: station/mb/build.sh compiles it -O0 there (about 25 s), its units kept by mbui-reader-mac-. The
+          # lighter parts and every run while vars.MINI1 is 'off' use macos-26.
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
+          fi
+          # Where natives and natives-win-reader build: a branch missing only readers whose shell-station main already
+          # published needs moon, mbc and zig alone (-O0 on GitHub's runner, station/mb/build.sh), so it builds on
+          # ubuntu-24.04 and does not wait for ci-1 (a change to station/mb queued while ci-1 was away, #7347).
+          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ "${missing:-}" = "reader:linux-x64" ] && [ -z "$(node scripts/native.ts missing shell-station:linux-x64)" ]; then
+            echo 'natives_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
+          elif [ "${{ vars.CI_1 }}" != off ]; then
+            echo 'natives_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'natives_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -z "$(node scripts/native.ts missing shell-station:win32-x64)" ]; then
+            echo 'natives_win_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
+          else
+            echo 'natives_win_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
           fi
 
   # The non-Apple native parts for this commit (scripts/native.ts --linux): Linux, Windows cross-builds, Wasm and Android,
@@ -141,23 +159,61 @@ jobs:
   natives:
     needs: plan
     if: needs.plan.outputs.natives == 'needed'
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "ci-1"]' || '["self-hosted", "quick"]') }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_runner) }}
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
       id-token: write # the branch job can stage its native archives in R2
     steps:
+      # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-      - if: runner.os == 'Linux'
+      - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         uses: ./.github/actions/setup-linux
       - if: runner.os == 'macOS'
         uses: ./.github/actions/setup-mac
-      # (the station's reader is MoonBit: scripts/native.ts `reader`)
+      # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
+      # cache by its version)
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/zig-0.16.0
+          key: zig-linux-x64-0.16.0
+      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
+        if: runner.environment != 'self-hosted'
+        run: |
+          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
+          if [ ! -x "$d/zig" ]; then
+            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            t="$RUNNER_TEMP/zig.tar.xz"
+            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
+            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            rm -f "$t"
+          fi
+          echo "$d" >> "$GITHUB_PATH"
+          [ "$("$d/zig" version)" = 0.16.0 ]
+      # (the reader's compiled units, station/mb/build.sh's MBC_STORE, as natives-mac keeps them: restored here, saved
+      # at the end whatever came of the build)
+      - if: runner.environment != 'self-hosted'
+        id: reader-store
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-linux-${{ github.sha }}
+          restore-keys: mbui-reader-linux-
+      # (the station's reader is MoonBit: scripts/native.ts `reader`, which needs only mbc of mbui's tools)
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       - name: Get or build the native parts
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_RUNNER: ${{ runner.environment }}
         run: |
+          limit=()
+          [ "$GITHUB_RUNNER" = self-hosted ] || limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             export STILLFAIL_NATIVE_READERS=3
           else
@@ -175,7 +231,7 @@ jobs:
           elif [ "$GITHUB_REF" = refs/heads/main ]; then
             node scripts/native.ts ensure --linux --publish
           else
-            node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
@@ -183,6 +239,13 @@ jobs:
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives.r2.json", if-no-files-found: ignore, retention-days: 7 }
+      - if: always() && runner.environment != 'self-hosted'
+        run: find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
+      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-linux-${{ github.sha }}
 
   # A branch's Windows reader (BRANCH_WIN_READER), on ci-1 after natives, so that the two readers' C does not share its
   # cores and each has a job's five minutes: its archive staged in R2 as natives' are (natives-win-reader-<sha>), for
@@ -190,31 +253,77 @@ jobs:
   natives-win-reader:
     needs: [plan, natives]
     if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref != 'refs/heads/main' && needs.plan.outputs.natives_win_reader == 'needed' && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
-    runs-on: ["self-hosted", "ci-1"]
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_win_runner) }}
     timeout-minutes: 5
     permissions:
       contents: read
       id-token: write # its native archive staged in R2
     steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup-linux
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-linux
+      # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
+      # cache by its version)
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/zig-0.16.0
+          key: zig-linux-x64-0.16.0
+      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
+        if: runner.environment != 'self-hosted'
+        run: |
+          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
+          if [ ! -x "$d/zig" ]; then
+            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            t="$RUNNER_TEMP/zig.tar.xz"
+            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
+            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            rm -f "$t"
+          fi
+          echo "$d" >> "$GITHUB_PATH"
+          [ "$("$d/zig" version)" = 0.16.0 ]
+      # (the reader's compiled units, station/mb/build.sh's MBC_STORE, as natives-mac keeps them: restored here, saved
+      # at the end whatever came of the build)
+      - if: runner.environment != 'self-hosted'
+        id: reader-store
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-win-${{ github.sha }}
+          restore-keys: mbui-reader-win-
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       - name: Get or build Windows' reader
         env:
           GH_TOKEN: ${{ github.token }}
           # (one reader here: every core its)
           STILLFAIL_NATIVE_READERS: "1"
-        run: node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_WIN_READER
+          GITHUB_RUNNER: ${{ runner.environment }}
+        run: |
+          limit=()
+          [ "$GITHUB_RUNNER" = self-hosted ] || limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
+          ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_WIN_READER
       - name: Stage its archive in R2
         run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-win-reader.r2.json"
       - uses: actions/upload-artifact@v4
         with: { name: "natives-win-reader-${{ github.sha }}", path: "${{ runner.temp }}/natives-win-reader.r2.json", if-no-files-found: ignore, retention-days: 7 }
+      - if: always() && runner.environment != 'self-hosted'
+        run: find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
+      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-win-${{ github.sha }}
 
   # A branch's the rest of what main builds on ci-1 (linux-arm64, shell-station), into ci-1's cache,
   # which main's natives job takes them from without holding main's jobs back.
   natives-main:
     needs: [plan, natives, natives-win-reader]
-    if: ${{ !cancelled() && needs.plan.outputs.natives == 'needed' && github.ref != 'refs/heads/main' && needs.natives.result == 'success' && needs.natives-win-reader.result != 'failure' }}
+    if: ${{ !cancelled() && needs.plan.outputs.natives == 'needed' && github.ref != 'refs/heads/main' && needs.natives.result == 'success' && needs.natives-win-reader.result != 'failure' && needs.plan.outputs.natives_runner != '"ubuntu-24.04"' }}
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') }}
     timeout-minutes: 5
     steps:
