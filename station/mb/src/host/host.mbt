@@ -18,6 +18,9 @@ extern "C" fn out_ffi(b : Bytes) -> Int = "sfh_out"
 extern "C" fn now_ffi() -> Int64 = "sfh_now"
 
 ///|
+extern "C" fn wall_ms_ffi() -> Int64 = "sfh_wall_ms"
+
+///|
 #borrow(op, json)
 extern "C" fn shell_sync_ffi(op : Bytes, json : Bytes) -> Bytes = "sfh_shell_sync"
 
@@ -293,9 +296,36 @@ pub fn args() -> Array[String] {
 }
 
 ///|
-/// A clock that never goes back, in ms (host.c `sfh_now`).
+/// A clock that never goes back, in ms from the machine's start (host.c `sfh_now`): it times waits, deadlines and
+/// durations only, never a time of the world's (a date in January 1970). That is `wall_ms` or `epoch_ms`.
 pub fn now() -> Int64 {
   now_ffi()
+}
+
+///|
+/// Now, in ms since 1970, as the system's wall clock says (host.c `sfh_wall_ms`): it goes back or jumps when the
+/// machine's time is set. What is shared with other programs (file times, a process's start) is in this.
+pub fn wall_ms() -> Int64 {
+  wall_ms_ffi()
+}
+
+///|
+/// The wall's time and `now` as `epoch_ms` was first asked, taken then rather than as the program starts.
+let epoch_anchor : Ref[(Int64, Int64)?] = Ref(None)
+
+///|
+/// Now, in ms since 1970, going on as `now` goes from the wall's time when first asked: what a part keeps or compares
+/// as a time of the world's (a record's `at`, an expiry, a sample's time), never going back.
+pub fn epoch_ms() -> Int64 {
+  let (wall_0, mono_0) = match epoch_anchor.val {
+    Some(a) => a
+    None => {
+      let a = (wall_ms_ffi(), now_ffi())
+      epoch_anchor.val = Some(a)
+      a
+    }
+  }
+  wall_0 + (now_ffi() - mono_0)
 }
 
 ///|

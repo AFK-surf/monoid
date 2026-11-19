@@ -419,10 +419,10 @@ pub(all) struct Processes {
 }
 
 ///|
-/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the host's clock where
-/// none is given).
+/// The machine's own, through `kill` and `ps`; a process's start by `wall` (ms since the epoch; the system's wall clock
+/// where none is given).
 pub fn Processes::shell(host : @host.Host, wall? : () -> Double) -> Processes {
-  let wall = wall.unwrap_or(() => @host.now().to_double())
+  let wall = wall.unwrap_or(() => @host.wall_ms().to_double())
   {
     signal_group: async fn(pgid, signal) {
       let sig = if starts(signal, "SIG") { from(signal, 3) } else { signal }
@@ -543,7 +543,7 @@ pub async fn JobsHost::new(
     notify_url: "",
     closing: false,
     ended: async fn(_, _, _, _) {  },
-    now: now.unwrap_or(() => @host.now().to_double()),
+    now: now.unwrap_or(() => @host.epoch_ms().to_double()),
   }
 }
 

@@ -100,7 +100,7 @@ pub fn host_io(
     }
   }
   {
-    now: () => @host.now().to_double(),
+    now: () => @host.epoch_ms().to_double(),
     after: (ms, f) => {
       let fiber = host.rt.fork(async fn() {
         @effect.sleep(if ms < 0 { 0 } else { ms })

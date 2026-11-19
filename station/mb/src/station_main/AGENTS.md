@@ -73,9 +73,11 @@
     backgrounded process of its own, and a retirement; the moves; the updates and the `beta` features, on
     `coord_ask`: station/test/mb-live-p5-5.test.ts.
 - `@host.now()` (and the runtime's `now`) is a monotonic clock counting from the machine's start: it times waits and
-  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry, a process's start) is
-  `p5_epoch_ms` (sys.mbt), given to each package's clock where it is made; a process's start is `start_time_of`
-  (the system's, ms since the epoch), never `ps`'s words, which are in the machine's own time zone.
+  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry) is `@host.epoch_ms()`
+  (sys.mbt `p5_epoch_ms`: the wall's time once, then the monotonic clock, never going back), and what is shared with
+  other programs (file times) `@host.wall_ms()`; each package's own default clock is one of these, never
+  `@host.now()`. A process's start is `start_time_of` (the system's, ms since the epoch), never `ps`'s words, which
+  are in the machine's own time zone.
 - The shell keeps no watch of a file or a folder: what the TypeScript watched (a transcript, a job's log, a drive's
   folder, run/'s files) is looked at by its size and time every few hundred ms while it is followed, its line saying
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories
