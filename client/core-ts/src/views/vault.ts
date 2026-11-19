@@ -152,11 +152,17 @@ type Mem = {
   /// By workspace, the devices and members this device took out of its lock in this run at a person's asking
   /// (`tookOut`): a vault waiting to be keyed anew for one of them may read the box key to be keyed anew (`rekeyGone`).
   out: Map<string, Set<string>>;
+  /// The box key made one at a time (`ensureBoxKey`): two workspaces, or 开启 and `autoBox` at once, never make two.
+  boxInit: ReturnType<typeof Semaphore.makeUnsafe>;
+  /// The workspaces whose `autoBox` runs now (one at a time each: a read, an event and the lock coming all set it going).
+  autoBoxing: Set<string>;
+  /// The workspaces whose stations `vaultCome` read for `autoBox`, nothing of the vaults held yet (once a run).
+  cameRead: Set<string>;
 };
 const mems = new WeakMap<Inner, Mem>();
 const mem = (inner: Inner): Mem => {
   let m = mems.get(inner);
-  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), out: new Map() }));
+  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set() }));
   return m;
 };
 
@@ -679,6 +685,8 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
     // (items left under an earlier key, a keying anew stopped half-way: written again under the vault's where the keys
     // are unsealed here still)
     if (list !== null) carryKept(inner, ws);
+    // (this device not set up while the person's vault is on elsewhere: set up by itself)
+    autoBox(inner, ws);
   });
 }
 
@@ -926,6 +934,7 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
       // One this person was just put in (or this station was just brought): its items are read.
       else if (!known) inner.scheduler.enqueue(address, `${address} vault/${d.id}`, Priority.background, readItems(inner, address, d.id));
       spreadAll(inner, ws);
+      autoBox(inner, ws);
       return;
     }
     case "vault-gone":
@@ -958,6 +967,8 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
         kept(inner, ws, station);
         // A member's device set up (or asking again): given the keys unsealed here, no one asked.
         giveKept(inner, ws);
+        // (another device of this person's set up: this one too, by itself)
+        autoBox(inner, ws);
       }
       return;
     case "vault-plain":
@@ -1103,6 +1114,66 @@ export function vaultCome(inner: Inner, ws: string): void {
   // A device or member taken out who held a key of a vault of this person's own: the vault keyed anew without them.
   if (able(inner)) inner.runner.fork(Effect.ignore(new Vaults(inner, ws, null).rekeyGone(), { log: "Unhandled", message: "vaults keyed anew" }));
   lockSeen(inner).touch("prompts");
+  // This device just let in (approved on another of the person's): set up by itself where their vault is on already;
+  // nothing of the vaults held yet, the stations read now for it (once a run), as a page shown would.
+  const h = held(inner, ws);
+  if (able(inner) && Object.keys(h.vaults).length === 0 && Object.keys(h.boxes).length === 0 && !mem(inner).cameRead.has(ws)) {
+    const lock = lockOf(inner, ws);
+    if (!(lock instanceof CoreError) && me(lock, signerOf(inner)) !== null) {
+      mem(inner).cameRead.add(ws);
+      for (const s of stationsOf(inner, ws)) {
+        const address = `${ws}/${s.id}`;
+        inner.scheduler.enqueue(address, `${address} vault`, Priority.background, readStation(inner, address));
+      }
+    }
+  }
+  autoBox(inner, ws);
+}
+
+/// Whether this device is set up in `ws` (its certificate the lock vouches for, its box key the one kept here), as the
+/// `vaults` topic's `setUp` says.
+function setUpHere(inner: Inner, ws: string, lock: Checked, device: string): boolean {
+  const mine = held(inner, ws).boxes[device];
+  return mine !== undefined && certOwner(lock, mine) !== null && mine.box === mem(inner).box;
+}
+
+/// Whether this person's vault is on already on another device of theirs in `ws`: a vault they are in that the lock
+/// takes (or one waiting to be keyed anew), or a certificate of another device of theirs (its vault not come yet).
+function onElsewhere(inner: Inner, ws: string, lock: Checked, self: { device: string; sub: string }): boolean {
+  const h = held(inner, ws);
+  return Object.values(h.vaults).some((v) => !v.deleted && v.members.includes(self.sub) && (trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null))
+    || certs(inner, ws, lock).some((c) => c.sub === self.sub && c.device !== self.device);
+}
+
+/// This device set up by itself (its box key made, its certificate published: `Vaults.certify`) where it is in the lock,
+/// not set up, and the person's vault is on already on another device of theirs (`onElsewhere`): approved on that one,
+/// they were told 「密钥库未开启」 here and had to press 开启 again (2026-11-20). Writing the box key asks nobody (only
+/// reading it does) and the signer is read unasked, so nothing prompts; no recovery words are made and no vault: those
+/// of the person's other devices are the ones. Where the vault is on nowhere, 开启 stays the person's own press.
+function autoBox(inner: Inner, ws: string): void {
+  if (!able(inner) || mem(inner).autoBoxing.has(ws)) return;
+  const lock = lockOf(inner, ws);
+  if (lock instanceof CoreError) return;
+  const self = me(lock, signerOf(inner));
+  if (self === null || setUpHere(inner, ws, lock, self.device) || !onElsewhere(inner, ws, lock, self)) return;
+  mem(inner).autoBoxing.add(ws);
+  inner.runner.fork(Effect.ignore(Effect.ensuring(new Vaults(inner, ws, null).autoSetUp(), Effect.sync(() => void mem(inner).autoBoxing.delete(ws))), { log: "Unhandled", message: "vault set up by itself" }));
+}
+
+/// This app's box key's public half: the one kept, else made now (its private half in the secure storage, written
+/// without asking the person) and kept. One at a time in this core (`boxInit`).
+function ensureBoxKey(inner: Inner): Effect.Effect<string, CoreError> {
+  const m = mem(inner);
+  return m.boxInit.withPermits(1)(Effect.gen(function* () {
+    const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
+    if (had) return (m.box = new TextDecoder().decode(had));
+    const priv = new Uint8Array(32);
+    inner.host.randomBytes(priv);
+    const pub = boxPublic(priv);
+    yield* Effect.mapError(inner.host.secureSet!(BOX_KEY, priv, { user: true }), (e) => CoreError.refused(e, "vault_refused"));
+    yield* Effect.mapError(inner.host.storageSet(BOX_PUB, utf8(pub)), asCoreError);
+    return (m.box = pub);
+  }));
 }
 
 /// A device (its id) or a member (their sub) this device takes out of workspace `ws`'s lock as a person asked it to, here
@@ -1993,16 +2064,7 @@ class Vaults {
       }
       const { lock, signer, self: who } = yield* self.#ready();
       // The box key made once (its public half kept beside, read without asking the person).
-      const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
-      let pub = had ? new TextDecoder().decode(had) : null;
-      if (pub === null) {
-        const priv = new Uint8Array(32);
-        inner.host.randomBytes(priv);
-        pub = boxPublic(priv);
-        yield* Effect.mapError(inner.host.secureSet!(BOX_KEY, priv, { user: true }), (e) => CoreError.refused(e, "vault_refused"));
-        yield* Effect.mapError(inner.host.storageSet(BOX_PUB, utf8(pub)), asCoreError);
-      }
-      mem(inner).box = pub;
+      const pub = yield* ensureBoxKey(inner);
       const theirs = certs(inner, self.ws, lock).filter((c) => c.sub === who.sub && typeof c.recovery === "string").sort((a, b) => b.at - a.at)[0];
       let words: string | null = null;
       let recovery = theirs?.recovery ?? null;
@@ -2057,10 +2119,47 @@ class Vaults {
       const here = certs(inner, self.ws, lock).find((c) => c.device === who.device);
       const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
       const pub = had ? new TextDecoder().decode(had) : null;
-      if (!here || pub === null || here.box !== pub) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
+      if (!here || pub === null || here.box !== pub) {
+        // (not set up yet, the vault on on another device of the person's, its `autoBox` not done as the person
+        // pressed: set up now, as it would be, and so asking; on nowhere, 开启 is theirs to press, the words said then)
+        if (!onElsewhere(inner, self.ws, lock, who)) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
+        return { asked: (yield* self.#certify(lock, signer, who)).length };
+      }
       const { sig: _s, ...rest } = bare(here);
       const stations = yield* self.#publish(sign({ ...rest, at: Math.max(nowS(inner), here.at + 1) }, TAG.box, signer));
       return { asked: stations.length };
+    });
+  }
+
+  /// This device's box key (made once, `ensureBoxKey`) certified and published, with the recovery key the person's
+  /// other devices' certificates carry (none made: their recovery words are said once, on the device that turned the
+  /// vault on); the stations that took it.
+  #certify(lock: Checked, signer: Signer, who: { device: string; sub: string }): Effect.Effect<string[], CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const pub = yield* ensureBoxKey(inner);
+      const recovery = certs(inner, self.ws, lock).filter((c) => c.sub === who.sub && typeof c.recovery === "string").sort((a, b) => b.at - a.at)[0]?.recovery ?? null;
+      const at = Math.max(nowS(inner), (held(inner, self.ws).boxes[who.device]?.at ?? -1) + 1);
+      return yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, ...(recovery !== null ? { recovery } : {}), at }, TAG.box, signer));
+    });
+  }
+
+  /// `autoBox`'s work: as it was asked, checked again now (the lock, this device in it, not set up, the vault on on
+  /// another device of the person's), this device certified (`#certify`). The signer read as it is kept, never made.
+  autoSetUp(): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const lock = lockOf(inner, self.ws);
+      if (lock instanceof CoreError) return;
+      const signer = yield* Signer.load(inner.host);
+      const who = signer ? me(lock, signer.id) : null;
+      if (signer === null || who === null || !onElsewhere(inner, self.ws, lock, who)) return;
+      // (the box key kept already, read now: `install` may not have read it yet)
+      yield* ensureBoxKey(inner);
+      if (setUpHere(inner, self.ws, lock, who.device)) return;
+      yield* self.#certify(lock, signer, who);
     });
   }
 

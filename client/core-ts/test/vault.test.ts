@@ -331,8 +331,11 @@ function fakeStation() {
 /// `web`: a web page's host (no secure storage). `two`: a second station, `ws/st2` (`st2`), in the workspace too.
 /// `more`: what else the station answers (its chats' posts).
 /// `also`: more of what the workspace's view says (its stations by other ids).
-async function rig(web = false, two = false, more: Answers = {}, also?: Record<string, unknown>) {
-  const st = fakeStation();
+/// `as`: another device of the same person beside one rig (`twin`): this core signs with `seed` (the lock's device of that
+/// key), on that rig's station and lock.
+type RigLock = { head: { seq: number; hash: string; genesis: string }; entries: Entry[]; requests: never[] };
+async function rig(web = false, two = false, more: Answers = {}, also?: Record<string, unknown>, as?: { twin: { st: ReturnType<typeof fakeStation>; lock: RigLock }; seed: Uint8Array }) {
+  const st = as?.twin.st ?? fakeStation();
   const st2 = fakeStation();
   const me = { signer: null as Signer | null };
   const phone = key(fill(2)), other = key(fill(3));
@@ -344,14 +347,15 @@ async function rig(web = false, two = false, more: Answers = {}, also?: Record<s
   } : undefined;
   const s = await started({ ...base(), ...more }, 0, wire, (x) => {
     x.host.appKeys = true;
+    if (as) x.host.secure.set(Signer.KEY, { value: as.seed, user: false });
     me.signer = Effect.runSync(Signer.make(x.host));
     if (web) x.host.secureGet = undefined;
     if (two) x.cloud.also = { stations: [{ id: "st", name: "studio", online: true, last_seen: null }, { id: "st2", name: "mini", online: true, last_seen: null }] };
     if (also) x.cloud.also = { ...x.cloud.also, ...also };
     stationReplies(x.host, (req) => (req.headers.some(([k, v]) => k === AT && v === "st2") ? st2.reply(req) : st.reply(req)));
   });
-  const genesis = lockOf({ id: me.signer!.id, signBytes: (b) => me.signer!.signBytes(b) }, phone, other);
-  const lock = { head: { seq: 0, hash: entryHash(genesis), genesis: entryHash(genesis) }, entries: [genesis], requests: [] };
+  const genesis = as?.twin.lock.entries[0] ?? lockOf({ id: me.signer!.id, signBytes: (b) => me.signer!.signBytes(b) }, phone, other);
+  const lock: RigLock = as?.twin.lock ?? { head: { seq: 0, hash: entryHash(genesis), genesis: entryHash(genesis) }, entries: [genesis], requests: [] };
   let ui = s.core.connect();
   const values = new Map<number, unknown>();
   const done = new Map<number, Record<string, unknown>>();
@@ -1316,6 +1320,106 @@ test("one vault of one's own: a device set up later makes none, and is given its
   const before = r.host.secureAsked.length;
   await fails(r.ask("vault.approve", { request: rid, scope: "once" }), "vault_no_key");
   assert.deepEqual([r.host.secureAsked.length, r.st.vaults.size, r.st.items.has(save.item)], [before, 1, false]);
+  r.core.close();
+});
+
+/// This person's second device (the rig's `phone`, its own core on `d1`'s station and lock), let in after `d1` turned
+/// the vault on: as its lock comes, nothing pressed.
+async function secondDevice(d1: Awaited<ReturnType<typeof rig>>) {
+  const d2 = await rig(false, false, {}, undefined, { twin: d1, seed: fill(2) });
+  d2.putLock();
+  vaultCome(d2.core.inner, "ws");
+  await d2.host.time.pass(2_000);
+  d2.take();
+  return d2;
+}
+
+test("a device let in after another of the person's turned the vault on is set up by itself: its box key made, its certificate published with that one's recovery key, nobody asked, no second vault; the other, the key in hand, gives it the key, and it opens the secret with no press but the opening", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  const setup = await d1.ask("vault.setup", {});
+  const put = await d1.ask("vault.putItem", { vault: setup.made, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] } });
+  const first = d1.st.boxes.get("ab".repeat(32))!;
+  const d2 = await secondDevice(d1);
+  const vaults = await d2.watch(1, { topic: "vaults", workspace: "ws" });
+  // Set up by itself: the box key written (never read: nobody asked), its certificate on the station, the first's
+  // recovery key in it (no words made), no vault made.
+  assert.equal(d2.host.secureAsked.length, 0, "nobody asked");
+  assert.ok(d2.host.secure.get(BOX_KEY)?.user, "the box key kept as one read only by asking the person");
+  const cert = d2.st.boxes.get(d1.phone.hex)!;
+  assert.ok(cert !== undefined && signedOk(cert, TAG.box), "its certificate published, signed");
+  assert.equal(cert.box, new TextDecoder().decode(d2.host.storage.get(BOX_PUB)!));
+  assert.equal(cert.recovery, first.recovery, "the first device's recovery key");
+  assert.equal(d1.st.vaults.size, 1, "no second vault");
+  assert.equal(vaults().setUp, true);
+  assert.deepEqual(vaults().vaults.map((v: any) => [v.id, v.keyed]), [[setup.made, false]]);
+  // The first device, the key unsealed still, hears of it: gives it the key at once, nobody asked there either.
+  const asked1 = d1.host.secureAsked.length;
+  d1.push("vault-box", cert);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.equal(d1.host.secureAsked.length, asked1);
+  const v = d1.st.vaults.get(setup.made)!;
+  assert.ok(v.keys.some((k) => k.cert.device === d1.phone.hex), "keyed for the second device");
+  // The second hears of the vault's version: keyed here, and the secret opened (the box key read once, as it is opened).
+  d2.push("vault", v);
+  await d2.host.time.pass(500);
+  assert.equal(vaults().vaults[0].keyed, true);
+  const opened = await d2.ask("vault.open", { item: put.id });
+  assert.equal(opened.plain.fields.value, "ghp_x");
+  assert.deepEqual(d2.host.secureAsked.map((a) => a.key), [BOX_KEY]);
+  d1.core.close();
+  d2.core.close();
+});
+
+test("a device let in after another of the person's turned the vault on, that one's key locked away: set up by itself all the same, and waiting on it there (`lockPrompts` `asks`)", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  const setup = await d1.ask("vault.setup", {});
+  await d1.ask("vault.lock", {});
+  const prompts = await d1.watch(2, { topic: "lockPrompts" });
+  const d2 = await secondDevice(d1);
+  const vaults = await d2.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().setUp, true, "never 密钥库未开启");
+  const cert = d2.st.boxes.get(d1.phone.hex)!;
+  d1.push("vault-box", cert);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.deepEqual(prompts().asks.map((a: any) => [a.vault, a.device]), [[setup.made, d1.phone.hex]]);
+  assert.equal(d1.st.vaults.get(setup.made)!.seq, 0, "no key given: none in hand there");
+  d1.core.close();
+  d2.core.close();
+});
+
+test("申请授权 pressed before the device set itself up: set up then and asking, not refused 「未开启」", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  await d1.ask("vault.setup", {});
+  const first = d1.st.boxes.get("ab".repeat(32))!;
+  // (its lock here, nothing read or told yet: not set up)
+  const d2 = await rig(false, false, {}, undefined, { twin: d1, seed: fill(2) });
+  d2.putLock();
+  d2.core.inner.data.put("vault", "ws", { ...(d2.core.inner.data.record("vault", "ws") as object), boxes: { ["ab".repeat(32)]: first } } as never);
+  assert.equal(d2.st.boxes.has(d1.phone.hex), false);
+  assert.deepEqual(await d2.ask("vault.ask", {}), { asked: 1 });
+  const cert = d2.st.boxes.get(d1.phone.hex)!;
+  assert.equal(cert.recovery, first.recovery);
+  assert.equal(d2.host.secureAsked.length, 0);
+  d1.core.close();
+  d2.core.close();
+});
+
+test("a device in the lock whose person has turned the vault on nowhere is not set up by itself: 开启 stays theirs, its recovery words said then", async () => {
+  const r = await rig();
+  r.putLock();
+  vaultCome(r.core.inner, "ws");
+  await r.host.time.pass(2_000);
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual([vaults().canSign, vaults().setUp, r.st.boxes.size, r.host.secure.has(BOX_KEY)], [true, false, 0, false]);
+  await fails(r.ask("vault.ask", {}), "vault_not_set_up");
+  assert.equal(r.st.boxes.size, 0);
+  const setup = await r.ask("vault.setup", {});
+  assert.equal(setup.words.split(" ").length, 24);
   r.core.close();
 });
 

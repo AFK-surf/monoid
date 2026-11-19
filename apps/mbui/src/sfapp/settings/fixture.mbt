@@ -47,8 +47,11 @@ priv struct SettingsFixture {
   /// Claude 主账号's trouble: "" none, "quota" its allowance unreadable (settings-profile-quota-failed), "blocked"
   /// its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
   mut trouble : String
-  /// the vault not set up on this device (settings-vault-off)
+  /// the vault not set up on this device (settings-vault-off: on nowhere, no vault of theirs; settings-vault-elsewhere:
+  /// on another device of theirs, their vault there with no key here yet)
   mut vault_off : Bool
+  /// lin's vault on on another device of theirs, this one not set up yet (settings-vault-elsewhere): its row not keyed here
+  mut vault_elsewhere : Bool
   /// secrets of lin's still in plain text from before security mode (settings-vault-plain), until encrypted
   mut plain_left : Int
   /// lin's own vault waiting to be keyed anew on Willow, a device holding its key taken out of the lock
@@ -192,6 +195,7 @@ let fx : SettingsFixture = {
   new_key: false,
   trouble: "",
   vault_off: false,
+  vault_elsewhere: false,
   plain_left: 0,
   vault_waits: false,
   vault_own: "",
@@ -282,7 +286,7 @@ fn fx_vault_row() -> Json {
     ("items", Json::number(3.0)),
     ("devices", Json::number(2.0)),
     ("open", Json::boolean(false)),
-    ("keyed", Json::boolean(true)),
+    ("keyed", Json::boolean(!fx.vault_elsewhere)),
     ("missing", Json::number(0.0)),
     ("recoverable", Json::boolean(true)),
   ]
@@ -431,6 +435,7 @@ fn fixture_reset() -> Unit {
   fx.new_key = false
   fx.trouble = ""
   fx.vault_off = false
+  fx.vault_elsewhere = false
   fx.plain_left = 0
   fx.vault_waits = false
   fx.vault_own = ""
@@ -976,6 +981,10 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connect-menu" => ()
     "settings-connect-mode" => fixture_open.desk = "connect-mode"
     "settings-vault-off" => fx.vault_off = true
+    "settings-vault-elsewhere" => {
+      fx.vault_off = true
+      fx.vault_elsewhere = true
+    }
     "settings-vault-plain" => fx.plain_left = 2
     "settings-vault-waits" => fx.vault_waits = true
     // 密钥 with no safe mode: the vault its person's own (not turned on yet, turned on with secrets from before still in
@@ -1095,7 +1104,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connect-comma" | "settings-connect-feishu" | "settings-connect-group" => "connect:ws1/st1#k1"
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
-    "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
@@ -3551,7 +3560,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
             "vaults",
-            if fx.vault_own == "off" || fx.vault_own == "outside" { [] } else { [fx_vault_row()] },
+            // (none where it is on nowhere: settings-vault-off in safe mode too)
+            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) { [] } else { [fx_vault_row()] },
           ),
           (
             "requests",

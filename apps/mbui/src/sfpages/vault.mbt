@@ -682,7 +682,8 @@ pub fn vault_items_node(
 /// What 密钥 and 全部密钥 show before the library, by their keys, as the core's `vaults` (`v`) says where the viewer
 /// stands: the recovery words to write down ("words"); waiting for the core ("waiting"); a web page's names
 /// ("read-only", then "named/<vault>" each); what has to come first ("personal-lock": no safe mode, this device to be
-/// approved by another trusted device of theirs; "not-signer": in safe mode; "off"), or, not
+/// approved by another trusted device of theirs; "not-signer": in safe mode; "off": not set up here, no vault of theirs
+/// on anywhere), or, not
 /// signing for another reason than its not being trusted (the core's `stateText`), this device verified once by a press
 /// ("confirm-signer": its `confirmText`) or the members still syncing ("lock-waiting"). None where the library is there
 /// to be used (in plain text on the station, or locked, signed and set up here).
@@ -700,7 +701,10 @@ fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
     // theirs whatever the workspace; in safe mode, 安全 is where a device is approved)
     Some(_) if !flag(v, "canSign") && !flag(v, "locked") => Some(["personal-lock"])
     Some(_) if !flag(v, "canSign") => Some(["not-signer"])
-    Some(_) if !flag(v, "setUp") => Some(["off"])
+    // (not set up here while a vault of theirs is on already, on another device of theirs: the core sets this one up by
+    // itself, or 申请授权 does, so the library shows, the vault under its name with no key here yet; 开启 only where
+    // the person has none)
+    Some(_) if !flag(v, "setUp") && items(v, "vaults").is_empty() => Some(["off"])
     Some(_) => None
   }
 }
