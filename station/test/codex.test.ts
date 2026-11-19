@@ -777,11 +777,11 @@ describe("the Codex driver", { concurrency: true }, () => {
     // Outgrown now: another session opened meanwhile does not end it under the first.
     (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
     const two = await d.open(options(p), listen().push);
+    assert.equal(starts(p.dump).length, 1, "the same app-server");
     await mcp.open("a");
     // (gone, so that the next app-server's look at its tools is not held too)
     rmSync(`${p.dump}.mcp.a`);
     const one = await opening;
-    assert.equal(starts(p.dump).length, 1);
     // Its turn over, idle: replaced, both opened again on a new one with their next turn.
     await one.prompt("say:x");
     await a.until(ended(1));
