@@ -372,6 +372,13 @@ pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> St
 
 pub let confirm_w : Double
 
+#callsite(autofill(loc))
+pub fn control_look_node(@view.View, () -> @headless.ControlState, () -> ControlLook, loc~ : SourceLoc) -> Unit
+
+pub let control_off_alpha : Double
+
+pub fn control_state_seen(@headless.ControlState) -> @headless.ControlState
+
 pub let copied_ms : Double
 
 
@@ -1391,6 +1398,9 @@ pub fn over_foot_reach(Double) -> @ui.Style
 pub fn over_room(@view.View) -> (Double, Double)
 
 pub fn overlap(Double) -> @ui.Style
+
+#callsite(autofill(loc))
+pub fn overlay_card_node(@view.View, (@headless.OverlayDismiss) -> Unit, (@view.View, @headless.Overlay) -> Unit, place? : (@view.View) -> Unit, modal? : Bool, scrim? : Bool, dismiss_on_escape? : Bool, dismiss_on_outside? : Bool, inert? : () -> Bool, anchor? : @view.View, label? : () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn oversize(Double) -> @ui.Style
 
@@ -2844,6 +2854,16 @@ pub(all) struct Confirmed {
   open : Bool
   confirmed : Bool
 }
+
+pub struct ControlLook {
+  ground : @headless.StateStyle[Int64]
+  ground_over : @headless.StateStyle[Int64]
+  edge : @headless.StateStyle[(Double, Int64)]
+  alpha : @headless.StateStyle[Double]
+  focus_ring : Bool
+}
+pub fn ControlLook::at(Self, @headless.ControlState) -> (Int64, Int64, (Double, Int64), Double)
+pub fn ControlLook::new(ground? : @headless.StateStyle[Int64], ground_over? : @headless.StateStyle[Int64], edge? : @headless.StateStyle[(Double, Int64)], alpha? : @headless.StateStyle[Double], focus_ring? : Bool) -> Self
 
 #derive(Eq, @debug.Debug)
 pub(all) enum CountLook {

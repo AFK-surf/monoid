@@ -64,6 +64,11 @@ pub fn hover_reveal(@view.View, @view.View, also? : Array[@view.View], always? :
 #callsite(autofill(loc))
 pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, takes_focus? : Bool, roving? : Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
+pub fn overlay(@view.View, (OverlayDismiss) -> Unit, (@view.View, Overlay) -> Unit, modal? : Bool, dismiss_on_escape? : Bool, dismiss_on_outside? : Bool, inert? : () -> Bool, anchor? : @view.View, auto_focus? : Bool, return_focus? : Bool, label? : () -> String, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn overlays_open(@view.Tree) -> Int32
+
 pub fn platform_stroke(@view.Stroke, apple~ : Bool) -> @view.Stroke
 
 #callsite(autofill(loc))
@@ -126,6 +131,7 @@ pub fn Button::focus_shown(Self) -> Bool
 pub fn Button::hovered(Self) -> Bool
 pub fn Button::press(Self) -> Unit
 pub fn Button::pressed(Self) -> Bool
+pub fn Button::state(Self, selected? : Bool, busy? : Bool) -> ControlState
 
 pub struct Choice {
   // private fields
@@ -136,6 +142,7 @@ pub fn Choice::focus_shown(Self) -> Bool
 pub fn Choice::hovered(Self) -> Bool
 pub fn Choice::press(Self) -> Unit
 pub fn Choice::pressed(Self) -> Bool
+pub fn Choice::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum ChoiceKind {
@@ -190,6 +197,18 @@ pub fn[K] Combobox::node(Self[K]) -> @view.View
 #callsite(autofill(loc))
 pub fn[K : Eq] Combobox::option(Self[K], @view.View, () -> K, () -> String, (@view.View, ComboOption) -> Unit, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+#derive(Eq, @debug.Debug)
+pub(all) struct ControlState {
+  hovered : Bool
+  pressed : Bool
+  focused : Bool
+  focus_shown : Bool
+  disabled : Bool
+  selected : Bool
+  open : Bool
+  busy : Bool
+}
+
 pub struct Disclosure {
   // private fields
 }
@@ -199,6 +218,7 @@ pub fn Disclosure::hovered(Self) -> Bool
 pub fn Disclosure::open(Self) -> Bool
 pub fn Disclosure::press(Self) -> Unit
 pub fn Disclosure::pressed(Self) -> Bool
+pub fn Disclosure::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum GroupAxis {
@@ -255,8 +275,24 @@ pub fn MenuItem::focused(Self) -> Bool
 pub fn MenuItem::hovered(Self) -> Bool
 pub fn MenuItem::press(Self) -> Unit
 pub fn MenuItem::pressed(Self) -> Bool
+pub fn MenuItem::state(Self) -> ControlState
 
 #derive(Eq, @debug.Debug)
+pub struct Overlay {
+  // private fields
+}
+pub fn Overlay::depth(Self) -> Int32
+pub fn Overlay::dismiss(Self, OverlayDismiss) -> Unit
+pub fn Overlay::is_top(Self) -> Bool
+pub fn Overlay::node(Self) -> @view.View
+
+#derive(Eq, @debug.Debug)
+pub(all) enum OverlayDismiss {
+  Escape
+  Outside
+  Back
+}
+
 pub(all) enum Placement {
   BelowStart
   BelowCenter
@@ -290,6 +326,7 @@ pub fn RadioItem::focus_shown(Self) -> Bool
 pub fn RadioItem::hovered(Self) -> Bool
 pub fn RadioItem::press(Self) -> Unit
 pub fn RadioItem::pressed(Self) -> Bool
+pub fn RadioItem::state(Self) -> ControlState
 
 pub struct Slider {
   // private fields
@@ -317,6 +354,12 @@ pub(all) enum SplitAxis {
   Horizontal
   Vertical
 }
+
+pub struct StateStyle[T] {
+  // private fields
+}
+pub fn[T] StateStyle::new(base~ : T, disabled? : T, busy? : T, pressed? : T, selected_hovered? : T, selected? : T, hovered? : T, focused? : T, open? : T) -> Self[T]
+pub fn[T] StateStyle::resolve(Self[T], ControlState) -> T
 
 pub struct Table {
   // private fields
@@ -356,6 +399,7 @@ pub fn Toggle::mixed(Self) -> Bool
 pub fn Toggle::on(Self) -> Bool
 pub fn Toggle::press(Self) -> Unit
 pub fn Toggle::pressed(Self) -> Bool
+pub fn Toggle::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum ToggleKind {
