@@ -278,6 +278,7 @@ function personalLockOf(inner: Inner, ws: string): Checked | CoreError {
   const sub = inner.workspaces.owner(ws);
   if (sub === null) return new CoreError("vault_no_account", t("core-misc.vault.notTrusted"));
   const personal = inner.adb.personal();
+  if (typeof personal.standing !== "function" || typeof personal.pinnedOf !== "function") return new CoreError("vault_no_account", t("core-misc.vault.notTrusted"));
   const standing = personal.standing(sub);
   if (standing === "outside" || standing === "replaced") return new CoreError("vault_personal_outside", t("core-misc.vault.notTrusted"));
   const entries = personal.pinnedOf(sub);
@@ -567,6 +568,7 @@ export function install(inner: Inner): void {
       m.box = pub ? new TextDecoder().decode(pub) : null;
       lockSeen(inner).touch("self");
       inner.views?.vaultChanged(null);
+      vaultReady(inner);
     }),
   );
 }
@@ -1160,9 +1162,30 @@ function autoBox(inner: Inner, ws: string): void {
   inner.runner.fork(Effect.ignore(Effect.ensuring(new Vaults(inner, ws, null).autoSetUp(), Effect.sync(() => void mem(inner).autoBoxing.delete(ws))), { log: "Unhandled", message: "vault set up by itself" }));
 }
 
+/// Re-check all owned workspaces once this device's signer or box key finishes loading at cold start: if `readStation`
+/// and `vaultCome` ran before `Signer.load()`, `autoBox` returned early and would otherwise never retry.
+export function vaultReady(inner: Inner): void {
+  if (!able(inner) || signerOf(inner) === null) return;
+  for (const [ws] of inner.workspaces.owned()) {
+    const lock = lockOf(inner, ws);
+    if (lock instanceof CoreError) continue;
+    const self = me(lock, signerOf(inner));
+    if (self === null || setUpHere(inner, ws, lock, self.device)) continue;
+    const h = held(inner, ws);
+    if (Object.keys(h.vaults).length === 0 && Object.keys(h.boxes).length === 0 && !mem(inner).cameRead.has(ws)) {
+      mem(inner).cameRead.add(ws);
+      for (const s of stationsOf(inner, ws)) {
+        const address = `${ws}/${s.id}`;
+        inner.scheduler.enqueue(address, `${address} vault`, Priority.background, readStation(inner, address));
+      }
+    }
+    autoBox(inner, ws);
+  }
+}
+
 /// This app's box key's public half: the one kept, else made now (its private half in the secure storage, written
 /// without asking the person) and kept. One at a time in this core (`boxInit`).
-function ensureBoxKey(inner: Inner): Effect.Effect<string, CoreError> {
+export function ensureBoxKey(inner: Inner): Effect.Effect<string, CoreError> {
   const m = mem(inner);
   return m.boxInit.withPermits(1)(Effect.gen(function* () {
     const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
@@ -1174,6 +1197,119 @@ function ensureBoxKey(inner: Inner): Effect.Effect<string, CoreError> {
     yield* Effect.mapError(inner.host.storageSet(BOX_PUB, utf8(pub)), asCoreError);
     return (m.box = pub);
   }));
+}
+
+export type HandedVault = { ws: string; cert: BoxCert; vault?: Vault };
+
+function handoverWorkspaces(inner: Inner, subs: readonly string[], workspaces: readonly string[]): string[] {
+  const out = new Set<string>(workspaces);
+  if (subs.length > 0) {
+    for (const [ws, sub] of inner.workspaces.owned()) if (subs.includes(sub)) out.add(ws);
+  }
+  return [...out];
+}
+
+/// Signs this device's X25519 box certificate for every workspace involved in a pairing request (`hello.boxCerts`),
+/// creating the box key silently if it does not exist yet.
+export function pairBoxCerts(inner: Inner, device: string, signer: Signer, subs: readonly string[], workspaces: readonly string[]): Effect.Effect<{ box: string; certs: Record<string, BoxCert> }, CoreError> {
+  return Effect.gen(function* () {
+    const box = yield* ensureBoxKey(inner);
+    const signed: Record<string, BoxCert> = {};
+    for (const ws of handoverWorkspaces(inner, subs, workspaces)) {
+      const at = Math.max(nowS(inner), (held(inner, ws).boxes[device]?.at ?? -1) + 1);
+      signed[ws] = sign({ v: 1 as const, ws, device, box, at }, TAG.box, signer);
+    }
+    return { box, certs: signed };
+  });
+}
+
+/// Pure synchronous check for `pair.ts` `approve()`: whether handing over vaults to `device` needs `BOX_KEY` unsealed
+/// (i.e. at least one owned vault is missing `device`'s key and its master key is not currently unlocked in RAM).
+export function needsBoxForHandover(inner: Inner, device: string, subs: readonly string[], workspaces: readonly string[], boxCerts: Record<string, BoxCert> | null | undefined): boolean {
+  if (!boxCerts || !able(inner)) return false;
+  const signer = signerOf(inner);
+  if (signer === null) return false;
+  for (const ws of handoverWorkspaces(inner, subs, workspaces)) {
+    const cert = boxCerts[ws];
+    if (!cert || cert.ws !== ws || cert.device !== device || typeof cert.box !== "string") continue;
+    const lock = lockOf(inner, ws);
+    if (lock instanceof CoreError) continue;
+    const who = me(lock, signer);
+    if (who === null) continue;
+    if (subs.length > 0 && !subs.includes(who.sub)) continue;
+    for (const v of Object.values(held(inner, ws).vaults)) {
+      if (v.deleted || !trusted(lock, v) || v.owner !== who.sub) continue;
+      if (!v.keys.some((k) => k.cert.device === who.device)) continue;
+      if (v.keys.some((k) => k.cert.device === device && k.cert.box === cert.box)) continue;
+      if (!unlocked(inner, v)) return true;
+    }
+  }
+  return false;
+}
+
+/// After approving `device` into the personal or workspace lock, seals all personal vaults owned by this device's user
+/// to `device`'s verified `BoxCert` using either RAM-cached keys or the already-unsealed `boxPriv` (zero extra prompts).
+export function handoverForApproved(
+  inner: Inner,
+  opts: { device: string; signKey: string | null; subs: readonly string[]; workspaces: readonly string[]; boxCerts: Record<string, BoxCert> | null | undefined; boxPriv: Uint8Array | null; chains?: Record<string, Entry[]> },
+): Effect.Effect<HandedVault[]> {
+  const boxCerts = opts.boxCerts;
+  const signKey = opts.signKey;
+  if (!boxCerts || !signKey || !able(inner)) return Effect.succeed([]);
+  return Effect.gen(function* () {
+    const signer = yield* Effect.orElseSucceed(Signer.load(inner.host), () => null);
+    if (signer === null) return [];
+    const handed: HandedVault[] = [];
+    for (const ws of handoverWorkspaces(inner, opts.subs, opts.workspaces)) {
+      const cert = boxCerts[ws];
+      if (!cert || cert.ws !== ws || cert.device !== opts.device || cert.sig?.key !== signKey) continue;
+      const ownerSub = inner.workspaces.owner(ws);
+      const chain = !safeMode(inner, ws) && ownerSub !== null ? opts.chains?.[ownerSub] : undefined;
+      const lock = chain && chain.length > 0 ? personalChecked(ws, ownerSub!, chain) : lockOf(inner, ws);
+      if (lock instanceof CoreError) continue;
+      const who = me(lock, signer.id);
+      if (who === null) continue;
+      if (certOwner(lock, cert) !== who.sub) continue;
+      const fit = fits(inner, ws);
+      change(inner, ws, (h) => {
+        if (heldOver(h.boxes[cert.device], cert, fit)) h.boxes[cert.device] = cert;
+      });
+      for (const s of stationsOf(inner, ws)) {
+        inner.runner.fork(Effect.ignore(ask(inner, `${ws}/${s.id}`, "PUT", "/vault/boxes", cert), { log: "Unhandled", message: "vault handover box put" }));
+      }
+      const vaults = new Vaults(inner, ws, null);
+      const wsHanded = yield* Effect.orElseSucceed(vaults.handover(cert, opts.boxPriv, lock), () => [] as HandedVault[]);
+      if (wsHanded.length > 0) handed.push(...wsHanded);
+      else handed.push({ ws, cert });
+    }
+    return handed;
+  });
+}
+
+/// On the newly approved device: verifies and stores the handed-over `BoxCert` and `Vault` records immediately so the
+/// vault is ready with zero extra clicks, then enqueues `readStation` to fetch encrypted items.
+export function takeHanded(inner: Inner, raw: unknown): void {
+  const list = arr(raw);
+  if (list.length === 0) return;
+  const touched = new Set<string>();
+  for (const item of list) {
+    const ws = str(get(item, "ws"));
+    const cert = get(item, "cert") as BoxCert | undefined;
+    if (ws === null || !isObject(cert) || typeof cert.device !== "string") continue;
+    const vault = get(item, "vault") as Vault | undefined;
+    const fit = fits(inner, ws);
+    change(inner, ws, (h) => {
+      if (heldOver(h.boxes[cert.device], cert, fit)) h.boxes[cert.device] = cert;
+      if (isObject(vault) && typeof vault.id === "string") take(h, vault, fit);
+    });
+    touched.add(ws);
+  }
+  for (const ws of touched) {
+    for (const s of stationsOf(inner, ws)) {
+      const address = `${ws}/${s.id}`;
+      inner.scheduler.enqueue(address, `${address} vault`, Priority.shown, readStation(inner, address));
+    }
+  }
 }
 
 /// A device (its id) or a member (their sub) this device takes out of workspace `ws`'s lock as a person asked it to, here
@@ -1764,6 +1900,60 @@ class Vaults {
         return add.length;
       }),
     );
+  }
+
+  /// Seals all owned vaults in this workspace to `cert` during pairing handover, using RAM-cached keys or `boxPriv`
+  /// without prompting again.
+  handover(cert: BoxCert, boxPriv: Uint8Array | null, effectiveLock?: Checked): Effect.Effect<HandedVault[], CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const ready = yield* self.#ready();
+      const lock = effectiveLock ?? ready.lock;
+      const signer = ready.signer;
+      const who = me(lock, signer.id) ?? ready.self;
+      const out: HandedVault[] = [];
+      const privPub = boxPriv !== null && boxPriv.length === 32 ? boxPublic(boxPriv) : null;
+      for (const cur of Object.values(held(inner, self.ws).vaults)) {
+        if (cur.deleted || !trusted(lock, cur) || cur.owner !== who.sub || !cur.keys.some((k) => k.cert.device === who.device)) continue;
+        if (cur.keys.some((k) => k.cert.device === cert.device && k.cert.box === cert.box)) {
+          out.push({ ws: self.ws, vault: cur, cert });
+          continue;
+        }
+        const entry = yield* self.#giving(cur.id)(
+          Effect.gen(function* () {
+            const v = held(inner, self.ws).vaults[cur.id];
+            if (!v || v.deleted || !trusted(lock, v) || v.owner !== who.sub) return null;
+            if (v.keys.some((k) => k.cert.device === cert.device && k.cert.box === cert.box)) return { ws: self.ws, vault: v, cert };
+            const kept = mem(inner).keys.get(keyOf(v));
+            let key: Uint8Array | null = kept && kept.until > inner.host.nowMs() ? kept.key : null;
+            if (key === null && boxPriv !== null && privPub !== null) {
+              const mine = v.keys.find((k) => k.cert.device === who.device);
+              if (mine && privPub === mine.cert.box) {
+                try {
+                  key = openSeal(boxPriv, mine.wrapped, keyContext(self.ws, v.id, v.epoch));
+                } catch {
+                  key = null;
+                }
+              }
+            }
+            if (key === null) return null;
+            const eph = new Uint8Array(32);
+            inner.host.randomBytes(eph);
+            const wrapped = sealWith(cert.box, key, keyContext(self.ws, v.id, v.epoch), eph);
+            const { keys: keptKeys } = self.#freshened(lock, v);
+            const keys = [...keptKeys.filter((k) => k.cert.device !== cert.device), { cert, wrapped }];
+            const { sig: _, ...rest } = v;
+            const next = sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer);
+            const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id)));
+            const saved = put._tag === "Success" ? put.success : next;
+            return { ws: self.ws, vault: saved, cert };
+          }),
+        );
+        if (entry !== null) out.push(entry);
+      }
+      return out;
+    });
   }
 
   /// The vault's keys with each device's certificate the latest the lock vouches for of the same box key, where it

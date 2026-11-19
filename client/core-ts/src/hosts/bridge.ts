@@ -17,9 +17,9 @@
 //     Android: CoreHost; Windows: win_core.c)
 //   kept.stage {name, offset} + bytes → {path, size} — a file a station sends this phone, written where its adb shell
 //     reads (Android: CoreHost); offset -1 only asks
-//   secure.get {key, user, reason?} → bytes or {none}; secure.set {key, user} + value; secure.delete {key};
-//     secure.ask {reason} — answered by the app (Kotlin: the Keystore, and the prompt when `user` or asked), not the
-//     shell ("设备上的钥匙")
+//   secure.get {key, user, reason?} → bytes or {none}; secure.getMany {keys, user, reason?} → {sizes} + bytes;
+//     secure.set {key, user} + value; secure.delete {key}; secure.ask {reason} — answered by the app (Kotlin: the
+//     Keystore, and the prompt when `user` or asked), not the shell ("设备上的钥匙")
 //   db.read {table, from, to} → {keys, sizes} + the values one after another (the former records store, read once)
 //   tcp.open {port} → {id}; tcp.read {id} → bytes or {end}; tcp.write {id} + bytes; tcp.end {id}; tcp.close {id}
 //   adb.pair {port, code}; adb.hold {port} (fails `unpaired` while adbd does not take the key); adb.state {} → {port};
@@ -362,6 +362,22 @@ export class BridgeHost implements Host {
 
   secureGet(key: string, opts: { user: boolean; reason?: string }): Effect.Effect<Uint8Array | null, HostError> {
     return Effect.map(this.#bridge.call("secure.get", { key, user: opts.user, reason: opts.reason ?? "" }), (a) => ((a.json as J)?.none === true ? null : (a.bytes ?? new Uint8Array(0))));
+  }
+  secureGetMany(keys: readonly string[], opts: { user: boolean; reason?: string }): Effect.Effect<(Uint8Array | null)[], HostError> {
+    if (keys.length === 0) return Effect.succeed([]);
+    return Effect.catch(
+      Effect.map(this.#bridge.call("secure.getMany", { keys: [...keys], user: opts.user, reason: opts.reason ?? "" }), (a) => {
+        const sizes = ((a.json as J)?.sizes ?? []) as number[];
+        const bytes = a.bytes ?? new Uint8Array(0);
+        let at = 0;
+        return keys.map((_, i) => {
+          const n = sizes[i];
+          if (typeof n !== "number" || n < 0) return null;
+          return bytes.slice(at, (at += n));
+        });
+      }),
+      (e) => (e.message === "unsupported" ? Effect.forEach(keys, (k) => this.secureGet(k, opts)) : Effect.fail(e)),
+    );
   }
   secureSet(key: string, value: Uint8Array, opts: { user: boolean }): Effect.Effect<void, HostError> {
     return Effect.asVoid(this.#bridge.call("secure.set", { key, user: opts.user }, value));

@@ -42,7 +42,7 @@ import type { SpanContext } from "../trace.ts";
 import { equal, get, hex, isObject, sha256, utf8 } from "../util.ts";
 import { type Checked, checkLock, lockChain, signerIn } from "../vault/lock-check.ts";
 import { AGAIN_MOST, againOf, hashOf, keep, links } from "../lock-keep.ts";
-import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, vaultAsks, vaultCome } from "./vault.ts";
+import { levelVaults, levelVaultsOf, tookOut, tookOutMoved, vaultAsks, vaultCome, vaultReady } from "./vault.ts";
 import { laterSleep } from "../runtime.ts";
 import { Marks } from "../reactive.ts";
 import { ofAddress } from "../workspace.ts";
@@ -324,6 +324,7 @@ export function signerKnown(inner: Inner, id: string | null): void {
   signers.set(inner, id);
   lockSeen(inner).touch("self");
   inner.views?.vaultChanged(null);
+  if (id !== null) vaultReady(inner);
 }
 
 /// The signing keys the lock names as this device's, looked for among what earlier installs kept (`Signer.recover`):

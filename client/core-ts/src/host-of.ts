@@ -168,6 +168,8 @@ export interface HostOf<Message> extends BaseHost {
   /// a `user` value fails so too), `not_in_front` (no screen to ask on) or `key_invalidated` (Android: the screen lock
   /// was taken off since) as their message (CoreError.refused says them in words).
   secureGet?(key: string, opts: { user: boolean; reason?: string }): Effect.Effect<Uint8Array | null, HostError>;
+  /// Several sealed values read in one go (asking the person at most once when `user` is true and at least one exists).
+  secureGetMany?(keys: readonly string[], opts: { user: boolean; reason?: string }): Effect.Effect<(Uint8Array | null)[], HostError>;
   secureSet?(key: string, value: Uint8Array, opts: { user: boolean }): Effect.Effect<void, HostError>;
   secureDelete?(key: string): Effect.Effect<void, HostError>;
   /// The `user: false` values this app kept under `key` where `secureGet` no longer finds them, newest first: an iOS

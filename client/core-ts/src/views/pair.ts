@@ -48,11 +48,12 @@ import { PAIR_ALPN, PAIR_TRIES, pairCode, pairSession, pakeKeys, pakeStart, same
 import * as format from "../format.ts";
 import * as prefs from "../prefs.ts";
 import { get, hex, isObject, parseJson, utf8 } from "../util.ts";
-import { fromB64url } from "../vault/crypto.ts";
+import { type BoxCert, fromB64url } from "../vault/crypto.ts";
 import { type Checked, checkLock } from "../vault/lock-check.ts";
 import { Priority } from "../sync/scheduler.ts";
 import { ownBuild } from "../station/oldest.ts";
 import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
+import { BOX_KEY, type HandedVault, handoverForApproved, needsBoxForHandover, pairBoxCerts, takeHanded } from "./vault.ts";
 import type { Said } from "../lock-statements.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -152,7 +153,7 @@ export function credentialOf(token: string, keys: unknown, ws: string, device: s
 /// A place's `joins`: the lock there has not heard of this person (made a member since it was turned on); `moved`: its
 /// chain moved to its people's own logs, where a web page is let in by an entry of its person's own log (`movedPlace`);
 /// `admit`, there, someone's first device: who is said a member, with the log of their own its hello brought.
-type Asking = { personal?: { subs: string[]; key: string }; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
+type Asking = { personal?: { subs: string[]; key: string }; boxCerts?: Record<string, BoxCert>; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
 
 const askings = new WeakMap<Inner, Map<string, Asking>>();
 const askingsOf = (inner: Inner) => {
@@ -426,11 +427,14 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
     const before = all.get(peer);
     if (before) Deferred.doneUnsafe(before.away, Effect.void);
     const kind = get(hello.value, "kind") === "app" ? "app" : "web";
+    const rawCerts = get(hello.value, "boxCerts");
+    const boxCerts = kind === "app" && isObject(rawCerts) ? (rawCerts as Record<string, BoxCert>) : undefined;
     const asking: Asking = {
       device: peer, name: who.name, email: who.email, kind, label: (str(get(hello.value, "label")) ?? "").slice(0, 120),
       signKey: kind === "app" ? str(get(hello.value, "sign_key")) : null, code: pairCode((b) => inner.host.randomBytes(b)),
       at: Math.floor(inner.host.nowMs() / 1000), until: inner.host.nowMs() + PAIR_WAIT_MS, places, hidden: false, away: Deferred.makeUnsafe<void>(),
       ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key } } : {}),
+      ...(boxCerts !== undefined ? { boxCerts } : {}),
     };
     all.set(peer, asking);
     told(inner);
@@ -522,20 +526,26 @@ function approve(inner: Inner, a: Asking): Effect.Effect<J> {
     // (its entry pending in a lock, no station of it up: the first such row, which the answer carries)
     let pending: unknown = null;
     const chains: Record<string, Entry[]> = {};
+    let boxPriv: Uint8Array | null = null;
+    const handed: HandedVault[] = [];
     // Into the person's own lock first, then (asked into both) the workspaces that let it in by their own entry, which
     // sign with this device's own key and ask nobody again.
     if (a.personal) {
       const { subs, key } = a.personal;
       const reason = t("core-misc.personal.reason.add");
+      const needBox = a.kind === "app" && a.signKey !== null && needsBoxForHandover(inner, a.device, subs, [], a.boxCerts);
       // The key, read once the code is proved and once for every account (their lock begun in this ask where they have
-      // none, personal-lock.ts `seedFor`): one turned down is not asked again for the next account.
+      // none, personal-lock.ts `seedFor`): one turned down is not asked again for the next account. When personal
+      // vaults also need unsealing for handover, read `BOX_KEY` in the very same biometric prompt (`seedForWith`).
       let seed: Uint8Array | null = null;
       let seedErr: CoreError | null = null;
       for (const sub of subs) {
         if (seed === null && seedErr === null) {
-          const got = yield* Effect.result(inner.adb.personal().seedFor(sub, reason));
-          if (got._tag === "Success") seed = got.success;
-          else if (got.failure.code !== "personal_outside") seedErr = got.failure;
+          const got = yield* Effect.result(needBox ? inner.adb.personal().seedForWith(sub, reason, [BOX_KEY]) : Effect.map(inner.adb.personal().seedFor(sub, reason), (s) => ({ seed: s, extra: [] as (Uint8Array | null)[] })));
+          if (got._tag === "Success") {
+            seed = got.success.seed;
+            boxPriv = got.success.extra[0] ?? null;
+          } else if (got.failure.code !== "personal_outside") seedErr = got.failure;
           else {
             failed.push({ ws: personOf(sub), error: got.failure.message, code: got.failure.code });
             continue;
@@ -552,7 +562,11 @@ function approve(inner: Inner, a: Asking): Effect.Effect<J> {
         else failed.push({ ws: personOf(sub), error: added.failure.message, code: added.failure.code });
         pending ??= inner.adb.personal().pendingShown(sub).find(({ item }) => item.state === "waiting" && item.entry.kind === "device" && get(item.entry.body, "key") === key)?.row ?? null;
       }
-      done.push(...Object.keys(chains).map(personOf));
+      const joinedSubs = Object.keys(chains);
+      done.push(...joinedSubs.map(personOf));
+      if (joinedSubs.length > 0 && a.kind === "app" && a.signKey !== null && a.boxCerts) {
+        handed.push(...(yield* handoverForApproved(inner, { device: a.device, signKey: a.signKey, subs: joinedSubs, workspaces: [], boxCerts: a.boxCerts, boxPriv, chains })));
+      }
     }
     // Where the chain moved: one `web` entry of the person's own log lets the page into every such workspace of theirs,
     // the person asked once for all of them (not once a workspace); the others' chains as before, in the same approval.
@@ -581,6 +595,7 @@ function approve(inner: Inner, a: Asking): Effect.Effect<J> {
       const within = asked(inner);
       for (const p of moved) yield* within.wait(Effect.ignore(read(inner, p.ws), { log: "Unhandled", message: "pairing workspace read" }));
     }
+    const signedWs: string[] = [];
     for (const p of a.places) {
       if (p.moved === true) continue;
       const body: J = { id: a.device, sub: p.sub, kind: a.kind, label: a.label };
@@ -591,12 +606,25 @@ function approve(inner: Inner, a: Asking): Effect.Effect<J> {
       const within = asked(inner);
       const lock = new Lock(inner, p.ws, p.account, null, { byHand: true, within });
       const signed = yield* Effect.result(Effect.andThen(p.joins === true ? lock.admit(p.sub, a.email) : Effect.void, lock.append("device", body)));
-      if (signed._tag === "Success") done.push(p.ws);
-      else failed.push({ ws: p.ws, error: signed.failure.message, code: signed.failure.code });
+      if (signed._tag === "Success") {
+        done.push(p.ws);
+        signedWs.push(p.ws);
+      } else failed.push({ ws: p.ws, error: signed.failure.message, code: signed.failure.code });
       if (pending === null && signed._tag === "Success" && isObject(signed.success) && isObject(signed.success.pending)) pending = signed.success.pending;
       yield* within.wait(Effect.ignore(read(inner, p.ws), { log: "Unhandled", message: "pairing workspace read" }));
     }
-    return { t: "approved", workspaces: done, failed, ...(a.personal ? { chains } : {}), ...(pending !== null ? { pending } : {}) };
+    if (signedWs.length > 0 && a.kind === "app" && a.signKey !== null && a.boxCerts) {
+      const remainingWs = signedWs.filter((ws) => !handed.some((h) => h.ws === ws));
+      if (remainingWs.length > 0) {
+        if (boxPriv === null && inner.host.secureGet && needsBoxForHandover(inner, a.device, [], remainingWs, a.boxCerts)) {
+          const got = yield* Effect.result(inner.host.secureGet(BOX_KEY, { user: true, reason: t("core-misc.personal.reason.add") }));
+          if (got._tag === "Success") boxPriv = got.success;
+        }
+        handed.push(...(yield* handoverForApproved(inner, { device: a.device, signKey: a.signKey, subs: [], workspaces: remainingWs, boxCerts: a.boxCerts, boxPriv })));
+      }
+    }
+    boxPriv?.fill(0);
+    return { t: "approved", workspaces: done, failed, ...(a.personal ? { chains } : {}), ...(handed.length > 0 ? { vaults: handed } : {}), ...(pending !== null ? { pending } : {}) };
   });
 }
 
@@ -1015,8 +1043,9 @@ function begin(inner: Inner): Effect.Effect<unknown, CoreError> {
           return;
         }
         changed(inner, y);
+        const boxed = inner.host.appKeys === true && signer !== null ? yield* Effect.orElseSucceed(pairBoxCerts(inner, base, signer, personalSubs, workspaces), () => null) : null;
         // (its build, as its requests say it: read by approving cores from before 2026-11-14, which noted it)
-        const hello = { t: "hello", v: 1, workspaces: credentials, kind: inner.host.appKeys ? "app" : "web", label: prefs.deviceName(inner.data) ?? "", sign_key: signer?.id ?? null, build: ownBuild() || "0.1.0", ...(log !== null ? { log } : {}), ...(personalKey !== null ? { personal: { subs: personalSubs, key: personalKey } } : {}) };
+        const hello = { t: "hello", v: 1, workspaces: credentials, kind: inner.host.appKeys ? "app" : "web", label: prefs.deviceName(inner.data) ?? "", sign_key: signer?.id ?? null, build: ownBuild() || "0.1.0", ...(log !== null ? { log } : {}), ...(personalKey !== null ? { personal: { subs: personalSubs, key: personalKey } } : {}), ...(boxed !== null ? { box: boxed.box, boxCerts: boxed.certs } : {}) };
         // A lock can move while credentials or devices are being sought. Follow it for this try, asking newly named
         // approvers too, but never dial one a second time after its seek ended: it may already be showing a code.
         const asked = new Set<string>();
@@ -1277,7 +1306,7 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
       drop(y);
       y.state = "done";
       y.approvedIn = arr(get(approved, "workspaces")).filter((w): w is string => typeof w === "string");
-      yield* approvedNow(inner, y.approvedIn, get(approved, "chains"));
+      yield* approvedNow(inner, y.approvedIn, get(approved, "chains"), get(approved, "vaults"));
     } else if (checked.some((m) => y.met.get(m.id) === m)) {
       y.state = "wrong";
       y.left = left;
@@ -1393,7 +1422,7 @@ function signedAnyway(inner: Inner, y: Trying, base: string, results: readonly T
 /// call's wait of the stations for all of them (lock.ts ASKED_MS). A moved workspace's stations that refused it are
 /// asked again (`approvedHere`): put on its person's own lock, it is let in to each workspace of theirs that binds it,
 /// and nothing would tell it so, its page left waiting.
-function approvedNow(inner: Inner, approvedIn: readonly string[], chains: unknown): Effect.Effect<void, CoreError> {
+function approvedNow(inner: Inner, approvedIn: readonly string[], chains: unknown, vaults?: unknown): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
     const personal = inner.adb.personal();
     const subs = new Set(approvedIn.filter(isPerson).map((p) => p.slice("person:".length)));
@@ -1405,6 +1434,7 @@ function approvedNow(inner: Inner, approvedIn: readonly string[], chains: unknow
     const affected = [...new Set([...approvedIn.filter((w) => !isPerson(w)), ...theirs])];
     for (const ws of affected) approvedHere(inner, ws);
     yield* asked(inner).wait(Effect.forEach(affected, (ws) => Effect.ignore(read(inner, ws), { log: "Unhandled", message: "pairing workspace read" }), { concurrency: "unbounded", discard: true }));
+    if (vaults !== undefined) takeHanded(inner, vaults);
   });
 }
 
@@ -1498,6 +1528,8 @@ export function personalBegin(inner: Inner, subs: string[]): Effect.Effect<unkno
     // without one the device that approves it puts it in none of them)
     const signer = yield* Effect.mapError(Signer.make(inner.host), (e) => CoreError.plainly("lock_key", e, t("core-misc.lock.keyNotKept", { error: asCoreError(e).message })));
     signerKnown(inner, signer.id);
+    const base = (yield* inner.mesh()).deviceId();
+    const boxed = inner.host.appKeys === true ? yield* Effect.orElseSucceed(pairBoxCerts(inner, base, signer, subs, []), () => null) : null;
     const before = tryings.get(inner);
     if (before) drop(before);
     const y = trying(inner, subs.map(personOf));
@@ -1509,7 +1541,7 @@ export function personalBegin(inner: Inner, subs: string[]): Effect.Effect<unkno
     const wsRelays = [...inner.workspaces.owned()].filter(([, owner]) => subs.includes(owner)).flatMap(([ws]) => inner.cloudSync.workspaceRelays(ws));
     const relays = [...new Set([...(inner.cloudSync.relays ?? []), ...wsRelays])];
     // (the key it signs the workspaces' locks with: a device on the person's lock puts it in those where they bound it)
-    const hello = { t: "hello", v: 1, workspaces: [], kind: "app", label: prefs.deviceName(inner.data) ?? "", sign_key: signer.id, build: ownBuild() || "0.1.0", personal: { subs, key } };
+    const hello = { t: "hello", v: 1, workspaces: [], kind: "app", label: prefs.deviceName(inner.data) ?? "", sign_key: signer.id, build: ownBuild() || "0.1.0", personal: { subs, key }, ...(boxed !== null ? { box: boxed.box, boxCerts: boxed.certs } : {}) };
     y.searching = true;
     inner.runner.fork(
       Effect.gen(function* () {

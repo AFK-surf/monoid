@@ -49,6 +49,7 @@ function fetchError(e: unknown): HostError {
 /// are the host's (host.ts `secureGet`).
 export interface Sealer {
   get(key: string, user: boolean, reason: string): Promise<Uint8Array | null>;
+  getMany?(keys: readonly string[], user: boolean, reason: string): Promise<(Uint8Array | null)[]>;
   set(key: string, value: Uint8Array, user: boolean): Promise<void>;
   delete(key: string): Promise<void>;
   /// The person asked to say yes (host.ts `secureAsk`).
@@ -66,6 +67,7 @@ export class NodeHost implements Host {
   readonly #listener: Listener;
   readonly #started = performance.now();
   readonly secureGet?: Host["secureGet"];
+  readonly secureGetMany?: Host["secureGetMany"];
   readonly secureSet?: Host["secureSet"];
   readonly secureDelete?: Host["secureDelete"];
   readonly secureAsk?: Host["secureAsk"];
@@ -96,6 +98,10 @@ export class NodeHost implements Host {
     this.appKeys = !page;
     if (sealer && !page) {
       this.secureGet = (key, opts) => Effect.tryPromise({ try: () => sealer.get(key, opts.user, opts.reason ?? ""), catch: sealError });
+      const getMany = sealer.getMany?.bind(sealer);
+      this.secureGetMany = getMany
+        ? (keys, opts) => Effect.tryPromise({ try: () => getMany(keys, opts.user, opts.reason ?? ""), catch: sealError })
+        : (keys, opts) => Effect.forEach(keys, (k) => this.secureGet!(k, opts));
       this.secureSet = (key, value, opts) => Effect.tryPromise({ try: () => sealer.set(key, value, opts.user), catch: sealError });
       this.secureDelete = (key) => Effect.tryPromise({ try: () => sealer.delete(key), catch: sealError });
       const ask = sealer.ask?.bind(sealer);

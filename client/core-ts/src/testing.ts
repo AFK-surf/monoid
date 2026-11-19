@@ -370,6 +370,15 @@ export class FakeHost implements Host {
       }
       return Effect.succeed(kept.value.slice());
     });
+  secureGetMany?: (keys: readonly string[], opts: { user: boolean; reason?: string }) => Effect.Effect<(Uint8Array | null)[], HostError> = (keys, opts) =>
+    Effect.suspend(() => {
+      const found = keys.map((key) => this.secure.get(key));
+      if (found.some((kept) => kept !== undefined && (kept.user || opts.user))) {
+        this.secureAsked.push({ key: keys.join(","), ...(opts.reason !== undefined ? { reason: opts.reason } : {}) });
+        if (this.secureRefused) return Effect.fail(new HostError("the person did not confirm"));
+      }
+      return Effect.succeed(found.map((kept) => (kept === undefined ? null : kept.value.slice())));
+    });
   secureSet?: (key: string, value: Uint8Array, opts: { user: boolean }) => Effect.Effect<void, HostError> = (key, value, opts) =>
     Effect.sync(() => void this.secure.set(key, { value: value.slice(), user: opts.user }));
   secureDelete?: (key: string) => Effect.Effect<void, HostError> = (key) => Effect.sync(() => void this.secure.delete(key));

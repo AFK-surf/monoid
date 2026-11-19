@@ -570,8 +570,42 @@ static void secure_do(NSString *op, NSDictionary *a, NSData *bytes, NSData **jso
     if (!(*error = person_ask(reason))) *json_out = const_json("{}");
     return;
   }
-  NSString *key = [a[@"key"] isKindOfClass:[NSString class]] ? a[@"key"] : nil;
   BOOL user = [a[@"user"] isKindOfClass:[NSNumber class]] && [a[@"user"] boolValue];
+  if ([op isEqualToString:@"secure.getMany"]) {
+    NSArray *keys = [a[@"keys"] isKindOfClass:[NSArray class]] ? a[@"keys"] : nil;
+    if (!keys) {
+      *error = @"secure.getMany: no keys";
+      return;
+    }
+    NSMutableArray *vals = [NSMutableArray arrayWithCapacity:keys.count];
+    BOOL any = NO;
+    for (id item in keys) {
+      if (![item isKindOfClass:[NSString class]] || [(NSString *)item length] == 0) {
+        *error = @"secure.getMany: bad key";
+        return;
+      }
+      NSData *v = kept_get((NSString *)item, user, error);
+      if (*error) return;
+      if (v) any = YES;
+      [vals addObject:v ?: [NSNull null]];
+    }
+    if (any && user && (*error = person_ask(reason))) return;
+    NSMutableData *all = [NSMutableData data];
+    NSMutableArray<NSNumber *> *sizes = [NSMutableArray arrayWithCapacity:vals.count];
+    for (id v in vals) {
+      if ([v isKindOfClass:[NSData class]]) {
+        NSData *d = (NSData *)v;
+        [sizes addObject:@(d.length)];
+        [all appendData:d];
+      } else {
+        [sizes addObject:@(-1)];
+      }
+    }
+    *json_out = [NSJSONSerialization dataWithJSONObject:@{@"sizes" : sizes} options:0 error:nil];
+    *bytes_out = all;
+    return;
+  }
+  NSString *key = [a[@"key"] isKindOfClass:[NSString class]] ? a[@"key"] : nil;
   if (key.length == 0) {
     *error = [op stringByAppendingString:@": no key"];
     return;
@@ -647,6 +681,10 @@ extern "C" int mb_core_secure_test(void) {
     BOOL apart = !e && std_of(j) == "{\"none\":true}";
     fprintf(stderr, "SECURE_TEST secure.get as user's %s\n", e ? e.UTF8String : std_of(j).c_str());
     ok = ok && apart;
+    secure_do(@"secure.getMany", @{@"keys" : @[@"secure-test", @"secure-test-missing"]}, nil, &j, &b, &e);
+    BOOL many = !e && std_of(j) == "{\"sizes\":[48,-1]}" && [b isEqualToData:value];
+    fprintf(stderr, "SECURE_TEST secure.getMany %s %lu bytes\n", e ? e.UTF8String : std_of(j).c_str(), (unsigned long)b.length);
+    ok = ok && many;
     secure_do(@"secure.delete", k, nil, &j, &b, &e);
     fprintf(stderr, "SECURE_TEST secure.delete %s\n", e ? e.UTF8String : std_of(j).c_str());
     ok = ok && !e;

@@ -29,6 +29,7 @@ export const personOf = (sub: string) => `person:${sub}`;
 export const isPerson = (where: string) => where.startsWith("person:");
 
 const KEY = "personal-signer";
+export const PERSONAL_KEY = KEY;
 /// What a person does here (an entry they sign) waits out the cloud's "too many requests": the account's devices share
 /// one budget a minute, which their reads as a lock moves can use up (as views/lock.ts `Lock` waits, by hand).
 const LIMITED_TRIES = 6;
@@ -750,6 +751,26 @@ export class PersonalLock {
     });
   }
 
+  /// The key's seed together with `extraKeys` in a single biometric prompt (`secureGetMany` when available).
+  #unsealWith(reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
+    const { host } = this.#env;
+    if (extraKeys.length === 0) return Effect.map(this.#unseal(reason), (seed) => ({ seed, extra: [] }));
+    return Effect.gen({ self: this }, function* () {
+      if (host.secureGetMany) {
+        const values = yield* Effect.mapError(host.secureGetMany([KEY, ...extraKeys], { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"));
+        const seed = values[0] ?? null;
+        if (seed === null || seed.length !== 32) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
+        return { seed, extra: values.slice(1) };
+      }
+      const seed = yield* this.#unseal(reason);
+      const extra: (Uint8Array | null)[] = [];
+      for (const k of extraKeys) {
+        extra.push(yield* Effect.mapError(host.secureGet!(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
+      }
+      return { seed, extra };
+    });
+  }
+
   #entry(sub: string, seed: Uint8Array, key: string, kind: string, body: unknown, before: readonly Entry[] = this.#pinned.get(sub) ?? []): Entry {
     const last = before[before.length - 1];
     const e = { v: 1 as const, ws: personOf(sub), seq: before.length, prev: last ? entryHash(last) : null, at: Math.floor(this.#env.host.nowMs() / 1000), kind, body };
@@ -1394,16 +1415,31 @@ export class PersonalLock {
   /// bindings ride what the act then signs (`#restate`). The lead, 2026-11-14: the same one ask as before the move,
   /// nobody else involved.
   seedFor(sub: string, reason: string): Effect.Effect<Uint8Array, CoreError> {
+    return Effect.map(this.seedForWith(sub, reason, []), (r) => r.seed);
+  }
+
+  /// Like `seedFor`, also reading `extraKeys` in the same prompt (`secureGetMany`) when this device is already a member.
+  seedForWith(sub: string, reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
+    const { host } = this.#env;
     return Effect.gen({ self: this }, function* () {
       if (this.standing(sub) === "none" && this.#env.begins?.(sub) === true) {
         const read = yield* Effect.result(this.refresh(sub, undefined, this.asked()));
         if (this.standing(sub) === "none") {
           if (read._tag === "Failure") return yield* Effect.fail(read.failure);
-          if (!(this.mayBeginQuietly(sub) && (yield* this.beginQuietly(sub, true)))) return yield* this.begin(sub, reason);
+          if (!(this.mayBeginQuietly(sub) && (yield* this.beginQuietly(sub, true)))) {
+            const seed = yield* this.begin(sub, reason);
+            const extra: (Uint8Array | null)[] = [];
+            if (extraKeys.length > 0 && host.secureGetMany) {
+              extra.push(...(yield* Effect.mapError(host.secureGetMany(extraKeys, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"))));
+            } else if (extraKeys.length > 0 && host.secureGet) {
+              for (const k of extraKeys) extra.push(yield* Effect.mapError(host.secureGet(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
+            }
+            return { seed, extra };
+          }
         }
       }
       if (this.standing(sub) !== "member") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
-      return yield* this.#unseal(reason);
+      return yield* this.#unsealWith(reason, extraKeys);
     });
   }
 
