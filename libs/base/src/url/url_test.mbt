@@ -131,4 +131,8 @@ test "percent_decode_lossy decodes %XX and optional + lossily" {
   assert_eq(@url.percent_decode_lossy("a+b%20%E4%B8%AD", plus_space=true), "a b 中")
   assert_eq(@url.percent_decode_lossy("100%25+%zz+%2", plus_space=true), "100% %zz %2")
   assert_eq(@url.percent_decode_lossy("%FF%41"), "\u{FFFD}A")
+  assert_eq(@url.percent_decode_lossy(lone("a", 0xD800, "%20b")), "a\u{FFFD} b")
+  assert_eq(@url.percent_decode_lossy(lone("a", 0xDC00, "+b"), plus_space=true), "a\u{FFFD} b")
+  let pair = lone(lone("x", 0xD83D, ""), 0xDE80, "%21")
+  assert_eq(@url.percent_decode_lossy(pair), "x🚀!")
 }

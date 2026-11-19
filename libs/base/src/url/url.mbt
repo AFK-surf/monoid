@@ -195,26 +195,54 @@ pub fn decode_uri_component(s : String) -> String? {
 ///|
 /// Percent-decoding of `s` as `URLSearchParams` / `application/x-www-form-urlencoded` (when `plus_space` is true) or
 /// lossy percent-decode: `%XX` (two hex digits) decoded as a byte, `+` as a space where `plus_space`, any other `%`
-/// kept as it is, and the resulting bytes decoded as UTF-8 lossily.
+/// kept as it is, lone surrogates replaced with U+FFFD, and the resulting bytes decoded as UTF-8 lossily.
 pub fn percent_decode_lossy(s : String, plus_space? : Bool = false) -> String {
-  let bytes = @utf8.encode(s)
   let out = Buffer()
-  let n = bytes.length()
+  let n = s.length()
   let mut i = 0
   while i < n {
-    let b = bytes[i].to_int()
-    if b == '%' &&
+    let u = s.unsafe_get(i).to_int()
+    if u == '%' &&
       i + 2 < n &&
-      @codec.hex_digit(bytes[i + 1].to_int()) is Some(hi) &&
-      @codec.hex_digit(bytes[i + 2].to_int()) is Some(lo) {
+      @codec.hex_digit(s.unsafe_get(i + 1).to_int()) is Some(hi) &&
+      @codec.hex_digit(s.unsafe_get(i + 2).to_int()) is Some(lo) {
       out.write_byte(((hi << 4) | lo).to_byte())
       i += 3
-    } else if plus_space && b == '+' {
+      continue
+    }
+    if plus_space && u == '+' {
       out.write_byte(b' ')
       i += 1
+      continue
+    }
+    i += 1
+    let cp = if u >= 0xD800 && u <= 0xDBFF && i < n {
+      let lo = s.unsafe_get(i).to_int()
+      if lo >= 0xDC00 && lo <= 0xDFFF {
+        i += 1
+        0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+      } else {
+        0xFFFD
+      }
+    } else if u >= 0xD800 && u <= 0xDFFF {
+      0xFFFD
     } else {
-      out.write_byte(bytes[i])
-      i += 1
+      u
+    }
+    if cp < 0x80 {
+      out.write_byte(cp.to_byte())
+    } else if cp < 0x800 {
+      out.write_byte((0xC0 | (cp >> 6)).to_byte())
+      out.write_byte((0x80 | (cp & 0x3F)).to_byte())
+    } else if cp < 0x10000 {
+      out.write_byte((0xE0 | (cp >> 12)).to_byte())
+      out.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+      out.write_byte((0x80 | (cp & 0x3F)).to_byte())
+    } else {
+      out.write_byte((0xF0 | (cp >> 18)).to_byte())
+      out.write_byte((0x80 | ((cp >> 12) & 0x3F)).to_byte())
+      out.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+      out.write_byte((0x80 | (cp & 0x3F)).to_byte())
     }
   }
   @utf8.decode_lossy(out.to_bytes())
