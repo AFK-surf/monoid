@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.26 | 126.19 |
 | [cbab7545c](https://github.com/AFK-surf/monoid/commit/cbab7545c645362f30c5efb6e5e89a6344ce9a6d) feat(screens): show apps' own pointers on remote M | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.26 | 126.19 |
 | [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 2.63 | 3.53 | 14.43 | 36.65 | 55.56 | 32.12 | 64.95 | 97.47 | 119.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.22 | 122.31 |
 | [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 2.6 | 3.5 | 14.29 | 36.36 | 55.05 | 31.87 | 64.34 | 97.06 | 127.83 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
-| [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 2.6 | 3.49 | 14.28 | 36.36 | 55.04 | 31.87 | 64.34 | 97.21 | 119.39 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4be060501](https://github.com/AFK-surf/monoid/commit/4be0605015e0b741854fc312f55db17377595599) feat(group): relay a chat to a group space, and pu | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.13 |
 | [cbab7545c](https://github.com/AFK-surf/monoid/commit/cbab7545c645362f30c5efb6e5e89a6344ce9a6d) feat(screens): show apps' own pointers on remote M | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.08 |
 | [3b2a399ea](https://github.com/AFK-surf/monoid/commit/3b2a399ea81f1dc80ee9339c171a4721cdd6e27b) ci(mbui): key Linux unit stores by the compiler, n | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.08 |
 | [25e27e405](https://github.com/AFK-surf/monoid/commit/25e27e405a5fadaa578c5a95669495e28b7df247) fix(station): renew borrowed Antigravity sign-ins  | 0.45 | 0.58 | 2.25 | 3.34 | 5.41 | 1.65 | 4.45 | 54.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0191af001](https://github.com/AFK-surf/monoid/commit/0191af001dad79da0356ee6ff33119ce01f8cc4b) perf(core): walk the archive on a covering index,  | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [43adeae0d](https://github.com/AFK-surf/monoid/commit/43adeae0d1fae0d4f03da9017aa148e8318a59a4) fix(mbui): a page's list's band drawn where its bl | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
 | [2db77b0db](https://github.com/AFK-surf/monoid/commit/2db77b0db04dfcaa66e1c0c7865544267ba7a922) test(mbui): refresh Android render golden after #6 | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.05 |
-| [71e0f837a](https://github.com/AFK-surf/monoid/commit/71e0f837a6abfc0e974a01ca1ea41f39dd7388fd) test(mbui): count a running frame's own asks out o | 0.44 | 0.58 | 2.22 | 3.31 | 5.34 | 1.63 | 4.4 | 54.07 |
