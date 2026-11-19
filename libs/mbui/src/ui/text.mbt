@@ -1424,7 +1424,10 @@ fn glyph_sub_dx(sub : Int) -> Double {
 /// moved by whole pixels keeps its phase. (Two numbers of one step, not a pair: what composes every glyph each frame
 /// makes no allocation of it.)
 fn glyph_qf(tx : Double) -> Double {
-  (tx * 4.0 + 0.5).floor()
+  // (1e-9 breaks exact N + 0.5 ties upward so shifting a glyph by whole pixels k / sc at non-dyadic scales like 3.25
+  // never flips its phase across floor() from 1-ULP float rounding: ride_kept_for and view_blocks rely on whole-pixel
+  // shifts keeping every glyph's phase)
+  (tx * 4.0 + 0.5 + 1.0e-9).floor()
 }
 
 ///|

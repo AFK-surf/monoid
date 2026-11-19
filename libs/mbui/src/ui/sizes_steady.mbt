@@ -335,6 +335,7 @@ fn sizes_steady_fault(
   turned~ : Double,
   set_out? : Double = -1.0,
   unasked? : Bool = true,
+  px? : Double = 0.0,
 ) -> (String?, Double) {
   // (the last four; the one before them, where there is one, for whether they set out from rest)
   let seen = if all.length() > 4 { all[all.length() - 4:].to_owned() } else { all }
@@ -374,12 +375,25 @@ fn sizes_steady_fault(
     let on = v1 * v2 > 0.0 && v2.abs() >= 0.25 * v1.abs() && v2.abs() <= v1.abs()
     let sets_out = on && (v0.abs() < 0.5 || (rest_before && v0 * v1 > 0.0 && v0.abs() < v1.abs()))
     let off = (v1 - (v0 + v2) / 2.0).abs()
+    // (a sub-half-frame sliver across the 0.5-period bucket edge where a pixel-snapped coordinate at its current speed
+    // moves less than one device pixel `px`: its 0- or 1-pixel step over that sliver is quantization, not a dead stop
+    // or velocity spike; a real step larger than one pixel is still caught)
+    let dt1 = seen[2].1 - seen[1].1
+    let dt2 = seen[3].1 - seen[2].1
+    let sliver_end = px > 0.0 &&
+      dt2 < 0.5 * period &&
+      (seen[3].2 - seen[2].2).abs() <= px + 1.0e-9 &&
+      v1.abs() * (dt2 / period) < px
+    let sliver_mid = px > 0.0 &&
+      dt1 < 0.5 * period &&
+      (seen[2].2 - seen[1].2).abs() <= px + 1.0e-9 &&
+      dmax(v0.abs(), v2.abs()) * (dt1 / period) < px
     // (stopped dead: going, then all but still in a frame, the speed it lost that frame more than stop_jerk times what
     // it lost in either frame before (the lesser of the two, a frame further back where there is one: where its slowing
     // set in falls between frames as it likes); slowing at one rate to rest, whatever frame its rest falls on, none
     // (the coordinator of the migration, 2026-11-11: what stops dead is a step in how fast it slows, not where its rest
     // falls among the frames; what it does after, turning back or not, no part of it))
-    if v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
+    if !sliver_end && v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
       let toward = if v1 > 0.0 { 1.0 } else { -1.0 }
       // (each loss of speed over the time between the middles of the two frames it is between, in two frames' time: a
       // slowing at one rate loses as much over the same time, a frame twice as long as the rest between them or not;
@@ -414,7 +428,13 @@ fn sizes_steady_fault(
     }
     // (at rest, or all but, then setting out: none)
     let resting = v0.abs() < least && v1.abs() < least
-    if !sets_out && !resting && (v1 - v0) * (v1 - v2) > 0.0 && (v1 - v0).abs() > least && (v1 - v2).abs() > least &&
+    if !sliver_end &&
+      !sliver_mid &&
+      !sets_out &&
+      !resting &&
+      (v1 - v0) * (v1 - v2) > 0.0 &&
+      (v1 - v0).abs() > least &&
+      (v1 - v2).abs() > least &&
       off > 0.5 * dmax(v0.abs(), v2.abs()) {
       return (Some("went \{v1} a frame between \{v0} and \{v2} at \{at} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"), turned)
     }
@@ -815,11 +835,9 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           ns.first_unasked[slot] = false
           continue
         }
-        if seen.length() > 0 &&
-          (now - seen[seen.length() - 1].0 < 0.5 * period || now - seen[seen.length() - 1].1 < 0.05 * period) {
-          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt; two samples less than 5% of a
-          // period apart across the 0.5-period bucket edge are one moment too, not a sub-millisecond interval where a
-          // pixel-snapped coordinate cannot cross a pixel; its second laid out again for a cause, a step in it that cause's)
+        if seen.length() > 0 && now - seen[seen.length() - 1].0 < 0.5 * period {
+          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt; its second laid out again for a
+          // cause, a step in it that cause's)
           if seen.length() == 2 && !frame_quiet.val {
             ns.first_unasked[slot] = false
           }
@@ -836,12 +854,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           seen.remove(0) |> ignore
         }
         let turned = ns.turned[slot]
+        let px = if self.scale > 0.0 { 1.0 / self.scale } else { 0.0 }
         let (fault, turn) = sizes_steady_fault(
           seen,
           period,
           turned~,
           set_out=set_out[i],
           unasked=ns.first_unasked[slot],
+          px~,
         )
         ns.turned[slot] = turn
         match fault {
