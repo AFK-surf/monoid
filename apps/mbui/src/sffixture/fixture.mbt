@@ -82,18 +82,20 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "tabs": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "active": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
       { "ws1/st1:s-c1": kept(fixture_view_tab(mode)) }
     _ => {}
   }
 }
 
 ///|
-/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-image:
-/// 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui:
-/// release.mbui; chat-view-side-memory-mbui: memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
+/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-md-long:
+/// 长说明.md; chat-view-side-image: 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a;
+/// chat-view-side-mbui: release.mbui; chat-view-side-memory-mbui: memory-schemes.mbui), its tab as the app keeps it
+/// (sfbase's view_tab_key).
 pub fn fixture_view_tab(mode : String) -> String {
   let name = match mode {
+    "chat-view-side-md-long" => "长说明.md"
     "chat-view-side-image" => "界面草图.png"
     "chat-view-side-video" => "演示录屏.mp4"
     "chat-view-side-audio" => "会议录音.m4a"
@@ -117,7 +119,7 @@ pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
     "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "open": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "shown": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
       let tab = fixture_view_tab(mode)
       { "ws1/st1:s-c1": { "open": [Json::string(tab)], "shown": Json::string(tab) } }
     }

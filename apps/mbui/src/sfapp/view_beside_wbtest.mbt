@@ -372,6 +372,37 @@ test "大屏: a tab's 排版 is the tab's: another tab brought to the front take
 }
 
 ///|
+test "大屏: a long Markdown beside a chat shows 滚动到底部; pressing it scrolls to the end with no audit faults" {
+  let t = beside_tester(mode="chat-view-side-md-long")
+  let to_end = @sf.t("web-pages.drive.reader.toEnd")
+  assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 shown for long Markdown")
+  let has = fn(words : String) { t.words().iter().any(fn(w) { w.0.contains(words) }) }
+  assert_true(has("发布前长说明"), msg="start words shown before pressing 滚动到底部")
+  assert_true(!has("所有检查项已核对完毕"), msg="end words not shown before pressing 滚动到底部")
+  t.click(Button, label=to_end)
+  t.run_for(@ui.move_most_ms)
+  assert_true(has("所有检查项已核对完毕"), msg="end words shown after pressing 滚动到底部")
+  assert_true(!has("发布前长说明"), msg="start words scrolled out of view after pressing 滚动到底部")
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
+  assert_eq(faults, [], msg="audit faults: \{Repr(faults)}")
+}
+
+///|
+test "大屏: a short Markdown beside a chat does not show 滚动到底部, keeping the other reader keys" {
+  let t = beside_tester(mode="chat-view-side")
+  assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.toEnd")).length(), 0, msg="no 滚动到底部 for short Markdown")
+  for key in [
+    "web-pages.drive.reader.contents",
+    "web-pages.drive.reader.find",
+    "web-pages.drive.reader.layout",
+    "web-main.preview.download",
+    "web-main.preview.fullWindow",
+  ] {
+    assert_eq(t.all(Button, label=@sf.t(key)).length(), 1, msg="key \{key} still shown")
+  }
+}
+
+///|
 test "大屏: a file kept only while the app runs (a draft's: a Mermaid picture, an attachment waiting) asked beside opens the whole window, no tab, and its bar offers no 移到侧边" {
   let t = beside_tester()
   let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='red'/></svg>"

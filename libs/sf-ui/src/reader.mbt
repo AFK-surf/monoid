@@ -166,6 +166,8 @@ pub(all) struct Reading {
   draft : @signals.Signal[Double]
   /// a desktop's bar, gone as the text is read on down (where the list stood when it was last seen: `seen`)
   bar_hidden : @signals.Signal[Bool]
+  /// taller than two screens (what shows could scroll further than its own height): told with what is in sight
+  long : @signals.Signal[Bool]
   mut seen : (Int, Double)
 }
 
@@ -205,6 +207,7 @@ pub fn reading_for(key : String) -> Reading {
         jumped: (-1, 0.0, -1, 0.0),
         draft: @signals.signal(-1.0),
         bar_hidden: @signals.signal(false),
+        long: @signals.signal(false),
         seen: (0, 0.0),
       }
       readings[key] = r
@@ -246,6 +249,28 @@ pub fn reader_panel_of(key : String) -> ReaderPanel {
   match readings.get(key) {
     Some(r) => r.panel.get()
     None => NoPanel
+  }
+}
+
+///|
+/// Whether the text read as `key` is taller than two screens, followed: for a tab's scroll-to-bottom key.
+pub fn reader_long_of(key : String) -> Bool {
+  panels_told.get() |> ignore
+  match readings.get(key) {
+    Some(r) => r.long.get()
+    None => false
+  }
+}
+
+///|
+/// The text read as `key` scrolled to its end, at a cause: clears any held jump so `on_sight` records the end.
+pub fn reader_to_end(key : String) -> Unit {
+  match readings.get(key) {
+    Some(r) => {
+      r.jumped = (-1, 0.0, -1, 0.0)
+      r.list.to_end()
+    }
+    None => ()
   }
 }
 

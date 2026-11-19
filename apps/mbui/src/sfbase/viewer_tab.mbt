@@ -619,9 +619,10 @@ pub fn viewer_tab_node(
 ///|
 /// The tools over a file's tab in `row` (as tall as a service's bar, PreviewBar's): its name and the line about it (its
 /// size, its kind), cut short where the tab is narrow; then 预览 / 源码 (a table's, a page's, once read: as the whole
-/// window's bar has them), the reader's 目录, 搜索 and 排版 (Markdown and words read in it: its panels opened from here,
-/// the layout's in the tab's stage, viewer_tab_node's), 下载 (a ring while the core downloads it), 全屏 (`full`, where it
-/// is given). Each done at its press's moment; their tips in `tips`.
+/// window's bar has them), the reader's 目录, 搜索, 排版 (Markdown and words read in it: its panels opened from here,
+/// the layout's in the tab's stage, viewer_tab_node's) and 滚动到底部 (while its content is taller than two screens),
+/// 下载 (a ring while the core downloads it), 全屏 (`full`, where it is given). Each done at its press's moment; their
+/// tips in `tips`.
 fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Unit)?, tips : @sf.TipLayer) -> Unit {
   row
   .row(Is(true))
@@ -661,8 +662,8 @@ fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Uni
 
 ///|
 /// A file tab's keys in row `r` (tab_tools_node's, and the bar's over the whole window: viewer_tab_bar_tools): 预览 /
-/// 源码, the reader's panels, 下载 and 全屏 (`full`, where it is given), in `ink`, each `corner` round, their tips in
-/// `tips`.
+/// 源码, the reader's panels and 滚动到底部 (while taller than two screens), 下载 and 全屏 (`full`, where it is given),
+/// in `ink`, each `corner` round, their tips in `tips`.
 fn tab_keys_node(
   r : @view.View,
   src : Source,
@@ -752,6 +753,31 @@ fn tab_keys_node(
       },
     )
   }
+  // 滚动到底部: the reader's, only while the text is taller than two screens
+  slot(
+    tab_keys_drop_end,
+    fn() { vf_reads(vw) && @sf.reader_long_of(vw.read_key()) },
+    fn() {
+      Some(
+        @sf.menu_item_of(
+          @sf.t("web-pages.drive.reader.toEnd"),
+          fn() { @sf.reader_to_end(vw.read_key()) },
+          icon="chevrons-down",
+        ),
+      )
+    },
+    fn(x) {
+      @sf.tool_node(
+        x,
+        fn() { { icon: "chevrons-down", label: @sf.t("web-pages.drive.reader.toEnd"), on: false, disabled: false } },
+        ink,
+        corner,
+        fn() { @sf.reader_to_end(vw.read_key()) },
+        tip=tips,
+      )
+      |> ignore
+    },
+  )
   // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
   let dl = fn() { vw.download(src) }
   let saving = fn() {
@@ -837,20 +863,23 @@ fn tab_keys_node(
 
 ///|
 /// Which of a file's keys in the bar of a window of its own leaves it first where it has not the room (View::drops: 1
-/// first): 预览 / 源码 (the widest), then the reader's 排版, 搜索, 目录, then 下载.
+/// first): 预览 / 源码 (the widest), then the reader's 排版, 滚动到底部, 搜索, 目录, then 下载.
 let tab_keys_drop_source : Int = 1
 
 ///|
 let tab_keys_drop_layout : Int = 2
 
 ///|
-let tab_keys_drop_find : Int = 3
+let tab_keys_drop_end : Int = 3
 
 ///|
-let tab_keys_drop_contents : Int = 4
+let tab_keys_drop_find : Int = 4
 
 ///|
-let tab_keys_drop_download : Int = 5
+let tab_keys_drop_contents : Int = 5
+
+///|
+let tab_keys_drop_download : Int = 6
 
 ///|
 /// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @motion.Zoom's),

@@ -2270,6 +2270,7 @@ let en : Map[String, String] = {
   "web-pages.drive.reader.sans": "Sans",
   "web-pages.drive.reader.serif": "Serif",
   "web-pages.drive.reader.size": "Size",
+  "web-pages.drive.reader.toEnd": "Scroll to bottom",
   "web-pages.drive.refresh": "Refresh",
   "web-pages.drive.refreshWhat": "refresh the folder",
   "web-pages.drive.rename": "Rename",

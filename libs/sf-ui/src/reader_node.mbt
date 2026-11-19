@@ -381,6 +381,7 @@ fn reader_column_node(
   // shown waiting for it); a desktop's bar gone as it is read on down, back as it is read back up, near its top)
   let keeps : Ref[() -> Unit] = Ref(fn() {  })
   r.list.on_sight(fn(s) {
+    r.long.set(s.from_top + s.from_foot > s.shows)
     let (first, within) = reader_held_place(r, s.first, s.into, if s.tall > 0.0 { dmin(1.0, dmax(0.0, s.into / s.tall)) } else { 0.0 })
     let (chunk, was) = r.place.untracked()
     if first != chunk || (within - was).abs() > 0.002 {

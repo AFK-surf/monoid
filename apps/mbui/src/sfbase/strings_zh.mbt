@@ -2244,6 +2244,7 @@ let zh : Map[String, String] = {
   "web-pages.drive.reader.sans": "黑体",
   "web-pages.drive.reader.serif": "宋体",
   "web-pages.drive.reader.size": "字号",
+  "web-pages.drive.reader.toEnd": "滚动到底部",
   "web-pages.drive.refresh": "刷新",
   "web-pages.drive.refreshWhat": "刷新文件夹",
   "web-pages.drive.rename": "重命名",

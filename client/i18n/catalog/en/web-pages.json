@@ -1189,6 +1189,7 @@
   "web-pages.drive.reader.contents": "Contents",
   "web-pages.drive.reader.find": "Search",
   "web-pages.drive.reader.layout": "Layout",
+  "web-pages.drive.reader.toEnd": "Scroll to bottom",
   "web-pages.drive.reader.noChapters": "No chapters found in this file; jump with the progress bar",
   "web-pages.drive.reader.findPlaceholder": "Search the whole text",
   "web-pages.drive.reader.foundCount": {

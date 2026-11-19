@@ -95,7 +95,8 @@ fn sg_seen(c : SgCase) -> @view.Sight[Int] {
   }
   let edge = sg_shows - c.foot
   let whole = tops.filter(fn(t) { t.1 >= 0.0 && t.1 + sg_tall <= edge + 1.0e-6 })
-  let from_foot = c.scroll.most() - c.scroll.at(c.tree)
+  let from_top = c.scroll.at(c.tree)
+  let from_foot = c.scroll.most() - from_top
   {
     first: tops[0].0,
     slice: 0,
@@ -105,6 +106,7 @@ fn sg_seen(c : SgCase) -> @view.Sight[Int] {
     last_slice: 0,
     whole: whole.last().map(fn(t) { t.0 }),
     whole_slice: 0,
+    from_top,
     from_foot,
     shows: sg_shows,
     at_foot: from_foot.abs() < 1.0e-6,
@@ -140,7 +142,7 @@ test "a page's list tells what is in sight once after its first layout: at its f
   let c = sg_case(30)
   assert_eq(c.told.length(), 1, msg="\{Repr(c.told)}")
   assert_eq(c.told[0].1, sg_seen(c))
-  assert_eq(c.told[0].1, { first: 25, slice: 0, into: 0.0, tall: sg_tall, last: 29, last_slice: 0, whole: Some(29), whole_slice: 0, from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true })
+  assert_eq(c.told[0].1, { first: 25, slice: 0, into: 0.0, tall: sg_tall, last: 29, last_slice: 0, whole: Some(29), whole_slice: 0, from_top: c.scroll.most(), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true })
   assert_eq(c.place.sight_now(), Some(c.told[0].1))
 }
 
@@ -158,6 +160,10 @@ test "a wheel's notch tells what will be in sight at that input, once, nothing a
     assert_eq(c.told.length(), 2, msg="at \{rate} a second, nothing as it eases: \{Repr(c.told)}")
     assert_eq(told_then[0].1, sg_seen(c), msg="at \{rate} a second")
     assert_true(!told_then[0].1.at_foot && told_then[0].1.from_foot > 0.0, msg="at \{rate} a second")
+    assert_true(
+      told_then[0].1.from_top < c.scroll.most() && (told_then[0].1.from_top + told_then[0].1.from_foot - c.scroll.most()).abs() < 1.0e-6,
+      msg="at \{rate} a second: from_top=\{told_then[0].1.from_top} from_foot=\{told_then[0].1.from_foot} most=\{c.scroll.most()}",
+    )
   }
 }
 
@@ -294,7 +300,7 @@ test "with its top covered 0, 44 and 52: the first key the first with something 
     let (first, into) = if cover >= sg_tall { (1, cover - sg_tall) } else { (0, cover) }
     assert_eq(
       at_top,
-      { first, slice: 0, into, tall: sg_tall, last: 4, last_slice: 0, whole: Some(4), whole_slice: 0, from_foot: c.scroll.most(), shows: sg_shows, at_foot: false, foot_whole: false },
+      { first, slice: 0, into, tall: sg_tall, last: 4, last_slice: 0, whole: Some(4), whole_slice: 0, from_top: 0.0, from_foot: c.scroll.most(), shows: sg_shows, at_foot: false, foot_whole: false },
       msg="covered \{cover}, at its top",
     )
     // (at its foot: block 25 at the top of what shows, under the cover where it is 40 or more)
@@ -303,7 +309,7 @@ test "with its top covered 0, 44 and 52: the first key the first with something 
     let (first, into) = if cover >= sg_tall { (26, cover - sg_tall) } else { (25, cover) }
     assert_eq(
       at_foot,
-      { first, slice: 0, into, tall: sg_tall, last: 29, last_slice: 0, whole: Some(29), whole_slice: 0, from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
+      { first, slice: 0, into, tall: sg_tall, last: 29, last_slice: 0, whole: Some(29), whole_slice: 0, from_top: f.scroll.most(), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
       msg="covered \{cover}, at its foot",
     )
   }

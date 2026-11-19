@@ -22,7 +22,8 @@
 /// shows under it: as much as the head shows, a table of contents telling that from its first key at the top), `last`
 /// the last that shows, `whole` the last wholly in what shows (its top no higher than the edge under what covers its
 /// top, its foot over the foot's top, where it has them; none where none is) and drawn whole (before the first in
-/// sight still on its way in), `from_foot` how far it is scrolled from its foot, `shows` how tall what shows is,
+/// sight still on its way in), `from_top` how far it is scrolled from its top, `from_foot` how far it is scrolled from
+/// its foot, `shows` how tall what shows is,
 /// `at_foot` whether it is at its foot (where the list is, as it lays out: what follows it, a way back to it),
 /// `foot_whole` whether it is at its foot with none from the first in sight on still on its way in (its end seen);
 /// `tall` how tall `first`'s block is as it is counted (how far down it `into` is, as a share: a reader's place in a
@@ -41,6 +42,7 @@ pub(all) struct Sight[K] {
   last_slice : Int
   whole : K?
   whole_slice : Int
+  from_top : Double
   from_foot : Double
   shows : Double
   at_foot : Bool
@@ -130,6 +132,7 @@ fn[K] Sight::keyed(self : Sight[Int], ids : ListKeys[K], sl : SliceIds) -> Sight
     last_slice: sl.slice_of(self.last),
     whole: self.whole.map(fn(i) { ids.key(sl.kid_of(i)) }),
     whole_slice: self.whole.map_or(0, fn(i) { sl.slice_of(i) }),
+    from_top: self.from_top,
     from_foot: self.from_foot,
     shows: self.shows,
     at_foot: self.at_foot,
@@ -203,6 +206,7 @@ fn[K] sight_counted(
     last_slice: 0,
     whole,
     whole_slice: 0,
+    from_top: x,
     from_foot: most - x,
     shows: vh,
     at_foot: most - x <= 1.0e-6,

@@ -1138,6 +1138,7 @@
   "web-pages.drive.reader.contents": "目录",
   "web-pages.drive.reader.find": "搜索",
   "web-pages.drive.reader.layout": "排版",
+  "web-pages.drive.reader.toEnd": "滚动到底部",
   "web-pages.drive.reader.noChapters": "此文件中未找到章节，可使用进度条跳转",
   "web-pages.drive.reader.findPlaceholder": "在全文中搜索",
   "web-pages.drive.reader.foundCount": {
