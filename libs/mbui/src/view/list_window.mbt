@@ -1285,7 +1285,7 @@ fn View::scrolls_window_ids(
         }
         gone_from.val[k] = (off, if b < was.length() { Some(was[b]) } else { None })
       }
-      if !flips && laid_once && !at_once && !gate && keys_diff {
+      if !flips && laid_once && !at_once && !gate && keys_diff && !self.tree.nowhere_at(self.at) {
         self.tree.answer_mark(self.at)
       }
       // (one come at its foot by this change, seen, at its foot: the stretch from the last key there before that stays held
@@ -2816,6 +2816,12 @@ fn View::scrolls_window_ids(
   }, fn(now) {
     let (out, _) = now
     guard s.seen.untracked() is Some((_, vh)) && vh > 0.0 else { return }
+    // (laid out nowhere (a page under the one on top): none of its blocks made or let go while it is; its fill lays
+    // out what shows when it is shown again, nowhere_changed_test.mbt)
+    if self.tree.nowhere_at(self.at) {
+      laid_again()
+      return
+    }
     // A reach measurement can tell a new offset in its final round. Settle it after leaving the room.
     if self.tree.rooming == self.at {
       if out is Some(_) || made_rev.val != laid_rev.val {

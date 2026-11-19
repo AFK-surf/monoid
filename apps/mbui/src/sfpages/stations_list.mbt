@@ -111,11 +111,29 @@ pub fn stations_list_node(
           )
         "first" => sl_first_node(b, core, here, add, adding)
         "devices" => @sf.section_heading_node(b, fn() { @sf.t("web-pages.devices.title") })
-        "stations" =>
-          b.each(addresses, fn(k) { k }, fn(row, k) {
+        "stations" => {
+          // (live station additions/removals open or close their card slots within this block; card-internal updates stay static)
+          b.transitions_only() |> ignore
+          let shown_addresses = @signals.signal(@signals.untracked(addresses), same=fn(a, b) { a == b })
+          b.reacts(
+            addresses,
+            fn(next) {
+              if !@view.answering_now() {
+                @view.transition(within=b, fn() { shown_addresses.set(next) })
+              } else {
+                shown_addresses.set(next)
+              }
+            },
+            at_start=false,
+          )
+          b.each(fn() { shown_addresses.get() }, fn(k) { k }, fn(row, k) {
             let address = k.untracked()
             // (its own station of the list, read by its address: told only as that one changes)
-            sl_station_card_node(row, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            row.box(fn(card) {
+              card.transitions_only() |> ignore
+              sl_station_card_node(card, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            })
+            |> ignore
             // (its menu where the pointer's other button is pressed on it: opened, its name or its address copied)
             row.on_menu(fn(m) {
               let name = text(@signals.untracked(fn() { stations_by.get(address) }), "name")
@@ -130,6 +148,7 @@ pub fn stations_list_node(
             })
             |> ignore
           })
+        }
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
           let r = fn() { rigs_by.get(id) }

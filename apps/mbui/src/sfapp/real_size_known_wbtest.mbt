@@ -643,7 +643,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide reader": (652, 528, 81),
   "wide reader-bars": (666, 535, 83),
   "wide reader-contents": (743, 596, 96),
-  "wide reader-layout": (900, 727, 134),
+  "wide reader-layout": (900, 637, 131),
   "wide reader-md": (776, 611, 95),
   "wide newchat": (1216, 811, 71),
   "wide newchat-files": (1216, 811, 71),

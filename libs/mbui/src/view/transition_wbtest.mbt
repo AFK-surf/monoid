@@ -405,3 +405,39 @@ test "transition: flips list never pops open a new key whose comes(k) is false" 
     assert_true(!transition_now(), msg="at \{period}: a transition left told")
   }
 }
+
+///|
+test "transition: scrolls_window inside laid_nowhere makes no blocks while hidden and lays them out when shown again" {
+  let clock = Ref(0.0)
+  let nowhere = @signals.signal(false, same=fn(a, b) { a == b })
+  let keys = @signals.signal([1, 2, 3], same=fn(a, b) { a == b })
+  let built : Array[Int] = []
+  let tree = Tree::new(time=fn() { clock.val }, fn(root) {
+    root.transitions_only() |> ignore
+    root.box(fn(page) {
+      page.laid_nowhere(By(fn() { nowhere.get() })).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      page.scrolls_window(Scroll::list(), fn() { keys.get() }, est=40.0, fn(slot, k) {
+        built.push(k)
+        slot.box(fn(b) { b.height(Is(Some(40.0))).words(Is("row-\{k}")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(built, [1, 2, 3])
+  nowhere.set(true)
+  clock.val = 20.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  built.clear()
+  keys.set([0, 1, 2, 3])
+  clock.val = 40.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  assert_eq(built, [], msg="hidden scrolls_window built blocks while laid_nowhere")
+  nowhere.set(false)
+  clock.val = 60.0
+  tree.frame(390.0, 844.0, now=clock.val) |> ignore
+  assert_true(built.contains(0), msg="uncovered scrolls_window laid out key 0")
+  assert_true(tree.drawn().iter().any(fn(d) { d.words == "row-0" }), msg="row-0 drawn once shown again")
+  tree.dispose()
+}

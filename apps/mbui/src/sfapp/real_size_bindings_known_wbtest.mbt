@@ -859,7 +859,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat-working agentCard/step": 11,
   "wide chat-working agentCard/job": 11,
   "wide chat-working history/step": 15,
-  "wide archived archive/down": 71,
+  "wide archived archive/down": 57,
   "wide archived archive/archived": 29,
   "wide place-stations station/host": 13,
   "wide place-stations stationMove to= module=/moving": 32,

@@ -1321,12 +1321,14 @@ fn triple_body_node(
         leaving.set(lv)
         held_back.set(held_back.untracked() + came)
         room.at_moment(room.cause_at() + @sf.leave_ms, fn() {
-          let lv = leaving.untracked().copy()
-          for g in gone {
-            lv.remove(g.0)
-          }
-          leaving.set(lv)
-          held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          @view.transition(within=room.transitions_root(), fn() {
+            let lv = leaving.untracked().copy()
+            for g in gone {
+              lv.remove(g.0)
+            }
+            leaving.set(lv)
+            held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          })
         })
         |> ignore
       })

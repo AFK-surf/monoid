@@ -167,7 +167,22 @@ fn adb_block(
       let step = fn() { now().map(fn(s) { s.0 }) }
       let note = fn() { now().map(fn(s) { s.2 }).unwrap_or("") }
       let acts = fn() { step().map(fn(s) { s.act != "" }).unwrap_or(false) }
-      b.show(fn() { adb_phone_step(view(), phone(), focus) is Some(_) }, fn(b) {
+      // (live phone wireless-debugging updates open or close this step smoothly in place, scoped to this block)
+      b.transitions_only() |> ignore
+      let step_open = fn() { adb_phone_step(view(), phone(), focus) is Some(_) }
+      let shown_step = @signals.signal(@signals.untracked(step_open), same=fn(a, b) { a == b })
+      b.reacts(
+        step_open,
+        fn(on) {
+          if !@view.answering_now() {
+            @view.transition(within=b, fn() { shown_step.set(on) })
+          } else {
+            shown_step.set(on)
+          }
+        },
+        at_start=false,
+      )
+      b.show(fn() { shown_step.get() }, fn(b) {
         @sf.page_card_node(b, footed=true, fn(k) {
           // (its title's line and what is said under it one block, line under line, as card_lines_node's)
           k.box(fn(t) {

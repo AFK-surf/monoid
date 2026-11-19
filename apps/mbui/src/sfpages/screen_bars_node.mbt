@@ -314,7 +314,15 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let u = pg.u
   let narrow = fn() { view_narrow(p, u) }
   p.reacts(narrow, fn(n) { u.narrow_bar = n })
-  p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
+  // (a login screen opened until it is gone (`until_gone`) closes its side tab as soon as phase becomes "gone"; keep
+  // its bar in place while the panel slides shut instead of yanking 48px out from over the stage mid-slide)
+  let closing_gone = fn() {
+    match u.at {
+      Some(at) => at.until_gone && s.phase_now() == "gone"
+      None => false
+    }
+  }
+  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
     slot.box(fn(bar) {
       match (pg.own_bar, pg.tab_pads) {
         (Some(own), _) => @sf.style_node(bar, fn() { own })
