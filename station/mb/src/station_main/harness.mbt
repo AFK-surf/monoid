@@ -403,8 +403,8 @@ fn driver_errors_said() -> Json {
     @accounts_oauth.Said("signed out"),
     @accounts_oauth.RenewRefused(Some(401), "refused by its server"),
     @accounts_pool.Thrown("RenewRefused", @accounts_pool.jobj([("message", @accounts_pool.js("refused in the pool"))])),
-    @api_routes.Thrown("RenewRefused", jv_of_json({ "message": "refused through the bus", "status": 400 })),
-    @api_routes.Thrown("Said", jv_of_json({ "message": "said through the bus" })),
+    @api_routes.Thrown("RenewRefused", @jsjson.JV::of_json({ "message": "refused through the bus", "status": 400 })),
+    @api_routes.Thrown("Said", @jsjson.JV::of_json({ "message": "said through the bus" })),
     @accounts_oauth.Failed("a plain failure"),
   ]
   Json::array(

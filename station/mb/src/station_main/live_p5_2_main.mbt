@@ -42,8 +42,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       lang=(bus.lang.val)(),
     ),
     cwords: @session_chats.Words::new(jv_of(zh), jv_of(en)),
-    rwords: @api_routes.Words::new(rv_of(zh), rv_of(en)),
-    files: @session_storage.Files::new(host, sep=sep()),
+    rwords: @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
+    files: p52_cold_files(bus),
     config: Json::object({
       "dataDir": jstr(bus.data),
       "profiles": Json::array([]),

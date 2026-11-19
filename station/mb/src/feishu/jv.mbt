@@ -1,22 +1,27 @@
-// Values as JavaScript has them (@jsjson.JValue: JSON.parse and JSON.stringify exactly), and what the Feishu code asks
+// Values as JavaScript has them (@jsjson.JV: JSON.parse and JSON.stringify exactly), and what the Feishu code asks
 // of them as the TypeScript did (`text(v)`, `v?.a?.b`, `String(v)`, `Number(s)`, `s.trim()`): an object's fields in
-// JavaScript's order, a lone surrogate of a string kept.
+// JavaScript's order, a lone surrogate of a string kept (this package's `parse`, unlike @jsjson's `jv_parse`). An
+// object's fields are kept in a mutable array: what the TypeScript changed in place, a kept file's maps, is changed in
+// place here too (`jput`, `jdelete`).
 
 ///|
-/// A JavaScript value as JSON has it. An object's fields are kept in a mutable array (what the TypeScript changed in
-/// place, a kept file's maps, is changed in place here too).
-#derive(Eq)
-pub(all) enum JV {
-  Null
-  Bool(Bool)
-  Num(Double)
-  Str(String)
-  Arr(Array[JV])
-  /// keys and values, in the order they were put (integer-like keys are put first by `jset` and `jobj`)
-  Obj(Array[(String, JV)])
+pub using @jsjson {
+  type JV,
+  jget,
+  js,
+  jnum,
+  jint,
+  jopt,
+  jstr,
+  jnumber,
+  jitems,
+  points,
+  num_text,
+  trim_js,
 }
 
 ///|
+/// A JavaScript value as this package reads it: a lone surrogate of a string kept.
 fn of_js(v : @jsjson.JValue) -> JV {
   match v {
     Null => Null
@@ -25,18 +30,6 @@ fn of_js(v : @jsjson.JValue) -> JV {
     Str(u) => Str(@jsjson.raw_text(u))
     Arr(a) => Arr(a.map(of_js))
     Obj(f) => Obj(f.map(p => (@jsjson.raw_text(p.0), of_js(p.1))))
-  }
-}
-
-///|
-fn to_js(v : JV) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(n) => Num(n)
-    Str(s) => Str(@jsjson.units(s))
-    Arr(a) => Arr(a.map(to_js))
-    Obj(f) => Obj(f.map(p => (@jsjson.units(p.0), to_js(p.1))))
   }
 }
 
@@ -57,60 +50,7 @@ pub fn try_parse(text : String) -> JV? {
 ///|
 /// JSON.stringify(v).
 pub fn stringify(v : JV) -> String {
-  @jsjson.stringify(to_js(v))
-}
-
-///|
-/// What JSON is to the rest of the program (@json.Json: a harness's answer).
-pub fn JV::to_json(self : JV) -> Json {
-  @json.parse(stringify(self)) catch {
-    _ => Json::null()
-  }
-}
-
-///|
-/// `@json.Json` as a JavaScript value (its fields in its order).
-pub fn JV::from_json(j : Json) -> JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(a) => Arr(a.map(JV::from_json))
-    Object(m) => {
-      let o = Obj([])
-      for k, v in m {
-        jput(o, k, JV::from_json(v))
-      }
-      o
-    }
-  }
-}
-
-///|
-/// `v.k` of an object (undefined: None).
-pub fn JV::get(self : JV, k : String) -> JV? {
-  match self {
-    Obj(fields) => {
-      for f in fields {
-        if f.0 == k {
-          return Some(f.1)
-        }
-      }
-      None
-    }
-    _ => None
-  }
-}
-
-///|
-/// `v?.k`: None where it is not an object or has no such field.
-pub fn jget(v : JV?, k : String) -> JV? {
-  match v {
-    Some(Obj(_) as o) => o.get(k)
-    _ => None
-  }
+  @jsjson.stringify(JV::to_js(v))
 }
 
 ///|
@@ -119,29 +59,6 @@ pub fn jat(v : JV?, i : Int) -> JV? {
   match v {
     Some(Arr(a)) if i >= 0 && i < a.length() => Some(a[i])
     _ => None
-  }
-}
-
-///|
-pub fn js(s : String) -> JV {
-  Str(s)
-}
-
-///|
-pub fn jnum(n : Double) -> JV {
-  Num(n)
-}
-
-///|
-pub fn jint(n : Int) -> JV {
-  Num(n.to_double())
-}
-
-///|
-pub fn jopt(s : String?) -> JV {
-  match s {
-    Some(v) => Str(v)
-    None => Null
   }
 }
 
@@ -209,7 +126,7 @@ pub fn jdelete(o : JV, k : String) -> Unit {
 ///|
 /// An object literal of these fields, in JavaScript's order (a field whose value is None, undefined, left out).
 pub fn jobj(fields : Array[(String, JV?)]) -> JV {
-  let o = Obj([])
+  let o = JV::Obj([])
   for f in fields {
     match f.1 {
       Some(v) => jput(o, f.0, v)
@@ -241,7 +158,7 @@ pub fn jvalues(v : JV) -> Array[JV] {
     Str(s) => {
       let out = []
       for i in 0..<s.length() {
-        out.push(Str(s.unsafe_substring(start=i, end=i + 1)))
+        out.push(JV::Str(s.unsafe_substring(start=i, end=i + 1)))
       }
       out
     }
@@ -255,33 +172,6 @@ pub fn text(v : JV?) -> String {
   match v {
     Some(Str(s)) => s
     _ => ""
-  }
-}
-
-///|
-/// The string it is, if it is one.
-pub fn jstr(v : JV?) -> String? {
-  match v {
-    Some(Str(s)) => Some(s)
-    _ => None
-  }
-}
-
-///|
-/// The number it is, if it is one.
-pub fn jnumber(v : JV?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
-}
-
-///|
-/// `Array.isArray(v) ? v : []`.
-pub fn jitems(v : JV?) -> Array[JV] {
-  match v {
-    Some(Arr(a)) => a
-    _ => []
   }
 }
 
@@ -303,22 +193,6 @@ pub fn nullish(v : JV?, fallback : JV) -> JV {
   match v {
     None | Some(Null) => fallback
     Some(x) => x
-  }
-}
-
-///|
-/// A number as JavaScript writes it (`String(n)`).
-pub fn num_text(d : Double) -> String {
-  if d.is_nan() {
-    "NaN"
-  } else if d.is_inf() {
-    if d > 0.0 {
-      "Infinity"
-    } else {
-      "-Infinity"
-    }
-  } else {
-    @jsjson.stringify(Num(d))
   }
 }
 
@@ -360,20 +234,6 @@ pub fn is_js_space(c : Int) -> Bool {
   c == 0x205f ||
   c == 0x3000 ||
   c == 0xfeff
-}
-
-///|
-/// `s.trim()`.
-pub fn trim_js(s : String) -> String {
-  let mut a = 0
-  let mut b = s.length()
-  while a < b && is_js_space(s.unsafe_charcode_at(a)) {
-    a += 1
-  }
-  while b > a && is_js_space(s.unsafe_charcode_at(b - 1)) {
-    b -= 1
-  }
-  s.unsafe_substring(start=a, end=b)
 }
 
 ///|
@@ -443,29 +303,6 @@ pub fn has(s : String, p : String) -> Bool {
     i += 1
   }
   false
-}
-
-///|
-/// `[...s]`: its code points, each a string (a lone surrogate one of them).
-pub fn points(s : String) -> Array[String] {
-  let out = []
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    let w = if c >= 0xd800 && c <= 0xdbff && i + 1 < s.length() {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        2
-      } else {
-        1
-      }
-    } else {
-      1
-    }
-    out.push(s.unsafe_substring(start=i, end=i + w))
-    i += w
-  }
-  out
 }
 
 ///|

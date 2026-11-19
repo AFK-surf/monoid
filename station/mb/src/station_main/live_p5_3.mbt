@@ -586,7 +586,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "resources.watch.end" =>
       Json::string(
         self.resources.end(num(0, "pid").unwrap_or(-1.0).to_int(), text(1, "session")) catch {
-          P53Error(m) => raise @api_routes.Thrown("NotEndable", jv_of_json({ "message": Json::string(m) }))
+          P53Error(m) => raise @api_routes.Thrown("NotEndable", @jsjson.JV::of_json({ "message": Json::string(m) }))
           e => raise e
         },
       )

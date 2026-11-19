@@ -92,15 +92,15 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
     ignore(self.ask("store.setProfileCheck", [js(id), check]))
   })
   let before_models = match jget(before, "models") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let before_fusion = match jget(before, "fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let check_fusion = match check.get("fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   if json_text(before_models) != json_text(check.get("models")) ||
@@ -815,7 +815,7 @@ async fn Accounts::lent_login_version(self : Accounts, home : String) -> String?
   guard try_parse(text) is Some(j) else { return None }
   let tokens = j.get("tokens")
   let pick = (k : String) => match jget(tokens, k) {
-    None => Null
+    None => JV::Null
     Some(v) => v
   }
   Some(@hash.sha256_utf8_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))

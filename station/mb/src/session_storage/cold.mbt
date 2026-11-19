@@ -333,7 +333,10 @@ async fn Files::rebuild_of(self : Files, dir : String) -> Array[(String, Double)
     ("maxEntries", ji(500000)),
     ("maxDurationMs", ji(60000)),
   ])
-  let said = @footprint.answer(ask.stringify(), self.sep)
+  let said = match self.footprint_by {
+    Some(measure) => measure(ask.stringify())
+    None => @footprint.answer(ask.stringify(), self.sep)
+  }
   if str(said, "error") is Some(e) {
     raise Thrown("Error", jo([("message", js(e)), ("code", get(said, "code").unwrap_or(Json::null()))]))
   }

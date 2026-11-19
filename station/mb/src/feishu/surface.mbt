@@ -1913,7 +1913,7 @@ pub async fn FeishuSurface::api(
     }
     return self.client.api(verb, path, body=None, query~, take_file=true)
   }
-  let body = Obj([])
+  let body = JV::Obj([])
   let mut query : JV? = None
   for k in jkeys(params) {
     if k == "query" {

@@ -741,7 +741,7 @@ async fn P53Jobs::tell(self : P53Jobs, job : Json, text : String) -> Unit {
 ///|
 /// Tells a session's agent (the hub's notify, which wakes it).
 async fn P53Jobs::tell_session(self : P53Jobs, session : String, text : String) -> Unit {
-  ignore((self.bus.hub_ask.val)("notify", p53_obj([("session", p53_s(session)), ("text", p53_s(text))]))) catch {
+  self.bus.hub_notify(session~, text~) catch {
     e => p53_log("warn", "jobs", "job notice not given", fields=p53_obj([("session", p53_s(session)), ("error", p53_s(p53_words(e)))]))
   }
 }

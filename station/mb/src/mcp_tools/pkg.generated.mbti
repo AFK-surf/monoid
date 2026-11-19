@@ -5,22 +5,23 @@ import {
   "mbui/effect",
   "station/api_routes",
   "station/host",
+  "station/jsjson",
 }
 
 // Values
-pub fn absent(@api_routes.JV?) -> Bool
+pub fn absent(@jsjson.JV?) -> Bool
 
 pub let access_levels : Array[String]
 
-pub fn access_of(@api_routes.JV) -> String
+pub fn access_of(@jsjson.JV) -> String
 
-pub fn archive_tools(Ctx, hub? : @api_routes.JV) -> Array[Tool]
+pub fn archive_tools(Ctx, hub? : @jsjson.JV) -> Array[Tool]
 
 pub fn byte_length(String) -> Int32
 
-pub fn chat_tools(Ctx, hub? : @api_routes.JV) -> Array[Tool]
+pub fn chat_tools(Ctx, hub? : @jsjson.JV) -> Array[Tool]
 
-pub fn clicking(Double, Double, String, Bool) -> Array[@api_routes.JV]
+pub fn clicking(Double, Double, String, Bool) -> Array[@jsjson.JV]
 
 pub fn code_point_count(String) -> Int32
 
@@ -28,7 +29,7 @@ pub fn computer_tools(Computer) -> Array[Tool]
 
 pub let core : Array[String]
 
-pub fn declared(Tool) -> @api_routes.JV
+pub fn declared(Tool) -> @jsjson.JV
 
 pub async fn described(Ctx, String, String?, String?) -> String
 
@@ -36,7 +37,7 @@ pub fn device_tools(Ctx, d? : String) -> Array[Tool]
 
 pub let drag_steps : Int32
 
-pub fn dragging(Double, Double, Double, Double, String) -> Array[@api_routes.JV]
+pub fn dragging(Double, Double, Double, Double, String) -> Array[@jsjson.JV]
 
 pub let every_turn : Array[String]
 
@@ -44,31 +45,31 @@ pub let examples : Int32
 
 pub fn[X] fail(String) -> X raise Failed
 
-pub async fn failed_turn_of(ToolsBackend, String, @api_routes.JV, Double) -> (@api_routes.JV, @api_routes.JV)?
+pub async fn failed_turn_of(ToolsBackend, String, @jsjson.JV, Double) -> (@jsjson.JV, @jsjson.JV)?
 
 pub async fn feedback_live(Ctx, String) -> FeedbackPart?
 
-pub fn feedback_tools(Ctx, store? : String, link? : async (String) -> @api_routes.JV, send? : async () -> (async (@api_routes.JV) -> @api_routes.JV)?, reply? : async () -> (async (@api_routes.JV) -> @api_routes.JV)?) -> Array[Tool]
+pub fn feedback_tools(Ctx, store? : String, link? : async (String) -> @jsjson.JV, send? : async () -> (async (@jsjson.JV) -> @jsjson.JV)?, reply? : async () -> (async (@jsjson.JV) -> @jsjson.JV)?) -> Array[Tool]
 
 pub fn feedback_viewer_may(String, String) -> Bool
 
-pub fn field(@api_routes.JV, String) -> @api_routes.JV
+pub fn field(@jsjson.JV, String) -> @jsjson.JV
 
-pub fn finite(@api_routes.JV?) -> Double?
+pub fn finite(@jsjson.JV?) -> Double?
 
 pub let first_ms : Double
 
 pub fn fitted(Array[Tool], Int32) -> (Array[Tool], Array[Tool])
 
-pub fn fixed_notice(@api_routes.JV, String?) -> String
+pub fn fixed_notice(@jsjson.JV, String?) -> String
 
 pub fn fixed_number(Double, Int32) -> Double
 
-pub fn format_skill_from_catalog(@api_routes.JV, String, String) -> String raise Failed
+pub fn format_skill_from_catalog(@jsjson.JV, String, String) -> String raise Failed
 
 pub fn forward_tools(Ctx, forwards? : String) -> Array[Tool]
 
-pub fn given(@api_routes.JV) -> @api_routes.JV?
+pub fn given(@jsjson.JV) -> @jsjson.JV?
 
 pub let grant_ids : Array[String]
 
@@ -86,17 +87,17 @@ pub fn indirect_tool(Array[Tool]) -> Tool
 
 pub fn int_text(Int32) -> String
 
-pub fn is_arr(@api_routes.JV?) -> Bool
+pub fn is_arr(@jsjson.JV?) -> Bool
 
-pub fn is_false(@api_routes.JV?) -> Bool
+pub fn is_false(@jsjson.JV?) -> Bool
 
 pub fn is_js_space(Int32) -> Bool
 
-pub fn is_obj(@api_routes.JV?) -> Bool
+pub fn is_obj(@jsjson.JV?) -> Bool
 
 pub fn is_slack_write(String) -> Bool
 
-pub fn is_true(@api_routes.JV?) -> Bool
+pub fn is_true(@jsjson.JV?) -> Bool
 
 pub fn iso_string(Double) -> String
 
@@ -104,17 +105,17 @@ pub fn job_tools(Ctx, jobs? : String, workspace? : String, places? : String?) ->
 
 pub fn js_round(Double) -> Double
 
-pub fn js_string_of(@api_routes.JV) -> String
+pub fn js_string_of(@jsjson.JV) -> String
 
-pub let jsignal : @api_routes.JV
+pub let jsignal : @jsjson.JV
 
-pub fn jundef_or(String?) -> @api_routes.JV
+pub fn jundef_or(String?) -> @jsjson.JV
 
-pub fn key_presses(String, extra? : Array[String]) -> Array[@api_routes.JV] raise Failed
+pub fn key_presses(String, extra? : Array[String]) -> Array[@jsjson.JV] raise Failed
 
 pub fn last_index_of(String, String) -> Int32
 
-pub async fn let_go(Ctx, String, @api_routes.JV, @api_routes.JV?, String, @api_routes.JV?) -> String
+pub async fn let_go(Ctx, String, @jsjson.JV, @jsjson.JV?, String, @jsjson.JV?) -> String
 
 pub async fn log_lines_of(ToolsBackend, String, Double, Double, Array[String], String, String) -> String
 
@@ -132,15 +133,15 @@ pub let not_posted : String
 
 pub let notice_mark : String
 
-pub async fn notice_report(Ctx, String, @api_routes.JV, @api_routes.JV, @api_routes.JV, ReportDeps) -> @api_routes.JV
+pub async fn notice_report(Ctx, String, @jsjson.JV, @jsjson.JV, @jsjson.JV, ReportDeps) -> @jsjson.JV
 
 pub let notify_limit : Int32
 
 pub let ops : Array[String]
 
-pub fn outcome_of(@api_routes.JV) -> @api_routes.JV
+pub fn outcome_of(@jsjson.JV) -> @jsjson.JV
 
-pub fn outcome_words(@api_routes.JV, String, String) -> String
+pub fn outcome_words(@jsjson.JV, String, String) -> String
 
 pub let output_cap : Int32
 
@@ -172,15 +173,15 @@ pub fn permission_tools(Ctx, grants? : String?, base? : String) -> Array[Tool]
 
 pub fn permitted(String, String) -> Bool
 
-pub fn plan_words(@api_routes.JV, String, Bool) -> String
+pub fn plan_words(@jsjson.JV, String, Bool) -> String
 
-pub fn pretty(@api_routes.JV) -> String
+pub fn pretty(@jsjson.JV) -> String
 
 pub async fn probe_relay(ToolsBackend, String) -> Probed
 
 pub fn quoted(String) -> String
 
-pub fn reached_at(@api_routes.JV, Int32) -> String
+pub fn reached_at(@jsjson.JV, Int32) -> String
 
 pub let read_cap : Int32
 
@@ -196,17 +197,17 @@ pub fn remote_tools(Ctx, remote? : String) -> Array[Tool]
 
 pub fn replace_all(String, String, String) -> String
 
-pub fn report(Ctx, @api_routes.JV, @api_routes.JV, @api_routes.JV) -> @api_routes.JV raise Failed
+pub fn report(Ctx, @jsjson.JV, @jsjson.JV, @jsjson.JV) -> @jsjson.JV raise Failed
 
 pub let report_path : String
 
-pub fn report_routes(Ctx, ReportDeps, async (@api_routes.JV) -> @api_routes.JV, store? : String) -> Array[ReportRoute]
+pub fn report_routes(Ctx, ReportDeps, async (@jsjson.JV) -> @jsjson.JV, store? : String) -> Array[ReportRoute]
 
 pub fn retire_tools(Ctx, asks? : String) -> Array[Tool]
 
 pub fn rig_tools(Ctx, use_? : String) -> Array[Tool]
 
-pub fn room_words(@api_routes.JV) -> String
+pub fn room_words(@jsjson.JV) -> String
 
 pub fn rust_arch(String) -> String
 
@@ -216,7 +217,7 @@ pub fn screen_tools(Ctx, hub? : String, base? : String, name? : String) -> Array
 
 pub let scroll_unit_px : Double
 
-pub async fn search_for_peer(ToolsBackend, @api_routes.JV, String?, String?, deps? : String) -> @api_routes.JV
+pub async fn search_for_peer(ToolsBackend, @jsjson.JV, String?, String?, deps? : String) -> @jsjson.JV
 
 pub let search_kinds : Array[String]
 
@@ -228,13 +229,13 @@ pub let settle_ms : Double
 
 pub let shot_max : Int32
 
-pub async fn skill_for_peer(async (String?) -> @api_routes.JV, @api_routes.JV, String?, String?) -> @api_routes.JV
+pub async fn skill_for_peer(async (String?) -> @jsjson.JV, @jsjson.JV, String?, String?) -> @jsjson.JV
 
 pub let skill_read_method : String
 
 pub let slack_spoken : Array[String]
 
-pub fn slack_tools(Ctx, hub? : @api_routes.JV) -> Array[Tool]
+pub fn slack_tools(Ctx, hub? : @jsjson.JV) -> Array[Tool]
 
 pub let slack_writes : Array[String]
 
@@ -250,7 +251,7 @@ pub let speaks_writing : String
 
 pub fn split(String, String) -> Array[String]
 
-pub fn spread(@api_routes.JV, Array[(String, @api_routes.JV)]) -> @api_routes.JV
+pub fn spread(@jsjson.JV, Array[(String, @jsjson.JV)]) -> @jsjson.JV
 
 pub fn squeeze_spaces(String) -> String
 
@@ -260,33 +261,33 @@ pub fn starts(String, String) -> Bool
 
 pub let stillfail_surface : String
 
-pub fn str_of(@api_routes.JV?) -> String?
+pub fn str_of(@jsjson.JV?) -> String?
 
-pub fn stringify(@api_routes.JV) -> String
+pub fn stringify(@jsjson.JV) -> String
 
-pub fn stringify_or_undefined(@api_routes.JV) -> String
+pub fn stringify_or_undefined(@jsjson.JV) -> String
 
-pub fn strings_of(@api_routes.JV?) -> Array[String]
+pub fn strings_of(@jsjson.JV?) -> Array[String]
 
-pub fn summary_of(@api_routes.JV, @api_routes.JV) -> @api_routes.JV
+pub fn summary_of(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
 
-pub async fn tell_fixed(async (Array[String]) -> @api_routes.JV, async (String, String) -> Unit) -> Int32
+pub async fn tell_fixed(async (Array[String]) -> @jsjson.JV, async (String, String) -> Unit) -> Int32
 
-pub fn text(@api_routes.JV?) -> String
+pub fn text(@jsjson.JV?) -> String
 
-pub fn thrown_as(Error, String) -> @api_routes.JV?
+pub fn thrown_as(Error, String) -> @jsjson.JV?
 
 pub fn to_unit(Double, Double, Double, Double) -> (Double, Double)
 
 pub let tree_settle_ms : Double
 
-pub fn trimmed(@api_routes.JV?) -> String
+pub fn trimmed(@jsjson.JV?) -> String
 
-pub fn truthy(@api_routes.JV?) -> Bool
+pub fn truthy(@jsjson.JV?) -> Bool
 
-pub fn typed(@api_routes.JV, @api_routes.JV) -> @api_routes.JV
+pub fn typed(@jsjson.JV, @jsjson.JV) -> @jsjson.JV
 
-pub fn typing(String) -> Array[@api_routes.JV] raise Failed
+pub fn typing(String) -> Array[@jsjson.JV] raise Failed
 
 pub let unbound_refusal : String
 
@@ -298,7 +299,7 @@ pub let wait_max : Double
 
 pub fn weight(Tool) -> Int32
 
-pub fn without(@api_routes.JV, String) -> @api_routes.JV
+pub fn without(@jsjson.JV, String) -> @jsjson.JV
 
 pub fn workspace_size_tools(Ctx, watch? : String, remote? : String) -> Array[Tool]
 
@@ -333,7 +334,7 @@ pub struct Computer {
   opening : Map[String, @effect.Deferred[Result[AgentView, Error]]]
   trees : Map[String, (String, String, String)]
 }
-pub async fn Computer::act(Self, String, @api_routes.JV) -> ToolReply
+pub async fn Computer::act(Self, String, @jsjson.JV) -> ToolReply
 pub async fn Computer::close_all(Self) -> Unit
 pub async fn Computer::close_session(Self, String) -> Unit
 pub async fn Computer::new(Ctx, hub? : String, base? : String, name? : String, timers? : Timers) -> Self
@@ -350,21 +351,21 @@ pub(all) enum Content {
   Text(String)
   Image(String, String)
 }
-pub fn Content::to_jv(Self) -> @api_routes.JV
+pub fn Content::to_jv(Self) -> @jsjson.JV
 
 pub struct Ctx {
   b : ToolsBackend
   words : @api_routes.Words
   consts : Consts
 }
-pub fn Ctx::decl(Self, String) -> @api_routes.JV
+pub fn Ctx::decl(Self, String) -> @jsjson.JV
 pub fn Ctx::new(ToolsBackend, @api_routes.Words, Consts) -> Self
 pub fn Ctx::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
 pub struct DeviceTools {
   b : ToolsBackend
   home : String
-  env : @api_routes.JV
+  env : @jsjson.JV
   sessions : String?
   processes : Map[String, Kept]
   mut next : Int32
@@ -372,8 +373,8 @@ pub struct DeviceTools {
 }
 pub async fn DeviceTools::close(Self) -> Unit
 pub async fn DeviceTools::drained(Self) -> Unit
-pub fn DeviceTools::new(ToolsBackend, String, @api_routes.JV, String?) -> Self
-pub async fn DeviceTools::run(Self, String, @api_routes.JV, @api_routes.JV, String) -> @api_routes.JV
+pub fn DeviceTools::new(ToolsBackend, String, @jsjson.JV, String?) -> Self
+pub async fn DeviceTools::run(Self, String, @jsjson.JV, @jsjson.JV, String) -> @jsjson.JV
 
 pub struct Door {
   mcp : McpEndpoint
@@ -411,7 +412,7 @@ type Kept
 
 pub(all) struct Listing {
   budget : Int32?
-  loaded : @api_routes.JV?
+  loaded : @jsjson.JV?
 }
 
 pub struct McpEndpoint {
@@ -428,13 +429,13 @@ pub struct MoveAsks {
   mut asks : Array[Ask]
   running : Array[@effect.Fiber[Unit]]
 }
-pub async fn MoveAsks::answer(Self, String, String, @api_routes.JV) -> @api_routes.JV
-pub async fn MoveAsks::chosen(Self, @api_routes.JV, @api_routes.JV, String, @api_routes.JV) -> Unit
-pub fn MoveAsks::may(Self, @api_routes.JV, @api_routes.JV, @api_routes.JV) -> String?
+pub async fn MoveAsks::answer(Self, String, String, @jsjson.JV) -> @jsjson.JV
+pub async fn MoveAsks::chosen(Self, @jsjson.JV, @jsjson.JV, String, @jsjson.JV) -> Unit
+pub fn MoveAsks::may(Self, @jsjson.JV, @jsjson.JV, @jsjson.JV) -> String?
 pub async fn MoveAsks::new(Ctx, String, MoveHas) -> Self
 pub async fn MoveAsks::settle(Self) -> Unit
-pub async fn MoveAsks::tool(Self, String, @api_routes.JV) -> @api_routes.JV
-pub async fn MoveAsks::tool_in(Self, String, String?, @api_routes.JV) -> @api_routes.JV
+pub async fn MoveAsks::tool(Self, String, @jsjson.JV) -> @jsjson.JV
+pub async fn MoveAsks::tool_in(Self, String, String?, @jsjson.JV) -> @jsjson.JV
 
 pub(all) struct MoveHas {
   ask : Bool
@@ -450,7 +451,7 @@ pub(all) struct PeerTarget {
   port : Int32
   path : String
 }
-pub fn PeerTarget::to_jv(Self) -> @api_routes.JV
+pub fn PeerTarget::to_jv(Self) -> @jsjson.JV
 
 pub(all) enum Probed {
   Reached(Double)
@@ -459,20 +460,20 @@ pub(all) enum Probed {
 
 pub(all) struct Reply {
   status : Int32
-  body : @api_routes.JV?
+  body : @jsjson.JV?
 }
 
 pub(all) struct ReportAsk {
   body : Bytes
   lang : String
-  viewer : @api_routes.JV
+  viewer : @jsjson.JV
 }
 
 pub(all) struct ReportDeps {
   log_tail : async (Int32) -> String?
-  versions : async () -> @api_routes.JV
+  versions : async () -> @jsjson.JV
   env_names : async () -> Array[String]
-  link : async (String) -> @api_routes.JV
+  link : async (String) -> @jsjson.JV
   home : String
 }
 
@@ -483,7 +484,7 @@ pub(all) struct ReportRoute {
 }
 
 pub(all) struct Source {
-  ref_ : @api_routes.JV
+  ref_ : @jsjson.JV
   id : String
   user_tab : Bool
   has_access : Bool
@@ -499,11 +500,11 @@ pub fn Timers::wall() -> Self
 pub(all) struct Tool {
   name : String
   description : String
-  input_schema : @api_routes.JV
-  run : async (String, @api_routes.JV, @api_routes.JV) -> String
-  content : (async (String, @api_routes.JV) -> ToolReply)?
+  input_schema : @jsjson.JV
+  run : async (String, @jsjson.JV, @jsjson.JV) -> String
+  content : (async (String, @jsjson.JV) -> ToolReply)?
 }
-pub fn Tool::new(@api_routes.JV, async (String, @api_routes.JV, @api_routes.JV) -> String, content? : async (String, @api_routes.JV) -> ToolReply) -> Self
+pub fn Tool::new(@jsjson.JV, async (String, @jsjson.JV, @jsjson.JV) -> String, content? : async (String, @jsjson.JV) -> ToolReply) -> Self
 
 pub(all) struct ToolReply {
   content : Array[Content]
@@ -511,13 +512,13 @@ pub(all) struct ToolReply {
 }
 
 pub struct ToolsBackend {
-  call : async (String, Array[@api_routes.JV]) -> @api_routes.JV
+  call : async (String, Array[@jsjson.JV]) -> @jsjson.JV
 }
-pub async fn ToolsBackend::ask(Self, String, Array[@api_routes.JV]) -> @api_routes.JV
-pub async fn ToolsBackend::invoke(Self, @api_routes.JV, Array[@api_routes.JV]) -> @api_routes.JV
-pub async fn ToolsBackend::log(Self, String, String, String, @api_routes.JV) -> Unit
-pub fn ToolsBackend::new(async (String, Array[@api_routes.JV]) -> @api_routes.JV) -> Self
-pub async fn ToolsBackend::tell(Self, String, Array[@api_routes.JV]) -> Unit
+pub async fn ToolsBackend::ask(Self, String, Array[@jsjson.JV]) -> @jsjson.JV
+pub async fn ToolsBackend::invoke(Self, @jsjson.JV, Array[@jsjson.JV]) -> @jsjson.JV
+pub async fn ToolsBackend::log(Self, String, String, String, @jsjson.JV) -> Unit
+pub fn ToolsBackend::new(async (String, Array[@jsjson.JV]) -> @jsjson.JV) -> Self
+pub async fn ToolsBackend::tell(Self, String, Array[@jsjson.JV]) -> Unit
 
 pub(all) enum Upgraded {
   Refused(Bytes)

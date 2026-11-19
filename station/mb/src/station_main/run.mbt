@@ -612,7 +612,7 @@ fn Station::told(self : Station, line : String) -> Unit {
         Some(b) =>
           ignore(
             self.host.rt.fork(name="channel ask", async fn() {
-              ignore((b.coord_ask.val)("updates.hup", Json::null())) catch {
+              b.coord_updates_hup() catch {
                 _ => ()
               }
             }),
@@ -993,7 +993,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   live_p5_1_handed()
   // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
   match s.bus {
-    Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))
+    Some(b) => ignore(@effect.timeout(10_000, async fn() { b.hub_shutdown() }))
     None => ()
   }
   // (the P5-5 parts closed on their own as it stopped: their processes ended before this one, not after)

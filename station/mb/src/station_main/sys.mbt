@@ -247,6 +247,21 @@ pub fn tmpdir() -> String {
 }
 
 ///|
+/// A program started as the station's background work (platform `backgrounded`: macOS's `taskpolicy -b`, Linux's
+/// `ionice` and `nice`), by what this machine has.
+fn backgrounded(program : String, args : Array[String]) -> (String, Array[String]) {
+  if is_windows() {
+    return (program, args)
+  }
+  let how = @ops_platform.background_found(
+    platform() == "darwin",
+    p => (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok({ file: true, .. }),
+    p => attempt(() => @drive.realpath(p)).to_option(),
+  )
+  @ops_platform.backgrounded_on(how, program, args)
+}
+
+///|
 /// The system as Node's `process.platform` names it.
 pub fn platform() -> String {
   match os_ffi() {

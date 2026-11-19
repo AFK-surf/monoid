@@ -429,7 +429,7 @@ async fn Admin::shown_to(self : Admin, r : Request) -> Answer {
       groups.push(a)
     }
   }
-  let shown = Obj(jfields(Some(chats)).filter(c => !nullish(c.1)))
+  let shown = JV::Obj(jfields(Some(chats)).filter(c => !nullish(c.1)))
   let cores = jitems(Some(self.backend.ask("os.cpus", []))).length()
   let memory = self.backend.ask("os.totalmem", [])
   let out = jset(

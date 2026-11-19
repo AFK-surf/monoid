@@ -559,7 +559,7 @@ async fn P55::start_connects(self : P55) -> Unit {
             Some(conn) => p55_bot_identity(to_core((conn.identity)()))
             None => None
           }
-          @feishu.shown(@feishu.JV::from_json(c), live).to_json()
+          @feishu.shown(@feishu.JV::of_json(c), live).to_json()
         }
         "comma" => to_core(@comma.shown(of_core(c)))
         "group" =>

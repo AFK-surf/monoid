@@ -984,7 +984,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
         }
         let profiles = match i.get("profiles") {
           None => None
-          Some(Null) => Some(Null)
+          Some(Null) => Some(JV::Null)
           Some(p) =>
             if strings_or_throw(p) {
               Some(p)
@@ -999,7 +999,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           let speed = self.speed_asked(i.get("speed"))
           let context = self.context_asked(i.get("context"), r.lang)
           let preset_copy = match i.get("presetCopy") {
-            None | Some(Null) => Null
+            None | Some(Null) => JV::Null
             Some(p) => self.backend.ask("sessions/presets.presetCopyInput", [p])
           }
           let opts = jobj(
@@ -1110,13 +1110,13 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           let mine = match
             (
               if nullish(hws) {
-                Null
+                JV::Null
               } else {
                 hws
               },
               match vws {
-                None => Null
-                Some(v) => if nullish(v) { Null } else { v }
+                None => JV::Null
+                Some(v) => if nullish(v) { JV::Null } else { v }
               },
             ) {
             (Null, Null) => true
@@ -1525,11 +1525,11 @@ async fn Admin::session_action(
       let pick = (name : String) => {
         match i.get(name) {
           None => None
-          Some(Null) => Some(Null)
+          Some(Null) => Some(JV::Null)
           Some(v) => Some(js(text_of(Some(v))))
         }
       }
-      let mut change = Obj([])
+      let mut change = JV::Obj([])
       if jhas(i, "runtime") {
         match i.get("runtime") {
           Some(Str(s)) if s != "" => change = jset(change, "runtime", js(s))
@@ -1602,7 +1602,7 @@ async fn Admin::session_action(
       // With the profile it runs on now (picked again: the one picked).
       let row = self.backend.ask("hub.store.getSession", [js(key)])
       let profile = if nullish(row) {
-        Null
+        JV::Null
       } else {
         match row.get("profile") {
           Some(p) if !nullish(p) => p

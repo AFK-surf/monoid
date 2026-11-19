@@ -167,7 +167,7 @@ fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) 
     // (the machine's own login: its credentials file, or the keychain's item, renewed where it ran out; read here only
     // where no accounts part answers, P5-2 alone)
     machine_token: rejected => pump.later("machine's Claude login", async fn() {
-      match ask("accounts.machineToken", { "rejected": jopt(rejected) }) {
+      match asked_machine_token(ask, rejected~) {
         Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
         Null => {
           let fields = @agent_runtimes.Fields::new()
@@ -184,7 +184,7 @@ fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) 
     }),
     // (a subscription profile's token: the accounts')
     subscription_token: Some(p => rejected => pump.later("profile's Claude login", async fn() {
-      let got = ask("accounts.claudeToken", { "profile": p52_json_of_jv(p), "rejected": jopt(rejected) })
+      let got = asked_subscription_token(ask, p52_json_of_jv(p), rejected~)
       match got {
         Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))
         _ => raise @agent_drivers.Failed("the profile's Claude sign-in is not there (no accounts part answered)")
@@ -195,9 +195,9 @@ fn p52_claude_logins(pump : Pump, host : @host.Host, ask : async (String, Json) 
     lent_token: Some(p => rejected => pump.later("borrowed Claude login", async fn() {
       let prof = p52_json_of_jv(p)
       let got = if p52_borrowed(prof) {
-        ask("sharing.lendClaude", { "profile": prof, "rejected": jopt(rejected) })
+        asked_lent_token(ask, prof, rejected~)
       } else {
-        ask("accounts.claudeToken", { "profile": prof, "rejected": jopt(rejected) })
+        asked_subscription_token(ask, prof, rejected~)
       }
       match got {
         Object(t) if t.get("token") is Some(String(tok)) => (tok, p52_expires_at(t))

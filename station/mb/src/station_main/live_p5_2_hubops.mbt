@@ -54,20 +54,20 @@ fn routes_thrown(e : Error) -> Error {
     @api_routes.Thrown(_, _) | @api_routes.Refused(_, _) => e
     // (regenerate-title.ts `TitleError`: what went wrong is its `problem`, the route's words chosen by it)
     @session_chats.Thrown("TitleError", m) =>
-      @api_routes.Thrown("TitleError", jv_of_json({ "message": Json::string(m), "problem": Json::string(m) }))
+      @api_routes.Thrown("TitleError", @jsjson.JV::of_json({ "message": Json::string(m), "problem": Json::string(m) }))
     @session_chats.Thrown(kind, m) =>
-      @api_routes.Thrown(if kind == "" { "Error" } else { kind }, jv_of_json({ "message": Json::string(m) }))
+      @api_routes.Thrown(if kind == "" { "Error" } else { kind }, @jsjson.JV::of_json({ "message": Json::string(m) }))
     @session_storage.Thrown(kind, said) =>
       @api_routes.Thrown(
         if kind == "" { "Error" } else { kind },
-        jv_of_json(
+        @jsjson.JV::of_json(
           match said {
             Object(_) => said
             _ => { "message": said }
           },
         ),
       )
-    other => @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(said_of(other)) }))
+    other => @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(said_of(other)) }))
   }
 }
 
@@ -85,7 +85,7 @@ async fn P52::called(self : P52, f : Json, args : Array[Json]) -> Json {
 /// preset-records.ts `starsOf`: a person's stars as a device or a station says them, checked; a RecordRefusal saying
 /// what is wrong.
 fn stars_of(raw : Json) -> Json raise {
-  let refuse = (m : String) => @api_routes.Thrown("RecordRefusal", jv_of_json({ "message": Json::string(m) }))
+  let refuse = (m : String) => @api_routes.Thrown("RecordRefusal", @jsjson.JV::of_json({ "message": Json::string(m) }))
   guard raw is Object(m) else { raise refuse("stars: an object of models' stars") }
   if m.length() > 200 {
     raise refuse("stars: 200 models at most")
@@ -545,12 +545,12 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           t => t
         }
         if thread is Null {
-          raise @api_routes.Thrown("Refused", jv_of_json({ "message": "this session has no chat to ask in" }))
+          raise @api_routes.Thrown("Refused", @jsjson.JV::of_json({ "message": "this session has no chat to ask in" }))
         }
         if jtext(jfield(thread, "thread"), "surface") != Some("chat") {
           raise @api_routes.Thrown(
             "Refused",
-            jv_of_json({
+            @jsjson.JV::of_json({
               "message": "the confirmations are cards in the still.fail app, which a Slack or Feishu thread does not show: drive the retirement from a still.fail chat of this workspace (chat_create opens one), or a person retires the station from its page in the app",
             }),
           )
@@ -773,7 +773,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       }
       "sessions/archive.workspaceFile" =>
         match self.files.workspace_file(arg_text(args, 0), arg_text(args, 1), Ref(0)) {
-          Some(b) => json_of_jv(@api_routes.jbytes(b))
+          Some(b) => @jsjson.JV::to_json(@api_routes.jbytes(b))
           None => Json::null()
         }
       "sessions/cc.cc" => {

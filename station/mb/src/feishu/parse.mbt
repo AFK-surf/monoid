@@ -405,7 +405,7 @@ pub fn message_of(event : JV?, bot : String) -> FeishuMessage? {
 ///|
 /// `{...v}` of any value: an object's own fields, an array's or a string's by index, nothing of anything else.
 fn spread_of(v : JV?) -> JV {
-  let o = Obj([])
+  let o = JV::Obj([])
   match v {
     Some(Obj(fields)) => for f in fields { jput(o, f.0, f.1) }
     Some(Arr(a)) => for i, x in a { jput(o, i.to_string(), x) }

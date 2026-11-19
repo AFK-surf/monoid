@@ -573,9 +573,9 @@ async fn P55::start_moves(self : P55) -> Unit {
   bus.parts.overview("move", async fn(_viewer, _lang) { { "offered": Json::boolean(self.move_on()) } })
   // (the card's choice, in the app: an owner or admin of the chat's workspace confirms it or declines)
   bus.parts.card_choice("move", {
-    may: (viewer, card, at) => asks.may(jv_of_json(viewer), jv_of_json(card), jv_of_json(at)),
+    may: (viewer, card, at) => asks.may(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), @jsjson.JV::of_json(at)),
     chosen: (viewer, card, option, at) => ignore(host.rt.fork(name="move card chosen", async fn() {
-      asks.chosen(jv_of_json(viewer), jv_of_json(card), option, jv_of_json(at)) catch {
+      asks.chosen(@jsjson.JV::of_json(viewer), @jsjson.JV::of_json(card), option, @jsjson.JV::of_json(at)) catch {
         e => self.warn("move", "the card's choice was not taken", e)
       }
     })),
@@ -585,11 +585,11 @@ async fn P55::start_moves(self : P55) -> Unit {
     [
       {
         name: "station_move",
-        declared: json_of_jv(asks.c.decl("station_move")),
+        declared: @jsjson.JV::to_json(asks.c.decl("station_move")),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, jv_of_json(args)) })))
+            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, @jsjson.JV::of_json(args)) })))
           })
         },
       },
@@ -766,7 +766,7 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
 /// answers them on coord_ask), its file of asks (`fs.*`) and a temporary name's bytes (`crypto.randomBytes`).
 fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
   let (zh, en) = catalogs_json()
-  let words = @api_routes.Words::new(jv_of_json(zh), jv_of_json(en))
+  let words = @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en))
   let s = (args : Array[@api_routes.JV], i : Int) => match args.get(i) { Some(Str(x)) => x; _ => "" }
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
     match op {
@@ -791,7 +791,7 @@ fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
         @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
       _ =>
         match self.ops.get(op) {
-          Some(f) => jv_of_json(f(Json::array(args.map(json_of_jv))))
+          Some(f) => @jsjson.JV::of_json(f(Json::array(args.map(@jsjson.JV::to_json))))
           None => raise BusError("no move part \{op}")
         }
     }
@@ -804,15 +804,15 @@ fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
 /// it asks so (`told`, its key), the step's end told to it; else answered with its outcome as before.
 async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer : String, ws : String, request : Json) -> Json {
   let args = match p55_jfield(request, "args") {
-    Object(_) as a => jv_of_json(a)
+    Object(_) as a => @jsjson.JV::of_json(a)
     _ => @api_routes.JV::Obj([])
   }
   match p55_jfield(request, "told") {
     String(key) if key.length() <= 300 =>
       to_core(moves.told.run(peer, key, async fn(_progress) {
-        Some(of_core(json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))))
+        Some(of_core(@jsjson.JV::to_json(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))))
       }))
-    _ => json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
+    _ => @jsjson.JV::to_json(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
   }
 }
 

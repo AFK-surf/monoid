@@ -219,16 +219,10 @@ async fn P55::start_updates(self : P55, rig? : Bool = false) -> Unit {
   // the agents' side told (what waited for it started, its processes on the new one).
   u.on_runtime_changed((kind, installed, replaced) => ignore(
     bus.host.rt.fork(name="runtime changed", async fn() {
-      ignore((bus.jobs_ask.val)("accounts.machineRefresh", Json::array([]))) catch {
+      bus.jobs_machine_refresh() catch {
         _ => ()
       }
-      ignore(
-        (bus.hub_ask.val)("runtimeChanged", {
-          "kind": Json::string(kind),
-          "installed": Json::boolean(installed),
-          "replaced": Json::boolean(replaced),
-        }),
-      ) catch {
+      bus.hub_runtime_changed(kind~, installed~, replaced~) catch {
         e => self.warn("updates", "the agents' side not told a runtime changed", e)
       }
     }),

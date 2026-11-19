@@ -202,7 +202,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for attempt in 0..<3 {
         let held = v("vaultSnapshot", [ws, id])
         let prev = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -261,7 +261,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return refuse(400, "vault_invalid", js_string(Some(why)))
         }
         let body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -360,7 +360,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for _ in 0..<3 {
         let held_vault = v("vaultSnapshot", [ws, next.get("vault").unwrap()])
         let vault = if nullish(held_vault) {
-          Null
+          JV::Null
         } else {
           match held_vault.get("value") {
             Some(p) if !nullish(p) => p
@@ -381,7 +381,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           next.get("id").unwrap(),
         ])
         let prev = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -432,7 +432,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return refuse(400, "vault_invalid", js_string(Some(why)))
         }
         let item_body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -518,7 +518,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
       for _ in 0..<3 {
         let held = v("boxSnapshot", [ws, cert.get("device").unwrap_or(jundef)])
         let had = if nullish(held) {
-          Null
+          JV::Null
         } else {
           match held.get("value") {
             Some(p) if !nullish(p) => p
@@ -541,7 +541,7 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           return ok(jobj([("box", had)]))
         }
         let box_body = if nullish(held) {
-          Null
+          JV::Null
         } else {
           held.get("body").unwrap_or(Null)
         }
@@ -772,7 +772,7 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
         jnumber(prev.get("version")).unwrap_or(@double.not_a_number) + 1.0
       }
       if next.get("version") != Some(jnum(follows)) {
-        let item = if prev is Null { Null } else { shown([prev]) }
+        let item = if prev is Null { JV::Null } else { shown([prev]) }
         return refuse(
           409,
           "vault_conflict",

@@ -101,37 +101,6 @@ fn p52_json_of_jv(v : @jsjson.JValue) -> Json {
 }
 
 ///|
-fn rv_of(j : Json) -> @api_routes.JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(a) => Arr(a.map(rv_of))
-    Object(m) => Obj(m.iter().map(kv => (kv.0, rv_of(kv.1))).to_array())
-  }
-}
-
-///|
-fn json_of_rv(v : @api_routes.JV) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(s)
-    Arr(a) => Json::array(a.map(json_of_rv))
-    Obj(f) => {
-      let m : Map[String, Json] = Map([])
-      for kv in f {
-        m[kv.0] = json_of_rv(kv.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 fn jfield(v : Json, k : String) -> Json {
   match v {
     Object(m) => m.get(k).unwrap_or(Json::null())

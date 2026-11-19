@@ -162,7 +162,7 @@ fn connection_of(
 
 ///|
 fn feishu_jv(j : @jsjson.JValue) -> @feishu.JV {
-  @feishu.JV::from_json(to_core(j))
+  @feishu.JV::of_json(to_core(j))
 }
 
 ///|
@@ -446,7 +446,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
     ])
   })
   self.op("feishu/web.domainOf", async fn(arg) {
-    Json::string(@feishu.domain_of(match core_items(arg).get(0) { Some(Null) | None => None; Some(v) => Some(@feishu.JV::from_json(v)) }))
+    Json::string(@feishu.domain_of(match core_items(arg).get(0) { Some(Null) | None => None; Some(v) => Some(@feishu.JV::of_json(v)) }))
   })
   self.op("feishu.registrations.start", async fn(arg) {
     let save = core_items(arg).get(0).unwrap_or(Json::null())
@@ -460,7 +460,7 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
       s(0).unwrap_or(""),
       s(1).unwrap_or(""),
       s(2),
-      context=@feishu.JV::from_json(a.get(3).unwrap_or(Json::null())),
+      context=@feishu.JV::of_json(a.get(3).unwrap_or(Json::null())),
       workspace=s(4),
     )
     to_core(of_feishu(reg.jv()))
@@ -520,7 +520,7 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
           let v = to_core((chat.call)("api", [of_core(Json::string(meth)), of_feishu(params)]))
           match p55_jstr(v, "file") {
             Some(h) => File(hex_bytes(h), p55_jtext(v, "name"), p55_jtext(v, "type"))
-            None => Data(@feishu.JV::from_json(v))
+            None => Data(@feishu.JV::of_json(v))
           }
         })
       None => None

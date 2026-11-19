@@ -31,9 +31,11 @@
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
   (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
   what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
-  `register_pids`). station/test/mb-station-contracts.test.ts holds every `Ref` of the bus given by a slice, and every
-  `parts.carry`, `plane.told` and `events.follow` hook of the TypeScript's given here; station/test/mb-live-hooks-parity.test.ts
-  holds them live.
+  `register_pids`). What is asked often across slices is a typed method of the bus (live_bus.mbt `hub_notify`,
+  `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
+  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
+  of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
+  TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
   A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
@@ -49,7 +51,9 @@
   - P5-2 (`live_p5_2_*.mbt`), the agents' side: the hub, its actors and their drivers in the sessions' program
     (`stillfail-reader --sessions`, with `#live` mounted: live_p5_2_main `mount_live`), the conversations and their
     storage's world (live_p5_2_world.mbt: the live view's locator, the machine's sessions, the peers), the tools of
-    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); the usage
+    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); a session's
+    cold storage, its packing and its room's measure each a process of its own (live_p5_2_cold.mbt: `--builder packed`,
+    `--builder footprint` backgrounded), never on the station's loop; the usage
     counter, its drain and the old statistics' retirement (live_p5_2_usage.mbt), the bug reports' part:
     station/test/mb-live-p5-2.test.ts.
   - P5-3 (`live_p5_3*.mbt`), the jobs and their services, other stations' tasks (`task.*`, `sync.*`, `file.*`,

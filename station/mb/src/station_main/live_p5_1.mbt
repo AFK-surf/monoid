@@ -179,7 +179,7 @@ pub async fn before_store_p5_1(host : @host.Host, data : String, db_path : Strin
   match (try { Ok(@replica.take_back(host, sep(), data, db_path, wall_ms().to_double())) } catch { e => Err(e) }) {
     Ok(Some(ready)) => {
       let text = (k : String) => match ready.get(k) {
-        Some(@jsjson.Str(s)) => Json::string(@jsjson.text(s))
+        Some(@jsjson.JValue::Str(s)) => Json::string(@jsjson.text(s))
         _ => Json::null()
       }
       p51_log("INFO", "copies", "a lost station's chats taken back", fields={ "station": text("origin"), "from": text("from") })

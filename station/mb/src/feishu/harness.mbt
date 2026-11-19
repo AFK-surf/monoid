@@ -521,7 +521,7 @@ fn client_case(c : JV) -> JV {
     let r = match text(jget(s, "call")) {
       "pass" => {
         world.wall = world.wall + num_of(jget(s, "ms")).to_int64()
-        Null
+        JV::Null
       }
       "tenantToken" => step_outcome(rt, async fn() { js(client.tenant_token()) })
       "api" =>
@@ -712,7 +712,7 @@ async fn surface_case(c : JV) -> JV {
     let r = match text(jget(s, "call")) {
       "advance" => {
         rt.advance(num_of(jget(s, "ms")).to_int())
-        Null
+        JV::Null
       }
       "take" =>
         step_outcome(rt, async fn() {
@@ -1079,7 +1079,7 @@ async fn registrations_case(c : JV) -> JV {
     let r = match text(jget(s, "call")) {
       "advance" => {
         rt.advance(num_of(jget(s, "ms")).to_int())
-        Null
+        JV::Null
       }
       "begin" =>
         step_outcome(rt, async fn() {
@@ -1212,7 +1212,7 @@ async fn tool_case(c : JV) -> JV {
     chat_api: connect => match jget(jget(o, "connected"), connect) {
       Some(Arr(list)) =>
         Some(async fn(meth, params) {
-          asked.push(Arr([js(connect), js(meth), params]))
+          asked.push(JV::Arr([js(connect), js(meth), params]))
           let n = used.get(connect).unwrap_or(0)
           used[connect] = n + 1
           let spec = list[@cmp.minimum(n, list.length() - 1)]
@@ -1266,7 +1266,7 @@ async fn tool_case(c : JV) -> JV {
       }),
     )
   }
-  let written = Obj([])
+  let written = JV::Obj([])
   for p, b in world.files {
     jput(written, p, js(hex_of(b)))
   }

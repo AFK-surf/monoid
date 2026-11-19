@@ -314,7 +314,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     }
   }
   let profiles = match raw.get("profiles") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(p) => p
   }
   guard profiles is Arr(profile_list) else {
@@ -435,7 +435,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
   }
   unique_ids("profile", profile_ids)
   let connects = match raw.get("connects") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(c) => c
   }
   guard connects is Arr(connect_list) else {

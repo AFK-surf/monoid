@@ -35,7 +35,7 @@ test "values as JSON.stringify writes them, keys in JavaScript's order" {
   let o = @api_routes.jobj([
     ("b", @api_routes.jint(1)),
     ("2", @api_routes.js("x")),
-    ("a", @api_routes.Null),
+    ("a", @api_routes.JV::Null),
     ("1", @api_routes.jbool(true)),
   ])
   assert_eq(
@@ -54,7 +54,7 @@ test "values as JSON.stringify writes them, keys in JavaScript's order" {
       Some(
         @api_routes.jarr([
           @api_routes.jint(1),
-          @api_routes.Null,
+          @api_routes.JV::Null,
           @api_routes.js("a"),
         ]),
       ),

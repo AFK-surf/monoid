@@ -227,7 +227,7 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
   }
   match disk_of(bus.data) {
     Some((left, _)) if left < p53_disk_low_bytes =>
-      ignore((bus.hub_ask.val)("relieveArchived", p53_obj([("lowBytes", p53_n(p53_disk_low_bytes))]))) catch {
+      bus.hub_relieve_archived(low_bytes=p53_disk_low_bytes) catch {
         e => p53_log("warn", "hub", "making room on the disk failed", fields=p53_obj([("error", p53_s(p53_words(e)))]))
       }
     _ => ()
@@ -426,7 +426,7 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
         },
         working: key => self.working(key),
         notify: async fn(session, text) {
-          ignore((bus.hub_ask.val)("notify", p53_obj([("session", p53_s(session)), ("text", p53_s(text))])))
+          bus.hub_notify(session~, text~)
         },
         warn: (message, detail) => p53_log("warn", "workspace-size", message, fields=p53_obj([("detail", p53_s(detail))])),
       }) catch {

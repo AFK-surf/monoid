@@ -210,7 +210,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       machine_email: None,
       claude_token: async fn(profile, rejected) {
         let accounts = self.accounts.made()
-        let got = p53_json(accounts.claude_token(p53_jv(profile), rejected, true))
+        let got = p53_json(accounts.claude_token(@jsjson.JV::of_json(profile), rejected, true))
         (p53_text(got, "token"), p53_num(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {

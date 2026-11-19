@@ -9,11 +9,25 @@ pub struct Files {
   held : Map[String, Array[@effect.Deferred[Unit]]]
   /// The path separator (`/`, or `\` on Windows).
   sep : String
+  /// Where the packing is asked (an ask `{op, …}` answered as `@packed.answer` would, its refusal raised): a process
+  /// of its own where the station runs it (sessions/packed-mb.ts), so none of the bytes are on the station's thread;
+  /// None, this program's own `@packed.answer` (a harness, a builder).
+  priv packed_by : (async (Json) -> Json)?
+  /// Where a directory's size is measured (`@footprint.answer`'s ask, answered as it answers): a backgrounded process
+  /// of its own where the station runs it (sessions/footprint.ts); None, this program's own.
+  priv footprint_by : (async (String) -> Json)?
 }
 
 ///|
-pub fn Files::new(host : @host.Host, sep? : String = "/") -> Files {
-  { host, held: {}, sep }
+/// `packed` and `footprint`: what asks the packing and a directory's measure of another process (a station's, which
+/// must not walk or pack on its own thread); left out, this program does both itself.
+pub fn Files::new(
+  host : @host.Host,
+  sep? : String = "/",
+  packed? : async (Json) -> Json,
+  footprint? : async (String) -> Json,
+) -> Files {
+  { host, held: {}, sep, packed_by: packed, footprint_by: footprint }
 }
 
 ///|
@@ -327,7 +341,10 @@ pub async fn Files::link(self : Files, target : String, path : String) -> String
 /// What `packedProgram().ask(op, args)` answers: station/packed's, in this program.
 pub async fn Files::packed(self : Files, op : String, args : Array[(String, Json)]) -> Json {
   args.push(("op", js(op)))
-  @packed.answer(self.host, jo(args))
+  match self.packed_by {
+    Some(ask) => ask(jo(args))
+    None => @packed.answer(self.host, jo(args))
+  }
 }
 
 ///|

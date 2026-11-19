@@ -468,7 +468,7 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
         None => p53_b(false)
       }
     "node.notify" => {
-      ignore((bus.hub_ask.val)("notify", p53_obj([("session", a(0)), ("text", a(1))]))) catch { _ => () }
+      bus.hub_notify(session=s(0), text=s(1)) catch { _ => () }
       Json::null()
     }
     "node.cloudState" => p53_cloud(bus)
@@ -726,7 +726,7 @@ async fn P53Remote::relieve(self : P53Remote, now : Double, below : Double) -> U
 /// MEASURE_UP_TO; past `limit` a lower bound, not walked further.
 async fn p53_workspace_size(bus : LiveBus, path : String, limit : Double) -> @jobs_host.WorkspaceSize {
   // (a builder nobody waits on: yields the machine, its disk too, to the foreground; mb-reader.ts BACKGROUND_BUILDERS)
-  let (program, args) = p53_backgrounded(p53_program(bus), ["--builder", "footprint", "--sep", sep()])
+  let (program, args) = backgrounded(p53_program(bus), ["--builder", "footprint", "--sep", sep()])
   let proc = spawn(bus.host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
     SysError(why) => raise P53Error(why)
   }
@@ -770,7 +770,7 @@ async fn p53_tree_bytes(bus : LiveBus, path : String) -> Double {
 /// `p53_tree_bytes` by the program at `reader`.
 async fn p53_tree_bytes_by(host : @host.Host, reader : String, path : String) -> Double {
   // (a builder nobody waits on: yields the machine, its disk too, to the foreground; mb-reader.ts BACKGROUND_BUILDERS)
-  let (program, args) = p53_backgrounded(reader, ["--builder", "footprint", "--sep", sep()])
+  let (program, args) = backgrounded(reader, ["--builder", "footprint", "--sep", sep()])
   let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
     _ => return 0.0
   }
@@ -927,21 +927,6 @@ fn p53_unhex(h : String) -> Bytes {
   let digit = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() { c - '0'.to_int() } else if c >= 'a'.to_int() && c <= 'f'.to_int() { c - 'a'.to_int() + 10 } else if c >= 'A'.to_int() && c <= 'F'.to_int() { c - 'A'.to_int() + 10 } else { 0 }
   let n = h.length() / 2
   Bytes::makei(n, i => (digit(h.unsafe_charcode_at(2 * i)) * 16 + digit(h.unsafe_charcode_at(2 * i + 1))).to_byte())
-}
-
-///|
-/// A program started as the station's background work (platform `backgrounded`: macOS's `taskpolicy -b`, Linux's
-/// `ionice` and `nice`), by what this machine has.
-fn p53_backgrounded(program : String, args : Array[String]) -> (String, Array[String]) {
-  if is_windows() {
-    return (program, args)
-  }
-  let how = @ops_platform.background_found(
-    platform() == "darwin",
-    p => (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok({ file: true, .. }),
-    p => attempt(() => @drive.realpath(p)).to_option(),
-  )
-  @ops_platform.backgrounded_on(how, program, args)
 }
 
 ///|

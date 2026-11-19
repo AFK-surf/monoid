@@ -10,37 +10,6 @@
 // viewer, lang}`) and answers JSON: `{status, headers?, body?}` where it says its status, else its value whole (200).
 
 ///|
-fn jv_of_json(j : Json) -> @api_routes.JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(a) => Arr(a.map(jv_of_json))
-    Object(m) => Obj(m.to_array().map(kv => (kv.0, jv_of_json(kv.1))))
-  }
-}
-
-///|
-fn json_of_jv(v : @api_routes.JV) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(s)
-    Arr(a) => Json::array(a.map(json_of_jv))
-    Obj(fields) => {
-      let m : Map[String, Json] = {}
-      for f in fields {
-        m[f.0] = json_of_jv(f.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 priv struct AdminLive {
   admin : @api_routes.Admin
   /// What the routes hold by reference (a hash being made).
@@ -84,8 +53,8 @@ fn p51_file_piece(host : @host.Host, file : String, from : Double, length : Int)
   }
   match host.shell_sync("fs.bytes", { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }) {
     String(hex) => @cloud_lock.hex_bytes(hex)
-    { "error": String(e), .. } => raise @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(e) }))
-    _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
+    { "error": String(e), .. } => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(e) }))
+    _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
   }
 }
 
@@ -123,12 +92,12 @@ fn p51_mime(p : String) -> String {
 ///|
 /// Whether a viewer manages the station, and whether one only reads (api_routes' `manages_station`, `read_only`).
 fn p51_manages(viewer : Json) -> Bool {
-  @api_routes.manages_station(jv_of_json(viewer))
+  @api_routes.manages_station(@jsjson.JV::of_json(viewer))
 }
 
 ///|
 fn p51_read_only(viewer : Json) -> Bool {
-  @api_routes.read_only(jv_of_json(viewer))
+  @api_routes.read_only(@jsjson.JV::of_json(viewer))
 }
 
 ///|
@@ -136,7 +105,7 @@ fn p51_read_only(viewer : Json) -> Bool {
 fn p51_fs_thrown(e : Error) -> Error {
   match e {
     @drive.FsError(f) =>
-      @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(f.message), "code": Json::string(f.code) }))
+      @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(f.message), "code": Json::string(f.code) }))
     other => other
   }
 }
@@ -154,7 +123,7 @@ fn p51_errno_thrown(n : Int, call : String, p : String) -> Error {
     28 => ("ENOSPC", "no space left on device")
     _ => ("EIO", "i/o error")
   }
-  @api_routes.Thrown("Error", jv_of_json({ "message": Json::string("\{code}: \{words}, \{call} '\{p}'"), "code": Json::string(code) }))
+  @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{code}: \{words}, \{call} '\{p}'"), "code": Json::string(code) }))
 }
 
 ///|
@@ -171,7 +140,7 @@ fn P51::restart_pid(self : P51) -> Int? {
 /// The station's parts as the routes ask them (api_routes `Backend`).
 async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> @api_routes.JV {
   let bus = self.bus
-  let arg = (i : Int) => json_of_jv(args.get(i).unwrap_or(Null))
+  let arg = (i : Int) => @jsjson.JV::to_json(args.get(i).unwrap_or(Null))
   let text = (i : Int) => match args.get(i) {
     Some(Str(s)) => s
     _ => ""
@@ -182,7 +151,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
       None => (name, "")
     }
-    guard a.handles.get(handle) is Some(buf) else { raise @api_routes.Thrown("Error", jv_of_json({ "message": "no handle \{handle}" })) }
+    guard a.handles.get(handle) is Some(buf) else { raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no handle \{handle}" })) }
     match call {
       "update" => {
         match @api_routes.bytes_of(args.get(0).unwrap_or(Null)) {
@@ -196,7 +165,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         let digest = @cloud_lock.sha256(buf.to_bytes())
         return if text(0) == "hex" { Str(@cloud_lock.hex_of(digest)) } else { @api_routes.jbytes(digest) }
       }
-      _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "no call \{call} of a hash" }))
+      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a hash" }))
     }
   }
   // A file the routes opened (`fs.open`): its size, a piece of it, let go.
@@ -206,7 +175,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       None => (name, "")
     }
     guard a.files.get(handle) is Some(file) else {
-      raise @api_routes.Thrown("Error", jv_of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
+      raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
     }
     match call {
       "stat" => return self.backend(a, "fs.stat", [Str(file)])
@@ -226,13 +195,13 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         out.write_bytesview(buffer[0:at])
         out.write_bytesview(got[0:n])
         out.write_bytesview(buffer[at + n:])
-        return jv_of_json({ "bytesRead": Json::number(n.to_double()), "buffer": json_of_jv(@api_routes.jbytes(out.to_bytes())) })
+        return @jsjson.JV::of_json({ "bytesRead": Json::number(n.to_double()), "buffer": @jsjson.JV::to_json(@api_routes.jbytes(out.to_bytes())) })
       }
       "close" => {
         a.files.remove(handle)
         return Null
       }
-      _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "no call \{call} of a file" }))
+      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a file" }))
     }
   }
   // A part's card choice (`parts.cardChoiceOf`'s): whether a member may choose on it, and what is done once they did.
@@ -242,7 +211,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       None => (name[5:].to_owned(), "")
     }
     guard bus.parts.card_choice_named(handle) is Some(choice) else {
-      raise @api_routes.Thrown("Error", jv_of_json({ "message": "no card choice \{handle}" }))
+      raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no card choice \{handle}" }))
     }
     match call {
       "may" =>
@@ -254,7 +223,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         (choice.chosen)(arg(0), arg(1), text(2), arg(3))
         return Null
       }
-      _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "no call \{call} of a card choice" }))
+      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a card choice" }))
     }
   }
   // The page's restart, asked first (`restart`) and then told (`restart.go`) once its answer is on its way.
@@ -284,7 +253,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => false
       }
       let got = readers.read_bytes(text(0), arg(1), text(2), background~) catch {
-        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", jv_of_json({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
+        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", @jsjson.JV::of_json({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
         e => raise e
       }
       @api_routes.jbytes(got)
@@ -318,23 +287,23 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
     "os.cpus" =>
       match machine() {
-        { "cpus": Array(c), .. } => jv_of_json(Json::array(c))
+        { "cpus": Array(c), .. } => @jsjson.JV::of_json(Json::array(c))
         _ => Arr([])
       }
-    "config.raw" => jv_of_json((bus.config_raw.val)())
+    "config.raw" => @jsjson.JV::of_json((bus.config_raw.val)())
     "config.updateSoon" => {
       let next = arg(0)
       ignore((bus.config_update.val)(_ => next))
       Null
     }
-    "host.sample" => jv_of_json((bus.host_sample.val)())
-    "cloud.memberships" => jv_of_json((bus.cloud_call.val)("memberships", Json::null()))
+    "host.sample" => @jsjson.JV::of_json((bus.host_sample.val)())
+    "cloud.memberships" => @jsjson.JV::of_json((bus.cloud_call.val)("memberships", Json::null()))
     "cloud.reload" => {
       ignore((bus.cloud_call.val)("reload", Json::null()))
       Null
     }
     "events.open" => {
-      guard self.events is Some(events) else { raise @api_routes.Thrown("HttpError", jv_of_json({ "message": "events not ready", "status": 503 })) }
+      guard self.events is Some(events) else { raise @api_routes.Thrown("HttpError", @jsjson.JV::of_json({ "message": "events not ready", "status": 503 })) }
       let live = match arg(3) {
         Array(items) =>
           items.filter_map(i => match i {
@@ -382,7 +351,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       for kv in headers {
         h[kv.0] = Json::string(kv.1)
       }
-      jv_of_json({ "status": 200, "headers": Json::object(h), "body": { "$stream": Json::number(sid.to_double()) } })
+      @jsjson.JV::of_json({ "status": 200, "headers": Json::object(h), "body": { "$stream": Json::number(sid.to_double()) } })
     }
     "events.overviewChanged" => {
       (bus.overview_changed.val)()
@@ -454,14 +423,14 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           } else {
             st
           }
-          jv_of_json({
+          @jsjson.JV::of_json({
             "size": Json::number(st.size),
             "mtimeMs": Json::number(st.mtime_ms),
             "file": Json::boolean(st.kind == "file"),
             "dir": Json::boolean(st.kind == "dir" || st.kind == "directory"),
           })
         }
-        _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
+        _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
       }
     }
     "fs.readFile" => @api_routes.jbytes(@drive.read_all(text(0)) catch { e => raise p51_fs_thrown(e) })
@@ -501,7 +470,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       let names = @drive.names(dir) catch { e => raise p51_fs_thrown(e) }
       if arg(1) is { "withFileTypes": True, .. } {
         // (a Dirent as the routes take it, `{name, file, dir}`: a link is neither, as Node's isFile and isDirectory)
-        jv_of_json(
+        @jsjson.JV::of_json(
           Json::array(
             names.map(n => {
               let st = attempt(() => @drive.lstat(path([dir, n])))
@@ -553,14 +522,14 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     "fs.statfs" =>
       match disk_of(text(0)) {
         Some((free, total)) =>
-          jv_of_json({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })
+          @jsjson.JV::of_json({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })
         None => raise p51_errno_thrown(2, "statfs", text(0))
       }
     "fs.open" => {
       let p = text(0)
       match (try { Ok(self.fs.lstat(p)) } catch { e => Err(e) }) {
         Ok(Some(_)) => ()
-        _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "ENOENT: no such file or directory, open '\{p}'", "code": "ENOENT" }))
+        _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{p}'", "code": "ENOENT" }))
       }
       a.next_handle += 1
       let handle = "fh:\{a.next_handle}"
@@ -571,7 +540,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       // (a handle `fs.open` gave, where to start, how much): the bytes there, fewer at the file's end
       let handle = @api_routes.ref_of(args.get(0).unwrap_or(Null)).unwrap_or("")
       guard a.files.get(handle) is Some(file) else {
-        raise @api_routes.Thrown("Error", jv_of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
+        raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
       }
       let num = (i : Int) => match args.get(i) {
         Some(Num(n)) => n
@@ -581,20 +550,20 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     }
     // (lock.ts `admit` of the lock in force where `state` says, `vault.lock`'s: the device and role it admits)
     "cloud/lock.admit" => {
-      guard self.plane is Some(plane) else { raise @api_routes.Thrown("Error", jv_of_json({ "message": "no control plane" })) }
+      guard self.plane is Some(plane) else { raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no control plane" })) }
       let ws = match arg(0) {
         { "ws": String(w), .. } if Some(w) != plane.cloud.home() => Some(w)
         _ => None
       }
       guard plane.cloud.locked(ws~) is Some({ state: Some(st), .. }) else {
-        raise @api_routes.Thrown("Error", jv_of_json({ "message": "this workspace keeps no lock" }))
+        raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "this workspace keeps no lock" }))
       }
       let now = match args.get(2) {
         Some(Num(n)) => n
         _ => wall_ms().to_double() / 1000.0
       }
       let (device, role) = @cloud_lock.admit(plane.crypto, st, who_of(arg(1)), now) catch {
-        e => raise @api_routes.Thrown("Error", jv_of_json({ "message": Json::string("\{e}") }))
+        e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
       }
       let d : Map[String, Json] = { "id": Json::string(device.id), "sub": Json::string(device.sub), "kind": Json::string(device.kind) }
       match device.by {
@@ -605,7 +574,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Some(k) => d["sign_key"] = Json::string(k)
         None => ()
       }
-      jv_of_json({ "device": Json::object(d), "role": Json::string(role) })
+      @jsjson.JV::of_json({ "device": Json::object(d), "role": Json::string(role) })
     }
     "read/sessions.mime" => Str(p51_mime(text(0)))
     "cli.joinWorkspace" => {
@@ -618,10 +587,10 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => None
       }
       let joined = join_workspace(self.host, text(0), text(1), lock, bus.version, home_locked) catch {
-        JoinRefused(kind, m) => raise @api_routes.Thrown(kind, jv_of_json({ "message": Json::string(m) }))
-        e => raise @api_routes.Thrown("Error", jv_of_json({ "message": Json::string("\{e}") }))
+        JoinRefused(kind, m) => raise @api_routes.Thrown(kind, @jsjson.JV::of_json({ "message": Json::string(m) }))
+        e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
       }
-      jv_of_json(joined)
+      @jsjson.JV::of_json(joined)
     }
     "fs.mkdir" => {
       ignore(attempt(() => @drive.mkdir(text(0), true)))
@@ -665,9 +634,9 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           Some(b)
         }
       }
-      jv_of_json({ "$stream": Json::number(sid.to_double()) })
+      @jsjson.JV::of_json({ "$stream": Json::number(sid.to_double()) })
     }
-    "agents.overview" => jv_of_json(self.overview(arg(0), text(1)))
+    "agents.overview" => @jsjson.JV::of_json(self.overview(arg(0), text(1)))
     "parts.mayView" =>
       match arg(0) {
         { "method": String(m), "path": String(p), .. } => Bool(bus.parts.may_view(m, p))
@@ -685,21 +654,21 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Some(_) => @api_routes.jref("restart.go")
         None => Null
       }
-    "store.getSession" => jv_of_json(bus.store.get_session(text(0)))
-    "hub.store.getSession" => jv_of_json(bus.store.get_session(text(0)))
+    "store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
+    "hub.store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
     "store.sessionWs" =>
       match bus.store.session_ws(text(0)) {
         Null => @api_routes.jundef
-        ws => jv_of_json(ws)
+        ws => @jsjson.JV::of_json(ws)
       }
-    "store.getJob" => jv_of_json(bus.store.get_job(arg(0)))
-    "store.handedTo" => jv_of_json(bus.store.handed_to(text(0)))
-    "store.homeChat" => jv_of_json(bus.store.home_chat(arg(0)))
+    "store.getJob" => @jsjson.JV::of_json(bus.store.get_job(arg(0)))
+    "store.handedTo" => @jsjson.JV::of_json(bus.store.handed_to(text(0)))
+    "store.homeChat" => @jsjson.JV::of_json(bus.store.home_chat(arg(0)))
     "store.threadSessions" => {
       let rows = bus.db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [arg(0)])
       Arr(
         rows.map(r => {
-          jv_of_json({
+          @jsjson.JV::of_json({
             "thread": r.get("thread").unwrap_or(Json::null()),
             "session": r.get("session").unwrap_or(Json::null()),
             "connect": r.get("connect").unwrap_or(Json::null()),
@@ -716,12 +685,12 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       Null
     }
-    "hub.store.binding" => jv_of_json(bus.store.binding(arg(0)))
+    "hub.store.binding" => @jsjson.JV::of_json(bus.store.binding(arg(0)))
     "store.getThread" =>
       match bus.db.all("SELECT * FROM threads WHERE id = ?", [arg(0)]) {
         [r, ..] => {
           let c = (k : String) => r.get(k).unwrap_or(Json::null())
-          jv_of_json({
+          @jsjson.JV::of_json({
             "id": c("id"),
             "surface": c("surface"),
             "channel": c("channel"),
@@ -755,8 +724,8 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => ()
       }
       match @events.runtime_view(jv(arg(0)), Some(jv(arg(1))), supported) {
-        Omit => jv_of_json({ "$omit": true })
-        Value(Some(v)) => jv_of_json(of_jv(v))
+        Omit => @jsjson.JV::of_json({ "$omit": true })
+        Value(Some(v)) => @jsjson.JV::of_json(of_jv(v))
         Value(None) => @api_routes.jundef
       }
     }
@@ -765,14 +734,14 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         { "tools": { "access": String(a), .. }, .. } if a == "off" || a == "read" || a == "full" => Str(a)
         _ => Str("off")
       }
-    "mesh/settings.networkView" => jv_of_json(@mesh_runtime.network_view(Some(arg(0))))
+    "mesh/settings.networkView" => @jsjson.JV::of_json(@mesh_runtime.network_view(Some(arg(0))))
     "read/machine.roots" => {
       let home = env_get("HOME").unwrap_or(".")
       let codex = match env_get("CODEX_HOME") {
         Some(c) if c != "" => c
         _ => path([home, ".codex"])
       }
-      jv_of_json({ "claude": Json::string(path([home, ".claude", "projects"])), "codex": Json::string(path([codex, "sessions"])) })
+      @jsjson.JV::of_json({ "claude": Json::string(path([home, ".claude", "projects"])), "codex": Json::string(path([codex, "sessions"])) })
     }
     // (std::io::Error as anyhow shows it: read/sessions.ts `ioMessage`)
     "read/sessions.ioMessage" =>
@@ -786,7 +755,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
     _ => {
       // Another slice's: asked through the bus with the arguments as JSON; what it refuses thrown as its kind.
-      let asked = Json::array(args.map(json_of_jv))
+      let asked = Json::array(args.map(@jsjson.JV::to_json))
       let ask = match slice_of(name) {
         "jobs" => bus.jobs_ask.val
         "ui" => bus.ui_ask.val
@@ -794,15 +763,15 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => bus.hub_ask.val
       }
       match (try { Ok(ask(name, asked)) } catch { e => Err(e) }) {
-        Ok(v) => jv_of_json(v)
+        Ok(v) => @jsjson.JV::of_json(v)
         Err(@api_routes.Thrown(_, _) as t) => raise t
         // (P5-4's refusals carry their kind and what the route reads of them: a drive's code, a vault's need)
-        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, jv_of_json(said))
+        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, @jsjson.JV::of_json(said))
         // (a file system's refusal keeps its code: ENOENT, EEXIST, what `ioMessage` and an exclusive write read)
         Err(@session_chats.Thrown(code, m)) =>
           raise @api_routes.Thrown(
             "Error",
-            jv_of_json(
+            @jsjson.JV::of_json(
               if code == "" {
                 { "message": Json::string(m) }
               } else {
@@ -811,7 +780,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
             ),
           )
         Err(@drive.FsError(_) as e) => raise p51_fs_thrown(e)
-        Err(e) => raise @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(said_of(e)) }))
+        Err(e) => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(said_of(e)) }))
       }
     }
   }
@@ -1019,18 +988,18 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     ),
     disk_room: (p, k) => match disk_of(p) {
       Some((free, total)) => k(jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
-      None => k(@jsjson.Null)
+      None => k(@jsjson.JValue::Null)
     },
     store_now: () => wall_ms().to_double(),
     binding: id => match (try { Ok(store.binding(Json::string(id))) } catch { e => Err(e) }) {
       Ok(b) => jv(b)
-      Err(_) => @jsjson.Null
+      Err(_) => @jsjson.JValue::Null
     },
     connect_kind: kind => if kinds.contains(kind) {
       Some({
         shown: c => match of_jv(c) {
           { "id": String(id), .. } => jv(shown.get(id).unwrap_or(Json::object({})))
-          _ => @jsjson.Obj([])
+          _ => @jsjson.JValue::Obj([])
         },
         connection: c => match of_jv(c) {
           { "id": String(id), .. } => states.get(id).map(jv)
@@ -1165,7 +1134,7 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     }
   }
   let setup = @api_routes.Setup::new(
-    @api_routes.Words::new(jv_of_json(zh), jv_of_json(en)),
+    @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
     bus.version,
     @events.runtime_kinds,
     env_get("STILLFAIL_DEV") == Some("1"),
@@ -1205,7 +1174,7 @@ async fn P51::admin_live(self : P51) -> AdminLive {
       { "id": Number(n, ..), .. } => (n.to_int(), [])
       _ => raise BusError("$admin.called names no callback")
     }
-    (json_of_jv(a.admin.called(id, args.map(jv_of_json))), None)
+    (@jsjson.JV::to_json(a.admin.called(id, args.map(@jsjson.JV::of_json))), None)
   })
   // What a hand-over carries of the messages written under a key (move/live.ts `keptSends`, `keepSends`): those of the
   // threads `{"threads": [[here, there], …]}` here, each under its thread's id there, and those another station kept,
@@ -1317,7 +1286,7 @@ async fn P51::admin_answer(self : P51, a : AdminLive, r : @api_routes.Request) -
         }
       },
       "rawBody": Json::string(body_text),
-      "viewer": json_of_jv(r.viewer),
+      "viewer": @jsjson.JV::to_json(r.viewer),
       "lang": Json::string(r.lang),
     }
     let said = (route.answer)(asked) catch {
@@ -1383,7 +1352,7 @@ async fn P51::local_admin(self : P51, a : AdminLive, r : Request, conn : Json) -
     r.query().map(q => "?" + q),
     r.headers,
     r.body,
-    jv_of_json(viewer),
+    @jsjson.JV::of_json(viewer),
     lang,
   )
   let answer = self.admin_answer(a, req)

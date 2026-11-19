@@ -94,7 +94,7 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
             Some(f) => ignore(f([]))
             None => ()
           }
-          ignore((bus.hub_ask.val)("cardOutcomes.save", Json::array([arg(0)])))
+          bus.hub_card_outcomes_save(arg(0))
           @rigs_mode.undefined_json()
         }
         "store.withdrawCard" => {

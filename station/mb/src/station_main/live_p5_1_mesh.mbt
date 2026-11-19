@@ -1306,7 +1306,7 @@ async fn P51::member_admin(self : P51, ask : @gate.AdminAsk) -> @door.Answer {
     if ask.search == "" { None } else { Some(ask.search) },
     ask.headers,
     ask.body,
-    jv_of_json(ask.viewer.to_json()),
+    @jsjson.JV::of_json(ask.viewer.to_json()),
     ask.lang,
     signal~,
   )

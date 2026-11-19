@@ -614,6 +614,50 @@ test("the conversations' own parts: a title asked of a runtime session of their 
   assert.equal(await a.ended, 0, a.err());
 });
 
+test("an archived session put in cold storage off the station's thread, and its workspace back whole once unarchived", { skip }, async () => {
+  const data = fresh("c");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-cold", "claude", "t0", "1790000000.000001");
+    const room = join(data, "sessions", "chat", "c-cold");
+    const workspace = join(room, "workspace");
+    writeFileSync(join(workspace, "keep.txt"), "kept\n");
+    mkdirSync(join(workspace, "node_modules", "x"), { recursive: true });
+    writeFileSync(join(workspace, "node_modules", "x", "index.js"), "module.exports = 1;\n");
+
+    // Archived: its room marked cold, what can be made again removed, the workspace packed (cold.ts `pack`, by the
+    // packing and measuring programs of their own: `--builder packed`, `--builder footprint`).
+    const archived = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "POST", {});
+    assert.equal(archived.status, 200, `${JSON.stringify(archived.json)}\n${a.err()}`);
+    await until("the room put in cold storage", () => existsSync(join(room, "cold")) && existsSync(join(room, "workspace.tar.zst")), () => a.err());
+    assert.equal(existsSync(join(workspace, "keep.txt")), false, "the workspace is in its archive");
+    assert.equal(existsSync(join(workspace, "node_modules")), false);
+
+    // Unarchived: the workspace written back from its archive (cold.ts `restore`), what was rebuildable not in it.
+    const back = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "DELETE");
+    assert.equal(back.status, 200, `${JSON.stringify(back.json)}\n${a.err()}`);
+    await until("the workspace restored", () => existsSync(join(workspace, "keep.txt")) && !existsSync(join(room, "workspace.tar.zst")), () => a.err());
+    assert.equal(readFileSync(join(workspace, "keep.txt"), "utf8"), "kept\n");
+    assert.equal(existsSync(join(workspace, "node_modules")), false);
+    assert.doesNotMatch(a.err(), /an archived session's files not put away/);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
 test("the relays tool with no mesh up: the mesh's relays listed as none, enrolling and revoking one refused", { skip }, async () => {
   const data = fresh("r");
   const app = fresh("a");

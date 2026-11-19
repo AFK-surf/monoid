@@ -128,7 +128,7 @@ pub fn seen_patch(c : FeishuConnect, i : BotIdentity) -> ((JV) -> Unit)? {
       // (an array is an object to JavaScript: what is set on it is kept by nothing written)
       Some(Arr(_)) => Obj([])
       _ => {
-        let f = Obj([])
+        let f = JV::Obj([])
         jput(entry, "feishu", f)
         f
       }

@@ -69,7 +69,7 @@ fn base_name(p : String) -> String {
 /// A refusal in the asker's words.
 fn Admin::drive_refused(self : Admin, e : Error, lang : String) -> Answer {
   let (code, message, said) = match e {
-    DriveErr(code, message) => (code, message, Obj([]))
+    DriveErr(code, message) => (code, message, JV::Obj([]))
     Thrown("DriveError", said) =>
       (js_string(said.get("code")), message_of(e), said)
     _ => ("io", message_of(e), Obj([]))
@@ -291,7 +291,7 @@ fn Admin::drive_routes(self : Admin) -> Array[Route] {
             jset(was, "roots", jarr(roots))
           } else {
             let workspaces = match was.get("workspaces") {
-              None | Some(Null) => Obj([])
+              None | Some(Null) => JV::Obj([])
               v => spread_of(v)
             }
             jset(
@@ -559,7 +559,7 @@ fn conflicts_of(v : JV?) -> JV raise DriveErr {
   match v {
     None | Some(Null) => Obj([])
     Some(Obj(fields)) => {
-      let mut out = Obj([])
+      let mut out = JV::Obj([])
       for f in fields {
         match f.1 {
           Str("replace" | "keep" | "skip") => out = jset(out, f.0, f.1)

@@ -120,7 +120,7 @@ pub async fn read_kimi(io : Io, home : String) -> KimiLogin? {
 ///|
 /// JSON.stringify(v, null, 2).
 pub fn stringify_pretty(v : JV) -> String {
-  @jsjson.stringify_indent(to_js(v), 2)
+  @jsjson.stringify_indent(JV::to_js(v), 2)
 }
 
 ///|

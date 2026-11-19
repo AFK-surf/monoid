@@ -132,6 +132,7 @@ pub struct Files {
   host : @host.Host
   held : Map[String, Array[@effect.Deferred[Unit]]]
   sep : String
+  // private fields
 }
 pub fn Files::agent_home_paths(Self, String) -> (String, String)
 pub async fn Files::agent_homes(Self, String) -> Array[String]
@@ -155,7 +156,7 @@ pub async fn Files::lock(Self, String) -> (() -> Unit)
 pub async fn Files::lstat(Self, String) -> LStat?
 pub async fn Files::mkdir(Self, String) -> Unit
 pub async fn Files::mkdirs(Self, String) -> Unit
-pub fn Files::new(@host.Host, sep? : String) -> Self
+pub fn Files::new(@host.Host, sep? : String, packed? : async (@json.Json) -> @json.Json, footprint? : async (String) -> @json.Json) -> Self
 pub async fn Files::pack_file(Self, String) -> Unit
 pub async fn Files::pack_file_if(Self, String, async () -> Bool) -> Unit
 pub async fn Files::pack_workspace(Self, String) -> Unit
