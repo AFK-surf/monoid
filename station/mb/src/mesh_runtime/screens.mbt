@@ -25,6 +25,10 @@ pub let kind_audio_config : Int = 5
 pub let kind_audio : Int = 6
 
 ///|
+/// The pointer in a few bytes (`cursor_payload`), to a client that asked `binaryCursor`.
+pub let kind_cursor : Int = 7
+
+///|
 pub let kind_input : Int = 16
 
 ///|
@@ -82,6 +86,34 @@ pub fn frame(kind : Int, payload : Bytes) -> Bytes {
   b.write_byte(kind.to_byte())
   b.write_uint_be(payload.length().reinterpret_as_uint())
   b.write_bytes(payload)
+  b.to_bytes()
+}
+
+///|
+/// The most of a pointer's shape a `cursor` frame carries (its UTF-8): a longer one goes without it.
+pub let cursor_shape_max : Int = 64
+
+///|
+/// A `cursor` frame's payload (`cursorPayload`): none for no pointer (null); else x and y (0..1, each in 16 bits,
+/// big-endian, of 65535) and the shape's UTF-8.
+pub fn cursor_payload(cursor : Json) -> Bytes {
+  if cursor is Null {
+    return b""
+  }
+  let shape = match field(cursor, "shape") {
+    Some(String(t)) => @utf8.encode(t)
+    _ => b""
+  }
+  let q = (k : String) => js_round(unit(finite(field(cursor, k)).unwrap_or(0.0)) * 65535.0).to_int()
+  let (x, y) = (q("x"), q("y"))
+  let b = @buffer.Buffer(size_hint=4 + shape.length())
+  b.write_byte((x >> 8).to_byte())
+  b.write_byte((x & 255).to_byte())
+  b.write_byte((y >> 8).to_byte())
+  b.write_byte((y & 255).to_byte())
+  if shape.length() <= cursor_shape_max {
+    b.write_bytes(shape)
+  }
   b.to_bytes()
 }
 
@@ -675,6 +707,9 @@ pub fn asked(screen : Json) -> Json {
   }
   if m.get("taken") is Some(True) {
     out.push(("taken", Json::boolean(true)))
+  }
+  if m.get("binaryCursor") is Some(True) && !peek {
+    out.push(("binaryCursor", Json::boolean(true)))
   }
   jobj(out)
 }

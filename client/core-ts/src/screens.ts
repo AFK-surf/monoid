@@ -56,7 +56,8 @@ const PASSKEY_CLIENT_MAX = 49_152;
 export type ScreenCall =
   /// `ask.control` as asked; `auto` (none asked): control unless someone else drives it as it opens.
   /// `sound`: its sound on as it opens (false: muted on the page, as `screen.sound` says it).
-  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean }
+  /// `cursorUpdates`: the page takes the pointer as `{cursor}` alone as it moves, not a whole state each time.
+  | { kind: "view"; station: string; screen: string; view: string; ask: ScreenAsk; auto: boolean; sound: boolean; cursorUpdates?: true }
   | { kind: "ack"; view: string; ts: number }
   | { kind: "keyframe"; view: string }
   /// The view's sound on, or off (muted here: the station sends none till it is on again).
@@ -127,6 +128,7 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
         ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}) },
         auto: !peek && typeof control !== "boolean",
         sound: get(params, "sound") !== false,
+        ...(get(params, "cursorUpdates") === true ? { cursorUpdates: true as const } : {}),
       };
     }
     case "screen.ack": {
@@ -652,7 +654,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // device it is on (who is on the screen, for those who look).
     const client = deviceName(inner.data);
     const app = deviceApp(inner.data);
-    let bounds: ScreenAsk = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}) };
+    // A page that takes the pointer alone (`cursorUpdates`) has the station send it as `cursor` frames (a station from
+    // before them sends it in a state, taken the same way below).
+    let bounds: ScreenAsk & { binaryCursor?: true } = { ...c.ask, ...(client ? { client } : {}), ...(app ? { app } : {}), ...(c.cursorUpdates === true && !c.ask.peek ? { binaryCursor: true as const } : {}) };
     // The stream open now: where acks, key frames and input go (in order, one writer); null between streams.
     let out: Queue.Queue<Uint8Array> | null = null;
     let reopen: Deferred.Deferred<void> | null = null;
@@ -971,11 +975,25 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (clip.type === "text") {
                   if (clip.data.length > 0 && clip.data.length <= CLIP_TEXT_MAX) progress({ clipboard: { type: "text", text: fromUtf8(clip.data) } });
                 } else if (clip.data.length > 0 && clip.data.length <= CLIP_PNG_MAX) progress({ clipboard: { type: "png", size: clip.data.length } }, clip.data);
+              } else if ("cursor" in frame) {
+                // The pointer, as it moves (60 times a second): what is kept of it so that the next whole state has it,
+                // and to a page that takes it alone, only it.
+                const k = frame.cursor;
+                if (k === null) delete state.cursor;
+                else state.cursor = { x: k.x, y: k.y, ...(k.shape !== undefined ? { shape: k.shape } : {}) };
+                if (c.cursorUpdates === true) progress({ cursor: state.cursor ?? null });
+                else tell();
               } else if ("state" in frame) {
                 const s = frame.state;
                 if (!isObject(s)) continue;
                 if (isObject(s.cursor) && finite(s.cursor.x) && finite(s.cursor.y)) state.cursor = { x: unit(s.cursor.x), y: unit(s.cursor.y), ...(typeof s.cursor.shape === "string" ? { shape: s.cursor.shape } : {}) };
                 else if (s.cursor === null) delete state.cursor;
+                // A state of the pointer alone (a station from before `cursor` frames), to a page that takes it alone:
+                // only it, no whole state made and sent for it.
+                if (c.cursorUpdates === true && Object.keys(s).length === 1 && Object.prototype.hasOwnProperty.call(s, "cursor")) {
+                  progress({ cursor: state.cursor ?? null });
+                  continue;
+                }
                 if (typeof s.title === "string" && s.title !== "") state.title = s.title;
                 // How a simulator's picture is turned: its case is drawn turned with it.
                 if (s.turn === 0 || s.turn === 1 || s.turn === 2 || s.turn === 3) state.turn = s.turn;

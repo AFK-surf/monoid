@@ -49,11 +49,17 @@ pub fn congestion_of(@json.Json?) -> String
 
 pub fn control_or_format(Int32) -> Bool
 
+pub fn cursor_payload(@json.Json) -> Bytes
+
+pub let cursor_shape_max : Int32
+
 pub let cut : Double
 
 pub fn decode_uri_component(String) -> String?
 
 pub let delivery_window_ms : Double
+
+pub let direct_rate : Double
 
 pub fn dirname(String) -> String
 
@@ -68,6 +74,8 @@ pub fn dscp_taken(@json.Json?) -> Bool
 pub fn encode_uri_component(String) -> String
 
 pub let export_ms : Int32
+
+pub let far_rtt_ms : Double
 
 pub fn file_bytes(async () -> FileReading, Int64, Int64) -> Pieces
 
@@ -123,6 +131,8 @@ pub let kind_clipboard : Int32
 
 pub let kind_config : Int32
 
+pub let kind_cursor : Int32
+
 pub let kind_input : Int32
 
 pub let kind_keyframe : Int32
@@ -141,7 +151,11 @@ pub fn lan_addrs(Array[String], Array[(String, Array[Iface])]) -> Array[String]
 
 pub fn lan_neighbours(Array[(String, Array[Iface])]) -> Array[String]
 
+pub let lan_rate : Double
+
 pub async fn lan_reach(Array[String], async (String) -> String?) -> String?
+
+pub let lan_rtt_ms : Double
 
 pub fn lang_of_core(Array[(String, String)]) -> String
 
@@ -188,6 +202,14 @@ pub let measured_ms : Double
 pub fn message_of(Error) -> String
 
 pub let min_rate : Double
+
+pub let moving_sharpen_ms : Double
+
+pub let moving_sharpen_up : Double
+
+pub let near_rate : Double
+
+pub let near_rtt_ms : Double
 
 pub fn network_view(@json.Json?) -> @json.Json
 
@@ -243,6 +265,10 @@ pub async fn read_bytes(Pieces, Int32) -> Bytes
 
 pub fn region_of(@json.Json?) -> Region?
 
+pub let relay_rate : Double
+
+pub let relay_rtt_ms : Double
+
 pub fn route(String) -> String
 
 pub let rtt_window_ms : Double
@@ -284,6 +310,10 @@ pub async fn slowly(@door.Stream, () -> Array[WayPath], String, () -> String, Do
 pub let stall_tick_ms : Double
 
 pub let start_rate : Double
+
+pub fn start_rate_for(@json.Json?) -> Double
+
+pub fn start_rate_of(Array[LinkPath]) -> Double
 
 pub let start_unacked : Int32
 
@@ -494,6 +524,7 @@ pub(all) struct LinkPath {
   selected : Bool
   relay : String?
   ip : String?
+  rtt_ms : Double?
   tx_packets : Double
   lost_packets : Double
 }
@@ -706,11 +737,15 @@ pub(all) struct ServingProcess {
 pub struct Sharpener {
   mut at : Double
   mut rate : Double?
+  mut key : Bool
+  mut key_at : Double
+  mut key_rate : Double?
 }
 pub fn Sharpener::due(Self, Double, Double?) -> Bool
+pub fn Sharpener::due_moving(Self, Double, Double?) -> Bool
 pub fn Sharpener::left(Self, Double) -> Double
 pub fn Sharpener::new() -> Self
-pub fn Sharpener::sent(Self, Double, Double?) -> Unit
+pub fn Sharpener::sent(Self, Double, Double?, key? : Bool) -> Unit
 
 pub struct Sizer {
   now : () -> Double
