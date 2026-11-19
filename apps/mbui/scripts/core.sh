@@ -196,8 +196,11 @@ posthog_define() {
   fi
 }
 # When this release build was made (Unix ms, client/core-ts/src/station/oldest.ts `__STILLFAIL_BUILT_AT__`): MBUI_BUILT_AT
-# when given; else for a numbered release (MBUI_BUILD >= 1000) the HEAD commit's timestamp in ms; 0 in local dev so dev
-# builds never prompt to upgrade. Part of core.hbc's key and stamp.
+# when given; else for a numbered release (MBUI_BUILD >= 1000) the UTC day the HEAD commit was made on, its midnight in
+# ms; 0 in local dev so dev builds never prompt to upgrade. Part of core.hbc's key and stamp: the day, not the commit's
+# second, keeps a core.hbc in HBC_CACHE for every commit of a day that left its sources as they were (the second made
+# every commit miss it), and a week's staleness (STALE_BUILD_MS) is not told by the hour. Every step of a job that asks
+# for or makes core.hbc gives the same MBUI_BUILD (pipeline.yml desktop-build, desktop-win), or the key is another.
 built_at_define() {
   if [ -n "${MBUI_BUILT_AT:-}" ]; then
     case "$MBUI_BUILT_AT" in
@@ -209,7 +212,7 @@ built_at_define() {
     ct=$(git -C "$SF_SRC" show -s --format=%ct HEAD 2>/dev/null || true)
     case "$ct" in
       ''|*[!0-9]*) echo 0 ;;
-      *) printf '%s000\n' "$ct" ;;
+      *) printf '%s000\n' "$(( (ct / 86400) * 86400 ))" ;;
     esac
   else
     echo 0

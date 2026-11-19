@@ -1723,6 +1723,10 @@ jobs:
           # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
           # step below gives it, so that core.hbc is made once
           POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
+          # main's core says when it was built (apps/mbui/scripts/core.sh built_at_define: any MBUI_BUILD >= 1000, the
+          # number itself not read here, mac.sh building no Info.plist; main's history is not fetched yet), as the
+          # bundling step's below does, so that core.hbc's key is one in every step; a branch's says 0 in each
+          MBUI_BUILD: ${{ github.ref == 'refs/heads/main' && '1000' || '' }}
         run: |
           bash apps/mbui/scripts/moon-mtimes.sh
           touch "$RUNNER_TEMP/start"
@@ -1800,6 +1804,8 @@ jobs:
       - id: hbc
         env:
           POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
+          # (the prebuild's, above)
+          MBUI_BUILD: ${{ github.ref == 'refs/heads/main' && '1000' || '' }}
         run: |
           if [ -n "${POSTHOG_JSON:-}" ]; then
             (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog-kept.json")
@@ -1856,6 +1862,9 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/posthog.json"' EXIT
           # (the prebuild's app and core.hbc as it made them, where it says it built them whole: mac-release-prebuild.sh)
           [ ! -f "$RUNNER_TEMP/mac-prebuild/built" ] || export MBUI_BUILT=1
+          # (main's: core.hbc made again here, where the prebuild did not build it whole, says when it was built as the
+          # prebuild's would; the number is mac-app.sh's own, its Info.plist's, main's history fetched by now)
+          [ "$GITHUB_REF" != refs/heads/main ] || export MBUI_BUILD="$(git rev-list --count HEAD)"
           MBUI_VARIANT=beta MBUI_SIGN_AFTER_BUILD=1 bash apps/mbui/scripts/mac-app.sh build
           mkdir -p "$RUNNER_TEMP/mac-unsigned"
           ditto -c -k --sequesterRsrc --keepParent apps/mbui/out/mac/youdid.wtf.app "$RUNNER_TEMP/mac-unsigned/bundle.zip"
@@ -2173,6 +2182,9 @@ jobs:
             echo "POSTHOG_FILE=$RUNNER_TEMP/posthog.json" >> "$GITHUB_ENV"
           fi
           unset POSTHOG_JSON
+          # the build's number, as the build, win.sh core and release.sh have it: core.hbc's key says when it was built
+          # (apps/mbui/scripts/core.sh built_at_define), so asked without it no key was the release's (main 135828927558)
+          export MBUI_BUILD=$(git rev-list --count HEAD)
           export HERMESC=$(cygpath -m "$(node scripts/native.ts path engine win32-x64)/hermesc.exe")
           STILLFAIL_POSTHOG=$([ ! -s "$RUNNER_TEMP/posthog.json" ] || echo "$RUNNER_TEMP/posthog.json") bash apps/mbui/scripts/core.sh hermes-kept || exit 0
           [ "${{ vars.MONOID_CI }}" != on ] || bash apps/mbui/scripts/core.sh hermes-kept || exit 0
@@ -2185,7 +2197,7 @@ jobs:
       # (beside the build: kept, a copy; else made on the cores cl leaves)
       - name: The core's bytecode (Hermes) and the installer's own program
         run: |
-          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
+          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-} MBUI_BUILD=$(git rev-list --count HEAD)
           bash apps/mbui/scripts/win.sh core
           [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
           bash apps/mbui/scripts/win.sh setup-bare
