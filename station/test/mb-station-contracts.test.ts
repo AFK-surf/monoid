@@ -268,7 +268,6 @@ const ENV_NOT_THE_PROGRAMS: Record<string, string> = {
   STILLFAIL_NODE: "the Node the launcher runs main.js with",
   STILLFAIL_TEST_TMP: "the TypeScript tests' temporary directory (test/setup-env.mjs)",
   STILLFAIL_ACTORS_TRACE: "a trace of Node's shells of the actors (sessions/mb-actor.ts), which the program has none of",
-  STILLFAIL_MEMLOG: "a log of Node's own heap",
 };
 
 test("every STILLFAIL_* the TypeScript station reads, the program reads", () => {

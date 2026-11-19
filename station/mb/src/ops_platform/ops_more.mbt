@@ -823,13 +823,41 @@ pub fn log_record(ms : Double, level : String, at : String, message : String, fi
     "WARN" => 13
     _ => 17
   }
-  {
+  let record : Map[String, Json] = {
     "timeUnixNano": js(nanos(js_round(ms))),
     "severityNumber": ji(severity),
     "severityText": js(level),
     "body": { "stringValue": js(scrub_text(message, home)) },
     "attributes": Json::array(attrs),
   }
+  // (a trace's id, as OpenTelemetry has it on the record: its span's lines found by it; `log.trace` stays)
+  match fields {
+    Object(m) =>
+      match m.get("trace") {
+        Some(String(t)) if trace_id(t) => record["traceId"] = js(t)
+        _ => ()
+      }
+    _ => ()
+  }
+  Json::object(record)
+}
+
+///|
+/// log-export.ts `TRACE_ID`: 32 lowercase hex digits, not all zero.
+fn trace_id(t : String) -> Bool {
+  if t.length() != 32 {
+    return false
+  }
+  let mut zero = true
+  for c in t {
+    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return false
+    }
+    if c != '0' {
+      zero = false
+    }
+  }
+  !zero
 }
 
 ///|
@@ -880,11 +908,20 @@ pub struct LogExport {
   mut dropped : Int
   mut closed : Bool
   mut configured : Bool
+  /// What the batches say of the station beside its id and version (log-export.ts `os`, `arch`, `runtime`, `role`).
+  mut described : Array[(String, String)]
 }
 
 ///|
 pub fn LogExport::new(home : String) -> LogExport {
-  { home, waiting: [], dropped: 0, closed: false, configured: false }
+  { home, waiting: [], dropped: 0, closed: false, configured: false, described: [] }
+}
+
+///|
+/// log-export.ts `LogExportOptions`' `os`, `arch`, `runtime` and `role`: what each batch says the station runs on and
+/// is (a whole station or a rig).
+pub fn LogExport::describe(self : LogExport, os~ : String, arch~ : String, runtime~ : String, role~ : String) -> Unit {
+  self.described = [("os.type", os), ("host.arch", arch), ("process.runtime.name", runtime), ("stillfail.role", role)]
 }
 
 ///|
@@ -904,12 +941,23 @@ pub fn LogExport::add(self : LogExport, line : LogLine, enabled : Bool) -> Unit 
 }
 
 ///|
+/// log-export.ts `trim`: past what is kept waiting the oldest INFO lines go first, the oldest of the rest only once none
+/// is left.
 fn LogExport::trim(self : LogExport) -> Unit {
-  if self.waiting.length() > log_max_waiting {
-    let over = self.waiting.length() - log_max_waiting
-    self.dropped += over
-    self.waiting = self.waiting[over:].to_owned()
+  let mut over = self.waiting.length() - log_max_waiting
+  if over <= 0 {
+    return
   }
+  self.dropped += over
+  let kept = []
+  for line in self.waiting {
+    if over > 0 && line.level == "INFO" {
+      over -= 1
+    } else {
+      kept.push(line)
+    }
+  }
+  self.waiting = if over > 0 { kept[over:].to_owned() } else { kept }
 }
 
 ///|
@@ -933,6 +981,9 @@ pub fn LogExport::body(
     attribute("service.version", js(version)),
     attribute("stillfail.station", js(station)),
   ]
+  for d in self.described {
+    resource.push(attribute(d.0, js(d.1)))
+  }
   js_stringify({
     "resourceLogs": [
       {

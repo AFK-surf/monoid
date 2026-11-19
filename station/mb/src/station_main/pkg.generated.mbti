@@ -72,6 +72,8 @@ pub async fn file_lock(@host.Host, String) -> FileLock
 
 pub fn flag(Array[String], String) -> String?
 
+pub async fn flush_live_p5_1_log() -> Unit
+
 pub fn group_alive(Int32) -> Bool
 
 pub async fn harness(@host.Host) -> Unit

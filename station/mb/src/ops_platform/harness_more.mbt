@@ -132,7 +132,12 @@ fn more_case(c : Json) -> Json raise {
       let sent = []
       for step in arr(field(c, "steps")) {
         match str_or(step, "do", "") {
-          "configure" => e.configured = true
+          "configure" => {
+            e.configured = true
+            if field(step, "os") is Some(String(os)) {
+              e.describe(os~, arch=str_or(step, "arch", ""), runtime=str_or(step, "runtime", ""), role=str_or(step, "role", ""))
+            }
+          }
           "add" => e.add(log_line_of(field(step, "line").unwrap_or(Json::null())), bool_field(step, "enabled"))
           "addMany" => {
             let l = log_line_of(field(step, "line").unwrap_or(Json::null()))
@@ -165,6 +170,32 @@ fn more_case(c : Json) -> Json raise {
       { "sent": Json::array(sent), "waiting": ji(e.waiting.length()), "dropped": ji(e.dropped) }
     }
     "logRefused" => jb(log_refused(onum("status")))
+    // forewarn.ts
+    "forewarn" => {
+      let f = Forewarn::new()
+      let opt = (j : Json, k : String) => match field(j, k) {
+        Some(Number(v, ..)) => Some(v)
+        _ => None
+      }
+      Json::array(
+        arr(field(c, "steps")).map(step => {
+          let l = field(step, "look").unwrap_or(Json::null())
+          let look : ForewarnLook = {
+            disk_free: opt(l, "diskFree"),
+            disk_total: opt(l, "diskTotal"),
+            wal_bytes: num_field(l, "walBytes").unwrap_or(0.0),
+            open_fds: opt(l, "openFds").map(n => n.to_int()),
+            rss: opt(l, "rss"),
+            relay_conflict: bool_field(l, "relayConflict"),
+          }
+          Json::array(
+            f
+            .look(look, num_field(step, "now").unwrap_or(0.0))
+            .map(w => { "at": js(w.at), "message": js(w.message), "fields": w.fields }),
+          )
+        }),
+      )
+    }
     // self-memory.ts
     "limits" => { "soft": jn(soft_limit_of(n("total"))), "hardRss": jn(hard_rss_of(n("total"))), "hardFront": jn(hard_front_of(n("total"))) }
     "selfMemory" => {

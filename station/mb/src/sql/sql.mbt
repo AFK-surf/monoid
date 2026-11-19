@@ -124,6 +124,9 @@ pub struct Db {
   priv mut changed : Int
   /// What `known` found, each with `changed` as it was when it was found.
   priv found : Map[String, (Int, Json)]
+  /// Told each statement exec, run and all ran (`timed`): its SQL, the ms it took, the rows of `all`'s, what it
+  /// failed with. None (the readers', the builders'): nothing timed.
+  priv mut said : ((String, Double, Int?, String?) -> Unit)?
 }
 
 ///|
@@ -142,7 +145,7 @@ fn open(path : String, flags : Int, wait : Int) -> Db raise @wire.ShellError {
   if handle <= 0L {
     raise @wire.ShellError(@utf8.decode_lossy(errstr_ffi((-handle).to_int())))
   }
-  let db = { handle, kept: Map([]), changed: 0, found: Map([]) }
+  let db = { handle, kept: Map([]), changed: 0, found: Map([]), said: None }
   db.exec("PRAGMA synchronous = NORMAL;")
   db
 }
@@ -180,6 +183,38 @@ fn Db::failed(self : Db) -> @wire.ShellError {
 ///|
 /// Statements with no rows (BEGIN, COMMIT, PRAGMA …).
 pub fn Db::exec(self : Db, sql : String) -> Unit raise @wire.ShellError {
+  match self.said {
+    None => self.exec_untimed(sql)
+    Some(said) => {
+      let at = @host.now()
+      let done = try { Ok(self.exec_untimed(sql)) } catch { e => Err(e) }
+      said(sql, (@host.now() - at).to_double(), None, failed_words(done))
+      match done {
+        Ok(v) => v
+        Err(e) => raise e
+      }
+    }
+  }
+}
+
+///|
+/// What a timed statement failed with, or None.
+fn[T] failed_words(done : Result[T, @wire.ShellError]) -> String? {
+  match done {
+    Ok(_) => None
+    Err(@wire.ShellError(m)) => Some(m)
+  }
+}
+
+///|
+/// Each statement exec, run and all run from now told to `said` (its SQL, the ms it took, the rows of `all`'s, what
+/// it failed with: a write waiting out the busy time fails, store/timed.ts), never what it was given; None: none.
+pub fn Db::timed(self : Db, said : ((String, Double, Int?, String?) -> Unit)?) -> Unit {
+  self.said = said
+}
+
+///|
+fn Db::exec_untimed(self : Db, sql : String) -> Unit raise @wire.ShellError {
   self.changed += 1
   if exec_ffi(self.handle, cstr(sql)) != 0 {
     raise self.failed()
@@ -269,6 +304,22 @@ fn bind_number(handle : Int64, at : Int, n : Double, repr : String?) -> Int {
 ///|
 /// A statement with `params`; how many rows it changed.
 pub fn Db::run(self : Db, sql : String, params : Array[Json]) -> Int raise @wire.ShellError {
+  match self.said {
+    None => self.run_untimed(sql, params)
+    Some(said) => {
+      let at = @host.now()
+      let done = try { Ok(self.run_untimed(sql, params)) } catch { e => Err(e) }
+      said(sql, (@host.now() - at).to_double(), None, failed_words(done))
+      match done {
+        Ok(v) => v
+        Err(e) => raise e
+      }
+    }
+  }
+}
+
+///|
+fn Db::run_untimed(self : Db, sql : String, params : Array[Json]) -> Int raise @wire.ShellError {
   self.changed += 1
   let kept = self.prepared(sql, params)
   let rc = step_ffi(kept.handle)
@@ -320,6 +371,22 @@ fn value(handle : Int64, i : Int) -> Json {
 ///|
 /// A statement's rows, each by its columns' names.
 pub fn Db::all(self : Db, sql : String, params : Array[Json]) -> Array[Map[String, Json]] raise @wire.ShellError {
+  match self.said {
+    None => self.all_untimed(sql, params)
+    Some(said) => {
+      let at = @host.now()
+      let done = try { Ok(self.all_untimed(sql, params)) } catch { e => Err(e) }
+      said(sql, (@host.now() - at).to_double(), done.map(rows => rows.length()).to_option(), failed_words(done))
+      match done {
+        Ok(v) => v
+        Err(e) => raise e
+      }
+    }
+  }
+}
+
+///|
+fn Db::all_untimed(self : Db, sql : String, params : Array[Json]) -> Array[Map[String, Json]] raise @wire.ShellError {
   let kept = self.prepared(sql, params)
   if !kept.reads_only {
     self.changed += 1

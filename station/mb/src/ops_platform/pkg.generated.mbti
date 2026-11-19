@@ -122,6 +122,18 @@ pub fn followed_change(String, String?) -> String
 
 pub fn footprint_of_status(String) -> Double?
 
+pub let forewarn_again_ms : Double
+
+pub let forewarn_large_wal_bytes : Double
+
+pub let forewarn_low_disk_bytes : Double
+
+pub let forewarn_low_disk_share : Double
+
+pub let forewarn_many_fds : Int32
+
+pub fn forewarn_mb(Double) -> Double
+
 pub fn forget_marks(Fs, String, Array[String]) -> Unit raise
 
 pub fn format_skill(@json.Json, String, String) -> Result[String, String]
@@ -785,6 +797,27 @@ pub fn FollowedTree::close(Self) -> Unit
 pub fn FollowedTree::new(String, (String) -> Bool, Int32, (String) -> String?) -> Self
 pub fn FollowedTree::scan(Self, Fs) -> Scanned raise
 
+pub struct Forewarn {
+  said : Map[String, Double]
+}
+pub fn Forewarn::look(Self, ForewarnLook, Double) -> Array[ForewarnSaid]
+pub fn Forewarn::new() -> Self
+
+pub(all) struct ForewarnLook {
+  disk_free : Double?
+  disk_total : Double?
+  wal_bytes : Double
+  open_fds : Int32?
+  rss : Double?
+  relay_conflict : Bool
+}
+
+pub(all) struct ForewarnSaid {
+  at : String
+  message : String
+  fields : @json.Json
+}
+
 pub struct Fs {
   host : @host.Host
 }
@@ -826,11 +859,13 @@ pub struct LogExport {
   mut dropped : Int32
   mut closed : Bool
   mut configured : Bool
+  mut described : Array[(String, String)]
 }
 pub fn LogExport::add(Self, LogLine, Bool) -> Unit
 pub fn LogExport::body(Self, Array[LogLine], String, Int32, String, Double) -> String
 pub fn LogExport::close(Self) -> Unit
 pub fn LogExport::configure(Self) -> Unit
+pub fn LogExport::describe(Self, os~ : String, arch~ : String, runtime~ : String, role~ : String) -> Unit
 pub fn LogExport::new(String) -> Self
 pub fn LogExport::send_all(Self, Bool, String?, String, Double, (String) -> Double?) -> Array[String]
 

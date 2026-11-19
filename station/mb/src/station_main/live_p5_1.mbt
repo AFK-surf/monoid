@@ -270,6 +270,8 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
   ignore(
     host.rt.fork_daemon("p5-1 stop", on_error=e => @host.note("p5-1 stop failed: \{e}"), async fn() {
       ignore(bus.stopped.wait())
+      // (the log's last lines sent first: why it stopped)
+      flush_live_p5_1_log()
       p.close()
     }),
   )
@@ -280,6 +282,16 @@ pub async fn start_live_p5_1(bus : LiveBus) -> Unit {
 fn start_live_p5_1_mesh(bus : LiveBus) -> Unit {
   match p51_live.val {
     Some(p) => p.mesh_start(bus.as_rig())
+    None => ()
+  }
+}
+
+///|
+/// What of the log waits sent before the process ends, 5 s at most (log-export.ts `shutdown`): why it stopped, what it
+/// handed over.
+pub async fn flush_live_p5_1_log() -> Unit {
+  match p51_live.val {
+    Some(p) => ignore(@effect.timeout(5_000, async fn() { p.flush_log() }))
     None => ()
   }
 }
@@ -452,6 +464,7 @@ fn P51::telemetry_live(self : P51) -> Unit {
   self.reports.enabled = () => self.telemetry_errors()
   self.reports.station = () => self.station_id
   self.log_export.configure()
+  self.log_export.describe(os=platform(), arch=arch(), runtime="moonbit", role=if self.bus.as_rig() { "rig" } else { "station" })
   self.every("the station's log", 5000, async fn() { // timer: a batch of the log, sent every few seconds (log-export.ts EVERY_MS)
     self.flush_log()
   })

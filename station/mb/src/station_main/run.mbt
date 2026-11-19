@@ -572,7 +572,7 @@ fn Station::stop(self : Station, why : String) -> Unit {
     return
   }
   self.health_said = false
-  err_write("station: stopping (\{why})\n")
+  p51_log("INFO", "station", "stopping", fields={ "why": Json::string(why) })
   match read_json(path([self.data, "run", "hub.json"])) {
     Some({ "pid": Number(p, ..), .. }) if p.to_int() == @drive.pid() => @drive.rm_force(path([self.data, "run", "hub.json"]))
     _ => ()
@@ -615,7 +615,7 @@ fn Station::told(self : Station, line : String) -> Unit {
     Ok(j) => j
     Err(_) => {
       // (not the line itself: one carried over holds secrets)
-      err_write("launcher: unreadable line from the launcher (\{line.length()} long)\n")
+      p51_log("WARN", "launcher", "unreadable line from the launcher", fields={ "length": Json::number(line.length().to_double()) })
       return
     }
   }
@@ -816,6 +816,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   before_store_p5_1(host, data, db_path)
   let opened = try {
     let db = @sql.Db::create(host, db_path, wait=5000)
+    // (its statements timed, the slow said: store/timed.ts)
+    db.timed(Some(main_query_said))
     @store_schema.open(db, host, db_path, wall_ms())
     Ok((db, @store_sessions.Store::open(db, () => wall_ms(), 0L)))
   } catch {
@@ -904,7 +906,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   s.say_health()
   s.up = true
   control.say({ "ready": Json::boolean(true), "version": Json::string(s.version) })
-  err_write("station: station up (\{s.version}, \{data})\n")
+  p51_log("INFO", "station", if bus.as_rig() { "rig up" } else { "station up" }, fields={ "version": Json::string(s.version), "data": Json::string(data) })
   // The loopback port: the launcher's, or 4760 on the machine's own data directory, else any free one.
   let named_port = match flag(args, "--port") {
     Some(p) => attempt(() => @string.parse_int(p)).to_option()
@@ -932,7 +934,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         }),
       )
     }
-    None => err_write("station: the loopback port is not had\n")
+    None => p51_log("WARN", "station", "the loopback port is not had")
   }
   // The local status's socket (Unix's: a path in the data directory, the station's user's alone).
   if !is_windows() {
@@ -942,7 +944,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         ignore(
           host.rt.fork_daemon("status", on_error=e => @host.note("status failed: \{e}"), async fn() { serve_http(host, listening.id, async fn(r, conn) { s.status_reply(r, conn) }) }),
         )
-      Err(_) => err_write("station: the local status's socket is not had\n")
+      Err(_) => p51_log("WARN", "station", "the local status's socket is not had")
     }
   }
   // The agents' door, once the process before is gone (the one handing over writes its handover first).
@@ -1013,6 +1015,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   ignore(
     host.rt.fork_daemon("heartbeat", on_error=e => @host.note("heartbeat failed: \{e}"), async fn() {
       let every = held_every_ms()
+      let forewarn = @ops_platform.Forewarn::new()
       while !s.stopped.is_done() {
         let started = @host.now()
         @effect.sleep(every) // timer: a sample of this thread (main.ts HELD_EVERY_MS)
@@ -1021,6 +1024,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
         if s.stopped.is_done() {
           break
         }
+        s.sampled(late, every)
+        s.forewarned(forewarn)
         if control.heartbeats {
           control.say({ "heartbeat": Json::boolean(true) })
         }
@@ -1029,10 +1034,25 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
       }
     }),
   )
+  // Where the memory goes, and what runs out: every ten minutes, or every ten seconds with STILLFAIL_MEMLOG (main.ts).
+  ignore(
+    host.rt.fork_daemon("memory", on_error=e => @host.note("memory failed: \{e}"), async fn() {
+      let every = if env_get("STILLFAIL_MEMLOG") is Some(_) { 10_000 } else { 600_000 }
+      while !s.stopped.is_done() {
+        @effect.sleep(every) // timer: a sample of this process and its machine (main.ts `memory: now`)
+        if s.stopped.is_done() {
+          break
+        }
+        s.memory_now()
+      }
+    }),
+  )
   // A heap request left while no station ran.
   ignore(answer_heap_request(data, () => s.heap()))
   let why = s.stopped.wait()
   ignore(why)
+  // (the log's last lines sent first, 5 s at most: why it stopped, what it handed over)
+  flush_live_p5_1_log()
   // (what the live parts started let go of before the process ends: their processes, what they hand over)
   stop_live_p5_1()
   live_p5_1_handed()

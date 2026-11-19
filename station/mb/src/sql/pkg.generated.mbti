@@ -23,6 +23,7 @@ pub fn Db::create(@host.Host, String, wait~ : Int32) -> Self raise @wire.ShellEr
 pub fn Db::exec(Self, String) -> Unit raise @wire.ShellError
 pub fn Db::known(Self, String, () -> @json.Json raise) -> @json.Json raise
 pub fn Db::run(Self, String, Array[@json.Json]) -> Int32 raise @wire.ShellError
+pub fn Db::timed(Self, ((String, Double, Int32?, String?) -> Unit)?) -> Unit
 
 // Type aliases
 
