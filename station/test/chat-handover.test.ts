@@ -280,6 +280,8 @@ test("a file of the chat's room this station cannot read: the chat does not go, 
   chmodSync(file, 0o000);
   try {
     const error = await a.moves.handover.handOver(key, B).then(() => null, (e: Error) => e.message);
+    // (the drop's taking out there runs after its answer: waited for before what is left there is looked at)
+    await w.quiet();
     assert.match(error ?? "", /读不到 1 个文件（.*locked\.txt）|cannot read 1 of its files \(.*locked\.txt\)/, `the station's words, naming it: ${error}`);
     assert.equal(a.rig.hub.chatHeld(key), null, "goes on here");
     assert.equal(a.rig.store.handedTo(key), null, "nothing of it went");

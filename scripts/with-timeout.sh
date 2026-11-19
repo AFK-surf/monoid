@@ -22,24 +22,50 @@ case $left in -*|0) echo "with-timeout.sh: no time left ($limit) for $1" >&2; ex
 
 # (the command and what it started, each process's children found again at each stop: no process group asked of the
 # shell, which a shell without a terminal may not give)
-tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; echo "$1"; }
+# On Linux each thread's children are read from /proc, no process started for them (a `pgrep` a process, each reading
+# all of /proc, took seconds of a loaded runner's 4 cores); elsewhere, or without that file, `pgrep -P`.
+if [ -e "/proc/$$/task/$$/children" ]; then
+  tree() {
+    local f c kids
+    for f in /proc/"$1"/task/*/children; do
+      kids=
+      { read -r kids < "$f"; } 2>/dev/null
+      for c in $kids; do tree "$c"; done
+    done
+    echo "$1"
+  }
+else
+  tree() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; echo "$1"; }
+fi
 
-"$@" &
+# (the limit's watcher says on a pipe that its TERM is now its trap's, and the command that ended first stops it only
+# then: a TERM come before the trap was set may go unseen by its shell, the watcher left to stop the command at its
+# limit, or end it with the shell's own word of a job killed)
+dir=$(mktemp -d "${TMPDIR:-/tmp}/with-timeout.XXXXXX")
+trap 'rm -rf "$dir"' EXIT
+mkfifo "$dir/ready"
+exec 4<>"$dir/ready"
+rm -f "$dir/ready"
+"$@" 4<&- &
 pid=$!
-mark=$(mktemp "${TMPDIR:-/tmp}/with-timeout.XXXXXX")
-rm -f "$mark"
 (
-  # (its sleep stopped with it, when the command ends first: nothing of this left running past the step)
-  trap 'kill ${s:-} 2>/dev/null; exit 0' TERM
-  sleep "$left" < /dev/null > /dev/null 2>&1 &
+  # (its sleep stopped with it, and waited for, when the command ends first: nothing of this left running past the
+  # step; nothing said of it either, the shell's word of a job killed included)
+  trap 'exec 2>/dev/null; kill $s; wait $s; exit 0' TERM
+  sleep "$left" < /dev/null > /dev/null 2>&1 4<&- &
   s=$!
+  echo >&4
+  exec 4<&-
   wait $s
-  : > "$mark"
+  : > "$dir/out"
   echo "with-timeout.sh: $1 still running after ${left} s: stopped" >&2
   pids=$(tree $pid)
   # shellcheck disable=SC2086 # pids, one word each
   kill -TERM $pids 2>/dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 $pid 2>/dev/null || break; sleep 0.5; done
+  # (5 s for TERM by the clock, not by a count of sleeps that each take longer on a loaded machine; looked at every
+  # 0.1 s, done as soon as it ended)
+  grace=$((SECONDS + 5))
+  while [ $SECONDS -lt $grace ] && kill -0 $pid 2>/dev/null; do sleep 0.1; done
   pids="$pids $(tree $pid 2>/dev/null)"
   # shellcheck disable=SC2086
   kill -KILL $pids 2>/dev/null
@@ -47,11 +73,11 @@ rm -f "$mark"
 watch=$!
 wait $pid
 code=$?
-if [ -e "$mark" ]; then
+if [ -e "$dir/out" ]; then
   wait $watch 2>/dev/null
-  rm -f "$mark"
   exit 124
 fi
+read -r _ <&4
 kill -TERM $watch 2>/dev/null
 wait $watch 2>/dev/null
 exit $code
