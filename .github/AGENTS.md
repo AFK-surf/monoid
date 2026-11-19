@@ -32,9 +32,12 @@
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
   published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
-  a branch's reader's C is compiled at -O0 in units of 2 MB on every core (`MBC_UNIT_KB=2048`; zig cc's UBSan off),
-  its units kept in the Actions cache by branch keys of their own (`mbui-reader-linux-branch-`, `-win-branch-`,
-  `-mac-branch-`, apart from main's -O2 `mbui-reader-mac-`); `check` runs there only when
+  a branch's reader's C is compiled at -O0 in units of 8 MB with `moonbit_init` one unit on every core
+  (`MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0`, cold in 71 s where 2 MB's took 105; zig cc's UBSan off), its units kept in the
+  Actions cache by branch keys of their own (`mbui-reader-linux-branch-v2-`, `-win-branch-v2-`, `-mac-branch-v2-`,
+  apart from main's -O2 `mbui-reader-mac-`), which a branch's first push cannot read (a branch sees only main's
+  caches). Main's moon build of the reader is not kept for branches: moon builds all of it again in another checkout
+  path or `MOON_HOME`, and one line changed in `station/mb/src/reader` took as long as cold; `check` runs there only when
   the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
