@@ -439,9 +439,6 @@ struct Node {
   /// whether its starting to leave has been told (Tree::tell_leaving: once, told anew once it has come back)
   leavings : Array[() -> Unit]
   backs : Array[() -> Unit]
-  /// what it said to do as it is put by at rest (View::on_rest), after all it holds is: run again as it is put by again,
-  /// and once more as it is let go (View::owns)
-  rests : Array[(() -> Unit, () -> Unit)]
   mut leave_told : Bool
   /// its properties' bindings, by property (Prop::ord): what stops each (Node::prop_set; a few, as `drops`)
   props : Array[(Int, () -> Unit)]
@@ -2040,7 +2037,6 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         drop_next: 0,
         leavings: [],
         backs: [],
-        rests: [],
         leave_told: false,
         props: [],
         on_press: None,
@@ -2643,6 +2639,9 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.point_stopped()
   if self.nodes.length() > 0 && self.nodes[0].live {
     self.root().let_go()
+  }
+  if node_rests.length() > 0 {
+    node_rests.retain(fn(e) { !physical_equal(e.1.tree, self) })
   }
   self.drawn_marks.clear()
   self.looks_due.clear()
@@ -8477,14 +8476,34 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
+// what each node said to do at rest (View::on_rest), kept beside the tree by registration and View (its tree, index
+// and making, as Lent's), never in Node: only the few nodes a kept part rests on say one, so Node's C layout stays
+// what every unit inlining View::live was built against
+let node_rest_next : Ref[Int] = Ref(0)
+
+///|
+let node_rests : Array[(Int, View, () -> Unit, () -> Unit)] = []
+
+///|
 /// `f` run as it is put by at rest (View::park, View::rests: after what it holds is, so what binds in it has let go of
 /// what it read by then) and once as it is let go (View::owns): what it worked out that nothing follows (a computed read
 /// untracked as it laid out) let go of what that read, or it holds what that read while nothing shows it. `wake`: what
 /// it does as it is woken again (taken in: View::park's waking), not as it is let go.
 pub fn View::on_rest(self : View, f : () -> Unit, wake? : () -> Unit = fn() {  }) -> View {
-  guard self.live() is Some(n) else { return self }
-  n.rests.push((f, wake))
-  self.owns(f)
+  guard self.alive() else { return self }
+  if node_rests.length() >= 64 {
+    node_rests.retain(fn(e) { e.1.alive() })
+  }
+  let id = node_rest_next.val
+  node_rest_next.val = id + 1
+  node_rests.push((id, self, f, wake))
+  self.owns(fn() {
+    match node_rests.search_by(fn(e) { e.0 == id }) {
+      Some(i) => node_rests.remove(i) |> ignore
+      None => ()
+    }
+    f()
+  })
 }
 
 ///|
@@ -8583,7 +8602,6 @@ fn View::let_go(self : View) -> Unit {
   }
   n.leavings.clear()
   n.backs.clear()
-  n.rests.clear()
   n.leave_told = false
   n.on_press = None
   n.on_double_press = None
@@ -9082,9 +9100,18 @@ fn Tree::rest_in(self : Tree, at : Int, wakes : Array[() -> Unit]) -> Unit {
   for k in n.kids {
     self.rest_in(k, wakes)
   }
-  for pair in n.rests.copy() {
-    (pair.0)()
-    wakes.push(pair.1)
+  if node_rests.length() > 0 {
+    let v = self.handle(at)
+    let pairs : Array[(() -> Unit, () -> Unit)] = []
+    for e in node_rests {
+      if e.1.same(v) {
+        pairs.push((e.2, e.3))
+      }
+    }
+    for pair in pairs {
+      (pair.0)()
+      wakes.push(pair.1)
+    }
   }
 }
 
