@@ -14,6 +14,7 @@
 #import <mach/mach.h>
 #include <pwd.h>
 #import "apple.h"
+#include <stdatomic.h>
 #include "post.h"
 #include "term.h"
 #include "done_watch.h"
@@ -2186,10 +2187,16 @@ void mb_host_request_frame(void) {
 }
 
 // A message posted from outside the frames (post.h), on whatever thread: its frame asked for on the main thread.
+// Asked once till it is told (post_woken: set as it is asked, cleared on the main thread before what was posted is
+// taken, so a post after the take finds it clear and asks again), as Linux's (linux_app.c posting): a burst of posts
+// from a core's thread, each the first since a frame took the last, queues one block, not one each.
+static atomic_int post_woken;
 static void mb_post_wake(void) {
+  if (atomic_exchange_explicit(&post_woken, 1, memory_order_acq_rel)) return;
   // the app told what came (ui's messages_between): it takes what changes only signals now, and asks for a frame only
   // where something is left for one
   dispatch_async(dispatch_get_main_queue(), ^{
+    atomic_store_explicit(&post_woken, 0, memory_order_release);
     if (outside_cb) outside_cb(MB_OUTSIDE_POSTED, 0, 0);
     else mb_host_request_frame();
   });

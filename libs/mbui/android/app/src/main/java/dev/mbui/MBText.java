@@ -23,6 +23,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Text with Android's own engine: grapheme clusters and their advances
@@ -137,8 +138,9 @@ final class MBText {
     static int heldKey = -1;
     static Bitmap held;
     static boolean heldColour;
-    // moves on as the faces change: what was drawn in them before is drawn again
-    static int faces;
+    // moves on as the faces change: what was drawn in them before is drawn again (read by the threads ahead too:
+    // typeface)
+    static volatile int faces;
     static float[] adv = new float[1024];
     static char[] chars = new char[1024];
     static final BreakIterator graphemes = BreakIterator.getCharacterInstance();
@@ -228,11 +230,44 @@ final class MBText {
         }
     }
 
-    /** The typeface a style is drawn in at a weight: its face given, else the system's (face). (On either thread: the faces given are changed on the app's thread.) */
-    static synchronized Typeface typeface(int style, int weight) {
+    /**
+     * The style bits a typeface is chosen by (faceId, face, the slant): the face named (0xF00), code's (2), the serif
+     * one (4), what people wrote (16), italic (1). Not letter spacing (8), tabular digits (32) or narrow marks (64),
+     * which are the paint's font features, nor the size, the paint's too: fonts of every size and feature share one.
+     */
+    static final int TYPEFACE_STYLE = 0xF17;
+
+    /** A typeface's key: the faces' generation, the style bits it is chosen by and its weight. */
+    static long typefaceKey(int facesGen, int style, int weight) {
+        return ((long) facesGen << 32) | ((long) (style & TYPEFACE_STYLE) << 16) | (weight & 0xFFFF);
+    }
+
+    /**
+     * Each typeface made (typeface), by typefaceKey, in the faces of now (let go as they change: facesChanged). Read
+     * with no lock: a typeface is made once (a font file read and its tables parsed, milliseconds), not for every
+     * paint, and the threads ahead making their paints never hold the app's thread up making its own.
+     */
+    static final ConcurrentHashMap<Long, Typeface> typefaces = new ConcurrentHashMap<>();
+
+    /**
+     * The typeface a style is drawn in at a weight: its face given, else the system's (face). On either thread: the
+     * faces given are changed on the app's thread, under MBText's lock, which one not made yet is made under (where the
+     * faces are as they are now, and kept only in them).
+     */
+    static Typeface typeface(int style, int weight) {
+        Typeface t = typefaces.get(typefaceKey(faces, style, weight));
+        return t != null ? t : typefaceMade(style, weight);
+    }
+
+    static synchronized Typeface typefaceMade(int style, int weight) {
+        long k = typefaceKey(faces, style, weight);
+        Typeface t = typefaces.get(k);
+        if (t != null) return t;
         int f = faceId(style);
         Typeface given = f > 0 ? faceTypeface(f, weight, (style & 1) != 0) : null;
-        return given != null ? given : Typeface.create(face(style), weight, (style & 1) != 0);
+        t = given != null ? given : Typeface.create(face(style), weight, (style & 1) != 0);
+        typefaces.put(k, t);
+        return t;
     }
 
     static synchronized boolean take(int f, Object src, int weight) {
@@ -274,6 +309,7 @@ final class MBText {
     /** What was measured and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on). */
     static void facesChanged() {
         paints.clear();
+        typefaces.clear();
         faces++;
         reset();
     }
@@ -738,8 +774,9 @@ final class MBText {
     // A phase at a time: each glyph asked by a frame first at the phases its key says (bits 26..27: where its line put
     // it, text.mbt laid_ahead; phase 0 for one shaped and not laid out), every glyph's before any other phase of any
     // (askedFirst), so a page's few hundred new glyphs are each drawn as they will be painted before one is drawn four
-    // times; the other phases after (askedRest), for where words move to next. A phase the app's thread asks for is
-    // taken drawn, waited for while a thread ahead draws it, else drawn there.
+    // times; the other phases after (askedRest), for where words move to next, a phase of every glyph in turn (one more
+    // of each before a third of any). A phase the app's thread asks for is taken drawn, waited for while a thread ahead
+    // draws it, else drawn there.
 
     /** The most glyphs asked for or drawn ahead and not placed yet (the oldest drawn let go past it). */
     static final int AHEAD_MOST = 1024;
@@ -978,10 +1015,11 @@ final class MBText {
                         e.inRest = false;
                         int rest = e.want & ~e.first;
                         bit = Integer.lowestOneBit(rest);
-                        // (its other phases next, before another glyph's: its place in the queue kept)
+                        // (its other phases after one more of every other glyph's: a page moved across by a quarter
+                        // of a pixel a frame finds the next phase of all its glyphs drawn, not all four of a few)
                         if ((rest & ~bit) != 0) {
                             e.inRest = true;
-                            askedRest.addFirst(e);
+                            askedRest.addLast(e);
                         }
                     }
                     if (bit != 0) break;
