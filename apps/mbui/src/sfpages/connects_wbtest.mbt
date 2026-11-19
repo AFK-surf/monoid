@@ -147,25 +147,26 @@ fn middle_of(t : @ui.Tester, role : @view.Role, label : String) -> (Double, Doub
 }
 
 ///|
-test "a connect's Slack app: its picture's room edged 1 in the line's colour" {
+test "a connect's Slack app: its picture's room edged in a hairline of the line's colour" {
   let t = slack_app_tester(390.0, 2)
   let (x, y) = middle_of(t, Button, "上传图片")
-  assert_eq(edge_round(t, x, y), (1.0, edge_shown(t, x, y, @ui.tree_theme().color(Line))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
+  assert_eq(edge_round(t, x, y), (0.5, edge_shown(t, x, y, @ui.tree_theme().color(Line))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
 }
 
 ///|
-test "a connect's Slack app: its colour's swatch edged 1 in the border's colour" {
+test "a connect's Slack app: its colour's swatch edged in a hairline of the line's colour" {
   let t = slack_app_tester(390.0, 2)
   // (the swatch: the one square drawn 28 across, beside the colour's field)
   let swatches = t.drawn_rects().filter(fn(r) { r.2 == 28.0 && r.3 == 28.0 })
   assert_eq(swatches.length(), 1, msg="\{Repr(swatches)}")
   let (sx, sy, _, _, _) = swatches[0]
   let (x, y) = (sx + 14.0, sy + 14.0)
-  assert_eq(edge_round(t, x, y), (1.0, edge_shown(t, x, y, @ui.tree_theme().color(Border))), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
+  // (the line's translucent colour as it is: drawn over the swatch's own colour, as a host draws it)
+  assert_eq(edge_round(t, x, y), (0.5, @ui.tree_theme().color(Line)), msg="at \{x},\{y}: \{edges_at(t, x, y)}")
 }
 
 ///|
-test "a connect's Slack app's buddies to pick from, with a mouse: the picked edged 2 in the words' colour, the rest 1 in the line's, one under the pointer 1 in the field's hover" {
+test "a connect's Slack app's buddies to pick from, with a mouse: the picked edged 2 in the words' colour, the rest a hairline of the line's, one under the pointer a hairline of the border's" {
   let t = slack_app_tester(1280.0, 0)
   let th = @ui.tree_theme()
   // (移动应用 picked by a press; 后端接口 not)
@@ -175,13 +176,13 @@ test "a connect's Slack app's buddies to pick from, with a mouse: the picked edg
   assert_true(t.query(Button, label="移动应用").unwrap().selected == Some(true))
   let (ox, oy) = middle_of(t, Button, "后端接口")
   assert_eq(edge_round(t, px, py), (2.0, edge_shown(t, px, py, th.color(Fg))), msg="picked at \{px},\{py}: \{edges_at(t, px, py)}")
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(Line))), msg="not picked: \{edges_at(t, ox, oy)}")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Line))), msg="not picked: \{edges_at(t, ox, oy)}")
   t.move_to(ox, oy)
   t.run_for(@ui.move_most_ms)
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(FieldHover))), msg="under the pointer: \{edges_at(t, ox, oy)}")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Border))), msg="under the pointer: \{edges_at(t, ox, oy)}")
   t.move_to(1.0, 1.0)
   t.run_for(@ui.move_most_ms)
-  assert_eq(edge_round(t, ox, oy), (1.0, edge_shown(t, ox, oy, th.color(Line))), msg="the pointer gone")
+  assert_eq(edge_round(t, ox, oy), (0.5, edge_shown(t, ox, oy, th.color(Line))), msg="the pointer gone")
 }
 
 ///|
