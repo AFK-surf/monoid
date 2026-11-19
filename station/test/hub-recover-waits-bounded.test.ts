@@ -34,6 +34,7 @@ test("restart recovery does not inspect idle sessions to find waits", async () =
       Object.defineProperty(store, "db", { value: observed });
       const resumed: string[] = [];
       const hub = Object.assign(Object.create(Hub.prototype), {
+        holdsNow: new Set(),
         adopted: new Set(), store,
         chatOf: () => ({}),
         actor: (r: { key: string }) => ({ takeWait: () => { resumed.push(r.key); }, takeRefill: () => {} }),
@@ -65,6 +66,7 @@ test("an old store recovers its waits immediately while its new lookup is still 
     db.exec("DELETE FROM session_recover_waits; UPDATE session_recover_wait_meta SET complete=0,cursor=NULL WHERE id=1");
     const resumed: string[] = [];
     const hub = Object.assign(Object.create(Hub.prototype), {
+      holdsNow: new Set(),
       adopted: new Set(), store,
       chatOf: () => ({}),
       actor: (r: { key: string }) => ({

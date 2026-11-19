@@ -136,10 +136,13 @@ pub async fn AgentsSide::start(self : AgentsSide, place : Place) -> Unit {
   let url = js_string((world.ask)("agents.openDoor", Json::null()))
   hub.tools_at(url)
   self.taken = true
-  hub.release("starting")
+  // (what was cut off found while turns are still held, as `follow` does: agents.ts `start`)
   if self.in_workspace {
     ignore((world.ask)("agents.along", "taken"))
     hub.recover()
+  }
+  hub.release("starting")
+  if self.in_workspace {
     ignore((world.ask)("agents.jobsRelaunch", Json::null()))
   } else if place.removed {
     ignore((world.ask)("agents.jobsStopAll", "the station was removed from its workspace"))

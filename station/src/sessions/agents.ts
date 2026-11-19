@@ -907,10 +907,14 @@ export const AgentsLive = (control: Control) =>
         hub.toolsAt(opened.url);
         parts.doorOpen(opened.url);
         taken = true;
-        hub.release("starting");
+        // What was cut off is found while turns are still held (as `follow` does), so that releasing them starts each
+        // session's once: its recovery, or what waits for it.
         if (inWorkspace) {
           for (const a of along) await a.taken?.();
           hub.recover();
+        }
+        hub.release("starting");
+        if (inWorkspace) {
           await jobs.relaunch();
         } else if (cloud.removed()) {
           // Removed, and the station stopped before it stopped its jobs (or crashed): what still runs is ended now.

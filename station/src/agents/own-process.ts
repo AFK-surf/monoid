@@ -176,6 +176,13 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
       const extra = { ...this.replaying(options), ...(hosting.flavor === undefined ? {} : { flavor: hosting.flavor, kept: hosting.kept === true }) };
       const replayed = (await this.agents.replayOwn(hosting.kind, out, at, extra)) as Replayed;
       session = await this.crashed(options, replayed, info, events);
+      // A process whose station went before its session was open (stuck on `initialize`, say) is no session to go on
+      // with: refused before it is held, so `endOrphans` ends its runner and the session opens again the usual way.
+      // Every runtime here but Claude Code speaks to open one (Claude Code is told its id as it starts and says nothing
+      // before its first turn); Pi's id is the station's, never said back, so only its output tells for Pi.
+      if ((hosting.kind !== "pi" && session.id() === "") || (hosting.kind !== "claude" && at === 0)) {
+        throw new Error(`${kind} process for ${options.key} had not opened a session`);
+      }
       log.info(`agents::${kind}`, `taking up a ${kind} process after a crash`, { session: session.id(), pgid: info.pgid, busy: session.busy(), from: at });
       // A turn is running that this station did not start.
       if (session.busy()) events({ type: "turnStarted" });

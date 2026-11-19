@@ -502,6 +502,27 @@ for (const crashed of [false, true]) {
   });
 }
 
+test("a process whose station went before it was open (initialize never answered) is not taken up after a crash", async () => {
+  const { options, driver, dump } = setup({ FAKE_AGY_SILENT: "1" });
+  const opening = driver.open(options, () => {});
+  opening.catch(() => {});
+  await until(() => existsSync(dump + ".rpc") && rpc(dump).some((m) => m.method === "initialize"));
+  const [stuck] = [...(driver as unknown as { live: Set<unknown> }).live] as { runner(): string | undefined }[];
+  const runner = stuck!.runner()!;
+  driver.detach();
+  await allLeft();
+  const next = new AgyDriver({ data });
+  drivers.push(next);
+  // (refused before it is held: the hub's `endOrphans` ends its runner, and the session opens again the usual way)
+  await assert.rejects(next.adopt(options, null, () => {}), new RegExp(`agy process for ${options.key} had not opened a session`));
+  assert.equal(next.ownedRunners().size, 0);
+  const { endRunner, findRunner } = await import("../src/agents/process.ts");
+  assert.notEqual(await findRunner(data, runner), undefined);
+  await endRunner(data, runner, "test");
+  (stuck as unknown as { waiting: { failAll(e: Error): void } }).waiting.failAll(new Error("ended"));
+  await assert.rejects(opening, /ended/);
+});
+
 test("a warm Antigravity session whose CLI lacks its trajectory recovers across handover and on a live prompt without an error notice", async () => {
   const { Hub } = await import("../src/sessions/hub.ts");
   const { InternalChat } = await import("../src/sessions/internal.ts");
