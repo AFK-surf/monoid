@@ -1313,17 +1313,16 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
       }
       await both("borrowed checked again, the same", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
       assert.deepEqual(writes, { ts: 0, mb: 0 }, "the same reading not written again");
-      const hostSaid = tsParts.shared.status;
-      const changedSaid = async (pr: Json) => {
-        const got = await hostSaid(pr);
+      const hostSaid = [tsParts.shared.status, mbParts.shared.status] as const;
+      const changedSaid = (said: typeof tsParts.shared.status) => async (pr: Json) => {
+        const got = await said(pr);
         return { ...got, quota: { ...got.quota, windows: [{ label: "5 小时", usedPercent: 41, resetsAt: null }] } };
       };
-      tsParts.shared.status = changedSaid;
-      mbParts.shared.status = changedSaid;
+      tsParts.shared.status = changedSaid(hostSaid[0]);
+      mbParts.shared.status = changedSaid(hostSaid[1]);
       await both("borrowed checked again, changed", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
       assert.deepEqual(writes, { ts: 1, mb: 1 }, "a changed reading at the same checkedAt written");
-      tsParts.shared.status = hostSaid;
-      mbParts.shared.status = hostSaid;
+      [tsParts.shared.status, mbParts.shared.status] = hostSaid;
       await both("borrowed checked again, as before", () => tsAccounts.check("bx", "zh"), "check", "bx", "zh");
       assert.deepEqual(writes, { ts: 2, mb: 2 });
       await alike("borrowed checked again");

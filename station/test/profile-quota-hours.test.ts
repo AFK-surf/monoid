@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Accounts } from "../src/accounts/index.ts";
 import { checkConfig } from "../src/accounts/check.ts";
 import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
@@ -68,8 +69,9 @@ describe("an account's last hours", () => {
     const { store } = storeAt(start);
     store.setProfileQuota("cc", quota(start - PACE_HOURS * HOUR_MS - HOUR_MS, 5));
     const said: string[] = [];
-    const exec = store.db.exec.bind(store.db);
-    store.db.exec = (sql: string) => (said.push(sql), exec(sql));
+    // (on the database under the store's timing proxy, which calls its exec)
+    const exec = DatabaseSync.prototype.exec;
+    store.db.exec = function (this: DatabaseSync, sql: string) { said.push(sql); return exec.call(this, sql); };
     store.setProfileQuota("cc", quota(start + 60_000, 20));
     assert.deepEqual(said, ["BEGIN IMMEDIATE", "COMMIT"], "the status, its hour and the old hours' cut committed once");
     const rows = store.db.prepare("SELECT hour FROM profile_quota_hours WHERE profile = 'cc'").all() as { hour: number }[];
