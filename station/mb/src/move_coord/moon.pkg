@@ -1,5 +1,6 @@
 import {
   "station/host",
+  "station/host_world",
   "station/jsjson",
   "station/nodepath",
   "station/memory",

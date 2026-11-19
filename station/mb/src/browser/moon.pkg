@@ -3,6 +3,7 @@ import {
   "base/hash",
   "base/url",
   "station/host",
+  "station/host_world",
   "station/jsjson",
   "station/jscase",
   "station/nodepath",
