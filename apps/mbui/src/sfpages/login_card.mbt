@@ -825,18 +825,8 @@ pub fn login_card_node(
       shown => shown
     }
   }
-  // the time, said again as each minute of a login's time left goes (login_minute_gone's)
-  let now = @signals.signal((core.now)())
-  fn next_minute() -> Unit {
-    let at = (core.now)()
-    let gone = login_minute_gone(@signals.untracked(l), at)
-    p.at_moment(p.logic_at() + 60000.0 - gone, fn() {
-      now.set((core.now)())
-      next_minute()
-    }, later=true)
-    |> ignore
-  }
-  next_minute()
+  // the time, said again as each minute of a login's time left goes
+  let now = @sf.countdown_now_node(p, core.now, fn() { number(l(), "expiresAt") })
   // signed in while its card is in view, felt as something done; failed, as something refused (feel.mbt)
   @sfbase.felt_change_node(p, fn() { text(l(), "state") == "done" }, Confirm)
   @sfbase.felt_change_node(p, fn() { text(l(), "state") == "failed" }, Reject)
@@ -857,7 +847,7 @@ pub fn login_card_node(
       // (in its login sheet its title alone: the sheet's own close is how it is put away)
       2 if in_sheet =>
         @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
-          login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, fn() { now.get() })
+          login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now)
         })
       2 =>
         @sf.login_step_card_node(
@@ -869,7 +859,7 @@ pub fn login_card_node(
             fn() { login_cancelling(core, station, shown_id()) },
             fn() { login_cancel_now(core, station, @signals.untracked(shown_id)) },
           ),
-          fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, fn() { now.get() }) },
+          fn(card) { login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place, now) },
         )
       4 =>
         @sf.login_step_card_node(x, title, in_sheet~, marked~, fn(card) {
