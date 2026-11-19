@@ -696,6 +696,8 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // the library's confirms in the middle of the window, each at its place in the window's stack of layers among what
     // else is presented (src/sf presented_node.mbt)
     @sf.presented_nodes(root)
+    // what a right click offers, over every shell, switcher, viewer and presented modal (sfdesk context_menu.mbt)
+    @sfdesk.context_menu_node(root)
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
     // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
@@ -965,6 +967,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     })
     |> ignore
     @sf.presented_nodes(root)
+    @sfdesk.context_menu_node(root)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }
 }

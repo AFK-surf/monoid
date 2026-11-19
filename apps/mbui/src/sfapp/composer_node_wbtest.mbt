@@ -243,3 +243,104 @@ test "made as nodes, keyboard and mouse: 抄送's menu has each thread's platfor
   }
   assert_true(ws.iter().any(fn(w) { w.0 == "产品讨论" && (w.2 - cc.2).abs() < 1.0 && w.1 > cc.1 }), msg="said before send: \{Repr(ws)}")
 }
+
+///|
+test "made as nodes, keyboard and mouse: right click on composer field and its I-beam area opens edit menu (Select All, Cut, Copy, Paste text & PNG); right click on +/Send does not; clicking beside Send keeps focus" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, pointing=Mouse)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composed_field_made(t))
+  t.type_text("第一行")
+  t.frame()
+  let field_at = fn() {
+    let (x, y, _, h) = t.ime_rect()
+    (x + 1.0, y + h / 2.0)
+  }
+  // 1. Right click on the text field opens edit menu with 全选 enabled
+  let (fx, fy) = field_at()
+  t.right_click(fx, fy)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("剪切") is Some(_) && t.find("复制") is Some(_) && t.find("粘贴") is Some(_) && t.find("全选") is Some(_))
+  t.tap_text("全选")
+  t.run_for(@ui.move_most_ms)
+  // 2. Right click again: selection stays painted while menu is open; Cut copies and clears
+  t.right_click(fx, fy)
+  t.run_for(@ui.move_most_ms)
+  let sel_color = (@sf.theme().p.accent & 0xFFFFFF00L) | 0x40L
+  assert_true(t.drawn_rects().iter().any(fn(rc) { rc.4 == sel_color }), msg="selection highlight stays visible while context menu is open")
+  t.tap_text("剪切")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), "第一行")
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some(""))
+  // 3. Paste text from context menu on composer I-beam area (between + and Send, below text)
+  let send = t.query(Button, label=@sf.t("web-main.composer.send")).unwrap().rect
+  let pad_x = send.0 - 80.0
+  let pad_y = send.1 + send.3 / 2.0
+  t.clipboard_gives("ab")
+  t.right_click(pad_x, pad_y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("粘贴") is Some(_), msg="right click on composer area opened edit menu")
+  t.tap_text("粘贴")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("ab"))
+  // 4. Paste PNG image via context menu attaches image.png
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  t.right_click(pad_x, pad_y)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("粘贴")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") }) }), Some(["image.png"]))
+  // 5. Right click on Send button does NOT open composer's text edit menu
+  t.right_click(send.0 + send.2 / 2.0, send.1 + send.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("全选") is None, msg="right click on Send button must not open composer edit menu")
+  // 6. Left click on composer area beside Send keeps focus instead of blurring
+  t.tap(pad_x, pad_y)
+  t.run_for(@ui.move_most_ms)
+  let (still_focused, _, _, _) = t.ime()
+  assert_true(still_focused, msg="clicking composer area beside Send keeps focus")
+}
+
+///|
+test "made as nodes, keyboard and mouse: right click on composer while a message menu is open switches cleanly to the composer's edit menu (menu_behind)" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, pointing=Mouse)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("ab")
+  t.frame()
+  let (fx, fy, _, fh) = t.ime_rect()
+  let (mx, my) = t.find("截图也换了").unwrap()
+  t.right_click(mx, my)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息") is Some(_), msg="message menu opened first")
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("全选") is Some(_) && t.find("复制消息") is None, msg="switched to composer edit menu")
+}
+
+///|
+test "made as nodes, offline chat: pasting a file or image into composer is refused with offline toast and adds no attachment" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture("chat-cold-offline")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, pointing=Mouse)
+  t.run_for(@ui.move_most_ms)
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  let (fx, fy, _, fh) = t.ime_rect()
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("粘贴")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.files.get().length() }), Some(0))
+  assert_true(t.find(@sf.t("web-main.composer.filesOffline")) is Some(_), msg="offline paste toast shown")
+}

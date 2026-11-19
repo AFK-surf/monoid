@@ -1607,9 +1607,9 @@ fn Ctx::paint_field(
   let bar = bar()
   let focused = self.has_focus(fb.id)
   let ml = st.marked.length()
-  // selection
+  // selection (kept visible while a menu or modal parks the field's focus)
   let (a, b) = st.sel()
-  if focused && a != b && ml == 0 {
+  if (focused || self.focus_parked(fb.id)) && a != b && ml == 0 {
     let (x0, l0) = st.place_of(tl, a)
     let (x1, l1) = st.place_of(tl, b)
     for l in l0..=l1 {
@@ -2416,6 +2416,17 @@ pub fn Ctx::field_edit(self : Ctx, id : Int, what : Int, paste? : String = "") -
       }
       self.focus_on(id)
       self.read_changed("a field edited")
+      match tree_said_ids.get(id) {
+        Some(nid) =>
+          match tree_fields.get(nid) {
+            Some(tf) => {
+              tree_field_told(tf)
+              tree_field_redraw()
+            }
+            None => ()
+          }
+        None => ()
+      }
     }
     None => ()
   }

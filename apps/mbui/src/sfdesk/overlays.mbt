@@ -10,7 +10,6 @@
 /// What opens over the wide frame, in node `v` (a shell's, over its panels): a right click's menu (context_menu.mbt),
 /// the rail's menu and what opens from the rail (rail_overlays_node.mbt), 待处理's panel (attention_node.mbt).
 pub fn overlays_node(v : @view.View, src : Source) -> Unit {
-  context_menu_node(v)
   rail_overlays_node(v, src)
   attention_panel_node(v, src)
 }

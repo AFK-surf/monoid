@@ -571,6 +571,7 @@ fn pane_made(
                 // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
                 body=fn(col, s, r, composer, shows) {
                   pane_made_chat(col, k)
+                  context_node(col)
                   chat_body_nodes(col, s, r, tips, stint, composer, shows)
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
