@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 2.65 | 3.56 | 14.53 | 36.75 | 55.96 | 32.25 | 65.32 | 97.44 | 119.22 |
 | [1ff8361c1](https://github.com/AFK-surf/monoid/commit/1ff8361c11dcd13b7163c7abd5b0c0b335ec7faf) fix(station): store Feishu bot identity on MoonBit | 2.65 | 3.56 | 14.53 | 36.75 | 55.96 | 32.24 | 65.32 | 97.73 | 119.22 |
 | [e354a8b79](https://github.com/AFK-surf/monoid/commit/e354a8b798d1d87f9eae929c2c8f2616b3fcb670) fix(station/mb): make a cold session's actor befor | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.47 | 123.92 |
 | [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 2.64 | 3.54 | 14.47 | 36.69 | 55.74 | 32.18 | 65.12 | 97.73 | 117.66 |
 | [266cf6bfe](https://github.com/AFK-surf/monoid/commit/266cf6bfe1eedaaac857c1ed4d889414abccf4dc) feat(mbui): add moduleDir, lifecycle hooks, meta s | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.17 | 65.1 | 97.44 | 119.89 |
 | [4e75126e9](https://github.com/AFK-surf/monoid/commit/4e75126e9ef6fbab8c5291cf1270c8f9ad3c1ce6) fix(station): wait for the turns that ran in two r | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.17 | 65.1 | 97.44 | 119.89 |
-| [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 2.64 | 3.54 | 14.47 | 36.71 | 55.74 | 32.16 | 65.1 | 97.54 | 124.67 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [1ff8361c1](https://github.com/AFK-surf/monoid/commit/1ff8361c11dcd13b7163c7abd5b0c0b335ec7faf) fix(station): store Feishu bot identity on MoonBit | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [e354a8b79](https://github.com/AFK-surf/monoid/commit/e354a8b798d1d87f9eae929c2c8f2616b3fcb670) fix(station/mb): make a cold session's actor befor | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [32e315b6d](https://github.com/AFK-surf/monoid/commit/32e315b6d31fba6f2a41cb97cdc8b554b542292e) fix(station): keep the MoonBit station's file call | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54 |
 | [266cf6bfe](https://github.com/AFK-surf/monoid/commit/266cf6bfe1eedaaac857c1ed4d889414abccf4dc) feat(mbui): add moduleDir, lifecycle hooks, meta s | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54 |
 | [4e75126e9](https://github.com/AFK-surf/monoid/commit/4e75126e9ef6fbab8c5291cf1270c8f9ad3c1ce6) fix(station): wait for the turns that ran in two r | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
-| [cc389af88](https://github.com/AFK-surf/monoid/commit/cc389af8875accd49f4960a7ec510d8b2a1894c7) fix(mbui): focus the model search when its panel o | 0.45 | 0.58 | 2.26 | 3.34 | 5.42 | 1.65 | 4.46 | 54.1 |
