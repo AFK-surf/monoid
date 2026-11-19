@@ -2702,6 +2702,8 @@ pub fn composer_sent_from_node(src : Source, w : Writing) -> @sfbase.SentFrom? {
   } else {
     // (its words from where they stand in the field)
     let words = w.field.words_at().map(fn(at) { at.0 })
+    // (the room of the field they are seen within: what of them is scrolled out of it not seen as they set out)
+    let words_room = w.field.words_at().map(fn(at) { at.1 })
     // (each quote's card by the id it is shared by once this is sent, this draft's next send with quotes: the message's
     // made with it flies from it as one box, View::shared)
     let held_quotes = @signals.untracked(fn() { w.quotes.get() })
@@ -2735,7 +2737,7 @@ pub fn composer_sent_from_node(src : Source, w : Writing) -> @sfbase.SentFrom? {
         _ => ()
       }
     }
-    Some({ words, quotes: [], quote_ids, parts, delay: 0.0 })
+    Some({ words, words_room, quote_ids, parts, delay: 0.0 })
   }
 }
 

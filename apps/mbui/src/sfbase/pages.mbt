@@ -1757,7 +1757,7 @@ pub fn reset() -> Unit {
   flights_reset()
   chat_foot_dropped.set(None)
   sent_from_at.clear()
-  sent_quotes_from_at.clear()
+  sent_words_room_at.clear()
   sent_quote_ids_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()

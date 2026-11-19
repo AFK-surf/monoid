@@ -266,3 +266,125 @@ test "a faint dark ground going to a whole light one: never darker on its way th
     assert_true(r >= least - 1, msg="at \{p}: \{r} under \{least}")
   }
 }
+
+///|
+test "what flies in from within a page's list to its rows (in_list): drawn after its rows, under its foot and under what flies in from that foot" {
+  let sent = @signals.signal(false, same=fn(a, b) { a == b })
+  let row0 : Ref[View?] = Ref(None)
+  let inner : Ref[View?] = Ref(None)
+  let outer : Ref[View?] = Ref(None)
+  let foot_box : Ref[View?] = Ref(None)
+  let list : Ref[View?] = Ref(None)
+  let tree = Tree::new(fn(root) {
+    root.box(fn(o) {
+      list.val = Some(o)
+      o.width(Is(Some(400.0))).height(Is(Some(700.0))) |> ignore
+      o.scrolls_window(
+        Scroll::list(),
+        fn() { if sent.get() { [0, 1] } else { [0] } },
+        est=100.0,
+        follows=fn() { true },
+        foot=fn(f) {
+          f.box(fn(c) {
+            foot_box.val = Some(c)
+            c.width(Is(Some(400.0))).height(Is(Some(60.0))).ground(Is(lca_green)) |> ignore
+          })
+          |> ignore
+        },
+        fn(b, k) {
+          match k {
+            1 =>
+              b.box(fn(r) {
+                r.row(Is(true)) |> ignore
+                // (from higher in the list: what an agent's line puts by a message)
+                r.box(fn(n) {
+                  inner.val = Some(n)
+                  n.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(lca_red)).flies_in(lca_straight, fn(to) {
+                    Some((to.0, to.1 - 200.0, to.2, to.3))
+                  }, in_list=true)
+                  |> ignore
+                })
+                |> ignore
+                // (from the foot: words sent from the composer)
+                r.box(fn(n) {
+                  outer.val = Some(n)
+                  n.width(Is(Some(120.0))).height(Is(Some(40.0))).ground(Is(lca_blue)).flies_in(lca_straight, fn(to) {
+                    Some((to.0, 650.0, to.2, to.3))
+                  })
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            _ =>
+              b.box(fn(r) {
+                row0.val = Some(r)
+                r.width(Is(Some(400.0))).height(Is(Some(300.0))).ground(Is(lca_blue)) |> ignore
+              })
+              |> ignore
+          }
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 700.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { sent.set(true) })
+  tree.frame(400.0, 700.0, now=1050.0) |> ignore
+  let (a, b) = (inner.val.unwrap(), outer.val.unwrap())
+  assert_true(a.flies() && b.flies(), msg="both fly")
+  let held = tree.nodes[list.val.unwrap().at].scroll_held
+  match self_flying(tree, a) {
+    Some(f) => assert_eq((f.host, f.after), (list.val.unwrap().at, held))
+    None => fail("no flight")
+  }
+  let (r0, ai, fi, bi) = (lca_index(tree, row0.val.unwrap()), lca_index(tree, a), lca_index(tree, foot_box.val.unwrap()), lca_index(tree, b))
+  assert_true(r0 >= 0 && r0 < ai && ai < fi && fi < bi, msg="\{r0} \{ai} \{fi} \{bi}")
+}
+
+///|
+test "what flies in from words a field scrolled (cut_from): what of them was seen there, opening straight to all of where it lands along its way, its own corners" {
+  let shown = @signals.signal(false, same=fn(a, b) { a == b })
+  let flier : Ref[View?] = Ref(None)
+  let tree = Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(400.0))).height(Is(Some(700.0))) |> ignore
+      p.show(fn() { shown.get() }, fn(s) {
+        s.box(fn(n) {
+          flier.val = Some(n)
+          n
+          .offset(Is((50.0, 100.0)))
+          .width(Is(Some(100.0)))
+          .height(Is(Some(40.0)))
+          .radius(Is(12.0))
+          .ground(Is(lca_blue))
+          .flies_in(lca_straight, fn(to) { Some((to.0, to.1 + 200.0, to.2, to.3)) }, cut_from=fn(to) {
+            Some((to.0, 320.0, to.0 + to.2, 330.0))
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 700.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { shown.set(true) })
+  tree.frame(400.0, 700.0, now=1000.0) |> ignore
+  let n = flier.val.unwrap()
+  assert_true(n.flies())
+  let r = fn(c : (Double, Double, Double, Double)?) {
+    c.map(fn(c) { ((c.0 * 1000.0).round() / 1000.0, (c.1 * 1000.0).round() / 1000.0, (c.2 * 1000.0).round() / 1000.0, (c.3 * 1000.0).round() / 1000.0) })
+  }
+  // (as it sets out: the band of it the field showed)
+  assert_eq(r(tree.lift_cut(n.id())), Some((50.0, 320.0, 150.0, 330.0)))
+  // (half way: that band half way open to where it lands, within where it is drawn (at 200 to 240))
+  tree.frame(400.0, 700.0, now=1100.0) |> ignore
+  assert_eq(r(tree.lift_cut(n.id())), Some((50.0, 210.0, 150.0, 235.0)))
+  assert_eq(tree.lift_cut_corners(n.id()), Some((12.0, 12.0, 12.0, 12.0)))
+  tree.frame(400.0, 700.0, now=1300.0) |> ignore
+  assert_true(!n.flies())
+  assert_eq(tree.lift_cut(n.id()), None)
+}

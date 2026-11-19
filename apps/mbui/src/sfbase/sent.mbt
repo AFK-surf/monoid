@@ -63,7 +63,7 @@ pub fn sent_reset() -> Unit {
   sent_pictures_told.clear()
   sent_from_at.clear()
   sent_parts_at.clear()
-  sent_quotes_from_at.clear()
+  sent_words_room_at.clear()
   sent_quote_ids_at.clear()
   sent_delay_at.clear()
   sent_delay_fresh.clear()
@@ -193,7 +193,7 @@ fn going_up(going : Array[Json]) -> (Array[Json], Array[(String, Int, Int)]) {
 
 ///|
 /// Where what is sent from here stood in the composer as it was sent, in the window: its words (the top left of their
-/// first line), each quote's card (x, y, w, h, in the order the composer held them; None where one was not drawn) and
+/// first line) and the field's room they were seen within there (x, y, w, h: `words_room`, none where not said), and
 /// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key), and how long
 /// after it is sent all of it sets out (`delay`, ms; 0 at once: a chat just made's first words set out as its scene
 /// says as it leaves whatever this says, fresh's fly_after, sent_delay_take). On a chat's page made as nodes its row flies from there (mbui's
@@ -203,7 +203,7 @@ fn going_up(going : Array[Json]) -> (Array[Json], Array[(String, Int, Int)]) {
 /// with it flying from the composer's as one box, its place never said.
 pub(all) struct SentFrom {
   words : (Double, Double)?
-  quotes : Array[(Double, Double, Double, Double)?]
+  words_room : (Double, Double, Double, Double)?
   quote_ids : Array[String]
   parts : Array[(String, (Double, Double, Double, Double))]
   delay : Double
@@ -239,8 +239,9 @@ pub fn sent_local(
         Some(at) => sent_from_at[key] = at
         None => ()
       }
-      if !f.quotes.is_empty() {
-        sent_quotes_from_at[key] = f.quotes
+      match f.words_room {
+        Some(room) => sent_words_room_at[key] = room
+        None => ()
       }
       if f.quote_ids.iter().any(fn(i) { i != "" }) {
         sent_quote_ids_at[key] = f.quote_ids
@@ -364,7 +365,7 @@ pub fn sent_local_gone(rk : String, key : String) -> Unit {
       sending.remove(i) |> ignore
       // (where it stood, if its row never took it: nothing flies from there now)
       sent_from_at.remove(key)
-      sent_quotes_from_at.remove(key)
+      sent_words_room_at.remove(key)
       sent_quote_ids_at.remove(key)
       sent_parts_at.remove(key)
       sent_delay_at.remove(key)
@@ -456,27 +457,25 @@ pub fn sent_picture_told(station : String, a : Attachment) -> String? {
 let sent_from_at : Map[String, (Double, Double)] = Map([])
 
 ///|
-/// Where the quotes' cards of what was sent from here stood in the composer as it was sent (each one's place and size
-/// in the window, in the order the composer held them; None where one was not drawn), by the key its row has in its
-/// chat's list, till that row's cards take them to fly from there (sent_quotes_from_take): the composer an old view's,
-/// as sent_from_at says.
-let sent_quotes_from_at : Map[String, Array[(Double, Double, Double, Double)?]] = Map([])
+/// The room of the composer's field the words of what was sent from here were seen within as they were sent (x, y, w, h
+/// in the window: SentFrom's `words_room`), by the key its row has in its chat's list, till that row's bubble takes it
+/// (sent_words_room_take): what of them was scrolled out of it is not seen as they set out.
+let sent_words_room_at : Map[String, (Double, Double, Double, Double)] = Map([])
 
 ///|
-/// Where the quotes' cards of what was sent from here as `key` stood as it was sent (sent_local's `from`), taken:
-/// told once.
-pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Double)?] {
-  let at = sent_quotes_from_at.get(key).unwrap_or([])
-  sent_quotes_from_at.remove(key)
+/// The room of the composer's field the words of what was sent from here as `key` were seen within as they were sent
+/// (sent_local's `from`), taken: told once.
+pub fn sent_words_room_take(key : String) -> (Double, Double, Double, Double)? {
+  let at = sent_words_room_at.get(key)
+  sent_words_room_at.remove(key)
   at
 }
 
 ///|
 /// Whether anything of what was sent from here as `key` (its words, its quotes' cards, its parts) waits for its row to
-/// fly from where it stood (sent_from_take, sent_quotes_from_take, sent_quote_ids_take, sent_part_take), not taken.
+/// fly from where it stood (sent_from_take, sent_quote_ids_take, sent_part_take), not taken.
 pub fn sent_from_waits(key : String) -> Bool {
   sent_from_at.contains(key) ||
-  sent_quotes_from_at.contains(key) ||
   sent_quote_ids_at.contains(key) ||
   sent_parts_at.contains(key)
 }

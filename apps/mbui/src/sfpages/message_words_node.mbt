@@ -101,6 +101,7 @@ fn mine_bubble_node(
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   cards? : (@sf.TipLayer, (@sf.LinkOf) -> @sf.LinkCard?),
   flies_from? : (Double, Double)? = None,
+  words_room? : (Double, Double, Double, Double)? = None,
   fly? : SentFly = sent_fly_alone,
 ) -> Unit {
   v.box(fn(b) {
@@ -108,9 +109,19 @@ fn mine_bubble_node(
     // (sent from here a moment ago: from where its words stood in the composer's field, its words there as they were
     // typed, its ground coming in round them as they go across (the old page's desktop flight, flight_ground: what
     // every composer sends with): a flight, sf/motion.mbt's kind 4; View::flies_in)
+    // (words the field had scrolled, some of them out of its room (`words_room`): none of those seen as they set out,
+    // what is seen of them opening to the whole bubble on its way; words all in it, all of them seen)
     match flies_from {
-      Some((x, y)) =>
-        fly.flies_in(b, sent_words_part, fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) }, bare_from=true)
+      Some((x, y)) => {
+        let cut_from = fn(to : (Double, Double, Double, Double)) {
+          match words_room {
+            Some((_, ry, _, rh)) if y < ry - 1.0 || y + (to.3 - 2.0 * bubble_top) > ry + rh + 1.0 =>
+              Some((x - bubble_side, ry - bubble_top, x - bubble_side + to.2, ry + rh + bubble_top))
+            _ => None
+          }
+        }
+        fly.flies_in(b, sent_words_part, fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) }, bare_from=true, cut_from~)
+      }
       None => ()
     }
     // (on the page's way to a wider column (a side panel sliding out), laid out as wide as where it goes, as long as it
@@ -198,13 +209,11 @@ fn mine_said_node(
   // SentFly, setting out as long after it was sent as it says (sfbase's sent_delay_take: none but a new chat's first
   // words on 窄排法))
   let flies_from = @sfbase.sent_from_take(@signals.untracked(key))
-  let quotes_from = @sfbase.sent_quotes_from_take(@signals.untracked(key))
+  // (and the room of the field its words were seen within there)
+  let words_room = @sfbase.sent_words_room_take(@signals.untracked(key))
   // (a composer made as nodes: the ids its quotes' cards were shared by, each card here flying from its own as one box)
   let quote_ids = @sfbase.sent_quote_ids_take(@signals.untracked(key))
-  let quotes_n = if quotes_from.length() > quote_ids.length() { quotes_from.length() } else { quote_ids.length() }
-  let quotes_fly = Array::makei(quotes_n, fn(i) {
-    quotes_from.get(i).unwrap_or(None) is Some(_) || quote_ids.get(i).unwrap_or("") != ""
-  })
+  let quotes_fly = quote_ids.map(fn(id) { id != "" })
   let parts_flying = @sfbase.sent_parts_flying(@signals.untracked(key))
   let has_parts = !parts_flying.is_empty() || quotes_fly.iter().any(fn(q) { q })
   let made_at = v.cause_at()
@@ -262,7 +271,7 @@ fn mine_said_node(
           |> ignore
         None => ()
       }
-      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from, shared_ids=quote_ids, flies_of~, fly~)
+      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, shared_ids=quote_ids, flies_of~, fly~)
       message_files_node(
         col,
         src,
@@ -299,6 +308,7 @@ fn mine_said_node(
           lit=fn() { if said() { lit() } else { ("", 0L) } },
           cards=(here.tips, fn(l) { if said() { cards(l) } else { None } }),
           flies_from~,
+          words_room~,
           fly~,
         )
       })
@@ -373,14 +383,20 @@ fn mine_said_node(
             // still 0 of the way across, so nothing under it seen then; read by the clock till that moment is gone;
             // lifted strictly vertically under its rising lead (`from.0 == to.0`) so it stays under its bubble uncut by
             // the row's clip and never shifts across)
-            fly.flies_in(n, "under", fn(to) {
-              let dy = lead_dy.val
-              if dy > 0.5 {
-                Some((to.0, to.1 + dy, to.2, to.3))
-              } else {
-                None
-              }
-            })
+            // (from within the list to within it: drawn among its rows, under its foot and what flies from that foot)
+            fly.flies_in(
+              n,
+              "under",
+              fn(to) {
+                let dy = lead_dy.val
+                if dy > 0.5 {
+                  Some((to.0, to.1 + dy, to.2, to.3))
+                } else {
+                  None
+                }
+              },
+              in_list=true,
+            )
             n.alpha(By(fn() {
               if n.drawn_while(fn(now) { now <= sent_at }) <= sent_at {
                 return 0.0
@@ -636,6 +652,8 @@ fn SentFly::flies_in(
   from : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
   up_late? : Double = sent_up_late,
   bare_from? : Bool = false,
+  in_list? : Bool = false,
+  cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
 ) -> Unit {
   let lead = part == self.lead
   let from_fn = if lead {
@@ -650,7 +668,7 @@ fn SentFly::flies_in(
   } else {
     from
   }
-  v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~) |> ignore
+  v.flies_in(self.flight, from_fn, up_late~, bare_from~, far_of=sent_far, lead~, in_list~, cut_from?=cut_from) |> ignore
   if lead {
     (self.led)(v)
   }
