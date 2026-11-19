@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
 | [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.39 | 119.55 |
 | [cd3fb3af9](https://github.com/AFK-surf/monoid/commit/cd3fb3af93521eeecb223603e91325eaa3709dc7) fix(station): wait for job groups to be gone in jo | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.34 | 111.34 |
 | [a2b41a591](https://github.com/AFK-surf/monoid/commit/a2b41a59114aafd6a66796600b73a35f9364346f) ci(release): shorten the Mac app build, the statio | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.34 | 111.34 |
-| [d94e363fe](https://github.com/AFK-surf/monoid/commit/d94e363feaaf708095c3d8bd41b94e46aafa8634) feat(mbui): add generic updater library and releas | 2.64 | 3.54 | 14.47 | 36.7 | 55.73 | 32.16 | 65.08 | 97.42 | 121.91 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
 | [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1d1db3785](https://github.com/AFK-surf/monoid/commit/1d1db37857c5183174fe5c54064fd098e052cc73) feat(mbui): complete 6-target packager, prebuilt W | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
 | [cd3fb3af9](https://github.com/AFK-surf/monoid/commit/cd3fb3af93521eeecb223603e91325eaa3709dc7) fix(station): wait for job groups to be gone in jo | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.07 |
 | [a2b41a591](https://github.com/AFK-surf/monoid/commit/a2b41a59114aafd6a66796600b73a35f9364346f) ci(release): shorten the Mac app build, the statio | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.18 |
-| [d94e363fe](https://github.com/AFK-surf/monoid/commit/d94e363feaaf708095c3d8bd41b94e46aafa8634) feat(mbui): add generic updater library and releas | 0.45 | 0.58 | 2.25 | 3.34 | 5.42 | 1.65 | 4.45 | 54.18 |
