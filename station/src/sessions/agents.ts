@@ -970,6 +970,7 @@ export const AgentsLive = (control: Control) =>
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),
         orphans: store,
+        clonesActive: () => hub.clones.hasActive(),
       });
       upkeep.start();
 

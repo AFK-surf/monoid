@@ -26,7 +26,44 @@ import { Fibers, wall } from "./fibers.ts";
 import { clean, inside, within } from "./paths.ts";
 import { walkBounded, yieldLoop } from "./walk.ts";
 import { log } from "./log.ts";
+import {
+  BRANCH_MIN_AGE_MS,
+  PROCESS_DIR_SEGMENTS,
+  PROCESS_FILE_RE,
+  REPO_BRANCHES_EVERY_MS,
+  REPO_BRANCHES_MAX_PER_REPO,
+  REPO_BUNDLE_MS,
+  REPO_GC_TIMEOUT_MS,
+  REPO_GIT_TIMEOUT_MS,
+  STALE_BRANCH_MS,
+  type RepoBranchCleanupSummary,
+  type RepoGitRun,
+  isProcessFile,
+  pruneAllRepoBranches,
+  pruneExpiredRepoBundles,
+  pruneRepoBranchesIn,
+  runRepoGit,
+} from "./repo-branches.ts";
 import { collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
+
+export {
+  BRANCH_MIN_AGE_MS,
+  PROCESS_DIR_SEGMENTS,
+  PROCESS_FILE_RE,
+  REPO_BRANCHES_EVERY_MS,
+  REPO_BRANCHES_MAX_PER_REPO,
+  REPO_BUNDLE_MS,
+  REPO_GC_TIMEOUT_MS,
+  REPO_GIT_TIMEOUT_MS,
+  STALE_BRANCH_MS,
+  type RepoBranchCleanupSummary,
+  type RepoGitRun,
+  isProcessFile,
+  pruneAllRepoBranches,
+  pruneExpiredRepoBundles,
+  pruneRepoBranchesIn,
+  runRepoGit,
+};
 
 const MiB = 1024 ** 2;
 const HOUR = 3600_000;
@@ -128,7 +165,8 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
   { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)", maxAgeMs: BOARD_FILES_GONE_MS, reclaim: "Upkeep goneBoardFiles" },
   { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)", reclaim: "sessions/lifecycle.ts deleteSession (exclusive transcripts), ops/storage.ts relieveOrphanTranscripts (low disk only)" },
-  { name: "repos", class: "session-bound", what: "the repositories' shared clones", reclaim: "sessions/lifecycle.ts relieveRepos (low disk only)" },
+  { name: "repos", class: "session-bound", what: "the repositories' shared clones", reclaim: "Upkeep pruneAllRepoBranches (daily), sessions/lifecycle.ts relieveRepos (low disk only)" },
+  { name: "repo-bundles", class: "bounded-ephemeral", what: "git bundles of stale unpushed branches pruned from shared clones", maxAgeMs: REPO_BUNDLE_MS, reclaim: "Upkeep pruneExpiredRepoBundles" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },
   { name: "share", class: "authoritative", what: "the memory's versions shared between stations" },
   { name: "xshare", class: "authoritative", what: "chats shared with other workspaces" },
@@ -735,6 +773,10 @@ export type UpkeepParts = {
   checkpoint?: () => Promise<unknown>;
   /// Store queries for pruning orphan session rooms under `<data>/sessions`.
   orphans?: OrphanStore;
+  /// Whether any shared clone is currently in progress (skips daily repo branch cleanup while active).
+  clonesActive?: () => boolean;
+  /// Optional git runner override for repo branch cleanup (tests).
+  repoGit?: RepoGitRun;
 };
 
 /// The station's own files held to their bounds (the manifest's `reclaim`): every UPKEEP_EVERY_MS (`timer: a sample
@@ -744,6 +786,7 @@ export class Upkeep {
   readonly #time: Fibers;
   #running: Promise<void> | null = null;
   #lastOrphanRoomsAt: number | null = null;
+  #lastRepoBranchesAt: number | null = null;
 
   constructor(parts: UpkeepParts) {
     this.#parts = parts;
@@ -796,6 +839,17 @@ export class Upkeep {
     await this.#step("transcript marks", () => orphanMarks(join(data, "transcript-marks")));
     await this.#step("board files", () => goneBoardFiles(join(data, "board-files"), BOARD_FILES_GONE_MS, now));
     await this.#step("repo worktrees", () => pruneRepoWorktrees(data));
+    await this.#step("repo bundles", () => pruneExpiredRepoBundles(data, now));
+    if (this.#lastRepoBranchesAt === null || now - this.#lastRepoBranchesAt >= REPO_BRANCHES_EVERY_MS) {
+      this.#lastRepoBranchesAt = now;
+      await this.#step("repo branches", () =>
+        pruneAllRepoBranches(data, now, {
+          clonesActive: this.#parts.clonesActive,
+          pruneWorktrees: pruneRepoWorktrees,
+          git: this.#parts.repoGit,
+        }),
+      );
+    }
     if (this.#parts.orphans && (this.#lastOrphanRoomsAt === null || now - this.#lastOrphanRoomsAt >= ORPHAN_ROOM_EVERY_MS)) {
       this.#lastOrphanRoomsAt = now;
       const store = this.#parts.orphans;

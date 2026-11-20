@@ -6,7 +6,8 @@
 // a full reclamation pass runs (throttled to once per RELIEVE_FULL_EVERY_MS = 30 min) across all four steps without
 // stopping early between steps: idle unarchived rebuildables (1h threshold, sessions/lifecycle.ts `relieveIdleRebuildable`),
 // archived workspaces before their time (`relieveArchived`), orphaned UUID transcripts under `<data>` older than 7 days
-// (ops/storage.ts `relieveOrphanTranscripts`), and unreferenced shared clones in `<data>/repos` (`relieveRepos`). Only the mirrors went at first: a station, which runs no one's tasks, had
+// (ops/storage.ts `relieveOrphanTranscripts`), and unreferenced shared clones in `<data>/repos` untouched for 3 days
+// (`relieveRepos`, cleaning local branches and bundling >14d stale unpushed branches first). Only the mirrors went at first: a station, which runs no one's tasks, had
 // none, and its 89G disk was down to 2.3G free with 10G of archived workspaces waiting out their week (2026-10-25). And
 // only under 20 GiB at all, every five minutes, while remote/sessions grew to 63 GiB in five days (2026-11-15).
 
