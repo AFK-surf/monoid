@@ -23,6 +23,32 @@ import { WS, A, B, C, world, endTurn, stillfailChat, gitEnv, filesOf, entries, h
 
 type Json = any;
 
+test("a chat's rows go a few tables to a request where that station takes them so, one table a request to a station from before; the chat there is the same either way", async () => {
+  // (real run, 2026-11-20: a chat of 3 entries held 30 s toward a busy station, a dozen round trips of 2-3 s each)
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const rowsAsked = () => w.heard.filter((h) => h.method === "handover.rows" && h.from === A).length;
+  const one = await stillfailChat(a);
+  const before = entries(a, one.thread);
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: one.key, follow: ["jobs"] });
+  await w.quiet();
+  assert.deepEqual(out.done, [{ module: "chats", id: one.key }]);
+  const batched = rowsAsked();
+  assert.ok(batched >= 1 && batched <= 2, `its rows in a request or two: ${batched}`);
+  assert.deepEqual(entries(b, homeThread(b, one.key)), before);
+  // A station from before: begin says nothing of rows, and each table's page goes alone, as before.
+  b.answered = (request, answer) => (request?.method === "handover.begin" && answer !== null && typeof answer === "object" ? (({ rows: _, ...rest }) => rest)(answer) : answer);
+  const two = await stillfailChat(a);
+  const was = rowsAsked();
+  const out2 = await a.moves.scheduler.move(WS, B, { module: "chats", item: two.key, follow: ["jobs"] });
+  await w.quiet();
+  assert.deepEqual(out2.done, [{ module: "chats", id: two.key }]);
+  const alone = rowsAsked() - was;
+  assert.ok(alone >= 4 && alone > batched, `a table a request: ${alone} against ${batched}`);
+  assert.equal(entries(b, homeThread(b, two.key)).length, entries(a, two.thread).length);
+});
+
 test("a still.fail chat handed over goes on there: shown there, out of sight here and said where it went; its next turn takes up its runtime session on the account's copy there; nothing said in it", async () => {
   const w = world();
   const a = w.get(A);

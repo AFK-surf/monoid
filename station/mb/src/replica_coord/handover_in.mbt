@@ -201,40 +201,59 @@ pub async fn Handover::answer(self : Handover, in_workspace : (String, String) -
         self.step(peer, i, request, place, Some(self.placing(i, carry)))
       }
       "handover.rows" => {
-        let table = match at(request, "table") {
+        // (one table's page, or several tables' pages in the order they go: `rows: "batched"`, at most `rows_most` rows
+        // in all; handover.ts)
+        let bad = () => refused(self.why("badRequest", args=[("detail", "not a page of a chat's rows")]))
+        let named = (v : J?) => match v {
           None | Some(Null) => ""
           v => show_value(v)
         }
-        if i.s("step") != "coming" && (i.s("step") != "shown" || !after_shown.contains(table)) {
-          raise refused(self.why("shownAlready"))
+        let asked : Array[J] = match at(request, "tables") {
+          Some(Arr(ts)) => ts
+          _ => [request]
         }
-        let rows = match at(request, "rows") {
-          Some(Arr(r)) => r
-          _ => raise refused(self.why("badRequest", args=[("detail", "not a page of a chat's rows")]))
+        let pages : Array[(String, Array[J])] = []
+        for t in asked {
+          match at(t, "rows") {
+            Some(Arr(r)) => pages.push((named(at(t, "table")), r))
+            _ => raise bad()
+          }
         }
-        if !chat_tables.contains(table) || rows.length() > 500 {
-          raise refused(self.why("badRequest", args=[("detail", "not a page of a chat's rows")]))
+        let mut all = 0
+        for p in pages {
+          if i.s("step") != "coming" && (i.s("step") != "shown" || !after_shown.contains(p.0)) {
+            raise refused(self.why("shownAlready"))
+          }
+          if !chat_tables.contains(p.0) {
+            raise bad()
+          }
+          all = all + p.1.length()
+        }
+        if pages.length() == 0 || all > rows_most {
+          raise bad()
         }
         let page = str_at(request, "page")
         if page is Some(p) && i.so("page") == Some(p) {
           return jo([("ok", jb(true))])
         }
         self.failing("import")
-        let ctx = self.store("importRows", [
-          i.get("ctx").unwrap_or(Null),
-          js(table),
-          ja(rows),
-          if i.s("step") == "coming" {
-            js(i.s("id"))
-          } else {
-            Null
-          },
-        ])
-        match ctx {
-          Obj(_) => i.set("ctx", ctx)
-          _ => ()
+        for p in pages {
+          let ctx = self.store("importRows", [
+            i.get("ctx").unwrap_or(Null),
+            js(p.0),
+            ja(p.1),
+            if i.s("step") == "coming" {
+              js(i.s("id"))
+            } else {
+              Null
+            },
+          ])
+          match ctx {
+            Obj(_) => i.set("ctx", ctx)
+            _ => ()
+          }
         }
-        if i.s("step") == "shown" && usage_tables.contains(table) {
+        if i.s("step") == "shown" && pages.iter().any(p => usage_tables.contains(p.0)) {
           self.usage_of(i.keys(), false)
         }
         self.failing("imported")
@@ -525,7 +544,7 @@ async fn Handover::begin(self : Handover, origin : String, ws : String, id : Str
     _ => (None, None)
   }
   let git = (self.d.has_git)() catch { _ => false }
-  jo([("ok", jb(true)), ("free", opt_num(free)), ("total", opt_num(total)), ("git", jb(git)), ("usage", jb(true))])
+  jo([("ok", jb(true)), ("free", opt_num(free)), ("total", opt_num(total)), ("git", jb(git)), ("usage", jb(true)), ("rows", js("batched"))])
 }
 
 ///|

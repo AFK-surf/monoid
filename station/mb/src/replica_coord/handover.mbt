@@ -1368,6 +1368,8 @@ pub async fn Handover::hand_over(
     self.mark(o, "begin")
     let begun = self.begin_there(o, stopped_for)
     o.set("usage", jb(at(begun, "usage") is Some(Bool(true))))
+    // (several tables' pages in one request, where that station takes them so: handover.ts `batched`)
+    o.set("batched", jb(at(begun, "rows") is Some(Str("batched"))))
     self.mark(o, "first")
     self.files(o, begun, progress, false)
     self.mark(o, "turn")
@@ -1836,11 +1838,7 @@ fn bump(xs : Array[(String, Double)], k : String, n : Double) -> Unit {
 async fn Handover::send_rows(self : Handover, o : Rec, from : J?) -> Counted {
   let sent : Counted = { sessions: 0.0, entries: [], letters: [], rows: [] }
   let keys = jstrs(o.keys())
-  let page = async fn(table : String, rows : Array[J]) {
-    if rows.length() == 0 {
-      return
-    }
-    ignore(self.ask_to(o, [("method", js("handover.rows")), ("table", js(table)), ("rows", ja(rows)), ("page", js(self.w.fs.random_hex(8)))]))
+  let counted = fn(table : String, rows : Array[J]) {
     if table == "sessions" {
       sent.sessions += rows.length().to_double()
     } else if table == "entries" || table == "letters" {
@@ -1854,6 +1852,47 @@ async fn Handover::send_rows(self : Handover, o : Rec, from : J?) -> Counted {
       }
     } else if table != "threads" {
       bump(sent.rows, table, rows.length().to_double())
+    }
+  }
+  // (pages of several tables held for one request, in the order they were read, at most `rows_most` rows in all, where
+  // that station takes them so: handover.ts `batched`)
+  let batched = o.b("batched")
+  let held : Array[(String, Array[J])] = []
+  let held_rows = [0]
+  let flush = async fn() {
+    if held.length() == 0 {
+      return
+    }
+    let tables = held.copy()
+    held.clear()
+    held_rows[0] = 0
+    // (a page of its own: asked again, as its answer was lost, it is not taken twice there)
+    let id = self.w.fs.random_hex(8)
+    if tables.length() == 1 {
+      ignore(self.ask_to(o, [("method", js("handover.rows")), ("table", js(tables[0].0)), ("rows", ja(tables[0].1)), ("page", js(id))]))
+    } else {
+      ignore(self.ask_to(o, [("method", js("handover.rows")), ("tables", ja(tables.map(t => jo([("table", js(t.0)), ("rows", ja(t.1))])))), ("page", js(id))]))
+    }
+    for t in tables {
+      counted(t.0, t.1)
+    }
+  }
+  let page = async fn(table : String, rows : Array[J]) {
+    if rows.length() == 0 {
+      return
+    }
+    if !batched {
+      ignore(self.ask_to(o, [("method", js("handover.rows")), ("table", js(table)), ("rows", ja(rows)), ("page", js(self.w.fs.random_hex(8)))]))
+      counted(table, rows)
+      return
+    }
+    if held_rows[0] + rows.length() > rows_most {
+      flush()
+    }
+    held.push((table, rows))
+    held_rows[0] = held_rows[0] + rows.length()
+    if held_rows[0] >= rows_most {
+      flush()
     }
   }
   let pages = async fn(table : String, of : J, after0 : J) -> J? {
@@ -1958,8 +1997,13 @@ async fn Handover::send_rows(self : Handover, o : Rec, from : J?) -> Counted {
     }
     o.set("usageSent", jo(last))
   }
+  flush()
   sent
 }
+
+///|
+/// The most rows one `handover.rows` takes in all, as one page of a table takes (handover.ts `ROWS_MOST`).
+let rows_most : Int = 500
 
 ///|
 /// Where what was sent and what it has differ, in words (None: they do not).

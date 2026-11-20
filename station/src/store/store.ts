@@ -1896,10 +1896,15 @@ export class Store {
   /// `ctx.ws` (not shown) until `showChat`. `ctx` says what was put in.
   /// `id`: the hand-over's, whose ctx is kept with the rows (`handover_in`, `importCtx`).
   importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[], id?: string): void {
+    this.importPages(ctx, [{ table, rows }], id);
+  }
+
+  /// Pages of several tables of another station's chat put in, in their order, in one transaction (`importRows`'s).
+  importPages(ctx: handover.ImportCtx, pages: readonly { table: handover.ChatTable; rows: Json[] }[], id?: string): void {
     this.#with((changes) => {
       const touched: handover.Touched = { sessions: new Set(), threads: new Set() };
       this.#tx(() => {
-        handover.importRows(this.db, ctx, table, rows, touched);
+        for (const p of pages) handover.importRows(this.db, ctx, p.table, p.rows, touched);
         if (id !== undefined) this.#run("INSERT INTO handover_in (id, ctx) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET ctx = ?2", id, JSON.stringify(ctx));
       });
       for (const key of touched.sessions) this.#wsOf.delete(key);

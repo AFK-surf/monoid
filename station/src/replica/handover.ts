@@ -55,6 +55,11 @@ type Json = any;
 /// How long a hand-over waits for a busy chat's turn to end, where it was asked to wait.
 export const TURN_WAIT_MS = 10 * 60_000;
 
+/// What `handover.begin` answers where several tables' pages go in one `handover.rows` (`tables`), and the most rows
+/// one request takes in all, as one page of a table takes.
+export const ROWS_BATCHED = "batched";
+export const ROWS_MOST = 500;
+
 /// What a chat's station sends after it was shown where it went: what was said there meanwhile, and what its agents
 /// were counted to have spent as it went (the usage counter reads a transcript a while after its turn ended).
 const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries", ...USAGE_TABLES];
@@ -129,6 +134,10 @@ export type Out = {
   /// The station it goes to takes its calls (`handover.begin`'s `usage`): they go with its rows; and each session's last
   /// call sent (its `at` and id), what is sent after it.
   usage?: boolean; usageSent?: Record<string, [number, string] | null>;
+  /// The station it goes to takes several tables' pages in one request (`handover.begin`'s `rows: "batched"`): a small
+  /// chat's rows go in a request or two, not one a table (real run, 2026-11-20: a chat of 3 entries held 30 s toward a
+  /// busy station, a dozen round trips of 2-3 s each).
+  batched?: boolean;
 };
 /// A step of one on the station it goes to: being put in (`coming`), shown (`shown`), taken out (`dropped`).
 /// `stoppedFor`: it arrives stopped, waiting for that; `bindings`: the single-session connects (as known here) bound to
@@ -887,6 +896,7 @@ export class Handover {
       // (one from before calls went with a chat takes none: they stay here, and go as it is heard from once it does,
       // `#syncHandedUsage`)
       o.usage = begun?.usage === true;
+      o.batched = begun?.rows === ROWS_BATCHED;
       this.#mark(o, "first");
       await this.#files(o, begun, opts.progress, false);
       this.#mark(o, "turn");
@@ -1098,13 +1108,37 @@ export class Handover {
   async #sendRows(o: Out, ask: (r: Json) => Promise<Json>, from: Out["sent"] | null): Promise<Counts> {
     const store = this.#d.store;
     const sent: Counts = { sessions: 0, entries: {}, letters: {}, rows: {} };
-    const page = async (table: ChatTable, rows: Json[]) => {
-      if (rows.length === 0) return;
-      // (a page of its own: asked again, as its answer was lost, it is not taken twice there)
-      await ask({ method: "handover.rows", table, rows, page: randomBytes(8).toString("hex") });
+    const counted = (table: ChatTable, rows: Json[]) => {
       if (table === "sessions") sent.sessions += rows.length;
       else if (table === "entries" || table === "letters") for (const r of rows) sent[table][String(r.thread)] = (sent[table][String(r.thread)] ?? 0) + 1;
       else if (table !== "threads") sent.rows[table] = (sent.rows[table] ?? 0) + rows.length;
+    };
+    // (pages of several tables held for one request, in the order they were read, at most ROWS_MOST rows in all, where
+    // that station takes them so: `batched`)
+    let held: { table: ChatTable; rows: Json[] }[] = [];
+    let heldRows = 0;
+    const flush = async () => {
+      if (held.length === 0) return;
+      const tables = held;
+      held = [];
+      heldRows = 0;
+      // (a page of its own: asked again, as its answer was lost, it is not taken twice there)
+      const id = randomBytes(8).toString("hex");
+      if (tables.length === 1) await ask({ method: "handover.rows", table: tables[0]!.table, rows: tables[0]!.rows, page: id });
+      else await ask({ method: "handover.rows", tables, page: id });
+      for (const t of tables) counted(t.table, t.rows);
+    };
+    const page = async (table: ChatTable, rows: Json[]) => {
+      if (rows.length === 0) return;
+      if (o.batched !== true) {
+        await ask({ method: "handover.rows", table, rows, page: randomBytes(8).toString("hex") });
+        counted(table, rows);
+        return;
+      }
+      if (heldRows + rows.length > ROWS_MOST) await flush();
+      held.push({ table, rows });
+      heldRows += rows.length;
+      if (heldRows >= ROWS_MOST) await flush();
     };
     // (the last row sent: of the page before where the last is empty)
     const pages = async (table: ChatTable, of: number | string, after: Json = null) => {
@@ -1148,6 +1182,7 @@ export class Handover {
       }
       o.usageSent = last;
     }
+    await flush();
     void CHAT_TABLES;
     return sent;
   }
@@ -1435,16 +1470,25 @@ export class Handover {
               return await this.#step(peer, i, request, place, this.#placing(i, carry));
             }
             case "handover.rows": {
-              const table = String(request.table ?? "") as ChatTable;
-              // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
-              if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(table))) throw new Refused(why("shownAlready"));
-              if (!CHAT_TABLES.includes(table) || !Array.isArray(request.rows) || request.rows.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
+              // (one table's page, or several tables' pages in the order they go: `rows: "batched"`, at most ROWS_MOST
+              // rows in all)
+              const pages: { table: ChatTable; rows: Json[] }[] = Array.isArray(request.tables)
+                ? request.tables.map((t: Json) => ({ table: String(t?.table ?? "") as ChatTable, rows: t?.rows }))
+                : [{ table: String(request.table ?? "") as ChatTable, rows: request.rows }];
+              let all = 0;
+              for (const p of pages) {
+                // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
+                if (i.step !== "coming" && (i.step !== "shown" || !AFTER_SHOWN.includes(p.table))) throw new Refused(why("shownAlready"));
+                if (!CHAT_TABLES.includes(p.table) || !Array.isArray(p.rows)) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
+                all += p.rows.length;
+              }
+              if (pages.length === 0 || all > ROWS_MOST) throw new Refused(why("badRequest", { detail: "not a page of a chat's rows" }));
               const page = typeof request.page === "string" ? request.page : null;
               if (page !== null && i.page === page) return { ok: true };
               this.#d.fail?.("import");
-              this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
+              this.#d.store.importPages(i.ctx, pages, i.step === "coming" ? i.id : undefined);
               // (calls counted there after it was shown here: its usage as all its calls here say it)
-              if (i.step === "shown" && USAGE_TABLES.includes(table)) this.#usageOf(i.keys, false);
+              if (i.step === "shown" && pages.some((p) => USAGE_TABLES.includes(p.table))) this.#usageOf(i.keys, false);
               this.#d.fail?.("imported");
               if (page !== null) i.page = page;
               await this.#saveIn(i);
@@ -1580,7 +1624,7 @@ export class Handover {
     await this.#saveIn(i);
     const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null, total: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
     // (`usage`: its calls are taken with its rows, and a chat's handed before as `handover.usage` brings them)
-    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true };
+    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true, rows: ROWS_BATCHED };
   }
 
   async #place(i: In, carry: string): Promise<Json> {
