@@ -2,5 +2,7 @@ import {
   "mbui/ui",
   "mbui/view",
   "mbui/signals",
+  "mbui/paint",
+  "mbui/headless",
   "liquid-glass/lg",
 }
