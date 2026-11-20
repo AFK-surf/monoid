@@ -335,8 +335,13 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
     assert.equal(delExt.status, 200, JSON.stringify(delExt));
     assert.ok(existsSync(extUserFile), "MoonBit delete_session preserved workspace outside <data>/sessions");
     assert.ok(existsSync(userTranscript), "MoonBit delete_session preserved external user profile transcript");
+    // told to stop (`op`, the launcher's control channel), it winds down with its processes (`--builder replica-export`)
+    launched.tell({ op: "stop" });
+    assert.equal(await launched.ended, 0, launched.err());
   } finally {
-    launched.tell({ type: "stop" });
-    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);
+    if (launched.child.exitCode === null && launched.child.signalCode === null) {
+      launched.tell({ op: "stop" });
+      await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);
+    }
   }
 });

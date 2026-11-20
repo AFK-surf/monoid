@@ -1086,7 +1086,9 @@ pub async fn MemorySync::handle(self : MemorySync, _peer : String, request : Jso
 ///|
 /// Brings `peer` and this station level in `ws`: what it has that comes after or beside this station's taken here,
 /// then what this station has that it lacks given it.
-async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> Unit {
+/// Answers the word of this station's records it gave from: one looked at while `memory.put` was under way is not
+/// counted as given.
+async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> String {
   let got = (self.deps.ask)(peer, ws, jobj([("method", jstr("memory.get"))]))
   let theirs : Map[String, Json] = Map([])
   if get(Some(got), "files") is Some(Object(fs)) {
@@ -1096,7 +1098,7 @@ async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> Uni
       }
     }
   }
-  self.lane(ws, async fn() {
+  let (give, synced) = self.lane(ws, async fn() {
     ignore(self.look(ws))
     let kept = self.kept[ws]
     // Their versions this station has not: fetched, a batch at a time.
@@ -1158,21 +1160,22 @@ async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> Uni
       }
     }
     ignore(self.take(ws, theirs, given))
+    // What it lacks of this station's, to give it, and their word: read in the lane, before another look changes them.
+    let kept = self.kept[ws]
+    let give : Array[(String, Json)] = []
+    for path in js_keys(kept.files) {
+      let r = kept.files[path]
+      let t = theirs.get(path)
+      let has = match t {
+        Some(x) => rec_hash(x) == rec_hash(r) || rec_prev(x).contains(rec_hash(r))
+        None => false
+      }
+      if !has {
+        give.push((path, r))
+      }
+    }
+    (give, self.word(ws))
   })
-  // What it lacks of this station's, given it.
-  let kept = self.kept[ws]
-  let give : Array[(String, Json)] = []
-  for path in js_keys(kept.files) {
-    let r = kept.files[path]
-    let t = theirs.get(path)
-    let has = match t {
-      Some(x) => rec_hash(x) == rec_hash(r) || rec_prev(x).contains(rec_hash(r))
-      None => false
-    }
-    if !has {
-      give.push((path, r))
-    }
-  }
   let mut i = 0
   while i < give.length() {
     let files : Map[String, Json] = Map([])
@@ -1195,6 +1198,7 @@ async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> Uni
       ignore((self.deps.ask)(peer, ws, jobj([("method", jstr("memory.put")), ("files", Json::object(files)), ("blobs", Json::object(blobs))])))
     }
   }
+  synced
 }
 
 ///|
@@ -1243,8 +1247,7 @@ fn MemorySync::bring(self : MemorySync, peer : String, ws : String) -> Unit {
       }
     }
     try {
-      self.level(peer, ws)
-      self.level_at[key] = self.word(ws)
+      self.level_at[key] = self.level(peer, ws)
       self.retries.remove(key)
     } catch {
       e => {
@@ -1462,7 +1465,7 @@ pub async fn MemorySync::level_now(self : MemorySync) -> Unit {
     ignore(self.lane(ws, async fn() { self.look(ws) }))
     for p in m.peers {
       guard get(Some(p), "id") is Some(String(id)) && id != self.me() else { continue }
-      self.level(id, ws) catch {
+      ignore(self.level(id, ws)) catch {
         e => {
           let words = error_words(e)
           if !before_memory(e) && !words.contains("unavailable") && !words.contains("not reached") {

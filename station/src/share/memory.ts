@@ -598,7 +598,9 @@ export class MemorySync {
 
   /// Brings `peer` and this station level in `ws`: what it has that comes after or beside this station's taken here,
   /// then what this station has that it lacks given it.
-  async #level(peer: string, ws: string): Promise<void> {
+  /// Answers the word of this station's records it gave from: one looked at while `memory.put` was under way is not
+  /// counted as given.
+  async #level(peer: string, ws: string): Promise<string> {
     const ask = this.#deps.ask;
     const got: Json = await ask(peer, ws, { method: "memory.get" });
     const theirs: Record<string, Rec> = {};
@@ -606,7 +608,7 @@ export class MemorySync {
       const rec = recOf(raw);
       if (rec !== null && memoryPath(path)) theirs[path] = rec;
     }
-    await this.#lane(ws, async () => {
+    const { give, synced } = await this.#lane(ws, async () => {
       await this.#look(ws);
       const kept = this.#kept.get(ws)!;
       // Their versions this station has not: fetched, a batch at a time.
@@ -637,10 +639,11 @@ export class MemorySync {
         }
       }
       await this.#take(ws, theirs, given);
+      // What it lacks of this station's, to give it, and their word: read in the lane, before another look changes them.
+      const files = this.#kept.get(ws)!.files;
+      const give: [string, Rec][] = Object.entries(files).filter(([path, r]) => theirs[path]?.hash !== r.hash && !theirs[path]?.prev.includes(r.hash));
+      return { give, synced: this.#word(ws) };
     });
-    // What it lacks of this station's, given it.
-    const kept = this.#kept.get(ws)!;
-    const give: [string, Rec][] = Object.entries(kept.files).filter(([path, r]) => theirs[path]?.hash !== r.hash && !theirs[path]?.prev.includes(r.hash));
     for (let i = 0; i < give.length;) {
       const files: Record<string, Rec> = {};
       const blobs: Record<string, string> = {};
@@ -654,6 +657,7 @@ export class MemorySync {
       }
       if (Object.keys(files).length > 0) await ask(peer, ws, { method: "memory.put", files, blobs });
     }
+    return synced;
   }
 
   /// What `ws`'s records are, as a word that changes when any of them does.
@@ -670,8 +674,8 @@ export class MemorySync {
     if (this.#levelAt.get(key) === at && this.#kept.has(ws)) return;
     this.#going.add(key);
     this.#level(peer, ws).then(
-      () => {
-        this.#levelAt.set(key, this.#word(ws));
+      (synced) => {
+        this.#levelAt.set(key, synced);
         this.#retries.delete(key);
       },
       (e) => {
