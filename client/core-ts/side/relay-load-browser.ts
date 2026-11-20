@@ -108,13 +108,56 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   for (let i = 0; i < options.stations; i++) nodes.push(await addon.bind({ secretKey: randomBytes(32), alpns: [alpn], relayUrls: urls, discovery: false, lookup: false }));
   await until(() => nodes.every(n => n.relayStatus().filter((r: any) => r.connected).length === options.relays), "stations home on every relay");
   const descriptors = new Map<string, any[]>();
+  const descriptorChanges: { at: number; scope: string; station: string; descriptor: any }[] = [];
+  const directoryListeners = new Set<(scope: string) => void>();
+  const configuredPeers = new Map<string, string>();
+  const directoryErrors: string[] = [];
+  let directoryWork = Promise.resolve();
+  let directoryClosed = false;
+  // ScopeDirectory publishes native descriptors unchanged and follows meshSubscribe.
+  // LeafAttachments sends these addresses beside the independent relay allowlist.
+  const publish = (index: number, scope: string, descriptor: any) => {
+    if (directoryClosed) return;
+    const peers = descriptors.get(scope);
+    if (!peers || JSON.stringify(peers[index]) === JSON.stringify(descriptor)) return;
+    peers[index] = descriptor;
+    descriptorChanges.push({ at: performance.now(), scope, station: nodes[index].id(), descriptor });
+    for (const listener of directoryListeners) listener(scope);
+    if (peers.filter(Boolean).length !== nodes.length) return;
+    directoryWork = directoryWork.then(async () => {
+      if (directoryClosed) return;
+      for (let i = 0; i < nodes.length; i++) {
+        const others = descriptors.get(scope)!.filter((_, j) => i !== j);
+        const key = `${scope}:${i}`, word = JSON.stringify(others);
+        if (configuredPeers.get(key) === word) continue;
+        const own = await nodes[i].meshConfigure({ scope, transit: true, relayUrls: urls, peers: others });
+        configuredPeers.set(key, word);
+        publish(i, scope, own);
+      }
+    }).catch(error => { directoryErrors.push(String(error)); });
+  };
+  for (const workspace of workspaces) descriptors.set(workspaceScope(origin, workspace), []);
+  for (let i = 0; i < nodes.length; i++) {
+    assert.equal(typeof nodes[i].meshSubscribe, "function", "native scope address updates are required");
+    await nodes[i].meshSubscribe(1, (error: Error | null, scopes: any[]) => {
+      if (error) { directoryErrors.push(String(error)); return; }
+      for (const { scope, descriptor } of scopes) publish(i, scope, descriptor);
+    });
+  }
+  cleanups.push(async () => {
+    directoryClosed = true;
+    for (const node of nodes) node.meshUnsubscribe(1);
+    await directoryWork;
+  });
   for (const workspace of workspaces) {
     const scope = workspaceScope(origin, workspace);
-    const peers = await Promise.all(nodes.map(node => node.meshConfigure({ scope, transit: true, peers: [], relayUrls: urls })));
-    // Native peers may use their loopback UDP paths. The browser cannot use UDP.
-    for (let i = 0; i < nodes.length; i++) await nodes[i].meshConfigure({ scope, transit: true, relayUrls: urls, peers: peers.filter((_: any, j: number) => i !== j) });
-    descriptors.set(scope, peers.map((d: any) => ({ ...d, address: { id: d.address.id, addrs: urls.map(Relay => ({ Relay })) } })));
+    await Promise.all(nodes.map(async (node, i) => publish(i, scope,
+      await node.meshConfigure({ scope, transit: true, peers: [], relayUrls: urls }))));
   }
+  await until(() => [...descriptors.values()].every(peers => peers.filter(Boolean).length === nodes.length
+    && peers.every(peer => peer.address.addrs.some((addr: any) => addr.Relay))), "native scope home addresses");
+  await directoryWork;
+  assert.deepEqual(directoryErrors, []);
   const grant = new GrantKey("relay-load");
   const eventStreams = new Set<any>();
   const serverCounts = { accepted: 0, eventOpens: 0, requests: 0 };
@@ -127,7 +170,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
     });
     const cloud = new Cloud(data); cleanups.push(() => cloud.close());
     const directory = { directory: { policy: () => ({ nodes: nodes.map(n => n.id()), relayUrls: urls, globalRelays: [] }),
-      records: (scope: string) => descriptors.get(scope)!.map(descriptor => ({ body: JSON.stringify({ descriptor }) })) }, listen: () => () => {} };
+      records: (scope: string) => descriptors.get(scope)!.map(descriptor => ({ body: JSON.stringify({ descriptor }) })) }, listen: (listener: (scope: string) => void) => { directoryListeners.add(listener); return () => { directoryListeners.delete(listener); }; } };
     const leaves = new LeafAttachments(nodes[i], directory as any, cloud);
     void (async () => {
       for (;;) {
@@ -248,7 +291,8 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   for (const stream of eventStreams) await stream.write(Buffer.from("after-cut\n"));
   await until(async () => (await rpc("snapshot")).counts.eventChunks > chunksBefore, "existing stream delivers after relay removal");
   const final = await rpc("snapshot");
-  const result = { transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options,
+  assert.deepEqual(directoryErrors, []);
+  const result = { stationDescriptors: Object.fromEntries(descriptors), descriptorChanges, directoryErrors, transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options,
     browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after, final, controls,
     measurement: measured, recovery: { relay: cut.url, milliseconds: recoveryMs, ...recovered,
       eventStreamsReopened: serverCounts.eventOpens - opensBefore, allOriginalConnectionsOpen: final.links.every((link: any) => link.originalClosed === null && link.sameConnection) }, serverCounts };

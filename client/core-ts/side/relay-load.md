@@ -57,3 +57,9 @@ Every observation checks that the original station connections and event streams
 Worker HTTP requests to relay hosts are grouped by host and `METHOD /path` in `measurement.http`. The raw request times are in `measurement.httpRequests` and `cdp.ndjson`. `RELAY_LOAD_MS=900000` selects a 15-minute window.
 
 The fixture stores the final snapshot, original close reasons, connection records and close events. It fails if an original connection is lost or an application event stream reopens.
+
+Neighbor descriptors come unchanged from native `meshConfigure` and `meshSubscribe`, as in `station/src/mesh/scope-directory.ts`.
+Their relay addresses are the scope endpoint's advertised homes, not every allowed relay.
+The fixture keeps `relayUrls` as the workspace allowlist, as in `station/src/mesh/leaf.ts`, and pushes descriptor changes to leaf streams.
+`stationDescriptors` and `descriptorChanges` preserve these inputs in the result.
+Earlier runs that replaced every peer address with all fixture relays use a different measurement setup.
