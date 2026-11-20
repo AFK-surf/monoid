@@ -401,7 +401,6 @@ pub async fn Hub::bind_single(Self, String, String?, String?, String?) -> String
 pub fn Hub::busy(Self, String) -> Bool
 pub fn Hub::cancel(Self, Int32) -> Unit
 pub fn Hub::changed(Self, String, restart? : Bool) -> Unit
-pub fn Hub::chat_held(Self, String) -> String?
 pub fn Hub::chat_key(Self, String) -> String
 pub fn Hub::client_key(Self, String) -> String?
 pub fn Hub::client_keys(Self) -> Array[(String, String)]

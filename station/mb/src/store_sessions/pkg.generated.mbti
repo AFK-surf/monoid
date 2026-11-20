@@ -59,13 +59,11 @@ pub struct Store {
   // private fields
 }
 pub fn Store::add_job_notice(Self, @json.Json, @json.Json) -> Unit raise
-pub fn Store::advance_usage_counter(Self, @json.Json) -> Unit raise
 pub fn Store::any_running(Self) -> Bool raise
 pub fn Store::archived_sessions(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::auto_title(Self, @json.Json) -> @json.Json raise
 pub fn Store::awake_jobs(Self) -> Array[@json.Json] raise
 pub fn Store::awake_wait(Self, Double, Double) -> @json.Json raise
-pub fn Store::begin_usage_counter_file(Self, @json.Json, @json.Json, @json.Json, Bool) -> @json.Json raise
 pub fn Store::binding(Self, @json.Json) -> @json.Json raise
 pub fn Store::call(Self, String, Array[@json.Json]) -> @json.Json raise
 pub fn Store::chat_page(Self, String, @json.Json, @json.Json, Int32, Array[String]) -> Array[@json.Json] raise
@@ -100,7 +98,6 @@ pub fn Store::forget_wait(Self, @json.Json) -> Unit raise
 pub fn Store::get_job(Self, @json.Json) -> @json.Json raise
 pub fn Store::get_session(Self, String) -> @json.Json raise
 pub fn Store::gone_to(Self, Array[String], @json.Json, @json.Json) -> Unit raise
-pub fn Store::hand_off(Self, Array[String], @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::handed_chats(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
 pub fn Store::handed_to(Self, String) -> @json.Json raise
 pub fn Store::has_turns(Self, @json.Json) -> Bool raise
@@ -168,9 +165,7 @@ pub fn Store::ran_on_of(Self, Array[String]) -> Array[(String, Array[String])] r
 pub fn Store::recently_compacted(Self, String) -> Bool raise
 pub fn Store::record_process(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::record_usage(Self, @json.Json, @json.Json, String, Array[@json.Json], @json.Json) -> Int32 raise
-pub fn Store::record_usage_all(Self, Array[@json.Json]) -> Array[Int32] raise
 pub fn Store::recovery_waits(Self) -> @json.Json raise
-pub fn Store::refresh_chat_share_index(Self) -> Bool raise
 pub fn Store::remember_slack_stop(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::remote_queue_jobs(Self) -> Array[@json.Json] raise
 pub fn Store::retitled(Self, @json.Json) -> Unit
@@ -183,11 +178,9 @@ pub fn Store::runtime_session_source(Self, String, String) -> @json.Json raise
 pub fn Store::runtime_session_sources(Self, String, @json.Json?) -> Array[@json.Json] raise
 pub fn Store::runtime_sessions(Self, String) -> Array[@json.Json] raise
 pub fn Store::saved_compact_context(Self, String) -> @json.Json raise
-pub fn Store::session_by_token(Self, String) -> @json.Json raise
 pub fn Store::session_counts(Self, @json.Json) -> @json.Json raise
 pub fn Store::session_has_up_job(Self, @json.Json) -> @json.Json raise
 pub fn Store::session_key_by_token(Self, String) -> @json.Json raise
-pub fn Store::session_keys(Self) -> Array[@json.Json] raise
 pub fn Store::session_of_runtime(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::session_page(Self, Array[String], Array[@json.Json]?) -> SessionPage
 pub fn Store::session_page_of_ws(Self, @json.Json, @json.Json, @json.Json, Int32) -> SessionPage raise
@@ -227,7 +220,6 @@ pub fn Store::set_thread_hidden(Self, @json.Json, Bool, String) -> Unit raise
 pub fn Store::set_thread_title(Self, @json.Json, @json.Json) -> Unit raise
 pub fn Store::set_title(Self, String, @json.Json) -> Unit raise
 pub fn Store::set_told_notes(Self, @json.Json, @json.Json) -> Unit raise
-pub fn Store::set_transcript_length(Self, String, @json.Json) -> Unit raise
 pub fn Store::set_transcript_lengths(Self, Array[(String, @json.Json)]) -> Unit raise
 pub fn Store::set_wait_for(Self, @json.Json, @json.Json, Bool) -> Unit raise
 pub fn Store::show_chat(Self, Array[String], @json.Json) -> Unit raise
@@ -248,7 +240,6 @@ pub fn Store::transcript_in_use(Self, @json.Json, @json.Json, @json.Json) -> Boo
 pub fn Store::unpriced_usage_sessions(Self) -> Array[String] raise
 pub fn Store::untold_widget_models(Self, @json.Json) -> Array[@json.Json] raise
 pub fn Store::up_job_ids(Self, @json.Json, Bool) -> Array[@json.Json] raise
-pub fn Store::usage_active_sessions(Self, @json.Json) -> Array[@json.Json] raise
 pub fn Store::usage_changed(Self, Array[@json.Json], @json.Json?, Bool) -> Unit
 pub fn Store::usage_counter(Self) -> @json.Json raise
 pub fn Store::usage_counter_file(Self, @json.Json) -> @json.Json raise
@@ -257,7 +248,6 @@ pub fn Store::usage_files(Self) -> @json.Json raise
 pub fn Store::usage_groups(Self, Double, Double, Double) -> Array[@json.Json] raise
 pub fn Store::usage_of_session(Self, String) -> Array[@json.Json] raise
 pub fn Store::usage_since(Self) -> @json.Json raise
-pub fn Store::usage_threads(Self, Array[@json.Json]) -> Array[@json.Json] raise
 pub fn Store::usage_turns(Self, @json.Json, @json.Json, Double) -> Array[@json.Json] raise
 pub fn Store::used_chat_share(Self, @json.Json, Array[@json.Json]) -> Unit raise
 pub fn Store::waiting_for_people(Self, @json.Json, @json.Json) -> Array[@json.Json] raise

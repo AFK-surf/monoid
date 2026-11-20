@@ -10,16 +10,6 @@ pub fn Store::usage_counter(self : Store) -> Json raise {
 }
 
 ///|
-pub fn Store::advance_usage_counter(self : Store, through : Json) -> Unit raise {
-  ignore(
-    self.run(
-      "UPDATE usage_counter SET through = MAX(through, ?) WHERE id = 1",
-      [through],
-    ),
-  )
-}
-
-///|
 /// store/usage.ts `usageCounterFile`.
 pub fn Store::usage_counter_file(self : Store, path : Json) -> Json raise {
   match
@@ -31,35 +21,6 @@ pub fn Store::usage_counter_file(self : Store, path : Json) -> Json raise {
       { "cutoff": col(r, "cutoff"), "anchor": col(r, "anchor") }
     _ => Json::null()
   }
-}
-
-///|
-/// store/usage.ts `beginUsageCounterFile`, in a transaction of its own.
-pub fn Store::begin_usage_counter_file(
-  self : Store,
-  path : Json,
-  file : Json,
-  counter : Json,
-  reset : Bool,
-) -> Json raise {
-  self.tx(() => {
-    ignore(
-      self.run(
-        @usagecount.begin_usage_file_sql,
-        [
-          path,
-          nullish(field(file, "session")),
-          nullish(field(file, "offset")),
-          nullish(field(file, "model")),
-          nullish(field(counter, "cutoff")),
-          nullish(field(counter, "anchor")),
-          flag(reset),
-          nullish(field(file, "speed")),
-        ],
-      ),
-    )
-    self.usage_counter_file(path)
-  })
 }
 
 ///|
@@ -213,28 +174,6 @@ pub fn Store::record_usage(
 }
 
 ///|
-/// `recordUsage` of each (store.ts UsageWrite: `{path, file, runtime, calls, options?}`), in one transaction.
-pub fn Store::record_usage_all(
-  self : Store,
-  writes : Array[Json],
-) -> Array[Int32] raise {
-  if writes.length() == 0 {
-    return []
-  }
-  self.tx(() => {
-    writes.map(w => {
-      self.record_usage(
-        nullish(field(w, "path")),
-        nullish(field(w, "file")),
-        js_string(nullish(field(w, "runtime"))),
-        arr(nullish(field(w, "calls"))),
-        nullish(field(w, "options")),
-      )
-    })
-  })
-}
-
-///|
 /// usage-compactions.ts `usageCompactionsReady`.
 fn Store::compactions_ready_in(self : Store) -> Bool raise {
   if self.has_compact() {
@@ -333,24 +272,6 @@ pub fn Store::usage_changed(
     o["statisticsOnly"] = jbool(true)
   }
   self.send([Json::object(o)])
-}
-
-///|
-pub fn Store::usage_active_sessions(
-  self : Store,
-  since : Json,
-) -> Array[Json] raise {
-  let out = []
-  let seen : Set[String] = Set([])
-  for r in self.all(active_sessions, [since]) {
-    let s = col(r, "session_key")
-    let key = s.stringify()
-    if !seen.contains(key) {
-      seen.add(key)
-      out.push(s)
-    }
-  }
-  out
 }
 
 ///|
@@ -565,31 +486,6 @@ pub fn Store::first_text(self : Store, thread : Json) -> Json raise {
     Some(r) => col(r, "t")
     None => Json::null()
   }
-}
-
-///|
-/// The threads usage names, each with the first thing a person said in it (`[thread, first]` each).
-pub fn Store::usage_threads(
-  self : Store,
-  ids : Array[Json],
-) -> Array[Json] raise {
-  let out = []
-  for id in ids {
-    let thread = self.get_thread(id)
-    if thread is Null {
-      continue
-    }
-    let first = if field(thread, "title") is Some(Null) &&
-      field(thread, "autoTitle") is Some(Null) {
-      self.first_text(id) catch {
-        _ => Json::null()
-      }
-    } else {
-      Json::null()
-    }
-    out.push(Json::array([thread, first]))
-  }
-  out
 }
 
 ///|

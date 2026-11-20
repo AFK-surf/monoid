@@ -119,15 +119,6 @@ fn Store::decision_session_lookup(self : Store, verify_native? : Bool = false) -
 }
 
 ///|
-pub fn Store::decision_sessions_ready(self : Store) -> Json raise {
-  let current = self.decision_session_lookup(verify_native=true)
-  if current != "pending" {
-    self.use_decision_session(current)
-  }
-  jbool(current != "pending")
-}
-
-///|
 /// A message matching "no such index|table: [main.]NAME" at its end, NAME one of `names`.
 fn missing_object(message : String, kinds : Array[String], names : Array[String]) -> Bool {
   for kind in kinds {

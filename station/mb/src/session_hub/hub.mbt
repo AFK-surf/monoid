@@ -713,11 +713,6 @@ pub fn Hub::busy(self : Hub, key : String) -> Bool {
 }
 
 ///|
-pub fn Hub::chat_held(self : Hub, key : String) -> String? {
-  self.held_chats.get(key)
-}
-
-///|
 /// What the stop notice of a held chat says, once (`SessionDeps.stoppedNotice`).
 pub fn Hub::stopped_notice(self : Hub, key : String) -> String? {
   match self.stop_notices.get(key) {

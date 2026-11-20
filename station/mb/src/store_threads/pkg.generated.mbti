@@ -109,7 +109,6 @@ pub fn Store::complete_router_write(Self, @json.Json) -> @json.Json raise
 pub fn Store::connect_local_threads(Self, @json.Json) -> @json.Json raise
 pub fn Store::connect_thread_station(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::connect_threads(Self, @json.Json) -> @json.Json raise
-pub fn Store::decision_sessions_ready(Self) -> @json.Json raise
 pub fn Store::decisions_version(Self) -> @json.Json
 pub fn Store::deliver(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::deliver_letter(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
@@ -120,7 +119,6 @@ pub fn Store::drop_connect_threads(Self, @json.Json) -> @json.Json raise
 pub fn Store::edit_message(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::edit_message_if_ready(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::end_card_edit_scan(Self, CardEditScan) -> Unit raise
-pub fn Store::entries_after(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::entries_before(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::entries_between(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::first_text(Self, @json.Json) -> @json.Json raise
@@ -166,8 +164,6 @@ pub fn Store::pending_card(Self, @json.Json) -> @json.Json raise
 pub fn Store::pending_card_header(Self, @json.Json) -> @json.Json raise
 pub fn Store::pending_card_header_if_ready(Self, @json.Json) -> @json.Json raise
 pub fn Store::pending_count(Self, @json.Json) -> @json.Json raise
-pub fn Store::pending_messages(Self, @json.Json) -> @json.Json raise
-pub fn Store::pinned_sessions(Self) -> @json.Json raise
 pub fn Store::pins(Self, @json.Json) -> @json.Json raise
 pub fn Store::read_position(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::recent_chat_list(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
@@ -203,7 +199,6 @@ pub fn Store::thread_of_message(Self, @json.Json, @json.Json, @json.Json) -> @js
 pub fn Store::thread_sessions(Self, @json.Json) -> @json.Json raise
 pub fn Store::threads_at(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::unkeep_chat(Self, @json.Json, @json.Json) -> @json.Json raise
-pub fn Store::unread_count(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::unread_for_archive(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::untold_card_choices(Self, @json.Json, @json.Json) -> @json.Json raise
 pub fn Store::untold_moved_note(Self, @json.Json) -> @json.Json raise

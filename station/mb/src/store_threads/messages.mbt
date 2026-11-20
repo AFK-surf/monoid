@@ -79,11 +79,6 @@ pub fn Store::last_message_at_for_archive(self : Store, thread : Json) -> Json r
 }
 
 ///|
-pub fn Store::unread_count(self : Store, viewer : Json, thread : Json) -> Json raise {
-  self.unread_count_at(viewer, thread, self.read_position(viewer, thread))
-}
-
-///|
 pub fn Store::message_count(self : Store, thread : Json) -> Json raise {
   self.unread_count_at(jstr(""), thread, jint(-1))
 }
@@ -310,11 +305,6 @@ pub fn Store::last_entry(self : Store, thread : Json) -> Json raise {
     Some(r) if !(col(r, "n") is Null) => col(r, "n")
     _ => jint(0)
   }
-}
-
-///|
-pub fn Store::entries_after(self : Store, thread : Json, n : Json) -> Json raise {
-  self.entries_between(thread, jnum(num(n) + 1.0), i64_max)
 }
 
 ///|

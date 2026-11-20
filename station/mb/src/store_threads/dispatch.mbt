@@ -61,23 +61,6 @@ fn card_fn(spec : @jsjson.JValue?) -> (@jsjson.JValue?) -> @jsjson.JValue raise 
 }
 
 ///|
-fn prepared_of(v : @jsjson.JValue?) -> Prepared? {
-  match v {
-    Some(Obj(_) as p) =>
-      Some({
-        scan: CardEditScan::from_json(jget(p, "scan").unwrap_or(Null)),
-        card: jtext(jget(p, "card")),
-        edit: match jget(p, "edit") {
-          None => None
-          Some(Str(s)) => Some(Some(@jsjson.sanitize_str(s)))
-          Some(_) => Some(None)
-        },
-      })
-    _ => None
-  }
-}
-
-///|
 /// One of the store's calls by its TypeScript name (store.ts), its arguments and answer as JSON: what the station's
 /// own parts ask of it by name (station_main's agents' side).
 pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> Json raise {
@@ -88,7 +71,6 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "threadAt" => s.thread_at(a(0), a(1), a(2))
     "threadsAt" => s.threads_at(a(0), a(1))
     "openThread" => s.open_thread(a(0), a(1), a(2), a(3), a(4))
-    "openThreadOf" => s.open_thread_of(a(0), a(1), a(2), a(3), a(4), a(5))
     "threadOfMessage" => s.thread_of_message(a(0), a(1), a(2))
     "joinThread" => s.join_thread(a(0), a(1), a(2))
     "leaveThread" => s.leave_thread(a(0), a(1))
@@ -111,10 +93,6 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "searchChatList" => s.search_chat_list(a(0), a(1), a(2), a(3), filter=a(4))
     "firstText" => s.first_text(a(0))
     "lastMessage" => s.last_message(a(0))
-    "lastMessageAtForArchive" => s.last_message_at_for_archive(a(0))
-    "unreadCount" => s.unread_count(a(0), a(1))
-    "messageCount" => s.message_count(a(0))
-    "unreadForArchive" => s.unread_for_archive(a(0), a(1))
     "insertMessage" => {
       let before = hook(s, arg(args, 1), None)
       let inserted = match arg(args, 2) {
@@ -132,7 +110,6 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "decisionsVersion" => s.decisions_version()
     "recentDecisions" => s.recent_decisions()
     "recordDecision" => s.record_decision(a(0), arg(args, 1).unwrap_or(Null))
-    "decisionSessionsReady" => s.decision_sessions_ready()
     "lastDecision" => s.last_decision(a(0))
     "latestDecisionsSince" => s.latest_decisions_since(a(0), a(1))
     "archivePolicy" => s.archive_policy(a(0))
@@ -142,7 +119,6 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "clearArchiveSuggestion" => s.clear_archive_suggestion(a(0), a(1))
     "archiveSuggested" => s.archive_suggested(a(0))
     "lastEntry" => s.last_entry(a(0))
-    "entriesAfter" => s.entries_after(a(0), a(1))
     "entriesBefore" => s.entries_before(a(0), a(1), a(2))
     "entriesBetween" => s.entries_between(a(0), a(1), a(2))
     "messagePageEntries" => s.message_page_entries(a(0), a(1))
@@ -152,12 +128,8 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "cardAt" => s.card_at(a(0), a(1))
     "messagesBefore" => s.messages_before(a(0), a(1), a(2))
     "insertLetter" => s.insert_letter(arg(args, 0).unwrap_or(Obj([])))
-    "lastLetter" => s.last_letter(a(0))
     "deliverLetter" => s.deliver_letter(a(0), a(1), a(2))
     "deliver" => s.deliver(a(0), a(1), a(2), a(3))
-    "deliveryPending" => s.delivery_pending(a(0), a(1), a(2))
-    "completeRouterWrite" => s.complete_router_write(a(0))
-    "pendingMessages" => s.pending_messages(a(0))
     "pendingBefore" => s.pending_before(a(0), a(1), a(2))
     "pendingCount" => s.pending_count(a(0))
     "hasPending" => s.has_pending(a(0))
@@ -165,33 +137,20 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "markDelivered" => s.mark_delivered(a(0), a(1))
     "markUndelivered" => s.mark_undelivered(a(0), a(1))
     "heardThreads" => s.heard_threads(a(0), a(1))
-    "sessionsWithPending" => s.sessions_with_pending()
-    "returningSessionsIn" => s.returning_sessions_in(a(0))
     "starter" => s.starter(a(0))
     "participants" => s.participants(a(0))
-    "readPosition" => s.read_position(a(0), a(1))
     "setRead" => s.set_read(a(0), a(1), a(2))
     "setChatHidden" => s.set_chat_hidden(a(0), a(1), a(2))
     "setChatMuted" => s.set_chat_muted(a(0), a(1), a(2))
     "pins" => s.pins(a(0))
-    "pinnedSessions" => s.pinned_sessions()
-    "archiveMarks" => s.archive_marks(a(0), a(1))
     "setPin" => s.set_pin(a(0), a(1), a(2))
     "relayedTo" => s.relayed_to(a(0))
     "noteRelayed" => s.note_relayed(a(0), a(1))
-    "connectThreadStation" => s.connect_thread_station(a(0), a(1), a(2))
-    "setConnectThreadStation" => s.set_connect_thread_station(a(0), a(1), a(2), a(3))
-    "connectThreads" => s.connect_threads(a(0))
-    "dropConnectThreads" => s.drop_connect_threads(a(0))
-    "connectLocalThreads" => s.connect_local_threads(a(0))
-    "keptChats" => s.kept_chats(a(0))
     "keepChat" => s.keep_chat(a(0), a(1))
     "unkeepChat" => s.unkeep_chat(a(0), a(1))
     "pendingCard" => s.pending_card(a(0))
     "pendingCardHeader" => s.pending_card_header(a(0))
     "pendingCardHeaderIfReady" => s.pending_card_header_if_ready(a(0))
-    "cardEndedByMessage" => s.card_ended_by_message(a(0), a(1))
-    "cardReplacedBy" => s.card_replaced_by(a(0), a(1))
     "closedCard" => s.closed_card(a(0), a(1))
     "askingMessage" => s.asking_message(a(0), a(1), a(2))
     "cardClosedSince" => s.card_closed_since(a(0), a(1))
@@ -199,40 +158,6 @@ pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> J
     "dismiss" => s.dismiss(a(0), a(1), a(2))
     "withdrawCard" => s.withdraw_card(a(0), a(1), a(2))
     "restateCard" => s.restate_card(a(0), a(1), a(2), card_fn(arg(args, 3)))
-    "saveCardOutcome" => {
-      let save = hook(s, arg(args, 1), None)
-      jstr(
-        s.save_card_outcome(CardOutcome::from_json(arg(args, 0).unwrap_or(Null)), () => match save {
-          Some(f) => f()
-          None => ()
-        }),
-      )
-    }
-    "restateQueuedCard" =>
-      match s.restate_queued_card(CardOutcome::from_json(arg(args, 0).unwrap_or(Null)), prepared_of(arg(args, 1))) {
-        Some(b) => jbool(b)
-        None => undefined
-      }
-    "beginCardEditScan" =>
-      match s.begin_card_edit_scan(CardOutcome::from_json(arg(args, 0).unwrap_or(Null))) {
-        Some(scan) => scan.to_json()
-        None => Json::null()
-      }
-    "endCardEditScan" => {
-      s.end_card_edit_scan(CardEditScan::from_json(arg(args, 0).unwrap_or(Null)))
-      undefined
-    }
-    "cardOutcomeHeads" =>
-      Json::array(
-        s
-        .card_outcome_heads(text_of(a(0)).unwrap_or("0"), if a(1) is Null { 64 } else { num(a(1)).to_int() })
-        .map(c => c.to_json()),
-      )
-    "cardEditPage" =>
-      card_edit_page(s.db, a(0), text_of(a(1)).unwrap_or(""), text_of(a(2)))
-    "cardMessagePage" =>
-      card_message_page(s.db, a(0), text_of(a(1)).unwrap_or(""), text_of(a(2)))
-    "closeLoginCards" => s.close_login_cards(a(0))
     "closeCard" => s.close_card(a(0), a(1), a(2), a(3), a(4))
     "untoldCardChoices" => s.untold_card_choices(a(0), a(1))
     "setMovedNotes" => s.set_moved_notes(a(0))

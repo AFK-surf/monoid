@@ -1560,20 +1560,6 @@ pub fn Store::not_gone(
 }
 
 ///|
-/// Sessions `keys` handed to `station`: where each went kept, then out of sight here, at once.
-pub fn Store::hand_off(
-  self : Store,
-  keys : Array[String],
-  station : Json,
-  home : Json,
-  threads : Json,
-) -> Unit raise {
-  self.gone_to(keys, station, threads)
-  self.shown_there(keys, home)
-  self.delivered_there(keys)
-}
-
-///|
 /// Sessions `keys` went to `station`: where each went kept, with its chat's thread here and there.
 pub fn Store::gone_to(
   self : Store,

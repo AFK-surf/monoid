@@ -427,10 +427,6 @@ let speed_quarters_read : String =
   #|  ORDER BY quarter, profile, model
 
 ///|
-let active_sessions : String =
-  #|SELECT session_key FROM turns WHERE ended_at IS NULL UNION ALL SELECT session_key FROM turns WHERE ended_at >= ?
-
-///|
 let turns_from : String =
   #|SELECT IFNULL((SELECT MAX(started_at) FROM turns WHERE session_key = ?1 AND started_at <= ?2),
   #|  (SELECT MIN(started_at) FROM turns WHERE session_key = ?1)) AS at

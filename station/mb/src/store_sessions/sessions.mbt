@@ -61,14 +61,6 @@ pub fn Store::session_key_by_token(self : Store, token : String) -> Json raise {
 }
 
 ///|
-pub fn Store::session_by_token(self : Store, token : String) -> Json raise {
-  match self.one("SELECT * FROM sessions WHERE token = ?", [jstr(token)]) {
-    Some(r) => to_session(r)
-    None => Json::null()
-  }
-}
-
-///|
 /// store.ts ARCHIVED_WORKSPACE_BATCH.
 let archived_workspace_batch : Int32 = 64
 
@@ -729,15 +721,6 @@ pub fn Store::conversation_since(self : Store, key : String) -> Json raise {
 }
 
 ///|
-pub fn Store::set_transcript_length(
-  self : Store,
-  key : String,
-  n : Json,
-) -> Unit raise {
-  self.set_transcript_lengths([(key, n)])
-}
-
-///|
 pub fn Store::set_transcript_lengths(
   self : Store,
   lengths : Array[(String, Json)],
@@ -936,11 +919,6 @@ pub fn Store::unpriced_usage_sessions(self : Store) -> Array[String] raise {
   self
   .all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0", [])
   .map(r => js_string(col(r, "session")))
-}
-
-///|
-pub fn Store::session_keys(self : Store) -> Array[Json] raise {
-  self.all("SELECT key FROM sessions", []).map(r => col(r, "key"))
 }
 
 ///|

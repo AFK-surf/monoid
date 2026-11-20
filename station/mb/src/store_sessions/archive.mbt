@@ -25,15 +25,6 @@ fn thread_id_of(t : Json) -> Json {
 }
 
 ///|
-/// store.ts `getThread`.
-fn Store::get_thread(self : Store, id : Json) -> Json raise {
-  match self.one("SELECT * FROM threads WHERE id = ?", [id]) {
-    Some(r) => to_thread(r)
-    None => Json::null()
-  }
-}
-
-///|
 /// store.ts `lastEntry`.
 fn Store::last_entry(self : Store, thread : Json) -> Json raise {
   match self.one("SELECT MAX(n) AS n FROM entries WHERE thread = ?", [thread]) {

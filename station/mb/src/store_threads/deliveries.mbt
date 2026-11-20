@@ -174,64 +174,6 @@ pub fn Store::complete_router_write(self : Store, id : Json) -> Json raise {
 }
 
 ///|
-fn pending_of(r : Map[String, Json], message : Json) -> Json {
-  {
-    "message": message,
-    "surface": col(r, "surface"),
-    "channel": col(r, "channel"),
-    "threadTs": col(r, "thread_ts"),
-    "connect": col(r, "connect"),
-  }
-}
-
-///|
-fn created_at(p : Json) -> Double {
-  match p {
-    Object(o) =>
-      match o.get("message") {
-        Some(Object(m)) => num(m.get("createdAt").unwrap_or(Json::null()))
-        _ => 0.0
-      }
-    _ => 0.0
-  }
-}
-
-///|
-pub fn Store::pending_messages(self : Store, session : Json) -> Json raise {
-  let said = self
-    .all(
-      "SELECT m.*, t.surface, t.channel, t.thread_ts, ts.connect FROM deliveries d\n       JOIN merged m ON m.thread = d.thread AND m.n = d.n JOIN threads t ON t.id = d.thread\n       JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n       WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
-      [session],
-    )
-    .map(r => pending_of(r, message_of(r)))
-  let letters = self
-    .all(
-      "SELECT l.*, t.surface, t.channel, t.thread_ts, ts.connect FROM letter_deliveries d\n       JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread\n       JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n       WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
-      [session],
-    )
-    .map(r => pending_of(r, letter_message_of(r)))
-  if letters.is_empty() {
-    return Json::array(said)
-  }
-  if said.is_empty() {
-    return Json::array(letters)
-  }
-  let out = []
-  let mut i = 0
-  let mut j = 0
-  while i < said.length() || j < letters.length() {
-    if j >= letters.length() || (i < said.length() && created_at(said[i]) <= created_at(letters[j])) {
-      out.push(said[i])
-      i += 1
-    } else {
-      out.push(letters[j])
-      j += 1
-    }
-  }
-  Json::array(out)
-}
-
-///|
 pub fn Store::pending_before(self : Store, session : Json, thread : Json, n : Json) -> Json raise {
   Json::array(
     self
@@ -554,11 +496,6 @@ pub fn Store::pins(self : Store, viewer : Json) -> Json raise {
     out[js_text(col(r, "session"))] = col(r, "at")
   }
   Json::object(out)
-}
-
-///|
-pub fn Store::pinned_sessions(self : Store) -> Json raise {
-  Json::array(self.all("SELECT DISTINCT session FROM pins", []).map(r => col(r, "session")))
 }
 
 ///|
