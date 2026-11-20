@@ -42,6 +42,8 @@ pub fn[K : Eq] tabs_node(
   }
   parent.box(made_for=loc, fn(col) {
     style_node(col, fn() { tabs_column })
+    let panel_way = @motion.NodeWay::new(1.0)
+    let panel_dir : Ref[Double] = Ref(1.0)
     // its tab list (a row as wide as where it is, its track as wide as its tabs)
     col.box(fn(line) {
       style_node(line, fn() { tabs_line })
@@ -76,7 +78,7 @@ pub fn[K : Eq] tabs_node(
             x
           }
           // (where the bar or the capsule is along the strip and how wide: off from where it set out to the chosen
-          // tab's place and width together as that changes, on move_damped; the words' size changed, there at once)
+          // tab's place and width together as that changes, on snappy_damped; the words' size changed, there at once)
           let rect = @motion.cover_indicator(
             strip,
             fn() { place_of(chosen()) },
@@ -87,7 +89,20 @@ pub fn[K : Eq] tabs_node(
                 None
               }
             },
+            spec=@motion.snappy_damped,
           )
+          let prev_idx = Ref(place_of(@signals.untracked(chosen)))
+          strip.reacts(chosen, at_start=false, fn(k) {
+            let to_k = place_of(k)
+            let from_k = prev_idx.val
+            prev_idx.val = to_k
+            if to_k != from_k {
+              panel_dir.val = if to_k > from_k { 1.0 } else { -1.0 }
+              if !@ui.reduced_motion() {
+                panel_way.go_from(strip, 0.0, 1.0, @motion.tween(180.0, ease=Out))
+              }
+            }
+          })
           strip.box(fn(mark) {
             mark
             .over(Is(true))
@@ -187,7 +202,15 @@ pub fn[K : Eq] tabs_node(
           keep_mounted~,
           fn(p, shown) {
             style_node(p, fn() { tabs_panel })
-            p.laid_nowhere(By(fn() { !shown.selected() })) |> ignore
+            p
+            .laid_nowhere(By(fn() { !shown.selected() }))
+            .offset(By(fn() {
+              let q = panel_way.shown(p)
+              (panel_dir.val * 12.0 * (1.0 - q), 0.0)
+            }))
+            .alpha(By(fn() { panel_way.shown(p) }))
+            .carries_until(fn() { panel_way.ends_at() })
+            |> ignore
           },
           fn(p) { content(p, key) },
         )

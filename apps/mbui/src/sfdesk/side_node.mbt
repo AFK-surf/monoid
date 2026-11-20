@@ -5,6 +5,20 @@
 // for theirs (files_side_node.mbt).
 
 ///|
+/// The vertical order of a top-level place in the left rail (side_node's switch direction).
+fn side_place_index(place : String) -> Int {
+  match place {
+    "chats" => 0
+    "remote" => 1
+    "files" => 2
+    "stations" => 3
+    "profiles" => 4
+    "settings" => 5
+    _ => 0
+  }
+}
+
+///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
 /// has it: cut to the block's room, its corners the block's (its line over it, dock_edge_node's); shown while what is in
 /// it is drawn.
@@ -35,6 +49,7 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
       .height(By(fn() { Some(at().box.3) }))
       .offset(By(fn() { (at().box.0 - at().block.0, at().box.1 - at().block.1) }))
       |> ignore
+      let prev_place : Ref[(String, Int)?] = Ref(None)
       side.pick(at_once=true, fn() { if side_place() == "archive" { "chats" } else { side_place() } }, fn(s, place) {
         match place {
           // (the settings' list beside their pages: settings_frame.mbt)
@@ -48,6 +63,20 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
+        let cur_idx = side_place_index(place)
+        match prev_place.val {
+          Some((old_place, old_idx)) if old_place != place && !@ui.reduced_motion() => {
+            let dir = if cur_idx >= old_idx { 1.0 } else { -1.0 }
+            let way = @motion.NodeWay::new(0.0)
+            way.go_from(s, 0.0, 1.0, @motion.tween(160.0, ease=Out))
+            s
+            .offset(By(fn() { (0.0, dir * 10.0 * (1.0 - way.shown(s))) }))
+            .carries_until(fn() { way.ends_at() })
+            |> ignore
+          }
+          _ => ()
+        }
+        prev_place.val = Some((place, cur_idx))
       })
     })
     |> ignore
