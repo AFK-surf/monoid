@@ -609,3 +609,68 @@ test "flips: trimming an off-screen row under a top placeholder inside transitio
     }
   }
 }
+
+///|
+/// The drawn top and seen height of the words that start as `start` and their scale, the drawn top of the words `under`
+/// (a line laid under them in their block), in `tree`.
+fn lf_over_under(tree : @view.Tree, start : String, under : String) -> (Double, Double, Double, Double) {
+  let scales : Array[Double] = []
+  let held = tree.drawn_held(scales~)
+  let mut p = (rc_none, rc_none, rc_none)
+  let mut d = rc_none
+  for i, e in held {
+    if e.0.words.has_prefix(start) {
+      p = (e.0.y, e.0.h, scales[i])
+    } else if e.0.words == under {
+      d = e.0.y
+    }
+  }
+  (p.0, p.1, p.2, d)
+}
+
+///|
+test "flips: a block laid out narrower as its column sets off on a way to it, its words broken to more lines over a line under them: drawn at their size, opened from their top, never over the line under them" {
+  let looks = rc_looks(rc_at + 600.0)
+  for rate in rc_rates {
+    let w = @signals.signal(300.0, same=fn(a, b) { a == b })
+    let words = @signals.signal(lf_anew_words + lf_anew_words, same=fn(a, b) { a == b })
+    let gap : Ref[@view.View?] = Ref(None)
+    let scroll = @view.Scroll::list()
+    let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.width(By(fn() { Some(w.get()) })).height(Is(Some(400.0))) |> ignore
+        o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+          if k == 9 {
+            b.box(fn(g) {
+              gap.val = Some(g)
+              g.height(By(fn() { Some(if w.get() > 200.0 { 12.0 } else { 8.0 }) })).shrink(Is(0.0)) |> ignore
+            })
+            |> ignore
+            b.box(fn(t) { t.words(By(fn() { words.get() })) |> ignore }) |> ignore
+            b.box(fn(t) { t.words(Is("下面一行")) |> ignore }) |> ignore
+          } else {
+            b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    let from = lf_words_tall(tree, "一段")
+    let got = rc_walk(tree, [(rc_at, fn() {
+      gap.val.unwrap().resizes() |> ignore
+      w.set(160.0)
+    })], looks, rate, fn() { lf_over_under(tree, "一段", "下面一行") })
+    let to = lf_words_tall(tree, "一段")
+    assert_true(to - from > 20.0, msg="at \{rate} a second: no more lines: \{from} to \{to} tall")
+    for i, g in got {
+      let (py, ph, sc, dy) = g
+      assert_true(
+        py != rc_none && dy != rc_none && py + ph <= dy + 0.5 && (sc - 1.0).abs() < 0.0001,
+        msg="at \{rate} a second, at \{looks[i]}: the words drawn from \{py}, \{ph} of them seen, at \{sc}; the line under them at \{dy}\n\{Repr(got)}",
+      )
+    }
+  }
+}

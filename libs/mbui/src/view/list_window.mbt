@@ -1886,12 +1886,19 @@ fn View::scrolls_window_ids(
     guard found is Some(k) else { return fn() {  } }
     let all = places(laid.untracked())
     guard laid_at.get(k) is Some(j) && j < all.length() else { return fn() {  } }
-    // (where the top of what shows is: at its foot, followed there, where that is)
-    let shown_top = if s.at_foot() {
-      foot_top(all, match s.seen.untracked() {
-        Some((_, vh)) => vh
-        None => 0.0
-      })
+    // (where the top of what shows is: at its foot, followed there, where that is; a list from its end shorter than
+    // what shows, its blocks at its foot, the room left over them: that far over its first block's top)
+    let vh = match s.seen.untracked() {
+      Some((_, vh)) => vh
+      None => 0.0
+    }
+    let whole = @signals.untracked(fn() {
+      all.foot() + room_under() + s.tuck_room.get() + foot_room.get()
+    })
+    let shown_top = if from_end && whole < vh {
+      whole - vh
+    } else if s.at_foot() {
+      foot_top(all, vh)
     } else {
       top_now(all, @signals.untracked(at))
     }
@@ -2099,8 +2106,28 @@ fn View::scrolls_window_ids(
         let foot = counted(laid.get()).foot()
         foot + room_under() + s.tuck_room.get() + foot_room.get() - vh - at() < screens * vh
       }, same=fn(a, b) { a == b })
+      // (told while this list measures its blocks in its own layout (a block found shorter than `est` told in the
+      // fill, the list's room being worked out): asked once that layout is done, never in its midst, where keys come
+      // in over what it holds by its place among them and it puts its anchor by places that moved meanwhile)
+      let owed = Ref(false)
       self.reacts(fn() { (near.get() && wanting(), keys().length()) }, fn(now) {
-        if now.0 {
+        if !now.0 {
+          owed.val = false
+          return
+        }
+        if self.tree.rooming == self.at {
+          if !owed.val {
+            owed.val = true
+            self.tree.once_laid_out(fn() {
+              guard owed.val else { return }
+              owed.val = false
+              if self.alive() && @signals.untracked(fn() { near.get() && wanting() }) {
+                ask()
+              }
+            })
+          }
+        } else {
+          owed.val = false
           ask()
         }
       })
@@ -2126,8 +2153,28 @@ fn View::scrolls_window_ids(
           top_now(all, x) - all.col.start < screens * vh
         }
       }, same=fn(a, b) { a == b })
+      // (told while this list measures its blocks in its own layout (a block found shorter than `est` told in the
+      // fill, the list's room being worked out): asked once that layout is done, never in its midst, where keys come
+      // in over what it holds by its place among them and it puts its anchor by places that moved meanwhile)
+      let owed = Ref(false)
       self.reacts(fn() { (near.get() && wanting(), keys().length()) }, fn(now) {
-        if now.0 {
+        if !now.0 {
+          owed.val = false
+          return
+        }
+        if self.tree.rooming == self.at {
+          if !owed.val {
+            owed.val = true
+            self.tree.once_laid_out(fn() {
+              guard owed.val else { return }
+              owed.val = false
+              if self.alive() && @signals.untracked(fn() { near.get() && wanting() }) {
+                ask()
+              }
+            })
+          }
+        } else {
+          owed.val = false
           ask()
         }
       })
@@ -3356,7 +3403,7 @@ fn View::scrolls_window_ids(
       }
     }
     // (a standing limit: its key met among the keys, gone from them after that, the limit with it)
-    let from = match place {
+    let mut from = match place {
       Some(p) =>
         match p.from {
           Some((k, margin)) =>
@@ -3386,6 +3433,7 @@ fn View::scrolls_window_ids(
     let mut again = true
     let measured : Map[Int, Bool] = Map([])
     // (the blocks an ask's place spanned, unknown, a pass gone out from each: the fill's `spans_unknown`)
+    // (by their keys: places the keys came to anew meanwhile move under them)
     let spanned : Map[Int, Bool] = Map([])
     // (what showed as this layout began, kept made while it still measures: a pass that finds what shows otherwise for
     // one never measured (the appended one at its foot, as tall as `est` till it is measured, all that shows by itself)
@@ -3393,6 +3441,23 @@ fn View::scrolls_window_ids(
     let showed = shown_now.copy()
     let mut found : Array[Int] = []
     let mut visible : Array[Int] = []
+    // (the key it is held by, and the keys as they were as this fill began: keys come in or gone while it measures
+    // (what is told as it measures asking for more) put the one it is held by at another place, found again there by
+    // its key, never held by a place that now holds another)
+    let init_all = places(laid.untracked())
+    let mut ak : Int? = if ai >= 0 && ai < init_all.length() { Some(init_all.key(ai)) } else { None }
+    let mut refills_at = column.refills
+    // (a standing limit found again where its key is now)
+    let from_again = fn() {
+      match place {
+        Some(p) =>
+          match p.from {
+            Some((fk, margin)) => laid_at.get(fk).map(fn(fi) { (fi, margin) })
+            None => None
+          }
+        None => None
+      }
+    }
     while again {
       again = false
       fill_passes.val = fill_passes.val + 1
@@ -3429,6 +3494,18 @@ fn View::scrolls_window_ids(
         _ => ()
       }
       let all = places(laid.untracked())
+      if column.refills != refills_at {
+        refills_at = column.refills
+        match ak {
+          Some(k) =>
+            match laid_at.get(k) {
+              Some(ni) => ai = ni
+              None => ()
+            }
+          None => ()
+        }
+        from = from_again()
+      }
       vh = shows().unwrap_or(0.0)
       if all.length() == 0 {
         found = []
@@ -3441,11 +3518,19 @@ fn View::scrolls_window_ids(
       // (held by what was pressed in a block: the block's top as far up as what lies over what was pressed grew since,
       // the room under its foot as that asks)
       let mut pressed_holds = false
-      if !asked && pin.val is Some((k, below, over, was)) && laid_at.get(k) is Some(i) && i < all.length() {
+      if !asked &&
+        pin.val is Some((k, below, over, was)) &&
+        !(pin_foot.val && pin_opens.val) &&
+        laid_at.get(k) is Some(i) &&
+        i < all.length() {
         ai = i
+        ak = Some(all.key(ai))
         pressed_holds = true
         aoff = over_h(over) - (was - pin_less.val) - below
-        foot_room.set(dmax(0.0, all.top(i) + aoff + vh - blocks_foot(all)))
+        // (where its top is at the list's top or over it, held there with nothing under its foot: the list's top is
+        // where it shows already, no room under it asked for)
+        let want = all.top(i) + aoff
+        foot_room.set(if !from_end && want <= 0.0 { 0.0 } else { dmax(0.0, want + vh - blocks_foot(all)) })
       } else if floor.val is Some((lk, e0)) {
         // (a key come at its foot: the stretch from the last that stayed as long as it was, it and what is under it and
         // the foot as they show now)
@@ -3513,6 +3598,7 @@ fn View::scrolls_window_ids(
           follows_foot = false
           // (held by it while it binds, as it is measured anew in this fill too)
           ai = i
+          ak = Some(all.key(ai))
           aoff = -from_edge(margin)
           binds = true
         }
@@ -3561,8 +3647,9 @@ fn View::scrolls_window_ids(
           let mut q = ai
           while q <= past && all.top(q) <= top {
             // (once each in a fill: one that stays unknown measured is no reason for another pass)
-            if !all.known(q) && !spanned.contains(q) {
-              spanned[q] = true
+            let uk = all.key(q)
+            if !all.known(q) && !spanned.contains(uk) {
+              spanned[uk] = true
               unknown = q
               break
             }
@@ -3903,6 +3990,30 @@ fn View::scrolls_window_ids(
     blocks.clear()
     blocks.append(live)
     let all = places(laid.untracked())
+    // (keys come in or gone since its last pass: where it shows worked out again by the key it is held by, never the
+    // anchor put by a place that now holds another)
+    if column.refills != refills_at && all.length() > 0 {
+      match ak {
+        Some(k) =>
+          match laid_at.get(k) {
+            Some(ni) => ai = ni
+            None => ()
+          }
+        None => ()
+      }
+      ai = ai.min(all.length() - 1).max(0)
+      from = from_again()
+      let most = dmax(0.0, whole_now() - vh)
+      top = if follows_foot || to_end {
+        most
+      } else {
+        match from {
+          Some((fi, margin)) if binds && fi < all.length() =>
+            dmax(0.0, all.top(fi) - margin - @signals.untracked(fn() { s.top_covered() }))
+          _ => dclamp(all.top(ai) + aoff, 0.0, most)
+        }
+      }
+    }
     // (how tall the column is as this fill leaves it and where its blocks are: what a floor armed next is held to)
     laid_whole.val = blocks_foot(all) + foot_room.untracked()
     laid_last.val = Some(all)
@@ -4842,15 +4953,6 @@ fn View::scrolls_window_ids(
                   continue
                 }
                 match was_c {
-                  // (in a block laid out at another width (its column on its way to another width, View::lays_anew),
-                  // what comes out otherwise across was laid out anew: its words broken again, its ground round them
-                  // as they are now, at once, as the window made another size has it, only its place on the list's
-                  // way; never drawn as grown from its top, its words squeezed and sprung back (the user, 2026-11-17:
-                  // 「新架构下文字的右侧展开收起挤压的时候效果不对」「很 q 弹的垃圾」))
-                  Some(b) if laid_anew && (n.flex.width - b.w).abs() > 0.5 => {
-                    put(c, flip_in_down(b.y - y - held, 0.0, 0.0, false))
-                    walk(c, y, b.y - y, x, 0.0)
-                  }
                   // (a place that held nothing as the change came (a pick showing nothing, laid out nowhere) and holds
                   // something now, down a column: where it was laid out then is no place it stood, so it comes from
                   // the foot of the one before as that is drawn on the way, as one come does (below), what it holds
@@ -4866,7 +4968,11 @@ fn View::scrolls_window_ids(
                     let grown = h - b.h
                     // (across, where the block is as wide as it was (a pill opened in a row that stays as wide): from
                     // where it stood and as wide as its ground was drawn, as round, on the same way; in a block laid out
-                    // anew at another width, across at once, as ever (the user, 2026-11-17))
+                    // anew at another width (its column on its way to another width, View::lays_anew), across at once:
+                    // its words broken again, its ground round them as they are now, as the window made another size
+                    // has it, never squeezed and sprung back (the user, 2026-11-17: 「新架构下文字的右侧展开收起挤压的
+                    // 时候效果不对」「很 q 弹的垃圾」); grown down by it, opened from its top as any grown, what is under
+                    // it in its block coming down as it opens, never under it)
                     let lw = if laid_anew || (n.flex.width - b.w).abs() <= 0.5 { 0.0 } else { n.flex.width - b.w }
                     // (only what came to another width goes across, and what it holds with it: what only stands
                     // elsewhere across as the change came (a row sent while what holds the list moves) is where it is laid)
