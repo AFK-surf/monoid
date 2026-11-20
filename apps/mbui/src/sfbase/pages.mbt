@@ -1444,14 +1444,9 @@ fn page_entry_parked(serial : Int, p : Page) -> Unit {
 fn page_entry_gone(serial : Int, _p : Page) -> Unit {
   entries_kept.remove(serial)
   page_sources.remove(serial)
-  // (its chat's reader let go with it, not only forgotten)
-  match active_chat_readers.get(serial) {
-    Some(let_go) => {
-      active_chat_readers.remove(serial)
-      let_go()
-    }
-    None => ()
-  }
+  // (its chat's reader let go by the entry it is bound to as that goes in the frame after (page_chat_reader's
+  // bind_to), never here: Nav tells it gone before then, the original read still asked till that frame)
+  active_chat_readers.remove(serial)
   release_pending_chat(serial)
   match handed_readers.get(serial) {
     Some(readers) => {
@@ -1488,13 +1483,16 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
       }
     _ => ()
   }
-  // (its chat's reader let go as it leaves, put by or for good)
-  match active_chat_readers.get(serial) {
-    Some(let_go) => {
-      active_chat_readers.remove(serial)
-      let_go()
+  // (its chat's reader let go at once only where nothing else lets go of it: put by (kept_left), or never drawn; one
+  // drawn and let go for good lets go of it as its entry goes in the frame after (page_chat_reader's bind_to))
+  if parked || chat is None {
+    match active_chat_readers.get(serial) {
+      Some(let_go) => {
+        active_chat_readers.remove(serial)
+        let_go()
+      }
+      None => ()
     }
-    None => ()
   }
   if parked {
     // (its sources kept for it as it is put on again: what they had read of its chat read anew then)
