@@ -287,7 +287,47 @@ test "a connect's startsOn dialog: explicit manual checklist (no auto-all), disa
     t.tap(mx2, my2)
     t.draw()
     assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: unchecking Maple enables save")
+    // Toggle "跟随工作区白名单（自动分配）" ON -> manual checklist hides, save sends { autoStation: true }, detail shows "跟随工作区白名单".
+    assert_true(t.find("跟随工作区白名单（自动分配）") is Some(_), msg="\{at}: auto allowlist switch shown")
+    assert_true(t.find("2 台") is Some(_), msg="\{at}: allowlist count shown")
+    let (ax, ay) = middle_of(t, Switch, "跟随工作区白名单（自动分配）")
+    t.tap(ax, ay)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Willow（connect 所在的这台）") is None, msg="\{at}: manual checklist collapses when auto is on")
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save enabled when switching to auto")
+    let (bx2, by2) = middle_of(t, Button, "保存")
+    t.tap(bx2, by2)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(puts.length(), 2, msg=at)
+    assert_true(flag(field(Some(puts[1]), "input"), "autoStation"), msg="\{at}: submits autoStation: true")
+    assert_true(t.find("跟随工作区白名单") is Some(_), msg="\{at}: detail displays auto allowlist summary")
   }
+}
+
+///|
+test "a connect's startsOn row: non-admin member sees read-only row and cannot open routing dialog" {
+  let t = setting_tester(Connect("ws1/st1", "k1"), 1280.0, platform=0, over=fn(s) {
+    let base_read = s.topic_read
+    {
+      ..s,
+      topic_read: fn(topic, params) {
+        if topic == "workspace" {
+          { value: Some({ "role": "member", "name": "星火", "members": [] }), error: None, version: 1 }
+        } else {
+          base_read(topic, params)
+        }
+      },
+    }
+  })
+  t.draw()
+  assert_true(t.find("新对话开在") is Some(_))
+  let (sx, sy) = t.find("新对话开在").unwrap()
+  t.tap(sx, sy)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="non-admin tapping startsOn must not open dialog")
 }
 
 ///|

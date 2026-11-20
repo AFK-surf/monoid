@@ -557,6 +557,20 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
       a.err,
     );
     assert.equal(store.listTurns(feishuSession.s.key).length, 1, "manually archived thread must not receive follow-up turns");
+
+    // ── 1f. Live MoonBit PUT /admin-api/connects/:id autoStation + stations parity ──
+    const putAuto = await ask(door, "/admin-api/connects/f1", { method: "PUT", body: { autoStation: true } });
+    assert.equal(putAuto.status, 200, putAuto.body);
+    const f1Auto = (JSON.parse(putAuto.body).connects as any[]).find((c) => c.id === "f1");
+    assert.equal(f1Auto.startsOnAuto, true);
+    assert.equal(f1Auto.startsOn, null);
+    assert.equal(f1Auto.startsOnStations, null);
+    const putManual = await ask(door, "/admin-api/connects/f1", { method: "PUT", body: { stations: ["ws1/st1", "ws1/st2"] } });
+    assert.equal(putManual.status, 200, putManual.body);
+    const f1Manual = (JSON.parse(putManual.body).connects as any[]).find((c) => c.id === "f1");
+    assert.equal(f1Manual.startsOnAuto, undefined);
+    assert.equal(f1Manual.startsOn, "st1");
+    assert.deepEqual(f1Manual.startsOnStations, ["st1", "st2"]);
   } finally {
     store.close();
   }

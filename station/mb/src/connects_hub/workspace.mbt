@@ -908,24 +908,56 @@ pub async fn WorkspaceConnects::receive(self : WorkspaceConnects, id : String, e
       return (self.d.hub.receive)(id, event)
     }
     let here = self.here()
-    let raw_pool = self.allowlist_of(entry)
-    let pool = raw_pool.filter(s => (s == here || self.in_workspace(ws, s)) && !self.is_tasks_only(ws, s))
-    if raw_pool.length() == 1 {
-      let want = pool.get(0)
-      guard want is Some(want) && want != here else { return (self.d.hub.receive)(id, event) }
-      try {
-        self.forward(want, id, ws, event)
-        (self.d.store.set_connect_thread_station)(id, channel, thread_ts, want)
-        self.d.log.info("connects", "a new conversation runs on another station", jo([("connect", js(id)), ("station", js(want))]))
-      } catch {
-        e => {
-          self.d.log.warn("connects", "the connect's station for new conversations did not take one; it runs here", jo([("connect", js(id)), ("station", js(want)), ("error", js(thrown_message(e)))]))
-          (self.d.hub.receive)(id, event)
+    let auto_mode = at(entry, "autoStation") is Some(Bool(true))
+    let raw_pool : Array[String] = []
+    let pool : Array[String] = []
+    if auto_mode {
+      for p in (self.d.stations)(ws) {
+        match str_of(at(Some(p), "id")) {
+          Some(raw_id) => {
+            let s = bare_station_id(raw_id)
+            if s != "" && !raw_pool.contains(s) {
+              raw_pool.push(s)
+            }
+          }
+          None => ()
         }
       }
-      return
+      if here != "" && !raw_pool.contains(here) {
+        raw_pool.push(here)
+      }
+      for s in raw_pool {
+        if !self.is_tasks_only(ws, s) {
+          pool.push(s)
+        }
+      }
+    } else {
+      for s in self.allowlist_of(entry) {
+        raw_pool.push(s)
+      }
+      for s in raw_pool {
+        if (s == here || self.in_workspace(ws, s)) && !self.is_tasks_only(ws, s) {
+          pool.push(s)
+        }
+      }
+      if raw_pool.length() == 1 {
+        let want = pool.get(0)
+        guard want is Some(want) && want != here else { return (self.d.hub.receive)(id, event) }
+        try {
+          self.forward(want, id, ws, event)
+          (self.d.store.set_connect_thread_station)(id, channel, thread_ts, want)
+          self.d.log.info("connects", "a new conversation runs on another station", jo([("connect", js(id)), ("station", js(want))]))
+        } catch {
+          e => {
+            self.d.log.warn("connects", "the connect's station for new conversations did not take one; it runs here", jo([("connect", js(id)), ("station", js(want)), ("error", js(thrown_message(e)))]))
+            (self.d.hub.receive)(id, event)
+          }
+        }
+        return
+      }
     }
-    // Multi-station manual allowlist: query live load in parallel via peer `describe` and pick least busy.
+    // Multi-station manual allowlist or workspace auto-assign allowlist: query live load in parallel via peer `describe`
+    // and pick least busy. In `auto_mode`, strictly require `acceptAutoChats === true`.
     let n = pool.length()
     let probed : Array[(String, Int, Double, Double)?] = Array::make(n, None)
     if n > 0 {
@@ -940,6 +972,9 @@ pub async fn WorkspaceConnects::receive(self : WorkspaceConnects, id : String, e
           match self.query_station_load(ws, st) {
             Some(described) => {
               if str_of(at(Some(described), "mode")) == Some("tasks") || at(Some(described), "sessions") is Some(Bool(false)) {
+                return
+              }
+              if auto_mode && !(at(Some(described), "acceptAutoChats") is Some(Bool(true))) {
                 return
               }
               let load = at(Some(described), "load")
@@ -1007,15 +1042,22 @@ pub async fn WorkspaceConnects::receive(self : WorkspaceConnects, id : String, e
         return
       }
     }
-    // Hard allowlist safety invariant: only fall back to `here` if `here` is explicitly in the allowlist.
-    if pool.contains(here) {
+    // Hard allowlist safety invariant:
+    // - In `auto_mode`, NEVER fall back to `here` or any non-allowlisted station when 0 allowlisted stations are reachable.
+    // - In manual allowlist mode, only fall back to `here` if `here` is explicitly in the allowlist.
+    if !auto_mode && pool.contains(here) {
       (self.d.hub.receive)(id, event)
       return
     }
     let lang = self.d.speech.station_lang()
     let sep = self.d.speech.tr(lang, "station.list.separator")
     let names = raw_pool.map(s => self.name_of(ws, s)).join(sep)
-    self.d.log.warn("connects", "no allowlisted station reachable for new conversation; refusing local fallback", jo([("connect", js(id)), ("stations", jsa(raw_pool))]))
+    let msg = if auto_mode {
+      "no workspace-allowlisted station reachable for autoStation connect; refusing local fallback"
+    } else {
+      "no allowlisted station reachable for new conversation; refusing local fallback"
+    }
+    self.d.log.warn("connects", msg, jo([("connect", js(id)), ("autoStation", jb(auto_mode)), ("stations", jsa(raw_pool))]))
     match self.own(id) {
       Some(s) => {
         let words = self.d.speech.tr(lang, "station.connect.stationAway", args=[("station", names)])

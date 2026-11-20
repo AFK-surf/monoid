@@ -527,26 +527,51 @@ export class WorkspaceConnects {
       const fresh = event.type === "message" && event.message.addressed && this.d.store.threadAt(hub.surface(id), thread.channel, thread.threadTs) === null;
       if (!fresh) return hub.receive(id, event);
       const here = this.d.here();
-      const rawPool = this.allowlistOf(entry);
-      const pool = rawPool.filter((s) => (s === here || this.inWorkspace(ws, s)) && !this.isTasksOnly(ws, s));
-      if (rawPool.length === 1) {
-        const want = pool[0] ?? null;
-        if (want === null || want === here) return hub.receive(id, event);
-        try {
-          await this.forward(want, id, ws, event);
-          this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
-          log.info("connects", "a new conversation runs on another station", { connect: id, station: want });
-        } catch (e) {
-          log.warn("connects", "the connect's station for new conversations did not take one; it runs here", { connect: id, station: want, error: (e as Error).message });
-          await hub.receive(id, event);
+      const autoMode = entry?.autoStation === true;
+      let rawPool: string[];
+      let pool: string[];
+      if (autoMode) {
+        const seen = new Set<string>();
+        const all: string[] = [];
+        for (const p of this.d.stations(ws)) {
+          if (typeof p?.id === "string") {
+            const s = this.bareStationId(p.id);
+            if (s !== "" && !seen.has(s)) {
+              seen.add(s);
+              all.push(s);
+            }
+          }
         }
-        return;
+        if (here !== "" && !seen.has(here)) {
+          seen.add(here);
+          all.push(here);
+        }
+        rawPool = all;
+        pool = all.filter((s) => !this.isTasksOnly(ws, s));
+      } else {
+        rawPool = this.allowlistOf(entry);
+        pool = rawPool.filter((s) => (s === here || this.inWorkspace(ws, s)) && !this.isTasksOnly(ws, s));
+        if (rawPool.length === 1) {
+          const want = pool[0] ?? null;
+          if (want === null || want === here) return hub.receive(id, event);
+          try {
+            await this.forward(want, id, ws, event);
+            this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
+            log.info("connects", "a new conversation runs on another station", { connect: id, station: want });
+          } catch (e) {
+            log.warn("connects", "the connect's station for new conversations did not take one; it runs here", { connect: id, station: want, error: (e as Error).message });
+            await hub.receive(id, event);
+          }
+          return;
+        }
       }
-      // Multi-station manual allowlist: query live load via peer `describe` (event-driven, no polling) and pick least busy.
+      // Multi-station manual allowlist or workspace auto-assign allowlist: query live load via peer `describe`
+      // (event-driven, no polling) and pick least busy. In `autoMode`, strictly require `acceptAutoChats === true`.
       const probed = await Promise.all(
         pool.map(async (station, idx) => {
           const described = await this.queryStationLoad(ws, station);
           if (described === null || described?.mode === "tasks" || described?.sessions === false) return null;
+          if (autoMode && described?.acceptAutoChats !== true) return null;
           const load = described?.load;
           const rawTurns = load?.running?.turns;
           const baseTurns = typeof rawTurns === "number" && Number.isFinite(rawTurns) ? rawTurns : 0;
@@ -586,13 +611,15 @@ export class WorkspaceConnects {
           this.addInflight(id, candidate.station, -1);
         }
       }
-      // Hard allowlist safety invariant: only fall back to `here` if `here` is explicitly in the allowlist.
-      if (pool.includes(here)) {
+      // Hard allowlist safety invariant:
+      // - In `autoMode`, NEVER fall back to `here` or any non-allowlisted station when 0 allowlisted stations are reachable.
+      // - In manual allowlist mode, only fall back to `here` if `here` is explicitly in the allowlist.
+      if (!autoMode && pool.includes(here)) {
         await hub.receive(id, event);
         return;
       }
       const names = rawPool.map((s) => this.nameOf(ws, s)).join(tr(stationLang(), "station.list.separator"));
-      log.warn("connects", "no allowlisted station reachable for new conversation; refusing local fallback", { connect: id, stations: rawPool });
+      log.warn("connects", autoMode ? "no workspace-allowlisted station reachable for autoStation connect; refusing local fallback" : "no allowlisted station reachable for new conversation; refusing local fallback", { connect: id, autoStation: autoMode, stations: rawPool });
       await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: names })}`), []).catch(() => {});
     });
   }

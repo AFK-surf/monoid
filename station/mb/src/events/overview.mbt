@@ -525,9 +525,10 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     Some(by) if truthy(by.get("id")) => by
     _ => Null
   }
-  let starts_on = non_empty(c.get("station"))
+  let starts_on_auto = c.get("autoStation") is Some(Bool(true))
+  let starts_on = if starts_on_auto { None } else { non_empty(c.get("station")) }
   let starts_on_stations_list : Array[String] = []
-  if c.get("stations") is Some(Arr(items)) {
+  if !starts_on_auto && c.get("stations") is Some(Arr(items)) {
     for x in items {
       if text_of(Some(x)) is Some(s) {
         let t = @jscase.trim(s)
@@ -537,7 +538,9 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
       }
     }
   }
-  let starts_on_stations : J = if starts_on_stations_list.length() > 0 {
+  let starts_on_stations : J = if starts_on_auto {
+    Null
+  } else if starts_on_stations_list.length() > 0 {
     ja(starts_on_stations_list.map(js))
   } else {
     match starts_on {
@@ -599,6 +602,7 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     ),
     ("startsOn", Some(starts_on.unwrap_or(Null))),
     ("startsOnStations", Some(starts_on_stations)),
+    ("startsOnAuto", if starts_on_auto { Some(Bool(true)) } else { None }),
     ("moves", Some(Bool(true))),
   ]
   let put = (name : String, value : J?) => {

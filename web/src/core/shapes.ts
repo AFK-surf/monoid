@@ -672,6 +672,8 @@ export interface Connect {
 	startsOn?: string;
 	/** The allowlisted stations of its workspace its new conversations balance across (null: this one). */
 	startsOnStations?: string[];
+	/** Whether new conversations follow the workspace auto-assign allowlist. */
+	startsOnAuto?: boolean;
 	/** Whether this station lets the connect be moved to another station of its workspace. */
 	moves?: boolean;
 	statusText: string;

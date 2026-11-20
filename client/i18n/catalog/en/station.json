@@ -248,6 +248,7 @@
   "station.connect.stationAway": "The station this chat runs on ({station}) can't be reached right now, so your message didn't get to it. Try again once it's back online.",
   "station.connect.ownerEmail": "The owner must be an email address",
   "station.connect.ownerWho": "Only workspace owners, admins or the current owner can change the owner",
+  "station.connect.stationManagersOnly": "Only a workspace owner or admin can change which station a connect runs on",
   "station.core.badAddress": "Unknown station address: {address}",
   "station.core.connecting": "Connecting",
   "station.core.disconnected": "Disconnected",

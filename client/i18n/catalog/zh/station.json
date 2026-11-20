@@ -245,6 +245,7 @@
   "station.connect.stationAway": "这个对话所在的 station（{station}）现在连不上，你的消息没送到。等它上线后再发一次。",
   "station.connect.ownerEmail": "所属用户必须是邮箱地址",
   "station.connect.ownerWho": "只有 workspace 的 owner、管理员或当前所属用户可以更改所属用户",
+  "station.connect.stationManagersOnly": "只有工作区管理员可以更改连接的运行 station",
   "station.core.badAddress": "无法识别的 station 地址：{address}",
   "station.core.connecting": "连接",
   "station.core.disconnected": "连接已断开",

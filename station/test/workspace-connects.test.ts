@@ -585,3 +585,90 @@ test("multi-station allowlist: workspace-prefixed station addresses in config ar
   assert.equal(s1.rig.store.listSessions().length, 0);
   await close();
 });
+
+test("PUT /connects/:id restricts station routing changes to workspace owners/admins (403) and supports autoStation", async () => {
+  const { s, close } = workspace();
+  const owner = { sub: "u1", email: "owner@example.com", name: "Owner", role: "owner" as const, workspace: "ws", home: true, device: "d1" };
+  const member = { sub: "u2", email: "member@example.com", name: "Member", role: "member" as const, workspace: "ws", home: true, device: "d2" };
+  const edits = connectEdits({
+    config: { raw: () => s.rig.raw, updateSoon: async (f: (r: Json) => void) => f(s.rig.raw) } as never,
+    data: s.rig.dir,
+    hub: () => s.rig.hub,
+    overview: (v, lang) => overview({ store: s.rig.store, hub: s.rig.hub, cloud: { state: null, membership: () => null, reached: true } as never, config: () => s.rig.raw }, v, lang),
+    entry: () => undefined,
+  });
+  const ownerReq = { viewer: owner, lang: "en" as const, path: "/connects/c-perm" } as never;
+  const memberReq = { viewer: member, lang: "en" as const, path: "/connects/c-perm" } as never;
+
+  // Owner creates connect with autoStation: true -> overview emits startsOnAuto: true, startsOn/startsOnStations null.
+  const ovAuto: any = await edits.putConnect(ownerReq, "c-perm", { bind: { runtime: "claude" }, autoStation: true });
+  const cAuto = ovAuto.connects.find((c: Json) => c.id === "c-perm");
+  assert.equal(cAuto.startsOnAuto, true);
+  assert.equal(cAuto.startsOn, null);
+  assert.equal(cAuto.startsOnStations, null);
+  assert.equal(s.rig.raw.connects.find((c: Json) => c.id === "c-perm").autoStation, true);
+
+  // Member editing non-routing field (enabled) succeeds and preserves autoStation: true.
+  const ovNonRoute: any = await edits.putConnect(memberReq, "c-perm", { enabled: false });
+  const cNonRoute = ovNonRoute.connects.find((c: Json) => c.id === "c-perm");
+  assert.equal(cNonRoute.enabled, false);
+  assert.equal(cNonRoute.startsOnAuto, true);
+
+  // Member changing autoStation / stations / station is refused with 403.
+  await assert.rejects(() => edits.putConnect(memberReq, "c-perm", { autoStation: false }), (e: any) => e?.status === 403);
+  await assert.rejects(() => edits.putConnect(memberReq, "c-perm", { stations: ["s1", "s2"] }), (e: any) => e?.status === 403);
+  await assert.rejects(() => edits.putConnect(memberReq, "c-perm", { station: "s1" }), (e: any) => e?.status === 403);
+
+  // Member creating a new connect with non-default routing is refused with 403.
+  await assert.rejects(() => edits.putConnect(memberReq, "c-member-new", { bind: { runtime: "claude" }, autoStation: true }), (e: any) => e?.status === 403);
+
+  // Invalid autoStation type returns 400.
+  await assert.rejects(() => edits.putConnect(ownerReq, "c-perm", { autoStation: "yes" }), (e: any) => e?.status === 400);
+
+  // Owner switching from autoStation: true to manual stations clears autoStation.
+  const ovManual: any = await edits.putConnect(ownerReq, "c-perm", { stations: ["s1", "s2"] });
+  const cManual = ovManual.connects.find((c: Json) => c.id === "c-perm");
+  assert.equal(cManual.startsOnAuto, undefined);
+  assert.deepEqual(cManual.startsOnStations, ["s1", "s2"]);
+  assert.equal(s.rig.raw.connects.find((c: Json) => c.id === "c-perm").autoStation, undefined);
+  await close();
+});
+
+test("autoStation: dispatches only to online stations with acceptAutoChats===true && mode!=='tasks' by live load, and refuses fallback when 0 allowlisted are online", async () => {
+  const { h, s1, s2, rigSt, close } = multiWorkspace({
+    [H]: () => ({ sessions: true, acceptAutoChats: false, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 95 } } }),
+    [S]: () => ({ sessions: true, acceptAutoChats: true, load: { running: { turns: 2 }, memory: { totalBytes: 100, availableBytes: 50 } } }),
+    [S2]: () => ({ sessions: true, acceptAutoChats: true, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 60 } } }),
+    [RIG]: () => ({ sessions: true, mode: "tasks", acceptAutoChats: true, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 99 } } }),
+  });
+  const entry = h.rig.raw.connects.find((c: Json) => c.id === "cl");
+  entry.autoStation = true;
+  delete entry.station;
+  delete entry.stations;
+
+  // S2 has acceptAutoChats: true and lowest load (0 turns); H has acceptAutoChats: false and RIG is mode: "tasks".
+  const m1 = message({ text: "<@UBOT> auto balance 1", threadTs: "4001.1", ts: "4001.1" });
+  await h.connects.receive("cl", { type: "message", message: m1 });
+  await settle();
+  assert.equal(h.rig.store.connectThreadStation("cl", m1.channel, m1.threadTs), S2);
+  assert.ok(s2.rig.store.getSession(sessionKey(`cl@${H}`, m1.channel, m1.threadTs)));
+  assert.equal(h.rig.store.listSessions().length, 0, "must not route to H when H.acceptAutoChats is false");
+  assert.equal(rigSt.rig.store.listSessions().length, 0, "must not route to tasks-only RIG");
+  await close();
+
+  // Hard invariant: when 0 stations return acceptAutoChats: true, refuse dispatch and NEVER fall back to H.
+  const none = multiWorkspace({
+    [H]: () => ({ sessions: true, acceptAutoChats: false, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 95 } } }),
+    [S]: () => ({ sessions: true, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 90 } } }),
+    [S2]: () => ({ sessions: true, acceptAutoChats: false, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 90 } } }),
+  });
+  none.h.rig.raw.connects.find((c: Json) => c.id === "cl").autoStation = true;
+  const m2 = message({ text: "<@UBOT> auto none", threadTs: "4002.1", ts: "4002.1" });
+  await none.h.connects.receive("cl", { type: "message", message: m2 });
+  await settle();
+  assert.equal(none.h.rig.store.listSessions().length, 0, "must NOT fall back to local H when 0 allowlisted stations are online");
+  assert.equal(none.s1.rig.store.listSessions().length, 0);
+  assert.equal(none.s2.rig.store.listSessions().length, 0);
+  assert.match(none.h.rig.chat.lastText(), /⚠️/, "should post away notice when no allowlisted station is reachable");
+  await none.close();
+});

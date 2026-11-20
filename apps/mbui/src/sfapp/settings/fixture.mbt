@@ -390,10 +390,14 @@ let fx_unprotected : Ref[Bool] = Ref(false)
 let fx_connect_stations : Map[String, Array[String]] = Map([])
 
 ///|
+let fx_connect_auto : Map[String, Bool] = Map([])
+
+///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
   fx.names.clear()
   fx_connect_stations.clear()
+  fx_connect_auto.clear()
   rigs_fixture_reset()
   move_fixture_reset()
   devices_fixture_reset()
@@ -1924,18 +1928,27 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
     // (a station that runs its new conversations elsewhere and moves it: connects/workspace.ts)
     (
       "startsOn",
-      match fx_connect_stations.get(id) {
-        Some([first, ..]) => str(first)
-        _ => Json::null()
+      if fx_connect_auto.get(id) == Some(true) {
+        Json::null()
+      } else {
+        match fx_connect_stations.get(id) {
+          Some([first, ..]) => str(first)
+          _ => Json::null()
+        }
       },
     ),
     (
       "startsOnStations",
-      match fx_connect_stations.get(id) {
-        Some(list) if list.length() > 0 => Json::array(list.map(str))
-        _ => Json::null()
+      if fx_connect_auto.get(id) == Some(true) {
+        Json::null()
+      } else {
+        match fx_connect_stations.get(id) {
+          Some(list) if list.length() > 0 => Json::array(list.map(str))
+          _ => Json::null()
+        }
       },
     ),
+    ("startsOnAuto", Json::boolean(fx_connect_auto.get(id) == Some(true))),
     ("moves", Json::boolean(true)),
     ("statusText", str(status)),
     ("presence", str(presence)),
@@ -2224,6 +2237,7 @@ fn fx_station(address : String) -> Json {
       ("face", str("working")),
       ("line", str(if fx.willow_incompatible { "版本不兼容，需要更新" } else if fx.gpus { "AMD EPYC · 32 GB · Linux" } else { "Apple M1 Pro · 32 GB · macOS 26" })),
       ("online", Json::boolean(!fx.willow_away)),
+      ("acceptAutoChats", Json::boolean(true)),
       // the viewer added it: its mode theirs to change (the core's `mine`)
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),
@@ -2517,6 +2531,7 @@ fn fx_station(address : String) -> Json {
       ("summary", str(if up { "Apple M3 · 空闲" } else { "离线 · 2 天前" })),
       ("face", str(if up { "idle" } else { "offline" })),
       ("online", Json::boolean(up)),
+      ("acceptAutoChats", Json::boolean(true)),
       ("link", obj([("state", str(if up { "online" } else { "offline" }))])),
       // (away, as Willow away says it)
       ("stateText", str(if up { "" } else { "2 天前在线" })),
@@ -4219,24 +4234,32 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx_changed()
       Some(Ok(obj([("id", str("k1"))])))
     }
-    "connect.put" if has(field(p, "input"), "stations") => {
+    "connect.put" if has(field(p, "input"), "autoStation") || has(field(p, "input"), "stations") => {
       let id = text(p, "id")
       let inp = field(p, "input")
-      let next : Array[String] = []
-      for s in strings(inp, "stations") {
-        let trimmed = s.trim(chars=" \t\n").to_owned()
-        let bare = match trimmed.rev_find("/") {
-          Some(i) => trimmed.clamped_view(start=i + 1, end=trimmed.length()).to_owned()
-          None => trimmed
-        }
-        if bare != "" && !next.contains(bare) {
-          next.push(bare)
-        }
-      }
-      if next.length() > 0 {
-        fx_connect_stations[id] = next
-      } else {
+      if flag(inp, "autoStation") {
+        fx_connect_auto[id] = true
         fx_connect_stations.remove(id)
+      } else if has(inp, "stations") {
+        fx_connect_auto.remove(id)
+        let next : Array[String] = []
+        for s in strings(inp, "stations") {
+          let trimmed = s.trim(chars=" \t\n").to_owned()
+          let bare = match trimmed.rev_find("/") {
+            Some(i) => trimmed.clamped_view(start=i + 1, end=trimmed.length()).to_owned()
+            None => trimmed
+          }
+          if bare != "" && !next.contains(bare) {
+            next.push(bare)
+          }
+        }
+        if next.length() > 0 {
+          fx_connect_stations[id] = next
+        } else {
+          fx_connect_stations.remove(id)
+        }
+      } else {
+        fx_connect_auto.remove(id)
       }
       fx_changed()
       Some(Ok(obj([])))

@@ -272,4 +272,14 @@ test "connect_shown emits startsOn and startsOnStations consistently for none, s
   )
   assert_eq(multi_c.get("startsOn").map(stringify), Some("\"s1\""))
   assert_eq(multi_c.get("startsOnStations").map(stringify), Some("[\"s1\",\"s2\"]"))
+  assert_eq(multi_c.get("startsOnAuto").map(stringify), None)
+
+  let auto_c = connect_shown(
+    deps,
+    jo([("id", js("c3")), ("autoStation", Bool(true)), ("station", js("s1")), ("bind", jo([("runtime", js("claude"))]))]),
+    _ => 0.0,
+  )
+  assert_eq(auto_c.get("startsOnAuto").map(stringify), Some("true"))
+  assert_eq(auto_c.get("startsOn").map(stringify), Some("null"))
+  assert_eq(auto_c.get("startsOnStations").map(stringify), Some("null"))
 }

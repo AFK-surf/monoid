@@ -134,11 +134,12 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
       ? [...new Set<string>(c.bind.profiles.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
       : [];
     const singleProfile = nonEmpty(c.bind?.profile) ?? (bindProfiles.length === 1 ? bindProfiles[0]! : null);
-    const startsOn = nonEmpty(c.station);
-    const rawStartsOnStations: string[] = Array.isArray(c.stations)
+    const startsOnAuto = c.autoStation === true;
+    const startsOn = startsOnAuto ? null : nonEmpty(c.station);
+    const rawStartsOnStations: string[] = !startsOnAuto && Array.isArray(c.stations)
       ? [...new Set<string>(c.stations.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
       : [];
-    const startsOnStations = rawStartsOnStations.length > 0 ? rawStartsOnStations : startsOn !== null ? [startsOn] : null;
+    const startsOnStations = startsOnAuto ? null : rawStartsOnStations.length > 0 ? rawStartsOnStations : startsOn !== null ? [startsOn] : null;
     const shown = {
       id: c.id,
       // What it is known by (its bot's name on its platform, and its workspace there), as its kind says: its id till then.
@@ -166,6 +167,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
       // another (connects/workspace.ts; a station from before says neither).
       startsOn,
       startsOnStations,
+      ...(startsOnAuto ? { startsOnAuto: true } : {}),
       moves: true,
     };
     const own = d.connectKinds?.get(kind);
