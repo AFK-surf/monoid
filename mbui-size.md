@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03747dd85](https://github.com/AFK-surf/monoid/commit/03747dd85c8c1225759846f23cb29106e224aaed) fix(sf-ui): keep a long relay name inside the stat | 2.67 | 3.59 | 14.64 | 36.94 | 56.33 | 32.4 | 65.68 | 97.73 | 121.44 |
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 2.67 | 3.59 | 14.64 | 36.94 | 56.32 | 32.4 | 65.68 | 97.72 | 122.32 |
 | [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 98.01 | 127.95 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 97.58 | 111.21 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.4 | 125.75 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 2.65 | 3.57 | 14.57 | 36.81 | 56.1 | 32.28 | 65.43 | 97.54 | 121.1 |
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.43 | 97.44 | 112.7 |
-| [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.42 | 97.52 | 127.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03747dd85](https://github.com/AFK-surf/monoid/commit/03747dd85c8c1225759846f23cb29106e224aaed) fix(sf-ui): keep a long relay name inside the stat | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.3 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
-| [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.5 | 54.13 |
