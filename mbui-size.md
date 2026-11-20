@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
 | [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
-| [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.37 | 130.24 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.2 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
 | [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
-| [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
