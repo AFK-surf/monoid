@@ -629,10 +629,10 @@ pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
           })
         })
         v.show(has_removed, fn(s) {
-          @sf.words_node(s, fn() { @sf.t("web-pages.vault.members.rekeyNote") }, fn() { desk_note }) |> ignore
+          @sf.words_node(s, fn() { @sf.t("web-pages.vault.members.rekeyNote") }, fn() { vd_note }) |> ignore
         })
         v.show(fn() { error.get() != "" }, fn(e) {
-          @sf.words_node(e, fn() { error.get() }, fn() { desk_note_bad }) |> ignore
+          @sf.words_node(e, fn() { error.get() }, fn() { vd_note_bad }) |> ignore
         })
       } else {
         let shown = fn() {
@@ -724,3 +724,11 @@ let vd_agent : @ui.Style = @ui.css("w=Full gap=S2_5 pt=S1")
 /// (warn: the amber, the meta's size, in lines)
 // kept across runs: a value (no field of it changes)
 let vt_warn_lines : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let vd_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let vd_note_bad : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, w=Full)
