@@ -176,21 +176,23 @@ const round = (v: number, places: number) => {
 };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+function normScopeOf(name: string): string | null {
+  const l = name.trim().toLowerCase();
+  if (l === "gemini") return "gemini";
+  if (l === "3p" || l === "claude / gpt") return "3p";
+  if (l === "fable") return "Fable";
+  return null;
+}
+
 /// A window's scope as one name whoever said it: an Antigravity account's "gemini" and "3p" as its allowance gives
 /// them (stations from before spent against "Gemini" and "Claude / GPT"), Fable's "Fable"; with none said, of a
 /// label that names one of these after its " · ".
 export function normScope(scope: string, label = ""): string {
-  const of = (name: string): string | null => {
-    const l = name.trim().toLowerCase();
-    if (l === "gemini") return "gemini";
-    if (l === "3p" || l === "claude / gpt") return "3p";
-    if (l === "fable") return "Fable";
-    return null;
-  };
+  if (scope === "" && label === "") return "";
   const s = scope.trim();
-  if (s !== "") return of(s) ?? s;
+  if (s !== "") return normScopeOf(s) ?? s;
   const at = label.lastIndexOf(" · ");
-  return at < 0 ? "" : of(label.slice(at + 3)) ?? "";
+  return at < 0 ? "" : normScopeOf(label.slice(at + 3)) ?? "";
 }
 
 function winOf(w: J): Win | null {
@@ -248,19 +250,52 @@ function snapsOf(quotas: J[]): Snap[] {
   const kept = snapsRead.get(quotas);
   if (kept !== undefined) return kept;
   const snaps: Snap[] = [];
-  for (const q of quotas) {
+  for (let i = 0; i < quotas.length; i++) {
+    const q = quotas[i];
     const at = num(q?.at);
     if (at === null) continue;
-    snaps.push({ at, windows: (Array.isArray(q.windows) ? q.windows : []).flatMap((w: J) => winOf(w) ?? []) });
+    const raw = q.windows;
+    const windows: Win[] = [];
+    if (Array.isArray(raw)) {
+      for (let j = 0; j < raw.length; j++) {
+        const w = winOf(raw[j]);
+        if (w !== null) windows.push(w);
+      }
+    }
+    snaps.push({ at, windows });
   }
+  snaps.sort((a, b) => a.at - b.at);
   snapsRead.set(quotas, snaps);
   return snaps;
 }
 
+const spendRead = new WeakMap<object, Map<string, Map<number, number>>>();
+function spendOf(raw: J[]): Map<string, Map<number, number>> {
+  const kept = spendRead.get(raw);
+  if (kept !== undefined) return kept;
+  const spend = new Map<string, Map<number, number>>();
+  for (let i = 0; i < raw.length; i++) {
+    const s = raw[i];
+    const hour = num(s?.hour);
+    const weight = num(s?.weight);
+    if (hour === null || weight === null || weight <= 0) continue;
+    const scope = normScope(str(s.scope));
+    let byHour = spend.get(scope);
+    if (byHour === undefined) {
+      byHour = new Map<number, number>();
+      spend.set(scope, byHour);
+    }
+    byHour.set(hour, (byHour.get(hour) ?? 0) + weight);
+  }
+  spendRead.set(raw, spend);
+  return spend;
+}
+
 /// An account's hours, its members' together (each station's of its profile there).
 function hoursOf(item: J, pace: (station: string) => J): Hours {
-  const snaps: Snap[] = [];
-  const spend = new Map<string, Map<number, number>>();
+  let snaps: Snap[] = [];
+  let spendSingle: Map<string, Map<number, number>> | null = null;
+  let spendMerged: Map<string, Map<number, number>> | null = null;
   let most = -1;
   for (const m of Array.isArray(item?.members) ? item.members : []) {
     const said = pace(str(m?.station))?.profiles?.[str(m?.profileId)];
@@ -269,21 +304,33 @@ function hoursOf(item: J, pace: (station: string) => J): Hours {
     const quotas = Array.isArray(said.quotas) ? said.quotas : [];
     if (quotas.length > most) {
       most = quotas.length;
-      snaps.length = 0;
-      snaps.push(...snapsOf(quotas));
+      snaps = snapsOf(quotas);
     }
-    for (const s of Array.isArray(said.spend) ? said.spend : []) {
-      const hour = num(s?.hour);
-      const weight = num(s?.weight);
-      if (hour === null || weight === null || weight <= 0) continue;
-      const scope = normScope(str(s.scope));
-      const byHour = spend.get(scope) ?? new Map<number, number>();
-      byHour.set(hour, (byHour.get(hour) ?? 0) + weight);
-      spend.set(scope, byHour);
+    const rawSpend = said.spend;
+    if (Array.isArray(rawSpend) && rawSpend.length > 0) {
+      const part = spendOf(rawSpend);
+      if (part.size > 0) {
+        if (spendSingle === null && spendMerged === null) {
+          spendSingle = part;
+        } else {
+          if (spendMerged === null) {
+            spendMerged = new Map<string, Map<number, number>>();
+            for (const [scope, byHour] of spendSingle!) spendMerged.set(scope, new Map(byHour));
+            spendSingle = null;
+          }
+          for (const [scope, byHour] of part) {
+            let dst = spendMerged.get(scope);
+            if (dst === undefined) {
+              dst = new Map<number, number>();
+              spendMerged.set(scope, dst);
+            }
+            for (const [hour, weight] of byHour) dst.set(hour, (dst.get(hour) ?? 0) + weight);
+          }
+        }
+      }
     }
   }
-  snaps.sort((a, b) => a.at - b.at);
-  return { snaps, spend };
+  return { snaps, spend: spendMerged ?? spendSingle ?? new Map() };
 }
 
 type PoolSpec = { title: string; slots: Slot[] };
@@ -379,15 +426,26 @@ type Past = { used: number[]; burn: number[]; known: number };
 /// running sums over the hours it may be asked of, made once (a reckoning asks it of every hour back, and of spans).
 function spending(spend: Map<number, number> | undefined, nowHourF: number): (a: number, b: number) => number {
   if (spend === undefined || spend.size === 0) return () => 0;
-  const first = Math.floor(nowHourF) - HISTORY_HOURS - 800;
-  const n = Math.floor(nowHourF) - first + 2;
-  const sums = new Array<number>(n + 1).fill(0);
-  for (let i = 0; i < n; i++) sums[i + 1] = sums[i]! + (spend.get(first + i) ?? 0);
+  const nowFloor = Math.floor(nowHourF);
+  const last = nowFloor + 2;
+  let minKey = Infinity;
+  for (const k of spend.keys()) if (k < minKey) minKey = k;
+  if (minKey >= last) return () => 0;
+  const first = Math.max(nowFloor - HISTORY_HOURS - 800, Math.floor(minKey));
+  const n = last - first;
+  const sums = new Float64Array(n + 1);
+  const vals = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = spend.get(first + i) ?? 0;
+    vals[i] = v;
+    sums[i + 1] = sums[i]! + v;
+  }
   const at = (x: number) => {
-    const i = Math.floor(x) - first;
+    const fx = Math.floor(x);
+    const i = fx - first;
     if (i < 0) return 0;
     if (i >= n) return sums[n]!;
-    return sums[i]! + (spend.get(first + i) ?? 0) * (x - Math.floor(x));
+    return sums[i]! + vals[i]! * (x - fx);
   };
   return (a, b) => (b <= a ? 0 : at(nowHourF + b) - at(nowHourF + a));
 }
@@ -406,18 +464,31 @@ function pastOf(s: Slot, now: number, w: Win | null = s.long, scope: string = s.
   const endOf = (t: number) => r - cycle * Math.floor((r - t) / cycle);
   // What is known of it: each hour kept (of this window: its scope, its kind), and now.
   const points: { t: number; used: number; end: number }[] = [];
-  for (const snap of s.hours.snaps) {
+  const snaps = s.hours.snaps;
+  const wScope = w.scope;
+  let sorted = true;
+  let prevT = -Infinity;
+  for (let si = 0; si < snaps.length; si++) {
+    const snap = snaps[si]!;
     const t = (snap.at - now) / HOUR_MS;
     if (t >= 0 || t < -HISTORY_HOURS - cycle) continue;
-    const sw = snap.windows.find((x) => x.scope === w.scope && kindOf(x) === "long");
+    const wins = snap.windows;
+    let sw: Win | undefined;
+    for (let wi = 0; wi < wins.length; wi++) {
+      const x = wins[wi]!;
+      if (x.scope === wScope && kindOf(x) === "long") { sw = x; break; }
+    }
     if (sw === undefined) continue;
     const end = sw.resetsAt !== null ? (sw.resetsAt - now) / HOUR_MS : endOf(t);
+    if (t < prevT) sorted = false;
+    prevT = t;
     points.push({ t, used: sw.used, end });
   }
+  if (0 < prevT) sorted = false;
   points.push({ t: 0, used: w.used, end: endOf(0) });
-  points.sort((a, b) => a.t - b.t);
+  if (!sorted) points.sort((a, b) => a.t - b.t);
   const sameCycle = (a: number, b: number) => Math.abs(a - b) < 3;
-  const ofCycle = new Map<number, typeof points>();
+  const ofCycle = new Map<number, { mine: typeof points; cur: number }>();
   // Percent used per dollar spent and per hour, as this cycle went so far (what an hour of an earlier one without
   // points is reckoned by).
   const start0 = endOf(0) - cycle;
@@ -433,19 +504,27 @@ function pastOf(s: Slot, now: number, w: Win | null = s.long, scope: string = s.
     const t = -k;
     const end = endOf(t);
     const start = end - cycle;
-    let mine = ofCycle.get(end);
-    if (mine === undefined) {
-      mine = points.filter((p) => sameCycle(p.end, end)).map((p) => ({ ...p }));
+    let entry = ofCycle.get(end);
+    if (entry === undefined) {
+      const mine: typeof points = [];
+      for (let j = 0; j < points.length; j++) {
+        const p = points[j]!;
+        if (sameCycle(p.end, end)) mine.push({ t: p.t, used: p.used, end: p.end });
+      }
       // What a cycle used so far never goes back: a percent read a whole one higher, or two stations' readings a
       // moment apart, taken down to the newest reading after it (now's, the last), so the line rises nowhere but at a
       // refill and meets now where now is.
       for (let j = mine.length - 2; j >= 0; j--) mine[j]!.used = Math.min(mine[j]!.used, mine[j + 1]!.used);
-      ofCycle.set(end, mine);
+      entry = { mine, cur: mine.length };
+      ofCycle.set(end, entry);
     }
-    // (points in order of time: the first at or after `t`, the last at or before it)
-    const newer = mine.find((p) => p.t >= t);
-    let older: (typeof points)[number] | undefined;
-    for (const p of mine) if (p.t <= t) older = p;
+    const mine = entry.mine;
+    // (points in order of time, t strictly decreasing: move cursor back to the first at or after `t`)
+    let cur = entry.cur;
+    while (cur > 0 && mine[cur - 1]!.t >= t) cur--;
+    entry.cur = cur;
+    const newer = cur < mine.length ? mine[cur] : undefined;
+    const older = newer !== undefined && newer.t === t ? newer : cur > 0 ? mine[cur - 1] : undefined;
     let u: number;
     if (newer !== undefined && older !== undefined) {
       u = newer.t === older.t ? newer.used : older.used + (newer.used - older.used) * along(older.t, newer.t, t);
@@ -477,18 +556,35 @@ function pastOf(s: Slot, now: number, w: Win | null = s.long, scope: string = s.
 /// within one of each), or SHORT_OF_LONG.
 function shortOfLong(s: Slot): number {
   if (s.short === null || s.long === null) return SHORT_OF_LONG;
+  const snaps = s.hours.snaps;
+  if (snaps.length < 2) return SHORT_OF_LONG;
+  const lScope = s.long.scope;
+  const sScope = s.short.scope;
+  let la: Win | undefined;
+  let sa: Win | undefined;
+  const w0 = snaps[0]!.windows;
+  for (let wi = 0; wi < w0.length; wi++) {
+    const x = w0[wi]!;
+    if (la === undefined && x.scope === lScope && kindOf(x) === "long") la = x;
+    if (sa === undefined && x.scope === sScope && kindOf(x) === "short") sa = x;
+  }
   let dl = 0;
   let ds = 0;
-  for (let i = 1; i < s.hours.snaps.length; i++) {
-    const a = s.hours.snaps[i - 1]!;
-    const b = s.hours.snaps[i]!;
-    const la = a.windows.find((x) => x.scope === s.long!.scope && kindOf(x) === "long");
-    const lb = b.windows.find((x) => x.scope === s.long!.scope && kindOf(x) === "long");
-    const sa = a.windows.find((x) => x.scope === s.short!.scope && kindOf(x) === "short");
-    const sb = b.windows.find((x) => x.scope === s.short!.scope && kindOf(x) === "short");
-    if (!la || !lb || !sa || !sb || lb.used < la.used || sb.used < sa.used || sa.resetsAt !== sb.resetsAt) continue;
-    dl += lb.used - la.used;
-    ds += sb.used - sa.used;
+  for (let i = 1; i < snaps.length; i++) {
+    const wb = snaps[i]!.windows;
+    let lb: Win | undefined;
+    let sb: Win | undefined;
+    for (let wi = 0; wi < wb.length; wi++) {
+      const x = wb[wi]!;
+      if (lb === undefined && x.scope === lScope && kindOf(x) === "long") lb = x;
+      if (sb === undefined && x.scope === sScope && kindOf(x) === "short") sb = x;
+    }
+    if (la !== undefined && lb !== undefined && sa !== undefined && sb !== undefined && lb.used >= la.used && sb.used >= sa.used && sa.resetsAt === sb.resetsAt) {
+      dl += lb.used - la.used;
+      ds += sb.used - sa.used;
+    }
+    la = lb;
+    sa = sb;
   }
   // (whole percents read: a five hours' 20 against a week's 1 is a rounding's, not a five hours of 2% of its week)
   return ds >= 40 && dl >= 4 ? clamp((dl / ds) * 100, 8, 100) : SHORT_OF_LONG;
@@ -523,66 +619,257 @@ function tanksOf(slots: Slot[], shares: number[], now: number): Tank[] {
   });
 }
 
-/// Each hour on (1..FUTURE_HOURS) given `demand(h)`: what is left to use at its end, what was taken, what went
-/// without.
-function simulate(start: Tank[], demand: (h: number) => number): { avail: number[]; taken: number[]; unmet: number[] } {
-  const tanks = start.map((t) => ({ ...t, short: t.short === null ? null : { ...t.short } }));
-  const avail: number[] = [];
-  const taken: number[] = [];
-  const unmet: number[] = [];
-  for (let h = 1; h <= FUTURE_HOURS; h++) {
-    for (const t of tanks) {
-      if (t.resetIn <= h) {
-        t.left = t.share;
-        t.resetIn += t.cycle;
-      }
-      if (t.short !== null && t.short.resetIn !== null && t.short.resetIn <= h) {
-        t.short.used = 0;
-        t.short.resetIn = null;
+type SimBuf = {
+  cap: number;
+  share: Float64Array;
+  left: Float64Array;
+  resetIn: Float64Array;
+  cycle: Float64Array;
+  lockedTill: Float64Array;
+  hasShort: Uint8Array;
+  shortUsed: Float64Array;
+  shortResetIn: Float64Array;
+  shortHours: Float64Array;
+  shortOfLong: Float64Array;
+  openIdx: Int32Array;
+  openRoom: Float64Array;
+  openPace: Float64Array;
+};
+
+let simBuf: SimBuf = makeSimBuf(32);
+
+function makeSimBuf(cap: number): SimBuf {
+  return {
+    cap,
+    share: new Float64Array(cap),
+    left: new Float64Array(cap),
+    resetIn: new Float64Array(cap),
+    cycle: new Float64Array(cap),
+    lockedTill: new Float64Array(cap),
+    hasShort: new Uint8Array(cap),
+    shortUsed: new Float64Array(cap),
+    shortResetIn: new Float64Array(cap),
+    shortHours: new Float64Array(cap),
+    shortOfLong: new Float64Array(cap),
+    openIdx: new Int32Array(cap),
+    openRoom: new Float64Array(cap),
+    openPace: new Float64Array(cap),
+  };
+}
+
+function ensureSimBuf(need: number): SimBuf {
+  if (simBuf.cap < need) {
+    let cap = simBuf.cap;
+    while (cap < need) cap *= 2;
+    simBuf = makeSimBuf(cap);
+  }
+  return simBuf;
+}
+
+function loadTanks(start: Tank[], scale: number): void {
+  const n = start.length;
+  const { share, left, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
+  for (let i = 0; i < n; i++) {
+    const t = start[i]!;
+    share[i] = t.share * scale;
+    left[i] = t.left * scale;
+    resetIn[i] = t.resetIn;
+    cycle[i] = t.cycle;
+    lockedTill[i] = t.lockedTill;
+    const sh = t.short;
+    if (sh === null) {
+      hasShort[i] = 0;
+      shortUsed[i] = 0;
+      shortResetIn[i] = -1;
+      shortHours[i] = 0;
+      shortOfLong[i] = 0;
+    } else {
+      hasShort[i] = 1;
+      shortUsed[i] = sh.used;
+      shortResetIn[i] = sh.resetIn === null ? -1 : sh.resetIn;
+      shortHours[i] = sh.hours;
+      shortOfLong[i] = sh.ofLong;
+    }
+  }
+}
+
+/// Run one hour `h` on `simBuf`'s first `n` tanks with demand `wantIn`; returns unmet demand.
+// The hour's demand spread as the station's pool spreads sessions (station sessions/pool.ts `urgency`): over the
+// accounts that can take some, each by its week's pace (what it has left over the hours to its refill, a day at
+// least), what one cannot take of its part going to the others. Never one drained after another: the last weeks
+// left would be a few accounts' alone, held to their five hours, an hour going without where the pool's weeks
+// still had plenty (the owner, 2026-11-17: an account more said for tenths of a percent).
+function stepHour(n: number, h: number, wantIn: number): number {
+  const buf = simBuf;
+  const share = buf.share;
+  const left = buf.left;
+  const resetIn = buf.resetIn;
+  const cycle = buf.cycle;
+  const lockedTill = buf.lockedTill;
+  const hasShort = buf.hasShort;
+  const shortUsed = buf.shortUsed;
+  const shortResetIn = buf.shortResetIn;
+  const shortHours = buf.shortHours;
+  const shortOfLong = buf.shortOfLong;
+  const openIdx = buf.openIdx;
+  const openRoom = buf.openRoom;
+  const openPace = buf.openPace;
+  let openLen = 0;
+  for (let i = 0; i < n; i++) {
+    if (resetIn[i]! <= h) {
+      left[i] = share[i]!;
+      resetIn[i] = resetIn[i]! + cycle[i]!;
+    }
+    const hs = hasShort[i]!;
+    if (hs !== 0) {
+      const sr = shortResetIn[i]!;
+      if (sr >= 0 && sr <= h) {
+        shortUsed[i] = 0;
+        shortResetIn[i] = -1;
       }
     }
-    // The hour's demand spread as the station's pool spreads sessions (station sessions/pool.ts `urgency`): over the
-    // accounts that can take some, each by its week's pace (what it has left over the hours to its refill, a day at
-    // least), what one cannot take of its part going to the others. Never one drained after another: the last weeks
-    // left would be a few accounts' alone, held to their five hours, an hour going without where the pool's weeks
-    // still had plenty (the owner, 2026-11-17: an account more said for tenths of a percent).
-    let want = Math.max(0, demand(h));
-    let took = 0;
-    const roomOf = (t: Tank) => {
-      if (t.left <= 1e-9 || h <= t.lockedTill || t.share <= 0) return 0;
-      return t.short === null ? t.left : Math.min(t.left, ((100 - t.short.used) * t.share * t.short.ofLong) / 1e4);
-    };
-    let open = tanks.filter((t) => roomOf(t) > 1e-9);
-    while (want > 1e-9 && open.length > 0) {
-      const paceOf = (t: Tank) => t.left / Math.max(t.resetIn - h + 1, 24);
-      const whole = open.reduce((a, t) => a + paceOf(t), 0);
-      let given = 0;
-      const full: Tank[] = [];
-      for (const t of open) {
-        const room = roomOf(t);
-        const take = Math.min(room, (want * paceOf(t)) / whole);
-        if (take >= room - 1e-9) full.push(t);
-        if (take <= 0) continue;
-        t.left -= take;
-        if (t.short !== null) {
-          t.short.used = Math.min(100, t.short.used + (take * 1e4) / (t.share * t.short.ofLong));
-          if (t.short.resetIn === null) t.short.resetIn = h - 1 + t.short.hours;
+    const li = left[i]!;
+    const si = share[i]!;
+    if (li > 1e-9 && h > lockedTill[i]! && si > 0) {
+      let room = li;
+      if (hs !== 0) {
+        const srCap = ((100 - shortUsed[i]!) * si * shortOfLong[i]!) / 1e4;
+        if (srCap < room) room = srCap;
+      }
+      if (room > 1e-9) {
+        openIdx[openLen] = i;
+        openRoom[openLen] = room;
+        openLen++;
+      }
+    }
+  }
+  let want = wantIn > 0 ? wantIn : 0;
+  while (want > 1e-9 && openLen > 0) {
+    let whole = 0;
+    for (let oi = 0; oi < openLen; oi++) {
+      const i = openIdx[oi]!;
+      const rd = resetIn[i]! - h + 1;
+      const pace = left[i]! / (rd > 24 ? rd : 24);
+      openPace[oi] = pace;
+      whole += pace;
+    }
+    let given = 0;
+    let nextOpenLen = 0;
+    let anyFull = false;
+    for (let oi = 0; oi < openLen; oi++) {
+      const i = openIdx[oi]!;
+      const room = openRoom[oi]!;
+      const part = (want * openPace[oi]!) / whole;
+      const take = room < part ? room : part;
+      const isFull = take >= room - 1e-9;
+      if (isFull) anyFull = true;
+      if (take > 0) {
+        const nl = left[i]! - take;
+        left[i] = nl;
+        if (hasShort[i] !== 0) {
+          const nu = shortUsed[i]! + (take * 1e4) / (share[i]! * shortOfLong[i]!);
+          shortUsed[i] = nu < 100 ? nu : 100;
+          if (shortResetIn[i]! < 0) shortResetIn[i] = h - 1 + shortHours[i]!;
         }
         given += take;
       }
-      want -= given;
-      took += given;
-      if (full.length === 0) break;
-      open = open.filter((t) => !full.includes(t) && roomOf(t) > 1e-9);
+      if (!isFull) {
+        const nl = left[i]!;
+        if (nl > 1e-9) {
+          let remRoom = nl;
+          if (hasShort[i] !== 0) {
+            const srCap = ((100 - shortUsed[i]!) * share[i]! * shortOfLong[i]!) / 1e4;
+            if (srCap < remRoom) remRoom = srCap;
+          }
+          if (remRoom > 1e-9) {
+            openIdx[nextOpenLen] = i;
+            openRoom[nextOpenLen] = remRoom;
+            nextOpenLen++;
+          }
+        }
+      }
     }
+    want -= given;
+    if (!anyFull) break;
+    openLen = nextOpenLen;
+  }
+  return want;
+}
+
+/// Each hour on (1..FUTURE_HOURS) given `demandArr[h]`: what is left to use at its end, what was taken, what went
+/// without.
+function simulate(start: Tank[], demandArr: Float64Array): { avail: number[]; taken: number[]; unmet: number[] } {
+  const n = start.length;
+  ensureSimBuf(n);
+  loadTanks(start, 1);
+  const { left, lockedTill } = simBuf;
+  const avail = new Array<number>(FUTURE_HOURS);
+  const taken = new Array<number>(FUTURE_HOURS);
+  const unmet = new Array<number>(FUTURE_HOURS);
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
+    const want0 = demandArr[h]! > 0 ? demandArr[h]! : 0;
+    const want = stepHour(n, h, want0);
     // (what is left of the weeks: five hours spent only hold back what is taken, as `unmet` says)
     let a = 0;
-    for (const t of tanks) if (h > t.lockedTill) a += t.left;
-    avail.push(a);
-    taken.push(took);
-    unmet.push(want);
+    for (let i = 0; i < n; i++) if (h > lockedTill[i]!) a += left[i]!;
+    avail[h - 1] = a;
+    taken[h - 1] = want0 - want;
+    unmet[h - 1] = want;
   }
   return { avail, taken, unmet };
+}
+
+/// True if any hour in 1..FUTURE_HOURS goes without by more than `maxUnmet` under a constant hourly demand.
+function simulateAnyUnmet(start: Tank[], constDemand: number, maxUnmet: number): boolean {
+  const n = start.length;
+  ensureSimBuf(n);
+  loadTanks(start, 1);
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
+    if (stepHour(n, h, constDemand) > maxUnmet) return true;
+  }
+  return false;
+}
+
+/// True if `start` plus `k` full unit accounts (all scaled by `scale`) keep total unmet demand over the week within
+/// `maxUnmet` (in original unscaled percent of the pool).
+function simulateTotalUnmet(
+  start: Tank[],
+  k: number,
+  unitShare: number,
+  unitCycle: number,
+  unitShort: { hours: number; ofLong: number } | null,
+  demandArr: Float64Array,
+  scale: number,
+  maxUnmet: number,
+): boolean {
+  const n = start.length;
+  const total = n + k;
+  ensureSimBuf(total);
+  loadTanks(start, scale);
+  const scaledUnitShare = unitShare * scale;
+  const hasUnitShort = unitShort !== null ? 1 : 0;
+  const uHours = unitShort !== null ? unitShort.hours : 0;
+  const uOfLong = unitShort !== null ? unitShort.ofLong : 0;
+  const { share, left, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
+  for (let j = 0; j < k; j++) {
+    const idx = n + j;
+    share[idx] = scaledUnitShare;
+    left[idx] = scaledUnitShare;
+    resetIn[idx] = unitCycle;
+    cycle[idx] = unitCycle;
+    lockedTill[idx] = 0;
+    hasShort[idx] = hasUnitShort;
+    shortUsed[idx] = 0;
+    shortResetIn[idx] = -1;
+    shortHours[idx] = uHours;
+    shortOfLong[idx] = uOfLong;
+  }
+  let unmetSum = 0;
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
+    unmetSum += stepHour(total, h, demandArr[h]! * scale);
+    if (unmetSum / scale > maxUnmet + 1e-9) return false;
+  }
+  return unmetSum / scale <= maxUnmet;
 }
 
 const starves = (s: { avail: number[]; unmet: number[] }, h: number) => s.unmet[h]! > 0.05 || s.avail[h]! <= 0.3;
@@ -605,13 +892,17 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   // (a gate reset with the window: its own past, of the account's own spending, what it left the less of the two)
   const gates = active.map((s) => (gatedTogether(s.long, s.gate) ? pastOf(s, now, s.gate, "") : null));
   // The past: what each account's week had left.
+  const activeLen = active.length;
   const traj: number[] = [];
   for (let k = PAST_HOURS; k >= 1; k--) {
     let v = 0;
-    active.forEach((_, i) => {
-      const used = Math.max(pasts[i]!.used[k]!, gates[i]?.used[k] ?? 0);
+    for (let i = 0; i < activeLen; i++) {
+      const pu = pasts[i]!.used[k]!;
+      const g = gates[i];
+      const gu = g !== null ? g!.used[k]! : 0;
+      const used = pu > gu ? pu : gu;
       v += (shares[i]! * (100 - used)) / 100;
-    });
+    }
     traj.push(clamp(v, 0, 100));
   }
   const tanks = tanksOf(active, shares, now);
@@ -624,7 +915,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   const pastBurn: number[] = [];
   for (let j = 0; j < HISTORY_HOURS; j++) {
     let b = 0;
-    active.forEach((_, i) => (b += (shares[i]! * pasts[i]!.burn[j]!) / 100));
+    for (let i = 0; i < activeLen; i++) b += (shares[i]! * pasts[i]!.burn[j]!) / 100;
     pastBurn.push(b);
   }
   // The last hours' pace, and the week's.
@@ -663,11 +954,12 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   let diurnal = sums.map((s, lh) => (mean > 0 ? clamp((s + DIURNAL_PRIOR * mean) / (counts[lh]! + DIURNAL_PRIOR) / mean, DIURNAL_MIN, DIURNAL_MAX) : 1));
   const dm = diurnal.reduce((a, b) => a + b, 0) / 24;
   diurnal = diurnal.map((d) => d / dm);
-  const demand = (h: number) => {
+  const demandArr = new Float64Array(FUTURE_HOURS + 1);
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
     const w = Math.exp(-h / LEAN_HOURS);
-    return w * recent + (1 - w) * base * diurnal[localHour(now + (h - 0.5) * HOUR_MS)]!;
-  };
-  const sim = simulate(tanks, demand);
+    demandArr[h] = w * recent + (1 - w) * base * diurnal[localHour(now + (h - 0.5) * HOUR_MS)]!;
+  }
+  const sim = simulate(tanks, demandArr);
   for (let h = 0; h < FUTURE_HOURS; h++) traj.push(clamp(sim.avail[h]!, 0, 100));
   const willStarve = sim.avail.map((_, h) => starves(sim, h));
   const first = willStarve.findIndex((x) => x);
@@ -680,8 +972,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   let hi = held / FUTURE_HOURS + 0.01;
   while (hi - lo > 0.005) {
     const mid = (lo + hi) / 2;
-    const s = simulate(tanks, () => mid);
-    if (s.avail.some((_, h) => s.unmet[h]! > 0.05)) hi = mid;
+    if (simulateAnyUnmet(tanks, mid, 0.05)) hi = mid;
     else lo = mid;
   }
   const sustainable = Math.max(0.01, lo);
@@ -707,7 +998,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   // pace asks 3); where nothing is left now, the cycles' so far if faster: an hour it could not spend in is no pace
   // of its)
   const pace = Math.max(base, nowAvail <= 0.3 ? cycleAvg : 0);
-  const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demand, pace) : null;
+  const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demandArr, pace) : null;
   // (over it, or going without within the week: said against the faster of now's pace and the week's, never above
   // -0.1, so it falls as either rises)
   const net = sustainable - recent;
@@ -744,27 +1035,27 @@ function mode(xs: number[]): number | null {
 /// cycles give back what it asks an hour on the whole (`pace`), so the weeks after go on so. Each is reckoned at the
 /// pool's shares with them in (`scale`), as the pools made again of those accounts would be. None (null) where it
 /// goes without by no more than that as it is; most `NEEDED_MOST`.
-function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demand: (h: number) => number, pace: number): number | null {
+function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demandArr: Float64Array, pace: number): number | null {
   const unitWeight = mode(active.map((s) => s.weight))!;
   const unitShare = (unitWeight / weight) * 100;
   const unitCycle = mode(active.flatMap((s) => (s.long !== null ? [cycleOf(s.long)] : []))) ?? 168;
   const shortHours = active.flatMap((s) => (s.short !== null ? [shortHoursOf(s.short)] : []));
   // (a five hours of its own as its accounts' are read to be, the middle of them: not the guess where they tell)
-  const ofLongs = active.flatMap((s) => (s.short !== null ? [shortOfLong(s)] : [])).sort((a, b) => a - b);
+  const ofLongs: number[] = [];
+  for (let i = 0; i < tanks.length; i++) {
+    const sh = tanks[i]!.short;
+    if (sh !== null) ofLongs.push(sh.ofLong);
+  }
+  ofLongs.sort((a, b) => a - b);
   const unitOfLong = ofLongs.length > 0 ? ofLongs[Math.floor(ofLongs.length / 2)]! : SHORT_OF_LONG;
-  const unitShort = shortHours.length * 2 >= active.length ? { used: 0, resetIn: null, hours: mode(shortHours)!, ofLong: unitOfLong } : null;
+  const unitShort = shortHours.length * 2 >= active.length ? { hours: mode(shortHours)!, ofLong: unitOfLong } : null;
   // What its own give back an hour, at their cycles.
   const existingSteady = active.reduce((a, s, i) => a + shares[i]! / (s.long !== null ? cycleOf(s.long) : 168), 0);
   const canKeepUp = (k: number): boolean => {
     const scale = 100 / (100 + k * unitShare);
     if ((existingSteady + k * (unitShare / unitCycle)) * scale < pace * scale + 0.005) return false;
-    const scaled: Tank[] = tanks.map((t) => ({ ...t, share: t.share * scale, left: t.left * scale, short: t.short === null ? null : { ...t.short } }));
-    for (let j = 0; j < k; j++) {
-      scaled.push({ share: unitShare * scale, left: unitShare * scale, resetIn: unitCycle, cycle: unitCycle, lockedTill: 0, short: unitShort === null ? null : { ...unitShort } });
-    }
-    const forecast = simulate(scaled, (h) => demand(h) * scale);
     // (what it goes without, back in percent of the pool as it is)
-    return forecast.unmet.reduce((a, u) => a + u, 0) / scale <= NEEDED_SLACK;
+    return simulateTotalUnmet(tanks, k, unitShare, unitCycle, unitShort, demandArr, scale, NEEDED_SLACK);
   };
   if (canKeepUp(0)) return null;
   // (lo: so few do not keep it from going without; hi: so many do)
@@ -787,7 +1078,10 @@ function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank
 /// whether it needs fixing, its plan, whether it can be used, its allowance as read, the profiles it is on), in words.
 function rowRead(i: J): string {
   const members = Array.isArray(i?.members) ? i.members : [];
-  return JSON.stringify([str(i?.group), needsFix(i), str(i?.profile?.planText), i?.usable === true, i?.profile?.quota ?? null, members.map((m: J) => [str(m?.station), str(m?.profileId)])]);
+  const qState = i?.profile?.quota?.state;
+  const state = qState === "ok" || qState === "blocked" ? qState : "";
+  const windows = windowsOf(i).map((w) => [w.scope, w.mark, w.label, w.used, w.resetsAt, w.minutes]);
+  return JSON.stringify([str(i?.group), needsFix(i), str(i?.profile?.planText), i?.usable === true, state, windows, members.map((m: J) => [str(m?.station), str(m?.profileId)])]);
 }
 
 /// The pools made last (`poolOf`), each by what it was made of: its name, its rows as it reads them (`rowRead`), its
