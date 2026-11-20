@@ -3526,20 +3526,16 @@ export class Views implements Owner {
     return { ok: found ?? null };
   }
 
-  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory.ts
-  /// `setStationMode`; the user, 2026-11-10): those they added, and those no member of the workspace added (its adder
-  /// left, or the operator enrolled it) where they own the workspace.
+  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory/stations.ts
+  /// `setStationMode`): workspace owners and admins may convert any whole station, and a member may convert one they added.
   #mayChangeMode(scope: string): (id: string) => boolean {
     const ws = this.ok({ topic: "workspace", workspace: scope });
     const sub = this.#core.subOf?.(scope) ?? null;
     if (sub === null || !isObject(ws)) return () => false;
-    const owner = get(ws, "role") === "owner";
-    const members = new Set(arr(get(ws, "members")).map((m) => str(get(m, "sub"))));
+    const role = get(ws, "role");
+    if (role === "owner" || role === "admin") return () => true;
     const by = new Map(arr(get(ws, "stations")).map((s) => [str(get(s, "id")), str(get(s, "enrolled_by"))] as const));
-    return (id) => {
-      const adder = by.get(id) ?? null;
-      return adder === sub || (owner && (adder === null || !members.has(adder)));
-    };
+    return (id) => by.get(id) === sub;
   }
 
   /// A scope's stations, made in one place for the three ways they are asked: `row`, each as a list shows it

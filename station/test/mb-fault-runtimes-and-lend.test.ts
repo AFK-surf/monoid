@@ -914,7 +914,7 @@ test("a chat's calls go with it to another station and back, its agent working t
   assert.equal(handedTo(a.data, chat.key), null, "it goes on here");
   // (failed this turn, as the TypeScript's page says it: here still, where it can be moved again)
   assert.equal(itemOf(await w.page(), "chats", chat.key)?.state, "failed");
-  assert.match(String(refused.failed.error), /try again/, "said, with what to do");
+  assert.match(String(refused.failed.error), /The chat did not go to beta and goes on here/, "said, in the station's words");
   assert.deepEqual({ calls: callsOf(b.data, chat.key), kept: keptOf(b.data, chat.key), totals: totalsOf(b.data, chat.key), row: rowThere(), handed: handedTo(b.data, chat.key) }, before, "nothing of it put in there, nothing doubled");
   assert.deepEqual(readdirSync(inbox).sort(), inBefore, "nothing left half there");
   assert.deepEqual(callsOf(a.data, chat.key), four, "here as it was");

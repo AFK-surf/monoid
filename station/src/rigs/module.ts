@@ -500,8 +500,8 @@ export const RigsLive = Layer.effectDiscard(
       {
         // This station to run only tasks from now on (`{mode: "tasks", person}`), asked of it by a member's device:
         // `person` their own lock's hash, which it will pin. Whose a station is (who added it) the machine does not
-        // know: the control plane does, and lets only that member list it so (cloud/src/directory.ts
-        // `setStationMode`). So the ask is kept as theirs until the control plane lists it as that same person's rig
+        // know: the control plane does, and lets only that member or a workspace owner or admin list it so, as the rig
+        // of whoever does (cloud/src/directory/stations.ts `setStationMode`). So the ask is kept as theirs until the control plane lists it as that same person's rig
         // (the app asks that next; cloud/presence.ts): neither alone makes it one. A station in one workspace only, as
         // a rig is.
         method: "POST", pattern: /^\/mode$/,

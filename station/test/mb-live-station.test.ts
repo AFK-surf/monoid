@@ -55,7 +55,11 @@ const children: ChildProcess[] = [];
 const closers: (() => void)[] = [];
 after(async () => {
   for (const c of closers) c();
-  for (const c of children.filter((c) => c.exitCode === null && c.signalCode === null)) c.kill("SIGKILL");
+  const left = children.filter((c) => c.exitCode === null && c.signalCode === null);
+  for (const c of left) c.kill("SIGKILL");
+  // (a killed child holds its files until it is gone: removing its directory before then finds it not empty)
+  const gone = Promise.all(left.map((c) => (c.exitCode === null && c.signalCode === null ? new Promise<void>((r) => c.once("exit", () => r())) : undefined)));
+  await Promise.race([gone, new Promise<void>((r) => setTimeout(r, 5_000).unref())]);
   // (what a run left: its processes, by what their files say)
   for (const d of dirs) {
     for (const f of ["run/station.json", "run/front.pid"]) {
@@ -75,7 +79,7 @@ after(async () => {
       }
     }
   }
-  if (process.env.STATION_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  if (process.env.STATION_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 /// Looked at until `look` gives something (real processes: every 50 ms), or failing with `what` after `ms`.

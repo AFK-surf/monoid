@@ -188,6 +188,13 @@ export class Station {
           await stream.finish().catch(() => {});
           return;
         }
+        // A part uploaded: answered in a few bytes, as the station answers one (station/src/api/routes/hub.ts), whatever its size.
+        if (parsed.path.startsWith("/uploads/parts")) {
+          await stream.write(Buffer.from(JSON.stringify({ have: body.length })));
+          ended = true;
+          await stream.finish().catch(() => {});
+          return;
+        }
         await stream.write(Buffer.from(`${head}|${body.toString()}`));
         for (const part of ["|one", "|two", "|three"]) {
           await this.world.sleep(100);

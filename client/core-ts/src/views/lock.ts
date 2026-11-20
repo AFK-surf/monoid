@@ -122,7 +122,9 @@ export function answersOf<A, E>(inner: Inner, asks: Effect.Effect<A, E>[], after
     asks.forEach((ask, i) =>
       inner.runner.fork(Effect.flatMap(Effect.result(ask), (r) => Effect.gen(function* () {
         got[i] = r;
-        if (at !== undefined) quiet.delete(at[i]!);
+        // (only an answer from it lets it be waited on again: one that failed with no status from it, its link giving
+        // up long after, is as silent as before, and the next read would wait OTHERS_MS on it again)
+        if (at !== undefined && answered(r)) quiet.delete(at[i]!);
         if (--left === 0 || (!skipped[i] && --waited === 0)) Deferred.doneUnsafe(all, Effect.void);
         const more = after(r);
         if (more === null) return;
@@ -141,6 +143,8 @@ export function answersOf<A, E>(inner: Inner, asks: Effect.Effect<A, E>[], after
 }
 /// The stations that did not answer a read in time (answersOf `at`), until they answer one.
 const silentOf = new WeakMap<Inner, Set<string>>();
+/// Whether a station answered: what it said, or a refusal with its HTTP status; not a link that failed with none.
+const answered = (r: Result.Result<unknown, unknown>): boolean => r._tag === "Success" || (r.failure instanceof CoreError && r.failure.status !== undefined);
 
 /// One call's wait on the stations (ASKED_MS from its first `wait`): `first(work)` runs `work` to its end in a fiber of
 /// the core's (what it reads is held when it comes, whoever still waits) and gives its answer if that came by then

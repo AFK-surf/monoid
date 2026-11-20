@@ -146,7 +146,7 @@ priv struct SettingsFixture {
   mut willow_away : Bool
   // (settings-stations-incompatible: Willow up, saying what this core cannot read)
   mut willow_incompatible : Bool
-  // (settings-stations-tasks-theirs: Willow added by another member, its mode not the viewer's to change)
+  // (settings-stations-tasks-theirs: Willow added by another member, seen by a plain member: its mode not theirs to change)
   mut willow_theirs : Bool
   /// the subscriptions' allowances a month's window too, three in all (settings-profiles-monthly: OpenCode Go's)
   mut monthly : Bool
@@ -960,6 +960,7 @@ pub fn fixture_page(mode : String) -> String {
     // its 设置 while it is away: only what can be changed then
     "settings-stations-incompatible" => fx.willow_incompatible = true
     "settings-stations-tasks-theirs" => fx.willow_theirs = true
+    "settings-stations-tasks-doing" => fx_rigs.mode_doing = true
     "settings-station-away" => {
       fx.willow_away = true
       station_parts["ws1/st1"] = "settings"
@@ -1315,7 +1316,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending"
     | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again" => "security"
     m if m.has_prefix("settings-security-upgrade-") => "security"
-    "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-devices" => "stations"
+    "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-tasks-doing" | "settings-stations-devices" => "stations"
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
@@ -2427,7 +2428,7 @@ fn fx_station(address : String) -> Json {
       ("face", str("working")),
       ("line", str(if fx.willow_incompatible { "版本不兼容，需要更新" } else if fx.gpus { "AMD EPYC · 32 GB · Linux" } else { "Apple M1 Pro · 32 GB · macOS 26" })),
       ("online", Json::boolean(!fx.willow_away)),
-      // the viewer added it: its mode theirs to change (the core's `mine`)
+      // its mode the viewer's to change (the core's `mine`: they added it, or they own or administer the workspace)
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),
       ("profileStates", fx_station_profile_states(profiles)),
@@ -3294,7 +3295,14 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             "members",
             fx_members(me),
           ),
-          ("stations", [obj([("id", str("st1")), ("name", str("Willow"))]), obj([("id", str("st2")), ("name", str("Maple"))])]),
+          (
+            "stations",
+            if rigs_fixture_made() {
+              [obj([("id", str("st2")), ("name", str("Maple"))])]
+            } else {
+              [obj([("id", str("st1")), ("name", str("Willow"))]), obj([("id", str("st2")), ("name", str("Maple"))])]
+            },
+          ),
           ("rigs", rigs_fixture_listed(mode)),
           ("invitations", [obj([("id", str("i1")), ("role", str("member")), ("email", str("qin@example.com")), ("time", obj([("expires_at", stamp_of("", until="6 天后"))]))])]),
           ("added", [obj([("email", str("he@example.com")), ("role", str("member"))])]),
@@ -3344,7 +3352,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         Some([])
       } else {
         // (settings-stations-motion: 3 comes, then Maple goes)
-        let all = [fx_station("ws1/st1"), fx_station("ws1/st2")]
+        let all = if rigs_fixture_made() { [fx_station("ws1/st2")] } else { [fx_station("ws1/st1"), fx_station("ws1/st2")] }
         if fx.motion >= 1 || fx.retire_others >= 2 {
           all.push(fx_station("ws1/st3"))
         }
@@ -4118,6 +4126,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    "doing" if rigs_fixture_doing(mode) is Some(d) => Some(d)
     "doing" => Some(obj([("doing", if fx.protecting {
       [obj([("call", str("lock.joinStation")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str("st2"))]))])]
     } else if fx.key_giving {

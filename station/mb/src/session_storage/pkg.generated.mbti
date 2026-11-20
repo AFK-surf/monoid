@@ -261,6 +261,7 @@ pub struct Storage {
   mut swept : @effect.Deferred[Unit]?
   left_alone : @set.Set[String]
   going : Array[@effect.Fiber[Unit]]
+  // private fields
 }
 pub async fn Storage::archive_for_peer(Self, @json.Json, String?) -> @json.Json
 pub async fn Storage::archive_room(Self, String) -> String?

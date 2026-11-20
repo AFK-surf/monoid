@@ -899,6 +899,10 @@ export class ReferenceUsageCounter {
     } else {
       try { size = (await stat(path)).size; } catch { return 0; }
     }
+    // Put away and read to its end already, nothing left to write of it: its end is not decompressed again
+    // (usagecount/counter.mbt `read_out`).
+    if (archived && was !== undefined && size === was.offset && was.cutoff !== null && was.anchor !== null && was.path === path
+      && !(this.#timeFrom !== null && (was.speed ?? null) === null && was.offset > 0 && runtime !== "claude" && runtime !== "codex")) return 0;
     let anchor = "";
     const shortened = was !== undefined && size < was.offset;
     if (!shortened && was !== undefined) {

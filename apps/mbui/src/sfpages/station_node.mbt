@@ -718,8 +718,9 @@ fn station_actions_node(
   })
   if manager {
     let on = fn() { [("station", id())] }
-    doing_mark_node(a, fn() { is_doing(core, ["workspace.renameStation", "workspace.removeStation"], on()) }, fn() {
-      failed_of(core, ["workspace.renameStation", "workspace.removeStation"], on())
+    // (its mode changing too: asked of the station, then the cloud, a while in all)
+    doing_mark_node(a, fn() { is_doing(core, ["workspace.renameStation", "workspace.removeStation", "rig.setMode"], on()) }, fn() {
+      failed_of(core, ["workspace.renameStation", "workspace.removeStation", "rig.setMode"], on())
     }, tips~)
     // its ⋯ (station_menu's), beside it
     @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {

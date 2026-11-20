@@ -124,7 +124,7 @@ test "a whole station made one that only runs tasks from its ⋯, asked first wi
 }
 
 ///|
-test "a station another member added has no 改为只执行任务 in its ⋯: its mode is its owner's" {
+test "a station another member added has no 改为只执行任务 in a plain member's ⋯: its mode not theirs to change" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="settings-stations-tasks-theirs")
   // (the settings' made-up stations take the mode by their page, as fixture_open does)
@@ -137,4 +137,67 @@ test "a station another member added has no 改为只执行任务 in its ⋯: it
   // its ⋯ open, the rest of it there
   assert_true(t.find("重命名") is Some(_))
   assert_true(t.find("改为只执行任务") is None)
+}
+
+///|
+/// The pieces of lines drawn in the last frame: a spinner's ring and arc are drawn so (sf's waiting.mbt), little else of
+/// a station's page is.
+fn lines_drawn(t : @ui.Tester) -> Int {
+  t.drawn_lines().length()
+}
+
+///|
+test "a station's mode changing: under way in its page's head, 改为只执行任务 not again from its ⋯, 改为完整 station busy on a rig's" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings-stations-tasks")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  let resting = lines_drawn(t)
+  let t = wide_tester(calls, mode="settings-stations-tasks-doing")
+  @settings.fixture_page("settings-stations-tasks-doing") |> ignore
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  // Willow's page: a spinner in its head beside its ⋯, as a rename shows
+  assert_true(lines_drawn(t) > resting, msg="\{lines_drawn(t)} \{resting}")
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("改为只执行任务").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("把「Willow」改为只执行任务？") is None, msg="pressed again while it goes")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  // build-box's page: its 改为完整 station pressed none while it goes
+  let (x, y) = t.find("build-box").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("改为完整 station").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("把「build-box」改为完整 station？") is None)
+  assert_eq(calls.filter(fn(m) { m.name == "rig.setMode" }).length(), 0)
+}
+
+///|
+test "the workspace's first station made one that only runs tasks: its page stays in the place, not the next station's" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings-stations-tasks")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  // Willow picked in the list, its page beside it: Maple said once, in the list
+  t.click(Button, label="Willow")
+  t.run_for(@ui.move_most_ms)
+  let maples = fn() { t.words().filter(fn(w) { w.0 == "Maple" }).length() }
+  assert_eq(maples(), 1)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("改为只执行任务").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find_last("改为只执行任务").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  // the workspace lists it among its rigs, the `rigs` topic not yet: Willow's page still the place's, not Maple's
+  assert_eq(calls.filter(fn(m) { m.name == "rig.setMode" }).length(), 1)
+  assert_eq(maples(), 1, msg="Maple's page not taken for it")
 }
