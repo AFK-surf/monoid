@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f4660800f](https://github.com/AFK-surf/monoid/commit/f4660800fb576d8f0b3e8cf824e3ffaab88cbccb) test(station): wait out two live test races (#7631 | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.5 | 122.26 |
 | [e38110638](https://github.com/AFK-surf/monoid/commit/e381106389934969fc0d91e8b47cdaf9c88b982f) fix(station): share the overview's decisions and m | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.5 | 122.26 |
 | [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.55 | 129.47 |
 | [dc98cef72](https://github.com/AFK-surf/monoid/commit/dc98cef7257936ed9c503aa0b2c6ac645a12bd91) fix(mbui): let shared nodes that stay or say no id | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.55 | 129.47 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c3780fa9](https://github.com/AFK-surf/monoid/commit/9c3780fa9d6a9aed1e2010e9c870df569c4f3917) fix(mbui): a stream's sound clock counts what is h | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.58 | 125.13 |
 | [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.58 | 125.13 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 2.64 | 3.55 | 14.52 | 36.74 | 55.92 | 32.22 | 65.28 | 97.47 | 125.53 |
-| [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 2.64 | 3.55 | 14.52 | 36.74 | 55.91 | 32.22 | 65.27 | 97.39 | 119.12 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f4660800f](https://github.com/AFK-surf/monoid/commit/f4660800fb576d8f0b3e8cf824e3ffaab88cbccb) test(station): wait out two live test races (#7631 | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [e38110638](https://github.com/AFK-surf/monoid/commit/e381106389934969fc0d91e8b47cdaf9c88b982f) fix(station): share the overview's decisions and m | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.26 |
 | [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.26 |
 | [dc98cef72](https://github.com/AFK-surf/monoid/commit/dc98cef7257936ed9c503aa0b2c6ac645a12bd91) fix(mbui): let shared nodes that stay or say no id | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c3780fa9](https://github.com/AFK-surf/monoid/commit/9c3780fa9d6a9aed1e2010e9c870df569c4f3917) fix(mbui): a stream's sound clock counts what is h | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [22affa29a](https://github.com/AFK-surf/monoid/commit/22affa29a3a9d45b90a6fec33bdaa862f8dccaa1) fix(vault): set up a second trusted device by itse | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
 | [ef2877a44](https://github.com/AFK-surf/monoid/commit/ef2877a44d016e6e7147731708fa1cbb5f325769) feat(mbui): widen reader column to 48em in chat si | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
-| [016b09ab0](https://github.com/AFK-surf/monoid/commit/016b09ab078c6e7d252b8aec08c54482ca0be870) refactor(mbui): move TipOwner to mbui/headless, dr | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.28 |
