@@ -9763,11 +9763,13 @@ pub fn[K : Eq] View::pick(
   along_row? : Bool = false,
   leave? : Double = 0.0,
   leave_of? : (K, K) -> Double,
+  keeps? : Bool = false,
+  keeps_max? : Int = 0,
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.alive() else { return }
   let (which, leave_of) = Picked::of(which, make, leave_of)
-  self.pick_by(which, at_once, along_row, leave, leave_of, loc)
+  self.pick_by(which, at_once, along_row, leave, leave_of, keeps, keeps_max, loc)
 }
 
 ///|
@@ -9832,12 +9834,15 @@ fn View::pick_by(
   along_row : Bool,
   leave : Double,
   leave_of : ((Picked, Picked) -> Double)?,
+  keeps : Bool,
+  keeps_max : Int,
   loc : SourceLoc,
 ) -> Unit {
   let slot = self.slot(loc)
   slot.along_row_said(along_row, at_once, "pick", loc)
-  // (what it showed leaving over a time as what it shows now waits to be seen: pick_leave.mbt)
-  if leave > 0.0 {
+  // (what it showed leaving over a time as what it shows now waits to be seen: pick_leave.mbt; ignored when `keeps`
+  // parks branches instead of letting them leave)
+  if !keeps && leave > 0.0 {
     slot.pick_leaving(which, at_once, leave, loc)
     return
   }
@@ -9845,6 +9850,8 @@ fn View::pick_by(
   // (what it showed on its way out, `leave_of`'s: its key, its node, and what makes what it shows now at that way's end
   // called off)
   let going : Ref[(Picked, View, () -> Unit)?] = Ref(None)
+  // (parked branches kept alive at rest when `keeps` is true, oldest-used first for LRU eviction when `keeps_max > 0`)
+  let parked : Array[(Picked, View, () -> Unit)] = []
   let stop = slot.tree.structured(which, fn(k) {
     guard slot.alive() else { return }
     // (on its way out: back as what it showed is asked again; else what it shows now waits for that way's end)
@@ -9861,7 +9868,7 @@ fn View::pick_by(
       None => ()
     }
     match (had.val, leave_of) {
-      (Some((was, v)), Some(of)) if was != k && !at_once && v.alive() && slot.tree.transition_gate(v.at) => {
+      (Some((was, v)), Some(of)) if !keeps && was != k && !at_once && v.alive() && slot.tree.transition_gate(v.at) => {
         let ms = of(was, k)
         if ms > 0.0 {
           slot.tree.work.structure = slot.tree.work.structure + 1
@@ -9884,40 +9891,81 @@ fn View::pick_by(
       Some((was, _)) if was == k => ()
       _ => {
         slot.tree.work.structure = slot.tree.work.structure + 1
+        // (take any parked branch matching `k` before parking `was` so LRU eviction cannot evict `k` itself)
+        let mut reused : (View, () -> Unit)? = None
+        if keeps {
+          for i in 0..<parked.length() {
+            if parked[i].0 == k {
+              let (_, pv, wake) = parked.remove(i)
+              reused = Some((pv, wake))
+              break
+            }
+          }
+        }
         // (and whether the one before was on its way from nothing or to it: the new one goes on with that, a box taking
         // no room holding nothing following it still, Style's come_fill)
         let (tall, fill) = match had.val {
-          Some((_, v)) => {
+          Some((was, v)) => {
             // (one over what holds it, or along a row it makes no way along, took none of the column's room)
             let (tall, fill) = if v.live() is Some(n) && slot.tree.makes_way(v.at) {
               (slot.tree.along_now(v.at, slot.tree.cause_now()), n.coming && n.flex.style.come_fill)
             } else {
               (0.0, false)
             }
-            // (going in another's place: what it holds told it starts leaving, then let go)
-            slot.tree.tell_leaving(v.at)
-            slot.drop(v)
+            if keeps {
+              if v.alive() {
+                let wake = slot.park(v)
+                parked.push((was, v, wake))
+                if keeps_max > 0 {
+                  while parked.length() > keeps_max {
+                    let (_, evicted, _) = parked.remove(0)
+                    evicted.let_go()
+                  }
+                }
+              }
+            } else {
+              // (going in another's place: what it holds told it starts leaving, then let go)
+              slot.tree.tell_leaving(v.at)
+              slot.drop(v)
+            }
             (tall, fill)
           }
           None => (0.0 / 0.0, false)
         }
-        let said = slot.tree.said_count
-        let v = slot.structure_box(fn(v) { (k.make)(v) }, loc~)
-        let none = slot.tree.structural(v, said)
-        if tall == tall && !at_once {
-          if none && tall >= 0.5 {
-            // (one that made nothing: its way closes from as tall as the one before was to nothing, and stays there, a
-            // box taking no room holding nothing closing its padding with it (flex's come_fill, nothing_made))
-            slot.comes(v, tall, 0.0, stays=true) |> ignore
-          } else {
-            slot.comes(v, tall, 1.0, fill~) |> ignore
+        match reused {
+          Some((pv, wake)) if pv.alive() => {
+            slot.take_in(pv)
+            answering(fn() { wake() })
+            had.val = Some((k, pv))
+          }
+          _ => {
+            let said = slot.tree.said_count
+            let v = slot.structure_box(fn(v) { (k.make)(v) }, loc~)
+            let none = slot.tree.structural(v, said)
+            if tall == tall && !at_once {
+              if none && tall >= 0.5 {
+                // (one that made nothing: its way closes from as tall as the one before was to nothing, and stays there, a
+                // box taking no room holding nothing closing its padding with it (flex's come_fill, nothing_made))
+                slot.comes(v, tall, 0.0, stays=true) |> ignore
+              } else {
+                slot.comes(v, tall, 1.0, fill~) |> ignore
+              }
+            }
+            had.val = Some((k, v))
           }
         }
-        had.val = Some((k, v))
       }
     }
   })
-  slot.owns(stop) |> ignore
+  slot.owns(fn() {
+    stop()
+    let all = parked.copy()
+    parked.clear()
+    for entry in all {
+      entry.1.let_go()
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -9932,9 +9980,11 @@ pub fn[K : Eq] View::switch_by(
   which : () -> K,
   make : (View, K) -> Unit,
   leave? : Double = 0.0,
+  keeps? : Bool = false,
+  keeps_max? : Int = 0,
   loc~ : SourceLoc,
 ) -> Unit {
-  self.pick(which, make, at_once=true, leave~, loc~)
+  self.pick(which, make, at_once=true, leave~, keeps~, keeps_max~, loc~)
 }
 
 ///|
