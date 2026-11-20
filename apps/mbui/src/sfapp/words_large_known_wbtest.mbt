@@ -22,9 +22,7 @@ let words_large_known : Map[String, Int] = {
     ("phone-zh share-card-senren-title", 160),
     ("phone-zh share-card-senren-affection", 38),
     ("phone-zh share-card-senren-party", 0),
-    ("phone-en landing-invited", 1),  // was 0, +1 (shows_ground) way_in_node.mbt:195 / landing_node.mbt:119 真问题，待修
     ("phone-en chat-agent", 2),  // was 0, +2 (a) hover.mbt:1113 真问题，待修
-    ("phone-en chat-publish", 1),  // was 0, +1 (shows_ground) button_node.mbt:272 / viewer_frame.mbt:199 真问题，待修
     ("phone-en chat-preview-csv", 1),
     ("phone-en chat-preview-html", 1),
     ("phone-en chat-screens", 4),
