@@ -411,8 +411,9 @@ test("the release's installer started as an update asks it, the copy an update b
   assert.equal(readFileSync(join(run, "install.sh"), "utf8"), readFileSync(script, "utf8"), "the copy is the release's installer");
   // (it runs in the background, nobody's child: its exit written beside it)
   const until = Date.now() + 20_000;
-  while (!existsSync(join(run, "update.exit")) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
-  assert.equal(readFileSync(join(run, "update.exit"), "utf8").trim(), "0");
+  const exitFile = join(run, "update.exit");
+  while ((!existsSync(exitFile) || readFileSync(exitFile, "utf8").trim() === "") && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(readFileSync(exitFile, "utf8").trim(), "0");
   assert.equal(readFileSync(join(run, "ran.txt"), "utf8"), "the new installer\n");
   await h.ok({ step: "stop" });
   h.child.stdin!.end();
