@@ -439,11 +439,16 @@ test("net conformance: half-close FIN both ways with real Node node:net server",
   try {
     // Direction A: Node server sends payload + FIN first, waits for MB's reply + FIN
     let serverGotA = Buffer.alloc(0);
+    let resolveServerDoneA!: () => void;
+    const serverDoneA = new Promise<void>((r) => {
+      resolveServerDoneA = r;
+    });
     const srvA = netServer({ allowHalfOpen: true }, (sock) => {
       const chunks: Buffer[] = [];
       sock.on("data", (c) => chunks.push(c));
       sock.on("end", () => {
         serverGotA = Buffer.concat(chunks);
+        resolveServerDoneA();
         sock.destroy();
       });
       sock.write(Buffer.from("hello-from-node-before-fin"));
@@ -461,6 +466,8 @@ test("net conformance: half-close FIN both ways with real Node node:net server",
     assert.equal(Buffer.from(resA.received_hex, "hex").toString("utf8"), "hello-from-node-before-fin");
     assert.equal(resA.closed_after_eof, false, "socket must stay open for writing after peer FIN");
     assert.equal(resA.closed_after_end, true, "socket must close once both halves ended");
+    // MB returns once its FIN is sent; Node's "end" may not have fired yet.
+    await serverDoneA;
     assert.equal(serverGotA.toString("utf8"), "reply-after-peer-fin");
 
     // Direction B: MB sends payload + FIN first, then reads Node's delayed reply + FIN
