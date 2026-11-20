@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import fsModule from "node:fs";
+import { rename } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +35,7 @@ import {
   restoreWorkspace,
   withExtension,
   withLock,
+  WORKSPACE_RENAME_BACKOFF,
   workspaceArchive,
   workspaceFile,
 } from "../src/sessions/archive.ts";
@@ -258,6 +260,60 @@ test("becoming active before commit keeps originals and removes temporary archiv
   assert.equal(readFileSync(history, "utf8"), "history\n");
   assert.ok(!existsSync(packed(history)));
   assert.ok(!existsSync(join(room, "history.jsonl.zst.writing")));
+  rmSync(room, { recursive: true });
+});
+
+/// A rename of the workspace aside that fails with EPERM the first `times` attempts (Windows: a handle kept a moment
+/// after its process exits), every other rename as it is.
+const lockedWorkspace = (room: string, times: number) => {
+  const waits: number[] = [];
+  let attempts = 0;
+  return {
+    waits,
+    attempts: () => attempts,
+    opts: {
+      rename: async (from: string, to: string) => {
+        if (from === join(room, "workspace") && to === join(room, "workspace.retiring") && attempts++ < times) {
+          throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+        }
+        await rename(from, to);
+      },
+      wait: async (ms: number) => { waits.push(ms); },
+    },
+  };
+};
+
+test("a workspace held a moment after its process exits is packed once the lock clears", async () => {
+  const room = temp();
+  write(join(room, "workspace/source.rs"), "work");
+  const locked = lockedWorkspace(room, 3);
+  await packWorkspaceIf(room, () => true, locked.opts);
+  assert.deepEqual(locked.waits, [50, 100, 200]);
+  assert.ok(existsSync(workspaceArchive(room)));
+  assert.deepEqual(fsModule.readdirSync(join(room, "workspace")), []);
+  assert.ok(!existsSync(join(room, "workspace.retiring")));
+  await restoreWorkspace(room);
+  assert.equal(readFileSync(join(room, "workspace/source.rs"), "utf8"), "work");
+  rmSync(room, { recursive: true });
+});
+
+test("a workspace that stays held keeps its files and leaves no archive, and is packed once let go", async () => {
+  const room = temp();
+  write(join(room, "workspace/source.rs"), "work");
+  const locked = lockedWorkspace(room, Infinity);
+  await assert.rejects(packWorkspaceIf(room, () => true, locked.opts), { code: "EPERM" });
+  assert.equal(locked.attempts(), WORKSPACE_RENAME_BACKOFF.length + 1);
+  assert.deepEqual(locked.waits, [...WORKSPACE_RENAME_BACKOFF]);
+  assert.equal(readFileSync(join(room, "workspace/source.rs"), "utf8"), "work");
+  assert.ok(!existsSync(workspaceArchive(room)));
+  assert.ok(!existsSync(join(room, "workspace-locks.json")));
+  assert.ok(!existsSync(join(room, "workspace.tar.zst.writing")));
+  assert.ok(!existsSync(join(room, "workspace.retiring")));
+  await packWorkspaceIf(room, () => true);
+  assert.ok(existsSync(workspaceArchive(room)));
+  assert.ok(!existsSync(join(room, "workspace/source.rs")));
+  await restoreWorkspace(room);
+  assert.equal(readFileSync(join(room, "workspace/source.rs"), "utf8"), "work");
   rmSync(room, { recursive: true });
 });
 

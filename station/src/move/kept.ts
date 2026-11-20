@@ -2,31 +2,17 @@
 // durable): a set of item ids in one JSON file, read once before the station serves, written whole as it changes.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { wall } from "../ops/fibers.ts";
-
-const RENAME_BACKOFF = [20, 40, 80, 160];
+import { renameRetrying } from "../ops/files.ts";
 
 /// Replace the file atomically, allowing a short wait for Windows file locks to clear.
-export async function replaceFile(path: string, text: string, opts?: { rename?: typeof rename; wait?: (ms: number) => Promise<void> }): Promise<void> {
+export async function replaceFile(path: string, text: string, opts?: { rename?: (from: string, to: string) => Promise<void>; wait?: (ms: number) => Promise<void> }): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-  const move = opts?.rename ?? rename;
-  const wait = opts?.wait ?? wall.sleep;
   try {
     await writeFile(tmp, text);
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await move(tmp, path);
-        return;
-      } catch (error) {
-        const delay = RENAME_BACKOFF[attempt];
-        const code = (error as NodeJS.ErrnoException)?.code;
-        if (delay === undefined || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
-        await wait(delay);
-      }
-    }
+    await renameRetrying(tmp, path, opts);
   } catch (error) {
     await rm(tmp, { force: true }).catch(() => {});
     throw error;
