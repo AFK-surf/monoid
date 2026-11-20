@@ -802,7 +802,7 @@ fn new_scene_frames(
   script : String,
 ) -> Array[(Double, Bool)] raise {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture_app(mode, chat_nodes=true)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
   t.check_looks(false)

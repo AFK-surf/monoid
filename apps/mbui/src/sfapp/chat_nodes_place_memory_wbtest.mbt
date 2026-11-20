@@ -14,7 +14,7 @@ fn pm_open(
 ) -> @ui.Tester {
   let (_, w, h, platform) = s
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = long_source(l)
   let src : Source = {
     ..base,
@@ -306,7 +306,7 @@ test "小屏, a chat's page made as nodes as the app goes behind while a fling g
 /// (第n条：), the page made as nodes.
 fn pm_board_open() -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("board")
   let src : Source = {
     ..base,

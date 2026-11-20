@@ -56,8 +56,22 @@ typedef struct event {
 
 static lock_t queue_lock = LOCK_INIT;
 static cond_t queue_cond = COND_INIT;
+#if !defined(_WIN32) && !defined(__APPLE__)
+static pthread_once_t queue_cond_once = PTHREAD_ONCE_INIT;
+static void queue_cond_init(void) {
+  pthread_condattr_t attr;
+  pthread_condattr_init(&attr);
+  pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  pthread_cond_init(&queue_cond, &attr);
+  pthread_condattr_destroy(&attr);
+}
+static void ensure_queue_cond(void) { pthread_once(&queue_cond_once, queue_cond_init); }
+#else
+static void ensure_queue_cond(void) {}
+#endif
 static event_t *head = NULL, *tail = NULL;
 static void *shell = NULL;
+int64_t sfh_now(void);
 
 /// The most of stdin's pieces (kind 1) the queue holds before read_input stops reading: the parent's lines wait in the
 /// pipe meanwhile, and the parent's writes behind them (Node's own bound: read/mb-reader.ts STDIN_MOST), while the
@@ -80,6 +94,7 @@ static event_t *event_of(uint8_t kind, uint64_t id, size_t len) {
 
 /// `e` at the queue's end (queue_lock held).
 static void enqueue(event_t *e) {
+  ensure_queue_cond();
   if (tail) tail->next = e; else head = e;
   tail = e;
   signal_one(&queue_cond);
@@ -179,6 +194,7 @@ static void raise_nofile(void) {
 /// Starts reading stdin, and the shell keeping its own files in `dir` (none when `dir` is empty). False: the shell did not
 /// start.
 int32_t sfh_start(moonbit_bytes_t dir) {
+  ensure_queue_cond();
 #ifndef _WIN32
   raise_nofile();
   // A write to a pipe or socket whose other end closed fails (EPIPE) and ends nothing else: the shell's are a Unix
@@ -205,20 +221,37 @@ int32_t sfh_start(moonbit_bytes_t dir) {
 /// The next event (kind, id as 8 bytes, then what it carries), waiting at most `ms` (negative: until there is one).
 /// Empty: none came in time.
 moonbit_bytes_t sfh_wait(int64_t ms) {
+  ensure_queue_cond();
   lock(&queue_lock);
   if (head == NULL && ms != 0) {
 #ifdef _WIN32
     SleepConditionVariableSRW(&queue_cond, &queue_lock, ms < 0 ? INFINITE : (DWORD)ms, 0);
+#elif defined(__APPLE__)
+    if (ms < 0) {
+      while (head == NULL) pthread_cond_wait(&queue_cond, &queue_lock);
+    } else {
+      if (ms > 86400000LL) ms = 86400000LL;
+      int64_t deadline = sfh_now() + ms;
+      while (head == NULL) {
+        int64_t left = deadline - sfh_now();
+        if (left <= 0) break;
+        struct timespec rel;
+        rel.tv_sec = (time_t)(left / 1000);
+        rel.tv_nsec = (long)((left % 1000) * 1000000);
+        if (pthread_cond_timedwait_relative_np(&queue_cond, &queue_lock, &rel) != 0) break;
+      }
+    }
 #else
     if (ms < 0) {
       while (head == NULL) pthread_cond_wait(&queue_cond, &queue_lock);
     } else {
+      if (ms > 86400000LL) ms = 86400000LL;
       struct timespec at;
-      clock_gettime(CLOCK_REALTIME, &at);
-      at.tv_sec += ms / 1000;
-      at.tv_nsec += (ms % 1000) * 1000000;
-      if (at.tv_nsec >= 1000000000) { at.tv_sec += 1; at.tv_nsec -= 1000000000; }
-      while (head == NULL && pthread_cond_timedwait(&queue_cond, &queue_lock, &at) != ETIMEDOUT) {}
+      clock_gettime(CLOCK_MONOTONIC, &at);
+      at.tv_sec += (time_t)(ms / 1000);
+      at.tv_nsec += (long)((ms % 1000) * 1000000);
+      if (at.tv_nsec >= 1000000000L) { at.tv_sec += 1; at.tv_nsec -= 1000000000L; }
+      while (head == NULL && pthread_cond_timedwait(&queue_cond, &queue_lock, &at) == 0) {}
     }
 #endif
   }

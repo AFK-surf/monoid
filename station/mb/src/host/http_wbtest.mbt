@@ -49,7 +49,18 @@ test "fetch: its status, headers and body; nothing cancelled" {
   assert_eq(r.header("Content-Type"), Some("text/plain"))
   assert_eq(r.header("X-ONE"), Some("1"))
   assert_eq(r.header("x-two"), None)
+  assert_eq(r.redirected, false)
   assert_eq(fake.cancelled, [])
+}
+
+///|
+test "fetch: an answer the shell had by a redirect followed says so" {
+  let fake = FakeFetch::new(1, { "status": 200, "redirected": true }, Some(b"there"))
+  let rt = @effect.Runtime::new()
+  let f = rt.fork(fake.fetch(None))
+  rt.advance(5)
+  guard f.poll() is Some(Succeeded(r)) else { fail("not answered") }
+  assert_eq((r.status, r.redirected, r.text()), (200, true, "there"))
 }
 
 ///|

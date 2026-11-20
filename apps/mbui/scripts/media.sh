@@ -7,7 +7,7 @@
 #   MBUI_LOCALE, MBUI_FONT_SCALE and the fixture's (all of film's: mbui/src/film/film.mbt; the made-up station's pace,
 #   MBUI_FIX_PACE=DELIVER,ANSWER,END and MBUI_FIX_CORE=MS: src/sffixture fix_pace_said; MBUI_CORE_CLIENT=1: the core
 #   answering through its client, as a device's, src/sffilmscene; MBUI_OPEN_WHOLE=1: what opens
-#   waits for what it reads, src/sffilmscene; MBUI_CHAT_PAGE=nodes: the chat's page made as nodes, 试用新对话页;
+#   waits for what it reads, src/sffilmscene; MBUI_CHAT_PAGE=nodes|old: the chat's page made as nodes or its old view, whatever the channel;
 #   MBUI_FILM_FACE_MS=MS the people's faces decoded that late, and MBUI_FILM_FACE_WAITS=1 a page opening waiting for
 #   them, src/sffilmscene: the native film's only). A picture: MBUI_PICTURE_FRAME=K
 #   or MBUI_PICTURE_AT=MS, MBUI_PICTURE_TRANSPARENT=1. A film: MBUI_FILM_FPS (60), also OUT.last.png and OUT.textrec.

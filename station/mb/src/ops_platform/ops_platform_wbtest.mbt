@@ -122,3 +122,11 @@ test "board-files manifest, upkeep round, and gone_board_files selection" {
   assert_eq(gone, ["p1/d1/old", "p1/d2/a", "p1/d2/b"])
   assert_eq(empty_dirs, [("p1", "d2")])
 }
+
+///|
+test "startEnv never gives the launcher's front to what the station starts" {
+  let own = [("PATH", "/bin"), ("STILLFAIL_MESH_FRONT", "/data/run/front.sock")]
+  let env = start_env(own, Json::object({ "agentEnv": Json::object({ "STILLFAIL_MESH_FRONT": Json::string("/x") }) }), [])
+  assert_true(env.iter().all(p => p.0 != "STILLFAIL_MESH_FRONT"))
+  assert_true(env.iter().any(p => p == ("PATH", "/bin")))
+}

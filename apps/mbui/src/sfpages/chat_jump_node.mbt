@@ -961,6 +961,31 @@ fn chat_rail_ticks(said : (Array[Int], Array[Double]), reader : (Double, Bool), 
 }
 
 ///|
+/// Index (`t.i`) of the tick in `ticks` nearest to vertical coordinate `y` within `chat_rail_press` (exact mirror of
+/// its `min_h=rail_press_w`, `py=rail_pad`, `justify=JCenter` layout, with no layout read-back). Returns -1 when empty.
+fn chat_rail_tick_index_at(ticks : Array[ChatRailTick], y : Double) -> Int {
+  guard !ticks.is_empty() else { return -1 }
+  let room = tick_thick + tick_gap.px()
+  let tall = ticks.fold(init=0.0, fn(a, t) { a + room + (if t.day { tick_day_gap.px() } else { 0.0 }) })
+  let rail_h = dmax(rail_press_w, tall + 2.0 * rail_pad.px())
+  let mut top = dmax(rail_pad.px(), (rail_h - tall) / 2.0)
+  let mut best = -1
+  let mut far = 1.0e9
+  for t in ticks {
+    if t.day {
+      top = top + tick_day_gap.px()
+    }
+    let d = (top + room / 2.0 - y).abs()
+    if d < far {
+      far = d
+      best = t.i
+    }
+    top = top + room
+  }
+  best
+}
+
+///|
 /// Which of `ticks` (chat_rail_ticks') a press at `y` down the rail's press `h` tall lies on: the one whose middle is
 /// nearest, as they are laid out in its middle (each tick_gap and its line tall, a day's tick_day_gap over the first of
 /// a day). None where there are none.
@@ -1080,12 +1105,10 @@ fn chat_rail_node(
         guard @signals.untracked(fn() { said.get() }) is Some((_, seqs)) && seqs.get(t.at) is Some(seq) else { return }
         @sfbase.go_to(r, seq)
       }
-      // (the tick the pointer rests on, by its message's place among those said: its tip said over the rail's, as the
-      // old page's outline_rail had it)
-      let pointed_at : @signals.Signal[Int?] = @signals.signal(None)
-      let k = chat_key(r)
       // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)
+      let hover_close : Ref[() -> Unit] = Ref(fn() {  })
       @sf.action_box_node(o, fn() { @sf.t("web-main.outline.title") }, fn(press) {
+        (hover_close.val)()
         let cv = @signals.untracked(view)
         guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
         let (seq, at_end) = jump.reader.untracked()
@@ -1093,6 +1116,65 @@ fn chat_rail_node(
         open_outline(src, r, th, current, from=Node(press), side=Left, along=Middle, stint=@signals.untracked(stint))
       }, fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
+        let hovered_idx = fn() -> Int? {
+          if @sf.pointer_rests() && press.pointed_in() {
+            let i = press.pointer_piece(fn(_px, py) { chat_rail_tick_index_at(ticks.get(), py) })
+            if i >= 0 { Some(i) } else { None }
+          } else {
+            None
+          }
+        }
+        let hovered_is = press.selected(hovered_idx)
+        let hovered_seq = fn() -> Double {
+          match hovered_idx() {
+            Some(i) =>
+              match (ticks.get().get(i), said.get()) {
+                (Some(tk), Some((_, seqs))) => seqs.get(tk.at).unwrap_or(-1.0)
+                _ => -1.0
+              }
+            None => -1.0
+          }
+        }
+        let panel_held : Ref[() -> Bool] = Ref(fn() { false })
+        let panel_held_ver : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+        let hand = @sf.hover_panel_node(
+          tips,
+          press,
+          @sf.t("web-main.outline.title"),
+          fn(col, close) {
+            let cv = @signals.untracked(view)
+            guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
+            let (seq, at_end) = jump.reader.untracked()
+            let current = outline_current(seqs, seq, at_end)
+            open_outline_hover_body(
+              col,
+              src,
+              r,
+              th,
+              current,
+              close,
+              @signals.untracked(stint),
+              hovered_seq,
+              fn() { @sf.pointer_rests() && press.pointed_in() },
+              fn(h) {
+                panel_held.val = h
+                panel_held_ver.set(panel_held_ver.untracked() + 1)
+                col.owns(fn() {
+                  panel_held.val = fn() { false }
+                  panel_held_ver.set(panel_held_ver.untracked() + 1)
+                })
+                |> ignore
+              },
+            )
+          },
+          held=fn() {
+            panel_held_ver.get() |> ignore
+            (panel_held.val)()
+          },
+          pointed=fn() { press.pointed_in() },
+        )
+        hover_close.val = hand.close
+        let closer_id = rail_hover_register(hand.close)
         press
         // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
         // placed on the composer's ground's way, never stepped by half of that in a frame, the user 2026-11-17:
@@ -1102,13 +1184,19 @@ fn chat_rail_node(
           fn(_, _) { @sfbase.chat_foot_dropped_off(r.station + ":" + r.session, 0.0).1 },
         )
         .cursor(Is(Some(Hand)))
-        // (the hand's, a finger's or the pointer's: the message of the tick it went down on)
-        .gesture(@ui.touch_slop(), tap=fn(d) {
-          match chat_rail_tick_at(@signals.untracked(fn() { ticks.get() }), d.y, d.h) {
-            Some(t) => go(t)
-            None => ()
-          }
-        })
+        // (the hand's, a finger's or the pointer's: the message of the tick it went down on; touch long-press opens the
+        // hover panel)
+        .gesture(
+          @ui.touch_slop(),
+          tap=fn(d) {
+            (hand.close)()
+            match chat_rail_tick_at(@signals.untracked(fn() { ticks.get() }), d.y, d.h) {
+              Some(t) => go(t)
+              None => ()
+            }
+          },
+          hold=(@ui.long_press_ms, fn(_) { if !@sf.pointer_rests() { (hand.hold)() } }),
+        )
         |> ignore
         // (its ticks changed as the chat goes on while it shows (a message said, the reader moved along it): a live cause
         // of its own, judged as it reads them, so what comes on it and what moves along it goes its way, @view.transition;
@@ -1131,55 +1219,33 @@ fn chat_rail_node(
           // comes on the column's one way, never a gap's height switched in a frame)
           fn(t) { (t.i, t.day) },
           fn(row, t) {
-            // (as wide as the press, its ticks at its end: the pointer rests on a tick's room anywhere across it)
-            row.width_share(Is(1.0)).lines_up(Is(Some(End))) |> ignore
+            let idx = t.untracked().i
             // (a day's gap over the first of a day after another)
             if t.untracked().day {
               row.box(fn(g) { g.height(Is(Some(tick_day_gap.px()))) |> ignore }) |> ignore
             }
             row.box(fn(room) {
               @sf.style_node(room, fn() { tick_room })
-              // (only pointed at, for its tip: a press there the rail's; its message asked for where not held as it
-              // is first pointed at, outline.mbt's rail_ask)
-              room.points(Is(true)).cursor(Is(Some(Hand))) |> ignore
-              room.reacts(fn() { room.pointed() }, fn(on) {
-                let at = @signals.untracked(fn() { t.get().at })
-                if on {
-                  pointed_at.set(Some(at))
-                  match (@signals.untracked(view).thread, @signals.untracked(fn() { said.get() })) {
-                    (Some(th), Some((_, seqs))) =>
-                      match seqs.get(at) {
-                        Some(seq) => if rail_tip_words(k, seq) == "" { rail_ask(src, r, th, seqs, at) }
-                        None => ()
-                      }
-                    _ => ()
-                  }
-                } else if @signals.untracked(fn() { pointed_at.get() }) == Some(at) {
-                  pointed_at.set(None)
-                }
-              }, at_start=false)
-              room.owns(fn() {
-                if @signals.untracked(fn() { pointed_at.get() }) == Some(@signals.untracked(fn() { t.get().at })) {
-                  pointed_at.set(None)
-                }
-              })
-              |> ignore
-              @sf.tip_node(tips, room, fn() {
-                match said.get() {
-                  Some((_, seqs)) =>
-                    match seqs.get(t.get().at) {
-                      Some(seq) => rail_tip_words(k, seq)
-                      None => ""
-                    }
-                  None => ""
-                }
-              }, side=Left)
-              |> ignore
               room.box(fn(line) {
                 line
-                .width(By(fn() { Some(if t.get().reader { tick_long } else { tick_w(t.get().turn) }) }))
+                .width(By(fn() {
+                  let tk = t.get()
+                  Some(
+                    if tk.reader {
+                      tick_long
+                    } else if hovered_is(idx) {
+                      tick_hover_w(tk.turn)
+                    } else {
+                      tick_w(tk.turn)
+                    },
+                  )
+                }))
                 .height(Is(Some(tick_thick)))
-                .ground(By(fn() { @ui.tree_theme().color(if t.get().reader { Fg } else { Line }) }))
+                .radius(Is(tick_thick / 2.0))
+                .ground(By(fn() {
+                  let tk = t.get()
+                  @ui.tree_theme().color(if tk.reader { Fg } else if hovered_is(idx) { Muted } else { Line })
+                }))
                 |> ignore
               })
               |> ignore
@@ -1187,10 +1253,14 @@ fn chat_rail_node(
             |> ignore
           },
         )
-        @sf.tip_node(tips, press, fn() { if pointed_at.get() is Some(_) { "" } else { @sf.t("web-main.keymap.chat.outline") } }, side=Left, shortcut="chat.outline")
-        |> ignore
         jump.rail_at = Some(press)
-        press.owns(fn() { if jump.rail_at.map(fn(b) { b.id() }) == Some(press.id()) { jump.rail_at = None } }) |> ignore
+        press.owns(fn() {
+          rail_hover_unregister(closer_id)
+          if jump.rail_at.map(fn(b) { b.id() }) == Some(press.id()) {
+            jump.rail_at = None
+          }
+        })
+        |> ignore
       })
       |> ignore
     })

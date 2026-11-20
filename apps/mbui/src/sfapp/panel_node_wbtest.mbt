@@ -428,7 +428,8 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // (its words faded out by the time half its way out is over, before its ground (kit's pop_out), the frame at or
   // after that the first they are gone in)
   let in_time = match gone_at {
-    Some(ms) => ms >= @motion.pop_out_ms / 2.0 && ms < @motion.pop_out_ms / 2.0 + t.frame_period()
+    // (to a thousandth of a frame: the moments are sums of frame periods, never exactly on half the way)
+    Some(ms) => ms >= @motion.pop_out_ms / 2.0 && ms <= @motion.pop_out_ms / 2.0 + t.frame_period() + 0.001
     None => false
   }
   // (what is built meanwhile, the page under it as what it reads says (its own motions), built none of it)
@@ -455,7 +456,7 @@ test "panel, 大屏 keyboard and mouse: at a point, back (the system's): closed 
   }
   debug_inspect(out, content=(
     #|[
-    #|  "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 按空格输入) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
+    #|  "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
     #|  "focus false: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
     #|]
   ))

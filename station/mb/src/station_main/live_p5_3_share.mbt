@@ -193,8 +193,101 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
       })
       { close: () => gone.val = true, scan: look }
     },
-    dir: (_dir, _changed, _failed) => None,
+    dir: (dir, changed, failed) => Some(p53_watch_dir(host, stopped, dir, changed, failed)),
   }
+}
+
+///|
+/// One directory followed for its own entries, as `fs.watch(dir)` (not recursive) follows it: its listing and each
+/// entry's size and time looked at every `every` ms, an entry made, changed or removed told by its name. A directory
+/// that cannot be listed (not there yet, or gone) is told once (`failed`, the watch's `error`) and no longer looked
+/// at, as is one let go (`close`) or once the station stops; `began` is told once its first look is done, `ended` as its
+/// fiber ends.
+fn p53_watch_dir(
+  host : @host.Host,
+  stopped : @effect.Deferred[String],
+  dir : String,
+  changed : (String?) -> Unit,
+  failed : () -> Unit,
+  every? : Int = p53_follow_ms,
+  began? : @effect.Deferred[Unit],
+  ended? : @effect.Deferred[Unit],
+) -> @share_sync.Watcher {
+  let gone = Ref(false)
+  let marks : Ref[Map[String, String]?] = Ref(None)
+  let busy = Ref(false)
+  let again = Ref(false)
+  let still = () => !gone.val && !stopped.is_done()
+  // One look: false once the directory cannot be listed (it is then told, and let go).
+  let once = async fn() -> Bool {
+    guard host_readdir_types(host, dir) is Some(entries) else {
+      if still() {
+        gone.val = true
+        failed()
+      }
+      return false
+    }
+    let now : Map[String, String] = Map([])
+    for e in entries {
+      let (name, kind) = e
+      let mark = match (try { Ok(host.shell("fs.meta", { "path": jstr(@nodepath.join(sep(), [dir, name])) })) } catch { e => Err(e) }) {
+        Ok((m, _)) => "\{kind}:\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
+        Err(_) => kind
+      }
+      now[name] = mark
+    }
+    let before = marks.val
+    marks.val = Some(now)
+    // (the first look is where the watch begins: what was there then is not a change)
+    guard before is Some(before) && still() else { return true }
+    for k, v in now {
+      if before.get(k) != Some(v) {
+        changed(Some(k))
+      }
+    }
+    for k, _ in before {
+      if !now.contains(k) {
+        changed(Some(k))
+      }
+    }
+    true
+  }
+  let look = async fn() -> String? {
+    if busy.val {
+      again.val = true
+      return None
+    }
+    busy.val = true
+    defer {
+      busy.val = false
+    }
+    while still() {
+      again.val = false
+      if !once() {
+        return Some("\{dir} cannot be listed")
+      }
+      if !again.val {
+        break
+      }
+    }
+    None
+  }
+  fork_bg(host, "a followed directory", async fn() {
+    defer {
+      if ended is Some(d) {
+        ignore(d.succeed(()))
+      }
+    }
+    ignore(look())
+    if began is Some(b) {
+      ignore(b.succeed(()))
+    }
+    while still() {
+      @effect.sleep(every) // timer: a sample of this machine (its own files: the shell keeps no watch)
+      ignore(look())
+    }
+  })
+  { close: () => gone.val = true, scan: look }
 }
 
 ///|

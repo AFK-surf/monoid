@@ -44,7 +44,8 @@ priv struct SettingsFixture {
   mut new_login : Bool
   /// a new profile's draft at a key's form with a region and a protocol to choose (settings-new-profile-key)
   mut new_key : Bool
-  /// Claude 主账号's trouble: "" none, "quota" its allowance unreadable (settings-profile-quota-failed), "blocked"
+  /// Claude 主账号's trouble: "" none, "quota" its allowance unreadable (settings-profile-quota-failed), "verify" its
+  /// provider asking the account to be verified at a link first (settings-profile-verify), "blocked"
   /// its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
   mut trouble : String
   /// the vault not set up on this device (settings-vault-off: on nowhere, no vault of theirs; settings-vault-elsewhere:
@@ -971,6 +972,7 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/profile/ws1/st1/cc", 0)
     }
     "settings-profile-quota-failed" => fx.trouble = "quota"
+    "settings-profile-verify" => fx.trouble = "verify"
     "settings-profile-quota-login" => fx.trouble = "quota-login"
     "settings-profile-quota-expiry" => fx.reset_expiry = true
     "settings-profiles-long-name" => fx_long_name.val = true
@@ -1140,7 +1142,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
     "settings-memory-doc" => "memory-doc:ws1/st1#发布流程"
-    "settings-profile" | "settings-profile-hosts" | "settings-profile-hosts-one" | "settings-profile-hosts-away" | "settings-profile-hosts-pending" | "settings-profile-hosts-cutoff" | "settings-profile-quota-failed" | "settings-profile-blocked" | "settings-profile-signin" | "settings-profile-fable" | "settings-profile-own3" | "settings-profile-week-fable" =>
+    "settings-profile" | "settings-profile-hosts" | "settings-profile-hosts-one" | "settings-profile-hosts-away" | "settings-profile-hosts-pending" | "settings-profile-hosts-cutoff" | "settings-profile-quota-failed" | "settings-profile-verify" | "settings-profile-blocked" | "settings-profile-signin" | "settings-profile-fable" | "settings-profile-own3" | "settings-profile-week-fable" =>
       "profile:ws1/st1#cc"
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
     "settings-profile-move" => "profile:ws1/st1#cx"
@@ -1739,6 +1741,11 @@ fn fx_cc_tone() -> String {
 }
 
 ///|
+/// What Antigravity CLI says where Google asks the account to be verified first, its link whole (agy-quota.ts
+/// clipKeepingLinks).
+let fx_verify_said : String = "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser"
+
+///|
 /// Claude 主账号's own (`more`) and its trouble (fx.trouble) as the core says it (present.ts profileTrouble), with what
 /// its check and its allowance say then.
 fn fx_cc_with(more : Array[(String, Json)]) -> Array[(String, Json)] {
@@ -1750,6 +1757,11 @@ fn fx_cc_with(more : Array[(String, Json)]) -> Array[(String, Json)] {
       [
         issue("额度查询失败", "请求超时，已中止", "查不到额度不代表账号不能用。先重新查询；还是失败，再按返回的原因检查登录或网络。", "quota", "重新查询额度"),
         ("quota", obj([("state", str("unavailable")), ("detail", str("请求超时，已中止")), ("windows", []), ("checkedAt", Json::number(0.0))])),
+      ]
+    "verify" =>
+      [
+        issue("额度查询失败", fx_verify_said, "查不到额度不代表账号不能用。先重新查询；还是失败，再按返回的原因检查登录或网络。", "quota", "重新查询额度"),
+        ("quota", obj([("state", str("unavailable")), ("detail", str(fx_verify_said)), ("windows", []), ("checkedAt", Json::number(0.0))])),
       ]
     "blocked" =>
       [

@@ -656,6 +656,26 @@ fn writes_hashes_and_moves_the_station_programs_files() {
     assert_eq!(std::fs::read(dir.path().join("a/moved.txt")).unwrap(), "中\n".as_bytes());
     assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
     assert!(dir.path().join("c/d").is_dir());
+    // fs.mkdir with recursive=false is atomic and returns EEXIST when the directory already exists;
+    // recursive=true / omitted remains idempotent.
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d"), "recursive": true }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["value"], Value::Null);
+    assert!(dir.path().join("c/lock").is_dir());
+    let eexist = sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["error"]
+        .as_str()
+        .expect("non-recursive mkdir on existing dir must error")
+        .to_string();
+    assert!(eexist.contains("EEXIST"), "expected EEXIST in error, got: {eexist}");
+    // fs.utimes updates mtimeMs on both regular files and directories (OAuth lock heartbeat target).
+    let target_ms = 1_700_000_123_456.0_f64;
+    assert_eq!(sync("fs.utimes", json!({ "path": at("a/moved.txt"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let file_mtime = sync("fs.lstat", json!({ "path": at("a/moved.txt") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((file_mtime - target_ms).abs() < 2.0, "file mtimeMs expected ~{target_ms}, got {file_mtime}");
+    assert_eq!(sync("fs.utimes", json!({ "path": at("c/lock"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let dir_mtime = sync("fs.lstat", json!({ "path": at("c/lock") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((dir_mtime - target_ms).abs() < 2.0, "dir mtimeMs expected ~{target_ms}, got {dir_mtime}");
+    assert!(sync("fs.utimes", json!({ "path": at("c/missing"), "mtimeMs": target_ms }))["error"].is_string());
     assert!(sync("fs.remove", json!({ "path": at("a") }))["error"].is_string());
     assert_eq!(sync("fs.remove", json!({ "path": at("a"), "recursive": true }))["value"], Value::Null);
     assert!(!dir.path().join("a").exists());
@@ -1582,4 +1602,254 @@ fn a_screens_frames_as_datagrams_come_through_loss_at_once() {
         }
         assert!(report[0].2 > report[1].2 && report[2].2 > report[3].2);
     });
+}
+
+/// With `control: true`, `ws.ping` sends a Ping frame and `ws.next` surfaces incoming Pong and Ping frames (while
+/// tungstenite still replies with Pong to server Pings).
+#[test]
+fn ws_control_frames_and_ping_roundtrip() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // Receive client's ws.ping and reply with Pong.
+        let got_ping = ws.next().await.unwrap().unwrap();
+        match got_ping {
+            Message::Ping(payload) => ws.send(Message::Pong(payload)).await.unwrap(),
+            other => panic!("expected Ping from client, got {other:?}"),
+        }
+        // Send a server Ping and expect client's automatic Pong reply.
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        let got_pong = ws.next().await.unwrap().unwrap();
+        assert!(matches!(got_pong, Message::Pong(_)), "expected Pong from client, got {got_pong:?}");
+        // Wait for client close.
+        let _ = ws.next().await;
+    });
+    let opened = call(98_001, "ws.open", json!({ "url": format!("ws://{addr}/"), "control": true }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    call(98_002, "ws.ping", json!({ "id": ws_id }));
+    assert_eq!(call(98_003, "ws.next", json!({ "id": ws_id })), json!({ "pong": true }));
+    assert_eq!(call(98_004, "ws.next", json!({ "id": ws_id })), json!({ "ping": true }));
+    call(98_005, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}
+
+/// Without `control`, Ping and Pong frames stay internal and `ws.next` skips straight to the next data frame.
+#[test]
+fn ws_without_control_skips_ping_and_pong_frames() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        ws.send(Message::Pong(Default::default())).await.unwrap();
+        ws.send(Message::text("hi")).await.unwrap();
+        let _ = ws.next().await;
+    });
+    let opened = call(98_011, "ws.open", json!({ "url": format!("ws://{addr}/") }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    assert_eq!(call(98_012, "ws.next", json!({ "id": ws_id })), json!({ "text": "hi" }));
+    call(98_013, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}
+
+/// A test's server on 127.0.0.1, its listener taken by `serve` on the shell's runtime; its address.
+fn served<F, T>(shell: &Shell, serve: impl FnOnce(tokio::net::TcpListener) -> F) -> (std::net::SocketAddr, tokio::task::JoinHandle<T>)
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let listener = shell.runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+    let addr = listener.local_addr().unwrap();
+    (addr, shell.runtime.spawn(serve(listener)))
+}
+
+/// What came of call `id` asked with `a`: its JSON, or its error.
+fn asked(shell: &Shell, id: u64, op: &str, a: Value) -> Result<Value, String> {
+    shell.call(id, op.into(), a.to_string().as_bytes(), None);
+    let (json, error, _) = answer(id);
+    if error.is_empty() { Ok(serde_json::from_str(&json).unwrap()) } else { Err(error) }
+}
+
+/// An HTTP request's head read off `socket`.
+async fn head_of(socket: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        request.push(socket.read_u8().await.unwrap());
+    }
+    String::from_utf8(request).unwrap()
+}
+
+/// The other side's Close frame reaches `ws.next` with its code and reason (the plane's 4000, a presence socket
+/// replaced, and 4004, its station removed); one with none, and the socket's end after it, say only its end.
+#[test]
+fn a_close_frames_code_and_reason_reach_ws_next() {
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, server) = served(&shell, |listener| async move {
+        for frame in [Some((4000, "replaced")), Some((4004, "removed")), None] {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            ws.close(frame.map(|(code, reason)| CloseFrame { code: CloseCode::from(code), reason: reason.into() })).await.unwrap();
+        }
+    });
+    for (n, said) in [(0, json!({ "end": true, "code": 4000, "reason": "replaced" })), (1, json!({ "end": true, "code": 4004, "reason": "removed" })), (2, json!({ "end": true }))] {
+        let ws = asked(&shell, 96_000 + n * 10, "ws.open", json!({ "url": format!("ws://{addr}/v1/presence") })).unwrap()["id"].clone();
+        assert_eq!(asked(&shell, 96_001 + n * 10, "ws.next", json!({ "id": ws })), Ok(said));
+        assert_eq!(asked(&shell, 96_002 + n * 10, "ws.next", json!({ "id": ws })), Ok(json!({ "end": true })));
+        asked(&shell, 96_003 + n * 10, "ws.close", json!({ "id": ws })).unwrap();
+    }
+    shell.runtime.block_on(server).unwrap();
+}
+
+/// A WebSocket whose Upgrade is never answered fails once its `timeoutMs` passed, directly and through an entry; one
+/// cancelled while it waits (`fetch.cancel`) drops its socket, and nothing of it is kept.
+#[test]
+fn a_websocket_opening_ends_by_its_deadline_or_when_cancelled() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (heard, mut hearing) = tokio::sync::mpsc::unbounded_channel();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let heard = heard.clone();
+            tokio::spawn(async move {
+                head_of(&mut socket).await;
+                let _ = heard.send(());
+                // Never answered; what the read ends with is the client's socket closing.
+                let _ = socket.read_u8().await;
+                let _ = heard.send(());
+            });
+        }
+    });
+    let entry = json!({ "host": "127.0.0.1", "port": addr.port() });
+    for (id, a) in [(96_101, json!({ "url": format!("ws://{addr}/"), "timeoutMs": 150 })), (96_102, json!({ "url": "ws://cloud.invalid/", "entry": entry, "timeoutMs": 150 }))] {
+        assert_eq!(asked(&shell, id, "ws.open", a), Err("websocket: open timed out within 150 ms".to_string()));
+    }
+    let kept = shell.inner.handles.lock().unwrap().len();
+    shell.call(96_103, "ws.open".into(), json!({ "url": format!("ws://{addr}/") }).to_string().as_bytes(), None);
+    shell.runtime.block_on(async {
+        for _ in 0..5 {
+            hearing.recv().await.unwrap();
+        }
+    });
+    let cancel = || serde_json::from_slice::<Value>(&shell.call_sync("fetch.cancel", json!({ "id": 96_103 }).to_string().as_bytes())).unwrap();
+    assert_eq!(cancel(), json!({ "value": true }));
+    assert_eq!(answer(96_103).1, "cancelled");
+    shell.runtime.block_on(hearing.recv()).unwrap();
+    assert_eq!(cancel(), json!({ "value": false }));
+    assert_eq!(shell.inner.handles.lock().unwrap().len(), kept);
+}
+
+/// `stream.open` given `timeoutMs` fails once its head has not come by then; `stream.read` given `stallMs` (or
+/// `timeoutMs`) once its next piece has not.
+#[test]
+fn a_streams_head_and_pieces_end_by_their_deadlines() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                if head_of(&mut socket).await.starts_with("GET /body") {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+                }
+                // Nothing more comes, and the socket stays open.
+                let _ = socket.read_u8().await;
+            });
+        }
+    });
+    let at = |path: &str, within: Value| {
+        let mut a = json!({ "url": format!("http://{addr}{path}"), "method": "GET", "headers": [] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        a
+    };
+    assert_eq!(asked(&shell, 96_201, "stream.open", at("/head", json!({ "timeoutMs": 150 }))), Err("no answer within 150 ms".to_string()));
+    let stream = asked(&shell, 96_202, "stream.open", at("/body", json!({ "timeoutMs": 5000 }))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(false)));
+    shell.call(96_203, "stream.read".into(), json!({ "id": stream["id"] }).to_string().as_bytes(), None);
+    assert_eq!(answer(96_203).2.unwrap(), b"a");
+    for (id, within) in [(96_204, json!({ "stallMs": 150 })), (96_205, json!({ "timeoutMs": 150 }))] {
+        let mut a = json!({ "id": stream["id"] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        assert_eq!(asked(&shell, id, "stream.read", a), Err("nothing more came within 150 ms".to_string()));
+    }
+}
+
+/// A 302 is answered as it came where `redirect` is not `"follow"` (said or not: `"manual"`), `redirected` false;
+/// followed where it is, its target's answer `redirected`, for `fetch` and `stream.open` alike.
+#[test]
+fn redirects_are_followed_only_when_asked() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                loop {
+                    let head = head_of(&mut socket).await;
+                    let answer: &[u8] = if head.starts_with("GET /from ") {
+                        b"HTTP/1.1 302 Found\r\nLocation: /to\r\nContent-Length: 0\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nthere"
+                    };
+                    if socket.write_all(answer).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let from = |redirect: Option<&str>| {
+        let mut a = json!({ "url": format!("http://{addr}/from"), "method": "GET", "headers": [] });
+        if let Some(r) = redirect {
+            a["redirect"] = json!(r);
+        }
+        a
+    };
+    for (n, redirect) in [None, Some("manual")].into_iter().enumerate() {
+        let n = n as u64 * 10;
+        shell.call(96_301 + n, "fetch".into(), from(redirect).to_string().as_bytes(), None);
+        let (said, error, body) = answer(96_301 + n);
+        assert_eq!(error, "");
+        let said: Value = serde_json::from_str(&said).unwrap();
+        assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(302), json!(false), Vec::new()));
+        let stream = asked(&shell, 96_302 + n, "stream.open", from(redirect)).unwrap();
+        assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(302), json!(false)));
+    }
+    shell.call(96_321, "fetch".into(), from(Some("follow")).to_string().as_bytes(), None);
+    let (said, error, body) = answer(96_321);
+    assert_eq!(error, "");
+    let said: Value = serde_json::from_str(&said).unwrap();
+    assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(200), json!(true), b"there".to_vec()));
+    let stream = asked(&shell, 96_322, "stream.open", from(Some("follow"))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(true)));
 }

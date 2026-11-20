@@ -148,6 +148,10 @@ export class Directory extends ProductionDirectory {
   expireInviteCode(code: string) {
     this.ctx.storage.sql.exec("UPDATE invite_codes SET expires_at = ? WHERE code = ?", nowSeconds(), code);
   }
+
+  expireAdminKey(id: string) {
+    this.ctx.storage.sql.exec("UPDATE admin_keys SET expires_at = ? WHERE id = ?", nowSeconds() - 1, id);
+  }
   /** A member-mail reservation made `secs` ago, against the fixed test clock. */
   ageAddedMail(workspace: string, email: string, secs: number) {
     this.ctx.storage.sql.exec("UPDATE added_mails SET at = ? WHERE workspace = ? AND email = ?", nowSeconds() - secs, workspace, email);

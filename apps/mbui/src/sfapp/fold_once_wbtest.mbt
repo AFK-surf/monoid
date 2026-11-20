@@ -7,7 +7,8 @@
 ///|
 test "大屏: on the block's way each frame built once, the lists' rows kept" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
+  // (the old page, what stable keeps: its rows kept as built; the chat made as nodes lays out no old view to keep)
+  let t = wide_tester(calls, mode="chat", before=fn(_) { @sfbase.hold_chat_page_nodes(Some(false)) })
   t.set_rows_on_pixels(true)
   t.run_for(kept_rows_still_ms)
   let t0 = t.time()

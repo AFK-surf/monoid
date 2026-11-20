@@ -478,6 +478,8 @@ pub fn View::words_look(self : View, look : Live[WordsLook], loc~ : SourceLoc) -
     if n.shorter.length() > 0 {
       self.tree.give_way_applied(self.at)
     }
+    self.tree.soft_min_applied(self.at)
+    self.tree.structure_row_sync(self.at)
     // (how its words are set said: what follows it told, once this is)
     self.words_told()
   })
@@ -538,9 +540,9 @@ pub fn Tree::allows_ellipsis(self : Tree, id : NodeId) -> Bool {
     let n = self.nodes[at]
     let style = n.flex.style
     let own = at == id.at
-    // (what lays it out: what holds it, past any slot; how it gives way or grows is across only in a row)
+    // (what lays it out: what holds it, past any slot or bare single-child structure box; how it gives way or grows is across only in a row)
     let mut p = n.parent
-    while p >= 0 && self.nodes[p].slot {
+    while p >= 0 && (self.nodes[p].slot || self.is_bare_single_structure(p)) {
       p = self.nodes[p].parent
     }
     let in_row = p >= 0 && self.nodes[p].flex.style.direction is (Row | RowReverse)
@@ -607,6 +609,7 @@ pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
     }
     // (no wider than its column while cut short there, or as it was: Tree::capped_applied)
     self.tree.capped_applied(self.at)
+    self.tree.structure_row_sync(self.at)
   })
   self
 }
@@ -645,6 +648,7 @@ fn Tree::cut_applied(self : Tree, at : Int) -> Unit {
     n.flex.style.cut_least = least
     self.layout_marked_at(at)
   }
+  self.structure_row_sync(at)
 }
 
 ///|
@@ -658,6 +662,10 @@ fn Tree::cuts_under(self : Tree, at : Int) -> Unit {
     // (saying shorter words, giving way along a row alone)
     if self.nodes[k].shorter.length() > 0 {
       self.give_way_applied(k)
+    }
+    if self.nodes[k].structure_box {
+      self.cuts_under(k)
+      self.structure_row_sync_one(k)
     }
     if self.nodes[k].slot {
       self.cuts_under(k)

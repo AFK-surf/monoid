@@ -857,15 +857,22 @@ async fn choose_run_on_profile(
         return Stay(c)
       }
       let paid = (p : Profile) => !billed_per_use(p.raw)
+      let unavailable = (p : Profile) => quota_unavailable(health_of(p.id))
       let better = (p : Profile) => p.id != c.id &&
         fits(p) &&
         can(p.id) &&
-        (if paid(p) == paid(c) { crowded(c) && !crowded(p) } else { paid(p) })
+        (if paid(p) == paid(c) {
+          (unavailable(c) && !unavailable(p)) ||
+          (!unavailable(p) && crowded(c) && !crowded(p))
+        } else {
+          paid(p)
+        })
       among = candidates.filter(better)
-      // Leaving a billed-per-use profile for a paid subscription happens on the next turn without waiting for
-      // `cheap_to_leave`; moving off a crowded profile to an uncrowded one of the same tier still waits for
-      // `cheap_to_leave`.
-      let upgrading = !paid(c) && among.iter().any(paid)
+      // Leaving a billed-per-use profile for a paid subscription or leaving a quota-unavailable profile for a healthy
+      // one happens on the next turn without waiting for `cheap_to_leave`; moving off a crowded profile to an uncrowded
+      // one of the same tier still waits for `cheap_to_leave`.
+      let upgrading = (!paid(c) && among.iter().any(paid)) ||
+        (unavailable(c) && among.iter().any(p => !unavailable(p)))
       if among.length() == 0 || holding || (!upgrading && !cheap_to_leave()) {
         return Stay(c)
       }

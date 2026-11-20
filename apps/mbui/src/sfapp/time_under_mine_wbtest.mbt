@@ -10,7 +10,7 @@ let time_step_most : Double = 8.0
 ///|
 test "the time under one's own message comes in where it rests, never jumping across" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   fix_core_for.val = 100.0
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -53,7 +53,7 @@ test "the time under one's own message comes in where it rests, never jumping ac
 ///|
 test "the time under one's own message, once seen, is not drawn from nothing again as an answer comes under it" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   fix_core_for.val = 100.0
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

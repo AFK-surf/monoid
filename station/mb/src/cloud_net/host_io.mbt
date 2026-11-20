@@ -90,9 +90,13 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           "cloud",
           headers=headers.pairs,
           entry=over.map(s => (s.host, s.port)),
+          // (as the TypeScript station's presence socket waits for its open, station/src/cloud/presence.ts)
+          timeout_ms=20_000,
           on_message=events.message,
           on_error=events.error,
-          on_close=errored => end(if errored { 1006 } else { 1005 }, ""),
+          on_close=_ => (),
+          // (the plane's code and reason: 4000 replaced, 4004 removed, presence.mbt)
+          on_closed=end,
         ) catch {
           e => {
             let words = @host_world.shell_error_msg(e)

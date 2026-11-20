@@ -114,6 +114,71 @@ fn P51::restart_pid(self : P51) -> Int? {
 }
 
 ///|
+/// The station's parts whose answer is bytes, as the routes ask them (api_routes `Backend::ask_bytes`): a file's
+/// piece, a file whole, a stream's next piece and a reader's answer given as they are, never base64 and back (a part's
+/// piece is 4 MB); `None` where `backend` answers null. Any other part is `backend`'s answer decoded.
+async fn P51::backend_bytes(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> Bytes? {
+  let text = (i : Int) => match args.get(i) {
+    Some(Str(s)) => s
+    _ => ""
+  }
+  match name {
+    "readers.readBytes" => {
+      let readers = self.readers.unwrap()
+      let background = match of_jv(args.get(3).unwrap_or(Null)) {
+        { "background": True, .. } => true
+        _ => false
+      }
+      let got = readers.read_bytes(text(0), of_jv(args.get(1).unwrap_or(Null)), text(2), background~) catch {
+        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", to_jv({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
+        e => raise e
+      }
+      Some(got)
+    }
+    "fs.readFile" =>
+      match self.host.read_bytes(text(0)) {
+        Some(b) => Some(b)
+        None => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
+      }
+    "drive/fs.readAt" => {
+      // (a handle `fs.open` gave, where to start, how much): the bytes there, fewer at the file's end
+      let handle = @api_routes.ref_of(args.get(0).unwrap_or(Null)).unwrap_or("")
+      guard a.files.get(handle) is Some(file) else {
+        raise @api_routes.Thrown("Error", to_jv({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
+      }
+      let num = (i : Int) => match args.get(i) {
+        Some(Num(n)) => n
+        _ => 0.0
+      }
+      Some(p51_file_piece(self.host, file, num(1), num(2).to_int()))
+    }
+    "$stream.next" => {
+      let id = match args.get(0) {
+        Some(Num(n)) => n.to_int()
+        _ => -1
+      }
+      guard a.streams.get(id) is Some(next) else { return None }
+      match next() {
+        Some(b) => Some(b)
+        None => {
+          a.streams.remove(id)
+          a.stream_stops.remove(id)
+          None
+        }
+      }
+    }
+    _ => {
+      let got = self.backend(a, name, args)
+      if @api_routes.nullish(got) {
+        None
+      } else {
+        @api_routes.bytes_of(got)
+      }
+    }
+  }
+}
+
+///|
 /// The station's parts as the routes ask them (api_routes `Backend`).
 async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> @api_routes.JV {
   let bus = self.bus
@@ -198,18 +263,12 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     return Null
   }
   match name {
-    "readers.readBytes" => {
-      let readers = self.readers.unwrap()
-      let background = match arg(3) {
-        { "background": True, .. } => true
-        _ => false
+    // (bytes as `{"$bytes": base64}`, for a caller that does not take them as they are: `backend_bytes`'s)
+    "readers.readBytes" | "fs.readFile" | "drive/fs.readAt" | "$stream.next" =>
+      match self.backend_bytes(a, name, args) {
+        Some(b) => @api_routes.jbytes(b)
+        None => Null
       }
-      let got = readers.read_bytes(text(0), arg(1), text(2), background~) catch {
-        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", to_jv({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
-        e => raise e
-      }
-      @api_routes.jbytes(got)
-    }
     "readers.names.set" => {
       match (args.get(0), args.get(1)) {
         (Some(Str(email)), Some(Str(n))) => self.readers.unwrap().names[email] = n
@@ -278,21 +337,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       if self.events is Some(e) { e.events.presets_changed() }
       Null
     }
-    "$stream.next" => {
-      let id = match args.get(0) {
-        Some(Num(n)) => n.to_int()
-        _ => -1
-      }
-      guard a.streams.get(id) is Some(next) else { return Null }
-      match next() {
-        Some(b) => @api_routes.jbytes(b)
-        None => {
-          a.streams.remove(id)
-          a.stream_stops.remove(id)
-          Null
-        }
-      }
-    }
     "$fn.call" => {
       let id = match args.get(0) {
         Some(Num(n)) => n.to_int()
@@ -343,11 +387,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
       }
     }
-    "fs.readFile" =>
-      match self.host.read_bytes(text(0)) {
-        Some(b) => @api_routes.jbytes(b)
-        None => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
-      }
     "fs.writeFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
       let (excl, mode) = match arg(2) {
@@ -386,18 +425,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       let handle = "fh:\{a.next_handle}"
       a.files[handle] = p
       @api_routes.jref(handle)
-    }
-    "drive/fs.readAt" => {
-      // (a handle `fs.open` gave, where to start, how much): the bytes there, fewer at the file's end
-      let handle = @api_routes.ref_of(args.get(0).unwrap_or(Null)).unwrap_or("")
-      guard a.files.get(handle) is Some(file) else {
-        raise @api_routes.Thrown("Error", to_jv({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
-      }
-      let num = (i : Int) => match args.get(i) {
-        Some(Num(n)) => n
-        _ => 0.0
-      }
-      @api_routes.jbytes(p51_file_piece(self.host, file, num(1), num(2).to_int()))
     }
     // (lock.ts `admit` of the lock in force where `state` says, `vault.lock`'s: the device and role it admits)
     "cloud/lock.admit" => {
@@ -1015,7 +1042,10 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     @api_routes.windows_paths(@drive.cwd())
   }
   let holder : Ref[AdminLive?] = Ref(None)
-  let backend = @api_routes.Backend::new(async fn(name, args) { self.backend(holder.val.unwrap(), name, args) })
+  let backend = @api_routes.Backend::new(
+    async fn(name, args) { self.backend(holder.val.unwrap(), name, args) },
+    call_bytes=async fn(name, args) { self.backend_bytes(holder.val.unwrap(), name, args) },
+  )
   let a : AdminLive = {
     admin: @api_routes.Admin::new(backend, setup),
     files: {},

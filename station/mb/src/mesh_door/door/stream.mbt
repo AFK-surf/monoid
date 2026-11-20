@@ -13,6 +13,8 @@ pub(all) struct Stream {
   /// Once what was sent is acknowledged: None, or the code the other end stopped reading with.
   stopped : async () -> Int?
   reset : async (Int) -> Unit
+  /// Switch this stream's screen frames to QUIC datagrams tagged with `token`; None if unsupported.
+  media_datagrams : (async (Double) -> Bool)?
 }
 
 ///|

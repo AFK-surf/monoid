@@ -455,6 +455,7 @@ pub(all) struct PreviewAnswer {
   status : Int32
   headers : Array[(String, String)]
   next : async () -> Bytes?
+  close : async () -> Unit
 }
 
 pub(all) struct Processes {

@@ -768,6 +768,8 @@ async fn P53Jobs::launch(
   for k, v in self.machine.job_env(job, extra, env_get("PATH").unwrap_or("")) {
     vars[k] = v
   }
+  // (never the launcher's front: a job that found it would bind its own key on the station's endpoint)
+  vars.remove("STILLFAIL_MESH_FRONT")
   // (where `stillfail-job screen` asks for the screen: this machine's, which a sandbox's commands do not have)
   if sandboxed {
     vars.remove("STILLFAIL_JOB_SCREEN")
@@ -979,6 +981,8 @@ async fn P53Jobs::preview(self : P53Jobs, r : Request, conn : Json) -> Reply? {
     }
   }
   head.write_string("connection: close\r\n\r\n")
+  // (the service's connection let go however this ends: its client gone mid-way, the service's end, a failure)
+  defer (answer.close)()
   if !write_on(self.bus.host, conn, @utf8.encode(head.to_string())) {
     return None
   }
@@ -1011,6 +1015,7 @@ async fn P53Jobs::preview_json(self : P53Jobs, arg : Json) -> Json {
     _ => None
   }
   let answer = @jobs_host.proxy_preview(self.bus.host, jtext(arg, "method").unwrap_or("GET"), headers, body, port, target, (self.bus.lang.val)())
+  defer (answer.close)()
   let out = @buffer.Buffer()
   while true {
     match (answer.next)() {

@@ -416,6 +416,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
         text(4, "target"),
         str(5, "lang").unwrap_or((self.bus.lang.val)()),
       )
+      defer (answer.close)()
       let out = @buffer.Buffer()
       while true {
         match (answer.next)() {

@@ -585,6 +585,7 @@ fn wide_group_node(
         .gap(Is(page_card_gap))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
         |> ignore
+        corner_card_node(k, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
       } else {
         // (in a panel of its own a card of the panel's: its rows the ladder's inset in, a card's corner; desk_list_card)
         let (pad, corner) = list_card_in(k)
@@ -592,6 +593,7 @@ fn wide_group_node(
         let ends = if in_pane_node(k) { card_pad - wide_row_over } else { pad }
         k.padding(Is((pad, ends, pad, ends))).gap(Is(desk_list_gap)).radius(Is(corner))
         |> ignore
+        corner_card_node(k, fn() { corner }, inset=fn() { pad })
       }
       k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card, card }) |> ignore
       rows(k)

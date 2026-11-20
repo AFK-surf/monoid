@@ -39,7 +39,7 @@
   "core-misc.error.at": "{message}（{time}）",
   "core-misc.host.network": "网络连接失败",
   "core-misc.host.failed": "此设备上的操作失败",
-  "core-misc.secure.noDeviceLock": "请先为此设备设置锁屏密码",
+  "core-misc.secure.noDeviceLock": "请先在系统设置中为此设备开启登录密码或锁屏密码",
   "core-misc.secure.notInFront": "应用在后台时无法验证身份：请切回后重试",
   "core-misc.secure.keyInvalidated": "此设备的锁屏密码关闭过，原有密钥已失效：请在此设备上重新设置",
   "core-misc.wake.dropped": "页面回到前台，重新请求",

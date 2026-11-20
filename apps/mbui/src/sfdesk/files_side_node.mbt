@@ -15,7 +15,11 @@ fn files_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     ({ brand: a.brand, band: a.band, tape: a.tape, in_bar: a.bar, roots: @ui.tree_corner_roots_now() } : BandAt)
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   s.pick(fn() { workspace().map(fn(w) { w.id }) }, fn(q, id) {
     q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

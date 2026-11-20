@@ -20,8 +20,12 @@ let kept_rows_still_ms : Double = 70.0
 ///|
 /// Chat `mode` opened `w` by `h`: on 小屏 (a phone's width), on 中屏's tape (the page brought over the sidebar), or on
 /// 大屏 (a desktop's window, 1000 wide or more: with a mouse).
-fn kept_rows_open(mode : String, w : Double, h : Double) -> @ui.Tester {
+/// `old`: the old page, what stable keeps, its rows kept as built (kept_nodes.mbt).
+fn kept_rows_open(mode : String, w : Double, h : Double, old? : Bool = false) -> @ui.Tester {
   new_run()
+  if old {
+    @sfbase.hold_chat_page_nodes(Some(false))
+  }
   let src = fixture(mode)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let large = w >= 1000.0

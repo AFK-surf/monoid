@@ -267,9 +267,11 @@ pub fn Answer::whole(Self) -> Bytes?
 
 pub struct Backend {
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  call_bytes : (async (String, Array[@jsjson.JValue]) -> Bytes?)?
 }
 pub async fn Backend::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
-pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue) -> Self
+pub async fn Backend::ask_bytes(Self, String, Array[@jsjson.JValue]) -> Bytes?
+pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, call_bytes? : async (String, Array[@jsjson.JValue]) -> Bytes?) -> Self
 pub async fn Backend::tell(Self, String, Array[@jsjson.JValue]) -> Unit
 
 pub(all) enum Body {

@@ -410,6 +410,7 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       && (keptThere || ((was.joined ?? []).some((j) => j.workspace === body.workspace) && !joinedOf(body.workspaces).some((j) => j.workspace === was.workspace)))
       && s.succeed(body.workspace);
     const locked = s.chain() !== null;
+    const wrongHome = locked && s.state !== null && typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took;
     if (locked && s.state && ((typeof body.workspace === "string" && body.workspace !== s.state.workspace && !took) || (typeof body.origin === "string" && body.origin !== s.state.origin))) {
       log.warn("lock", "the control plane moves this station; the workspace lock keeps it where it is", { workspace: body.workspace, origin: body.origin });
     }
@@ -423,6 +424,12 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
       for (const k of ["workspace", "workspace_name", "name", "origin", "relay_url"] as const) {
         if (locked && (k === "origin" || (k === "workspace" && !took))) continue;
         if (typeof body[k] === "string") st[k] = body[k];
+      }
+      if (!wrongHome) {
+        if (typeof body.workspace_emoji === "string" && body.workspace_emoji !== "") st.workspace_emoji = body.workspace_emoji;
+        else delete st.workspace_emoji;
+        if (typeof body.workspace_icon === "string" && body.workspace_icon !== "") st.workspace_icon = body.workspace_icon;
+        else delete st.workspace_icon;
       }
       if (Array.isArray(body.relay_urls)) st.relay_urls = body.relay_urls.filter((u: unknown) => typeof u === "string");
       st.mesh_relays = meshRelays;

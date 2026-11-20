@@ -100,6 +100,7 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
   .row(Is(true))
   .height(By(fn() { Some(high()) }))
   .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
   |> ignore
   bar_room_node(b, fn() { dmax(0.0, (ends.margins)().0) })
@@ -182,6 +183,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
     .height(By(fn() { Some(high()) }))
     // (drawn at none while the app's first page waits, as the page's old view is: sfbase's first_page_waits)
     .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+    .takes_unseen(Is(true))
     // (its margins as spaces at its ends, one less than none taken back by drawing the row moved back as far)
     .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
     |> ignore

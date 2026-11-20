@@ -74,9 +74,7 @@ fn still_chats(v : Json?, n : Int, params : Map[String, Json]) -> Json? {
 /// changes, a number: each one more a chat come at their top.
 fn still_open(s : StillScreen, nodes : Bool) -> (@ui.Tester, Source, @signals.Signal[Int]) {
   new_run()
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = @sffixture.fixture("chat")
   // (read as the core's topic is worked out: a change of it told as the core tells one, to what holds the list)
   let bump = @signals.signal(0)

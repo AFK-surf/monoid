@@ -42,6 +42,9 @@ priv struct Mesh {
   /// given it as it is, another binds anew.
   mut endpoint : Json?
   mut identity : String
+  /// The secret key's hex the endpoint bound now holds ("" before the first): the station's own, which no Node of
+  /// another key takes from it (`foreign_key_bind`).
+  mut bound_key : String
   /// Its relays and its congestion controller as they are on it: as the last bind named them, then as a Node's own
   /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
   mut bound_relays : Array[String]
@@ -76,6 +79,7 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     bound_relays: [],
     bound_congestion: default_congestion,
     bound_alpns: "",
+    bound_key: "",
     said: Json::null(),
     waiting: [],
     clients: [],
@@ -350,9 +354,17 @@ fn fixed_port(options : Json) -> Bool {
 /// (`identity_of`) is kept as it is, its connections with it: the next Node of a handover binds with the relays and
 /// the congestion controller the station has now, which a running station changes on its endpoint as they change
 /// (relays.ts, mesh.ts `applyNetwork`), so those are changed on it in place, never by binding anew. Another identity
-/// (another key) binds anew, the old endpoint let go at the shell entirely: after the new one is bound, so a bind that
-/// fails leaves the old as it was, unless a fixed port says only one of them can hold it.
+/// (the same key, its discovery, address, relays alone or DSCP changed) binds anew, the old endpoint let go at the
+/// shell entirely: after the new one is bound, so a bind that fails leaves the old as it was, unless a fixed port says
+/// only one of them can hold it. A bind with another key is refused while an endpoint is bound (`foreign_key_bind`):
+/// a front is its station's, and a process that found its socket by the environment it inherited (a test an agent
+/// ran, with a key of its own) would otherwise close the station's endpoint and take it off the mesh.
 async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
+  let key_hex = hex(key)
+  if foreign_key_bind(self.endpoint, self.bound_key, key_hex) {
+    @host.note("mesh: refused bind for another key")
+    fail("another station's key: front already holds an endpoint")
+  }
   let identity = identity_of(options, key)
   if self.endpoint is Some(endpoint) && self.identity == identity {
     let relays = relays_of(options)
@@ -403,6 +415,7 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
     self.let_go(o)
   }
   self.identity = identity
+  self.bound_key = key_hex
   self.bound_relays = relays_of(options)
   self.bound_congestion = congestion_of(options)
   self.bound_alpns = field(options, "alpns").stringify()
@@ -412,6 +425,13 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   }
   ignore(self.host.rt.fork_daemon("mesh accept", on_error=e => @host.note("mesh accept failed: \{e}"), () => self.accepting(endpoint)))
   self.said
+}
+
+///|
+/// Whether a bind with `key` (its hex) would take the endpoint bound now (`bound`, of `bound_key`) from the key that
+/// holds it: refused, the endpoint neither replaced nor let go.
+fn foreign_key_bind(bound : Json?, bound_key : String, key : String) -> Bool {
+  bound is Some(_) && bound_key != "" && bound_key != key
 }
 
 ///|

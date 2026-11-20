@@ -8,8 +8,8 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { connect as netConnect, createConnection, createServer, type Server, type Socket } from "node:net";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { type AddressInfo, connect as netConnect, createConnection, createServer, type Server, type Socket } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { connect as tlsConnect } from "node:tls";
@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { WebSocketServer } from "ws";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
 
@@ -202,6 +203,19 @@ test("run: the vault, the drive, the screens, the browser, the devices, the term
   assert.match(browser.body, /WebSocket/);
   assert.deepEqual(await ask(door, "logins.logins"), { answer: [] });
   assert.equal(Array.isArray((await ask(door, "screens.list")).answer), true);
+
+  // P1-1: accounts_oauth host_io atomic mkdir(recursive=false) EEXIST + hold.utimes on lock dir
+  const oauthLock = (await ask(door, "p54.oauthHostLock")).answer;
+  assert.equal(oauthLock.eexist, "EEXIST", JSON.stringify(oauthLock));
+  assert.ok(Math.abs(oauthLock.mtimeMs - 1_700_000_555_000) < 2, JSON.stringify(oauthLock));
+  assert.equal(oauthLock.afterRemove, "ENOENT", JSON.stringify(oauthLock));
+
+  // P1-2: P51::member_screens passes raw @door.Stream + media_datagrams directly to answer_screen
+  const screenDgram = (await ask(door, "p54.memberScreensDatagrams")).answer;
+  assert.deepEqual(screenDgram.tokens, [42], JSON.stringify(screenDgram));
+  const screenHead = JSON.parse(screenDgram.firstLine);
+  assert.equal(screenHead.status, 200, JSON.stringify(screenHead));
+  assert.equal(screenHead.headers?.["x-screen-dgram"], "42", JSON.stringify(screenHead));
 
   // a handover: what the vault holds in memory carried to the next process, and taken up there
   const b = await launch(data, app);
@@ -465,7 +479,62 @@ test("run: the vault's SSH agent and its HTTPS proxy, and a device's TCP on any 
     assert.equal(eof.got, "bye");
     assert.equal(eof.held, held + 1, "held while open");
     assert.equal(eof.after, held, "let go at its end");
-    assert.equal((await ask(door, "test.netCalledOff", ["192.0.2.1", 9, 150])).answer, held, "let go as it was called off");
+    const calledOff = (await ask(door, "test.netCalledOff", ["192.0.2.1", 9, 150])).answer;
+    assert.equal(calledOff.held, held, "let go as it was called off");
+    assert.ok(calledOff.elapsedMs < 2000, `connecting slot aborted promptly: ${calledOff.elapsedMs}ms`);
+
+    // backpressured peer (paused reader): p54io_write never blocks the event loop, rejects at queue cap, and close cleans up
+    const pausedSockets: Socket[] = [];
+    const stall = createServer((s) => {
+      s.pause();
+      pausedSockets.push(s);
+    });
+    await new Promise<void>((r) => stall.listen(0, "127.0.0.1", () => r()));
+    try {
+      const bp = (await ask(door, "test.netBackpressure", ["127.0.0.1", (stall.address() as any).port])).answer;
+      assert.equal(bp.hitFull, true, `write queue cap hit: ${JSON.stringify(bp)}`);
+      assert.ok(bp.elapsedMs < 3000, `non-blocking write returned promptly: ${bp.elapsedMs}ms`);
+      assert.equal(bp.heldAfter, held, "slot released after close");
+    } finally {
+      for (const s of pausedSockets) s.destroy();
+      stall.close();
+    }
+
+    // write + end ordering: all queued bytes arrive before EOF
+    const sink = createServer((s) => {
+      let total = 0;
+      let bad = false;
+      s.on("data", (d: Buffer) => {
+        total += d.length;
+        for (let i = 0; i < d.length; i++) if (d[i] !== 0x61) bad = true;
+      });
+      s.on("end", () => s.end(bad ? "bad" : `ok:${total}`));
+    });
+    await new Promise<void>((r) => sink.listen(0, "127.0.0.1", () => r()));
+    try {
+      const ordered = (await ask(door, "test.netWriteEndOrder", ["127.0.0.1", (sink.address() as any).port, 16])).answer;
+      assert.equal(ordered.allWritten, true, JSON.stringify(ordered));
+      assert.equal(ordered.reply, `ok:${16 * 65536}`);
+      assert.equal(ordered.heldAfter, held, "slot released after ordered write+end");
+    } finally {
+      sink.close();
+    }
+
+    // Pump::connect: write error propagation + unix_open error code preservation (ENOENT, ECONNREFUSED, passthrough)
+    const sockDir = fresh("pump");
+    const liveSock = join(sockDir, "live.sock");
+    const staleSock = join(sockDir, "stale.sock");
+    const missingSock = join(sockDir, "missing.sock");
+    const unixSrv = createServer();
+    await new Promise<void>((r) => unixSrv.listen(liveSock, () => r()));
+    linkSync(liveSock, staleSock);
+    await new Promise<void>((r) => unixSrv.close(() => r()));
+    const pumpRes = (await ask(door, "test.pumpConnectErrors", [missingSock, staleSock])).answer;
+    assert.equal(pumpRes.writeErr, "Broken pipe", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.writeDestroyed, true, JSON.stringify(pumpRes));
+    assert.equal(pumpRes.missingCode, "ENOENT", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.refusedCode, "ECONNREFUSED", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.otherCode, "Permission denied", JSON.stringify(pumpRes));
 
     // a device here, reached through another station's tunnel: what came with the ask first, then both ways
     const viewer = { workspace: "ws1", sub: "u1", email: "a@example.com", name: "A", role: "owner" };
@@ -491,6 +560,54 @@ test("run: the vault's SSH agent and its HTTPS proxy, and a device's TCP on any 
     assert.equal((await ask(door, "test.ioHeld")).answer, held, "the device's connection let go once the tunnel ended");
     const missing = await ask(door, "test.hereDevice", ["ws1", "0000000000000000", 1, ""]);
     assert.match(JSON.stringify(missing), /no such device/);
+
+    // a tasks-only station's device as its rig reaches one (rig.mbt `reach`, devices/connect.ts `reachDevice`): the
+    // device as its owner signed it opened, let go by `destroy`, its end told, and told again at once after it
+    let rigClosed!: () => void;
+    const rigGone = new Promise<void>((r) => (rigClosed = r));
+    let rigReached = 0;
+    const rigDevice = createServer((s) => {
+      rigReached++;
+      s.resume();
+      s.on("close", () => rigClosed());
+    });
+    await new Promise<void>((r) => rigDevice.listen(0, "127.0.0.1", () => r()));
+    const rigTarget = `127.0.0.1:${(rigDevice.address() as any).port}`;
+    assert.deepEqual(await ask(door, "test.rigReach", [{ id: "0123456789abcdef", name: "rig echo", kind: "tcp", target: rigTarget }]), { answer: true });
+    await rigGone;
+    rigDevice.close();
+    assert.equal(rigReached, 1);
+    assert.equal((await ask(door, "test.ioHeld")).answer, held, "the rig's device connection let go");
+    // a share's wait for the station taken out of its workspace: said as the control plane tells the removal, while
+    // the station runs, its listener let go
+    assert.deepEqual(await ask(door, "test.removedLater"), { answer: { waited: true, running: true, letGo: true } });
+
+    // the browser's DevTools end: let go where the client is gone before its 101, and once where the gate terminates
+    // it (terminated twice, then closed)
+    const devtools = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((r) => devtools.on("listening", () => r()));
+    let devtoolsOpened = 0;
+    let devtoolsClosed = 0;
+    let bothClosed!: () => void;
+    const bothGone = new Promise<void>((r) => (bothClosed = r));
+    devtools.on("connection", (s) => {
+      devtoolsOpened++;
+      s.on("close", () => {
+        if (++devtoolsClosed === 2) bothClosed();
+      });
+    });
+    const devtoolsUrl = `ws://127.0.0.1:${(devtools.address() as AddressInfo).port}/devtools/browser/test`;
+    assert.deepEqual(await ask(door, "test.devtoolsUnanswered", [devtoolsUrl]), { answer: true });
+    assert.deepEqual(await ask(door, "test.devtoolsEnded", [devtoolsUrl]), { answer: true });
+    await bothGone;
+    devtools.close();
+    assert.deepEqual([devtoolsOpened, devtoolsClosed], [2, 2]);
+    // a browser's process group whose leader ended while one of it goes on (Chrome's renderers): alive as a group,
+    // ended by end_group
+    assert.deepEqual(await ask(door, "test.groupLeftBehind"), { answer: { leader: false, group: true, after: false } });
+
+    // the vault's backfills' one permit (store/backfill.ts) and its hold on the station's updating itself
+    assert.deepEqual(await ask(door, "test.backfillPermit"), { answer: { first: true, second: false, givenBack: true, whileWriting: false, written: true, held: 1, after: 0 } });
 
     a.tell({ op: "stop" });
     assert.equal(await a.ended, 0);

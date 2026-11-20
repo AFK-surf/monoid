@@ -211,6 +211,15 @@ function parseJsonLine(stdout: string): Json | null {
   return null;
 }
 
+/// At most `most` characters of `text`, but a link the cut falls in kept whole: Google's verification link (`Please
+/// verify your account in your browser to continue: https://accounts.google.com/v3/signin/continue?plt=…`) cut short
+/// opens a 400, and it is what the person is to open.
+export function clipKeepingLinks(text: string, most: number): string {
+  if (text.length <= most) return text;
+  const cut = text.slice(0, most);
+  if (!/https?:\/\/\S*$/.test(cut)) return cut;
+  return cut + /^\S*/.exec(text.slice(most))![0];
+}
 
 export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy"): Promise<ProfileQuota> {
   // Before sign-in (no token file in the profile's, none to take back from the keychain: agents/agy.ts `agyTakeBack`),
@@ -246,7 +255,7 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
     if (q.state === "ok" && windows.length > 0 && scoped.length > 0) q.scoped = scoped;
     return q;
   }
-  const detail = (typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim()).slice(0, 300);
+  const detail = clipKeepingLinks(typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim(), 300);
   if (authFailure(detail)) {
     throw new RenewRefused(401, tr(lang, "station.quota.signInExpired"));
   }

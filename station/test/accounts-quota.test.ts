@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, statSync,
 import { devNull } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
+import { agyAllowance, agyScopeForModel, clipKeepingLinks } from "../src/accounts/agy-quota.ts";
 import { claudeOAuthToken, RefreshLock } from "../src/accounts/oauth.ts";
 import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
@@ -159,6 +159,16 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(eofQ.unanswered, true);
     const blockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: "Your account has been suspended (typeof check)" }, undefined, URLS, "zh");
     assert.deepEqual([blockedQ.state, blockedQ.unanswered], ["blocked", undefined]);
+
+    // Google asking the account to be verified: its whole link said, which cut short opens a 400.
+    const verify =
+      "https://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser";
+    const eligible = `Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\n${verify}`;
+    const verifyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: eligible }, undefined, URLS, "zh");
+    assert.equal(verifyQ.state, "unavailable");
+    assert.ok(verifyQ.detail!.endsWith(`continue:\n${verify}`), verifyQ.detail!);
+    assert.equal(clipKeepingLinks(`${"x".repeat(10)} ${verify} after`, 30), `${"x".repeat(10)} ${verify}`);
+    assert.equal(clipKeepingLinks("x".repeat(40), 30), "x".repeat(30));
 
     // No windows: a person's account says it could not read them; a company's paying as it goes has none to show.
     const emptyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_EMPTY: "1" }, undefined, URLS, "zh");
@@ -486,10 +496,24 @@ describe("allowances and renewing", { concurrency: true }, () => {
     const refused = await checkQuota(profile, {}, undefined, urls, "zh");
     assert.deepEqual([refused.state, refused.signedOut], ["unavailable", true]);
     await p.close();
-    // Not renewed for now: nothing is said of the login.
+    // Not renewed for now: nothing is said of the login, but recheck is flagged so checkProfile can mark it failed.
     p = await oauthProvider(503);
     const later = await checkQuota(profile, {}, undefined, { ...urls, anthropic: p.base, claudeToken: p.base }, "zh");
-    assert.deepEqual([later.state, later.signedOut], ["unavailable", undefined]);
+    assert.deepEqual([later.state, later.signedOut, later.recheck], ["unavailable", undefined, true]);
+    await p.close();
+  });
+
+  test("claudeWithRefresh marks signedOut when usage still returns 401 after renewal", async () => {
+    const home = temp("still-401");
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(Date.now() + 3_600_000)));
+    const p = await provider((asked) =>
+      asked.method === "POST"
+        ? { status: 200, body: { access_token: "still-bad", refresh_token: "refresh-new", expires_in: 3600 } }
+        : { status: 401, body: { error: "unauthorized" } },
+    );
+    const got = await claudeWithRefresh({}, home, { ...URLS, anthropic: p.base, claudeToken: p.base }, "zh");
+    assert.deepEqual([got.state, got.signedOut], ["unavailable", true]);
+    assert.deepEqual(p.asked.map((r) => r.method), ["GET", "POST", "GET"]);
     await p.close();
   });
 

@@ -185,3 +185,167 @@ test "slack manifest helpers enable socket mode and stop event idempotently" {
   assert_true(patched is Some(_))
   assert_true(with_stop_event(patched) is None)
 }
+
+///|
+fn fake_slack_client(rt : @effect.Runtime) -> SlackClient {
+  SlackClient::new(
+    {
+      fetch: async fn(_meth, url, _headers, _body, _timeout_ms) {
+        let body = if url.has_suffix("/auth.test") {
+          "{\"ok\":true,\"team\":\"T\",\"team_id\":\"T1\",\"url\":\"https://t.slack.com/\",\"user_id\":\"UB1\",\"user\":\"bot\",\"bot_id\":\"B1\"}"
+        } else if url.has_suffix("/apps.connections.open") {
+          "{\"ok\":true,\"url\":\"wss://fake.slack/sock\"}"
+        } else {
+          "{\"ok\":true}"
+        }
+        { status: 200, headers: [], body: @utf8.encode(body), redirected: false }
+      },
+      now: () => rt.now().to_double(),
+      sleep: async fn(ms) { @effect.sleep(ms) },
+    },
+  )
+}
+
+///|
+fn fake_clock(rt : @effect.Runtime) -> Clock {
+  {
+    now: () => rt.now().to_double(),
+    sleep: async fn(ms) { @effect.sleep(ms) },
+    fork: f => rt.fork(f),
+  }
+}
+
+///|
+test "slack socket pings every ping_ms and keeps alive on Pong and Ping frames" {
+  let rt = @effect.Runtime::new()
+  let queue : @effect.Queue[WsFrame?] = @effect.Queue::unbounded()
+  let opens = Ref(0)
+  let pings = Ref(0)
+  let closes = Ref(0)
+  let heard = Ref(0)
+  let ws : WsIO = {
+    open: async fn(_) {
+      opens.val += 1
+      {
+        next: async fn() { queue.take() },
+        send: _ => (),
+        close: () => closes.val += 1,
+        ping: Some(() => pings.val += 1),
+      }
+    },
+  }
+  let surface = SlackSurface::new(
+    SurfaceOptions::new(
+      "xapp-test",
+      "xoxb-test",
+      fake_slack_client(rt),
+      fake_clock(rt),
+      ws,
+      Words::empty(),
+      Ref("en"),
+      (_, _, _, _) => (),
+      async fn(_) { b"" },
+      ping_ms=5000,
+      stale_ms=20000,
+      backoff_ms=1000,
+      on_heard=() => heard.val += 1,
+    ),
+  )
+  ignore(rt.fork(async fn() { surface.start(async fn(_) { () }) }))
+  rt.advance(0)
+  assert_eq(opens.val, 1)
+  assert_eq(pings.val, 0)
+  assert_eq(surface.socket(), (true, None))
+  // Ping at 5s, answered by Pong -> refreshes liveness.
+  rt.advance(5000)
+  assert_eq(pings.val, 1)
+  ignore(queue.try_offer(Some(Pong)))
+  rt.advance(0)
+  assert_eq(heard.val, 1)
+  // Pings at 10s and 15s, answered by server Ping -> refreshes liveness.
+  rt.advance(5000)
+  assert_eq(pings.val, 2)
+  rt.advance(5000)
+  assert_eq(pings.val, 3)
+  ignore(queue.try_offer(Some(Ping)))
+  rt.advance(0)
+  assert_eq(heard.val, 2)
+  // Pings at 20s, 25s (answered by Pong), and 30s -> past stale_ms (20s) total, still healthy.
+  rt.advance(5000)
+  assert_eq(pings.val, 4)
+  rt.advance(5000)
+  assert_eq(pings.val, 5)
+  ignore(queue.try_offer(Some(Pong)))
+  rt.advance(0)
+  assert_eq(heard.val, 3)
+  rt.advance(5000)
+  assert_eq(pings.val, 6)
+  assert_eq(opens.val, 1)
+  assert_eq(closes.val, 0)
+  assert_eq(surface.socket(), (true, None))
+  surface.stop()
+  rt.advance(0)
+}
+
+///|
+test "slack socket fails on stale silence after pings, closes, and reconnects" {
+  let rt = @effect.Runtime::new()
+  let opens = Ref(0)
+  let pings = Ref(0)
+  let closes = Ref(0)
+  let queues : Array[@effect.Queue[WsFrame?]] = []
+  let ws : WsIO = {
+    open: async fn(_) {
+      opens.val += 1
+      let q : @effect.Queue[WsFrame?] = @effect.Queue::unbounded()
+      queues.push(q)
+      {
+        next: async fn() { q.take() },
+        send: _ => (),
+        close: () => closes.val += 1,
+        ping: Some(() => pings.val += 1),
+      }
+    },
+  }
+  let surface = SlackSurface::new(
+    SurfaceOptions::new(
+      "xapp-test",
+      "xoxb-test",
+      fake_slack_client(rt),
+      fake_clock(rt),
+      ws,
+      Words::empty(),
+      Ref("en"),
+      (_, _, _, _) => (),
+      async fn(_) { b"" },
+      ping_ms=5000,
+      stale_ms=20000,
+      backoff_ms=1000,
+    ),
+  )
+  ignore(rt.fork(async fn() { surface.start(async fn(_) { () }) }))
+  rt.advance(0)
+  assert_eq(opens.val, 1)
+  assert_eq(surface.socket(), (true, None))
+  // Pings at 5s, 10s, 15s go unanswered.
+  rt.advance(5000)
+  assert_eq(pings.val, 1)
+  assert_eq(closes.val, 0)
+  rt.advance(5000)
+  assert_eq(pings.val, 2)
+  assert_eq(closes.val, 0)
+  rt.advance(5000)
+  assert_eq(pings.val, 3)
+  assert_eq(closes.val, 0)
+  // At 20s (stale_ms), run_socket fails, closes the dead socket, and connect_loop backs off.
+  rt.advance(5000)
+  assert_eq(closes.val, 1)
+  assert_eq(opens.val, 1)
+  assert_eq(surface.socket(), (false, Some("slack socket said nothing for 20s")))
+  // After backoff_ms (1000ms), connect_loop opens a fresh socket.
+  rt.advance(1000)
+  assert_eq(opens.val, 2)
+  assert_eq(surface.socket(), (true, None))
+  surface.stop()
+  rt.advance(0)
+}

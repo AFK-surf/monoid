@@ -627,6 +627,18 @@ pub fn JobsHost::job_env(self : JobsHost, job : JobStart, extra : Map[String, St
 }
 
 ///|
+/// The `/bin/sh -c` script that starts a job (`$0` its inner script, then its directory, command, exit file and log):
+/// in a group of its own (setsid where the system has it, else perl's setpgrp; its pid its group's), `nice` lower than
+/// the station, and never with the launcher's front, which `proc.run` passes on from the station's own environment
+/// (a job that found it would bind its own key on the station's endpoint).
+fn spawn_script(nice : Int) -> String {
+  "unset STILLFAIL_MESH_FRONT; cd \"$1\" || exit 1; shift; set -f; " +
+  "if command -v setsid >/dev/null 2>&1; then g='setsid'; else g='perl -e setpgrp(0,0);exec{$ARGV[0]}@ARGV --'; fi; " +
+  "n=''; if [ \{nice} -gt 0 ] && [ -x /usr/bin/nice ]; then n='/usr/bin/nice -n \{nice}'; fi; " +
+  "$g $n /bin/sh -c \"$0\" \{sh_quoted(job_command_name)} \"$@\" </dev/null >/dev/null 2>&1 & echo $!"
+}
+
+///|
 /// Runs a job's command in a group of its own, its output appended to its log by its shell, lower than the station
 /// (nice), and follows it to its end: its group's id.
 pub async fn JobsHost::spawn(
@@ -643,11 +655,7 @@ pub async fn JobsHost::spawn(
   remove(self.host, self.lost_file(job.id))
   let env = self.job_env(job, extra, @env.get_env_var("PATH").unwrap_or(""))
   let inner = "exec >>\"$3\" 2>&1; \{wrapper}"
-  // (a group of its own: setsid where the system has it, else perl's setpgrp; its pid its group's)
-  let start = "cd \"$1\" || exit 1; shift; set -f; " +
-    "if command -v setsid >/dev/null 2>&1; then g='setsid'; else g='perl -e setpgrp(0,0);exec{$ARGV[0]}@ARGV --'; fi; " +
-    "n=''; if [ \{nice} -gt 0 ] && [ -x /usr/bin/nice ]; then n='/usr/bin/nice -n \{nice}'; fi; " +
-    "$g $n /bin/sh -c \"$0\" \{sh_quoted(job_command_name)} \"$@\" </dev/null >/dev/null 2>&1 & echo $!"
+  let start = spawn_script(nice)
   let e : Map[String, Json] = Map([])
   for k, v in env {
     e[k] = jstr(v)

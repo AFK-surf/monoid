@@ -18,7 +18,7 @@
 // Comma's heartbeat is answered with one. Whatever else Comma asks (files, commands: a Comma station's) is refused.
 import { randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
-import { arch, platform } from "node:os";
+import { arch, hostname, platform } from "node:os";
 import { Effect } from "effect";
 import type WebSocket from "ws";
 import { wall } from "../ops/fibers.ts";
@@ -52,6 +52,55 @@ const POST_FILES = 20;
 const TASKS_VERSION = 2;
 /// Comma's question card takes two to six choices.
 const QUESTION_CHOICES = [2, 6] as const;
+/// Maximum number of workspace stations reported in capabilities.stillfail_workspace.
+const MAX_WORKSPACE_STATIONS = 100;
+
+/// Metadata of this connect's still.fail workspace sent in capabilities.stillfail_workspace.
+export type CommaWorkspaceMeta = {
+  id: string;
+  name: string;
+  station: string;
+  emoji?: string;
+  icon?: string;
+  stations: { id: string; name: string }[];
+};
+
+/// Builds the CommaWorkspaceMeta payload from a workspace membership and this station's id.
+export function workspaceMetaOf(
+  m: { workspace: string; workspace_name: string; workspace_emoji?: string; workspace_icon?: string; name: string; peers: any[] },
+  selfId: string,
+  fallbackHost: string = hostname(),
+): CommaWorkspaceMeta {
+  const selfName = m.name !== "" ? m.name : fallbackHost;
+  const seen = new Map<string, number>();
+  let stations: { id: string; name: string }[] = [];
+  for (const p of Array.isArray(m.peers) ? m.peers : []) {
+    if (typeof p?.id !== "string" || p.id === "") continue;
+    if (seen.has(p.id)) continue;
+    const name = typeof p?.name === "string" && p.name !== "" ? p.name : p.id;
+    seen.set(p.id, stations.length);
+    stations.push({ id: p.id, name });
+  }
+  if (selfId !== "") {
+    const idx = seen.get(selfId);
+    if (idx !== undefined) stations[idx] = { id: selfId, name: selfName };
+    else stations.push({ id: selfId, name: selfName });
+  }
+  if (stations.length > MAX_WORKSPACE_STATIONS) {
+    stations = stations.slice(0, MAX_WORKSPACE_STATIONS);
+    if (selfId !== "" && !stations.some((s) => s.id === selfId)) {
+      stations[MAX_WORKSPACE_STATIONS - 1] = { id: selfId, name: selfName };
+    }
+  }
+  return {
+    id: m.workspace,
+    name: m.workspace_name,
+    station: selfName,
+    ...(typeof m.workspace_emoji === "string" && m.workspace_emoji !== "" ? { emoji: m.workspace_emoji } : {}),
+    ...(typeof m.workspace_icon === "string" && m.workspace_icon !== "" ? { icon: m.workspace_icon } : {}),
+    stations,
+  };
+}
 
 /// A Message of a Task, as task.put gives it. `author.name`, `email`, `picture`: who said it, as Comma shows them.
 type TaskMessage = {
@@ -150,6 +199,10 @@ export type CommaSurfaceOptions = {
   previousExited?: Promise<void>;
   /// The home workspace for this surface has not changed since it was created.
   inScope?: () => boolean;
+  /// Metadata of this connect's still.fail workspace, reported in capabilities.stillfail_workspace.
+  workspaceMeta?: () => CommaWorkspaceMeta | null;
+  /// Subscribes to workspace metadata changes so an open socket pushes updated metadata frames.
+  onWorkspaceMetaChange?: (changed: () => void) => () => void;
 };
 
 export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
@@ -176,10 +229,14 @@ export class CommaSurface extends ConnectedSurface {
   private readonly chats: CommaChats | null;
   private readonly previousExited: Promise<void>;
   private readonly inScope: () => boolean;
+  private readonly workspaceMeta: (() => CommaWorkspaceMeta | null) | null;
+  private readonly onWorkspaceMetaChange: ((changed: () => void) => () => void) | null;
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
   private readonly instance = randomUUID();
   /// The socket now, once Comma said it is connected; and the requests to Comma waiting for their answer.
   private socket_: WebSocket | null = null;
+  private stopWorkspaceMeta: (() => void) | null = null;
+  private lastMetadataJson: string | null = null;
   private waiting = new Map<string, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
   /// The people of the Tasks, as Comma said with their Messages.
   private people = new Map<string, Person>();
@@ -204,6 +261,8 @@ export class CommaSurface extends ConnectedSurface {
     this.chats = options.chats ?? null;
     this.previousExited = options.previousExited ?? Promise.resolve();
     this.inScope = options.inScope ?? (() => true);
+    this.workspaceMeta = options.workspaceMeta ?? null;
+    this.onWorkspaceMetaChange = options.onWorkspaceMetaChange ?? null;
   }
 
   // ── the connection ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -241,7 +300,12 @@ export class CommaSurface extends ConnectedSurface {
       case "connected":
         this.socket_ = socket;
         log.info("comma", "connected to Comma", { connect: this.id, device: frame.device_id, run: frame.connector_run_id });
-        this.send({ type: "metadata", capabilities: this.capabilities(), skills: [], system_info: { os: platform(), arch: arch(), hostname: this.name } });
+        this.sendMetadata(true);
+        if (this.stopWorkspaceMeta === null && this.onWorkspaceMetaChange !== null) {
+          this.stopWorkspaceMeta = this.onWorkspaceMetaChange(() => {
+            if (this.socket_ !== null && this.inScope()) this.sendMetadata(false);
+          });
+        }
         this.hello();
         if (this.stats !== null && this.inScope()) {
           void this.sendIndex(socket, "stats.index", statsWire);
@@ -290,10 +354,27 @@ export class CommaSurface extends ConnectedSurface {
 
   private closed() {
     this.socket_ = null;
+    this.stopWorkspaceMeta?.();
+    this.stopWorkspaceMeta = null;
+    this.lastMetadataJson = null;
     for (const [id, w] of this.waiting) {
       w.reject(new Error("Comma is not connected"));
       this.waiting.delete(id);
     }
+  }
+
+  private sendMetadata(force = false) {
+    if (this.socket_ === null) return;
+    const frame = {
+      type: "metadata",
+      capabilities: this.capabilities(),
+      skills: [],
+      system_info: { os: platform(), arch: arch(), hostname: this.name },
+    };
+    const json = JSON.stringify(frame);
+    if (!force && json === this.lastMetadataJson) return;
+    this.lastMetadataJson = json;
+    this.send(frame);
   }
 
   private send(frame: Json) {
@@ -331,7 +412,19 @@ export class CommaSurface extends ConnectedSurface {
       const known = (models[m.runtime] ??= []);
       if (m.model !== null && !known.includes(m.model)) known.push(m.model);
     }
-    return { scope: "", persistent_processes: false, computer_use_tool: false, host_access_required: false, execution_boundary: "stillfail-connect", runtime_probe: false, tasks: TASKS_VERSION, task_models: models, ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }) };
+    const meta = this.inScope() ? (this.workspaceMeta?.() ?? null) : null;
+    return {
+      scope: "",
+      persistent_processes: false,
+      computer_use_tool: false,
+      host_access_required: false,
+      execution_boundary: "stillfail-connect",
+      runtime_probe: false,
+      tasks: TASKS_VERSION,
+      task_models: models,
+      ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }),
+      ...(meta === null ? {} : { stillfail_workspace: meta }),
+    };
   }
 
   /// Tells Comma it is here, and how far it has each Task it takes part in: Comma gives what it missed.

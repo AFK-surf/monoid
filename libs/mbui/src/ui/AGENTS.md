@@ -2,7 +2,7 @@
 
 ## Tree-only windows, native views, and multi-window state
 
-- Run pure-tree windows with `@ui.run_tree` (tests: `Tester::tree`) and pass the theme at creation, never via `Ctx::set_theme`. Unrequested frames must draw nothing new (`Tester::unasked_faults`, `libs/mbui/src/ui/tester_unasked.mbt`).
+- Run pure-tree windows with `@ui.run_tree` (tests: `Tester::tree`) and pass the theme at creation, never via `Ctx::set_theme`. Both default to `transitions_only=true` (pass `transitions_only=false` only for legacy ambient-transition tests), so changes outside `@view.transition` settle at once. Unrequested frames must draw nothing new (`Tester::unasked_faults`, `libs/mbui/src/ui/tester_unasked.mbt`).
 - Host native views (`libs/mbui/src/ui/tree_native.mbt`, `kept` to outlive node) and decoded host streams (`libs/mbui/src/ui/tree_stream.mbt`, `closes` for external ownership) directly as tree nodes, never inside an old `Ctx`. Hide while undrawn and close on unmount unless kept.
 - Desktop runs support multiple windows in one process (`@hostapi.windows_in_process`, `libs/mbui/src/ui/window_slots.mbt`), swapping per-window globals on each frame or input and restoring window 0 afterward. Register any new per-window global in `libs/mbui/src/ui/window_kept.mbt` (or via `@ui.window_kept` from upper packages), leaving process-wide caches (pictures, streams, native views, text caches, messages, fibers) outside. Store per-window signals as `Ref[Signal]`, never bare values, so windows do not wake each other.
 

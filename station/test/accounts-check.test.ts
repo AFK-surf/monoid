@@ -140,6 +140,54 @@ test("a Claude login kept but no longer renewable is one to sign in again; one n
   await p.close();
 });
 
+test("a Claude subscription check fails when renewal fails and the old token is rejected, and retries renewal once on 401", async () => {
+  const m = machine({ claude: `echo '{"loggedIn":true,"email":"a@x.com","subscriptionType":"max"}'` });
+  const home = join(m.home, "profile");
+  mkdirSync(home);
+  const login = (oauth: object) => writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "ref", ...oauth } }));
+  let renewal: { status: number; body: any } = { status: 503, body: { error: "unavailable" } };
+  let modelsFor = (auth: string | undefined) => (auth === "Bearer new" ? { status: 200, body: { data: [{ id: "claude-opus-5-5" }] } } : { status: 401, body: {} });
+  const p = await provider((asked) => (asked.method === "POST" ? renewal : modelsFor(asked.headers.authorization)));
+  const urls = { ...URLS, anthropic: p.base, claudeToken: p.base };
+  const run = () => checkProfile({ ...base, kind: "subscription", home, env: m.env, urls });
+  try {
+    // 1. Expired token + renewal 503 + /v1/models 401 -> failed with renewal detail.
+    login({ expiresAt: 1 });
+    const expiredFail = await run();
+    assert.equal(expiredFail.state, "failed");
+    assert.ok(expiredFail.detail.includes("503"), expiredFail.detail);
+
+    // 2. Non-expired token rejected by /v1/models 401 -> retries renewal once with rejected token:
+    // 2a. Renewal succeeds and /v1/models returns 200 -> ok.
+    login({ expiresAt: Date.now() + 3_600_000 });
+    renewal = { status: 200, body: { access_token: "new", refresh_token: "ref2", expires_in: 3600 } };
+    const recovered = await run();
+    assert.deepEqual([recovered.state, recovered.models], ["ok", ["claude-opus-5-5"]]);
+
+    // 2b. Renewal fails (503) -> failed.
+    login({ expiresAt: Date.now() + 3_600_000 });
+    renewal = { status: 503, body: { error: "unavailable" } };
+    const retryFail = await run();
+    assert.equal(retryFail.state, "failed");
+    assert.ok(retryFail.detail.includes("503"), retryFail.detail);
+
+    // 2c. Renewal refused (400 invalid_grant) -> login.
+    login({ expiresAt: Date.now() + 3_600_000 });
+    renewal = { status: 400, body: { error: "invalid_grant" } };
+    const retryRefused = await run();
+    assert.equal(retryRefused.state, "login");
+
+    // 2d. Renewal succeeds but /v1/models is still 401 -> login.
+    login({ expiresAt: Date.now() + 3_600_000 });
+    renewal = { status: 200, body: { access_token: "still-bad", refresh_token: "ref3", expires_in: 3600 } };
+    modelsFor = () => ({ status: 401, body: {} });
+    const still401 = await run();
+    assert.deepEqual([still401.state, still401.detail], ["login", "登录已过期或失效"]);
+  } finally {
+    await p.close();
+  }
+});
+
 // ── what a profile can decide with ──
 
 const logprobs = (best: string) => ({

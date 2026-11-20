@@ -288,11 +288,12 @@ pub fn peer_http_base(mcp_url : String) -> String {
 
 ///|
 /// runtime.ts `cleanEnv`: the station's environment as it starts what it runs (`base`: ops/agent-env.ts `startEnv()`,
-/// whose own variables it is) less what would let a runtime be another account than its profile's.
+/// whose own variables it is) less what would let a runtime be another account than its profile's, and the station's
+/// internal variables (`STATION_INTERNAL`: the launcher's front, whose socket binds the station's endpoint).
 pub fn clean_env(base : Fields, scrubbed : Array[String]) -> Fields {
   let out = Fields::new()
   for e in base.entries() {
-    if !scrubbed.contains(e.0) && e.1 is Str(_) {
+    if !scrubbed.contains(e.0) && e.0 != "STILLFAIL_MESH_FRONT" && e.1 is Str(_) {
       out.set(e.0, e.1)
     }
   }

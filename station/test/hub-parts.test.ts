@@ -24,7 +24,7 @@ import { chainOf, entriesOf, lengthOf, stateOf } from "./reference/transcripts.t
 import { prepare } from "../src/sessions/local-links.ts";
 import { prepareHere } from "./reference/local-links.ts";
 import { formatSteps, linkedSession } from "../src/sessions/others.ts";
-import { availableEfforts, cheapToLeave, commonEfforts, pickProfile, serves, urgency } from "../src/sessions/pool.ts";
+import { availableEfforts, cheapToLeave, commonEfforts, pickProfile, serves, signsIn, urgency, usable } from "../src/sessions/pool.ts";
 import { spelling } from "../src/sessions/config.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
@@ -1295,6 +1295,39 @@ test("the pool runs sessions on subscriptions, however full, and on an account b
   assert.equal(pickProfile([sub, key], "m", signals(), true).id, "key");
   health.sub = { check: ok("ok"), quota: week(10), spent: true };
   assert.equal(pickProfile([sub, key], "m", signals(), true).id, "key");
+});
+
+test("the pool skips blocked accounts and prefers healthy quota over unavailable within each tier", () => {
+  const with_ = (id: string, access: Record<string, unknown>) =>
+    hubConfig({ profiles: [{ id, runtime: "claude", home: `/h/${id}`, models: ["m"], access }] }, "/").profiles[0]!;
+  const cc1 = with_("cc1", { kind: "subscription" });
+  const cc2 = with_("cc2", { kind: "subscription" });
+  const cc3 = with_("cc3", { kind: "subscription" });
+  const key = with_("key", { kind: "anthropic-api", key: "k" });
+  const unavailable = { state: "unavailable", windows: [], detail: "Claude 登录续期请求失败，请稍后重试", checkedAt: 0 };
+  const blocked = { state: "blocked", windows: [], detail: "account suspended", checkedAt: 0 };
+  const health: Record<string, any> = {
+    cc1: { check: ok("ok"), quota: unavailable },
+    cc2: { check: ok("ok"), quota: quota(80) },
+    cc3: { check: ok("ok"), quota: quota(79) },
+    key: { check: ok("ok"), quota: { state: "unsupported", windows: [], detail: "", checkedAt: 0 } },
+  };
+  const signals = (load: Record<string, number> = {}) => ({ health: (id: string) => health[id], load: (id: string) => load[id] ?? 0, lastPicked: () => 0, now: () => 0 });
+  // Even with higher load on cc2/cc3, cc1 with unavailable quota must not be picked ahead of healthy subscriptions.
+  assert.ok(["cc2", "cc3"].includes(pickProfile([cc1, cc2, cc3], "m", signals({ cc2: 5, cc3: 5 }), true).id));
+  assert.equal(pickProfile([cc1, cc2, cc3], "m", signals({ cc2: 5, cc3: 2 }), true).id, "cc3");
+  // Blocked quota makes signsIn and usable false, so it is skipped.
+  assert.equal(signsIn({ check: ok("ok"), quota: blocked }), false);
+  assert.equal(usable({ check: ok("ok"), quota: blocked }, 0), false);
+  health.cc2 = { check: ok("ok"), quota: blocked };
+  assert.equal(pickProfile([cc2, cc3], "m", signals(), true).id, "cc3");
+  // When all other subscriptions are spent, a check:ok + quota:unavailable subscription still beats pay-as-you-go.
+  health.cc2 = { check: ok("ok"), quota: quota(100) };
+  health.cc3 = { check: ok("ok"), quota: quota(100) };
+  assert.equal(pickProfile([cc1, cc2, cc3, key], "m", signals(), true).id, "cc1");
+  // Once that subscription's check fails, pay-as-you-go takes over.
+  health.cc1 = { check: ok("failed"), quota: unavailable };
+  assert.equal(pickProfile([cc1, cc2, cc3, key], "m", signals(), true).id, "key");
 });
 
 test("the pool shares sessions by what each account would lose, and keeps them off nearly full five hours", () => {

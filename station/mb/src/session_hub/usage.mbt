@@ -673,3 +673,19 @@ pub async fn Hub::retire_usage(self : Hub) -> Unit {
     retry = if retry * 2.0 < 30_000.0 { retry * 2.0 } else { 30_000.0 }
   }
 }
+
+///|
+/// Start the hub's usage counter (`UsageCounter::new` + `start`).
+pub async fn Hub::usage_start(self : Hub) -> Unit {
+  let c = UsageCounter::new(self)
+  self.counter = Some(c)
+  self.keeps_counted = true
+  c.start()
+}
+
+///|
+/// Start draining moved sessions' chats for usage counting (`UsageDrain::new` + `begin`).
+pub fn Hub::usage_drain(self : Hub) -> Unit {
+  let d = UsageDrain::new(self)
+  d.begin()
+}

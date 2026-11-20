@@ -82,39 +82,10 @@ pub fn parse_iso(s : String) -> Double {
 ///|
 /// The station's log as it ends: its last `most` bytes, from the first whole line (notice.ts `readTail`).
 pub async fn read_tail(b : ToolsBackend, path : String, most : Int) -> String? {
-  let file = b.ask("fs.open", [js(path), js("r")]) catch { _ => return None }
-  let name = ref_of(file).unwrap_or("")
-  let out = {
-    let size = jnumber(b.ask("\{name}.stat", []).get("size")).unwrap_or(0.0)
-    let from = if size - most.to_double() > 0.0 {
-      size - most.to_double()
-    } else {
-      0.0
-    }
-    let got = b.ask("\{name}.read", [jnum(0.0), jnum(size - from), jnum(from)])
-    let n = jnumber(got.get("bytesRead")).unwrap_or(0.0).to_int()
-    let bytes = @api_routes.bytes_of(got.get("buffer").unwrap_or(Null)).unwrap_or(
-      b"",
-    )
-    let n = if n < bytes.length() { n } else { bytes.length() }
-    let text = utf8_text(bytes[0:n].to_bytes())
-    if from == 0.0 {
-      text
-    } else {
-      slice(text, index_of(text, "\n") + 1)
-    }
-  } catch {
-    e => {
-      b.tell("\{name}.close", []) catch {
-        _ => ()
-      }
-      raise e
-    }
+  match (b.ask("fs.readTail", [js(path), jint(most)]) catch { _ => return None }) {
+    Str(text) => Some(text)
+    _ => None
   }
-  b.tell("\{name}.close", []) catch {
-    _ => ()
-  }
-  Some(out)
 }
 
 ///|

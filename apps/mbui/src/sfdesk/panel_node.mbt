@@ -117,7 +117,14 @@ fn side_slides(n : @view.View, src : Source, key : String, chat : String, open :
   match was {
     Some(was) if was != open && panel_own.asked.untracked() == key => {
       panel_own.asked.set("")
-      way.go(target, @motion.moved(), at=n.cause_at())
+      let at = n.cause_at()
+      let (cur_w, cur_v) = way.at(at)
+      if way.goes_at(at) {
+        let v = @sf.dclamp(cur_v, -4000.0, 4000.0)
+        way.go(target, @motion.moved(over=(target - cur_w).abs()), velocity=v, at~)
+      } else {
+        way.go(target, @motion.moved(over=(target - cur_w).abs()), at~)
+      }
       // (the chat's rows laid out anew at where it goes, on their list's way from this moment: side_narrower)
       @sfbase.column_sets_off(chat)
       if !open {
@@ -332,8 +339,25 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         let (tabs, front) = side_shown(src, r)
         !side_own_bar_node(p, tabs, front, false)
       }, fn(b) { side_bar_node(b, src, r, fn() { side_shown(src, r) }, false, tips) })
+      let prev_front : Ref[(String, Int)?] = Ref(None)
       p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
         q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        let (tabs, front) = @signals.untracked(fn() { side_shown(src, r) })
+        let cur_idx = tabs.search(front).unwrap_or(0)
+        match prev_front.val {
+          Some((old_agent, old_idx)) if old_agent != agent && agent != "" && agent != tab_full_mark && !@ui.reduced_motion() => {
+            let dir = if cur_idx >= old_idx { 1.0 } else { -1.0 }
+            let way = @motion.NodeWay::new(0.0)
+            way.go_from(q, 0.0, 1.0, @motion.tween(140.0, ease=Out))
+            q
+            .offset(By(fn() { (dir * 8.0 * (1.0 - way.shown(q)), 0.0) }))
+            .alpha(By(fn() { way.shown(q) }))
+            .carries_until(fn() { way.ends_at() })
+            |> ignore
+          }
+          _ => ()
+        }
+        prev_front.val = if agent == "" || agent == tab_full_mark { None } else { Some((agent, cur_idx)) }
         if agent == tab_full_mark {
           // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
           ()

@@ -1538,11 +1538,13 @@ fn layout_flex(
       f.unsafe_set(i + MIN_MAIN, min_main)
       f.unsafe_set(i + SOFT_MIN, if row && !(s.fits && cs.drop != 0) {
         // (a row kept no narrower than what it holds that leaves out what has not the room: its words cut short under
-        // four of their size, fit_soft_held)
-        if cs.min_held {
-          fit_soft_held(c, cb)
-        } else {
+        // four of their size, fit_soft_held; -1.0 defers soft_min_of until last_resort sees overflow)
+        if cs.soft_min >= 0.0 {
           cs.soft_min
+        } else if cs.min_held || cs.soft_min < 0.0 {
+          -1.0
+        } else {
+          undef
         }
       } else {
         undef
@@ -1827,8 +1829,8 @@ fn layout_flex(
       }
       if known(space) {
         resolve_flexible(pool, ln.start, ln.end, items_hyp, space - gaps)
-        if row && !wrap {
-          last_resort(pool, ln.start, ln.end, space - gaps)
+        if row && s.overflow != Scroll {
+          last_resort(pool, flow, ln.start, ln.end, space - gaps, cb_w, cb_h)
         }
       } else {
         for k in ln.start..<ln.end {
@@ -2476,7 +2478,7 @@ fn fit_least_held(c : Node, cb : Box, cut_kept : Bool) -> Double {
 /// cut short kept (fit_least_held), as an old view's `keep` comes down to its soft_least; NaN none.
 fn fit_soft_held(c : Node, cb : Box) -> Double {
   let s = c.style
-  if known(s.soft_min) || !s.fits || s.one_of || !is_row(s.direction) {
+  if s.soft_min >= 0.0 || !s.fits || s.one_of || !is_row(s.direction) {
     return s.soft_min
   }
   let soft = fit_least_held(c, cb, false)
@@ -2485,6 +2487,68 @@ fn fit_soft_held(c : Node, cb : Box) -> Double {
   } else {
     soft
   }
+}
+
+///|
+/// The least an item `c` (its box `cb`) comes to as a last resort (last_resort), computed on demand only when a
+/// row overflows: a leaf's non-negative soft_min directly; a `fits` row kept no narrower than what it holds via
+/// fit_soft_held; a container marked with negative soft_min (-1.0) recursively over its flow children (NaN if none
+/// can yield).
+fn soft_min_of(c : Node, cb : Box) -> Double {
+  let s = c.style
+  if s.soft_min >= 0.0 {
+    return s.soft_min
+  }
+  if s.min_held && s.fits && !s.one_of && is_row(s.direction) {
+    return fit_soft_held(c, cb)
+  }
+  if s.soft_min < 0.0 && s.overflow == Visible && c.children.length() > 0 {
+    let parts = flow_children(c)
+    let along = is_row(s.direction) && s.wrap == NoWrap
+    let mut may_leave = false
+    if along {
+      for k in parts {
+        if k.style.position != Absolute && k.style.drop > 0 {
+          may_leave = true
+          break
+        }
+      }
+    }
+    let mut any = false
+    let mut sum = 0.0
+    let mut n = 0
+    let mut widest = 0.0
+    for k in parts {
+      let ks = k.style
+      if ks.position == Absolute || (along && (ks.drop > 0 || (ks.drop == -1 && !may_leave))) {
+        continue
+      }
+      let kb = box_for(k, undef, undef)
+      let sk = soft_min_of(k, kb)
+      let least = (if known(sk) {
+        any = true
+        sk
+      } else if known(kb.w) {
+        kb.w
+      } else if ks.shrink == 0.0 || ks.min_held {
+        size_node(k, undef, undef, undef, undef, undef, undef, false)
+      } else {
+        fmax(or_else(kb.min_w, 0.0), kb.pbw())
+      }) +
+        kb.mar_l +
+        kb.mar_r
+      sum = sum + least
+      n = n + 1
+      widest = fmax(widest, least)
+    }
+    if !any {
+      return undef
+    }
+    let gap = edge_of(s.gap_col_k, s.gap_col_v, undef)
+    let raw = cb.pbw() + (if along { sum + (if n > 1 { gap * (n - 1).to_double() } else { 0.0 }) } else { widest })
+    return if known(cb.min_w) { fmax(cb.min_w, raw) } else { raw }
+  }
+  undef
 }
 
 ///|
@@ -3070,7 +3134,7 @@ fn resolve_flexible(
 /// The least width a node takes when it is given one: its min-width, or less down to its least as a last resort
 /// (Style's soft_min), which only a row's last_resort gives it.
 fn soft_floor(s : Style, min_w : Double) -> Double {
-  if known(s.soft_min) && (!known(min_w) || s.soft_min < min_w) {
+  if s.soft_min >= 0.0 && (!known(min_w) || s.soft_min < min_w) {
     s.soft_min
   } else {
     min_w
@@ -3084,25 +3148,43 @@ fn soft_floor(s : Style, min_w : Double) -> Double {
 /// to one width where that is enough (each no less than its least), so that the row is no wider than its room; where
 /// they cannot make it so, none (what never gives way runs past it: a fault the squeeze check says). Never one wider
 /// than it was.
-fn last_resort(pool : Pool, a : Int, b : Int, space : Double) -> Unit {
+fn last_resort(
+  pool : Pool,
+  flow : Array[Node],
+  a : Int,
+  b : Int,
+  space : Double,
+  cb_w : Double,
+  cb_h : Double,
+) -> Unit {
   let f = pool.f
   let mut used = 0.0
+  for k in a..<b {
+    let i = k * ITEM
+    used = used + f.unsafe_get(i + MAIN) + f.unsafe_get(i + MARGIN_MAIN)
+  }
+  // (none cut in vain: check overflow first so non-overflowing rows pay zero soft_min_of cost)
+  let over = used - space
+  if over <= 0.01 {
+    return
+  }
   let mut room = 0.0
   let mut widest = 0.0
   for k in a..<b {
     let i = k * ITEM
     let main = f.unsafe_get(i + MAIN)
-    used = used + main + f.unsafe_get(i + MARGIN_MAIN)
-    let lo = f.unsafe_get(i + SOFT_MIN)
+    let mut lo = f.unsafe_get(i + SOFT_MIN)
+    if lo < 0.0 {
+      let c = flow.unsafe_get(pool.at.unsafe_get(k))
+      lo = soft_min_of(c, box_for(c, cb_w, cb_h))
+      f.unsafe_set(i + SOFT_MIN, lo)
+    }
     if known(lo) && lo < main {
       room = room + (main - lo)
       widest = fmax(widest, main)
     }
   }
-  // (none cut in vain: where all of them at their least still leave the row wider than its room, what never gives
-  // way is what runs past it, and they stay as they are)
-  let over = used - space
-  if over <= 0.01 || room < over - 0.01 {
+  if room < over - 0.01 {
     return
   }
   // what comes down at a width `cap`: each above it to it, no lower than its least

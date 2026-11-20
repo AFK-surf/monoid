@@ -59,7 +59,11 @@ fn home_node(
   // (a search the app starts with open: sfpages' search.mbt)
   @sfpages.search_start_now()
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  v.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  v
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   // under a finger's search the bar faded with the lists going away, the search over them (its old
   // view, hosted)

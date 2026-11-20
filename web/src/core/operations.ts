@@ -196,6 +196,8 @@ export interface OperationParams {
   "admin.relayTokenRevoke": { id: string };
   "admin.relayPut": { url: string; name: string; target?: string | null | undefined };
   "admin.relayRemove": { url: string };
+  "admin.createKey": { name: string; days?: number | null | undefined };
+  "admin.revokeKey": { id: string };
 }
 
 export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
@@ -405,5 +407,7 @@ export function bindCloudOperations(call: Call) {
     adminRelayTokenRevoke: <T = unknown>(params: OperationParams["admin.relayTokenRevoke"]) => call("admin.relayTokenRevoke", params) as Promise<T>,
     adminRelayPut: <T = unknown>(params: OperationParams["admin.relayPut"]) => call("admin.relayPut", params) as Promise<T>,
     adminRelayRemove: <T = unknown>(params: OperationParams["admin.relayRemove"]) => call("admin.relayRemove", params) as Promise<T>,
+    adminCreateKey: <T = unknown>(params: OperationParams["admin.createKey"]) => call("admin.createKey", params) as Promise<T>,
+    adminRevokeKey: <T = unknown>(params: OperationParams["admin.revokeKey"]) => call("admin.revokeKey", params) as Promise<T>,
   };
 }

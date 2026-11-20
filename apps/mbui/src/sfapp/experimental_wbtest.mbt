@@ -77,13 +77,14 @@ test "实验性功能's page: its switches, each off by default and on and off a
     let (t, src) = exp_at("settings-experimental", w, h, platform~)
     let at = "\{w}"
     let kept = fn(id : String) { field(field(src.topic("prefs", {}).get().value, "experimental"), id) is Some(True) }
-    for label in ["试用新对话页", "Farview 原生标签页渲染", "对话列表看板视图"] {
+    for label in ["Farview 原生标签页渲染", "对话列表看板视图"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
-    // (those three alone: the new chat's page and the composer made as nodes are 试用新对话页's, no switch of their own)
-    assert_eq(t.all(Switch).length(), 3, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
+    // (those two alone: the new chat page, its composer and the new chat are the test channel's, no switch of theirs)
+    assert_eq(t.all(Switch).length(), 2, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
+    assert_true(t.query(Switch, label="试用新对话页") is None, msg="\{at}: no 试用新对话页")
     assert_true(t.query(Switch, label="试用新输入框") is None, msg="\{at}: no 试用新输入框")
-    assert_true(!kept("chatPage") && !kept("farviewNative") && !kept("board"), msg="\{at}: all off by default")
+    assert_true(!kept("farviewNative") && !kept("board"), msg="\{at}: all off by default")
     // (but the wide frame's own: the sidebar's edge over what its pane shows by 6, sfdesk/pane_view.mbt's, as
     // station_move_wbtest's move_audit has it)
     let faults = t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })
@@ -98,8 +99,8 @@ test "实验性功能's page: its switches, each off by default and on and off a
 }
 
 ///|
-test "settings search finds each experimental switch by its words, on 实验性功能; 外观 no longer has 试用新对话页" {
-  for words in ["试用新对话页", "对话列表看板视图", "Farview 原生标签页渲染"] {
+test "settings search finds each experimental switch by its words, on 实验性功能; neither 外观 nor 实验性功能 has 试用新对话页" {
+  for words in ["对话列表看板视图", "Farview 原生标签页渲染"] {
     let t = settings_search_tester(390.0, 2)
     t.tap_text("搜索设置")
     t.type_text(words)
@@ -113,6 +114,9 @@ test "settings search finds each experimental switch by its words, on 实验性�
   let (t, _) = exp_at("settings-appearance", 390.0, 2400.0, platform=2)
   assert_true(t.find("主题") is Some(_), msg="外观")
   assert_true(t.find("试用新对话页") is None, msg="外观 without it")
+  let (t, _) = exp_at("settings-experimental", 390.0, 2400.0, platform=2)
+  assert_true(t.find("Farview 原生标签页渲染") is Some(_), msg="实验性功能")
+  assert_true(t.find("试用新对话页") is None, msg="实验性功能 without it")
 }
 
 ///|
@@ -276,7 +280,7 @@ test "a station's terminals and 迁移 are as the station's channel says, never 
 }
 
 ///|
-test "a stable app's 实验性功能: 对话列表看板视图 alone, not what still replaces a working path (试用新对话页, Farview 原生标签页渲染)" {
+test "a stable app's 实验性功能: 对话列表看板视图 alone, not what still replaces a working path (Farview 原生标签页渲染), nor 试用新对话页" {
   let (t, _) = exp_at("settings-experimental-stable", 390.0, 844.0, platform=2)
   assert_true(t.query(Switch, label="对话列表看板视图") is Some(_), msg="stable: " + t.words().map(fn(x) { x.0 }).join("|"))
   assert_true(t.query(Switch, label="试用新对话页") is None, msg="stable: no 试用新对话页")

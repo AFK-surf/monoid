@@ -9,8 +9,8 @@
 // Operations (`op`, its JSON → its answer):
 //   fetch {url, method, headers} + body → {status, headers} + body
 //   stream.open {url, method, headers} + body → {status, headers, id}; stream.read {id} → bytes, or {end}; stream.close {id}
-//   ws.open {url, protocols, binary?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
-//   asked: else such a frame is let go), or {end}; ws.send {id, text} or {id} and its bytes; ws.close {id}
+//   ws.open {url, protocols, binary?, control?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
+//   asked: else such a frame is let go), {ping} or {pong} (only where `control` was asked), or {end}; ws.send {id, text} or {id} and its bytes; ws.ping {id}; ws.close {id}
 //   storage.get {key} → bytes or {none}; storage.set {key} + value; storage.delete {key}
 //   kept.read {at, start, end} → bytes or {none} — a file the app saved where the person keeps files, read back
 //     (`at` as the system named it: a path; on Android a content address), answered by the app (Apple: apple_core.mm;

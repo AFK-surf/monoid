@@ -280,13 +280,40 @@ async fn check_inner(
       return check("login", t("station.profile.signedOut", []), None)
     }
     // What the subscription runs, as Anthropic lists it for the account's own token.
-    let token = match machine_token {
-      Some(tk) => Some(tk)
+    let (token, renew_error) = match machine_token {
+      Some(tk) => (Some(tk), None)
       None => profile_token(io, auth, o, at, lang)
     }
-    let models = match token {
-      None => None
+    let (first_models, models_status) = match token {
+      None => (None, None)
       Some(tk) => claude_models(io, at, tk)
+    }
+    let mut models = first_models
+    match renew_error {
+      Some(err) =>
+        if models is None {
+          return check("failed", err, None)
+        }
+      None =>
+        if models_status == Some(401) {
+          if token is Some(tk) {
+            let renewed = auth.token(
+              o.env,
+              if o.machine { None } else { Some(o.home) },
+              Some(tk),
+              at.claude_token,
+              lang,
+            ) catch {
+              RenewRefused(_, _) as e => raise e
+              e => return check("failed", message_of(e), None)
+            }
+            let (retry_models, retry_status) = claude_models(io, at, renewed.0)
+            if retry_status == Some(401) {
+              return check("login", t("station.quota.signInExpired", []), None)
+            }
+            models = retry_models
+          }
+        }
     }
     // For a profile in its own home Claude keeps the more specific tier beside its token.
     let credentials = if o.machine {
@@ -579,17 +606,17 @@ pub fn grok_email_in(text : String) -> String? raise JsonError {
 ///|
 /// A Claude profile's token as it signs in now, renewed first when due: a login that can no longer be renewed fails
 /// (to sign in again); one not renewed now for another reason is the one kept.
-async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, lang : String) -> String? {
+async fn profile_token(io : Io, auth : ClaudeAuth, o : CheckOptions, at : Urls, lang : String) -> (String?, String?) {
   let got = auth.token(o.env, Some(o.home), None, at.claude_token, lang) catch {
     RenewRefused(_, _) as e => raise e
-    _ => return claude_token(io, o.home)
+    e => return (claude_token(io, o.home), Some(message_of(e)))
   }
-  Some(got.0)
+  (Some(got.0), None)
 }
 
 ///|
 /// The models a Claude subscription's OAuth token may use; none when Anthropic does not say.
-async fn claude_models(io : Io, at : Urls, token : String) -> Array[String]? {
+async fn claude_models(io : Io, at : Urls, token : String) -> (Array[String]?, Int?) {
   try {
     let response = profile_get(io, "\{at.anthropic}/v1/models?limit=100", [
       ("authorization", "Bearer \{token}"),
@@ -597,12 +624,12 @@ async fn claude_models(io : Io, at : Urls, token : String) -> Array[String]? {
       ("anthropic-beta", "oauth-2025-04-20"),
     ])
     if response.ok() {
-      Some(model_ids(response))
+      (Some(model_ids(response)), Some(response.status))
     } else {
-      None
+      (None, Some(response.status))
     }
   } catch {
-    _ => None
+    _ => (None, None)
   }
 }
 

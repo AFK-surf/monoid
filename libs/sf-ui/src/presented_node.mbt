@@ -329,12 +329,18 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   )
   tips_at.val = Some(root.box(made_for=loc, fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
   window_tips_at.val = tips_at.val
+  window_root_at.val = Some(root)
 }
 
 ///|
 /// The layer over all of the window the presented's tips are in (presented_nodes'), once there is one.
 // kept across runs: said again as presented_nodes makes its layer
 let window_tips_at : Ref[@view.View?] = Ref(None)
+
+///|
+/// The window's root node (presented_nodes'), once there is one: where lazy overlays for old Ctx views mount.
+// kept across runs: said again as presented_nodes makes its layer, put back by presenters_reset
+let window_root_at : Ref[@view.View?] = Ref(None)
 
 ///|
 /// The layer over all of the window (presented_nodes' tips'): for what floats over a page's rows, beside them, on

@@ -626,8 +626,8 @@ pub fn keep_local(env : Array[(String, String)]) -> Array[(String, String)] {
 }
 
 ///|
-/// agent-env.ts `startEnv`: the station's own environment, `agentEnv` over it, less `scrubbed`; this machine kept out
-/// of a proxy.
+/// agent-env.ts `startEnv`: the station's own environment, `agentEnv` over it, less `scrubbed` and the station's
+/// internal variables (`STATION_INTERNAL`); this machine kept out of a proxy.
 pub fn start_env(
   own : Array[(String, String)],
   raw : Json,
@@ -637,7 +637,7 @@ pub fn start_env(
   for p in agent_env(raw) {
     env_set(env, p.0, p.1)
   }
-  keep_local(env.filter(p => !scrubbed.contains(p.0)))
+  keep_local(env.filter(p => !scrubbed.contains(p.0) && p.0 != "STILLFAIL_MESH_FRONT"))
 }
 
 ///|

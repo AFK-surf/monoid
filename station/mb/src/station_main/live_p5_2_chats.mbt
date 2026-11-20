@@ -713,12 +713,12 @@ async fn P52::tools_call(
   }
   match name {
     "mcp.resolve" =>
-      match self.store("sessionKeyByToken", [jstr(s(0))]) {
+      match self.bus.store.session_key_by_token(s(0)) {
         String(k) => Str(k)
         _ => @api_routes.jundef
       }
     "mcp.listing" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch {
+      let row = self.bus.store.get_session(s(0)) catch {
         _ => Json::null()
       }
       match @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) {
@@ -741,7 +741,7 @@ async fn P52::tools_call(
       } else {
         Str(@mcp_tools.unbound_refusal)
       }
-    "hub.store.handedTo" => to_jv(self.store("handedTo", [jstr(s(0))]))
+    "hub.store.handedTo" => to_jv(self.bus.store.handed_to(s(0)))
     "sessions/conversations.target" =>
       run(async fn() {
         @session_chats.target(
@@ -845,18 +845,6 @@ async fn P52::tools_call(
       run(async fn() {
         Str(self.storage().read_afar(s(1), s(2), s(3), of_jv(a(4))))
       })
-    "sessions/others.linkedSession" =>
-      match @session_storage.linked_session(s(0)) {
-        Some((k, n)) =>
-          @api_routes.jarr([
-            Str(k),
-            match n {
-              Some(x) => @api_routes.jnum(x.to_double())
-              None => Null
-            },
-          ])
-        None => Null
-      }
     "paths.data" => Str(self.data)
     // ── the relays tool's (agents.ts `relayTools`) ──
     "relays.ways" =>
@@ -884,13 +872,12 @@ async fn P52::tools_call(
         said => to_jv(said)
       }
     "relays.by" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
+      let row = self.bus.store.get_session(s(0)) catch { _ => Json::null() }
       Str(@session_hub.agent_name(jtext(row, "title"), s(0)))
     }
     "ways.view" => to_jv((self.bus.cloud_call.val)("ways", { "workspace": of_jv(a(0)) }))
     "ways.cloud.state" => (self.bus.cloud_state.val)().map(to_jv).unwrap_or(@api_routes.jundef)
     "mesh/ways.stillFails" => to_jv((self.bus.cloud_call.val)("stillFails", Json::null()))
-    "mesh/ways.relayUrl" => jopt_jv(@cloud_net.relay_url(of_jv(a(0)), insecure=a(1) is Bool(true)))
     "mesh/ways.addRelay" =>
       to_jv((self.bus.cloud_call.val)("addRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)), "by": of_jv(a(3)) }))
     "mesh/ways.removeRelay" =>
@@ -915,19 +902,34 @@ async fn P52::tools_call(
     // (the fixed reports told a while after the station starts and as each release is out: this side's own timers,
     // `start_feedback`)
     "ops/fibers.Fibers.after" | "plane.told" => Null
-    "fs.open" => {
+    "fs.readTail" => {
       let path = s(0)
-      let mode = s(1)
-      if mode == "" || mode == "r" {
-        let (m, _) = self.host.shell("fs.meta", { "path": jstr(path) })
-        if jfield(m, "exists") == Json::boolean(false) || jnum_of(m, "size") is None {
-          raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{path}'")
-        }
+      let most = match a(1) {
+        Num(n) => n
+        _ => 0.0
       }
-      tool_files_next.val += 1
-      let h = "toolfile:\{tool_files_next.val}"
-      tool_files[h] = path
-      @api_routes.jref(h)
+      let (m, _) = self.host.shell("fs.meta", { "path": jstr(path) }) catch {
+        _ => return Null
+      }
+      guard jfield(m, "exists") != Json::boolean(false) &&
+        jnum_of(m, "size") is Some(size) else {
+        return Null
+      }
+      let from = if size - most > 0.0 { size - most } else { 0.0 }
+      let got = p51_file_piece(self.host, path, from, (size - from).to_int()) catch {
+        _ => return Null
+      }
+      let text = @api_routes.utf8_text(got)
+      Str(
+        if from == 0.0 {
+          text
+        } else {
+          match text.find("\n") {
+            Some(i) => text[i + 1:].to_owned()
+            None => text
+          }
+        },
+      )
     }
     "base" =>
       match (self.bus.cloud_state.val)() {
@@ -941,21 +943,12 @@ async fn P52::tools_call(
         _ => Null
       }
     "agentName" => {
-      let row = self.store("getSession", [jstr(s(0))]) catch {
+      let row = self.bus.store.get_session(s(0)) catch {
         _ => Json::null()
       }
       let title = jtext(row, "title")
       Str(@session_hub.agent_name(title, s(0)))
     }
-    // (paths.ts `joinPath`: a path given whole stays as it is)
-    "ops/paths.joinPath" =>
-      Str(
-        if is_windows() {
-          @ops_platform.win_join(s(0), s(1))
-        } else {
-          @ops_platform.unix_join(s(0), s(1))
-        },
-      )
     "os.hostname" => Str(hostname())
     "ops/version.version" => Str(self.bus.version)
     "agents.pageOf" =>
@@ -966,38 +959,6 @@ async fn P52::tools_call(
     _ => {
       if name.has_prefix("store.") {
         return to_jv(self.store(name[6:].to_owned(), args.map(of_jv)))
-      }
-      // (a file the tools opened, `fs.open`: its size, a piece of it, let go)
-      if name.has_prefix("toolfile:") {
-        let (h, call) = match name.rev_find(".") {
-          Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
-          None => (name, "")
-        }
-        guard tool_files.get(h) is Some(file) else { return Null }
-        return match call {
-          "stat" =>
-            match attempt(() => @drive.stat(file)) {
-              Ok(st) => @api_routes.jobj([("size", @api_routes.jnum(st.size))])
-              Err(e) => raise thrown(e)
-            }
-          "read" => {
-            let len = match a(1) {
-              Num(n) => n.to_int()
-              _ => 0
-            }
-            let pos = match a(2) {
-              Num(n) => n
-              _ => 0.0
-            }
-            let got = p51_file_piece(self.host, file, pos, len) catch { e => raise thrown(e) }
-            @api_routes.jobj([("bytesRead", @api_routes.jnum(got.length().to_double())), ("buffer", @api_routes.jbytes(got))])
-          }
-          "close" => {
-            tool_files.remove(h)
-            Null
-          }
-          _ => Null
-        }
       }
       if name.has_prefix("staged.done:") {
         let copies = match chat_state.refs.get(name) {
@@ -1176,10 +1137,3 @@ async fn P52::mcp(self : P52, r : Request) -> Reply {
     None => { status: answered.status, headers: [], body: b"", }
   }
 }
-
-///|
-/// The files the tools opened (`fs.open`), by their handle: the path each reads.
-let tool_files : Map[String, String] = Map([])
-
-///|
-let tool_files_next : Ref[Int] = Ref(0)

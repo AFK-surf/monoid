@@ -27,7 +27,7 @@ test("a_beta_feature_follows_the_station_s_channel", () => {
   // config.json's updateChannel said over what the installer wrote
   assert.equal(stationFeature("terminal", { updateChannel: "beta" }, stable), true);
   assert.equal(stationFeature("terminal", { updateChannel: "stable" }, beta), false);
-  // what is no beta feature is never one here
+  // what is no station's beta feature is never one here
   assert.equal(stationFeature("board", {}, beta), false);
   assert.equal(stationFeature("chatPage", { updateChannel: "beta" }, beta), false);
 });

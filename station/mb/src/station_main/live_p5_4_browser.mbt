@@ -111,6 +111,59 @@ fn P54WsReader::read(self : P54WsReader, more : Bytes) -> Array[(Int, Bytes)] {
 }
 
 ///|
+/// Chrome's DevTools end opened (the shell's `ws.open`) for a client that is then answered (`answered`, its 101
+/// written): let go at once where that fails, the client gone before it, never left open in the shell.
+async fn p54_devtools_open(host : @host.Host, ws : String, answered : async () -> Bool) -> Json? {
+  let (opened, _) = host.shell("ws.open", { "url": Json::string(ws), "headers": Json::array([]) })
+  let up_id = opt_field(Some(opened), "id").unwrap_or(Json::null())
+  if !answered() {
+    ignore(host.shell("ws.close", { "id": up_id })) catch { _ => () }
+    return None
+  }
+  Some(up_id)
+}
+
+///|
+/// Chrome's DevTools end of a door's WebSocket (`up_id`, the shell's) as the gate takes it: what is sent to it, and a
+/// close and a terminate alike letting the shell's socket go, once (ws's `terminate` ends the socket as `close` does).
+fn p54_devtools_end(host : @host.Host, up_id : Json, up_open : Ref[Bool]) -> @browser.WsEnd {
+  let up_closed = Ref(false)
+  let close_up = () => {
+    up_open.val = false
+    if !up_closed.val {
+      up_closed.val = true
+      ignore(
+        host.rt.fork_quiet(name="devtools close", async fn() {
+          ignore(host.shell("ws.close", { "id": up_id })) catch {
+            _ => ()
+          }
+        }),
+      )
+    }
+  }
+  {
+    send_text: t => ignore(
+      host.rt.fork_quiet(name="devtools send", async fn() {
+        ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(t) })) catch {
+          _ => ()
+        }
+      }),
+    ),
+    send_raw: (b, _) => ignore(
+      host.rt.fork_quiet(name="devtools send", async fn() {
+        ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(@utf8.decode_lossy(b)) })) catch {
+          _ => ()
+        }
+      }),
+    ),
+    is_open: () => up_open.val,
+    connecting: () => false,
+    close: close_up,
+    terminate: close_up,
+  }
+}
+
+///|
 /// An Upgrade on the browser's route: the handshake answered on the connection, then both ways through the gate until
 /// either side ends; None as it wrote its answer itself.
 async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r : Request, conn : Json) -> Reply? {
@@ -124,13 +177,11 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
     Refused(status, why) => return Some(plain(status, why))
     Through(ws, g) => (ws, g)
   }
-  let (opened, _) = host.shell("ws.open", { "url": Json::string(ws), "headers": Json::array([]) }) catch {
-    e => return Some(plain(503, "the station's browser does not answer: \{p54_message(e)}"))
-  }
-  let up_id = opt_field(Some(opened), "id").unwrap_or(Json::null())
   let head = "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: \{p54_ws_accept(key)}\r\n\r\n"
-  if !write_on(host, conn, @utf8.encode(head)) {
-    return None
+  let up_id = match (try { Ok(p54_devtools_open(host, ws, async fn() { write_on(host, conn, @utf8.encode(head)) })) } catch { e => Err(e) }) {
+    Err(e) => return Some(plain(503, "the station's browser does not answer: \{p54_message(e)}"))
+    Ok(None) => return None
+    Ok(Some(id)) => id
   }
   let client_open = Ref(true)
   let up_open = Ref(true)
@@ -148,37 +199,7 @@ async fn p54_browser_upgrade(host : @host.Host, browsers : @browser.Browsers, r 
     },
     terminate: () => client_open.val = false,
   }
-  let upstream : @browser.WsEnd = {
-    send_text: t => ignore(
-      host.rt.fork_quiet(name="devtools send", async fn() {
-        ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(t) })) catch {
-          _ => ()
-        }
-      }),
-    ),
-    send_raw: (b, _) => ignore(
-      host.rt.fork_quiet(name="devtools send", async fn() {
-        ignore(host.shell("ws.send", { "id": up_id, "text": Json::string(@utf8.decode_lossy(b)) })) catch {
-          _ => ()
-        }
-      }),
-    ),
-    is_open: () => up_open.val,
-    connecting: () => false,
-    close: () => {
-      if up_open.val {
-        up_open.val = false
-        ignore(
-          host.rt.fork_quiet(name="devtools close", async fn() {
-            ignore(host.shell("ws.close", { "id": up_id })) catch {
-              _ => ()
-            }
-          }),
-        )
-      }
-    },
-    terminate: () => up_open.val = false,
-  }
+  let upstream = p54_devtools_end(host, up_id, up_open)
   let p = @browser.pass(client, upstream, @browser.Gate::new(gate_parts))
   // (what goes to the client, in its order)
   fork_bg(host, "browser door out", async fn() {
@@ -347,15 +368,15 @@ fn p54_browser_procs(host : @host.Host) -> @browser.MachineProcs {
     },
     // (ms since the epoch as the system says it: `ps -o lstart=` is in the machine's own time zone)
     start_time_of: async fn(pid) { start_time_of(pid) },
-    group_alive: pgid => pid_alive(pgid),
+    group_alive: pgid => group_alive(pgid),
     end_group: async fn(pgid, ms) {
       ignore(kill(pgid, "SIGTERM", group=true))
       let mut waited = 0.0
-      while waited < ms && pid_alive(pgid) {
+      while waited < ms && group_alive(pgid) {
         @effect.sleep(100) // timer: a deadline for a group to end before it is killed
         waited += 100.0
       }
-      if pid_alive(pgid) {
+      if group_alive(pgid) {
         ignore(kill(pgid, "SIGKILL", group=true))
       }
     },
@@ -368,6 +389,7 @@ fn p54_browser_procs(host : @host.Host) -> @browser.MachineProcs {
 
 ///|
 priv struct P54Browser {
+  host : @host.Host
   browsers : @browser.Browsers
   farview : @browser.FarviewTabs
 }
@@ -565,7 +587,7 @@ async fn p54_browser_start(bus : LiveBus, threads : @store_threads.Store, screen
     }
     None => ()
   }
-  { browsers, farview }
+  { host, browsers, farview }
 }
 
 ///|
@@ -618,6 +640,31 @@ async fn p54_browser_ask(b : P54Browser, op : String, a : Json) -> Json? {
       )
       (form.close)()
       of_jv(got.to_j())
+    }
+    // (a test's: Chrome's end let go where the client is gone before its 101, and where the gate terminates it, twice
+    // and then closes it: the DevTools server of the test's told each a close)
+    "test.devtoolsUnanswered" if p54_testing() => Json::boolean(p54_devtools_open(b.host, s(0), async fn() { false }) is None)
+    "test.devtoolsEnded" if p54_testing() => {
+      guard p54_devtools_open(b.host, s(0), async fn() { true }) is Some(up_id) else { return Some(Json::null()) }
+      let up_open = Ref(true)
+      let up = p54_devtools_end(b.host, up_id, up_open)
+      (up.terminate)()
+      (up.terminate)()
+      (up.close)()
+      Json::boolean(!(up.is_open)())
+    }
+    // (a test's: a group whose leader ended while a process of it goes on, as Chrome's renderers outlive Chrome: the
+    // group alive, and ended by `end_group`)
+    "test.groupLeftBehind" if p54_testing() => {
+      let procs = p54_browser_procs(b.host)
+      let ended : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let child = p54_spawn(b.host, "sh", ["-c", "PATH=/bin:/usr/bin; sleep 60 </dev/null >/dev/null 2>&1 & exit 0"], stdin_piped=false, group=true, close=(_, _) => ignore(ended.succeed(())))
+      let pgid = child.proc.pid
+      ended.wait()
+      let leader = pid_alive(pgid)
+      let group = (procs.group_alive)(pgid)
+      (procs.end_group)(pgid, 2000.0)
+      { "leader": Json::boolean(leader), "group": Json::boolean(group), "after": Json::boolean((procs.group_alive)(pgid)) }
     }
     "browser.closeOf" => {
       b.browsers.close_of(s(0))

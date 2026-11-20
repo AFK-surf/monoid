@@ -104,7 +104,11 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     }
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
   s.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })

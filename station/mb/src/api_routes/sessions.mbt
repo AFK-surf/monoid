@@ -294,9 +294,9 @@ async fn Admin::range_answer(
       0.0,
     )
     let want = @cmp.maximum(0.0, @cmp.minimum(length, total - offset))
-    let bytes = bytes_of(
-      self.backend.ask("drive/fs.readAt", [h, jnum(offset), jnum(want)]),
-    ).unwrap_or(b"")
+    let bytes = self.backend
+      .ask_bytes("drive/fs.readAt", [h, jnum(offset), jnum(want)])
+      .unwrap_or(b"")
     answered(
       content_type,
       Whole(bytes),

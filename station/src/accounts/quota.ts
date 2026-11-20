@@ -144,7 +144,8 @@ export async function claudeWithRefresh(env: Env, home: string | null, urls: Url
   const [first, unauthorized] = await claudeUsageResponse(urls.anthropic, token, lang, version);
   if (!unauthorized) return first;
   const [renewed] = await claudeOAuthToken(env, home, token, urls.claudeToken, lang);
-  return (await claudeUsageResponse(urls.anthropic, renewed, lang, version))[0];
+  const [second, stillUnauthorized] = await claudeUsageResponse(urls.anthropic, renewed, lang, version);
+  return stillUnauthorized ? { ...second, signedOut: true } : second;
 }
 
 /// A Claude subscription's allowance, by its access token: what /usage shows.
@@ -283,7 +284,14 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
     // Nor does the Devin CLI say its account's quota to a program (only its own /usage shows it).
     if (profile.runtime === "devin") return quota("unsupported", [], tr(lang, "station.quota.devinUnsupported"));
     if (profile.runtime === "agy") return await agyQuota(profile.home, { ...env, ...(isObject(profile.env) ? profile.env : {}) }, urls, lang);
-    if (profile.runtime === "claude") return await claudeWithRefresh(env, profile.machine === true ? null : profile.home, urls, lang, claudeVersion);
+    if (profile.runtime === "claude") {
+      try {
+        return await claudeWithRefresh(env, profile.machine === true ? null : profile.home, urls, lang, claudeVersion);
+      } catch (e) {
+        const q = failed(e, lang);
+        return !q.unanswered && !q.signedOut ? { ...q, recheck: true } : q;
+      }
+    }
     try {
       if (!codexRateLimits) throw new Error("no codex app-server to ask");
       const q = codexQuota(await codexRateLimits(profile), lang);

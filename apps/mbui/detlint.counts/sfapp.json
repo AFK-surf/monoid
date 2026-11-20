@@ -73,6 +73,16 @@
       "src/sfapp/app.mbt": 3,
       "src/sfapp/bar_timing.mbt": 1,
       "src/sfapp/settings/station_parts.mbt": 1
+    },
+    "structure-box": {
+      "src/sfapp/app.mbt": 1,
+      "src/sfapp/chat_bar_node.mbt": 1,
+      "src/sfapp/history.mbt": 1,
+      "src/sfapp/settings/devices.mbt": 1,
+      "src/sfapp/settings/run_more.mbt": 5,
+      "src/sfapp/settings/station_add.mbt": 3,
+      "src/sfapp/settings/vault_ask_node.mbt": 2,
+      "src/sfapp/sheets.mbt": 2
     }
   }
 }

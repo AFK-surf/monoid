@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { commaLine } from "../src/comma/index.ts";
-import { CommaSurface, connectUrl, questionOf } from "../src/comma/surface.ts";
+import { type CommaWorkspaceMeta, CommaSurface, connectUrl, questionOf, workspaceMetaOf } from "../src/comma/surface.ts";
 import { CommaTasks, threadTsOf } from "../src/comma/tasks.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -191,6 +191,121 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
     assert.deepEqual((await fake.request("task.put", { task: "cnv_1", messages: [] })).result, { gone: true });
     assert.deepEqual((await fake.request("task.put", { task: "cnv_9", messages: [] })).result, { unknown: true, gone: true });
     assert.match((await fake.request("exec", { cmd: "ls" })).error, /not something a still\.fail station does/);
+  } finally {
+    await surface.stop();
+    await rig.close();
+    await fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workspaceMetaOf includes self, deduplicates, omits empty marks, and caps at 100 stations while keeping self", () => {
+  const peers = Array.from({ length: 120 }, (_, i) => ({ id: `peer_${i}`, name: `Station ${i}` }));
+  peers.push({ id: "peer_0", name: "Duplicate" });
+  const meta = workspaceMetaOf(
+    { workspace: "ws_1", workspace_name: "Team", name: "SelfHost", peers },
+    "self_id",
+    "fallback-host",
+  );
+  assert.equal(meta.id, "ws_1");
+  assert.equal(meta.name, "Team");
+  assert.equal(meta.station, "SelfHost");
+  assert.equal("emoji" in meta, false);
+  assert.equal("icon" in meta, false);
+  assert.equal(meta.stations.length, 100);
+  assert.equal(meta.stations.filter((s) => s.id === "peer_0").length, 1);
+  assert.deepEqual(meta.stations.find((s) => s.id === "self_id"), { id: "self_id", name: "SelfHost" });
+
+  // When self is already in peers with an outdated name, its name is normalized to selfName (or fallbackHost).
+  const withSelf = workspaceMetaOf(
+    {
+      workspace: "ws_2",
+      workspace_name: "Lab",
+      workspace_emoji: "🧪",
+      workspace_icon: "glyph:beaker",
+      name: "",
+      peers: [{ id: "self_id", name: "old-name" }, { id: "other", name: "" }],
+    },
+    "self_id",
+    "my-mac",
+  );
+  assert.deepEqual(withSelf, {
+    id: "ws_2",
+    name: "Lab",
+    station: "my-mac",
+    emoji: "🧪",
+    icon: "glyph:beaker",
+    stations: [
+      { id: "self_id", name: "my-mac" },
+      { id: "other", name: "other" },
+    ],
+  });
+});
+
+test("CommaSurface sends capabilities.stillfail_workspace on connect and pushes updates on the same socket without duplicates", async () => {
+  const fake = await FakeComma.start();
+  const rig = new Rig();
+  const dir = mkdtempSync(join(tmpdir(), "comma-meta-"));
+  const tasks = new CommaTasks(join(dir, "tasks.json"));
+  let currentMeta: CommaWorkspaceMeta | null = {
+    id: "ws_1",
+    name: "Alpha",
+    station: "mac-1",
+    emoji: "🚀",
+    icon: "glyph:rocket",
+    stations: [{ id: "st_1", name: "mac-1" }, { id: "st_2", name: "linux-1" }],
+  };
+  let notify: (() => void) | null = null;
+  let unsubscribed = 0;
+  const surface = new CommaSurface({
+    connect: "cm",
+    server: fake.base,
+    token: "salix_conn_test123",
+    name: "Alpha · mac-1",
+    workspace: "ws_1",
+    tasks,
+    store: rig.store,
+    models: () => [],
+    workspaceMeta: () => currentMeta,
+    onWorkspaceMetaChange: (changed) => {
+      notify = changed;
+      return () => {
+        notify = null;
+        unsubscribed++;
+      };
+    },
+  });
+  try {
+    await surface.start(async () => {});
+    await fake.until("first metadata", () => fake.frames.some((f) => f.type === "metadata"));
+    const firstSocket = fake.socket;
+    const metas = () => fake.frames.filter((f) => f.type === "metadata");
+    assert.equal(metas().length, 1);
+    assert.deepEqual(metas()[0].capabilities.stillfail_workspace, currentMeta);
+
+    // Firing with unchanged metadata sends nothing.
+    notify!();
+    await settle();
+    assert.equal(metas().length, 1);
+
+    // Updating metadata pushes a new metadata frame on the exact same open socket.
+    currentMeta = {
+      id: "ws_1",
+      name: "Alpha Renamed",
+      station: "mac-1",
+      stations: [{ id: "st_1", name: "mac-1" }],
+    };
+    notify!();
+    await fake.until("second metadata", () => metas().length === 2);
+    assert.equal(fake.socket, firstSocket);
+    assert.deepEqual(metas()[1].capabilities.stillfail_workspace, currentMeta);
+    assert.equal("emoji" in metas()[1].capabilities.stillfail_workspace, false);
+    assert.equal("icon" in metas()[1].capabilities.stillfail_workspace, false);
+
+    // Stopping unsubscribes the listener cleanly.
+    await surface.stop();
+    assert.equal(unsubscribed, 1);
+    assert.equal(notify, null);
   } finally {
     await surface.stop();
     await rig.close();

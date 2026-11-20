@@ -92,8 +92,12 @@ test "中屏, a window with keyboard and mouse: the composer opened with one lin
 ///|
 /// The chat open on 小屏 with a finger (390x844), the system's words `scale`, its composer pressed and "第一行" typed in
 /// it, at rest (send_hold_wbtest's hold_chat: words the core's answers are kept for).
-fn least_words_small(scale : Double) -> @ui.Tester {
+fn least_words_small(scale : Double, old? : Bool = false) -> @ui.Tester {
   new_run()
+  // (`old`: the old page's composer, what stable keeps, its hold under words on their way (its SendFlight))
+  if old {
+    @sfbase.hold_chat_page_nodes(Some(false))
+  }
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -119,7 +123,7 @@ fn least_words_field_h(t : @ui.Tester) -> Double {
 test "小屏, a finger's: words of three lines sent hold the composer as tall as they took in it till they let go of it, the system's words 1 and 1.3" {
   let draft = "ws1/st1:s-c1"
   for scale in [1.0, 1.3] {
-    let t = least_words_small(scale)
+    let t = least_words_small(scale, old=true)
     t.type_text("\n第二行\n第三行")
     t.run_for(@ui.move_most_ms)
     let room = @sfpages.composer_room(t.ctx(), draft)

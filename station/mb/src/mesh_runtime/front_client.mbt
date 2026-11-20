@@ -807,6 +807,17 @@ async fn FrontStream::reset(self : FrontStream, code : Int) -> Unit {
 }
 
 ///|
+async fn FrontStream::media_datagrams(self : FrontStream, token : Double) -> Bool {
+  let said = self.front.ask(
+    "mediaDatagrams",
+    args=[("stream", jnum(self.id.to_double())), ("token", jnum(token))],
+  ) catch {
+    _ => return false
+  }
+  said is True
+}
+
+///|
 fn FrontStream::as_stream(self : FrontStream) -> @door.Stream {
   {
     read: () => self.read(),
@@ -814,6 +825,7 @@ fn FrontStream::as_stream(self : FrontStream) -> @door.Stream {
     finish: () => self.finish(),
     stopped: () => self.stopped(),
     reset: c => self.reset(c),
+    media_datagrams: Some(t => self.media_datagrams(t)),
   }
 }
 

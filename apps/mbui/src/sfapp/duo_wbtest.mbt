@@ -321,9 +321,8 @@ test "an iPhone Duo on its side, the soft keyboard rising: the cards end on it f
 /// it, its foot left corner its own).
 fn composer_and_page(t : @ui.Tester) -> (@ui.Laid, @ui.Laid)? {
   let bs = t.boxes_held()
-  guard bs.search_by(fn(b) { b.kind == "editor" }) is Some(e) else { return None }
-  let ed = bs[e]
-  let round = fn(b : @ui.Laid) { b.x <= ed.x && ed.x + ed.w <= b.x + b.w && b.y <= ed.y && ed.y + ed.h <= b.y + b.h }
+  guard composer_field_rect(t) is Some((ex, ey, ew, eh)) else { return None }
+  let round = fn(b : @ui.Laid) { b.x <= ex && ex + ew <= b.x + b.w && b.y <= ey && ey + eh <= b.y + b.h }
   let mut page : @ui.Laid? = None
   let mut box : @ui.Laid? = None
   for b in bs {
@@ -418,8 +417,18 @@ test "an iPhone Duo: a chat's rows as wide as they were with the keyboard up, th
   t.run_for(@ui.move_most_ms)
   t.drag(400.0, 330.0, 140.0, 330.0)
   t.run_for(@ui.move_most_ms * 2.0)
+  // (the row's words where they are laid out: an old view's row says them whole to a screen reader, a row made as
+  // nodes its words alone)
   let row = fn() {
-    t.semantics().filter(fn(s) { s.label.contains("推送截图前要先登录") }).map(fn(s) { (s.rect.0, s.rect.2) })
+    let said = t.semantics().filter(fn(s) { s.label.contains("推送截图前要先登录") }).map(fn(s) { (s.rect.0, s.rect.2) })
+    if said.length() > 0 {
+      said
+    } else {
+      match t.rect_of("推送截图前要先登录") {
+        Some((x, _, w, _)) => [(x, w)]
+        None => []
+      }
+    }
   }
   let shut = row()
   assert_eq(shut.length(), 1)
@@ -714,9 +723,33 @@ test "an iPhone Duo: the workspace's button has a dot while another workspace ha
 ///|
 /// The composer's width in the chat's page (the page's own width less its room), as last drawn.
 fn composer_w(t : @ui.Tester) -> Double {
-  match t.boxes().search_by(fn(b) { b.kind == "editor" }) {
-    Some(i) => t.boxes()[i].w
+  match composer_field_rect(t) {
+    Some((_, _, w, _)) => w
     None => 0.0
+  }
+}
+
+///|
+/// The composer's field where it is laid out: the window tree's lowest text field (the page made as nodes, its composer
+/// at its foot; read out or not, as the page beside the sidebar or a panel in use on the tape is kept from what is read
+/// out, tape_behind's, and a panel come over may have a field of its own), else the old view's editor.
+fn composer_field_rect(t : @ui.Tester) -> (Double, Double, Double, Double)? {
+  let mut field : @ui.SemNode? = None
+  for s in t.semantics() {
+    if s.role == TextField && (field is None || field.unwrap().rect.1 < s.rect.1) {
+      field = Some(s)
+    }
+  }
+  match field {
+    Some(f) => Some(f.rect)
+    None =>
+      match t.boxes().search_by(fn(b) { b.kind == "editor" }) {
+        Some(i) => {
+          let b = t.boxes()[i]
+          Some((b.x, b.y, b.w, b.h))
+        }
+        None => None
+      }
   }
 }
 
@@ -1523,13 +1556,14 @@ test "an iPhone Duo upright: a picture waiting in the composer, rounder than a c
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=669.0, h=951.0, platform=1, window_corner=59.0, nav_able=true)
   t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":0}}")
   t.run_for(@ui.move_most_ms)
-  // (the composer's corner concentric with the screen's: rounder than a card's)
-  let corner = @sf.composer_corner()
-  assert_true(corner > @sf.card_corner, msg="\{corner}")
   // (each frame held to the corner rule: before, the picture stood 8 in as round as 31, a circle)
   let w = @sfbase.writing(src, "ws1/st1:s-c1")
   @sfbase.writing_add(src, w, "ws1/st1", "新图片.png", png_head())
   t.run_for(@ui.move_most_ms)
+  // (the composer's corner, a box now, concentric with the screen's: rounder than a card's, as it is drawn)
+  guard composer_and_page(t) is Some((box, _)) else { fail("no composer in a page") }
+  let corner = box.radii.3
+  assert_true(corner > @sf.card_corner, msg="\{corner}")
   let picture = @sfbase.writing_pictures[text(Some(w.files.get()[0]), "id")]
   let clips = t.drawn_image_clips()
   let shown = t.drawn_instances().filter(fn(a) { a[5] == 4.0 }).mapi(fn(k, a) { (a, clips[k]) }).filter(fn(p) {

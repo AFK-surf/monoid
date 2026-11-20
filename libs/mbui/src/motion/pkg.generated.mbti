@@ -53,6 +53,8 @@ pub fn cover_indicator(@view.View, () -> Int32, (Int32) -> (Double, Double, Doub
 
 pub fn cubic_bezier(Double, Double, Double, Double) -> (Double) -> Double
 
+pub fn curtain_reveal(@view.View, () -> Bool, () -> Int64, duration_ms? : Double, wait_after_ms? : Double, wait_out_ms? : Double, steps? : Int32) -> Unit
+
 pub fn default_easing(Int32, easing? : (Double) -> Double) -> Array[(Double) -> Double]
 
 pub fn default_offset(Int32) -> Array[Double]
@@ -66,6 +68,8 @@ pub let dialog_out : Trans
 pub let dialog_out_ms : Double
 
 pub let digit_spring : Spec
+
+pub fn dismiss_drag_offset(Double, Double, resist_opposite? : Bool, coeff? : Double) -> Double
 
 pub fn ease_in(Double) -> Double
 
@@ -105,6 +109,22 @@ pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, v
 
 pub fn glass_lens_springs() -> (Spec, Spec, Spec)
 
+pub fn glyph_change(Double, Double, Int32, Int32, Bool, line_ms? : Double, glyph_ms? : Double, rise_px? : Double) -> @view.GlyphLook
+
+pub let glyph_change_in_ms : Double
+
+pub fn glyph_in(Double, Double, Int32, Int32, jitter_ms? : Double, glyph_ms? : Double, rise_px? : Double) -> @view.GlyphLook
+
+pub let glyph_jitter_ms : Double
+
+pub let glyph_line_ms : Double
+
+pub fn glyph_noise(Int32, Int32) -> Double
+
+pub let glyph_reveal_ms : Double
+
+pub let glyph_rise_px : Double
+
 pub let ground_in : Trans
 
 pub let ground_out : Trans
@@ -112,6 +132,10 @@ pub let ground_out : Trans
 pub fn grown_shown(@ui.Ctx, String) -> Double?
 
 pub let hand_spring : Spec
+
+pub fn hero_flight_box(HeroThumb, Double, (Double, Double, Double, Double), Double, Double, Double) -> HeroFlightBox?
+
+pub fn hero_seen_of((Double, Double, Double, Double), Double, Double) -> (Double, Double, Double, Double)
 
 #callsite(autofill(loc))
 pub fn hold_way(@view.View, Double, () -> Unit, live? : () -> Bool, recoil_ms? : Double, loc~ : SourceLoc) -> HoldWay
@@ -289,6 +313,11 @@ pub let ripple_ink : Int64
 
 pub let ripple_tap_ms : Double
 
+pub fn rolling_chars(String) -> Array[Char]
+
+#callsite(autofill(loc))
+pub fn rolling_slots_node(@view.View, () -> String, () -> Double, () -> @ui.TextStyle, () -> Int64, rolls? : () -> Bool, spec? : Spec, fade_px? : Double, loc~ : SourceLoc) -> @view.View
+
 pub fn rubber_band(Double, Double, coeff? : Double) -> Double
 
 pub fn rubber_band_clamped(Double, Double, Double, Double, coeff? : Double) -> Double
@@ -309,6 +338,8 @@ pub fn sheet_drag_closes(Double, Double, Double) -> Bool
 pub fn sheet_goes_to(Array[Double], Double, Double, Double, Double) -> Double?
 
 pub let sheet_scrim_ms : Double
+
+pub fn should_dismiss(Double, Double, Double, velocity_threshold? : Double) -> Bool
 
 pub fn snap_detent(Double, Double, Array[Double], close_past? : Double, decel_rate? : Double) -> Int32?
 
@@ -435,6 +466,15 @@ pub fn Eased::put(Self, Double) -> Unit
 pub fn Eased::shown(Self, @view.View) -> Double
 pub fn Eased::target(Self) -> Double
 
+pub struct EdgePull {
+  // private fields
+}
+pub fn EdgePull::drag(Self, Double, Double, Double) -> Unit
+pub fn EdgePull::let_go(Self, @view.View, spec? : Spec) -> Unit
+pub fn EdgePull::new(limit? : Double) -> Self
+pub fn EdgePull::shown_on(Self, @view.View) -> (Double, Double, Double)
+pub fn EdgePull::taken(Self) -> Bool
+
 #derive(Eq, @debug.Debug)
 pub(all) struct GenState {
   done : Bool
@@ -467,6 +507,26 @@ pub struct Handoff {
 }
 pub fn Handoff::new(within? : Double) -> Self
 pub fn Handoff::part(Self, (Double) -> Double, tag? : Int32, gave? : () -> Unit) -> HandPart
+
+#derive(Eq, @debug.Debug)
+pub(all) struct HeroFlightBox {
+  cut : (Double, Double, Double, Double)
+  box : (Double, Double, Double, Double)
+  corners : (Double, Double, Double, Double)
+  picture : (Double, Double, Double, Double)
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct HeroThumb {
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+  seen : (Double, Double, Double, Double)?
+  corners : (Double, Double, Double, Double)
+  letterbox : Bool
+  start_crop : Bool
+}
 
 pub struct HoldWay {
   // private fields
@@ -524,6 +584,14 @@ pub fn PressFeel::hovered_on(Self, @view.View) -> Double
 pub fn PressFeel::pressed_on(Self, @view.View) -> Double
 pub fn PressFeel::scale_on(Self, @view.View) -> Double
 
+pub struct SerialQueue {
+  // private fields
+}
+pub fn SerialQueue::commit(Self, String, Double) -> Unit
+pub fn SerialQueue::new() -> Self
+pub fn SerialQueue::next_at(Self, String, Double, lead? : Double) -> Double
+pub fn SerialQueue::reset(Self) -> Unit
+
 pub struct ShakeWay {
   amplitude : Double
   duration_ms : Double
@@ -559,11 +627,38 @@ pub fn Spec::per_unit(Self, Double) -> Self
 pub fn Spec::value_at(Self, Double, Double, Double, Double, Double) -> (Double, Double)
 pub fn Spec::way_said(Self) -> Bool
 
+pub struct SpringFollow2D {
+  // private fields
+}
+pub fn SpringFollow2D::active(Self, @view.View) -> Bool
+pub fn SpringFollow2D::capsule_shape(Self, @view.View, Double, Double, Double, Double) -> @view.GroundShape
+pub fn SpringFollow2D::chase(Self, @view.View, Double, Double, spec? : Spec) -> Unit
+pub fn SpringFollow2D::held_shown(Self, @view.View) -> Double
+pub fn SpringFollow2D::new() -> Self
+pub fn SpringFollow2D::release(Self, @view.View, spec? : Spec) -> Unit
+
 #derive(Eq, @debug.Debug)
 pub(all) enum StepsAt {
   End
   Start
 }
+
+#derive(Eq, @debug.Debug)
+pub(all) struct TextMorph {
+  was_cells : Array[(Double, Double)]
+  now_cells : Array[(Double, Double)]
+  whole_from : Double
+  whole_to : Double
+  places : Int32
+  salt : Int32
+  from : Double?
+  set_out : Array[(Double, Double)]
+}
+pub fn TextMorph::across(Self, Double, Double) -> Double
+pub fn TextMorph::cells_width(Array[(Double, Double)]) -> Double
+pub fn TextMorph::look(Self, Double, Double, @view.GlyphAt, Bool, in_ms? : Double, line_ms? : Double) -> @view.GlyphLook
+pub fn TextMorph::new(Array[(Double, Double)], Array[(Double, Double)], Int32, Int32, from? : Double, set_out? : Array[(Double, Double)]) -> Self
+pub fn TextMorph::place(Self, Double, Int32, Bool) -> (Double, Double)
 
 pub(all) struct TrackSpec {
   name : String

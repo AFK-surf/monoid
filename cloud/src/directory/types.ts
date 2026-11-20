@@ -131,7 +131,8 @@ for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWo
   "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest"]) FAMILIES[name] = "workspaces";
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
   "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount",
-  "adminFeedbackItem", "adminAddOwners", "adminRemoveAdded", "recordAudit", "adminAudit", "auditName"]) FAMILIES[name] = "admin";
+  "adminFeedbackItem", "adminAddOwners", "adminRemoveAdded", "recordAudit", "adminAudit", "auditName",
+  "adminKeys", "createAdminKey", "revokeAdminKey", "verifyAdminKey"]) FAMILIES[name] = "admin";
 /** The tables that are this object's own, not moved into another cloud: its sockets' generations, the outbox to the
  * objects (made again as things change), its counts, the views as last told (`#told`: begun again by the next change,
  * at a version above any before), who opened its console (noteOperator: noted again as they open the other's), and

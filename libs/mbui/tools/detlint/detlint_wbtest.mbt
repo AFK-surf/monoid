@@ -3556,3 +3556,29 @@ test "page-control-by-hand" {
   )
   assert_eq(lines(fs), [2, 4, 5, 10, 11])
 }
+
+///|
+test "structure-box" {
+  // single bare x.box(...) in show/pick/switch_by is flagged; part calls, multi-statement bodies, and tests are not
+  let src =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.show(fn() { true }, fn(x) { x.box(fn(l) { l.words(Is("a")) |> ignore }) |> ignore })
+    #|  v.pick(fn() { 1 }, fn(x, _) { ignore(x.box(fn(l) { l.words(Is("b")) |> ignore })) })
+    #|  v.switch_by(fn() { 1 }, fn(x, _) { let _ = x.box(fn(l) { l.words(Is("c")) |> ignore }) })
+    #|  v.show(fn() { true }, fn(x) { words_node(x, "ok") })
+    #|  v.show(fn() { true }, fn(x) {
+    #|    x.box(fn(a) { a.words(Is("1")) |> ignore }) |> ignore
+    #|    x.box(fn(b) { b.words(Is("2")) |> ignore }) |> ignore
+    #|  })
+    #|  v.show(fn() { true }, fn(x) {
+    #|    x.row(Is(true)) |> ignore
+    #|    x.box(fn(a) { a.words(Is("3")) |> ignore }) |> ignore
+    #|  })
+    #|}
+    #|test "t" {
+    #|  v.show(fn() { true }, fn(x) { x.box(fn(l) { l.words(Is("t")) |> ignore }) |> ignore })
+    #|}
+    #|
+  let fs = found([("src/app/view.mbt", src)], "structure-box", 3)
+  assert_eq(lines(fs), [2, 3, 4])
+}

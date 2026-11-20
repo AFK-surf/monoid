@@ -8,7 +8,9 @@ fn init {
   @ui.host_image_bytes_known([
     // (every screen walked over a core answering late, a chat's pictures opened and stepped: what CI's runs held at
     // most)
-    ("src/sfapp/answers_still_wbtest.mbt", 262430),
+    // (the chat's page made as nodes by default on the test channel since 2026-11-19, chatPage moved to beta: one picture
+    // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's; what chat_drive_parity_wbtest's holds)
+    ("src/sfapp/answers_still_wbtest.mbt", 300978),
     // (every screen's switches pressed over a core answering late, its pictures among them: what Studio's run held at
     // most, 2026-11-14)
     ("src/sfapp/switches_still_wbtest.mbt", 2906925),
@@ -62,9 +64,13 @@ fn init {
     ("src/sfapp/squeeze_wbtest.mbt", 1975151),
     ("src/sfapp/tape_wbtest.mbt", 89156),
     ("src/sfapp/things_sheet_wbtest.mbt", 159102),
-    ("src/sfapp/touch_wide_wbtest.mbt", 204672),
+    // (the chat's page made as nodes by default on the test channel since 2026-11-19, chatPage moved to beta: one picture
+    // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's; viewer_pick_wbtest's, made by its tester)
+    ("src/sfapp/touch_wide_wbtest.mbt", 243220),
     ("src/sfapp/view_beside_wbtest.mbt", 2970770),
-    ("src/sfapp/viewer_flight_wbtest.mbt", 146914),
+    // (the chat's page made as nodes by default on the test channel since 2026-11-19, chatPage moved to beta: one picture
+    // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's)
+    ("src/sfapp/viewer_flight_wbtest.mbt", 185462),
     ("src/sfapp/viewer_media_wbtest.mbt", 115516),
     ("src/sfapp/viewer_pick_wbtest.mbt", 243220),
     ("src/sfapp/viewers_desk_wbtest.mbt", 1895779),

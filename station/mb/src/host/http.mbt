@@ -16,11 +16,13 @@ pub impl Show for FetchTimeout with output(_, logger) {
 }
 
 ///|
-/// An answer to a fetch: its status, its headers (named as the shell gives them, lower case) and its body.
+/// An answer to a fetch: its status, its headers (named as the shell gives them, lower case), its body, and whether
+/// it is another URL's than the one asked (`redirected`: a redirect followed, `redirect="follow"`).
 pub struct FetchResponse {
   status : Int
   headers : Array[(String, String)]
   body : Bytes
+  redirected : Bool
 }
 
 ///|
@@ -55,7 +57,8 @@ fn response_of(said : Json, bytes : Bytes?) -> FetchResponse {
       })
     _ => []
   }
-  { status, headers, body: bytes.unwrap_or(b"") }
+  let redirected = said is { "redirected": True, .. }
+  { status, headers, body: bytes.unwrap_or(b""), redirected }
 }
 
 ///|
@@ -97,7 +100,8 @@ pub fn Host::cancel_fetch(self : Host, id : Int64) -> Unit {
 /// An HTTP request by the shell: `entry`, the host and port its TCP goes to (TLS's name and HTTP's Host the URL's
 /// own); `head_ms`, how long the shell waits for its answer's head, `stall_ms` how long its body may stay silent
 /// (neither: as long as this waits); `timeout_ms`, the deadline here for the whole answer (`FetchTimeout` once it
-/// passes); `called`, told the shell's call id as it is asked (what `Host::cancel_fetch` takes). Given up by its
+/// passes); `redirect`, `"follow"` for redirects followed (up to ten; else, `"manual"` or none, a 3xx is the answer);
+/// `called`, told the shell's call id as it is asked (what `Host::cancel_fetch` takes). Given up by its
 /// deadline or an interruption, it is given up at the shell too, its connection with it. The shell's own failure is
 /// raised as it says it (`@wire.ShellError`).
 pub async fn Host::fetch(
@@ -110,6 +114,7 @@ pub async fn Host::fetch(
   head_ms? : Int,
   stall_ms? : Int,
   timeout_ms? : Int,
+  redirect? : String,
   called? : (Int64) -> Unit,
 ) -> FetchResponse {
   let args : Map[String, Json] = {
@@ -125,6 +130,9 @@ pub async fn Host::fetch(
   }
   if stall_ms is Some(ms) {
     args["stallMs"] = Json::number(ms.to_double())
+  }
+  if redirect is Some(r) {
+    args["redirect"] = Json::string(r)
   }
   fetch_by(
     async fn(args, body, told) {

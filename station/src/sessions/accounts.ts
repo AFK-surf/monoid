@@ -11,7 +11,7 @@ import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { type HubConfig, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
 import { modelKey } from "../read/usage.ts";
-import { availableEfforts, cheapToLeave, commonEfforts, type ProfileHealth, pickProfile, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
+import { availableEfforts, cheapToLeave, commonEfforts, type ProfileHealth, pickProfile, quotaUnavailable, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
 import { agyScopeForModel } from "../accounts/agy-quota.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
 import { accessKind, billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
@@ -340,10 +340,16 @@ export class Accounts {
       // and from a crowded paid-for account to an uncrowded one (the pool puts those last) only when that loses little
       // (`cheapToLeave`); never from one paid for already to one billed per use.
       const paid = (p: Profile) => !billedPerUse(p);
+      const unavailable = (p: Profile) => quotaUnavailable(this.healthOf(p.id));
       const better = (p: Profile) =>
-        p.id !== current.id && fits(p) && this.can(p.id, row.model) && (paid(p) === paid(current) ? crowded(current) && !crowded(p) : paid(p));
+        p.id !== current.id &&
+        fits(p) &&
+        this.can(p.id, row.model) &&
+        (paid(p) === paid(current)
+          ? (unavailable(current) && !unavailable(p)) || (!unavailable(p) && crowded(current) && !crowded(p))
+          : paid(p));
       among = candidates.filter(better);
-      const upgrading = !paid(current) && among.some(paid);
+      const upgrading = (!paid(current) && among.some(paid)) || (unavailable(current) && among.some((p) => !unavailable(p)));
       if (among.length === 0 || holding || (!upgrading && !this.cheapToLeave(key))) return withSpelling(current);
     } else {
       // It goes to those that can run it now; none can: to those that at least sign in (it waits for their refill).

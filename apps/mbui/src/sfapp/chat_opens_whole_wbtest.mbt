@@ -353,7 +353,7 @@ fn ow_app(
 ) -> @ui.Tester {
   new_run()
   ow_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = ow_source(
     round_trip_again(core(fixture(mode)), 0.0, heard~, late=fn(_, _) { if armed.val { ms } else { 0.0 } }),

@@ -466,9 +466,7 @@ fn outside_round_trip(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(if new_chat { "home" } else { "chat" })
   let station : Source = {
     ..base,

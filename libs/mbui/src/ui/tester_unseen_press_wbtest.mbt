@@ -7,9 +7,9 @@
 /// that, taking a finger nowhere while hidden.
 priv enum UnseenKey {
   Faded
+  FadedTakesUnseen
   Hovered
   HoveredPressless
-  HoveredNowhere
 }
 
 ///|
@@ -41,14 +41,10 @@ fn unseen_tester(key : UnseenKey) -> Tester {
         |> ignore
         match key {
           Faded => k.alpha(Is(0.0)) |> ignore
+          FadedTakesUnseen => k.alpha(Is(0.0)).takes_unseen(Is(true)) |> ignore
           Hovered => k.alpha(By(fn() { if shown() { 1.0 } else { 0.0 } })) |> ignore
           HoveredPressless =>
             k.alpha(By(fn() { if shown() { 1.0 } else { 0.0 } })).presses(By(shown)) |> ignore
-          HoveredNowhere =>
-            k
-            .alpha(By(fn() { if shown() { 1.0 } else { 0.0 } }))
-            .takes(fn(w, h, _) { if shown() { [(0.0, 0.0, w, h)] } else { [] } })
-            |> ignore
         }
       })
       |> ignore
@@ -66,46 +62,92 @@ fn unseen_in_audit(t : Tester) -> Array[String] {
 }
 
 ///|
-test "a row's key faded out, always or under no hand: its press found, by the audit too, naming where it was made" {
-  for key in [Faded, Hovered] {
-    let t = unseen_tester(key)
-    // (the hand away from the row)
-    t.move_to(350.0, 300.0)
-    t.run_for(unseen_hand_ms)
-    let found = t.unseen_press_faults()
-    assert_eq(found.length(), 1, msg=found.join("\n"))
-    assert_true(
-      found[0].has_prefix("unseen press: a box (a node of the window's tree's at 240,0 60×32, made at ") &&
-      found[0].contains("tester_unseen_press_wbtest.mbt:"),
-      msg=found[0],
-    )
-    assert_eq(unseen_in_audit(t), found)
-  }
-}
-
-///|
-test "a row's key shown under the hand: no fault" {
-  let t = unseen_tester(Hovered)
+test "a row's key faded out with takes_unseen: found, by the audit too, naming where it was made" {
+  let t = unseen_tester(FadedTakesUnseen)
+  // (the hand away from the row)
   t.move_to(350.0, 300.0)
   t.run_for(unseen_hand_ms)
-  assert_eq(t.unseen_press_faults().length(), 1)
-  // (over the row, beside its key)
-  t.move_to(40.0, 24.0)
-  t.run_for(unseen_hand_ms)
-  assert_eq((t.unseen_press_faults(), unseen_in_audit(t)), ([], []))
+  let found = t.unseen_press_faults()
+  assert_eq(found.length(), 1, msg=found.join("\n"))
+  assert_true(
+    found[0].has_prefix("unseen press: a box (a node of the window's tree's at 240,0 60×32, made at ") &&
+    found[0].contains("tester_unseen_press_wbtest.mbt:"),
+    msg=found[0],
+  )
+  assert_eq(unseen_in_audit(t), found)
 }
 
 ///|
-test "a row's key said to take no press, or a finger nowhere, while hidden: no fault, hidden or shown" {
-  for key in [HoveredPressless, HoveredNowhere] {
+test "a row's key faded out without takes_unseen (always or under no hand): engine skips it, no fault" {
+  for key in [Faded, Hovered] {
     let t = unseen_tester(key)
     t.move_to(350.0, 300.0)
     t.run_for(unseen_hand_ms)
-    let hidden = (t.unseen_press_faults(), unseen_in_audit(t))
+    assert_eq((t.unseen_press_faults(), unseen_in_audit(t)), ([], []))
+    // (over the row, beside its key)
     t.move_to(40.0, 24.0)
     t.run_for(unseen_hand_ms)
-    assert_eq((hidden, t.unseen_press_faults()), (([], []), []))
+    assert_eq((t.unseen_press_faults(), unseen_in_audit(t)), ([], []))
   }
+}
+
+///|
+test "a row's key said to take no press while hidden: no fault, hidden or shown" {
+  let t = unseen_tester(HoveredPressless)
+  t.move_to(350.0, 300.0)
+  t.run_for(unseen_hand_ms)
+  let hidden = (t.unseen_press_faults(), unseen_in_audit(t))
+  t.move_to(40.0, 24.0)
+  t.run_for(unseen_hand_ms)
+  assert_eq((hidden, t.unseen_press_faults()), (([], []), []))
+}
+
+///|
+test "engine-level alpha=0 click passes through to underlying button, while takes_unseen(Is(true)) captures it" {
+  let under_clicks = Ref(0)
+  let over_clicks = Ref(0)
+  let opt_in = @signals.signal(false)
+  let t = Tester::tree(
+    fn(root) {
+      root.box(fn(under) {
+        under
+        .over(Is(true))
+        .width(Is(Some(100.0)))
+        .height(Is(Some(48.0)))
+        .ground(Is(0x3366CCFFL))
+        .says(Is(Some(@view.said(Button, label="Under"))))
+        .on_press(fn() { under_clicks.val += 1 })
+        |> ignore
+      })
+      |> ignore
+      root.box(fn(over) {
+        over
+        .over(Is(true))
+        .width(Is(Some(100.0)))
+        .height(Is(Some(48.0)))
+        .ground(Is(0xCC3333FFL))
+        .alpha(Is(0.0))
+        .takes_unseen(By(fn() { opt_in.get() }))
+        .says(Is(Some(@view.said(Button, label="Over"))))
+        .on_press(fn() { over_clicks.val += 1 })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=200.0,
+    platform=0,
+  )
+  t.draw()
+  // Without takes_unseen, pointer click passes through the alpha=0 button to the underlying button.
+  t.tap(50.0, 24.0)
+  assert_eq((under_clicks.val, over_clicks.val), (1, 0))
+  // With takes_unseen(true), the unseen button explicitly takes the click and unseen_press_faults flags it.
+  opt_in.set(true)
+  t.frame()
+  t.tap(50.0, 24.0)
+  assert_eq((under_clicks.val, over_clicks.val), (1, 1))
+  assert_eq(t.unseen_press_faults().length(), 1)
 }
 
 ///|

@@ -256,7 +256,11 @@ fn sent_soon_step(soon : Double, deliver : Double) -> (Double, Double) raise {
   t.type_text("再看一下")
   tap_send(t)
   let sent = t.time()
-  if soon >= 0.0 {
+  if soon >= 0.0 && @sfbase.chat_page_nodes.untracked() {
+    // (the page made as nodes keeps no old send_flight: its words out of the field as long after they were sent as
+    // sent_out_away_ms says, its composer's `away_until`)
+    t.run_for(sent + @sfbase.sent_out_away_ms() - t.time())
+  } else if soon >= 0.0 {
     while send_flight.get().map(fn(f) { !@sfbase.flight_out(t.ctx(), f) }).unwrap_or(false) {
       t.frame()
     }
@@ -393,6 +397,9 @@ test "words sent: the chat's rows they fly past are kept, not built again each f
     return
   }
   new_run()
+  // (the old page's rows built again each frame of the old flight (send_flight, rows_built): the page made as nodes
+  // keeps its rows, nothing of this to count)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let src = fixture("chat-done-live")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)

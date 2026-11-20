@@ -1032,7 +1032,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "settings-profiles", "settings-profiles-monthly", "settings-profiles-fable", "settings-profiles-own3", "settings-profiles-week-fable", "settings-profiles-several",
     "settings-profile-account", "settings-profiles-station",
     "settings-profile", "settings-profile-fable", "settings-profile-own3", "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
-    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-copy",
+    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-verify", "settings-profile-copy",
     "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-new-profile",
     // (添加账号 with three stations up to choose from, #6030; a key's form with a region and a protocol to choose)
     "settings-new-profile-stations", "settings-new-profile-key",

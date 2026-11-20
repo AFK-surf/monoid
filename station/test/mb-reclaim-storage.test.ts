@@ -72,6 +72,12 @@ function setRepoMtime(repo: string, ms: number): void {
   }
 }
 
+function withoutFront(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.STILLFAIL_MESH_FRONT;
+  return env;
+}
+
 async function launch(data: string, app: string) {
   const listener = () => new Promise<Server>((resolve) => {
     const s = createServer();
@@ -81,7 +87,8 @@ async function launch(data: string, app: string) {
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
-    env: { ...process.env, STILLFAIL_PARTS_DOOR: "1", STILLFAIL_LOCAL_ADMIN: "1" },
+    // Never the host station's front (an agent's environment once carried it): this test station binds a key of its own.
+    env: { ...withoutFront(), STILLFAIL_PARTS_DOOR: "1", STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1" },
   });
   children.push(child);
   mcp.close();
@@ -335,8 +342,13 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
     assert.equal(delExt.status, 200, JSON.stringify(delExt));
     assert.ok(existsSync(extUserFile), "MoonBit delete_session preserved workspace outside <data>/sessions");
     assert.ok(existsSync(userTranscript), "MoonBit delete_session preserved external user profile transcript");
-  } finally {
+    // told to stop (`op`, the launcher's control channel), it winds down with its processes (`--builder replica-export`)
     launched.tell({ op: "stop" });
-    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 10_000).unref())]);
+    assert.equal(await launched.ended, 0, launched.err());
+  } finally {
+    if (launched.child.exitCode === null && launched.child.signalCode === null) {
+      launched.tell({ op: "stop" });
+      await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);
+    }
   }
 });

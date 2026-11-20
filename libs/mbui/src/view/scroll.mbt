@@ -1041,6 +1041,7 @@ pub fn View::scrolls(
   for_in? : NodeId,
 ) -> View {
   guard self.live() is Some(_) else { return self }
+  self.mark_structure_own()
   // (where it says when it has it: drawn, and its room kept, only then)
   let bar = match (bar, bar_here) {
     (Some(b), Some(here)) => Some({ ..b, drawn: fn() { here() && (b.drawn)() } })
@@ -1096,6 +1097,7 @@ pub fn View::scrolls(
   // (what it holds laid out as tall as it is, whatever room it has: its content's own height, as CSS's overflow scroll
   // has it)
   self.tree.nodes[self.at].flex.style.overflow = @flex.Overflow::Scroll
+  self.tree.soft_min_applied(self.at)
   self.tree.layout_marked_at(self.at)
   // (how far it can go and how big it shows what it holds, worked out as it is laid out, in that same layout: what it
   // holds measured there (as tall as it comes to; across, as wide), the room it shows it in its own; what reads them
@@ -1322,6 +1324,8 @@ pub fn View::scrolls(
     inner.val = Some(held)
     self.tree.nodes[self.at].scroll_held = held.at
     self.tree.nodes[self.at].scroll_across = across
+    self.tree.soft_min_applied(self.at)
+    self.tree.soft_min_applied(held.at)
     // (a page's list's rows set on its host's pixels as an old view's list's are: Tree::set_rows_grid)
     // (a page's list's, down a column, drawn off by how far it is scrolled by its offset alone, read as it is drawn
     // (Node's scroll_off): nothing of it placed again as it scrolls, what it holds drawn as it was, moved by what hosts

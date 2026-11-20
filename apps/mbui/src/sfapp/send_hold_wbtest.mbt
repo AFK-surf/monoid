@@ -20,6 +20,9 @@ fn hold_chat() -> @ui.Tester {
 /// hold_chat's, and the source it reads.
 fn hold_chat_of() -> (@ui.Tester, Source) {
   new_run()
+  // (the old page's hold of the composer under words on their way (its SendFlight), what stable keeps: the page made
+  // as nodes lets it go at once, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -151,6 +154,9 @@ test "sent read up the list past its end's layout: the words' way as long as the
 ///|
 test "sent by Enter read up the list on 大屏: the list glides to its end in the page's scope, the words placed in the frame of the key" {
   new_run()
+  // (the old page's hold of the composer under words on their way (its SendFlight), what stable keeps: the page made
+  // as nodes lets it go at once, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -190,6 +196,8 @@ test "sent: its row is in the list in the frames of the press itself, what holds
 ///|
 test "a new chat's first words: what holds its composer is said as their row is in the new chat's list, not before" {
   let t = tester("home")
+  // (the old new chat's page and composer, what stable keeps: their words on their way the old SendFlight's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let (_, y) = bar_places_at()
   t.tap(195.0, y - 28.0 - 4.0)
   t.run_for(@ui.move_most_ms)
@@ -565,6 +573,9 @@ test "the box let go of at the moment words sent let go of it: closed on its own
   let both = hold_over_at(t, go, hold_over_moments)
   // (the box alone, nothing in it, no words on their way: its own clock)
   new_run()
+  // (the old page's hold of the composer under words on their way (its SendFlight), what stable keeps: the page made
+  // as nodes lets it go at once, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)

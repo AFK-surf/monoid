@@ -186,7 +186,21 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {
+      "src/choices_node.mbt": 2,
+      "src/form_swatch_node.mbt": 2,
+      "src/login_step_card_node.mbt": 1,
+      "src/notify_node.mbt": 1,
+      "src/options_card_node.mbt": 1,
+      "src/own_head_node.mbt": 1,
+      "src/page_node.mbt": 1,
+      "src/page_wide_node.mbt": 3,
+      "src/player_list_node.mbt": 1,
+      "src/quota_node.mbt": 3,
+      "src/quote_card_node.mbt": 3,
+      "src/settings_rows_node.mbt": 1
+    }
   },
   "excused": {
     "frame-request": {},
@@ -288,6 +302,7 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   }
 }

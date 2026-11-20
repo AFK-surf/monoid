@@ -76,11 +76,11 @@ test "panel centred, 大屏 keyboard and mouse: closed by its close button, by E
   }
   debug_inspect(out, content=(
     #|[
-    #|  "close: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    #|  "escape: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    #|  "outside: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    #|  "own: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 0 said [ok] focus Some(TextField 发消息)",
-    #|  "untitled close pressed: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "close: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "escape: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "outside: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "own: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 0 said [ok] focus Some(TextField 发消息)",
+    #|  "untitled close pressed: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 1 said [] focus Some(TextField 发消息)",
     #|]
   ))
 }

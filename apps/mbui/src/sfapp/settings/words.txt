@@ -566,6 +566,7 @@ android-settings.profile.none
 android-settings.profile.notChecked
 android-settings.profile.notSaved
 android-settings.profile.offline
+android-settings.profile.openLink
 android-settings.profile.pasteKey
 android-settings.profile.pickModels.lead
 android-settings.profile.pickModels.none
@@ -2021,8 +2022,6 @@ web-pages.stations.screensAndTerminals
 web-pages.experimental.title
 web-pages.experimental.lead
 web-pages.experimental.enabledCount
-web-pages.experimental.chatPage.title
-web-pages.experimental.chatPage.description
 web-pages.experimental.farviewNative.title
 web-pages.experimental.farviewNative.description
 web-pages.experimental.board.title

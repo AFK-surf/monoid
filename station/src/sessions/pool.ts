@@ -109,10 +109,15 @@ export function cheapToLeave(calls: ContextCall[], points: Map<string, number>):
   });
 }
 
-/// Whether a profile signs in: its login is not over and its key was not rejected.
+/// Whether a profile signs in: its login is not over, its key was not rejected, and the provider has not blocked it.
 export function signsIn(health: ProfileHealth): boolean {
   const state = health.check?.state;
-  return state !== "login" && state !== "failed";
+  return state !== "login" && state !== "failed" && health.quota?.state !== "blocked";
+}
+
+/// Whether a profile's last allowance check could not read its quota.
+export function quotaUnavailable(health?: ProfileHealth): boolean {
+  return health?.quota?.state === "unavailable";
 }
 
 /// Whether a profile can run now: it signs in, its key was not rejected, none of its windows is used up, and no turn
@@ -142,8 +147,20 @@ export function pickProfile(candidates: Profile[], model: string | null | undefi
   // None can run now: prefer one that at least signs in, as Accounts.runOn does. Otherwise repick can choose an
   // unreachable profile for its stale headroom, only for runOn to move straight back to the spent account.
   const signedIn = serving.filter((i) => signsIn(rank[i]![1]));
-  // None signs in either: still one that runs its model, so the failure shows in the session.
-  const pool = paid.length > 0 ? paid : fit.length > 0 ? fit : signedIn.length > 0 ? signedIn : serving;
+  const healthy = (list: number[]) => list.filter((i) => !quotaUnavailable(rank[i]![1]));
+  const paidHealthy = healthy(paid);
+  const fitHealthy = healthy(fit);
+  const signedInHealthy = healthy(signedIn);
+  // None signs in either: still one that runs its model, so the failure shows in the session. Within each tier, prefer
+  // profiles whose quota read succeeded over unavailable ones before falling back to a lower tier.
+  const pool =
+    paidHealthy.length > 0 ? paidHealthy
+    : paid.length > 0 ? paid
+    : fitHealthy.length > 0 ? fitHealthy
+    : fit.length > 0 ? fit
+    : signedInHealthy.length > 0 ? signedInHealthy
+    : signedIn.length > 0 ? signedIn
+    : serving;
   const urgencies = new Map(pool.map((i) => [i, urgency(rank[i]![1].quota, now)]));
   // Each profile's sessions over its weight, with the new one: the least is where it adds the least crowding.
   const share = (i: number) => (signals.load(rank[i]![0].id) + 1) / urgencies.get(i)!.weight;

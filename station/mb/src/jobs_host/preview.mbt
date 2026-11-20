@@ -91,12 +91,15 @@ pub fn preview_target(path : String) -> (Int, String)? {
 }
 
 ///|
-/// What goes back to the client: the service's status, its headers (by lowercase name, repeats kept), and its body a
-/// chunk at a time (None at its end).
+/// What goes back to the client: the service's status, its headers (by lowercase name, repeats kept), its body a
+/// chunk at a time (None at its end), and `close`, which lets the service's connection go (once; again does nothing):
+/// called by whoever stops reading before the end (its client gone), else the connection stays open as long as the
+/// service keeps it.
 pub(all) struct PreviewAnswer {
   status : Int
   headers : Array[(String, String)]
   next : async () -> Bytes?
+  close : async () -> Unit
 }
 
 ///|
@@ -113,6 +116,7 @@ fn plain_answer(status : Int, words : String) -> PreviewAnswer {
         Some(@utf8.encode(words))
       }
     },
+    close: async fn() {  },
   }
 }
 
@@ -123,11 +127,12 @@ priv struct Conn {
   socket : @net.Socket
   mut carry : Bytes
   mut ended : Bool
+  mut closed : Bool
 }
 
 ///|
 async fn Conn::open(host : @host.Host, port : Int) -> Conn raise {
-  { host, socket: host.tcp_open(port).socket, carry: b"", ended: false }
+  { host, socket: host.tcp_open(port).socket, carry: b"", ended: false, closed: false }
 }
 
 ///|
@@ -155,6 +160,10 @@ async fn Conn::fill(self : Conn) -> Bool raise {
 
 ///|
 async fn Conn::close(self : Conn) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
   self.socket.destroy()
 }
 
@@ -456,7 +465,7 @@ pub async fn proxy_preview(
     }
     back.push((name, value))
   }
-  { status, headers: back, next: conn.body(http_method, status, raw) }
+  { status, headers: back, next: conn.body(http_method, status, raw), close: async fn() { conn.close() } }
 }
 
 // ── a service's WebSocket ──

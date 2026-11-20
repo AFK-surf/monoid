@@ -265,6 +265,8 @@ export const PARAMS: Record<string, string> = {
   "admin.relayTokenRevoke": "id:string",
   "admin.relayPut": "url:string name:string target?:string",
   "admin.relayRemove": "url:string",
+  "admin.createKey": "name:string days?:number",
+  "admin.revokeKey": "id:string",
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
@@ -911,6 +913,10 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("POST", () => "/v1/admin/relays/put", p.pick(["url", "name", "target"]));
     case "admin.relayRemove":
       return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
+    case "admin.createKey":
+      return op("POST", () => "/v1/admin/keys", p.pick(["name", "days"]));
+    case "admin.revokeKey":
+      return op("POST", () => `/v1/admin/keys/${p.at("id")}/revoke`, null);
     default:
       return null;
   }

@@ -44,7 +44,8 @@ fn pill_over(t : @ui.Tester, y : Double) -> (Double, Double)? {
 fn pill_mark(t : @ui.Tester, y : Double) -> String {
   guard pill_over(t, y) is Some((qx, _)) else { return "" }
   for (name, x, sy, _, _) in t.shape_boxes() {
-    if name.has_prefix("sf/icon/quote") && x < qx && qx - x < 40.0 && sy < y && sy > y - 60.0 {
+    // (the old view's icon path, sf/icon/…; the page made as nodes draws it by /icon/…, chat_quote_node's)
+    if (name.has_prefix("sf/icon/quote") || name.has_prefix("/icon/quote")) && x < qx && qx - x < 40.0 && sy < y && sy > y - 60.0 {
       return name
     }
   }
@@ -151,7 +152,7 @@ test "大屏, a mouse picks across two list items of one message and quotes the 
   guard pill_over(t, by) is Some(_) else {
     fail("no 引用 over list items: box=\{Repr(t.ctx().selection_box())}, picked=\{Repr(@sfbase.picked.get())}")
   }
-  assert_true(pill_mark(t, by).has_prefix("sf/icon/quote/"), msg="the pill over the end has a closing quote")
+  assert_true(pill_mark(t, by).contains("/icon/quote/"), msg="the pill over the end has a closing quote")
   // (each fault as it was before, whatever the frame's nodes are numbered now)
   let was = before.map(aw_plain)
   assert_eq(t.audit().filter(fn(f) { !was.contains(aw_plain(f)) }), [])
@@ -160,7 +161,7 @@ test "大屏, a mouse picks across two list items of one message and quotes the 
   mouse_dragged(t, bx + bw - 1.0, by + bh / 2.0, ax + 1.0, ay + ah / 2.0)
   assert_eq(t.ctx().selected_text(), picked)
   guard pill_over(t, ay) is Some(_) else { fail("no 引用 over the start when picked upwards") }
-  assert_true(pill_mark(t, ay).has_prefix("sf/icon/quote-open/"), msg="the pill over the start has an opening quote")
+  assert_true(pill_mark(t, ay).contains("/icon/quote-open/"), msg="the pill over the start has an opening quote")
   t.run_for(@ui.double_click_ms)
   guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < ay && w.2 > ay - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
     fail("no 引用 to press")

@@ -659,6 +659,8 @@ test("Vault once & timed grants: handover carry preserves chat grant and prevent
   const pOnceId = "r_01HZZZZZZZZZZZZZZZZZZPO1";
   const pExpId = "r_01HZZZZZZZZZZZZZZZZZZPE1";
   const pdb = new DatabaseSync(join(pData, "stillfail.db"));
+  // (a station's own writes may hold the database's lock: wait for it, as every connection to it does)
+  pdb.exec("PRAGMA busy_timeout = 5000;");
   try {
     const plainItem = {
       ws: PWS,
@@ -822,6 +824,8 @@ test("Vault concurrency & guards: PUT box/vault/item version races, atomic vault
 
   // 5) NUL-suffixed & duplicate JSON-key ambiguity guards in live DB read through Admin API.
   const db = new DatabaseSync(join(env.data, "stillfail.db"));
+  // (the running station writes the same database: wait for its lock, as every connection to it does)
+  db.exec("PRAGMA busy_timeout = 5000;");
   try {
     // Pending request where NUL-suffixed key says "v_other" but actual "vault" key is VAULT1 -> must remain visible to Alice.
     db.prepare("INSERT INTO vault_requests (ws, id, session, status, body) VALUES (?, ?, 's1', 'pending', ?)")

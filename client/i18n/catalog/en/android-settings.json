@@ -366,6 +366,7 @@
   "android-settings.profile.notSaved": "Not saved",
   "android-settings.profile.offline": "{name} is offline; available once it reconnects",
   "android-settings.profile.pasteKey": "Paste key",
+  "android-settings.profile.openLink": "Open link",
   "android-settings.profile.recheck": "Recheck",
   "android-settings.profile.renameWhat": "rename the profile",
   "android-settings.profile.run": "Run",

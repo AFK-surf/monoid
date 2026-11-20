@@ -180,28 +180,16 @@ fn p54_hub_port(s : P54Screens) -> @mesh_runtime.ScreenHubPort {
 }
 
 ///|
-/// A member's view of a screen (`screens.view`: `{head, viewer, stream}`, the stream a handle at the shell) answered
-/// while it lasts.
-async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
+/// A member's view of a screen answered directly over a `@door.Stream` (preserving QUIC `media_datagrams`).
+async fn p54_screen_view_stream(
+  s : P54Screens,
+  stream : @door.Stream,
+  carry : Bytes,
+  head : Json,
+  viewer : Json,
+) -> Unit {
   let bus = s.bus
   let host = bus.host
-  let handle = opt_field(Some(asked), "stream").unwrap_or(Json::null())
-  let stream_handle = p54_stream_handle(handle)
-  let carry = p54_bytes_of(opt_field(Some(handle), "carry"))
-  let stream : @door.Stream = {
-    read: async fn() { p54_stream_read(host, stream_handle) },
-    write: async fn(b) { ignore(p54_stream_call(host, stream_handle, "write", bytes=b)) },
-    finish: async fn() { ignore(p54_stream_call(host, stream_handle, "finish")) catch { _ => () } },
-    stopped: async fn() {
-      match (try { Ok(p54_stream_call(host, stream_handle, "stopped")) } catch { e => Err(e) }) {
-        Ok(({ "code": Number(c, ..), .. }, _)) => Some(c.to_int())
-        _ => None
-      }
-    },
-    reset: async fn(code) {
-      ignore(p54_stream_call(host, stream_handle, "reset", code=ji(code))) catch { _ => () }
-    },
-  }
   let words = (lang : String, key : String, args : Json) => {
     let given = match args {
       Object(m) =>
@@ -222,16 +210,48 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
     p54_hub_port(s),
     stream,
     carry,
-    opt_field(Some(asked), "head").unwrap_or(Json::null()),
-    opt_field(Some(asked), "viewer").unwrap_or(Json::null()),
+    head,
+    viewer,
     () => !bus.stopped.is_done(),
     host.rt,
     words,
     (level, part, said, with_) => slice_log(level, part, said, with_),
     host_now=Some(() => wall_ms().to_double()),
-    media_datagrams=Some(async fn(token) {
+    media_datagrams=stream.media_datagrams,
+  )
+}
+
+///|
+/// A member's view of a screen (`screens.view`: `{head, viewer, stream}`, the stream a handle at the shell) answered
+/// while it lasts.
+async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
+  let host = s.bus.host
+  let handle = opt_field(Some(asked), "stream").unwrap_or(Json::null())
+  let stream_handle = p54_stream_handle(handle)
+  let carry = p54_bytes_of(opt_field(Some(handle), "carry"))
+  let stream : @door.Stream = {
+    read: async fn() { p54_stream_read(host, stream_handle) },
+    write: async fn(b) { ignore(p54_stream_call(host, stream_handle, "write", bytes=b)) },
+    finish: async fn() { ignore(p54_stream_call(host, stream_handle, "finish")) catch { _ => () } },
+    stopped: async fn() {
+      match (try { Ok(p54_stream_call(host, stream_handle, "stopped")) } catch { e => Err(e) }) {
+        Ok(({ "code": Number(c, ..), .. }, _)) => Some(c.to_int())
+        _ => None
+      }
+    },
+    reset: async fn(code) {
+      ignore(p54_stream_call(host, stream_handle, "reset", code=ji(code))) catch { _ => () }
+    },
+    media_datagrams: Some(async fn(token) {
       let (said, _) = p54_stream_call(host, stream_handle, "mediaDatagrams", token=Json::number(token))
       said is True
     }),
+  }
+  p54_screen_view_stream(
+    s,
+    stream,
+    carry,
+    opt_field(Some(asked), "head").unwrap_or(Json::null()),
+    opt_field(Some(asked), "viewer").unwrap_or(Json::null()),
   )
 }
