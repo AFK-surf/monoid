@@ -435,6 +435,9 @@ jobs:
     steps: &station-natives-linux-steps
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}' }
+      # (the pinned Node: ci-1's from setup-linux, before anything runs node)
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-linux
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
       - &station-natives-missing
@@ -443,8 +446,13 @@ jobs:
         run: |
           missing=""
           for want in $WANT; do
-            # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's)
-            k=$(node scripts/native.ts key "${want%%:*}" "${want#*:}" 2>/dev/null) || { echo "$want: not a part of this revision"; continue; }
+            # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's. Any
+            # other failure stops the job: never taken for "nothing missing". Not `native.ts parts`: newer than some
+            # revisions released)
+            if ! k=$(node scripts/native.ts key "${want%%:*}" "${want#*:}" 2> "$RUNNER_TEMP/key.err"); then
+              if grep -q "no such part: ${want%%:*} " "$RUNNER_TEMP/key.err"; then echo "$want: not a part of this revision"; continue; fi
+              cat "$RUNNER_TEMP/key.err" >&2; exit 1
+            fi
             name="${want%%:*}-${want#*:}-$k.tar.gz"
             # (the store answers GET, ranges too, not HEAD; the release's download a redirect)
             if curl -fs --max-time 30 -r 0-0 -o /dev/null "https://app.still.fail/releases/natives/$name"; then echo "$name: in the store"
@@ -452,8 +460,6 @@ jobs:
             else echo "$name: in neither, built here"; missing="$missing $want"; fi
           done
           echo "list=$missing" >> "$GITHUB_OUTPUT"
-      - if: steps.missing.outputs.list != '' && runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc', farview: 'false' }
@@ -559,6 +565,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
           git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
           STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --stage "$RUNNER_TEMP/release"
       - id: hand
