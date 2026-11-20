@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 2.73 | 3.68 | 14.98 | 37.01 | 56.86 | 32.45 | 66.01 | 98.04 | 119.16 |
 | [610441335](https://github.com/AFK-surf/monoid/commit/6104413355243786b5356bfd298a9ebc22fdf21b) fix(rules): defer the hash seed under moonc 0.10.2 | 2.73 | 3.69 | 14.99 | 37.01 | 56.89 | 32.45 | 66.01 | 98.04 | 119.52 |
 | [ea8f4a0a7](https://github.com/AFK-surf/monoid/commit/ea8f4a0a7494995a59eb623b612694fb65970beb) fix(station): keep an account's verification link  | 2.73 | 3.69 | 14.99 | 37.01 | 56.89 | 32.45 | 66.01 | 97.9 | 125.81 |
 | [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 2.73 | 3.68 | 14.99 | 37.01 | 56.88 | 32.44 | 66.01 | 98.14 | 122.74 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [147cbffea](https://github.com/AFK-surf/monoid/commit/147cbffeab11883ae0e572fdbb1ae16c43ad2b02) ci(android): hash APK inputs in batches and put fi | 2.67 | 3.58 | 14.64 | 36.93 | 56.33 | 32.39 | 65.67 | 97.63 | 125.92 |
 | [07ab0ec5f](https://github.com/AFK-surf/monoid/commit/07ab0ec5fc0516223eee4dc38ded1f7ddee1389a) fix(station): read adb revokes without taking the  | 2.67 | 3.58 | 14.64 | 36.93 | 56.33 | 32.39 | 65.67 | 97.63 | 125.92 |
 | [6b2f2c4fa](https://github.com/AFK-surf/monoid/commit/6b2f2c4fad295544428147c3355ef00bba73a635) refactor(station/mb): wire session_storage directl | 2.66 | 3.58 | 14.62 | 36.92 | 56.29 | 32.38 | 65.63 | 97.73 | 120.51 |
-| [b251a55c4](https://github.com/AFK-surf/monoid/commit/b251a55c4e3f66d324cb182e76a4883372dc015c) feat(mbui): add layered NavTransition protocol, ge | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.63 | 130.99 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [610441335](https://github.com/AFK-surf/monoid/commit/6104413355243786b5356bfd298a9ebc22fdf21b) fix(rules): defer the hash seed under moonc 0.10.2 | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [ea8f4a0a7](https://github.com/AFK-surf/monoid/commit/ea8f4a0a7494995a59eb623b612694fb65970beb) fix(station): keep an account's verification link  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [147cbffea](https://github.com/AFK-surf/monoid/commit/147cbffeab11883ae0e572fdbb1ae16c43ad2b02) ci(android): hash APK inputs in batches and put fi | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.08 |
 | [07ab0ec5f](https://github.com/AFK-surf/monoid/commit/07ab0ec5fc0516223eee4dc38ded1f7ddee1389a) fix(station): read adb revokes without taking the  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
 | [6b2f2c4fa](https://github.com/AFK-surf/monoid/commit/6b2f2c4fad295544428147c3355ef00bba73a635) refactor(station/mb): wire session_storage directl | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
-| [b251a55c4](https://github.com/AFK-surf/monoid/commit/b251a55c4e3f66d324cb182e76a4883372dc015c) feat(mbui): add layered NavTransition protocol, ge | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
