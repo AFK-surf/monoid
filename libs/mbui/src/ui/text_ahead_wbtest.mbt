@@ -119,3 +119,82 @@ test "a glyph shaped and not laid out is asked at phase 0, once; one laid out is
   assert_eq(asked, want)
   assert_true(asked.iter().any(fn(k) { (k >> 26) != 0 }))
 }
+
+///|
+test "between-frame event layout dispatches glyphs_ahead before next draw with zero duplicate on draw" {
+  let asked : Array[Int] = []
+  let show = @signals.signal(false)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=400.0, scale=2.75)
+  t.latin_advances(
+    FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+    FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+  )
+  set_view_app(fn(root) {
+    root.laid_before_causes()
+    root.box(fn(p) {
+      p.width(Is(Some(360.0))).padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      p.show(
+        fn() { show.get() },
+        fn(v) {
+          v
+          .width(Is(Some(328.0)))
+          .words(
+            Is("帧间事件新增文本节点，在下一帧绘制之前就应该提前派发字形预热。"),
+            look={ ..@view.words_plain, size: 15.3, line: 22.0, wrap: true },
+          )
+          |> ignore
+        },
+        at_once=true,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  fake_ahead.val = Some(asked)
+  view_event(fn() { show.set(true) })
+  let before_draw = asked.length()
+  assert_true(before_draw > 15, msg="expected glyphs_ahead during between-frame event, got \{before_draw}")
+  t.draw()
+  fake_ahead.val = None
+  let seen : Map[Int, Bool] = Map([])
+  for k in asked {
+    assert_true(!seen.contains(k), msg="duplicate (key, phase) dispatched across event + draw: \{k}")
+    seen[k] = true
+  }
+  let (placed, hit, _) = ahead_hits(asked)
+  assert_true(placed > 15)
+  assert_eq(hit, placed, msg="\{hit} of \{placed} placed glyphs asked at their phase")
+}
+
+///|
+test "heavy single-frame layout flushes mid-layout at glyphs_ahead_batch with zero duplicates" {
+  let asked : Array[Int] = []
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=600.0, scale=2.75)
+  t.latin_advances(
+    FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+    FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+  )
+  set_view_app(fn(_root) {  })
+  t.draw()
+  fake_ahead.val = Some(asked)
+  // > 48 distinct characters in one layout_text call triggers mid-layout flush automatically when view_app is active.
+  let long_a = "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰"
+  let _ = layout_text(long_a, 15.3, 400, 328.0, true)
+  let mid_count = asked.length()
+  assert_true(
+    mid_count >= glyphs_ahead_batch,
+    msg="expected mid-layout flush >= \{glyphs_ahead_batch}, got \{mid_count}",
+  )
+  // Second layout overlapping characters from long_a plus new characters, followed by frame-end dedup flush.
+  let long_b = "天地玄黄宇宙洪荒菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐"
+  let _ = layout_text(long_b, 15.3, 400, 328.0, true)
+  glyphs_ahead(dedup=true)
+  fake_ahead.val = None
+  assert_true(asked.length() > mid_count, msg="expected remaining glyphs flushed after second layout")
+  let seen : Map[Int, Bool] = Map([])
+  for k in asked {
+    assert_true(!seen.contains(k), msg="duplicate (key, phase) in single frame: \{k}")
+    seen[k] = true
+  }
+}

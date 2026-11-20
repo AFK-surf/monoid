@@ -541,6 +541,7 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   // an em may part it from this run's first (rich_spaced_run): each run is shaped on its own, so neither the host's
   // shaper nor words_spaced_in sees where two runs meet
   let mut spaced_before : (Int, Int, Double)? = None
+  let mut any_bidi = false
   for k, run in r.runs {
     let size = r.run_size(run)
     match run.drawing {
@@ -577,6 +578,9 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
     let weight = r.run_weight(run)
     let style = r.run_style(run)
     let s = shape(run.text, size, weight, style~, spacing=r.spacing)
+    if s.bidi is Some(_) {
+      any_bidi = true
+    }
     let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~)
     let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
     run_start.push(off)
@@ -632,7 +636,7 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
   // (right to left: each line's clusters put in their visual order, rich_lines)
-  let bd = @text.bidi_mixed(text)
+  let bd = if any_bidi { @text.bidi_mixed(text) } else { None }
   {
     text,
     run_start,

@@ -99,6 +99,8 @@ priv struct TextCache {
   mut colour_atlas : @hostapi.Atlas?
   // the glyphs of what was shaped in this frame that it has not drawn yet, for the host to draw ahead (glyphs_ahead)
   fresh : Array[Int]
+  // keys already dispatched to h_glyphs_ahead in this frame when dedup=true (cleared at text_frame / glyphs_forget)
+  ahead_sent : Map[Int, Bool]
   mut generation : Int
   // the frame being drawn, and the last that let go of what was shaped longest ago (shapes_thin)
   mut frame : Int
@@ -109,6 +111,7 @@ priv struct TextCache {
   mut started_over : Int
   mut too_much : Bool
   buf : FixedArray[Double]
+  mut part_buf : FixedArray[Double]?
   gbuf : FixedArray[Double]
 }
 
@@ -121,6 +124,7 @@ let text_cache : TextCache = {
   atlas: None,
   colour_atlas: None,
   fresh: [],
+  ahead_sent: Map([]),
   generation: -1,
   frame: 0,
   thinned: -1,
@@ -128,6 +132,7 @@ let text_cache : TextCache = {
   started_over: -1,
   too_much: false,
   buf: FixedArray::make(4 * 8192, 0.0),
+  part_buf: None,
   gbuf: FixedArray::make(8, 0.0),
 }
 
@@ -135,6 +140,9 @@ let text_cache : TextCache = {
 /// A frame begins: what it shapes and draws from the atlas is kept through it.
 fn text_frame() -> Unit {
   text_cache.frame = text_cache.frame + 1
+  if !text_cache.ahead_sent.is_empty() {
+    text_cache.ahead_sent.clear()
+  }
   for a in [text_cache.atlas, text_cache.colour_atlas] {
     match a {
       Some(a) => a.next_frame()
@@ -209,6 +217,9 @@ fn glyphs_forget() -> Unit {
   glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
+  if !text_cache.ahead_sent.is_empty() {
+    text_cache.ahead_sent.clear()
+  }
   glyphs_laid.clear()
   text_cache.atlas = None
   text_cache.colour_atlas = None
@@ -617,7 +628,14 @@ fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : F
   }
   guard wide else { return k }
   let cap = out.length() / 4
-  let part = FixedArray::make(out.length(), 0.0)
+  let part = match text_cache.part_buf {
+    Some(b) if b.length() >= out.length() => b
+    _ => {
+      let b = FixedArray::make(out.length(), 0.0)
+      text_cache.part_buf = Some(b)
+      b
+    }
+  }
   let mut k = 0
   for run in runs {
     let (a, b, narrow) = run
@@ -857,8 +875,9 @@ fn spaced_pair(a : Int, b : Int) -> Bool {
 
 ///|
 /// Whether every UTF-16 unit in `text` is a standalone UAX #29 extended grapheme cluster, non-joining, and left-to-right
-/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, and CJK / kana / Hangul syllables / fullwidth
-/// punctuation without combining marks, surrogates, CR, variation selectors, or ZWJ.
+/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, common standalone Latin-1 / general
+/// punctuation & currency symbols, and CJK / kana / Hangul syllables / fullwidth punctuation without combining marks,
+/// surrogates, CR, variation selectors, bidi controls, emoji-candidate symbols, or ZWJ.
 fn unit_clusters(text : String) -> Bool {
   let n = text.length()
   for k in 0..<n {
@@ -867,7 +886,25 @@ fn unit_clusters(text : String) -> Bool {
       continue
     }
     if c < 0x3000 {
-      if c == 10 || c == 9 {
+      if c == 10 ||
+        c == 9 ||
+        c == 0x00A5 ||
+        c == 0x00A7 ||
+        c == 0x00B0 ||
+        c == 0x00B1 ||
+        c == 0x00B7 ||
+        c == 0x00D7 ||
+        c == 0x00F7 ||
+        c == 0x2013 ||
+        c == 0x2014 ||
+        (c >= 0x2018 && c <= 0x201D) ||
+        c == 0x2022 ||
+        c == 0x2026 ||
+        c == 0x2030 ||
+        c == 0x2032 ||
+        c == 0x2033 ||
+        c == 0x20AC ||
+        c == 0x2103 {
         continue
       }
       return false
@@ -1288,6 +1325,11 @@ fn bidi_offset_at(
 let glyphs_ahead_most : Int = 4096
 
 ///|
+/// Once this many laid-out glyphs accumulate in `glyphs_laid` during a tree layout, flush them ahead immediately so
+/// background raster threads can work in parallel with the remaining text layout.
+let glyphs_ahead_batch : Int = 48
+
+///|
 /// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase (glyph_sub_at).
 fn glyph_drawn_any_sub(k : Int) -> Bool {
   text_cache.glyphs.contains(k) ||
@@ -1314,6 +1356,9 @@ fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
       glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
     }
   }
+  if glyphs_laid.length() >= glyphs_ahead_batch && view_app.val is Some(_) {
+    glyphs_ahead(dedup=true)
+  }
 }
 
 ///|
@@ -1329,7 +1374,7 @@ let glyphs_laid : Array[Int] = []
 /// more later. Each at the phase its line put it at (glyphs_laid: bits 26..27 of its key, glyph_sub_at), the host
 /// drawing that phase first; one shaped and not laid out at phase 0. What is drawn is the same; only when and where the
 /// work is done changes (@hostapi.glyphs_ahead).
-fn glyphs_ahead() -> Unit {
+fn glyphs_ahead(dedup? : Bool = false) -> Unit {
   let fresh = text_cache.fresh
   let laid = glyphs_laid
   if fresh.is_empty() && laid.is_empty() {
@@ -1339,18 +1384,27 @@ fn glyphs_ahead() -> Unit {
   let mut n = 0
   // (each key once; a glyph laid out at a phase not asked again at phase 0 for having been shaped)
   let asked : Map[Int, Bool] = Map([])
+  let sent = text_cache.ahead_sent
   for k in laid {
     let base = k & 0x03FFFFFF
-    if !asked.contains(k) && !glyph_drawn_any_sub(base) {
+    if !asked.contains(k) && (!dedup || !sent.contains(k)) && !glyph_drawn_any_sub(base) {
       asked[k] = true
       asked[base | (1 << 30)] = true
+      if dedup {
+        sent[k] = true
+        sent[base | (1 << 30)] = true
+      }
       keys[n] = k
       n = n + 1
     }
   }
   for k in fresh {
-    if !asked.contains(k | (1 << 30)) && !glyph_drawn_any_sub(k) {
-      asked[k | (1 << 30)] = true
+    let fk = k | (1 << 30)
+    if !asked.contains(fk) && (!dedup || !sent.contains(fk)) && !glyph_drawn_any_sub(k) {
+      asked[fk] = true
+      if dedup {
+        sent[fk] = true
+      }
       keys[n] = k
       n = n + 1
     }

@@ -469,7 +469,14 @@ final class MBText {
             char c = chars[i];
             if (c >= 0x20 && c <= 0x7E) continue;
             if (c < 0x3000) {
-                if (c == '\n' || c == '\t') continue;
+                if (c == '\n' || c == '\t'
+                        || c == 0x00A5 || c == 0x00A7 || c == 0x00B0 || c == 0x00B1
+                        || c == 0x00B7 || c == 0x00D7 || c == 0x00F7
+                        || c == 0x2013 || c == 0x2014 || (c >= 0x2018 && c <= 0x201D)
+                        || c == 0x2022 || c == 0x2026 || c == 0x2030
+                        || c == 0x2032 || c == 0x2033 || c == 0x20AC || c == 0x2103) {
+                    continue;
+                }
                 return false;
             }
             if (c <= 0x3029 || (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30FF)
@@ -644,6 +651,10 @@ final class MBText {
             boolean plain = (c >= 0x20 && c <= 0x7E)
                 || (c >= 0xA0 && c <= 0x24F && c != 0xA9 && c != 0xAE)
                 || (c >= 0x300 && c <= 0x4FF)
+                || (c >= 0x2010 && c <= 0x2027)
+                || (c >= 0x2030 && c <= 0x2033)
+                || c == 0x20AC
+                || c == 0x2103
                 || (c >= 0x3000 && c <= 0x30FF && c != 0x3030 && c != 0x303D)
                 || (c >= 0x3400 && c <= 0x4DBF)
                 || (c >= 0x4E00 && c <= 0x9FFF)

@@ -1147,7 +1147,7 @@ fn view_told_as_built(c : Ctx) -> Unit {
       let was = view_island_said()
       view_brought(tree)
       // (what it shaped laying itself out again handed to the host to draw ahead, as view_frame's: on_frame)
-      glyphs_ahead()
+      glyphs_ahead(dedup=true)
       // (what a still pointer is over, the tree laid out again as told: view_arrived's)
       view_pointed_again()
       if view_island_said() != was {
@@ -4474,6 +4474,7 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
   // the event has run. An event inside a frame leaves its handovers for the frame's end instead.
   if event_depth.val == 0 && !frame_running.val {
     frame_afters_run()
+    glyphs_ahead(dedup=true)
   }
   if journaled {
     journal_event(what, start)
