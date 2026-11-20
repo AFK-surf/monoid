@@ -251,6 +251,8 @@ async fn harness_sql_net(host : @host.Host) -> Unit {
             let s = conn.socket
             let buf = @buffer.new()
             let err_msg = try {
+              // Signal the peer that connect succeeded so RST happens deterministically during read
+              s.write(b"!")
               while s.read() is Some(chunk) {
                 buf.write_bytes(chunk)
               }

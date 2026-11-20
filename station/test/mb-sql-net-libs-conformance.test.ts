@@ -576,9 +576,9 @@ test("net conformance: ECONNREFUSED and peer RST error propagation & socket clea
     const refused = await h.call("net.connect_expect_error", { port: closedPort });
     assert.ok(refused.error, "connecting to closed port must fail");
 
-    // Peer sends a few bytes then triggers TCP RST (resetAndDestroy)
+    // Peer waits for client's 1-byte trigger, then immediately triggers TCP RST (resetAndDestroy)
     const rstSrv = netServer((sock: Socket) => {
-      sock.write(Buffer.from("before-rst"), () => {
+      sock.once("data", () => {
         sock.resetAndDestroy();
       });
     });
@@ -587,7 +587,7 @@ test("net conformance: ECONNREFUSED and peer RST error propagation & socket clea
     const rstPort = (rstSrv.address() as any).port;
 
     const rstRes = await h.ok("net.connect_read_rst", { port: rstPort });
-    // Either reset error is raised or EOF after reset; either way socket must be closed cleanly
+    assert.ok(typeof rstRes.error === "string" && rstRes.error.length > 0, `expected RST read error, got ${JSON.stringify(rstRes)}`);
     assert.equal(rstRes.closed, true, "socket must be closed after peer RST");
   } finally {
     await h.close();
