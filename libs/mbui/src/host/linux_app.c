@@ -1831,6 +1831,14 @@ double mb_host_cpu_ms(void) {
   return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
 }
 
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+  return -1.0;
+}
+
 double mb_host_mem_bytes(void) {
   long pages = 0, resident = 0;
   FILE *f = fopen("/proc/self/statm", "r");

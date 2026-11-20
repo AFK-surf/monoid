@@ -97,9 +97,21 @@ fn A11yMirror::apply(self : A11yMirror, full : Bool, focus : Int, told : Array[A
   for n in told {
     match self.nodes.get(n.id) {
       Some(was) =>
-        for k in was.kids {
-          if !n.kids.contains(k) {
-            let_go.push(k)
+        if was.kids.length() > 8 && !n.kids.is_empty() {
+          let now_kids : Map[Int, Bool] = Map([])
+          for k in n.kids {
+            now_kids[k] = true
+          }
+          for k in was.kids {
+            if !now_kids.contains(k) {
+              let_go.push(k)
+            }
+          }
+        } else {
+          for k in was.kids {
+            if !n.kids.contains(k) {
+              let_go.push(k)
+            }
           }
         }
       None => ()

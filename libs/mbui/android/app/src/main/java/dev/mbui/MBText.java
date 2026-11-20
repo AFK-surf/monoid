@@ -809,9 +809,9 @@ final class MBText {
     // the threads ahead (the app's thread's), started as the first glyph is asked
     static Thread[] aheadThreads;
 
-    /** How many threads draw ahead: half the cores, up to 3 (the app's thread and the GL thread have theirs). */
+    /** How many threads draw ahead: up to 2 (the app's thread and the GL thread have theirs). */
     static int aheadThreadCount() {
-        return Math.min(3, Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+        return Math.min(2, Math.max(1, Runtime.getRuntime().availableProcessors() / 3));
     }
 
     /** Whether `e` is asked ahead: some phase of it still to draw, being drawn or drawn and not taken (under lock). */
@@ -1029,6 +1029,9 @@ final class MBText {
      * own paints and scratch, as the app's thread would draw it.
      */
     static void drawAhead() {
+        // nice 1 (not THREAD_PRIORITY_BACKGROUND): stays in top-app cgroup so FT_Face mutexes held during
+        // Canvas.drawText never suffer severe priority inversion against mbui-logic (-8).
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE);
         HashMap<Long, Paint> paints = new HashMap<>();
         int paintsFaces = -1;
         Scratch scratch = new Scratch();

@@ -2135,6 +2135,15 @@ double mb_host_cpu_ms(void) {
   return (double)(k.QuadPart + u.QuadPart) / 10000.0;
 }
 
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  FILETIME create, exit, kernel, user;
+  if (!GetThreadTimes(GetCurrentThread(), &create, &exit, &kernel, &user)) return -1.0;
+  ULARGE_INTEGER k = {.LowPart = kernel.dwLowDateTime, .HighPart = kernel.dwHighDateTime};
+  ULARGE_INTEGER u = {.LowPart = user.dwLowDateTime, .HighPart = user.dwHighDateTime};
+  return (double)(k.QuadPart + u.QuadPart) / 10000.0;
+}
+
 double mb_host_mem_bytes(void) {
   PROCESS_MEMORY_COUNTERS_EX pmc = {sizeof pmc};
   if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof pmc)) return 0;

@@ -242,6 +242,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (what comes before the frame's own work, timed for the probe: the window's tree brought, its nodes built and laid
   // out, and what came from outside handed on as the frame begins, frame_drawn's start)
   let tw = work_now()
+  let cw = work_thread_cpu()
   view_frame(w, h, scale, t)
   // what the window's tree shaped as it was laid out handed to the host to draw ahead now, while the old views are
   // built and the frame painted, not after all of it (text.mbt glyphs_ahead: when the work is done, not what is drawn)
@@ -255,6 +256,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     c.wants_frame = true
   }
   let t3 = work_now()
+  let c3 = work_thread_cpu()
   h_present(c.inst, c.ninst)
   if perf_touch_at.val >= 0.0 {
     perf_touch_submitted(work_now())
@@ -267,6 +269,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     c.trim_images()
   }
   let t4 = work_now()
+  let c4 = work_thread_cpu()
   c.t_present = t4 - t3
   if bench.mode > 0 {
     bench_step(c, t0 - tw, t3 - tw, t4 - t3)
@@ -275,7 +278,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // counts it: perf.mbt)
   perf_tree_framed(t0 - tw)
   // (the frame into the window thread's journal, the interval it closes looked over: journal.mbt)
-  journal_frame(c, tw, t0, t3, t4)
+  journal_frame(c, tw, t0, t3, t4, cw~, c3~, c4~)
   slow_probe(c, t, t3 - t0, t4 - t3, tree=t0 - tw)
   perf_log(c, t, t0 - tw, t3 - tw, t4 - t3)
   // (what the stacks the window's tree holds say of the frame, as it ends: built whole, painted alone or of its looks
@@ -347,7 +350,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   }
   frame_afters_run()
   drawn_frame_afters_run()
-  journal_frame_ended(t4)
+  journal_frame_ended(t4, c4~)
   // (as many as were set by its end: what is set after, a cause of the next: frame_quiet)
   frame_end_sets.val = @signals.sets_said()
   frame_running.val = false

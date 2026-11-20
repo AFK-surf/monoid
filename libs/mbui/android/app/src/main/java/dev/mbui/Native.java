@@ -44,6 +44,8 @@ final class Native {
     static native void overOther(boolean on);
     /** The device slowed for its heat or not (MainActivity's thermal listener): glass drawn solid (android_host.c). */
     static native void thermal(boolean hot);
+    /** Whether a screen reader is active (A11y): cached in C atomic so mb_host_a11y_on needs no JNI per frame. */
+    static native void a11yEnabled(boolean enabled);
     /** A message for the app's next frame on `channel` (post.h's mb_post: any thread): its JSON's UTF-8. */
     static native void postBytes(String channel, byte[] json);
     /** A browser session's end (WebAuth): the URL it came back to, or why not (one of the two null). */

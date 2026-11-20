@@ -31,12 +31,24 @@ import java.util.concurrent.Executors;
  * burst of gallery thumbnails or slow URLs never starves an image just picked.
  */
 final class Images {
+    private static java.util.concurrent.ThreadFactory bgFactory(String prefix) {
+        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
+        return r -> {
+            Thread t = new Thread(() -> {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                r.run();
+            }, prefix + "-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
+    }
+
     // local files and bytes already in memory (picked previews, icons, marks)
-    static final ExecutorService pool = Executors.newFixedThreadPool(3);
+    static final ExecutorService pool = Executors.newFixedThreadPool(3, bgFactory("mbui-img"));
     // content:// URIs (gallery thumbnails and video stills: MediaProvider IPC)
-    static final ExecutorService thumbs = Executors.newFixedThreadPool(2);
+    static final ExecutorService thumbs = Executors.newFixedThreadPool(2, bgFactory("mbui-thumb"));
     // http(s):// fetches, kept off local decodes when the network stalls
-    static final ExecutorService remote = Executors.newFixedThreadPool(2);
+    static final ExecutorService remote = Executors.newFixedThreadPool(2, bgFactory("mbui-remote"));
 
     static final class Req {
         final String src;

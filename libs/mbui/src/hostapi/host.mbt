@@ -105,6 +105,7 @@ pub(open) trait Host {
   gpu_ms(Self) -> Double = _
   frames_dropped(Self) -> Int = _
   cpu_ms(Self) -> Double = _
+  thread_cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
   set_app_state(Self, FuncRef[(Int) -> Unit]) -> Unit = _
   system_dark(Self) -> Bool = _
@@ -811,6 +812,11 @@ impl Host with frames_dropped(_) {
 
 ///|
 impl Host with cpu_ms(_) {
+  -1.0
+}
+
+///|
+impl Host with thread_cpu_ms(_) {
   -1.0
 }
 
@@ -2436,6 +2442,13 @@ pub fn frames_dropped() -> Int {
 /// core's, the system's for it), in ms (-1: not known on this host): a probe's (MBUI_PROBE) share of a CPU.
 pub fn cpu_ms() -> Double {
   current.val.cpu_ms()
+}
+
+///|
+/// The calling thread's CPU time in ms (-1: unsupported or fake clock): used by the journal to separate OS preemption
+/// from real CPU work.
+pub fn thread_cpu_ms() -> Double {
+  current.val.thread_cpu_ms()
 }
 
 ///|

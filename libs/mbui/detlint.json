@@ -365,7 +365,9 @@
     "build-effect": {},
     "after-build-input": {},
     "unsettled-ok": {},
-    "host-delay": {},
+    "host-delay": {
+      "android/app/src/main/java/dev/mbui/A11y.java": 1
+    },
     "library-import": {},
     "reset-wire": {},
     "page-hand": {},

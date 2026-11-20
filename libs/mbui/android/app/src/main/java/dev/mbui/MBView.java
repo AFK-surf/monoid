@@ -93,10 +93,6 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         setRenderMode(RENDERMODE_WHEN_DIRTY);
         setFocusable(true);
         setFocusableInTouchMode(true);
-        // a screen reader turned on or off: the app tells its widgets, or stops (A11y, @hostapi.a11y_on)
-        android.view.accessibility.AccessibilityManager am =
-                (android.view.accessibility.AccessibilityManager) c.getSystemService(Context.ACCESSIBILITY_SERVICE);
-        if (am != null) am.addAccessibilityStateChangeListener(on -> wantFrame());
     }
 
     /** The app's widgets for Android's accessibility (A11y): made as the app first tells them. */
@@ -109,13 +105,14 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     @Override
     public android.view.accessibility.AccessibilityNodeProvider getAccessibilityNodeProvider() {
+        if (!A11y.isScreenReaderOn()) return null;
         return a11y != null && a11y.any() ? a11y : super.getAccessibilityNodeProvider();
     }
 
     @Override
     protected boolean dispatchHoverEvent(android.view.MotionEvent e) {
         // a finger exploring the screen with a screen reader on: the widget under it (A11y)
-        if (a11y != null && a11y.any() && a11y.hover(e)) return true;
+        if (A11y.isScreenReaderOn() && a11y != null && a11y.any() && a11y.hover(e)) return true;
         return super.dispatchHoverEvent(e);
     }
 
@@ -155,14 +152,24 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        if (!ONE && logic != null) {
+            logic.post(this::closeHints);
+        } else {
+            queueEvent(this::closeHints);
+        }
         super.onPause();
     }
 
-    /** Its drawing resumed: a frame made for it at once. */
+    /** Its drawing resumed: ADPF session recreated before the first frame so PowerHAL raises uclamp promptly. */
     @Override
     public void onResume() {
         super.onResume();
         paused = false;
+        if (!ONE && logic != null) {
+            logic.post(this::wakeHints);
+        } else {
+            queueEvent(this::wakeHints);
+        }
         wantFrame();
     }
 
@@ -644,12 +651,33 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             Host.log("drawing thread: priority: " + e);
         }
         int tid = android.os.Process.myTid();
+        lastGlTid = tid;
         if (ONE) {
             hintsFor(new int[] {tid});
             return;
         }
         // (the app's thread's id first: its post ahead of this one)
         logic.post(() -> hintsFor(new int[] {logicTid, tid}));
+    }
+
+    private void closeHints() {
+        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
+            hints.close();
+            hints = null;
+        }
+        hintTids = null;
+    }
+
+    private void wakeHints() {
+        if (ONE) {
+            if (lastGlTid > 0) hintsFor(new int[] {lastGlTid});
+        } else if (logicTid > 0) {
+            int gl = lastGlTid;
+            hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid});
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null && hintTarget > 0) {
+            hints.reportActualWorkDuration(hintTarget);
+        }
     }
 
     /** One session of the threads {@code tids} (a session per thread set: GLSurfaceView starts another GL thread as the view is shown again). */
@@ -672,6 +700,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private android.os.PerformanceHintManager.Session hints;
     private int[] hintTids;
     private long hintTarget;
+    private volatile int lastGlTid;
     /** The display's frame, ms (FramePacer's framePeriod). */
     double framePeriodMs() {
         return pacer.framePeriod / 1e6;

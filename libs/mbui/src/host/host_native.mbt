@@ -180,6 +180,8 @@ extern "C" fn ffi_frames_dropped() -> Int = "mb_host_frames_dropped"
 
 extern "C" fn ffi_cpu_ms() -> Double = "mb_host_cpu_ms"
 
+extern "C" fn ffi_thread_cpu_ms() -> Double = "mb_host_thread_cpu_ms"
+
 extern "C" fn ffi_perf_state() -> Int = "mb_host_perf_state"
 
 extern "C" fn ffi_set_perf(on : Int) -> Unit = "mb_host_set_perf"
@@ -936,6 +938,11 @@ fn frames_dropped() -> Int {
 /// The CPU's time the process has had, every thread's, in ms (-1: not known on this host).
 fn cpu_ms() -> Double {
   ffi_cpu_ms()
+}
+
+///|
+fn thread_cpu_ms() -> Double {
+  ffi_thread_cpu_ms()
 }
 
 ///|

@@ -222,6 +222,8 @@ public class MainActivity extends Activity {
         Notices.from(getIntent());
         // the default network as it changes, told to the app (src/hostapi/system.mbt), while an activity of the app lives
         NetworkWatch.hold(this);
+        // screen-reader state cached and synced to C atomic (avoids per-frame JNI/Binder queries)
+        A11y.attach(this);
     }
 
     /**
@@ -274,6 +276,7 @@ public class MainActivity extends Activity {
         Updates.started();
         // the window's size classes and the device's fold, said to the app as they change (src/hostapi/system.mbt)
         folds.start();
+        A11y.refresh(this);
         android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
         if (power != null && thermal == null) {
             thermal = MainActivity::thermalSaid;

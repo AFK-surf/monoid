@@ -4578,6 +4578,7 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
   // (the outermost event between frames, into the window thread's journal: journal.mbt; one in a frame is the frame's)
   let journaled = event_depth.val == 0 && !frame_running.val
   let start = if recording || journaled { work_now() } else { 0.0 }
+  let c0 = if journaled { work_thread_cpu() } else { -1.0 }
   let tree = if recording { view_app.val } else { None }
   let before = tree.map(fn(t) { t.work() })
   let alive = tree.map(fn(t) { t.alive() }).unwrap_or(0)
@@ -4601,7 +4602,7 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
     glyphs_ahead()
   }
   if journaled {
-    journal_event(what, start)
+    journal_event(what, start, c0~)
   }
   if recording {
     let elapsed = work_now() - start

@@ -76,11 +76,22 @@ final class CoreHost {
     /** Whether a core runs in this process. */
     static native boolean running();
 
+    private static java.util.concurrent.ThreadFactory bgFactory(String name) {
+        return r -> {
+            Thread t = new Thread(() -> {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                r.run();
+            }, name);
+            t.setDaemon(true);
+            return t;
+        };
+    }
+
     /** Off the core's thread: the Keystore takes its time. */
-    private static final ExecutorService calls = Executors.newSingleThreadExecutor();
-    private static final ExecutorService listenCalls = Executors.newSingleThreadExecutor();
+    private static final ExecutorService calls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-calls"));
+    private static final ExecutorService listenCalls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-listen"));
     /** A picked file's parts as they go up: a thread of their own (reading a video through takes a while). */
-    private static final ExecutorService pickedCalls = Executors.newSingleThreadExecutor();
+    private static final ExecutorService pickedCalls = Executors.newSingleThreadExecutor(bgFactory("mbui-core-picked"));
 
     private final String dataDir;
     /** The engine's handle once its start returned (a call can come before); 0 until then. */
