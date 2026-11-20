@@ -819,7 +819,7 @@ fn composer_box_node(
           @view.transition(within=foot.transitions_root(), change)
         }
       } else {
-        @view.transition(within=foot.transitions_root(), reshape)
+        reshape()
       }
     }
   })

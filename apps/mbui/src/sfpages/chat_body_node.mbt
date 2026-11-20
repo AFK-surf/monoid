@@ -1233,13 +1233,6 @@ fn chat_body_node(
     // (words sent from here as this change came: what comes with them in it (an agent's line made at the same moment, a
     // card folding) goes on their one way, not held for them)
     let sent_was = sent_lands.val
-    // (those words answering a card that waits: its agent's line made here with them (chat_sent_card), on their one way)
-    let answered_card = @signals.untracked(fn() {
-      match msgs_given.val {
-        Some(m) => @sfbase.chat_sent_card(chat_ref, m) is Some(_)
-        None => false
-      }
-    })
     for j in dmax_int(ks.length() - chat_held_tail, 0)..<ks.length() {
       let k = ks[j]
       guard !seen.contains(k) && !held.contains(k) else { continue }
@@ -1265,12 +1258,12 @@ fn chat_body_node(
           }
           hold(k, m, face, ks, was)
         }
-        // (an agent's line at work come while words sent from here still fly: in as they land; one made with words
-        // answering a card that waits, in with them, its room on their way, seen once they land)
+        // (an agent's line at work come while words sent from here still fly: one made in the same change as they set out
+        // in with them, its room on their way, seen once they land (working_shows_at); one come after, in as they land)
         Some({ entry: Working(_), .. }) if sent_lands.val > v.cause_at() &&
           @signals.untracked(fn() { chat_follows_foot(scroll) }) &&
           !@ui.reduced_motion() =>
-          if sent_was <= v.cause_at() && answered_card {
+          if sent_was <= v.cause_at() {
             working_shows_at[k] = sent_lands.val
           } else {
             working_shows_at.remove(k)

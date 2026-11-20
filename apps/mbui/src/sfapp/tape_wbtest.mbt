@@ -1593,6 +1593,11 @@ test "on an iPad's whole screen nothing of the wide frame is pressed or drawn un
       let t = ipad_at(mode, w, h, top)
       match state {
         "chat-panel" => {
+          // (the page brought over first where the tape has it behind: its bar's switch then in use)
+          if @sfdesk.wide.tape.get() {
+            @sfdesk.bring_page()
+            t.run_for(@ui.move_most_ms)
+          }
           tap_said(t, "打开侧栏")
           t.run_for(@ui.move_most_ms)
         }
