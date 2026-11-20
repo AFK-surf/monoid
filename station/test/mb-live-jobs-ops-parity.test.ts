@@ -669,8 +669,20 @@ test(
         const s = store.getJob(svcJob.id);
         return w?.state === "stopped" && s?.state === "stopped" && !alive(watchPgid, true) && !alive(svcPgid, true) ? true : null;
       });
-      assert.match(readFileSync(store.getJob(watchJob.id)!.log, "utf8"), /\[still\.fail\] stopped: its chat ended/);
-      assert.match(readFileSync(store.getJob(svcJob.id)!.log, "utf8"), /\[still\.fail\] stopped: its chat ended/);
+      // stopAll marks a job stopped before it appends the note to its log: wait for both notes too.
+      const ended = /\[still\.fail\] stopped: its chat ended/;
+      const logOf = (id: string): string => {
+        try {
+          return readFileSync(store.getJob(id)!.log, "utf8");
+        } catch {
+          return "";
+        }
+      };
+      await within("s1 job logs note the chat ended", 15_000, () =>
+        ended.test(logOf(watchJob.id)) && ended.test(logOf(svcJob.id)) ? true : null,
+      );
+      assert.match(logOf(watchJob.id), ended);
+      assert.match(logOf(svcJob.id), ended);
 
       // s2's job is still running and alive.
       assert.equal(store.getJob(otherJob.id)!.state, "running");

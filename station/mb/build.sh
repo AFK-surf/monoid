@@ -85,7 +85,8 @@ while ! mkdir "$lock" 2>/dev/null; do
 done
 echo "$$" > "$lock/pid"
 (
-  trap 'rm -rf "$lock"' EXIT
+  held_gen=
+  trap '[ -z "${held_gen:-}" ] || rm -rf "$held_gen"; rm -rf "$lock"' EXIT
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
   # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
@@ -99,7 +100,33 @@ echo "$$" > "$lock/pid"
       | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
   } | shasum | awk '{print $1}')
   prepped="$D/_build/prepped-$pkg.c"
-  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-$pkg.key" 2>/dev/null)" = "$gen_key" ]; then
+  # On a CI machine that keeps ~/stillfail-ci (ci-1, Mini1), the prepared C is shared by its runners, each with a
+  # checkout of its own (main's natives and natives-win-reader-main made it one after the other, ~30 s each): kept by
+  # gen_key beside the units' store, never in MBC_STORE, which GitHub's runners save to the Actions cache (120 MB).
+  # Made by one runner at a time (gen-$pkg-$gen_key.lock), each looking again once it holds the lock.
+  shared_prepped=
+  if [ -d "$HOME/stillfail-ci" ]; then
+    prepped_dir="$HOME/stillfail-ci/reader-mbc-prepped"
+    mkdir -p "$prepped_dir"
+    shared_prepped="$prepped_dir/prepped-$pkg-$gen_key.c"
+    if [ ! -f "$shared_prepped" ]; then
+      gen_lock="$prepped_dir/gen-$pkg-$gen_key.lock"
+      while ! mkdir "$gen_lock" 2>/dev/null; do
+        pid=$(cat "$gen_lock/pid" 2>/dev/null || echo 0)
+        if gone "$pid"; then rm -rf "$gen_lock"; continue; fi
+        sleep 0.1
+      done
+      held_gen=$gen_lock
+      echo "$$" > "$gen_lock/pid"
+    fi
+    if [ -f "$shared_prepped" ]; then
+      touch -c "$shared_prepped" 2>/dev/null || true
+      cp "$shared_prepped" "$work/reader.c"
+      echo "build.sh: $pkg.c as this machine prepared it for $gen_key" >&2
+      exit 0
+    fi
+  fi
+  if [ -z "$shared_prepped" ] && [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-$pkg.key" 2>/dev/null)" = "$gen_key" ]; then
     cp "$prepped" "$work/reader.c"
     echo "build.sh: $pkg.c as prepared for $gen_key" >&2
     exit 0
@@ -117,7 +144,7 @@ echo "$$" > "$lock/pid"
   } | shasum | awk '{print $1}')
   cprep_bin="$MBC_STORE/cprep-$cprep_key.exe"
   cprep_pid=
-  trap '[ -z "${cprep_pid:-}" ] || kill "$cprep_pid" 2>/dev/null || true; rm -rf "$lock"' EXIT
+  trap '[ -z "${cprep_pid:-}" ] || kill "$cprep_pid" 2>/dev/null || true; [ -z "${held_gen:-}" ] || rm -rf "$held_gen"; rm -rf "$lock"' EXIT
   if [ ! -x "$cprep_bin" ]; then
     env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$work/cprep" src/cprep >"$work/cprep-build.log" 2>&1 &
     cprep_pid=$!
@@ -140,6 +167,12 @@ echo "$$" > "$lock/pid"
     cprep_pid=
     cp "$work/cprep/native/release/build/station/cprep/cprep.exe" "$cprep_bin.$$" \
       && mv -f "$cprep_bin.$$" "$cprep_bin"
+  fi
+  if [ -n "$shared_prepped" ]; then
+    "$cprep_bin" "$D/_build/native/release/build/station/$pkg/$pkg.c" "$shared_prepped.tmp.$$" >&2
+    mv -f "$shared_prepped.tmp.$$" "$shared_prepped"
+    cp "$shared_prepped" "$work/reader.c"
+    exit 0
   fi
   "$cprep_bin" "$D/_build/native/release/build/station/$pkg/$pkg.c" "$prepped.tmp.$$" >&2
   rm -f "$D/_build/prepped-$pkg.key"

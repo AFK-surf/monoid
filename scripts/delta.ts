@@ -583,10 +583,14 @@ export function makeTree(oldDir: string, newFile: string, out: string): void {
   const neu = readFileSync(newFile);
   const data = files.map((f) => readFileSync(join(oldDir, f))), ranges: Range[] = [];
   for (let at = 0, i = 0; i < data.length; at += data[i]!.length, i++) ranges.push({ at, len: data[i]!.length });
-  writeFileSync(out, makeDelta(Buffer.concat(data), neu, files, [], [], ranges, newFile));
+  const old = Buffer.concat(data);
+  writeFileSync(out, makeDelta(old, neu, files, [], [], ranges, newFile));
+  // Checked against the old blob already read, as readOld would (its reading of a folder: test/delta.test.ts, applyFile).
   verified(out, () => {
     const d = readFileSync(out), h = parseHeader(d), want = expecting(neu);
-    apply(h, readOld(h, { dir: oldDir }), d, want.sink);
+    if (h.files.join("\0") !== files.join("\0")) throw new Error("the delta's old files are not the folder's");
+    if (h.oldSize !== old.length || h.oldSha256 !== sha256(old)) throw new Error("the old blob's sha256 is not the delta's");
+    apply(h, old, d, want.sink);
     want.done();
   });
 }
