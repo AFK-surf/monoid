@@ -138,7 +138,7 @@ pub fn peek_change_node(
         words_node(r, where_, fn() { peek_meta_words }) |> ignore
       })
       |> ignore
-      meta.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+      meta.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
     })
     |> ignore
     // (its title as wide as it is, cut to its lines where it has not the room, as an old view's words in a column are:
@@ -429,7 +429,7 @@ pub fn peek_file_head_node(
         words_node(r, fn() { if dir() { name() + "/" } else { name() } }, fn() { peek_title }) |> ignore
       })
       |> ignore
-      t.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+      t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
     })
     |> ignore
     peek_mono_node(h, fn() { [@ui.span(path(), mono=true)] }, peek_file_path, loc~)
@@ -624,7 +624,7 @@ pub fn peek_chat_head_node(
       words_node(r, title, fn() { peek_title }) |> ignore
     })
     |> ignore
-    t.show(fn() { ago() != "" }, fn(a) { words_node(a, ago, fn() { peek_meta_words }) |> ignore })
+    t.show(fn() { ago() != "" }, fn(a) { peek_ago_node(a, ago) })
   })
   |> ignore
 }
@@ -865,6 +865,20 @@ let peek_capsule_in : Double = @ui.capsule_in(r_menu, peek_capsule_h) - panel_pa
 ///|
 /// A capsule's height: a state's, a fact's, a face.
 let peek_capsule_h : Double = 20.0
+
+///|
+/// How long ago, at a head's end, in `a` (what a head's `show` made for it): kept whole where what is before it gives
+/// way (peek_ref, from nothing), cut short itself only where it alone is longer than the line.
+#callsite(autofill(loc))
+fn peek_ago_node(a : @view.View, ago : () -> String, loc~ : SourceLoc) -> Unit {
+  style_node(a, fn() { peek_ago_cut }, in_row=true, loc~)
+  words_node(a, ago, fn() { peek_meta_words }, loc~) |> ignore
+}
+
+///|
+/// What holds how long ago at a head's end: cut short along its row where the line has not the room.
+// kept across runs: a value (no field of it changes)
+let peek_ago_cut : @ui.Style = @ui.css("row w=Cut")
 
 ///|
 // kept across runs: a value (no field of it changes)
