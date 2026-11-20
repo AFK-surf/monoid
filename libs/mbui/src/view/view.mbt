@@ -9243,6 +9243,10 @@ fn View::let_go(self : View) -> Unit {
   if !in_subtree && self.tree.pointed_within_at(self.at) {
     self.tree.pointed_to(self.tree.pointed_fallback_above(self.at))
   }
+  // (the focus on it or any descendant: let go of before kids clear n.parent, what has it told once)
+  if !in_subtree {
+    self.tree.focus_lost_in(self.at)
+  }
   // (what it holds as this begins, each by its handle: one's going may take another out of it (View::lives_with, the
   // tip of a row held beside it in one layer), which is then let go already, its handle on nothing)
   let kids = n.kids.map(fn(k) { self.tree.handle(k) })
@@ -9347,10 +9351,6 @@ fn View::let_go(self : View) -> Unit {
   n.ground_over_read = 0
   n.on_pointer_moved = None
   n.pointed_in_cell = None
-  // (the focus on it: let go of with it, what has it told so)
-  if !in_subtree {
-    self.tree.focus_lost_in(self.at)
-  }
   n.focusable = false
   n.focus_keys = 0
   n.focus_tab = true
