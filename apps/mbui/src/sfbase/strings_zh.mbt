@@ -2760,6 +2760,7 @@ let zh : Map[String, String] = {
   "web-pages.stations.page.resources": "资源",
   "web-pages.stations.page.cpuBusy": "CPU 占用率",
   "web-pages.stations.page.cpuBusyShort": "CPU 占用",
+  "web-pages.stations.page.cpuBusyChip": "占用 {percent}%",
   "web-pages.stations.page.runningShort": "{n} 个运行中",
   "web-pages.stations.permissions.granted": "已允许",
   "web-pages.stations.permissions.missing": "未允许",

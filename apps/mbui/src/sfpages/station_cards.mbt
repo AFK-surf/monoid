@@ -40,7 +40,7 @@ fn meter_dial(m : Json, busy : Bool) -> @sf.Dial {
 /// Whether this device shows its machines' CPU as how much of it is used (the prefs' `cpuDial` busy), not how much is
 /// idle: pressing the CPU's dial turns it, kept on this device alone.
 fn cpu_busy(src : Source) -> Bool {
-  text(src.topic("prefs", {}).get().value, "cpuDial") == "busy"
+  @settings.cpu_busy_of(src.topic("prefs", {}).get().value)
 }
 
 ///|

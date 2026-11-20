@@ -67,11 +67,14 @@ pub fn station_state_node(parent : @view.View, s : () -> Json?) -> Unit {
 /// far apart as a list's row's lines are (the theme's chats' list's `text`: a sidebar's station row).
 pub fn station_figures_node(parent : @view.View, src : Source, s : () -> Json?, apart? : Bool = false) -> Unit {
   let net = src.topic("stationNet", { "station": Json::string(text(@signals.untracked(s), "station")) })
+  // (its chips as this device says a CPU: idle or busy, @settings.meters_said; told again only as what they say changes)
+  let busy = @signals.computed(fn(_) { cpu_busy(src) })
+  let meters = @signals.computed(fn(_) { @settings.meters_said(items(field(s(), "host"), "meters"), busy.get()) })
   parent.show(fn() { flag(s(), "online") }, fn(f) {
     if apart {
       @sf.style_node(f, fn() { @sf.theme().chat_list.text })
     }
-    @sf.list_row_line_node(f, fn(l) { @sf.meter_chips_brief_node(l, fn() { items(field(s(), "host"), "meters") }) })
+    @sf.list_row_line_node(f, fn(l) { @sf.meter_chips_brief_node(l, fn() { meters.get() }) })
     @sf.list_row_line_node(f, fn(l) {
       @sf.words_node(l, fn() {
           let n = net.get().value

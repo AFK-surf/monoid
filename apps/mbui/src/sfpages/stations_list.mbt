@@ -352,6 +352,8 @@ fn sl_joined(s : Json?) -> String {
 /// those in their bones; reconnecting, faded as last heard. How it is reached read only while the page shows (`shown`,
 /// stations_list_node's).
 fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown : () -> Bool) -> Unit {
+  // (its chips as this device says a CPU: idle or busy, @settings.meters_said; told again only as what they say changes)
+  let busy = @signals.computed(fn(_) { @settings.cpu_busy(core) })
   let online = fn() { flag(s(), "online") }
   let host = fn() {
     match field(s(), "host") {
@@ -359,6 +361,7 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
       _ => None
     }
   }
+  let meters = @signals.computed(fn(_) { @settings.meters_said(items(host(), "meters"), busy.get()) })
   // (how this device reaches it, while it is up: the core's `stationNet`, sampled while shown)
   let net = fn() {
     if !online() || !shown() {
@@ -390,7 +393,7 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
       m.min_height(Is(Some(@sf.fill_chip_h))) |> ignore
       m.box(fn(x) {
         x.alpha(By(fn() { seen(host() is Some(_)) })) |> ignore
-        @sf.meter_line_node(x, fn() { items(host(), "meters") })
+        @sf.meter_line_node(x, fn() { meters.get() })
       })
       |> ignore
       m.show(fn() { online() && host() is None && !unreadable() }, fn(o) {
