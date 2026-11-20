@@ -2286,10 +2286,9 @@ jobs:
           B=$RUNNER_TEMP/build; mkdir -p "$B"
           printf '%s' "$build" > "$B/build"
           T=$(cygpath -u "$RUNNER_TEMP")
-          rm -rf "$T/win-live" "$T/win-store-pending.failed"
-          mkdir -p "$T/win-live"
+          rm -f "$T/win-store-pending.failed"
           : > "$T/win-store-pending"
-          export MBC_STORE="$(cygpath -m "$T/win-live")/mbc-store" MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
+          export MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
           nohup bash -c 'MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" > /dev/null 2>&1 &
           # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
           cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
@@ -2299,15 +2298,15 @@ jobs:
           path: .ci/mbc-store
           key: mbui-win-store-m-${{ github.sha }}
           restore-keys: mbui-win-store-m-
-      # (moved where the build reads it, its wait taken away; taken back to .ci/mbc-store once the build ended, where
-      # the cache's version, which is of its path, finds it)
+      # (restored in place at .ci/mbc-store, the job's MBC_STORE, where the build reads it and the cache's version,
+      # which is of its path, finds it: only its wait taken away. Never moved: on Windows NTFS a directory's mv while
+      # a handle is still open on it fails with Permission denied, main 136395187089)
       - name: The units, handed to the build
         if: always() && steps.started.outcome == 'success'
         run: |
           T=$(cygpath -u "$RUNNER_TEMP")
           mkdir -p .ci/mbc-store
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d | wc -l)"
-          if [ -d "$T/win-live/mbc-store" ]; then cp -a -n .ci/mbc-store/. "$T/win-live/mbc-store/" && rm -rf .ci/mbc-store; else mv .ci/mbc-store "$T/win-live/mbc-store"; fi
           rm -f "$T/win-store-pending"
       # core.hbc by its inputs (HBC_CACHE), PostHog's project in its key: this job's own, saved below, apart from
       # preview.yml's (mbui-win-hbc-, none of PostHog's), which it falls back to (monoid's beta, below, has none either)
@@ -2373,11 +2372,6 @@ jobs:
           done
           echo "(waited $((SECONDS - t0)) s for it)"
           cat "$B/log"
-          # (the units back in .ci/mbc-store, the build done with them)
-          T=$(cygpath -u "$RUNNER_TEMP")
-          if [ -d "$T/win-live/mbc-store" ]; then
-            if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
-          fi
           [ "$(cat "$B/status")" = 0 ] || exit 1
           bash apps/mbui/scripts/win.sh put
           # the build cache's key: the app's C by its content (one as the restored one was is not saved again)
@@ -2448,9 +2442,6 @@ jobs:
             sleep 1
             T=$(cygpath -u "$RUNNER_TEMP")
             [ ! -f "$T/win-store-pending" ] || touch "$T/win-store-pending.failed"
-            if [ -d "$T/win-live/mbc-store" ]; then
-              if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
-            fi
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
             d=$(sh apps/mbui/scripts/mbui.sh)
             c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
