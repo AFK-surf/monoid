@@ -707,3 +707,105 @@ test "resolve_module_dir preserves Windows drive paths" {
   }
   assert_eq(m_up.resolve_module_dir("D:/a/b"), "D:/")
 }
+
+///|
+test "parse_moon_mod_field and format_version_from_mod read module metadata" {
+  let mod_src =
+    #|// comment
+    #|name = "monoid/mbui"
+    #|
+    #|version = "0.2.3"
+    #|source = "src"
+    #|
+  assert_eq(parse_moon_mod_field(mod_src, "name"), Some("monoid/mbui"))
+  assert_eq(parse_moon_mod_field(mod_src, "version"), Some("0.2.3"))
+  assert_eq(parse_moon_mod_field(mod_src, "missing"), None)
+
+  let out = format_version_from_mod(Some(mod_src))
+  assert_true(out.contains("mbui (ui.monoid) cli \{cli_version}"))
+  assert_true(out.contains("module: monoid/mbui@0.2.3"))
+
+  let fallback = format_version_from_mod(None)
+  assert_true(fallback.contains("module: mbui@\{cli_version}"))
+}
+
+///|
+test "mbui init renders moon.mod, moon.work, moon.pkg, main.mbt with and without --ui" {
+  let mod_plain = render_init_moon_mod("smoke", "0.1.0", None)
+  assert_true(mod_plain.contains("name = \"smoke\""))
+  assert_true(mod_plain.contains("\"mbui@0.1.0\","))
+  assert_true(!mod_plain.contains("my_ui"))
+
+  let work_plain = render_init_moon_work("/opt/mbui", None)
+  assert_true(work_plain.contains("\"/opt/mbui\","))
+
+  let pkg_plain = render_init_app_pkg(None)
+  assert_true(pkg_plain.contains("\"mbui/host\""))
+  assert_true(pkg_plain.contains("\"mbui/view\""))
+  assert_true(pkg_plain.contains("\"format\": \"iife\""))
+  assert_true(!pkg_plain.contains("Uncomment to use components"))
+
+  let main_plain = render_init_main_mbt("Smoke App", None)
+  assert_true(main_plain.contains("@ui.run_tree(\"Smoke App\""))
+  assert_true(!main_plain.contains("UI library wired"))
+
+  let ui : UiLibRef = {
+    path: "/opt/monoid-ui",
+    name: "monoid/ui",
+    version: "0.2.0",
+    import_pkg: "monoid/ui/components",
+  }
+  let mod_ui = render_init_moon_mod("smoke", "0.1.0", Some(ui))
+  assert_true(mod_ui.contains("\"mbui@0.1.0\","))
+  assert_true(mod_ui.contains("\"monoid/ui@0.2.0\","))
+
+  let work_ui = render_init_moon_work("/opt/mbui", Some(ui))
+  assert_true(work_ui.contains("\"/opt/mbui\","))
+  assert_true(work_ui.contains("\"/opt/monoid-ui\","))
+
+  let pkg_ui = render_init_app_pkg(Some(ui))
+  assert_true(pkg_ui.contains("\"monoid/ui/components\""))
+
+  let main_ui = render_init_main_mbt("Smoke App", Some(ui))
+  assert_true(main_ui.contains("monoid/ui@0.2.0"))
+  assert_true(main_ui.contains("monoid/ui/components"))
+
+  let steps = render_init_next_steps("./smoke")
+  assert_true(steps.contains("cd ./smoke"))
+  assert_true(steps.contains("moon check --target native"))
+  assert_true(steps.contains("moon check --target js"))
+  assert_true(steps.contains("mbui check mbui.json"))
+  assert_true(steps.contains("mbui pack mbui.json --target web --out dist"))
+}
+
+///|
+test "pkg_is_main and pick_ui_subpkg skip is-main and aux subpackages" {
+  let main_pkg =
+    #|options(
+    #|  "is-main": true,
+    #|)
+    #|
+  let lib_pkg =
+    #|import {
+    #|  "mbui/view",
+    #|}
+    #|// "is-main": true
+    #|
+  assert_true(pkg_is_main(main_pkg))
+  assert_true(!pkg_is_main(lib_pkg))
+
+  // Multi-package UI library with gallery (is-main), lg (lib), pages (aux), shots (is-main)
+  assert_eq(
+    pick_ui_subpkg("liquid-glass", [("gallery", true), ("lg", false), ("pages", false), ("shots", true)]),
+    "liquid-glass/lg",
+  )
+  // Multi-package UI library with cm (lib), gallery (is-main), pages (aux), shots (is-main)
+  assert_eq(
+    pick_ui_subpkg("comma-ui", [("cm", false), ("gallery", true), ("pages", false), ("shots", true)]),
+    "comma-ui/cm",
+  )
+  // Fallback when only non-main aux subpkg exists
+  assert_eq(pick_ui_subpkg("only-aux", [("gallery", true), ("pages", false)]), "only-aux/pages")
+  // Fallback when all subpackages are is-main
+  assert_eq(pick_ui_subpkg("all-main", [("gallery", true), ("shots", true)]), "all-main")
+}

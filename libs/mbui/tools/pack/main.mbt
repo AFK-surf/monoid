@@ -1,6 +1,7 @@
 // Unified mbui app packager CLI (`libs/mbui/scripts/mbui`).
 //
-//   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]
+//   mbui version
+//   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH] [--ui PATH]
 //   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]
 //   mbui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]
 //   mbui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]
@@ -57,7 +58,8 @@ fn sh(cmd : String, what : String) -> String {
 fn usage() -> String {
   let sb = StringBuilder()
   sb.write_string("usage:\n")
-  sb.write_string("  mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]\n")
+  sb.write_string("  mbui version\n")
+  sb.write_string("  mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH] [--ui PATH]\n")
   sb.write_string(
     "  mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]\n",
   )
@@ -131,11 +133,18 @@ fn next_arg(args : Array[String], i : Int, flag : String) -> String {
 }
 
 ///|
+fn run_version() -> Unit {
+  let mod_path = @sys.join(mbui_root(), "moon.mod")
+  @sys.out(format_version_from_mod(@sys.read_text(mod_path)))
+}
+
+///|
 fn run_init(args : Array[String]) -> Unit {
   let mut dir = ""
   let mut name = "My App"
   let mut app_id = "dev.example.myapp"
   let mut mbui_path = mbui_root()
+  let mut ui_path : String? = None
   let mut i = 0
   while i < args.length() {
     match args[i] {
@@ -151,6 +160,10 @@ fn run_init(args : Array[String]) -> Unit {
         mbui_path = next_arg(args, i, "--mbui")
         i += 2
       }
+      "--ui" => {
+        ui_path = Some(next_arg(args, i, "--ui"))
+        i += 2
+      }
       a if a.has_prefix("-") => die("init: unknown flag \{a}")
       a => {
         if dir != "" {
@@ -164,7 +177,7 @@ fn run_init(args : Array[String]) -> Unit {
   if dir == "" {
     die("init: missing <dir>\n" + usage())
   }
-  cmd_init(dir, name, app_id, mbui_path)
+  cmd_init(dir, name, app_id, mbui_path, ui_path)
 }
 
 ///|
@@ -829,6 +842,7 @@ fn main {
     rest.push(all[i])
   }
   match subcmd {
+    "version" | "--version" | "-V" => run_version()
     "init" => run_init(rest)
     "check" => run_check(rest)
     "meta" => run_meta(rest)
