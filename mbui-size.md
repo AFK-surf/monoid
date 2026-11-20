@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.22 | 135.54 |
 | [7888eeafc](https://github.com/AFK-surf/monoid/commit/7888eeafcdba3b36d80f7b00c28b6b88d9a7fac9) perf(mbui): migrate single-axis window reads to Vi | 2.78 | 3.75 | 15.28 | 37.35 | 57.86 | 32.73 | 66.74 | 98.24 | 124.79 |
 | [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 2.78 | 3.75 | 15.28 | 37.35 | 57.86 | 32.73 | 66.74 | 98.24 | 124.79 |
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.16 | 133.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
-| [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
 | [7888eeafc](https://github.com/AFK-surf/monoid/commit/7888eeafcdba3b36d80f7b00c28b6b88d9a7fac9) perf(mbui): migrate single-axis window reads to Vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
 | [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.07 |
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.87 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.81 |
-| [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 53.92 |
