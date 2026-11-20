@@ -819,22 +819,13 @@
     }
     return d;
   }
-  // sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by
-  float sd_group_soft(vec2 p, float k) {
-    float d = 1e9;
-    for (int i = 0; i < 8; i++) {
-      if (i >= u_n) break;
-      vec2 hs = u_shape[i].zw * 0.5;
-      d = smin_k(d, sd_rr(p, u_shape[i], vec4(min(u_rad[i / 4][i % 4] * 1.45, min(hs.x, hs.y)))), k);
-    }
-    return d;
+  // Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)
+  float mb_contour_int(float t, float w) {
+    float u = clamp(t, 0.0, w);
+    return u - u * u / (2.0 * w);
   }
   vec3 backdrop(vec2 p) {
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
-  }
-  // what is under liquid glass at p, not blurred
-  vec3 sharp(vec2 p) {
-    return texture(u_img, clamp(p * u_rmap.xy + u_rmap.zw, u_ruvc.xy, u_ruvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   // ColorFilter.kt's colorControls on what a Backdrop lens sees (k: its saturation, contrast, brightness): each sample
@@ -1019,119 +1010,153 @@
           vec2 toward = vec2(0.70710678, 0.70710678);
           if (!ambient && aq != 0) { float t = float(aq - 1) * (6.28318531 / 126.0); toward = vec2(cos(t), sin(t)); }
           float normal = dot(grad, toward);
-          float h = v_c2.x * ((ambient || fq == 0) ? abs(normal) : pow(abs(normal), float(fq) * 0.5)) * mask;
+          float base_a = ambient ? 0.38 : 0.5;
+          float h = v_c2.x * base_a * ((ambient || fq == 0) ? abs(normal) : pow(abs(normal), float(fq) * 0.5)) * mask;
           if (ambient) c = mix(c, vec3(step(0.0, normal), step(0.0, normal), step(0.0, normal)), h);
           else c = clamp(c + h, 0.0, 1.0);
         }
+        c += mb_dither(p * u_scale) / 255.0;
         o = vec4(c, 1.0) * (a * v_c2.w); return;
       }
-      // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
-      // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
-      // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through
-      // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its
-      // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on
-      // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a
-      // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the
-      // frame drawn whole, to the byte.
+      // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
+      // liquid_glass_final_render_core.glsl, Apache-2.0.
       float k = v_pad.w;
-      // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45
-      // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight
-      // side bends what is under it as a lens does, not as a prism)
       float d = sd_group(p, k);
-      float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
-      if (a <= 0.0) discard;
-      float e = 0.75;
-      vec2 grad = vec2(sd_group_soft(p + vec2(e, 0.0), k) - sd_group_soft(p - vec2(e, 0.0), k),
-                   sd_group_soft(p + vec2(0.0, e), k) - sd_group_soft(p - vec2(0.0, e), k));
-      vec2 n_edge = grad / max(length(grad), 1e-4);
-      vec2 gc = 0.5 * (u_gb.xy + u_gb.zw);
-      vec2 gh = max(0.5 * (u_gb.zw - u_gb.xy), vec2(1.0, 1.0));
-      vec2 dome = clamp((p - gc) / gh, vec2(-1.0, -1.0), vec2(1.0, 1.0));
-      vec2 n2 = normalize(n_edge + 0.14 * dome);
-      float bezel = max(v_c2.y, 1.0);
-      // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
-      float r = clamp(1.0 + d / bezel, 0.0, 1.0);
-      float r2 = r * r;
-      float r4 = r2 * r2;
-      float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
-      float inv_n = 1.0 / sqrt(slope * slope + 1.0);
-      vec2 Nxy = n2 * (slope * inv_n);
-      float Nz = inv_n;
-      // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)
-      float eta = 0.6578947;
-      float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);
-      float kt = eta * Nz - sqrt(k_ior);
-      vec2 Txy = Nxy * kt;
-      float Tz = -eta + kt * Nz;
-      // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)
-      vec2 off = Txy * (1.15 * v_pad.y / max(-Tz, 1e-4));
-      // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)
-      float ch = min(v_pad.z * (0.72 + 0.56 * abs(n2.x * n2.y)), v_pad.z);
-      vec2 disp = off * ch;
-      // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:
-      // a spectrum, not three images; the flat blurred, three)
-      vec3 s0 = sharp(p + off + disp);
-      vec3 s1 = sharp(p + off + disp * 0.6666667);
-      vec3 s2 = sharp(p + off + disp * 0.3333333);
-      vec3 s3 = sharp(p + off);
-      vec3 s4 = sharp(p + off - disp * 0.3333333);
-      vec3 s5 = sharp(p + off - disp * 0.6666667);
-      vec3 s6 = sharp(p + off - disp);
-      vec3 cs = vec3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,
-                     (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,
-                     (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);
-      vec3 cf = vec3(backdrop(p + off + disp * 0.5).r, backdrop(p + off).g, backdrop(p + off - disp * 0.5).b);
-      float lens = r2 * smoothstep(0.16, 0.88, r);
-      vec3 c = mix(cf, cs, lens * 0.86);
-      // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'
-      // colour; from at most off * (1 + 0.85 * ch), inside what is kept)
-      vec3 bleed = backdrop(p + off * (1.0 + ch * 0.85));
-      vec3 bleed_sat = max(mix(vec3(luma(bleed)), bleed, v_p.z * 1.35), 0.0);
-      c = mix(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);
-      c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
-      // (its tint whole on the flat, where words lie, and less through the lip)
-      float tint_a = col.a * (1.0 - 0.56 * lens);
-      c = c * (1.0 - tint_a) + col.rgb * tint_a;
-      // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,
-      // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)
+      float halfMinor = 1e9;
+      float best_d = 1e9;
+      for (int i = 0; i < 8; i++) {
+        if (i >= u_n) break;
+        float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
+        if (di < best_d) {
+          best_d = di;
+          halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;
+        }
+      }
+      halfMinor = max(halfMinor, 1.0);
+      float sd_px = -d * u_scale;
+      float materialAlpha = clamp(sd_px + 0.5, 0.0, 1.0);
+      float edgeW = 0.75 * u_scale;
+      float outward = -sd_px;
+      float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)
+                    - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
+      if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
+      float e = 0.5;
+      vec2 grad = vec2(
+        sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
+        sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
+      ) / (2.0 * e);
+      float gradLen = length(grad);
+      vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
+      float shortening = sqrt(clamp(gradLen, 0.0, 1.0));
+      bool is_clear = (v_p.w <= 0.1 && col.a < 0.12);
+      bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);
+      float inward = max(-d, 0.0);
+      float rawBevel = max(v_c2.y, 0.0);
+      float rawAmount = max(v_pad.y, 0.0);
+      float bevel;
+      float amount;
+      if (!is_clear) {
+        // refractionFitsShape = true (iOS 27 regular)
+        bevel = min(rawBevel, 0.5 * halfMinor);
+        amount = min(rawAmount, halfMinor);
+      } else {
+        // refractionFitsShape = false (iOS 27 clear)
+        float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
+        bevel = rawBevel * lensScale;
+        amount = rawAmount * lensScale;
+      }
+      vec2 disp = vec2(0.0, 0.0);
+      if (inward < bevel && bevel > 0.001 && amount > 0.0) {
+        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
+        float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
+        disp = surfaceNormal * (-mag);
+      }
+      vec3 refractColor;
+      if (abs(v_pad.z) * amount * u_scale <= 0.25) {
+        refractColor = backdrop(p + disp);
+      } else {
+        float ds = v_pad.z * 0.5;
+        refractColor = vec3(
+          backdrop(p + disp * (1.0 + ds)).r,
+          backdrop(p + disp).g,
+          backdrop(p + disp * (1.0 - ds)).b
+        );
+      }
+      vec3 emission;
+      float transmittance;
+      float lift;
+      float chromaGain;
+      float contourStr;
+      float contourDirAmt;
+      float bevelShadowStr;
+      float glintLum;
+      float glintFaceGain;
+      float glintVib;
+      if (is_clear) {
+        emission = vec3(0.126, 0.126, 0.126);
+        transmittance = 0.954; lift = 0.0; chromaGain = 1.057;
+        contourStr = 0.36; contourDirAmt = 1.0; bevelShadowStr = 0.0;
+        glintLum = 2.34; glintFaceGain = 3.58; glintVib = 0.78;
+      } else if (is_dark) {
+        emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);
+        transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;
+        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
+        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+      } else {
+        emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * 0.4032;
+        transmittance = 0.5994; lift = 0.216; chromaGain = 1.169;
+        contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
+        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+      }
+      float Y = luma(refractColor);
+      float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
+      vec3 transmittedColor = vec3(transLum * transmittance) + (refractColor - vec3(Y)) * (chromaGain * v_p.z);
+      vec3 baseColor = clamp(emission + transmittedColor, 0.0, 1.0);
+      // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
+      float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
+      if (colChroma > 0.08 && col.a > 0.001) {
+        baseColor = mix(baseColor, col.rgb, col.a * 0.5);
+      }
       float spot = 0.0;
       if (v_c2.z > 0.5) {
         float q = v_c2.z - 1.0;
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
-        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
-        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
+        float gr = max(min(v_rect.z, v_rect.w) * 1.5, 64.0);
+        spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));
+        baseColor = clamp(baseColor + vec3(0.08 * spot), 0.0, 1.0);
       }
-      float ndl = dot(n2, vec2(-0.6, -0.8));
-      float rim = v_c2.x;
-      // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
-      float body_ring = r2 * (1.0 - 0.35 * r);
-      c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
-      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
-      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
-      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
-      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
-      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
-      // where white on white would not show; less towards the rim, where the ridge lights)
-      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
-      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
-      float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
-      spec_band *= spec_band;
-      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
-      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
-      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
-                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
-      // pointer lights the edge
-      float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
-      edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
-      c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
-      c += mb_dither(p * u_scale) / 255.0;
-      o = vec4(c, 1.0) * (a * v_c2.w);
+      float tangency = abs(surfaceNormal.x);
+      vec3 result = baseColor;
+      // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)
+      if (bevelShadowStr >= 0.001 && inward < 23.0) {
+        float lightFacing = -surfaceNormal.y;
+        float shadowShift = 6.0 * lightFacing;
+        float penumbra = 2.0 * shadowShift;
+        float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;
+        float bevelFalloff = 1.0 - smoothstep(0.0, 16.0, inward - shadowShift);
+        float wrappedFacing = smoothstep(0.0, 1.0, lightFacing * 0.5 + 0.5);
+        float bevelDir = mix(1.0, wrappedFacing, 0.5);
+        float bevelShadow = clamp(bevelLeading * bevelFalloff * bevelDir * bevelShadowStr, 0.0, 1.0);
+        result = max(result - transmittedColor * bevelShadow, vec3(0.0));
+      }
+      // (b) Glint (1.2pt ramp + 0.21 * 4.8pt bleed, both top & bottom walls, recolors face)
+      if (v_c2.x > 0.01 && inward < 4.8) {
+        float glintProfile = clamp(1.0 - inward / 1.2, 0.0, 1.0)
+                           + 0.21 * clamp(1.0 - inward / 4.8, 0.0, 1.0);
+        float lobe = max(1.0 - tangency, 0.0);
+        float glint = clamp(v_c2.x * 0.252 * lobe * glintProfile + spot * 0.08 * glintProfile, 0.0, 1.0);
+        float resLum = luma(result);
+        vec3 glintTarget = vec3(glintLum) + result * glintFaceGain + (result - vec3(resLum)) * glintVib;
+        result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);
+      }
+      result = clamp(result + mb_dither(p * u_scale) / 255.0, 0.0, 1.0);
+      // (c) External 0.75pt dark contour (concentrated perpendicular to light axis where glint fades)
+      float contourDir = mix(1.0, tangency, contourDirAmt);
+      float extA = ext_cov * contourStr * contourDir * v_c2.w;
+      float visA = materialAlpha * v_c2.w;
+      o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));
       return;
     }
     vec2 hs = v_rect.zw * 0.5;

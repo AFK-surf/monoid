@@ -29,36 +29,51 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 }
 
 ///|
-/// The bottom bar's glass, a Backdrop lens as AndroidLiquidGlass's LiquidBottomTabs has it (libs/liquid-glass
-/// liquid_bottom_tabs.mbt tabs_glass; catalog/components/LiquidBottomTabs.kt): what is under it made vivid (a
-/// saturation of 1.5), blurred by 8 and bent along its rim by a lens 24 deep moving it by up to 24, the container's
-/// colour over it (#FAFAFA at 40%; #121212 at 40% in the dark), Backdrop's default highlight; where glass is drawn
-/// solid, that colour at its fullest.
-pub fn glass_tab_bar() -> @ui.Glass {
-  let container = if theme().dark { 0x12121266L } else { 0xFAFAFA66L }
-  @ui.Glass::backdrop_lens(
-    height=24.0,
-    amount=24.0,
-    blur=8.0,
-    tint=container,
-    solid=alpha(container, 1.0),
-    highlight=1.0,
-    saturation=1.5,
+/// The bottom bar's glass: iOS 27 regular liquid glass calibrated for 56pt controls (flutter_liquid_glass
+/// ios27Light / ios27Dark: uniform 2.1pt Gaussian blur across center and rim, quarter-circle bevel refraction,
+/// adaptive color transfer, inner bevel shadow, glint, and 0.75pt external contour); where glass is drawn solid,
+/// its opaque ground.
+pub fn glass_tab_bar(spot? : (Double, Double)? = None) -> @ui.Glass {
+  let t = theme()
+  // Neutral light/dark sentinel selects Apple iOS 27 ios27Light / ios27Dark color transfer model in kind == 6.
+  let tint = if t.dark { 0x202020FFL } else { 0xFDFCFD67L }
+  let solid = if t.dark { 0x1E1F24FFL } else { 0xFAFAFAFFL }
+  @ui.Glass::liquid(
+    blur=2.1,
+    tint~,
+    solid~,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=28.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot~,
   )
 }
 
 ///|
-/// The bottom bar's shadow (LiquidBottomTabs' Shadow: Backdrop's own, a deviation of 12, 4 down, black at 10%).
+/// The bottom bar's shadow (kept for compatibility; prefer `tab_bar_shadow()` for light/dark separation).
 pub let tab_bar_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
 
 ///|
-/// The pill under the place shown inside glass (colors_tokens.xml token_glass_selection): black at 8%, white at 12% in
-/// the dark.
+/// The bottom bar's shadow by theme: softer on light grounds, deeper on dark grounds so the capsule floats cleanly.
+pub fn tab_bar_shadow() -> Raised {
+  if theme().dark {
+    { sigma: 12.0, dy: 5.0, color: 0x00000052L }
+  } else {
+    { sigma: 10.0, dy: 4.0, color: 0x00000018L }
+  }
+}
+
+///|
+/// The pill under the place shown inside glass: black at 7.1% on light grounds, white at 12% in the dark.
 pub fn glass_selection() -> Int64 {
   if theme().dark {
     0xFFFFFF1FL
   } else {
-    0x00000014L
+    0x00000012L
   }
 }
 
@@ -102,14 +117,23 @@ fn backdrop_slider(press : Double) -> @ui.Glass {
 }
 
 ///|
-/// AndroidLiquidGlass’s LiquidBottomTabs selection lens, its InnerShadow 8 at its fullest (its Shadow is its box's:
-/// tab_lens_raised). Without the two it hardly showed on the bar's white, nothing under it to bend.
+/// The bottom bar's lifted selection lens while held: clear Backdrop lens with dispersion, depth effect and inner
+/// shadow (its outer shadow is `tab_lens_raised`).
 pub fn backdrop_tab(press : Double) -> @ui.Glass {
   let p = dclamp(press, 0.0, 1.0)
   let idle = if theme().dark { 0xFFFFFFFFL } else { 0x000000FFL }
   let tint = over(alpha(idle, 0.1 * (1.0 - p)), alpha(0x000000FFL, 0.03 * p))
-  @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=0.0,
-    tint~, solid=theme().p.raised, highlight=p, dispersion=true, inner_shadow=8.0 * p)
+  @ui.Glass::backdrop_lens(
+    height=12.0 * p,
+    amount=18.0 * p,
+    blur=0.0,
+    tint~,
+    solid=theme().p.raised,
+    highlight=p,
+    dispersion=true,
+    depth_effect=true,
+    inner_shadow=8.0 * p,
+  )
 }
 
 ///|

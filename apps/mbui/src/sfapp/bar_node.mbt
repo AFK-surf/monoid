@@ -319,7 +319,12 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   let disc = bar_at(holder, disc_x, disc_y, fn() { act_size }, fn() { act_size }, fn(d) {
     d
     .radius(Is(act_size / 2.0))
-    .glass(By(fn() { Some(@sf.glass_tab_bar()) }))
+    .glass(
+      By(fn() {
+        let spot = if d.pressed() { Some((act_size / 2.0, act_size / 2.0)) } else { None }
+        Some(@sf.glass_tab_bar(spot~))
+      }),
+    )
     .shadow(By(bar_shadow))
     .shadow_outside(Is(true))
     .presses(By(fn() {
@@ -418,10 +423,11 @@ fn bar_disc_look(d : @view.View) -> Unit {
 }
 
 ///|
-/// The shadow round the bar's glass on the page (@sf.tab_bar_raised: LiquidBottomTabs'), outside its outline only:
+/// The shadow round the bar's glass on the page (@sf.tab_bar_shadow: light/dark separated), outside its outline only:
 /// the glass bends nothing of it.
 fn bar_shadow() -> (Double, Double, Int64) {
-  (@sf.tab_bar_raised.sigma, @sf.tab_bar_raised.dy, @sf.tab_bar_raised.color)
+  let s = @sf.tab_bar_shadow()
+  (s.sigma, s.dy, s.color)
 }
 
 ///|
@@ -448,7 +454,15 @@ fn bar_glass_capsule(
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     g
     .radius(By(fn() { dmin(rad, h() / 2.0) }))
-    .glass(By(fn() { Some(@sf.glass_tab_bar()) }))
+    .glass(
+      By(fn() {
+        let until = if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }
+        let t = bar_moment(g, Ball, until)
+        let a = bar_ball_at(t)
+        let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
+        Some(@sf.glass_tab_bar(spot~))
+      }),
+    )
     .shadow(By(bar_shadow))
     .shadow_outside(Is(true))
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's

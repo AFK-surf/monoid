@@ -378,7 +378,8 @@ test "a held narrow choice draws the Backdrop lens and respects reduced transpar
   t.run_for(part_whole_ms)
   let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
   assert_eq(lenses.length(), 1)
-  assert_eq(lenses[0][14], -1.0)
+  // Default highlight (1) | depth_effect (4) -> -5.0
+  assert_eq(lenses[0][14], -5.0)
   assert_true(lenses[0][21] > 0.0)
   t.set_reduce_transparency(true)
   t.run_for(part_whole_ms)
