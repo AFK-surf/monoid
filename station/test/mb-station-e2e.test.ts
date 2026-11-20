@@ -552,6 +552,32 @@ test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) make
     // kept: asked again, the same
     assert.deepEqual(await ok("thumbnail", { image, dir: join(dir, "mb") }), mb);
   }
+  // preview: <= 300 KiB returns null; large PNG makes <id>.p.jpg and hits cache; pre-existing <id>.p.webp hits cache
+  const smallPreview = join(dir, "small-preview.png");
+  writeFileSync(smallPreview, png(200, 200));
+  assert.ok(readFileSync(smallPreview).length <= 300 * 1024);
+  assert.equal(await ok("preview", { image: smallPreview, dir: join(dir, "mb-preview") }), null);
+
+  const bigPreview = join(dir, "big-preview.png");
+  writeFileSync(bigPreview, png(2400, 1400));
+  assert.ok(readFileSync(bigPreview).length > 300 * 1024);
+  const previewDir = join(dir, "mb-preview");
+  const bigId = createHash("sha256").update(bigPreview).digest("hex").slice(0, 32);
+  const prev1 = await ok("preview", { image: bigPreview, dir: previewDir });
+  assert.ok(prev1 !== null);
+  assert.equal(prev1.type, "image/jpeg");
+  assert.equal(prev1.path, join(previewDir, `${bigId}.p.jpg`));
+  assert.ok(readFileSync(prev1.path).length * 2 < readFileSync(bigPreview).length);
+  const [pw, ph] = size(readFileSync(prev1.path));
+  assert.ok(pw <= 2048 && ph <= 2048);
+  assert.deepEqual(await ok("preview", { image: bigPreview, dir: previewDir }), prev1);
+
+  const webpCached = join(dir, "webp-cached.png");
+  writeFileSync(webpCached, png(2400, 1400));
+  const webpId = createHash("sha256").update(webpCached).digest("hex").slice(0, 32);
+  const webpPath = join(previewDir, `${webpId}.p.webp`);
+  writeFileSync(webpPath, Buffer.from("RIFF0000WEBP"));
+  assert.deepEqual(await ok("preview", { image: webpCached, dir: previewDir }), { path: webpPath, type: "image/webp" });
   for (const [name] of files) {
     const image = join(dir, name);
     const ts = await loadMesh().thumbhash(image, null);
