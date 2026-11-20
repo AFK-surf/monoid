@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 | [fca46308b](https://github.com/AFK-surf/monoid/commit/fca46308bfbad979e59e669a04acf61a7d55ccce) fix(mbui): free what native reference counting kep | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 | [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
 | [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.51 | 66.08 | 97.78 | 127.22 |
 | [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
-| [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
 | [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
 | [fca46308b](https://github.com/AFK-surf/monoid/commit/fca46308bfbad979e59e669a04acf61a7d55ccce) fix(mbui): free what native reference counting kep | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.18 |
 | [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
 | [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
 | [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
-| [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.12 |
