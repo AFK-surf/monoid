@@ -204,7 +204,14 @@ if [ ! -f "$moon_inc/moonbit.h" ]; then
   cp "$moon_home"/include/*.h "$tmp_inc/"
   mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
 fi
-flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
+# MOONBIT_CYCLE_COLLECT_AT (runtime.c's alone: no header reads it, so it stays out of cflags and mbc's units keep their
+# keys) is how many 256-root chunks the cycle buffer holds before an allocation walks every object reachable from them.
+# At the runtime's 64 (16,384 roots) the station's live graph (the bus, its slices, the store's maps) refilled it within
+# milliseconds: Office-Host-2's `run`, 3,998 chats, spent 99.7% of its samples in moonbit_collect_cycles. 4096 (about
+# a million roots, an 8 MiB buffer) walks 64 times less often: a 4,000-map graph converted 200 times took 2.4 s with
+# 16 walks, not 10.8 s with 1,548, every cycle still freed; 8192 saved no more and doubled the peak.
+flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1
+  -DMOONBIT_CYCLE_COLLECT_AT=4096)
 cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
 if [ "${cc[0]}" = zig ] && [ "$opt" = -O0 ]; then
   flags+=(-fno-sanitize=undefined)
