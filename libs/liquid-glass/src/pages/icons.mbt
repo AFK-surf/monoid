@@ -76,27 +76,6 @@ fn icon_brand_mark(parent : @view.View, size : Double, ink : () -> Int64) -> Uni
 }
 
 ///|
-/// Four-quadrant canvas layout icon.
-fn icon_canvas(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
-  let k = size / 24.0
-  icon_box(parent, size, fn() {
-    let c = ink()
-    [
-      @paint.shape_of(
-        [
-          rrect_outline(3.5, 3.5, 7.0, 7.0, 1.8, k),
-          rrect_outline(13.5, 3.5, 7.0, 7.0, 1.8, k),
-          rrect_outline(3.5, 13.5, 7.0, 7.0, 1.8, k),
-          rrect_outline(13.5, 13.5, 7.0, 7.0, 1.8, k),
-        ],
-        stroke=c,
-        width=1.8 * k,
-      ),
-    ]
-  })
-}
-
-///|
 /// Diamond prism / optical lens icon (Optics).
 fn icon_prism(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
   let k = size / 24.0

@@ -1,14 +1,43 @@
 // The gallery's pictures and film, drawn offscreen by mbui's renderer (@film.picture, @film.film: a Tester with the
-// host's own text and pictures), no window. Each page light and dark at 3 pixels a point; and a film at 60 frames a
-// second of the film page's parts held, dragged and let go (film_script), light and dark.
+// host's own text and pictures), no window. Each page light and dark at 3 pixels a point (or MBUI_LG_W/H/SCALE when
+// set); a film at 60 fps of the film page's parts held, dragged and let go (`film_script`), light and dark; and
+// `MBUI_LG_ONLY=stage` recording `stage-demo-dark.mp4` (1120×690 @ 2× 60 fps) of the Spatial Optical Stage.
 //
-//   MBUI_LG_SHOTS=<dir> shots.exe     <dir>/<page>-<light|dark>.png, <dir>/film-<light|dark>.mp4
-//                                     <dir>/gallery-<page|hover|focus>-<light|dark>.png
-//   MBUI_LG_ONLY=<page|film|gallery>  one of them alone
-//
-// The gallery (src/pages gallery.mbt) is drawn as src/gallery shows it, its bar over the overview, the interactive page
-// and the dialog page (gone while the dialog is open), and over the overview under the pointer on Interactive and with
-// the keyboard on the look (gallery_shots), its window as much taller as the bar takes.
+//   MBUI_LG_SHOTS=<dir> shots.exe          <dir>/<page>-<light|dark>.png, <dir>/film-<light|dark>.mp4
+//                                          <dir>/gallery-<page|hover|focus>-<light|dark>.png
+//   MBUI_LG_ONLY=<page|film|gallery|stage> one of them alone
+//   MBUI_LG_W / MBUI_LG_H / MBUI_LG_SCALE  optional override for page picture size & scale
+
+///|
+/// Parse a positive decimal string (e.g. "1120", "2.0") or return `fallback` when empty/invalid.
+fn env_double(name : String, fallback : Double) -> Double {
+  let s = @ui.env(name)
+  if s == "" {
+    return fallback
+  }
+  let mut val = 0.0
+  let mut frac = 0.0
+  let mut div = 1.0
+  let mut in_frac = false
+  let mut seen = false
+  for ch in s {
+    if ch == '.' && !in_frac {
+      in_frac = true
+    } else if ch >= '0' && ch <= '9' {
+      seen = true
+      let d = (ch.to_int() - '0'.to_int()).to_double()
+      if in_frac {
+        div = div * 10.0
+        frac = frac + d / div
+      } else {
+        val = val * 10.0 + d
+      }
+    } else {
+      return fallback
+    }
+  }
+  if seen && val + frac > 0.0 { val + frac } else { fallback }
+}
 
 ///|
 /// What the film does, step by step (mbui's drive script; where each part is: src/pages film_page): the button held,
@@ -28,6 +57,29 @@ let film_script : String =
   #|wait 1200
 
 ///|
+/// Interactive 60 fps demo of the 1120×690 Spatial Optical Stage: drag the Glass Prism across the Monoid Vermilion
+/// sun, inverse-luminance plate, and `ui.monoid` wordmark -> drag Refraction & Chroma sliders -> drag Dock to Deck and
+/// sweep Backdrop Luminance -> switch to Loupe and drag the optical magnifier across MoonBit source code.
+let stage_script : String =
+  #|wait 350
+  #|drag 374 331 96 -42 650
+  #|wait 250
+  #|drag 470 289 -148 76 750
+  #|wait 350
+  #|drag 918 212 110 0 550
+  #|wait 250
+  #|drag 888 269 120 0 550
+  #|wait 450
+  #|drag 428 640 132 0 650
+  #|wait 550
+  #|drag 982 252 -260 0 750
+  #|wait 550
+  #|tapxy 692 640
+  #|wait 550
+  #|drag 632 370 -140 20 750
+  #|wait 700
+
+///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.
 let gallery_shots : Array[(String, String, String)] = [
   ("overview", "overview", ""),
@@ -45,6 +97,9 @@ fn main {
     return
   }
   let only = @ui.env("MBUI_LG_ONLY")
+  let page_w = env_double("MBUI_LG_W", 1280.0)
+  let page_h = env_double("MBUI_LG_H", 1040.0)
+  let page_scale = env_double("MBUI_LG_SCALE", 3.0)
   let mut failed = 0
   for page in ["overview", "dialog", "interactive", "film"] {
     if only != "" && only != page {
@@ -53,13 +108,13 @@ fn main {
     for dark in [false, true] {
       @lg.set_dark(Some(dark))
       let path = "\{dir}/\{page}-\{if dark { "dark" } else { "light" }}.png"
-      let (w, h) = if page == "film" { (600.0, 400.0) } else { (1280.0, 1040.0) }
+      let (w, h, scale) = if page == "film" { (600.0, 400.0, 3.0) } else { (page_w, page_h, page_scale) }
       let ok = @film.picture(
         fn(root) { @pages.page(root, page) },
         path~,
         w~,
         h~,
-        scale=3.0,
+        scale~,
         dark~,
         at=1000.0,
       )
@@ -110,6 +165,24 @@ fn main {
       if !ok {
         failed += 1
       }
+    }
+  }
+  if only == "stage" {
+    @lg.set_dark(Some(true))
+    let out = "\{dir}/stage-demo-dark.mp4"
+    let ok = @film.film(
+      fn(root) { @pages.page(root, "overview") },
+      script=stage_script,
+      out~,
+      w=1120.0,
+      h=690.0,
+      scale=2.0,
+      dark=true,
+      fps=60,
+    )
+    println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
+    if !ok {
+      failed += 1
     }
   }
   if failed > 0 {
