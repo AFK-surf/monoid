@@ -1938,14 +1938,15 @@ jobs:
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
       - if: github.ref == 'refs/heads/main'
         run: bash scripts/git-history.sh main
-      # Reserve the measured post-build chain, including post-actions: 28 seconds. With tools/pack kept by mbui-moonbit
-      # (`pack`: the bundle built it anew every run, 36 of moon's tasks, 13.5 s, 136034538622) the bundle takes about
-      # 15 s where it took 29; a build cut here saves its store and cleans up in about 18 s, 10 s to spare.
+      # Reserve the measured post-build chain, including post-actions: 32 seconds. With tools/pack kept by mbui-moonbit
+      # (`pack`: the bundle built it anew every run, 36 of moon's tasks, 13.5 s, 136034538622) the bundle takes 14 s
+      # where it took 29; after it the upload 4 s, main's two cache saves 10 s and the post steps' cleanup 6 s, about
+      # 34 s less the 5 s JOB_END keeps already. A build cut here saves its store and cleans up in about 18 s.
       # The same diagnostics and process cleanup apply on main and on a branch.
       - name: Finish the Mac app build
         id: finish
         run: |
-          reserve=28
+          reserve=32
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
