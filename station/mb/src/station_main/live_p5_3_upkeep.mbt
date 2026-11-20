@@ -444,10 +444,7 @@ fn P53Watch::attach(self : P53Watch) -> Unit {
     ignore(watch.start(bus.host.rt))
   })
   bus.parts.tools([self.tool()])
-  bus.parts.session_ended(session => match self.watch {
-    Some(w) => fork_bg(bus.host, "a workspace no longer watched", async fn() { w.forget(session) })
-    None => ()
-  })
+  // (a deleted chat's limits are forgotten by P52::on_closed via `workspaceWatch.forget`; an archived chat keeps them)
 }
 
 ///|

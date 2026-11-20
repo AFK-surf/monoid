@@ -1489,11 +1489,24 @@ async fn P52::drain(self : P52) -> String {
 ///|
 /// The sessions' lifecycle (lifecycle.ts): auto archive and the archived sessions' expiry, each when it is next due.
 async fn P52::lifecycle(self : P52) -> Unit {
+  while !self.taken && !self.bus.stopped.is_done() && !self.closed {
+    @effect.sleep(200) // timer: a deadline (waiting for take_handover before the first lifecycle pass)
+  }
   while !self.bus.stopped.is_done() && !self.closed {
     let next = match self.hub {
       Some(hub) if self.taken => {
-        let a = hub.auto_archive(wall_ms().to_double()) catch { _ => None }
-        let b = hub.expire_archived(wall_ms().to_double()) catch { _ => None }
+        let a = hub.auto_archive(wall_ms().to_double()) catch {
+          e => {
+            slice_log("warn", "hub", "auto-archiving failed", { "error": jstr(said_of(e)) })
+            None
+          }
+        }
+        let b = hub.expire_archived(wall_ms().to_double()) catch {
+          e => {
+            slice_log("warn", "hub", "expiring archived workspaces failed", { "error": jstr(said_of(e)) })
+            None
+          }
+        }
         match (a, b) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)
@@ -1504,14 +1517,14 @@ async fn P52::lifecycle(self : P52) -> Unit {
     }
     let wait = match next {
       Some(at) => at - wall_ms().to_double()
-      None => 3_600_000.0
+      None => 600_000.0
     }
     // timer: a deadline (the next session due to be archived or expired, as the store says)
     @effect.sleep(
       if wait < 1000.0 {
         1000
-      } else if wait > 3_600_000.0 {
-        3_600_000
+      } else if wait > 600_000.0 {
+        600_000
       } else {
         wait.to_int()
       },
