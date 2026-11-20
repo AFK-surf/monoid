@@ -616,6 +616,43 @@ fn Copies::head_of_ws(self : Copies, ws : String) -> J? {
 }
 
 ///|
+/// What a place brought level with `head` is said to hold.
+fn head_said(head : J) -> String {
+  "\{head_gen(head)}:\{num_text(head_to(head))}:\{num_text(head_made(head))}"
+}
+
+///|
+/// Times a place is brought level again with a newer head where a batch the last named went meanwhile.
+let stale_heads_most : Int = 2
+
+///|
+/// `go` with `head`; where a file it named is gone (ENOENT: the export compacted its batches into new ones while it
+/// went) and a newer head is out, `go` again with that one, at most `stale_heads_most` times, rather than a failure of
+/// the place's. The head it went with, and what it found.
+async fn level_newest(head : J, newest : () -> J?, go : async (J) -> Levelled) -> (J, Levelled) {
+  let mut head = head
+  let mut again = 0
+  while true {
+    let tried : Result[Levelled, Error] = try Ok(go(head)) catch { e => Err(e) }
+    match tried {
+      Ok(done) => return (head, done)
+      Err(e) => {
+        guard code_of(e) == "ENOENT" &&
+          again < stale_heads_most &&
+          newest() is Some(next) &&
+          head_batches(next).length() > 0 &&
+          head_said(next) != head_said(head) else {
+          raise e
+        }
+        again += 1
+        head = next
+      }
+    }
+  }
+  panic()
+}
+
+///|
 /// `now`: not waiting for a retry already set; `fresh`: what the place holds asked of it.
 fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : Bool) -> Unit {
   let key = "\{ws}\n\{peer}"
@@ -656,7 +693,7 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   if fresh {
     k.known = None
   }
-  let said = "\{head_gen(head)}:\{num_text(head_to(head))}:\{num_text(head_made(head))}"
+  let said = head_said(head)
   if k.known is Some(_) && k.head == Some(said) && k.error is None {
     return
   }
@@ -665,7 +702,11 @@ fn Copies::level(self : Copies, ws : String, peer : String, now : Bool, fresh : 
   let run = self.w.run(async fn() {
     try {
       let place = peer_place(self.w, peer)
-      let mut done = level(place, ws, self.own(head), known=k.known)
+      let (head, first) = level_newest(head, () => self.head_of_ws(ws), async fn(h) {
+        level(place, ws, self.own(h), known=k.known)
+      })
+      let said = head_said(head)
+      let mut done = first
       if done is Behind {
         // This station's own copy is behind what that station keeps of it: a new generation, written beside it.
         let begun = match self.begun.get(ws) {

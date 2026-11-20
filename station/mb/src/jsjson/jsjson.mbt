@@ -217,6 +217,11 @@ fn Parser::number(self : Parser) -> Double raise SyntaxError {
 let max_parse_depth : Int = 1024
 
 ///|
+/// Keys an object holds before its repeats are found by a map rather than by a scan (747 KB objects of ten thousand
+/// keys came out quadratic).
+let seen_from : Int = 16
+
+///|
 fn Parser::value(self : Parser, depth : Int) -> JValue raise SyntaxError {
   if depth > max_parse_depth {
     raise SyntaxError("maximum nesting depth exceeded at \{self.at}")
@@ -226,6 +231,8 @@ fn Parser::value(self : Parser, depth : Int) -> JValue raise SyntaxError {
     0x7b => {
       self.at += 1
       let entries : Array[(String, JValue)] = []
+      // (a repeated key keeps its first place and takes the last value; past `seen_from` keys, found by a map)
+      let mut seen : Map[String, Int]? = None
       self.skip()
       if self.peek() == 0x7d {
         self.at += 1
@@ -237,9 +244,29 @@ fn Parser::value(self : Parser, depth : Int) -> JValue raise SyntaxError {
         self.skip()
         self.expect(":")
         let v = self.value(depth + 1)
-        match entries.search_by(e => e.0 == key) {
-          Some(i) => entries[i] = (key, v)
-          None => entries.push((key, v))
+        match seen {
+          Some(m) =>
+            match m.get(key) {
+              Some(i) => entries[i] = (key, v)
+              None => {
+                m.set(key, entries.length())
+                entries.push((key, v))
+              }
+            }
+          None =>
+            match entries.search_by(e => e.0 == key) {
+              Some(i) => entries[i] = (key, v)
+              None => {
+                entries.push((key, v))
+                if entries.length() >= seen_from {
+                  let m : Map[String, Int] = Map::new(capacity=entries.length() * 2)
+                  for i, e in entries {
+                    m.set(e.0, i)
+                  }
+                  seen = Some(m)
+                }
+              }
+            }
         }
         self.skip()
         if self.peek() == 0x2c {

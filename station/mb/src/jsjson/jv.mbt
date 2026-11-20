@@ -56,11 +56,27 @@ pub fn jopt(s : String?) -> JV {
 ///|
 /// An object of these fields in this order (as a literal writes them: integer-like keys first, as JavaScript does).
 pub fn jobj(fields : Array[(String, JV)]) -> JV {
-  let o = JValue::Obj(Array::new(capacity=fields.length()))
-  for f in fields {
-    o.put(f.0, f.1)
+  if fields.length() < seen_from {
+    let o = JValue::Obj(Array::new(capacity=fields.length()))
+    for f in fields {
+      o.put(f.0, f.1)
+    }
+    return o
   }
-  o
+  // (what `put` one by one gives, without its scans: a repeat keeps its first place and takes the last value,
+  // integer-like keys first ascending, the rest in the order they came)
+  let at : Map[String, Int] = Map::new(capacity=fields.length() * 2)
+  let unique : Array[(String, JV)] = Array::new(capacity=fields.length())
+  for f in fields {
+    match at.get(f.0) {
+      Some(i) => unique[i] = f
+      None => {
+        at.set(f.0, unique.length())
+        unique.push(f)
+      }
+    }
+  }
+  Obj(ordered(unique))
 }
 
 ///|
