@@ -100,3 +100,25 @@ test "login helpers, search keys, memory limits, and config teams" {
   assert_eq(teams.length(), 1)
   assert_eq(teams[0].1.name, "Acme")
 }
+
+///|
+test "board-files manifest, upkeep round, and gone_board_files selection" {
+  let entry = storage_entry("board-files").unwrap()
+  assert_eq(entry.class, "authoritative")
+  assert_eq(entry.max_age_ms, Some(board_files_gone_ms))
+  assert_eq(entry.reclaim, Some("Upkeep goneBoardFiles"))
+  let round = upkeep_round(true, true, true, true)
+  assert_eq(round[round.length() - 1], "board files")
+  let now = 10_000_000.0
+  let (gone, empty_dirs) = gone_board_files_plan(
+    [
+      ("p1", "d1", [("old", 1_000_000.0), ("new", 9_999_000.0)]),
+      ("p1", "d2", [("b", 2_000_000.0), ("a", 1_000_000.0)]),
+      ("p2", "d3", [("c", 9_999_000.0)]),
+    ],
+    1_000_000.0,
+    now,
+  )
+  assert_eq(gone, ["p1/d1/old", "p1/d2/a", "p1/d2/b"])
+  assert_eq(empty_dirs, [("p1", "d2")])
+}

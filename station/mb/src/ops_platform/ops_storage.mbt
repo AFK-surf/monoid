@@ -310,35 +310,65 @@ pub fn remove_stale(fs : Fs, dir : String, prefix : String, max_age_ms : Double,
 }
 
 ///|
+/// Pure selection for `gone_board_files`: given `(person, draft, [(file, mtime_ms)])` under `<person>/.gone/<draft>`,
+/// returns `(gone_labels_sorted, empty_draft_dirs)`.
+fn gone_board_files_plan(
+  entries : Array[(String, String, Array[(String, Double)])],
+  max_age_ms : Double,
+  now : Double,
+) -> (Array[String], Array[(String, String)]) {
+  let gone = []
+  let empty_dirs = []
+  for entry in entries {
+    let (person, draft, files) = entry
+    let mut left = files.length()
+    for f in files {
+      if now - f.1 < max_age_ms {
+        continue
+      }
+      gone.push(person + "/" + draft + "/" + f.0)
+      left -= 1
+    }
+    if left == 0 {
+      empty_dirs.push((person, draft))
+    }
+  }
+  gone.sort_by(units_order)
+  (gone, empty_dirs)
+}
+
+///|
 /// storage.ts `goneBoardFiles`: the files of drafts of 待派发 started or deleted (`dir` is board-files:
 /// <person>/.gone/<draft>/<file>) put aside `max_age_ms` or longer before `now`, removed, and a draft's folder left
 /// empty: the files removed, as <person>/<draft>/<file>, sorted.
 pub fn gone_board_files(fs : Fs, dir : String, max_age_ms : Double, now : Double) -> Array[String] raise {
-  let gone = []
+  let entries = []
   for person in fs.names(dir).unwrap_or([]) {
     let aside = posix_join([dir, person, ".gone"])
     for draft in fs.names(aside).unwrap_or([]) {
       guard fs.names(posix_join([aside, draft])) is Some(files) else { continue }
-      let mut left = files.length()
+      let dated = []
       for f in files {
         guard fs.lstat(posix_join([aside, draft, f])) is Some(st) else { continue }
-        if now - st.mtime_ms < max_age_ms {
-          continue
-        }
-        try fs.remove(posix_join([aside, draft, f]), recursive=true) catch {
-          _ => ()
-        }
-        gone.push(person + "/" + draft + "/" + f)
-        left -= 1
+        dated.push((f, st.mtime_ms))
       }
-      if left == 0 {
-        try fs.remove(posix_join([aside, draft]), recursive=true) catch {
-          _ => ()
-        }
+      entries.push((person, draft, dated))
+    }
+  }
+  let (gone, empty_dirs) = gone_board_files_plan(entries, max_age_ms, now)
+  for label in gone {
+    let parts = split_on(label, "/")
+    if parts.length() == 3 {
+      try fs.remove(posix_join([dir, parts[0], ".gone", parts[1], parts[2]]), recursive=true) catch {
+        _ => ()
       }
     }
   }
-  gone.sort_by(units_order)
+  for d in empty_dirs {
+    try fs.remove(posix_join([dir, d.0, ".gone", d.1]), recursive=true) catch {
+      _ => ()
+    }
+  }
   gone
 }
 

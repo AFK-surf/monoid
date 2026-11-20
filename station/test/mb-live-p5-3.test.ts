@@ -347,6 +347,12 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
   mkdirSync(join(data, "transcript-marks"), { recursive: true });
   writeFileSync(join(data, "transcript-marks", "gone.json"), JSON.stringify({ state: { path: join(data, "nowhere.jsonl") } }));
   writeFileSync(join(data, "transcript-marks", "kept.json"), JSON.stringify({ state: { path: join(data, "config.json") } }));
+  mkdirSync(join(data, "board-files", "p1", ".gone", "d1"), { recursive: true });
+  writeFileSync(join(data, "board-files", "p1", ".gone", "d1", "old"), "x");
+  utimesSync(join(data, "board-files", "p1", ".gone", "d1", "old"), new Date(Date.now() - 2 * 86_400_000), new Date(Date.now() - 2 * 86_400_000));
+  writeFileSync(join(data, "board-files", "p1", ".gone", "d1", "fresh"), "y");
+  mkdirSync(join(data, "board-files", "p1", "d2"), { recursive: true });
+  writeFileSync(join(data, "board-files", "p1", "d2", "live"), "z");
   // (no allowance read off this machine: a login of the test's is never sent out)
   const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1", HOME: home, STILLFAIL_ANTHROPIC_API: "http://127.0.0.1:9" });
   await a.next("ready", (m) => m.ready === true);
@@ -460,6 +466,8 @@ test("resources, accounts, search, the memory and the shares: on StationParts an
     assert.deepEqual(readdirSync(data).filter((n) => n.startsWith("config.json.bak-")).sort(), ["config.json.bak-2", "config.json.bak-3", "config.json.bak-4"]);
     assert.equal(existsSync(join(data, "node", ".part-1")), false);
     assert.deepEqual(readdirSync(join(data, "transcript-marks")), ["kept.json"]);
+    assert.deepEqual(readdirSync(join(data, "board-files", "p1", ".gone", "d1")), ["fresh"]);
+    assert.deepEqual(readdirSync(join(data, "board-files", "p1", "d2")), ["live"]);
 
     // ── Remote: station_list, this station from its load ──
     const listed = JSON.parse((await tool(door, "t1", "station_list")).text);

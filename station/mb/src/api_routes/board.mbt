@@ -78,7 +78,7 @@ fn Admin::board_routes(self : Admin) -> Array[Route] {
         ])
       }
       let said = match carried {
-        Obj(fields) => Obj(fields.filter(f => f.0 != "changed"))
+        Obj(fields) => jobj(fields.filter(f => f.0 != "changed"))
         v => v
       }
       ok(said)

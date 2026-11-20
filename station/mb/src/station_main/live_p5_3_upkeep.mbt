@@ -191,7 +191,7 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   })
   self.renewables(now, p53_thumbs_cap, p53_node_part_ms, note)
   note("board files", async fn() {
-    Json::array(p53_gone_board_files(host, at(["board-files"]), p53_board_files_gone_ms, now).map(p53_s))
+    Json::array(p53_gone_board_files(host, at(["board-files"]), p53_board_files_gone_ms, now).map(jstr))
   })
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
   out["free"] = jn(free)
@@ -343,7 +343,7 @@ async fn p53_gone_board_files(host : @host.Host, dir : String, most_ms : Double,
       let mut left = files.length()
       for f in files {
         let path = @nodepath.join(sep(), [aside, draft, f])
-        match p53_num(p53_lstat(host, path), "mtimeMs") {
+        match jnum_of(p53_lstat(host, path), "mtimeMs") {
           Some(at) if now - at >= most_ms => {
             p53_remove(host, path)
             gone.push(person + "/" + draft + "/" + f)
