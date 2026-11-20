@@ -1195,7 +1195,16 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
       v = (v << 8) | payload[i].to_uint64()
     }
     let acked = v.to_double()
-    self.pacer.acked(acked)
+    let wait_us = if payload.length() >= 12 {
+      let mut w = 0U
+      for i in 8..<12 {
+        w = (w << 8) | payload[i].to_uint()
+      }
+      w.to_double()
+    } else {
+      0.0
+    }
+    self.pacer.acked(acked, viewer_wait_ms=wait_us / 1000.0)
     if self.pacer.rtt() is Some(_) {
       self.timed = true
     }

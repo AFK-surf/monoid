@@ -259,13 +259,16 @@ export function inputFrame(input: J): Uint8Array {
   return frame(INPUT, utf8(JSON.stringify(input)));
 }
 
-/// The timestamp (µs) of the last frame the client decoded.
-export function ackFrame(ts: number): Uint8Array {
-  const payload = new Uint8Array(8);
+/// The timestamp (µs) of the last frame the client decoded, and optionally how long (µs) the client held it before
+/// showing or dropping it (appended as u32 big-endian when > 0; omitted when 0 for backwards compatibility).
+export function ackFrame(ts: number, waitUs = 0): Uint8Array {
+  const w = Number.isFinite(waitUs) && waitUs > 0 ? Math.min(0xffff_ffff, Math.round(waitUs)) : 0;
+  const payload = new Uint8Array(w > 0 ? 12 : 8);
   const view = new DataView(payload.buffer);
   const t = Math.max(0, Math.floor(ts));
   view.setUint32(0, Math.floor(t / TWO_32));
   view.setUint32(4, t % TWO_32);
+  if (w > 0) view.setUint32(8, w);
   return frame(ACK, payload);
 }
 
@@ -359,7 +362,7 @@ export function copiedFrame(type: ClipType, data: Uint8Array, privacy: ClipPriva
 }
 
 /// What the client sends, read (the test station's side).
-export type ClientFrame = { input: J } | { ack: number } | { keyframe: true } | { sound: boolean } | { micOn: boolean } | { mic: { flags: number; epoch: number; data: Uint8Array } } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
+export type ClientFrame = { input: J } | { ack: number; waitUs?: number } | { keyframe: true } | { sound: boolean } | { micOn: boolean } | { mic: { flags: number; epoch: number; data: Uint8Array } } | { look: J } | { clipboard: { type: ClipType | null; paste: boolean; data: Uint8Array; privacy?: ClipPrivacy } } | { other: number };
 
 export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
   const frames: ClientFrame[] = [];
@@ -375,7 +378,8 @@ export function readClientFrames(buf: Uint8Array): [ClientFrame[], Uint8Array] {
         break;
       case ACK: {
         const p = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-        frames.push({ ack: p.getUint32(0) * TWO_32 + p.getUint32(4) });
+        const ack = p.getUint32(0) * TWO_32 + p.getUint32(4);
+        frames.push(payload.length >= 12 ? { ack, waitUs: p.getUint32(8) } : { ack });
         break;
       }
       case KEYFRAME:

@@ -909,7 +909,8 @@ class ViewSession {
           case KIND.ack: {
             if (got.payload.length < 8) break;
             const acked = Number(got.payload.readBigUInt64BE(0));
-            this.pacer.acked(acked);
+            const waitUs = got.payload.length >= 12 ? got.payload.readUInt32BE(8) : 0;
+            this.pacer.acked(acked, waitUs / 1000);
             if (this.pacer.rtt() !== null) this.#timed = true;
             this.latency.acked(acked, this.pacer.rtt() ?? 0);
             const latency = this.latency.take();

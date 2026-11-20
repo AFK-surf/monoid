@@ -72,10 +72,6 @@ pub fn file_type(String) -> String
 
 pub fn gzip(BytesView) -> Bytes
 
-pub async fn harness(@host.Host) -> Unit
-
-pub async fn harness_case(@jsjson.JValue) -> @jsjson.JValue
-
 pub fn has(String, String) -> Bool
 
 pub fn header(Frame, String) -> String?

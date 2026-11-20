@@ -1,5 +1,4 @@
-// What the sharing works out by itself, on the values the TypeScript gives (station/test/mb-share-sync.test.ts holds the
-// whole of it to the TypeScript; these say the rules each piece keeps).
+// What the sharing works out by itself, on the values the station gives: these say the rules each piece keeps.
 
 ///|
 fn parse(s : String) -> Json {

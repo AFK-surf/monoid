@@ -189,6 +189,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
   readonly report?: HostOf<Message>["report"];
   readonly legacyRead?: HostOf<Message>["legacyRead"];
   readonly secureGet?: HostOf<Message>["secureGet"];
+  readonly secureGetMany?: HostOf<Message>["secureGetMany"];
   readonly secureSet?: HostOf<Message>["secureSet"];
   readonly secureDelete?: HostOf<Message>["secureDelete"];
   readonly securePast?: HostOf<Message>["securePast"];
@@ -215,6 +216,7 @@ export class WakingHost<Message = never> implements HostOf<Message> {
     if (inner.legacyRead) this.legacyRead = (range) => inner.legacyRead!(range);
     // So is what the system keeps sealed; a read may wait on the person, never on a UI coming back.
     if (inner.secureGet) this.secureGet = (key, opts) => inner.secureGet!(key, opts);
+    if (inner.secureGetMany) this.secureGetMany = (keys, opts) => inner.secureGetMany!(keys, opts);
     if (inner.secureSet) this.secureSet = (key, value, opts) => inner.secureSet!(key, value, opts);
     if (inner.secureDelete) this.secureDelete = (key) => inner.secureDelete!(key);
     if (inner.securePast) this.securePast = (key) => inner.securePast!(key);

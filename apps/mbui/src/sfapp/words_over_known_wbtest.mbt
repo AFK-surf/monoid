@@ -7,7 +7,8 @@ fn init {
   // The requested whole-panel fade lets the page show through for its last frames. Keep this exception exact: the
   // checker still reports every other overlap, and even this pair outside a closing layer.
   @ui.words_over_closing_expected([
-    ("src/sfapp/presets_wbtest.mbt", "取消", "300K"),
+    ("src/sfapp/presets_wbtest.mbt", "各目录里的 AGENTS.md 和 skill 会自动读，不用写在这里", "Opus 5.5"),
+    ("src/sfapp/presets_wbtest.mbt", "各目录里的 AGENTS.md 和 skill 会自动读，不用写在这里", "高 · 300K"),
     // (the card to share's stage fading as it closes, the picture a line higher since its looks are in sets: a day's
     // date under its bar over the new chat's words)
     ("src/sfapp/stations_now_wbtest.mbt", "描述要做的事。它会在 Willow 上使用所选模型新建会话。", "10/26"),

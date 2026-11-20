@@ -1,15 +1,12 @@
 import {
   "base/codec",
   "base/url",
-  "station/host",
   "station/jsjson",
   "station/nodepath",
   "station/ops_platform",
   "station/api_routes",
   "station/jscase",
   "mbui/effect",
-  "moonbitlang/core/json",
   "moonbitlang/core/cmp",
   "moonbitlang/core/buffer",
-  "moonbitlang/core/encoding/utf8",
 }

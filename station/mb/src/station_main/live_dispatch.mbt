@@ -394,6 +394,14 @@ fn dispatch_store(bus : LiveBus, name : String, args : Array[Json]) -> Json rais
         }
         _ => Json::null()
       }
+    "importRows" => {
+      let ctx = arg_at(args, 0)
+      let table = match arg_at(args, 1) { String(s) => s; _ => "" }
+      let rows = match arg_at(args, 2) { Array(xs) => xs; _ => [] }
+      let id : Json? = match args.get(3) { Some(Null) | None => None; Some(v) => Some(v) }
+      bus.store.import_rows(ctx, table, rows, id)
+      ctx
+    }
     _ => bus.store.call(name, args)
   }
 }

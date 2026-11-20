@@ -585,6 +585,10 @@ fn domain_to_ascii(cs : Array[Char]) -> String? {
     }
   }
   for c in cs {
+    let cp = c.to_int()
+    if c == '\u{FFFD}' || (cp >= 0xFDD0 && cp <= 0xFDEF) || (cp & 0xFFFE) == 0xFFFE {
+      return None
+    }
     // (U+3002, U+FF0E and U+FF61 are full stops too, by UTS #46)
     if c == '.' || c == '\u{3002}' || c == '\u{FF0E}' || c == '\u{FF61}' {
       match flush(cur) {
@@ -819,8 +823,12 @@ pub fn parse_url(raw : String) -> Url? {
         fragment,
       })
     }
-    // (an opaque path: spaces before what follows kept, C0 encoded)
-    let path = encode_chars(p, C0)
+    // (an opaque path: C0 encoded; a trailing space before `?`/`#` is percent-encoded per WHATWG URL §4.3)
+    let path = if p.length() > 0 && p[p.length() - 1] == ' ' {
+      encode_chars(p[:p.length() - 1], C0) + "%20"
+    } else {
+      encode_chars(p, C0)
+    }
     return Some({
       scheme,
       username: "",
@@ -898,7 +906,7 @@ pub fn parse_url(raw : String) -> Url? {
   let host_chars = if colon >= 0 { hostport[:colon] } else { hostport }
   let port_chars = if colon >= 0 { hostport[colon + 1:] } else { hostport[0:0] }
   if host_chars.length() == 0 {
-    if special || at >= 0 || port_chars.length() > 0 {
+    if special || at >= 0 || colon >= 0 {
       return None
     }
   }
@@ -1057,8 +1065,14 @@ pub fn Url::href(self : Url) -> String {
 }
 
 ///|
-/// `URL.origin`: `scheme://host[:port]` for http, https, ws, wss, ftp; "null" otherwise.
+/// `URL.origin`: `scheme://host[:port]` for http, https, ws, wss, ftp; inner origin for `blob:` of http/https; "null" otherwise.
 pub fn Url::origin(self : Url) -> String {
+  if self.scheme == "blob" {
+    match parse_url(self.path) {
+      Some(inner) if inner.scheme == "http" || inner.scheme == "https" => return inner.origin()
+      _ => return "null"
+    }
+  }
   match (special_port(self.scheme), self.host) {
     (Some(_), Some(h)) =>
       match self.port {

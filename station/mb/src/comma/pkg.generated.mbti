@@ -62,8 +62,6 @@ pub fn first_points(String, Int32) -> String
 
 pub fn from_json(@json.Json) -> @jsjson.JValue
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn held_from(@jsjson.JValue?) -> Held?
 
 pub fn hex(BytesView) -> String
@@ -95,8 +93,6 @@ pub fn js_text(@jsjson.JValue) -> String
 pub fn js_trim(String) -> String
 
 pub fn jstr(String) -> @jsjson.JValue
-
-pub fn kind_of(Error) -> String
 
 pub fn make_comma(CommaOptions, Io, @effect.Runtime) -> CommaParts
 
@@ -179,10 +175,6 @@ pub let task_channel : String
 pub fn task_rows_of(StationRows) -> Map[String, (String, String)]
 
 pub fn task_wire(IndexRow) -> @jsjson.JValue?
-
-pub fn test_random(Int32, Int32) -> String
-
-pub fn test_uuid(Int32) -> String
 
 pub async fn text_of(async () -> Bytes?) -> String
 
@@ -317,14 +309,11 @@ pub struct CommaSurface {
   // private fields
 }
 pub fn CommaSurface::address(Self) -> String raise
-pub fn CommaSurface::chats_now(Self) -> CommaChats?
 pub fn CommaSurface::closed(Self) -> Unit
 pub async fn CommaSurface::download(Self, String, String, Double) -> Bytes
 pub fn CommaSurface::frame(Self, Socket, @jsjson.JValue, () -> Unit) -> Unit
 pub fn CommaSurface::headers(Self) -> Array[(String, String)]
 pub fn CommaSurface::identify(Self) -> @jsjson.JValue
-pub fn CommaSurface::in_scope_now(Self) -> Bool
-pub fn CommaSurface::indexes_now(Self) -> CommaIndexes? raise
 pub async fn CommaSurface::known_person(Self, String) -> @jsjson.JValue
 pub fn CommaSurface::look_up(Self, String) -> @jsjson.JValue
 pub fn CommaSurface::look_up_email(Self, String) -> String?

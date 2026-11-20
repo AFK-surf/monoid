@@ -9,7 +9,6 @@ import {
   "station/ops_platform",
   "mbui/effect",
   "moonbitlang/core/encoding/utf8",
-  "moonbitlang/core/json",
   "moonbitlang/core/buffer",
 }
 

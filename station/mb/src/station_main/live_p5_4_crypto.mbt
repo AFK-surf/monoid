@@ -274,7 +274,11 @@ fn p54_mul(k : @bigint.BigInt, x : @bigint.BigInt, y : @bigint.BigInt) -> (@bigi
 ///|
 /// The public point `04‖x‖y` of the private scalar `d`.
 fn p54_p256_public(d : Bytes) -> Bytes raise {
-  match p54_mul(p54_big(d), p54_gx, p54_gy) {
+  let dd = p54_big(d)
+  if dd <= 0N || dd >= p54_n {
+    raise Failure("not a P-256 key")
+  }
+  match p54_mul(dd, p54_gx, p54_gy) {
     Some((x, y)) => p54_cat([b"\x04", p54_octets(x, 32), p54_octets(y, 32)])
     None => raise Failure("not a P-256 key")
   }
@@ -283,16 +287,23 @@ fn p54_p256_public(d : Bytes) -> Bytes raise {
 ///|
 /// P-256's ECDH: the x-coordinate of `d`·Q for the peer's uncompressed point Q (checked on the curve).
 fn p54_p256_shared(d : Bytes, peer : Bytes) -> Bytes raise {
+  let dd = p54_big(d)
+  if dd <= 0N || dd >= p54_n {
+    raise Failure("invalid P-256 scalar")
+  }
   if peer.length() != 65 || peer[0] != b'\x04' {
     raise Failure("not an uncompressed P-256 point")
   }
   let x = p54_big(p54_sub(peer, 1, 33))
   let y = p54_big(p54_sub(peer, 33, 65))
   let p = p54_p
+  if x >= p || y >= p {
+    raise Failure("the point is not on P-256")
+  }
   if p54_mod(y * y, p) != p54_mod(x * x * x - 3N * x + p54_b, p) {
     raise Failure("the point is not on P-256")
   }
-  match p54_mul(p54_big(d), x, y) {
+  match p54_mul(dd, x, y) {
     Some((sx, _)) => p54_octets(sx, 32)
     None => raise Failure("the shared point is at infinity")
   }

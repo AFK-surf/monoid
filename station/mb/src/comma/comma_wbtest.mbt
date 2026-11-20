@@ -1,5 +1,4 @@
-// What the comma parts work out alone, as the TypeScript they are written from works it out (station/test/mb-comma.test.ts
-// holds them to it through the program; these are the cases worth keeping beside the code).
+// Pure unit tests for station/mb/src/comma.
 
 ///|
 test "day_key folds what is not of a date and pads short days" {
@@ -130,4 +129,138 @@ test "a question card" {
     ),
   )
   assert_eq(question_of(Some(@jsjson.parse("{\"type\":\"text\"}")), "x") is None, true)
+}
+
+///|
+test "stats_wire and task_wire format live and removed rows" {
+  let removed_stats = stats_wire({
+    key: "s1/2025-10-02",
+    source: "stillfail",
+    kind: "usage",
+    rev: 7.0,
+    removed: true,
+    json: "",
+  })
+  assert_true(removed_stats is Some(_))
+  assert_true(prop(removed_stats, "removed") is Some(Bool(true)))
+  assert_eq(num_of(prop(removed_stats, "rev")), Some(7.0))
+  assert_true(str_of(prop(removed_stats, "key")).unwrap_or("").has_prefix("sf1:"))
+
+  let bad_stats = stats_wire({
+    key: "k",
+    source: "stillfail",
+    kind: "usage",
+    rev: 1.0,
+    removed: false,
+    json: "{broken",
+  })
+  assert_true(bad_stats is None)
+
+  let removed_task = task_wire({
+    key: "3@st",
+    source: "stillfail",
+    kind: "task",
+    rev: 4.0,
+    removed: true,
+    json: "",
+  })
+  assert_eq(
+    removed_task.map(stringify),
+    Some("{\"thread\":\"3@st\",\"rev\":4,\"removed\":true}"),
+  )
+  let null_task = task_wire({
+    key: "3@st",
+    source: "stillfail",
+    kind: "task",
+    rev: 4.0,
+    removed: false,
+    json: "null",
+  })
+  assert_true(null_task is None)
+}
+
+///|
+test "held_from parses epoch and clamps negative through" {
+  assert_true(held_from(None) is None)
+  assert_true(held_from(Some(jstr("bad"))) is None)
+  assert_true(held_from(Some(@jsjson.parse("{\"epoch\":123}"))) is None)
+  match held_from(Some(@jsjson.parse("{\"epoch\":\"ep-1\",\"through\":42}"))) {
+    Some(h) => {
+      assert_eq(h.epoch, Some("ep-1"))
+      assert_eq(h.through, 42.0)
+    }
+    None => fail("expected Some(Held)")
+  }
+  match held_from(Some(@jsjson.parse("{\"epoch\":null,\"through\":-5}"))) {
+    Some(h) => {
+      assert_eq(h.epoch, None)
+      assert_eq(h.through, 0.0)
+    }
+    None => fail("expected Some(Held)")
+  }
+}
+
+///|
+test "tasks Start/Task JSON roundtrip and js_order key sorting" {
+  let st : Start = {
+    requester: "u1",
+    title: Some("Fix bug"),
+    runtime: Some("claude"),
+    model: None,
+  }
+  let rt = Start::of_j(Some(st.to_j()))
+  assert_eq(rt.requester, "u1")
+  assert_eq(rt.title, Some("Fix bug"))
+  assert_eq(rt.runtime, Some("claude"))
+  assert_eq(rt.model, None)
+
+  let task = Task::of_j(
+    @jsjson.parse(
+      "{\"task\":\"t-9\",\"threadTs\":\"123.000001\",\"start\":{\"requester\":\"u2\"},\"fetched\":5,\"answered\":3,\"left\":true}",
+    ),
+  )
+  assert_eq(task.task, "t-9")
+  assert_eq(task.thread_ts, "123.000001")
+  assert_eq(task.start.requester, "u2")
+  assert_eq(task.fetched, 5.0)
+  assert_eq(task.answered, 3.0)
+  assert_true(task.left)
+
+  // Array-index keys sorted ascending before string keys in insertion order.
+  let ordered = js_order([("b", ji(1)), ("10", ji(2)), ("a", ji(3)), ("2", ji(4))])
+  assert_eq(ordered.map(e => e.0), ["2", "10", "b", "a"])
+}
+
+///|
+test "chats already_said_j, Attachment::of_j, comma_connects and shown" {
+  let err : Error = AlreadySaid({ id: "w1", thread: 7.0, n: 2.0, pending: 1.0 })
+  assert_eq(
+    already_said_j(err).map(stringify),
+    Some("{\"id\":\"w1\",\"thread\":7,\"n\":2,\"pending\":1}"),
+  )
+  assert_true(already_said_j(fail_("other")) is None)
+
+  let att = Attachment::of_j(@jsjson.parse("{\"path\":\"/tmp/a.png\",\"name\":\"a.png\",\"size\":1024}"))
+  assert_eq(att.path, "/tmp/a.png")
+  assert_eq(att.name, "a.png")
+  assert_eq(att.size, 1024.0)
+
+  let connects = comma_connects(
+    @jsjson.parse(
+      "{\"connects\":[{\"id\":\"c1\",\"kind\":\"comma\",\"comma\":{\"server\":\"https://c.ex\",\"token\":\"tok-1234\"},\"workspace\":\"ws1\"},{\"id\":\"s1\",\"kind\":\"slack\"},{\"id\":\"c2\",\"kind\":\"comma\",\"enabled\":false,\"comma\":{\"server\":\"https://c2.ex\",\"token\":\"abcd5678\"}}]}",
+    ),
+  )
+  assert_eq(connects.length(), 2)
+  assert_eq(connects[0].id, "c1")
+  assert_true(connects[0].enabled)
+  assert_eq(connects[0].workspace, Some("ws1"))
+  assert_eq(connects[1].id, "c2")
+  assert_false(connects[1].enabled)
+
+  let s = shown(@jsjson.parse("{\"comma\":{\"server\":\"https://c.ex\",\"token\":\"secret-9876\"}}"))
+  assert_eq(
+    stringify(s),
+    "{\"name\":\"Comma\",\"team\":null,\"botImage\":null,\"comma\":{\"server\":\"https://c.ex\",\"token\":\"••••9876\"}}",
+  )
+  assert_eq(workspace_db_name("ws-1").length(), 64)
 }

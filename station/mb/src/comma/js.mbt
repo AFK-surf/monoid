@@ -61,15 +61,6 @@ pub fn message_of(e : Error) -> String {
 }
 
 ///|
-/// Of which kind an error is, as a caller tells them apart ("" for a plain Error).
-pub fn kind_of(e : Error) -> String {
-  match e {
-    Thrown(k, _) => k
-    _ => ""
-  }
-}
-
-///|
 /// An object of the fields given, those None (undefined) left out as JSON.stringify leaves them.
 pub fn jo(fields : Array[(String, J?)]) -> J {
   Obj(fields.filter_map(f => f.1.map(v => (f.0, v))))

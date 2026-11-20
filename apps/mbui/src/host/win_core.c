@@ -338,15 +338,71 @@ static int secure_read(const char *key, int user, uint8_t **out, size_t *len, ch
   return got;
 }
 
+static void free_strs(char **items, size_t count) {
+  if (!items) return;
+  for (size_t i = 0; i < count; i++) free(items[i]);
+  free(items);
+}
+
+// A JSON array of strings at `p`, as malloc'd UTF-8 strings: 1 on success, 0 when not one.
+static int jstrs(const char *p, char ***out, size_t *count) {
+  *out = NULL;
+  *count = 0;
+  if (!p) return 0;
+  p = ws(p);
+  if (*p != '[') return 0;
+  p = ws(p + 1);
+  if (*p == ']') return 1;
+  size_t cap = 4, n = 0;
+  char **items = malloc(cap * sizeof(char *));
+  if (!items) return 0;
+  for (;;) {
+    if (*p != '"') {
+      free_strs(items, n);
+      return 0;
+    }
+    char *s = jstr(p);
+    const char *next = skip_string(p);
+    if (!s || !next) {
+      free(s);
+      free_strs(items, n);
+      return 0;
+    }
+    if (n == cap) {
+      cap *= 2;
+      char **grown = realloc(items, cap * sizeof(char *));
+      if (!grown) {
+        free(s);
+        free_strs(items, n);
+        return 0;
+      }
+      items = grown;
+    }
+    items[n++] = s;
+    p = ws(next);
+    if (*p == ',') p = ws(p + 1);
+    else if (*p == ']') {
+      *out = items;
+      *count = n;
+      return 1;
+    } else {
+      free_strs(items, n);
+      return 0;
+    }
+  }
+}
+
 // ── the person's thread: what asks the person (Windows Hello), one prompt at a time, the core's thread going on ──
 
-enum { PERSON_ASK, PERSON_GET, PERSON_SET };
+enum { PERSON_ASK, PERSON_GET, PERSON_SET, PERSON_GET_MANY };
 
 typedef struct person_job {
   struct person_job *next;
   uint64_t id;
   int op;
-  char *key, *reason;  // malloc'd (key NULL for an ask, reason NULL where none was said)
+  char *key, *reason;  // malloc'd (key NULL for an ask/getMany, reason NULL where none was said)
+  char **keys;         // a getMany's, malloc'd
+  size_t nkeys;
   uint8_t *bytes;      // a set's, malloc'd, wiped once done
   size_t blen;
 } person_job;
@@ -357,6 +413,70 @@ static struct {
   person_job *head, *tail;
   int started;
 } P = {SRWLOCK_INIT, CONDITION_VARIABLE_INIT, NULL, NULL, 0};
+
+static void secure_get_many(uint64_t id, char **keys, size_t n, int user, int ask_person, HWND window, const char *reason) {
+  char why[200] = "";
+  uint8_t **vals = n ? calloc(n, sizeof(uint8_t *)) : NULL;
+  size_t *lens = n ? calloc(n, sizeof(size_t)) : NULL;
+  int *gots = n ? calloc(n, sizeof(int)) : NULL;
+  int any = 0, failed = 0;
+  size_t total = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (!keys[i] || !*keys[i]) {
+      snprintf(why, sizeof why, "secure.getMany: bad key");
+      failed = 1;
+      break;
+    }
+    int got = secure_read(keys[i], user, &vals[i], &lens[i], why, sizeof why);
+    if (got < 0) {
+      failed = 1;
+      break;
+    }
+    gots[i] = got;
+    if (got > 0) {
+      any = 1;
+      total += lens[i];
+    }
+  }
+  const char *no = NULL;
+  if (!failed && any && user && ask_person) {
+    no = win_hello_ask(window, reason);
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+  }
+  if (failed) {
+    answer(id, NULL, why, NULL, 0);
+  } else if (no) {
+    answer(id, NULL, no, NULL, 0);
+  } else {
+    size_t jcap = 16 + n * 24;
+    char *jbuf = malloc(jcap);
+    size_t jlen = (size_t)snprintf(jbuf, jcap, "{\"sizes\":[");
+    uint8_t *all = total ? malloc(total) : NULL;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (i > 0) jbuf[jlen++] = ',';
+      if (gots[i] > 0) {
+        jlen += (size_t)snprintf(jbuf + jlen, jcap - jlen, "%zu", lens[i]);
+        if (lens[i]) {
+          memcpy(all + at, vals[i], lens[i]);
+          at += lens[i];
+        }
+      } else {
+        jlen += (size_t)snprintf(jbuf + jlen, jcap - jlen, "-1");
+      }
+    }
+    snprintf(jbuf + jlen, jcap - jlen, "]}");
+    answer(id, jbuf, NULL, all, total);
+    free(jbuf);
+    if (all) SecureZeroMemory(all, total), free(all);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (vals && vals[i]) SecureZeroMemory(vals[i], lens[i]), free(vals[i]);
+  }
+  free(vals);
+  free(lens);
+  free(gots);
+}
 
 static void person_do(person_job *j) {
   char why[200] = "";
@@ -379,6 +499,8 @@ static void person_do(person_job *j) {
     else if (no) answer(j->id, NULL, no, NULL, 0);
     else answer(j->id, "{}", NULL, out, len);
     if (out) SecureZeroMemory(out, len), free(out);
+  } else if (j->op == PERSON_GET_MANY) {
+    secure_get_many(j->id, j->keys, j->nkeys, 1, 1, window, j->reason);
   } else {
     static const uint8_t none = 0;
     if ((no = win_hello_check()) != NULL) answer(j->id, NULL, no, NULL, 0);
@@ -390,6 +512,7 @@ static void person_do(person_job *j) {
 static void person_free(person_job *j) {
   if (j->bytes) SecureZeroMemory(j->bytes, j->blen), free(j->bytes);
   free(j->key);
+  free_strs(j->keys, j->nkeys);
   free(j->reason);
   free(j);
 }
@@ -411,17 +534,7 @@ static DWORD WINAPI person_thread(void *arg) {
 }
 
 // The job taken (its strings its own, its bytes copied), to the person's thread, begun the first time.
-static void person_queue(uint64_t id, int op, char *key, char *reason, const uint8_t *bytes, size_t blen) {
-  person_job *j = calloc(1, sizeof *j);
-  j->id = id;
-  j->op = op;
-  j->key = key;
-  j->reason = reason;
-  if (bytes && blen) {
-    j->bytes = malloc(blen);
-    memcpy(j->bytes, bytes, blen);
-    j->blen = blen;
-  }
+static void person_queue_job(person_job *j) {
   AcquireSRWLockExclusive(&P.lock);
   if (!P.started) {
     HANDLE t = CreateThread(NULL, 0, person_thread, NULL, 0, NULL);
@@ -439,20 +552,55 @@ static void person_queue(uint64_t id, int op, char *key, char *reason, const uin
     return;
   }
   // (no thread to ask on: nobody asked, said as nowhere to ask)
-  answer(id, NULL, "not_in_front", NULL, 0);
+  answer(j->id, NULL, "not_in_front", NULL, 0);
   person_free(j);
 }
 
+static void person_queue(uint64_t id, int op, char *key, char *reason, const uint8_t *bytes, size_t blen) {
+  person_job *j = calloc(1, sizeof *j);
+  j->id = id;
+  j->op = op;
+  j->key = key;
+  j->reason = reason;
+  if (bytes && blen) {
+    j->bytes = malloc(blen);
+    memcpy(j->bytes, bytes, blen);
+    j->blen = blen;
+  }
+  person_queue_job(j);
+}
+
 static void core_secure(uint64_t id, const char *op, const char *json, const uint8_t *bytes, size_t blen) {
-  char *key = jstr(jget(json, "key"));
   int user = jtrue(jget(json, "user"));
   char why[200] = "";
-  int get = strcmp(op, "secure.get") == 0, set = strcmp(op, "secure.set") == 0;
   if (strcmp(op, "secure.ask") == 0) {
-    free(key);
     person_queue(id, PERSON_ASK, NULL, jstr(jget(json, "reason")), NULL, 0);
     return;
-  } else if (!key || !*key) {
+  }
+  if (strcmp(op, "secure.getMany") == 0) {
+    char **keys = NULL;
+    size_t nkeys = 0;
+    if (!jstrs(jget(json, "keys"), &keys, &nkeys)) {
+      answer(id, NULL, "secure.getMany: no keys", NULL, 0);
+      return;
+    }
+    if (user) {
+      person_job *j = calloc(1, sizeof *j);
+      j->id = id;
+      j->op = PERSON_GET_MANY;
+      j->keys = keys;
+      j->nkeys = nkeys;
+      j->reason = jstr(jget(json, "reason"));
+      person_queue_job(j);
+    } else {
+      secure_get_many(id, keys, nkeys, 0, 0, NULL, NULL);
+      free_strs(keys, nkeys);
+    }
+    return;
+  }
+  char *key = jstr(jget(json, "key"));
+  int get = strcmp(op, "secure.get") == 0, set = strcmp(op, "secure.set") == 0;
+  if (!key || !*key) {
     snprintf(why, sizeof why, "%s: no key", op);
     answer(id, NULL, why, NULL, 0);
   } else if (user && (get || set)) {

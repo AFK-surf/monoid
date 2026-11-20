@@ -68,8 +68,6 @@ pub let grant_ms : Double
 
 pub fn grant_names(@jsjson.JValue) -> Array[String]
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn hash_of(String, Codecs?) -> (String, Double, Double)?
 
 pub let held_ms : Double
@@ -143,8 +141,6 @@ pub let most_watches : Int32
 pub fn names(String) -> Array[String] raise FsError
 
 pub fn odel(@jsjson.JValue, String) -> Unit
-
-pub fn of_jv(@jsjson.JValue) -> @json.Json
 
 pub fn oget(@jsjson.JValue, String) -> @jsjson.JValue?
 
@@ -237,8 +233,6 @@ pub fn thumbnail(String, String, Codecs?, since? : Double) -> Thumbnail? raise
 pub fn thumbs_dir(String) -> String
 
 pub fn tmpdir() -> String
-
-pub fn to_jv(@json.Json) -> @jsjson.JValue
 
 pub fn to_trash(String, String?, Double, String?) -> String? raise
 
@@ -560,4 +554,3 @@ pub(all) struct Written {
 // Type aliases
 
 // Traits
-trait ToJ

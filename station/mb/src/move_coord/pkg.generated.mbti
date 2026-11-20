@@ -42,8 +42,6 @@ pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
 pub fn grant_owners_of(Array[@jsjson.JValue]) -> Map[String, Array[String]]
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn has_key(@jsjson.JValue, String) -> Bool
 
 pub fn host_clock(@host.Host) -> Clock
@@ -88,8 +86,6 @@ pub fn jb(Bool) -> @jsjson.JValue
 
 pub fn ji(Int32) -> @jsjson.JValue
 
-pub fn jl(Int64) -> @jsjson.JValue
-
 pub fn jn(Double) -> @jsjson.JValue
 
 pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
@@ -124,8 +120,6 @@ pub fn move_routes(MoveRoutesDeps) -> Array[MoveRoute]
 
 pub async fn move_view(@jsjson.JValue, Array[String], Array[(Need, Waits)], module? : String, after? : String, limit? : Int32, last? : @jsjson.JValue, stopping? : Bool, name? : (String) -> String, current? : Need, held? : (Scheduler, Held)) -> @jsjson.JValue
 
-pub fn moved_path(String, String, String) -> String
-
 pub fn need_of(@jsjson.JValue) -> Need
 
 pub fn new_item(String, String, String, Array[Need], cannot? : String, again? : Bool, leaves? : String) -> @jsjson.JValue
@@ -159,8 +153,6 @@ pub fn same(@jsjson.JValue?, @jsjson.JValue?) -> Bool
 pub fn say_of(Say, Error, String) -> String
 
 pub fn set(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
-
-pub fn set_opt(@jsjson.JValue, String, @jsjson.JValue?) -> @jsjson.JValue
 
 pub let settings_that_move : Array[String]
 
@@ -708,7 +700,6 @@ pub async fn Scheduler::forget(Self, Array[Need]) -> Unit
 pub fn Scheduler::has_stopped(Self, at? : String) -> Bool
 pub fn Scheduler::held(Self, String, String) -> Held?
 pub fn Scheduler::last(Self, String) -> @jsjson.JValue?
-pub fn Scheduler::module_ids(Self) -> Array[String]
 pub async fn Scheduler::move(Self, String, String, Selection, by? : String) -> @jsjson.JValue
 pub fn Scheduler::move_soon(Self, String, String, Selection, String?) -> @effect.Deferred[@jsjson.JValue]
 pub fn Scheduler::new(SchedulerDeps) -> Self raise MoveError
@@ -721,7 +712,6 @@ pub async fn Scheduler::settle_stopped(Self, from? : String, module? : String) -
 pub async fn Scheduler::start(Self) -> Unit
 pub fn Scheduler::stop_turn(Self, String?) -> Bool
 pub fn Scheduler::stopped_list(Self) -> Array[(Need, Waits)]
-pub fn Scheduler::stopped_looked(Self) -> Int32
 pub fn Scheduler::stopping(Self) -> Bool
 pub fn Scheduler::waits_on(Self, String) -> Bool
 pub async fn Scheduler::written(Self) -> Unit

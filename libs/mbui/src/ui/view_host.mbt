@@ -3555,7 +3555,17 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   // (a finger setting off scrolling lets go of the keyboard, as an old view's list does: Ctx::scroll_lets_go; one
   // taking it over for anything else, not)
   if tree.claims_scroll(id) {
-    g().scroll_lets_go(-1)
+    let c = g()
+    // (one scrolling choices for the focused field, or in a layer leaving what is typed to a field outside it, keeps
+    // its keyboard: Tree::scroll_keeps_typing)
+    let focus = if c.editor_layer.get(c.focus).unwrap_or(0) == 0 {
+      editor_node_of(c, c.focus)
+    } else {
+      None
+    }
+    if !tree.scroll_keeps_typing(id, focus) {
+      c.scroll_lets_go(-1)
+    }
   }
   match view_held.val {
     Some(Node(n)) => {

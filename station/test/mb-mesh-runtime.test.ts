@@ -437,8 +437,9 @@ test("a view's pacer, sizer, sharpener and frame latency, step for step, on a ra
           const due = out.filter((f) => f.at + rtt <= NOW);
           if (due.length === 0) break;
           const upTo = due[r.int(due.length)]!.ts;
-          pacer.acked(upTo);
-          await ask(p, "acked", { ts: upTo });
+          const wait = r.pick([undefined, 0, 0, 15, 45, 95, 130, 500, -5]);
+          pacer.acked(upTo, wait);
+          await ask(p, "acked", { ts: upTo, ...(wait !== undefined ? { wait } : {}) });
           out.splice(0, out.findIndex((f) => f.ts === upTo) + 1);
           const trip = pacer.rtt() ?? 0;
           latency.acked(upTo * 1000, trip);
@@ -487,6 +488,7 @@ test("a view's pacer, sizer, sharpener and frame latency, step for step, on a ra
       assert.equal(await ask(p, "rate"), pacer.rate(), `${step_} rate`);
       assert.equal(await ask(p, "through"), pacer.through(), `${step_} through`);
       assert.equal(await ask(p, "rtt"), pacer.rtt(), `${step_} rtt`);
+      assert.equal(await ask(p, "viewerWait"), pacer.viewerWait(), `${step_} viewerWait`);
       assert.equal(await ask(p, "wait"), pacer.wait(), `${step_} wait`);
       assert.equal(await ask(p, "unacked"), pacer.unacked, `${step_} unacked`);
       assert.deepEqual(await ask(z, "bounds"), asJson(sizer.bounds()), `${step_} bounds`);

@@ -4,6 +4,42 @@
 // (`node`, the program's channel to its station). Its clock and timers the program's runtime's.
 
 ///|
+fn sarg(args : Array[J], i : Int) -> String {
+  if i < args.length() {
+    text(Some(args[i])).unwrap_or("")
+  } else {
+    ""
+  }
+}
+
+///|
+fn oarg(args : Array[J], i : Int) -> String? {
+  if i < args.length() {
+    text(Some(args[i]))
+  } else {
+    None
+  }
+}
+
+///|
+fn jarg(args : Array[J], i : Int) -> J {
+  if i < args.length() {
+    args[i]
+  } else {
+    Null
+  }
+}
+
+///|
+fn darg(args : Array[J], i : Int) -> Double? {
+  if i < args.length() {
+    num(Some(args[i]))
+  } else {
+    None
+  }
+}
+
+///|
 fn enoent(syscall : String, path : String) -> Error {
   thrown("Error", @host_world.enoent_msg(syscall, path), more=[("code", js("ENOENT"))])
 }

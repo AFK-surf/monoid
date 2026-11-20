@@ -260,7 +260,7 @@ let filter_pill_chevron : Double = 12.0
 ///|
 /// The pill (the presets' capsule): a capsule edged in the line, 44 high; picked, on the neutral ground.
 // kept across runs: a value (no field of it changes)
-let filter_pill : @ui.Style = @ui.css("row min_h=S11 min_w=S0 align=ACenter radius=Full border=B1 border_color=Line")
+let filter_pill : @ui.Style = @ui.css("row min_h=S11 min_w=S0 align=ACenter radius=Full border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -17,12 +17,62 @@ fn is_drive(path : String) -> Bool {
 }
 
 ///|
+fn is_win_reserved_name(s : String, colon : Int) -> Bool {
+  if colon != 3 && colon != 4 {
+    return false
+  }
+  let up = (i : Int) => {
+    let c = s.unsafe_charcode_at(i)
+    if c >= 'a' && c <= 'z' { c - 32 } else { c }
+  }
+  let c0 = up(0)
+  let c1 = up(1)
+  let c2 = up(2)
+  if colon == 3 {
+    (c0 == 'C' && c1 == 'O' && c2 == 'N') ||
+    (c0 == 'P' && c1 == 'R' && c2 == 'N') ||
+    (c0 == 'A' && c1 == 'U' && c2 == 'X') ||
+    (c0 == 'N' && c1 == 'U' && c2 == 'L')
+  } else {
+    let c3 = s.unsafe_charcode_at(3)
+    let digit = (c3 >= '1' && c3 <= '9') || c3 == 0xB9 || c3 == 0xB2 || c3 == 0xB3
+    digit && ((c0 == 'C' && c1 == 'O' && c2 == 'M') || (c0 == 'L' && c1 == 'P' && c2 == 'T'))
+  }
+}
+
+///|
+fn has_win_reserved_part(joined : String) -> Bool {
+  let n = joined.length()
+  let mut i = 0
+  while i < n {
+    while i < n && joined.unsafe_charcode_at(i) == '\\' {
+      i += 1
+    }
+    let start = i
+    let mut colon = -1
+    while i < n && joined.unsafe_charcode_at(i) != '\\' {
+      if colon < 0 && joined.unsafe_charcode_at(i) == ':' {
+        colon = i - start
+      }
+      i += 1
+    }
+    if colon > 0 && is_win_reserved_name(joined.exact_view(start=start, end=i).to_owned(), colon) {
+      return true
+    }
+  }
+  false
+}
+
+///|
 /// Node's path.join: the parts joined, then normalized.
 pub fn join(sep : String, parts : Array[String]) -> String {
   let given = parts.filter(p => p != "")
   let mut joined = given.join(sep)
   if sep == "\\" && given.length() > 0 {
     joined = not_a_share(given[0], joined)
+    if has_win_reserved_part(joined) {
+      return joined.replace_all(old="/", new="\\")
+    }
   }
   normalize(sep, if joined == "" { "." } else { joined })
 }
@@ -140,14 +190,18 @@ fn normalize(sep : String, path : String) -> String {
   if tail != "" && trailing {
     tail = tail + sep
   }
-  if win && device == "" && !is_abs {
-    // Node's path.win32.normalize prefixes `.\` when the first segment of a relative path ends with `:`
-    let first_end = match tail.find("\\") {
-      Some(i) => i
-      None => tail.length()
+  if win && device == "" && !is_abs && path.contains(":") {
+    // Node's path.win32.normalize (CVE-2024-36139): prefix `.\` if relative normalization could be
+    // interpreted as a Windows drive/device path (tail starts with `<alpha>:` or any `:` in path
+    // is at end-of-string or followed by a separator).
+    if is_drive(tail) {
+      return ".\\" + tail
     }
-    if first_end > 0 && tail.unsafe_get(first_end - 1).to_int() == ':' {
-      tail = ".\\" + tail
+    for k in 0..<n {
+      if path.unsafe_get(k).to_int() == ':' &&
+        (k == n - 1 || is_sep(path.unsafe_get(k + 1).to_int(), true)) {
+        return ".\\" + tail
+      }
     }
   }
   if device == "" {
@@ -216,6 +270,9 @@ pub fn dirname(sep : String, path : String) -> String {
   }
   if i < root {
     return if root > 0 { path.exact_view(end=root).to_owned() } else { "." }
+  }
+  if !win && root == 1 && i == 1 {
+    return "//"
   }
   path.exact_view(end=i).to_owned()
 }

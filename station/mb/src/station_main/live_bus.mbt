@@ -74,6 +74,8 @@ pub(all) struct LiveBus {
   mesh_relay_conflict : Ref[() -> Bool]
   mesh_net_info : Ref[() -> Json]
   peer_http : Ref[async (Request, Json) -> Reply?]
+  door_ports : Ref[Array[Int]]
+  peer_outside : Ref[(async (String, Json, Bytes?, String) -> (Json, Bytes?))?]
   outside_reaches : Ref[(String, String?) -> Bool]
   forwarded_port : Ref[(Int) -> Bool]
   runtimes_available : Ref[() -> Array[String]]
@@ -82,6 +84,7 @@ pub(all) struct LiveBus {
   /// Custom `/mcp` HTTP handler (when `Some`, handles auth, `LISTINGS`, `OUTWARD` gating, `station_tool`, `SPEAKS`).
   mcp_handle : Ref[(async (Request) -> Reply)?]
   hub_ask : Ref[async (String, Json) -> Json]
+  hub_models_for : Ref[(String) -> Array[Json]]
   handover_sessions : Ref[async () -> Array[Json]]
   take_handover : Ref[async (Json?) -> Unit]
   drain_wait : Ref[async () -> String]
@@ -239,12 +242,15 @@ pub fn LiveBus::new(
     mesh_relay_conflict: Ref(() => false),
     mesh_net_info: Ref(() => Json::null()),
     peer_http: Ref(async fn(_r, _conn) { Some(plain(503, "mesh not up")) }),
+    door_ports: Ref([]),
+    peer_outside: Ref(None),
     outside_reaches: Ref((_target, _ws) => false),
     forwarded_port: Ref(_port => false),
     runtimes_available: Ref(() => []),
     here_device: Ref(async fn(_ask, _conn) { () }),
     mcp_handle: Ref(None),
     hub_ask: Ref(async fn(_op, _arg) { Json::null() }),
+    hub_models_for: Ref(_connect => []),
     handover_sessions: Ref(async fn() { [] }),
     take_handover: Ref(async fn(_h) { () }),
     drain_wait: Ref(async fn() { "idle" }),

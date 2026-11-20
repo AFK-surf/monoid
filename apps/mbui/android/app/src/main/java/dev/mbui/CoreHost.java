@@ -378,23 +378,56 @@ final class CoreHost {
     private static final class Unsupported extends Exception {}
 
     // ── secure.* (still.fail client/core-ts hosts/bridge.ts) ──
-    //   secure.get {key, user, reason} → {} + the bytes, or {none: true}; secure.set {key, user} + the bytes → {};
-    //   secure.delete {key} → {}; secure.ask {reason} → {} once the person said yes.
+    //   secure.get {key, user, reason} → {} + the bytes, or {none: true};
+    //   secure.getMany {keys, user, reason} → {sizes} + concatenated bytes (-1 where absent);
+    //   secure.set {key, user} + the bytes → {}; secure.delete {key} → {}; secure.ask {reason} → {} once the person said yes.
     // `user: false`: each value a file of <data>/secure (the key's UTF-8 in hex), sealed with AES-GCM under one key of
     // the Android Keystore (StrongBox where the phone has one), which never leaves it; the value's name is the cipher's
     // associated data, so one file can't stand in for another.
-    // `user: true`: an RSA-2048 pair whose private half takes the person each time (biometrics or
-    // the screen lock, BiometricPrompt over the activity, the core's `reason` in it); a value is sealed with a fresh
-    // AES key wrapped to the public half, so keeping one asks nobody and only reading it does. It needs a screen lock,
-    // and is gone for good once the screen lock is taken off (key_invalidated). Its files are <data>/secure-user, as
-    // SecureStore.kt's: a version byte (1), 1, the wrapped key's length (2, big-endian), the wrapped key (RSA-OAEP,
-    // SHA-256), the IV (12) and AES-GCM's output, its associated data naming the key and `user`.
+    // `user: true`: an RSA-2048 Keystore key `PERSON` whose private half takes the person each time (`timeout = 0`,
+    // BiometricPrompt over the activity, the core's `reason` in it), wrapping a software RSA-2048 master pair
+    // (`master.pub` + `master.priv` in <data>/secure-user, VERSION_ENVELOPE = 2): keeping a value wraps its fresh AES
+    // key to `master.pub` (asking nobody), and `secure.getMany` unwraps `master.priv` once per prompt to open every
+    // requested value before zeroing it. Legacy VERSION = 1 blobs (wrapped directly to `PERSON` or `FORMER_PERSON`) are
+    // read as before and transparently upgraded to VERSION_ENVELOPE = 2 after decryption.
 
     private static final String ALIAS = "dev.mbui.core.secure";
     private static final String PERSON = "dev.mbui.core.person";
     private static final byte VERSION = 1;
+    private static final byte VERSION_ENVELOPE = 2;
+    private static final byte[] MASTER_AAD = "stillfail-master/1".getBytes(StandardCharsets.UTF_8);
     private static final javax.crypto.spec.OAEPParameterSpec OAEP = new javax.crypto.spec.OAEPParameterSpec(
             "SHA-256", "MGF1", java.security.spec.MGF1ParameterSpec.SHA1, javax.crypto.spec.PSource.PSpecified.DEFAULT);
+
+    private byte[] secureGetDevice(String key) throws Exception {
+        File file = new File(new File(dataDir, "secure"), hex(key.getBytes(StandardCharsets.UTF_8)));
+        if (!file.exists()) {
+            // kept by still.fail's Android app before this one took its place (its signing key of the
+            // workspace's lock): opened with its key, kept again as this app keeps it
+            byte[] before = formerDevice(key);
+            if (before == null) return null;
+            secureSetDevice(key, before);
+            return before;
+        }
+        byte[] sealed = Files.readAllBytes(file.toPath());
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.DECRYPT_MODE, sealingKey(), new GCMParameterSpec(128, sealed, 0, 12));
+        c.updateAAD(key.getBytes(StandardCharsets.UTF_8));
+        return c.doFinal(sealed, 12, sealed.length - 12);
+    }
+
+    private void secureSetDevice(String key, byte[] bytes) throws Exception {
+        File file = new File(new File(dataDir, "secure"), hex(key.getBytes(StandardCharsets.UTF_8)));
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.ENCRYPT_MODE, sealingKey());
+        c.updateAAD(key.getBytes(StandardCharsets.UTF_8));
+        byte[] iv = c.getIV();
+        byte[] out = c.doFinal(bytes != null ? bytes : new byte[0]);
+        ByteArrayOutputStream all = new ByteArrayOutputStream();
+        all.write(iv);
+        all.write(out);
+        keep(file, all.toByteArray());
+    }
 
     private Answer secure(String op, JSONObject a, byte[] bytes) throws Exception {
         String reason = a.optString("reason", "");
@@ -404,40 +437,26 @@ final class CoreHost {
             ask(reason, null);
             return new Answer("{}", null);
         }
+        if (op.equals("secure.getMany")) {
+            JSONArray keysArr = a.optJSONArray("keys");
+            if (keysArr == null) throw new IllegalArgumentException("no keys");
+            return secureGetMany(keysArr, a.optBoolean("user"), reason);
+        }
         String key = a.optString("key", "");
         if (key.isEmpty()) throw new IllegalArgumentException("no key");
         if (a.optBoolean("user")) return secureUser(op, key, reason, bytes);
-        File file = new File(new File(dataDir, "secure"), hex(key.getBytes(StandardCharsets.UTF_8)));
         switch (op) {
             case "secure.get": {
-                if (!file.exists()) {
-                    // kept by still.fail's Android app before this one took its place (its signing key of the
-                    // workspace's lock): opened with its key, kept again as this app keeps it
-                    byte[] before = formerDevice(key);
-                    if (before == null) return new Answer("{\"none\":true}", null);
-                    secure("secure.set", a, before);
-                    return new Answer("{}", before);
-                }
-                byte[] sealed = Files.readAllBytes(file.toPath());
-                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-                c.init(Cipher.DECRYPT_MODE, sealingKey(), new GCMParameterSpec(128, sealed, 0, 12));
-                c.updateAAD(key.getBytes(StandardCharsets.UTF_8));
-                return new Answer("{}", c.doFinal(sealed, 12, sealed.length - 12));
+                byte[] got = secureGetDevice(key);
+                if (got == null) return new Answer("{\"none\":true}", null);
+                return new Answer("{}", got);
             }
             case "secure.set": {
-                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-                c.init(Cipher.ENCRYPT_MODE, sealingKey());
-                c.updateAAD(key.getBytes(StandardCharsets.UTF_8));
-                byte[] iv = c.getIV();
-                byte[] out = c.doFinal(bytes != null ? bytes : new byte[0]);
-                ByteArrayOutputStream all = new ByteArrayOutputStream();
-                all.write(iv);
-                all.write(out);
-                keep(file, all.toByteArray());
+                secureSetDevice(key, bytes);
                 return new Answer("{}", null);
             }
             case "secure.delete":
-                file.delete();
+                new File(new File(dataDir, "secure"), hex(key.getBytes(StandardCharsets.UTF_8))).delete();
                 new File(new File(dataDir, "secure-user"), hex(key.getBytes(StandardCharsets.UTF_8))).delete();
                 former(key).delete();
                 return new Answer("{}", null);
@@ -462,6 +481,240 @@ final class CoreHost {
         return ("stillfail-sealed/1\u0000" + key + "\u00001").getBytes(StandardCharsets.UTF_8);
     }
 
+    private File masterPubFile() {
+        return new File(new File(dataDir, "secure-user"), "master.pub");
+    }
+
+    private File masterPrivFile() {
+        return new File(new File(dataDir, "secure-user"), "master.priv");
+    }
+
+    /** Software RSA-2048 master public key (made once and paired with `master.priv` sealed to `PERSON`; asks nobody). */
+    private synchronized java.security.PublicKey ensureMasterPublic() throws Exception {
+        boolean regenerated = personKeyEnsure();
+        File pubFile = masterPubFile();
+        File privFile = masterPrivFile();
+        if (!regenerated && pubFile.exists() && privFile.exists()) {
+            byte[] pubBytes = Files.readAllBytes(pubFile.toPath());
+            return java.security.KeyFactory.getInstance("RSA").generatePublic(new java.security.spec.X509EncodedKeySpec(pubBytes));
+        }
+        java.security.KeyPairGenerator gen = java.security.KeyPairGenerator.getInstance("RSA");
+        gen.initialize(2048);
+        java.security.KeyPair pair = gen.generateKeyPair();
+        byte[] pubBytes = pair.getPublic().getEncoded();
+        byte[] privBytes = pair.getPrivate().getEncoded();
+        byte[] fresh = new byte[32];
+        try {
+            new java.security.SecureRandom().nextBytes(fresh);
+            java.security.PublicKey half = java.security.KeyFactory.getInstance("RSA")
+                    .generatePublic(new java.security.spec.X509EncodedKeySpec(personKey().getEncoded()));
+            Cipher wrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
+            wrap.init(Cipher.ENCRYPT_MODE, half, OAEP);
+            byte[] wrapped = wrap.doFinal(fresh);
+            byte[] iv = new byte[12];
+            new java.security.SecureRandom().nextBytes(iv);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(fresh, "AES"), new GCMParameterSpec(128, iv));
+            c.updateAAD(MASTER_AAD);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(new byte[] {VERSION, 1});
+            out.write(java.nio.ByteBuffer.allocate(2).putShort((short) wrapped.length).array());
+            out.write(wrapped);
+            out.write(iv);
+            out.write(c.doFinal(privBytes));
+            keep(privFile, out.toByteArray());
+            keep(pubFile, pubBytes);
+        } finally {
+            java.util.Arrays.fill(fresh, (byte) 0);
+            java.util.Arrays.fill(privBytes, (byte) 0);
+        }
+        return pair.getPublic();
+    }
+
+    private void sealUserV2(File file, String key, byte[] plaintext, java.security.PublicKey masterPub) throws Exception {
+        byte[] fresh = new byte[32];
+        try {
+            new java.security.SecureRandom().nextBytes(fresh);
+            Cipher wrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
+            wrap.init(Cipher.ENCRYPT_MODE, masterPub, OAEP);
+            byte[] wrapped = wrap.doFinal(fresh);
+            byte[] iv = new byte[12];
+            new java.security.SecureRandom().nextBytes(iv);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(fresh, "AES"), new GCMParameterSpec(128, iv));
+            c.updateAAD(aad(key));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write(new byte[] {VERSION_ENVELOPE, 1});
+            out.write(java.nio.ByteBuffer.allocate(2).putShort((short) wrapped.length).array());
+            out.write(wrapped);
+            out.write(iv);
+            out.write(c.doFinal(plaintext != null ? plaintext : new byte[0]));
+            keep(file, out.toByteArray());
+        } finally {
+            java.util.Arrays.fill(fresh, (byte) 0);
+        }
+    }
+
+    private byte[] unwrapWithPerson(String alias, byte[] wrapped, String reason) throws Exception {
+        KeyStore ks = keystore();
+        if (!(ks.getKey(alias, null) instanceof java.security.PrivateKey secret))
+            throw new android.security.keystore.KeyPermanentlyInvalidatedException("no key for what was sealed");
+        Cipher unwrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            // the key takes the person for this one use: the prompt unlocks this cipher
+            unwrap.init(Cipher.DECRYPT_MODE, secret, OAEP);
+            android.hardware.biometrics.BiometricPrompt.CryptoObject crypto =
+                    ask(reason, new android.hardware.biometrics.BiometricPrompt.CryptoObject(unwrap));
+            if (crypto == null) throw new SecureException("user_cancelled");
+            return (crypto.getCipher() != null ? crypto.getCipher() : unwrap).doFinal(wrapped);
+        } else {
+            // Android 10: a key that takes the screen lock cannot be unlocked per use, only for a while after
+            // it was given (10 s): the person is asked first, then the key is used
+            ask(reason, null);
+            unwrap.init(Cipher.DECRYPT_MODE, secret, OAEP);
+            return unwrap.doFinal(wrapped);
+        }
+    }
+
+    /** Unseals the software RSA-2048 master private key with one biometric prompt against `PERSON`. */
+    private java.security.PrivateKey openMasterPrivate(String reason) throws Exception {
+        File privFile = masterPrivFile();
+        if (!privFile.exists()) throw new android.security.keystore.KeyPermanentlyInvalidatedException("no master key");
+        byte[] blob = Files.readAllBytes(privFile.toPath());
+        if (blob.length <= 2 || blob[0] != VERSION || blob[1] != 1) throw new IllegalArgumentException("master.priv: not a sealed value");
+        java.nio.ByteBuffer rest = java.nio.ByteBuffer.wrap(blob, 2, blob.length - 2);
+        byte[] wrapped = new byte[rest.getShort() & 0xffff];
+        rest.get(wrapped);
+        byte[] iv = new byte[12];
+        rest.get(iv);
+        byte[] opened = unwrapWithPerson(PERSON, wrapped, reason);
+        byte[] pkcs8 = null;
+        try {
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(opened, "AES"), new GCMParameterSpec(128, iv));
+            c.updateAAD(MASTER_AAD);
+            pkcs8 = c.doFinal(blob, rest.position(), rest.remaining());
+            return java.security.KeyFactory.getInstance("RSA").generatePrivate(new java.security.spec.PKCS8EncodedKeySpec(pkcs8));
+        } finally {
+            java.util.Arrays.fill(opened, (byte) 0);
+            if (pkcs8 != null) java.util.Arrays.fill(pkcs8, (byte) 0);
+        }
+    }
+
+    private byte[] decryptUserV2(byte[] blob, String key, java.security.PrivateKey masterPriv) throws Exception {
+        java.nio.ByteBuffer rest = java.nio.ByteBuffer.wrap(blob, 2, blob.length - 2);
+        byte[] wrapped = new byte[rest.getShort() & 0xffff];
+        rest.get(wrapped);
+        byte[] iv = new byte[12];
+        rest.get(iv);
+        Cipher unwrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
+        unwrap.init(Cipher.DECRYPT_MODE, masterPriv, OAEP);
+        byte[] opened = unwrap.doFinal(wrapped);
+        try {
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(opened, "AES"), new GCMParameterSpec(128, iv));
+            c.updateAAD(aad(key));
+            return c.doFinal(blob, rest.position(), rest.remaining());
+        } finally {
+            java.util.Arrays.fill(opened, (byte) 0);
+        }
+    }
+
+    private byte[] decryptUserV1(byte[] blob, String key, String alias, String reason) throws Exception {
+        java.nio.ByteBuffer rest = java.nio.ByteBuffer.wrap(blob, 2, blob.length - 2);
+        byte[] wrapped = new byte[rest.getShort() & 0xffff];
+        rest.get(wrapped);
+        byte[] iv = new byte[12];
+        rest.get(iv);
+        byte[] opened = unwrapWithPerson(alias, wrapped, reason);
+        try {
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(opened, "AES"), new GCMParameterSpec(128, iv));
+            c.updateAAD(aad(key));
+            return c.doFinal(blob, rest.position(), rest.remaining());
+        } finally {
+            java.util.Arrays.fill(opened, (byte) 0);
+        }
+    }
+
+    private void tryUpgradeToV2(String key, byte[] plain) {
+        try {
+            File target = new File(new File(dataDir, "secure-user"), hex(key.getBytes(StandardCharsets.UTF_8)));
+            sealUserV2(target, key, plain, ensureMasterPublic());
+        } catch (Throwable ignored) {
+            // Upgrade is best-effort; the decrypted value is still returned.
+        }
+    }
+
+    private Answer secureGetMany(JSONArray keysArr, boolean user, String reason) throws Exception {
+        int n = keysArr.length();
+        String[] keys = new String[n];
+        for (int i = 0; i < n; i++) {
+            String k = keysArr.optString(i, "");
+            if (k.isEmpty()) throw new IllegalArgumentException("bad key");
+            keys[i] = k;
+        }
+        byte[][] vals = new byte[n][];
+        if (!user) {
+            for (int i = 0; i < n; i++) vals[i] = secureGetDevice(keys[i]);
+        } else {
+            byte[][] blobs = new byte[n][];
+            String[] aliases = new String[n];
+            boolean any = false;
+            boolean hasV2 = false;
+            for (int i = 0; i < n; i++) {
+                File file = new File(new File(dataDir, "secure-user"), hex(keys[i].getBytes(StandardCharsets.UTF_8)));
+                String alias = PERSON;
+                if (!file.exists()) {
+                    File before = former(keys[i]);
+                    if (!before.exists()) continue;
+                    file = before;
+                    alias = FORMER_PERSON;
+                }
+                byte[] blob = Files.readAllBytes(file.toPath());
+                if (blob.length <= 2 || blob[1] != 1 || (blob[0] != VERSION && blob[0] != VERSION_ENVELOPE))
+                    throw new IllegalArgumentException(keys[i] + ": not a sealed value");
+                blobs[i] = blob;
+                aliases[i] = alias;
+                any = true;
+                if (blob[0] == VERSION_ENVELOPE) hasV2 = true;
+            }
+            if (any) {
+                if (!locked()) throw new SecureException("no_device_lock");
+                java.security.PrivateKey masterPriv = hasV2 ? openMasterPrivate(reason) : null;
+                try {
+                    for (int i = 0; i < n; i++) {
+                        if (blobs[i] == null) continue;
+                        if (blobs[i][0] == VERSION_ENVELOPE) {
+                            vals[i] = decryptUserV2(blobs[i], keys[i], masterPriv);
+                        } else {
+                            vals[i] = decryptUserV1(blobs[i], keys[i], aliases[i], reason);
+                            tryUpgradeToV2(keys[i], vals[i]);
+                        }
+                    }
+                } finally {
+                    if (masterPriv != null) {
+                        try {
+                            masterPriv.destroy();
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+        }
+        JSONArray sizes = new JSONArray();
+        ByteArrayOutputStream all = new ByteArrayOutputStream();
+        for (int i = 0; i < n; i++) {
+            if (vals[i] == null) {
+                sizes.put(-1);
+            } else {
+                sizes.put(vals[i].length);
+                all.write(vals[i]);
+                java.util.Arrays.fill(vals[i], (byte) 0);
+            }
+        }
+        return new Answer("{\"sizes\":" + sizes.toString() + "}", all.toByteArray());
+    }
+
     /** A value for the person (`user: true`): kept asking nobody, read once they say yes (SecureStore.kt get, set). */
     private Answer secureUser(String op, String key, String reason, byte[] bytes) throws Exception {
         File file = new File(new File(dataDir, "secure-user"), hex(key.getBytes(StandardCharsets.UTF_8)));
@@ -477,61 +730,26 @@ final class CoreHost {
                     alias = FORMER_PERSON;
                 }
                 byte[] blob = Files.readAllBytes(file.toPath());
-                if (blob.length <= 2 || blob[0] != VERSION || blob[1] != 1) throw new IllegalArgumentException(key + ": not a sealed value");
+                if (blob.length <= 2 || blob[1] != 1 || (blob[0] != VERSION && blob[0] != VERSION_ENVELOPE))
+                    throw new IllegalArgumentException(key + ": not a sealed value");
                 if (!locked()) throw new SecureException("no_device_lock");
-                java.nio.ByteBuffer rest = java.nio.ByteBuffer.wrap(blob, 2, blob.length - 2);
-                byte[] wrapped = new byte[rest.getShort() & 0xffff];
-                rest.get(wrapped);
-                byte[] iv = new byte[12];
-                rest.get(iv);
-                KeyStore ks = keystore();
-                if (!(ks.getKey(alias, null) instanceof java.security.PrivateKey secret))
-                    throw new android.security.keystore.KeyPermanentlyInvalidatedException("no key for what was sealed");
-                Cipher unwrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
-                byte[] opened;
-                if (android.os.Build.VERSION.SDK_INT >= 30) {
-                    // the key takes the person for this one use: the prompt unlocks this cipher
-                    unwrap.init(Cipher.DECRYPT_MODE, secret, OAEP);
-                    android.hardware.biometrics.BiometricPrompt.CryptoObject crypto =
-                            ask(reason, new android.hardware.biometrics.BiometricPrompt.CryptoObject(unwrap));
-                    if (crypto == null) throw new SecureException("user_cancelled");
-                    opened = (crypto.getCipher() != null ? crypto.getCipher() : unwrap).doFinal(wrapped);
-                } else {
-                    // Android 10: a key that takes the screen lock cannot be unlocked per use, only for a while after
-                    // it was given (10 s): the person is asked first, then the key is used
-                    ask(reason, null);
-                    unwrap.init(Cipher.DECRYPT_MODE, secret, OAEP);
-                    opened = unwrap.doFinal(wrapped);
+                if (blob[0] == VERSION_ENVELOPE) {
+                    java.security.PrivateKey masterPriv = openMasterPrivate(reason);
+                    try {
+                        return new Answer("{}", decryptUserV2(blob, key, masterPriv));
+                    } finally {
+                        try {
+                            masterPriv.destroy();
+                        } catch (Throwable ignored) {}
+                    }
                 }
-                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-                c.init(Cipher.DECRYPT_MODE, new javax.crypto.spec.SecretKeySpec(opened, "AES"), new GCMParameterSpec(128, iv));
-                c.updateAAD(aad(key));
-                java.util.Arrays.fill(opened, (byte) 0);
-                return new Answer("{}", c.doFinal(blob, rest.position(), rest.remaining()));
+                byte[] plain = decryptUserV1(blob, key, alias, reason);
+                tryUpgradeToV2(key, plain);
+                return new Answer("{}", plain);
             }
             case "secure.set": {
                 if (!locked()) throw new SecureException("no_device_lock");
-                byte[] fresh = new byte[32];
-                new java.security.SecureRandom().nextBytes(fresh);
-                // the public half as a key of the platform's own provider: the Keystore's takes no part in it
-                java.security.PublicKey half = java.security.KeyFactory.getInstance("RSA")
-                        .generatePublic(new java.security.spec.X509EncodedKeySpec(personKey().getEncoded()));
-                Cipher wrap = Cipher.getInstance("RSA/ECB/OAEPPadding");
-                wrap.init(Cipher.ENCRYPT_MODE, half, OAEP);
-                byte[] wrapped = wrap.doFinal(fresh);
-                byte[] iv = new byte[12];
-                new java.security.SecureRandom().nextBytes(iv);
-                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-                c.init(Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(fresh, "AES"), new GCMParameterSpec(128, iv));
-                c.updateAAD(aad(key));
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                out.write(new byte[] {VERSION, 1});
-                out.write(java.nio.ByteBuffer.allocate(2).putShort((short) wrapped.length).array());
-                out.write(wrapped);
-                out.write(iv);
-                out.write(c.doFinal(bytes != null ? bytes : new byte[0]));
-                java.util.Arrays.fill(fresh, (byte) 0);
-                keep(file, out.toByteArray());
+                sealUserV2(file, key, bytes != null ? bytes : new byte[0], ensureMasterPublic());
                 return new Answer("{}", null);
             }
             case "secure.delete":
@@ -613,6 +831,29 @@ final class CoreHost {
             }
         }
         return make.make(false);
+    }
+
+    /** Ensures `PERSON` exists and is still valid; returns true when it had to be created anew. */
+    private static synchronized boolean personKeyEnsure() throws Exception {
+        KeyStore ks = keystore();
+        java.security.cert.Certificate cert = ks.getCertificate(PERSON);
+        if (cert != null) {
+            java.security.Key k = ks.getKey(PERSON, null);
+            if (!(k instanceof java.security.PrivateKey priv)) {
+                ks.deleteEntry(PERSON);
+            } else {
+                try {
+                    Cipher.getInstance("RSA/ECB/OAEPPadding").init(Cipher.DECRYPT_MODE, priv, OAEP);
+                    return false;
+                } catch (android.security.keystore.KeyPermanentlyInvalidatedException e) {
+                    ks.deleteEntry(PERSON);
+                } catch (android.security.keystore.UserNotAuthenticatedException e) {
+                    return false;
+                }
+            }
+        }
+        personKey();
+        return true;
     }
 
     /** The person's key's public half: made the first time, and again when the one there can no longer be used. */
@@ -743,6 +984,10 @@ final class CoreHost {
                 ok &= same;
                 Host.log("SECURE_TEST secure.get " + got.json + " " + (got.bytes != null ? got.bytes.length : 0)
                         + " bytes, " + (same ? "the same" : "NOT the same"));
+                Answer many = h.secure("secure.getMany", new JSONObject("{\"keys\":[" + JSONObject.quote(key) + ",\"mbui.secure-test.missing\"]}"), null);
+                boolean manyOk = "{\"sizes\":[48,-1]}".equals(many.json) && many.bytes != null && java.util.Arrays.equals(many.bytes, value);
+                ok &= manyOk;
+                Host.log("SECURE_TEST secure.getMany " + many.json + " " + (many.bytes != null ? many.bytes.length : 0) + " bytes");
                 File sealed = new File(new File(dir, "secure"), hex(key.getBytes(StandardCharsets.UTF_8)));
                 boolean apart = sealed.exists() && !java.util.Arrays.equals(Files.readAllBytes(sealed.toPath()), value);
                 ok &= apart;

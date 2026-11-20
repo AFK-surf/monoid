@@ -406,11 +406,6 @@ fn stat_of(a : J) -> Stat {
 }
 
 ///|
-pub fn stat_j(s : Stat) -> J {
-  jo([("dir", jb(s.dir)), ("file", jb(s.file)), ("link", jb(s.link)), ("size", jn(s.size)), ("mtimeMs", jn(s.mtime_ms))])
-}
-
-///|
 /// The drive's operations as still.fail Helper's requests, in one scope (files.ts `HelperFs`).
 pub struct HelperFs {
   priv files : HelperFiles

@@ -35,7 +35,10 @@ import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/va
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
 import { BOX_KEY, BOX_PUB, UNLOCK_MS, levelVaults, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
-import { handOver, inForceOf, leftIn, pendingHeld, read as readLock, roster } from "../src/views/lock.ts";
+import { handOver, inForceOf, leftIn, pairs, pendingHeld, read as readLock, roster, signerKnown } from "../src/views/lock.ts";
+import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from "../src/views/pair.ts";
+import { PERSONAL_KEY } from "../src/personal-lock.ts";
+import { Queue } from "effect";
 import { world as pairWorld } from "./lock-pair-world.ts";
 import { subscribe, call } from "./helpers.ts";
 import { withoutMesh } from "./lock-rig.ts";
@@ -3304,4 +3307,346 @@ test("a vault made before the move, s2 in it: after handOver, by the state in fo
   const v = r.st.vaults.get(r.id)!;
   assert.deepEqual([v.epoch, v.members, v.keys.map((x) => x.cert.device)], [old.epoch + 1, ["s1"], ["ab".repeat(32)]], "keyed anew without s2");
   r.core.close();
+});
+
+/// Two connected `Duplex` ends for in-memory pairing tests.
+function duplexPipe(): [Duplex, Duplex] {
+  const a2b = Effect.runSync(Queue.unbounded<any>());
+  const b2a = Effect.runSync(Queue.unbounded<any>());
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    Queue.offerUnsafe(a2b, null);
+    Queue.offerUnsafe(b2a, null);
+  };
+  const end = (out: Queue.Queue<any>, inp: Queue.Queue<any>): Duplex => ({
+    send: (m) => Effect.sync(() => { if (!closed) Queue.offerUnsafe(out, structuredClone(m)); }),
+    next: () => Queue.take(inp),
+    close,
+  });
+  return [end(a2b, b2a), end(b2a, a2b)];
+}
+
+/// Runs `e` on `inner.runner` while advancing `host.time` so TestClock timeouts/schedules complete deterministically.
+async function runOn<X>(host: FakeHost, inner: Core["inner"], e: Effect.Effect<X, any>): Promise<X> {
+  const box: { res: { ok: X } | { error: any } | null } = { res: null };
+  inner.runner.fork(Effect.match(e, { onSuccess: (ok) => void (box.res = { ok }), onFailure: (error) => void (box.res = { error }) }));
+  for (let i = 0; i < 200 && box.res === null; i++) await host.time.pass(50);
+  assert.ok(box.res !== null, "timed out waiting for effect");
+  if ("error" in box.res) throw box.res.error;
+  return box.res.ok;
+}
+
+test("personal pairing hands over personal vault master key in one biometric prompt so new device can decrypt immediately with zero extra clicks", async () => {
+  const st = fakeStation();
+  const personalCloud: { entries: Entry[] } = { entries: [] };
+  const D1 = "11".repeat(32);
+  const D2 = "22".repeat(32);
+  const makeDevice = async (devId: string) => {
+    const s = await started(undefined, 0, undefined, (x) => {
+      x.host.appKeys = true;
+      stationReplies(x.host, (req) => {
+        if (req.url.includes("/v1/me/personal-lock")) {
+          if (req.method === "GET") return { entries: personalCloud.entries };
+          const body = req.body ? JSON.parse(new TextDecoder().decode(req.body)) : {};
+          const incoming = Array.isArray(body.entries) ? (body.entries as Entry[]) : [];
+          for (const e of incoming) if (e.seq === personalCloud.entries.length) personalCloud.entries = [...personalCloud.entries, e];
+          return { entries: personalCloud.entries };
+        }
+        return st.reply(req);
+      });
+    });
+    s.core.inner.mesh = () => withoutMesh(devId);
+    const ui = s.core.connect();
+    let reqId = 100;
+    const ask = async (callName: string, params: Record<string, unknown> = {}) => {
+      const id = ++reqId;
+      s.host.takeEmitted();
+      call(s.core, ui, id, callName, { workspace: "ws", ...params });
+      let found: any = undefined;
+      for (let i = 0; i < 60 && found === undefined; i++) {
+        await s.host.time.pass(50);
+        for (const [, m] of s.host.takeEmitted()) {
+          const rec = m as any;
+          if (rec.id === id && ("ok" in rec || "error" in rec)) found = rec;
+        }
+      }
+      assert.ok(found !== undefined, `${callName}: no answer`);
+      assert.equal(found.error, undefined, `${callName}: ${JSON.stringify(found.error)}`);
+      return found.ok as any;
+    };
+    return { ...s, ask };
+  };
+
+  const d1 = await makeDevice(D1);
+  // d1 sets up personal vault (no safe mode -> personal lock created automatically) and stores 1 secret.
+  const { made } = await d1.ask("vault.setup", {});
+  assert.ok(made, "personal vault created");
+  const { id: itemId } = await d1.ask("vault.putItem", {
+    vault: made,
+    plain: { kind: "token", name: "HandoverSecret", fields: { value: "sk_handover_secret" } },
+    listing: { name: "HandoverSecret", kind: "token", modes: ["env"], hosts: [] },
+  });
+  // Lock vault on d1 so master key is NOT in RAM cache!
+  await d1.ask("vault.lock", {});
+  await d1.host.time.pass(50);
+
+  // d2 starts fresh, learns d1's personal lock from cloud (standing === "outside").
+  const d2 = await makeDevice(D2);
+  await runOn(d2.host, d2.core.inner, d2.core.inner.adb.personal().refresh("s1"));
+  assert.equal(d2.core.inner.adb.personal().standing("s1"), "outside");
+
+  // Wire d2's dialer to d1's serveTrusted.
+  const origOpen = dialer.open;
+  dialer.open = (_inner, id) => Effect.suspend(() => {
+    if (id !== D1) return Effect.fail(new CoreError("pair", "wrong peer"));
+    const [trusted, phone] = duplexPipe();
+    d1.core.inner.runner.fork(serveTrusted(d1.core.inner, D2, D1, trusted));
+    return Effect.succeed(phone);
+  });
+  try {
+    const askedBefore = d1.host.secureAsked.length;
+    await runOn(d2.host, d2.core.inner, personalBegin(d2.core.inner, ["s1"]));
+    await d2.host.time.pass(200);
+    await d1.host.time.pass(200);
+    const showing = pairs.shown(d1.core.inner);
+    assert.equal(showing.length, 1, "d1 shows pairing code");
+    const code = showing[0].code as string;
+
+    // Run personalProve on d2 while advancing both clocks so PAKE + approve complete.
+    let done: any = null;
+    d2.core.inner.runner.fork(Effect.match(personalProve(d2.core.inner, code), {
+      onSuccess: (ok) => void (done = { ok }),
+      onFailure: (error) => void (done = { error }),
+    }));
+    for (let i = 0; i < 200 && done === null; i++) {
+      await d1.host.time.pass(50);
+      await d2.host.time.pass(50);
+    }
+    assert.ok(done && !done.error, `personalProve failed: ${JSON.stringify(done)}`);
+
+    // 1. d1 prompted ONLY ONCE (single secureGetMany([PERSONAL_KEY, BOX_KEY])).
+    const askedDelta = d1.host.secureAsked.slice(askedBefore);
+    assert.equal(askedDelta.length, 1, `expected 1 biometric prompt on d1, got ${JSON.stringify(askedDelta)}`);
+    assert.equal(askedDelta[0]!.key, `${PERSONAL_KEY},${BOX_KEY}`);
+
+    // 2. d2 immediately has canSign === true, setUp === true, vaults[0].keyed === true with zero extra clicks.
+    const view2 = vaultsView(d2.core.inner, "ws") as any;
+    assert.equal(view2.canSign, true, "d2 canSign");
+    assert.equal(view2.setUp, true, "d2 setUp");
+    assert.equal(view2.vaults.length, 1, "d2 sees vault");
+    assert.equal(view2.vaults[0].keyed, true, "d2 vault is keyed immediately");
+
+    // 3. Let background readStation fetch encrypted items, then d2 opens and decrypts the secret!
+    await d2.host.time.pass(300);
+    const opened = await d2.ask("vault.open", { item: itemId });
+    assert.equal(opened.plain.fields.value, "sk_handover_secret");
+  } finally {
+    dialer.open = origOpen;
+    d1.core.close();
+    d2.core.close();
+  }
+});
+
+test("backwards compatibility: legacy new device hello without boxCerts pairs normally without reading BOX_KEY", async () => {
+  const st = fakeStation();
+  const personalCloud: { entries: Entry[] } = { entries: [] };
+  const D1 = "33".repeat(32);
+  const D2 = "44".repeat(32);
+  const d1 = await started(undefined, 0, undefined, (x) => {
+    x.host.appKeys = true;
+    stationReplies(x.host, (req) => {
+      if (req.url.includes("/v1/me/personal-lock")) {
+        if (req.method === "GET") return { entries: personalCloud.entries };
+        const body = req.body ? JSON.parse(new TextDecoder().decode(req.body)) : {};
+        const incoming = Array.isArray(body.entries) ? (body.entries as Entry[]) : [];
+        for (const e of incoming) if (e.seq === personalCloud.entries.length) personalCloud.entries = [...personalCloud.entries, e];
+        return { entries: personalCloud.entries };
+      }
+      return st.reply(req);
+    });
+  });
+  d1.core.inner.mesh = () => withoutMesh(D1);
+  const ui1 = d1.core.connect();
+  const ask1 = async (callName: string, params: Record<string, unknown> = {}) => {
+    const id = Math.floor(Math.random() * 1e6) + 200;
+    d1.host.takeEmitted();
+    call(d1.core, ui1, id, callName, { workspace: "ws", ...params });
+    let found: any = undefined;
+    for (let i = 0; i < 60 && found === undefined; i++) {
+      await d1.host.time.pass(50);
+      for (const [, m] of d1.host.takeEmitted()) {
+        const rec = m as any;
+        if (rec.id === id && ("ok" in rec || "error" in rec)) found = rec;
+      }
+    }
+    assert.ok(found !== undefined && found.error === undefined, `${callName}: ${JSON.stringify(found)}`);
+    return found.ok;
+  };
+  await ask1("vault.setup", {});
+  await ask1("vault.lock", {});
+  await d1.host.time.pass(50);
+
+  const askedBefore = d1.host.secureAsked.length;
+  const [trusted, phone] = duplexPipe();
+  d1.core.inner.runner.fork(serveTrusted(d1.core.inner, D2, D1, trusted));
+  const d2PersonalKey = key(fill(0x71)).id;
+  const d2SignKey = key(fill(0x72)).id;
+  // Legacy hello without boxCerts
+  await runOn(d1.host, d1.core.inner, phone.send({ t: "hello", v: 1, workspaces: [], kind: "app", label: "legacy", sign_key: d2SignKey, personal: { subs: ["s1"], key: d2PersonalKey } }));
+  const codeMsg = await runOn(d1.host, d1.core.inner, phone.next());
+  assert.equal(codeMsg?.t, "code");
+  const code = pairs.shown(d1.core.inner)[0].code as string;
+  const { pairSession, pakeStart, pakeKeys } = await import("../src/pair.ts");
+  const p = pakeStart(code, pairSession(D2, D1, ["person:s1"]), (b) => d1.host.randomBytes(b));
+  await runOn(d1.host, d1.core.inner, phone.send({ t: "pake", y: hex(p.share) }));
+  const r = await runOn(d1.host, d1.core.inner, phone.next());
+  assert.equal(r?.t, "pake");
+  const unhexLocal = (h: string) => Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16));
+  const keys = pakeKeys(p, unhexLocal(r.y), "new")!;
+  await runOn(d1.host, d1.core.inner, phone.send({ t: "confirm", mac: hex(keys.mine) }));
+  const approved = await runOn(d1.host, d1.core.inner, phone.next());
+  assert.equal(approved?.t, "approved");
+  assert.deepEqual(approved.workspaces, ["person:s1"]);
+  assert.equal(approved.vaults, undefined, "no vaults handed over for legacy hello");
+  const askedDelta = d1.host.secureAsked.slice(askedBefore);
+  assert.equal(askedDelta.length, 1);
+  assert.equal(askedDelta[0]!.key, PERSONAL_KEY, "did not read BOX_KEY when hello had no boxCerts");
+  d1.core.close();
+});
+
+test("cold-start autoBox race: when signerKnown fires after readStation and vaultCome, vaultReady triggers autoBox", async () => {
+  const r = await rig();
+  // Publish another device's cert & vault on the station so onElsewhere() is true, while this device has no BOX_PUB yet.
+  const otherCert = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(fill(0x88)), at: 2000 }, TAG.box, r.phone);
+  r.st.boxes.set(r.phone.hex, otherCert);
+  r.host.storage.delete(BOX_PUB);
+  r.host.secure.delete(BOX_KEY);
+  // Simulate cold start where Signer.load() has NOT finished yet when vaultCome/readStation run.
+  const realSigner = r.me.signer!.id;
+  signerKnown(r.core.inner, null);
+  r.putLock();
+  await r.host.time.pass(200);
+  assert.equal((vaultsView(r.core.inner, "ws") as any).setUp, false, "not set up while signer is null");
+  assert.equal(r.st.boxes.has("ab".repeat(32)), false, "no BoxCert published yet");
+  // Now Signer.load() finishes and calls signerKnown -> vaultReady -> autoBox!
+  signerKnown(r.core.inner, realSigner);
+  await r.host.time.pass(300);
+  assert.equal((vaultsView(r.core.inner, "ws") as any).setUp, true, "autoBox ran once signer became known");
+  assert.equal(r.st.boxes.has("ab".repeat(32)), true, "BoxCert published to station");
+  r.core.close();
+});
+
+test("handover preserves seq + 1 locally on both d1 and d2 when station temporarily rejects PUT /vault/vaults with vault_invalid, then spreads it once station catches up", async () => {
+  const st = fakeStation();
+  const personalCloud: { entries: Entry[] } = { entries: [] };
+  const D1 = "55".repeat(32);
+  const D2 = "66".repeat(32);
+  let rejectPutVault = false;
+  const makeDevice = async (devId: string) => {
+    const s = await started(undefined, 0, undefined, (x) => {
+      x.host.appKeys = true;
+      stationReplies(x.host, (req) => {
+        if (req.url.includes("/v1/me/personal-lock")) {
+          if (req.method === "GET") return { entries: personalCloud.entries };
+          const body = req.body ? JSON.parse(new TextDecoder().decode(req.body)) : {};
+          const incoming = Array.isArray(body.entries) ? (body.entries as Entry[]) : [];
+          for (const e of incoming) if (e.seq === personalCloud.entries.length) personalCloud.entries = [...personalCloud.entries, e];
+          return { entries: personalCloud.entries };
+        }
+        if (rejectPutVault && req.method === "PUT" && req.url.includes("/vault/vaults")) {
+          return status(400, { error: "device not in lock", code: "vault_invalid" });
+        }
+        return st.reply(req);
+      });
+    });
+    s.core.inner.mesh = () => withoutMesh(devId);
+    const ui = s.core.connect();
+    let reqId = 300;
+    const ask = async (callName: string, params: Record<string, unknown> = {}) => {
+      const id = ++reqId;
+      s.host.takeEmitted();
+      call(s.core, ui, id, callName, { workspace: "ws", ...params });
+      let found: any = undefined;
+      for (let i = 0; i < 60 && found === undefined; i++) {
+        await s.host.time.pass(50);
+        for (const [, m] of s.host.takeEmitted()) {
+          const rec = m as any;
+          if (rec.id === id && ("ok" in rec || "error" in rec)) found = rec;
+        }
+      }
+      assert.ok(found !== undefined, `${callName}: no answer`);
+      assert.equal(found.error, undefined, `${callName}: ${JSON.stringify(found.error)}`);
+      return found.ok as any;
+    };
+    return { ...s, ask };
+  };
+
+  const d1 = await makeDevice(D1);
+  const { made } = await d1.ask("vault.setup", {});
+  const { id: itemId } = await d1.ask("vault.putItem", {
+    vault: made,
+    plain: { kind: "token", name: "StaleLockSecret", fields: { value: "sk_stale_lock_ok" } },
+    listing: { name: "StaleLockSecret", kind: "token", modes: ["env"], hosts: [] },
+  });
+  await d1.ask("vault.lock", {});
+  await d1.host.time.pass(50);
+
+  const d2 = await makeDevice(D2);
+  await runOn(d2.host, d2.core.inner, d2.core.inner.adb.personal().refresh("s1"));
+
+  // Station has a stale personal lock cache during pairing handover -> rejects PUT /vault/vaults with 400 vault_invalid!
+  rejectPutVault = true;
+  const origOpen = dialer.open;
+  dialer.open = (_inner, id) => Effect.suspend(() => {
+    if (id !== D1) return Effect.fail(new CoreError("pair", "wrong peer"));
+    const [trusted, phone] = duplexPipe();
+    d1.core.inner.runner.fork(serveTrusted(d1.core.inner, D2, D1, trusted));
+    return Effect.succeed(phone);
+  });
+  try {
+    const askedBefore = d1.host.secureAsked.length;
+    await runOn(d2.host, d2.core.inner, personalBegin(d2.core.inner, ["s1"]));
+    await d2.host.time.pass(200);
+    await d1.host.time.pass(200);
+    const code = pairs.shown(d1.core.inner)[0].code as string;
+    let done: any = null;
+    d2.core.inner.runner.fork(Effect.match(personalProve(d2.core.inner, code), {
+      onSuccess: (ok) => void (done = { ok }),
+      onFailure: (error) => void (done = { error }),
+    }));
+    for (let i = 0; i < 200 && done === null; i++) {
+      await d1.host.time.pass(50);
+      await d2.host.time.pass(50);
+    }
+    assert.ok(done && !done.error, `personalProve failed: ${JSON.stringify(done)}`);
+    assert.equal(d1.host.secureAsked.slice(askedBefore).length, 1, "still only 1 biometric prompt on d1");
+
+    // Station still has seq=0 because it rejected PUT /vault/vaults,
+    assert.equal(st.vaults.get(made)!.seq, 0, "station rejected PUT during stale lock");
+    // ...but BOTH d1 and d2 persisted seq=1 locally!
+    const d1Held = (d1.core.inner.data.record("vault", "ws") as any).vaults[made] as Vault;
+    assert.equal(d1Held.seq, 1, "d1 preserved seq + 1 locally");
+    assert.ok(d1Held.keys.some((k) => k.cert.device === D2), "d1 local vault has d2 key");
+    const view2 = vaultsView(d2.core.inner, "ws") as any;
+    assert.equal(view2.canSign, true);
+    assert.equal(view2.setUp, true);
+    assert.equal(view2.vaults[0].keyed, true);
+
+    // Once station catches up on the lock and a read triggers spread, seq + 1 is pushed to the station!
+    rejectPutVault = false;
+    subscribe(d2.core, 1, 99, { topic: "vaults", workspace: "ws" });
+    await d2.host.time.pass(300);
+    assert.equal(st.vaults.get(made)!.seq, 1, "station received seq + 1 via spread");
+    assert.ok(st.vaults.get(made)!.keys.some((k) => k.cert.device === D2), "station vault has d2 key");
+
+    // And d2 opens the secret cleanly!
+    const opened = await d2.ask("vault.open", { item: itemId });
+    assert.equal(opened.plain.fields.value, "sk_stale_lock_ok");
+  } finally {
+    dialer.open = origOpen;
+    d1.core.close();
+    d2.core.close();
+  }
 });

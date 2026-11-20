@@ -1021,7 +1021,8 @@ pub fn View::scroll_holding(self : View, across? : Bool = false) -> Scroll? {
 /// as it is now (by default what covers its top), as an old view's list's bar does. `bar_here`: whether this one has
 /// its bar now, as that changes (one of several scrolled beside each other as one, Scroll::beside: the last of a long
 /// table's pieces, its bar under its last row alone): the bar drawn only while it says so; a hand
-/// on any of them shows it (Scroll's `peers_scrolled`).
+/// on any of them shows it (Scroll's `peers_scrolled`). `for_in`: what holds the field whose choices it scrolls, its
+/// keyboard kept as a finger scrolls them (View::claims' `for_in`).
 pub fn View::scrolls(
   self : View,
   s : Scroll,
@@ -1032,6 +1033,7 @@ pub fn View::scrolls(
   top_covered? : () -> Double = fn() { 0.0 },
   bar_clear? : () -> (Double, Double),
   bar_here? : () -> Bool,
+  for_in? : NodeId,
 ) -> View {
   guard self.live() is Some(_) else { return self }
   // (where it says when it has it: drawn, and its room kept, only then)
@@ -1575,7 +1577,7 @@ pub fn View::scrolls(
     let takes = along.abs() > slop() && along.abs() >= other.abs() && can
     s.claimed = takes
     takes
-  }, scrolls=true)
+  }, scrolls=true, for_in?)
   // (held, its own terms: what it holds moved as far as the hand, as big as it is drawn)
   .on_drag(fn(d) {
     // (where the hand is along it, in its own terms and the window's, and how fast: across, along the row)

@@ -281,7 +281,15 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
       ignore(hub.refresher(async fn() { desktop.refresh() }))
     }
     "linux" => {
-      let desktop = @screens.LinuxDesktop::new(io, { data: bus.data, changed, title, env: None, discover: None })
+      let desktop = @screens.LinuxDesktop::new(io, {
+        data: bus.data,
+        changed,
+        title,
+        env: None,
+        discover: None,
+        native_binary: @screens.linux_screen_binary(io, env),
+        native_start: None,
+      })
       ignore(hub.add(desktop.source()))
       ignore(hub.refresher(async fn() { desktop.refresh() }))
     }

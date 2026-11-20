@@ -156,6 +156,53 @@ test "CRC-32 rolled on, and deflate inflated again to the same" {
 }
 
 ///|
+priv struct FakeClock {
+  mut now : Double
+  timers : Array[(Int, Double, () -> Unit)]
+  mut next : Int
+}
+
+///|
+fn FakeClock::clock(self : FakeClock) -> Clock {
+  {
+    now: () => self.now,
+    after: fn(ms, f) {
+      self.next += 1
+      let id = self.next
+      self.timers.push((id, self.now + ms, f))
+      fn() {
+        for i, t in self.timers {
+          if t.0 == id {
+            self.timers.remove(i) |> ignore
+            return
+          }
+        }
+      }
+    },
+  }
+}
+
+///|
+fn FakeClock::advance(self : FakeClock, ms : Double) -> Unit {
+  let until = self.now + ms
+  while true {
+    let mut best = -1
+    for i, t in self.timers {
+      if t.1 <= until && (best < 0 || t.1 < self.timers[best].1) {
+        best = i
+      }
+    }
+    if best < 0 {
+      break
+    }
+    let t = self.timers.remove(best)
+    self.now = t.1
+    (t.2)()
+  }
+  self.now = until
+}
+
+///|
 test "a folder's watch: a burst told once, kept between asks, its asking held at most so long" {
   let fake : FakeClock = { now: 0.0, timers: [], next: 0 }
   let handlers : Array[(() -> Unit, () -> Unit)] = []

@@ -155,6 +155,24 @@ test("an Android release's symbols: older than 30 days by when the bucket says t
   assert.deepEqual(doomedOf(keys, feeds, null, NOW).filter((k) => k.startsWith("symbols/")), [], "none goes without times");
 });
 
+test("the station's readers in the prebuilt store: older than 14 days by when they were put go; the store's other parts never", () => {
+  const reader = (platform: string, c: string) => `natives/reader-${platform}-${c.repeat(24)}.tar.gz`;
+  const day = 86400;
+  const old = [reader("darwin-arm64", "a"), reader("linux-x64", "b"), reader("linux-arm64", "c"), reader("win32-x64", "d")];
+  const young = reader("linux-x64", "e"), untimed = reader("win32-x64", "f"), unread = reader("darwin-arm64", "0");
+  const others = [
+    `natives/shell-win32-x64-${"1".repeat(24)}.tar.gz`, `natives/engine-win32-x64-${"2".repeat(24)}.tar.gz`,
+    `natives/ghostty-vt-linux-x64-${"3".repeat(24)}.tar.gz`, `natives/reader-harness-linux-x64-${"4".repeat(24)}.tar.gz`,
+    `natives/reader-android-arm64-${"5".repeat(24)}.tar.gz`, `natives/reader-linux-x64-${"6".repeat(12)}.tar.gz`,
+  ];
+  const keys = [...old, young, untimed, unread, ...others];
+  const putAt = new Map<string, number>([...old, ...others].map((k) => [k, NOW - 15 * day]));
+  putAt.set(young, NOW - 13 * day);
+  putAt.set(unread, NaN);
+  assert.deepEqual(doomedOf(keys, {}, null, NOW, putAt), old);
+  assert.deepEqual(doomedOf(keys, {}, null, NOW), [], "none goes without times");
+});
+
 // Asking Cloudflare's API: a fetch that answers from a script, and a sleep that only writes down how long it was asked.
 const scripted = (answers: (Response | Error)[]) => {
   const urls: string[] = [];

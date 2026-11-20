@@ -175,7 +175,10 @@ async fn write_reply(host : @host.Host, id : Json, reply : Reply) -> Unit {
   let out = StringBuilder()
   out.write_string("HTTP/1.1 \{reply.status} \{reason(reply.status)}\r\n")
   for h in reply.headers {
-    out.write_string("\{h.0}: \{h.1}\r\n")
+    let name = h.0.to_lower()
+    if name != "content-length" && name != "transfer-encoding" && name != "connection" {
+      out.write_string("\{h.0}: \{h.1}\r\n")
+    }
   }
   out.write_string("content-length: \{reply.body.length()}\r\nconnection: close\r\n\r\n")
   let head = @utf8.encode(out.to_string())

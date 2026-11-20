@@ -122,7 +122,7 @@ decide() {
   # that Rust, what it vendors or ci-1's own setup changed. Otherwise check runs on GitHub's runners without them
   # (STILLFAIL_SKIP_RUST_TESTS), and needs no ci-1 to be up.
   check_rust=false
-  if has '^(station/native/(launcher|runner|mesh|screen)/|libs/mesh-transport/|client/(shell|iroh-wasm)/|client/Cargo\.(toml|lock)$|vendor/|\.github/actions/setup-(linux|mac)/)'; then check_rust=true; fi
+  if has '^(station/native/(launcher|runner|mesh|screen|screen-linux)/|libs/mesh-transport/|client/(shell|iroh-wasm)/|client/Cargo\.(toml|lock)$|vendor/|\.github/actions/setup-(linux|mac)/)'; then check_rust=true; fi
 }
 
 print() {

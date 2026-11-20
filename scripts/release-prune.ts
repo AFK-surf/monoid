@@ -15,8 +15,9 @@
 // feed names, any newer, and the newest 5. What a station's job staged (staged/<when>-<commit>/: scripts/release-put.sh
 // --stage) and no put took back and deleted: after two days. An Android release's native symbols (symbols/android/…:
 // scripts/release.sh, read by scripts/crash-symbols.ts) once older than 30 days by the time the bucket says it was put
-// (its listing's last_modified; the owner, 2026-11-11): one whose time cannot be read stays. The stations' own names,
-// Node and the feeds are never touched.
+// (its listing's last_modified; the owner, 2026-11-11): one whose time cannot be read stays. The station's readers in
+// the prebuilt store (natives/reader-<platform>-<key>.tar.gz: scripts/native.ts store-sync) once older than 14 days by
+// the same word; the store's other parts never. The stations' own names, Node and the feeds are never touched.
 // CI runs it after `put` (.github/workflows/pipeline.yml). An old file it could not delete stays for the next run's
 // prune: a release already put and told never goes red for it (as scripts/native.ts's prune).
 //   node scripts/release-prune.ts [--dry-run]
@@ -46,6 +47,11 @@ const STAGED_SECONDS = 2 * 24 * 3600;
 /** An Android release's symbols, and how long they stay after they were put. */
 const SYMBOLS = /^symbols\//;
 const SYMBOLS_SECONDS = 30 * 24 * 3600;
+/** The station's readers main built, copied into the prebuilt store (scripts/native.ts store-sync), and how long they
+ * stay after they were put: a stable release of up to a few days before fetches its own. One main still builds with is
+ * copied again by its next run. The store's other parts (prebuilt by hand: shell, engine, ghostty-vt…) never go. */
+const READER_NATIVE = /^natives\/reader-(darwin-arm64|linux-x64|linux-arm64|win32-x64)-[0-9a-f]{24}\.tar\.gz$/;
+const READER_NATIVE_SECONDS = 14 * 24 * 3600;
 /** The station's archives under their own names, and their deltas (scripts/release-deltas.ts). */
 const STATION_ARCHIVE = /^station\/archive\/(stable|beta)\/(\d+)-([0-9a-f]{64})-([a-z0-9-]+?)(\.tar\.gz|\.zip|\.from-\d+-[0-9a-f]{16}\.delta)$/;
 
@@ -149,6 +155,10 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
     if (SYMBOLS.test(key)) {
       const put = putAt.get(key);
       return put !== undefined && Number.isFinite(put) && put < now - SYMBOLS_SECONDS;
+    }
+    if (READER_NATIVE.test(key)) {
+      const put = putAt.get(key);
+      return put !== undefined && Number.isFinite(put) && put < now - READER_NATIVE_SECONDS;
     }
     const web = Number(key.match(WEB_ARCHIVE)?.[1]);
     if (Number.isSafeInteger(web)) return webNamed !== null && web < webNamed && webBuilds.indexOf(web) >= WEB_ARCHIVES;
@@ -279,7 +289,7 @@ if (import.meta.main) {
   const doomed = doomedOf(keys, feeds, webNamed, Date.now() / 1000, putAt);
   // (said each, so that what goes can be read from CI's log)
   for (const key of aheadOf(keys, feeds)) console.log(`above its feed: ${key}`);
-  console.log(`${keys.length} files, ${doomed.length} old installers, deltas, blockmaps, archives, staged files and symbols to delete`);
+  console.log(`${keys.length} files, ${doomed.length} old installers, deltas, blockmaps, archives, staged files, symbols and readers to delete`);
   for (const key of doomed) console.log(`  ${key}`);
   if (dryRun) process.exit(0);
   const { deleted, left } = await deleteDoomed(doomed, (key) => api(`${objects}/${encodeObjectKey(key)}`, { method: "DELETE" }));

@@ -12,5 +12,4 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/double",
   "moonbitlang/core/buffer",
-  "moonbitlang/core/encoding/base64",
 }

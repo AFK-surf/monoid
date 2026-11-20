@@ -567,10 +567,10 @@ test "by touch in the window's middle (a fold laid open) the preset's dialog, �
   t.run_for(@ui.move_most_ms)
   assert_true(t.focus_said().has_prefix("TextField"), msg="the clone's: \{t.focus_said()}")
   assert_true(t.ime().0, msg="the clone's input method")
-  // with keys and a mouse
+  // with keys and a mouse: new preset opens on its name field, picker on its filter
   new_run()
   let dialog = preset_mode("newchat-preset-new", wide=true)
-  assert_true(dialog.focus_said().has_prefix("Button \"添加目录\""), msg="the dialog: \{dialog.focus_said()}")
+  assert_true(dialog.focus_said().has_prefix("TextField"), msg="the dialog: \{dialog.focus_said()}")
   new_run()
   let picker = preset_mode("newchat-preset-new-browse", wide=true)
   assert_true(picker.focus_said().has_prefix("TextField \"筛选文件夹\""), msg="the picker: \{picker.focus_said()}")
@@ -588,8 +588,8 @@ test "a preset can leave directories, station, and model unrestricted, or bind a
   // Pick Station via multi-select panel, clear it with ×, then pick Willow
   press(t, "不限 Station")
   t.run_for(@ui.move_most_ms)
-  assert_true(shows(t, "全选"), msg=runs(t))
-  press(t, "全选")
+  assert_true(shows(t, "自动分配"), msg=runs(t))
+  press(t, "自动分配")
   t.frame()
   press(t, "Maple")
   t.frame()
@@ -876,4 +876,91 @@ test "the folder picker's station, way and rows pressed: the picker as it was ti
         ], ms)
     }
   }
+}
+
+///|
+test "editing a preset preserves speed, fast, context, and tui across model pill display, pick.save, and preset.put" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("newchat-preset-edit")
+  let rich_model : Json = {
+    "model": "claude-opus-5-5",
+    "runtime": "claude",
+    "effort": "high",
+    "speed": "ultrafast",
+    "fast": true,
+    "context": 500000,
+    "tui": true,
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      match got.value {
+        Some(Object(m)) if name == "preset" => {
+          let v = m.copy()
+          v["model"] = rich_model
+          { ..got, value: Some(Json::object(v)) }
+        }
+        _ => got
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t = preset_mode("newchat-preset-edit", wide=true, src~)
+  // Initial state (model_state == 0) shows Ultrafast and 500K in the model capsule.
+  assert_true(shows(t, "Opus 5.5 · 高 · Ultrafast · 500K"), msg=runs(t))
+  // Saving directly without touching the model picker preserves speed, fast, context, tui.
+  press(t, "保存")
+  t.frame()
+  let saved = Some(named(calls, "preset.put")[0].params)
+  let saved_model = field(saved, "model")
+  assert_eq(text(saved_model, "model"), "claude-opus-5-5")
+  assert_eq(text(saved_model, "speed"), "ultrafast")
+  assert_eq(field(saved_model, "fast"), Some(Json::boolean(true)))
+  assert_eq(field(saved_model, "tui"), Some(Json::boolean(true)))
+  assert_eq(field(saved_model, "context"), Some(Json::number(500000.0)))
+  // Opening the model picker forwards speed, fast, context, tui to pick.save.
+  new_run()
+  let calls2 : Array[Made] = []
+  let src2 : Source = {
+    ..src,
+    call: fn(name, params, done) {
+      calls2.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  let t2 = preset_mode("newchat-preset-edit", wide=true, src=src2)
+  press(t2, "Opus 5.5 · 高 · Ultrafast · 500K")
+  t2.run_for(@ui.move_most_ms)
+  let pick_saves = named(calls2, "pick.save")
+  guard pick_saves.length() >= 1 else { fail("no pick.save: \{Repr(calls2.map(fn(c) { c.name }))}") }
+  let sp = Some(pick_saves[0].params)
+  assert_eq(text(sp, "speed"), "ultrafast")
+  assert_eq(field(sp, "fast"), Some(Json::boolean(true)))
+  assert_eq(field(sp, "tui"), Some(Json::boolean(true)))
+  assert_eq(field(sp, "context"), Some(Json::number(500000.0)))
+}
+
+///|
+test "preset edit dialog and station picker show localized English copy with no hardcoded Chinese" {
+  new_run()
+  let t = screen_in("newchat-preset-edit", ("wide", 1280.0, 800.0, 0, ""), "en")
+  assert_true(shows(t, "Station & model"), msg=runs(t))
+  assert_true(shows(t, "Any station"), msg=runs(t))
+  assert_true(shows(t, "Any model"), msg=runs(t))
+  assert_true(shows(t, "Instructions"), msg=runs(t))
+  assert_false(shows(t, "Station 与模型（可选）") || shows(t, "不限 Station") || shows(t, "不限模型"), msg=runs(t))
+  press(t, "Any station")
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "Auto station"), msg=runs(t))
+  assert_true(shows(t, "Keep the station picked in the new chat"), msg=runs(t))
+  assert_true(shows(t, "Pick automatically across available stations"), msg=runs(t))
+  assert_false(
+    shows(t, "全选") || shows(t, "保持新对话当前选中的 station") || shows(t, "在所有可用 station 间按负载自动分配"),
+    msg=runs(t),
+  )
 }

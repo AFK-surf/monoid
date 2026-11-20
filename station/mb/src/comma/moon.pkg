@@ -10,7 +10,6 @@ import {
   "station/jscase",
   "station/nodepath",
   "station/memory",
-  "moonbitlang/core/json",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
   "moonbitlang/core/encoding/utf8",

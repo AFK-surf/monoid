@@ -186,13 +186,6 @@ fn Carry::take(self : Carry, n : Int) -> Bytes {
 }
 
 ///|
-fn Carry::clear(self : Carry) -> Unit {
-  self.pieces.clear()
-  self.length = 0
-  self.at = 0
-}
-
-///|
 /// A big-endian 4-byte value at `i` of what is kept.
 fn Carry::u32_at(self : Carry, i : Int) -> Int64 {
   (self.byte_at(i).to_int64() << 24) |

@@ -8,11 +8,9 @@ import {
   "station/nodepath",
   "station/sql",
   "station/activity",
-  "station/session_storage",
   "station/wire",
   "mbui/effect",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/hex",
-  "moonbitlang/core/buffer",
   "moonbitlang/core/double",
 }

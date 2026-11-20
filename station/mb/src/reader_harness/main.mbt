@@ -18,24 +18,14 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @replica_coord.harness(host))
     (Some("harness-connects-hub"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
-    (Some("harness-feishu"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @feishu.harness(host))
-    (Some("harness-comma"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @comma.harness(host))
-    (Some("harness-rigs-mode"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @rigs_mode.harness(host))
     (Some("harness-store-sessions"), Some(db)) =>
       @host.run(shell_dir=beside(db, "shell"), host => @store_sessions.harness(host, db))
     (Some("harness-accounts-oauth"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
-    (Some("harness-move-coord"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @move_coord.harness(host))
     (Some("harness-store-threads"), Some(db)) =>
       @host.run(shell_dir=beside(db, "shell"), host => @store_threads.harness(host, db))
     (Some("harness-accounts-pool"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_pool.harness(host))
-    (Some("harness-share-sync"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @share_sync.harness(host))
     (Some("harness-cloud-lock"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_lock.harness(host))
     (Some("harness-agent-drivers"), _) =>
@@ -44,8 +34,6 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_net.harness(host))
     (Some("harness-agent-runtimes"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_runtimes.harness(host))
-    (Some("harness-slack"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @slack.harness(host))
     (Some("harness-mesh-door"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_door.harness(host))
     (Some("harness-session-chats"), _) =>
@@ -54,18 +42,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @events.harness(host))
     (Some("harness-session-storage"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_storage.harness(host))
-    (Some("harness-browser"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @browser.harness(host))
-    (Some("harness-screens"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @screens.harness(host))
     (Some("harness-adb-devices"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
-    (Some("harness-terminals-logins"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @terminals_logins.harness(host))
-    (Some("harness-drive"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @drive.harness(host))
-    (Some("harness-updates"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @updates.harness(host))
     (Some("harness-mesh-runtime"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_runtime.harness(host))
     (Some("harness-api-routes"), _) =>
@@ -78,6 +56,10 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_crypto.harness(host))
     (Some("harness-stdlib"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_stdlib(host))
+    (Some("harness-upstream"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_upstream(host))
+    (Some("harness-sql-net"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_sql_net(host))
     _ => {
       @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
       2

@@ -996,6 +996,16 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   let call = @gate.peer_call(keeper, dialing, host.rt, outside=(target, ws) => (bus.outside_reaches.val)(target, Some(ws)))
   m.call = Some(call)
   self.keeper_call.val = Some(call)
+  if bus.peer_outside.val is Some(handler) {
+    m.peers.outside(async fn(peer, request, body, ws) {
+      let bytes = match body {
+        Some(b) => Some(body_bytes(b))
+        None => None
+      }
+      let (answer, out) = handler(peer, request, bytes, ws)
+      (answer, out.map(bytes_body))
+    })
+  }
   m.peers.attach(call.call)
   // A rig's grants first on what a station asks of it, every station told it is here.
   match self.rig {
@@ -1309,17 +1319,16 @@ fn P51::peer_door(self : P51, m : MeshLive) -> Unit {
   }
   let host = self.host
   bus.peer_http.val = async fn(r, conn) {
-    guard m.http is Some(http) else { return Some(plain(503, "the mesh is not up")) }
-    let rest = r.path()["/peer".length():].to_owned()
-    let parts = rest.split("/").map(s => s.to_owned()).filter(s => s != "").to_array()
-    guard parts.length() >= 2 else { return Some(plain(400, "/peer/<station>/<port>/…")) }
-    let station = parts[0]
-    let port = attempt(() => @string.parse_int(parts[1])).unwrap_or(0)
-    let query = match r.query() {
-      Some(q) => "?" + q
-      None => ""
+    if @mcp_tools.not_from_here(r.headers, bus.door_ports.val) is Some(why) {
+      return Some(plain(403, why))
     }
-    let target = "/" + parts[2:].to_array().join("/") + query
+    guard @mcp_tools.peer_target(r.target) is Some(parsed) else {
+      return Some(plain(404, "a web service of another station is /peer/<station name or id>/<port>/<path>"))
+    }
+    guard m.http is Some(http) else { return Some(plain(503, "this station is not on the mesh yet; try again shortly")) }
+    let station = parsed.station
+    let port = parsed.port
+    let target = parsed.path
     let wrote_head = Ref(false)
     let gone = Ref(false)
     let given = Ref(false)

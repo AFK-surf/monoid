@@ -329,3 +329,88 @@ test "one said with_stays, none of its id staying: made anew in the place of ano
   assert_true(!big.val.unwrap().flies(), msg="no flight between the two")
   assert_eq(drawn_as(tree, big.val.unwrap()), Some((20.0, 100.0, 200.0, 100.0, 1.0, blue)))
 }
+
+///|
+test "a thumbnail that stays let go of with the picture of its id in one change: no departure of its own, let go of at once, no fault" {
+  let thumbs_on = @signals.signal(true, same=fn(a, b) { a == b })
+  let open = @signals.signal(true, same=fn(a, b) { a == b })
+  let gone = Ref(0)
+  let thumb : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)) |> ignore
+      p.show(fn() { thumbs_on.get() }, at_once=true, fn(b) {
+        b.box(fn(t) {
+          thumb.val = Some(t)
+          t
+          .width(Is(Some(40.0)))
+          .height(Is(Some(40.0)))
+          .ground(Is(red))
+          .shared(Is("a"), straight, stays=true)
+          .owns(fn() { gone.val = gone.val + 1 })
+          |> ignore
+        })
+        |> ignore
+      })
+      p.show(fn() { open.get() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(b) {
+          b
+          .offset(Is((50.0, 300.0)))
+          .width(Is(Some(300.0)))
+          .height(Is(Some(200.0)))
+          .ground(Is(blue))
+          .shared(Is("a"), straight)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 800.0, now=0.0) |> ignore
+  assert_true(thumb.val.unwrap().alive())
+  // (both closed at once: the one that moves the only departure of "a" (one that stays never flies out as it goes),
+  // the thumbnail's branch let go of in the change itself, not put by for a flight it is never part of)
+  tree.event(1000.0, fn() {
+    thumbs_on.set(false)
+    open.set(false)
+  })
+  assert_eq(gone.val, 1)
+  assert_false(thumb.val.unwrap().alive())
+  tree.frame(400.0, 800.0, now=1000.0) |> ignore
+  tree.frame(400.0, 800.0, now=2000.0) |> ignore
+  assert_eq(gone.val, 1)
+}
+
+///|
+test "a container said By an id that says none as it goes: what holds it let go of at once, not put by for good" {
+  let on = @signals.signal(true, same=fn(a, b) { a == b })
+  let gone = Ref(0)
+  let made : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)) |> ignore
+      p.show(fn() { on.get() }, at_once=true, fn(b) {
+        b.box(fn(c) {
+          made.val = Some(c)
+          c
+          .width(Is(Some(40.0)))
+          .height(Is(Some(40.0)))
+          .ground(Is(red))
+          .shared(By(fn() { "" }), straight, container=true)
+          .owns(fn() { gone.val = gone.val + 1 })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 800.0, now=0.0) |> ignore
+  assert_true(made.val.unwrap().alive())
+  tree.event(1000.0, fn() { on.set(false) })
+  tree.frame(400.0, 800.0, now=1000.0) |> ignore
+  assert_eq(gone.val, 1)
+  assert_false(made.val.unwrap().alive())
+}

@@ -49,7 +49,26 @@ pub fn native(
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
     let id = b.id()
-    if tree_natives.iter().any(fn(e) { e.0 != id && physical_equal(e.1.view, view) }) {
+    // (given to another node still shown, a fault; one no longer shown (put by till its change is committed whole as
+    // what flies from it is, Tree::departs; leaving; laid out nowhere) hands it over: no longer its, not closed, so
+    // that its letting go later closes nothing of this one's)
+    let root = b.tree.root().id()
+    let gone : Array[@view.NodeId] = []
+    let mut live_dup = false
+    for o, tn in tree_natives {
+      if o != id && physical_equal(tn.view, view) {
+        if b.tree.holds(root, o) && !b.tree.leaving(o) && !b.tree.laid_out_nowhere(o) {
+          live_dup = true
+        } else {
+          gone.push(o)
+        }
+      }
+    }
+    for o in gone {
+      tree_natives.remove(o)
+      tree_natives_rev.val = tree_natives_rev.val + 1
+    }
+    if live_dup {
       b.fault("native: one native view given to two nodes of the tree's: a view is shown in one place")
     }
     tree_natives_rev.val = tree_natives_rev.val + 1

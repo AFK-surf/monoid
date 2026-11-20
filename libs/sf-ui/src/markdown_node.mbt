@@ -1570,7 +1570,7 @@ pub fn code_block_node(
 
 ///|
 /// A code block's tray key's hairline (code_block's).
-let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B1 border_color=Line")
+let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B0_5 border_color=Line")
 
 ///|
 /// How far apart a code block's keys stand (code_keys_apart's 4).

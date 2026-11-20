@@ -959,3 +959,98 @@ fn capped_id_at(key : String) -> Double {
 fn scroll_node_at_of(s : @view.Scroll) -> Double {
   s.at(view_tree().unwrap())
 }
+
+///|
+/// A field `placeholder` in `v`, 40 tall: the tree's own (ui's field) where `tree_fields`, else an old view's.
+fn scroll_node_field(v : @view.View, tree_fields : Bool, placeholder : String) -> Unit {
+  if tree_fields {
+    field(v, Field::new(), placeholder~).height(Is(Some(40.0))) |> ignore
+  } else {
+    old(v, fn(c) { c.editor("field/\{placeholder}", placeholder~) |> ignore }).height(Is(Some(40.0))) |> ignore
+  }
+}
+
+///|
+/// A column of 8 choices "选项 0".. (each 40 tall) 150 tall in `v`, scrolling as `s` says, for what `for_in` holds.
+fn scroll_node_choices(v : @view.View, s : @view.Scroll, for_in? : @view.NodeId) -> Unit {
+  v
+  .width(Is(Some(400.0)))
+  .height(Is(Some(150.0)))
+  .scrolls(s, slop=touch_slop(), for_in?, fn(held) {
+    for i in 0..<8 {
+      held.box(fn(r) { r.width(Is(Some(160.0))).height(Is(Some(40.0))).words(Is("选项 \{i}")) |> ignore })
+      |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
+test "a column of the tree's that scrolls a field's choices (View::scrolls' for_in), a finger's fields (Android's): a finger scrolling them keeps that field's keyboard, but lets another field's go" {
+  for tree_fields in [false, true] {
+    for own in [true, false] {
+      let scroll = @view.Scroll::new()
+      let t = Tester::new(fn(_c) {  }, w=400.0, h=400.0, platform=2, pointing=Finger)
+      t.check_looks(false)
+      set_view_app(fn(root) {
+        let holder = root.box(fn(h) { scroll_node_field(h, tree_fields, "查找") })
+        scroll_node_field(root, tree_fields, "其他")
+        root.box(fn(v) { scroll_node_choices(v, scroll, for_in=holder.id()) }) |> ignore
+      })
+      t.draw()
+      t.tap_text(if own { "查找" } else { "其他" })
+      t.draw()
+      assert_true(t.ime().0, msg="\{tree_fields} \{own}: the chosen field starts with the keyboard")
+      let (x, y) = t.find("选项 2").unwrap()
+      t.drag(x + 5.0, y + 5.0, x + 5.0, y - 70.0)
+      t.draw()
+      assert_eq((scroll.at(view_tree().unwrap()) > 0.0, t.ime().0), (true, own), msg="\{tree_fields} \{own}")
+    }
+  }
+}
+
+///|
+test "a column of the tree's that scrolls in a layer that leaves what is typed to a field outside it (View::leaves_typing), a finger's fields (Android's): a finger scrolling it keeps the field under the layer its keyboard, but lets a field in the layer's go" {
+  for tree_fields in [false, true] {
+    for modal in [true, false] {
+      let scroll = @view.Scroll::new()
+      let open = @signals.signal(false)
+      let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2, pointing=Finger)
+      t.check_looks(false)
+      set_view_app(fn(root) {
+        root.box(fn(gap) { gap.height(Is(Some(250.0))) |> ignore }) |> ignore
+        scroll_node_field(root, tree_fields, "底下的字段")
+        root.show(at_once=true, fn() { open.get() }, fn(layer) {
+          layer.over(Is(true)).stacked(Is(5)).modal(Is(modal)).presses(Is(true)).leaves_typing() |> ignore
+          scroll_node_field(layer, tree_fields, "层里的字段")
+          layer.box(fn(v) { scroll_node_choices(v, scroll) }) |> ignore
+        })
+      })
+      t.draw()
+      let case = "\{tree_fields} \{modal}"
+      // (the field under it with the keyboard, the layer opened over it)
+      t.tap_text("底下的字段")
+      t.draw()
+      assert_true(t.ime().0, msg="\{case}: the field under it starts with the keyboard")
+      open.set(true)
+      t.draw()
+      let (x, y) = t.find("选项 2").unwrap()
+      t.drag(x + 5.0, y + 5.0, x + 5.0, y - 70.0)
+      t.draw()
+      let scrolled = scroll.at(view_tree().unwrap())
+      assert_eq((scrolled > 0.0, t.ime().0, g().field_focused()), (true, true, true), msg="\{case}: the field under it")
+      // (the field in the layer given the keyboard: scrolled, let go)
+      t.tap_text("层里的字段")
+      t.draw()
+      assert_true(t.ime().0, msg="\{case}: the field in the layer takes the keyboard")
+      let (x, y) = t.find("选项 4").unwrap()
+      t.drag(x + 5.0, y + 5.0, x + 5.0, y - 70.0)
+      t.draw()
+      assert_eq(
+        (scroll.at(view_tree().unwrap()) > scrolled, t.ime().0),
+        (true, false),
+        msg="\{case}: the field in the layer",
+      )
+    }
+  }
+}

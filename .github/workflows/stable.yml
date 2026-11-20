@@ -410,25 +410,146 @@ jobs:
           RELEASE_REVISION: ${{ needs.plan.outputs.sha }}
         run: python3 scripts/promote-web.py --revision "$RELEASE_REVISION"
 
-  # Offer compatible apps before making the station update available.
-  station:
-    needs: [plan, web]
-    # web needs mbui-web, skipped when web=artifact; without this, the default success() over a skipped ancestor skips
-    # this job and everything after it (0.1.8278, 2026-11-12).
-    if: ${{ !cancelled() && needs.web.result == 'success' }}
+  # The station's native parts of the release's revision, each where the release or the store (natives/: main's
+  # natives-store copies the release's there, which keeps only 20 of a part, a few hours of main's) has it or else
+  # built and published here, beside the apps' builds, so that the station job only fetches them: there, the readers of
+  # the day before's main, found in neither, were built one after another on Mini1 and the job cut at its 10 minutes
+  # every run (2026-11-19). Seconds when all are there. The release's checkout is older than this workflow, its
+  # native.ts maybe one that asks the release alone: what is in either is asked here, and only what neither has is
+  # given to its `ensure --publish`. Linux's and Windows' on ci-1 (the readers' C, one job after the other: a
+  # concurrency group, as the pipeline's natives and natives-win-reader-main), the Apple ones on Mini1.
+  station-natives-linux:
+    needs: plan
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    concurrency:
+      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-linux-{0}', github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets
+    env:
+      WANT: >-
+        reader:linux-x64 reader:linux-arm64 launcher:linux-x64 launcher:linux-arm64 mesh:linux-x64 mesh:linux-arm64
+        runner:linux-x64 runner:linux-arm64 screen-linux:linux-x64 screen-linux:linux-arm64 launcher:win32-x64
+        mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
+    steps: &station-natives-linux-steps
+      - uses: actions/checkout@v5
+        with: { ref: '${{ needs.plan.outputs.sha }}' }
+      # (the pinned Node: ci-1's from setup-linux, before anything runs node)
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-linux
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      - &station-natives-missing
+        id: missing
+        name: What neither the store nor the release has
+        run: |
+          missing=""
+          for want in $WANT; do
+            # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's. Any
+            # other failure stops the job: never taken for "nothing missing". Not `native.ts parts`: newer than some
+            # revisions released)
+            if ! k=$(node scripts/native.ts key "${want%%:*}" "${want#*:}" 2> "$RUNNER_TEMP/key.err"); then
+              if grep -q "no such part: ${want%%:*} " "$RUNNER_TEMP/key.err"; then echo "$want: not a part of this revision"; continue; fi
+              cat "$RUNNER_TEMP/key.err" >&2; exit 1
+            fi
+            name="${want%%:*}-${want#*:}-$k.tar.gz"
+            # (the store answers GET, ranges too, not HEAD; the release's download a redirect)
+            if curl -fs --max-time 30 -r 0-0 -o /dev/null "https://app.still.fail/releases/natives/$name"; then echo "$name: in the store"
+            elif curl -fsI --max-time 30 -o /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/native-artifacts/$name"; then echo "$name: in the release"
+            else echo "$name: in neither, built here"; missing="$missing $want"; fi
+          done
+          echo "list=$missing" >> "$GITHUB_OUTPUT"
+      - if: steps.missing.outputs.list != ''
+        uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc', farview: 'false' }
+      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
+        if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
+        run: |
+          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
+          if [ ! -x "$d/zig" ]; then
+            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            t="$RUNNER_TEMP/zig.tar.xz"
+            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
+            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
+            rm -f "$t"
+          fi
+          [ "$("$d/zig" version)" = 0.16.0 ]
+          echo "$d" >> "$GITHUB_PATH"
+      - &station-natives-ensure
+        name: Build and publish what neither has
+        if: steps.missing.outputs.list != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISSING: ${{ steps.missing.outputs.list }}
+        run: |
+          # (the readers side by side share the cores, as the pipeline's natives)
+          r=$(printf '%s\n' $MISSING | grep -c '^reader:' || true)
+          [ "$r" -ge 1 ] || r=1
+          [ "$r" -le 3 ] || r=3
+          # shellcheck disable=SC2086 # part:target words
+          STILLFAIL_NATIVE_READERS=$r node scripts/native.ts ensure --publish $MISSING
+
+  station-natives-win:
+    needs: plan
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    concurrency:
+      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-win-{0}', github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets
+    env:
+      WANT: reader:win32-x64
+    steps: *station-natives-linux-steps
+
+  station-natives-mac:
+    needs: plan
     runs-on: [self-hosted, macos-ci]
-    environment: production
-    timeout-minutes: 10
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets
+    env:
+      WANT: reader:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
     steps:
       - uses: actions/checkout@v5
-        with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
+        with: { ref: '${{ needs.plan.outputs.sha }}' }
       - uses: ./.github/actions/setup-mac
-      # (MoonBit for the station's reader, station/mb/build.sh, built here where the natives' cache lacks it: pruned on
-      # the runner, the stable's station job of 0487f79c found `moon: command not found` four times, 43616763857)
+      - *station-natives-missing
+      - if: steps.missing.outputs.list != ''
+        uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc', farview: 'false' }
+      - *station-natives-ensure
+
+  # Offer compatible apps before making the station update available. Built and signed as the pipeline's station job
+  # builds the beta's, on GitHub's Mac (on Mini1, its uploads over the home line were cut at five minutes, 2026-11-17),
+  # into a directory (RELEASE_DIR) whose files are staged in the bucket (staged/…: release-put.sh --stage, --hand), never
+  # under the names stations install: station-put puts them, after the deltas to them, packages and feed within
+  # seconds. A run cut before that leaves the stable channel as it was (2026-11-19: put one by one as they were packed,
+  # a cut run left new packages beside the old station.json for 20 minutes). Its native parts only fetched
+  # (station-natives-*).
+  station:
+    needs: [plan, web, station-natives-linux, station-natives-win, station-natives-mac]
+    # web needs mbui-web, skipped when web=artifact; without this, the default success() over a skipped ancestor skips
+    # this job and everything after it (0.1.8278, 2026-11-12).
+    if: ${{ !cancelled() && needs.web.result == 'success' && needs.station-natives-linux.result == 'success' && needs.station-natives-win.result == 'success' && needs.station-natives-mac.result == 'success' }}
+    runs-on: macos-26
+    environment: production
+    timeout-minutes: 5
+    outputs:
+      hand: ${{ steps.hand.outputs.key }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/natives
+      # (MoonBit for the station's reader, station/mb/build.sh, where one is not prebuilt after all)
       - uses: ./.github/actions/mbui-moonbit
-      - name: Publish all three stable station platforms from the pinned source
+        with: { farview: 'false' }
+      - name: Build the stable station's release (darwin-arm64, linux-x64, linux-arm64, win32-x64) into a directory
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           # AFK's Developer ID (.github/mac_signing.py): the native parts are signed with it, as the beta's are; without
           # it the stable station went out ad hoc (2026-11-02's).
@@ -437,10 +558,108 @@ jobs:
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
           # The key the release is signed with (scripts/release-sign.ts): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        # The native parts it fetches by the usual route: the direct one (STILLFAIL_DIRECT_DNS, setup-mac) trickled each
-        # part for 300 s from mini1 and cut four attempts at 10 minutes, the usual route sending one in 20 s (0.1.8947,
-        # 43616763857). A release runs its base's scripts/native.ts, which gives up a slow route only from #6329 on.
-        run: STILLFAIL_DIRECT_DNS= sh .github/release.sh --stable station
+          RELEASE_DIR: ${{ runner.temp }}/release
+        run: sh .github/release.sh --stable station
+      # (this workflow's release-put.sh: the checkout is the release's, which can be older)
+      - name: Stage its files in the bucket
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --stage "$RUNNER_TEMP/release"
+      - id: hand
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --hand "$RUNNER_TEMP/release" | tee "$RUNNER_TEMP/hand.out"
+          echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
+
+  # The deltas to the stable station from the stable builds before it, a job a platform, as the pipeline's
+  # deltas-station makes the beta's (this workflow's scripts: release-deltas.ts takes station.json as the stable
+  # channel's): the archives under their own names (station/archive/stable/…) and the deltas put, nothing pointing at
+  # them until station-put writes the feed. Never a reason to hold the release back.
+  deltas-station:
+    needs: [plan, station]
+    if: ${{ !cancelled() && needs.station.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, linux-x64, linux-arm64, win32-x64]
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      HANDED: ${{ needs.station.outputs.hand }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /scripts/
+            /station/src/updates/delta.ts
+            /.node-version
+            /.github/actions/node/
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/node
+      - name: Its release, as station-put will have it
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          # shellcheck disable=SC2086 # names, one word each
+          sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
+          sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
+      # (a deadline of its own, inside the job's: what is not made by then is left out, the job green)
+      - name: Its deltas
+        run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200 --platform "$PLATFORM"
+      - name: Put them (nothing points at them until station-put writes the feed)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: sh scripts/release-put.sh --files "$RUNNER_TEMP/deltas"
+      - uses: actions/upload-artifact@v4
+        with: { name: "deltas-station-stable-${{ matrix.platform }}-${{ needs.plan.outputs.sha }}", path: "${{ runner.temp }}/deltas", if-no-files-found: ignore, retention-days: 1 }
+
+  # The stable station out: its staged files taken back, its platforms' deltas merged into station.json, then the four
+  # packages side by side and station.json last (release-put.sh: files, then feeds), seconds apart.
+  station-put:
+    needs: [plan, station, deltas-station]
+    if: ${{ !cancelled() && needs.station.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    env:
+      HANDED: ${{ needs.station.outputs.hand }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            /scripts/
+            /station/src/updates/delta.ts
+            /.node-version
+            /.github/actions/node/
+          sparse-checkout-cone-mode: false
+      - uses: ./.github/actions/node
+      - name: What the station job handed over
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          # shellcheck disable=SC2086 # names, one word each
+          sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
+      # (each platform's deltas, its job's; none, and the feed goes out as it was handed)
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: "deltas-station-stable-*-${{ needs.plan.outputs.sha }}", path: "${{ runner.temp }}/release", merge-multiple: true }
+      - name: The station's deltas in its feed
+        run: node scripts/release-deltas.ts --merge "$RUNNER_TEMP/release"
+      - name: Put the stable station (its files, then station.json)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          sh scripts/release-put.sh "$RUNNER_TEMP/release"
+          # shellcheck disable=SC2086 # names, one word each
+          sh scripts/release-put.sh --drop $HANDED
 
   # The official site, still.fail, from the same revision: the pipeline deploys only youdid.wtf's (site-beta), and a
   # stable release that left it out kept still.fail at 2026-10-01's for two weeks (no Windows download on it).
@@ -468,8 +687,8 @@ jobs:
         run: sh .github/deploy.sh site
 
   done:
-    needs: [plan, android, desktop, desktop-win, desktop-win-feeds, web, station, site]
-    if: ${{ !cancelled() && needs.web.result == 'success' && needs.station.result == 'success' && needs.site.result == 'success' && needs.desktop-win-feeds.result == 'success' }}
+    needs: [plan, android, desktop, desktop-win, desktop-win-feeds, web, station, station-put, site]
+    if: ${{ !cancelled() && needs.web.result == 'success' && needs.station.result == 'success' && needs.station-put.result == 'success' && needs.site.result == 'success' && needs.desktop-win-feeds.result == 'success' }}
     runs-on: [self-hosted, macos-ci]
     timeout-minutes: 5
     permissions:
