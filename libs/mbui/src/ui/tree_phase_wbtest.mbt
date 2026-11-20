@@ -256,6 +256,7 @@ test "sizes_steady: a box that steps in its first frame and stands, while someth
       h=200.0,
       // (what it finds said here, not stopped on)
       words_over_held=false,
+      transitions_only=false,
     )
     let found : Array[String] = []
     let judged = fn() {

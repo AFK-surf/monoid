@@ -2928,6 +2928,9 @@ test "wide: 文件's tabs as the core keeps them (filesTabs, files.tabs): the ad
   t.frame()
   assert_true(t.query(Button, label="左右分栏") is Some(_), msg="one again")
   // the tab shown closed: the other left alone, no tabs shown
+  let (tx, ty, tw, th) = t.all(Tab)[0].rect
+  t.move_to(tx + tw / 2.0, ty + th / 2.0)
+  t.frame()
   let (x, y, w, h) = t.all(Button, label="关闭标签")[0].rect
   t.tap(x + w / 2.0, y + h / 2.0)
   t.frame()

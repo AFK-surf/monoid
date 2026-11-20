@@ -75,10 +75,24 @@ pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit, t
 
 ///|
 /// Opens the window and runs `tree`, made once, until it closes (`theme`: the theme its nodes are drawn in, followed
-/// as it changes). No old frame is built around it.
-pub fn run_tree(title : String, tree : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
+/// as it changes). No old frame is built around it. `transitions_only` defaults to true so changes settle at once
+/// unless wrapped in `@view.transition`.
+pub fn run_tree(
+  title : String,
+  tree : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
   @view.faults_stop.val = false
-  set_view_app(tree, theme?)
+  let made = if transitions_only {
+    fn(root : @view.View) {
+      root.transitions_only() |> ignore
+      tree(root)
+    }
+  } else {
+    tree
+  }
+  set_view_app(made, theme?)
   start_host_window(title)
 }
 

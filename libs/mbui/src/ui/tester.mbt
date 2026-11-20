@@ -492,11 +492,20 @@ pub fn Tester::tree(
   keeps_sources? : Bool = true,
   windows_beside? : Bool = false,
   theme? : () -> Theme,
+  transitions_only? : Bool = true,
   loc~ : SourceLoc,
 ) -> Tester {
+  let made = if transitions_only {
+    fn(root : @view.View) {
+      root.transitions_only() |> ignore
+      tree(root)
+    }
+  } else {
+    tree
+  }
   tester_make(
     None,
-    tree,
+    made,
     theme,
     w~,
     h~,

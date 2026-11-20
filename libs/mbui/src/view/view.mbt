@@ -552,6 +552,10 @@ struct Node {
   /// whether View::points was said of it at all: said false, it is pointed at as it takes a press only, read as
   /// pointed at or not (Node::points_alone)
   mut points_said : Bool
+  /// whether it still takes presses and pointer hover when drawn completely unseen (composed opacity <= 0.001)
+  mut takes_unseen : Bool
+  /// whether its last `View::alpha` binding read the animation clock (mid-fade, not at rest)
+  mut alpha_animating : Bool
   mut bar_near_cell : @signals.Signal[Bool]?
   /// whether it takes a finger or the pointer some way (pressed, held, hosting the old view, a top row, pointed at,
   /// taking holds over: Tree::inputs_own_said), and how many of what it holds, it with them, do: what finds what
@@ -1274,6 +1278,8 @@ pub struct Tree {
   mut behind_set : Int
   /// how many nodes are said to move only in a transition (View::transitions_only): none, none walked to learn it
   mut transitions_only_set : Int
+  /// whether the currently evaluating binding read the animation clock (drawn_while / drawn_at / drawn_said)
+  mut clock_read_now : Bool
   /// how many nodes are said pressed by Enter that nothing with the focus takes (View::default_press): none, none looked for
   mut defaults_set : Int
   /// the width each node that says it lays what it holds out at (View::lays_anew), by node: what a Tester's steadiness
@@ -1708,6 +1714,7 @@ pub fn Tree::new(
     bones_set: 0,
     behind_set: 0,
     transitions_only_set: 0,
+    clock_read_now: false,
     defaults_set: 0,
     laid_said: Map([]),
     shakes_said: Map([]),
@@ -2060,6 +2067,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.come_uncut = false
       n.list_key_way = false
       n.inert = false
+      n.takes_unseen = false
+      n.alpha_animating = false
       n.modal = false
       n.back_goes_on = false
       n.leaves_typing = false
@@ -2243,6 +2252,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         come_uncut: false,
         list_key_way: false,
         inert: false,
+        takes_unseen: false,
+        alpha_animating: false,
         modal: false,
         back_goes_on: false,
         leaves_typing: false,
@@ -2362,6 +2373,7 @@ fn Tree::logic_said(self : Tree) -> Double {
 /// look worked out from the time (a fade, a place by the time), worked out again as it goes. Never for what is done.
 pub fn Tree::drawn_at(self : Tree) -> Double {
   self.clock_read_in_binding("drawn_at")
+  self.clock_read_now = true
   self.clock.get()
 }
 
@@ -2370,6 +2382,7 @@ pub fn Tree::drawn_at(self : Tree) -> Double {
 /// tree's own ways that follow the clock only while they go (a scroll on by itself, its bar coming and going), as
 /// View::drawn_while's.
 fn Tree::drawn_said(self : Tree) -> Double {
+  self.clock_read_now = true
   self.clock.get()
 }
 
@@ -2393,6 +2406,7 @@ pub fn View::goes_now(self : View, goes : (Double) -> Bool) -> Bool {
 pub fn View::drawn_while(self : View, goes : (Double) -> Bool) -> Double {
   if self.goes_now(goes) {
     // (the clock followed, read so: what a way that goes is drawn by, not a read of the time of a binding's own)
+    self.tree.clock_read_now = true
     self.tree.clock.get()
   } else {
     @double.infinity
@@ -3933,6 +3947,7 @@ priv enum Prop {
   Magnifies
   Sticky
   Reveals
+  TakesUnseen
 }
 
 ///|
@@ -4047,6 +4062,7 @@ impl Show for Prop with output(self, logger) {
       Magnifies => "Magnifies"
       Sticky => "Sticky"
       Reveals => "Reveals"
+      TakesUnseen => "TakesUnseen"
     },
   )
 }
@@ -4066,7 +4082,7 @@ fn Prop::moves_hits(self : Prop, phase : Phase) -> Bool {
     Layout | Both => true
     _ =>
       match self {
-        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | Modal | OverAll | Stacked | MovesWindow | BesideOf | Sticky =>
+        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | TakesUnseen | Modal | OverAll | Stacked | MovesWindow | BesideOf | Sticky =>
           true
         _ => false
       }
@@ -4185,6 +4201,7 @@ fn Prop::ord(self : Prop) -> Int {
     Magnifies => 101
     Sticky => 102
     Reveals => 103
+    TakesUnseen => 104
   }
 }
 
@@ -5610,7 +5627,41 @@ pub fn View::glass(self : View, g : Live[@paint.Glass?], loc~ : SourceLoc) -> Vi
 /// How opaque it is drawn, what it holds with it: its place's.
 #callsite(autofill(loc))
 pub fn View::alpha(self : View, a : Live[Double], loc~ : SourceLoc) -> View {
-  self.bind(loc~, Alpha, a, Place, fn(a) { self.tree.nodes[self.at].look.alpha = a })
+  match a {
+    Is(v) => {
+      match self.live() {
+        Some(n) => n.alpha_animating = false
+        None => ()
+      }
+      self.bind(loc~, Alpha, Is(v), Place, fn(a) { self.tree.nodes[self.at].look.alpha = a })
+    }
+    By(f) => {
+      let tree = self.tree
+      let at = self.at
+      let gen = self.gen
+      self.bind(
+        loc~,
+        Alpha,
+        By(fn() {
+          let prev = tree.clock_read_now
+          tree.clock_read_now = false
+          let v = f()
+          let anim = tree.clock_read_now
+          tree.clock_read_now = prev || anim
+          let n = tree.nodes[at]
+          if n.live && n.gen == gen && n.alpha_animating != anim {
+            n.alpha_animating = anim
+            if v <= unseen_alpha {
+              tree.hits_bump()
+            }
+          }
+          v
+        }),
+        Place,
+        fn(a) { self.tree.nodes[self.at].look.alpha = a },
+      )
+    }
+  }
   self
 }
 
@@ -6736,6 +6787,63 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
       })
   }
   self
+}
+
+///|
+/// The composed opacity at or below which a node is unseen and skipped by pointer hit-testing and hover unless it opts
+/// in via `View::takes_unseen`.
+let unseen_alpha : Double = 0.001
+
+///|
+/// Whether it still takes presses and pointer hover when drawn completely unseen (composed opacity <= 0.001): false by
+/// default so faded-out controls let clicks and hover pass through.
+pub fn View::takes_unseen(self : View, on : Live[Bool]) -> View {
+  guard self.live() is Some(n) else { return self }
+  n.prop_stop(Prop::TakesUnseen.ord())
+  let set = fn(on : Bool) {
+    guard self.live() is Some(n) else { return }
+    if n.takes_unseen == on {
+      return
+    }
+    n.takes_unseen = on
+    self.tree.hits_bump()
+  }
+  match on {
+    Is(v) => set(v)
+    By(f) =>
+      self.owning(fn() {
+        let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
+        n.prop_set(Prop::TakesUnseen.ord(), stop)
+      })
+  }
+  self
+}
+
+///|
+/// Whether node `id` is opted in to take presses and hover while unseen (View::takes_unseen).
+pub fn Tree::takes_unseen(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].takes_unseen
+}
+
+///|
+/// Whether node `at` is unseen at rest (its resting composed opacity <= `unseen_alpha`, ignoring ancestors or itself
+/// whose `View::alpha` binding is mid-fade on the animation clock, and stopping at lifted flight roots).
+fn Tree::unseen_at_rest(self : Tree, at : Int) -> Bool {
+  let mut rest_a = 1.0
+  let mut q = at
+  let mut steps = 0
+  while q >= 0 && q < self.nodes.length() && steps < 256 {
+    let nd = self.nodes[q]
+    if !nd.alpha_animating && !nd.takes_unseen {
+      rest_a = rest_a * nd.look.alpha
+    }
+    if nd.lift is Some(_) {
+      break
+    }
+    q = nd.parent
+    steps = steps + 1
+  }
+  rest_a <= unseen_alpha
 }
 
 ///|
@@ -14708,6 +14816,10 @@ fn Tree::target_in(self : Tree, x : Double, y : Double, tracked~ : Bool) -> (Tar
     order.val = o + 1
     self.work.found_walked = self.work.found_walked + 1
     let n = self.nodes[c.id.at]
+    // (a completely unseen node at rest lets presses pass through unless it explicitly opts in via View::takes_unseen)
+    if a <= unseen_alpha && !n.takes_unseen && self.unseen_at_rest(c.id.at) {
+      return
+    }
     // (a gesture answering a hold alone, or one only pointed at, takes no press nor drag: what is under it does, as
     // were it not there)
     if n.hold_only is Some(_) || n.points {
@@ -14810,8 +14922,11 @@ fn Tree::points_over(self : Tree, x : Double, y : Double) -> NodeId? {
   let at = self.logic_said()
   let found : Ref[NodeId?] = Ref(None)
   self.each_drawn_scaled(fn(c, cx, cy, a, s) {
+    let n = self.nodes[c.id.at]
+    if a <= unseen_alpha && !n.takes_unseen && self.unseen_at_rest(c.id.at) {
+      return
+    }
     if self.finger_on(c, cx, cy, s, x, y, at, tracked=true) {
-      let n = self.nodes[c.id.at]
       if n.points_alone() {
         found.val = Some(c.id)
       } else if (n.on_drag is Some(_) && n.claims is None && n.hold_only is None) ||
