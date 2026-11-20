@@ -458,23 +458,41 @@ fn fold_target(src : Source, w : Workspace, ww : Double) -> (PaneRoom, FoldLook)
 /// was committed: the tape's, as it was left) to `to`, one way as long as the furthest of what it moves goes.
 fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
   // (where the move before has it then; at rest, where it was put: the state before this one, as it was drawn)
-  let from = match (fold_goes.from, fold_goes.to) {
+  let (from, old_move) = match (fold_goes.from, fold_goes.to) {
     (Some(a), Some(b)) =>
       if fold_goes.way.goes_at(at) {
-        fold_mix(a, b, fold_goes.way.value_at(at))
+        let (k, vk) = fold_goes.way.at(at)
+        (fold_mix(a, b, k), Some((a, b, vk)))
       } else {
-        b
+        (b, None)
       }
-    _ => was_look.unwrap_or(to)
+    _ => (was_look.unwrap_or(to), None)
   }
   if fold_far(from, to) <= 0.5 && from.ground == to.ground && from.corner == to.corner {
     fold_put(to, at)
     return
   }
+  let v_norm = match old_move {
+    Some((a, b, vk)) => {
+      let (old_d, new_d) = if (b.col - a.col).abs() > 1.0 && (to.col - from.col).abs() > 1.0 {
+        (b.col - a.col, to.col - from.col)
+      } else if (b.mr - a.mr).abs() > 1.0 && (to.mr - from.mr).abs() > 1.0 {
+        (b.mr - a.mr, to.mr - from.mr)
+      } else {
+        (b.x - a.x, to.x - from.x)
+      }
+      if new_d.abs() > 1.0 {
+        dmax(-6.0, dmin(6.0, old_d * vk / new_d))
+      } else {
+        0.0
+      }
+    }
+    None => 0.0
+  }
   fold_goes.from = Some(from)
   fold_goes.to = Some(to)
   fold_goes.way.put(0.0)
-  fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), at~)
+  fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), velocity=v_norm, at~)
   fold_said()
   fold_set_offs.set(fold_set_offs.untracked() + 1)
 }

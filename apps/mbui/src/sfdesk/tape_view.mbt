@@ -273,7 +273,23 @@ fn tape_page_narrower(n : @view.View) -> @sfbase.ColumnLaid {
 
 ///|
 fn tape_behind_at(p : TapePane, t : Double) -> Double {
-  tape_along(tape_goes.behind, tape_index(p), t)
+  match wide.tape_pull.get() {
+    Some(pull_target) => {
+      let ends = tape_ends(tape_room_now())
+      let cur = wide.tape_at.get()
+      let span = tape_x_of(ends, pull_target) - tape_x_of(ends, cur)
+      let pulled = tape_pull_clamp(ends, pull_target, wide.tape_drag.get())
+      let frac = if span.abs() > 0.5 { dmax(0.0, dmin(1.0, pulled / span)) } else { 0.0 }
+      if p == cur {
+        frac
+      } else if p == pull_target {
+        1.0 - frac
+      } else {
+        1.0
+      }
+    }
+    None => tape_along(tape_goes.behind, tape_index(p), t)
+  }
 }
 
 ///|
@@ -316,12 +332,17 @@ fn tape_drawn_at(n : @view.View) -> Double {
 /// another place's sidebar): each thing it moves from where the move before had it then (and the tape where a finger
 /// had pulled it), to where the state `change` leaves has it; one way, as long as the furthest goes (a Move: @ui.move_ms),
 /// its end a moment of the tree's timeline.
-fn tape_moves_from(at : Double, change : () -> Unit) -> Unit {
+fn tape_moves_from(at : Double, change : () -> Unit, velocity_px? : Double = 0.0) -> Unit {
   @signals.untracked(fn() {
     let x = tape_x_at(tape_room_now(), at)
     let page = tape_page_at(at)
     let col = tape_col_at(at)
     let behind = [tape_behind_at(Side, at), tape_behind_at(Page, at), tape_behind_at(Panel, at)]
+    let old_vx = if tape_goes.way.goes_at(at) {
+      (tape_goes.x[1] - tape_goes.x[0]) * tape_goes.way.at(at).1
+    } else {
+      0.0
+    }
     change()
     let to = tape_to_of(tape_room_now())
     tape_goes.x[0] = x
@@ -335,8 +356,11 @@ fn tape_moves_from(at : Double, change : () -> Unit) -> Unit {
       tape_goes.behind[2 * i + 1] = to.behind[i]
     }
     let far = dmax(dmax((to.x - x).abs(), (to.page - page).abs()), (to.col - col).abs())
+    let v_phys = if velocity_px != 0.0 { velocity_px } else { old_vx }
+    let dx = to.x - x
+    let v_norm = if dx.abs() > 1.0 { dmax(-6.0, dmin(6.0, v_phys / dx)) } else { 0.0 }
     tape_goes.way.put(0.0)
-    tape_goes.way.go(1.0, @motion.moved(over=far), at~)
+    tape_goes.way.go(1.0, @motion.moved(over=far), velocity=v_norm, at~)
     tape_said()
     tape_rest_at(tape_goes.way.ends_at())
   })
@@ -416,15 +440,19 @@ fn tape_left() -> Unit {
 ///|
 /// `p` brought over at `at`, from where the tape is drawn then: no longer what a finger pulled (if it was), the field of
 /// the page no more in use letting go of the keyboard (what shows of it takes nothing).
-fn tape_to(p : TapePane, at : Double) -> Unit {
-  tape_moves_from(at, fn() {
-    wide.tape_at.set(p)
-    if wide.tape_pull.get() == Some(p) {
-      wide.tape_pull.set(None)
-      wide.tape_drag.set(0.0)
-      wide.tape_backing = false
-    }
-  })
+fn tape_to(p : TapePane, at : Double, velocity_px? : Double = 0.0) -> Unit {
+  tape_moves_from(
+    at,
+    fn() {
+      wide.tape_at.set(p)
+      if wide.tape_pull.get() == Some(p) {
+        wide.tape_pull.set(None)
+        wide.tape_drag.set(0.0)
+        wide.tape_backing = false
+      }
+    },
+    velocity_px~,
+  )
   if p != Page {
     @ui.current().blur()
   }
@@ -480,13 +508,17 @@ fn tape_let_go(p : TapePane, v : Double, at : Double) -> Unit {
     let ends = tape_ends(tape_room_now())
     let span = tape_x_of(ends, p) - tape_x_of(ends, wide.tape_at.get())
     if tape_goes_over(tape_pull_clamp(ends, p, wide.tape_drag.get()), span, v) {
-      tape_to(p, at)
+      tape_to(p, at, velocity_px=v)
     } else {
-      tape_moves_from(at, fn() {
-        wide.tape_pull.set(None)
-        wide.tape_drag.set(0.0)
-        wide.tape_backing = false
-      })
+      tape_moves_from(
+        at,
+        fn() {
+          wide.tape_pull.set(None)
+          wide.tape_drag.set(0.0)
+          wide.tape_backing = false
+        },
+        velocity_px=v,
+      )
     }
   })
 }
@@ -1000,6 +1032,12 @@ pub fn tape_col_now(t : Double) -> Double {
 /// worked out of the move alone, for a test.
 pub fn tape_along_at(t : Double) -> (Double, Double) {
   (tape_along(tape_goes.x, 0, t), tape_page_at(t))
+}
+
+///|
+/// How far behind the one in use panel `p` is at `t` (0 in use, 1 behind), for a test.
+pub fn tape_behind_now(p : TapePane, t : Double) -> Double {
+  tape_behind_at(p, t)
 }
 
 ///|

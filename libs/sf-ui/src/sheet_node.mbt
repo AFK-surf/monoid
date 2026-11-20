@@ -206,6 +206,29 @@ fn sheet_node(
       // worked out by for @kit.sheet_rest, as moved_by works them out; and as tall as it was seen then, on its way from
       // as tall as it stood: where its height sets out from as it comes to another of its own)
       let drawn : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
+      // (while a finger drags the sheet down or it springs back, dim the scrim with its drag progress; once leaving,
+      // `dim` fades out from the release alpha)
+      let drag_dim_factor = fn() -> Double {
+        if layer.leaving() {
+          1.0
+        } else if @signals.untracked(fn() { top().x.grows }) {
+          match tall_held.get() {
+            Some(h) => {
+              let lo = sheet_grows_to[0] * win_h()
+              if lo > 0.0 { dclamp(h / lo, 0.0, 1.0) } else { 1.0 }
+            }
+            None => 1.0
+          }
+        } else {
+          let down = match held.get() {
+            Some(y) => y
+            None => back.shown(layer)
+          }
+          let own = dmax(drawn.val.1, sheet_drag_close)
+          dclamp(1.0 - down / own, 0.0, 1.0)
+        }
+      }
+      let live_dim = fn() -> Double { dim.shown(layer) * drag_dim_factor() }
       // (its foot drawn back by how far it is drawn off its place on its way from as tall as it stood (as tall as it was
       // last drawn): staying at the window's foot as its top goes, as the host's sheet's foot does)
       // (how far its foot was drawn back as it closed on its way from as tall as it stood: carried's; none else)
@@ -416,10 +439,24 @@ fn sheet_node(
         }
       }
       // (each page's slide: where it is off to the sheet's side, in the sheet's widths (0 in place, -1 off to its
-      // start, 1 off to its end), from where, to where, from when and how long, said as a page is put on or taken off)
-      let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double)]] = Map([])
-      let way_at = fn(w : (Double, Double, Double, Double), t : Double) {
-        w.1 + @ui.move_path(w.0 - w.1, 0.0, t - w.2, w.3).0
+      // start, 1 off to its end), from where, to where, from when, how long and initial velocity (sheet-widths/ms),
+      // said as a page is put on or taken off)
+      let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double, Double)]] = Map([])
+      let way_state_at = fn(w : (Double, Double, Double, Double, Double), t : Double) -> (Double, Double) {
+        if w.3 <= 0.0 {
+          (w.1, 0.0)
+        } else if w.4 * (w.1 - w.0) < 0.0 {
+          // (turned back mid-slide: slow at one rate first and return, as placed_path does, avoiding a sharp brake)
+          let sw = dmax(@signals.untracked(fn() { layer.window().0 }), 1.0)
+          let (px, pv) = @ui.come_way_by(w.0 * sw, w.4 * sw, w.1 * sw, w.1 * sw, t - w.2)
+          (px / sw, pv / sw)
+        } else {
+          let (dx, dv) = @ui.move_path(w.0 - w.1, w.4, t - w.2, w.3)
+          (w.1 + dx, dv)
+        }
+      }
+      let way_at = fn(w : (Double, Double, Double, Double, Double), t : Double) {
+        way_state_at(w, t).0
       }
       // (each page off to a side once its slide there is over: laid out nowhere then, drawn and read out not at all,
       // kept as it was left; told at that moment, and taken back at the cause of its way back)
@@ -429,7 +466,7 @@ fn sheet_node(
       let page_views : Map[Int, @view.View] = Map([])
       let page_stood : Map[Int, @signals.Signal[Double?]] = Map([])
       let dues : Map[Int, () -> Unit] = Map([])
-      let away_after = fn(n : Int, w : (Double, Double, Double, Double)) {
+      let away_after = fn(n : Int, w : (Double, Double, Double, Double, Double)) {
         match dues.get(n) {
           Some(d) => d()
           None => ()
@@ -476,7 +513,15 @@ fn sheet_node(
         let go = fn(n : Int, to : Double) {
           match ways.get(n) {
             Some(w) => {
-              w.set((way_at(w.untracked(), at), to, at, dur))
+              let (pos, vel) = way_state_at(w.untracked(), at)
+              let v0 = dclamp(vel, -0.02, 0.02)
+              let sw = dmax(layer.window().0, 1.0)
+              let way_dur = if v0 * (to - pos) < 0.0 {
+                @ui.come_way_ms(pos * sw, v0 * sw, to * sw)
+              } else {
+                dur
+              }
+              w.set((pos, to, at, way_dur, v0))
               away_after(n, w.untracked())
             }
             None => ()
@@ -491,7 +536,7 @@ fn sheet_node(
               go(n, 1.0)
             } else {
               match ways.get(n) {
-                Some(w) => w.set((1.0, 1.0, at, 0.0))
+                Some(w) => w.set((1.0, 1.0, at, 0.0, 0.0))
                 None => ()
               }
             }
@@ -536,7 +581,7 @@ fn sheet_node(
       .modal(By(live))
       .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
-      .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { dim.shown(layer) }) }))
+      .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { live_dim() }) }))
       // (a press on what is above it its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))
       .on_drag(fn(d) {
@@ -689,7 +734,7 @@ fn sheet_node(
               return None
             }
             let t = theme()
-            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * dim.shown(layer))), alpha(t.p.card, 0.8)) })
+            Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
           }))
           .shadow(Is((sheet_raised.sigma, sheet_raised.dy, sheet_raised.color)))
           |> ignore
@@ -738,6 +783,11 @@ fn sheet_node(
                 Down => ()
                 Moved => tall_held.set(Some(now))
                 Up | Off => {
+                  let cur_dim = @signals.untracked(fn() {
+                    let lo = sheet_grows_to[0] * win_h()
+                    let f = if lo > 0.0 { dclamp(now / lo, 0.0, 1.0) } else { 1.0 }
+                    dim.value_at(layer.cause_at()) * f
+                  })
                   tall_held.set(None)
                   let at = if d.kind == Up && dy.abs() < @ui.touch_slop() { from_h.val } else { now }
                   tall.put(at)
@@ -749,6 +799,8 @@ fn sheet_node(
                       tall.go(sheet, if at > (lo + hi) / 2.0 * total { lo * total } else { hi * total }, @motion.moved())
                     }
                   } else if @motion.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
+                    // (hand the live scrim alpha to `dim` before leaving fades it to 0, avoiding a jump back to 1)
+                    dim.put(cur_dim)
                     // (sinking away from where it is, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
@@ -767,9 +819,15 @@ fn sheet_node(
                 Down => held.set(Some(0.0))
                 Moved => held.set(Some(down))
                 Up | Off => {
+                  let cur_dim = @signals.untracked(fn() {
+                    let own = dmax(drawn.val.1, sheet_drag_close)
+                    dim.value_at(layer.cause_at()) * dclamp(1.0 - down / own, 0.0, 1.0)
+                  })
                   held.set(None)
                   back.put(down)
                   if d.kind == Up && @motion.sheet_drag_closes(down, speed, sheet_drag_close) {
+                    // (hand the live scrim alpha to `dim` before leaving fades it to 0, avoiding a jump back to 1)
+                    dim.put(cur_dim)
                     // (closed from where it is: it sinks away from there, as fast as it was going down)
                     let_go_speed.val = Some(dmax(0.0, speed))
                     cancel()
@@ -859,12 +917,12 @@ fn sheet_node(
                       // (the one that shows: the last of them)
                       let all = @signals.untracked(pages)
                       if all.length() == 0 || all[all.length() - 1].n == k {
-                        (0.0, 0.0, 0.0, 0.0)
+                        (0.0, 0.0, 0.0, 0.0, 0.0)
                       } else {
-                        (-1.0, -1.0, 0.0, 0.0)
+                        (-1.0, -1.0, 0.0, 0.0, 0.0)
                       }
                     } else {
-                      (1.0, 0.0, slide.0, slide.1)
+                      (1.0, 0.0, slide.0, slide.1, 0.0)
                     },
                     same=fn(a, b) { a == b },
                   )
