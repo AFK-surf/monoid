@@ -174,6 +174,7 @@ fn valid_png(b : Bytes) -> Bool {
   }
   let mut i = 8
   let mut seen_ihdr = false
+  let mut seen_idat = false
   let mut seen_iend = false
   while i + 12 <= b.length() {
     let len = be32(b, i)
@@ -187,7 +188,7 @@ fn valid_png(b : Bytes) -> Bool {
       return false
     }
     if starts(b, i + 4, "IHDR") {
-      if len != 13 {
+      if seen_ihdr || i != 8 || len != 13 {
         return false
       }
       let w = be32(b, data)
@@ -210,6 +211,8 @@ fn valid_png(b : Bytes) -> Bool {
         return false
       }
       seen_ihdr = true
+    } else if starts(b, i + 4, "IDAT") {
+      seen_idat = true
     } else if starts(b, i + 4, "IEND") {
       if len != 0 {
         return false
@@ -219,7 +222,7 @@ fn valid_png(b : Bytes) -> Bool {
     }
     i = data + len + 4
   }
-  seen_ihdr && seen_iend
+  seen_ihdr && seen_idat && seen_iend
 }
 
 ///|
