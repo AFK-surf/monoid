@@ -430,8 +430,8 @@ jobs:
     env:
       WANT: >-
         reader:linux-x64 reader:linux-arm64 launcher:linux-x64 launcher:linux-arm64 mesh:linux-x64 mesh:linux-arm64
-        runner:linux-x64 runner:linux-arm64 launcher:win32-x64 mesh:win32-x64 runner:win32-x64 screen:win32-x64
-        agent-desktop:win32-x64
+        runner:linux-x64 runner:linux-arm64 screen-linux:linux-x64 screen-linux:linux-arm64 launcher:win32-x64
+        mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}' }
@@ -443,7 +443,9 @@ jobs:
         run: |
           missing=""
           for want in $WANT; do
-            name="${want%%:*}-${want#*:}-$(node scripts/native.ts key "${want%%:*}" "${want#*:}").tar.gz"
+            # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's)
+            k=$(node scripts/native.ts key "${want%%:*}" "${want#*:}" 2>/dev/null) || { echo "$want: not a part of this revision"; continue; }
+            name="${want%%:*}-${want#*:}-$k.tar.gz"
             # (the store answers GET, ranges too, not HEAD; the release's download a redirect)
             if curl -fs --max-time 30 -r 0-0 -o /dev/null "https://app.still.fail/releases/natives/$name"; then echo "$name: in the store"
             elif curl -fsI --max-time 30 -o /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/native-artifacts/$name"; then echo "$name: in the release"
