@@ -263,7 +263,7 @@ pub fn copy_tool_node(
       if copy() {
         (copied_end.val)()
         copied.set(true)
-        copied_end.val = parent.at_moment(parent.cause_at() + copied_ms, fn() { copied.set(false) })
+        copied_end.val = parent.at_moment(parent.cause_at() + copied_ms, later=true, fn() { copied.set(false) })
       }
     },
     tip?,

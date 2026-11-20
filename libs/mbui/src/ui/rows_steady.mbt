@@ -166,6 +166,22 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
       Some(st) => st
       None => continue
     }
+    if ln.fw <= 0.0 || ln.fh <= 0.0 {
+      continue
+    }
+    let mut alpha = 1.0
+    let mut p = i
+    while p >= 0 && p < self.count {
+      alpha = alpha * self.nodes[p].opacity
+      match self.drawn_entry(p) {
+        Some(e) => alpha = alpha * e.look_now().alpha
+        None => ()
+      }
+      p = self.nodes[p].parent
+    }
+    if alpha <= 0.05 {
+      continue
+    }
     // (scrolled by the hand or eased by a wheel, or put elsewhere by the app or the hand this frame or the one before (put
     // as it is laid out next): what moves it is no row's;
     // nor in its first frames shown, its rows laid out at the heights they are guessed at, then at their own)
