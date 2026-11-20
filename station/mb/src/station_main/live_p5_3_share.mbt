@@ -118,8 +118,14 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
   {
     tree: (root, into, most, changed, _failed) => {
       let gone = Ref(false)
-      let marks : Ref[Map[String, String]?] = Ref(None)
-      let look = async fn() -> String? {
+      // Empty, not unknown, at first: a file written after its follower last read the tree (MemorySync::look) and
+      // before this first look ends is told like any other, as the TypeScript's watch set before its listing tells it
+      // (each follower settles what it is told and reads by content, so files told again change nothing).
+      let marks : Ref[Map[String, String]] = Ref(Map([]))
+      // One look at a time (the sampling fiber's and each scan's): one asked while another runs runs after it.
+      let busy = Ref(false)
+      let again = Ref(false)
+      let once = async fn() -> Unit {
         let now : Map[String, String] = Map([])
         let queue = [(root, "", 0)]
         let mut seen = 0
@@ -144,22 +150,38 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
             }
           }
         }
-        match marks.val {
-          Some(before) => {
-            for k, v in now {
-              if before.get(k) != Some(v) {
-                changed(k)
-              }
-            }
-            for k, _ in before {
-              if !now.contains(k) {
-                changed(k)
-              }
-            }
-          }
-          None => ()
+        let before = marks.val
+        marks.val = now
+        if gone.val || stopped.is_done() {
+          return
         }
-        marks.val = Some(now)
+        for k, v in now {
+          if before.get(k) != Some(v) {
+            changed(k)
+          }
+        }
+        for k, _ in before {
+          if !now.contains(k) {
+            changed(k)
+          }
+        }
+      }
+      let look = async fn() -> String? {
+        if busy.val {
+          again.val = true
+          return None
+        }
+        busy.val = true
+        defer {
+          busy.val = false
+        }
+        while !gone.val && !stopped.is_done() {
+          again.val = false
+          once()
+          if !again.val {
+            break
+          }
+        }
         None
       }
       fork_bg(host, "a followed tree", async fn() {
