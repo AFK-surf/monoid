@@ -121,7 +121,7 @@ pub fn tab_strip_node(parent : @view.View, spec : TabStripSpec, loc~ : SourceLoc
   let prev_n = Ref(tabs_sig.untracked().length())
 
   let outer = parent.box(made_for=loc, fn(box) {
-    let prev_panel_w = Ref(@signals.untracked(fn() { (box.window().0, (spec.panel_w)()) }))
+    let prev_panel_w = Ref(@signals.untracked(fn() { (box.window_w(), (spec.panel_w)()) }))
     box
     .grow(Is(1.0))
     .shrink(Is(1.0))
@@ -207,7 +207,7 @@ pub fn tab_strip_node(parent : @view.View, spec : TabStripSpec, loc~ : SourceLoc
     // Unlock immediately on actual window/panel resize (not `total_w`, which fluctuates when tab-specific toolbar
     // buttons appear/disappear between active tabs) or tab count increase/empty.
     box.reacts(
-      fn() { (box.window().0, (spec.panel_w)()) },
+      fn() { (box.window_w(), (spec.panel_w)()) },
       at_start=false,
       fn(cur_sz) {
         let (ww, pw) = cur_sz

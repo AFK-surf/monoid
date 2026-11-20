@@ -260,7 +260,7 @@ pub fn drive_pane_node(
 /// to open it (pressed, it opens). A picture or a text no taller than 60% of the window; under a list (`fixed`), a
 /// quarter of it.
 fn fpane_body_node(parent : @view.View, e : DvEntry, way : String, open : () -> Unit, fixed : Bool) -> Unit {
-  let room = fn() { parent.window().1 * (if fixed { fpane_below_tall } else { fpane_most_tall }) }
+  let room = fn() { parent.window_h() * (if fixed { fpane_below_tall } else { fpane_most_tall }) }
   parent.pick(fn() { if fpane.failed.get() { "failed" } else { way } }, at_once=true, fn(b, w) {
     match w {
       "failed" =>

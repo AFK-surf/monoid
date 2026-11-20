@@ -441,7 +441,7 @@ pub fn search_page_node(
       // phone's screen by its width)
       fn() {
         match at {
-          Whole => found_stacked(l.window().0 - 2.0 * @sf.list_line_in(at))
+          Whole => found_stacked(l.window_w() - 2.0 * @sf.list_line_in(at))
           Side | Tape => true
         }
       },

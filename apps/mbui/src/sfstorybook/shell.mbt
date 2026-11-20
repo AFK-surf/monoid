@@ -69,11 +69,11 @@ fn stories_made(root : @view.View, first : String) -> Unit {
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
-  let wide = fn() { side_shown(root.window().0) }
+  let wide = fn() { side_shown(root.window_w()) }
   // (the list's width; what is left of the window the parts', said as a width so that what shares its room by it (a
   // filled segmented) is given that room, not what it holds)
   let side_w = fn() { if wide() { side_width() } else { 0.0 } }
-  let main_w = fn() { Some(@sf.dmax(0.0, root.window().0 - side_w())) }
+  let main_w = fn() { Some(@sf.dmax(0.0, root.window_w() - side_w())) }
   // (the bar's 跳转, what the jump goes beside however it is asked: by its button or by ⌘K / Ctrl+K)
   let jump : Ref[@view.View?] = Ref(None)
   // (what is drawn under it all: the root's own ground is the host's)
@@ -276,7 +276,7 @@ fn bar_node(
   env : Env,
 ) -> Unit {
   // (the room for 环境's words beside the width's choice and the bar's buttons, more chosen said longer)
-  let env_worded = fn() { main.window().0 >= 1008.0 }
+  let env_worded = fn() { main.window_w() >= 1008.0 }
   main.box(fn(bar) {
     bar
     .row(Is(true))
@@ -444,7 +444,7 @@ fn still_box(v : @view.View, make : (@view.View) -> Unit) -> Unit {
 /// All the parts as cards, each its name, its group and its first state drawn small; pressed, its page.
 fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal[Int]) -> Unit {
   let brand = @ui.env("MBUI_BRAND")
-  let narrow = fn() { page.window().0 < 720.0 }
+  let narrow = fn() { page.window_w() < 720.0 }
   page.padding(By(fn() { if narrow() { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 24.0, 24.0, 48.0) } })).gap(Is(16.0))
   |> ignore
   @sf.words_node(
@@ -513,7 +513,7 @@ fn card_node(v : @view.View, make : (@view.View) -> Unit) -> Unit {
     .ground(By(fn() { @sf.theme().p.paper }))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .radius(Is(12.0))
-    .pad(By(fn() { if card.window().0 < 720.0 { 14.0 } else { 20.0 } }))
+    .pad(By(fn() { if card.window_w() < 720.0 { 14.0 } else { 20.0 } }))
     .gap(Is(12.0))
     .min_width(Is(Some(0.0)))
     |> ignore
@@ -543,7 +543,7 @@ fn code_node(v : @view.View, code : () -> String) -> Unit {
 /// a press away; its functions. As wide as `width` says at most.
 fn story_node(page : @view.View, s : Story, width : () -> Double?) -> Unit {
   page
-  .padding(By(fn() { if page.window().0 < 720.0 { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 20.0, 24.0, 48.0) } }))
+  .padding(By(fn() { if page.window_w() < 720.0 { (16.0, 16.0, 16.0, 48.0) } else { (24.0, 20.0, 24.0, 48.0) } }))
   .gap(Is(16.0))
   .min_width(Is(Some(0.0)))
   |> ignore

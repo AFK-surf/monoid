@@ -187,7 +187,7 @@ fn sheet_node(
         }
         if in_ime { 0.0 } else { kb }
       }
-      let win_h = fn() { layer.window().1 + ime_under() }
+      let win_h = fn() { layer.window_h() + ime_under() }
       let body_win_h = fn() {
         let wh = win_h()
         if live() {
@@ -447,7 +447,7 @@ fn sheet_node(
           (w.1, 0.0)
         } else if w.4 * (w.1 - w.0) < 0.0 {
           // (turned back mid-slide: slow at one rate first and return, as placed_path does, avoiding a sharp brake)
-          let sw = dmax(@signals.untracked(fn() { layer.window().0 }), 1.0)
+          let sw = dmax(@signals.untracked(fn() { layer.window_w() }), 1.0)
           let (px, pv) = @ui.come_way_by(w.0 * sw, w.4 * sw, w.1 * sw, w.1 * sw, t - w.2)
           (px / sw, pv / sw)
         } else {
@@ -485,7 +485,7 @@ fn sheet_node(
         shown_was.val = ids
         guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
         let at = layer.cause_at()
-        let dur = @ui.move_ms(layer.window().0)
+        let dur = @ui.move_ms(layer.window_w())
         // (as tall as it stood as its page was put on or taken off (`stood`, said where that was done, before
         // anything of it is laid out anew): where the page that shows from now sets out from)
         let stood = stood()
@@ -515,7 +515,7 @@ fn sheet_node(
             Some(w) => {
               let (pos, vel) = way_state_at(w.untracked(), at)
               let v0 = dclamp(vel, -0.02, 0.02)
-              let sw = dmax(layer.window().0, 1.0)
+              let sw = dmax(layer.window_w(), 1.0)
               let way_dur = if v0 * (to - pos) < 0.0 {
                 @ui.come_way_ms(pos * sw, v0 * sw, to * sw)
               } else {
@@ -562,7 +562,7 @@ fn sheet_node(
           Some((stood, at, least, v)) => placed_path(own, stood, v, t - at, least).0
           None => 0.0
         }
-        Some((layer.window().1 - own + below.shown(own, t) + off, own))
+        Some((layer.window_h() - own + below.shown(own, t) + off, own))
       }
       tree_sheet_place.val = Some(place)
       layer.owns(fn() {
@@ -722,7 +722,7 @@ fn sheet_node(
           sheet.pick(at_once=true, fn() { covered_by() is Some(_) }, fn(g, covered) {
             g.over(Is(true)).radius(Is(pane_corner)) |> ignore
             if !covered {
-              g.height(By(fn() { Some(layer.window().1 * 2.0) })) |> ignore
+              g.height(By(fn() { Some(layer.window_h() * 2.0) })) |> ignore
             }
             make(g)
           })
@@ -911,7 +911,7 @@ fn sheet_node(
                 }
                   // (made with the sheet: the one that shows in place, those before it off to its start; put on since: in
                   // from the sheet's end, from its cause's moment)
-                  let slide = (layer.cause_at(), @ui.move_ms(layer.window().0))
+                  let slide = (layer.cause_at(), @ui.move_ms(layer.window_w()))
                   let way = @signals.signal(
                     if made_with.val {
                       // (the one that shows: the last of them)

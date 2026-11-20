@@ -274,8 +274,8 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (4.0, status_top_now(row.window().0), 16.0, 0.0) }))
-      .min_height(By(fn() { Some(status_top_now(row.window().0) + bar_h) }))
+      .padding(By(fn() { (4.0, status_top_now(row.window_w()), 16.0, 0.0) }))
+      .min_height(By(fn() { Some(status_top_now(row.window_w()) + bar_h) }))
       .lines_up(Is(Some(Middle)))
       |> ignore
       // (newly created from NewChat: keep outer glass stable while inner bar row crossfades in along bar_in)

@@ -303,7 +303,7 @@ pub fn terminal_pane_node(
   let pane_w = fn() {
     let w = match width {
       Some(wf) => wf()
-      None => v.window().0
+      None => v.window_w()
     }
     dmax(0.0, w - @sf.native_clear())
   }
@@ -446,7 +446,7 @@ pub fn terminal_pane_node(
     let sz = size_now()
     let lh = line_now()
     let (cw, _, _) = @ui.terminal_grid_metrics(sz)
-    let (c, r) = terminal_cells(pane_w(), v.window().1, top(), cell=cw, head=head_h(), foot=foot_h(), line_h=lh)
+    let (c, r) = terminal_cells(pane_w(), v.window_h(), top(), cell=cw, head=head_h(), foot=foot_h(), line_h=lh)
     let scale = v.pixel_scale()
     let px_cw = dmax(1.0, (cw * scale).round()).to_int()
     let px_ch = dmax(1.0, (lh * scale).round()).to_int()

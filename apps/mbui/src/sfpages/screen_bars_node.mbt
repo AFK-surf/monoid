@@ -449,7 +449,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       fn() { false },
       fn(_) { 1.0 },
       fn() { 0.0 },
-      fn() { p.window().0 },
+      fn() { p.window_w() },
       ink,
       fn(r, corner) {
         // how the view goes, while the link is poor

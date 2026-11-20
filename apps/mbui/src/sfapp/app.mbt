@@ -657,7 +657,7 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     },
   )
   guard words_set else { return }
-  root.reacts(fn() { (src.topic("prefs", {}).get().value, root.window().0, @sf.native_able()) }, fn(a) {
+  root.reacts(fn() { (src.topic("prefs", {}).get().value, root.window_w(), @sf.native_able()) }, fn(a) {
     // (none before the first frame gives the window: told as anything there would be laid out by the wide frame's
     // being otherwise and its faces then changed with nothing measured yet)
     if a.1 > 0.0 {
@@ -718,7 +718,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // (the window's height, what a chat list's and a chat's first window are worked out of wherever they are first
     // asked: sfbase's first_window, chat_first_window; said before any page of nodes is made, as it asks; none before
     // the first frame gives it, what was known kept till then)
-    root.reacts(fn() { root.window().1 }, fn(h) { if h > 0.0 { @sfbase.window_tall.val = h } })
+    root.reacts(fn() { root.window_h() }, fn(h) { if h > 0.0 { @sfbase.window_tall.val = h } })
     // (the window's size from the menu bar, in every state: sfdesk's window_zoom.mbt)
     @sfdesk.zoom_actions(root, src)
     // (pictures by their address as the core gives them, said before any page of nodes is made: what one shows on its
@@ -726,11 +726,11 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.picture_of.val = fn(url, frame) { (src.picture)(url, frame) }
     // (what the app shows, by its kind alone, told the window thread's journal as it changes, on every host: what its
     // hang reports and the device's performance record say; no frame asks it)
-    root.reacts(fn() { @sfbase.shown_kind(shown_now(src, root.window().0)) }, @ui.journal_shows)
+    root.reacts(fn() { @sfbase.shown_kind(shown_now(src, root.window_w())) }, @ui.journal_shows)
     // (to a core that counts what people use (client/core-ts's use-counts.ts: a build given still.fail's project, on
     // its own cloud), whether to, as the settings say, and while it does what the app shows by that same kind alone,
     // each as it changes; nothing to one that does not, as under a Tester or a replay)
-    root.reacts(fn() { @sfbase.counts_told(src, @sfbase.shown_kind(shown_now(src, root.window().0))) }, fn(told) {
+    root.reacts(fn() { @sfbase.counts_told(src, @sfbase.shown_kind(shown_now(src, root.window_w()))) }, fn(told) {
       match told {
         Some((on, kind)) => {
           (src.call)("client.reports", { "on": Json::boolean(on) }, @sfbase.answer_unread)
@@ -829,7 +829,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
               Some(now) => now.id
               None => ""
             }
-            let wide = !(@sf.layout(v.window().0) is Small) || @sf.native_able()
+            let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
             (ws, app.nav.pages(), wide, @sfbase.history_acts_ended())
           },
           fn(said) {
@@ -841,7 +841,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         first_page_node(v, src)
         // what the page on top reads as it is first built, asked as it comes on top (sfbase's page_opens_node)
         @sfbase.page_opens_node(v, src, fn(w, p, ask) {
-          if @sf.layout(v.window().0) is Small && !@sf.native_able() {
+          if @sf.layout(v.window_w()) is Small && !@sf.native_able() {
             page_opens_by(src, w, p, ask)
           } else {
             @sfdesk.pane_opens(src, w.id, p, ask)
@@ -853,7 +853,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // still shown (sfbase's opens_ahead_node): its shell's panes' (小屏's Home, home_opens; the wide frame's,
         // sfdesk's frame_opens)
         @sfbase.opens_ahead_node(v, src, fn() {
-          let width = v.window().0
+          let width = v.window_w()
           if width <= 0.0 {
             None
           } else if @sf.layout(width) is Small && !@sf.native_able() {
@@ -870,7 +870,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // (narrow_shell.mbt): laid out Small with a workspace, the narrow shell's nodes; on the tape, its panels' nodes
         // (tape_shell.mbt); the ways in, the splash, a window of its own; nothing before the window has a width
         let shell_was : Ref[ShellIs] = Ref(Unsized)
-        v.pick(fn() { shell_is(src, v.window().0) }, fn(s, shell) {
+        v.pick(fn() { shell_is(src, v.window_w()) }, fn(s, shell) {
           // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.
           if shell is Taped && shell_was.val is (Stacked | Paned) && !@sf.native_able() &&
             app.nav.top() != Home && pane_ready(src, app.nav.top()) {
@@ -987,7 +987,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
             back=fn() { "" },
             on_back=fn() { lone_closed(q) },
             top=fn() { @ui.system_bars().top },
-            width=fn() { q.window().0 },
+            width=fn() { q.window_w() },
             on_switch_page=@sfbase.lone_page_replace,
           )
         // (a chat's tab: drawn as over the whole window, its bar the window's top row, clear of the window's buttons as
@@ -1283,7 +1283,7 @@ fn lock_gate_node(q : @view.View, src : Source, core : @settings.Core) -> Unit {
         p.grow(Is(1.0)) |> ignore
         // (the top bar lies over the page's top: its column stays out from under it, home_top_bar_node's height)
         @sfpages.lock_wait_node(p, core, @settings.here_of(core, w.id, w.name), clear=fn() {
-          status_top_now(p.window().0) + bar_h
+          status_top_now(p.window_w()) + bar_h
         })
         |> ignore
       })
@@ -1319,7 +1319,7 @@ let place_switch : @motion.Way = @motion.Way::new(1.0)
 /// How far over what the system's bars leave of the window's foot the toast is, for the window's tree's (toast's,
 /// followed): the wide frame's 24; the narrow one's over the bar's room.
 fn toast_bottom_now(v : @view.View) -> Double {
-  let wide = !(@sf.layout(v.window().0) is Small) || @sf.native_able()
+  let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
   // (over the system's bars at the window's foot: the toaster keeps clear of them itself, View::clear)
   if wide {
     @sf.toast_bottom
@@ -1384,7 +1384,7 @@ fn splash_of_tree(v : @view.View, label : () -> String?, now : () -> Bool) -> Un
   })
   match splash_owner.val {
     Some(owner) if owner.alive() =>
-      v.reacts(fn() { v.window().0 > 0.0 }, fn(sized) {
+      v.reacts(fn() { v.window_w() > 0.0 }, fn(sized) {
         if sized && owner.alive() {
           splash_begin(owner, v.cause_at())
         }
@@ -1657,7 +1657,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       let wide = match first_wide.val {
         Some(wide) => wide
         None => {
-          let wide = !(@sf.layout(v.window().0) is Small) || @sf.native_able()
+          let wide = !(@sf.layout(v.window_w()) is Small) || @sf.native_able()
           first_wide.val = Some(wide)
           wide
         }

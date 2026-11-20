@@ -572,7 +572,7 @@ fn load_list(v : @view.View, src : Source, station : String, port : Int) -> Unit
         |> ignore
       })
       // (the old view's capped box's: no taller than its most, what it holds scrolling in it)
-      @sf.capped_node(l, fn() { dmin(load_list_most, load_list_share * l.window().1) }, fn(b) {
+      @sf.capped_node(l, fn() { dmin(load_list_most, load_list_share * l.window_h()) }, fn(b) {
         b.each(fn() { items(load(), "resources") }, fn(r) { number(Some(r), "id").to_int() }, fn(row, r) {
           // (in a box of no padding of its own: a row that comes or goes closes its way to none of it)
           row.box(fn(b) { load_row(b, fn() { Some(r.get()) }) }) |> ignore

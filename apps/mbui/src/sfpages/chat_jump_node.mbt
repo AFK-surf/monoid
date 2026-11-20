@@ -1163,7 +1163,7 @@ fn chat_rail_node(
         match said.get() {
           Some(s) => {
             let latest = chat_said_latest(src, r, view)
-            let (_, h) = o.window()
+            let h = o.window_h()
             let most = dmax(0.0, (h - top()) * rail_share - 2.0 * rail_pad.px())
             chat_rail_ticks(s, jump.reader.get(), latest, most)
           }

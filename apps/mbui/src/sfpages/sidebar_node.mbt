@@ -359,7 +359,7 @@ fn chats_pane_node(
   // (a window made taller: the list told the first window of it, where it holds fewer and the core has more; it never
   // shrinks)
   let held_rows = @signals.computed(fn(_) { @sfbase.chats_held(read().0) })
-  v.reacts(fn() { (v.window().1, more.get(), held_rows.get()) }, fn(at) {
+  v.reacts(fn() { (v.window_h(), more.get(), held_rows.get()) }, fn(at) {
     @sfbase.chats_window_for(src, id, filter, at.0, at.2, at.1)
   })
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

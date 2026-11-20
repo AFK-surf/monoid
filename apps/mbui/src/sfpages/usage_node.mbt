@@ -581,7 +581,7 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
       },
     )
     |> ignore
-    area.show(fn() { area.window().0 >= 380.0 }, fn(scale) {
+    area.show(fn() { area.window_w() >= 380.0 }, fn(scale) {
       let top_val = fn() { number(v(), "top").to_int() }
       scale.height(Is(Some(@sf.usage_plot))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
       @sf.words_node(scale, fn() { "$" + top_val().to_string() }, fn() { ug_scale_label }) |> ignore
@@ -1198,7 +1198,7 @@ pub fn usage_node(
   // weeks where it is narrower than 600, as the old view's were by the width it was drawn in)
   let page_w = match width {
     Some(w) => w
-    None => fn() { v.window().0 }
+    None => fn() { v.window_w() }
   }
   let topic_of = fn(ask : (String, Map[String, Json])) { (core.topic)(ask.0, ask.1).get() }
   // (each read as it reads it, saying so where a choice pressed handed it what it asked: sfbase's shown_read)

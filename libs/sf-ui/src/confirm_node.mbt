@@ -174,7 +174,7 @@ fn dialog_layer_node(
       // (over it the room `top_share` of the window's height says, where it says one: else as much as under it)
       layer.box(fn(s) {
         if top_share > 0.0 {
-          s.height(By(fn() { Some(layer.window().1 * top_share) })).shrink(Is(0.0)) |> ignore
+          s.height(By(fn() { Some(layer.window_h() * top_share) })).shrink(Is(0.0)) |> ignore
         } else {
           s.grow(Is(1.0)) |> ignore
         }

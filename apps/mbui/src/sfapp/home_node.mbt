@@ -23,9 +23,9 @@ fn home_node(
   }
   let frame : @sfpages.ListsNodeFrame = {
     // under the top bar, the status bar's height and its own; over the bottom bar
-    top: fn() { status_top_now(v.window().0) + bar_h + 8.0 },
-    under: fn() { status_top_now(v.window().0) + bar_h },
-    foot: fn() { nav_foot() + bar_room_at(v.window().0) },
+    top: fn() { status_top_now(v.window_w()) + bar_h + 8.0 },
+    under: fn() { status_top_now(v.window_w()) + bar_h },
+    foot: fn() { nav_foot() + bar_room_at(v.window_w()) },
     ground: fn() { @sf.theme().p.bg },
     // what the update wants of the person, over what the last one brought (until it is seen)
     before: fn(filter, view) {
@@ -92,7 +92,7 @@ fn home_node(
           src,
           tips,
           workspace,
-          fn() { l.window().0 },
+          fn() { l.window_w() },
           top=fn() { (frame.under)() + @sfpages.board_chips_h(l) },
           foot=fn() { (frame.foot)() },
           stint~,
@@ -116,7 +116,7 @@ fn home_node(
     if serial != 0 {
       tab_body_comes_in(s, serial)
     }
-    @sfpages.search_page_node(s, src, workspace, fn() { status_top_now(s.window().0) }, Whole)
+    @sfpages.search_page_node(s, src, workspace, fn() { status_top_now(s.window_w()) }, Whole)
   })
 }
 
@@ -158,7 +158,7 @@ fn home_top_bar_node(
     g.box(fn(row) {
       row
       .row(Is(true))
-      .sets_together(fn() { status_top_now(row.window().0) }, fn(top) {
+      .sets_together(fn() { status_top_now(row.window_w()) }, fn(top) {
         row.padding(Is((16.0, top, 16.0, 0.0))).min_height(Is(Some(top + bar_h))) |> ignore
       })
       .gap(Is(10.0))

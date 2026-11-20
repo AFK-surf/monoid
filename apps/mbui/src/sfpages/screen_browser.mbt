@@ -229,7 +229,7 @@ fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
 /// Whether the view's bar is laid out narrow: in a narrow window (`v`'s), followed. (Beside its chat with keyboard and
 /// mouse the panel's bar is its own, narrow whatever the window: screen_tab_bar_node.)
 fn view_narrow(v : @view.View, _u : ScreenUi) -> Bool {
-  v.window().0 < browser_wide_at
+  v.window_w() < browser_wide_at
 }
 
 ///|

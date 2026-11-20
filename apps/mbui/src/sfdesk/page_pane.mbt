@@ -83,7 +83,7 @@ fn pane_page_one(c : @ui.Ctx, src : Source, page : Page, held? : Bool = false) -
 fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   let gated = fn() {
     match @sfbase.workspace_in_view(src).0 {
-      Some(w) => fold_target(src, w, v.window().0).0.gated
+      Some(w) => fold_target(src, w, v.window_w()).0.gated
       None => false
     }
   }
@@ -270,7 +270,7 @@ fn pane_made(
               }
             }
             let width = fn() {
-              let ww = p.window().0
+              let ww = p.window_w()
               match @sfbase.workspace_in_view(src).0 {
                 Some(w) => ww - fold_target(src, w, ww).1.col
                 None => ww
@@ -603,7 +603,7 @@ fn pane_made(
                     // new_side_node's, laid out narrow or wide by where it comes to, not on its way)
                     Some(w) =>
                       @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() {
-                        let ww = n.window().0
+                        let ww = n.window_w()
                         let pane = ww - fold_target(s, w, ww).1.col
                         let beside = pane >= side_both_least &&
                           new_files_open(s, w.id) &&
@@ -651,7 +651,7 @@ fn pane_chat_bar_ends(
   let look = fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
-        let (_, now) = fold_target(src, w, n.window().0)
+        let (_, now) = fold_target(src, w, n.window_w())
         Some(fold_along(fold_drawn_at(n), now))
       }
       None => None
@@ -783,7 +783,7 @@ fn pane_made_chat(col : @view.View, k : Int) -> Unit {
 fn pane_aside_at(src : Source, n : @view.View) -> Double {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let (_, now) = fold_target(src, w, n.window().0)
+      let (_, now) = fold_target(src, w, n.window_w())
       fold_along(fold_drawn_at(n), now).aside
     }
     None => 0.0
@@ -825,7 +825,7 @@ fn pane_chat_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.Col
 /// going with the page; at rest, and while a new chat (laid out anew as the move goes, its words not a chat's rows), as
 /// wide as it is.
 fn pane_fold_held(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
-  let ww = n.window().0
+  let ww = n.window_w()
   guard @sfbase.workspace_in_view(src).0 is Some(w) else { return { by: 0.0, across: 0.0, laid: ww, toward: ww, toward_by: 0.0 } }
   let (_, now) = fold_target(src, w, ww)
   let t = fold_drawn_at(n)
@@ -855,7 +855,7 @@ fn pane_page_w(src : Source, n : @view.View, serial : Int, pane : Double) -> Dou
 /// How wide the pane off the tape is as node `n` is drawn: the window's less the block's column, where the block's move
 /// has it then.
 fn pane_w_at(src : Source, n : @view.View) -> Double {
-  let ww = n.window().0
+  let ww = n.window_w()
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
       let (_, now) = fold_target(src, w, ww)

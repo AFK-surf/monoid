@@ -192,7 +192,7 @@ fn service_tab_node(
               session: text(j, "session"),
             }
           },
-          fn() { b.window().0 },
+          fn() { b.window_w() },
           close~,
           full~,
           round~,

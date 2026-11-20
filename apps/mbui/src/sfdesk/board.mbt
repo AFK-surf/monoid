@@ -64,7 +64,7 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
         // `width`): moved with the pane as the sidebar closes beside it, its columns' words never wrapped anew on the
         // way, each frame's width another)
         let width = fn() {
-          let ww = b.window().0
+          let ww = b.window_w()
           match @sfbase.workspace_in_view(src).0 {
             Some(w) => board_width(src, w, ww)
             None => ww

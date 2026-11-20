@@ -24,7 +24,7 @@ pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit 
     |> ignore
     // (where it goes over the point read: within the window's sides, under its top)
     let goal = fn(p : (Double, Double)) {
-      let ww = l.window().0
+      let ww = l.window_w()
       let half = loupe_w / 2.0
       let side = loupe_side
       (

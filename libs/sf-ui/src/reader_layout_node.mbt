@@ -14,7 +14,7 @@
 /// open, docked beside the text or a sheet on 小屏.
 #callsite(autofill(loc))
 fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
-  let small = fn() { layout(root.window().0) is Small }
+  let small = fn() { layout(root.window_w()) is Small }
   let open = fn() { layout_open.get() is Some(_) }
   // (the reading whose panel it is, as it opens)
   let reading = fn() { reading_for(layout_open.untracked().unwrap_or("")) }
@@ -144,7 +144,7 @@ fn layout_body(col : @view.View, narrow : Bool, p : () -> ReaderPaper, loc~ : So
   let inner = fn() {
     if narrow {
       let (_, right, _, left) = col.clear()
-      dmax(desk_none, col.window().0 - left - right - 2.0 * desk_layout_in)
+      dmax(desk_none, col.window_w() - left - right - 2.0 * desk_layout_in)
     } else {
       desk_layout_inner
     }

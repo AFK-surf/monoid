@@ -306,7 +306,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     .over(Is(true))
     .row(Is(true))
     .padding(By(fn() {
-      if vw.played() && @sf.player_fills_native(player_width(r.window().0)) {
+      if vw.played() && @sf.player_fills_native(player_width(r.window_w())) {
         (0.0, 0.0, 0.0, 0.0)
       } else {
         (0.0, 0.0, @sf.native_clear(), 0.0)
@@ -532,7 +532,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   // (and, not marking, its actions in their bars in place of its own bar: vf_native's), at the moment what it says
   // changes; kept as said while it is the one open (Viewer::up_still), handed over as each frame ends
   // (@sf.native_over_up)
-  n.reacts(fn() { native_said(vw, src, player_width(n.window().0)) }, fn(said) {
+  n.reacts(fn() { native_said(vw, src, player_width(n.window_w())) }, fn(said) {
     match said {
       // (a film's or a song's: its name and its actions there, close, 全屏 and download (vf_native_media), as wide as
       // its player is laid out; filling the window, none: the bars put away, its name none either)

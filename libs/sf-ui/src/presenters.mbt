@@ -1544,7 +1544,7 @@ let sheet_win_lent : @view.Lent[() -> Double] = @view.Lent::new()
 pub fn sheet_window_h_node(v : @view.View) -> Double {
   match v.lent(sheet_win_lent) {
     Some(f) => f()
-    None => v.window().1
+    None => v.window_h()
   }
 }
 

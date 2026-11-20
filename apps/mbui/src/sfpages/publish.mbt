@@ -565,7 +565,7 @@ fn publish_node(n : @view.View, src : Source, look : () -> @ui.Look) -> Unit {
       }
     }
   })
-  let width = fn() { n.window().0 }
+  let width = fn() { n.window_w() }
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
   n.box(fn(page) {
@@ -771,7 +771,7 @@ fn publish_list_node(parent : @view.View, src : Source, r : ChatRef, width : () 
         }
         publishing.aim = false
         let top = publish_head_w(width())
-        let (_, wh) = parent.window()
+        let wh = parent.window_h()
         if y < top || y + h > wh - publish_foot_w(width()) {
           scroll.put(scroll.at(parent.tree) + (y - top - publish_paper_in))
         }

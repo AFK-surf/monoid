@@ -136,7 +136,7 @@ pub fn agent_card_node(
       @sf.style_node(x, fn() { agent_card_notes })
       x.show(fn() { text(card(), "jobs") != "" }, fn(j) {
         agent_card_link_node(j, fn() { text(card(), "jobs") }, fn() { agent_card_action }, fn() { agent_card_action }, fn() {
-          (@sfbase.chat_jobs_open.val)(src, r, j.window().0)
+          (@sfbase.chat_jobs_open.val)(src, r, j.window_w())
         })
       })
       x.each(fn() { Array::makei(items(card(), "attention").length(), fn(i) { i }) }, fn(i) { i }, fn(row, i) {

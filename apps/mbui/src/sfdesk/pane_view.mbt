@@ -608,7 +608,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     fn() {
       match @sfbase.workspace_in_view(src).0 {
         Some(w) => {
-          let r = pane_room(src, w, v.window().0)
+          let r = pane_room(src, w, v.window_w())
           let group = if @sf.native_on() { "tabs" } else { side_group(src, w.id) }
           let cause : FoldIs = {
             folded: wide.folded.get(),
@@ -638,7 +638,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
           let look = if cause.peeking && !w.peeking {
             fold_goes.shift = fold_peek_shift(fold_along(at, look))
             match @sfbase.workspace_in_view(src).0 {
-              Some(ws) => fold_look_of(pane_room(src, ws, v.window().0), fold_goes.shift)
+              Some(ws) => fold_look_of(pane_room(src, ws, v.window_w()), fold_goes.shift)
               None => look
             }
           } else {
@@ -671,7 +671,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       .width(By(fn() {
         match @sfbase.workspace_in_view(src).0 {
           Some(w) => {
-            let (_, now) = fold_target(src, w, col.window().0)
+            let (_, now) = fold_target(src, w, col.window_w())
             Some(fold_along(fold_drawn_at(col), now).col)
           }
           None => Some(0.0)
@@ -704,7 +704,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // The rail's closed look follows the block's target, at the cause of the change.
   v.reacts(fn() {
     match @sfbase.workspace_in_view(src).0 {
-      Some(w) => pane_room(src, w, v.window().0).bar
+      Some(w) => pane_room(src, w, v.window_w()).bar
       None => false
     }
   }, fn(bar) { wide.closed.set(bar) })
@@ -880,7 +880,7 @@ fn fold_peek_shift(at : FoldLook) -> Double {
   match fold_goes.node {
     Some(v) => {
       let s = wide.side_w.get()
-      let w = v.window().0
+      let w = v.window_w()
       match shown {
         Some((left, right)) => {
           let moved = (rail_left() - at.col) / 2.0
@@ -921,7 +921,7 @@ fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
   // (the page's width on the block's way: where the block's column goes, the window's less it)
   match (fold_goes.to, fold_goes.node) {
     (Some(b), Some(v)) if fold_going(c.moment()) =>
-      @sfbase.page_way_said(fold_goes.way.starts_at().to_string(), v.window().0 - b.col, ends=fold_goes.way.ends_at())
+      @sfbase.page_way_said(fold_goes.way.starts_at().to_string(), v.window_w() - b.col, ends=fold_goes.way.ends_at())
     _ => @sfbase.page_way_said("", 0.0, ends=0.0)
   }
 }
@@ -932,7 +932,7 @@ fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
 fn pane_update_shows(src : Source, n : @view.View) -> Bool {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let r = pane_room(src, w, n.window().0)
+      let r = pane_room(src, w, n.window_w())
       !r.gated && update_shown() && r.bar && !r.peek
     }
     None => false
@@ -949,7 +949,7 @@ fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   .over(Is(true))
   .padding(By(fn() {
     let top = match @sfbase.workspace_in_view(src).0 {
-      Some(w) => pane_room(src, w, o.window().0).top
+      Some(w) => pane_room(src, w, o.window_w()).top
       None => 0.0
     }
     let left = if @ui.window_inset_now() { update_closed_inset } else { update_closed_in }
@@ -970,7 +970,7 @@ fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 fn pane_rail_at(src : Source, n : @view.View) -> RailAt {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let (r, now) = fold_target(src, w, n.window().0)
+      let (r, now) = fold_target(src, w, n.window_w())
       rail_at_fold(r.bar, fold_along(fold_drawn_at(n), now))
     }
     None => rail_at_tape(dock_ground(false))
@@ -1007,7 +1007,7 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
 fn pane_edge_stands(src : Source, n : @view.View) -> Bool {
   match @sfbase.workspace_in_view(src).0 {
     Some(w) => {
-      let r = pane_room(src, w, n.window().0)
+      let r = pane_room(src, w, n.window_w())
       !r.bare && r.on_fold is None && !r.crowded
     }
     None => false
@@ -1038,11 +1038,11 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   let fold = fn() { wide.folded.set(!wide.folded.get()) }
   n
   .width(Is(Some(@ui.Space::px(S3))))
-  .height(By(fn() { Some(dmax(0.0, n.window().1 - pane_top())) }))
+  .height(By(fn() { Some(dmax(0.0, n.window_h() - pane_top())) }))
   .offset(By(fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
-        let (r, now) = fold_target(src, w, n.window().0)
+        let (r, now) = fold_target(src, w, n.window_w())
         (fold_along(fold_drawn_at(holder), now).edge, r.top)
       }
       None => (0.0, pane_top())

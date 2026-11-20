@@ -1649,7 +1649,7 @@ fn composer_field_node(
   }
   let wl = @signals.untracked(fn() { @ui.style_words(@sf.theme().t.words) })
   // (how many lines it shows at most as the system's size of words and the window are now: followed, not as made)
-  let live_max_lines = fn() { node_text_lines(scale(), words.window().1) }
+  let live_max_lines = fn() { node_text_lines(scale(), words.window_h()) }
   let typed = @ui.field(
     words,
     w.field,

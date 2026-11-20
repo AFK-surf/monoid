@@ -131,7 +131,7 @@ fn open_jobs_pop_node(chip : @view.View, src : Source, workspace : () -> Workspa
       },
       // (420 high at most, or 60% of the window: past that its groups scroll in it, as the old popover's did,
       // within_room)
-      most=fn() { dmin(open_jobs_pop_most, chip.window().1 * 0.6) },
+      most=fn() { dmin(open_jobs_pop_most, chip.window_h() * 0.6) },
       from=Node(chip),
       w=open_jobs_pop_w,
       side=Top,

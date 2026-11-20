@@ -948,7 +948,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       |> ignore
       tape_cover(side, Side, fn() {
         let r = tape_room_now()
-        let (_, wh) = side.window()
+        let wh = side.window_h()
         // The cover can reopen the sidebar, but never takes the system window buttons' row.
         let top = if @ui.window_inset() {
           dmax(r.panel_top, @ui.window_points_to_content_now(window_buttons_row) + bar_in_now())
@@ -1065,7 +1065,7 @@ fn tape_island_key() -> String {
 /// between it and the one before (the side panel's 8 from the page's).
 fn tape_panel_room(n : @view.View) -> (Double, Double, Double, Double) {
   let r = tape_room_now()
-  let (_, wh) = n.window()
+  let wh = n.window_h()
   (0.0, r.panel_top, 0.0, dmax(0.0, wh - r.panel_top - r.panel_h))
 }
 
@@ -1342,7 +1342,7 @@ fn tape_side_at(side : @view.View) -> SideAt {
   // (behind the panel in use, its ground a step darker as far as the tape's move has got: tape_behind's)
   let k = tape_behind_at(Side, tape_drawn_at(side))
   {
-    ..dock_side_at(false, false, s, col, top, r.foot, 0.0, side.window().1, None),
+    ..dock_side_at(false, false, s, col, top, r.foot, 0.0, side.window_h(), None),
     ground: if k <= 0.0 { apart_ground() } else { @sf.behind_ground(k~) },
     brand: side_brand_h(false, r.top),
     band: 1.0,

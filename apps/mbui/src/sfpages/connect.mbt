@@ -36,7 +36,7 @@ pub fn connect_node(
   }
   let page_w = match width {
     Some(w) => w
-    None => fn() { v.window().0 }
+    None => fn() { v.window_w() }
   }
   // (that connect alone, whole: its page's own ask; none while its station's overview is read, null where it is gone)
   let read = fn() { @settings.connect_read(core, here(), station, id) }

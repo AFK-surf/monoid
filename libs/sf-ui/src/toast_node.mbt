@@ -59,7 +59,7 @@ pub fn toaster_node(
     // (the window less what the system's bars reach in over its sides: View::clear)
     let width = fn() {
       let (_, right, _, left) = v.clear()
-      let ww = v.window().0 - left - right
+      let ww = v.window_w() - left - right
       if w < ww - 32.0 {
         w
       } else {

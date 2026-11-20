@@ -236,20 +236,20 @@ pub fn drive_player_node(parent : @view.View, src : Source, at : DriveAt, back :
     .map(fn(e) { { name: e.name, size: e.size, mtime: e.mtime, mime: e.mime, kind: e.kind, dir: e.dir } })
   }
   let m = @sf.player_opened(parent, reader_key(at), file, siblings)
-  let width = fn() { @sf.player_stage_w(parent.window().0) }
+  let width = fn() { @sf.player_stage_w(parent.window_w()) }
   drive_player_native(parent, at, file, m, fn() { @sf.playlist_for(file, siblings()).length() > 1 }, width, back)
   // (its stage's ground under all of it, the column's room too)
   let picture = !(file.kind == "audio" || file.mime.has_prefix("audio/"))
   parent.box(fn(g) { g.over(Is(true)).ground(By(fn() { @sf.media_ink(picture).stage })) |> ignore }) |> ignore
   let room = parent.box(fn(r) {
-    r.over(Is(true)).row(Is(true)).padding(By(fn() { (0.0, 0.0, parent.window().0 - width(), 0.0) })) |> ignore
+    r.over(Is(true)).row(Is(true)).padding(By(fn() { (0.0, 0.0, parent.window_w() - width(), 0.0) })) |> ignore
   })
   let stage = room.box(fn(s) { s.grow(Is(1.0)) |> ignore })
   @sf.player_node(
     stage,
     m,
     file,
-    fn() { (width(), parent.window().1) },
+    fn() { (width(), parent.window_h()) },
     back_label=fn() { viewer_folder_label(src, at.station, root, dir) },
     on_back=back,
     still=fn() { "" },

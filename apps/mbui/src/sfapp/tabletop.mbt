@@ -194,7 +194,7 @@ fn chat_foot_node(
   .ground(By(fn() { if @ui.system_tabletop() is Some(_) { @sf.theme().p.bg } else { 0L } }))
   .height(By(fn() {
     match @ui.system_tabletop() {
-      Some((top, _)) => Some(dmax(0.0, n.window().1 - top))
+      Some((top, _)) => Some(dmax(0.0, n.window_h() - top))
       None => None
     }
   }))

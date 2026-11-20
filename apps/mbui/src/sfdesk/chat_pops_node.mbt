@@ -31,7 +31,7 @@ fn chat_pops_node(b : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
     chat_jobs_pop_node(n, src, r, None)
   })
   b.reacts(
-    fn() { b.window().0 },
+    fn() { b.window_w() },
     fn(_) {
       if @sf.native_on() {
         chat_own.info_open.set(false)

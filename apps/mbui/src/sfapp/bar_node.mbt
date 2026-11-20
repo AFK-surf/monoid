@@ -299,7 +299,7 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
         bar.vis.at(t).0
       }
       let foot = 22.0 + nav_foot()
-      let raised = bar_raise(holder.window().1, foot, panel(), status_top_now(holder.window().0)) * bar.up.at(t).0
+      let raised = bar_raise(holder.window_h(), foot, panel(), status_top_now(holder.window_w())) * bar.up.at(t).0
       (0.0, (1.0 - v) * bar_drop - raised)
     },
     fn(_, _) {

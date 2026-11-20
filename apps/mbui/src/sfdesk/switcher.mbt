@@ -157,14 +157,14 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
             workspace,
             fn() {
               match workspace() {
-                Some(w) => switcher_offered(src, w, !(@sf.layout(layer.window().0) is Small) || @sf.native_able())
+                Some(w) => switcher_offered(src, w, !(@sf.layout(layer.window_w()) is Small) || @sf.native_able())
                 None => []
               }
             },
             fn() { @sfpages.found_stacked(room() - 2.0 * switcher_edge) },
             idle_chats=true,
             most=fn() {
-              Some(dmin(switcher_most_h, layer.window().1 * switcher_most_share) - switcher_panel_rest + switcher_edge)
+              Some(dmin(switcher_most_h, layer.window_h() * switcher_most_share) - switcher_panel_rest + switcher_edge)
             },
             foot_in=switcher_edge,
           )

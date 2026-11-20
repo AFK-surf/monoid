@@ -700,7 +700,7 @@ pub fn farview_pane_node(
       @stage.stage_node(
         col,
         tab.stage,
-        height=Some(fn() { (room.height().unwrap_or(col.window().1) - room.tall(chrome)).max(0.0) }),
+        height=Some(fn() { (room.height().unwrap_or(col.window_h()) - room.tall(chrome)).max(0.0) }),
         on_menu=Some(fn(hit) { farview_menu(tab.stage, hit, fn() { find.show(tab.stage) }) }),
       )
       |> ignore

@@ -1869,7 +1869,7 @@ pub fn switch_node(
     let size = fn() {
       if !small && native_input() is Finger {
         // Give labels more room on compact touch windows while retaining the capsule.
-        let extra = dclamp(at.window().0 - 360.0, 0.0, 12.0)
+        let extra = dclamp(at.window_w() - 360.0, 0.0, 12.0)
         (52.0 + extra, 28.0)
       } else {
         switch_size(small)

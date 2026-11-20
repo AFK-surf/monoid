@@ -179,7 +179,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
           // (the width of the box it is laid out in, this node's: the window's less the system's bars beside it, as
           // the root's sides say it, told as either changes)
           let (left, right) = sides_room()
-          Some(bar_told(src, w, active, narrow_bar_shown(src, w), v.window().0 - left - right))
+          Some(bar_told(src, w, active, narrow_bar_shown(src, w), v.window_w() - left - right))
         }
         None => None
       }
@@ -196,7 +196,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   v.show(at_once=true, @sfpages.search_over_on, fn(k) {
     k.over(Is(true)) |> ignore
     @sfpages.search_over_ground_node(k)
-    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
+    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window_w()) }, Whole)
   })
   // the bottom bar over the pages: its glass, a finger on it the bar's at each event's moment, the bar drawn in it
   // (bar_node.mbt); on a place's top page with nothing over it (narrow_bar_shown); none while this device waits to be
@@ -411,7 +411,7 @@ fn new_frame_node(src : Source, w : Workspace, width : () -> Double) -> @sfpages
     bar: fn(b) {
       @sf.nav_bar_node(b, fn() { tr("common.cancel") }, fn() { tr("android-chat.new.title") }, fn() {
         @sfbase.close_page(NewChat) |> ignore
-      }, top=fn() { status_top_now(b.window().0) })
+      }, top=fn() { status_top_now(b.window_w()) })
     },
     foot: fn() { nav_foot() },
     over: fn(_, _) {  },
@@ -499,10 +499,10 @@ fn narrow_made_as(
             // (under the status bar as the window it is in is now: status_top_now, by its width as it changes; a place
             // of the bottom bar's under the top bar, which names it, over the bottom bar: place_page's)
             if place {
-              let width = v.window().0
+              let width = v.window_w()
               { back: None, top: status_top_now(width) + bar_h + 8.0, foot: nav_foot() + bar_room_at(width), named: true }
             } else {
-              { back: under.map(@sfbase.back_label), top: status_top_now(v.window().0), foot: nav_foot(), named: false }
+              { back: under.map(@sfbase.back_label), top: status_top_now(v.window_w()), foot: nav_foot(), named: false }
             }
           }
           v.pick(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
@@ -631,7 +631,7 @@ fn narrow_made_as(
               // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node, under its bar of 取消)
               new_node=fn(n, s) {
                 match @signals.untracked(fn() { workspace_in_view(s).0 }) {
-                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window().0 }), @sf.TipLayer::new(fn() { Some(v) }))
+                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() { n.window_w() }), @sf.TipLayer::new(fn() { Some(v) }))
                   None => ()
                 }
               },
@@ -663,7 +663,7 @@ fn narrow_made_as(
     Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
-          @sf.layout(p.window().0) is Small
+          @sf.layout(p.window_w()) is Small
         })
       })
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
@@ -781,7 +781,7 @@ fn narrow_made_as(
           w.id,
           fn() { at },
           frame=fn() { { ..frame(), back: under.map(fn(u) { drive_back_label(src, w, u) }) } },
-          width=fn() { p.window().0 },
+          width=fn() { p.window_w() },
           on_back=fn() { @sfbase.go_back() |> ignore },
           go=drive_go_back_to,
           shown=fn() { app.nav.shows(serial) },
@@ -947,8 +947,8 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
   if !has_top {
     v.box(fn(o) {
       o.over(Is(true)) |> ignore
-      o.show(fn() { status_top_now(v.window().0) > 0.0 }, fn(paper) {
-        paper.height(By(fn() { Some(status_top_now(v.window().0)) })).ground(By(fn() { @sf.theme().p.bg })) |> @sf.ground_node |> ignore
+      o.show(fn() { status_top_now(v.window_w()) > 0.0 }, fn(paper) {
+        paper.height(By(fn() { Some(status_top_now(v.window_w())) })).ground(By(fn() { @sf.theme().p.bg })) |> @sf.ground_node |> ignore
       })
     })
     |> ignore
@@ -956,7 +956,7 @@ fn narrow_made_top(v : @view.View, has_top~ : Bool) -> Unit {
   v.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (where the frame is not wide: is_wide, by the window as it is)
-    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window().0) is Small && !@sf.native_able() }, fn(band) {
+    o.show(fn() { @ui.window_inset_now() && @sf.layout(v.window_w()) is Small && !@sf.native_able() }, fn(band) {
       band.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore
     })
   })

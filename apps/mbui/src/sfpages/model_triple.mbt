@@ -642,7 +642,7 @@ pub fn model_triple_node(
       let go = fn() {
         let (x, y, w, h) = b.placed_window_now()
         // (its panel gone up from it where it stands low in the window: short of room for it under it, more over it)
-        let under = b.window().1 - (y + h)
+        let under = b.window_h() - (y + h)
         let up = under < triple_up_need && y > under
         if @signals.untracked(bound) {
           match on_bound {

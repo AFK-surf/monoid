@@ -61,7 +61,7 @@ pub fn reader_node(
     let room = page.box(fn(r) { r.over(Is(true)).row(Is(true)).padding(By(fn() { (0.0, 0.0, clear(), 0.0) })) |> ignore })
     let root = room.box(fn(m) { m.grow(Is(1.0)) |> ignore })
     // laid out 小屏 (the window's tier): a phone's, its own bars that a tap brings; not in a tab
-    let small = fn() { !beside && layout(root.window().0) is Small }
+    let small = fn() { !beside && layout(root.window_w()) is Small }
     // (the panel beside the text: on 大屏 and 中屏 always, in a tab where it has room for both; on 小屏 never, its
     // panels the window's sheets over it)
     let wide = match width {
@@ -70,7 +70,7 @@ pub fn reader_node(
     }
     let tab_w = match width {
       Some(w) => w
-      None => fn() { dmax(0.0, root.window().0 - clear()) }
+      None => fn() { dmax(0.0, root.window_w() - clear()) }
     }
     reader_start(root, r)
     if !beside {

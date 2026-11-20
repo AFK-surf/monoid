@@ -120,7 +120,7 @@ fn status_top_now(width : Double) -> Double {
 /// nav_foot), in the room between them.
 fn within_bars_tree(v : @view.View, page : (@view.View) -> Unit) -> Unit {
   v.box(fn(b) {
-    b.over(Is(true)).padding(By(fn() { (0.0, status_top_now(v.window().0), 0.0, nav_foot()) })) |> ignore
+    b.over(Is(true)).padding(By(fn() { (0.0, status_top_now(v.window_w()), 0.0, nav_foot()) })) |> ignore
     b.box(fn(body) {
       body.grow(Is(1.0)) |> ignore
       page(body)

@@ -84,7 +84,7 @@ fn screen_content_node(fill : @view.View, pg : ScreenPage, pair? : () -> Bool = 
     // (beside a chat, in its tab, as narrow whatever the window: there is the chat to read too)
     @sf.by_look_node(
       c,
-      fn() { if pg.in_tab { 0.0 } else { c.window().0 } },
+      fn() { if pg.in_tab { 0.0 } else { c.window_w() } },
       fn(w) {
         d.by_device.set(true)
         w.reacts(fn() { flag(s.state_now(), "debug") }, fn(on) { d.beside.set(on) })

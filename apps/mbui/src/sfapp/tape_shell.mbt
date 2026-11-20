@@ -143,7 +143,7 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
             back~,
             on_back=fn() { @sfbase.close_page(Terminal(at)) |> ignore },
             top=fn() { 0.0 },
-            width=fn() { n.window().0 },
+            width=fn() { n.window_w() },
             on_switch_page=fn(next) { app.nav.replace(next) },
           )
         }

@@ -2519,7 +2519,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
           pn.act(fn() { pn.p.toggle_sideways() })
           // (turned: the layout it had held from this moment, the window still as it was, never the one its turned
           // window would have once the system turns it (a phone's turned wide as a tablet: tokens.mbt's layout))
-          ignore(layout(slot.window().0))
+          ignore(layout(slot.window_w()))
           pn.wake()
         }, fn() { pn.p.is_sideways() })
       })

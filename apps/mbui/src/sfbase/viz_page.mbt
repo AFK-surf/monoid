@@ -931,7 +931,7 @@ fn viz_full_shown(n : @view.View, src : Source, full : VizFull, html : String, s
       })
     }
   })
-  let width = fn() { n.window().0 }
+  let width = fn() { n.window_w() }
   let room = fn() { (@sf.viewer_host().room)() }
   n.box(fn(page) {
     @sf.style_node(page, fn() { viz_ground })

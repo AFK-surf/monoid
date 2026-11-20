@@ -54,11 +54,11 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   reader_layout_nodes(root)
   // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
   // unsaid let go of, what has gone let go: presented_followed)
-  root.reacts(fn() { (presented_said.val.get(), layout(root.window().0) is Small) }, fn(told) { presented_followed(told.1) })
+  root.reacts(fn() { (presented_said.val.get(), layout(root.window_w()) is Small) }, fn(told) { presented_followed(told.1) })
   root.each(
     fn() {
       presented_said.val.get() |> ignore
-      let (w, _) = root.window()
+      let w = root.window_w()
       // (a panel, a confirm, a question, a menu or a pick drawn by what screen it is on, none before the window has its
       // size: what it is drawn as, a sheet or not, is picked as it is made)
       presented_now
@@ -71,7 +71,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       let p = item.untracked().p
       let serial = p.serial
       // (a sheet from the window's foot, on 小屏 as it is made: sheet_node)
-      let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
+      let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window_w()) is Small }))
       tree_as_sheet[serial] = as_sheet
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
       if isolated {

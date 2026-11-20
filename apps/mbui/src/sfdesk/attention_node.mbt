@@ -69,7 +69,7 @@ pub fn attention_panel_node(v : @view.View, src : Source) -> Unit {
   })
   // (the window turned or folded beside the system's tabs: what it opened from is elsewhere, closed, as the system's
   // popovers are)
-  v.reacts(fn() { v.window().0 }, at_start=false, fn(_) {
+  v.reacts(fn() { v.window_w() }, at_start=false, fn(_) {
     if @sf.native_on() && wide.attention_open.untracked() {
       attention_set(false)
     }

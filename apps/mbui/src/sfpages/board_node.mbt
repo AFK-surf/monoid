@@ -1575,7 +1575,7 @@ fn board_chips_node(v : @view.View, src : Source, ws : () -> String) -> Unit {
       // (the cards' margin at either end, lined up with them, inside what scrolls; board_chips_pad over and under: each
       // pressed in 44 high)
       .padding(Is((board_pad, board_chips_pad, board_pad, board_chips_pad)))
-      .min_width(By(fn() { Some(held.window().0) }))
+      .min_width(By(fn() { Some(held.window_w()) }))
       .offset(By(fn() { (left.shown(row), 0.0) }))
       |> ignore
       @headless.radio_group(

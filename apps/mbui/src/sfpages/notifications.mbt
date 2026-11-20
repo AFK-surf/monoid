@@ -150,7 +150,7 @@ pub fn notify_node(
   }
   let page_w = match width {
     Some(w) => w
-    None => fn() { v.window().0 }
+    None => fn() { v.window_w() }
   }
   @sf.page_node(
     v,

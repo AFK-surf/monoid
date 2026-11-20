@@ -164,7 +164,7 @@ fn back_hint_node(v : @view.View, hint : BackHint) -> Unit {
       .ground(By(fn() { @ui.blend(@ui.tree_theme().surface, @sf.theme().p.accent, ready_u()) }))
       .edge(By(fn() { (@ui.Stroke::B1.px(), @ui.blend(@ui.tree_theme().line, @sf.theme().p.accent, ready_u())) }))
       .offset(By(fn() {
-        let (_, wh) = o.window()
+        let wh = o.window_h()
         let y = (wh - side) / 2.0
         let a = hint.across.get()
         let x = if o.leaving() && !hint.committed {

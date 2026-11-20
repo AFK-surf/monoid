@@ -1064,7 +1064,7 @@ fn tab_player_node(h : @view.View, src : Source, vw : Viewer) -> Unit {
   }
   h.by_room(fn(held, room) {
     // (as wide as the stage is given and as tall; the window's till it is first laid out)
-    let size = fn() { (room.width(), room.height().unwrap_or(held.window().1)) }
+    let size = fn() { (room.width(), room.height().unwrap_or(held.window_h())) }
     held.box(fn(k) {
       k.height(By(fn() { Some(size().1) })) |> ignore
       @sf.player_node(
@@ -1516,7 +1516,7 @@ pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : 
         let s3 = @ui.Space::px(S3)
         if bars {
           let (top, foot) = (@sf.viewer_host().room)()
-          let (w, _) = s.window()
+          let w = s.window_w()
           let under = if @sf.native_over.up {
             top + s3
           } else if w <= @sf.viewer_small_w {

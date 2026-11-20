@@ -197,7 +197,7 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
   let room = fn() { (@sf.viewer_host().room)() }
-  let width = fn() { n.window().0 }
+  let width = fn() { n.window_w() }
   let mini = match @sfbase.view_tab_file(tab) {
     Some(f) => @sfbase.is_mbui_viz(f.file.name)
     None => false
@@ -215,7 +215,7 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
       .padding(By(fn() { (0.0, 0.0, @sf.native_clear(), room().1) }))
       |> ignore
       if @sfbase.view_tab_file(tab) is Some(_) {
-        side_view_node(body, src, r, tab, fn(b) { dmax(0.0, b.window().0 - @sf.native_clear()) }, None, tools=false)
+        side_view_node(body, src, r, tab, fn(b) { dmax(0.0, b.window_w() - @sf.native_clear()) }, None, tools=false)
       } else if tab_service(tab) is Some(job) {
         service_tab_node(body, src, r, job, None, None, None, tips)
       } else if tab_file(tab) is Some((session, path, name)) {
@@ -407,7 +407,7 @@ fn tab_window_body_node(
   }
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
-  let width = fn() { n.window().0 }
+  let width = fn() { n.window_w() }
   let mini = match @sfbase.view_tab_file(tab) {
     Some(v) => @sfbase.is_mbui_viz(v.file.name)
     None => false
@@ -482,7 +482,7 @@ fn tab_window_body_node(
         page.box(fn(t) { t.height(By(fn() { Some(top() + @sf.viewer_bar_h) })).shrink(Is(0.0)) |> ignore }) |> ignore
         page.box(fn(body) {
           body.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-          side_view_node(body, src, r, tab, fn(b) { b.window().0 }, None, tools=false)
+          side_view_node(body, src, r, tab, fn(b) { b.window_w() }, None, tools=false)
         })
         |> ignore
       })

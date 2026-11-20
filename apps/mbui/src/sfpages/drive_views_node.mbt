@@ -333,7 +333,7 @@ pub fn rows_view_node(
         Some(w) => (Some(w), 0.0)
         None =>
           match s.b.renaming() {
-            Some(w) => (Some(w), l.window().1)
+            Some(w) => (Some(w), l.window_h())
             None => (None, 0.0)
           }
       }

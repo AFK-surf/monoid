@@ -1123,7 +1123,7 @@ pub fn service_page_node(
               session: text(j, "session"),
             }
           },
-          fn() { b.window().0 },
+          fn() { b.window_w() },
         )
     }
   })
@@ -1220,7 +1220,7 @@ pub fn file_view_node(
             station,
             job,
             fn() { { port: 0, name, restarting: false, restarts: 0, session: key } },
-            fn() { b.window().0 },
+            fn() { b.window_w() },
             file=Some(f),
             close~,
             full~,
