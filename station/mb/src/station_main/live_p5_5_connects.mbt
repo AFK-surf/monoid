@@ -29,11 +29,11 @@ fn connects_fs(host : @host.Host) -> @connects_hub.Fs {
     size: async fn(p) { (@drive.stat(p) catch { e => raise fail(e) }).size },
     write_text: async fn(p, t) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: @utf8.encode(t), at_least: None, truncate: Some(0.0), sync: false }) catch { e => raise fail(e) })
+      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: @utf8.encode(t), at_least: None, truncate: None, sync: false }) catch { e => raise fail(e) })
     },
     write_bytes: async fn(p, b) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: b, at_least: None, truncate: Some(0.0), sync: false }) catch { e => raise fail(e) })
+      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: b, at_least: None, truncate: None, sync: false }) catch { e => raise fail(e) })
     },
     append_text: async fn(p, t) {
       let at = match (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) {
@@ -224,12 +224,13 @@ priv struct ConnectsLive {
 }
 
 ///|
-/// A connect's connection, whichever platform's it is.
+/// A connect's connection, whichever platform's it is, or that of another station's connect a chat here runs on
+/// (sessions/agents.ts `chats`, connects/workspace.ts `agents.surfaces`: its calls asked of that station).
 fn ConnectsLive::chat(self : ConnectsLive, id : String) -> @connects_hub.Surface? {
   for _, c in self.kinds {
     if c.chats(id) is Some(s) { return Some(s) }
   }
-  None
+  self.workspace.remote.surface(id).map(r => r.surface())
 }
 
 ///|
@@ -320,6 +321,36 @@ async fn P55::start_connects(self : P55) -> Unit {
     Some(w) => self.memberships().iter().any(m => m.0 == w)
   }
   let workspace_ref : Ref[@connects_hub.WorkspaceConnects?] = Ref(None)
+  let kinds : Map[String, @connects_hub.Connects] = {}
+  // (each connect's surface as the hub reads it at once, sessions/chat.ts `ChatSurface`: this station's, and those of
+  // the connects of other stations a chat here runs on, connects/workspace.ts `agents.surfaces`)
+  let all_surfaces = () => {
+    let all : Map[String, Json] = {}
+    for _, c in kinds {
+      for conf in c.connects() {
+        guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) else { continue }
+        if c.chats(id) is Some(s) { all[id] = p55_surface_json(s) }
+      }
+    }
+    if workspace_ref.val is Some(wc) {
+      for conf in wc.remote.connects() {
+        guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) && !all.contains(id) else { continue }
+        if wc.remote.surface(id) is Some(r) { all[id] = p55_surface_json(r.surface()) }
+      }
+    }
+    all
+  }
+  // (the connects of other stations a chat here runs on told the hub with their surfaces, connects/workspace.ts
+  // `agents.connects`: before it is handed an event of one, so that it knows the connect)
+  let sync_remote_to_hub = async fn() {
+    guard workspace_ref.val is Some(wc) else { return }
+    ignore((bus.hub_ask.val)("remoteConnects", Json::array(wc.remote.connects().map(of_jv)))) catch {
+      e => self.warn("connects", "the connects of other stations not told the hub", e)
+    }
+    ignore((bus.hub_ask.val)("surfaces", Json::object(all_surfaces()))) catch {
+      e => self.warn("connects", "the connects' surfaces not told the hub", e)
+    }
+  }
   let receive = async fn(connect : String, event : @jsjson.JValue) -> Unit {
     match workspace_ref.val {
       Some(wc) => wc.receive(connect, event)
@@ -391,7 +422,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   })
   self.closing(async fn() { slack.close() })
   // The other platforms' (live_p5_5_platforms.mbt), each on its own: one that is not made is said, the rest are.
-  let kinds : Map[String, @connects_hub.Connects] = { "slack": slack }
+  kinds["slack"] = slack
   let more : Array[(String, async () -> @connects_hub.Connects)] = [
     ("feishu", async fn() { self.start_feishu(options) }),
     ("comma", async fn() { self.start_comma(options) }),
@@ -429,10 +460,19 @@ async fn P55::start_connects(self : P55) -> Unit {
         for _, c in kinds {
           if c.chats(id) is Some(s) { return Some(s) }
         }
-        None
+        match workspace_ref.val {
+          Some(wc) => wc.remote.surface(id).map(r => r.surface())
+          None => None
+        }
       },
       config_connects: async fn() { jitems(jfield((bus.config_raw.val)(), "connects")).map(to_jv) },
-      receive: async fn(connect, event) { ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)])) },
+      receive: async fn(connect, event) {
+        // (one of another station's connects is learned just before its event is handed on: the hub knows it first)
+        if workspace_ref.val is Some(wc) && wc.remote.surface(connect) is Some(_) {
+          sync_remote_to_hub()
+        }
+        ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)]))
+      },
       moved_to: async fn(connect, channel, ts) {
         as_text(self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]))
       },
@@ -463,16 +503,13 @@ async fn P55::start_connects(self : P55) -> Unit {
   workspace_ref.val = Some(wc)
   let live : ConnectsLive = { slack, kinds, workspace: wc }
   connects_live.val = Some(live)
+  // (the connects of other stations its chats run on, known before the hub asks for them: connects/workspace.ts)
+  wc.remote.ready()
+  sync_remote_to_hub()
   // (the agents' side keeps each connect's surface as the hub reads it at once, sessions/chat.ts `ChatSurface`: told
   // each time a connect starts, changes or stops)
   let tell_surfaces = () => {
-    let all : Map[String, Json] = {}
-    for _, c in kinds {
-      for conf in c.connects() {
-        guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) else { continue }
-        if c.chats(id) is Some(s) { all[id] = p55_surface_json(s) }
-      }
-    }
+    let all = all_surfaces()
     ignore(
       bus.host.rt.fork_quiet(name="connects' surfaces told", async fn() {
         ignore((bus.hub_ask.val)("surfaces", Json::object(all))) catch {
@@ -626,7 +663,15 @@ async fn P55::start_connects(self : P55) -> Unit {
     }
   })
   for op in ["connects.kindOf", "connects.ownKinds", "connects.heldBy", "connects.movedAway", "connects.runsOn", "connects.move", "connects.arrived", "connects.route", "connects.describedFor", "connects.learnOf", "retire.of", "retire.named", "retire.move", "retire.takeHeld"] {
-    self.op(op, async fn(arg) { self.coord_connects(op, jitems(arg)) })
+    // (those that may change what this station knows of other stations' connects tell the hub again after)
+    let changes = ["connects.move", "connects.arrived", "connects.route", "connects.learnOf", "retire.move", "retire.takeHeld"].contains(op)
+    self.op(op, async fn(arg) {
+      let out = self.coord_connects(op, jitems(arg))
+      if changes {
+        sync_remote_to_hub()
+      }
+      out
+    })
   }
   // A connect's chat surface by its call's name (sessions/chat.ts `ChatSurface`), as the agents' side and its storage ask
   // it: `[connect, ...args]`, `{connect, args}`, or `{connect, thread, text, files, user, …}` by the call's fields.

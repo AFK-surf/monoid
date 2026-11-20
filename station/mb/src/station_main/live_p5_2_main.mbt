@@ -192,6 +192,7 @@ async fn P52::refresh_config(self : P52) -> Unit {
     _ => 0
   }
   self.config = of_jv(worked)
+  self.apply_remote_connects()
   let next_max = match jfield(self.config, "maxConcurrentTurns") {
     Number(n, ..) if n > 0.0 => n.to_int()
     _ => 0
@@ -201,6 +202,26 @@ async fn P52::refresh_config(self : P52) -> Unit {
       p.set_max_concurrent_turns(next_max)
     }
   }
+}
+
+///|
+/// The connects of other stations a chat here runs on (`remoteConnects`, P5-5's) in the hub's config after
+/// config.json's (sessions/agents.ts `settings`, `moreConnects`): those it told before taken out, none over one of
+/// config.json's own.
+fn P52::apply_remote_connects(self : P52) -> Unit {
+  guard self.config is Object(m) else { return }
+  let own = jitems(jfield(self.config, "connects")).filter(c => !(jfield(c, "remote") is True))
+  let ids = own.map(c => jtext_or_empty(c, "id"))
+  for c in remote_connects.val {
+    let id = jtext_or_empty(c, "id")
+    if id != "" && !ids.contains(id) {
+      own.push(c)
+      ids.push(id)
+    }
+  }
+  let next = m.copy()
+  next["connects"] = Json::array(own)
+  self.config = Json::object(next)
 }
 
 ///|
@@ -1203,6 +1224,13 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
       Json::null()
     }
+    // (P5-5's connects of other stations a chat here runs on, told as they are learned, moved or kept: in the hub's
+    // config with config.json's, connects/workspace.ts `agents.connects`)
+    "remoteConnects" => {
+      remote_connects.val = jitems(arg)
+      self.apply_remote_connects()
+      Json::null()
+    }
     // ── what the other slices ask by an object of its fields ──
     // (hub.ts `notify`: the session's actor made where it is cold, an unknown session refused to the one telling)
     "notify" => hub.command(jtext(arg, "session").unwrap_or(""), "notify", [jfield(arg, "text")])
@@ -1682,6 +1710,11 @@ fn trace_on() -> Bool {
 ///|
 /// The connects' chat surfaces as the connects' part told them (`surfaces`), by connect.
 let connect_surfaces : Map[String, Json] = Map([])
+
+///|
+/// The connects of other stations a chat here runs on as the connects' part told them (`remoteConnects`), each as the
+/// hub reads a connect (connects_hub `connect_of`).
+let remote_connects : Ref[Array[Json]] = Ref([])
 
 ///|
 /// The hub's live view (hub.ts `live`, sessions/live.ts `LiveHub`): the shell of the program's `#live`, once made.
