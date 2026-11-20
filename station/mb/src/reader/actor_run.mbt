@@ -1278,14 +1278,23 @@ async fn Actors::start_turn(
       if missing {
         ignore(self.deps(a, "runtimeMissing", [jstr(a.runtime)]))
       }
-      let said = if missing {
+      async fn missing_said() -> String raise {
         "⚠️ " + self.t(a, "station.notice.runtimeMissing", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) })
+      }
+      let said = if missing {
+        missing_said()
       } else {
         "⚠️ " + self.failed_words(a, "cannotStartWords", e)
       }
+      // (a start failing is said once until a person speaks, whatever its reason; but the runtime said missing
+      // before, starting with the same words, is not that: its failing now that it is there is news)
       let cannot_start = "⚠️ " + self.t(a, "station.notice.cannotStart")
-      let last = self.said_last(a)
-      if !(last is Some(l) && (l == said || (!missing && l.has_prefix(cannot_start)))) {
+      let dup = match self.said_last(a) {
+        Some(l) if l == said => true
+        Some(l) if !missing && l.has_prefix(cannot_start) => l != missing_said()
+        _ => false
+      }
+      if !dup {
         self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
       }
       raise e
