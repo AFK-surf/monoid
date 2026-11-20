@@ -43,10 +43,14 @@ fn Tree::pressed_twice(self : Tree, id : NodeId, at : Double, wx : Double, wy : 
 /// its press alone. It takes presses as one that does something pressed does.
 pub fn View::on_double_press(self : View, f : () -> Unit) -> View {
   guard self.live() is Some(n) else { return self }
+  self.mark_structure_own()
   n.on_double_press = Some(f)
   if n.on_press is None {
     // (what a press of it does: nothing of its own, the first of two; its own said after this one replaces it)
     self.on_press(fn() {  }) |> ignore
+  } else {
+    self.tree.soft_min_applied(self.at)
+    self.tree.soft_min_applied_kids(self.at)
   }
   self
 }

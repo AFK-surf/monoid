@@ -32,6 +32,7 @@ pub fn View::focusable(self : View, on : Live[Bool], keys? : Int = focus_enter |
   // changes, as the change saying it is committed, the focus on it let go of then; said anew, what was said before let
   // go of)
   guard self.live() is Some(n) else { return self }
+  self.mark_structure_own()
   n.prop_stop(Prop::Focusable.ord())
   // (its `tab` the last said of Tab's stop on it: View::tab_stop said before let go of)
   n.prop_stop(Prop::TabStop.ord())
@@ -42,6 +43,8 @@ pub fn View::focusable(self : View, on : Live[Bool], keys? : Int = focus_enter |
     guard self.live() is Some(n) else { return }
     let was = (n.focusable, n.focus_keys, n.focus_tab)
     n.focusable = on
+    self.tree.soft_min_applied(self.at)
+    self.tree.soft_min_applied_kids(self.at)
     self.tree.said_marked(self.at, words=false, state=true)
     n.focus_keys = keys
     // (Tab's stop on it View::tab_stop's where that was said after this: not undone as whether it takes the focus

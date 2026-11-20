@@ -326,7 +326,8 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
@@ -426,7 +427,8 @@
     "along-row-at-once": {},
     "headless-on-drag": {},
     "page-headless": {},
-    "page-control-by-hand": {}
+    "page-control-by-hand": {},
+    "structure-box": {}
   },
   "tester": {
     "names": [

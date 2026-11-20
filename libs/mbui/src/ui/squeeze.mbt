@@ -111,6 +111,7 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
   // again: what it holds runs past it on purpose), and whether a fault was said of it
   let room = Array::make(n * 2, 0.0)
   let said = Array::make(n, false)
+  let ground_said = Array::make(n, false)
   // where each node may be seen at all, by the boxes that clip round it (x0, y0, x1, y1), and whether it is drawn off its
   // place on purpose inside the nearest of them (it, or what holds it there: Ctx::squeeze_aside_at): words so moved
   // wholly out of sight are not judged as cut (on their way in or out, over what holds them); words laid in the flow
@@ -224,11 +225,13 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
       }
     }
     // the outermost box that runs past the window's edge, partly in it, where nothing it is in cuts it
+    let mut reported_edge = false
     if !cut[i] && b.fw > 0.0 && b.x < w && b.x + b.fw > 0.0 {
       let past = b.squeeze_past(w)
       let p = b.parent
       let parent_past = p >= 0 && p < n && self.nodes[p].squeeze_past(w) > squeeze_slack
       if past > squeeze_slack && !parent_past && !self.squeeze_aside_at(i) {
+        reported_edge = true
         out.push((i, "\{self.named(i)} runs \{past.round()} past the window's edge"))
       }
     }
@@ -242,6 +245,44 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
       if off > squeeze_slack && b.x < hi && b.x + b.fw > lo && !(p >= 0 && p < n && said[p]) {
         said[i] = true
         out.push((i, "\{self.named(i)} is cut off \{off.round()} by what clips it"))
+      }
+    }
+    // visible content running horizontally past its nearest unclipped visible container (shows_ground)
+    if !reported_edge && !said[i] && self.squeeze_shows_at(i) && b.fw > 0.0 && !self.squeeze_aside_at(i) {
+      let mut k = b.parent
+      let mut g = -1
+      let mut neg_l = b.mar_l < 0.0
+      let mut neg_r = b.mar_r < 0.0
+      let mut suppressed = false
+      while k >= 0 && k < n {
+        let nk = self.nodes[k]
+        if nk.shows_ground() && !nk.squeeze_cuts() && !nk.sideways && !self.squeeze_scaled(k) {
+          g = k
+          break
+        }
+        if self.squeeze_aside_at(k) || self.squeeze_scaled(k) || nk.squeeze_cuts() || nk.sideways {
+          break
+        }
+        if ground_said[k] {
+          suppressed = true
+        }
+        if nk.mar_l < 0.0 {
+          neg_l = true
+        }
+        if nk.mar_r < 0.0 {
+          neg_r = true
+        }
+        k = nk.parent
+      }
+      if g >= 0 && !suppressed {
+        let ng = self.nodes[g]
+        let over_l = if neg_l { 0.0 } else { ng.x - b.x }
+        let over_r = if neg_r { 0.0 } else { b.x + b.fw - (ng.x + ng.fw) }
+        let past_g = dmax(over_l, over_r)
+        if past_g > squeeze_slack && b.x < ng.x + ng.fw && b.x + b.fw > ng.x {
+          ground_said[i] = true
+          out.push((i, "\{self.named(i)} runs \{past_g.round()} past \{self.named(g)}"))
+        }
       }
     }
     let p = b.parent

@@ -497,6 +497,11 @@ struct Node {
   /// a row of a list made by its key (View::each; a page's list's slot and block, View::scrolls_window): the same while
   /// its key is there, whatever is made in it anew (read by View::row_place alone)
   mut each_row : Bool
+  /// a box made by a structure (View::show, pick, each) to hold its callback's content, whether the callback set
+  /// properties on it directly, and whether it currently mirrors a single child's row-shrink contract
+  mut structure_box : Bool
+  mut structure_own : Bool
+  mut structure_synced : Bool
   /// whether it takes input now as what reads it reads it (View::takes_input): made as first read, let go with it
   mut input_cell : @signals.Signal[Bool]?
   /// whether it can take the keyboard's focus, which of Enter (1) and Space (2) press it as it has it (View::focusable;
@@ -1972,6 +1977,9 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.piece_cell = None
       n.said_cell = None
       n.each_row = false
+      n.structure_box = false
+      n.structure_own = false
+      n.structure_synced = false
       n.focusable = false
       n.focus_keys = 0
       n.focus_tab = true
@@ -2179,6 +2187,9 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         takes_ver: None,
         drag_end: None,
         slot: false,
+        structure_box: false,
+        structure_own: false,
+        structure_synced: false,
         along_row: false,
         alone: false,
         fault_to: None,
@@ -2271,6 +2282,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
   }
   // (put in the order by what holds it as it is laid out there: View::box_appended by its own run, View::slot from what
   // holds it)
+  self.soft_min_applied(at)
   self.handle(at)
 }
 
@@ -2775,6 +2787,23 @@ pub fn View::box(
   } else {
     v.owning(fn() { make(v) })
   }
+  v
+}
+
+///|
+/// A structure's callback root box (View::show, pick, each): marked `structure_box` before `make` runs so a bare
+/// single-child wrapper inside a Row forwards its child's row-shrink contract automatically.
+fn View::structure_box(self : View, make : (View) -> Unit, loc~ : SourceLoc) -> View {
+  guard self.live() is Some(n) else { return self.tree.none() }
+  let v = self.tree.made(self.at, words_as_said=n.words_as_said, loc~)
+  self.tree.nodes[v.at].structure_box = true
+  n.kids.push(v.at)
+  if self.at == 0 {
+    self.tree.top_last()
+  }
+  self.box_appended(v.at)
+  v.owning(fn() { make(v) })
+  self.tree.structure_row_sync_one(v.at)
   v
 }
 
@@ -4237,6 +4266,7 @@ let setting_together : Ref[SetsTogether?] = Ref(None)
 /// on another node is set alone, once.
 pub fn[T : Eq] View::sets_together(self : View, read : () -> T, set : (T) -> Unit) -> View {
   guard self.live() is Some(_) else { return self }
+  self.mark_structure_own()
   let g : SetsTogether = {
     at: self.at,
     gen: self.gen,
@@ -4285,6 +4315,7 @@ fn[T : Eq] View::bind(
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.live() is Some(n) else { return }
+  self.mark_structure_own()
   match n.source {
     Some(s) => s.said[prop.ord()] = (prop, loc)
     None => ()
@@ -4425,6 +4456,7 @@ pub fn View::padding(self : View, p : Live[(Double, Double, Double, Double)], lo
     s.set_padding_top(Pt(p.1))
     s.set_padding_right(Pt(p.2))
     s.set_padding_bottom(Pt(p.3))
+    self.tree.soft_min_applied(self.at)
   })
   self
 }
@@ -4494,7 +4526,10 @@ pub fn View::row(self : View, across : Live[Bool], loc~ : SourceLoc) -> View {
 /// How much of the room left it takes.
 #callsite(autofill(loc))
 pub fn View::grow(self : View, g : Live[Double], loc~ : SourceLoc) -> View {
-  self.bind(loc~, Grow, g, Layout, fn(g) { self.tree.nodes[self.at].flex.style.grow = g })
+  self.bind(loc~, Grow, g, Layout, fn(g) {
+    self.tree.nodes[self.at].flex.style.grow = g
+    self.tree.soft_min_applied(self.at)
+  })
   self
 }
 
@@ -4504,7 +4539,10 @@ pub fn View::grow(self : View, g : Live[Double], loc~ : SourceLoc) -> View {
 /// (its words, their face, its parts, their gaps) lays it out so again. Layout's.
 #callsite(autofill(loc))
 pub fn View::keeps_held(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
-  self.bind(loc~, KeepsHeld, on, Layout, fn(on) { self.tree.nodes[self.at].flex.style.min_held = on })
+  self.bind(loc~, KeepsHeld, on, Layout, fn(on) {
+    self.tree.nodes[self.at].flex.style.min_held = on
+    self.tree.soft_min_applied(self.at)
+  })
   self
 }
 
@@ -4651,6 +4689,7 @@ pub fn View::over(
         s.set_inset_bottom(if from_top { Auto } else { inset })
       }
     }
+    self.tree.soft_min_applied(self.at)
   })
   self
 }
@@ -4675,6 +4714,7 @@ pub fn View::over_at(self : View, edges : Live[(Double?, Double?, Double?, Doubl
     s.set_inset_top(at(t))
     s.set_inset_right(at(r))
     s.set_inset_bottom(at(b))
+    self.tree.soft_min_applied(self.at)
   })
   self
 }
@@ -4693,6 +4733,7 @@ pub fn View::clips(self : View, on : Live[Bool], down? : Bool = false, loc~ : So
     n.clips_said = on
     n.clips_down = down
     n.look.clips = on || (n.coming && !n.come_uncut)
+    self.tree.soft_min_applied(self.at)
   })
   self
 }
@@ -4723,7 +4764,9 @@ pub fn Tree::clips_past_of(self : Tree, id : NodeId) -> Double {
 /// in that room, its words cut to it: one cut by its own most from what it holds then laid out that short is laid out
 /// whole again and cut again, each pass, for ever.)
 pub fn View::holds_whole(self : View) -> View {
+  self.mark_structure_own()
   self.tree.nodes[self.at].flex.style.overflow = @flex.Overflow::Scroll
+  self.tree.soft_min_applied(self.at)
   self.tree.layout_marked_at(self.at)
   self
 }
@@ -5293,7 +5336,10 @@ pub fn View::corners_drawn(self : View) -> (Double, Double, Double, Double) {
 /// drawn with its ground (one rect, filled and edged), its corners its ground's: paint's.
 #callsite(autofill(loc))
 pub fn View::edge(self : View, e : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
-  self.bind(loc~, Edge, e, Paint, fn(e) { self.tree.nodes[self.at].look.edge = e })
+  self.bind(loc~, Edge, e, Paint, fn(e) {
+    self.tree.nodes[self.at].look.edge = e
+    self.tree.soft_min_applied(self.at)
+  })
   self
 }
 
@@ -6664,10 +6710,13 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
   // (whether it takes input is the logic's: said at the moment it changes, as a structure's change is, a finger held on
   // it or in it let go of then; said anew, what was said before let go of, as any property's binding is)
   guard self.live() is Some(n) else { return self }
+  self.mark_structure_own()
   n.prop_stop(Prop::Presses.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     n.inert = !on
+    self.tree.soft_min_applied(self.at)
+    self.tree.soft_min_applied_kids(self.at)
     self.tree.said_marked(self.at, words=false, state=true)
     self.tree.hits_bump()
     if !on {
@@ -7344,7 +7393,10 @@ pub fn View::shorter(self : View, alts : Live[Array[String]], loc~ : SourceLoc) 
 /// Its row says it lets them go so (View::fits). Layout's.
 #callsite(autofill(loc))
 pub fn View::drops(self : View, k : Live[Int], loc~ : SourceLoc) -> View {
-  self.bind(loc~, Drop, k, Layout, fn(k) { self.tree.nodes[self.at].flex.style.drop = k })
+  self.bind(loc~, Drop, k, Layout, fn(k) {
+    self.tree.nodes[self.at].flex.style.drop = k
+    self.tree.soft_min_applied(self.at)
+  })
   self
 }
 
@@ -7436,6 +7488,7 @@ pub fn[K : Eq] View::measured(
     }
   })
   self.bind(loc~, Measured, content, Layout, fn(v) { k.val = Some(v) })
+  tree.soft_min_applied(self.at)
   self
 }
 
@@ -7837,7 +7890,10 @@ fn Tree::asked_at(
 /// What a press on it does: run outside any tracking, as one change (what it writes told once it is done).
 pub fn View::on_press(self : View, f : () -> Unit) -> View {
   guard self.live() is Some(n) else { return self }
+  self.mark_structure_own()
   n.on_press = Some(f)
+  self.tree.soft_min_applied(self.at)
+  self.tree.soft_min_applied_kids(self.at)
   self.tree.inputs_own_said(self.at)
   self.tree.said_marked(self.at, words=false, state=true)
   self.tree.hits_bump()
@@ -7977,6 +8033,7 @@ pub fn View::on_drag(
   captures? : Bool = false,
 ) -> View {
   guard self.live() is Some(n) else { return self }
+  self.mark_structure_own()
   n.fingers = if fingers < 1 { 1 } else { fingers }
   n.drags_whole = whole
   n.drag_captures = captures
@@ -9049,6 +9106,7 @@ fn View::slot(self : View, loc : SourceLoc) -> View {
   guard self.live() is Some(n) else { return self.tree.none() }
   let v = self.tree.made(self.at, words_as_said=n.words_as_said, loc~)
   self.tree.nodes[v.at].slot = true
+  self.tree.soft_min_applied(v.at)
   n.kids.push(v.at)
   self.tree.order_marked_in(self.at)
   if self.at == 0 {
@@ -9090,6 +9148,11 @@ fn View::box_appended(self : View, child : Int) -> Unit {
       if !self.tree.box_put_in(child) {
         self.boxes_again()
       }
+      let holder = self.tree.box_holder(child)
+      if holder >= 0 {
+        self.tree.soft_min_applied(holder)
+        self.tree.structure_row_sync(holder)
+      }
       // (whether it takes input told it alone: the others' is what holds each and the modal layers, none of them changed)
       self.tree.modals_told(within=child)
       return
@@ -9098,6 +9161,8 @@ fn View::box_appended(self : View, child : Int) -> Unit {
   }
   // (one due to be put again in order (Tree::holding_boxes) is put whole as that ends: what is pushed now is redone)
   self.tree.nodes[at].flex.add(self.tree.nodes[child].flex)
+  self.tree.soft_min_applied(at)
+  self.tree.structure_row_sync(at)
   // (what it holds changed, not what it asks of what holds it: where it lays out alone, laid out again from it, as
   // boxes_put does)
   self.tree.layout_marked_at(at, within=true)
@@ -9139,6 +9204,8 @@ fn Tree::boxes_put(self : Tree, at : Int) -> Unit {
   for b in all {
     n.flex.add(b)
   }
+  self.soft_min_applied(at)
+  self.structure_row_sync(at)
   self.layout_marked_at(at, within=true)
   self.order_marked_in(at)
   // (what is drawn over what, among what holds it, changed. The root's: its children are the window's layers, and one
@@ -9501,7 +9568,7 @@ pub fn View::show(
           }
           _ => {
             let said = slot.tree.said_count
-            let v = slot.box(then, loc~)
+            let v = slot.structure_box(then, loc~)
             // (one that made nothing: no way to make)
             let none = slot.tree.structural(v, said)
             // (under a page's list, as a key coming, `leave` or not: pick_leave.mbt's head)
@@ -9673,7 +9740,7 @@ fn View::pick_by(
             going.val = None
             guard slot.alive() else { return }
             let now = @signals.untracked(which)
-            let nv = slot.box(fn(n) { (now.make)(n) }, loc~)
+            let nv = slot.structure_box(fn(n) { (now.make)(n) }, loc~)
             had.val = Some((now, nv))
           })
           going.val = Some((was, v, off))
@@ -9704,7 +9771,7 @@ fn View::pick_by(
           None => (0.0 / 0.0, false)
         }
         let said = slot.tree.said_count
-        let v = slot.box(fn(v) { (k.make)(v) }, loc~)
+        let v = slot.structure_box(fn(v) { (k.make)(v) }, loc~)
         let none = slot.tree.structural(v, said)
         if tall == tall && !at_once {
           if none && tall >= 0.5 {
@@ -9859,7 +9926,7 @@ fn[T : Eq, K : Hash + Eq] each_change(
   let fresh = fn(k : K, it : T) {
     let item = @signals.signal(it, same=fn(a, b) { a == b })
     let said = slot.tree.said_count
-    let v = slot.box(fn(v) {
+    let v = slot.structure_box(fn(v) {
       // (a row by its key: what is made in it known by it, View::row_place)
       v.tree.nodes[v.at].each_row = true
       row(v, item)
@@ -10111,7 +10178,7 @@ fn[T] each_of_change(
             if found is Some(i) {
               gone_rows.remove(i) |> ignore
             }
-            let v = slot.box(fn(v) {
+            let v = slot.structure_box(fn(v) {
               // (a row by its object: what is made in it known by it, View::row_place)
               v.tree.nodes[v.at].each_row = true
               row(v, it)
@@ -10388,6 +10455,9 @@ fn View::comes(
     _ => 0.0
   }
   n.coming = true
+  if n.structure_box {
+    tree.structure_row_sync_one(v.at)
+  }
   // (one way with what else comes or goes in its column at this moment and what is on its way there now)
   tree.come_group_join(v, st, at)
   n.look.clips = n.clips_said || !n.come_uncut
@@ -10790,6 +10860,9 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
     return
   }
   m.coming = false
+  if m.structure_box {
+    tree.structure_row_sync_one(v.at)
+  }
   m.come_uncut = false
   m.list_key_way = false
   st.come_grid = 0.0
@@ -12529,6 +12602,8 @@ fn Tree::capped_applied(self : Tree, at : Int) -> Unit {
     st.set_max_width(max)
     self.layout_marked_at(at)
   }
+  self.soft_min_applied(at)
+  self.structure_row_sync(at)
 }
 
 ///|
@@ -12571,6 +12646,232 @@ fn Tree::give_way_applied(self : Tree, at : Int) -> Unit {
   if st.get_min_width() != min {
     st.set_min_width(min)
     self.layout_marked_at(at)
+  }
+  self.soft_min_applied(at)
+  self.structure_row_sync(at)
+}
+
+///|
+/// Last-resort soft minimum width for node `at` (@flex.Style.soft_min):
+/// - `>= 0.0`: one-line text leaf floor width (padding + border or explicit min_width)
+/// - `-1.0`: ordinary unclipped container eligible to participate recursively in `last_resort`
+/// - `NaN`: ineligible (control, clipped, scrolling, fixed width, wrapped text, measured leaf, absolute, etc.)
+fn Tree::soft_min_applied(self : Tree, at : Int) -> Unit {
+  let n = self.nodes[at]
+  guard n.live else { return }
+  let st = n.flex.style
+  let p = self.box_holder(at)
+  let ineligible = n.slot ||
+    st.position == @flex.PositionType::Absolute ||
+    n.min_w_within ||
+    st.drop != 0 ||
+    self.presses_said(at) ||
+    n.focusable ||
+    n.hosted ||
+    (p >= 0 && (self.presses_said(p) || self.nodes[p].focusable)) ||
+    n.clips_said ||
+    n.scroll_held >= 0 ||
+    st.overflow != @flex.Overflow::Visible ||
+    (p >= 0 && self.nodes[p].scroll_across) ||
+    !(st.width_kind() == @flex.LEN_AUTO || (st.grow > 0.0 && st.min_held))
+  let soft = if ineligible {
+    @double.not_a_number
+  } else if (n.look.words != "" || !n.look.runs.is_empty()) &&
+    !n.look.words_look.wrap &&
+    n.flex.children.length() == 0 {
+    let pbw = st.padding_left_value() +
+      st.padding_right_value() +
+      st.border_left_value() +
+      st.border_right_value()
+    let said_min = match n.min_w_said {
+      Some(Some(w)) => w
+      _ => 0.0
+    }
+    dmax(pbw, said_min)
+  } else if n.flex.measure is None {
+    if n.structure_synced {
+      let kids : Array[Int] = []
+      self.flex_kids(at, kids)
+      if kids.length() == 1 {
+        let c = self.nodes[kids[0]]
+        if !c.cut && c.shorter.length() > 0 && c.look.runs.is_empty() && !c.look.words_look.wrap && c.min_w_said is None {
+          st.padding_left_value() + st.padding_right_value() + st.border_left_value() + st.border_right_value()
+        } else {
+          -1.0
+        }
+      } else {
+        -1.0
+      }
+    } else {
+      -1.0
+    }
+  } else {
+    @double.not_a_number
+  }
+  let was = st.soft_min
+  if !(was == soft || (was != was && soft != soft)) {
+    st.soft_min = soft
+    self.layout_marked_at(at)
+  }
+}
+
+///|
+/// Recompute soft_min for direct flex children of `at` (e.g. when `at` becomes pressable or focusable).
+fn Tree::soft_min_applied_kids(self : Tree, at : Int) -> Unit {
+  let kids : Array[Int] = []
+  self.flex_kids(at, kids)
+  for k in kids {
+    self.soft_min_applied(k)
+  }
+}
+
+///|
+/// Mark a structure callback box as directly styled/configured by caller code so it stops mirroring a child.
+fn View::mark_structure_own(self : View) -> Unit {
+  guard self.live() is Some(n) else { return }
+  if n.structure_box && !n.structure_own {
+    n.structure_own = true
+    self.tree.structure_row_sync_one(self.at)
+  }
+}
+
+///|
+/// Collect direct flex child node indices under `at`, skipping `slot` nodes.
+fn Tree::flex_kids(self : Tree, at : Int, out : Array[Int]) -> Unit {
+  for k in self.nodes[at].kids {
+    let nk = self.nodes[k]
+    if !nk.live {
+      continue
+    }
+    if nk.slot {
+      self.flex_kids(k, out)
+    } else {
+      out.push(k)
+    }
+  }
+}
+
+///|
+/// Whether `at` is an unstyled, non-animating structure callback box wrapping a single direct flex child.
+fn Tree::is_bare_single_structure(self : Tree, at : Int) -> Bool {
+  let n = self.nodes[at]
+  if !n.live || !n.structure_box || n.structure_own || n.coming {
+    return false
+  }
+  let kids : Array[Int] = []
+  self.flex_kids(at, kids)
+  kids.length() == 1
+}
+
+///|
+/// Sync row-shrink contract from a bare single-child structure box `x`'s only flex child onto `x` when `x` sits in a
+/// Row; reset `x` if it is no longer eligible.
+fn Tree::structure_row_sync_one(self : Tree, x : Int) -> Unit {
+  let nx = self.nodes[x]
+  if !nx.live || !nx.structure_box {
+    return
+  }
+  let xs = nx.flex.style
+  let mut holder = nx.parent
+  while holder >= 0 && (self.nodes[holder].slot || self.is_bare_single_structure(holder)) {
+    holder = self.nodes[holder].parent
+  }
+  let kids_flex : Array[Int] = []
+  if !nx.structure_own && !nx.coming && holder >= 0 && (self.nodes[holder].flex.style.direction is (Row | RowReverse)) {
+    self.flex_kids(x, kids_flex)
+  }
+  let mut synced = false
+  if kids_flex.length() == 1 {
+    let ci = kids_flex[0]
+    let c = self.nodes[ci]
+    let cs = c.flex.style
+    let is_shorter = !c.cut && c.shorter.length() > 0 && c.look.runs.is_empty() && !c.look.words_look.wrap
+    if c.cut || is_shorter || c.structure_synced {
+      synced = true
+      let shrink = if c.structure_synced { cs.shrink } else { 1.0 }
+      let min_w : @flex.Dim = if c.structure_synced {
+        cs.get_min_width()
+      } else if c.cut {
+        match c.min_w_said {
+          Some(Some(w)) => if c.min_w_within { Within(w) } else { Pt(w) }
+          _ => Auto
+        }
+      } else {
+        match c.min_w_said {
+          Some(Some(w)) => if c.min_w_within { Within(w) } else { Pt(w) }
+          _ =>
+            Pt(
+              (self.measure)(
+                c.shorter[c.shorter.length() - 1],
+                c.look.words_look,
+                -1.0,
+                @signals.untracked(fn() { self.words_scale_at(ci) }),
+              ).0,
+            )
+        }
+      }
+      let max_w : @flex.Dim = if c.structure_synced {
+        cs.get_max_width()
+      } else {
+        match c.max_w_said {
+          Some(Some(w)) => if c.max_w_within { Within(w) } else { Pt(w) }
+          _ => Auto
+        }
+      }
+      let cut_least = if c.structure_synced {
+        cs.cut_least
+      } else if c.cut && !c.look.words_look.wrap && (c.look.words != "" || !c.look.runs.is_empty()) {
+        @flex.cut_kept_ems * c.look.words_look.size * @signals.untracked(fn() { self.words_scale_at(ci) })
+      } else {
+        0.0 / 0.0
+      }
+      let mut changed = false
+      if xs.shrink != shrink {
+        xs.shrink = shrink
+        changed = true
+      }
+      if xs.get_min_width() != min_w {
+        xs.set_min_width(min_w)
+        changed = true
+      }
+      if xs.get_max_width() != max_w {
+        xs.set_max_width(max_w)
+        changed = true
+      }
+      let was_cl = xs.cut_least
+      if !(was_cl == cut_least || (was_cl != was_cl && cut_least != cut_least)) {
+        xs.cut_least = cut_least
+        changed = true
+      }
+      let was_synced = nx.structure_synced
+      nx.structure_synced = true
+      if changed || !was_synced {
+        self.layout_marked_at(x)
+        self.soft_min_applied(x)
+      }
+    }
+  }
+  if !synced && nx.structure_synced {
+    nx.structure_synced = false
+    xs.shrink = 0.0
+    xs.set_min_width(Auto)
+    xs.set_max_width(Auto)
+    xs.cut_least = 0.0 / 0.0
+    self.layout_marked_at(x)
+    self.soft_min_applied(x)
+  }
+}
+
+///|
+/// Sync `at` if it is a structure box, and any consecutive `structure_box` ancestors along `box_holder`.
+fn Tree::structure_row_sync(self : Tree, at : Int) -> Unit {
+  if self.nodes[at].structure_box {
+    self.structure_row_sync_one(at)
+  }
+  let mut p = self.box_holder(at)
+  while p >= 0 && self.nodes[p].structure_box {
+    self.structure_row_sync_one(p)
+    p = self.box_holder(p)
   }
 }
 
@@ -14155,6 +14456,7 @@ pub fn View::hosted(self : View, make? : (View) -> Unit = fn(v) { v.grow(Is(1.0)
   let tree = self.tree
   self.box(fn(v) {
     tree.nodes[v.at].hosted = true
+    tree.soft_min_applied(v.at)
     tree.inputs_own_said(v.at)
     tree.said_marked(v.at, kids=true)
     tree.hosting = v.at

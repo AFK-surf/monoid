@@ -49,6 +49,9 @@
     },
     "page-headless": {
       "src/sfbase/viz_mbui_node.mbt": 1
+    },
+    "structure-box": {
+      "src/sfbase/viewer_tree.mbt": 1
     }
   },
   "excused": {
