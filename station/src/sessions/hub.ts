@@ -1253,8 +1253,9 @@ export class Hub {
 
   /// A process went idle: look again when it has idled past warmMs.
   idleNow(key: string) {
-    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; never sweep old
-    // directories on a clock or at startup.
+    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; any archive whose
+    // packing did not finish is backfilled periodically by `packUnfinishedArchived` (bounded per round, with a cursor,
+    // only for sessions not yet past `archivedWorkspaceMs`), never via a one-shot full sweep at startup.
     const row = this.store.getSession(key);
     if (row && row.archivedAt !== null) {
       const actor = this.actor(row);
