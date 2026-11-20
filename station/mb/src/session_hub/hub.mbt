@@ -115,8 +115,8 @@ pub struct Hub {
   world : World
   store : @store_sessions.Store
   /// The threads' store, made again at each step the clock moved (its time is the one it was made with).
-  mut threads : @store_threads.Store
-  mut words : Words
+  threads : @store_threads.Store
+  words : Words
   /// The actors made (a session's key, its runtime), in the order made.
   actors : Map[String, String]
   /// Why turns are held.

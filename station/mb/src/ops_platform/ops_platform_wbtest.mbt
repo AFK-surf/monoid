@@ -1,3 +1,5 @@
+// Native MoonBit unit tests for ops_platform pure logic.
+
 ///|
 test "Node's path.win32 and the platform's readings" {
   inspect(win32_resolve(["c:/Users/x/../y/./z"], "C:\\"), content="c:\\Users\\y\\z")
@@ -32,4 +34,69 @@ test "a command on Windows is found with PATHEXT, never as the POSIX script besi
   assert_eq(win_find_command("codex", env, ";", join, p => p == "C:\\npm\\codex"), None)
   // No PATH, nothing found.
   assert_eq(win_find_command("codex", [], ";", join, there), None)
+}
+
+///|
+test "path cleaning, base names, extensions, and domains" {
+  assert_eq(clean_posix(Unix, "/a/b/../c/./d"), "/a/c/d")
+  assert_eq(clean_path(Unix, "/a/b/../c"), "/a/c")
+  assert_eq(file_name(Unix, "/a/b/report.pdf"), Some("report.pdf"))
+  assert_eq(any_base_name("C:\\dir\\sub\\file.txt"), "file.txt")
+  assert_eq(extension("archive.tar.gz"), Some("gz"))
+  assert_eq(extension("README"), None)
+  assert_eq(domain_of("https://Sub.Example.com:8443/p"), Some("sub.example.com:8443"))
+  assert_eq(domain_of("not a url"), None)
+}
+
+///|
+test "CLI flags, data_dir, env validation, and command parsing" {
+  assert_eq(flag(["run", "--data", "/tmp/d", "--port", "9"], "--data"), Some("/tmp/d"))
+  assert_eq(flag(["run"], "--data"), None)
+  assert_eq(data_dir(["--data", "/custom"], Some("/env"), "/home"), "/custom")
+  assert_eq(data_dir([], Some("/env"), "/home"), "/env")
+  assert_eq(first_word("  git status --short"), "git")
+  assert_true(env_name("VALID_VAR_1"))
+  assert_true(!env_name("1BAD"))
+  assert_true(!env_name("BAD-NAME"))
+  assert_eq(check_agent_env(Some({ "FOO": "bar" })), None)
+  assert_true(check_agent_env(Some({ "1BAD": "x" })) is Some(_))
+  assert_eq(agent_env({ "agentEnv": { "A": "1" } }), [("A", "1")])
+  assert_eq(command_words("git commit -m 'hello world'"), Some(["git", "commit", "-m", "hello world"]))
+  assert_eq(command_words("unterminated 'quote"), None)
+}
+
+///|
+test "disk tiers, cpu_share, cap_plan, and background wrappers" {
+  assert_eq(disk_tier(100.0 * 1024.0 * 1024.0 * 1024.0, 200.0 * 1024.0 * 1024.0 * 1024.0), "ok")
+  assert_eq(disk_tier(1.0 * 1024.0 * 1024.0, 200.0 * 1024.0 * 1024.0 * 1024.0), "low")
+  assert_eq(forewarn_mb(10.0 * 1024.0 * 1024.0), 10.0)
+  assert_eq(cpu_share((10.0, 100.0), (30.0, 200.0)), Some(0.2))
+  assert_eq(cpu_share((10.0, 100.0), (10.0, 100.0)), None)
+  let (drop, freed) = cap_plan([("a", 50.0, 10.0), ("b", 50.0, 20.0), ("c", 50.0, 30.0)], 100.0)
+  assert_eq(drop, ["a"])
+  assert_eq(freed, 50.0)
+  let bg = background_found(true, p => p == "/usr/sbin/taskpolicy", _ => None)
+  let (prog, args) = backgrounded_on(bg, "node", ["app.js"])
+  assert_eq(prog, "/usr/sbin/taskpolicy")
+  assert_eq(args, ["-b", "node", "app.js"])
+}
+
+///|
+test "login helpers, search keys, memory limits, and config teams" {
+  assert_true(asks_enter("Press Enter to open browser"))
+  assert_true(!asks_enter("Done."))
+  let (ver, full) = device_urls(
+    ["https://github.com/login/device", "https://github.com/login/device?user_code=ABCD-1234"],
+    "ABCD-1234",
+  )
+  assert_eq(ver, Some("https://github.com/login/device"))
+  assert_eq(full, Some("https://github.com/login/device?user_code=ABCD-1234"))
+  let k1 = file_search_key(["/repo"], "foo", false, true, 50, false, [])
+  let k2 = file_search_key(["/repo"], "foo", false, true, 50, false, [])
+  assert_eq(k1, k2)
+  assert_eq(footprint_of_status("VmRSS:\t  1024 kB\n"), Some(1024.0 * 1024.0))
+  assert_true(hard_rss_of(16.0 * 1024.0 * 1024.0 * 1024.0) > 0.0)
+  let teams = config_teams({ "connects": [{ "id": "f1", "kind": "feishu", "feishu": { "tenant": { "name": "Acme" } } }] })
+  assert_eq(teams.length(), 1)
+  assert_eq(teams[0].1.name, "Acme")
 }

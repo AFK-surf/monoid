@@ -4,7 +4,6 @@ package "station/ops_platform"
 import {
   "moonbitlang/core/json",
   "station/host",
-  "station/sql",
 }
 
 // Values
@@ -157,8 +156,6 @@ pub fn guarded_tops(Bool, String, Array[String]) -> Array[String]
 pub fn hard_front_of(Double) -> Double
 
 pub fn hard_rss_of(Double) -> Double
-
-pub async fn harness(@host.Host) -> Unit
 
 pub let health_fresh_ms : Double
 
@@ -532,12 +529,6 @@ pub fn storage_entry(String) -> StorageEntry?
 
 pub let storage_manifest : Array[StorageEntry]
 
-pub fn store_session(@sql.Db, String) -> @json.Json? raise
-
-pub fn store_thread(@sql.Db, Double) -> @json.Json? raise
-
-pub fn store_thread_sessions(@sql.Db, Double) -> Array[@json.Json] raise
-
 pub fn stores_secret(String) -> Bool
 
 pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
@@ -545,8 +536,6 @@ pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
 pub fn team_in(Array[(String, Team)], String) -> Team?
 
 pub fn text_name(String) -> Bool
-
-pub fn threads_with_cards(@sql.Db, Array[Double]) -> Array[Double] raise
 
 pub let thumbs_cap : Double
 

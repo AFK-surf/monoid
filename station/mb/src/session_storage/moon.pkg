@@ -9,7 +9,6 @@ import {
   "station/nodepath",
   "station/memory",
   "station/jscase",
-  "station/wire",
   "mbui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/double",

@@ -8,7 +8,7 @@ using @jsjson {
   js_includes as has, js_split as split_on, js_split_lines as split_lines, js_upper_ascii as upper,
   js_all_digits as digits, js_number, is_integer, is_safe_integer, jval_stringify_num as num_text, js_round,
   json_field as field, json_str_field as str_field, json_num_field as num_field, json_bool_field as bool_field,
-  json_items as arr, json_strings_of as strs, json_str as js, json_num_js as jn, json_int as ji, json_bool as jb,
+  json_str as js, json_num_js as jn, json_int as ji, json_bool as jb,
   json_strs as jstrs, json_opt_str as opt_s, json_stringify as js_stringify, jval_of_json as to_jvalue,
   jval_to_json as from_jvalue,
 }
@@ -153,48 +153,10 @@ fn str_or(j : Json, name : String, d : String) -> String {
 }
 
 ///|
-fn int_field(j : Json, name : String, d : Int) -> Int {
-  match num_field(j, name) {
-    Some(n) => n.to_int()
-    None => d
-  }
-}
-
-///|
-fn nums(j : Json?) -> Array[Double] {
-  match j {
-    Some(Array(a)) =>
-      a.filter_map(v => match v {
-        Number(n, ..) => Some(n)
-        _ => None
-      })
-    _ => []
-  }
-}
-
-///|
 fn opt_n(n : Double?) -> Json {
   match n {
     Some(t) => jn(t)
     None => Json::null()
-  }
-}
-
-///|
-/// A map of strings as the case gives it (an environment), its keys in their order.
-fn env_of(j : Json?) -> Array[(String, String)] {
-  match j {
-    Some(Object(m)) => {
-      let out = []
-      for k, v in m {
-        match v {
-          String(s) => out.push((k, s))
-          _ => ()
-        }
-      }
-      out
-    }
-    _ => []
   }
 }
 
@@ -273,13 +235,4 @@ fn[T] stable_sort(items : Array[T], cmp : (T, T) -> Int) -> Array[T] {
     k += 1
   }
   out
-}
-
-///|
-/// An error's words: a Failure's message as it was said.
-fn err_text(e : Error) -> String {
-  match e {
-    Failure(m) => m
-    _ => e.to_string()
-  }
 }

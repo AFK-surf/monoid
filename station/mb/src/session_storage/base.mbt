@@ -92,7 +92,7 @@ pub async fn Station::tell(self : Station, name : String, args : Array[Json]) ->
 ///|
 using @jsjson {
   json_str as js, json_num as jn, json_int as ji, json_bool as jb, json_obj as jo, json_arr as ja,
-  json_opt_str as jopt, json_field as get, json_str_field as str, json_num_field as num, json_bool_field as yes,
+  json_opt_str as jopt, json_field as get, json_str_field as str, json_num_field as num,
   json_items as items, json_str_of as as_str, json_num_of as as_num, json_js_str as js_text, num_text,
 }
 
@@ -112,16 +112,6 @@ fn some_of(v : Json) -> Json? {
   } else {
     Some(v)
   }
-}
-
-///|
-/// JavaScript's undefined, as an argument.
-let jundef : Json = jo([("$undef", ji(1))])
-
-///|
-/// Bytes as JSON (`{"$bytes": base64}`).
-fn jbytes(b : Bytes) -> Json {
-  jo([("$bytes", js(@base64.encode(b)))])
 }
 
 ///|

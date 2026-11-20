@@ -3,7 +3,6 @@ package "station/agent_drivers"
 
 import {
   "moonbitlang/core/ref",
-  "station/host",
   "station/jsjson",
 }
 
@@ -161,10 +160,6 @@ pub fn gemini_dir(Machine, String) -> String
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
 pub fn go_keyring_value(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(String) -> String
 
 pub fn has_word_ci(String, String) -> Bool
 

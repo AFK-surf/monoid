@@ -471,7 +471,7 @@ const ASK_ANSWERED_IN: Record<string, RegExp> = {
 const ASK_HANDED_ON: { slice: string; answers: () => string; why: string; holds: () => boolean }[] = [
   {
     slice: "hub",
-    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_harness.mbt")))?.[0] ?? "",
+    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_call.mbt")))?.[0] ?? "",
     why: "P5-2's hub_bridge (live_p5_2_hubops.mbt) asks session_hub's hub_call what it does not answer",
     holds: () => /@session_hub\.hub_call\(hub, name, args\)/.test(read(join(mb, "station_main", "live_p5_2_hubops.mbt"))),
   },

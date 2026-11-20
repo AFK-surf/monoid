@@ -1,5 +1,4 @@
-// What the drivers' own parts hold to by themselves; held to the TypeScript as a whole by
-// station/test/mb-agent-drivers.test.ts.
+// Native MoonBit unit tests for agent_drivers core helpers.
 
 ///|
 test "an ISO time as Date.parse reads it" {

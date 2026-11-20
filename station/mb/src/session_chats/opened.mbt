@@ -66,13 +66,6 @@ fn key_of(args : J) -> String raise Thrown {
 }
 
 ///|
-fn key_or(args : J) -> String? {
-  try Some(key_of(args)) catch {
-    _ => None
-  }
-}
-
-///|
 async fn starter_of(w : World, key : String) -> J {
   let mut thread = J::Null
   try {

@@ -5,7 +5,6 @@ import {
   "mbui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/set",
-  "station/host",
   "station/jsjson",
   "station/store_sessions",
   "station/store_threads",
@@ -113,8 +112,6 @@ pub fn field(@json.Json, String) -> @json.Json?
 pub fn first_line(String) -> String
 
 pub fn handed_ws(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
 
 pub let held_after_ms : Double
 
@@ -302,8 +299,6 @@ pub let sweep_ms : Double
 
 pub fn take(String, Int32) -> String
 
-pub fn test_random_hex(Int32, Int32) -> String
-
 pub fn text_or_null(@json.Json, String) -> String?
 
 pub fn thread_command(String) -> String?
@@ -362,8 +357,8 @@ pub async fn AgentsSide::start(Self, Place) -> Unit
 pub struct Hub {
   world : World
   store : @store_sessions.Store
-  mut threads : @store_threads.Store
-  mut words : Words
+  threads : @store_threads.Store
+  words : Words
   actors : Map[String, String]
   holds_now : Array[String]
   adopted : @set.Set[String]
@@ -504,26 +499,6 @@ pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
 pub fn Hub::workspaces(Self) -> Array[String]
 pub fn Hub::ws_of(Self, String?) -> String?
 pub fn Hub::ws_of_arg(Self, @json.Json) -> String?
-
-pub struct HubHarness {
-  host : @host.Host
-  mut words : Words
-  mut hub : Hub?
-  mut now : Double
-  mut config : @json.Json
-  mut workspaces : Array[String]
-  mut station : String?
-  mut links : Bool
-  chats : Map[String, @json.Json]
-  states : Map[String, @json.Json]
-  asked : Map[Int32, @effect.Deferred[@json.Json]]
-  mut asks : Int32
-  mut random : Int32
-  mut move_on : Bool?
-  mut live : LiveShell?
-}
-pub fn HubHarness::new(@host.Host) -> Self
-pub fn HubHarness::op(Self, @json.Json) -> @json.Json?
 
 pub struct LiveShell {
   hub : Hub

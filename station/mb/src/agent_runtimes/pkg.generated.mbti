@@ -25,8 +25,6 @@ pub let acp_steer : String
 
 pub fn afresh(String, Array[String]) -> String
 
-pub fn agent_home_feedback(String, @jsjson.JValue?) -> Bool
-
 pub fn ago_words(Double) -> String
 
 pub fn agy_base_model(String) -> (String, String?)
@@ -212,10 +210,6 @@ pub let grok_usage : String
 pub fn grok_usage_line(@jsjson.JValue?, Double, @jsjson.JValue) -> String?
 
 pub fn group_of(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
-
-pub async fn harness_case(@host.Host, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn hermes_catalog(@jsjson.JValue?, @jsjson.JValue) -> Array[String]
 
@@ -469,20 +463,6 @@ pub fn Acp::retune(Self, String?, String?) -> Bool
 pub fn Acp::snapshot(Self) -> @jsjson.JValue
 pub fn Acp::steer(Self, String) -> Bool?
 
-pub struct AgentHome {
-  mut running : Bool
-  mut again : Bool
-  mut queued : Bool
-  mut closed : Bool
-  mut rounds : Int32
-  trace : Array[String]
-}
-pub fn AgentHome::changed(Self) -> Unit
-pub fn AgentHome::close(Self) -> Unit
-pub fn AgentHome::ended(Self) -> Unit
-pub fn AgentHome::flush(Self) -> Unit
-pub fn AgentHome::new() -> Self
-
 pub struct Bridged {
   own : Own
   mut model : String?
@@ -611,7 +591,7 @@ pub struct Own {
   mut tools_url : String?
   mut tools_absent : Bool
   runner : String
-  mut frozen : @jsjson.JValue?
+  frozen : @jsjson.JValue?
   waits : Map[String, Wait]
   later : Array[() -> Unit]
   uuids : Array[String]
@@ -671,8 +651,6 @@ pub(all) struct Start {
   init_timeout : Double?
 }
 pub fn Start::json(Self) -> @jsjson.JValue
-
-type Taken
 
 pub(all) struct Via {
   provider : String?

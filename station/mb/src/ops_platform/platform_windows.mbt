@@ -276,14 +276,6 @@ pub(all) enum Named {
 }
 
 ///|
-fn named_json(n : Named) -> Json {
-  match n {
-    Beside(b) => { "beside": js(b) }
-    At(a) => { "at": js(a) }
-  }
-}
-
-///|
 let shim_frame : Array[String] = [
   "echo off", "goto start", ":find_dp0", "set dp0=%~dp0", ":start", "setlocal", "call :find_dp0",
 ]
@@ -343,15 +335,6 @@ fn named_of(path : String) -> Named {
 pub(all) enum Shim {
   Node(Named)
   Program(Named)
-}
-
-///|
-fn shim_json(s : Shim?) -> Json {
-  match s {
-    None => Json::null()
-    Some(Node(n)) => { "node": named_json(n) }
-    Some(Program(p)) => { "program": named_json(p) }
-  }
 }
 
 ///|

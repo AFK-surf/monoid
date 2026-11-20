@@ -47,3 +47,9 @@ pub fn u(s : String, i : Int) -> Int {
 fn is_digit_unit(c : Int) -> Bool {
   c >= '0'.to_int() && c <= '9'.to_int()
 }
+
+///|
+/// What is said of undefined.
+pub fn undefined() -> Json {
+  { "$undefined": true }
+}

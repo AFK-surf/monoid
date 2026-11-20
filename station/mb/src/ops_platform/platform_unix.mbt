@@ -12,16 +12,6 @@ pub(all) enum Background {
 }
 
 ///|
-fn background_of(j : Json) -> Background {
-  match str_or(j, "kind", "none") {
-    "taskpolicy" => Taskpolicy
-    "ionice" => Ionice(str_or(j, "ionice", ""), str_or(j, "nice", ""))
-    "nice" => Nice(str_or(j, "nice", ""))
-    _ => NoWrapper
-  }
-}
-
-///|
 /// unix.ts `backgroundedOn`.
 pub fn backgrounded_on(how : Background, program : String, args : Array[String]) -> (String, Array[String]) {
   match how {

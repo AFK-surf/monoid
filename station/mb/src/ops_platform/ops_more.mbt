@@ -857,17 +857,6 @@ pub(all) struct LogLine {
 }
 
 ///|
-fn log_line_of(j : Json) -> LogLine {
-  {
-    ms: num_field(j, "ms").unwrap_or(0.0),
-    level: str_or(j, "level", "INFO"),
-    at: str_or(j, "at", ""),
-    message: str_or(j, "message", ""),
-    fields: field(j, "fields").unwrap_or(Json::object(Map([]))),
-  }
-}
-
-///|
 pub let log_max_waiting : Int = 5000
 
 ///|

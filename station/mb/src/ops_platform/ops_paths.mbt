@@ -10,14 +10,6 @@ pub(all) enum Plat {
 }
 
 ///|
-fn plat_of(j : Json) -> Plat {
-  match str_field(j, "platform") {
-    Some("windows") => Windows(str_or(j, "cwd", "C:\\"))
-    _ => Unix
-  }
-}
-
-///|
 fn Plat::is_sep(self : Plat, c : Int) -> Bool {
   match self {
     Unix => c == 47

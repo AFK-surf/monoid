@@ -1,280 +1,11 @@
-// The hub as station/test/mb-session-hub.test.ts drives it (harness.mbt's `{"op": "hub"}` lines), on a database of the
-// test's and a clock of the test's, what it asks of the world asked of the test:
-// - `{"hub": "open", "db", "config", "workspaces", "station", "chats", "states", "now", "links"}`: the hub made over the
-//   database (its stores' statements the station's), with its config, the workspaces it is in, its connects' chats as
-//   they answer (`{botUserId, workspace, has}` by connect), its actors' process states (`{state, idleSince?}` by key);
-// - `{"hub": "set", …}`: any of those changed, as the station's change;
-// - `{"hub": "advance", "now"}`: the clock moved, what was due by then run;
-// - `{"hub": "call", "fn", "args"}`: one of its methods by the TypeScript's name, answered `{"id", "result"}` or
-//   `{"id", "error"}` once done; meanwhile what it tells is said `{"tell", "args"}` and what it asks `{"ask", "what",
-//   "args"}`, which the test answers `{"hub": "answer", "ask", "value"}` (or `"error"`).
+// Dispatching Hub methods by their TypeScript names (`hub_call`), used by station_main's live P5-2 bridge.
 
 ///|
-pub struct HubHarness {
-  host : @host.Host
-  mut words : Words
-  mut hub : Hub?
-  mut now : Double
-  mut config : Json
-  mut workspaces : Array[String]
-  mut station : String?
-  mut links : Bool
-  chats : Map[String, Json]
-  states : Map[String, Json]
-  asked : Map[Int, @effect.Deferred[Json]]
-  mut asks : Int
-  mut random : Int
-  mut move_on : Bool?
-  mut live : LiveShell?
-}
-
-///|
-pub fn HubHarness::new(host : @host.Host) -> HubHarness {
-  {
-    host,
-    words: Words::new(),
-    hub: None,
-    now: 0.0,
-    config: Json::object({}),
-    workspaces: [],
-    station: None,
-    links: false,
-    chats: {},
-    states: {},
-    asked: {},
-    asks: 0,
-    random: 0,
-    move_on: None,
-    live: None,
-  }
-}
-
-///|
-/// The test's random bytes (its `randomBytes` made alike): byte `i` of the `k`th ask.
-pub fn test_random_hex(k : Int, n : Int) -> String {
-  @codec.hex_encode(Bytes::makei(n, i => ((k * 37 + i * 11 + 5) & 255).to_byte()))
-}
-
-///|
-fn HubHarness::set(self : HubHarness, line : Json) -> Unit {
-  match field(line, "config") {
-    Some(c) => self.config = c
-    None => ()
-  }
-  match field(line, "workspaces") {
-    Some(Array(w)) => self.workspaces = w.map(js_string)
-    _ => ()
-  }
-  match field(line, "station") {
-    Some(String(s)) => self.station = Some(s)
-    Some(Null) => self.station = None
-    _ => ()
-  }
-  match field(line, "links") {
-    Some(True) => self.links = true
-    Some(False) => self.links = false
-    _ => ()
-  }
-  match field(line, "chats") {
-    Some(Object(m)) => {
-      self.chats.clear()
-      for k, v in m {
-        if v != Json::null() {
-          self.chats[k] = v
-        }
-      }
-    }
-    _ => ()
-  }
-  match field(line, "states") {
-    Some(Object(m)) => {
-      self.states.clear()
-      for k, v in m {
-        self.states[k] = v
-      }
-    }
-    _ => ()
-  }
-  match field(line, "now") {
-    Some(Number(n, ..)) => self.now = n
-    _ => ()
-  }
-  match field(line, "moveOn") {
-    Some(True) => self.move_on = Some(true)
-    Some(False) => self.move_on = Some(false)
-    Some(Null) => self.move_on = None
-    _ => ()
-  }
-}
-
-///|
-fn HubHarness::world(self : HubHarness) -> World {
-  {
-    tell: (what, args) => self.host.say(({ "tell": Json::string(what), "args": args } : Json).stringify()),
-    ask: async fn(what, args) {
-      self.asks += 1
-      let n = self.asks
-      let d : @effect.Deferred[Json] = @effect.Deferred::new()
-      self.asked[n] = d
-      self.host.say(({ "ask": num(n.to_double()), "what": Json::string(what), "args": args } : Json).stringify())
-      d.wait()
-    },
-    now: () => self.now,
-    config: () => self.config,
-    workspaces: () => self.workspaces,
-    station: () => self.station,
-    link: key => if self.links {
-      let ws = match self.hub {
-        Some(h) => h.ws_of(Some(key)).unwrap_or("ws")
-        None => "ws"
-      }
-      Some("https://ember.test/o/\{ws}/\{self.station.unwrap_or("st")}/\{replace_all(key, ":", "%3A")}")
-    } else {
-      None
-    },
-    chat: connect => self.chats.get(connect),
-    process_state: key => match self.states.get(key) {
-      Some(s) => str_of(s, "state").unwrap_or("cold")
-      None => "cold"
-    },
-    idle_ms: (key, now) => match self.states.get(key) {
-      Some(s) =>
-        match num_of(s, "idleSince") {
-          Some(since) => Some(now - since)
-          None => None
-        }
-      None => None
-    },
-    move_on: () => self.move_on,
-    random_hex: n => {
-      self.random += 1
-      test_random_hex(self.random, n)
-    },
-  }
-}
-
-///|
-/// A line of the test's: answered at once (Some), or once the call it starts is done (None: said then).
-pub fn HubHarness::op(self : HubHarness, line : Json) -> Json? {
-  let id = field(line, "id").unwrap_or(Json::null())
-  match str_of(line, "hub") {
-    Some("open") => {
-      self.set(line)
-      let path = str_of(line, "db").unwrap_or("")
-      let made = try {
-        let db = @sql.Db::attach(self.host, path, wait=5000)
-        let store = @store_sessions.Store::open(db, () => self.now.to_int64(), num_of(line, "latestNote").unwrap_or(0.0).to_int64())
-        let threads = @store_threads.Store::new(db, self.now)
-        let hub = Hub::new(self.world(), store, threads, words=self.words)
-        self.hub = Some(hub)
-        Json::null()
-      } catch {
-        e => { "error": Json::string(e.to_string()) }
-      }
-      Some(match made {
-        Object(_) => made
-        _ => { "result": Json::null() }
-      })
-    }
-    Some("set") => {
-      self.set(line)
-      Some({ "result": Json::null() })
-    }
-    Some("advance") => {
-      let target = num_of(line, "now").unwrap_or(self.now)
-      match self.hub {
-        Some(h) =>
-          ignore(
-            self.host.rt.fork(async fn() {
-              // (the clock moved as a test's clock moves: to each timer due on the way, which runs at its time)
-              while true {
-                let mut next : Double? = None
-                for t in h.timers {
-                  if t.due <= target && (next is None || t.due < next.unwrap()) {
-                    next = Some(t.due)
-                  }
-                }
-                match next {
-                  None => break
-                  Some(due) => {
-                    if due > self.now {
-                      self.now = due
-                    }
-                    h.threads = @store_threads.Store::new(h.store.db, self.now) catch { _ => h.threads }
-                    h.settle() catch {
-                      _ => ()
-                    }
-                  }
-                }
-              }
-              self.now = target
-              h.threads = @store_threads.Store::new(h.store.db, self.now) catch { _ => h.threads }
-              h.settle() catch {
-                _ => ()
-              }
-              h.flush_threads()
-              self.host.say(({ "id": id, "result": Json::null() } : Json).stringify())
-            }),
-          )
-        None => self.now = target
-      }
-      match self.hub {
-        Some(_) => None
-        None => Some({ "result": Json::null() })
-      }
-    }
-    Some("answer") => {
-      let n = num_of(line, "ask").unwrap_or(0.0).to_int()
-      match self.asked.get(n) {
-        Some(d) => {
-          self.asked.remove(n)
-          match str_of(line, "error") {
-            Some(m) => ignore(d.fail(Refused(m)))
-            None => ignore(d.succeed(field(line, "value").unwrap_or(Json::null())))
-          }
-        }
-        None => ()
-      }
-      None
-    }
-    Some("call") => {
-      guard self.hub is Some(hub) else { return Some({ "error": "no hub open" }) }
-      hub.words = self.words
-      hub.threads = @store_threads.Store::new(hub.store.db, self.now) catch { _ => hub.threads }
-      let name = str_of(line, "fn").unwrap_or("")
-      let args = items(field(line, "args"))
-      ignore(
-        self.host.rt.fork(async fn() {
-          let answer : Json = try {
-            let r = if name.has_prefix("live.") {
-              let live = match self.live {
-                Some(l) => l
-                None => {
-                  let l = LiveShell::new(hub)
-                  self.live = Some(l)
-                  l
-                }
-              }
-              live_call(live, slice(name, 5), args)
-            } else {
-              hub_call(hub, name, args)
-            }
-            // (what it set going with no time to wait runs as the step ends, as a fiber of no sleep does)
-            hub.settle()
-            hub.flush_threads()
-            { "id": id, "result": r }
-          } catch {
-            e => {
-              hub.flush_threads()
-              { "id": id, "error": Json::string(error_words(e)) }
-            }
-          }
-          self.host.say(answer.stringify())
-        }),
-      )
-      None
-    }
-    _ => Some({ "error": "no such hub op" })
+fn arg(args : Array[Json], i : Int) -> Json? {
+  match args.get(i) {
+    None => None
+    Some(Object(m)) if m.get("$undefined") is Some(True) => None
+    Some(v) => Some(v)
   }
 }
 
@@ -284,12 +15,26 @@ fn a(args : Array[Json], i : Int) -> Json {
 }
 
 ///|
-/// The usage checker the harness made (one at most).
-let checks : Array[UsageCheck] = []
+fn a_str(args : Array[Json], i : Int) -> String {
+  match arg(args, i) {
+    Some(String(s)) => s
+    Some(v) => js_string(v)
+    None => ""
+  }
+}
 
 ///|
-/// The agents' side the harness made (one at most).
-let agents_of : Array[AgentsSide] = []
+fn a_num(args : Array[Json], i : Int) -> Double {
+  match arg(args, i) {
+    Some(Number(n, ..)) => n
+    _ => 0.0
+  }
+}
+
+///|
+fn a_arr(args : Array[Json], i : Int) -> Array[Json] {
+  items(arg(args, i))
+}
 
 ///|
 fn opt_arg_str(args : Array[Json], i : Int) -> String? {
@@ -305,9 +50,28 @@ fn bool_arg(args : Array[Json], i : Int) -> Bool {
 }
 
 ///|
+fn strs(xs : Array[String]) -> Json {
+  Json::array(xs.map(Json::string))
+}
+
+///|
+fn opt_json(v : Json?) -> Json {
+  match v {
+    Some(j) => j
+    None => Json::null()
+  }
+}
+
+///|
 fn pairs_json(xs : Array[(String, String)]) -> Json {
   Json::array(xs.map(p => Json::array([Json::string(p.0), Json::string(p.1)])))
 }
+
+///|
+let checks : Array[UsageCheck] = []
+
+///|
+let agents_of : Array[AgentsSide] = []
 
 ///|
 /// One of the hub's methods, by the TypeScript's name.
@@ -643,7 +407,6 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
         None => Json::boolean(true)
       }
     "untilTimer" => {
-      // (the test waits for the hub to have set a timer, an event of its own, before it moves the clock on to it)
       if hub.timers.length() == 0 {
         let d : @effect.Deferred[Unit] = @effect.Deferred::new()
         hub.timer_waiters.push(d)
@@ -661,7 +424,6 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
       unit
     }
     "usageCheck" => {
-      // (the checker asked in turn, its answers given by the test as `usageCheckHeard`)
       let c = match checks.get(0) {
         Some(c) => c
         None => {
@@ -709,74 +471,5 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
         other => raise Refused("no store call \{other}")
       }
     _ => raise Refused("no hub call \{name}")
-  }
-}
-
-///|
-/// One of the live view's shell's (live.ts `LiveHub`), by the TypeScript's name.
-async fn live_call(live : LiveShell, name : String, x : Array[Json]) -> Json {
-  let unit = undefined()
-  match name {
-    "subscribe" =>
-      int(
-        live.subscribe(
-          a_str(x, 0),
-          a_num(x, 1),
-          match arg(x, 2) {
-            Some(Number(n, ..)) => Some(n)
-            _ => None
-          },
-          brief=bool_arg(x, 3),
-        ),
-      )
-    "unsubscribe" => {
-      live.unsubscribe(a_str(x, 0), a_num(x, 1).to_int())
-      unit
-    }
-    "forget" => {
-      live.forget(a_str(x, 0))
-      unit
-    }
-    "running" => {
-      live.running(a_str(x, 0), bool_arg(x, 1))
-      unit
-    }
-    "event" => {
-      live.event(a_str(x, 0), a(x, 1))
-      unit
-    }
-    "soon" => {
-      live.soon(a_str(x, 0))
-      unit
-    }
-    "moved" => {
-      live.moved(a_str(x, 0))
-      unit
-    }
-    "turnEnded" => {
-      live.turn_ended(a_str(x, 0))
-      unit
-    }
-    "usageCounted" => {
-      live.usage_counted()
-      unit
-    }
-    "held" => strs(live.held_now())
-    "nowOf" => live.now_of(a_arr(x, 0).map(js_string))
-    "carried" => live.carried()
-    "takePlans" => {
-      live.take_plans(a(x, 0))
-      unit
-    }
-    "takeTails" => {
-      live.take_tails(a(x, 0))
-      unit
-    }
-    "told" => {
-      live.told_by_program(a_str(x, 0), a_arr(x, 1))
-      unit
-    }
-    "asked" => live.asked_by_program(a_str(x, 0), a_arr(x, 1))
-    _ => raise Refused("no live call \{name}")
   }
 }

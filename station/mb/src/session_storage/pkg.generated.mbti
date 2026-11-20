@@ -42,8 +42,6 @@ pub fn format_steps(Int32, Array[@json.Json], Int32) -> String
 
 pub fn from_before(String) -> Bool
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn is_kind(Error, String) -> Bool
 
 pub fn iso(Double) -> String

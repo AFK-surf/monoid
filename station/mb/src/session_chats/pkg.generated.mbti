@@ -3,7 +3,6 @@ package "station/session_chats"
 
 import {
   "moonbitlang/core/ref",
-  "station/host",
   "station/jsjson",
   "station/session_hub",
 }
@@ -131,8 +130,6 @@ pub fn gone_kept(Array[@jsjson.JValue]) -> Array[@jsjson.JValue]
 
 pub let gone_kept_most : Int32
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn header_size(BytesView) -> Facts?
 
 pub async fn hub_config(World, @jsjson.JValue, String, (String) -> Array[String]?) -> @jsjson.JValue
@@ -257,8 +254,6 @@ pub fn origin_in(String) -> String?
 
 pub async fn origin_of(World, String) -> String?
 
-pub fn page_origin(String, String) -> String
-
 pub fn parse_js(String) -> @jsjson.JValue raise Thrown
 
 pub fn parse_opt(String) -> @jsjson.JValue?
@@ -270,10 +265,6 @@ pub fn percent_decode(String) -> String
 pub async fn policy_stamp(World, String) -> @jsjson.JValue
 
 pub async fn policy_ws(World, @jsjson.JValue) -> @jsjson.JValue
-
-pub fn post_block_answered(Bool, Double?, Double) -> Bool
-
-pub fn post_block_threads(Array[@jsjson.JValue]) -> Array[(@jsjson.JValue, Double)]
 
 pub async fn post_card(World, String, @jsjson.JValue, String, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?) -> @jsjson.JValue
 
@@ -368,8 +359,6 @@ pub async fn sender(World, String) -> (String, String?)
 pub async fn sender_title_if_ready(World, String) -> @jsjson.JValue?
 
 pub let session_message_method : String
-
-pub fn session_page(PageBase, String, String) -> String
 
 pub async fn session_send(World, String, @jsjson.JValue) -> String
 
@@ -487,12 +476,6 @@ pub fn Found::to_j(Self) -> @jsjson.JValue
 pub(all) struct Held {
   id : String?
   args : @jsjson.JValue
-}
-
-pub struct PageBase {
-  origin : String
-  workspace : String
-  station : String
 }
 
 pub struct PresetsFile {
