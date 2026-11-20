@@ -795,8 +795,19 @@ fn BarModel::jump(self : BarModel) -> Unit {
 // ── what the bar is told ───────────────────────────────────────────────
 
 ///|
-/// The notch's action's icon, as last shown (kept as it closes).
+/// The notch's action's icon, as last shown (kept as it closes): bar_action_icon's.
 let m_face : Ref[String] = { val: "" }
+
+///|
+/// The icon the notch draws for `action` (bar_action's; "" none): 令's action, a new chat, drawn as a ＋ as the others'
+/// are (令's own glyph read as no shape anyone knew).
+fn bar_action_icon(action : String) -> String {
+  if action == "ling" {
+    "plus"
+  } else {
+    action
+  }
+}
 
 ///|
 /// A place's name (the bar's words for what a screen reader says, the place's page's title).
@@ -966,16 +977,18 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     m.drag_y = -1.0
     m.holds = false
   }
-  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once
-  if told.action != "" && told.action != m_face.val {
+  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once.
+  // By the icon drawn, not the action: 令 and ＋ draw the same ＋, which stays still as one gives way to the other.
+  let face = bar_action_icon(told.action)
+  if face != "" && face != m_face.val {
     let k_then = m.k_at(at)
     if m_face.val == "" || k_then <= 0.001 {
-      m_face.val = told.action
+      m_face.val = face
       m.icon_was = ""
       m.icon_swap.snap(1.0)
     } else {
       m.icon_was = m_face.val
-      m_face.val = told.action
+      m_face.val = face
       m.icon_swap.snap(0.0)
       m.icon_swap.go(1.0, icon_swap_ms, Linear, at~)
     }

@@ -354,12 +354,12 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
 }
 
 ///|
-/// The actions the notch has an icon for (bar_action's: 令, ＋).
+/// The icons the notch draws for its actions (bar_action_icon's: 令's and ＋'s alike a ＋).
 // kept across runs: a table, never written
-let bar_faces : Array[String] = ["ling", "plus"]
+let bar_faces : Array[String] = ["plus"]
 
 ///|
-/// The action's icons in `d` (action_icon's: 令 drawn as a ＋ too, each 30, in the bar's lit ink, in its middle), one of each action's, made once
+/// The action's icons in `d` (bar_action_icon's, each 30, in the bar's lit ink, in its middle), one of each action's, made once
 /// and drawn (and found on screen by what it draws) only while the action is it (m_face) or another swaps in for it
 /// (icon_was; bar_tell: a short scale and fade, 300 ms on the bar's clock, linear; the one going out by 120 ms, the one
 /// coming in from 60 ms): none made or let go as the action is another.
@@ -387,11 +387,9 @@ fn bar_action_icons(d : @view.View) -> Unit {
     d.box(fn(c) {
       c.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
       let shown = fn() { look(c, face) }
-      // (令's action, a new chat, drawn as a ＋ as the others' are: 令's own glyph read as no shape anyone knew)
-      let icon = if face == "ling" { "plus" } else { face }
-      let i = @sf.icon_node(c, icon, 30.0, By(bar_action_ink), name_now=fn() {
+      let i = @sf.icon_node(c, face, 30.0, By(bar_action_ink), name_now=fn() {
         if shown() is Some(_) {
-          icon
+          face
         } else {
           ""
         }
