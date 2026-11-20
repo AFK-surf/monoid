@@ -1436,7 +1436,7 @@ test "on the tape a settings page chosen in their list shows beside it, pressed 
 }
 
 ///|
-test "on the tape, a chat's service opened from the chat in use: its side panel comes over with it, the chat beside" {
+test "on the tape, a chat's service opened from the chat in use: over the whole window, nothing of the tape moving, back the chat in use; with ⌘ held, its side panel comes over with it, the chat beside" {
   new_run()
   let src = fixture("chat-jobs")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -1447,8 +1447,21 @@ test "on the tape, a chat's service opened from the chat in use: its side panel 
   @sfdesk.bring_page()
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
-  // (as its link in a message opens it: a page, which the frame lays beside its chat)
+  // (as its link in a message opens it: a page, which the frame lays over the whole window as its chat's tab)
   open_page(Service("ws1/st1", "j-web"))
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="over the whole window")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="the tape where it was under it")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="back: the chat in use, nothing slid")
+  // (with ⌘ held: beside its chat, its side panel brought over)
+  t.hold_mods(@ui.mod_cmd)
+  open_page(Service("ws1/st1", "j-web"))
+  t.hold_mods(0)
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
