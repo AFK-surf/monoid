@@ -45,7 +45,7 @@ fn made_stack() -> (Tester, Nav[String], MadeLog, Array[String]) {
                 let first = @signals.untracked(page)
                 log.made.push(first)
                 let taps = @signals.signal(0)
-                let scroll = @view.Scroll::new()
+                let scroll = @view.Scroll::plain()
                 log.taps[first] = taps
                 log.scrolls[first] = scroll
                 log.roots[first] = v.id()

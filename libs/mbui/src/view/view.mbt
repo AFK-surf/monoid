@@ -7430,17 +7430,24 @@ pub fn Tree::takes_presses(self : Tree, id : NodeId) -> Bool {
 
 ///|
 /// The words it shows: layout's (their size) and paint's, in `ink` (View::ink as it changes), set as `look` says.
+/// `one_line=true` forces `{ ..look, wrap: false }`; `optical=true` enables single-line vertical optical centering
+/// (`View::words_optical`).
 #callsite(autofill(loc))
 pub fn View::words(
   self : View,
   words : Live[String],
   ink? : Int64 = ink_theme,
   look? : WordsLook = words_plain,
+  one_line? : Bool = false,
+  optical? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   guard self.live() is Some(n) else { return self }
   n.look.ink = ink
-  n.look.words_look = look
+  n.look.words_look = if one_line { { ..look, wrap: false } } else { look }
+  if optical {
+    n.look.words_optical = true
+  }
   let tree = self.tree
   let at = self.at
   // (cut short as said before its words were: what of them is kept, as they look now)

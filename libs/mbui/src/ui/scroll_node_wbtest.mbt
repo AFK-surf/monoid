@@ -567,7 +567,7 @@ test "an old view's box kept to a height at its end, what it holds made shorter,
 
 ///|
 test "a column of the tree's that scrolls, with these bars, a mouse over it: scrolled, what it holds faded towards its foot as drawn, its bar's thumb along that edge none of it" {
-  let scroll = @view.Scroll::new()
+  let scroll = @view.Scroll::plain()
   let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
   t.check_looks(false)
   set_view_app(fn(root) {
@@ -642,8 +642,8 @@ test "a column of the tree's that scrolls, with these bars, and an old view's bo
 
 ///|
 test "a column of the tree's that scrolls in one that does too, with these bars: the inner's thumb at the outer's foot faded by the outer as what the outer holds is, none by its own" {
-  let outer = @view.Scroll::new()
-  let inner = @view.Scroll::new()
+  let outer = @view.Scroll::plain()
+  let inner = @view.Scroll::plain()
   let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
   t.check_looks(false)
   set_view_app(fn(root) {
