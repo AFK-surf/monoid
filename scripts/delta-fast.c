@@ -3,10 +3,13 @@
 // delta.ts compiles it once (ensureNativeDelta) and hands it the old and made bytes and the runs it found, falling
 // back to its own search where there is no C compiler or zlib.
 //   delta-fast OLD MADE RUNS OUT
+//   delta-fast --files OLD MADE FILES OUT
 // RUNS: the runs found (wholeFiles, sameBlocks), in delta.ts's order (by made, but for a block sameBlocks followed back
 // over a run found before it, which the search takes as delta.ts's does), 12 bytes each, little-endian
-// { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted). OUT: the delta's chunks
-// { u32 raw_len; u32 packed_len; raw deflate }, without the header or the end chunk.
+// { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted).
+// FILES: the old blob's file ranges, 8 bytes each, little-endian { u32 at; u32 len } (empty: no wholeFiles, only
+// sameBlocks); delta-fast computes wholeFiles and sameBlocks itself in C before sorting and searching.
+// OUT: the delta's chunks { u32 raw_len; u32 packed_len; raw deflate }, without the header or the end chunk.
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
@@ -22,6 +25,9 @@
 #define CHUNK (1 << 20)
 #define PREFIXES (1 << 24)
 #define PREFIXED_FROM (1 << 20)
+#define WINDOW 256
+#define BLOCK 256
+#define HASH_MUL 0x01000193u
 
 static void die(const char *what) {
   fprintf(stderr, "delta-fast: %s%s%s\n", what, errno ? ": " : "", errno ? strerror(errno) : "");
@@ -151,6 +157,204 @@ static int32_t *prefix_starts(const uint8_t *sorted, int32_t m) {
 
 typedef struct { int64_t made, old, len; } Run;
 typedef struct { int64_t start, end; } Span;
+
+typedef struct { Run *data; int64_t len, cap; } RunVec;
+
+static void runs_push(RunVec *v, Run r) {
+  if (v->len == v->cap) {
+    v->cap = v->cap ? v->cap * 2 : 64;
+    Run *p = realloc(v->data, (size_t)v->cap * sizeof(Run));
+    if (!p) { errno = ENOMEM; die("out of memory"); }
+    v->data = p;
+  }
+  v->data[v->len++] = r;
+}
+
+static uint32_t roll_hash(const uint8_t *b, int len) {
+  uint32_t h = 0;
+  for (int i = 0; i < len; i++) h = h * HASH_MUL + b[i];
+  return h;
+}
+
+static uint32_t hash_pow(int len) {
+  uint32_t top = 1;
+  for (int i = 0; i < len; i++) top *= HASH_MUL;
+  return top;
+}
+
+static int is_flat(const uint8_t *b, int len) {
+  uint8_t first = b[0];
+  for (int i = 1; i < len; i++) if (b[i] != first) return 0;
+  return 1;
+}
+
+static size_t next_pow2(size_t n) {
+  size_t c = 16;
+  while (c < n) c <<= 1;
+  return c;
+}
+
+// --- wholeFiles and sameBlocks in C (delta.ts's wholeFiles, sameBlocks) ---
+
+typedef struct { uint32_t at, len, hash; } FileEntry;
+typedef struct { uint32_t hash, start, count; } WholeSlot;
+
+static int by_hash_len_at(const void *a, const void *b) {
+  const FileEntry *x = a, *y = b;
+  if (x->hash != y->hash) return x->hash < y->hash ? -1 : 1;
+  if (x->len != y->len) return x->len > y->len ? -1 : 1;
+  if (x->at != y->at) return x->at < y->at ? -1 : 1;
+  return 0;
+}
+
+static RunVec find_whole_files(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize, const uint8_t *files_buf, size_t files_bytes) {
+  RunVec out = { NULL, 0, 0 };
+  if (files_bytes % 8 != 0) { errno = 0; die("the files list is not 8-byte records"); }
+  int64_t nfiles = (int64_t)(files_bytes / 8);
+  if (nfiles == 0 || newsize < WINDOW) {
+    for (int64_t i = 0; i < nfiles; i++) {
+      const uint8_t *b = files_buf + i * 8;
+      uint32_t at = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+      uint32_t len = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+      if ((int64_t)at + (int64_t)len > oldsize) { errno = 0; die("a file range goes past the old blob"); }
+    }
+    return out;
+  }
+  uint32_t *bits = zalloc((size_t)(1u << 17) * sizeof(uint32_t));
+  FileEntry *entries = alloc((size_t)nfiles * sizeof(FileEntry));
+  size_t valid = 0;
+  for (int64_t i = 0; i < nfiles; i++) {
+    const uint8_t *b = files_buf + i * 8;
+    uint32_t at = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+    uint32_t len = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+    if ((int64_t)at + (int64_t)len > oldsize) { errno = 0; die("a file range goes past the old blob"); }
+    if (len < WINDOW || is_flat(old + at, WINDOW)) continue;
+    uint32_t h = roll_hash(old + at, WINDOW);
+    bits[h >> 15] |= 1u << ((h >> 10) & 31);
+    entries[valid++] = (FileEntry){ at, len, h };
+  }
+  if (valid == 0) { free(bits); free(entries); return out; }
+  qsort(entries, valid, sizeof(FileEntry), by_hash_len_at);
+  size_t cap = next_pow2(valid * 2);
+  uint32_t mask = (uint32_t)(cap - 1);
+  WholeSlot *table = zalloc(cap * sizeof(WholeSlot));
+  for (size_t i = 0; i < valid; ) {
+    uint32_t h = entries[i].hash;
+    size_t start = i;
+    while (i < valid && entries[i].hash == h) i++;
+    uint32_t idx = (h ^ (h >> 16)) & mask;
+    while (table[idx].count != 0) idx = (idx + 1) & mask;
+    table[idx] = (WholeSlot){ h, (uint32_t)start, (uint32_t)(i - start) };
+  }
+  uint32_t top = hash_pow(WINDOW);
+  int64_t p = 0;
+  uint32_t h = roll_hash(made, WINDOW);
+  for (;;) {
+    const FileEntry *found = NULL;
+    if (bits[h >> 15] & (1u << ((h >> 10) & 31))) {
+      uint32_t idx = (h ^ (h >> 16)) & mask;
+      while (table[idx].count != 0) {
+        if (table[idx].hash == h) {
+          uint32_t start = table[idx].start, end = start + table[idx].count;
+          for (uint32_t j = start; j < end; j++) {
+            uint32_t fat = entries[j].at, flen = entries[j].len;
+            if (p + (int64_t)flen <= newsize && memcmp(old + fat, made + p, flen) == 0) { found = &entries[j]; break; }
+          }
+          break;
+        }
+        idx = (idx + 1) & mask;
+      }
+    }
+    if (found) {
+      runs_push(&out, (Run){ p, (int64_t)found->at, (int64_t)found->len });
+      p += (int64_t)found->len;
+      if (p + WINDOW > newsize) break;
+      h = roll_hash(made + p, WINDOW);
+    } else {
+      if (p + WINDOW >= newsize) break;
+      h = h * HASH_MUL - (uint32_t)made[p] * top + (uint32_t)made[p + WINDOW];
+      p++;
+    }
+  }
+  free(bits);
+  free(entries);
+  free(table);
+  return out;
+}
+
+typedef struct { uint32_t hash, off_plus_1; } BlockSlot;
+
+static void look_gap(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t from, int64_t to,
+                     const uint32_t *bits, const BlockSlot *table, uint32_t mask, uint32_t top, RunVec *out) {
+  int64_t p = from;
+  if (to - p < BLOCK) return;
+  uint32_t h = roll_hash(made + p, BLOCK);
+  for (;;) {
+    int64_t o = -1;
+    if (bits[h >> 15] & (1u << ((h >> 10) & 31))) {
+      uint32_t idx = (h ^ (h >> 16)) & mask;
+      while (table[idx].off_plus_1 != 0) {
+        if (table[idx].hash == h) { o = (int64_t)(table[idx].off_plus_1 - 1u); break; }
+        idx = (idx + 1) & mask;
+      }
+    }
+    if (o >= 0 && memcmp(old + o, made + p, BLOCK) == 0) {
+      int64_t back = 0;
+      int64_t most = (p - from) < o ? (p - from) : o;
+      while (back < most && made[p - back - 1] == old[o - back - 1]) back++;
+      int64_t len = BLOCK;
+      int64_t ahead = (to - p) < (oldsize - o) ? (to - p) : (oldsize - o);
+      while (len < ahead && made[p + len] == old[o + len]) len++;
+      runs_push(out, (Run){ p - back, o - back, back + len });
+      p += len;
+      if (p + BLOCK > to) return;
+      h = roll_hash(made + p, BLOCK);
+    } else {
+      if (p + BLOCK >= to) return;
+      h = h * HASH_MUL - (uint32_t)made[p] * top + (uint32_t)made[p + BLOCK];
+      p++;
+    }
+  }
+}
+
+static RunVec find_same_blocks(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize, const Run *wf, int64_t nwf) {
+  RunVec out = { NULL, 0, 0 };
+  if (newsize < BLOCK || oldsize < BLOCK) {
+    for (int64_t i = 0; i < nwf; i++) runs_push(&out, wf[i]);
+    return out;
+  }
+  uint32_t *bits = zalloc((size_t)(1u << 17) * sizeof(uint32_t));
+  size_t nblocks = (size_t)(oldsize / BLOCK);
+  size_t cap = next_pow2(nblocks * 2);
+  uint32_t mask = (uint32_t)(cap - 1);
+  BlockSlot *table = zalloc(cap * sizeof(BlockSlot));
+  for (int64_t at = 0; at + BLOCK <= oldsize; at += BLOCK) {
+    if (is_flat(old + at, BLOCK)) continue;
+    uint32_t h = roll_hash(old + at, BLOCK);
+    uint32_t idx = (h ^ (h >> 16)) & mask;
+    int exists = 0;
+    while (table[idx].off_plus_1 != 0) {
+      if (table[idx].hash == h) { exists = 1; break; }
+      idx = (idx + 1) & mask;
+    }
+    if (!exists) {
+      table[idx].hash = h;
+      table[idx].off_plus_1 = (uint32_t)at + 1u;
+      bits[h >> 15] |= 1u << ((h >> 10) & 31);
+    }
+  }
+  uint32_t top = hash_pow(BLOCK);
+  int64_t at = 0;
+  for (int64_t i = 0; i < nwf; i++) {
+    look_gap(old, oldsize, made, at, wf[i].made, bits, table, mask, top, &out);
+    runs_push(&out, wf[i]);
+    at = wf[i].made + wf[i].len;
+  }
+  look_gap(old, oldsize, made, at, newsize, bits, table, mask, top, &out);
+  free(bits);
+  free(table);
+  return out;
+}
 
 static int by_start(const void *a, const void *b) {
   const Span *x = a, *y = b;
@@ -346,27 +550,42 @@ static void bsdiff(Search *S, Chunker *out) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 5) {
-    fprintf(stderr, "usage: delta-fast OLD MADE RUNS OUT\n");
+  int files_mode = argc == 6 && strcmp(argv[1], "--files") == 0;
+  if (!files_mode && argc != 5) {
+    fprintf(stderr, "usage: delta-fast OLD MADE RUNS OUT | delta-fast --files OLD MADE FILES OUT\n");
     return 2;
   }
   errno = 0;
-  Mapped old = map(argv[1]), made = map(argv[2]), rf = map(argv[3]);
-  if (rf.n % 12 != 0) { errno = 0; die("the runs file is not 12-byte records"); }
-  int64_t nruns = (int64_t)(rf.n / 12);
-  Run *runs = alloc((size_t)nruns * sizeof(Run));
-  for (int64_t i = 0; i < nruns; i++) {
-    const uint8_t *b = rf.p + i * 12;
-    uint32_t v[3];
-    for (int j = 0; j < 3; j++) v[j] = (uint32_t)b[j * 4] | (uint32_t)b[j * 4 + 1] << 8 | (uint32_t)b[j * 4 + 2] << 16 | (uint32_t)b[j * 4 + 3] << 24;
-    runs[i] = (Run){ v[0], v[1], v[2] };
-    if (runs[i].old + runs[i].len > (int64_t)old.n || runs[i].made + runs[i].len > (int64_t)made.n ||
-        memcmp(old.p + runs[i].old, made.p + runs[i].made, (size_t)runs[i].len) != 0) {
-      errno = 0;
-      die("a run is out of place or not the old bytes it says");
+  const char *old_path = argv[files_mode ? 2 : 1];
+  const char *made_path = argv[files_mode ? 3 : 2];
+  const char *third_path = argv[files_mode ? 4 : 3];
+  const char *out_path = argv[files_mode ? 5 : 4];
+  Mapped old = map(old_path), made = map(made_path), third = map(third_path);
+  int64_t oldsize = (int64_t)old.n;
+  Run *runs = NULL;
+  int64_t nruns = 0;
+  if (files_mode) {
+    RunVec wf = find_whole_files(old.p, oldsize, made.p, (int64_t)made.n, third.p, third.n);
+    RunVec sb = find_same_blocks(old.p, oldsize, made.p, (int64_t)made.n, wf.data, wf.len);
+    free(wf.data);
+    runs = sb.data;
+    nruns = sb.len;
+  } else {
+    if (third.n % 12 != 0) { errno = 0; die("the runs file is not 12-byte records"); }
+    nruns = (int64_t)(third.n / 12);
+    runs = alloc((size_t)nruns * sizeof(Run));
+    for (int64_t i = 0; i < nruns; i++) {
+      const uint8_t *b = third.p + i * 12;
+      uint32_t v[3];
+      for (int j = 0; j < 3; j++) v[j] = (uint32_t)b[j * 4] | (uint32_t)b[j * 4 + 1] << 8 | (uint32_t)b[j * 4 + 2] << 16 | (uint32_t)b[j * 4 + 3] << 24;
+      runs[i] = (Run){ v[0], v[1], v[2] };
+      if (runs[i].old + runs[i].len > oldsize || runs[i].made + runs[i].len > (int64_t)made.n ||
+          memcmp(old.p + runs[i].old, made.p + runs[i].made, (size_t)runs[i].len) != 0) {
+        errno = 0;
+        die("a run is out of place or not the old bytes it says");
+      }
     }
   }
-  int64_t oldsize = (int64_t)old.n;
 
   // what of the old blob is outside the runs, and whether that is sorted alone (delta.ts's makeDelta, WHOLE_ENOUGH)
   Span *taken = alloc((size_t)(nruns + 1) * sizeof(Span));
@@ -413,8 +632,8 @@ int main(int argc, char **argv) {
   free(taken);
 
   Chunker c = { 0 };
-  c.out = fopen(argv[4], "wb");
-  if (!c.out) die(argv[4]);
+  c.out = fopen(out_path, "wb");
+  if (!c.out) die(out_path);
   if (deflateInit2(&c.zs, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK) { errno = 0; die("deflateInit2"); }
   c.bound = deflateBound(&c.zs, CHUNK);
   c.buf = alloc(CHUNK);

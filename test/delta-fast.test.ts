@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
-import { apply, ensureNativeDelta, makeApk, makeDelta, makeTree, parseHeader, readOld, sameBlocks, wholeFiles } from "../scripts/delta.ts";
+import { apply, ensureNativeDelta, makeApk, makeDelta, makeTree, makeTreeFromBuffer, parseHeader, readOld, sameBlocks, wholeFiles, type Range } from "../scripts/delta.ts";
 import * as delta from "../scripts/delta.ts";
 
 // scripts/delta-fast.c makes what delta.ts's own search makes: the same bsdiff records byte for byte (only their
@@ -150,6 +150,79 @@ test("a folder's and an apk's delta made by delta-fast.c give the package back",
   writeFileSync(join(dir, "old.apk"), zip([["index.bundle", js, true], ["lib.so", lib, false]]));
   writeFileSync(join(dir, "new.apk"), zip([["index.bundle", Buffer.concat([js.subarray(0, 40_000), Buffer.from("8147"), js.subarray(40_000)]), true], ["lib.so", edited(rand, lib, 5000), false]]));
   assert.equal(inC(() => makeApk(join(dir, "old.apk"), join(dir, "new.apk"), join(dir, "a.delta"))), 1);
+  // (makeApk check="skip" produces the exact same delta bytes)
+  assert.equal(inC(() => makeApk(join(dir, "old.apk"), join(dir, "new.apk"), join(dir, "a-skip.delta"), "skip")), 1);
+  assert.ok(readFileSync(join(dir, "a-skip.delta")).equals(readFileSync(join(dir, "a.delta"))));
+  // (makeTreeFromBuffer produces the exact same delta bytes as makeTree)
+  const ordered = Object.keys(files).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  const bufs = ordered.map((k) => files[k]!);
+  const ranges: Range[] = [];
+  for (let at = 0, i = 0; i < bufs.length; at += bufs[i]!.length, i++) ranges.push({ at, len: bufs[i]!.length });
+  inC(() => makeTreeFromBuffer(ordered, ranges, Buffer.concat(bufs), join(dir, "new"), join(dir, "d-buf.delta")));
+  assert.ok(readFileSync(join(dir, "d-buf.delta")).equals(readFileSync(join(dir, "d.delta"))));
+});
+
+test("delta-fast --files matches JS wholeFiles + sameBlocks + 4-arg delta-fast byte for byte", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-files-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = native!;
+  const runBoth = (what: string, old: Buffer, made: Buffer, oldFiles: Range[]) => {
+    const oldPath = join(dir, "old"), madePath = join(dir, "made");
+    const runsPath = join(dir, "runs"), filesPath = join(dir, "files");
+    const out4 = join(dir, "out4"), outFiles = join(dir, "outFiles");
+    writeFileSync(oldPath, old);
+    writeFileSync(madePath, made);
+    const runs = sameBlocks(old, made, oldFiles.length ? wholeFiles(old, oldFiles, made) : []);
+    const runsBin = Buffer.alloc(runs.length * 12);
+    runs.forEach((r, i) => { runsBin.writeUInt32LE(r.made, i * 12); runsBin.writeUInt32LE(r.old, i * 12 + 4); runsBin.writeUInt32LE(r.len, i * 12 + 8); });
+    writeFileSync(runsPath, runsBin);
+    const filesBin = Buffer.alloc(oldFiles.length * 8);
+    oldFiles.forEach((f, i) => { filesBin.writeUInt32LE(f.at, i * 8); filesBin.writeUInt32LE(f.len, i * 8 + 4); });
+    writeFileSync(filesPath, filesBin);
+    execFileSync(bin, [oldPath, madePath, runsPath, out4], { stdio: ["ignore", "ignore", "pipe"] });
+    execFileSync(bin, ["--files", oldPath, madePath, filesPath, outFiles], { stdio: ["ignore", "ignore", "pipe"] });
+    const b4 = readFileSync(out4), bf = readFileSync(outFiles);
+    assert.ok(bf.equals(b4), `${what}: --files output (${bf.length} B) must match 4-arg output (${b4.length} B) byte for byte`);
+  };
+
+  const rand = prng(314159);
+  // 1) Multi-file with same-prefix tie-breaking (len DESC, at ASC), short files, flat/zero blocks, and shifted large blocks
+  const prefix = random(rand, 256);
+  const fShort = random(rand, 100);
+  const fFlat = Buffer.alloc(4096, 0x00);
+  const fFlatAA = Buffer.alloc(1024, 0xaa);
+  const fSamePrefixShort = Buffer.concat([prefix, random(rand, 400)]);
+  const fSamePrefixLong = Buffer.concat([prefix, random(rand, 2000)]);
+  const fSamePrefixDup1 = Buffer.from(fSamePrefixLong);
+  const fSamePrefixDup2 = Buffer.from(fSamePrefixLong);
+  const fBig = texty(rand, 180_000);
+  const multi = blobOf([fShort, fFlat, fSamePrefixShort, fSamePrefixDup1, fFlatAA, fSamePrefixDup2, fBig]);
+  const multiMade = Buffer.concat([
+    Buffer.alloc(3000, 0x00),
+    fSamePrefixDup1,
+    random(rand, 333),
+    fSamePrefixShort,
+    Buffer.alloc(1500, 0xaa),
+    fBig.subarray(90_000),
+    random(rand, 123),
+    fBig.subarray(0, 90_000),
+    fShort,
+  ]);
+  runBoth("multi-file + tie-break + flat + shifted", multi.blob, multiMade, multi.ranges);
+
+  // 2) Same-hash collision candidates where first (longer) fails memcmp and second (shorter) matches
+  const fColLong = Buffer.concat([prefix, Buffer.from("A".repeat(1000))]);
+  const fColMid = Buffer.concat([prefix, Buffer.from("B".repeat(600))]);
+  const fColShort = Buffer.concat([prefix, Buffer.from("C".repeat(300))]);
+  const col = blobOf([fColLong, fColMid, fColShort, random(rand, 4000)]);
+  const colMade = Buffer.concat([random(rand, 50), fColShort, random(rand, 50), fColMid, random(rand, 50), fColLong]);
+  runBoth("same-prefix hash bucket fallback", col.blob, colMade, col.ranges);
+
+  // 3) Empty files list (sameBlocks only) with overlapping backward extension & repeated zero stretches
+  const r1 = random(rand, 2048), z = random(rand, 2048);
+  const ovOld = Buffer.concat([Buffer.alloc(4096), r1, r1.subarray(1536), z, Buffer.alloc(4096, 0x55)]);
+  const ovMade = Buffer.concat([Buffer.alloc(2048), r1, z, random(rand, 300), Buffer.alloc(4096, 0x55)]);
+  runBoth("empty files list + overlapping sameBlocks", ovOld, ovMade, []);
 });
 
 test("from PREFIXED_FROM old bytes delta-fast.c makes the delta by itself, the same records as delta.ts's, its size alike", { skip }, (t) => {
