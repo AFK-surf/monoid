@@ -92,7 +92,13 @@ fn[K : Hash + Eq, T] each_kept_settle(slot : View, kept : EachKept[K, T]?) -> Un
       Some((v, _, _, holding)) => {
         holding.val = false
         e.put_by.remove(k)
-        v.let_go()
+        if v.alive() {
+          if slot.tree.in_events > 0 || slot.tree.ways_going_at(slot.tree.logic) {
+            v.retire_parked()
+          } else {
+            v.let_go()
+          }
+        }
       }
       None => ()
     }

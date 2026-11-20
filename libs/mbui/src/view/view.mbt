@@ -1332,6 +1332,19 @@ pub struct Tree {
   /// how many ask for where things stand as each change comes, before it is taken (View::laid_before_causes): what is
   /// laid out otherwise by a change before it laid out and placed as that one comes, whether a frame came or not
   mut before_causes : Int
+  /// how many @motion.moves_for owners are awake (View::laid_before_moves): eager when transitions_only_set == 0,
+  /// deferred until frame or @view.transition entry otherwise
+  mut moves_causes : Int
+  /// latest change moment deferred by lazy moves_for settlement (-1.0: none pending)
+  mut unsettled_at : Double
+  /// whether no new non-standing/non-laying mutations have dirtied the tree since mark_unsettled
+  mut unsettled_clean : Bool
+  /// true while Tree::brought is laying out deferred lazy moves_for changes so derived bindings stay answered
+  mut settling_unsettled : Bool
+  /// true when a whole-tree @view.answering change (within is None) dirtied structure or bindings and awaits immediate layout settlement
+  mut answer_unsettled : Bool
+  /// evicted EachKept node slots (at, gen) retired immediately and awaiting slot recycling on next idle frame or dispose
+  parked_garbage : Array[(Int, Int)]
   /// how many of its nodes alive have a modal layer's scrim for a ground (View::scrim_under)
   mut scrims : Int
   /// laying out where things stand before a change (Tree::stand_before_cause): not again inside it
@@ -1775,6 +1788,12 @@ pub fn Tree::new(
     pending: [],
     drawn_due: false,
     before_causes: 0,
+    moves_causes: 0,
+    unsettled_at: -1.0,
+    unsettled_clean: false,
+    settling_unsettled: false,
+    answer_unsettled: false,
+    parked_garbage: [],
     scrims: 0,
     standing: false,
     moves_unlaid: false,
@@ -2773,6 +2792,14 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   if self.nodes.length() > 0 && self.nodes[0].live {
     self.root().let_go()
   }
+  self.drain_parked_garbage()
+  self.unsettled_at = -1.0
+  self.unsettled_clean = false
+  self.answer_unsettled = false
+  if !unsettled_trees.is_empty() {
+    unsettled_trees.retain(fn(t) { !physical_equal(t, self) })
+    unsettled_trees.shrink_to_fit()
+  }
   if node_rests.length() > 0 {
     node_rests.retain(fn(e) { !physical_equal(e.1.tree, self) })
   }
@@ -2975,6 +3002,9 @@ fn Tree::layout_marked_at(self : Tree, at : Int, within? : Bool = false) -> Unit
     self.room_marked_at(at)
     return
   }
+  if !self.standing && !self.laying {
+    self.unsettled_clean = false
+  }
   if self.sources && !self.layout_due && self.layout_first < 0 {
     self.layout_first = at
   }
@@ -3131,6 +3161,9 @@ fn Tree::look_marked_at(self : Tree, at : Int) -> Unit {
 ///|
 /// Its place (how far it is drawn off, how opaque) to be worked out again, what it holds with it.
 fn Tree::place_marked_at(self : Tree, at : Int) -> Unit {
+  if !self.standing && !self.laying {
+    self.unsettled_clean = false
+  }
   let n = self.nodes[at]
   self.touched(at, words=false)
   if !n.place_due {
@@ -3566,12 +3599,18 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     }
   })
   w.on_marked(fn() {
+    if !self.standing && !self.laying {
+      self.unsettled_clean = false
+    }
     // (marked as an answer writes what it read: what it sets as it runs is the answer's)
     // (or, where only a transition moves its node, outside one, by no clock: its change at once, transition.mbt)
     if b.live &&
       (answering_now() ||
-      (b.at >= 0 && !(self.ticking || self.laying || self.handing) && !self.transition_gate(b.at))) {
+      (b.at >= 0 && !(self.ticking || (self.laying && !self.settling_unsettled) || self.handing) && !self.transition_gate(b.at))) {
       b.answered = true
+    }
+    if b.live && answering_depth.val > 0 && answer_held.val.is_empty() {
+      self.answer_unsettled = true
     }
     if b.live {
       let told = transition_marked()
@@ -3793,9 +3832,14 @@ fn Tree::structured_by(
   }
   // (marked as it is told by an answer: settled as that ends)
   w.on_marked(fn() {
-    if answering_depth.val > 0 && !queued.val {
-      queued.val = true
-      answer_marked.push((self, settle))
+    if answering_depth.val > 0 {
+      if answer_held.val.is_empty() {
+        self.answer_unsettled = true
+      }
+      if !queued.val {
+        queued.val = true
+        answer_marked.push((self, settle))
+      }
     }
     // (marked inside a transition: its next run is that transition's, run when it may)
     let told = transition_marked()
@@ -6596,6 +6640,31 @@ pub fn View::laid_before_causes(self : View) -> Unit {
 }
 
 ///|
+/// Like `View::laid_before_causes`, for `@motion.moves_for`: settles eagerly when `transitions_only_set == 0`
+/// (un-gated trees) and defers settlement until a frame or the entry of `@view.transition` when `transitions_only` is
+/// active, avoiding redundant synchronous full-tree layout at the end of non-transition events.
+pub fn View::laid_before_moves(self : View) -> Unit {
+  guard self.alive() else { return }
+  self.tree.moves_causes = self.tree.moves_causes + 1
+  let held = Ref(true)
+  self.on_rest(
+    fn() {
+      if held.val {
+        held.val = false
+        self.tree.moves_causes = self.tree.moves_causes - 1
+      }
+    },
+    wake=fn() {
+      if !held.val {
+        held.val = true
+        self.tree.moves_causes = self.tree.moves_causes + 1
+      }
+    },
+  )
+  |> ignore
+}
+
+///|
 /// Where it was last placed in the window, and how big (each that holds it where it was placed too: its layout's place
 /// and its offset), drawn off and grown or shrunk by nothing: as it stood before a change told now is laid out, in the
 /// terms of laid_window_now (for what moves from there for that change's cause, said once at that moment).
@@ -9165,12 +9234,13 @@ fn Node::let_go_held(self : Node) -> Unit {
 /// cleanups run), what goes with it run, its callback and measure dropped, its index free.
 fn View::let_go(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
+  let in_subtree = self.tree.letting.contains(n.parent)
   // (on a flight's way, or one of an id: that flight over, its id counted no more, shared.mbt)
   self.tree.share_let_go(self.at)
   // (what the pointer is over let go of, it or one it holds: pointed at what holds it that takes the pointer there
   // instead, or no more where none does, View::pointed_in; what it is over then the host's to find again, as what takes
   // it changed)
-  if self.tree.pointed_within_at(self.at) {
+  if !in_subtree && self.tree.pointed_within_at(self.at) {
     self.tree.pointed_to(self.tree.pointed_fallback_above(self.at))
   }
   // (what it holds as this begins, each by its handle: one's going may take another out of it (View::lives_with, the
@@ -9226,10 +9296,14 @@ fn View::let_go(self : View) -> Unit {
     }
   }
   // (a node let go is made another's (Tree's `free`): what these held let go of with it, not kept in their slots)
-  n.leavings.clear()
-  n.leavings.shrink_to_fit()
-  n.backs.clear()
-  n.backs.shrink_to_fit()
+  if !n.leavings.is_empty() {
+    n.leavings.clear()
+    n.leavings.shrink_to_fit()
+  }
+  if !n.backs.is_empty() {
+    n.backs.clear()
+    n.backs.shrink_to_fit()
+  }
   n.leave_told = false
   n.on_press = None
   n.on_double_press = None
@@ -9274,7 +9348,9 @@ fn View::let_go(self : View) -> Unit {
   n.on_pointer_moved = None
   n.pointed_in_cell = None
   // (the focus on it: let go of with it, what has it told so)
-  self.tree.focus_lost_in(self.at)
+  if !in_subtree {
+    self.tree.focus_lost_in(self.at)
+  }
   n.focusable = false
   n.focus_keys = 0
   n.focus_tab = true
@@ -9323,7 +9399,7 @@ fn View::let_go(self : View) -> Unit {
   n.flex.children_cut(0)
   n.flex.holds_gone = false
   let parent = n.parent
-  if parent >= 0 {
+  if !in_subtree && parent >= 0 {
     self.tree.marked_up(parent, true, true, false, false, true)
   }
   n.parent = -1
@@ -9343,11 +9419,97 @@ fn View::let_go(self : View) -> Unit {
   // (its run taken out of the order by itself, the rest as it was; one held by what is being let go, none: its run goes
   // with that one's. Not by how deep in letting go this is: what a scope let go of as it stopped, in another layer, is
   // held by none of those and goes by itself)
-  if !self.tree.letting.contains(parent) {
+  if !in_subtree {
     self.tree.order_taken_out(self.at, self.gen, parent)
   }
   self.tree.work.let_go = self.tree.work.let_go + 1
-  self.tree.hits_bump()
+  if !in_subtree {
+    self.tree.hits_bump()
+  }
+}
+
+///|
+/// Phase 1 of deferred EachKept eviction: post-order teardown of live subscriptions, `stop`/`props`/`drops` (`View::owns`
+/// and topic releases), and tree-level counters, deferring heavy slot/flex/host cleanup to `Tree::drain_parked_garbage`.
+fn View::retire_parked(self : View) -> Unit {
+  guard self.live() is Some(n) else { return }
+  self.tree.share_let_go(self.at)
+  let kids = n.kids.map(fn(k) { self.tree.handle(k) })
+  n.kids.clear()
+  for k in kids {
+    k.retire_parked()
+  }
+  n.live = false
+  if n.on_back is Some(_) || n.on_back_step is Some(_) {
+    match self.tree.backs.search(self.at) {
+      Some(i) => self.tree.backs.remove(i) |> ignore
+      None => ()
+    }
+  }
+  match self.tree.modals.search(self.at) {
+    Some(i) => {
+      self.tree.modals.remove(i) |> ignore
+      self.tree.modals_told()
+    }
+    None => ()
+  }
+  match n.stop {
+    Some(stop) => stop()
+    None => ()
+  }
+  n.stop = None
+  n.owner = None
+  n.takes = None
+  self.tree.takes_off(n)
+  n.takes_ver = None
+  if !n.props.is_empty() {
+    let props = n.props.copy()
+    n.props.clear()
+    for p in props {
+      (p.1)()
+    }
+  }
+  if !n.drops.is_empty() {
+    let drops = n.drops.copy()
+    n.drops.clear()
+    for d in drops {
+      (d.1)()
+    }
+  }
+  match self.tree.backing {
+    Some((b, _)) if b.at == self.at && b.gen == self.gen => self.tree.backing = None
+    _ => ()
+  }
+  if n.behind {
+    self.tree.behind_set -= 1
+  }
+  if n.transitions_only {
+    self.tree.transitions_only_set -= 1
+  }
+  n.transitions_only = false
+  n.behind = false
+  if n.default_press {
+    self.tree.defaults_set -= 1
+  }
+  n.default_press = false
+  if n.bones != 0L {
+    self.tree.bones_set -= 1
+  }
+  n.bones = 0L
+  self.drag_ended()
+  if n.inputs_own {
+    n.inputs_own = false
+    self.tree.inputs_count(self.at, -1)
+  }
+  match self.tree.held {
+    Some(h) if h.at == self.at && h.gen == self.gen => self.tree.held_to(None)
+    _ => ()
+  }
+  if self.tree.hosting == self.at {
+    self.tree.hosting = -1
+  }
+  n.parent = -1
+  self.tree.parked_garbage.push((self.at, self.gen))
 }
 
 ///|
@@ -11791,6 +11953,166 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
 }
 
 ///|
+// kept across runs: trees with pending lazy moves_for settlement, removed on layout or disposal
+let unsettled_trees : Array[Tree] = []
+
+///|
+fn Tree::eager_settle(self : Tree) -> Bool {
+  self.before_causes > 0 ||
+  (self.moves_causes > 0 && (self.transitions_only_set == 0 || self.answer_unsettled))
+}
+
+///|
+fn Tree::mark_unsettled(self : Tree, at : Double) -> Unit {
+  if self.gone || self.last_w <= 0.0 || self.standing {
+    return
+  }
+  if !(self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+    self.scrolls_shown_at(at)
+    return
+  }
+  if at > self.unsettled_at {
+    self.unsettled_at = at
+  }
+  self.unsettled_clean = true
+  if !unsettled_trees.iter().any(fn(t) { physical_equal(t, self) }) {
+    unsettled_trees.push(self)
+  }
+}
+
+///|
+fn Tree::clear_unsettled(self : Tree) -> Unit {
+  self.unsettled_clean = false
+  self.answer_unsettled = false
+  if self.unsettled_at >= 0.0 {
+    self.unsettled_at = -1.0
+    if !unsettled_trees.is_empty() {
+      unsettled_trees.retain(fn(t) { !physical_equal(t, self) })
+      unsettled_trees.shrink_to_fit()
+    }
+  }
+}
+
+///|
+fn settle_unsettled_for_transition() -> Unit {
+  if unsettled_trees.is_empty() {
+    return
+  }
+  let pending = unsettled_trees.copy()
+  for t in pending {
+    if !t.gone && t.moves_causes > 0 && t.unsettled_at >= 0.0 && t.unsettled_clean && !t.laying && !t.standing {
+      let cause_was = t.cause_at
+      t.cause_at = t.unsettled_at
+      t.settle_layout_at(t.unsettled_at)
+      t.cause_at = cause_was
+    }
+  }
+}
+
+///|
+fn Tree::ways_going_at(self : Tree, at : Double) -> Bool {
+  self.ways_end() > at || self.clock_read()
+}
+
+///|
+/// Phase 2 of deferred EachKept eviction: finish slot/flex/host cleanup for retired parked nodes on an idle frame or
+/// `Tree::dispose`.
+fn Tree::drain_parked_garbage(self : Tree) -> Unit {
+  if self.parked_garbage.is_empty() {
+    return
+  }
+  let garbage = self.parked_garbage.copy()
+  self.parked_garbage.clear()
+  self.parked_garbage.shrink_to_fit()
+  for entry in garbage {
+    let (at, gen) = entry
+    if at < 0 || at >= self.nodes.length() {
+      continue
+    }
+    let n = self.nodes[at]
+    if n.gen != gen || n.live {
+      continue
+    }
+    n.props.shrink_to_fit()
+    n.drops.shrink_to_fit()
+    if !n.leavings.is_empty() {
+      n.leavings.clear()
+      n.leavings.shrink_to_fit()
+    }
+    if !n.backs.is_empty() {
+      n.backs.clear()
+      n.backs.shrink_to_fit()
+    }
+    n.leave_told = false
+    n.on_press = None
+    n.on_double_press = None
+    n.on_step = None
+    n.top_row = false
+    n.moves_window = false
+    n.on_menu = None
+    self.buttons_clear_at(at)
+    n.on_wheel = None
+    n.on_key = None
+    n.on_back = None
+    n.on_back_step = None
+    n.said = None
+    n.said_hidden = false
+    n.bone_whole = false
+    n.cut = false
+    n.pressed_cell = None
+    n.pointed_cell = None
+    n.ground_read = 0
+    n.ground_over_read = 0
+    n.on_pointer_moved = None
+    n.pointed_in_cell = None
+    n.focusable = false
+    n.focus_keys = 0
+    n.focus_tab = true
+    n.tab_by_stop = false
+    n.input_cell = None
+    n.cursor = None
+    n.as_ground = false
+    n.beside = None
+    n.beside_last = None
+    n.beside_point = None
+    n.beside_piece = None
+    n.focused_cell = None
+    n.focus_shown_cell = None
+    n.size_cell = None
+    n.shows = None
+    n.shows_across = false
+    n.shows_room = None
+    n.claims = None
+    n.claims_from = None
+    n.bounds_input = false
+    n.tucked_under = None
+    n.drawn_clear = None
+    n.bar_near = 0.0
+    n.bar_across = false
+    n.points = false
+    n.points_said = false
+    n.bar_near_cell = None
+    n.on_drag = None
+    n.drags_whole = false
+    n.drag_captures = false
+    n.drag_said = n.drag_said + 1
+    n.takes = None
+    n.flex.measure = None
+    n.flex.room = false
+    n.flex.children_cut(0)
+    n.flex.holds_gone = false
+    n.content = None
+    n.let_go_held()
+    self.removed.push({ at, gen })
+    self.free.push(at)
+    self.work.let_go = self.work.let_go + 1
+  }
+  self.draws_rev = self.draws_rev + 1
+  self.draws_any_rev = self.draws_any_rev + 1
+  self.hits_bump()
+}
+
+///|
 /// Once the change under way is told whole (a signal set outside, a batch of them, an event, a moment come on the
 /// timeline): where things stand then laid out and placed, where something asks (View::laid_before_causes), so that
 /// the next change, whenever it comes and whether a frame is drawn first or not, finds them placed as this one left
@@ -11798,7 +12120,7 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
 fn Tree::settle_after_change(self : Tree, at : Double) -> Unit {
   // (what laying out and placing things itself tells, its clock set to the change's moment and back, no change of its
   // own to settle after)
-  if self.before_causes <= 0 || self.standing {
+  if (self.before_causes <= 0 && self.moves_causes <= 0) || self.standing {
     return
   }
   // (of the change's own moment: the latest told in it)
@@ -11822,12 +12144,69 @@ fn Tree::settle_after_change(self : Tree, at : Double) -> Unit {
 /// Where things stand as of `at` laid out and placed now, where something asks (View::laid_before_causes): what was told
 /// worked out, laid out and placed as a frame would, nothing drawn.
 fn Tree::settle_now(self : Tree, at : Double) -> Unit {
-  if self.before_causes <= 0 || self.standing || self.last_w <= 0.0 {
+  if self.standing || self.last_w <= 0.0 {
+    return
+  }
+  if self.eager_settle() {
+    self.settle_layout_at(at)
+    return
+  }
+  if self.moves_causes > 0 {
+    self.settle_bindings_at(at)
+  }
+}
+
+///|
+/// Lightweight event-end settlement for `View::laid_before_moves` under `View::transitions_only`: drains pending
+/// property bindings (`bindings_due` / `pulls_marked` / `after_bindings`) without touching `clock`/`beat` or running
+/// `@flex.compute` / text measurement / `Tree::place`, then marks the tree unsettled if layout or placing remains due.
+fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
+  if self.standing || self.last_w <= 0.0 {
+    return
+  }
+  if !self.bindings_due.is_empty() || !self.pulls_marked.is_empty() || !self.after_bindings.is_empty() {
+    self.standing = true
+    @signals.untracked(fn() {
+      self.pull()
+      self.draining += 1
+      let mut i = 0
+      while i < self.bindings_due.length() {
+        let b = self.bindings_due[i]
+        if b.queued {
+          (b.run)()
+        }
+        i = i + 1
+      }
+      self.draining -= 1
+      self.bindings_due.clear()
+      self.bindings_due.release_unused(placeholder=bound_gone)
+      let still = self.pulls_marked.filter(fn(b) { b.live && b.marked })
+      self.pulls_marked.clear()
+      self.pulls_marked.append(still)
+      self.pulls_marked.release_unused(placeholder=bound_gone)
+      self.after_bindings_run()
+    })
+    self.standing = false
+    self.change_ended()
+  }
+  if self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty() {
+    self.marked()
+    self.mark_unsettled(at)
+  } else {
+    self.scrolls_shown_at(at)
+    self.clear_unsettled()
+  }
+}
+
+///|
+fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
+  if self.standing || self.last_w <= 0.0 {
     return
   }
   if !(self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
     // (nothing laid out again: what it holds stands where it was placed, its column where it is now (the hand moved it))
     self.scrolls_shown_at(at)
+    self.clear_unsettled()
     return
   }
   self.standing = true
@@ -11848,6 +12227,7 @@ fn Tree::settle_now(self : Tree, at : Double) -> Unit {
     })
   }
   self.standing = false
+  self.clear_unsettled()
   if self.work.passes > passes_was {
     self.withins_restored()
   }
@@ -12326,6 +12706,7 @@ pub fn Tree::bring_to(self : Tree, at : Double) -> Unit {
 ///|
 /// What was marked done, at the clock's now (Tree::frame, Tree::bring_to).
 fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
+  let had_unsettled = self.unsettled_at >= 0.0
   // what is due by now done (and the logic at `upto`, nothing due or not: what is said next is of then)
   self.advance(upto)
   let laying_was = self.laying
@@ -12333,7 +12714,10 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   self.pass_via = via
   // (what the changes of this moment owed of what is under the pointer: this pass lays it out and tells it)
   self.withins_owed = false
+  let settling_was = self.settling_unsettled
+  self.settling_unsettled = had_unsettled || self.unsettled_at >= 0.0
   self.laid_out(upto)
+  self.settling_unsettled = settling_was
   self.laying = laying_was
   // (container flies_in queued while building inside by_room during layout: pair once layout has placed the node)
   if !self.in_change() && self.pairs_asked {
@@ -12360,6 +12744,10 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
   // (what a change told in this frame's bindings left under a still pointer, at that change's moment)
   self.hand_now()
   self.sights_now()
+  self.clear_unsettled()
+  if !self.in_change() && !self.ways_going_at(upto) {
+    self.drain_parked_garbage()
+  }
 }
 
 ///|
@@ -12381,6 +12769,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     // (Tree::measured_now: a change's keys measured, a column told it reaches further) is to place it otherwise)
     if !self.layout_due && self.places_due.is_empty() {
       self.scrolls_shown_at(self.clock.untracked())
+      self.clear_unsettled()
     }
     return
   }
@@ -12585,6 +12974,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     self.withins_passing = false
   }
   self.scrolls_shown_at(self.clock.untracked())
+  self.clear_unsettled()
 }
 
 ///|

@@ -1645,6 +1645,7 @@ pub fn View::keyboard_inset(Self) -> Double
 pub fn View::keymap(Self, Live[Keymap]) -> Self
 pub fn View::kids(Self) -> Array[Self]
 pub fn View::laid_before_causes(Self) -> Unit
+pub fn View::laid_before_moves(Self) -> Unit
 #callsite(autofill(loc))
 pub fn View::laid_nowhere(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::laid_place_now(Self) -> (Double, Double, Double, Double)

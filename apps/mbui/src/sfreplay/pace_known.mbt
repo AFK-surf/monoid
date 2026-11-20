@@ -28,7 +28,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "quote": [7],
   "service-page": [7],
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
-  "drive-lend": [7],
   "drive-play": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
@@ -98,9 +97,10 @@ let strict_diverged_known : Map[String, Array[(Double, String)]] = {
   // 22133.3 asks doing again. The run's device took it in the frame that built the next page, behind a message before
   // it, so nothing was let go. Gone with #5135 (what is read kept by its topic while a page is covered), whose merge
   // takes this out.
+  // (timestamps shifted +5.6108ms with lazy moves_for settlement: non-transition messages no longer lay out between frames)
   "lock-wait": [
-    (23096.97412109375, "{\"id\":14,\"unsubscribe\":true}"),
-    (23100.0, "{\"id\":24,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
+    (23102.5849609375, "{\"id\":14,\"unsubscribe\":true}"),
+    (23116.666666666668, "{\"id\":24,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
   ],
 }
 
