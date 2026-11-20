@@ -4,24 +4,9 @@
 // what is under it is, and a lens over words that a finger drags.
 
 ///|
-/// GLSL's smoothstep(`e0`, `e1`, `x`).
-fn smoothstep(e0 : Double, e1 : Double, x : Double) -> Double {
-  if e0 == e1 {
-    return if x < e0 { 0.0 } else { 1.0 }
-  }
-  let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0)
-  t * t * (3.0 - 2.0 * t)
-}
-
-///|
-/// How many bands of glass the progressive blur's mask is drawn in: its lower half's fade, a band a slice, each as seen
-/// as the mask is at its middle.
-let blur_slices : Int = 16
-
-///|
 /// A progressive blur in `parent` (ProgressiveBlurContent): a band 128 high across what holds it, what is under it
 /// blurred by 4 with the tint over 80% of it (white, or grey in the dark), whole down its upper half and fading out to
-/// nothing at its foot (smoothstep(h, h / 2, y), the catalog's AlphaMask shader); `words` in its middle. The node.
+/// nothing at its foot via a single frosted glass layer masked by `fades`; `words` in its middle. The node.
 #callsite(autofill(loc))
 pub fn liquid_progressive_blur_node(
   parent : @view.View,
@@ -33,27 +18,16 @@ pub fn liquid_progressive_blur_node(
     b.height(Is(Some(height))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
     let glass = fn() {
       let tint = alpha(colors().blur_tint, blur_band_tint)
-      @paint.Glass::frosted(blur=blur_band_blur, tint~, solid=colors().blur_tint, contained=true)
+      @paint.Glass::frosted(blur=blur_band_blur, tint~, solid=colors().blur_tint, contained=false)
     }
-    // (its upper half whole, its lower half a slice at a time, each as the mask is at its middle)
-    b.box(fn(top) {
-      top.over(Is(true)).height(Is(Some(height / 2.0))).glass(By(fn() { Some(glass()) })) |> ignore
-    })
-    |> ignore
-    let slice = height / 2.0 / blur_slices.to_double()
-    for k in 0..<blur_slices {
-      let y = height / 2.0 + k.to_double() * slice
-      b.box(fn(s) {
-        s
-        .over(Is(true))
-        .height(Is(Some(slice)))
-        .offset(Is((0.0, y)))
-        .glass(By(fn() { Some(glass()) }))
-        .alpha(Is(smoothstep(height, height / 2.0, y + slice / 2.0)))
-        |> ignore
+    b.box(fn(mask) {
+      mask.over(Is(true)).fades(Is((0.0, 0.0, 0.0, height / 2.0))) |> ignore
+      mask.box(fn(layer) {
+        layer.over(Is(true)).glass(By(fn() { Some(glass()) })) |> ignore
       })
       |> ignore
-    }
+    })
+    |> ignore
     b.box(fn(w) { w.words(By(words), look=words_at(type_body)).ink(By(fn() { colors().content })) |> ignore }) |> ignore
   })
 }

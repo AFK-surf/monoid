@@ -135,12 +135,12 @@ fn chosen_at() -> Array[String] raise {
 ///|
 test "a run of choices is drawn the same at 60, 120, 24 and 7 frames a second" {
   inspect(chosen_at().join("\n"), content=(
-    #|Overview false 32 432.5,12,415
-    #|Interactive false 35 432.5,12,415
-    #|Interactive true 35 432.5,12,415
-    #|Overview true 32 432.5,12,415
-    #|Overview false 32 432.5,12,415
-    #| false 32 
-    #|Overview false 32 432.5,12,415
+    #|Overview false 15 432.5,12,415
+    #|Interactive false 18 432.5,12,415
+    #|Interactive true 18 432.5,12,415
+    #|Overview true 15 432.5,12,415
+    #|Overview false 15 432.5,12,415
+    #| false 15 
+    #|Overview false 15 432.5,12,415
   ))
 }

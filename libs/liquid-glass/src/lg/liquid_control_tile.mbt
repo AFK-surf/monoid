@@ -6,8 +6,8 @@
 // tile lights it where it is (InteractiveHighlight), as a LiquidButton's.
 
 ///|
-/// A tile's glass (iOS 27 regular liquid glass), lit by a finger at `spot` while `light > 0.01`.
-fn tile_glass(angle : Double, light : Double, spot : (Double, Double)?) -> @paint.Glass {
+/// A tile's glass (iOS 27 regular liquid glass).
+fn tile_glass(angle : Double) -> @paint.Glass {
   ignore(angle)
   let d = is_dark()
   @paint.Glass::liquid(
@@ -21,7 +21,7 @@ fn tile_glass(angle : Double, light : Double, spot : (Double, Double)?) -> @pain
     chroma=0.0,
     merge=0.0,
     adaptive=false,
-    spot=if light > 0.01 { spot } else { None },
+    spot=None,
   )
 }
 
@@ -71,10 +71,17 @@ pub fn liquid_card_node(
     .height(Is(Some(h)))
     .shrink(Is(0.0))
     .radius(Is(radius))
-    .glass(By(fn() {
-      let p = ih.pressed(c)
-      Some(tile_glass(angle, p, if p > 0.0 { Some(ih.spot(c, w, h)) } else { None }))
-    }))
+    .glass(By(fn() { Some(tile_glass(angle)) }))
+    |> ignore
+    c.box(fn(ov) {
+      ov
+      .over(Is(true))
+      .points(Is(false))
+      .radius(Is(radius))
+      .ground(Is(white))
+      .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) * 0.14 }))
+      |> ignore
+    })
     |> ignore
     content(c)
   }

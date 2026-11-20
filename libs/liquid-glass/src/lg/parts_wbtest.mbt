@@ -160,6 +160,58 @@ test "liquid bottom tabs: a tab is chosen by a press, by the arrow keys and by t
 }
 
 ///|
+test "liquid bottom tabs: pressing an unselected tab lifts the lens there immediately and drags to another tab" {
+  let chosen = @signals.signal(0)
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=tab_lens_held_scale)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs", drag~)
+      |> ignore
+    })
+    |> ignore
+  })
+  let node = drag.node.val.unwrap()
+  let (x1, y1) = middle(t, Tab, "Search")
+  let (x2, _) = middle(t, Tab, "Me")
+  t.touch(0, x1, y1)
+  t.run_for(held_ms)
+  let lifted = (drag.pressed(node) > 0.5, drag.target() == 1.0, drag.value(node) > 0.5)
+  t.touch(1, x2, y1)
+  t.run_for(a_frame)
+  t.touch(2, x2, y1)
+  t.run_for(springs_out)
+  assert_eq((lifted, chosen.get(), t.get(Tab, label="Me").selected), ((true, true, true), 2, Some(true)))
+}
+
+///|
+test "a liquid button's press highlight decays monotonically to zero on release without bouncing back" {
+  let light = InteractiveHighlight::new()
+  let t = lg_case(fn(p) { liquid_button_node(p, fn() { "Send" }, fn() {  }, light~) |> ignore })
+  let (x, y) = middle(t, Button, "Send")
+  let node = light.node.val.unwrap()
+  t.touch(0, x, y)
+  t.run_for(springs_out)
+  let peak = light.pressed(node)
+  t.touch(2, x, y)
+  let mut prev = peak
+  let mut monotonic = true
+  let mut non_negative = true
+  for _ in 0..<35 {
+    t.run_for(a_frame)
+    let cur = light.pressed(node)
+    if cur > prev + 0.000001 {
+      monotonic = false
+    }
+    if cur < -0.000001 {
+      non_negative = false
+    }
+    prev = cur
+  }
+  assert_eq((peak > 0.99, monotonic, non_negative, prev < 0.001), (true, true, true, true))
+}
+
+///|
 test "a liquid dialog is read out a dialog while open, and goes by Escape, by Cancel and by its action" {
   let open = @signals.signal(true)
   let acted = Ref(0)
@@ -327,9 +379,9 @@ let glass_seen : Array[String] = [
   "40,140,400,64 40,228,77,48",
   "275.94,87.49,76.04,33.03 40,140,400,64 40,228,77,48",
   "40,140,400,64 40,228,77,48",
-  "33.75,138.8,414.95,66.39 209.25,133.81,151.6,76.38 40,228,77,48",
+  "33.75,138.8,414.95,66.39 209.79,133.72,150.55,76.55 40,228,77,48",
   "40,140,400,64 40,228,77,48",
-  "40,140,400,64 39.42,227.61,78.75,48.78",
+  "40,140,400,64 38.95,227.31,79.7,49.37",
   "40,140,400,64 40,228,77,48",
   "true 70 2",
 ]

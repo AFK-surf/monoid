@@ -85,25 +85,26 @@ fn wallpaper(w : @view.View) -> Unit {
     ]
     for b in blots {
       let (x, y, d, light, dark) = b
-      paper.box(fn(c) {
-        c
-        .over(Is(true))
-        .width(Is(Some(d)))
-        .height(Is(Some(d)))
-        .radius(Is(d / 2.0))
-        .offset(Is((x, y)))
-        .ground(By(fn() { if @lg.is_dark() { dark } else { light } }))
+      let cx = x + d / 2.0
+      let cy = y + d / 2.0
+      let layers = 24
+      for k in 0..<layers {
+        let t = k.to_double() / (layers - 1).to_double()
+        let ld = d * (1.80 - 1.65 * t)
+        let a = 0.026 + 0.024 * t
+        paper.box(fn(c) {
+          c
+          .over(Is(true))
+          .width(Is(Some(ld)))
+          .height(Is(Some(ld)))
+          .radius(Is(ld / 2.0))
+          .offset(Is((cx - ld / 2.0, cy - ld / 2.0)))
+          .ground(By(fn() { @lg.alpha(if @lg.is_dark() { dark } else { light }, a) }))
+          |> ignore
+        })
         |> ignore
-      })
-      |> ignore
+      }
     }
-    paper.box(fn(f) {
-      f
-      .over(Is(true))
-      .glass(Is(Some(@ui.Glass::frosted(blur=90.0, tint=0x00000000L, solid=0x808080FFL, contained=true))))
-      |> ignore
-    })
-    |> ignore
     for k in 0..<14 {
       paper.box(fn(s) {
         s
@@ -174,181 +175,221 @@ fn overview(root : @view.View, held : Held?, top : Double) -> Unit {
   let air = @signals.signal(false)
   let wifi = @signals.signal(true)
   let cell = @signals.signal(true)
-  root.box(fn(page) {
-    page.grow(Is(1.0)).row(Is(true)).gap(Is(48.0)).padding(Is((48.0, 40.0 + top, 48.0, 40.0))) |> ignore
-    page.box(fn(left) {
-      left.width(Is(Some(520.0))).shrink(Is(0.0)).gap(Is(28.0)) |> ignore
-      section(left, "LiquidButton", fn(s) {
-        row(s, fn(r) {
-          @lg.liquid_button_node(r, fn() { "Transparent Liquid Button" }, fn() {  }, light?=held.map(fn(h) { h.button }))
-          |> ignore
-          @lg.liquid_button_node(r, fn() { "Surface Liquid Button" }, fn() {  }, surface=0xFFFFFF4DL) |> ignore
-        })
-        row(s, fn(r) {
-          @lg.liquid_button_node(r, fn() { "Tinted Liquid Button" }, fn() {  }, tint=0x0088FFFFL) |> ignore
-          @lg.liquid_button_node(r, fn() { "Tinted Liquid Button" }, fn() {  }, tint=0xFF8D28FFL) |> ignore
-        })
-      })
-      section(left, "LiquidToggle", fn(s) {
-        row(s, fn(r) {
-          @lg.liquid_toggle_node(r, fn() { off.get() }, fn(v) { off.set(v) }, fn() { "Wi-Fi" }, drag?=held.map(fn(h) {
-            h.toggle
-          }))
-          |> ignore
-          @lg.liquid_toggle_node(r, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "Bluetooth" }) |> ignore
-        })
-      })
-      section(left, "LiquidSlider", fn(s) {
-        s.box(fn(b) {
-          b.width(Is(Some(460.0))) |> ignore
-          @lg.liquid_slider_node(b, fn() { level.get() }, fn(v) { level.set(v) }, fn() { "Brightness" }, drag?=held.map(fn(
-            h,
-          ) {
-            h.slider
-          }))
-          |> ignore
-        })
-        |> ignore
-      })
-      section(left, "LiquidBottomTabs", fn(s) {
-        s.box(fn(b) {
-          b.width(Is(Some(460.0))).gap(Is(20.0)) |> ignore
-          @lg.liquid_bottom_tabs_node(
-            b,
-            ["Tab 1", "Tab 2", "Tab 3"],
-            fn() { tab3.get() },
-            fn(i) { tab3.set(i) },
-            label="Tabs",
-            drag?=held.map(fn(h) { h.tabs }),
-            light?=held.map(fn(h) { h.tabs_light }),
-          )
-          |> ignore
-          @lg.liquid_bottom_tabs_node(
-            b,
-            ["Tab 1", "Tab 2", "Tab 3", "Tab 4"],
-            fn() { tab4.get() },
-            fn(i) { tab4.set(i) },
-            label="More tabs",
-          )
-          |> ignore
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-    page.box(fn(right) {
-      right.width(Is(Some(616.0))).shrink(Is(0.0)).gap(Is(28.0)) |> ignore
-      section(right, "Control center", fn(s) {
-        row(s, fn(r) {
-          let wide = @lg.tile_size * 2.0 + @lg.tile_gap
-          // (its corners round what it holds, 16 in: the catalog's 34 would cut closer to its capsules than they sit to
-          // its edge)
-          @lg.liquid_card_node(
-            r,
-            wide,
-            wide,
-            fn() { "Connectivity" },
-            radius=@lg.tile_inner / 2.0 + @lg.tile_gap,
-            light?=held.map(fn(h) { h.tile }),
-            press=fn() {  },
-            content=fn(c) {
-              c.padding(Is((@lg.tile_gap, @lg.tile_gap, @lg.tile_gap, @lg.tile_gap))).lies_along(Is(Between)) |> ignore
-              c.box(fn(rr) {
-                rr.row(Is(true)).lies_along(Is(Between)) |> ignore
-                @lg.liquid_control_item_node(rr, fn() { air.get() }, fn(v) { air.set(v) }, fn() { "Airplane mode" }) |> ignore
-                @lg.liquid_control_item_node(rr, fn() { wifi.get() }, fn(v) { wifi.set(v) }, fn() { "Wi-Fi" }) |> ignore
-              })
-              |> ignore
-              c.box(fn(rr) {
-                rr.row(Is(true)) |> ignore
-                @lg.liquid_control_item_node(rr, fn() { cell.get() }, fn(v) { cell.set(v) }, fn() { "Cellular" }) |> ignore
-              })
-              |> ignore
-            },
-          )
-          |> ignore
-          r.box(fn(col) {
-            col.gap(Is(@lg.tile_gap)) |> ignore
-            row(col, fn(rr) {
-              @lg.liquid_control_tile_node(rr, fn() { "Flight" }, fn() {  }) |> ignore
-              @lg.liquid_control_tile_node(rr, fn() { "Rotation" }, fn() {  }, angle=135.0) |> ignore
-            })
-            @lg.liquid_card_node(col, wide, @lg.tile_size, fn() { "Now playing" }) |> ignore
-          })
-          |> ignore
-        })
-      })
-      section(right, "Adaptive luminance", fn(s) {
-        row(s, fn(r) {
-          for lum in [0.92, 0.08] {
-            r.box(fn(b) {
-              b
-              .width(Is(Some(220.0)))
-              .height(Is(Some(200.0)))
-              .radius(Is(28.0))
-              .lines_up(Is(Some(Middle)))
-              .lies_along(Is(Middle))
-              .ground(Is(if lum > 0.5 { 0xF4F4F4FFL } else { 0x1C1C1EFFL }))
-              |> ignore
-              b.box(fn(stripes) {
-                // (six lines, 32 from its top and 24 from its foot, cut to its corners: the card's shadow over it is not)
-                stripes.over(Is(true)).clips(Is(true)).radius(Is(28.0)).padding(Is((0.0, 32.0, 0.0, 0.0))).gap(Is(24.0)) |> ignore
-                for _ in 0..<6 {
-                  stripes.box(fn(line) {
-                    line.height(Is(Some(4.0))).ground(Is(if lum > 0.5 { 0xD0D0D8FFL } else { 0x3A3A44FFL })) |> ignore
-                  })
-                  |> ignore
-                }
-              })
-              |> ignore
-              @lg.liquid_adaptive_surface_node(b, fn() { lum }, size=150.0) |> ignore
-            })
+  let sc = @view.Scroll::new()
+  root.by_room(fn(host, room) {
+    let wide_layout = fn() { room.width() >= 1260.0 }
+    let pad_x = fn() { if wide_layout() { 48.0 } else { 24.0 } }
+    let pad_y = fn() { if wide_layout() { 40.0 } else { 24.0 } }
+    let col_gap = fn() { if wide_layout() { 48.0 } else { 28.0 } }
+    let left_w = fn() {
+      if wide_layout() {
+        520.0
+      } else {
+        let avail = @lg.clamp(room.width() - 2.0 * pad_x() - col_gap(), 400.0, 1200.0)
+        (avail * 0.48).floor()
+      }
+    }
+    let right_w = fn() {
+      if wide_layout() {
+        616.0
+      } else {
+        let avail = @lg.clamp(room.width() - 2.0 * pad_x() - col_gap(), 400.0, 1200.0)
+        avail - left_w()
+      }
+    }
+    let slider_tabs_w = fn() {
+      if wide_layout() {
+        460.0
+      } else {
+        let lw = left_w()
+        if lw < 460.0 { lw } else { 460.0 }
+      }
+    }
+    let adaptive_card_w = fn() {
+      if wide_layout() {
+        220.0
+      } else {
+        let aw = ((right_w() - 16.0) / 2.0).floor()
+        if aw < 220.0 { aw } else { 220.0 }
+      }
+    }
+    host.grow(Is(1.0)).scrolls(sc, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(page) {
+      page.row(Is(true)).gap(By(col_gap)).padding(By(fn() { (pad_x(), pad_y() + top, pad_x(), pad_y()) })) |> ignore
+      page.box(fn(left) {
+        left.width(By(fn() { Some(left_w()) })).shrink(Is(0.0)).gap(Is(28.0)) |> ignore
+        section(left, "LiquidButton", fn(s) {
+          row(s, fn(r) {
+            @lg.liquid_button_node(r, fn() { "Transparent Liquid Button" }, fn() {  }, light?=held.map(fn(h) { h.button }))
             |> ignore
-          }
+            @lg.liquid_button_node(r, fn() { "Surface Liquid Button" }, fn() {  }, surface=0xFFFFFF4DL) |> ignore
+          })
+          row(s, fn(r) {
+            @lg.liquid_button_node(r, fn() { "Tinted Liquid Button" }, fn() {  }, tint=0x0088FFFFL) |> ignore
+            @lg.liquid_button_node(r, fn() { "Tinted Liquid Button" }, fn() {  }, tint=0xFF8D28FFL) |> ignore
+          })
         })
-      })
-      section(right, "Progressive blur", fn(s) {
-        s.box(fn(b) {
-          b.radius(Is(24.0)).clips(Is(true)) |> ignore
-          b.box(fn(text) {
-            text.padding(Is((20.0, 16.0, 20.0, 16.0))).ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.5) })) |> ignore
-            text.box(fn(t) {
-              t.words(Is(lorem), look=@lg.words_at(16.0, wrap=true)).ink(By(fn() { @lg.colors().content })) |> ignore
-            })
+        section(left, "LiquidToggle", fn(s) {
+          row(s, fn(r) {
+            @lg.liquid_toggle_node(r, fn() { off.get() }, fn(v) { off.set(v) }, fn() { "Wi-Fi" }, drag?=held.map(fn(h) {
+              h.toggle
+            }))
+            |> ignore
+            @lg.liquid_toggle_node(r, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "Bluetooth" }) |> ignore
+          })
+        })
+        section(left, "LiquidSlider", fn(s) {
+          s.box(fn(b) {
+            b.width(By(fn() { Some(slider_tabs_w()) })) |> ignore
+            @lg.liquid_slider_node(b, fn() { level.get() }, fn(v) { level.set(v) }, fn() { "Brightness" }, drag?=held.map(fn(
+              h,
+            ) {
+              h.slider
+            }))
             |> ignore
           })
           |> ignore
-          b.box(fn(o) {
-            o.over(Is(true)) |> ignore
-            @lg.liquid_progressive_blur_node(o, height=96.0) |> ignore
+        })
+        section(left, "LiquidBottomTabs", fn(s) {
+          s.box(fn(b) {
+            b.width(By(fn() { Some(slider_tabs_w()) })).gap(Is(20.0)) |> ignore
+            @lg.liquid_bottom_tabs_node(
+              b,
+              ["Tab 1", "Tab 2", "Tab 3"],
+              fn() { tab3.get() },
+              fn(i) { tab3.set(i) },
+              label="Tabs",
+              drag?=held.map(fn(h) { h.tabs }),
+              light?=held.map(fn(h) { h.tabs_light }),
+            )
+            |> ignore
+            @lg.liquid_bottom_tabs_node(
+              b,
+              ["Tab 1", "Tab 2", "Tab 3", "Tab 4"],
+              fn() { tab4.get() },
+              fn(i) { tab4.set(i) },
+              label="More tabs",
+            )
+            |> ignore
           })
           |> ignore
         })
-        |> ignore
       })
-      section(right, "Magnifier", fn(s) {
-        @lg.liquid_magnifier_node(s, fn() { lorem }, at=(60.0, 40.0)) |> ignore
+      |> ignore
+      page.box(fn(right) {
+        right.width(By(fn() { Some(right_w()) })).shrink(Is(0.0)).gap(Is(28.0)) |> ignore
+        section(right, "Control center", fn(s) {
+          row(s, fn(r) {
+            let wide = @lg.tile_size * 2.0 + @lg.tile_gap
+            // (its corners round what it holds, 16 in: the catalog's 34 would cut closer to its capsules than they sit to
+            // its edge)
+            @lg.liquid_card_node(
+              r,
+              wide,
+              wide,
+              fn() { "Connectivity" },
+              radius=@lg.tile_inner / 2.0 + @lg.tile_gap,
+              light?=held.map(fn(h) { h.tile }),
+              press=fn() {  },
+              content=fn(c) {
+                c.padding(Is((@lg.tile_gap, @lg.tile_gap, @lg.tile_gap, @lg.tile_gap))).lies_along(Is(Between)) |> ignore
+                c.box(fn(rr) {
+                  rr.row(Is(true)).lies_along(Is(Between)) |> ignore
+                  @lg.liquid_control_item_node(rr, fn() { air.get() }, fn(v) { air.set(v) }, fn() { "Airplane mode" }) |> ignore
+                  @lg.liquid_control_item_node(rr, fn() { wifi.get() }, fn(v) { wifi.set(v) }, fn() { "Wi-Fi" }) |> ignore
+                })
+                |> ignore
+                c.box(fn(rr) {
+                  rr.row(Is(true)) |> ignore
+                  @lg.liquid_control_item_node(rr, fn() { cell.get() }, fn(v) { cell.set(v) }, fn() { "Cellular" }) |> ignore
+                })
+                |> ignore
+              },
+            )
+            |> ignore
+            r.box(fn(col) {
+              col.gap(Is(@lg.tile_gap)) |> ignore
+              row(col, fn(rr) {
+                @lg.liquid_control_tile_node(rr, fn() { "Flight" }, fn() {  }) |> ignore
+                @lg.liquid_control_tile_node(rr, fn() { "Rotation" }, fn() {  }, angle=135.0) |> ignore
+              })
+              @lg.liquid_card_node(col, wide, @lg.tile_size, fn() { "Now playing" }) |> ignore
+            })
+            |> ignore
+          })
+        })
+        section(right, "Adaptive luminance", fn(s) {
+          row(s, fn(r) {
+            for lum in [0.92, 0.08] {
+              r.box(fn(b) {
+                b
+                .width(By(fn() { Some(adaptive_card_w()) }))
+                .height(Is(Some(200.0)))
+                .radius(Is(28.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .ground(Is(if lum > 0.5 { 0xF4F4F4FFL } else { 0x1C1C1EFFL }))
+                |> ignore
+                b.box(fn(stripes) {
+                  // (six lines, 32 from its top and 24 from its foot, cut to its corners: the card's shadow over it is not)
+                  stripes.over(Is(true)).clips(Is(true)).radius(Is(28.0)).padding(Is((0.0, 32.0, 0.0, 0.0))).gap(Is(24.0)) |> ignore
+                  for _ in 0..<6 {
+                    stripes.box(fn(line) {
+                      line.height(Is(Some(4.0))).ground(Is(if lum > 0.5 { 0xD0D0D8FFL } else { 0x3A3A44FFL })) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+                @lg.liquid_adaptive_surface_node(b, fn() { lum }, size=150.0) |> ignore
+              })
+              |> ignore
+            }
+          })
+        })
+        section(right, "Progressive blur", fn(s) {
+          s.box(fn(b) {
+            b.radius(Is(24.0)).clips(Is(true)) |> ignore
+            b.box(fn(text) {
+              text.padding(Is((20.0, 16.0, 20.0, 16.0))).ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.5) })) |> ignore
+              text.box(fn(t) {
+                t.words(Is(lorem), look=@lg.words_at(16.0, wrap=true)).ink(By(fn() { @lg.colors().content })) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            b.box(fn(o) {
+              o.over(Is(true)) |> ignore
+              @lg.liquid_progressive_blur_node(o, height=96.0) |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        section(right, "Magnifier", fn(s) {
+          @lg.liquid_magnifier_node(s, fn() { lorem }, at=(60.0, 40.0)) |> ignore
+        })
       })
+      |> ignore
     })
     |> ignore
+    match held {
+      Some(h) =>
+        @signals.untracked(fn() {
+          // (each held as a finger holds it: the button pressed and pulled right, the toggle's thumb and the slider's,
+          // the tabs' lens between its first two tabs, a tile pressed)
+          h.button.down(60.0, 24.0, 240.0, 48.0)
+          h.button.moved(120.0, 34.0)
+          h.toggle.press()
+          h.slider.press()
+          h.tabs.press()
+          h.tabs.update_value(0.55)
+          h.tabs_light.down(80.0, 32.0, 460.0, 64.0)
+          h.tile.down(110.0, 40.0, 152.0, 152.0)
+        })
+      None => ()
+    }
   })
   |> ignore
-  match held {
-    Some(h) =>
-      @signals.untracked(fn() {
-        // (each held as a finger holds it: the button pressed and pulled right, the toggle's thumb and the slider's,
-        // the tabs' lens between its first two tabs, a tile pressed)
-        h.button.down(60.0, 24.0, 240.0, 48.0)
-        h.button.moved(120.0, 34.0)
-        h.toggle.press()
-        h.slider.press()
-        h.tabs.press()
-        h.tabs.update_value(0.55)
-        h.tabs_light.down(80.0, 32.0, 460.0, 64.0)
-        h.tile.down(110.0, 40.0, 152.0, 152.0)
-      })
-    None => ()
-  }
 }
 
 ///|

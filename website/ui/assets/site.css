@@ -669,9 +669,15 @@ a.card:has(> .demo):hover { background: none; }
   }
   .menu-toggle svg { width: 20px; height: 20px; }
   body.menu-open { overflow: hidden; }
+  body.menu-open .bar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--ground);
+  }
   body.menu-open .nav {
     display: flex; flex-direction: column; align-items: stretch;
-    position: fixed; inset: var(--bar-h) 0 0 0; background: var(--ground);
+    position: fixed; inset: var(--bar-h) 0 0 0; height: calc(100dvh - var(--bar-h)); z-index: 60;
+    background: var(--ground);
     padding: 8px 16px 32px; overflow-y: auto; gap: 0;
   }
   body.menu-open .nav > a, body.menu-open .nav > button {

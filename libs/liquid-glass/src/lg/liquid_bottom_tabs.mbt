@@ -12,9 +12,8 @@
 // each tab is drawn in a colour going from its words' to the accent as far as the lens is over it.
 
 ///|
-/// The bar's glass (iOS 27 regular liquid glass calibrated for 56–64pt controls), lit by a finger at `spot` while
-/// `light > 0.01`.
-fn tabs_glass(light : Double, spot : (Double, Double)?) -> @paint.Glass {
+/// The bar's glass (iOS 27 regular liquid glass calibrated for 56–64pt controls).
+fn tabs_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
@@ -27,7 +26,7 @@ fn tabs_glass(light : Double, spot : (Double, Double)?) -> @paint.Glass {
     chroma=0.0,
     merge=0.0,
     adaptive=false,
-    spot=if light > 0.01 { spot } else { None },
+    spot=None,
   )
 }
 
@@ -69,6 +68,9 @@ pub fn liquid_bottom_tab_node(
   content : (@view.View, () -> Int64) -> Unit,
   lit : (@view.View) -> Double,
   scale : (@view.View) -> Double,
+  press? : (@view.Drag) -> Unit,
+  tap? : (@view.Drag) -> Unit,
+  drag? : (@view.Drag) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   rg.item(made_for=loc, g, fn() { index }, fn() { label }, fn(t, it) {
@@ -83,6 +85,12 @@ pub fn liquid_bottom_tab_node(
       })
     })
     |> ignore
+    if press is Some(_) || tap is Some(_) || drag is Some(_) {
+      t.box(fn(hit) {
+        hit.over(Is(true)).gesture(@ui.touch_slop(), press?, tap?, drag?) |> ignore
+      })
+      |> ignore
+    }
     // (the keyboard's focus on it: a ring in the accent round its capsule)
     t.show(fn() { it.focus_shown() }, fn(ring) {
       ring.over(Is(true)).radius(Is(tab_lens_h / 2.0)).edge(By(fn() { (2.0, colors().accent) })) |> ignore
@@ -165,23 +173,58 @@ pub fn liquid_bottom_tabs_node(
         .margin(Is((-tabs_pad, -tabs_pad, 0.0, 0.0)))
         .radius(Is(tabs_h / 2.0))
         .shadow(Is(shadow_default))
-        .glass(By(fn() {
-          let p = ih.pressed(bar)
-          let spot = if p > 0.0 {
-            Some(((dd.value(bar) + 0.5) * tab_w() + tabs_pad + panel(bar), tabs_h / 2.0))
-          } else {
-            None
-          }
-          Some(tabs_glass(p, spot))
-        }))
+        .glass(By(fn() { Some(tabs_glass()) }))
         .ground_drawn(By(fn() {
           let ww = w()
           let s = lerp(1.0, 1.0 + 16.0 / ww, dd.pressed(bar))
           stretched(ww, tabs_h, panel(bar), 0.0, s, s)
         }))
         |> ignore
+        bar.box(fn(ov) {
+          ov
+          .over(Is(true))
+          .points(Is(false))
+          .radius(Is(tabs_h / 2.0))
+          .ground(Is(white))
+          .alpha(By(fn() { clamp(ih.pressed(ov), 0.0, 1.0) * 0.14 }))
+          .ground_drawn(By(fn() {
+            let ww = w()
+            let s = lerp(1.0, 1.0 + 16.0 / ww, dd.pressed(ov))
+            stretched(ww, tabs_h, panel(ov), 0.0, s, s)
+          }))
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
+      let stopped = fn() {
+        let to = clamp(dd.target().round(), 0.0, last)
+        let i = to.to_int()
+        current.val = i
+        dd.animate_to(to)
+        if i != selected() {
+          select(i)
+        }
+        pulled_by.val = 0.0
+        pulled.go(g, 0.0, @motion.spring(ratio=1.0, stiffness=300.0, threshold=0.5)) // det-ok(motion-spring): LiquidBottomTabs.kt offsetAnimation, ported 1:1
+        ih.up()
+      }
+      let on_drag = fn(d : @view.Drag) {
+        match d.kind {
+          // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
+          Down | Moved => {
+            let dx = d.wx - last_x.val
+            last_x.val = d.wx
+            let tw = tab_w()
+            if tw > 0.0 {
+              dd.update_value(clamp(dd.target() + dx / tw, 0.0, last))
+            }
+            pulled_by.val = pulled_by.val + dx
+            pulled.put(pulled_by.val)
+          }
+          Up | Off => stopped()
+        }
+      }
       inner.box(fn(row) {
         row.row(Is(true)).height(Is(Some(tab_lens_h))).offset(By(fn() { (panel(row), 0.0) })) |> ignore
         for i, name in labels {
@@ -189,7 +232,28 @@ pub fn liquid_bottom_tabs_node(
             Some(fs) => fs.get(i).unwrap_or(tab_face(name))
             None => tab_face(name)
           }
-          liquid_bottom_tab_node(row, rg, i, name, face, fn(n) { lit(n, i) }, grown) |> ignore
+          let hit = i.to_double()
+          liquid_bottom_tab_node(
+            row,
+            rg,
+            i,
+            name,
+            face,
+            fn(n) { lit(n, i) },
+            grown,
+            press=fn(d) {
+              last_x.val = d.wx
+              pulled_by.val = 0.0
+              ih.down(hit * tab_w() + d.x + tabs_pad, d.y + tabs_pad, w(), tabs_h)
+              dd.press()
+              if (hit - dd.target()).abs() > 0.001 {
+                dd.update_value(hit)
+              }
+            },
+            tap=fn(_) { stopped() },
+            drag=on_drag,
+          )
+          |> ignore
         }
       })
       |> ignore
@@ -230,46 +294,6 @@ pub fn liquid_bottom_tabs_node(
           .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
           |> ignore
         })
-        |> ignore
-        // (held, dragged and let go by a finger: the lens's own, over the tabs; its tabs are pressed round it)
-        let stopped = fn() {
-          let to = clamp(dd.target().round(), 0.0, last)
-          let i = to.to_int()
-          current.val = i
-          dd.animate_to(to)
-          if i != selected() {
-            select(i)
-          }
-          pulled_by.val = 0.0
-          pulled.go(lens, 0.0, @motion.spring(ratio=1.0, stiffness=300.0, threshold=0.5)) // det-ok(motion-spring): LiquidBottomTabs.kt offsetAnimation, ported 1:1
-          ih.up()
-        }
-        lens.gesture(
-          @ui.touch_slop(),
-          press=fn(d) {
-            last_x.val = d.wx
-            ih.down(d.x, d.y, w(), tabs_h)
-            dd.press()
-          },
-          tap=fn(_) { stopped() },
-          drag=fn(d) {
-            match d.kind {
-              // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
-              Down => ()
-              Moved => {
-                let dx = d.wx - last_x.val
-                last_x.val = d.wx
-                let tw = tab_w()
-                if tw > 0.0 {
-                  dd.update_value(clamp(dd.target() + dx / tw, 0.0, last))
-                }
-                pulled_by.val = pulled_by.val + dx
-                pulled.put(pulled_by.val)
-              }
-              Up | Off => stopped()
-            }
-          },
-        )
         |> ignore
       })
       |> ignore

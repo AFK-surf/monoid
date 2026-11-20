@@ -6,9 +6,8 @@
 // hand, the keys and a screen reader is mbui's headless button's: a press, Enter or Space, Activate.
 
 ///|
-/// The glass of a LiquidButton (iOS 27 liquid glass): `press` how far a finger holds it, at `spot` (points from its top
-/// left); `tint` and `surface` its colours (clear: none).
-fn button_glass(press : Double, spot : (Double, Double)?, tint : Int64, surface : Int64) -> @paint.Glass {
+/// The glass of a LiquidButton (iOS 27 liquid glass): `tint` and `surface` its colours (clear: none).
+fn button_glass(tint : Int64, surface : Int64) -> @paint.Glass {
   let d = is_dark()
   let tinted = tint != clear
   let glass_tint = if tinted {
@@ -38,7 +37,7 @@ fn button_glass(press : Double, spot : (Double, Double)?, tint : Int64, surface 
     chroma=0.0,
     merge=0.0,
     adaptive=false,
-    spot=if press > 0.01 { spot } else { None },
+    spot=None,
   )
 }
 
@@ -104,11 +103,7 @@ pub fn liquid_button_node(
     .padding(Is((button_px, 0.0, button_px, 0.0)))
     .radius(Is(button_h / 2.0))
     .shadow(Is(shadow_default))
-    .glass(By(fn() {
-      let p = if interactive { light.pressed(b) } else { 0.0 }
-      let (w, h) = light.size.get()
-      Some(button_glass(p, if p > 0.0 { Some(light.spot(b, w, h)) } else { None }, tint, surface))
-    }))
+    .glass(By(fn() { Some(button_glass(tint, surface)) }))
     .ground_drawn(By(fn() {
       if !interactive {
         return @view.ground_as_laid
@@ -142,6 +137,21 @@ pub fn liquid_button_node(
           }
         },
       )
+      |> ignore
+      b.box(fn(ov) {
+        ov
+        .over(Is(true))
+        .points(Is(false))
+        .radius(Is(button_h / 2.0))
+        .ground(Is(white))
+        .alpha(By(fn() { clamp(light.pressed(ov), 0.0, 1.0) * 0.14 }))
+        .ground_drawn(By(fn() {
+          let (w, h) = light.size.get()
+          let (dx, dy, sx, sy) = light.stretch(ov)
+          stretched(w, h, dx, dy, sx, sy)
+        }))
+        |> ignore
+      })
       |> ignore
     }
     // (what it holds moved and grown with its glass about its middle: the catalog's layer holds both)

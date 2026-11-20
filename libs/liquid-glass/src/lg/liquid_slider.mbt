@@ -64,7 +64,6 @@ pub fn liquid_slider_node(
   let on_thumb = Ref(false)
   let did_drag = Ref(false)
   let last_x = Ref(0.0)
-  let down_x = Ref(0.0)
   let hand = fn(d : @view.Drag) {
     if disabled() || d.w <= 0.0 {
       return
@@ -72,12 +71,15 @@ pub fn liquid_slider_node(
     match d.kind {
       Down => {
         let tx = slider_thumb_x(d.w, (dd.target() - least) / span)
-        on_thumb.val = d.x >= tx && d.x <= tx + thumb_w
+        let hit_thumb = d.x >= tx && d.x <= tx + thumb_w
+        on_thumb.val = true
         did_drag.val = false
         last_x.val = d.wx
-        down_x.val = d.x
-        if on_thumb.val {
-          dd.press()
+        dd.press()
+        if !hit_thumb {
+          let to = clamp(least + span * (d.x / d.w), least, most)
+          dd.update_value(to)
+          change(to)
         }
       }
       Moved =>
@@ -96,10 +98,6 @@ pub fn liquid_slider_node(
           }
           on_thumb.val = false
           dd.release()
-        } else if (d.x - down_x.val).abs() <= @ui.touch_slop() {
-          let to = clamp(least + span * (d.x / d.w), least, most)
-          dd.animate_to(to)
-          change(to)
         }
       Off =>
         if on_thumb.val {

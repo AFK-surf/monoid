@@ -56,6 +56,7 @@
   const triggers = [...bar.querySelectorAll("[data-mega]")];
   const hoverable = window.matchMedia("(hover: hover) and (min-width: 861px)");
   let timer = 0;
+  let hoverOpenedAt = 0;
 
   const shut = (except) => {
     for (const t of triggers) {
@@ -73,13 +74,20 @@
   for (const t of triggers) {
     const menu = document.getElementById(t.dataset.mega);
     t.addEventListener("click", () => {
-      if (t.getAttribute("aria-expanded") === "true") shut();
-      else open(t);
+      if (t.getAttribute("aria-expanded") === "true") {
+        if (Date.now() - hoverOpenedAt < 400) return;
+        shut();
+      } else {
+        open(t);
+      }
     });
     for (const el of [t, menu]) {
       el?.addEventListener("pointerenter", (e) => {
         if (e.pointerType !== "mouse" || !hoverable.matches) return;
         clearTimeout(timer);
+        if (t.getAttribute("aria-expanded") !== "true") {
+          hoverOpenedAt = Date.now();
+        }
         open(t);
       });
       el?.addEventListener("pointerleave", (e) => {
