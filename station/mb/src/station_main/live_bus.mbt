@@ -96,6 +96,8 @@ pub(all) struct LiveBus {
   ui_ask : Ref[async (String, Json) -> Json]
   /// P5-4: Direct typed screen-view handler receiving the raw `@door.Stream` (preserving QUIC `media_datagrams`).
   ui_screen_view : Ref[(async (@door.Stream, Bytes, Json, Json) -> Bool)?]
+  /// P5-4: Helper-granted protected folder Spotlight search (`screens.files`).
+  ui_helper_search : Ref[(async (Array[String], String, Double, Array[String]) -> Array[String])?]
   /// P5-5: Slack, Feishu, Comma, Group, WorkspaceConnects, Copies, Moves, Updates, Features.
   coord_ask : Ref[async (String, Json) -> Json]
   // ── Hooks any slice registers on (plain lists: each slice adds its own, none provides a whole) ──
@@ -260,6 +262,7 @@ pub fn LiveBus::new(
     jobs_ask: Ref(async fn(_op, _arg) { Json::null() }),
     ui_ask: Ref(async fn(_op, _arg) { Json::null() }),
     ui_screen_view: Ref(None),
+    ui_helper_search: Ref(None),
     coord_ask: Ref(async fn(_op, _arg) { Json::null() }),
     release_hearers: [],
     peer_hearers: [],
