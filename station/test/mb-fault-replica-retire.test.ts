@@ -688,19 +688,21 @@ test("a chat's files changed, added and deleted while its first pass is sent: th
   const room2 = treeOf(ws2);
   const said2 = await texts(leaving.door, c2.thread);
   await given("the second chat movable", async () => itemOf(await movePage(leaving.door, b.id), "chats", c2.key)?.state === "here", async () => `${JSON.stringify(await movePage(leaving.door, b.id))}; ${both()}`, 30_000);
+  // (the turn's end read from what the station keeps of it, move/turn.json and move/last.json: a move page asked while
+  // the station picked is down plans afresh, out of any turn, and waits out each of its questions of it)
+  const lastOf = () => readJson(join(a.data, "move", "last.json"))?.w1 ?? null;
+  const lastBefore = lastOf()?.at ?? 0;
   assert.equal((await http(leaving.door, "/admin-api/move", { body: { to: b.id, module: "chats", item: c2.key, withNeeds: true } })).status, 202);
   await given("its first pass under way", () => outStep(a.data, c2.key) === "files", () => `step=${outStep(a.data, c2.key)}; ${both()}`, 30_000);
   await taker.kill();
-  const ended = await given("the move toward the killed station ended", async () => {
-    const page = await movePage(leaving.door, b.id);
-    return page?.moving === null ? page : null;
-  }, async () => `${JSON.stringify(await movePage(leaving.door, b.id))}; step=${outStep(a.data, c2.key)}; ${both()}`, 150_000);
-  // the chat here as it was: not handed, its files and messages, said why the move did not go and what to do
-  const failed = itemOf(ended, "chats", c2.key);
-  assert.equal(failed?.state, "failed", JSON.stringify(ended));
-  // (in the words of the request the kill cut: its files' sending, or the ask that followed them)
-  assert.match(String(failed?.error), /^the other station did not answer(?: while its files were being sent)?: (?:move it|try) again once it answers$/, JSON.stringify(failed));
-  assert.equal(ended.last?.failed?.item, `chats ${c2.key}`, JSON.stringify(ended.last));
+  const ended = await given("the move toward the killed station ended", () => {
+    const last = lastOf();
+    return !existsSync(join(a.data, "move", "turn.json")) && last !== null && last.at > lastBefore ? last : null;
+  }, () => `last=${JSON.stringify(lastOf())}; step=${outStep(a.data, c2.key)}; ${both()}`, 90_000);
+  // the chat here as it was: not handed, its files and messages
+  assert.deepEqual(ended.failed?.item, { module: "chats", id: c2.key }, JSON.stringify(ended));
+  assert.match(String(ended.failed?.error), /^The chat did not go to taker and goes on here: /, JSON.stringify(ended));
+  assert.deepEqual(ended.done, [], JSON.stringify(ended));
   assert.equal(handedTo(a.data, c2.key), null);
   assert.deepEqual(treeOf(ws2), room2);
   assert.deepEqual(await texts(leaving.door, c2.thread), said2);
@@ -712,11 +714,14 @@ test("a chat's files changed, added and deleted while its first pass is sent: th
   // ── the station back: moved, its files byte for byte ──
   taker = await start(1);
   const room2now = treeOf(ws2);
-  await given("the second chat movable again", async () => {
+  const failed = await given("the second chat movable again", async () => {
     const page = await movePage(leaving.door, b.id);
     const i = itemOf(page, "chats", c2.key);
-    return page?.moving === null && (i?.state === "here" || i?.state === "failed") && i?.cannot === undefined;
+    return page?.moving === null && i?.state === "failed" && i?.cannot === undefined ? i : null;
   }, async () => `${JSON.stringify(await movePage(leaving.door, b.id))}; ${both()}`, 60_000);
+  // said why the move did not go and what to do, in the words of the request the kill cut: its files' sending, the ask
+  // that followed them, or (the station found gone in the turn) any later one
+  assert.match(String(failed.error), /^(?:the other station did not answer(?: while its files were being sent)?: (?:move it|try) again once it answers|taker does not answer: nothing more is asked of it in this move\. Move again once it is up\.)$/, JSON.stringify(failed));
   assert.equal((await http(leaving.door, "/admin-api/move", { body: { to: b.id, module: "chats", item: c2.key, withNeeds: true } })).status, 202);
   await given("the second chat there", async () => {
     const page = await movePage(leaving.door, b.id);
