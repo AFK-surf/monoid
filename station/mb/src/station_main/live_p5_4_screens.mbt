@@ -354,6 +354,8 @@ fn p54_screen_thrown(e : Error) -> Error {
       if access is Some(a) { said["access"] = of_jv(a.to_j()) }
       P54Refused("ScreenRefused", Json::object(said))
     }
+    @screens.GrantRefused(key) =>
+      P54Refused("GrantRefused", { "key": Json::string(key), "message": Json::string(key) })
     other => other
   }
 }
@@ -513,6 +515,14 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           self.debugs[id] = hub.debug_of(id)
           p54_ref("debug:" + id)
         }
+        "chromeOf" =>
+          of_jv(
+            hub.chrome_of(
+              s(0),
+              opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int(),
+              opt_num(call_arg(a, 2)).unwrap_or(0.0),
+            ).to_j(),
+          )
         _ => return None
       }
     } else if op.has_prefix("screen:") {
@@ -622,10 +632,10 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
         "grants.request" =>
           match self.grants {
             Some(g) => {
-              let (state, asked) = g.request(s(0), to_jv(call_arg(a, 1).unwrap_or(Json::null())), again=opt_true(call_arg(a, 2)))
-              { "state": Json::string(state), "asked": Json::boolean(asked) }
+              let (window, screen) = g.request(s(0), to_jv(call_arg(a, 1).unwrap_or(Json::null())), again=opt_true(call_arg(a, 2)))
+              { "window": Json::string(window), "screen": Json::boolean(screen) }
             }
-            None => Json::null()
+            None => raise @screens.GrantRefused("station.permissions.noHelper")
           }
         "grants.status" =>
           match self.grants {

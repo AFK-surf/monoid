@@ -1300,7 +1300,11 @@ async fn P52::tools_call(
       } else {
         self.bus.coord_ask
       }
-      to_jv((to.val)(name, Json::array(args.map(of_jv))))
+      match (try { Ok((to.val)(name, Json::array(args.map(of_jv)))) } catch { e => Err(e) }) {
+        Ok(v) => to_jv(v)
+        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, to_jv(said))
+        Err(e) => raise e
+      }
     }
   }
 }

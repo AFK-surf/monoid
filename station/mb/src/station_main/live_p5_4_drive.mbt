@@ -185,8 +185,8 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
       }
     }
     (Some(dr), "upload") => {
-      let (size, entry) = dr.upload(s(0), s(1), s(2), n(3), n(4), p54_bytes_of(call_arg(a, 5)), b(6), b(7))
-      { "size": Json::number(size), "entry": entry.map(p54_entry_json).unwrap_or(Json::null()) }
+      let (have, entry) = dr.upload(s(0), s(1), s(2), n(3), n(4), p54_bytes_of(call_arg(a, 5)), b(6), b(7))
+      { "have": Json::number(have), "size": Json::number(have), "entry": entry.map(p54_entry_json).unwrap_or(Json::null()) }
     }
     (Some(dr), "mkdir") => p54_entry_json(dr.mkdir(s(0), s(1), b(2)))
     (Some(dr), "rename") => p54_entry_json(dr.rename(s(0), s(1), s(2), b(3)))
