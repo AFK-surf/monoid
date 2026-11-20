@@ -50,6 +50,9 @@ priv struct GlassPaint {
   mut run : Int
   // the last capture of frosted glass (0 none): what glass `shares_capture` takes
   mut frost_run : Int
+  // the last capture of a Backdrop lens (0 none): what a lens `shares_capture` takes (same blur)
+  mut lens_run : Int
+  mut lens_blur : Double
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
@@ -65,6 +68,8 @@ priv struct GlassPaint {
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,
+  lens_run: 0,
+  lens_blur: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -86,6 +91,8 @@ let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.lens_run = 0
+  glass_paint.lens_blur = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
@@ -126,6 +133,8 @@ pub fn Ctx::glass_solid(self : Ctx) -> Bool {
 fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.lens_run = 0
+  glass_paint.lens_blur = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.in_group = 0
@@ -295,22 +304,30 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   let a = self.inst
   let kind = a[b + 5]
   let blur = a[b + 7]
+  let is_lens = liquid && a[b + 14] < 0.0
   if shares && !liquid && glass_paint.frost_run != 0 {
     // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
     a[b + 20] = -glass_paint.frost_run.to_double()
+    return
+  }
+  if shares && is_lens && blur >= 0.0 && glass_paint.lens_run != 0 && glass_paint.lens_blur == blur {
+    a[b + 20] = -glass_paint.lens_run.to_double()
     return
   }
   // one capture with the glass just before it: right after it, as it is,
   // the same blur, not over it, and (liquid) a group of fewer than 8; glass
   // contained (blur below 0) a capture of its own box alone
   let prev = glass_paint.run_start + glass_paint.run_len
+  let prev_is_lens = liquid && k > 0 && a[(k - 1) * inst_size + 14] < 0.0
   let mut same = glass_paint.run != 0 &&
     prev == k &&
     blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
     a[(k - 1) * inst_size + 7] == blur &&
-    (!liquid || (glass_paint.run_len < 8 && a[b + 14] >= 0.0 && a[(k - 1) * inst_size + 14] >= 0.0))
-  if same && !liquid {
+    (!liquid ||
+      (is_lens && prev_is_lens) ||
+      (!is_lens && !prev_is_lens && glass_paint.run_len < 8))
+  if same && (!liquid || is_lens) {
     for j in glass_paint.run_start..<k {
       if rects_meet(j, k, a) {
         same = false
@@ -326,6 +343,9 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.run_len = 1
     if !liquid {
       glass_paint.frost_run = glass_paint.run
+    } else if is_lens && blur >= 0.0 {
+      glass_paint.lens_run = glass_paint.run
+      glass_paint.lens_blur = blur
     }
   }
   a[b + 20] = -glass_paint.run.to_double()

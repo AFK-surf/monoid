@@ -344,3 +344,28 @@ test "a Backdrop lens's corners each its own, its radius the roundest" {
   let lens = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
   assert_eq(lens.map(fn(a) { (a[4], a[36], a[37], a[38], a[39]) }), [(20.0, 20.0, 4.0, 12.0, 0.0)])
 }
+
+///|
+test "Backdrop lenses share a capture across non-glass when sharing() with matching blur, and when adjacent non-overlapping" {
+  let lens4 = @ui.Glass::backdrop_lens(height=10.0, amount=14.0, blur=4.0, tint=0xFFFFFF40L, solid=0xFFFFFFFFL, highlight=0.7)
+  let lens8 = @ui.Glass::backdrop_lens(height=10.0, amount=14.0, blur=8.0, tint=0xFFFFFF40L, solid=0xFFFFFFFFL, highlight=0.7)
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
+      // first lens with its own shadow (kind 2) drawn right after it
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=lens4, shadow=4.0, fn() {  }) |> ignore
+      // second lens marked sharing() with same blur: shares first lens's capture across the shadow
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=lens4.sharing(), shadow=4.0, fn() {  }) |> ignore
+      // third lens marked sharing() with different blur: must not share
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=lens8.sharing(), fn() {  }) |> ignore
+      // fourth lens adjacent non-overlapping with same blur as third: shares third's capture
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=lens8, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let lenses = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(lenses.length(), 4)
+  assert_true(lenses[0][20] < 0.0)
+  assert_eq(lenses[1][20], lenses[0][20])
+  assert_true(lenses[2][20] < 0.0 && lenses[2][20] != lenses[0][20])
+  assert_eq(lenses[3][20], lenses[2][20])
+}

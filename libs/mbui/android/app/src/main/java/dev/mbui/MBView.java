@@ -549,6 +549,22 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** The GL thread's time drawing the last frame (ns), told to the system with the app's (frameWorked). */
     private volatile long glWorked;
 
+    // Pending post-eglSwapBuffers timing (GL thread only): GLSurfaceView.GLThread drains mEventQueue right after
+    // mEglHelper.swap() without triggering another render, so afterSwap captures GPU backpressure in eglSwapBuffers.
+    private boolean swapPending;
+    private long swapT0, swapD0, swapEnd;
+    private int swapDropped, swapCtx;
+    private final Runnable afterSwap = this::finishSwap;
+
+    private void finishSwap() {
+        if (!swapPending) return;
+        swapPending = false;
+        if (paused || mine != swapCtx || !glCurrent()) return;
+        long s1 = System.nanoTime();
+        glWorked = s1 - swapT0;
+        glDrawn((s1 - swapD0) / 1e6, swapDropped);
+    }
+
     /**
      * A frame drawn on the GL thread in {@code ms}, {@code dropped} frames handed over since the last never drawn
      * (android_host.c: what the app reads of it, @hostapi.gpu_ms and frames_dropped).
@@ -562,6 +578,13 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      * surface's first frame, or one at a new size, waits a while for the app's.
      */
     private void drawOnGl() {
+        if (swapPending) {
+            swapPending = false;
+            if (!paused && mine == swapCtx) {
+                glWorked = swapEnd - swapT0;
+                glDrawn((swapEnd - swapD0) / 1e6, swapDropped);
+            }
+        }
         if (mine != setUp) {
             // another view set the drawing up in its own context since this one did (an OverActivity came and went):
             // set up again here, at this view's size, and the app's frame made for it
@@ -591,13 +614,17 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         showAt(t.shows);
         if (t.ref != null) MBText.frameDrawn(t.ref);
         Latency.frameEnds(t.lat);
-        long d1 = System.nanoTime();
-        glWorked = d1 - t0;
-        // (the GL thread's time drawing it, its waiting for the app's frame left out, and the frames handed over never
-        // drawn since the last: @hostapi.gpu_ms, @hostapi.frames_dropped)
-        glDrawn((d1 - d0) / 1e6, mail.takeDropped());
         // what the app asked of it after: done now, but for what follows a frame handed over meanwhile
         mail.runTasks(mail.pendingSeqNow());
+        // (the GL thread's time drawing and swapping it, its waiting for the app's frame left out, and the frames
+        // handed over never drawn since the last: @hostapi.gpu_ms, @hostapi.frames_dropped)
+        swapT0 = t0;
+        swapD0 = d0;
+        swapEnd = System.nanoTime();
+        swapDropped = mail.takeDropped();
+        swapCtx = mine;
+        swapPending = true;
+        queueEvent(afterSwap);
     }
 
     /**

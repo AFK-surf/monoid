@@ -174,9 +174,10 @@ static const char *shader_src =
     "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
     "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
     "  int kind = int(I.p.y + 0.5);\n"
-    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);\n"
+    "  bool merged_liquid = kind == 6 && I.c2.z >= 0.0;\n"
+    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && I.c2.z < 0.0)) ? 1.0 : 0.0);\n"
     "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
-    "  if (kind == 6) pos = lerp(ggb.xy, ggb.zw, corner);\n"
+    "  if (merged_liquid) pos = lerp(ggb.xy, ggb.zw, corner);\n"
     "  // the pieces of shapes (kind 12): nothing drawn\n"
     "  if (kind == 12) pos = float2(0.0, 0.0);\n"
     "  // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (o.p), its clip\n"
@@ -1353,6 +1354,8 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
+  int merged_liquid = (kind == 6 && a[14] >= 0.0f);
+  int lens = (kind == 6 && a[14] < 0.0f);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
@@ -1361,12 +1364,16 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
     float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
     if (kind == 6) {
-      float m23 = fmaxf(a[23], 0.0f);
+      float m23 = fmaxf(lens ? b[23] : a[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
-      if (n < 8) {
+      if (merged_liquid && n < 8) {
         for (int k = 0; k < 4; k++) gu.shape[n][k] = b[k];
         gu.rad[n][0] = b[4];
         n++;
+      }
+      if (lens && a[7] >= 0.0f) {
+        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        if (bm > margin) margin = bm;
       }
     }
     if (bx0 < x0) x0 = bx0;
@@ -1374,11 +1381,21 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (bx1 > x1) x1 = bx1;
     if (by1 > y1) y1 = by1;
   }
-  for (int32_t i = end; kind == 5 && i < count; i++) {
+  for (int32_t i = end; (kind == 5 || lens) && i < count; i++) {
     const float *b = f + i * MB_INST;
     if (b[20] != a[20]) continue;
-    float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
-    float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
+    float bx0, by0, bx1, by1;
+    if (lens) {
+      float m23 = fmaxf(b[23], 0.0f);
+      bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
+      if (a[7] >= 0.0f) {
+        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        if (bm > margin) margin = bm;
+      }
+    } else {
+      bx0 = b[0] > b[16] ? b[0] : b[16]; by0 = b[1] > b[17] ? b[1] : b[17];
+      bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18]; by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
+    }
     if (bx0 < x0) x0 = bx0;
     if (by0 < y0) y0 = by0;
     if (bx1 > x1) x1 = bx1;
@@ -1580,9 +1597,9 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       ctx->PSSetShader(ps, NULL, 0);
       // liquid: the group as one shape, drawn once, its capture's sharp level in t1 (an image's run after it binds its
       // own there again)
-      int liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6;
-      if (shows && liquid) ctx->PSSetShaderResources(1, 1, rsrv ? &rsrv : &atlas_srv);
-      if (shows) ctx->DrawInstanced(6, liquid ? 1 : (UINT)(end - start), 0, (UINT)start);
+      int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 14] >= 0.0f;
+      if (shows && merged_liquid) ctx->PSSetShaderResources(1, 1, rsrv ? &rsrv : &atlas_srv);
+      if (shows) ctx->DrawInstanced(6, merged_liquid ? 1 : (UINT)(end - start), 0, (UINT)start);
       start = end;
       continue;
     }

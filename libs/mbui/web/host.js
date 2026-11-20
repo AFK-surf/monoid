@@ -454,9 +454,10 @@
     int vid = gl_VertexID;
     vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);
     int kind = int(a_p.y + 0.5);
-    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);
+    bool merged_liquid = kind == 6 && a_c2.z >= 0.0;
+    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);
     vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);
-    if (kind == 6) pos = mix(u_gb.xy, u_gb.zw, corner);
+    if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);
     // the pieces of shapes (kind 12): nothing drawn
     if (kind == 12) pos = vec2(0.0);
     // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (v_pos), its clip there
@@ -1446,7 +1447,9 @@
     const a = start * INST;
     // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
     const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
-    const margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
+    const mergedLiquid = kind === 6 && f32[a + 14] >= 0;
+    const lens = kind === 6 && f32[a + 14] < 0;
+    let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     gn = 0;
     for (let i = start; i < end; i++) {
@@ -1454,21 +1457,35 @@
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
       let bx1 = Math.min(f32[b] + f32[b + 2], f32[b + 18]), by1 = Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]);
       if (kind === 6) {
-        const m = Math.max(f32[a + 23], 0);
+        const m = Math.max(lens ? f32[b + 23] : f32[a + 23], 0);
         bx0 = f32[b] - m; by0 = f32[b + 1] - m; bx1 = f32[b] + f32[b + 2] + m; by1 = f32[b + 1] + f32[b + 3] + m;
-        if (gn < 8) {
+        if (mergedLiquid && gn < 8) {
           for (let k = 0; k < 4; k++) gshape[gn * 4 + k] = f32[b + k];
           grad[gn] = f32[b + 4];
           gn++;
         }
+        if (lens && f32[a + 7] >= 0) {
+          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          if (bm > margin) margin = bm;
+        }
       }
       x0 = Math.min(x0, bx0); y0 = Math.min(y0, by0); x1 = Math.max(x1, bx1); y1 = Math.max(y1, by1);
     }
-    for (let i = end; kind === 5 && i < count; i++) {
+    for (let i = end; (kind === 5 || lens) && i < count; i++) {
       const b = i * INST;
       if (f32[b + 20] !== f32[a + 20]) continue;
-      x0 = Math.min(x0, Math.max(f32[b], f32[b + 16])); y0 = Math.min(y0, Math.max(f32[b + 1], f32[b + 17]));
-      x1 = Math.max(x1, Math.min(f32[b] + f32[b + 2], f32[b + 18])); y1 = Math.max(y1, Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]));
+      if (lens) {
+        const m = Math.max(f32[b + 23], 0);
+        x0 = Math.min(x0, f32[b] - m); y0 = Math.min(y0, f32[b + 1] - m);
+        x1 = Math.max(x1, f32[b] + f32[b + 2] + m); y1 = Math.max(y1, f32[b + 1] + f32[b + 3] + m);
+        if (f32[a + 7] >= 0) {
+          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          if (bm > margin) margin = bm;
+        }
+      } else {
+        x0 = Math.min(x0, Math.max(f32[b], f32[b + 16])); y0 = Math.min(y0, Math.max(f32[b + 1], f32[b + 17]));
+        x1 = Math.max(x1, Math.min(f32[b] + f32[b + 2], f32[b + 18])); y1 = Math.max(y1, Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]));
+      }
     }
     ggb[0] = x0 - 2; ggb[1] = y0 - 2; ggb[2] = x1 + 2; ggb[3] = y1 + 2;
     const W = canvas.width, Hh = canvas.height, sc = dpr;
@@ -1717,12 +1734,12 @@
           for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
           // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
           // binds its own there again)
-          const liquid = Math.round(f32[start * INST + 5]) === 6;
-          if (liquid) {
+          const mergedLiquid = Math.round(f32[start * INST + 5]) === 6 && f32[start * INST + 14] >= 0;
+          if (mergedLiquid) {
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, rTex || atlasTex);
           }
-          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, liquid ? 1 : end - start);
+          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, mergedLiquid ? 1 : end - start);
         }
         start = end;
         continue;

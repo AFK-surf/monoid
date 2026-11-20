@@ -61,9 +61,10 @@ static const char *VS =
     "  int vid = gl_VertexID;\n"
     "  vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
     "  int kind = int(a_p.y + 0.5);\n"
-    "  float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);\n"
+    "  bool merged_liquid = kind == 6 && a_c2.z >= 0.0;\n"
+    "  float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);\n"
     "  vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);\n"
-    "  if (kind == 6) pos = mix(u_gb.xy, u_gb.zw, corner);\n"
+    "  if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);\n"
     "  // the pieces of shapes (kind 12): nothing drawn\n"
     "  if (kind == 12) pos = vec2(0.0);\n"
     "  // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (v_pos), its clip\n"
@@ -978,6 +979,8 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
+  int merged_liquid = (kind == 6 && a[14] >= 0.0f);
+  int lens = (kind == 6 && a[14] < 0.0f);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
@@ -985,12 +988,16 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
     float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
     if (kind == 6) {
-      float m23 = fmaxf(a[23], 0.0f);
+      float m23 = fmaxf(lens ? b[23] : a[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
-      if (m->n < 8) {
+      if (merged_liquid && m->n < 8) {
         for (int k = 0; k < 4; k++) m->shape[m->n * 4 + k] = b[k];
         m->rad[m->n] = b[4];
         m->n++;
+      }
+      if (lens && a[7] >= 0.0f) {
+        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        if (bm > margin) margin = bm;
       }
     }
     if (bx0 < x0) x0 = bx0;
@@ -998,11 +1005,21 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (bx1 > x1) x1 = bx1;
     if (by1 > y1) y1 = by1;
   }
-  for (int32_t i = end; kind == 5 && i < count; i++) {
+  for (int32_t i = end; (kind == 5 || lens) && i < count; i++) {
     const float *b = f + i * MB_INST;
     if (b[20] != a[20]) continue;
-    float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
-    float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
+    float bx0, by0, bx1, by1;
+    if (lens) {
+      float m23 = fmaxf(b[23], 0.0f);
+      bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
+      if (a[7] >= 0.0f) {
+        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        if (bm > margin) margin = bm;
+      }
+    } else {
+      bx0 = b[0] > b[16] ? b[0] : b[16]; by0 = b[1] > b[17] ? b[1] : b[17];
+      bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18]; by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
+    }
     if (bx0 < x0) x0 = bx0;
     if (by0 < y0) y0 = by0;
     if (bx1 > x1) x1 = bx1;
@@ -1202,7 +1219,7 @@ static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
   int kind = (int)(b[5] + 0.5f);
   float e = kind == 2 ? fabsf(b[7]) * 3.0f + 2.0f : 1.0f;
   // (liquid: its group's bounds, each shape and the first's reach round it, 2 more: grab_of)
-  if (kind == 6) e = fmaxf(fmaxf(b[23], f[(size_t)run * MB_INST + 23]), 0.0f) + 2.0f;
+  if (kind == 6 && b[14] >= 0.0f) e = fmaxf(fmaxf(b[23], f[(size_t)run * MB_INST + 23]), 0.0f) + 2.0f;
   e += 1.0f;
   float x0 = fminf(b[0], b[0] + b[2]) - e, x1 = fmaxf(b[0], b[0] + b[2]) + e;
   float y0 = fminf(b[1], b[1] + b[3]) - e, y1 = fmaxf(b[1], b[1] + b[3]) + e;
@@ -1775,13 +1792,13 @@ static void draw_into(GLuint fb, int part) {
           glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
         // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
         // binds its own there again; the unit left active as main_state leaves it, 2)
-        int liquid = (int)(fbuf[start * MB_INST + 5] + 0.5f) == 6;
-        if (liquid) {
+        int merged_liquid = (int)(fbuf[start * MB_INST + 5] + 0.5f) == 6 && fbuf[start * MB_INST + 14] >= 0.0f;
+        if (merged_liquid) {
           glActiveTexture(GL_TEXTURE1);
           glBindTexture(GL_TEXTURE_2D, r_tex ? r_tex : atlas);
           glActiveTexture(GL_TEXTURE2);
         }
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, liquid ? 1 : end - start);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, merged_liquid ? 1 : end - start);
       }
       start = end;
       continue;
