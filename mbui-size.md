@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.32 | 119.75 |
 | [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.49 | 123.55 |
 | [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.4 | 125.75 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 2.65 | 3.57 | 14.57 | 36.81 | 56.1 | 32.28 | 65.43 | 97.54 | 121.1 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.54 | 125.05 |
-| [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 117.03 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
 | [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.3 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
-| [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
