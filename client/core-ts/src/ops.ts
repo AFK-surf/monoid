@@ -90,6 +90,7 @@ export const PARAMS: Record<string, string> = {
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
   "elevation.set": "on:boolean",
+  "screenService.set": "on:boolean",
   "session.warm": "key:string",
   "session.evict": "key:string",
   "session.compact": "key:string",
@@ -409,6 +410,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // Windows there, then the station restarted; set by the workspace's owners and admins.
     case "elevation.set":
       return op("PUT", () => "/elevation", p.pick(["on"]), OVERVIEW);
+    // Whether a Windows station installs the optional LocalSystem screen service (screens/service.ts) so human remote
+    // views can see and click UAC prompts, elevated windows, and the lock screen; set by workspace owners and admins.
+    case "screenService.set":
+      return op("PUT", () => "/screen-service", p.pick(["on"]), OVERVIEW);
     case "session.stop":
       return op("POST", () => `/sessions/${p.at("key")}/stop`, null, process("key"));
     case "session.cancelRetry":

@@ -23,6 +23,9 @@ priv struct SettingsFixture {
   /// a Windows station's running as administrator, as the core shows it (its overview's `elevation`), as a test sets
   /// it; none: not a Windows station
   mut elevation : Json?
+  /// a Windows station's optional LocalSystem screen service, as the core shows it (its overview's `screenService`),
+  /// as a test sets it; none: not a Windows station
+  mut screen_service : Json?
   /// the copies of its chats as the core shows them (its overview's `copies`), as a mode sets them; none: a station
   /// from before them
   mut copies : Json?
@@ -185,6 +188,7 @@ let fx : SettingsFixture = {
   afresh_above: 1.0,
   logs: true,
   elevation: None,
+  screen_service: None,
   copies: None,
   gpus: false,
   more_gpus: false,
@@ -421,6 +425,7 @@ fn fixture_reset() -> Unit {
   fx.afresh_above = 1.0
   fx.logs = true
   fx.elevation = None
+  fx.screen_service = None
   fx.copies = None
   fixture_retire_asked.clear()
   fx_remote_made.clear()
@@ -691,6 +696,12 @@ pub fn fixture_scanned() -> Unit {
 /// Willow a Windows station, running as administrator as `v` says (the core's `StationElevation`), or not.
 pub fn fixture_elevation(v : Json?) -> Unit {
   fx.elevation = v
+}
+
+///|
+/// Willow a Windows station, with the optional LocalSystem screen service as `v` says (the core's `StationScreenService`), or not.
+pub fn fixture_screen_service(v : Json?) -> Unit {
+  fx.screen_service = v
 }
 
 ///|
@@ -2477,6 +2488,7 @@ fn fx_station(address : String) -> Json {
           ("diagnostics", obj([("logs", Json::boolean(fx.logs))])),
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
+          ("screenService", fx.screen_service.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
           ("move", fx_move_offer()),
           ("features", fx_station_features()),
@@ -4090,6 +4102,20 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
           shown["busy"] = Json::boolean(true)
           shown["canChange"] = Json::boolean(false)
           fx.elevation = Some(Json::object(shown))
+          fx_changed()
+        }
+        _ => ()
+      }
+      Some(Ok(obj([])))
+    }
+    "screenService.set" => {
+      match fx.screen_service {
+        Some(Object(e)) => {
+          let shown = e.copy()
+          shown["on"] = Json::boolean(flag(p, "on"))
+          shown["busy"] = Json::boolean(true)
+          shown["canChange"] = Json::boolean(false)
+          fx.screen_service = Some(Json::object(shown))
           fx_changed()
         }
         _ => ()

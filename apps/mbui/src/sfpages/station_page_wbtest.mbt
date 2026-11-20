@@ -422,6 +422,53 @@ test "a Windows station's 设置 switches running as administrator, waiting whil
 }
 
 ///|
+test "a Windows station's screen service switch shows its line and failure and toggles once while busy" {
+  let asked : Array[Json] = []
+  let t = setting_tester(
+    Station("ws1/st1"),
+    390.0,
+    platform=2,
+    h=2400.0,
+    over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "screenService.set" {
+            asked.push(params)
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    },
+    ready=fn() {
+      @settings.station_parts["ws1/st1"] = "settings"
+      @settings.fixture_screen_service(
+        Some(
+          @settings.obj([
+            ("on", Json::boolean(false)),
+            ("busy", Json::boolean(false)),
+            ("line", Json::string("远程查看屏幕时可显示并点击 UAC 弹窗、管理员窗口和锁屏界面")),
+            ("failed", Json::string("UAC 被拒绝，设置没有改变")),
+            ("canChange", Json::boolean(true)),
+          ]),
+        ),
+      )
+    },
+  )
+  t.run_for(@ui.move_most_ms)
+  scrolled_to(t, 390.0, "远程控制 UAC 与锁屏")
+  assert_true(t.find("UAC 被拒绝，设置没有改变") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
+  t.click(Switch, label="远程控制 UAC 与锁屏")
+  t.draw()
+  assert_eq(asked.length(), 1, msg="switched")
+  assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)))
+  t.run_for(@ui.move_most_ms)
+  t.click(Switch, label="远程控制 UAC 与锁屏")
+  t.draw()
+  assert_eq(asked.length(), 1, msg="not again while it is under way")
+}
+
+///|
 test "a station's ⋯ restarts it" {
   let asked : Array[(String, Json)] = []
   let t = setting_tester(Station("ws1/st1"), 390.0, platform=2, h=2400.0,

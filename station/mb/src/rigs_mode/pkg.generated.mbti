@@ -124,6 +124,18 @@ pub fn safe_int(Double) -> Bool
 
 pub fn said(Map[String, @json.Json]) -> String
 
+pub let screen_service_ask_ms : Double
+
+pub fn screen_service_ask_script(String, Bool, String?, Bool) -> String
+
+pub fn screen_service_overview(ScreenService, Viewer) -> @json.Json
+
+pub fn screen_service_parse_probe(String) -> ScreenServiceProbe
+
+pub fn screen_service_probe_script(Array[String]) -> String
+
+pub async fn screen_service_route(ScreenService, String, String, String, Viewer, (String) -> String) -> Answer?
+
 pub fn signature_holds(@cloud_lock.Crypto, String, @json.Json?) -> Bool
 
 pub fn signed_bytes(String, @json.Json) -> Bytes raise @cloud_lock.Failure
@@ -448,6 +460,34 @@ pub(all) struct RigsDeps {
   spawn : (async () -> Unit) -> Unit
   id : () -> String
 }
+
+pub struct ScreenService {
+  // private fields
+}
+pub async fn ScreenService::change(Self, Bool) -> Unit
+pub fn ScreenService::new(ScreenServiceDeps) -> Self
+pub async fn ScreenService::start(Self) -> Unit
+pub fn ScreenService::stop(Self) -> Unit
+pub fn ScreenService::view(Self, Bool) -> @json.Json
+
+pub(all) struct ScreenServiceDeps {
+  after : (Double, () -> Unit) -> () -> Unit
+  changed : () -> Unit
+  fork : (async () -> Unit) -> Unit
+  probe : async () -> ScreenServiceProbe
+  run : (String) -> Child
+}
+
+pub(all) struct ScreenServiceProbe {
+  installed : Bool
+  running : Bool
+  connected : Bool
+  elevated : Bool
+  admin : Bool
+  user_sid : String?
+  binary : String?
+}
+pub fn ScreenServiceProbe::empty() -> Self
 
 pub(all) struct Socket {
   destroy : () -> Unit

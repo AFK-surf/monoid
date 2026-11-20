@@ -21,6 +21,7 @@ export interface OperationParams {
   "context.setAfresh": { afreshWhenCold?: boolean | null | undefined; afreshAbove?: number | null | undefined };
   "diagnostics.setLogs": { logs: boolean };
   "elevation.set": { on: boolean };
+  "screenService.set": { on: boolean };
   "session.warm": { key: string };
   "session.evict": { key: string };
   "session.compact": { key: string };
@@ -227,6 +228,7 @@ export function bindStationOperations(call: Call) {
     contextSetAfresh: <T = unknown>(params: OperationParams["context.setAfresh"] = {}) => call("context.setAfresh", params) as Promise<T>,
     diagnosticsSetLogs: <T = unknown>(params: OperationParams["diagnostics.setLogs"]) => call("diagnostics.setLogs", params) as Promise<T>,
     elevationSet: <T = unknown>(params: OperationParams["elevation.set"]) => call("elevation.set", params) as Promise<T>,
+    screenServiceSet: <T = unknown>(params: OperationParams["screenService.set"]) => call("screenService.set", params) as Promise<T>,
     sessionWarm: <T = unknown>(params: OperationParams["session.warm"]) => call("session.warm", params) as Promise<T>,
     sessionEvict: <T = unknown>(params: OperationParams["session.evict"]) => call("session.evict", params) as Promise<T>,
     sessionCompact: <T = unknown>(params: OperationParams["session.compact"]) => call("session.compact", params) as Promise<T>,

@@ -1691,6 +1691,8 @@ let en : Map[String, String] = {
   "web-pages.stations.elevation.admin": "Run as administrator",
   "web-pages.stations.elevation.section": "Administrator",
   "web-pages.stations.elevation.what": "switch running as administrator",
+  "web-pages.stations.screenService.title": "Remote control of UAC and lock screen",
+  "web-pages.stations.screenService.what": "switch remote control of UAC and lock screen",
   "web-pages.stations.search.personal": "Search personal data",
   "web-pages.stations.search.personalLine": "Workspace members can also search mail, messages, calendars, contacts, notes and photos",
   "web-pages.stations.search.section": "Search",

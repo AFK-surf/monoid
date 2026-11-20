@@ -1658,6 +1658,8 @@ let zh : Map[String, String] = {
   "web-pages.stations.elevation.admin": "以管理员身份运行",
   "web-pages.stations.elevation.section": "管理员",
   "web-pages.stations.elevation.what": "切换以管理员身份运行",
+  "web-pages.stations.screenService.title": "远程控制 UAC 与锁屏",
+  "web-pages.stations.screenService.what": "切换远程控制 UAC 与锁屏",
   "web-pages.stations.search.personal": "搜索个人数据",
   "web-pages.stations.search.personalLine": "workspace 成员也可搜索邮件、信息、日历、通讯录、备忘录和照片",
   "web-pages.stations.search.section": "搜索",

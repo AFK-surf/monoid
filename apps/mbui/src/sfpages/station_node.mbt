@@ -192,7 +192,7 @@ fn station_view_node(
   // (what its blocks are worked out of: the station as their keys read it, so a change of what no key reads runs none
   // of what reads them; and the blocks worked out once, told only as one comes, goes or moves)
   // (and the `beta` features it runs: its terminals' rows are keys of its overview's parts)
-  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "features"])
+  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "screenService", "features"])
   let blocks_now = @signals.computed(fn(_) {
     let s = keyed
     // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
@@ -258,7 +258,7 @@ fn station_view_node(
         })
         |> ignore
       "system" =>
-        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation"]), manager, fn() {
+        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation", "screenService"]), manager, fn() {
           flag(top(), "online")
         })
       "logins" => station_logins_node(b, core, address, fn() { flag(top(), "online") })
@@ -431,7 +431,7 @@ fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   let has_env = field(o, "agentEnv") is Some(Array(_)) && ((online && manager) || env.length() > 0)
   let search = field(o, "search")
   let has_search = search is Some(Object(_)) && text(search, "files") == "spotlight"
-  if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) {
+  if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) || field(o, "screenService") is Some(Object(_)) {
     out.push("system")
   }
   if online && items(field(o, "copies"), "offers").length() > 0 {
@@ -1431,7 +1431,7 @@ fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : ()
 // ── Settings ────────────────────────────────────────────────────────────
 
 ///|
-/// Unified "运行设置" section: collapsible Agent 环境变量, Spotlight personal search switch, Windows admin elevation switch, and diagnostic logs switch.
+/// Unified "运行设置" section: collapsible Agent 环境变量, Spotlight personal search switch, Windows admin elevation switch, Windows screen service switch, and diagnostic logs switch.
 fn station_system_node(b : @view.View, core : Core, address : String, s : () -> Json?, manager : Bool, online : () -> Bool) -> Unit {
   let env_list = fn() { items(field(s(), "overview"), "agentEnv") }
   let has_env = fn() { field(field(s(), "overview"), "agentEnv") is Some(Array(_)) && ((online() && manager) || env_list().length() > 0) }
@@ -1439,6 +1439,7 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
   let search = fn() { field(field(s(), "overview"), "search") }
   let diagnostics = fn() { field(field(s(), "overview"), "diagnostics") }
   let elevation = fn() { field(field(s(), "overview"), "elevation") }
+  let screen_service = fn() { field(field(s(), "overview"), "screenService") }
   let has_search = fn() { search() is Some(Object(_)) && text(search(), "files") == "spotlight" }
   st_section_node(b, fn() { "运行设置" }, fn(sec) {
     @sf.group_node(sec, fn(g) {
@@ -1497,6 +1498,21 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
           busy=fn() { flag(elevation(), "busy") },
         )
       })
+      g.show(fn() { screen_service() is Some(Object(_)) }, fn(ss) {
+        st_switch_node(
+          ss,
+          core,
+          address,
+          fn() { @sf.t("web-pages.stations.screenService.title") },
+          fn() { flag(screen_service(), "on") },
+          fn() { text(screen_service(), "line") },
+          "screenService.set",
+          "on",
+          fn() { @sf.t("web-pages.stations.screenService.what") },
+          fn() { online() && flag(screen_service(), "canChange") },
+          busy=fn() { flag(screen_service(), "busy") },
+        )
+      })
       g.show(fn() { diagnostics() is Some(Object(_)) }, fn(dg) {
         st_switch_node(
           dg,
@@ -1514,6 +1530,9 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
     })
     sec.show(fn() { text(elevation(), "failed") != "" }, fn(f) {
       @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }) |> ignore
+    })
+    sec.show(fn() { text(screen_service(), "failed") != "" }, fn(f) {
+      @sf.words_node(f, fn() { text(screen_service(), "failed") }, fn() { st_problem_bad }) |> ignore
     })
   })
 }
