@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 97.96 | 116.44 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.16 | 121.82 |
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.34 | 119.04 |
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 2.73 | 3.68 | 14.97 | 37.07 | 56.84 | 32.5 | 66.06 | 97.73 | 120.43 |
 | [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
-| [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.08 |
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
-| [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.05 |
