@@ -17,8 +17,9 @@ inter=$(ls "$SF_SRC"/node_modules/.pnpm/@fontsource-variable+inter@*/node_module
 # src/sfstorybook/sources.mbt)
 lib=$(cd "$MBUI_APP_MOD/../../libs/sf-ui/src" && pwd)
 motion_lib=$(cd "$MBUI_APP_MOD/../../libs/mbui/src/motion" && pwd)
-(cd "$MBUI_APP_MOD/src" && for f in sfstorybook/stories.mbt sfstorybook/stories_motion.mbt motion/catalog.mbt motion/tools.mbt $(grep -o '"[a-z_]*\.mbt"' sfstorybook/stories.mbt sfstorybook/stories_motion.mbt | tr -d '"' | sort -u | sed 's|^|sf/|'); do
-  case $f in sf/*) at=$lib/${f#sf/} ;; motion/*) at=$motion_lib/${f#motion/} ;; *) at=$f ;; esac
+ui_lib=$(cd "$MBUI_APP_MOD/../../libs/mbui/src/ui" && pwd)
+(cd "$MBUI_APP_MOD/src" && for f in sfstorybook/stories.mbt sfstorybook/stories_motion.mbt motion/catalog.mbt motion/tools.mbt motion/shared.mbt motion/zoom.mbt ui/nav_transition.mbt $(grep -o '"[a-z_]*\.mbt"' sfstorybook/stories.mbt sfstorybook/stories_motion.mbt | tr -d '"' | sort -u | sed 's|^|sf/|'); do
+  case $f in sf/*) at=$lib/${f#sf/} ;; motion/*) at=$motion_lib/${f#motion/} ;; ui/*) at=$ui_lib/${f#ui/} ;; *) at=$f ;; esac
   [ -f "$at" ] || continue
   printf '//@@ %s\n' "$f"
   cat "$at"

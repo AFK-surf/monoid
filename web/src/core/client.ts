@@ -47,8 +47,8 @@ export type Topic =
   | { topic: "machineLoginScreen"; station: string; id: string }
   | { topic: "loginSessions"; account: string }
   // `feedback`: bug reports about still.fail (a cloud from before has none: an error).
-  | { topic: "admin"; account: string; list: "users" | "workspaces" | "invite-codes" | "feedback" | "audit" }
-  | { topic: "adminList"; account: string; list: "users" | "workspaces" | "invite-codes" | "feedback" | "audit"; query: string; filter?: string; sort?: string; limit?: number; messages?: number }
+  | { topic: "admin"; account: string; list: "users" | "workspaces" | "invite-codes" | "feedback" | "audit" | "keys" }
+  | { topic: "adminList"; account: string; list: "users" | "workspaces" | "invite-codes" | "feedback" | "audit" | "keys"; query: string; filter?: string; sort?: string; limit?: number; messages?: number }
   | { topic: "adminItem"; account: string; list: "users" | "workspaces" | "feedback"; id: string }
   | { topic: "adminOverview"; account: string }
   // still.fail's relays and the load on each over the last day or week (a cloud from before has none: a 404).

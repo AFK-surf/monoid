@@ -14,11 +14,12 @@ let rule_names : Array[String] = [
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
   "each-lookup", "layout-drawn-while", "shader-int", "raw-hover-ground", "width-structure",
   "reused-untracked-key", "manual-fade-way", "page-at-moment", "along-row-at-once", "headless-on-drag",
-  "page-headless", "page-control-by-hand",
+  "page-headless", "page-control-by-hand", "structure-box",
 ]
 
 ///|
 let rule_words : Map[String, String] = {
+  "structure-box": "a structure's callback (View::show, pick, switch_by: `fn(x) { x.box(…) }`) wraps its only child in a bare `x.box(…)` with no other statements on `x`: the structure already makes that box for you, so the extra box is redundant and hides row layout properties; put the properties and children directly on `x` (calling a part function like `words_node(x, …)` is fine)",
   "page-headless": "a page (detlint.json `pages`) says mbui's headless components itself (`@headless.button`, `toggle`, `combobox`…: each `@headless.<name>` counted): a page is made of the app's component library (`library`), whose parts are those components with the app's look (AGENTS.md, Components); a page that gives one a look of its own is a part the library lacks: write it there and use it",
   "page-control-by-hand": "a page (detlint.json `pages`) says a control's role itself (`@view.said(Button, …)`, `Checkbox`, `Radio`, `Switch`, `Tab`, `Tablist`, `Menu`, `MenuItem*`, `Combobox`, `Listbox`, `Option`), with a press, a focus or keys of its own, where a headless component is that control to the hand, the keyboard and a screen reader and the library's part is it with the app's look: use the library's part (a page's link, region, status, heading or dialog not counted)",
   "along-row-at-once": "a structure said both along a row and at once (View::show, pick or each given along_row=true and at_once=true): along a row it makes its way, at once it makes none, so it is a fault as it is made (view's along_row.mbt), seen only where that part shows; say the one meant",

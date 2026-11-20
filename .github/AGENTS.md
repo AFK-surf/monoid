@@ -79,8 +79,10 @@
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
   a part that needs more is made faster, split (the station's, a job a platform: `--platform`, put's `--merge`) or gets
-  fewer bases, not longer (10 bases: the owner, 2026-11-11). All but Android's (its `javac`, `ubuntu-24.04`'s JDK) run on `ci-1`, idle on
-  main by then, not queued behind GitHub's runners (`ubuntu-24.04` with `vars.CI_1 = 'off'`).
+  fewer bases, not longer (10 bases: the owner, 2026-11-11). `deltas-desktop-win` and the station's two Linux
+  platforms run on `ci-1` (`ubuntu-24.04` with `vars.CI_1 = 'off'`); the rest (`deltas-android`, its `javac`
+  `ubuntu-24.04`'s JDK, `deltas-desktop` and the station's macOS and Windows platforms) on `ubuntu-24.04`: the five
+  let go together queued one after another on `ci-1`'s 2 runners.
 - Stable (`workflows/stable.yml`) runs from main's head against the release's older checkout: a step that needs newer
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
   staged; only `station-put` puts it, packages then `station.json` seconds apart, so a run cut before leaves the channel

@@ -8,9 +8,9 @@
 // ── a platform's socket on the shell (the `ws` package's WebSocket, connects_hub's `Socket`) ──
 
 ///|
-/// A socket to `url` on the shell (`ws.open`, `ws.next`, `ws.send`, `ws.close`), what it says told as it comes. A
-/// platform whose socket speaks in binary frames (Feishu's long connection, protobuf) asks for them (`binary`): what it
-/// sends goes as binary frames too.
+/// A socket to `url` on the shell (`ws.open` with `control: true`, `ws.next`, `ws.send`, `ws.ping`, `ws.close`), what
+/// it says told as it comes. A platform whose socket speaks in binary frames (Feishu's long connection, protobuf) asks
+/// for them (`binary`): what it sends goes as binary frames too.
 fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array[(String, String)]) -> @connects_hub.Socket {
   (url, headers) => {
     let events : @effect.Queue[@connects_hub.SocketEvent] = @effect.Queue::unbounded()
@@ -29,6 +29,7 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
         "url": Json::string(url),
         "headers": Json::array(headers.map(h => Json::array([Json::string(h.0), Json::string(h.1)]))),
         "binary": Json::boolean(binary),
+        "control": Json::boolean(true),
       }) catch {
         e => {
           let words = "\{e}"
@@ -63,6 +64,8 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
         match frame {
           { "text": String(t), .. } => ignore(events.try_offer(Said(@utf8.encode(t), false)))
           { "binary": True, .. } => ignore(events.try_offer(Said(bytes.unwrap_or(b""), true)))
+          { "pong": True, .. } => ignore(events.try_offer(Pong))
+          { "ping": True, .. } => ignore(events.try_offer(Pinged))
           _ => {
             ignore(events.try_offer(Closed))
             return
@@ -85,8 +88,15 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
           |> ignore
         _ => ()
       },
-      // (the shell answers the platform's pings itself, and pings nothing of its own)
-      ping: () => (),
+      ping: () => match id.val {
+        Some(i) if !closed.val =>
+          ignore(
+            host.rt.fork_quiet(name="platform ws ping", async fn() {
+              ignore(host.shell("ws.ping", { "id": i })) catch { _ => () }
+            }),
+          )
+        _ => ()
+      },
       terminate: close,
     }
   }

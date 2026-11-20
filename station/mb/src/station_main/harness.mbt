@@ -452,6 +452,7 @@ async fn pipe_tcp_lost(host : @host.Host) -> Json {
     finish: fn() {  },
     stopped: fn() { None },
     reset: fn(code) { ignore(reset.succeed(code)) },
+    media_datagrams: None,
   }
   let handle = shell_handle(host, stream, b"")
   guard handle is { "kind": "tcp", "stream": theirs, .. } else { raise BusError("no connection: \{handle.stringify()}") }

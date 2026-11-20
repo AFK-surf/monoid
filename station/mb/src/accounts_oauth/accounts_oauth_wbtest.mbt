@@ -435,3 +435,99 @@ test "the models part asks at its start and as the cloud says, by the ETag it na
   ])
   assert_eq(w.files.get("/d/model-catalog.json"), Some("{\"etag\":\"e1\",\"models\":{\"m\":{}}}"))
 }
+
+///|
+test "Claude subscription check fails when renewal fails and old token is rejected, and retries renewal once on 401" {
+  let claude_cmd : Json = { "code": 0, "stdout": "{\"loggedIn\":true,\"email\":\"a@x.com\",\"subscriptionType\":\"max\"}" }
+  let urls : Json = { "anthropic": "http://api.test", "claudeToken": "http://auth.test/token" }
+  let run = (cred : String, routes : Json) => check_case({
+    "now": Json::number(t0),
+    "files": { "/p/.credentials.json": Json::string(cred) },
+    "commands": { "claude auth status": claude_cmd },
+    "routes": routes,
+    "options": { "runtime": "claude", "kind": "subscription", "home": "/p", "urls": urls, "lang": "zh" },
+    "root": "/p",
+  })
+  // 1. Expired token + renewal 503 + /v1/models 401 -> failed.
+  let expired_fail = run(creds("old", 1.0), {
+    "/token": [{ "status": 503, "body": { "error": "unavailable" } }],
+    "/v1/models": [{ "status": 401, "body": {} }],
+  })
+  assert_eq(get(get(Some(expired_fail), "result"), "state"), Some(Json::string("failed")))
+  // 2. Expired token + renewal 503 + /v1/models 200 -> ok.
+  let expired_ok = run(creds("old", 1.0), {
+    "/token": [{ "status": 503, "body": { "error": "unavailable" } }],
+    "/v1/models": [{ "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } }],
+  })
+  assert_eq(get(get(Some(expired_ok), "result"), "state"), Some(Json::string("ok")))
+  // 3. Non-expired token + /v1/models 401 -> retries renewal once:
+  // 3a. renewal 200 + /v1/models 200 -> ok with models.
+  let retry_ok = run(creds("old", t0 + 3_600_000.0), {
+    "/token": [{ "status": 200, "body": { "access_token": "new", "refresh_token": "r2", "expires_in": 3600 } }],
+    "/v1/models": [
+      { "status": 401, "body": {} },
+      { "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } },
+    ],
+  })
+  assert_eq(get(get(Some(retry_ok), "result"), "state"), Some(Json::string("ok")))
+  assert_eq(get(get(Some(retry_ok), "result"), "models"), Some(Json::array([Json::string("claude-opus-5-5")])))
+  // 3b. renewal 503 -> failed.
+  let retry_fail = run(creds("old", t0 + 3_600_000.0), {
+    "/token": [{ "status": 503, "body": { "error": "unavailable" } }],
+    "/v1/models": [{ "status": 401, "body": {} }],
+  })
+  assert_eq(get(get(Some(retry_fail), "result"), "state"), Some(Json::string("failed")))
+  // 3c. renewal 400 -> login.
+  let retry_refused = run(creds("old", t0 + 3_600_000.0), {
+    "/token": [{ "status": 400, "body": { "error": "invalid_grant" } }],
+    "/v1/models": [{ "status": 401, "body": {} }],
+  })
+  assert_eq(get(get(Some(retry_refused), "result"), "state"), Some(Json::string("login")))
+  // 3d. renewal 200 + /v1/models still 401 -> login.
+  let still_401 = run(creds("old", t0 + 3_600_000.0), {
+    "/token": [{ "status": 200, "body": { "access_token": "still-bad", "refresh_token": "r2", "expires_in": 3600 } }],
+    "/v1/models": [{ "status": 401, "body": {} }, { "status": 401, "body": {} }],
+  })
+  assert_eq(get(get(Some(still_401), "result"), "state"), Some(Json::string("login")))
+  assert_eq(get(get(Some(still_401), "result"), "detail"), Some(Json::string("station.quota.signInExpired")))
+}
+
+///|
+test "RefreshLock heartbeat calls utimes every 5s past 60s and non-recursive mkdir raises EEXIST" {
+  let w = World::new({ "now": Json::number(t0) })
+  let io = w.io()
+  let lock_path = "/h/.oauth_refresh.lock"
+  let eexist_code = Ref("")
+  let mtime_after_70s = Ref(0.0)
+  let second_acquired_at = Ref(0L)
+  let lock_ref : Ref[RefreshLock?] = Ref(None)
+  ignore(w.drive(async fn() {
+    (io.mkdir)("/h", true)
+    let lock = RefreshLock::acquire(io, words(), lock_path, "en")
+    lock_ref.val = Some(lock)
+    // Atomic non-recursive mkdir on an existing lock directory raises EEXIST.
+    (io.mkdir)(lock_path, false) catch {
+      e => eexist_code.val = code_of(e)
+    }
+    Json::null()
+  }, timers=false))
+  assert_eq(eexist_code.val, "EEXIST")
+  // Advance past the 60s stale threshold: the 5s utimes heartbeat must keep mtime fresh.
+  w.rt.advance(70_000)
+  mtime_after_70s.val = w.dirs.get(lock_path).unwrap().1
+  assert_true(mtime_after_70s.val >= t0 + 65_000.0)
+  // A second contender arriving at +70s must NOT treat the live lock as stale.
+  ignore(w.rt.fork(async fn() {
+    let l2 = RefreshLock::acquire(io, words(), lock_path, "en")
+    second_acquired_at.val = w.now()
+    l2.release()
+  }))
+  ignore(w.rt.run_ready())
+  w.rt.advance(1_000)
+  assert_eq(second_acquired_at.val, 0L)
+  // Releasing the first lock lets the contender acquire it.
+  ignore(w.rt.fork(async fn() { lock_ref.val.unwrap().release() }))
+  ignore(w.rt.run_ready())
+  w.rt.advance(500)
+  assert_true(second_acquired_at.val > 0L)
+}

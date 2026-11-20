@@ -1,10 +1,6 @@
 // These parts' IO on the station's program: the shell's (`@host.Host::shell`, client/shell's `run`), on the program's
 // runtime. What the shell does not offer yet is said where it is asked, never made up:
-// - `fetch` follows redirects (reqwest's), so a request asking `manual` is still followed;
-// - a folder made only where it is not (`mkdir` alone, EEXIST) is a look then a make, not one step: two programs
-//   taking one lock at the same moment may both have it, which Claude Code's `mkdir` never lets happen;
-// - a folder held open has no `utimes`: a lock's heartbeat stops at its first beat (as one that fails does), so a lock
-//   held past 60 s may be taken by another as stale;
+// - `fetch` never follows redirects (`Policy::none()`), matching `manual: true`;
 // - a command's run has no stdin and keeps the station's environment, the variables a login drops unset by `sh`
 //   (`commands_on`), its stderr kept in a file beside it; not run through `sh` on Windows (no stderr there).
 
@@ -55,10 +51,14 @@ pub fn host_io(host : @host.Host) -> Io {
     },
     write: (path, text) => @host_world.fs_write(host, path, text),
     mkdir: (path, recursive) => {
-      if !recursive && @host_world.fs_exists(host, path, lstat=true) {
-        raise FsError("EEXIST", @host_world.eexist_msg("mkdir", path))
+      @host_world.fs_mkdir(host, path, recursive~) catch {
+        e =>
+          if includes("\{e}", "EEXIST") {
+            raise FsError("EEXIST", @host_world.eexist_msg("mkdir", path))
+          } else {
+            raise e
+          }
       }
-      @host_world.fs_mkdir(host, path)
     },
     rmdir: path => {
       if !@host_world.fs_exists(host, path, lstat=true) {
@@ -89,7 +89,13 @@ pub fn host_io(host : @host.Host) -> Io {
       let held : Stat = { dev: 0.0, ino: st.ino, size: 0.0, mtime_ms: st.mtime_ms }
       {
         stat: async fn() { held },
-        utimes: async fn(_) { raise Failed("the shell offers no fs.utimes") },
+        utimes: async fn(at_ms) {
+          match @host_world.fs_lstat(host, path) {
+            Some(cur) if held.ino == 0.0 || cur.ino == held.ino =>
+              @host_world.fs_utimes(host, path, at_ms.to_double())
+            _ => raise enoent(path, "utimes")
+          }
+        },
         close: async fn() {  },
       }
     },

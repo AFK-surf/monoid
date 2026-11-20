@@ -3,14 +3,16 @@ import type { Stamp } from "../api.ts";
 import type { Presence, Tone } from "../ui.tsx";
 import type { FeedbackStatus } from "../cloud/api.ts";
 
-export type List = "users" | "workspaces" | "invite-codes" | "feedback" | "audit";
+export type List = "users" | "workspaces" | "invite-codes" | "feedback" | "audit" | "keys";
 export type Timed = { time?: Record<string, Stamp> };
 export type Mark = { label: string; tone: Tone };
 export type PersonLike = { name: string; email: string; picture: string };
 export type Row = Timed & {
   id: string; title: string; line: string; marks: Mark[]; person?: PersonLike;
-  /** A workspace's: how its stations last stood. A code's: open, used, expired, revoked. An operator's change: its kind. */
+  /** A workspace's: how its stations last stood. A code's: open, used, expired, revoked. An operator's change: its kind. A key's: active, expired, revoked. */
   state?: Presence | string | null; url?: string | null; note?: string;
+  /** An Admin API key's prefix (`sfa_…`). */
+  prefix?: string;
   /** A code's sign-up link for each product, where the cloud answers as two. */
   links?: { product: string; url: string }[];
   /** A bug report's: FB-<number>. */

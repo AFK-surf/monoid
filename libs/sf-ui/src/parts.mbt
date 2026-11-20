@@ -4156,6 +4156,14 @@ let sign_in_touch_w : Double = 420.0
 let sign_in_button_h : Double = 50.0
 
 ///|
+/// The button's words' room from its ends: past where its round ends turn, so its words are never in their curve.
+let sign_in_button_padx : Double = 20.0
+
+///|
+/// The button's words' room above and below, where they take two lines: within its 50 while they take one.
+let sign_in_button_pady : Double = 10.0
+
+///|
 /// The picture: as wide as the button at most (SignIn.kt: widthIn(max = 300.dp)), never past the page's sides.
 let sign_in_picture_w : Double = 300.0
 

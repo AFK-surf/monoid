@@ -21,7 +21,7 @@ export class AdminRelays implements Owner {
   }
 
   owns(topic: Topic): boolean {
-    return topic.topic === "admin" && (topic.list === "relays" || topic.list === "audit" || (typeof topic.list === "string" && topic.list.startsWith("feedback/")));
+    return topic.topic === "admin" && (topic.list === "relays" || topic.list === "audit" || topic.list === "keys" || (typeof topic.list === "string" && topic.list.startsWith("feedback/")));
   }
 
   start(topic: Topic): void {

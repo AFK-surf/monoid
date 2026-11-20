@@ -117,7 +117,11 @@ fn api_of(file : String, name : String) -> String {
     None =>
       match sources().get("motion/" + base) {
         Some(ls) => ls
-        None => return ""
+        None =>
+          match sources().get("ui/" + base) {
+            Some(ls) => ls
+            None => return ""
+          }
       }
   }
   guard lines.search_by(fn(l) { l.has_prefix("pub fn " + name + "(") || (l.has_prefix("pub fn[") && l.contains("] " + name + "(")) }) is Some(at) else {

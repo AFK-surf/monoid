@@ -96,8 +96,26 @@ pub async fn fs_put_whole(host : @host.Host, path : String, data : Bytes, mode? 
 }
 
 ///|
-pub async fn fs_mkdir(host : @host.Host, path : String, sync? : Bool = false) -> Unit {
-  ignore(shell_call(host, sync, "fs.mkdir", { "path": @json.Json::string(path) }))
+pub async fn fs_mkdir(host : @host.Host, path : String, recursive? : Bool = true, sync? : Bool = false) -> Unit {
+  let args : Map[String, @json.Json] = { "path": @json.Json::string(path) }
+  if !recursive { args["recursive"] = @json.Json::boolean(false) }
+  ignore(shell_call(host, sync, "fs.mkdir", args))
+}
+
+///|
+pub async fn fs_utimes(
+  host : @host.Host,
+  path : String,
+  mtime_ms : Double,
+  atime_ms? : Double,
+  sync? : Bool = false,
+) -> Unit {
+  let args : Map[String, @json.Json] = {
+    "path": @json.Json::string(path),
+    "mtimeMs": @json.Json::number(mtime_ms),
+  }
+  if atime_ms is Some(v) { args["atimeMs"] = @json.Json::number(v) }
+  ignore(shell_call(host, sync, "fs.utimes", args))
 }
 
 ///|

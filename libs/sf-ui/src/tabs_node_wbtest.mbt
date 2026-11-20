@@ -186,3 +186,38 @@ test "tabs_node: indicator slide animation causes zero relayout (laid == 0)" {
     }
   }
 }
+
+///|
+test "tabs_node: panel content enters in sync with indicator direction and settles cleanly" {
+  for kept in [false, true] {
+    let k = tabs2(keep_mounted=kept)
+    let rest_x = k.t.rect_of("对话面板").unwrap().0
+    // (switch rightward: 对话 -> 任务; panel starts shifted right (+dx) and fades in)
+    k.t.click(Tab, label="任务")
+    if !@ui.test_at_a_rate() {
+      k.t.frame()
+      let w_mid = k.t.words().iter().find_first(fn(w) { w.0 == "任务面板" }).unwrap()
+      assert_true(w_mid.1 > rest_x, msg="rightward switch enters from +x: rest=\{rest_x}, mid=\{w_mid.1}")
+      assert_true(w_mid.5 > 0.0 && w_mid.5 < 1.0, msg="rightward switch fades in: alpha=\{w_mid.5}")
+    }
+    k.t.run_for(@ui.move_most_ms)
+    let w_end = k.t.words().iter().find_first(fn(w) { w.0 == "任务面板" }).unwrap()
+    assert_true((w_end.1 - rest_x).abs() < 0.5, msg="settled x matches rest: rest=\{rest_x}, end=\{w_end.1}")
+    assert_true((w_end.5 - 1.0).abs() < 0.01, msg="settled alpha is 1: \{w_end.5}")
+    assert_eq(k.t.audit(), [])
+
+    // (switch leftward: 任务 -> 对话; panel starts shifted left (-dx) and fades in)
+    k.t.click(Tab, label="对话")
+    if !@ui.test_at_a_rate() {
+      k.t.frame()
+      let w_left = k.t.words().iter().find_first(fn(w) { w.0 == "对话面板" }).unwrap()
+      assert_true(w_left.1 < rest_x, msg="leftward switch enters from -x: rest=\{rest_x}, mid=\{w_left.1}")
+      assert_true(w_left.5 > 0.0 && w_left.5 < 1.0, msg="leftward switch fades in: alpha=\{w_left.5}")
+    }
+    k.t.run_for(@ui.move_most_ms)
+    let w_back = k.t.words().iter().find_first(fn(w) { w.0 == "对话面板" }).unwrap()
+    assert_true((w_back.1 - rest_x).abs() < 0.5, msg="settled back x matches rest: rest=\{rest_x}, back=\{w_back.1}")
+    assert_true((w_back.5 - 1.0).abs() < 0.01, msg="settled back alpha is 1: \{w_back.5}")
+    assert_eq(k.t.audit(), [])
+  }
+}

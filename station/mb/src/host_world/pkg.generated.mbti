@@ -23,7 +23,7 @@ pub async fn fs_lstat(@host.Host, String, sync? : Bool) -> LstatInfo?
 
 pub async fn fs_meta(@host.Host, String, sync? : Bool) -> MetaInfo?
 
-pub async fn fs_mkdir(@host.Host, String, sync? : Bool) -> Unit
+pub async fn fs_mkdir(@host.Host, String, recursive? : Bool, sync? : Bool) -> Unit
 
 pub async fn fs_put(@host.Host, String, Bytes, offset? : Double, truncate? : Bool, exclusive? : Bool, mode? : Int32, sync_disk? : Bool) -> Unit
 
@@ -46,6 +46,8 @@ pub async fn fs_remove(@host.Host, String, recursive? : Bool, sync? : Bool) -> U
 pub async fn fs_rename(@host.Host, String, String, sync? : Bool) -> Unit
 
 pub async fn fs_symlink(@host.Host, String, String, sync? : Bool) -> Unit
+
+pub async fn fs_utimes(@host.Host, String, Double, atime_ms? : Double, sync? : Bool) -> Unit
 
 pub async fn fs_write(@host.Host, String, String, sync? : Bool) -> Unit
 

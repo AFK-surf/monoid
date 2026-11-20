@@ -34,9 +34,9 @@ pub fn facts_list_node(
     // (words of a length known, whole: measured again as the system's size of words changes)
     let label_w = fn() {
       list.words_redone() |> ignore
-      let size = theme().t.ui * list.words_scale()
+      let size = node_sp(list, @ui.tree_theme().text_size(Ui).0)
       labels.fold(init=least, fn(m, l) {
-        let w = @ui.text_advance(l, size~).ceil()
+        let w = node_words_w(l, size).ceil()
         if w > m {
           w
         } else {

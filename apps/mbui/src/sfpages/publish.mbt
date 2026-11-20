@@ -37,8 +37,6 @@ priv struct Publishing {
   /// (publish_viz_live); `viz_made` told as one comes or goes
   viz_at : Map[String, (@view.View, @sfbase.VizFrame)]
   viz_made : @signals.Signal[Int]
-  /// closed, going as a dialog goes, what it showed kept till it has gone (publish_layer_node)
-  leaving : @signals.Signal[Bool]
   /// told each time the page's list says what it has in sight (a layout done: where a page of HTML is laid out read then)
   sighted : @signals.Signal[Int]
   /// those of them whose file could not be read: their cards
@@ -95,7 +93,6 @@ let publishing : Publishing = {
   copied: @signals.signal(0, same=fn(a, b) { a == b }),
   viz_at: {},
   viz_made: @signals.signal(0),
-  leaving: @signals.signal(false),
   sighted: @signals.signal(0),
   viz_failed: {},
   stills: {},
@@ -458,31 +455,41 @@ fn publish_view(r : ChatRef) -> ChatView {
 ///|
 /// The page that shares it, while it is open, over the shells' pages (narrow_shell, tape_shell), in node `v`: made as it
 /// is opened, let go as it has gone. It comes in faded in as a file opened over the window does, and goes as a dialog
-/// does (@sf.window_page_in, @motion.pop_out), drawn as it was while it goes, the pages under it theirs again from then.
+/// does (@motion.overlay_presence, @motion.dialog_out), drawn as it was while it goes, the pages under it theirs again from then.
 pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
-  // (which opening is drawn: the one open, and once closed the one going till it has gone, at its declared end)
-  let drawn = @signals.signal(0)
-  let ends : Ref[() -> Unit] = Ref(fn() {  })
-  v.reacts(fn() { if publishing.of.get() is Some(_) { publishing.opened.get() } else { 0 } }, fn(open) {
-    (ends.val)()
-    ends.val = fn() {  }
-    if open > 0 {
-      publishing.leaving.set(false)
-      drawn.set(open)
-    } else if drawn.untracked() > 0 {
-      publishing.leaving.set(true)
-      ends.val = v.at_moment(v.cause_at() + @motion.pop_out_ms, fn() {
-        drawn.set(0)
-        publishing.leaving.set(false)
-      })
-    }
-  })
-  // (over the pages, the whole of the room it is given: publish_node's)
-  v.pick(at_once=true, fn() { drawn.get() }, fn(n, opened) {
-    if opened > 0 {
-      publish_node(n, src)
-    }
-  })
+  // (over the pages, the whole of the room it is given: publish_node's; kept for dialog_out_ms while leaving)
+  v.show(
+    at_once=true,
+    leave=@motion.dialog_out_ms,
+    fn() { publishing.of.get() is Some(_) },
+    fn(n) {
+      let (look, live) = @motion.overlay_presence(
+        n,
+        enter=@motion.trans(fade=0.0, spec=@motion.tween(publish_in_ms, ease=Out), ground_first=true),
+        exit=@motion.dialog_out,
+      )
+      n
+      .over(Is(true))
+      // (the pages under it theirs again as it begins to go)
+      .modal(By(live))
+      .presses(By(live))
+      .ground(By(fn() { @sf.theme().p.bg }))
+      .alpha(By(fn() { look().alpha }))
+      .scale(By(fn() { look().sx }))
+      .offset(By(fn() { (look().dx, look().dy) }))
+      |> ignore
+      // (keyed on publishing.opened alone so closing leaves the preview intact during dialog_out)
+      n.pick(
+        at_once=true,
+        fn() { publishing.opened.get() },
+        fn(body, opened) {
+          if opened > 0 {
+            publish_node(body, src, look)
+          }
+        },
+      )
+    },
+  )
 }
 
 ///|
@@ -490,16 +497,12 @@ pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
 /// at the page's width, what it is for over it (viewer_frame_act_node: the bar a file opened has, or 取消 and 保存到相册
 /// at the foot; beside the system's bars, theirs: publish_native); back and Escape close it, but while its picture is
 /// being taken. The picture is taken whole off the screen at the chat's maximum column width (publish_take).
-fn publish_node(n : @view.View, src : Source) -> Unit {
+fn publish_node(n : @view.View, src : Source, look : () -> @ui.Look) -> Unit {
   guard @signals.untracked(fn() { publishing.of.get() }) is Some((r, _)) else { return }
   publishing_src.val = Some(src)
   let busy = fn() { publishing.busy.untracked() }
   n
   .over(Is(true))
-  // (the pages under it theirs again as it begins to go)
-  .modal(By(fn() { !publishing.leaving.get() }))
-  .presses(By(fn() { !publishing.leaving.get() }))
-  .ground(By(fn() { @sf.theme().p.bg }))
   .on_key(fn(k) {
     if k.code == @ui.key_escape {
       if !busy() {
@@ -516,21 +519,6 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
     }
   })
   |> ignore
-  // (in faded, as a file opened over the window: window_page_in; out as a dialog goes, faded and a little smaller:
-  // pop_out. Its ground whole by half its fade and what is on it over the other half, never what it is put over and
-  // its words both seen in one place: the transitions' ground_first)
-  let seen = @motion.NodeWay::new(0.0)
-  seen.go_ms(n, 1.0, publish_in_ms)
-  let gone = @motion.NodeWay::new(0.0)
-  n.reacts(fn() { publishing.leaving.get() }, fn(going) {
-    if going {
-      gone.go_ms(n, 1.0, @motion.pop_out_ms, ease=Leave)
-    }
-  })
-  // (how far in it is as `v` is drawn: its ground's share of it, and what is on it)
-  let a = fn(v : @view.View) { seen.shown(v) * (1.0 - gone.shown(v)) }
-  n.alpha(By(fn() { dmin(1.0, 2.0 * a(n)) })).scale(By(fn() { 1.0 - publish_out_shrink * gone.shown(n) })) |> ignore
-  let words = fn(v : @view.View) { dmax(0.0, 2.0 * a(v) - 1.0) }
   // (what was drawn live on it let go as it has gone, where no other has opened since)
   n.owns(fn() {
     if publishing.of.untracked() is None {
@@ -581,7 +569,7 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
   n.box(fn(page) {
-    page.fills_across(Is(true)).grow(Is(1.0)).alpha(By(fn() { words(page) })) |> ignore
+    page.fills_across(Is(true)).grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
     // (one in the other's place at once: what comes is there whole as it is answered, as a page shows what it opens on)
     page.pick(
       at_once=true,
@@ -612,7 +600,7 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
   // what it is for: on a wide screen the bar a file opened has (back to the chat), 复制图片 at its end; on a small one
   // 取消, 复制 and 保存到相册 at the foot; beside the system's bars, theirs (publish_native)
   n.show(fn() { !@sf.native_on() }, fn(o) {
-    o.over(Is(true)).alpha(By(fn() { words(o) })) |> ignore
+    o.over(Is(true)).alpha(By(fn() { look().words })) |> ignore
     let p = fn() { publishing.preview.get() }
     @sf.viewer_frame_act_node(
       o,
@@ -652,11 +640,8 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// How it comes in (window_page_in's fade), and how much smaller it is as it has gone (pop_out's 0.97).
+/// How it comes in (window_page_in's fade).
 pub let publish_in_ms : Double = 140.0
-
-///|
-let publish_out_shrink : Double = 0.03
 
 ///|
 /// What it says to the system's bars (an iPhone Duo's), as it changes (publish_native's).

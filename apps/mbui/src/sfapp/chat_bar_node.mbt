@@ -724,7 +724,7 @@ fn bar_keys_shown(view : () -> ChatView?, jobs : () -> Json?) -> (Bool, Bool, Bo
 
 ///|
 /// At the end of chat `r`'s bar (its view `view`, read), in `e`: 归档 while nothing is left in it, coming and going
-/// (chat_bar's: 280 ms, ArchiveEase, fading from or to 85% of its size where it stands, its room laid out at once),
+/// (fading in/out over @sf.dur_ms Out where it stands, its room laid out at once),
 /// its services and jobs while it has any (a dot when one died lately or a service is started again), what it is and
 /// "…"; each drawn on its way from where it was as 归档 or the services' key comes or goes (`slides`).
 fn bar_end_node(
@@ -751,7 +751,7 @@ fn bar_end_node(
       if @view.answering_now() {
         share.put(if on { 1.0 } else { 0.0 })
       } else {
-        share.go(k, if on { 1.0 } else { 0.0 }, archive_tween)
+        share.go_ms(k, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
       }
     })
     slides(k)
@@ -770,7 +770,6 @@ fn bar_end_node(
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .alpha(By(s))
-      .scale(By(fn() { 0.85 + 0.15 * s() }))
       .presses(By(archivable))
       |> ignore
       b.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })

@@ -169,7 +169,7 @@ pub fn value_slider_node(
               holder.show(fn() { hold() > 0.0 }, at_once=true, fn(o) {
                 o
                 .beside(k.id(), side=Top, along=Middle, offset=vslider_bubble_gap)
-                .scale(By(fn() { dmin(1.0, 0.6 + 0.4 * hold()) }), about=FromBeside)
+                .scale(By(fn() { dmin(1.0, slider_bubble_scale_from + (1.0 - slider_bubble_scale_from) * hold()) }), about=FromBeside)
                 |> ignore
                 bubble_in(o)
               })
@@ -182,7 +182,7 @@ pub fn value_slider_node(
             row.show(fn() { hold() > 0.0 }, at_once=true, fn(o) {
               o
               .over(Is(true), edges=(None, Some(-vslider_bubble_gap), None, None))
-              .scale(By(fn() { dmin(1.0, 0.6 + 0.4 * hold()) }), about=At(0.5, 1.0))
+              .scale(By(fn() { dmin(1.0, slider_bubble_scale_from + (1.0 - slider_bubble_scale_from) * hold()) }), about=At(0.5, 1.0))
               .moved_by(fn(w, h, at) { (cx() + off_at(at) - w / 2.0, -h) }, fn(_w, _h) { lag.end() })
               |> ignore
               bubble_in(o)
@@ -228,6 +228,10 @@ let vslider_track_h : Double = 4.0
 
 ///|
 let vslider_knob_d : Double = 20.0
+
+///|
+/// Starting scale of the slider value bubble when pressed (0.94 -> 1.0, avoiding abrupt pop).
+let slider_bubble_scale_from : Double = 0.94
 
 ///|
 let vslider_drop_out : Double = 3.0

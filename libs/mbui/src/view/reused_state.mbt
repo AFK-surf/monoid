@@ -31,6 +31,9 @@ priv struct ReusedSlot {
   mut kept_bool : (String) -> Bool?
   /// how many keys its list keeps something of (ReusedKept), for a test
   kept_keys : () -> Int
+  /// how many times it was taken for another key (ReusedSlot::told_reused): what is drawn in it before and after is
+  /// another key's, never one thing stepping (ui's sizes_steady.mbt)
+  mut epoch : Int
 }
 
 ///|
@@ -130,6 +133,7 @@ fn Tree::reused_made(
     kept_x: x,
     kept_bool: b,
     kept_keys,
+    epoch: 0,
   }
   let at = v.at
   self.reused_slots[at] = rs
@@ -155,6 +159,16 @@ fn Tree::reused_root(self : Tree, at : Int) -> (Int, ReusedSlot)? {
     i = self.nodes[i].parent
   }
   None
+}
+
+///|
+/// How many times the block of a page's list taken for other keys that node `at` is in, nearest it (itself, or what
+/// holds it), was taken for another key (View::scrolls_window's `reused`): none where it is in none, or is let go of.
+/// What is drawn of it with another count shows another key: judged anew, never as one thing stepping (ui's
+/// sizes_steady.mbt).
+pub fn Tree::reused_epoch_of(self : Tree, at : Int) -> Int? {
+  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return None }
+  self.reused_root(at).map(fn(r) { r.1.epoch })
 }
 
 ///|
@@ -212,6 +226,7 @@ fn ReusedSlot::taken(self : ReusedSlot, tree : Tree, root : Int) -> (Map[String,
 ///|
 /// Taken for another key: what is done so (View::on_reused), each of what lives of it.
 fn ReusedSlot::told_reused(self : ReusedSlot) -> Unit {
+  self.epoch = self.epoch + 1
   for e in self.on_reused.to_array() {
     let (_, (v, fs)) = e
     guard v.alive() else { continue }

@@ -294,11 +294,15 @@ fn leaf_size(
     } else {
       tl
     }
+    view_words_first_told(tl)
     (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(tl.line_end, tl.shaped.cu)) { w } else { tl.w }, tl.h)
   } else if n.kind == kind_rich {
     // (on one line, as wide as it is, as Ctx::text's words: cut, where it is, as it is placed narrower)
     match n.rich_layout(if n.wrap { max_w } else { 1.0e9 }) {
-      Some(rl) => (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(rl.line_end, rl.cu)) { w } else { rl.w }, rl.h)
+      Some(rl) => {
+        view_runs_first_told(rl)
+        (if wm == Exactly || (wm == AtMost && n.wrap && soft_wrapped(rl.line_end, rl.cu)) { w } else { rl.w }, rl.h)
+      }
       None => (0.0, 0.0)
     }
   } else if n.kind == kind_editor {
@@ -519,6 +523,8 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
     ACenter => Center
     AEnd => FlexEnd
     AStretch => Stretch
+    AFirstLine => FirstLineCenter
+    ABaseline => Baseline
   }
   if s.align_items != ai {
     s.align_items = ai

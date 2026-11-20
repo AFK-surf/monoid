@@ -24,7 +24,7 @@ if ($release -and $userDir -and (Split-Path -Leaf $release) -eq 'app') {
 }
 $data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { $own }
 $station = if ($env:STILLFAIL_STATION_BIN) { $env:STILLFAIL_STATION_BIN } else { Join-Path $here 'mesh\target\release\stillfail-station.exe' }
-$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail uninstall [--purge]'
+$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail uninstall [--purge] | stillfail admin <command>'
 $a = @($args)
 
 function Run([string[]] $more) {
@@ -123,6 +123,19 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     if (-not $script) { [Console]::Error.WriteLine('stillfail update: no installer to run'); exit 1 }
     $env:STILLFAIL_DATA = $data
     & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script
+    exit $LASTEXITCODE
+  }
+  { $a[0] -eq 'admin' } {
+    $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
+    if (-not (Test-Path -LiteralPath $node)) { $cmd = Get-Command node -ErrorAction SilentlyContinue; $node = if ($cmd) { $cmd.Source } else { $null } }
+    if (-not $node) { [Console]::Error.WriteLine('stillfail admin: node not found'); exit 1 }
+    $built = Join-Path $here 'station\admin-cli.js'
+    $src = Join-Path $here 'bin\admin-cli.ts'
+    $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
+    if (-not $entry) { [Console]::Error.WriteLine("stillfail admin: admin-cli not found in $here\station or $here\bin"); exit 1 }
+    $env:STILLFAIL_DATA = $data
+    $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
+    & $node $entry @rest
     exit $LASTEXITCODE
   }
   default { [Console]::Error.WriteLine($usage); exit 2 }

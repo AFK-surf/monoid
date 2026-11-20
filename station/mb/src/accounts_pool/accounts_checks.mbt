@@ -715,7 +715,8 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let answer = self.quota_fn(profile)
   let signed_out = answer.get("signedOut") == Some(Bool(true))
   let no_answer = answer.get("unanswered") == Some(Bool(true))
-  let asked = jdel(jdel(answer, "signedOut"), "unanswered")
+  let recheck = answer.get("recheck") == Some(Bool(true))
+  let asked = jdel(jdel(jdel(answer, "signedOut"), "unanswered"), "recheck")
   if self.login_generation.get(id).unwrap_or(0) != generation {
     return self.quotas.get(id)
   }
@@ -768,6 +769,22 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       self.codex_login(id, false, lang)
     }
   } else if signed_out && jget(self.checks.get(id), "state") != Some(Str("login")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if recheck && jget(self.checks.get(id), "state") == Some(Str("ok")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if profile.runtime == "claude" &&
+    access_kind(profile.raw) == "subscription" &&
+    read.get("state") == Some(Str("ok")) &&
+    (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
+      jget(self.checks.get(id), "state") == Some(Str("login"))) {
     self.background.spawn(async fn() {
       ignore(self.check(id, self.ctx.station_lang)) catch {
         _ => ()

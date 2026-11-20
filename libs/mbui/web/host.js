@@ -3227,8 +3227,12 @@
     });
     // with no field focused, the keys are the app's (its shortcuts, Escape, the arrows; a character as 1000 + it)
     on(win, 'keydown', (e) => {
-      if (e.target === ta || imeActive || e.isComposing) return;
-      if (e.altKey && e.key === 'ArrowLeft') return; // back (below)
+      if (e.defaultPrevented || e.target === ta || imeActive || e.isComposing || e.keyCode === 229) return;
+      if (e.target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
+      if (!catching && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === 'ArrowLeft') {
+        goBack(e);
+        return;
+      }
       const mods = modsOf(e);
       const code = keymap[e.key];
       if (code) { cb.key(code, mods); e.preventDefault(); return; }
@@ -3240,6 +3244,7 @@
       cb.key(own ?? 1000 + c.charCodeAt(0), mods);
       e.preventDefault();
     });
+    on(win, 'mouseup', (e) => { if (e.button === 3) goBack(e); });
     // What an input method did to its field goes to the app's as what it changed there, not as what it says it put in:
     // voice input writes a guess and replaces it as it hears more (iOS's dictation selects its last guess and inserts
     // the next over it; another's keyboard may delete it key by key and type the next), corrections and suggestions
@@ -3407,8 +3412,6 @@
   H.setBack = (b) => { back = b; };
   H.backEnabled = (on) => { backOn = on; };
   const goBack = (e) => { if (back && backOn) { e.preventDefault(); back(2, 0, 1, 0); } };
-  window.addEventListener('keydown', (e) => { if (e.altKey && e.key === 'ArrowLeft') goBack(e); });
-  window.addEventListener('mouseup', (e) => { if (e.button === 3) goBack(e); });
 
   // A context lost (the GPU's process gone; a phone's browser takes it from a page sent behind): without
   // preventDefault the browser never gives it back, and paints the canvas white with its broken-canvas mark, over the

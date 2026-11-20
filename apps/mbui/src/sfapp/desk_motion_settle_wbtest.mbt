@@ -71,7 +71,7 @@ test "大屏, either chat's page: a chat switched to from the sidebar while its 
     t.run_for(@ui.move_most_ms)
     assert_true(composer_focused(), msg="\{at}: the cursor in s-c1's composer")
     // (the list's search pulled into view over its first row and pressed: the cursor in it)
-    let logs = t.drive("wheelat -400 夜里的构建又失败了\nwait 600\ntap 搜索\nwait 600\nexit\n")
+    let logs = t.drive("wheelat -400 夜里的构建又失败了\nwait 600\ntap 搜索\nwait 600\ntype 首页的列表\nwait 200\nexit\n")
     guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
       fail("\{at}: the search not pressed: \{ms_drive_said(logs)}")
     }

@@ -56,11 +56,12 @@ pub fn Tester::unseen_press_faults(self : Tester) -> Array[String] {
     if faded * 2.0 >= window {
       continue
     }
-    let lands = match tree.target_at(cx, cy) {
-      Pressed(t) | Dragged(t) => tree.holds(id, t)
-      _ => false
-    }
-    if !lands {
+    let pointer_lands = tree.takes_unseen(id) &&
+      (match tree.target_at(cx, cy) {
+        Pressed(t) | Dragged(t) => tree.holds(id, t)
+        _ => false
+      })
+    if !pointer_lands {
       continue
     }
     let words = if said == "" { "a box " } else { "「\{words_short(said)}」 " }

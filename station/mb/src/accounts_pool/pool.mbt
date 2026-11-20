@@ -309,10 +309,18 @@ pub fn cheap_to_leave(
 }
 
 ///|
-/// `signsIn`: its login is not over and its key was not rejected.
+/// `signsIn`: its login is not over, its key was not rejected, and the provider has not blocked it.
 pub fn signs_in(h : Health) -> Bool {
   let state = jget(h.check, "state")
-  state != Some(Str("login")) && state != Some(Str("failed"))
+  state != Some(Str("login")) &&
+  state != Some(Str("failed")) &&
+  jget(h.quota, "state") != Some(Str("blocked"))
+}
+
+///|
+/// `quotaUnavailable`: whether a profile's last allowance check could not read its quota.
+fn quota_unavailable(h : Health) -> Bool {
+  jget(h.quota, "state") == Some(Str("unavailable"))
 }
 
 ///|
@@ -399,10 +407,20 @@ pub fn pick_profile(
   let fit = serving.filter(i => usable(rank[i].1, now~))
   let paid = fit.filter(i => !billed_per_use(rank[i].0.raw))
   let signed_in = serving.filter(i => signs_in(rank[i].1))
-  let pool = if paid.length() > 0 {
+  let healthy = (list : Array[Int]) => list.filter(i => !quota_unavailable(rank[i].1))
+  let paid_healthy = healthy(paid)
+  let fit_healthy = healthy(fit)
+  let signed_in_healthy = healthy(signed_in)
+  let pool = if paid_healthy.length() > 0 {
+    paid_healthy
+  } else if paid.length() > 0 {
     paid
+  } else if fit_healthy.length() > 0 {
+    fit_healthy
   } else if fit.length() > 0 {
     fit
+  } else if signed_in_healthy.length() > 0 {
+    signed_in_healthy
   } else if signed_in.length() > 0 {
     signed_in
   } else {

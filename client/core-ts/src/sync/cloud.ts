@@ -40,6 +40,7 @@ export const ADMIN_LISTS = ["users", "workspaces", "invite-codes", "feedback"];
 /// deleted or changed the workspaces and the users (who is in which). A path not known here reads them all.
 export function adminListsForWrite(at: string): string[] {
   if (at === "/v1/admin/me") return [];
+  if (at.startsWith("/v1/admin/keys")) return [];
   if (at.startsWith("/v1/admin/feedback")) return ["feedback"];
   if (at.startsWith("/v1/admin/invite-codes")) return ["invite-codes"];
   if (at.startsWith("/v1/admin/pending")) return ["users", "workspaces"];
@@ -250,6 +251,7 @@ export class CloudSync {
       else if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) {
         for (const list of adminListsForWrite(at)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}/${list}`, Priority.asked, Effect.asVoid(this.adminList(sub, list))), { log: "Unhandled", message: "admin read" }));
         if (at.startsWith("/v1/admin/feedback")) this.onAdminSubList(sub, "feedback/");
+        if (at.startsWith("/v1/admin/keys")) this.onAdminSubList(sub, "keys");
       }
       // (every change of an operator's is in its 操作记录, the relays' too)
       if (at.startsWith("/v1/admin/") && at !== "/v1/admin/me" && method !== "GET") this.onAdminSubList(sub, "audit");
@@ -761,6 +763,7 @@ export class CloudSync {
       // (those read only while shown: a report's own page, the operators' changes)
       if (named === null || named.includes("feedback")) this.onAdminSubList(sub, "feedback/");
       if (named === null || named.includes("audit")) this.onAdminSubList(sub, "audit");
+      if (named === null || named.includes("keys")) this.onAdminSubList(sub, "keys");
       for (const list of lists) {
         core.scheduler.enqueue("cloud", `admin/${sub}/${list}`, Priority.shown, Effect.flatMap(this.adminList(sub, list), (e): Effect.Effect<void> => {
           if (e !== null && passing(e)) this.#adminAgain(sub);

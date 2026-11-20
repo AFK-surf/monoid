@@ -1398,6 +1398,7 @@ pub fn Tree::reads_out(Self, NodeId) -> Bool
 pub fn Tree::reduces_motion(Self, () -> Bool) -> Unit
 pub fn Tree::resident_next(Self) -> Double
 pub fn Tree::resident_read(Self) -> Bool
+pub fn Tree::reused_epoch_of(Self, Int32) -> Int32?
 pub fn Tree::reveal_in(Self, NodeId, Double) -> Bool
 pub fn Tree::reveals_any(Self) -> Bool
 pub fn Tree::rides_scroll(Self, NodeId) -> Bool

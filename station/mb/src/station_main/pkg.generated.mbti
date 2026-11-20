@@ -8,6 +8,7 @@ import {
   "station/cloud_lock",
   "station/drive",
   "station/host",
+  "station/mesh_door/door",
   "station/sql",
   "station/station_main/media",
   "station/store_sessions",
@@ -226,6 +227,8 @@ pub fn updates_setup(String, String, app? : String) -> Unit
 
 pub fn updates_world(@host.Host, String) -> @updates.World
 
+pub async fn upstream_op(@host.Host, @json.Json) -> @json.Json
+
 pub fn wall_ms() -> Int64
 
 pub async fn write_on(@host.Host, @json.Json, Bytes) -> Bool
@@ -337,18 +340,22 @@ pub(all) struct LiveBus {
   mesh_relay_conflict : @ref.Ref[() -> Bool]
   mesh_net_info : @ref.Ref[() -> @json.Json]
   peer_http : @ref.Ref[async (Request, @json.Json) -> Reply?]
+  door_ports : @ref.Ref[Array[Int32]]
+  peer_outside : @ref.Ref[(async (String, @json.Json, Bytes?, String) -> (@json.Json, Bytes?))?]
   outside_reaches : @ref.Ref[(String, String?) -> Bool]
   forwarded_port : @ref.Ref[(Int32) -> Bool]
   runtimes_available : @ref.Ref[() -> Array[String]]
   here_device : @ref.Ref[async (@json.Json, @json.Json) -> Unit]
   mcp_handle : @ref.Ref[(async (Request) -> Reply)?]
   hub_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  hub_models_for : @ref.Ref[(String) -> Array[@json.Json]]
   handover_sessions : @ref.Ref[async () -> Array[@json.Json]]
   take_handover : @ref.Ref[async (@json.Json?) -> Unit]
   drain_wait : @ref.Ref[async () -> String]
   status_agents : @ref.Ref[() -> @json.Json?]
   jobs_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
+  ui_screen_view : @ref.Ref[(async (@door.Stream, Bytes, @json.Json, @json.Json) -> Bool)?]
   coord_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   release_hearers : Array[() -> Unit]
   peer_hearers : Array[(String) -> Unit]

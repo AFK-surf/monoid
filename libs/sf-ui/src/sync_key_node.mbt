@@ -16,6 +16,7 @@ pub fn sync_key_node(
   side : Double,
   mark : Double,
   syncing : () -> String?,
+  delay_ms? : Double = later_ms,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(k) {
@@ -27,7 +28,7 @@ pub fn sync_key_node(
     // (all here: where it rests from, from when; held till its tick has stood)
     let rest : @signals.Signal[(SyncRest, Double)?] = @signals.signal(None)
     let held = @signals.signal(false)
-    let fade = @motion.NodeWay::new(0.0)
+    let fade = @motion.NodeWay::new(if delay_ms <= 0.0 && @signals.untracked(syncing) is Some(_) { 1.0 } else { 0.0 })
     let resting = @motion.NodeWay::new(0.0)
     let back = @motion.NodeWay::new(0.0)
     let ticked = @motion.NodeWay::new(0.0)
@@ -45,15 +46,20 @@ pub fn sync_key_node(
         resting.put(0.0)
         back.put(0.0)
         ticked.put(0.0)
-        // (a time nothing waits for, as a toast's on screen: what is idle is idle while it goes on)
-        off_wait.val = k.at_moment(
-          at + later_ms,
-          fn() {
-            waited.set(true)
-            seen.set(true)
-          },
-          later=true,
-        )
+        // (a time nothing waits for, as a toast's on screen: what is idle is idle while it goes on; delay_ms <= 0 shows immediately)
+        if delay_ms <= 0.0 {
+          waited.set(true)
+          seen.set(true)
+        } else {
+          off_wait.val = k.at_moment(
+            at + delay_ms,
+            fn() {
+              waited.set(true)
+              seen.set(true)
+            },
+            later=true,
+          )
+        }
       } else {
         waited.set(false)
         if @signals.untracked(fn() { seen.get() }) {

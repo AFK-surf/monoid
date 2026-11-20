@@ -26,9 +26,10 @@ test "a file coming down told a new share: its chip's fill goes there as each fr
   assert_eq(ground.length(), 1, msg="\{Repr(t.drawn_rects())}")
   let whole = ground[0].2
   assert_true((first[0].2 - whole * 0.2).abs() < 0.01, msg="\{Repr(first)} of \{whole}")
-  // (told 60%: its fill told to go there, from where it is)
+  // (told 60%: its fill told to go there, from where it is, with zero flex relayout)
   percent.set(60)
   t.draw()
+  t.tree_frames_from_now()
   let end = t.time() + chip_fill_ms
   let widths : Array[Double] = []
   while t.time() < end {
@@ -43,6 +44,9 @@ test "a file coming down told a new share: its chip's fill goes there as each fr
     }
   }
   t.frame_at(t.display_frame(end))
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="download_chip fill animation relaid out: \{Repr(f)}")
+  }
   let ascending = widths.length() > 3 &&
     Array::makei(widths.length() - 1, fn(k) { widths[k] < widths[k + 1] }).iter().all(fn(b) { b })
   assert_true(ascending, msg="\{Repr(widths)}")

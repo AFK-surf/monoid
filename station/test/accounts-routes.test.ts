@@ -1590,3 +1590,65 @@ test("a Hermes profile offers discovered models and keeps a manual selection whe
     assert.match(check.detail,/provider unavailable/);
   } finally {await r.close();}
 });
+
+test("Claude askQuota strips recheck, triggers check once when ok, and recovers check on later ok quota", async () => {
+  const data = temp("claude-recheck");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", access: { kind: "subscription" } }],
+    connects: [],
+  }));
+  let checks = 0;
+  let checkState = "ok";
+  let quotaResult: any = { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 0 };
+  const t = await rig({
+    data,
+    check: async () => {
+      checks++;
+      return { state: checkState, detail: checkState === "ok" ? "signed in" : "renew failed", models: null, checkedAt: 0 };
+    },
+    readQuota: async () => quotaResult,
+  });
+  try {
+    await t.accounts.check("cc");
+    await until(() => t.accounts.health("cc").quota?.state === "ok", "initial quota seeded");
+    await settle();
+    assert.equal(checks, 1);
+    assert.equal(t.accounts.health("cc").check?.state, "ok");
+
+    // 1. Quota returns recheck:true while check is ok -> strips recheck, spawns check -> check becomes failed.
+    checkState = "failed";
+    quotaResult = { state: "unavailable", windows: [], detail: "Claude 登录续期请求失败，请稍后重试", checkedAt: 0, recheck: true };
+    const first = await t.accounts.refreshQuota("cc");
+    assert.equal(first?.state, "unavailable");
+    assert.equal((first as any)?.recheck, undefined, "transient recheck flag must be stripped");
+    await until(() => t.accounts.health("cc").check?.state === "failed", "recheck marks profile failed");
+    await settle();
+    assert.equal(checks, 2);
+
+    // 2. Subsequent quota with recheck:true while already failed does not re-trigger check.
+    await t.accounts.refreshQuota("cc");
+    await settle();
+    assert.equal(checks, 2, "already failed profile is not rechecked on every quota poll");
+
+    // 3. Subsequent quota returning ok recovers a failed or login Claude subscription back to ok.
+    checkState = "ok";
+    quotaResult = { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 0 };
+    await t.accounts.refreshQuota("cc");
+    await until(() => t.accounts.health("cc").check?.state === "ok", "ok quota triggers recovery check from failed");
+    await settle();
+    assert.equal(checks, 3);
+
+    // Also recover from login state.
+    checkState = "login";
+    await t.accounts.check("cc");
+    assert.equal(t.accounts.health("cc").check?.state, "login");
+    assert.equal(checks, 4);
+    checkState = "ok";
+    await t.accounts.refreshQuota("cc");
+    await until(() => t.accounts.health("cc").check?.state === "ok", "ok quota triggers recovery check from login");
+    await settle();
+    assert.equal(checks, 5);
+  } finally {
+    await t.close();
+  }
+});

@@ -109,6 +109,9 @@ priv struct SizesSeen {
   mut scale_end : Double
   mut scale_prev : (Double, Double)
   mut scale_now : (Double, Double)
+  /// how many times the block of a page's list it is in had been taken for another key when it was last seen
+  /// (Tree::reused_epoch_of, one more; 0 in none; -1 not seen yet): another count, it shows another key, seen anew
+  mut reused : Int
 }
 
 ///|
@@ -125,6 +128,7 @@ fn SizesSeen::new(text : String) -> SizesSeen {
     scale_end: -1.0e9,
     scale_prev: (1.0, 1.0),
     scale_now: (1.0, 1.0),
+    reused: -1,
   }
 }
 
@@ -548,6 +552,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // where it is down its row is the hold's, stopping as it is caught and going on as it is let go on purpose; its
     // sizes, where it is across and where it is down out of a row judged as ever)
     let stuck = Array::make(k, false)
+    // (and how many times the block of a page's list it is in was taken for another key (Tree::reused_epoch_of), one
+    // more; 0 in none: what is drawn in a block taken for another key is that key's, never the one before stepping, even
+    // where the block was out of sight between, put by)
+    let reused_ep = Array::make(k, 0)
     let puts_now : Map[Int, (Double, Double)] = Map([])
     let laids_now : Map[Int, Double] = Map([])
     // (what holds each before it: a node of the window's tree put among the frame's may come after what it holds)
@@ -587,6 +595,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         sy_at[i] = (if p >= 0 && p < k { sy_at[p] } else { 1.0 }) * la
       }
       xb[i] = (if p >= 0 && p < k { xb[p] } else { 0.0 }) + ldx
+      reused_ep[i] = match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) =>
+          match tr.reused_epoch_of(id.at) {
+            Some(ep) => ep + 1
+            None => 0
+          }
+        _ => if p >= 0 && p < k { reused_ep[p] } else { 0 }
+      }
       ya[i] = pa * la
       yb[i] = pa * lb + pb
       al[i] = palpha * n.opacity * lalpha
@@ -850,6 +866,23 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         }
       }
       drawn_pos[i] = (left0, top0)
+      // (its block taken for another key since it was last seen: another key's, seen anew from this frame, its first)
+      if ns.reused != reused_ep[i] {
+        if ns.reused >= 0 {
+          ns.text = n.text
+          ns.ever = 0
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = (sx_at[i], sy_at[i])
+          ns.scale_now = (sx_at[i], sy_at[i])
+          for s in 0..<6 {
+            ns.seen[s].clear()
+            ns.turned[s] = -1.0e9
+            ns.first_unasked[s] = false
+          }
+        }
+        ns.reused = reused_ep[i]
+      }
       if ns.at != now {
         ns.at = now
         ns.touched = 0

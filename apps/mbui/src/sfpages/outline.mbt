@@ -177,6 +177,8 @@ pub fn open_outline(
   stint? : Int = 0,
   typed? : String = "",
 ) -> Unit {
+  rail_hover_close()
+  @sf.hover_panel_old_close()
   let at : OutlineAt = {
     field: @ui.Field::new(),
     query: @signals.signal("", same=fn(a, b) { a == b }),
@@ -209,6 +211,116 @@ pub fn open_outline(
     tall=outline_tall,
     hugs=true,
   )
+}
+
+///|
+/// Build chat `r`'s outline inside a hover panel body `v`: creates OutlineAt, asks `chat.bring` only when the hover
+/// panel actually opens (0 calls at rest), does not steal keyboard focus (`auto_focus=false`), and follows `follow`
+/// while `follow_active()` is true.
+fn open_outline_hover_body(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  thread : Double,
+  current : Double,
+  close : () -> Unit,
+  stint : Int,
+  follow : () -> Double,
+  follow_active : () -> Bool,
+  on_held : (() -> Bool) -> Unit,
+) -> Unit {
+  let at : OutlineAt = {
+    field: @ui.Field::new(),
+    query: @signals.signal("", same=fn(a, b) { a == b }),
+    found: @signals.signal(None),
+    bringing: @signals.signal(false, same=fn(a, b) { a == b }),
+    asked: 0,
+    lit: @signals.signal("", same=fn(a, b) { a == b }),
+    current,
+    held: @signals.signal(
+      if (src.swr_views)() { outline_rows_of(outline_rows_key(r, thread)) } else { Map([]) },
+    ),
+    asking: {},
+    absent: {},
+  }
+  if !src.read_only {
+    (src.call)("chat.bring", Json::object(outline_params(r, thread)), @sfbase.answer_unread)
+  }
+  outline_body(
+    v,
+    src,
+    r,
+    thread,
+    at,
+    close,
+    stint,
+    false,
+    auto_focus=false,
+    follow~,
+    follow_active~,
+    on_held~,
+  )
+}
+
+///|
+/// Active node-based rail hover panel closers (registered while alive, cleared on reset) so opening the modal outline
+/// closes any open hover panel and never stacks two outline panels.
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let rail_hover_closers : Array[(Int, () -> Unit)] = []
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let rail_hover_closer_next : Ref[Int] = Ref(0)
+
+///|
+fn rail_hover_register(close : () -> Unit) -> Int {
+  rail_hover_closer_next.val += 1
+  let id = rail_hover_closer_next.val
+  rail_hover_closers.push((id, close))
+  id
+}
+
+///|
+fn rail_hover_unregister(id : Int) -> Unit {
+  match rail_hover_closers.search_by(fn(p) { p.0 == id }) {
+    Some(i) => rail_hover_closers.remove(i) |> ignore
+    None => ()
+  }
+}
+
+///|
+fn rail_hover_close() -> Unit {
+  for p in rail_hover_closers.copy() {
+    (p.1)()
+  }
+}
+
+///|
+/// Legacy Ctx outline_rail hover state: currently hovered tick's seq, whether pointer is on the rail, and the active
+/// hover panel's held predicate (search input focused or non-empty).
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_hover_seq : @signals.Signal[Double] = @signals.signal(-1.0, same=fn(a, b) { a == b })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_hover_on : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_held : Ref[() -> Bool] = Ref(fn() { false })
+
+///|
+// kept across runs: let go of by outline_hover_reset (list_reset)
+let old_rail_held_ver : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+fn outline_hover_reset() -> Unit {
+  rail_hover_closers.clear()
+  rail_hover_closer_next.val = 0
+  old_rail_hover_seq.set(-1.0)
+  old_rail_hover_on.set(false)
+  old_rail_held.val = fn() { false }
+  old_rail_held_ver.set(0)
 }
 
 ///|
@@ -273,6 +385,10 @@ fn outline_body(
   close : () -> Unit,
   stint : Int,
   keyed : Bool,
+  auto_focus? : Bool = true,
+  follow? : () -> Double,
+  follow_active? : () -> Bool,
+  on_held? : (() -> Bool) -> Unit,
 ) -> Unit {
   let params = outline_params(r, thread)
   let value = fn() { src.topic("chatOutline", params).get().value }
@@ -481,11 +597,18 @@ fn outline_body(
       },
     )
     // (the keys as it opens from ⌘G and the rail, however it is shown, the input method up; from the round button a
-    // search at hand: the keys where the panel is beside it, not on a sheet, where the rows are what is read)
-    if keyed {
-      @sf.panel_opens_in_node(f)
-    } else {
-      @sf.panel_search_at_hand_node(f)
+    // search at hand: the keys where the panel is beside it, not on a sheet, where the rows are what is read; in a
+    // hover panel (`!auto_focus`), never steal keyboard focus from the chat composer)
+    if auto_focus {
+      if keyed {
+        @sf.panel_opens_in_node(f)
+      } else {
+        @sf.panel_search_at_hand_node(f)
+      }
+    }
+    match on_held {
+      Some(set_held) => set_held(fn() { f.focused() || at.query.get() != "" })
+      None => ()
     }
   })
   |> ignore
@@ -512,10 +635,31 @@ fn outline_body(
   v.show(fn() { more() > 0 }, fn(n) {
     @sf.panel_note_node(n, fn() { @sf.t("web-main.outline.more", args=[("n", more().to_string())]) })
   })
-  // its rows, the reader's in the middle as it opens, the chunk it is in asked for then; what its field holds as it
-  // opens looked for at once
-  at.lit.set(current_key(at))
-  v.at_moment(v.cause_at(), fn() { ask_chunk(chunk_of(at.current)) }) |> ignore
+  // its rows, the hovered tick's (when opened as a hover panel) or the reader's in the middle as it opens, the chunk
+  // it is in asked for then; what its field holds as it opens looked for at once
+  let seq_key = fn(seq : Double) -> String {
+    if seq < 0.0 {
+      ""
+    } else {
+      "said/" + seq.to_int().to_string()
+    }
+  }
+  let init_seq = match follow {
+    Some(get_seq) => {
+      let s = @signals.untracked(get_seq)
+      if s >= 0.0 { s } else { at.current }
+    }
+    None => at.current
+  }
+  let init_key = seq_key(init_seq)
+  at.lit.set(init_key)
+  v.at_moment(v.cause_at(), fn() {
+    ask_chunk(chunk_of(init_seq))
+    if init_seq != at.current && at.current >= 0.0 {
+      ask_chunk(chunk_of(at.current))
+    }
+  })
+  |> ignore
   let first = @signals.untracked(fn() { at.field.text() }).trim(chars=" ").to_owned()
   if first != "" {
     ask(first)
@@ -593,7 +737,32 @@ fn outline_body(
     place~,
   )
   |> ignore
-  place.centre(current_key(at))
+  place.centre(init_key)
+  match (follow, follow_active) {
+    (Some(get_seq), Some(active)) =>
+      v.reacts(
+        fn() {
+          if active() && !searching() {
+            Some(get_seq())
+          } else {
+            None
+          }
+        },
+        at_start=false,
+        fn(opt) {
+          match opt {
+            Some(seq) if seq >= 0.0 => {
+              let k = seq_key(seq)
+              at.lit.set(k)
+              place.centre(k)
+              ask_chunk(chunk_of(seq))
+            }
+            _ => ()
+          }
+        },
+      )
+    _ => ()
+  }
 }
 
 ///|
@@ -815,13 +984,20 @@ let tick_gap : @ui.Space = S1
 let tick_day_gap : @ui.Space = S3
 
 ///|
-let tick_least : Double = @ui.Space::px(S1)
+let tick_least : Double = 6.0
 
 ///|
-let tick_most : Double = @ui.Space::px(S3)
+let tick_most : Double = 14.0
 
 ///|
-let tick_long : Double = @ui.Space::px(S4)
+let tick_long : Double = 20.0
+
+///|
+/// How long a hovered non-reader tick of a turn of `turn` messages is: noticeably longer than its resting width,
+/// capped at `tick_long`.
+fn tick_hover_w(turn : Int) -> Double {
+  dmin(tick_long, dmax(tick_w(turn) + 4.0, 16.0))
+}
 
 ///|
 /// How many doublings of a turn's messages reach tick_most (32).
@@ -922,62 +1098,11 @@ fn rail_ticks(days : Array[Int], at : Int, turns : Array[Int], most : Double) ->
 }
 
 ///|
-/// What people said in each chat as its rail's tips say it (`chat.outline.rows`' rows, asked a chunk at a time as a
-/// tick is pointed at): its first line and time of day, by the chat's key and the message's seq.
-// kept across runs: let go of by the package's reset (chat_list.mbt)
-let rail_said : @signals.Signal[Map[String, (String, String)]] = @signals.signal({})
-
-///|
-/// The chunks of rail_said asked for whose answer has not come, by the chat's key and the chunk.
-// kept across runs: let go of by the package's reset (chat_list.mbt)
-let rail_asking : Map[String, Bool] = Map([])
-
-///|
-/// What a tick of chat `k`'s rail standing for its message `seq` says: its first line and time, "" till the core gave
-/// them.
-fn rail_tip_words(k : String, seq : Double) -> String {
-  match rail_said.get().get(k + "/" + seq.to_int().to_string()) {
-    Some((words, clock)) => if clock == "" { words } else { words + "  " + clock }
-    None => ""
-  }
-}
-
-///|
-/// The rows of chat `r`'s outline (its thread `thread`, its said `said`) of the chunk the `at`th of them is in, asked for
-/// rail_said unless held or asked already.
-fn rail_ask(src : Source, r : ChatRef, thread : Double, said : Array[Double], at : Int) -> Unit {
-  let k = chat_key(r)
-  let chunk = at / outline_chunk
-  let asking = k + "/" + chunk.to_string()
-  guard !src.read_only && !rail_asking.contains(asking) else { return }
-  let from = chunk * outline_chunk
-  let to = if from + outline_chunk < said.length() { from + outline_chunk } else { said.length() }
-  guard from < to else { return }
-  rail_asking[asking] = true
-  let asked = outline_params(r, thread)
-  asked["seqs"] = Json::array(said[from:to].to_owned().map(fn(q) { Json::number(q) }))
-  (src.call)("chat.outline.rows", Json::object(asked), fn(res) {
-    match res {
-      Ok(j) => {
-        let now = rail_said.untracked().copy()
-        for row in items(Some(j), "rows") {
-          let item = outline_item(row, false)
-          now[k + "/" + item.seq.to_int().to_string()] = (item.words, item.clock)
-        }
-        rail_said.set(now)
-      }
-      // (its station away: asked again as a tick of it is next pointed at)
-      Err(_) => rail_asking.remove(asking) |> ignore
-    }
-  })
-}
-
-///|
 /// The rail of chat `r`'s outline (its thread `thread`) at the list's right (an old view's, beside to_latest), the
 /// list's visible room `top` under its top and `room` over its foot: shown while the outline has three said or more;
 /// one tick for each, as long as its turn (`latest`: the chat's newest message, where the last turn ends), the one at
-/// `index` the reader's. Pointed at, a tick's tip says its message's first line and time (asked for as it is). Pressed,
-/// a tick goes to its message. Whether it shows.
+/// `index` the reader's. Pointed at, a tick highlights immediately and after 180 ms opens the interactive outline hover
+/// panel beside the rail; pressed, a tick closes any hover panel and goes straight to its message. Whether it shows.
 fn outline_rail(
   c : @ui.Ctx,
   src : Source,
@@ -1001,10 +1126,13 @@ fn outline_rail(
   let shown = rail_ticks(days, at, rail_turns(said, latest), most)
   let id = c.id("chat-outline-rail")
   let k = chat_key(r)
+  let hover_key = "outline:" + k
   // (the tick pointed at: its id and the message it stands for; each tick's id and message for a press on the rail)
   let pointed : Ref[(Int, Int)?] = Ref(None)
   let ticks_at : Array[(Int, Int)] = []
   c.on_press(id, fn() {
+    old_rail_hover_on.set(false)
+    @sf.hover_panel_old_close(key=hover_key, dismiss=true)
     let mut best = match pointed.val {
       Some((_, i)) => i
       None => at
@@ -1018,31 +1146,44 @@ fn outline_rail(
     }
     @sfbase.go_to(r, said[best])
   })
+  let half_gap = tick_gap.px() / 2.0
+  let half_day = tick_day_gap.px() / 2.0
+  let pad_px = rail_pad.px()
+  let last_g = shown.length() - 1
   c.layer(fn() {
     c.box(style=rail_place.then(@ui.style(pt=@sf.room_of(top), pb=@sf.room_of(room))), fn() {
       let b = c.box(style=rail_press, id~, fn() {
-        // (a day's ticks together, the days further apart; the map's, one group; each in a room as tall as it and the
-        // gap to the next, the press's width, for the pointer to rest on)
+        // (absorb rail_pad and tick_day_gap into each tick_room's pt/pb so there are zero hover dead zones across day
+        // boundaries or top/bottom padding, while preserving exact tick line coordinates)
         let n = Ref(0)
-        for ticks in shown {
+        for g, ticks in shown {
+          let last_j = ticks.length() - 1
           c.box(style=rail_day, fn() {
-            for tick in ticks {
+            for j, tick in ticks {
               let tid = c.id("chat-outline-tick/" + n.val.to_string())
               n.val += 1
               ticks_at.push((tid, tick.at))
-              // (only pointed at, for its tip: a press there the rail's)
-              c.box(style=tick_room, id=tid, taps=false, points=true, fn() {
+              let hovered = c.hovered(tid)
+              if hovered {
+                pointed.val = Some((tid, tick.at))
+              }
+              let pt_px = half_gap +
+                (if g == 0 && j == 0 { pad_px } else if g > 0 && j == 0 { half_day } else { 0.0 })
+              let pb_px = half_gap +
+                (if g == last_g && j == last_j { pad_px } else if g < last_g && j == last_j { half_day } else { 0.0 })
+              let room_style = @ui.style(w=Full, align=AEnd, pt=@sf.room_of(pt_px), pb=@sf.room_of(pb_px))
+              // (only pointed at, for hover highlight and hover panel: a press there the rail's)
+              c.box(style=room_style, id=tid, taps=false, points=true, fn() {
                 let line = if tick.reader {
-                  @ui.style(w=Fixed(tick_long), h=Fixed(tick_thick), bg=Fg)
+                  @ui.style(w=Fixed(tick_long), h=Fixed(tick_thick), bg=Fg, radius=Full)
+                } else if hovered {
+                  @ui.style(w=Fixed(tick_hover_w(tick.turn)), h=Fixed(tick_thick), bg=Muted, radius=Full)
                 } else {
-                  @ui.style(w=Fixed(tick_w(tick.turn)), h=Fixed(tick_thick), bg=Line)
+                  @ui.style(w=Fixed(tick_w(tick.turn)), h=Fixed(tick_thick), bg=Line, radius=Full)
                 }
                 c.box(style=line, fn() {  }) |> ignore
               })
               |> ignore
-              if c.hovered(tid) {
-                pointed.val = Some((tid, tick.at))
-              }
             }
           })
           |> ignore
@@ -1057,17 +1198,52 @@ fn outline_rail(
     |> ignore
   })
   |> ignore
-  match pointed.val {
-    // (a tick pointed at: its message, asked for where it is not held, at the moment of the build's end)
-    Some((tid, i)) => {
-      let words = rail_tip_words(k, said[i])
-      if words == "" {
-        c.tell("outline/rail-ask/" + k, fn() { rail_ask(src, r, thread, said, i) })
-      }
-      @sf.tip(c, "chat-outline-tick/" + tid.to_string(), tid, words, side=Left)
+  let stint = c.page_stint()
+  if pointed.val is Some(_) || c.hovered(id) {
+    let seq = match pointed.val {
+      Some((_, i)) => said[i]
+      None => current
     }
-    None =>
-      @sf.tip(c, "chat-outline-rail", id, @sf.t("web-main.keymap.chat.outline"), shortcut="chat.outline", side=Left)
+    c.tell("outline/rail-hover/" + k, fn() {
+      old_rail_hover_seq.set(seq)
+      old_rail_hover_on.set(true)
+      @sf.hover_panel_old_hover(
+        hover_key,
+        Of(id),
+        @sf.t("web-main.outline.title"),
+        fn(v, close) {
+          open_outline_hover_body(
+            v,
+            src,
+            r,
+            thread,
+            current,
+            close,
+            stint,
+            fn() { old_rail_hover_seq.get() },
+            fn() { old_rail_hover_on.get() },
+            fn(h) {
+              old_rail_held.val = h
+              old_rail_held_ver.set(old_rail_held_ver.untracked() + 1)
+              v.owns(fn() {
+                old_rail_held.val = fn() { false }
+                old_rail_held_ver.set(old_rail_held_ver.untracked() + 1)
+              })
+              |> ignore
+            },
+          )
+        },
+        held=fn() {
+          old_rail_held_ver.get() |> ignore
+          (old_rail_held.val)()
+        },
+      )
+    })
+  } else if old_rail_hover_on.untracked() {
+    c.tell("outline/rail-leave/" + k, fn() {
+      old_rail_hover_on.set(false)
+      @sf.hover_panel_old_leave(hover_key)
+    })
   }
   true
 }
@@ -1084,15 +1260,14 @@ let rail_place : @ui.Style = @ui.style(w=Full, h=Full, align=AEnd, justify=JCent
 
 ///|
 /// The rail's press: 44 wide and 44 tall at least (rail_press_w), its ticks in its middle at its right, rail_pad in.
+/// Vertical padding and day gaps are absorbed into each tick_room so pointer hover has zero dead zones.
 // kept across runs: a value (no field of it changes)
 let rail_press : @ui.Style = @ui.style(
   w=Fixed(rail_press_w),
   min_h=Fixed(rail_press_w),
   align=AEnd,
   justify=JCenter,
-  py=rail_pad,
   pr=rail_pad,
-  gap=tick_day_gap,
 )
 
 ///|
@@ -1195,6 +1370,12 @@ fn outline_entries_of(
       outline_rail(c, src, r, th, value, top_seq, at_end, latest, top, room, room_anim~)
     }
     _ => false
+  }
+  if !railed && old_rail_hover_on.untracked() {
+    c.tell("outline/rail-leave/" + k, fn() {
+      old_rail_hover_on.set(false)
+      @sf.hover_panel_old_leave("outline:" + k)
+    })
   }
   let floated = offered && jump && v.thread is Some(_)
   if floated {
