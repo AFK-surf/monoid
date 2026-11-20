@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.26 | 98.16 | 128.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
-| [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.15 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.05 |
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
-| [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
