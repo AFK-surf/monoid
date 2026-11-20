@@ -507,7 +507,7 @@ const wholeRows = (chats: J): J => firstRows(chats, Infinity);
 /// What a station's row reads of its overview (OverviewRow), of what the database keeps of it beside it
 /// (`station_part.row`: db/schema.ts overviewRowOf, those four as the overview has them): its row is made again only as
 /// these change, not with each of its profiles' quota or its decisions.
-const rowOf = (o: J): J => ({ viewer: o.viewer, counts: o.counts, ...(o.disk != null ? { disk: o.disk } : {}), ...(o.drive != null ? { drive: o.drive } : {}), ...(o.autoChats != null ? { autoChats: o.autoChats } : {}) });
+const rowOf = (o: J): J => ({ viewer: o.viewer, counts: o.counts, ...(o.disk != null ? { disk: o.disk } : {}), ...(o.drive != null ? { drive: o.drive } : {}) });
 
 /// The id of what judges whether this core can read a station's overview, its verdicts kept by it (db/kept.ts
 /// KEPT.overviewFit): how an overview is judged (its `making`: `unreadable`, decorated, then put through `Overview`;
@@ -3590,7 +3590,7 @@ export class Views implements Owner {
         way: way === undefined ? null : present.way(way, (h) => this.relayName(h)),
         ...(s.joined ? { joined: true, home: this.#core.homeName?.(scope, s.id) ?? null } : {}),
         mine: mine(s.id),
-        acceptAutoChats: get(get(overview, "autoChats"), "enabled") === true,
+        ...(get(get(overview, "autoChats"), "enabled") === true ? { acceptAutoChats: true } : {}),
       };
       if (row) return item;
       const serving = overview !== undefined ? servingIn(overview, scope, s.joined === true) : overview;

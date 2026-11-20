@@ -541,15 +541,10 @@ fn new_station_control_node(
   }
   let auto_on = fn() { flag(view(), "autoStation") }
   let label = fn() {
-    let sname = text(station(), "name")
     if auto_on() {
-      if sname != "" {
-        @sf.t("web-main.newChat.autoStationOn", args=[("name", sname)])
-      } else {
-        @sf.t("web-main.newChat.autoStation")
-      }
+      @sf.t("web-main.newChat.autoStation")
     } else {
-      sname
+      text(station(), "name")
     }
   }
   let made : Ref[@view.View?] = Ref(None)

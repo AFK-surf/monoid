@@ -2880,7 +2880,6 @@ web-main.preset.autoStation
 web-main.preset.autoStationAllowlistHint
 web-main.preset.autoStationEmptyHint
 web-main.newChat.autoStation
-web-main.newChat.autoStationOn
 web-main.newChat.autoStationHint
 web-main.newChat.autoEmptyTitle
 web-main.newChat.pickStation

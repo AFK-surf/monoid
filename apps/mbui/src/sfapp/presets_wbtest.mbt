@@ -960,9 +960,9 @@ test "preset edit dialog and station picker show localized English copy with no 
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "Auto station"), msg=runs(t))
   assert_true(shows(t, "Keep the station picked in the new chat"), msg=runs(t))
-  assert_true(shows(t, "Pick automatically across available stations"), msg=runs(t))
+  assert_true(shows(t, "Balance by load across 2 allowlisted stations"), msg=runs(t))
   assert_false(
-    shows(t, "全选") || shows(t, "保持新对话当前选中的 station") || shows(t, "在所有可用 station 间按负载自动分配"),
+    shows(t, "全选") || shows(t, "保持新对话当前选中的 station") || shows(t, "仅在工作区白名单"),
     msg=runs(t),
   )
 }

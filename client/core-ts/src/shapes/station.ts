@@ -415,8 +415,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["counts", "Counts"],
     ["disk", opt("DiskRoom")],
     ["drive", opt("DriveRoots"), { doc: "As Overview's: a station without it lends no folders (the files' sidebar leaves it out)." }],
-    ["autoChats", opt("AutoChatsView"), { doc: "As Overview's: whether this station accepts automatically assigned new chats." }],
-  ], { doc: "A station's overview as its row reads it (StationRow): who the viewer is to it, its agents at work, its disk, the\nfolders it lends, and whether it accepts automatic new-chat assignment." }),
+  ], { doc: "A station's overview as its row reads it (StationRow): who the viewer is to it, its agents at work, its disk, and the\nfolders it lends." }),
   AutoChatsView: struct([
     ["enabled", "bool", { doc: "Whether this station accepts automatically assigned new chats and presets (opt-in, default false)." }],
     ["canEdit", "bool", { doc: "The viewer manages the station: may change it (`autoChats.save`)." }],
