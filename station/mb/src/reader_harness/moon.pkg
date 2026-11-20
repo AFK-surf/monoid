@@ -9,6 +9,7 @@ import {
   "base/net",
   "base/time",
   "base/url",
+  "base/wire" @base_wire,
   "station/host",
   "station/sql",
   "station/wire",

@@ -572,3 +572,89 @@ test("station_main has no bare hub.act() calls bypassing cold-session wakeup", (
   }
   assert.deepEqual(unexpected, [], unexpected.join("\n"));
 });
+
+/// Prevent Wave 1 & Wave 2 style empty placeholder callbacks from creeping back into `station_main` slice wiring.
+test("station_main slice wiring has no empty stub callbacks", () => {
+  const unexpected: string[] = [];
+  const sliceFiles = programFiles().filter((f) => !f.endsWith("/live_bus.mbt"));
+  for (const f of sliceFiles) {
+    const rel = relative(station, f);
+    const lines = read(f).split("\n");
+    lines.forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/\b_connect\s*=>\s*\[\]/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has empty connect placeholder callback \`_connect => []\``);
+      }
+      if (/\bon_close:\s*_\w*\s*=>\s*\(\)\s*=>\s*\(\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has no-op unsubscribe callback \`on_close: _ => () => ()\``);
+      }
+      if ((rel.endsWith("live_p5_5_connects.mbt") || rel.endsWith("live_p5_5_platforms.mbt")) && /\bignore\(\s*(?:handler|cb|on_message|callback)\s*\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} drops connects callback with ignore(...)`);
+      }
+    });
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
+
+/// Every MCP tool declared by the TypeScript station must be declared and wired in the MoonBit program,
+/// and no `station_main` PartTool or PartRoute may contain a todo/not-implemented stub.
+test("every TypeScript MCP tool is declared and wired in MoonBit without stub implementations", () => {
+  const tsToolNames = new Set<string>();
+  for (const f of tsFiles()) {
+    const t = read(f);
+    if (!f.includes("/tools/") && !f.endsWith("tools.ts") && !t.includes("parts.tools(")) continue;
+    for (const m of t.matchAll(/^\s+name:\s*"([a-z][a-z0-9_]+)",\s*$/gm)) {
+      const around = t.slice(m.index!, m.index! + 400);
+      if (around.includes("description:") || around.includes("inputSchema:") || around.includes("parameters:")) {
+        tsToolNames.add(m[1]!);
+      }
+    }
+  }
+  assert.ok(tsToolNames.size >= 30, `TypeScript MCP tools read: ${tsToolNames.size}`);
+  const mbAllText = mbt(mb).filter((f) => !/\/harness[^/]*\.mbt$/.test(f)).map(read).join("\n");
+  const missing = [...tsToolNames].filter((n) => !mbAllText.includes(`"${n}"`)).sort();
+  assert.deepEqual(missing, [], `MCP tools in station/src/ missing from station/mb/src/: ${missing.join(", ")}`);
+
+  const stubs: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    read(f).split("\n").forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/raise\s+Failure\(\s*"(?:todo|not implemented|stub)/i.test(line)) {
+        stubs.push(`${rel}:${i + 1} contains stub Failure`);
+      }
+    });
+  }
+  assert.deepEqual(stubs, [], stubs.join("\n"));
+});
+
+/// Core real-process MoonBit parity suites (`mb-live-*.test.ts`) must never regress or silently vanish.
+test("core live real-process parity suite list (mb-live-*.test.ts) does not regress", () => {
+  const requiredLiveSuites = [
+    "mb-live-accounts-handover.test.ts",
+    "mb-live-canary-fixes.test.ts",
+    "mb-live-comma-replica-parity.test.ts",
+    "mb-live-connects-admin-parity.test.ts",
+    "mb-live-devices-rigs-cards.test.ts",
+    "mb-live-hooks-parity.test.ts",
+    "mb-live-jobs-ops-parity.test.ts",
+    "mb-live-locator.test.ts",
+    "mb-live-mesh-remote-parity.test.ts",
+    "mb-live-p5-1.test.ts",
+    "mb-live-p5-2.test.ts",
+    "mb-live-p5-3.test.ts",
+    "mb-live-p5-4.test.ts",
+    "mb-live-p5-5.test.ts",
+    "mb-live-sessions-parity.test.ts",
+    "mb-live-station.test.ts",
+    "mb-live-vault-devices-parity.test.ts",
+    "mb-live-vault-proxy-parity.test.ts",
+  ];
+  const testDir = join(station, "test");
+  const present = new Set(readdirSync(testDir).filter((n) => /^mb-live-.*\.test\.ts$/.test(n)));
+  assert.ok(present.size >= requiredLiveSuites.length, `mb-live-*.test.ts count regressed: ${present.size} < ${requiredLiveSuites.length}`);
+  const missing = requiredLiveSuites.filter((name) => !present.has(name));
+  assert.deepEqual(missing, [], `missing core live parity suites: ${missing.join(", ")}`);
+  const emptySuites = requiredLiveSuites.filter((name) => !/\b(?:test|it)\s*\(/.test(read(join(testDir, name))));
+  assert.deepEqual(emptySuites, [], `core live parity suites with no test cases: ${emptySuites.join(", ")}`);
+});

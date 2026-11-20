@@ -73,6 +73,64 @@ async fn upstream_eval(host : @host.Host, ask : Json) -> Json {
       }
       Json::string(@url.percent_decode_lossy(std_str(ask, "s"), plus_space=plus))
     }
+    "sse.feed" => {
+      let most = match std_at(ask, "most") {
+        Some(Number(n, ..)) => n.to_int()
+        _ => @base_wire.max_event
+      }
+      let sse = @base_wire.Sse::new(most~)
+      let chunks : Array[Bytes] = match std_at(ask, "chunks_hex") {
+        Some(Array(xs)) =>
+          xs.map(x => match x {
+            String(h) => @codec.hex_decode(h).unwrap_or(b"")
+            _ => b""
+          })
+        _ => [std_bytes(ask, "hex")]
+      }
+      let events : Array[Json] = []
+      let mut too_long = false
+      for ch in chunks {
+        try {
+          for ev in sse.feed(ch) {
+            events.push({
+              "name": Json::string(ev.name),
+              "data": Json::string(ev.data),
+              "id": match ev.id {
+                Some(i) => Json::string(i)
+                None => Json::null()
+              },
+            })
+          }
+        } catch {
+          @base_wire.TooLong(_) => {
+            too_long = true
+            break
+          }
+        }
+      }
+      { "events": Json::array(events), "tooLong": Json::boolean(too_long) }
+    }
+    "flate.deflate" => Json::string(@codec.hex_encode(@flate.deflate(std_bytes(ask, "hex"))))
+    "flate.inflate" => std_opt_bytes(@flate.inflate(std_bytes(ask, "hex")))
+    "flate.deflate_stream" => {
+      let d = @flate.Deflater::new()
+      let out = @buffer.new()
+      match std_at(ask, "chunks_hex") {
+        Some(Array(xs)) =>
+          for x in xs {
+            if x is String(h) {
+              out.write_bytes(d.push(@codec.hex_decode(h).unwrap_or(b"")))
+            }
+          }
+        _ => ()
+      }
+      out.write_bytes(d.finish())
+      Json::string(@codec.hex_encode(out.to_bytes()))
+    }
+    "flate.zlib_compress" => Json::string(@codec.hex_encode(@flate.zlib_compress(std_bytes(ask, "hex"))))
+    "flate.zlib_decompress" => std_opt_bytes(@flate.zlib_decompress(std_bytes(ask, "hex")))
+    "flate.gzip" => Json::string(@codec.hex_encode(@flate.gzip(std_bytes(ask, "hex"))))
+    "flate.gunzip" => std_opt_bytes(@flate.gunzip(std_bytes(ask, "hex")))
     _ => @station_main.upstream_op(host, ask)
   }
 }

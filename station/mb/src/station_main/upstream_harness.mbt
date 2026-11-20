@@ -159,6 +159,31 @@ pub async fn upstream_op(host : @host.Host, ask : Json) -> Json {
         None => { "ok": Json::boolean(false) }
       }
     }
+    "http.serve_start" => http_serve_start(host)
+    "fs.op" => {
+      let op = up_str(ask, "fs_op")
+      let args : Array[Json] = match up_at(ask, "args") {
+        Some(Array(xs)) => xs
+        _ => []
+      }
+      let strict_rm = match up_at(ask, "strict_rm") {
+        Some(True) => true
+        _ => false
+      }
+      let readdir_file_field = match up_at(ask, "readdir_file_field") {
+        Some(True) => true
+        _ => false
+      }
+      try {
+        let v = host_fs_op(host, op, args, strict_rm~, readdir_file_field~)
+        { "ok": Json::boolean(true), "value": v }
+      } catch {
+        DispatchFsError(code, msg) =>
+          { "ok": Json::boolean(false), "code": Json::string(code), "message": Json::string(msg) }
+        e =>
+          { "ok": Json::boolean(false), "code": Json::string(""), "message": Json::string(said_of(e)) }
+      }
+    }
     other => { "unknown": Json::string(other) }
   }
 }

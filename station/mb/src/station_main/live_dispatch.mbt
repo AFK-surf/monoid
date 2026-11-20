@@ -16,6 +16,44 @@ impl Show for DispatchFsError with output(self, logger) {
 }
 
 ///|
+fn os_errno_to_code(n : Int) -> String {
+  if platform() == "win32" {
+    match n {
+      2 | 3 | 123 => "ENOENT"
+      5 | 32 | 33 => "EPERM"
+      17 => "EXDEV"
+      80 | 183 => "EEXIST"
+      87 => "EINVAL"
+      112 => "ENOSPC"
+      145 => "ENOTEMPTY"
+      206 => "ENAMETOOLONG"
+      267 => "ENOTDIR"
+      _ => "EIO"
+    }
+  } else {
+    match n {
+      1 => "EPERM"
+      2 => "ENOENT"
+      13 => "EACCES"
+      16 => "EBUSY"
+      17 => "EEXIST"
+      18 => "EXDEV"
+      20 => "ENOTDIR"
+      21 => "EISDIR"
+      22 => "EINVAL"
+      23 => "ENFILE"
+      24 => "EMFILE"
+      28 => "ENOSPC"
+      30 => "EROFS"
+      36 | 63 => "ENAMETOOLONG"
+      39 | 66 => "ENOTEMPTY"
+      40 | 62 => "ELOOP"
+      _ => "EIO"
+    }
+  }
+}
+
+///|
 fn shell_fs_code(e : Error) -> String {
   let said = said_of(e)
   let n = match said.find("(os error ") {
@@ -28,11 +66,7 @@ fn shell_fs_code(e : Error) -> String {
     }
     None => -1
   }
-  if platform() == "win32" {
-    match n { 2 | 3 | 123 => "ENOENT"; 5 | 32 | 33 => "EPERM"; 80 | 183 => "EEXIST"; 112 => "ENOSPC"; 145 => "ENOTEMPTY"; 267 => "ENOTDIR"; 17 => "EXDEV"; _ => "EIO" }
-  } else {
-    match n { 1 => "EPERM"; 2 => "ENOENT"; 13 => "EACCES"; 16 => "EBUSY"; 17 => "EEXIST"; 18 => "EXDEV"; 20 => "ENOTDIR"; 21 => "EISDIR"; 28 => "ENOSPC"; 39 | 66 => "ENOTEMPTY"; _ => "EIO" }
-  }
+  os_errno_to_code(n)
 }
 
 ///|
@@ -46,8 +80,14 @@ fn fs_code_said(code : String, call : String, p : String) -> String {
     "EXDEV" => "cross-device link not permitted"
     "ENOTDIR" => "not a directory"
     "EISDIR" => "illegal operation on a directory"
+    "EINVAL" => "invalid argument"
+    "ENFILE" => "file table overflow"
+    "EMFILE" => "too many open files"
     "ENOSPC" => "no space left on device"
+    "EROFS" => "read-only file system"
+    "ENAMETOOLONG" => "file name too long"
     "ENOTEMPTY" => "directory not empty"
+    "ELOOP" => "too many levels of symbolic links"
     _ => "i/o error"
   }
   "\{code}: \{words}, \{call} '\{p}'"
@@ -292,8 +332,10 @@ async fn host_fs_op(
       Json::null()
     }
     "symlink" => {
-      if live_symlink_ffi(cstr(s(0)), cstr(s(1))) != 0 {
-        raise DispatchFsError("EEXIST", "EEXIST: file already exists, symlink '\{s(0)}' -> '\{s(1)}'")
+      let err = live_symlink_ffi(cstr(s(0)), cstr(s(1)))
+      if err != 0 {
+        let code = os_errno_to_code(err)
+        raise DispatchFsError(code, fs_code_said(code, "symlink", s(1)))
       }
       Json::null()
     }
