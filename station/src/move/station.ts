@@ -21,12 +21,10 @@ import { AskAgain, Gone, type Module, type PlanReads, Said } from "./module.ts";
 import { ReposModule, repoItemId, worktreesOfClones } from "./repos.ts";
 import { SettingsModule } from "./settings.ts";
 import { type VaultDeps, VaultModule, vaultItemId } from "./vault.ts";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
-import { KeptSet } from "./kept.ts";
+import { KeptSet, replaceFile } from "./kept.ts";
 import { Told } from "./told.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -34,10 +32,7 @@ import { hold as holdUpdates } from "../updates/holds.ts";
 
 /// A JSON file written whole (beside, then renamed).
 async function writeJsonFile(path: string, v: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-  await writeFile(tmp, JSON.stringify(v));
-  await rename(tmp, path);
+  await replaceFile(path, JSON.stringify(v));
 }
 
 type Json = any;
@@ -389,11 +384,13 @@ export class Moves {
         const key = `${s.id}\n${s.host}`;
         if (this.#d.store.liveSessionsOn(p.id, 1).length > 0) {
           this.#unusedTold.delete(key);
-          if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key);
+          if (this.#unusedOwed.has(key)) void this.#unusedOwed.delete(key).catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
           continue;
         }
         if (this.#unusedTold.has(key) || this.#unusedOwed.has(key)) continue;
-        void this.#unusedOwed.add(key).then(() => this.#tellUnused(s.host));
+        void this.#unusedOwed.add(key)
+          .then(() => this.#tellUnused(s.host))
+          .catch((e: Error) => log.warn("move", "unused login state not saved", { error: e.message }));
       }
     });
   }
@@ -403,13 +400,12 @@ export class Moves {
     for (const key of this.#unusedOwed.values()) {
       const [share, to] = key.split("\n");
       if (to !== host) continue;
-      void this.#ask(host, { method: "move.unused", share }).then(
-        async () => {
+      void this.#ask(host, { method: "move.unused", share })
+        .then(async () => {
           this.#unusedTold.add(key);
           await this.#unusedOwed.delete(key);
-        },
-        () => {},
-      );
+        })
+        .catch(() => {});
     }
   }
 

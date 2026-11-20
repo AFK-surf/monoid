@@ -30,6 +30,7 @@ pub struct KeptSet {
   priv path : String
   priv ids : Array[String]
   priv index : Set[String]
+  priv lock : @effect.Semaphore
 }
 
 ///|
@@ -51,7 +52,7 @@ pub fn KeptSet::new(disk : Disk, path : String) -> KeptSet {
       }
     None => ()
   }
-  { disk, path, ids, index: Set::from_array(ids) }
+  { disk, path, ids, index: Set::from_array(ids), lock: @effect.Semaphore::new(1) }
 }
 
 ///|
@@ -94,7 +95,9 @@ pub async fn KeptSet::delete(self : KeptSet, id : String) -> Unit {
 
 ///|
 async fn KeptSet::save(self : KeptSet) -> Unit {
-  (self.disk.write)(self.path, stringify(strings_j(self.ids)))
+  self.lock.with_permit(async fn() {
+    (self.disk.write)(self.path, stringify(strings_j(self.ids)))
+  })
 }
 
 ///|
@@ -103,6 +106,7 @@ pub struct KeptMap {
   priv disk : Disk
   priv path : String
   priv mut map : J
+  priv lock : @effect.Semaphore
 }
 
 ///|
@@ -115,7 +119,7 @@ pub fn KeptMap::new(disk : Disk, path : String) -> KeptMap {
       }
     None => jo([])
   }
-  { disk, path, map }
+  { disk, path, map, lock: @effect.Semaphore::new(1) }
 }
 
 ///|
@@ -145,7 +149,9 @@ pub async fn KeptMap::delete(self : KeptMap, key : String) -> Unit {
 
 ///|
 async fn KeptMap::save(self : KeptMap) -> Unit {
-  (self.disk.write)(self.path, stringify(self.map))
+  self.lock.with_permit(async fn() {
+    (self.disk.write)(self.path, stringify(self.map))
+  })
 }
 
 ///|
@@ -165,9 +171,7 @@ pub struct KeptLog {
 }
 
 ///|
-/// `later`: the rewrite owed is not begun now but before the first line written (or by `written`), its records as
-/// they are then: what the TypeScript's takes as its first await is over (kept.ts `#rewrite`, which reads the map
-/// after its `mkdir`), so what the caller sets meanwhile is in it, then written again as its own line.
+/// `later`: start the rewrite before the first append or in `written`. It includes the records present at that time.
 pub fn KeptLog::new(
   disk : Disk,
   path : String,
