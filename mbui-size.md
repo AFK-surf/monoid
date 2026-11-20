@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 | [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 97.96 | 116.44 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.16 | 121.82 |
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.34 | 119.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 2.73 | 3.68 | 14.97 | 37.07 | 56.84 | 32.5 | 66.06 | 97.73 | 120.43 |
-| [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
 | [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.08 |
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.12 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
-| [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
