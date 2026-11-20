@@ -684,7 +684,7 @@ test "wide, the dialog's 添加目录 under a mouse is lit round, out past its t
   guard rows.length() == 1 else { fail("no 添加目录") }
   let (x, y, w, h) = rows[0].rect
   t.move_to(x + w / 2.0, y + h / 2.0)
-  t.draw()
+  t.run_for(@sf.dur_ms)
   assert_eq(t.corner_faults(), [])
   let lit = t.boxes_held().filter(fn(b) { (b.x - x).abs() < 0.5 && (b.y - y).abs() < 0.5 && (b.w - w).abs() < 0.5 && b.bg != 0L })
   assert_true(lit.length() == 1 && (lit[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit.length()} lit")

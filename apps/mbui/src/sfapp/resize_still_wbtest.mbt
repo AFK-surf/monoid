@@ -30,7 +30,7 @@ test "the window resized: nothing moves for it, in a chat or on Home" {
     for mode in ["chat", "home"] {
       let t = daily_open(mode, scr, 1.0)
       // (the page's opening over first: its slide in, the pictures of its messages brushed in as they are decoded)
-      t.run_for(@sf.reveal_ms)
+      t.run_for(@ui.move_most_ms + @sf.reveal_ms)
       assert_eq(@ui.some_text(t.idle_said()), "None", msg="\{scr.name} \{mode}: still moving as it opened")
       let mut was = scr.w
       for w in [1100.0, 900.0, 700.0, 500.0, 1280.0] {

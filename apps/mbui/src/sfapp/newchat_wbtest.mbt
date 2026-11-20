@@ -729,7 +729,7 @@ test "wide: a new chat's stations under a mouse have concentric corners in the p
     let (mx, my, mw, mh) = rows[1].rect
     // Pointer on the bottom row (Maple): its hover ground is concentric with the small panel's corners.
     t.move_to(mx + mw / 2.0, my + mh / 2.0)
-    t.draw()
+    t.run_for(@sf.dur_ms)
     assert_eq(t.corner_faults(), [])
     let lit_maple = t.boxes_held().filter(fn(b) { same_box(b, (mx, my, mw, mh)) })
     assert_true(lit_maple.length() == 1 && (lit_maple[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_maple.length()} maple lit")
@@ -738,7 +738,7 @@ test "wide: a new chat's stations under a mouse have concentric corners in the p
       fail("no CPU chip in Willow")
     }
     t.move_to(cx + cw / 2.0, cy + ch / 2.0)
-    t.draw()
+    t.run_for(@sf.dur_ms)
     assert_eq(t.corner_faults(), [])
     let lit_willow = t.boxes_held().filter(fn(b) { same_box(b, (wx, wy, ww, wh)) })
     assert_true(lit_willow.length() == 1 && (lit_willow[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_willow.length()} willow lit")

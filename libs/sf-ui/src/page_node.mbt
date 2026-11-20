@@ -68,6 +68,9 @@ pub fn hover_ground_node(
   let active = fn() { on() && (lit_fn() || extra()) }
   let fade = @motion.hover_fade(target, active, duration_ms=dur_ms, instant_off=fn() { @ui.pointing() is Finger })
   target.ground_over(By(fn() {
+    // (read as it was before the fade, untracked: View::ground_over still learns it follows the hand and the focus,
+    // its corners' and focus's checks, with no further subscription)
+    @signals.untracked(active) |> ignore
     let p = fade()
     if p <= 0.0 {
       0L

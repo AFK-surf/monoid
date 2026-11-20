@@ -348,14 +348,14 @@ test "the model and account row lights as the mouse enters it and clears as it r
   }
   assert_false(row_lit())
   t.move_to(mx, my)
-  t.draw()
+  t.run_for(@sf.dur_ms)
   assert_true(row_lit())
   t.move_to(ax, ay)
-  t.draw()
+  t.run_for(@sf.dur_ms)
   assert_true(row_lit())
   let (x, y, w, h) = peek_trigger
   t.move_to(x + w / 2.0, y + h / 2.0)
-  t.draw()
+  t.run_for(@sf.dur_ms)
   assert_false(row_lit())
   assert_true(t.find("Claude · Opus 5.5") is Some(_))
 }
