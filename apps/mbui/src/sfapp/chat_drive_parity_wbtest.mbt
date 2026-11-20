@@ -960,11 +960,6 @@ let pa_rest_off_known : Array[(String, String, Double, Double, Double, String)] 
 ]
 
 ///|
-/// The composer under the viewer: as nodes held as the box it was while the viewer is over it (composer_node's
-/// held_behind), let go of once it shuts; the old page's let go behind it to its capsule, its placeholder 按空格输入.
-let pa_why_held_behind : String = "the composer under the viewer: as nodes held as the box it was while the viewer is over it (held_behind); the old page's let go behind it to its capsule, saying 按空格输入"
-
-///|
 /// Frames at rest on both sides known to differ whole, by drive and moments, each with why: as the second words sent
 /// while the agent is at work on the first are taken, the old page lets its agent's line go (the first's answer come)
 /// though it is at work on them still, its rows down by that line till their answer floats out; as nodes the line stays
@@ -2004,7 +1999,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("composer"), from: 5183.0, to: 5250.0, dx: 5.3, dy: 8.1, dw: 10.4, why: pa_why_composer_way },
   { drive: "desk-notice-card-viewer", what: Key("words 「Claude」"), from: 5200.0, to: 5283.0, dx: 19.4, dy: 9.6, dw: 0.2, why: pa_why_panel_first },
   { drive: "desk-notice-card-viewer", what: Key("words 「1 小时前」"), from: 5200.0, to: 5283.0, dx: 19.4, dy: 9.6, dw: 0.2, why: pa_why_panel_first },
-  { drive: "desk-notice-card-viewer", what: Key("nodes alone 「1 小时前」"), from: 5233.0, to: 5233.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
   { drive: "desk-notice-card-viewer", what: Key("words 「改好后的样子：」"), from: 5183.0, to: 5183.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
   { drive: "desk-notice-card-viewer", what: Key("words 「对比图和构建日志附在下面。」"), from: 5183.0, to: 5183.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
   { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 old alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
@@ -3120,8 +3114,9 @@ let pa_way_known : Array[PaWay] = [
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 17.0, to: 633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "viewer-video", what: Key("old alone 「0:13」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 2183.0, to: 3700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
-  { drive: "viewer-video-medium", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 1550.0, to: 1700.0, dx: 29.1, dy: 0.2, dw: 0.2, why: pa_why_panel_mine },
-  { drive: "viewer-video-medium", what: Key("ground"), from: 1567.0, to: 1700.0, dx: 28.1, dy: 0.2, dw: 15.9, why: pa_why_panel_mine },
+  { drive: "viewer-video-medium", what: Key("words 「打好的发布包在这里，下载下来装一下看看。」"), from: 1550.0, to: 1650.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
+  { drive: "viewer-video-medium", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 1550.0, to: 1750.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
+  { drive: "viewer-video-medium", what: Key("words 「推送截图前要先登录 gh。」"), from: 1550.0, to: 1617.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
   { drive: "picture-lift", what: Key("nodes alone 「1 小时前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「40 分钟前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
@@ -3481,13 +3476,8 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("alpha 「Claude」"), from: 2567.0, to: 2583.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_send },
   { drive: "desk-notice-card-viewer", what: Key("alpha 「刚刚」"), from: 2567.0, to: 2583.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_timein },
   { drive: "desk-notice-card-viewer", what: Key("old alone 「把首页和聊天页的截图都更新」"), from: 883.0, to: 883.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_card },
-  { drive: "desk-notice-card-viewer", what: Key("composer"), from: 5483.0, to: 6983.0, dx: 0.2, dy: 42.2, dw: 42.2, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「按空格输入」"), from: 6733.0, to: 7300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「发布清单 第三项已经核对完：安装包签名正确。」"), from: 6767.0, to: 7117.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「1 小时前」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「发送到」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「星火#发布」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_held_behind },
+  { drive: "desk-notice-card-viewer", what: Key("ground nodes alone"), from: 5217.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude」"), from: 5250.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
   { drive: "send", what: Key("alpha 「处理中」"), from: 4033.0, to: 4033.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_working },
   { drive: "send", what: Key("alpha 「0s」"), from: 4033.0, to: 4050.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_working },
   { drive: "send", what: Key("ring old alone"), from: 4133.0, to: 4183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
