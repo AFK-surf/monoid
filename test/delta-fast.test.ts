@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 import { CHUNK, apply, applyFile, ensureNativeDelta, makeApk, makeDelta, makeTree, makeTreeFromBuffer, parseHeader, readOld, sameBlocks, wholeFiles, type Range } from "../scripts/delta.ts";
 import * as delta from "../scripts/delta.ts";
@@ -438,3 +439,41 @@ function zip(entries: [string, Buffer, boolean][]): Buffer {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, cd, end]);
 }
+
+test("delta-fast.c built with -DDELTA_DLOPEN_ZLIB (libz loaded at run time) makes and checks the chunks -lz's does, byte for byte", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-dlopen-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dl = join(dir, "delta-fast-dl");
+  const source = fileURLToPath(new URL("../scripts/delta-fast.c", import.meta.url));
+  execFileSync("cc", ["-O3", "-std=c11", "-DDELTA_DLOPEN_ZLIB", "-o", dl, source, "-ldl"], { stdio: ["ignore", "ignore", "pipe"] });
+  const lz = native!;
+
+  const rand = prng(271828);
+  const shared = texty(rand, 300_000);
+  const { blob: old, ranges } = blobOf([random(rand, 5000), shared, Buffer.alloc(8192, 0), texty(rand, 40_000)]);
+  const made = Buffer.concat([edited(rand, shared, 4000), random(rand, 3000), Buffer.alloc(8192, 0), texty(rand, 2_000_000)]);
+  const oldPath = join(dir, "old"), madePath = join(dir, "made"), filesPath = join(dir, "files");
+  writeFileSync(oldPath, old);
+  writeFileSync(madePath, made);
+  const filesBin = Buffer.alloc(ranges.length * 8);
+  ranges.forEach((f, i) => { filesBin.writeUInt32LE(f.at, i * 8); filesBin.writeUInt32LE(f.len, i * 8 + 4); });
+  writeFileSync(filesPath, filesBin);
+
+  const outLz = join(dir, "lz.chunks"), outDl = join(dir, "dl.chunks");
+  execFileSync(lz, ["--files", "--verify", oldPath, madePath, filesPath, outLz], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(dl, ["--files", "--verify", oldPath, madePath, filesPath, outDl], { stdio: ["ignore", "ignore", "pipe"] });
+  const a = readFileSync(outLz), b = readFileSync(outDl);
+  assert.ok(a.readUInt32LE(0) === CHUNK && a.length > 8, "more than one chunk made");
+  assert.ok(b.equals(a), `the dlopen build's chunks (${b.length} B) are the -lz build's (${a.length} B) byte for byte`);
+
+  for (const bin of [lz, dl]) assert.equal(spawnSync(bin, ["--check-only", oldPath, madePath, outDl]).status, 0, `${bin} checks the chunks`);
+  // one byte of the deflated payload changed: refused, and the file kept
+  const bad = Buffer.from(b);
+  bad[8 + 100] = bad[8 + 100]! ^ 0x01;
+  const badPath = join(dir, "bad.chunks");
+  writeFileSync(badPath, bad);
+  const res = spawnSync(dl, ["--check-only", oldPath, madePath, badPath], { encoding: "utf8" });
+  assert.notEqual(res.status, 0, "a changed byte is refused");
+  assert.match(res.stderr, /delta-fast/);
+  assert.equal(existsSync(badPath), true, "--check-only keeps the chunks it refused");
+});
