@@ -1041,6 +1041,20 @@ fn chat_rail_day_at(ticks : Array[ChatRailTick], y : Double) -> Int {
 }
 
 ///|
+/// What of the rail the pointer at vertical coordinate `y` within `chat_rail_press` is on, as one piece (the press's
+/// View::pointer_piece keeps only the first `piece` it is asked with, so a day's gap and a tick are told apart in one):
+/// `-2 - t.i` in the gap over tick `t.i` (chat_rail_day_at), else the nearest tick's `t.i` (chat_rail_tick_index_at); -1
+/// where there are no ticks.
+fn chat_rail_piece_at(ticks : Array[ChatRailTick], y : Double) -> Int {
+  let day = chat_rail_day_at(ticks, y)
+  if day >= 0 {
+    -2 - day
+  } else {
+    chat_rail_tick_index_at(ticks, y)
+  }
+}
+
+///|
 /// Which of `ticks` (chat_rail_ticks') a press at `y` down the rail's press `h` tall lies on: the one whose middle is
 /// nearest, as they are laid out in its middle (each tick_gap and its line tall, a day's tick_day_gap over the first of
 /// a day). None where there are none.
@@ -1171,21 +1185,29 @@ fn chat_rail_node(
         open_outline(src, r, th, current, from=Node(press), side=Left, along=Middle, stint=@signals.untracked(stint))
       }, fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
+        // (what of the rail the pointer is on: a day's gap or a tick, asked of the press once, chat_rail_piece_at)
+        let pointed_piece = fn() -> Int {
+          if press.pointed_in() {
+            press.pointer_piece(fn(_px, py) { chat_rail_piece_at(ticks.get(), py) })
+          } else {
+            -1
+          }
+        }
         // (the heading of the day whose gap the pointer is in: said by a tip, no tick lit nor the outline opened there)
         let pointed_day = fn() -> String {
-          if press.pointed_in() {
-            let i = press.pointer_piece(fn(_px, py) { chat_rail_day_at(ticks.get(), py) })
-            match ticks.get().get(i) {
-              Some(t) if i >= 0 => t.name
-              _ => ""
+          let p = pointed_piece()
+          if p <= -2 {
+            match ticks.get().get(-2 - p) {
+              Some(t) => t.name
+              None => ""
             }
           } else {
             ""
           }
         }
         let hovered_idx = fn() -> Int? {
-          if @sf.pointer_rests() && press.pointed_in() && pointed_day() == "" {
-            let i = press.pointer_piece(fn(_px, py) { chat_rail_tick_index_at(ticks.get(), py) })
+          if @sf.pointer_rests() && pointed_day() == "" {
+            let i = pointed_piece()
             if i >= 0 { Some(i) } else { None }
           } else {
             None

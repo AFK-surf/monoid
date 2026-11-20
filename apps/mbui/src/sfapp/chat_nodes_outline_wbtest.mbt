@@ -111,7 +111,7 @@ test "对话目录's rail on a chat's page made as nodes: a tick pressed takes t
 }
 
 ///|
-test "对话目录's rail on a chat's page made as nodes: 0ms hover highlight (including day gaps), 180ms hover panel without stealing focus, follow on rail slide, click row to jump, search lock with Escape/outside close, and ⌘G closes hover panel" {
+test "对话目录's rail on a chat's page made as nodes: 0ms hover highlight (none in a day's gap, that day named instead), 180ms hover panel without stealing focus, follow on rail slide, click row to jump, search lock with Escape/outside close, and ⌘G closes hover panel" {
   let calls : Array[String] = []
   let t = rail_nodes_tester(1280.0, 800.0, calls)
   t.run_for(@ui.move_most_ms)
@@ -135,12 +135,20 @@ test "对话目录's rail on a chat's page made as nodes: 0ms hover highlight (i
   assert_eq(hovered[1].4, muted, msg="tick 1 should highlight Muted immediately")
   assert_true(hovered[1].2 >= 16.0, msg="tick 1 should elongate on hover: \{hovered[1].2}")
   assert_true(outline_panel(t) is None)
-  // day gap between index 6 and index 7: snaps to nearest tick
+  // the day's gap between index 6 and index 7 is that day's, not a tick's: no tick lit, the hover panel not opened there
+  // (a tip names the day instead)
   let gap_mid_y = (base_ticks[6].1 + base_ticks[7].1) / 2.0 + 1.0
   t.move_to(rx + rw / 2.0, gap_mid_y)
   t.draw()
   let in_gap = raw_ticks()
-  assert_true(in_gap[6].4 == muted || in_gap[7].4 == muted, msg="day gap snaps to nearest tick")
+  assert_true(in_gap[6].4 != muted && in_gap[7].4 != muted, msg="no tick lit in a day's gap")
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is None, msg="hover panel must not open from a day's gap")
+  assert_eq(calls.filter(fn(c) { c == "chat.bring" }).length(), 0)
+  // onto the day's first tick (index 7): lit at once
+  t.move_to(rx + rw / 2.0, base_ticks[7].1 + 1.0)
+  t.draw()
+  assert_eq(raw_ticks()[7].4, muted, msg="tick 7 should highlight Muted immediately")
   // 180ms hover opens interactive outline panel on the left without stealing focus
   t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
   guard outline_panel(t) is Some((px, py, pw, ph)) else { fail("hover panel did not open") }

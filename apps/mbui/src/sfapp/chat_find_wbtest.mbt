@@ -1174,7 +1174,7 @@ test "对话目录: scrolled to its end, its last row whole in the panel, over i
 }
 
 ///|
-test "对话目录: hovering the rail highlights the nearest tick immediately (including across day gaps), opens interactive hover panel after 180ms without stealing focus, supports search lock and Escape/outside close, direct click jumps without opening panel, and ⌘G never stacks two panels" {
+test "对话目录: hovering the rail highlights the nearest tick immediately (in a day's gap none, that day named instead), opens interactive hover panel after 180ms without stealing focus, supports search lock and Escape/outside close, direct click jumps without opening panel, and ⌘G never stacks two panels" {
   let calls : Array[Made] = []
   let t = outline_tester(calls)
   let rail = outline_buttons(t).filter(fn(b) { b.2 >= 44.0 })[0]
@@ -1198,12 +1198,20 @@ test "对话目录: hovering the rail highlights the nearest tick immediately (i
   assert_eq(after_hover[1].4, muted, msg="tick 1 should highlight Muted at 0ms")
   assert_true(after_hover[1].2 >= 16.0, msg="tick 1 should elongate on hover: \{after_hover[1].2}")
   assert_true(outline_panel(t) is None, msg="hover panel must not open at 0ms")
-  // day gap between day 0 (index 6) and day 1 (index 7): no dead zone!
+  // the day's gap between day 0 (index 6) and day 1 (index 7) is that day's, not a tick's: no tick lit, the hover panel
+  // not opened there (a tip names the day instead)
   let gap_mid_y = (base_ticks[6].1 + base_ticks[7].1) / 2.0 + 1.0
   t.move_to(rx + rw / 2.0, gap_mid_y)
   t.draw()
   let in_gap = raw_ticks()
-  assert_true(in_gap[6].4 == muted || in_gap[7].4 == muted, msg="day gap must snap to nearest tick with no dead zone")
+  assert_true(in_gap[6].4 != muted && in_gap[7].4 != muted, msg="no tick lit in a day's gap")
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is None, msg="hover panel must not open from a day's gap")
+  assert_eq(named(calls, "chat.bring").length(), 0)
+  // onto the day's first tick (index 7): lit at once
+  t.move_to(rx + rw / 2.0, base_ticks[7].1 + 1.0)
+  t.draw()
+  assert_eq(raw_ticks()[7].4, muted, msg="tick 7 should highlight Muted at 0ms")
   // after 180ms + settle: hover panel opens on the left without stealing focus
   t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
   guard outline_panel(t) is Some((px, py, pw, ph)) else { fail("hover panel did not open after 180ms") }
