@@ -71,6 +71,22 @@ pub fn Tree::has_sticky_in(self : Tree, id : NodeId) -> Bool {
   if self.stickies.is_empty() {
     return false
   }
+  if !self.order_due && self.alive_id(id) && id.at < self.order_of.length() {
+    let o = self.order_of[id.at]
+    if o >= 0 {
+      let end = self.order_end[o]
+      let n = self.order_of.length()
+      for at, e in self.stickies {
+        if at < n {
+          let i = self.order_of[at]
+          if i >= o && i < end && self.nodes[at].live && self.nodes[at].gen == e.0 {
+            return true
+          }
+        }
+      }
+      return false
+    }
+  }
   for at, e in self.stickies {
     let sid : NodeId = { at, gen: e.0 }
     if sid == id || self.holds_in_order(id, sid) {
@@ -94,6 +110,24 @@ pub fn Tree::is_sticky(self : Tree, id : NodeId) -> Bool {
 /// Whether any node is held at a top now (View::sticky, said Some).
 pub fn Tree::sticks_any(self : Tree) -> Bool {
   !self.stickies.is_empty()
+}
+
+///|
+/// Whether any node held at a top (View::sticky, said Some) is drawn now (in the current walk order, not parked).
+pub fn Tree::sticks_drawn(self : Tree) -> Bool {
+  if self.stickies.is_empty() {
+    return false
+  }
+  if self.order_due {
+    return true
+  }
+  let n = self.order_of.length()
+  for at, e in self.stickies {
+    if at < n && self.order_of[at] >= 0 && self.nodes[at].live && self.nodes[at].gen == e.0 {
+      return true
+    }
+  }
+  false
 }
 
 ///|

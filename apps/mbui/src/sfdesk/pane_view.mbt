@@ -495,6 +495,10 @@ fn fold_moves_from(at : Double, to : FoldLook, was_look? : FoldLook) -> Unit {
   fold_goes.way.go(1.0, @motion.moved(over=fold_far(from, to)), velocity=v_norm, at~)
   fold_said()
   fold_set_offs.set(fold_set_offs.untracked() + 1)
+  match app.nav.top() {
+    Chat(r) => @sfbase.column_sets_off(r.station + "\u{1}" + r.session, resize=false)
+    _ => ()
+  }
 }
 
 ///|
@@ -557,10 +561,16 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   fold_goes.was = None
   fold_goes.shift = 0.0
   fold_goes.way.put(1.0)
+  let side_at_c = @signals.computed(fn(_) { pane_side_at(src, v) })
+  let rail_at_c = @signals.computed(fn(_) { pane_rail_at(src, v) })
+  let side_at = fn() { if @signals.active_sub() is None { pane_side_at(src, v) } else { side_at_c.get() } }
+  let rail_at = fn() { if @signals.active_sub() is None { pane_rail_at(src, v) } else { rail_at_c.get() } }
   nav_hold(src)
   // (a chat's detail asked as a page put beside its chat as it comes on top, before a frame builds it)
   beside_follow(v, src)
   v.owns(fn() {
+    side_at_c.dispose()
+    rail_at_c.dispose()
     nav_held.val = fn() { None }
     fold_goes.node = None
     fold_goes.parts.clear()
@@ -688,7 +698,7 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // the block over them (reaching over the page shown a while), the tree's: its ground and the rail (dock_node)
   v.box(fn(b) {
     b.over(Is(true)) |> ignore
-    dock_node(b, fn() { pane_side_at(src, b) }, fn(r) { rail_node(r, src, tips, fn() { pane_rail_at(src, b) }) })
+    dock_node(b, side_at, fn(r) { rail_node(r, src, tips, rail_at) })
   })
   |> ignore
   // The rail's closed look follows the block's target, at the cause of the change.
@@ -703,13 +713,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // the sidebar made once, the tree's, over the block where it lays its sidebar out (side_node)
   v.box(fn(sides) {
     sides.over(Is(true)) |> ignore
-    side_node(sides, src, tips, fn() { pane_side_at(src, sides) })
+    side_node(sides, src, tips, side_at)
   })
   |> ignore
   // the block's line over all it holds (dock_edge_node)
   v.box(fn(line) {
     line.over(Is(true)) |> ignore
-    dock_edge_node(line, fn() { pane_side_at(src, line) })
+    dock_edge_node(line, side_at)
   })
   |> ignore
   // the sidebar's edge, the tree's, over the block (its rows under its strip), but where a list's thumb of the

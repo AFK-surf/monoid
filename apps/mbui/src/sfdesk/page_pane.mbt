@@ -586,8 +586,8 @@ fn pane_made(
                     None => ()
                   }
                 },
-                // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
-                narrower=fn(s, n) { side_narrower(s, n, k) },
+                // (its column on the page's way as the side panel or left sidebar slides beside it: laid out as at its target end)
+                narrower=fn(s, n) { pane_chat_narrower(s, n, k) },
                 // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
                 // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
                 aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },
@@ -788,6 +788,33 @@ fn pane_aside_at(src : Source, n : @view.View) -> Double {
     }
     None => 0.0
   }
+}
+
+///|
+/// How chat page `serial`'s node column in the pane off the tape is laid out as node `n` is drawn (chat_page_made's
+/// `narrower`): while its right side panel slides, follows side_narrower; otherwise while the left sidebar block moves
+/// on a Chat page (never NewChat), holds the column at the move's target width via pane_fold_held; at rest, as wide as
+/// the pane less its open side panel.
+fn pane_chat_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
+  let pane = pane_w_at(src, n)
+  let side_active = match app.nav.page_of(serial) {
+    Some((Chat(r), _)) if pane >= side_both_least => {
+      let key = chat_key(r)
+      let way = side_way(key)
+      way.said()
+      let t = n.drawn_while(fn(at) { way.goes_at(at) })
+      (t != @double.infinity && way.goes_at(t)) || side_setting_off(key, side_drawn_open(src, r, key))
+    }
+    Some((NewChat, _)) => true
+    _ => false
+  }
+  if side_active {
+    return side_narrower(src, n, serial)
+  }
+  if app.nav.page_of(serial) is Some((Chat(_), _)) && fold_going(fold_drawn_at(n)) {
+    return pane_fold_held(src, n, serial)
+  }
+  side_narrower(src, n, serial)
 }
 
 ///|

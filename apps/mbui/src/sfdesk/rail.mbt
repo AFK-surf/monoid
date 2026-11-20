@@ -468,6 +468,7 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       } else {
         @sfbase.go_place("chats") |> ignore
         wide.landed.set("")
+        land(src, w)
       }
     }
     "archive" => {

@@ -1556,7 +1556,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   }
   // (none said anywhere: nothing of it looked at, node by node)
   let reveals = tree.reveals_any()
-  let sticks = tree.sticks_any()
+  let sticks = tree.sticks_drawn()
   // (what draws differently frame by frame as it is: revealed on its way, or holding what is held at a top as what
   // scrolls it moves; never kept and moved whole)
   let unsteady = fn(id : @view.NodeId) {

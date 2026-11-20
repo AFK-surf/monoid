@@ -18,6 +18,7 @@
 /// How the rail is drawn where the block's move has got: the closed bar's or open; its width, its padding at its left,
 /// top and foot, its top row's height (the space over its first place); what it stands on (its marks' discs); how far
 /// in the lists' marks hung on its places are (as the sidebar folds).
+#derive(Eq)
 priv struct RailAt {
   bar : Bool
   w : Double
@@ -206,7 +207,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
     // the workspaces (sfpages' workspace.mbt), giving way and scrolling where the window is short
     rail_workspaces_node(r, src, tips, at)
     // settings
-    rail_key_node(r, tips, at, fn() { lit_place() == "settings" }, fn() { @sf.t("web-pages.settings.title") }, rail_gear, fn(k) {
+    rail_key_node(r, tips, at, fn() { lit_place() == "settings" }, fn() { @sf.t("web-pages.settings.title") }, fn() { rail_gear(src) }, fn(k) {
       @sf.icon_node(k.sq, "settings", rail_icon_size, By(k.ink)) |> ignore
     })
     |> ignore
@@ -217,7 +218,7 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
 ///|
 /// The settings' gear pressed: lit (in the settings), back out of them, to the chat last open; their list folded for the
 /// page's room: shown over the page, or folded again (返回会话 at its top goes back).
-fn rail_gear() -> Unit {
+fn rail_gear(src : Source) -> Unit {
   let lit = lit_place()
   if lit == "settings" && wide.crowded {
     wide.peeking.set(!wide.peeking.get())
@@ -229,6 +230,10 @@ fn rail_gear() -> Unit {
       }
     }
     wide.landed.set("")
+    match @sfbase.workspace_in_view(src).0 {
+      Some(w) => land(src, w)
+      None => ()
+    }
   } else {
     open_settings()
     wide.peek_next.set(wide.crowded)

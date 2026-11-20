@@ -105,7 +105,7 @@ fn attention_open_now(src : Source, w : Workspace) -> Unit {
     }
   } else {
     match side_attention.val {
-      Some(s) if s.alive() => (Node(s), Bottom, attention_off_side)
+      Some(s) if s.alive() && (side_place() == "chats" || side_place() == "archive") => (Node(s), Bottom, attention_off_side)
       _ => (Unanchored, Bottom, attention_off_side)
     }
   }

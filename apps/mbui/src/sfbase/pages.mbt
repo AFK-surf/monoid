@@ -240,18 +240,20 @@ let columns_set_off : Map[String, () -> Unit] = Map([])
 
 ///|
 /// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it.
-pub fn column_sets_off(chat : String) -> Unit {
+pub fn column_sets_off(chat : String, resize? : Bool = true) -> Unit {
   // (the page set off on its way by its cause (a side panel opened or shut): what it changes on the chat's page goes its
   // way, @view.transition)
   @view.transition(fn() {
     columns_set_off_said.set(columns_set_off_said.untracked() + 1)
-    match columns_set_off.get(chat) {
-      Some(f) => f()
-      None => ()
-    }
-    // (each row's room over it told after its list, in the same change: column_set_off_each)
-    for _, f in columns_set_off_each.copy() {
-      f()
+    if resize {
+      match columns_set_off.get(chat) {
+        Some(f) => f()
+        None => ()
+      }
+      // (each row's room over it told after its list, in the same change: column_set_off_each)
+      for _, f in columns_set_off_each.copy() {
+        f()
+      }
     }
   })
 }

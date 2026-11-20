@@ -1434,6 +1434,7 @@ pub fn Tree::stays_seen(Self, String) -> Bool
 pub fn Tree::step_at(Self, NodeId, Int32, Double) -> Bool
 pub fn Tree::spatial_reveal_of(Self, NodeId, Double) -> SpatialReveal?
 pub fn Tree::sticks_any(Self) -> Bool
+pub fn Tree::sticks_drawn(Self) -> Bool
 pub fn Tree::stretch_of(Self, NodeId) -> Double
 pub fn Tree::stroke(Self, Int32, Int32, Double, from? : NodeId?, facts? : Array[String]) -> Bool
 pub fn Tree::styled(Self) -> Array[Styled]

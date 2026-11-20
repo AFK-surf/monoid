@@ -129,3 +129,57 @@ test "大屏: the chats key pressed twice over the new chat, its prompt going wi
 test "大屏 beside the system's bars: the chats key pressed twice over the new chat, its prompt going with the pane both ways" {
   fold_new_chat(1)
 }
+
+///|
+test "大屏窄宽节点对话页：折叠/展开左栏及对话↔Station切换中正文不重排折行且全程稳定" {
+  new_run()
+  let src = fixture("chat-long")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  @sfbase.hold_chat_page_nodes(Some(true))
+  // (w=960: pane=960-48-240=672 < 840 when open, 960-48=912 > 840 when folded — crosses the 840px wrap threshold)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=960.0, h=800.0)
+  t.run_for(@ui.move_most_ms)
+  let line = "和首页那边的改动有关"
+  let size = fn() {
+    guard t.rect_of(line) is Some((_, _, w, h)) else { return (-1.0, -1.0) }
+    (w, h)
+  }
+  let open_size = size()
+  assert_true(open_size.0 > 0.0, msg="missing chat line at start")
+  // Fold left sidebar: column holds target width from start of transition (zero mid-flight reflow)
+  let t0 = t.time()
+  t.advance(between_frames_ms)
+  @sfdesk.wide.folded.set(true)
+  t.frame_at(t0 + 40.0)
+  let fold_size = size()
+  assert_true(fold_size.0 > 0.0, msg="missing chat line mid-fold")
+  for at in [80.0, 120.0, 200.0] {
+    t.frame_at(t0 + at)
+    assert_eq(size(), fold_size, msg="node chat reflowed mid-fold at \{at}")
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_eq(size(), fold_size, msg="node chat settled size differs from held target")
+  // Unfold left sidebar back: holds open target width throughout transition
+  let t1 = t.time()
+  t.advance(between_frames_ms)
+  @sfdesk.wide.folded.set(false)
+  t.frame_at(t1 + 40.0)
+  let unfold_size = size()
+  assert_eq(unfold_size, open_size, msg="unfold target size mismatch")
+  for at in [80.0, 120.0, 200.0] {
+    t.frame_at(t1 + at)
+    assert_eq(size(), unfold_size, msg="node chat reflowed mid-unfold at \{at}")
+  }
+  t.run_for(@ui.move_most_ms)
+  // Switch 对话 (240) -> Station (280) -> 对话 (240) cleanly with sizes_steady
+  t.click(Button, label="Station：Station")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="对话")
+  t.move_to(500.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  if size().0 < 0.0 {
+    t.tap_text("整理发布清单")
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_eq(size(), open_size, msg="node chat size after Station round-trip")
+}

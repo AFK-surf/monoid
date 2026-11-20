@@ -565,6 +565,7 @@ let dock_line : Double = 1.0
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
 /// move has got), where that move has got between open and the floating bar (the band's), whether the
 /// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
+#derive(Eq)
 priv struct SideAt {
   box : (Double, Double, Double, Double)
   /// how wide what the sidebar holds is laid out: `box`'s, but on a move between where it is shown and where it is not

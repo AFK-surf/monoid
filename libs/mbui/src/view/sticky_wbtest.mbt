@@ -101,3 +101,57 @@ test "a node held at a top drawn so whatever holds it is told of it: the row hol
   let d = sticky_case(Is(None))
   assert_true(!d.tree.has_sticky_in(d.mark.val.unwrap().id()) && !d.tree.sticks_any())
 }
+
+///|
+test "parked sticky node: sticks_drawn is false and has_sticky_in on visible node is false, restored on wake" {
+  let now = Ref(0.0)
+  let active = @signals.signal("a")
+  let visible_box : Ref[View?] = Ref(None)
+  let sticky_holder : Ref[View?] = Ref(None)
+  let tree = Tree::new(
+    fn(root) {
+      root.each(
+        fn() { [active.get()] },
+        fn(k) { k },
+        keeps=fn() { ["a", "b"] },
+        at_once=true,
+        fn(slot, k) {
+          let key = @signals.untracked(fn() { k.get() })
+          if key == "a" {
+            slot.box(fn(h) {
+              h.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
+              sticky_holder.val = Some(h)
+              h.box(fn(m) {
+                m.width(Is(Some(20.0))).height(Is(Some(20.0))).sticky(Is(Some(10.0))) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          } else {
+            slot.box(fn(v) {
+              v.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
+              visible_box.val = Some(v)
+            })
+            |> ignore
+          }
+        },
+      )
+    },
+    time=fn() { now.val },
+  )
+  tree.frame(300.0, 400.0) |> ignore
+  assert_true(tree.sticks_any())
+  assert_true(tree.sticks_drawn())
+  assert_true(tree.has_sticky_in(sticky_holder.val.unwrap().id()))
+  // Switch to "b" so "a" (with its sticky node) is parked.
+  active.set("b")
+  tree.frame(300.0, 400.0) |> ignore
+  assert_true(tree.sticks_any())
+  assert_false(tree.sticks_drawn())
+  assert_false(tree.has_sticky_in(visible_box.val.unwrap().id()))
+  // Wake "a" back up: sticks_drawn and has_sticky_in return true.
+  active.set("a")
+  tree.frame(300.0, 400.0) |> ignore
+  assert_true(tree.sticks_drawn())
+  assert_true(tree.has_sticky_in(sticky_holder.val.unwrap().id()))
+}

@@ -372,20 +372,30 @@ fn usage_prices_link_node(parent : @view.View, core : Core) -> Unit {
 ///|
 /// The days' bars' parts named (with each part's cost) and what they are split by (`按人 | 按模型 | 按账号`).
 fn usage_split_node(parent : @view.View, v : () -> Json?, press : UsagePress) -> Unit {
-  let lists = fn() { items(v(), "lists") }
-  let choices = fn() {
+  let lists_c = @signals.computed(fn(_) { items(v(), "lists") })
+  let choices_c = @signals.computed(fn(_) {
+    let ls = lists_c.get()
     ["people", "models", "profiles"].filter(fn(k) {
-      lists().iter().any(fn(l) { text(Some(l), "key") == k && items(Some(l), "parts").length() > 0 })
+      ls.iter().any(fn(l) { text(Some(l), "key") == k && items(Some(l), "parts").length() > 0 })
     })
-  }
-  let split_labels = fn() {
-    choices().map(fn(k) {
-      match lists().search_by(fn(l) { text(Some(l), "key") == k }) {
-        Some(i) => text(Some(lists()[i]), "title")
+  })
+  let split_labels_c = @signals.computed(fn(_) {
+    let ls = lists_c.get()
+    choices_c.get().map(fn(k) {
+      match ls.search_by(fn(l) { text(Some(l), "key") == k }) {
+        Some(i) => text(Some(ls[i]), "title")
         None => k
       }
     })
-  }
+  })
+  parent.owns(fn() {
+    split_labels_c.dispose()
+    choices_c.dispose()
+    lists_c.dispose()
+  })
+  |> ignore
+  let choices = fn() { choices_c.get() }
+  let split_labels = fn() { split_labels_c.get() }
   // (what each part cost over the days: the core's)
   let series_cost = fn(pv : Json?) -> String { text(pv, "costText") }
   // (the choice beside the legend's first line, its middle on that line's however many lines the legend takes, never
@@ -860,7 +870,8 @@ fn usage_body_node(
       } else {
         body.gap(Is(ug_body_gap)) |> ignore
         body.show(details_pending, fn(at) {
-          let sample = fn() { Some(usage_sample()) }
+          let sample_val = Some(usage_sample())
+          let sample = fn() { sample_val }
           @sf.waiting_node(at, fn(s) {
             s.box(fn(details) {
               details.gap(Is(ug_body_gap)) |> ignore
@@ -1327,7 +1338,8 @@ pub fn usage_node(
               |> ignore
             _ => {
               let quiet = core.quiet()
-              let sample = fn() { Some(usage_sample()) }
+              let sample_val = Some(usage_sample())
+              let sample = fn() { sample_val }
               @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, fn() { None }, page_w, choice) })
             }
           }

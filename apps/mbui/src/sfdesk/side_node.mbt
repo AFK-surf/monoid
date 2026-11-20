@@ -44,40 +44,77 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
         }
       })
       |> ignore
-      side
-      .width(By(fn() { Some(at().laid_w) }))
-      .height(By(fn() { Some(at().box.3) }))
-      .offset(By(fn() { (at().box.0 - at().block.0, at().box.1 - at().block.1) }))
-      |> ignore
+      let cur_place = fn() { if side_place() == "archive" { "chats" } else { side_place() } }
+      let kept_places : @signals.Signal[Array[String]] = @signals.signal([])
+      let last_ws : Ref[String] = Ref("")
+      side.reacts(
+        fn() { (@sfbase.workspace_in_view(src).0.map_or("", fn(w) { w.id }), cur_place()) },
+        fn(now) {
+          let (ws, place) = now
+          let mut kept = if ws != last_ws.val {
+            last_ws.val = ws
+            []
+          } else {
+            kept_places.untracked()
+          }
+          if !kept.contains(place) {
+            kept = kept.copy()
+            kept.push(place)
+          }
+          kept_places.set(kept)
+        },
+      )
+      // (settings_side_node's own reacts sleeps while parked; keep resetting search when leaving settings)
+      let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
+      side.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })
       let prev_place : Ref[(String, Int)?] = Ref(None)
-      side.pick(at_once=true, fn() { if side_place() == "archive" { "chats" } else { side_place() } }, fn(s, place) {
-        match place {
-          // (the settings' list beside their pages: settings_frame.mbt)
-          "settings" => settings_side_node(s, src, tips, at)
-          // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
-          "files" => files_side_node(s, src, tips, at)
-          "stations" => stations_side_node(s, src, tips, at)
-          "profiles" => profiles_side_node(s, src, tips, at)
-          // (远程's: its band over the remote list, made as the chats' sidebar is)
-          "remote" => remote_side_node(s, src, tips, at)
-          // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
-          _ => lists_side_node(s, src, tips, at)
-        }
+      let slide_dir : Ref[Double] = Ref(1.0)
+      let slide_way = @motion.NodeWay::new(1.0)
+      side.reacts(cur_place, fn(place) {
         let cur_idx = side_place_index(place)
         match prev_place.val {
           Some((old_place, old_idx)) if old_place != place && !@ui.reduced_motion() => {
-            let dir = if cur_idx >= old_idx { 1.0 } else { -1.0 }
-            let way = @motion.NodeWay::new(0.0)
-            way.go_from(s, 0.0, 1.0, @motion.tween(160.0, ease=Out))
-            s
-            .offset(By(fn() { (0.0, dir * 10.0 * (1.0 - way.shown(s))) }))
-            .carries_until(fn() { way.ends_at() })
-            |> ignore
+            if !fold_going(side.cause_at()) {
+              slide_dir.val = if cur_idx >= old_idx { 1.0 } else { -1.0 }
+              slide_way.go_from(side, 0.0, 1.0, @motion.tween(160.0, ease=Out))
+            } else {
+              slide_way.put(1.0)
+            }
           }
           _ => ()
         }
         prev_place.val = Some((place, cur_idx))
       })
+      side
+      .width(By(fn() { Some(at().laid_w) }))
+      .height(By(fn() { Some(at().box.3) }))
+      .offset(By(fn() {
+        let dy = slide_dir.val * 10.0 * (1.0 - slide_way.shown(side))
+        (at().box.0 - at().block.0, at().box.1 - at().block.1 + dy)
+      }))
+      .carries_until(fn() { slide_way.ends_at() })
+      |> ignore
+      side.each(
+        fn() { [cur_place()] },
+        fn(k) { k },
+        keeps=fn() { kept_places.get() },
+        at_once=true,
+        fn(s, place_sig) {
+          let place = @signals.untracked(fn() { place_sig.get() })
+          match place {
+            // (the settings' list beside their pages: settings_frame.mbt)
+            "settings" => settings_side_node(s, src, tips, at)
+            // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
+            "files" => files_side_node(s, src, tips, at)
+            "stations" => stations_side_node(s, src, tips, at)
+            "profiles" => profiles_side_node(s, src, tips, at)
+            // (远程's: its band over the remote list, made as the chats' sidebar is)
+            "remote" => remote_side_node(s, src, tips, at)
+            // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
+            _ => lists_side_node(s, src, tips, at)
+          }
+        },
+      )
     })
     |> ignore
   })
