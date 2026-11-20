@@ -139,6 +139,7 @@ let image_info_out : FixedArray[Double] = FixedArray::make(4, 0.0)
 /// Hands over an encoded image (JPEG, PNG, HEIC, WebP…) to show as `key`.
 pub fn Ctx::image_bytes(self : Ctx, key : String, data : Bytes) -> Unit {
   ignore(self)
+  let changed = image_bytes_changed(key, data)
   image_vector_drawers.remove(key)
   // (a GIF handed over as it before: its frames let go of, gif.mbt)
   moving_forget(key)
@@ -146,12 +147,16 @@ pub fn Ctx::image_bytes(self : Ctx, key : String, data : Bytes) -> Unit {
     image_data[key] = data
   }
   image_bytes_here(key)
+  if changed {
+    image_cache_renew(key)
+  }
 }
 
 ///|
 /// Hands over an encoded image to show as `key`, from outside a frame (a
 /// core call's answer). Keys starting `mem:` show nothing until given.
 pub fn add_image(key : String, data : Bytes) -> Unit {
+  let changed = image_bytes_changed(key, data)
   image_vector_drawers.remove(key)
   // (a GIF handed over as it before: its frames let go of)
   moving_forget(key)
@@ -160,6 +165,61 @@ pub fn add_image(key : String, data : Bytes) -> Unit {
     image_data[key] = data
   }
   image_bytes_here(key)
+  if changed {
+    image_cache_renew(key)
+  }
+}
+
+///|
+/// Whether `data` handed over as `key` (add_image, Ctx::image_bytes) changes what it shows: other bytes than those it
+/// was handed before (the same ones, as an old view hands them over each frame, are not decoded again), a vector
+/// renderer of its own let go of, or a picture decoded from elsewhere by that name before (a file, a URL).
+fn image_bytes_changed(key : String, data : Bytes) -> Bool {
+  if image_vector_drawers.contains(key) {
+    return true
+  }
+  // (a GIF that moves: the bytes it was made from; its first frame's PNG in image_data is made anew each time)
+  let prev = match moving_images.get(key) {
+    Some(m) => Some(m.data)
+    None => image_data.get(key)
+  }
+  match prev {
+    Some(old) => !(physical_equal(old, data) || old == data)
+    None => image_cache.contains(key)
+  }
+}
+
+///|
+/// The decodes of `key` made from what it showed before let go of, as other bytes are handed over for it: one still
+/// coming or failed at once, one ready kept only to stand in (px 0, as redraw_vector_pictures has it) until a decode of
+/// the new bytes is ready (image_done lets it go then), so no frame shows nothing between them; what was read back of
+/// its pixels with them. Its decodes' state told, so what draws it asks for a decode of the new bytes.
+fn image_cache_renew(key : String) -> Unit {
+  pixels_forget(key)
+  match image_cache.get(key) {
+    Some(list) => {
+      for e in list {
+        if e.state != 1 {
+          h_image_free(e.id)
+          image_dropped(e)
+        }
+      }
+      list.retain(fn(e) { e.state == 1 })
+      for e in list {
+        e.px = 0
+      }
+      if list.is_empty() {
+        image_cache.remove(key)
+      }
+    }
+    None => ()
+  }
+  @signals.start_batch()
+  let said = image_said(key)
+  said.bytes.set(true)
+  said.decodes.set(said.decodes.untracked() + 1)
+  sizes_told(key, said)
+  @signals.end_batch()
 }
 
 ///|
@@ -170,11 +230,16 @@ pub fn add_vector_image(
   data : Bytes,
   draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?,
 ) -> Unit {
+  // (decoded before: drawn again, its renderer or its bytes others now)
+  let changed = image_cache.contains(key)
   // (a GIF handed over as it before: its frames let go of, gif.mbt)
   moving_forget(key)
   image_data[key] = data
   image_vector_drawers[key] = draw
   image_bytes_here(key)
+  if changed {
+    image_cache_renew(key)
+  }
 }
 
 ///|
@@ -944,8 +1009,20 @@ fn image_done(src : String, e : ImageEntry, at : Double) -> Unit {
   }
   // (its size and its decodes' state told as one: what reads both sees both, never one)
   let said = image_said(src)
+  // (a decode of what it showed before, ready now (px 0, only standing in): its size no longer this picture's)
+  let current = e.state == 1 && e.px > 0
+  // (a decode of what it shows now ready: what stood in for it, of what it showed before, let go of)
+  if current && image_cache.get(src) is Some(list) && list.iter().any(fn(x) { x.px == 0 }) {
+    for x in list {
+      if x.px == 0 {
+        h_image_free(x.id)
+        image_dropped(x)
+      }
+    }
+    list.retain(fn(x) { x.px != 0 })
+  }
   @signals.start_batch()
-  if e.state == 1 {
+  if current {
     said.size.set(Some((e.ow, e.oh)))
   }
   said.decodes.set(said.decodes.untracked() + 1)
