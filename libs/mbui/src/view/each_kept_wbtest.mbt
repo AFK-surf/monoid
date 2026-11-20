@@ -263,3 +263,154 @@ test "a row put by and taken in within its way shows that way where the clock ha
   c.frame(400.0)
   assert_eq(way_x(), 90.0)
 }
+
+///|
+test "parked branch with lays_out_alone child after laid_nowhere wakes with every drawn node placed as laid out" {
+  let now = Ref(0.0)
+  let nowhere = @signals.signal(false)
+  let active = @signals.signal("a")
+  let child_h = @signals.signal(40.0)
+  let alone_node : Ref[View?] = Ref(None)
+  let tree = Tree::new(
+    fn(root) {
+      root.box(fn(cut) {
+        cut.width(Is(Some(248.0))).height(Is(Some(400.0))).laid_nowhere(By(fn() { nowhere.get() })) |> ignore
+        cut.each(
+          fn() { [active.get()] },
+          fn(k) { k },
+          keeps=fn() { ["a", "b"] },
+          at_once=true,
+          fn(slot, k) {
+            let key = @signals.untracked(fn() { k.get() })
+            if key == "a" {
+              slot.box(fn(box) {
+                box.width(Is(Some(248.0))).height(Is(Some(49.0))).lays_out_alone() |> ignore
+                alone_node.val = Some(box)
+                box.box(fn(inner) {
+                  inner.width(Is(Some(248.0))).height(By(fn() { Some(child_h.get()) })).words(Is("row")) |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            } else {
+              slot.box(fn(other) {
+                other.width(Is(Some(248.0))).height(Is(Some(49.0))).words(Is("other")) |> ignore
+              })
+              |> ignore
+            }
+          },
+        )
+      })
+      |> ignore
+    },
+    time=fn() { now.val },
+  )
+  // 1. Initial visible frame
+  tree.frame(300.0, 400.0) |> ignore
+  // 2. Hide container via laid_nowhere (forget clears flex cache and walk zeroes lw/lh)
+  nowhere.set(true)
+  now.val = 16.0
+  tree.frame(300.0, 400.0) |> ignore
+  // 3. Park branch "a" and mark its alone child dirty while parked; run a frame
+  active.set("b")
+  child_h.set(49.0)
+  if alone_node.val is Some(a) {
+    tree.layout_marked_at(a.at)
+  }
+  now.val = 32.0
+  tree.frame(300.0, 400.0) |> ignore
+  // 4. Show container again and wake branch "a"
+  nowhere.set(false)
+  active.set("a")
+  now.val = 48.0
+  tree.frame(300.0, 400.0) |> ignore
+  let drawn = tree.drawn()
+  assert_true(drawn.length() > 0)
+  for d in drawn {
+    match tree.placed_against_laid(d.id) {
+      Some((placed, pw, ph, lw, lh)) => {
+        assert_true(placed, msg="node \{d.id.at} not placed")
+        assert_true((pw - lw).abs() <= 0.5 && (ph - lh).abs() <= 0.5, msg="node \{d.id.at} placed \{pw}x\{ph} vs laid \{lw}x\{lh}")
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+test "parked branch after measured_now (unwalked layout) wakes with every drawn node placed as laid out" {
+  let now = Ref(0.0)
+  let nowhere = @signals.signal(false)
+  let active = @signals.signal("a")
+  let alone_node : Ref[View?] = Ref(None)
+  let inner_node : Ref[View?] = Ref(None)
+  let tree = Tree::new(
+    fn(root) {
+      root.box(fn(cut) {
+        cut.width(Is(Some(248.0))).height(Is(Some(400.0))).laid_nowhere(By(fn() { nowhere.get() })) |> ignore
+        cut.each(
+          fn() { [active.get()] },
+          fn(k) { k },
+          keeps=fn() { ["a", "b"] },
+          at_once=true,
+          fn(slot, k) {
+            let key = @signals.untracked(fn() { k.get() })
+            if key == "a" {
+              slot.box(fn(box) {
+                box.width(Is(Some(248.0))).height(Is(Some(49.0))).lays_out_alone() |> ignore
+                alone_node.val = Some(box)
+                box.box(fn(inner) {
+                  inner.width(Is(Some(248.0))).height(Is(Some(49.0))).words(Is("row")) |> ignore
+                  inner_node.val = Some(inner)
+                })
+                |> ignore
+              })
+              |> ignore
+            } else {
+              slot.box(fn(other) {
+                other.width(Is(Some(248.0))).height(Is(Some(49.0))).words(Is("other")) |> ignore
+              })
+              |> ignore
+            }
+          },
+        )
+      })
+      |> ignore
+    },
+    time=fn() { now.val },
+  )
+  // 1. Initial visible frame
+  tree.frame(300.0, 400.0) |> ignore
+  // 2. Hide container via laid_nowhere (forget clears flex cache and walk zeroes lw/lh)
+  nowhere.set(true)
+  now.val = 16.0
+  tree.frame(300.0, 400.0) |> ignore
+  // 3. Unhide container, force measured_now via laid_window_now() (computes 248x49 without walking),
+  //    then park branch "a" before the next frame walks it.
+  nowhere.set(false)
+  let _ = alone_node.val.unwrap().laid_window_now()
+  active.set("b")
+  now.val = 32.0
+  tree.frame(300.0, 400.0) |> ignore
+  // 4. Wake branch "a" and draw a frame; alone_node and inner_node must be placed 248x49 (not 0x0).
+  active.set("a")
+  now.val = 48.0
+  tree.frame(300.0, 400.0) |> ignore
+  let drawn = tree.drawn()
+  assert_true(drawn.length() > 0)
+  for d in drawn {
+    match tree.placed_against_laid(d.id) {
+      Some((placed, pw, ph, lw, lh)) => {
+        assert_true(placed, msg="node \{d.id.at} not placed")
+        assert_true((pw - lw).abs() <= 0.5 && (ph - lh).abs() <= 0.5, msg="node \{d.id.at} placed \{pw}x\{ph} vs laid \{lw}x\{lh}")
+      }
+      None => ()
+    }
+  }
+  match tree.placed_against_laid(inner_node.val.unwrap().id()) {
+    Some((placed, pw, ph, lw, lh)) => {
+      assert_true(placed && (pw - 248.0).abs() <= 0.5 && (ph - 49.0).abs() <= 0.5 && (lw - 248.0).abs() <= 0.5 && (lh - 49.0).abs() <= 0.5)
+    }
+    None => fail("inner node missing")
+  }
+}

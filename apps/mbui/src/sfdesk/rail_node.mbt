@@ -231,7 +231,7 @@ fn rail_gear(src : Source) -> Unit {
     }
     wide.landed.set("")
     match @sfbase.workspace_in_view(src).0 {
-      Some(w) => land(src, w)
+      Some(w) => land_chat(src, w)
       None => ()
     }
   } else {

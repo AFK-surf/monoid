@@ -1044,6 +1044,18 @@ fn land(src : Source, w : Workspace) -> Unit {
 }
 
 ///|
+/// Same-frame landing when returning to the chats place: pushes only an already-known Chat so the
+/// stack does not flash an empty Home or push an unanswered NewChat ahead of pane_opens.
+fn land_chat(src : Source, w : Workspace) -> Unit {
+  if app.nav.depth() != 1 || app.nav.top() != Home || @sfbase.board_on_of(src, w.id) {
+    return
+  }
+  guard land_page(w.id, @sfbase.read_now(src)) is Some(Chat(_) as page) else { return }
+  wide.landed.set(w.id)
+  app.nav.push(page)
+}
+
+///|
 /// The page the chats' place of workspace `ws` lands on with nothing open, the first time it does (land's): the chat
 /// the core's marks say was open last there, else a new chat; None till the marks, asked of `ask`, are read.
 fn land_page(ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Page? {

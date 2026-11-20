@@ -704,6 +704,7 @@ struct Node {
   /// where it is in what holds it (its layout's place and its own offset), how opaque of itself, how big: worked out
   /// once it is placed
   mut placed : Bool
+  mut unwalked_from : Int
   /// left out of its row as it was last laid out (View::drops): laid out nowhere, what it holds with it; none of it drawn,
   /// pressed or read out
   mut out : Bool
@@ -2097,6 +2098,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look_due = false
       n.place_due = false
       n.placed = false
+      n.unwalked_from = -1
       n.out = false
       n.content = None
       self.draws_rev = self.draws_rev + 1
@@ -2262,6 +2264,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         look_due: false,
         place_due: false,
         placed: false,
+        unwalked_from: -1,
         out: false,
         lx: 0.0,
         ly: 0.0,
@@ -3026,7 +3029,9 @@ fn Tree::alone_laid_out(self : Tree) -> Unit {
       // alone for each change of it, for nothing seen, 2026-11-15: Home's lists under a chat, 295 nodes a change)
       let mut nowhere = false
       let mut p = n.parent
+      let mut top = at
       while p >= 0 {
+        top = p
         let pn = self.nodes[p]
         if !pn.slot && pn.flex.style.display == @flex.DisplayNone {
           nowhere = true
@@ -3037,7 +3042,17 @@ fn Tree::alone_laid_out(self : Tree) -> Unit {
         }
         p = pn.parent
       }
-      if nowhere {
+      if nowhere || top != 0 {
+        if top != 0 {
+          let mut i = n.parent
+          while i >= 0 {
+            let m = self.nodes[i]
+            if !m.slot {
+              m.flex.dirty = true
+            }
+            i = m.parent
+          }
+        }
         continue
       }
       if !anc_dirty && n.flex.laid_given() {
@@ -9695,6 +9710,32 @@ fn View::park(self : View, v : View, rest? : Bool = true) -> () -> Unit {
   if m.inputs_in != 0 {
     self.tree.inputs_count(self.at, -m.inputs_in)
   }
+  if self.tree.walk_from >= 0 {
+    if m.unwalked_from < 0 || self.tree.walk_from < m.unwalked_from {
+      m.unwalked_from = self.tree.walk_from
+    }
+  }
+  for a in self.tree.alone_laid {
+    let mut k = a.0
+    if k >= 0 && k < self.tree.nodes.length() && self.tree.nodes[k].live {
+      while k >= 0 && k != v.at {
+        k = self.tree.nodes[k].parent
+      }
+      if k == v.at {
+        if m.unwalked_from < 0 || a.1 < m.unwalked_from {
+          m.unwalked_from = a.1
+        }
+        let mut j = self.tree.nodes[a.0].parent
+        while j >= 0 && j != v.at {
+          let jn = self.tree.nodes[j]
+          if !jn.slot {
+            jn.flex.dirty = true
+          }
+          j = jn.parent
+        }
+      }
+    }
+  }
   m.parent = -1
   self.tree.marked_up(self.at, true, true, false, false, true)
   self.tree.order_marked_in(self.at)
@@ -12451,7 +12492,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
     }
     // (what was laid out alone: placed by from it, where what holds it was not laid out)
     for a in self.alone_laid {
-      if self.nodes[a.0].live {
+      if self.nodes[a.0].live && self.held_from_root(a.0) {
         let h = self.box_holder(a.0)
         if h < 0 || self.nodes[h].flex.laid_out_at() < gen {
           self.walk(a.0, gen, true)
@@ -12856,6 +12897,13 @@ fn Tree::outs_told(self : Tree) -> Unit {
 /// it is the same).
 fn Tree::walk(self : Tree, at : Int, gen : Int, holder_laid : Bool) -> Unit {
   let n = self.nodes[at]
+  let gen = if n.unwalked_from >= 0 {
+    let u = n.unwalked_from
+    n.unwalked_from = -1
+    if u < gen { u } else { gen }
+  } else {
+    gen
+  }
   self.work.visited = self.work.visited + 1
   if n.slot {
     if holder_laid {
