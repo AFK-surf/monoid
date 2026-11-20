@@ -2751,6 +2751,75 @@ sim("multi_way_striped_bulk_transfers_aggregate_bandwidth_across_fast_relays", a
   await close(s, station, mesh);
 });
 
+sim("main_and_pinned_endpoints_bind_with_exact_relay_allowlists", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 200 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30 }, station: { ms: 20 } });
+  const entry = s.net.entry("https://entry.relay.test:8443/", a, { device: { ms: 40 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: true }, [a, b], [entry], { [entry]: a }));
+  assert.equal(bound.length, 1);
+  assert.deepEqual(bound[0]!.relayAllowlist, [a, b, entry]);
+  assert.equal(bound[0]!.allowPublicRelays, true);
+
+  // Turning off `a` disables the main endpoint and dials pinned single-relay (`b`), fenced (`[b]`), and LAN (`[]`).
+  const id = `w/${station.id()}`;
+  station.lan = station.addr().ips;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [a]));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await s.until(() => bound.some((o) => o.relayUrls.length === 0 && o.relayOnly === false));
+  const pinnedSingle = bound.find((o) => o.relayOnly === true && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedFence = bound.find((o) => o.relayOnly === false && o.lookup === false && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedLan = bound.find((o) => o.relayOnly === false && o.relayUrls.length === 0);
+  assert.ok(pinnedSingle !== undefined, "expected pinned single-relay endpoint");
+  assert.deepEqual(pinnedSingle.relayAllowlist, [b]);
+  assert.equal(pinnedSingle.allowPublicRelays, false);
+  assert.ok(pinnedFence !== undefined, "expected pinned fenced endpoint");
+  assert.deepEqual(pinnedFence.relayAllowlist, [b]);
+  assert.equal(pinnedFence.allowPublicRelays, false);
+  assert.ok(pinnedLan !== undefined, "expected pinned LAN endpoint");
+  assert.deepEqual(pinnedLan.relayAllowlist, []);
+  assert.equal(pinnedLan.allowPublicRelays, false);
+  await close(s, station, mesh);
+});
+
+sim("retune_with_new_entry_updates_in_place_without_rebinding", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const hongKong = s.relay("https://hong-kong.relay.test/", { device: { ms: 500 }, station: { ms: 40 } });
+  const beijingEntry = s.net.entry("https://beijing.relay.test:8443/", hongKong, { device: { ms: 20 }, station: { ms: 40 } });
+  const station = await s.stationOn(hongKong, []);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: true }, [hongKong]));
+  assert.equal(bound.length, 1);
+  assert.deepEqual(bound[0]!.relayAllowlist, [hongKong]);
+  assert.equal(bound[0]!.allowPublicRelays, true);
+  const id = station.id();
+  const link = await reach(s, mesh, id);
+  assert.ok(sameRelay(via(mesh, id), hongKong));
+  mesh.retune([hongKong], [beijingEntry], { [beijingEntry]: hongKong });
+  await s.time.pass(TICK_MS);
+  assert.equal(bound.length, 1, "adding an entry via retune must keep the main endpoint without rebinding");
+  assert.equal(mesh.current(id), link, "existing connection must stay open");
+  assert.ok(sameRelay(via(mesh, id), beijingEntry));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
 // ── over the addon: what only it can show, never timed ──
 
 function test(name: string, options: TestOptions | Body, body?: Body) {

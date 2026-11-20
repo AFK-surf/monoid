@@ -962,7 +962,9 @@ export class Mesh {
       const speeds: Record<string, Record<string, Speed>> = speedsRaw !== null && typeof speedsRaw === "object" && !Array.isArray(speedsRaw) ? speedsRaw : {};
       const said = saidOf(parseJson(yield* Effect.orElseSucceed(host.storageGet(env.addressesKey ?? ADDRESSES_KEY), () => null)));
       const fresh = entries.filter((e) => !relays.some((r) => sameRelay(r, e)));
-      const endpoint = yield* Mesh.#bindMain(env, secret, relays, entryRoutes(relays, fresh, targets));
+      const routes = entryRoutes(relays, fresh, targets);
+      const allowlist = Mesh.#allowlist(relays, routes);
+      const endpoint = yield* Mesh.#bindMain(env, secret, relays, routes, allowlist);
       const mesh = new Mesh(env, relays, fresh, targets, endpoint, secret, days, speeds, said);
       env.runner.fork(mesh.#accepting(endpoint));
       env.runner.fork(mesh.#watch());
@@ -971,15 +973,64 @@ export class Mesh {
     });
   }
 
+  /// Deduplicated relay and entry URLs permitted on an endpoint, by normalized URL key.
+  static #allowlist(relays: string[], entries: { entry: string; relay: string }[], extra: Iterable<string> = []): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const url of [...relays, ...entries.map((e) => e.entry), ...extra]) {
+      const key = relayKey(url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(url);
+    }
+    return out;
+  }
+
+  /// Deduplicated allowlist for the main endpoint: its relays, forwarding entries, and any known workspace relays.
+  #mainAllowlist(relays: string[], entries: { entry: string; relay: string }[]): string[] {
+    const theirs: string[] = [];
+    for (const list of this.#theirs.values()) theirs.push(...list);
+    return Mesh.#allowlist(relays, entries, theirs);
+  }
+
   /// The main endpoint, bound as its user says (`MeshEnv`: what it takes, `relayOnly`, `lookup`).
-  static #bindMain(env: MeshEnv, secret: Uint8Array, relays: string[], relayEntries: { entry: string; relay: string }[]): Effect.Effect<IrohEndpoint, CoreError> {
-    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries);
+  static #bindMain(
+    env: MeshEnv,
+    secret: Uint8Array,
+    relays: string[],
+    relayEntries: { entry: string; relay: string }[],
+    relayAllowlist: string[],
+  ): Effect.Effect<IrohEndpoint, CoreError> {
+    const allowPublicRelays = env.lookup === true && env.relayOnly !== true && relays.length > 0;
+    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, relayAllowlist, allowPublicRelays);
   }
 
   /// An endpoint: one at an address or on one relay alone looks nothing up (`lookup` only with a relay, and IP
   /// transports to go where what it found is).
-  static #bind(iroh: Iroh, secret: Uint8Array, relays: string[], relayOnly = false, lookup = false, alpns: Uint8Array[] = [], relayEntries: { entry: string; relay: string }[] = []): Effect.Effect<IrohEndpoint, CoreError> {
-    return Effect.mapError(iroh.bind({ secretKey: secret, relayUrls: relays, lookup: lookup && !relayOnly && relays.length > 0, relayOnly, ...(alpns.length > 0 ? { alpns } : {}), ...(relayEntries.length > 0 ? { relayEntries } : {}) }), (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.bind_failed")));
+  static #bind(
+    iroh: Iroh,
+    secret: Uint8Array,
+    relays: string[],
+    relayOnly = false,
+    lookup = false,
+    alpns: Uint8Array[] = [],
+    relayEntries: { entry: string; relay: string }[] = [],
+    relayAllowlist?: string[],
+    allowPublicRelays = false,
+  ): Effect.Effect<IrohEndpoint, CoreError> {
+    return Effect.mapError(
+      iroh.bind({
+        secretKey: secret,
+        relayUrls: relays,
+        lookup: lookup && !relayOnly && relays.length > 0,
+        relayOnly,
+        ...(alpns.length > 0 ? { alpns } : {}),
+        ...(relayEntries.length > 0 ? { relayEntries } : {}),
+        ...(relayAllowlist !== undefined ? { relayAllowlist } : {}),
+        allowPublicRelays,
+      }),
+      (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.bind_failed")),
+    );
   }
 
   /// The connections the main endpoint takes (`MeshEnv.takes`), each handed on, until it is closed (bound anew).
@@ -1359,7 +1410,9 @@ export class Mesh {
         return this.#endpoint;
       }
       this.#reboundAt = now;
-      const bound = yield* Effect.result(Mesh.#bindMain(this.#env, this.#secret, this.relays, entryRoutes(this.relays, this.entries, this.entryTargets)));
+      const routes = entryRoutes(this.relays, this.entries, this.entryTargets);
+      const allowlist = this.#mainAllowlist(this.relays, routes);
+      const bound = yield* Effect.result(Mesh.#bindMain(this.#env, this.#secret, this.relays, routes, allowlist));
       record(this.#env.host, "conn rebind", () => `${always ? "relays retold" : "a dial unanswered, nothing open"} -> ${bound._tag === "Failure" ? `failed: ${said(bound.failure.message)}` : "bound"}`);
       if (bound._tag === "Failure") return this.#endpoint;
       const endpoint = bound.success;
@@ -1737,7 +1790,9 @@ export class Mesh {
       if (secret.length !== 32) return yield* Effect.fail(CoreError.invalid(t("core-logic.mesh.bad_device_key")));
       const stored = yield* Effect.mapError(this.#env.host.storageGet(DEVICE_KEY), asCoreError);
       if (stored !== null && hex(stored) === hex(secret)) return;
-      const endpoint = yield* Mesh.#bindMain(this.#env, secret, this.relays, entryRoutes(this.relays, this.entries, this.entryTargets));
+      const routes = entryRoutes(this.relays, this.entries, this.entryTargets);
+      const allowlist = this.#mainAllowlist(this.relays, routes);
+      const endpoint = yield* Mesh.#bindMain(this.#env, secret, this.relays, routes, allowlist);
       this.#env.runner.fork(this.#accepting(endpoint));
       yield* Effect.mapError(this.#env.host.storageSet(DEVICE_KEY, secret), asCoreError);
       this.#secret = secret;
@@ -2560,10 +2615,10 @@ export class Mesh {
       const fence = this.#fences.get(relay);
       const bound = yield* Effect.result(
         relay === LAN || relay === TAILNET
-          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [])
+          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [], false, false, [], [], [], false)
           : fence !== undefined
-            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence)
-            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true),
+            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence, false, false, [], [], fence, false)
+            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true, false, [], [], [relay], false),
       );
       const endpoint = bound._tag === "Success" ? bound.success : null;
       Deferred.doneUnsafe(d, Effect.succeed(endpoint));

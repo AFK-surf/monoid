@@ -118,6 +118,12 @@ export type BindOptions = {
   relayUrls: string[];
   /// Alternative entrances to the same relay, not additional independent relays.
   relayEntries?: { entry: string; relay: string }[];
+  /// Immutable ceiling of relay and entry URLs this endpoint may ever use (`[]` permits only IP and custom
+  /// transports). Omitted: unrestricted.
+  relayAllowlist?: string[];
+  /// When true with `relayAllowlist`, also admit iroh's built-in default relays for emergency fallback when all
+  /// configured relays are down.
+  allowPublicRelays?: boolean;
   /// Look stations up on the LAN and in the DHT (a client's: not announced itself).
   lookup: boolean;
   /// Relays alone, no IP transports (what measures a relay's way must not go direct).
