@@ -799,18 +799,23 @@ test("browser & sign-in parity: browser MCP tool, /browser WS door, sign_in MCP 
 
     // 5. Real sign-in card lifecycle & card_outbox replay through Admin API
     const db = new DatabaseSync(join(data, "stillfail.db"));
-    const nowSec = Math.floor(Date.now() / 1000);
-    const seedSignin = (id: string, session: string, owner: string, thread: number, cardTs: string, n: number) => {
-      db.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at,card) VALUES(?,?,'message',?,'agent',?,'sign in',?,?)")
-        .run(thread, n, cardTs, session, Date.now(), JSON.stringify({ type: "options", signin: { id, site: "example.com", reason: "parity test" } }));
-      const body = { id, session, chat: session, owner, site: "example.com", tab: "T1", reason: "parity test", at: nowSec, status: "pending", thread, cardTs };
-      db.prepare("INSERT INTO signin_asks(id,session,owner,status,body) VALUES(?,?,?,?,?)")
-        .run(id, session, owner, "pending", JSON.stringify(body));
-    };
-    seedSignin("g_deny_1", "s-br", "", threadId, "1795000002.000101", 10);
-    seedSignin("g_self_1", "s-br", "", threadId, "1795000002.000102", 11);
-    seedSignin("g_other_1", "s-alice", "alice@example.com", aliceThread, "1795000002.000201", 10);
-    db.close();
+    // (the running station writes the same database: wait for its lock, as every connection to it does)
+    db.exec("PRAGMA busy_timeout = 5000;");
+    try {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const seedSignin = (id: string, session: string, owner: string, thread: number, cardTs: string, n: number) => {
+        db.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at,card) VALUES(?,?,'message',?,'agent',?,'sign in',?,?)")
+          .run(thread, n, cardTs, session, Date.now(), JSON.stringify({ type: "options", signin: { id, site: "example.com", reason: "parity test" } }));
+        const body = { id, session, chat: session, owner, site: "example.com", tab: "T1", reason: "parity test", at: nowSec, status: "pending", thread, cardTs };
+        db.prepare("INSERT INTO signin_asks(id,session,owner,status,body) VALUES(?,?,?,?,?)")
+          .run(id, session, owner, "pending", JSON.stringify(body));
+      };
+      seedSignin("g_deny_1", "s-br", "", threadId, "1795000002.000101", 10);
+      seedSignin("g_self_1", "s-br", "", threadId, "1795000002.000102", 11);
+      seedSignin("g_other_1", "s-alice", "alice@example.com", aliceThread, "1795000002.000201", 10);
+    } finally {
+      db.close();
+    }
 
     // Non-owner / wrong workspace refused on g_other_1
     const wrongOwner = await httpJson(s.door, "/admin-api/browser/sign-ins/g_other_1/deny", { method: "POST", body: {} });
