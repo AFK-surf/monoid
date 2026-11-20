@@ -11,7 +11,7 @@ pub struct Store {
   /// Now, in ms (store.ts `now`: its Clock's).
   priv clock : () -> Int64
   /// The last migration note there is (agents/migrations.ts `latest`): what a new session begins told.
-  mut latest_note : Int64
+  latest_note : Int64
   priv efforts_index : Bool
   priv mut listeners : Array[(Int32, (Json) -> Unit)]
   priv mut workspace_listeners : Array[(Int32, () -> Unit)]

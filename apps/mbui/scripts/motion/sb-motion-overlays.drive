@@ -1,0 +1,13 @@
+wait 200
+tap 打开确认框
+wait 400
+tap 取消
+wait 300
+hover 新建
+wait 450
+hover 搜索
+wait 250
+hover 筛选
+wait 250
+move 10 10
+wait 300

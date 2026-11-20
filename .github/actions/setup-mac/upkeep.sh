@@ -18,6 +18,13 @@ if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
   find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
   find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +720 -exec rm -rf {} + 2>/dev/null || true
 fi
+# station/mb/build.sh shares each reader's prepared C (~120 MB) among this machine's runners in
+# ~/stillfail-ci/reader-mbc-prepped, touched on use. Delete those unused for 3 hours, and locks and partial writes
+# left for 30 minutes.
+if [ -d "$HOME/stillfail-ci/reader-mbc-prepped" ]; then
+  find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 \( -name '*.lock' -o -name '*.tmp.*' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+  find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 -type f -name 'prepped-*.c' -mmin +180 -delete 2>/dev/null || true
+fi
 
 # The native cache (scripts/native.ts). Delete the .tmp-<pid>-* directories of processes that are gone, after 30
 # minutes. Then trim the versions over STILLFAIL_NATIVE_CACHE_MAX_BYTES (native.ts trim: only versions unused for 15

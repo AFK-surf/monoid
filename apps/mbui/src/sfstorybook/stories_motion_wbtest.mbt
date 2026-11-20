@@ -1,0 +1,100 @@
+// The 6 motion library showcase stories (stories_motion.mbt) in a Tester:
+// every page passes Tester::audit() at 390 and 1280 width and at 1.0x and 1.3x font scale,
+// and core interactive controls (curves play/reverse, controls switching, reveal flash & list, overlays confirm) work cleanly.
+
+///|
+fn motion_story_keys() -> Array[String] {
+  [
+    "motion-curves",
+    "motion-press",
+    "motion-controls",
+    "motion-overlays",
+    "motion-reveal",
+    "motion-cycles",
+  ]
+}
+
+///|
+fn motion_tester(key : String, w : Double, scale? : Double = 1.0, h? : Double = 1200.0) -> @ui.Tester {
+  @ui.host_image_bytes_known([("src/sfstorybook/stories_motion_wbtest.mbt", 9834)])
+  @sf.presenters_reset()
+  let t = @ui.Tester::new(stories_view, tree=stories_tree(key), w~, h~, platform=0)
+  if scale != 1.0 {
+    t.set_font_scale(scale)
+  }
+  t.draw()
+  t
+}
+
+///|
+test "all 6 motion stories pass audit at 390 and 1280 width and 1.0 and 1.3 scale" {
+  let all : Array[String] = []
+  for key in motion_story_keys() {
+    for w in [390.0, 1280.0] {
+      for scale in [1.0, 1.3] {
+        let t = motion_tester(key, w, scale~)
+        for f in page_faults(t) {
+          all.push("\{key} at \{w} ×\{scale}: \{f}")
+        }
+      }
+    }
+  }
+  assert_true(all.is_empty(), msg=all.join("\n"))
+}
+
+///|
+test "motion-curves: 播放 sets curves off and 放回 returns them to rest" {
+  let t = motion_tester("motion-curves", 1280.0, h=1600.0)
+  t.click(Button, label="播放")
+  t.run_for(@ui.move_most_ms * 3.0)
+  assert_true(t.find("放回") is Some(_), msg="button switched to 放回")
+  assert_true(t.at_rest(), msg="at rest after forward play")
+  t.click(Button, label="放回")
+  t.run_for(@ui.move_most_ms * 3.0)
+  assert_true(t.find("播放") is Some(_), msg="button returned to 播放")
+  assert_true(t.at_rest(), msg="at rest after reverse play")
+}
+
+///|
+test "motion-controls: switching segmented control, tabs, and stops updates selection cleanly" {
+  let t = motion_tester("motion-controls", 1280.0, h=1400.0)
+  t.click(Radio, label="进行中")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Tab, label="变更")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("当前面板：变更") is Some(_), msg="tab panel switched to 变更")
+  let (sx, sy, sw, sh) = t.get(@ui.Role::Slider, label="思考强度").rect
+  t.tap(sx + sw * 2.5 / 4.0, sy + sh / 2.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("高") is Some(_), msg="stops switched to 高")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-reveal: flash trigger and ComeGroup list insert/remove run cleanly" {
+  let t = motion_tester("motion-reveal", 1280.0, h=1600.0)
+  t.click(Button, label="触发定位闪烁")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="插入一行")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("动态列表条目 #4") is Some(_), msg="inserted row #4")
+  t.click(Button, label="删除末行")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("动态列表条目 #3") is None, msg="removed last row #3")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-overlays: confirm dialog opens and closes cleanly on Cancel" {
+  let t = motion_tester("motion-overlays", 1280.0, h=1200.0)
+  t.click(Button, label="打开确认框")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("应用这套动效参数？") is Some(_), msg="confirm dialog opened")
+  let open_faults = page_faults(t)
+  assert_true(open_faults.is_empty(), msg=open_faults.join("\n"))
+  t.click(Button, label="取消")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("应用这套动效参数？") is None, msg="confirm dialog closed")
+}

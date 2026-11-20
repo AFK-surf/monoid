@@ -132,7 +132,7 @@ pub fn refused_dx(t : Double) -> Double {
 pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> Unit {
   // (where it was drawn as a press went down on it while it refused; none: the press is not one of its)
   let armed : Ref[(Double, Double)?] = Ref(None)
-  let shake : Ref[@motion.NodeWay?] = Ref(None)
+  let shake : Ref[@motion.ShakeWay?] = Ref(None)
   // (the window's presses and taps as last followed, untracked: what changed of them told apart)
   let seen = Ref(@signals.untracked(fn() { (v.window_downs(), v.window_taps()) }))
   let refused_was = Ref(@signals.untracked(refuses))
@@ -189,13 +189,13 @@ pub fn refused_shake(v : @view.View, refuses : () -> Bool, loc~ : SourceLoc) -> 
       let way = match shake.val {
         Some(w) => w
         None => {
-          let w = @motion.NodeWay::new(1.0)
+          let w = @motion.ShakeWay::new(amplitude=refused_reach, duration_ms=refused_ms, cycles=1.5)
           shake.val = Some(w)
-          v.offset(By(fn() { (refused_dx(w.shown(v)), 0.0) }), loc~) |> ignore
+          w.shakes(v, loc~) |> ignore
           w
         }
       }
-      way.go_from(v, 0.0, 1.0, @motion.tween(refused_ms, ease=Linear))
+      way.shake(at=v.cause_at(), loc~)
     },
   )
 }

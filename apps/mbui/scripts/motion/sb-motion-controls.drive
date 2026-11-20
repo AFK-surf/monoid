@@ -1,0 +1,13 @@
+wait 200
+tap 主开关
+wait 350
+tap 进行中
+wait 350
+tap 变更
+wait 350
+tap 文件
+wait 350
+wheelat 320 概览
+wait 150
+tap 指标
+wait 400

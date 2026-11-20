@@ -186,7 +186,10 @@ pub fn stops_node(
       }
       let thumb_h = fn() { high() - 2.0 * pad }
       let p = @motion.NodeWay::new(@signals.untracked(goal))
-      inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @motion.follow_spring) })
+      inner.reacts(at_start=false, goal, fn(g) {
+        let spec = if finger.untracked() is Some(_) { @motion.follow_spring } else { @motion.snappy_damped }
+        p.go(inner, g, spec)
+      })
       let rail_h = 10.0
       inner.box(fn(r) {
         let span = fn() { dmax(0.0, room.width() - cell()) }
@@ -225,10 +228,12 @@ pub fn stops_node(
       }
       // The thumb and the rail follow the same spring.
       let held = @motion.NodeWay::new(0.0)
-      let scale = @motion.NodeWay::new(1.0)
+      let scale_x = @motion.NodeWay::new(1.0)
+      let scale_y = @motion.NodeWay::new(1.0)
       inner.reacts(at_start=false, fn() { finger.get() is Some(_) }, fn(h) {
         held.go(inner, if h { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
-        scale.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
+        scale_x.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
+        scale_y.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_y_spring)
       })
       let name = fn() {
         let a = at()
@@ -263,14 +268,17 @@ pub fn stops_node(
           l.over(Is(true)) |> ignore
           l.box(fn(lens) {
             style_node(lens, fn() { stops_ball_room })
+            let lens_wh = fn() { (tw() * scale_x.shown(lens), thumb_h() * scale_y.shown(lens)) }
             lens
             .over(Is(true))
-            .width(By(fn() { Some(tw()) }))
-            .height(By(fn() { Some(thumb_h()) }))
-            .offset(By(fn() { (x_now(lens), 0.0) }))
+            .width(By(fn() { Some(lens_wh().0) }))
+            .height(By(fn() { Some(lens_wh().1) }))
+            .offset(By(fn() {
+              let (lw, lh) = lens_wh()
+              (x_now(lens) + (tw() - lw) / 2.0, (thumb_h() - lh) / 2.0)
+            }))
             .glass(By(fn() { Some(backdrop_slider(lensed(lens))) }))
             .alpha(By(fn() { lensed(lens) }))
-            .scale(By(fn() { scale.shown(lens) }))
             |> ignore
           })
           |> ignore

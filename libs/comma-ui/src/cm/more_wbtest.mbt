@@ -332,3 +332,26 @@ test "a toast's time stops while the pointer is over it, going on from what it h
   t.run_for(toast_stays / 2.0)
   assert_eq((held, left, t.all(Status, label="Changes saved").length()), (1, 1, 0))
 }
+
+///|
+test "dialog_node: releasing modal on first exit frame lets clicks pass through mid-exit" {
+  let open = @signals.signal(false)
+  let under_clicks = Ref(0)
+  let t = floating_case(fn(p, layer) {
+    button_node(p, fn() { "Open" }, fn() { open.set(true) }) |> ignore
+    button_node(p, fn() { "Underneath" }, fn() { under_clicks.val = under_clicks.val + 1 }) |> ignore
+    dialog_node(layer, open, fn() { "Confirm action" }, actions=fn(f) {
+      button_node(f, fn() { "Cancel" }, fn() { open.set(false) }, hierarchy=SecondaryGray, size=Sm) |> ignore
+    })
+  })
+  t.act(Button, Activate, label="Open")
+  t.run_for(floating_ms)
+  assert_eq(t.all(Dialog, label="Confirm action").length(), 1)
+  // Close dialog and advance only half of ms_dialog_exit (dialog still fading out)
+  open.set(false)
+  t.run_for(ms_dialog_exit / 2.0)
+  let (bx, by, bw, bh) = t.get(Button, label="Underneath").rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
+  t.draw()
+  assert_eq(under_clicks.val, 1, msg="click during dialog exit should pass through immediately")
+}

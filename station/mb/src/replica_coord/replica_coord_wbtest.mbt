@@ -1,5 +1,5 @@
-// What of the package needs no host: names, the rendezvous order, a stream's hash, the merging of presets, what a
-// moved chat is told. The rest is held to the TypeScript through the program (station/test/mb-replica-coord.test.ts).
+// What of the package needs no host: names, the rendezvous order, a stream's hash, the merging of presets, heads,
+// errors, and what a moved chat is told.
 
 ///|
 test "a copy's names" {
@@ -82,4 +82,72 @@ test "connects as they go on the other station" {
   let b = "b".repeat(64)
   let out = connects_there(["slack1"], ["ember", "slack1", "x@" + b], a, b)
   assert_eq(out, [("slack1", "slack1@" + a), ("x@" + b, "x")])
+}
+
+///|
+test "as_head validates version, gen, batches, file hashes, and integer to" {
+  let hash = "a".repeat(64)
+  let batch = "0000000001-0000000004-00000000.ndjson.zst"
+  let valid = parse(
+    "{\"v\":1,\"origin\":\"s1\",\"workspace\":\"W1\",\"gen\":\"lz5x0-0123abcd\",\"to\":4,\"made\":100,\"batches\":[\"" +
+    batch +
+    "\"],\"files\":{\"" +
+    hash +
+    "\":12},\"runs\":[{\"run\":\"r1\",\"from\":1}]}",
+  )
+  let h = as_head(valid).unwrap()
+  assert_eq(head_gen(h), "lz5x0-0123abcd")
+  assert_eq(head_to(h), 4.0)
+  assert_eq(head_made(h), 100.0)
+  assert_eq(head_batches(h), [batch])
+  assert_eq(head_files(h), [hash])
+  assert_eq(head_runs(h), [("r1", 1.0)])
+
+  assert_true(as_head(set(valid, "v", jn(2.0))) is None)
+  assert_true(as_head(set(valid, "gen", js("BAD"))) is None)
+  assert_true(as_head(set(valid, "to", jn(1.5))) is None)
+  assert_true(as_head(set(valid, "batches", ja([js("bad.zst")]))) is None)
+  assert_true(as_head(set(valid, "files", jo([("not-a-hash", jn(1.0))]))) is None)
+}
+
+///|
+test "Thrown error helpers classify Refused, Said, and system codes" {
+  let r : Error = refused("no space")
+  assert_true(is_refused(r))
+  assert_eq(kind_of(r), "Refused")
+  assert_eq(message_of(r), "no space")
+  assert_eq(code_of(r), "")
+
+  let s : Error = said("done moving")
+  assert_false(is_refused(s))
+  assert_eq(kind_of(s), "Said")
+  assert_eq(message_of(s), "done moving")
+
+  let io : Error = Thrown("Error", jo([("message", js("missing")), ("code", js("ENOENT"))]))
+  assert_eq(code_of(io), "ENOENT")
+  assert_eq(message_of(io), "missing")
+}
+
+///|
+test "fixed1 and string_map / pair_get helpers" {
+  assert_eq(fixed1(0.0), "0.0")
+  assert_eq(fixed1(2.25), "2.3")
+  assert_eq(fixed1(9.99), "10.0")
+  let m = string_map(Some(parse("{\"a\":\"1\",\"b\":2,\"c\":\"three\"}")))
+  assert_eq(m, [("a", "1"), ("c", "three")])
+  assert_eq(pair_get(m, "c"), Some("three"))
+  assert_eq(pair_get(m, "b"), None)
+  assert_eq(stringify(pairs_json(m)), "{\"a\":\"1\",\"c\":\"three\"}")
+}
+
+///|
+test "tell tracks sessions, removals, and ignores unrelated events" {
+  let t = Told::nothing()
+  assert_true(tell(t, parse("{\"type\":\"session\",\"key\":\"s1\"}")))
+  assert_true(tell(t, parse("{\"type\":\"sessionRemoved\",\"key\":\"s2\",\"ws\":\"W1\"}")))
+  assert_true(tell(t, parse("{\"type\":\"threadRemoved\",\"id\":9}")))
+  inspect(
+    stringify(t.to_json()),
+    content="{\"sessions\":[\"s1\"],\"threads\":[],\"removedSessions\":[{\"key\":\"s2\",\"ws\":\"W1\"}],\"removedThreads\":[{\"id\":9,\"ws\":null}],\"marks\":[]}",
+  )
 }

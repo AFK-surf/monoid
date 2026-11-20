@@ -1,5 +1,5 @@
 // What the routes stand on, as JavaScript has it: the patterns, values, numbers, paths, words and decodings the
-// TypeScript routes used (station/test/mb-api-routes.test.ts holds the routes themselves to them).
+// TypeScript routes used.
 
 ///|
 test "patterns match as JavaScript's" {

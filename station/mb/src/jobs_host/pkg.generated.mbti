@@ -81,10 +81,6 @@ pub let give_up_ms : Double
 
 pub let gpu_wait_ms : Int32
 
-pub async fn harness(@host.Host) -> Unit
-
-pub async fn harness_case(@host.Host, @json.Json) -> @json.Json
-
 pub fn head_of(String, @cloud_net.Url) -> @json.Json
 
 pub fn heard(Got?, @json.Json) -> @json.Json

@@ -438,12 +438,16 @@ test("net conformance: half-close FIN both ways with real Node node:net server",
   const h = startSqlNetHarness();
   try {
     // Direction A: Node server sends payload + FIN first, waits for MB's reply + FIN
-    let serverGotA = Buffer.alloc(0);
+    // The server sees MB's FIN on this process's event loop, after the harness may have answered: wait for it.
+    let resolveGotA!: (b: Buffer) => void;
+    const serverGotA = new Promise<Buffer>((r) => {
+      resolveGotA = r;
+    });
     const srvA = netServer({ allowHalfOpen: true }, (sock) => {
       const chunks: Buffer[] = [];
       sock.on("data", (c) => chunks.push(c));
       sock.on("end", () => {
-        serverGotA = Buffer.concat(chunks);
+        resolveGotA(Buffer.concat(chunks));
         sock.destroy();
       });
       sock.write(Buffer.from("hello-from-node-before-fin"));
@@ -461,7 +465,7 @@ test("net conformance: half-close FIN both ways with real Node node:net server",
     assert.equal(Buffer.from(resA.received_hex, "hex").toString("utf8"), "hello-from-node-before-fin");
     assert.equal(resA.closed_after_eof, false, "socket must stay open for writing after peer FIN");
     assert.equal(resA.closed_after_end, true, "socket must close once both halves ended");
-    assert.equal(serverGotA.toString("utf8"), "reply-after-peer-fin");
+    assert.equal((await serverGotA).toString("utf8"), "reply-after-peer-fin");
 
     // Direction B: MB sends payload + FIN first, then reads Node's delayed reply + FIN
     const srvB = netServer({ allowHalfOpen: true }, (sock) => {

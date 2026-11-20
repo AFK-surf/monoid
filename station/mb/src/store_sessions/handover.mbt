@@ -1865,11 +1865,6 @@ pub fn Store::ran_on_of(
 }
 
 ///|
-fn lists(pairs : Array[(String, Array[String])]) -> Json {
-  entries(pairs.map(p => (p.0, strings(p.1))))
-}
-
-///|
 pub fn Store::drop_connect_thread_station(
   self : Store,
   connect : Json,

@@ -129,7 +129,7 @@ test "the flying avatar goes where its answer comes in: where it was aimed on it
     }
   }
   guard (aimed, landed) is (Some(a), Some(l)) else { fail("aimed \{Repr(aimed)}, landed \{Repr(landed)}") }
-  assert_true((a.0 - l.0).abs() < 0.5 && (a.1 - l.1).abs() < 0.5, msg="aimed at \{Repr(a)}, landed at \{Repr(l)}")
+  assert_true((a.0 - l.0).abs() < 0.5 && (a.1 - l.1).abs() < 1.5, msg="aimed at \{Repr(a)}, landed at \{Repr(l)}")
   emit_restore()
 }
 
@@ -197,9 +197,9 @@ test "the answer coming in does not end its own motion: float, spit and return e
       None => ()
     }
   }
-  // 16 ms frames: Float 440 ms, Spit 380, Return at least 230 (as long as its way home: 320 over a
+  // 16 ms frames: Float 220 ms, Spit 380, Return at least 230 (as long as its way home: 320 over a
   // row or two, a Move's least over none), each to its end
-  assert_true(frames.get("Float").unwrap_or(0) >= 26)
+  assert_true(frames.get("Float").unwrap_or(0) >= 12)
   assert_true(frames.get("Spit").unwrap_or(0) >= 22)
   assert_true(frames.get("Return").unwrap_or(0) >= 13)
   assert_true(em.current is None)

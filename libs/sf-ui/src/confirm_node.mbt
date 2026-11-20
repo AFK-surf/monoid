@@ -74,8 +74,8 @@ fn dialog_layer_node(
   top_share? : Double = 0.0,
   come? : @motion.Trans = @motion.dialog_in,
   come_ms? : Double = @motion.dialog_ms,
-  go? : @motion.Trans = @motion.pop_out,
-  go_ms? : Double = @motion.pop_out_ms,
+  go? : @motion.Trans = @motion.dialog_out,
+  go_ms? : Double = @motion.dialog_out_ms,
 ) -> Unit {
   parent.show(
     open,
@@ -220,8 +220,8 @@ pub fn over_panel_node(
   come? : @motion.Trans = @motion.dialog_in,
   come_ms? : Double = @motion.dialog_ms,
   ground_ms? : Double = confirm_ground_ms,
-  go? : @motion.Trans = @motion.pop_out,
-  go_ms? : Double = @motion.pop_out_ms,
+  go? : @motion.Trans = @motion.dialog_out,
+  go_ms? : Double = @motion.dialog_out_ms,
 ) -> Unit {
   // (its layer over all else in `parent` itself: dialog_layer_node's; nothing made while it is closed but that)
   dialog_layer_node(parent, open, cancel, fn(across, layer, look, _) { panel(across, layer, look) }, outside=true, within~, back_within?, top_share~, come~, come_ms~, ground_ms~, go~, go_ms~)

@@ -14,10 +14,13 @@ priv struct PressRipple {
   /// how big the node was said to be as it went down (what its disc's size and drift are worked out by)
   w : Double
   h : Double
-  way : @motion.Way
+  /// its way in, 0 to .5 from when it went down
+  enter_way : @motion.Way
+  /// its way out, 0 to .5 more, said as it is let go to set out once its way in is over (nothing woken for it then)
+  exit_way : @motion.Way
   at : Double
   mut lifted : Double?
-  /// what is due for it (its way out set off, it let go), let go as it is
+  /// what is due for it (its end told, View::drawn_while's), let go with it
   due : Array[() -> Unit]
 }
 
@@ -47,9 +50,11 @@ fn press_look(
   pointer? : Bool = true,
   loc~ : SourceLoc,
 ) -> PressLook {
-  // (the ripples going, by their numbers, in the order they began)
+  // (the ripples' places, by their numbers, in the order they were made: each holds the ripple it shows now and
+  // says when another took it over; one whose ripple has gone is shown again by the next press, no node made or
+  // let go, nothing laid out again, as a sheet it is in still moves)
   let ripples : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { a == b })
-  let made : Map[Int, PressRipple] = Map([])
+  let made : Map[Int, (Ref[PressRipple], @signals.Signal[Int])] = Map([])
   let next = Ref(0)
   // (a finger's press in what scrolls not shown yet, and its showing, due)
   let late : Ref[@view.Drag?] = Ref(None)
@@ -85,21 +90,17 @@ fn press_look(
       None => sink.go(0.0, @motion.lift_spring, at~)
     }
     for n in ripples.untracked() {
-      guard made.get(n) is Some(r) else { continue }
+      guard made.get(n) is Some((slot, ver)) else { continue }
+      let r = slot.val
       if r.lifted is None {
         r.lifted = Some(at)
         let out_at = dmax(at, r.at + @motion.ripple_enter_ms)
-        r.due.push(
-          v.at_moment(out_at, fn() {
-            r.way.go(1.0, @motion.tween(@motion.ripple_exit_ms, ease=Linear), at=out_at)
-            r.due.push(
-              v.at_moment(r.way.end(), fn() {
-                made.remove(n)
-                ripples.set(ripples.untracked().filter(fn(o) { o != n }))
-              }),
-            )
-          }),
-        )
+        r.exit_way.go(0.5, @motion.tween(@motion.ripple_exit_ms, ease=Leave), at=out_at)
+        // (its disc told at the ripple's end, its binding drawn once more and the clock followed no more: nothing laid
+        // out, no node made or let go, no hand worked out again)
+        if r.exit_way.goes_at(at) {
+          r.due.push(v.at_moment(r.exit_way.end(), fn() { ver.set(ver.untracked() + 1) }))
+        }
       }
     }
   }
@@ -128,7 +129,7 @@ fn press_look(
     })
     over.each(fn() { ripples.get() }, fn(n) { n }, fn(d, n) {
       match made.get(n.untracked()) {
-        Some(r) => ripple_disc(d, r, ink)
+        Some((slot, ver)) => ripple_disc(d, slot, ver, ink)
         None => ()
       }
     })
@@ -136,8 +137,8 @@ fn press_look(
   v.owns(fn() {
     (late_due.val)()
     (pointer_due.val)()
-    for _, r in made {
-      for f in r.due {
+    for _, place in made {
+      for f in place.0.val.due {
         f()
       }
     }
@@ -167,12 +168,28 @@ fn press_look(
       sink_most.val = dmin(press_sink_most, @motion.press_sink / dmax(dmax(d.w, d.h), 1.0))
       sink.go(1.0, @motion.lift_spring, at~)
     }
-    let way = @motion.Way::new(0.0)
-    way.go(0.5, @motion.tween(@motion.ripple_enter_ms, ease=Out), at~)
+    let enter_way = @motion.Way::new(0.0)
+    enter_way.go(0.5, @motion.tween(@motion.ripple_enter_ms, ease=Out), at~)
+    let exit_way = @motion.Way::new(0.0)
+    let ripple = { x: d.x, y: d.y, w: d.w, h: d.h, enter_way, exit_way, at, lifted: None, due: [] }
+    pressed_once.set(true)
+    // (a place whose ripple has gone, out and over by now: shown again with this one)
+    for n in ripples.untracked() {
+      guard made.get(n) is Some((slot, ver)) else { continue }
+      let was = slot.val
+      if was.lifted is Some(_) && was.exit_way.target() >= 0.5 && at >= was.exit_way.end() {
+        for f in was.due {
+          f()
+        }
+        slot.val = ripple
+        ver.set(ver.untracked() + 1)
+        return
+      }
+    }
+    // (every place's ripple still going: one more place)
     let n = next.val
     next.val = n + 1
-    made[n] = { x: d.x, y: d.y, w: d.w, h: d.h, way, at, lifted: None, due: [] }
-    pressed_once.set(true)
+    made[n] = (Ref(ripple), @signals.signal(0))
     let now = ripples.untracked().copy()
     now.push(n)
     ripples.set(now)
@@ -213,18 +230,32 @@ fn press_look(
 let press_sink_most : Double = 0.04
 
 ///|
-/// One ripple's disc in `d` (over what it ripples, as big as `r` says it was as it went down): its progress as the
+/// One ripple place's disc in `d`, showing the ripple `slot` holds (another as `ver` says it was put there; as big as
+/// that ripple says it was as it went down; nothing drawn once it has gone): its progress as the
 /// ripple's way has it as each frame is drawn while it goes; its alpha the ink's from .13 of the way and fading from .4;
 /// its radius 2.3 times that half diagonal and 10 more, times the progress; from where it went down to the middle by .5; blurred by .27
 /// of its radius (@motion.ripple's).
-fn ripple_disc(d : @view.View, r : PressRipple, ink_now : () -> Int64) -> Unit {
-  let p = fn() {
-    r.way.shown_on(d)
-  }
+fn ripple_disc(
+  d : @view.View,
+  slot : Ref[PressRipple],
+  ver : @signals.Signal[Int],
+  ink_now : () -> Int64,
+) -> Unit {
   let geom = fn() {
+    ver.get() |> ignore
+    let r = slot.val
     let (w, h) = (r.w, r.h)
     let most = ((w * w + h * h).sqrt() / 2.0 + 10.0) * 2.3
-    let k = p()
+    // (read as Way::shown_on reads a way, but asking no moment of its end of the hand (Tree::hand_at_end): a disc is
+    // drawn alone, under no hand; told at its end by its place's `ver`, set then (lift), as View::drawn_while asks)
+    r.enter_way.said()
+    r.exit_way.said()
+    let at = d.drawn_while(fn(t) { r.enter_way.goes_at(t) || r.exit_way.goes_at(t) })
+    let k = if at == @double.infinity {
+      r.enter_way.target() + r.exit_way.target()
+    } else {
+      r.enter_way.value_at(at) + r.exit_way.value_at(at)
+    }
     let radius = most * k
     let t = dmin(1.0, k * 2.0)
     let cx = r.x + (w / 2.0 - r.x) * t
@@ -251,7 +282,12 @@ fn ripple_disc(d : @view.View, r : PressRipple, ink_now : () -> Int64) -> Unit {
     let fade = dmin(sub(0.0, 0.13), 1.0 - sub(0.4, 1.0))
     let ink = ink_now()
     let alpha = ((ink & 0xFFL).to_double() * dmax(fade, 0.0)).round().to_int64()
-    (radius * 0.27, 0.0, (ink & 0xFFFFFF00L) | alpha)
+    // (gone, or not seen: nothing drawn, as with no disc)
+    if k >= 1.0 || fade <= 0.0 || alpha <= 0L {
+      (0.0, 0.0, 0L)
+    } else {
+      (radius * 0.27, 0.0, (ink & 0xFFFFFF00L) | alpha)
+    }
   }))
   |> ignore
 }

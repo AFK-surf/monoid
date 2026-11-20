@@ -85,8 +85,6 @@ pub async fn hand_over(FolderPlace, Place, String, String) -> Bool
 
 pub async fn handover_id(Fs, Array[String], String, Double) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let hash_most : Double
 
 pub fn head_batches(@jsjson.JValue) -> Array[String]

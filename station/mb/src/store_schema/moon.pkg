@@ -1,10 +1,8 @@
 import {
   "station/host",
-  "station/wire",
   "station/sql",
   "station/jsjson",
   "station/nodepath",
-  "moonbitlang/core/json",
   "moonbitlang/core/string",
   "moonbitlang/core/encoding/hex",
   "moonbitlang/core/encoding/utf8",

@@ -62,10 +62,9 @@ fn dedent(lines : Array[String]) -> String {
 }
 
 ///|
-/// The lines that make the state `label` says in stories.mbt: the body of the `fn(card) { … }` after its label
-/// ("" where stories.mbt did not come with the page).
-fn case_code(label : String) -> String {
-  guard sources().get("sfstorybook/stories.mbt") is Some(lines) else { return "" }
+/// The lines that make the state `label` says in `file`: the body of the `fn(card) { … }` after its label.
+fn case_code_in(file : String, label : String) -> String {
+  guard sources().get(file) is Some(lines) else { return "" }
   let said = "\"" + label + "\""
   guard lines.search_by(fn(l) { l.contains(said) }) is Some(at) else { return "" }
   let head = "fn(card) {"
@@ -94,10 +93,33 @@ fn case_code(label : String) -> String {
 }
 
 ///|
+/// The lines that make the state `label` says in stories.mbt or stories_motion.mbt
+/// ("" where neither came with the page).
+fn case_code(label : String) -> String {
+  let code = case_code_in("sfstorybook/stories.mbt", label)
+  if code != "" {
+    code
+  } else {
+    case_code_in("sfstorybook/stories_motion.mbt", label)
+  }
+}
+
+///|
 /// Function `name` of the library as file `file` declares it: its comment, then its signature without the caller's
 /// place it is given (`loc~`) ("" where the file did not come with the page or has no such function).
 fn api_of(file : String, name : String) -> String {
-  guard sources().get("sf/" + file) is Some(lines) else { return "" }
+  let base = match file.rev_find("/") {
+    Some(i) => file.unsafe_substring(start=i + 1, end=file.length())
+    None => file
+  }
+  let lines = match sources().get("sf/" + base) {
+    Some(ls) => ls
+    None =>
+      match sources().get("motion/" + base) {
+        Some(ls) => ls
+        None => return ""
+      }
+  }
   guard lines.search_by(fn(l) { l.has_prefix("pub fn " + name + "(") || (l.has_prefix("pub fn[") && l.contains("] " + name + "(")) }) is Some(at) else {
     return ""
   }

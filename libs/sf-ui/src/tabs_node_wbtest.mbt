@@ -172,3 +172,17 @@ test "tabs in a phone's width, both looks: nothing the audit finds" {
     assert_eq(k.t.audit(), [], msg=if look is Pill { "pill" } else { "underline" })
   }
 }
+
+///|
+test "tabs_node: indicator slide animation causes zero relayout (laid == 0)" {
+  for look in [Underline, Pill] {
+    let k = tabs2(look~, keep_mounted=true)
+    k.t.click(Tab, label="任务")
+    k.t.draw()
+    k.t.tree_frames_from_now()
+    k.t.run_for(@ui.move_most_ms)
+    for f in k.t.tree_frames() {
+      assert_eq(f.laid, 0, msg="tabs_node indicator slide relaid out: \{Repr(f)}")
+    }
+  }
+}

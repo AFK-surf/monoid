@@ -24,20 +24,20 @@ pub let hover_card_close_ms : Double = 120.0
 let hover_card_offset : Double = 6.0
 
 ///|
-/// How a card comes (faded in, grown from .96, eased out over 160 ms) and goes (to .97, eased to leave over 90 ms),
-/// its ground first, then what it holds.
+/// How a card comes (pop_in: faded in, grown from .97, eased out over 140 ms) and goes (pop_out: to .97, eased to leave
+/// over 100 ms), its ground first, then what it holds.
 // kept across runs: a value (no field of it changes)
-let hover_card_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.96, spec=@motion.tween(hover_card_in_ms, ease=Out), ground_first=true)
+let hover_card_in : @motion.Trans = @motion.pop_in
 
 ///|
 // kept across runs: a value (no field of it changes)
-let hover_card_out : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, spec=@motion.tween(hover_card_out_ms, ease=Leave), ground_first=true)
+let hover_card_out : @motion.Trans = @motion.pop_out
 
 ///|
-let hover_card_in_ms : Double = 160.0
+let hover_card_in_ms : Double = @motion.pop_ms
 
 ///|
-pub let hover_card_out_ms : Double = 90.0
+pub let hover_card_out_ms : Double = @motion.pop_out_ms
 
 ///|
 /// What is done with a card (hover_card_node's) by what it is of or by what is in it: opened as a finger's hold opens

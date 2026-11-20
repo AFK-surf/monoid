@@ -64,7 +64,8 @@ fn stories_made(root : @view.View, first : String) -> Unit {
   @ui.set_tree_theme(@sf.ui_theme_now)
   // (the workbench's size of words, input and language, as MBUI_FONT_SCALE, MBUI_POINTING and MBUI_LANG say: matrix.mbt)
   let env = env_started()
-  let all = foundations() + stories(@sf.TipLayer::new(fn() { Some(root) })) + workbench_stories(env)
+  let tips = @sf.TipLayer::new(fn() { Some(root) })
+  let all = foundations() + motion_stories(tips) + stories(tips) + workbench_stories(env)
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
@@ -298,7 +299,12 @@ fn bar_node(
           if i < 0 {
             "\{all.length()} 页"
           } else {
-            library_path + all[i].file
+            let f = all[i].file
+            if f.contains("/") {
+              f
+            } else {
+              library_path + f
+            }
           }
         },
         fn() { bar_file },

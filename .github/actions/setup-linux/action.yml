@@ -40,6 +40,11 @@ runs:
             find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
             find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
           fi
+          # Each reader's prepared C shared among the runners (station/mb/build.sh), touched on use.
+          if [ -d "$HOME/stillfail-ci/reader-mbc-prepped" ]; then
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 \( -name '*.lock' -o -name '*.tmp.*' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 -type f -name 'prepped-*.c' -mmin +180 -delete 2>/dev/null || true
+          fi
           for diag in "$HOME"/actions-runner*/_diag; do
             [ -d "$diag" ] || continue
             find "$diag" -maxdepth 1 -type f -name 'Worker_*.log' -mtime +1 -delete 2>/dev/null || true

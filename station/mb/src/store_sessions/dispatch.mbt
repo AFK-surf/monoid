@@ -1,9 +1,4 @@
-// What test/mb-store-sessions.test.ts asks of this store (the reader's `--builder harness-store-sessions --db <file>`),
-// a line a call: `{"id", "now", "call", "args", "latestNote"?}`, each answered `{"id", "result", "changes",
-// "workspace", "args"}` (what it told its followers, how often it said a session's workspace changed, and its args as
-// the call left them: an import's context and a usage write's `changed` are changed in place, as the TypeScript
-// changes its objects), or `{"id", "error", "data"}`. A Map is said as its entries, a Set as its items, undefined as
-// `{"$undefined": true}`.
+// Named dispatch for `Store` (store.ts method names), used by station_main's live store bridge.
 
 ///|
 fn arg(args : Array[Json], i : Int32) -> Json? {
@@ -45,6 +40,11 @@ fn unit(_ : Unit) -> Json {
 }
 
 ///|
+fn lists(pairs : Array[(String, Array[String])]) -> Json {
+  entries(pairs.map(p => (p.0, strings(p.1))))
+}
+
+///|
 /// A page's calls (`[method, key?]` each), answered in turn.
 fn page_ops(page : SessionPage, ops : Array[Json]) -> Json raise {
   let out = []
@@ -74,8 +74,6 @@ fn page_ops(page : SessionPage, ops : Array[Json]) -> Json raise {
 pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
   let db = self.db
   match name {
-    "sql" =>
-      Json::array(statements.map(p => Json::array([jstr(p.0), jstr(p.1)])))
     "told" => unit(self.told(arr(a(x, 0))))
     "notify" => unit(self.notify(s(x, 0)))
     // ── sessions ──
@@ -396,83 +394,4 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
     "firstText" => self.first_text(a(x, 0))
     other => raise store_error("no call \{other}")
   }
-}
-
-///|
-/// The harness (reader `--builder harness-store-sessions --db <file>`): calls of the store on the database at
-/// `db_path`, a line each, each at the time its line says.
-pub async fn harness(host : @host.Host, db_path : String) -> Unit {
-  let db = @sql.Db::attach(host, db_path, wait=5000) catch {
-    e => {
-      host.say(js({ "error": jstr("\{e}") }))
-      return
-    }
-  }
-  let now = Ref(0L)
-  let store = Store::open(db, () => now.val, 0L) catch {
-    e => {
-      host.say(js({ "error": jstr("\{e}") }))
-      return
-    }
-  }
-  let told = []
-  ignore(store.subscribe(c => told.push(c)))
-  let workspace = Ref(0)
-  ignore(store.on_session_workspace_change(() => workspace.val += 1))
-  while host.line() is Some(line) {
-    if line == "" {
-      continue
-    }
-    let ask = js_parse(line) catch { _ => Json::null() }
-    let id = nullish(field(ask, "id"))
-    if num_of(nullish(field(ask, "now"))) is Some(n) {
-      now.val = n.to_int64()
-    }
-    if num_of(nullish(field(ask, "latestNote"))) is Some(n) {
-      store.latest_note = n.to_int64()
-    }
-    let args = arr(nullish(field(ask, "args")))
-    told.clear()
-    workspace.val = 0
-    let answer : Json = try {
-      let result = store.call(js_string(nullish(field(ask, "call"))), args)
-      {
-        "id": id,
-        "result": result,
-        "changes": Json::array(told.copy()),
-        "workspace": ints(workspace.val),
-        "args": Json::array(args),
-      }
-    } catch {
-      StoreError(message, data) =>
-        {
-          "id": id,
-          "error": jstr(message),
-          "data": data,
-          "changes": Json::array(told.copy()),
-          "workspace": ints(workspace.val),
-          "args": Json::array(args),
-        }
-      @wire.ShellError(message) =>
-        {
-          "id": id,
-          "error": jstr(message),
-          "data": Json::null(),
-          "changes": Json::array(told.copy()),
-          "workspace": ints(workspace.val),
-          "args": Json::array(args),
-        }
-      e =>
-        {
-          "id": id,
-          "error": jstr("\{e}"),
-          "data": Json::null(),
-          "changes": Json::array(told.copy()),
-          "workspace": ints(workspace.val),
-          "args": Json::array(args),
-        }
-    }
-    host.say(js(answer))
-  }
-  db.close()
 }

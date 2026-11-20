@@ -1,10 +1,4 @@
-// The store on a line protocol (reader `--builder harness-store-threads --db <file>`), what
-// station/test/mb-store-threads.test.ts plays against the TypeScript store on a twin database: each line
-// `{id, op, args, now}` names a store method as store.ts names it, its arguments as the TypeScript's in JSON, and the
-// store's time then; it is answered `{id, result}` or `{id, error: {name, message}}`, with what the store told meanwhile
-// (`changes`) and asked to be prepared (`requested`). What a method takes as a function is said as data: a statement
-// to run (`{sql, args}`, "$n" for the new entry's number) or an error to raise (`{throw}`); a card restated by merging
-// (`{merge}`) or set (`{set}`). The queued outcomes' consumer runs as `worker.*` on a clock of its own the test moves.
+// Named dispatch and clock setter for `Store` (store.ts method names), used by station_main's live store bridge.
 
 ///|
 fn arg(args : Array[@jsjson.JValue], i : Int) -> @jsjson.JValue? {
@@ -84,52 +78,10 @@ fn prepared_of(v : @jsjson.JValue?) -> Prepared? {
 }
 
 ///|
-fn error_json(e : Error) -> Json {
-  let (name, message) = match e {
-    MessageWriteBusy => ("MessageWriteBusy", "")
-    DecisionSessionsUnavailable => ("DecisionSessionsUnavailable", "decision session lookup is not ready")
-    SessionChatUnavailable => ("SessionChatUnavailable", "session chat is still being prepared")
-    CcSessionsUnavailable(_) => ("CcSessionsUnavailable", "copy destinations are still being prepared")
-    StoreError(m) => ("Error", m)
-    @wire.ShellError(m) => ("Error", m)
-    Failure(m) => ("Error", m)
-    e => ("Error", e.to_string())
-  }
-  let out : Map[String, Json] = { "name": jstr(name), "message": jstr(message) }
-  if e is CcSessionsUnavailable(sessions) {
-    out["sessions"] = Json::array(sessions.map(jstr))
-  }
-  Json::object(out)
-}
-
-///|
-/// What the harness keeps across lines: the store, and the worker with the gates its page reads wait at.
-priv struct Harness {
-  store : Store
-  mut worker : Worker?
-  rt : @effect.Runtime
-  gates : Map[String, @effect.Deferred[Unit]]
-  mut held : Int
-}
-
-///|
-async fn Harness::wait_gate(self : Harness, thread : Json) -> Unit {
-  match self.gates.get(thread.stringify()) {
-    Some(gate) => {
-      self.held += 1
-      gate.wait() catch {
-        _ => ()
-      }
-      self.held -= 1
-    }
-    None => ()
-  }
-  @effect.pause()
-}
-
-///|
-fn Harness::call(self : Harness, op : String, args : Array[@jsjson.JValue]) -> Json raise {
-  let s = self.store
+/// One of the store's calls by its TypeScript name (store.ts), its arguments and answer as JSON: what the station's
+/// own parts ask of it by name (station_main's agents' side).
+pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> Json raise {
+  let s = self
   let a = (i : Int) => jarg(args, i)
   match op {
     "getThread" => s.get_thread(a(0))
@@ -289,154 +241,8 @@ fn Harness::call(self : Harness, op : String, args : Array[@jsjson.JValue]) -> J
     "markCardChoicesTold" => s.mark_card_choices_told(a(0), a(1))
     "cardChoices" => s.card_choices(a(0), a(1))
     "archiveLook" => @readops.archive_look(s.db, a(0))
-    "worker.start" => {
-      let page = async fn(thread : Json, target : String, before : String?) -> Json {
-        self.wait_gate(thread)
-        card_edit_page(s.db, thread, target, before)
-      }
-      let message_page = async fn(thread : Json, target : String, before : String?) -> Json {
-        self.wait_gate(thread)
-        card_message_page(s.db, thread, target, before)
-      }
-      let w = Worker::new(s, self.rt, page, message_page)
-      self.worker = Some(w)
-      if a(0) is True {
-        w.previous_exited()
-      }
-      undefined
-    }
-    "worker.exited" => {
-      self.worker.unwrap().previous_exited()
-      undefined
-    }
-    "worker.run" => undefined
-    "worker.wake" => {
-      self.worker.unwrap().wake()
-      undefined
-    }
-    "worker.save" => {
-      let save = hook(s, arg(args, 1), None)
-      jstr(
-        self.worker
-        .unwrap()
-        .save(CardOutcome::from_json(arg(args, 0).unwrap_or(Null)), () => match save {
-          Some(f) => f()
-          None => ()
-        }),
-      )
-    }
-    "worker.hold" => {
-      self.gates[a(0).stringify()] = @effect.Deferred::new()
-      undefined
-    }
-    "worker.release" => {
-      match self.gates.get(a(0).stringify()) {
-        Some(g) => {
-          self.gates.remove(a(0).stringify())
-          ignore(g.succeed(()))
-        }
-        None => ()
-      }
-      undefined
-    }
-    "worker.state" =>
-      match self.worker {
-        Some(w) =>
-          match w.state() {
-            Object(m) => {
-              m["held"] = jint(self.held)
-              m["warnings"] = Json::array(w.warnings.map(jstr))
-              Json::object(m)
-            }
-            other => other
-          }
-        None => { "held": jint(self.held) }
-      }
-    "worker.close" => {
-      match self.worker {
-        Some(w) => w.close()
-        None => ()
-      }
-      undefined
-    }
     _ => raise StoreError("no such store method: \{op}")
   }
-}
-
-///|
-/// Answers the line protocol on the database at `db_path` until stdin ends.
-pub async fn harness(host : @host.Host, db_path : String) -> Unit {
-  let db = @sql.Db::attach(host, db_path, wait=5000) catch {
-    e => {
-      host.say(({ "error": error_json(e) } : Json).stringify())
-      return
-    }
-  }
-  let store = Store::new(db, 0.0) catch {
-    e => {
-      host.say(({ "error": error_json(e) } : Json).stringify())
-      return
-    }
-  }
-  let h = { store, worker: None, rt: @effect.Runtime::new(start=0L), gates: Map([]), held: 0 }
-  while host.line() is Some(line) {
-    if line == "" {
-      continue
-    }
-    let ask = @jsjson.parse(line) catch { _ => Null }
-    let id = jnullish(jget(ask, "id"))
-    let op = jtext(jget(ask, "op")).unwrap_or("")
-    let args = match jget(ask, "args") {
-      Some(Arr(xs)) => xs
-      _ => []
-    }
-    store.sent.clear()
-    store.requested.clear()
-    match jget(ask, "now") {
-      Some(Num(n)) => {
-        store.now = n
-        if op.has_prefix("worker.") {
-          match h.worker {
-            Some(w) => {
-              w.run_until(n.to_int64())
-              store.now = n
-            }
-            None =>
-              if n.to_int64() > h.rt.now() {
-                h.rt.advance((n.to_int64() - h.rt.now()).to_int())
-              }
-          }
-        }
-      }
-      _ => ()
-    }
-    let out : Map[String, Json] = { "id": id }
-    (try h.call(op, args) catch {
-      e => out["error"] = error_json(e)
-    } noraise {
-      r => out["result"] = r
-    })
-    if op.has_prefix("worker.") {
-      match h.worker {
-        Some(w) => w.run_until(h.rt.now())
-        None => ()
-      }
-    }
-    out["changes"] = Json::array(store.sent.copy())
-    out["requested"] = Json::array(store.requested.copy())
-    store.sent.clear()
-    store.requested.clear()
-    host.say(Json::object(out).stringify())
-  }
-  db.close()
-}
-
-///|
-/// One of the store's calls by its TypeScript name (store.ts), its arguments and answer as JSON: what the station's
-/// own parts ask of it by name (station_main's agents' side), as this harness answers the test.
-pub fn Store::call(self : Store, op : String, args : Array[@jsjson.JValue]) -> Json raise {
-  let h : Harness = { store: self, worker: None, rt: @effect.runtime(), gates: Map([]), held: 0 }
-  h.call(op, args)
 }
 
 ///|

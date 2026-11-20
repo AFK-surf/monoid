@@ -1,0 +1,5 @@
+wait 300
+tap 播放
+wait 700
+tap 放回
+wait 700

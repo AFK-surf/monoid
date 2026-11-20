@@ -138,3 +138,41 @@ test "stops: seven levels with long names on a narrow phone: still one line, the
   assert_eq(stops_named(t, labels), ["Very high"])
   assert_eq(t.squeeze_faults(), [])
 }
+
+///|
+test "stops_node: discrete keyboard switch uses critically damped spring without overshoot" {
+  let labels = ["低", "中", "高", "极高"]
+  let chosen = @signals.signal(0)
+  let state = Stops::new()
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+    stops_node(root, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { chosen.set(i) })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let thumb_x = fn() {
+    let raised = theme().p.raised
+    t.drawn_rects().iter().find_first(fn(r) { r.4 == raised }).map(fn(r) { r.0 }).unwrap_or(-1.0)
+  }
+  let x0 = thumb_x()
+  // Switch from 0 -> 2 via keyboard focus + Right twice
+  t.act(@ui.Role::Slider, Focus, label="思考深度")
+  t.key(@ui.key_code_right)
+  t.key(@ui.key_code_right)
+  // Find target settled x2 first by sampling trajectory and checking monotonicity / no overshoot past settled x2
+  let xs : Array[Double] = []
+  let step = @ui.move_most_ms / 30.0
+  for _ in 0..<30 {
+    t.run_for(step)
+    xs.push(thumb_x())
+  }
+  t.run_for(@ui.move_most_ms)
+  let x2 = thumb_x()
+  assert_true(x2 > x0 + 20.0, msg="moved right: x0=\{x0}, x2=\{x2}")
+  for x in xs {
+    assert_true(x >= x0 - 0.05 && x <= x2 + 0.05, msg="stops_node discrete switch overshot [\{x0}, \{x2}]: x=\{x}")
+  }
+}

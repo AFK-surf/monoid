@@ -10,10 +10,8 @@ import {
   "station/session_chats",
   "station/sql",
   "mbui/effect",
-  "moonbitlang/core/json",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
   "moonbitlang/core/cmp",
-  "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/utf8",
 }

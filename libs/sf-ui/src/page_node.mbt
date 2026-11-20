@@ -66,7 +66,25 @@ pub fn hover_ground_node(
   let src = by.unwrap_or(target)
   let lit_fn = lit.unwrap_or(fn() { lit_node(src) })
   let active = fn() { on() && (lit_fn() || extra()) }
-  target.ground_over(By(fn() { if active() { color() } else { 0L } })) |> ignore
+  let fade = @motion.hover_fade(target, active, duration_ms=dur_ms, instant_off=fn() { @ui.pointing() is Finger })
+  target.ground_over(By(fn() {
+    // (read as it was before the fade, untracked: View::ground_over still learns it follows the hand and the focus,
+    // its corners' and focus's checks, with no further subscription)
+    @signals.untracked(active) |> ignore
+    let p = fade()
+    if p <= 0.0 {
+      0L
+    } else {
+      let c = color()
+      if p >= 1.0 || c == 0L {
+        c
+      } else {
+        let a = ((c & 0xFFL).to_double() * p).round().to_int64()
+        (c & 0xFFFFFF00L) | a
+      }
+    }
+  }))
+  |> ignore
 }
 
 ///|

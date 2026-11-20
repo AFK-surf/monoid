@@ -102,14 +102,22 @@ pub fn[K : Eq] tabs_node(
           strip.box(fn(mark) {
             mark
             .over(Is(true))
-            .offset(By(fn() {
-              let x = rect().map(fn(r) { r.0 }).unwrap_or(0.0)
-              match look {
-                Underline => (x, tab_h - tabs_bar_h)
-                Pill => (x, 0.0)
+            .width(Is(Some(0.0)))
+            .ground_drawn(By(fn() {
+              match rect() {
+                Some((x, _, w, _)) => {
+                  dx: x,
+                  dy: match look {
+                    Underline => tab_h - tabs_bar_h
+                    Pill => 0.0
+                  },
+                  dw: w,
+                  dh: 0.0,
+                  corners: None,
+                }
+                None => @view.ground_as_laid
               }
             }))
-            .width(By(fn() { rect().map(fn(r) { r.2 }) }))
             |> ignore
             match look {
               Underline =>

@@ -4,7 +4,6 @@ package "station/store_threads"
 import {
   "mbui/effect",
   "moonbitlang/core/json",
-  "station/host",
   "station/jsjson",
   "station/sql",
 }
@@ -17,8 +16,6 @@ pub fn card_message_page(@sql.Db, @json.Json, String, String?) -> @json.Json rai
 pub fn card_of_entry(@json.Json) -> @json.Json?
 
 pub fn entry_of(@json.Json) -> @json.Json
-
-pub async fn harness(@host.Host, String) -> Unit
 
 // Errors
 pub(all) suberror CcSessionsUnavailable {

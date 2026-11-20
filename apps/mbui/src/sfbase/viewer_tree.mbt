@@ -254,7 +254,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     },
     fn(to) {
       if to != vw.lift.target() {
-        vw.lift.go(to, @motion.animate_spring, at=n.cause_at())
+        vw.lift.go(to, @motion.move_damped, at=n.cause_at())
       }
     },
   )
@@ -828,7 +828,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
         v.pinched = true
         if v.swiping {
           v.swiping = false
-          strip.go(0.0, @motion.sheet_spring, at~)
+          strip.go(0.0, @motion.carousel_spring, at~)
         }
         // (a pull going on: the pinch takes the picture from where it has it, back to fitted if let go smaller)
         v.pulling = false
@@ -870,7 +870,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
           v.zoom.reset(at~)
         }
         if v.swiping {
-          strip.go(0.0, @motion.sheet_spring, at~)
+          strip.go(0.0, @motion.carousel_spring, at~)
         }
         v.swiping = false
         v.held = false
@@ -1072,7 +1072,7 @@ fn Viewer::image_let_go(
     } else if to > 0 {
       v.go(c, src, 1, vx * 1000.0)
     } else {
-      strip.go(0.0, @motion.sheet_spring, at~, velocity=vx * 1000.0)
+      strip.go(0.0, @motion.carousel_spring, at~, velocity=vx * 1000.0)
     }
   } else if v.held && zoomed && (v.moved > tap_slop || pinched) {
     // zoomed in, let go moving: on at the finger's speed, slowing, to a stop or its edge
@@ -1307,7 +1307,7 @@ fn Viewer::wheel_page(self : Viewer, canvas : @view.View, src : Source, w : @vie
     if pv_strip.wheel.state == Paging {
       pv_strip.wheel.reset()
       if !self.closing {
-        pv_strip.way.go(0.0, @motion.sheet_spring, at=due)
+        pv_strip.way.go(0.0, @motion.carousel_spring, at=due)
       }
     }
   })

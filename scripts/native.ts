@@ -1596,9 +1596,15 @@ async function inStore(name: string): Promise<boolean> {
     return false;
   }
 }
+// pigz gzips on every core (a reader's package took ~10 s of one with tar's gzip): the same .tar.gz, read by tar -xzf
+// and gunzipSync. --use-compress-program, which GNU tar and bsdtar both take (bsdtar's -I is -T); not on Windows;
+// STILLFAIL_NO_PIGZ=1 turns it off.
+let pigzHere: boolean | undefined;
+const pigz = (): boolean =>
+  (pigzHere ??= osPlatform() !== "win32" && process.env.STILLFAIL_NO_PIGZ !== "1" && spawnSync("pigz", ["--version"], { stdio: "ignore" }).status === 0);
 function pack(dir: string, name: string, into: string): string {
   const file = join(into, name);
-  run(TAR, ["-czf", file, "-C", dir, "."]);
+  run(TAR, pigz() ? ["--use-compress-program=pigz", "-cf", file, "-C", dir, "."] : ["-czf", file, "-C", dir, "."]);
   return file;
 }
 
