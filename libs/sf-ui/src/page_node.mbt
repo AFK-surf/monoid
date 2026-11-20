@@ -984,6 +984,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
       k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
+      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
       rows(k)
     })
     |> ignore
@@ -1005,6 +1006,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
+      corner_card_node(card, fn() { corner }, inset=fn() { pad })
       rows(card)
     })
     |> ignore
