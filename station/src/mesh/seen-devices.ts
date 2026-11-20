@@ -43,6 +43,13 @@ export class SeenDevices {
     const label = (said as { label?: unknown } | null)?.label;
     const was = this.#rows.get(`${who.workspace}\0${who.sub}\0${device}`);
     const role = typeof who.role === "string" && who.role !== "" ? who.role : was?.role;
+    if (typeof who.role === "string" && who.role !== "") {
+      const viewer = this.#viewers.get(who.workspace)?.get(who.sub);
+      if (viewer !== undefined && viewer.role !== who.role) {
+        viewer.role = who.role;
+        this.#version++;
+      }
+    }
     const next: Seen = {
       workspace: who.workspace, sub: who.sub, email: who.email, ...(role !== undefined ? { role } : {}), device,
       base: base ?? was?.base ?? null,

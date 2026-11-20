@@ -433,13 +433,9 @@ pub fn vault_ok(lock : LockView, prev : Json?, next : Json, copy : Bool, c : &Cr
     None => false
     Some((sub, _)) =>
       if is_workspace {
-        members.contains(sub) && (
-          if prev is None && seq == 0.0 {
-            sub == owner && is_admin(lock, sub)
-          } else {
-            sub == owner || is_admin(lock, sub)
-          }
-        )
+        members.contains(sub) &&
+        is_admin(lock, sub) &&
+        (if prev is None && seq == 0.0 { sub == owner } else { true })
       } else {
         sub == owner
       }
@@ -447,11 +443,7 @@ pub fn vault_ok(lock : LockView, prev : Json?, next : Json, copy : Bool, c : &Cr
   guard @role.signed_by(by is Some(_), signer_ok) else {
     return Some(
       if is_workspace {
-        if prev is None && seq == 0.0 {
-          "a workspace vault is created by a workspace owner or admin"
-        } else {
-          "a workspace vault is signed by its owner or a workspace admin in the lock"
-        }
+        "a workspace vault is signed by a workspace owner or admin in the lock"
       } else {
         "a vault is signed by one of its owner's devices in the lock"
       },

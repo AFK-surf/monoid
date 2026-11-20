@@ -239,10 +239,11 @@ test "POST /vault/vaults/latest and PUT /vault/vaults sibling support workspace 
   assert_eq(status, 200)
   assert_eq(stringify(body), "{\"vaults\":[\{stringify(current)}]}")
 
-  // Sibling copy of workspace vault allows owner change; rejects scope change.
+  // Sibling copy of workspace vault allows owner takeover by signer; rejects third-party owner or scope change.
   let sibling_parts = vault_parts(ws_lock, [
     ("vaults.vaultSnapshot", _ => snapshot(held, "b0")),
     ("vault/crypto.vaultSupersedes", _ => jbool(true)),
+    ("vault/crypto.signerOf", _ => jobj([("sub", js("u2")), ("device", js("d2"))])),
     ("vaults.putVaultIf", _ => jbool(true)),
   ])
   let sibling_ws = jobj([
@@ -252,9 +253,22 @@ test "POST /vault/vaults/latest and PUT /vault/vaults sibling support workspace 
     ("scope", js("workspace")),
     ("members", jstrs(["u2"])),
     ("seq", jint(0)),
+    ("sig", jobj([("key", js("k2"))])),
   ])
   let (s_ok, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_ws))
   assert_eq(s_ok, 200)
+
+  let sibling_third_party = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u3")),
+    ("scope", js("workspace")),
+    ("members", jstrs(["u2", "u3"])),
+    ("seq", jint(0)),
+    ("sig", jobj([("key", js("k2"))])),
+  ])
+  let (s_bad_owner, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_third_party))
+  assert_eq(s_bad_owner, 400)
 
   let sibling_bad_scope = jobj([
     ("id", js("v1")),

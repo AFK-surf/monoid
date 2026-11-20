@@ -224,4 +224,23 @@ test("workspace vault rules: scope, admin creation/updates, owner takeover, memb
   assert.equal(vaultOk(lock, null, p0 as any), null);
   const personalToWs = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZX", seq: 1, owner: alice.sub, name: "Personal", scope: "workspace" as const, members: [alice.sub], epoch: 0, keys: [kAlice], at: 1001 }, TAG.vault, alice.signer);
   assert.equal(vaultOk(lock, p0 as any, personalToWs as any), "a vault's scope does not change");
+
+  // 6. Ordinary member cannot forge a workspace vault via ?copy=1 with seq: 1 (prev = null, copy = true).
+  const forgedCopy = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZW", seq: 1, owner: carol.sub, name: "Forged", scope: "workspace" as const, members: [carol.sub], epoch: 0, keys: [kCarol], at: 1000 }, TAG.vault, carol.signer);
+  assert.equal(vaultOk(lock, null, forgedCopy as any, true), "a workspace vault is signed by a workspace owner or admin in the lock");
+
+  // 7. Demoted creator (alice -> member) can no longer update the workspace vault, but can still write items and active admin bob can still update/take over.
+  const demotedLock: any = {
+    ...lock,
+    members: new Map([
+      [alice.sub, { sub: alice.sub, email: "alice@x.test", role: "member" }],
+      [bob.sub, { sub: bob.sub, email: "bob@x.test", role: "admin" }],
+      [carol.sub, { sub: carol.sub, email: "carol@x.test", role: "member" }],
+    ]),
+  };
+  const v2ByDemotedAlice = signRec({ v: 1 as const, ws: WS, id: vid, seq: 2, owner: alice.sub, name: "Still Mine", scope: "workspace" as const, members: [alice.sub, bob.sub, carol.sub], epoch: 0, keys: [kAlice, kBob, kCarol], at: 1002 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(demotedLock, v1 as any, v2ByDemotedAlice as any), "a workspace vault is signed by a workspace owner or admin in the lock");
+  const itemByDemotedAlice = signRec({ v: 1 as const, ws: WS, vault: vid, id: "i_01HZZZZZZZZZZZZZZZZZZZZZZY", version: 0, epoch: 0, ct: "A".repeat(48), at: 1002 }, TAG.item, alice.signer);
+  assert.equal(itemOk(demotedLock, v1 as any, null, itemByDemotedAlice as any), null);
+  assert.equal(vaultOk(demotedLock, v2 as any, v3Takeover as any), null);
 });

@@ -260,6 +260,11 @@ test("non-security mode personalVaultLock preserves member roles and GET /vault/
     assert.deepEqual(parsed.chains.alice, alice.chain);
     assert.deepEqual(parsed.chains.bob, bob.chain);
     assert.deepEqual(personalVaultChains(WS, { chains: personChainsOf(c), members: seenDevicesOf(c) }).alice, alice.chain);
+
+    // Role downgrade via mesh hello (`saw`) overrides stale `remember` role in `#viewers`.
+    seenDevicesOf(c).saw(2000, { workspace: WS, sub: "bob", email: "bob@x.com", role: "member" }, bob.base.hex, bob.base.hex, { kind: "app" });
+    assert.equal(seenDevicesOf(c).roles(WS).get("bob"), "member");
+    assert.equal(c.vaultLock(WS)!.members.get("bob")?.role, "member");
     c.close();
   } finally {
     rmSync(data, { recursive: true, force: true });

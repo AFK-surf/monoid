@@ -124,7 +124,8 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
             return refuse(409, "vault_conflict", `seq ${prev === null ? 0 : prev.seq + 1} is the one that follows`, { vault: prev });
           }
           const scopeChanged = (next.scope ?? null) !== (prev?.scope ?? null);
-          const ownerChanged = prev !== null && next.owner !== prev.owner && !(next.scope === "workspace" && prev.scope === "workspace");
+          const ownerChanged = prev !== null && next.owner !== prev.owner &&
+            !(next.scope === "workspace" && prev.scope === "workspace" && signerOf(l, next.sig?.key)?.sub === next.owner);
           const why = sibling
             ? vaultOk(l, null, next, true) ?? (scopeChanged ? "a vault's scope does not change" : ownerChanged ? "a vault's owner does not change" : null)
             : vaultOk(l, prev, next, copy);

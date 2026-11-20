@@ -19,8 +19,8 @@ priv struct P54Cloud {
   personal : Map[String, Json]
   /// Who asked the vault of each workspace here (vault/module.ts `lock`'s `viewer`), by sub: their email.
   viewers : Map[String, Map[String, String]]
-  /// Their workspace role from their credential, by workspace and sub.
-  viewer_roles : Map[String, Map[String, String]]
+  /// Their workspace role from their credential, by workspace and sub: `(role, seen_secs)`.
+  viewer_roles : Map[String, Map[String, (String, Double)]]
   /// The personal chains selected for each member outside security mode (GET /vault/boxes).
   personal_chains : Map[String, Map[String, Array[Json]]]
   /// The vault's records of a workspace (its vaults, its box certificates) and its check of a box certificate against
@@ -43,7 +43,7 @@ fn P54Cloud::has(self : P54Cloud, bus : LiveBus, ws : String) -> Bool {
 ///|
 /// The members of `ws` whose devices came to this station (mesh/seen-devices.json, the gate's), by sub: their email
 /// and role, as they said them last.
-fn p54_seen_members(bus : LiveBus, ws : String) -> (Map[String, String], Map[String, String]) {
+fn p54_seen_members(bus : LiveBus, ws : String) -> (Map[String, String], Map[String, (String, Double)]) {
   let out : Map[String, (String, Double)] = Map([])
   let roles_at : Map[String, (String, Double)] = Map([])
   let rows = match read_text(path([bus.data, "mesh", "seen-devices.json"])).bind(@cloud_lock.parse) {
@@ -74,11 +74,7 @@ fn p54_seen_members(bus : LiveBus, ws : String) -> (Map[String, String], Map[Str
   for sub, v in out {
     said[sub] = v.0
   }
-  let roles : Map[String, String] = Map([])
-  for sub, v in roles_at {
-    roles[sub] = v.0
-  }
-  (said, roles)
+  (said, roles_at)
 }
 
 ///|
@@ -99,12 +95,20 @@ async fn p54_personal_lock(bus : LiveBus, c : P54Cloud, ws : String) -> Json? {
       })
     _ => []
   }
-  let (emails, roles) = p54_seen_members(bus, ws)
+  let (emails, roles_at) = p54_seen_members(bus, ws)
   for sub, e in c.viewers.get(ws).unwrap_or(Map([])) {
     emails[sub] = e
   }
-  for sub, r in c.viewer_roles.get(ws).unwrap_or(Map([])) {
-    roles[sub] = r
+  let roles : Map[String, String] = Map([])
+  for sub, v in roles_at {
+    roles[sub] = v.0
+  }
+  for sub, v in c.viewer_roles.get(ws).unwrap_or(Map([])) {
+    let (r, at) = v
+    match roles_at.get(sub) {
+      Some((_, seen_at)) if seen_at > at => ()
+      _ => roles[sub] = r
+    }
   }
   let (vaults, boxes) = match c.held.val {
     Some(f) => f(ws)
@@ -698,7 +702,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
                     m
                   }
                 }
-                rof[sub] = role
+                rof[sub] = (role, @host.epoch_ms().to_double() / 1000.0)
               }
             }
             _ => ()

@@ -313,9 +313,20 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
             if next_scope != prev_scope {
               js("a vault's scope does not change")
             } else if next.get("owner").unwrap_or(jundef) !=
-              prev.get("owner").unwrap_or(jundef) &&
-              !(next_scope == Str("workspace") && prev_scope == Str("workspace")) {
-              js("a vault's owner does not change")
+              prev.get("owner").unwrap_or(jundef) {
+              let signer = crypto("signerOf", [
+                l,
+                field_of(next.get("sig"), "key").unwrap_or(jundef),
+              ])
+              let takeover = next_scope == Str("workspace") &&
+                prev_scope == Str("workspace") &&
+                field_of(Some(signer), "sub").unwrap_or(jundef) ==
+                next.get("owner").unwrap_or(jundef)
+              if takeover {
+                Null
+              } else {
+                js("a vault's owner does not change")
+              }
             } else {
               Null
             }
