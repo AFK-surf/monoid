@@ -68,7 +68,8 @@ function element(extra = {}) {
   };
 }
 
-function browser({ webdriver = false } = {}) {
+// `frame`: what each of its frames does (as MoonBit's frame, between the host's start of one and its end)
+function browser({ webdriver = false, frame = () => {} } = {}) {
   const said = [];
   const measured = [];
   const blobs = [];
@@ -91,7 +92,7 @@ function browser({ webdriver = false } = {}) {
     createElement: made, getElementById: (id) => (id === 'c' ? canvas : ime), addEventListener(name, f) {
       if (name === 'visibilitychange') document.seen.push(f);
     },
-    seen: [], hidden: false, visibilityState: 'visible', body: element(), title: '', fonts: { add() {}, delete() {} },
+    seen: [], hidden: false, visibilityState: 'visible', body: element(), title: '', fonts: { add() {}, delete() {}, *[Symbol.iterator]() {} },
   };
   // the popups the page opens: a document of their own, a canvas whose context is another's
   const popups = [];
@@ -127,7 +128,7 @@ function browser({ webdriver = false } = {}) {
   win.globalThis = win;
   vm.runInNewContext(source, win, { filename: 'host.js' });
   const H = win.__mbhost;
-  H.run('test', () => {}, () => {}, () => {}, () => {}, () => {});
+  H.run('test', () => frame(), () => {}, () => {}, () => {}, () => {});
   H.setOutside(() => {});
   // the frames asked for, run (their RAF callbacks, as a browser runs them)
   const run = () => { while (frames.length) frames.shift()(0); };
@@ -189,6 +190,39 @@ test('the glyphs\' keys are forgotten as the next frame starts once the faces ch
   b.H.requestFrame();
   b.run();
   assert.equal(b.H.atlasGeneration(), g2 + 1, 'nothing more forgotten with nothing changed');
+});
+
+test('a face cleared in a frame: the keys forgotten as the next starts move the generation on past what that frame read', async () => {
+  let inFrame = null;
+  const b = browser({ frame: () => { const f = inFrame; inFrame = null; if (f) f(); } });
+  await task();
+  b.run();
+  assert.ok(b.H.faceAddBytes(1, new Uint8Array(0), 0));
+  await task();
+  b.H.requestFrame();
+  b.run();
+  // in a frame: a face cleared, the generation read at once (faces.mbt words_forgotten), words shaped again in it by
+  // the keys still here
+  let read = -1, k = -1;
+  inFrame = () => {
+    b.H.textKey('x', 10, 400, 0);
+    b.H.faceClear(1);
+    read = b.H.atlasGeneration();
+    k = b.H.textKey('a', 10, 400, 0);
+  };
+  b.H.requestFrame();
+  b.run();
+  assert.equal(k, 1);
+  assert.equal(b.H.atlasGeneration(), read, 'the generation as it read it till the frame ends');
+  b.H.requestFrame();
+  b.run();
+  // (else what that frame shaped is kept with the generation as it is, its keys another glyph's: text.mbt text_arrive)
+  assert.ok(b.H.atlasGeneration() > read, 'the generation moved on as the keys were forgotten');
+  assert.equal(b.H.textKey('y', 10, 400, 0), 0, 'the keys made anew');
+  const g = b.H.atlasGeneration();
+  b.H.requestFrame();
+  b.run();
+  assert.equal(b.H.atlasGeneration(), g, 'nothing more forgotten with nothing changed');
 });
 
 test('glass\'s textures given back after 180 frames with none, and as the page is hidden', () => {

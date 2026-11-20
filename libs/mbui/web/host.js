@@ -2756,12 +2756,15 @@
   // Between frames (each window's frame starts with it, resize): the glyphs' keys forgotten as text changed, or as
   // there came to be more than KEYS_MOST of them (each a glyph of a size, weight and style ever shaped: a page left
   // open on changing text grows them without end), the generation moved on so MoonBit shapes what it shows again
-  // (text.mbt text_arrive: the generation read as each frame starts).
+  // (text.mbt text_arrive: the generation read as each frame starts). It moves on as the keys are forgotten, even where
+  // it moved on as the text changed: a face cleared in a frame (faceClear) moves it on there, MoonBit reads it at once
+  // (faces.mbt words_forgotten) and shapes again by the keys still here, which would be kept with that generation and
+  // drawn next frame as other glyphs (as the native hosts' keys_sweep moves it on as it clears them).
   const KEYS_MOST = 65536;
   function textSweep() {
     if (inFrame) return;
     if (!keysStale && entries.length <= KEYS_MOST) return;
-    if (!keysStale) textChanged();
+    textChanged();
     keys.clear();
     entries.length = 0;
     keysStale = false;
