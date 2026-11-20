@@ -70,6 +70,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_stdlib(host))
     (Some("harness-upstream"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_upstream(host))
+    (Some("harness-sql-net"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_sql_net(host))
     _ => {
       @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
       2
