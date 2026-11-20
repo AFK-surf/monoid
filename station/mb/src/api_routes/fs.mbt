@@ -47,7 +47,7 @@ pub async fn Admin::fs(self : Admin, call : String, args : Array[JV]) -> JV {
 
 ///|
 pub async fn Admin::read_file(self : Admin, path : String) -> Bytes {
-  bytes_of(self.fs("readFile", [js(path)])).unwrap_or(b"")
+  self.backend.ask_bytes("fs.readFile", [js(path)]).unwrap_or(b"")
 }
 
 ///|
@@ -76,12 +76,5 @@ pub fn Admin::io_message(self : Admin, e : Error) -> String {
 /// A stream's next piece, as the backend gives it (`{"$stream": id}` read on with `$stream.next`).
 pub fn Admin::stream_of(self : Admin, v : JV) -> async () -> Bytes? {
   let id = v.get("$stream").unwrap_or(Null)
-  async fn() {
-    let piece = self.backend.ask("$stream.next", [id])
-    if nullish(piece) {
-      None
-    } else {
-      bytes_of(piece)
-    }
-  }
+  async fn() { self.backend.ask_bytes("$stream.next", [id]) }
 }
