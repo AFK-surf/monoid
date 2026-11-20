@@ -140,6 +140,8 @@ let image_info_out : FixedArray[Double] = FixedArray::make(4, 0.0)
 pub fn Ctx::image_bytes(self : Ctx, key : String, data : Bytes) -> Unit {
   ignore(self)
   image_vector_drawers.remove(key)
+  // (a GIF handed over as it before: its frames let go of, gif.mbt)
+  moving_forget(key)
   if !add_gif(key, data) {
     image_data[key] = data
   }
@@ -151,6 +153,8 @@ pub fn Ctx::image_bytes(self : Ctx, key : String, data : Bytes) -> Unit {
 /// core call's answer). Keys starting `mem:` show nothing until given.
 pub fn add_image(key : String, data : Bytes) -> Unit {
   image_vector_drawers.remove(key)
+  // (a GIF handed over as it before: its frames let go of)
+  moving_forget(key)
   // a GIF that moves: its frames each a picture (gif.mbt)
   if !add_gif(key, data) {
     image_data[key] = data
@@ -166,6 +170,8 @@ pub fn add_vector_image(
   data : Bytes,
   draw : (Bytes, Int) -> (Int, Int, FixedArray[Byte])?,
 ) -> Unit {
+  // (a GIF handed over as it before: its frames let go of, gif.mbt)
+  moving_forget(key)
   image_data[key] = data
   image_vector_drawers[key] = draw
   image_bytes_here(key)
@@ -984,16 +990,7 @@ fn image_ready_asking_none(src : String) -> Bool {
 /// shown: a tile of a page each time it changes). What is told of it goes once nothing follows it.
 pub fn forget_image(key : String) -> Unit {
   // (a GIF that moves: each of its frames with it, its first too, and what it is made from)
-  match moving_images.get(key) {
-    Some(m) => {
-      for k in 1..<m.keys.length() {
-        m.unmake(k)
-      }
-      m.unmake(0)
-      moving_images.remove(key)
-    }
-    None => ()
-  }
+  moving_forget(key)
   pixels_forget(key)
   image_data.remove(key)
   image_vector_drawers.remove(key)

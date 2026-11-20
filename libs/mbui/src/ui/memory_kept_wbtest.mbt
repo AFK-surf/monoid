@@ -205,3 +205,37 @@ test "a GIF drawn this frame keeps its frames past the budget" {
   assert_eq(gif_expanded_bytes.val, expanded)
   assert_true(m.made[1] && m.made[2])
 }
+
+///|
+test "a GIF's key handed over again as a still: every frame of the GIF let go of, the key drawn as the still" {
+  let data = many_ways_gif()
+  let shown = Ref(false)
+  let t = shown_twice("mem:again", shown)
+  add_image("mem:again", data)
+  t.draw()
+  let m = moving_images.get("mem:again").unwrap()
+  run_to_frame(t, m, 0, a_moment_short)
+  shown.val = true
+  t.draw()
+  for k in [1, 2, 3, 4, 5, 0] {
+    run_to_frame(t, m, k, 0.0)
+  }
+  assert_eq(made_of(m), [true, true, true, true, true, true])
+  assert_true(pixels_read_back(t, "mem:again#2", 16) is PixelsRead(_, _, _))
+  assert_true(gif_expanded_bytes.val > 0)
+  // handed over again: a still
+  let still = b"\x89PNG not really"
+  add_image("mem:again", still)
+  assert_true(!moving_images.contains("mem:again"))
+  for k in m.keys {
+    assert_true(!image_data.contains(k), msg=k)
+    assert_true(!image_cache.contains(k), msg=k)
+  }
+  assert_true(!pixels_keys().iter().any(fn(k) { k.contains("mem:again#") }), msg=pixels_keys().join(","))
+  assert_eq(pixels_by_src.get("mem:again#2"), None)
+  assert_eq(gif_expanded_bytes.val, 0)
+  assert_eq(image_data.get("mem:again"), Some(still))
+  // drawn as the still from then on, no frame of the GIF
+  t.run_for(away)
+  assert_eq(frames_drawn(t, "mem:again", m.keys.length()), [-1, -1])
+}

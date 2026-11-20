@@ -572,6 +572,19 @@ fn GifCycle::unmake(self : GifCycle, k : Int) -> Unit {
 }
 
 ///|
+/// The GIF that moves handed over as `key` let go of, where there is one: each of its frames (GifCycle::unmake) and
+/// what it is made from. What is handed over as `key` again (another GIF, a still, a vector picture) or `key` forgotten
+/// (forget_image) lets go of it first, so none of its frames is left behind under a key nothing names any more.
+fn moving_forget(key : String) -> Unit {
+  guard moving_images.get(key) is Some(m) else { return }
+  for k in 0..<m.keys.length() {
+    m.unmake(k)
+  }
+  m.decoder = None
+  moving_images.remove(key)
+}
+
+///|
 /// The frames made past their first of the GIFs that move held to gif_frames_budget: of those not drawn in frame
 /// `frame_no`, the one drawn longest ago first, all of its frames past its first let go of and its decoder with them
 /// (made again from its bytes as one is wanted again: GifCycle::make).
@@ -627,14 +640,6 @@ fn add_gif(key : String, data : Bytes) -> Bool {
     start,
     last_used: -1,
     frame_bytes: FixedArray::make(count, 0),
-  }
-  // (one handed over as this key before: what was counted of its frames counted no more)
-  match moving_images.get(key) {
-    Some(was) =>
-      for k in 1..<was.frame_bytes.length() {
-        gif_expanded_bytes.val = gif_expanded_bytes.val - was.frame_bytes[k]
-      }
-    None => ()
   }
   moving_images[key] = m
   m.make(0)
