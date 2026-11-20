@@ -203,11 +203,12 @@ fn tools_view(access : JV) -> JV {
 fn Admin::tools_routes(self : Admin) -> Array[Route] {
   [
     route("GET", "^\\/tools\\/access$", async fn(_r, _) {
-      ok(
-        tools_view(
-          self.backend.ask("device/tools.accessOf", [self.config_raw()]),
-        ),
-      )
+      let access = match
+        field_of(field_of(Some(self.config_raw()), "tools"), "access") {
+        Some(Str("off" | "read" | "full") as a) => a
+        _ => js("off")
+      }
+      ok(tools_view(access))
     }),
     route("PUT", "^\\/tools\\/access$", async fn(r, _) {
       if !manages_station(r.viewer) {

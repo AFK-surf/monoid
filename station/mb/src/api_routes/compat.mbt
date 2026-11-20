@@ -1,7 +1,7 @@
 // A station must not send a closed-enum runtime to a client that cannot decode it (station/src/api/runtime-compat.ts):
 // a client says the runtimes it reads (`stillfail-runtimes`), one from before says none and reads those of before
-// Hermes. What the station's answers say of a runtime is projected for it (read/runtime-view.ts, the readers' part:
-// `runtimeView.runtimeView`), never what people wrote.
+// Hermes. What the station's answers say of a runtime is projected for it (read/runtime-view.ts, `@events.runtime_view`),
+// never what people wrote.
 
 ///|
 let legacy_runtimes : Array[String] = [
@@ -30,11 +30,6 @@ pub fn client_runtimes(headers : Array[(String, String)]) -> Array[String] {
 }
 
 ///|
-fn supported_json(supported : Array[String]) -> JV {
-  jobj([("$set", jstrs(supported))])
-}
-
-///|
 fn entries_view(value : JV, supported : Array[String]) -> JV {
   guard value is Obj(_) && value.get("entries") is Some(Arr(entries)) else {
     return value
@@ -60,17 +55,16 @@ fn is_omit(v : JV) -> Bool {
 }
 
 ///|
-async fn Admin::runtime_view(
-  self : Admin,
-  ty : JV,
-  value : JV,
-  supported : Array[String],
-) -> JV {
-  self.backend.ask("runtimeView.runtimeView", [
-    ty,
-    value,
-    supported_json(supported),
-  ])
+fn runtime_view(ty : JV, value : JV, supported : Array[String]) -> JV {
+  let set : Map[String, Unit] = {}
+  for k in supported {
+    set[k] = ()
+  }
+  match @events.runtime_view(ty, Some(value), set) {
+    Omit => jobj([("$omit", jbool(true))])
+    Value(Some(v)) => v
+    Value(None) => jundef
+  }
 }
 
 ///|
@@ -93,11 +87,7 @@ fn shape_for(path : String) -> JV? {
 }
 
 ///|
-async fn Admin::frame(
-  self : Admin,
-  text : String,
-  supported : Array[String],
-) -> String {
+fn frame(text : String, supported : Array[String]) -> String raise {
   let lines = text.split("\n").map(l => l.to_string()).collect()
   let event = match lines.iter().find_first(l => l.has_prefix("event: ")) {
     Some(l) => Some(l.unsafe_substring(start=7, end=l.length()))
@@ -122,7 +112,7 @@ async fn Admin::frame(
   let view = if event == Some("thread") {
     entries_view(value, supported)
   } else {
-    self.runtime_view(ty.unwrap(), value, supported)
+    runtime_view(ty.unwrap(), value, supported)
   }
   if is_omit(view) && event == Some("session") {
     // Keep the event's id for resumable streams and remove an obsolete cached session.
@@ -154,8 +144,7 @@ fn find_frame_end(b : Bytes, from : Int32) -> Int32 {
 
 ///|
 /// An event stream's frames, each projected.
-fn Admin::events_view(
-  self : Admin,
+fn events_view(
   next : async () -> Bytes?,
   supported : Array[String],
 ) -> async () -> Bytes? {
@@ -170,8 +159,8 @@ fn Admin::events_view(
           let all = pending.to_bytes()
           let mut at = 0
           while find_frame_end(all, at) is end && end >= 0 {
-            let frame = utf8_text(all[at:end].to_bytes())
-            out.push(utf8(self.frame(frame, supported) + "\n\n"))
+            let text = utf8_text(all[at:end].to_bytes())
+            out.push(utf8(frame(text, supported) + "\n\n"))
             at = end + 2
           }
           pending.reset()
@@ -182,7 +171,7 @@ fn Admin::events_view(
           let rest = utf8_text(pending.to_bytes())
           pending.reset()
           if rest != "" {
-            out.push(utf8(self.frame(rest, supported)))
+            out.push(utf8(frame(rest, supported)))
           }
         }
       }
@@ -221,11 +210,11 @@ pub async fn Admin::runtime_compatible(
   if path == "/events" {
     match answer.body {
       Stream(next) =>
-        return { ..answer, body: Stream(self.events_view(next, supported)), }
+        return { ..answer, body: Stream(events_view(next, supported)), }
       Streamed(next, close) =>
         return {
           ..answer,
-          body: Streamed(self.events_view(next, supported), close),
+          body: Streamed(events_view(next, supported), close),
         }
       Whole(_) => ()
     }
@@ -287,11 +276,11 @@ pub async fn Admin::runtime_compatible(
   } else if account && raw is Obj(_) {
     match raw.get("overview") {
       Some(o) =>
-        jset(raw, "overview", self.runtime_view(js("Overview"), o, supported))
-      None => self.runtime_view(js("Overview"), raw, supported)
+        jset(raw, "overview", runtime_view(js("Overview"), o, supported))
+      None => runtime_view(js("Overview"), raw, supported)
     }
   } else {
-    self.runtime_view(ty.unwrap(), raw, supported)
+    runtime_view(ty.unwrap(), raw, supported)
   }
   if is_omit(view) {
     return error(426, self.tr(r.lang, "station.admin.updateClientForRuntime"))
