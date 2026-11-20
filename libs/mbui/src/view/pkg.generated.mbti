@@ -1413,6 +1413,7 @@ pub fn Tree::said_order(Self) -> Array[SaidNode]
 pub fn Tree::said_pass(Self, (NodeId) -> Bool, (NodeId) -> String, set? : (String, WordsLook) -> String, under? : Int32, whole? : Bool) -> SaidPass
 pub fn Tree::says_picture(Self, NodeId) -> Bool
 pub fn Tree::scroll_corrected(Self, NodeId) -> Double
+pub fn Tree::scroll_keeps_typing(Self, NodeId, NodeId?) -> Bool
 pub fn Tree::scroll_keys_at(Self, Int32) -> Double
 pub fn Tree::scroll_off_by(Self, NodeId) -> Int32
 pub fn Tree::scroll_off_of(Self, NodeId, Double) -> (Double, Double)?
@@ -1508,7 +1509,7 @@ pub fn View::box(Self, (Self) -> Unit, made_for? : SourceLoc, words_as_said? : B
 #callsite(autofill(loc))
 pub fn View::by_room(Self, (Self, Room) -> Unit, loc~ : SourceLoc) -> Self
 pub fn View::cause_at(Self) -> Double
-pub fn View::claims(Self, (Double, Double) -> Bool, scrolls? : Bool, from? : (Double, Double) -> Bool) -> Self
+pub fn View::claims(Self, (Double, Double) -> Bool, scrolls? : Bool, for_in? : NodeId, from? : (Double, Double) -> Bool) -> Self
 pub fn View::clear(Self) -> (Double, Double, Double, Double)
 #callsite(autofill(loc))
 pub fn View::clips(Self, Live[Bool], loc~ : SourceLoc) -> Self
@@ -1769,7 +1770,7 @@ pub fn View::says(Self, Live[Said?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::scale(Self, Live[Double], about? : Pivot, max_shift? : Double, loc~ : SourceLoc) -> Self
 pub fn View::scroll_holding(Self, across? : Bool) -> Scroll?
-pub fn View::scrolls(Self, Scroll, (Self) -> Unit, slop? : Double, bar? : ScrollBar, bar_in? : Double, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), bar_here? : () -> Bool) -> Self
+pub fn View::scrolls(Self, Scroll, (Self) -> Unit, slop? : Double, bar? : ScrollBar, bar_in? : Double, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), bar_here? : () -> Bool, for_in? : NodeId) -> Self
 pub fn[K : Hash + Eq] View::scrolls_reused(Self, Scroll, () -> Array[K], (Self, () -> K) -> Unit, shape? : (K) -> Int32, reuses? : (K) -> Bool, est? : Double, slop? : Double, bar? : ScrollBar, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), holds? : (K) -> Bool, follows? : () -> Bool, from_end? : Bool, comes? : (K) -> Bool, goes? : (K) -> Bool, leaves_room? : (K) -> Bool, comes_whole? : (K) -> Bool, comes_way? : (K) -> (Double, (Double) -> Double)?, reorders? : (K) -> Bool, at_once? : Bool, flips? : Bool, place? : ListPlace[K], near_foot? : (Double, () -> Bool, () -> Unit), near_top? : (Double, () -> Bool, () -> Unit), head? : (Self) -> Unit, foot? : (Self) -> Unit, foot_clear? : () -> Double, bands? : (() -> Array[ListBand[K]], (Self, () -> ListBand[K]) -> Unit)) -> Self
 pub fn[K : Hash + Eq] View::scrolls_window(Self, Scroll, () -> Array[K], (Self, K) -> Unit, est? : Double, slop? : Double, bar? : ScrollBar, top_covered? : () -> Double, bar_clear? : () -> (Double, Double), holds? : (K) -> Bool, follows? : () -> Bool, from_end? : Bool, comes? : (K) -> Bool, goes? : (K) -> Bool, leaves_room? : (K) -> Bool, comes_whole? : (K) -> Bool, comes_way? : (K) -> (Double, (Double) -> Double)?, at_once? : Bool, place? : ListPlace[K], near_foot? : (Double, () -> Bool, () -> Unit), near_top? : (Double, () -> Bool, () -> Unit), reused? : (K) -> Int32?, make_reused? : (Self, () -> K) -> Unit, head? : (Self) -> Unit, foot? : (Self) -> Unit, slices? : (K) -> Int32, make_slice? : (Self, K, Int32) -> Unit, reused_slice? : (K, Int32) -> Int32?, make_reused_slice? : (Self, () -> K, () -> Int32) -> Unit, keep_first_slice? : (K) -> Bool) -> Self
 pub fn[T : Eq] View::sets_together(Self, () -> T, (T) -> Unit) -> Self

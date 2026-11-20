@@ -591,6 +591,9 @@ struct Node {
   mut max_w_within : Bool
   /// what it takes over holds for is scrolling what it holds (View::claims' `scrolls`)
   mut claims_scroll : Bool
+  /// what holds the field whose choices it scrolls (View::claims' `for_in`): a finger scrolling it keeps that field's
+  /// keyboard
+  mut claims_for : NodeId?
   /// where it scrolls what it holds up and down (View::scrolls): the node holding that, whose height less its own is how
   /// far it can go (Scroll's room); -1 for one that does not
   mut scroll_held : Int
@@ -1999,6 +2002,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.hold_only = None
       n.line_gap = None
       n.claims_scroll = false
+      n.claims_for = None
       n.scroll_held = -1
       n.drawn_rev = 0
       n.said_rev = 0
@@ -2148,6 +2152,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         max_w_within: false,
         shorter: [],
         claims_scroll: false,
+        claims_for: None,
         scroll_held: -1,
         drawn_rev: 0,
         said_rev: 0,
@@ -4778,13 +4783,16 @@ pub fn Tree::scrims_up(self : Tree) -> Bool {
 /// went down (dx, dy, in the window's points), the innermost that holds what it went down on first (Tree::claimer_of);
 /// taken over, what had it is called off and the rest of it is this one's (View::on_drag: down where it is then).
 /// One that does takes none at its own down. `scrolls`: what it takes them over for is scrolling what it holds (what
-/// hosts the tree lets go of the keyboard for that, as a finger scrolling a list does: Tree::claims_scroll). `from`:
+/// hosts the tree lets go of the keyboard for that, as a finger scrolling a list does: Tree::claims_scroll). `for_in`:
+/// what holds the field whose choices it scrolls, its keyboard kept as a finger scrolls them
+/// (Tree::scroll_keeps_typing). `from`:
 /// whether it may take over a hold that went down there (in its own terms, as it was drawn then): one that went down
 /// elsewhere it is not asked of (a stack's page taking a swipe back from its edge alone); none, from anywhere.
 pub fn View::claims(
   self : View,
   f : (Double, Double) -> Bool,
   scrolls? : Bool = false,
+  for_in? : NodeId,
   from? : (Double, Double) -> Bool,
 ) -> View {
   guard self.live() is Some(n) else { return self }
@@ -4792,6 +4800,7 @@ pub fn View::claims(
   self.tree.inputs_own_said(self.at)
   n.claims_from = from
   n.claims_scroll = scrolls
+  n.claims_for = for_in
   n.claims_said = n.claims_said + 1
   self.tree.hits_bump()
   self
@@ -4900,6 +4909,39 @@ pub fn Tree::claimers_at(
 /// Whether node `id` takes over holds to scroll what it holds (View::claims' `scrolls`).
 pub fn Tree::claims_scroll(self : Tree, id : NodeId) -> Bool {
   self.alive_id(id) && self.nodes[id.at].claims_scroll
+}
+
+///|
+/// Whether a finger setting off scrolling node `id` keeps the keyboard of the focused field in `focus` (`None`: one of
+/// the old frame's own at its root): either `id` scrolls choices for what `for_in` holds and `focus` is in it
+/// (View::scrolls' `for_in`, as Ctx::capped's `for_field`), or `id` lies in a layer that leaves what is typed to a
+/// field outside it (View::leaves_typing, with no modal layer taking typing between) and `focus` is outside that layer.
+pub fn Tree::scroll_keeps_typing(self : Tree, id : NodeId, focus : NodeId?) -> Bool {
+  guard self.alive_id(id) && self.nodes[id.at].claims_scroll else { return false }
+  match (self.nodes[id.at].claims_for, focus) {
+    (Some(scope), Some(f)) if self.holds(scope, f) => return true
+    _ => ()
+  }
+  let mut q = id.at
+  while q >= 0 {
+    let ln = self.nodes[q]
+    if ln.live && (ln.leaves_typing || ln.modal) && !self.leaving_at(q) {
+      if ln.leaves_typing {
+        let lid : NodeId = { at: q, gen: ln.gen }
+        let outside = match focus {
+          Some(f) => !self.holds(lid, f)
+          None => true
+        }
+        if outside {
+          return true
+        }
+      } else {
+        break
+      }
+    }
+    q = ln.parent
+  }
+  false
 }
 
 ///|
