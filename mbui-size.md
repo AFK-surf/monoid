@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
 | [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
 | [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.73 | 125.49 |
 | [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 2.72 | 3.68 | 14.96 | 36.94 | 56.33 | 32.47 | 66.01 | 97.76 | 123.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.55 | 129.47 |
 | [dc98cef72](https://github.com/AFK-surf/monoid/commit/dc98cef7257936ed9c503aa0b2c6ac645a12bd91) fix(mbui): let shared nodes that stay or say no id | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.55 | 129.47 |
 | [52b377637](https://github.com/AFK-surf/monoid/commit/52b377637c5c80019d7a1374df115db17683dc69) test(mb): add SQL, net, delta, and packed conforma | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.54 | 125.56 |
-| [e70fdb543](https://github.com/AFK-surf/monoid/commit/e70fdb54372d340fd72e2356100f14cdda494403) test(station): add live MoonBit parity tests for C | 2.66 | 3.57 | 14.57 | 36.83 | 56.12 | 32.29 | 65.43 | 97.76 | 120.12 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
 | [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.26 |
 | [dc98cef72](https://github.com/AFK-surf/monoid/commit/dc98cef7257936ed9c503aa0b2c6ac645a12bd91) fix(mbui): let shared nodes that stay or say no id | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.13 |
 | [52b377637](https://github.com/AFK-surf/monoid/commit/52b377637c5c80019d7a1374df115db17683dc69) test(mb): add SQL, net, delta, and packed conforma | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
-| [e70fdb543](https://github.com/AFK-surf/monoid/commit/e70fdb54372d340fd72e2356100f14cdda494403) test(station): add live MoonBit parity tests for C | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
