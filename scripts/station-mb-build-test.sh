@@ -1,7 +1,7 @@
 #!/bin/bash
 # station/mb/build.sh with every tool it runs made up (moon, mbc, cc, ar, getconf: none compiles anything): the jobs it
 # gives mbc (every core alone, shared among the readers scripts/native.ts builds side by side, MBC_JOBS over both),
-# moonbit.h taken from the store by its content (so two moons of one machine, ci-1's runners, compile the same units),
+# MoonBit headers taken from the store by their names and contents (so ci-1's runners compile the same units),
 # MoonBit's runtime archived once and kept in MBC_STORE until what it is made of changes, moon's lock left by a
 # build gone taken over, and --harness building the tests' program (src/reader_harness) beside the reader, each its own.
 #   bash scripts/station-mb-build-test.sh [BUILD_SH]     (BUILD_SH: another build.sh to hold to the same, e.g. an older one)
@@ -156,14 +156,31 @@ fresh
 run header || fail "build after a header changed: $(cat "$t/log/build-header.out")"
 [ "$(compiles)" = 2 ] || fail "a runtime header changed: $(compiles) runtime files compiled, not 2"
 
-# 3. Two moons with the same moonbit.h (ci-1's runners, each its own _tool/moon-ci): the same command for mbc, so the
-#    same units, and the same runtime kept.
-cp -R "$t/moon" "$t/moon2"
-fresh; run home1 || fail "MOON_HOME one: $(cat "$t/log/build-home1.out")"
+# 3. Adding or changing a sibling of moonbit.h changes mbc's include directory. Two moons with the same headers
+#    (ci-1's runners, each its own _tool/moon-ci) share the include directory, cflags, and runtime.
+moon_include() { sed -n 's/^-I"\([^"]*\)".*/\1/p' "$t/log/cflags"; }
+inc_before=$(moon_include)
+case "$inc_before" in
+  "$MBC_STORE"/moon-include-*) ;;
+  *) fail "expected a cached MoonBit include directory in mbc's cflags: $(cat "$t/log/cflags")" ;;
+esac
+printf '%s\n' 'int moonbit_unsafe_string_substring(void);' > "$t/moon/include/extra.h"
+fresh; run added || fail "build after adding extra.h: $(cat "$t/log/build-added.out")"
+inc_added=$(moon_include)
+[ "$inc_added" != "$inc_before" ] || fail "adding extra.h reused $inc_before"
+cmp -s "$t/moon/include/extra.h" "$inc_added/extra.h" || fail "extra.h missing or out of date in $inc_added"
+
+printf '%s\n' 'int moonbit_unsafe_string_substring(int);' > "$t/moon/include/extra.h"
+fresh; run home1 || fail "build after changing extra.h: $(cat "$t/log/build-home1.out")"
+inc_changed=$(moon_include)
+[ "$inc_changed" != "$inc_added" ] || fail "changing extra.h reused $inc_added"
+cmp -s "$t/moon/include/extra.h" "$inc_changed/extra.h" || fail "extra.h missing or out of date in $inc_changed"
+
 c1=$(cat "$t/log/cflags")
+cp -R "$t/moon" "$t/moon2"
 fresh; MOON_HOME="$t/moon2" run home2 || fail "MOON_HOME two: $(cat "$t/log/build-home2.out")"
 c2=$(cat "$t/log/cflags")
-[ "$c1" = "$c2" ] || fail "two moons of one moonbit.h: mbc given other cflags ($c1 / $c2)"
+[ "$c1" = "$c2" ] || fail "two moons with identical headers: mbc given different cflags ($c1 / $c2)"
 case "$c1" in *"$t/moon"*) fail "mbc's cflags name a moon's own directory: $c1" ;; esac
 [ "$(compiles)" = 0 ] || fail "the second moon, its runtime the same: $(compiles) runtime files compiled, not 0"
 
