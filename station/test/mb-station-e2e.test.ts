@@ -667,6 +667,20 @@ test("children started, followed to their end, given input and signals; a lock o
   assert.equal((readFileSync(lock).length), 0, "never written");
 });
 
+test("stdin writes are non-blocking, drain multi-chunk input, and kill stalled children past STILLFAIL_STDIN_MOST", { skip }, async () => {
+  const r = await ok("stdinBackpressure");
+  assert.equal(r.catOk, true, "multi-chunk write to cat drains cleanly and closes with EOF");
+  assert.equal(r.rejected, true, "writing past STILLFAIL_STDIN_MOST returns false");
+  assert.ok(r.writeMs < 2_000, `writes must not block the event loop (took ${r.writeMs}ms)`);
+  assert.ok(r.totalMs < 5_000, `stalled child must be killed promptly (took ${r.totalMs}ms)`);
+  assert.equal(r.stalledCode, null);
+  assert.equal(r.stalledSignal, "SIGKILL");
+  assert.equal(r.stalledAlive, false, "no orphan process left alive");
+  assert.equal(r.quickCode, 0);
+  assert.equal(r.quickSignal, null);
+  assert.equal(r.lateWrite, false, "exited child without end_input cleans up stdin handle");
+});
+
 // ── run, under a launcher of the test's ──
 
 type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void>; stderr: () => string };
