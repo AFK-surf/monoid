@@ -1564,6 +1564,26 @@ test("an agent opens a chat on another station: made there once per key, its fir
   await far.close();
 });
 
+test("a chat opened here and moved to another station since: that station tells its opener here how its turns end", async () => {
+  // (real run, 2026-11-20: a led chat moved to pvg-office-2 and its turn's end came back "opened no chat")
+  const near = new Rig({ link: true });
+  const a = say("<@UBOT> lead a drill");
+  await near.accept(a);
+  await settle();
+  const keyA = sessionKey("cl", "C1", a.threadTs);
+  const child = "chat:c-drill";
+  near.store.insertOpened({ childStation: "", child, parentStation: "", parent: keyA, key: "drill", title: "演练", link: null, led: true });
+  near.store.db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?, 'far', NULL, NULL, NULL, 0)").run(child);
+  assert.deepEqual(noticeForPeer(near.hub, "far", { session: child, to: keyA, state: "all_done", words: "读回 drill.txt" }), { told: true });
+  assert.equal(near.store.openedBy(keyA)[0]!.state, "all_done");
+  await settle();
+  const told = [...runtimeOf(near, keyA).steers, ...runtimeOf(near, keyA).prompts.slice(1)].join("\n");
+  assert.ok(matches(told, ["演练", "ended its turn all_done", "读回 drill.txt"]), told);
+  // Only the station it went to.
+  assert.throws(() => noticeForPeer(near.hub, "elsewhere", { session: child, to: keyA, state: "all_done" }), /opened no chat/);
+  await near.close();
+});
+
 test("an agent opens a chat with a preset as a person would in the app: taken as it is, nothing given beside what it names", async () => {
   const near = new Rig({ link: true });
   near.edit((raw) => {

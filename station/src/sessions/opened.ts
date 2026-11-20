@@ -492,9 +492,10 @@ export function noticeForPeer(hub: Hub, peer: string, request: Json, ws: string 
   if (ws !== null && !hub.inWorkspace(parent, ws)) throw new Error(`${parent} opened no chat ${child} on that station`);
   const state = request?.state;
   if (!["all_done", "need_human", "failed", "stopped"].includes(state)) throw new Error("state must be all_done, need_human, failed or stopped");
-  const record = hub.store.openedBy(parent).find((o) => o.childStation === peer && o.child === child);
+  // (or one opened here and handed to that station since: its row here still names it this station's own, '')
+  const record = hub.store.openedBy(parent).find((o) => o.child === child && (o.childStation === peer || (o.childStation === "" && hub.store.handedTo(child)?.station === peer)));
   if (!record) throw new Error(`${parent} opened no chat ${child} on that station`);
-  hub.store.setOpenedState(peer, child, state);
+  hub.store.setOpenedState(record.childStation, child, state);
   const title = given(request, "title") ?? record.title ?? child;
   hub.notify(parent, notice(title, record.link, state, given(request, "words"), record.led));
   return { told: true };
