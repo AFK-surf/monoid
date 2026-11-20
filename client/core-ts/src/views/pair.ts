@@ -52,8 +52,8 @@ import { type BoxCert, fromB64url } from "../vault/crypto.ts";
 import { type Checked, checkLock } from "../vault/lock-check.ts";
 import { Priority } from "../sync/scheduler.ts";
 import { ownBuild } from "../station/oldest.ts";
-import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
-import { BOX_KEY, type HandedVault, handoverForApproved, needsBoxForHandover, pairBoxCerts, takeHanded } from "./vault.ts";
+import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, deviceVerifyCode, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
+import { BOX_KEY, type HandedVault, handoverForApproved, needsBoxForHandover, pairBoxCerts, previewHandoverVaults, takeHanded } from "./vault.ts";
 import type { Said } from "../lock-statements.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -153,7 +153,7 @@ export function credentialOf(token: string, keys: unknown, ws: string, device: s
 /// A place's `joins`: the lock there has not heard of this person (made a member since it was turned on); `moved`: its
 /// chain moved to its people's own logs, where a web page is let in by an entry of its person's own log (`movedPlace`);
 /// `admit`, there, someone's first device: who is said a member, with the log of their own its hello brought.
-type Asking = { personal?: { subs: string[]; key: string }; boxCerts?: Record<string, BoxCert>; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
+type Asking = { personal?: { subs: string[]; key: string }; boxCerts?: Record<string, BoxCert>; device: string; name: string; email: string; kind: "app" | "web"; label: string; build: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
 
 const askings = new WeakMap<Inner, Map<string, Asking>>();
 const askingsOf = (inner: Inner) => {
@@ -431,6 +431,7 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
     const boxCerts = kind === "app" && isObject(rawCerts) ? (rawCerts as Record<string, BoxCert>) : undefined;
     const asking: Asking = {
       device: peer, name: who.name, email: who.email, kind, label: (str(get(hello.value, "label")) ?? "").slice(0, 120),
+      build: (str(get(hello.value, "build")) ?? "").slice(0, 64),
       signKey: kind === "app" ? str(get(hello.value, "sign_key")) : null, code: pairCode((b) => inner.host.randomBytes(b)),
       at: Math.floor(inner.host.nowMs() / 1000), until: inner.host.nowMs() + PAIR_WAIT_MS, places, hidden: false, away: Deferred.makeUnsafe<void>(),
       ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key } } : {}),
@@ -642,9 +643,23 @@ function shown(inner: Inner): J[] {
       const joins = a.places.filter((p) => p.joins === true && p.admit === undefined).map((p) => nameOf(inner, p.ws));
       const admits = a.places.flatMap((p) => (p.admit !== undefined ? [{ ws: p.ws, text: t("core-misc.lock.pairRole", { role: roleText(p.admit.role) }) }] : []));
       const role = admits.length === 0 ? null : admits.length === 1 && a.places.length === 1 ? admits[0]!.text : admits.map((x) => t("core-misc.lock.inWorkspace", { name: nameOf(inner, x.ws), error: x.text })).join(t("core-misc.lock.listSep"));
+      const code = deviceVerifyCode(a.device);
+      const willSign = a.kind === "app" && a.signKey !== null;
+      const handoverVaults = willSign && a.boxCerts
+        ? previewHandoverVaults(inner, {
+            device: a.device,
+            subs: a.personal ? a.personal.subs : [],
+            workspaces: a.places.filter((p) => p.moved !== true && p.sub === p.account).map((p) => p.ws),
+            boxCerts: a.boxCerts,
+          })
+        : [];
       return {
         device: a.device, name: a.name, email: a.email, kind: a.kind, label: a.label, code: a.code, created_at: a.at,
         deviceText: deviceText(a) + (joins.length > 0 ? t("core-misc.lock.pairJoins", { names: joins.join(t("core-misc.lock.listSep")) }) : ""),
+        ...(code ? { deviceCode: code } : {}),
+        ...(a.build ? { build: a.build } : {}),
+        willSign,
+        ...(handoverVaults.length > 0 ? { handoverVaults } : {}),
         ...(role !== null ? { roleText: role } : {}),
         until: a.until, untilText: untilText(inner, a.until),
         // (asked into the person's own lock: the workspaces that lock lets it in to, as one approved into theirs is
@@ -729,8 +744,15 @@ function byOwnLock(inner: Inner, ws: string, sub: string): boolean {
 function mine(inner: Inner, ws: string): J | null {
   const y = tryings.get(inner);
   if (!y || !y.workspaces.includes(ws)) return null;
+  const base = inner.meshNow()?.deviceId() ?? baseOf(inner);
+  const thisDeviceCode = base ? deviceVerifyCode(base) : "";
+  const thisDeviceText = deviceText({ kind: inner.host.appKeys ? "app" : "web", label: prefs.deviceName(inner.data) ?? "" });
+  const selfFields = {
+    ...(thisDeviceCode ? { thisDeviceCode } : {}),
+    thisDeviceText,
+  };
   const credentialError = y.credentialErrors?.get(ws);
-  if (credentialError !== undefined) return { state: "failed", devices: 0, error: credentialError };
+  if (credentialError !== undefined) return { state: "failed", devices: 0, error: credentialError, ...selfFields };
   // Signed in elsewhere, not here: no trusted device that answered approves it in this one (2026-11-04: a web page
   // waiting in three workspaces, approved in two, showed this one's page as it was, its code typed, as though nothing
   // had come of it). Put on its person's own lock is signed in to every workspace of theirs (`coversWorkspace`), and
@@ -739,7 +761,7 @@ function mine(inner: Inner, ws: string): J | null {
     const where = [...new Set(y.approvedIn.flatMap((w) => (isPerson(w) ? [...inner.workspaces.owned()].filter(([x, o]) => personOf(o) === w && x !== ws && byOwnLock(inner, x, o)).map(([x]) => x) : [w])))];
     const names = where.map((w) => nameOf(inner, w)).filter((n) => n !== "");
     // (none to name: said as one that went, never with a name left out)
-    return { state: "failed", devices: 0, error: names.length === 0 ? endedText([]) : t("core-misc.lock.pairElsewhere", { names: names.join(t("core-misc.lock.listSep")) }) };
+    return { state: "failed", devices: 0, error: names.length === 0 ? endedText([]) : t("core-misc.lock.pairElsewhere", { names: names.join(t("core-misc.lock.listSep")) }), ...selfFields };
   }
   const until = Math.max(0, ...[...y.met.values()].map((m) => m.until ?? 0));
   const typing = y.state === "code" || y.state === "wrong";
@@ -754,6 +776,7 @@ function mine(inner: Inner, ws: string): J | null {
     ...(typing && until > 0 ? { until, untilText: untilText(inner, until) } : {}),
     ...(y.state === "checking" && y.asking === true ? { checkingText: t("core-misc.lock.pairConfirming") } : {}),
     ...(y.approvers !== undefined ? { approvers } : {}),
+    ...selfFields,
   };
 }
 

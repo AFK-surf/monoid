@@ -218,7 +218,7 @@ const EMPTY: Record<string, Record<string, string>> = {
   // (this device being approved face to face)
   // (`upgrade`: a handover of safe mode under way on the owner's device, which none is while it is not done by itself)
   "lock": { "me.pair.approvers": STATE, "upgrade.lines": STATE },
-  "vaults": { refused: ERROR },
+  "vaults": { refused: ERROR, "vaults[].pendingDevices": STATE },
   // (a simulator's panels and case: none is up)
   "screens": { "screens[].panels": STATE, "screens[].chrome": STATE },
   "chatLetters": {
