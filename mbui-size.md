@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [099f4a3c3](https://github.com/AFK-surf/monoid/commit/099f4a3c32f9deb3c066c3dbd063d57862f27705) test(station): add dual-station MoonBit mesh/remot | 2.65 | 3.57 | 14.57 | 36.81 | 56.12 | 32.29 | 65.43 | 97.76 | 119.01 |
 | [fe72a9910](https://github.com/AFK-surf/monoid/commit/fe72a991087292da3964cd067cb3cec154b6beec) fix(mbui): keep a field's keyboard while a finger  | 2.65 | 3.57 | 14.57 | 36.81 | 56.12 | 32.29 | 65.43 | 97.5 | 119.6 |
 | [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 2.64 | 3.55 | 14.52 | 36.73 | 55.9 | 32.22 | 65.25 | 97.5 | 126.33 |
 | [69aa1eb7c](https://github.com/AFK-surf/monoid/commit/69aa1eb7ca3ce8077bdd74b42e3d99784c0381d3) fix(ci): retry Cloudflare's account per put try, a | 2.64 | 3.55 | 14.52 | 36.73 | 55.9 | 32.22 | 65.25 | 97.5 | 126.33 |
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
-| [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [099f4a3c3](https://github.com/AFK-surf/monoid/commit/099f4a3c32f9deb3c066c3dbd063d57862f27705) test(station): add dual-station MoonBit mesh/remot | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [fe72a9910](https://github.com/AFK-surf/monoid/commit/fe72a991087292da3964cd067cb3cec154b6beec) fix(mbui): keep a field's keyboard while a finger  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ea0dccaf](https://github.com/AFK-surf/monoid/commit/3ea0dccaf788da7a9571ad76cb8b14716abb9a04) fix(mbui): align model picker dividers flush as 0. | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.08 |
 | [69aa1eb7c](https://github.com/AFK-surf/monoid/commit/69aa1eb7ca3ce8077bdd74b42e3d99784c0381d3) fix(ci): retry Cloudflare's account per put try, a | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
-| [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
