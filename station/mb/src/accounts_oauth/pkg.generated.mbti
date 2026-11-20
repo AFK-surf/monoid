@@ -69,10 +69,6 @@ pub fn grok_email_in(String) -> String? raise JsonError
 
 pub fn grok_models(String) -> Array[String]
 
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(@json.Json) -> @json.Json
-
 pub fn host_io(@host.Host) -> Io
 
 pub fn join(Array[String]) -> String
@@ -137,22 +133,27 @@ pub async fn write_console(Io, String, ConsoleLogin) -> Unit
 pub(all) suberror Failed {
   Failed(String)
 }
+pub impl Show for Failed
 
 pub(all) suberror FsError {
   FsError(String, String)
 }
+pub impl Show for FsError
 
 pub(all) suberror JsonError {
   JsonError(String)
 }
+pub impl Show for JsonError
 
 pub(all) suberror RenewRefused {
   RenewRefused(Int32?, String)
 }
+pub impl Show for RenewRefused
 
 pub(all) suberror Said {
   Said(String)
 }
+pub impl Show for Said
 
 // Types and methods
 pub(all) struct Bound {
@@ -334,6 +335,7 @@ pub fn LoginManager::attach(Self, LoginPages) -> Unit
 pub fn LoginManager::cancel(Self, String) -> Unit
 pub fn LoginManager::changes(Self, (String) -> Unit) -> () -> Unit
 pub fn LoginManager::get(Self, String) -> LoginJob?
+pub fn LoginManager::job_state_file(Self, String) -> String?
 pub fn LoginManager::new(Io, LoginDeps, Words, String, commands? : LoginCommands, console? : String) -> Self
 pub async fn LoginManager::open_page(Self, String, String) -> String
 pub fn LoginManager::set_state_file(Self, (String) -> String?) -> Unit
@@ -404,7 +406,7 @@ pub async fn MachineLogins::refresh(Self) -> Unit
 pub struct ModelCatalog {
   // private fields
 }
-pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit) -> Self
+pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit, learned? : () -> Unit) -> Self
 pub async fn ModelCatalog::refresh(Self, etag? : String) -> Unit
 pub async fn ModelCatalog::written(Self) -> Unit
 

@@ -33,18 +33,26 @@
 // station verifies to go back to one of them (station/src/updates/release.ts planBack), its archive downloaded under
 // its own name; release-prune.ts keeps the archives these name.
 // Run twice on the same directory, the second run changes nothing (a delta already made and in the feed is kept).
+// --platform P (one of STATION_PLATFORMS): the station's feeds alone, and of them P's deltas alone, so that each
+//   platform's are made on a runner of its own (pipeline.yml's deltas-station, 10 bases × 4 platforms did not fit one
+//   runner's --deadline). The feed is not amended: what this run would have put in it (its `earlier`, P's deltas) is
+//   written beside it as <feed>.deltas.<P>.json, which --merge puts in the feed.
+//   node scripts/release-deltas.ts --merge DIR   each <feed>.deltas.<P>.json in DIR put in its feed there (`earlier`,
+//                                                P's deltas), the feed as one run of every platform would have amended
+//                                                it, and deleted; a platform with none keeps what the feed said
 //   node scripts/release-deltas.ts --zst RAW OUT     RAW compressed (zstd) to OUT: the Windows raw installer's .raw.zst
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { request as httpRequest, type IncomingMessage } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { availableParallelism, tmpdir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, inflateRawSync, zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { makeApk, makeTree, rawOf, storedZip } from "./delta.ts";
+import { ensureNativeDelta, makeApk, makeTreeFromBuffer, rawOf, storedZip, type Range } from "./delta.ts";
 
 /** What apps/mbui/linux/install.sh copies into the app's folder (`stillfail`, `lib*.so*`, `core.hbc`, `VERSION`): the
  * files an installed Linux app has, which its deltas are made from. The two change together. */
@@ -159,26 +167,24 @@ const fine = (path: string) => path !== "" && !path.startsWith("/") && !path.spl
 
 type Kind = "mac" | "linux" | "win" | "android" | "station";
 
-/** The files an installed build of `kind` has, out of its package (`path`), written into `dir`. */
-export function layInstalled(kind: Kind, path: string, dir: string): void {
-  const put = (rel: string, data: Buffer) => {
-    if (!fine(rel)) return;
-    mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), data);
-  };
+/** Extract the installed files of `kind` from `path`, calling `put(rel, data)` for each valid entry in archive order. */
+function extractInstalled(kind: Exclude<Kind, "android">, path: string, put: (rel: string, data: Buffer) => void): void {
   const fromZip = (zip: Buffer, under: (name: string) => string | null) => {
     for (const f of zipFiles(zip)) {
       const rel = under(f.name);
-      if (rel !== null && !f.dir && !isLink(f.mode)) put(rel, f.data());
+      if (rel !== null && !f.dir && !isLink(f.mode) && fine(rel)) put(rel, f.data());
     }
   };
   switch (kind) {
     case "mac": {
       // (the regular files of the one .app at the top: its folder's name is the app's)
-      const zip = readFileSync(path);
-      const top = zipFiles(zip).map((f) => /^([^/]+\.app)\//.exec(f.name)?.[1]).find((n) => n);
+      const all = zipFiles(readFileSync(path));
+      const top = all.map((f) => /^([^/]+\.app)\//.exec(f.name)?.[1]).find((n) => n);
       if (!top) throw new Error("no .app in the zip");
-      fromZip(zip, (name) => (name.startsWith(`${top}/`) ? name.slice(top.length + 1) : null));
+      for (const f of all) {
+        const rel = f.name.startsWith(`${top}/`) ? f.name.slice(top.length + 1) : null;
+        if (rel !== null && !f.dir && !isLink(f.mode) && fine(rel)) put(rel, f.data());
+      }
       return;
     }
     case "linux": {
@@ -193,18 +199,19 @@ export function layInstalled(kind: Kind, path: string, dir: string): void {
         for (let hops = 0; f && (f.type === "2" || f.type === "1") && hops < 8; hops++) {
           f = f.type === "2" ? byName.get(`${top}/${f.link}`) : byName.get(f.link.replace(/^\.\//, ""));
         }
-        if (f?.type === "0") put(parts[1]!, f.data);
+        if (f?.type === "0" && fine(parts[1]!)) put(parts[1]!, f.data);
       }
       return;
     }
     case "win": {
       const raw = zstdDecompressSync(readFileSync(path));
       const { stub, files } = rawInstaller(raw);
-      for (const f of files) put(f.name, f.data);
+      for (const f of files) if (fine(f.name)) put(f.name, f.data);
       const env = files.find((f) => f.name === "setup.env")?.data.toString("utf8") ?? "";
       const name = /^APP_NAME=(.*)$/m.exec(env)?.[1]?.replace(/[\r ]+$/, "");
       if (!name) throw new Error("the installer's setup.env says no APP_NAME");
-      put(`Uninstall ${name}.exe`, stub);
+      const uninst = `Uninstall ${name}.exe`;
+      if (fine(uninst)) put(uninst, stub);
       return;
     }
     case "station": {
@@ -216,13 +223,32 @@ export function layInstalled(kind: Kind, path: string, dir: string): void {
         const rel = under(e.name.replace(/^\.\//, ""));
         // (a hard link is a file of its own once unpacked)
         const f = e.type === "1" ? byName.get(e.link.replace(/^\.\//, "")) : e;
-        if (rel !== null && f?.type === "0") put(rel, f.data);
+        if (rel !== null && f?.type === "0" && fine(rel)) put(rel, f.data);
       }
       return;
     }
-    case "android":
-      throw new Error("an APK is its own installed form");
   }
+}
+
+/** The files an installed build of `kind` has, out of its package (`path`), written into `dir`. */
+export function layInstalled(kind: Kind, path: string, dir: string): void {
+  if (kind === "android") throw new Error("an APK is its own installed form");
+  extractInstalled(kind, path, (rel, data) => {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), data);
+  });
+}
+
+/** The files an installed build of `kind` has, out of its package (`path`), assembled in memory (bytewise sorted, as
+ * `layInstalled` + `treeFiles` would produce without writing to disk). */
+export function layInstalledEntries(kind: Exclude<Kind, "android">, path: string): { files: string[]; ranges: Range[]; old: Buffer } {
+  const map = new Map<string, Buffer>();
+  extractInstalled(kind, path, (rel, data) => { map.set(rel, data); });
+  const files = [...map.keys()].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  const data = files.map((f) => map.get(f)!);
+  const ranges: Range[] = [];
+  for (let at = 0, i = 0; i < data.length; at += data[i]!.length, i++) ranges.push({ at, len: data[i]!.length });
+  return { files, ranges, old: Buffer.concat(data) };
 }
 
 /** What a delta to the package of `kind` makes: its raw form. */
@@ -236,31 +262,136 @@ function rawPackage(kind: Kind, path: string): Buffer {
   }
 }
 
-// --- one delta, in a process of its own (--pair) ---
+// --- one delta, in a process of its own (--pair) or a persistent worker (--worker) ---
 
 type Pair = { kind: Kind; base: string; made: string; out: string; classes?: string | undefined };
 
-function makePair(p: Pair) {
+const DELTA_BATCH_JAVA = `package dev.mbui;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+
+public final class DeltaBatch {
+    public static void main(String[] args) throws Exception {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        String line;
+        while ((line = in.readLine()) != null) {
+            if (line.isEmpty()) continue;
+            String[] parts = line.split("\\t", -1);
+            if (parts.length != 3) {
+                System.out.println("ERR bad request");
+                System.out.flush();
+                continue;
+            }
+            try {
+                File out = new File(parts[2]).getAbsoluteFile();
+                Delta.apply(new File(parts[0]), new File(parts[1]), out, out.getParentFile());
+                System.out.println("OK");
+            } catch (Throwable e) {
+                String msg = e.getMessage() == null ? e.toString() : e.getMessage();
+                System.out.println("ERR " + msg.replace('\\r', ' ').replace('\\n', ' '));
+            }
+            System.out.flush();
+        }
+    }
+}
+`;
+
+/** A persistent JVM running dev.mbui.DeltaBatch so a worker amortizes JVM startup and JZlib JIT across Android bases. */
+class JavaBatch {
+  private proc: ReturnType<typeof spawn> | null = null;
+  private classes: string | null = null;
+  private err = "";
+  private buf = "";
+  private pending: ((res: string | null) => void) | null = null;
+
+  private ensure(classes: string) {
+    if (this.proc && this.classes === classes) return this.proc;
+    this.kill();
+    const proc = spawn("java", ["-Xmx256m", "-cp", classes, "dev.mbui.DeltaBatch"], { stdio: ["pipe", "pipe", "pipe"] });
+    this.proc = proc;
+    this.classes = classes;
+    this.err = "";
+    this.buf = "";
+    proc.stderr!.on("data", (d: Buffer) => { this.err = (this.err + d.toString("utf8")).slice(-2000); });
+    proc.stdout!.on("data", (d: Buffer) => {
+      this.buf += d.toString("utf8");
+      const nl = this.buf.indexOf("\n");
+      if (nl >= 0) {
+        const line = this.buf.slice(0, nl).replace(/\r$/, "");
+        this.buf = this.buf.slice(nl + 1);
+        const cb = this.pending;
+        this.pending = null;
+        if (cb) cb(line === "OK" ? null : line.startsWith("ERR ") ? line.slice(4) : line || "unexpected Java batch response");
+      }
+    });
+    proc.on("close", (code, sig) => {
+      if (this.proc === proc) { this.proc = null; this.classes = null; }
+      const cb = this.pending;
+      this.pending = null;
+      if (cb) cb(this.err.trim().split("\n").at(-1) || `Java batch exited (${code ?? sig})`);
+    });
+    proc.on("error", (e) => {
+      if (this.proc === proc) { this.proc = null; this.classes = null; }
+      const cb = this.pending;
+      this.pending = null;
+      if (cb) cb(why(e));
+    });
+    return proc;
+  }
+
+  apply(classes: string, base: string, delta: string, out: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const proc = this.ensure(classes);
+      this.pending = resolve;
+      proc.stdin!.write(`${base}\t${delta}\t${out}\n`);
+    });
+  }
+
+  private kill() {
+    if (!this.proc) return;
+    try { this.proc.kill("SIGKILL"); } catch { /* already gone */ }
+    this.proc = null;
+    this.classes = null;
+  }
+
+  async close(): Promise<void> {
+    const proc = this.proc;
+    if (!proc) return;
+    this.proc = null;
+    this.classes = null;
+    await new Promise<void>((resolve) => {
+      proc.once("close", () => resolve());
+      try { proc.stdin!.end(); } catch { resolve(); }
+    });
+  }
+}
+
+async function makePair(p: Pair, javaBatch?: JavaBatch): Promise<void> {
   if (p.kind === "android") {
-    makeApk(p.base, p.made, p.out, "none");
+    makeApk(p.base, p.made, p.out, "skip");
     // the APK the app's own applier makes of it (its deflater, JZlib), byte for byte the release's, or no delta
     const check = `${p.out}.apk`;
-    const r = spawnSync("java", ["-Xmx256m", "-cp", p.classes!, "dev.mbui.Delta", "apply", p.base, p.out, check], { encoding: "utf8" });
-    const same = r.status === 0 && readFileSync(check).equals(readFileSync(p.made));
+    const noControl = !/[\t\r\n]/.test(`${p.base}${p.out}${check}`);
+    let javaErr: string | null;
+    if (javaBatch && noControl) {
+      javaErr = await javaBatch.apply(p.classes!, p.base, p.out, check);
+    } else {
+      const r = spawnSync("java", ["-Xmx256m", "-cp", p.classes!, "dev.mbui.Delta", "apply", p.base, p.out, check], { encoding: "utf8" });
+      javaErr = r.status === 0 ? null : r.stderr.trim().split("\n").at(-1) || `java exited (${r.status ?? r.signal})`;
+    }
+    const same = javaErr === null && existsSync(check) && readFileSync(check).equals(readFileSync(p.made));
     rmSync(check, { force: true });
     if (!same) {
       rmSync(p.out, { force: true });
-      throw new Error(`the Java applier does not make the APK of it (${r.status === 0 ? "other bytes" : r.stderr.trim().split("\n").at(-1)})`);
+      throw new Error(`the Java applier does not make the APK of it (${javaErr ?? "other bytes"})`);
     }
     return;
   }
-  const dir = mkdtempSync(join(tmpdir(), "release-delta-old-"));
-  try {
-    layInstalled(p.kind, p.base, dir);
-    makeTree(dir, p.made, p.out);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const { files, ranges, old } = layInstalledEntries(p.kind, p.base);
+  makeTreeFromBuffer(files, ranges, old, p.made, p.out);
 }
 
 // --- where the releases are ---
@@ -270,6 +401,7 @@ type Source = {
   fetch(name: string, to: string, signal: AbortSignal): Promise<boolean>;
   text(name: string, signal: AbortSignal): Promise<string | null>;
   has(name: string, signal: AbortSignal): Promise<boolean>;
+  close?(): void;
 };
 
 function source(where: string): Source {
@@ -285,13 +417,17 @@ function source(where: string): Source {
     };
   }
   // node:http(s) and not fetch: Node 24's undici asserts (`!this.paused`, Parser.finish) on a TLS socket's end while a
-  // body is paused, thrown in the socket's event and not on the request's promise, which ended the whole run. A
-  // connection of its own for each request (agent: false), at most 5 redirects.
+  // body is paused, thrown in the socket's event and not on the request's promise, which ended the whole run. Keep-alive
+  // agents reuse TCP/TLS connections across bases, destroyed in Run.done(); at most 5 redirects.
+  const httpAgent = new HttpAgent({ keepAlive: true, maxSockets: 16 });
+  const httpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: 16 });
   const url = (name: string) => `${where.replace(/\/+$/, "")}/${name}`;
   const request = (u: string, method: "GET" | "HEAD", signal: AbortSignal, headers: Record<string, string> = {}, hops = 0): Promise<IncomingMessage> =>
     new Promise((resolve, reject) => {
-      const get = u.startsWith("https:") ? httpsRequest : httpRequest;
-      const req = get(u, { method, signal, agent: false, headers: { "user-agent": "stillfail-release-deltas", ...headers } }, (res) => {
+      const isHttps = u.startsWith("https:");
+      const get = isHttps ? httpsRequest : httpRequest;
+      const agent = isHttps ? httpsAgent : httpAgent;
+      const req = get(u, { method, signal, agent, headers: { "user-agent": "stillfail-release-deltas", ...headers } }, (res) => {
         const status = res.statusCode ?? 0, to = res.headers.location;
         if ([301, 302, 303, 307, 308].includes(status) && to) {
           res.resume();
@@ -335,6 +471,10 @@ function source(where: string): Source {
       res?.resume();
       return res !== null;
     },
+    close() {
+      httpAgent.destroy();
+      httpsAgent.destroy();
+    },
   };
 }
 
@@ -355,6 +495,22 @@ const wordsOf = (feed: any): any => {
 type Signed = { version: string; release: string; signature: string; key: string };
 const signedOf = (feed: any): Signed | null =>
   ["version", "release", "signature", "key"].every((k) => typeof feed?.[k] === "string") ? { version: feed.version, release: feed.release, signature: feed.signature, key: feed.key } : null;
+
+/** `from` moved to `to`, its directory made. `this.work` is in the system's temp (C: on Windows' runners) and `--into`
+ * may be on another disk ($RUNNER_TEMP, D:), where a rename fails with EXDEV (preview 44334978946's windows, every
+ * delta left out): there it is copied beside `to` and renamed into place, so `to` is never seen half written. */
+export function moveInto(from: string, to: string, rename: (a: string, b: string) => void = renameSync): void {
+  mkdirSync(dirname(to), { recursive: true });
+  try {
+    rename(from, to);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "EXDEV") throw e;
+    const staged = `${to}.${process.pid}.new`;
+    copyFileSync(from, staged);
+    renameSync(staged, to);
+    rmSync(from, { force: true });
+  }
+}
 
 /** The `earlier` of the station's feed of `build`: `prev` (the feed published before it) and its own `earlier`, those
  * older than `build`, each build once, newest first, `most` of them. */
@@ -395,7 +551,7 @@ type Target = {
   platform?: string;
 };
 
-export type Options = { releases: string; bases: number; jobs: number; deadline: number | null; into: string };
+export type Options = { releases: string; bases: number; jobs: number; deadline: number | null; into: string; platform?: string | null };
 
 class Run {
   readonly warnings: string[] = [];
@@ -551,7 +707,7 @@ class Run {
     const inPlace = (p: string) => `${channel === "beta" ? "beta/" : ""}stillfail-station-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const archive = (b: number, sha: string, p: string) => `station/archive/${channel}/${b}-${sha}-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const out: Target[] = [];
-    for (const platform of STATION_PLATFORMS) {
+    for (const platform of this.o.platform ? [this.o.platform] : STATION_PLATFORMS) {
       const it = words.builds[platform];
       if (!it) continue;
       const label = `${feedName.replace(/\.json$/, "")} ${platform}`;
@@ -595,14 +751,17 @@ class Run {
     return out;
   }
 
-  /** Delta.java and JZlib compiled once (null: no javac here, and no Android delta, which is checked by them). */
+  /** Delta.java, DeltaBatch.java and JZlib compiled once (null: no javac here, and no Android delta). */
   private javaClasses(): string | null {
     if (this.classes !== undefined) return this.classes;
     const root = fileURLToPath(new URL("..", import.meta.url));
     const jz = join(root, "libs/mbui/android/jzlib/src/com/jcraft/jzlib");
     const out = join(this.work, "classes");
+    const batchSrc = join(this.work, "java-src/dev/mbui/DeltaBatch.java");
     try {
-      const srcs = [join(root, "libs/mbui/android/app/src/main/java/dev/mbui/Delta.java"), ...readdirSync(jz).filter((f) => f.endsWith(".java")).map((f) => join(jz, f))];
+      mkdirSync(dirname(batchSrc), { recursive: true });
+      writeFileSync(batchSrc, DELTA_BATCH_JAVA);
+      const srcs = [join(root, "libs/mbui/android/app/src/main/java/dev/mbui/Delta.java"), batchSrc, ...readdirSync(jz).filter((f) => f.endsWith(".java")).map((f) => join(jz, f))];
       const r = spawnSync("javac", ["-nowarn", "-encoding", "UTF-8", "-d", out, ...srcs], { encoding: "utf8" });
       if (r.status !== 0) throw new Error(r.error ? r.error.message : r.stderr.trim().split("\n").at(-1));
       return (this.classes = out);
@@ -612,7 +771,7 @@ class Run {
     }
   }
 
-  /** Every pair made, --jobs at once, the newest bases first. */
+  /** Every pair made, --jobs persistent workers overlapped with bounded base prefetching, newest bases first. */
   async make(targets: Target[]) {
     const pairs: { t: Target; b: Base; rank: number }[] = [];
     for (const t of targets) t.bases.forEach((b, rank) => pairs.push({ t, b, rank }));
@@ -630,47 +789,212 @@ class Run {
       }
       return true;
     });
-    let next = 0;
+    if (todo.length === 0) return;
+
     const children = this.children;
-    const one = async ({ t, b }: { t: Target; b: Base }) => {
-      if (this.abort.signal.aborted) return void t.outcome.set(b, "out of time");
-      await this.fetchBase(t, b);
-      if (b.missing) return;
-      if (this.abort.signal.aborted) return void t.outcome.set(b, "out of time");
-      const classes = t.kind === "android" ? this.javaClasses() : undefined;
-      if (classes === null) return void t.outcome.set(b, "not checked (no javac)");
-      const out = this.tmp("delta");
-      const job = this.tmp("pair.json");
-      writeFileSync(job, JSON.stringify({ kind: t.kind, base: b.path!, made: t.made, out, classes } satisfies Pair));
-      const said = await new Promise<string | null>((resolve) => {
-        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--pair", job], { stdio: ["ignore", "ignore", "pipe"] });
+    const abort = this.abort;
+    // (delta-fast.c compiled once for the whole run, its makers handed the binary; none: they make them in JavaScript)
+    const fast = ensureNativeDelta(this.work);
+    const env = fast ? { ...process.env, STILLFAIL_DELTA_FAST_BIN: fast } : process.env;
+    const jobs = Math.max(1, this.o.jobs);
+    const prefetchCap = jobs + 2;
+
+    // Bounded prefetch queue: at most `jobs + 2` bases in-flight or sitting on disk waiting for a CPU worker.
+    let fetchIdx = 0;
+    let unconsumed = 0;
+    let activeFetchers = 0;
+    let fetchDone = false;
+    const ready: { idx: number; t: Target; b: Base }[] = [];
+    const slotWaiters: (() => void)[] = [];
+    const itemWaiters: (() => void)[] = [];
+    const wakeSlot = () => { while (unconsumed < prefetchCap && slotWaiters.length) slotWaiters.shift()!(); };
+    const wakeItem = () => { while (ready.length && itemWaiters.length) itemWaiters.shift()!(); };
+    const wakeAll = () => {
+      while (slotWaiters.length) slotWaiters.shift()!();
+      while (itemWaiters.length) itemWaiters.shift()!();
+    };
+    abort.signal.addEventListener("abort", wakeAll, { once: true });
+
+    const prefetcher = async () => {
+      activeFetchers++;
+      try {
+        for (;;) {
+          if (fetchIdx >= todo.length) break;
+          while (unconsumed >= prefetchCap && !abort.signal.aborted) {
+            await new Promise<void>((r) => slotWaiters.push(r));
+          }
+          if (fetchIdx >= todo.length) break;
+          const idx = fetchIdx++;
+          const { t, b } = todo[idx]!;
+          if (abort.signal.aborted) {
+            t.outcome.set(b, "out of time");
+            continue;
+          }
+          unconsumed++;
+          await this.fetchBase(t, b);
+          if (b.missing) {
+            unconsumed--;
+            wakeSlot();
+            continue;
+          }
+          if (abort.signal.aborted) {
+            if (b.path) rmSync(b.path, { force: true });
+            t.outcome.set(b, "out of time");
+            unconsumed--;
+            wakeSlot();
+            continue;
+          }
+          ready.push({ idx, t, b });
+          ready.sort((x, y) => x.idx - y.idx);
+          wakeItem();
+        }
+      } finally {
+        activeFetchers--;
+        if (activeFetchers === 0) {
+          fetchDone = true;
+          wakeAll();
+        }
+      }
+    };
+
+    const take = async (): Promise<{ t: Target; b: Base } | null> => {
+      for (;;) {
+        if (ready.length > 0) {
+          const item = ready.shift()!;
+          unconsumed--;
+          wakeSlot();
+          return item;
+        }
+        if (fetchDone) return null;
+        await new Promise<void>((r) => itemWaiters.push(r));
+      }
+    };
+
+    type WorkerReply = { id: number; ok: boolean; error?: string };
+    const createWorker = () => {
+      let proc: ReturnType<typeof spawn> | null = null;
+      let err = "";
+      let buf = "";
+      let reqId = 0;
+      let pending: { id: number; resolve: (said: string | null) => void } | null = null;
+
+      const start = () => {
+        if (proc) return proc;
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--worker"], { stdio: ["pipe", "pipe", "pipe"], env });
+        proc = child;
+        err = "";
+        buf = "";
         children.add(child);
-        let err = "";
-        child.stderr!.on("data", (d: Buffer) => (err = (err + d.toString("utf8")).slice(-2000)));
+        child.stderr!.on("data", (d: Buffer) => { err = (err + d.toString("utf8")).slice(-2000); });
+        child.stdout!.on("data", (d: Buffer) => {
+          buf += d.toString("utf8");
+          for (;;) {
+            const nl = buf.indexOf("\n");
+            if (nl < 0) break;
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            const p = pending;
+            pending = null;
+            if (!p) continue;
+            try {
+              const msg = JSON.parse(line) as WorkerReply;
+              p.resolve(msg.ok ? null : msg.error || "failed");
+            } catch {
+              p.resolve(err.trim().split("\n").at(-1) || "invalid worker response");
+            }
+          }
+        });
         child.on("close", (code, sig) => {
           children.delete(child);
-          resolve(code === 0 ? null : this.abort.signal.aborted ? "out of time" : err.trim().split("\n").at(-1) || `ended (${code ?? sig})`);
+          if (proc === child) proc = null;
+          const p = pending;
+          pending = null;
+          if (p) p.resolve(abort.signal.aborted ? "out of time" : err.trim().split("\n").at(-1) || `ended (${code ?? sig})`);
         });
-      });
-      rmSync(b.path!, { force: true });
-      if (said !== null) {
-        if (said !== "out of time") this.warn(`${t.label} from ${b.build}: no delta: ${said}`);
-        return void t.outcome.set(b, said === "out of time" ? said : "failed");
-      }
-      const size = statSync(out).size;
-      if (size >= KEPT_BELOW * t.packageSize) {
-        rmSync(out, { force: true });
-        return void t.outcome.set(b, `not kept (${mb(size)}, ${KEPT_BELOW * 100}% of the package or more)`);
-      }
-      const name = t.name(b);
-      mkdirSync(dirname(join(this.o.into, name)), { recursive: true });
-      renameSync(out, join(this.o.into, name));
-      t.made_.push(t.entry(b, name, sha256(readFileSync(join(this.o.into, name))), size));
-      t.outcome.set(b, mb(size));
+        child.on("error", (e) => {
+          children.delete(child);
+          if (proc === child) proc = null;
+          const p = pending;
+          pending = null;
+          if (p) p.resolve(abort.signal.aborted ? "out of time" : why(e));
+        });
+        return child;
+      };
+
+      return {
+        run(pair: Pair): Promise<string | null> {
+          return new Promise((resolve) => {
+            const child = start();
+            const id = ++reqId;
+            pending = { id, resolve };
+            child.stdin!.write(`${JSON.stringify({ id, pair })}\n`);
+          });
+        },
+        async close(): Promise<void> {
+          const child = proc;
+          if (!child) return;
+          proc = null;
+          await new Promise<void>((resolve) => {
+            child.once("close", () => resolve());
+            if (abort.signal.aborted) {
+              try { child.kill("SIGKILL"); } catch { resolve(); }
+            } else {
+              try { child.stdin!.end(); } catch { resolve(); }
+            }
+          });
+        },
+      };
     };
-    await Promise.all(Array.from({ length: Math.max(1, this.o.jobs) }, async () => {
-      while (next < todo.length) await one(todo[next++]!);
-    }));
+
+    const workerCount = Math.min(jobs, todo.length);
+    const workers = Array.from({ length: workerCount }, () => createWorker());
+    const runWorker = async (w: ReturnType<typeof createWorker>) => {
+      try {
+        for (;;) {
+          const item = await take();
+          if (!item) break;
+          const { t, b } = item;
+          if (this.abort.signal.aborted) {
+            if (b.path) rmSync(b.path, { force: true });
+            t.outcome.set(b, "out of time");
+            continue;
+          }
+          const classes = t.kind === "android" ? this.javaClasses() : undefined;
+          if (classes === null) {
+            if (b.path) rmSync(b.path, { force: true });
+            t.outcome.set(b, "not checked (no javac)");
+            continue;
+          }
+          const out = this.tmp("delta");
+          const said = await w.run({ kind: t.kind, base: b.path!, made: t.made, out, classes });
+          rmSync(b.path!, { force: true });
+          if (said !== null) {
+            if (said !== "out of time") this.warn(`${t.label} from ${b.build}: no delta: ${said}`);
+            t.outcome.set(b, said === "out of time" ? said : "failed");
+            continue;
+          }
+          const size = statSync(out).size;
+          if (size >= KEPT_BELOW * t.packageSize) {
+            rmSync(out, { force: true });
+            t.outcome.set(b, `not kept (${mb(size)}, ${KEPT_BELOW * 100}% of the package or more)`);
+            continue;
+          }
+          const name = t.name(b);
+          moveInto(out, join(this.o.into, name));
+          t.made_.push(t.entry(b, name, sha256(readFileSync(join(this.o.into, name))), size));
+          t.outcome.set(b, mb(size));
+        }
+      } finally {
+        await w.close();
+      }
+    };
+
+    const fetcherCount = Math.min(prefetchCap, todo.length);
+    await Promise.all([
+      ...Array.from({ length: fetcherCount }, () => prefetcher()),
+      ...workers.map((w) => runWorker(w)),
+    ]);
   }
 
   /** The feed amended: its deltas the ones made now (newest first); an app's `raw` beside them (but Android's). */
@@ -682,6 +1006,16 @@ class Run {
       for (const t of targets) if (t.made_.length) deltas[t.platform!] = [...t.made_].sort((a, b) => b.from - a.from);
       const { earlier: _e, ...words } = rest;
       const earlier = this.earlier.get(feedName) ?? [];
+      if (this.o.platform) {
+        // (one platform's: beside the feed, for --merge; release-put.sh --files leaves it, a feed by its name, out)
+        const platform = this.o.platform, mine = deltas[platform] ?? [];
+        if (earlier.length === 0 && mine.length === 0) return;
+        const to = join(this.o.into, fragmentName(feedName, platform));
+        mkdirSync(dirname(to), { recursive: true });
+        writeFileSync(`${to}.new`, `${JSON.stringify({ earlier, platform, deltas: mine } satisfies Fragment)}\n`);
+        renameSync(`${to}.new`, to);
+        return;
+      }
       amended = { ...words, ...(earlier.length ? { earlier } : {}), ...(Object.keys(deltas).length ? { deltas } : {}) };
     } else {
       const t = targets[0];
@@ -707,8 +1041,62 @@ class Run {
 
   done() {
     if (this.timer) clearTimeout(this.timer);
+    for (const c of this.children) {
+      try { c.kill("SIGKILL"); } catch { /* already gone */ }
+    }
+    this.children.clear();
+    this.src.close?.();
     rmSync(this.work, { recursive: true, force: true });
   }
+}
+
+/** What a run of one platform (--platform) would have put in the station's feed, beside it. */
+type Fragment = { earlier: Signed[]; platform: string; deltas: Made[] };
+const fragmentName = (feedName: string, platform: string) => `${feedName.replace(/\.json$/, "")}.deltas.${platform}.json`;
+const FRAGMENT = /^(station(?:-beta)?)\.deltas\.([^.]+)\.json$/;
+
+/** Each <feed>.deltas.<platform>.json in `dir` put in its feed there, as one run of every platform would have amended
+ * it (its `earlier`, each platform's deltas, in STATION_PLATFORMS' order, newest first), and deleted, whatever came of
+ * it: a fragment left there would be put as a feed (release-put.sh's feed()). A platform with no fragment (its job
+ * failed) keeps what the feed said of it; nothing here fails a release. */
+export function mergeDeltas(dir: string): { lines: string[]; warnings: string[] } {
+  const lines: string[] = [], warnings: string[] = [];
+  const byFeed = new Map<string, string[]>();
+  for (const name of existsSync(dir) ? readdirSync(dir).sort() : []) {
+    const m = FRAGMENT.exec(name);
+    if (m) byFeed.set(`${m[1]}.json`, [...(byFeed.get(`${m[1]}.json`) ?? []), name]);
+  }
+  for (const [feedName, names] of byFeed) {
+    try {
+      const path = join(dir, feedName);
+      if (!existsSync(path)) throw new Error("no such feed here");
+      const feed = JSON.parse(readFileSync(path, "utf8"));
+      const { raw: _r, deltas: had, earlier: hadEarlier, ...words } = feed;
+      const deltas: Record<string, Made[]> = { ...(had && typeof had === "object" ? had : {}) };
+      let earlier: Signed[] = Array.isArray(hadEarlier) ? hadEarlier : [];
+      const said: string[] = [];
+      for (const name of names) {
+        let f: Fragment;
+        try { f = JSON.parse(readFileSync(join(dir, name), "utf8")); } catch (e) { warnings.push(`${name}: not read: ${why(e)}`); continue; }
+        if (!STATION_PLATFORMS.includes(f.platform) || !Array.isArray(f.deltas)) { warnings.push(`${name}: not a station platform's deltas`); continue; }
+        if (Array.isArray(f.earlier) && f.earlier.length) earlier = f.earlier;
+        if (f.deltas.length) deltas[f.platform] = [...f.deltas].sort((a, b) => b.from - a.from);
+        else delete deltas[f.platform];
+        said.push(`${f.platform} ${f.deltas.length}`);
+      }
+      const order = (k: string) => (STATION_PLATFORMS.includes(k) ? STATION_PLATFORMS.indexOf(k) : STATION_PLATFORMS.length);
+      const sorted = Object.fromEntries(Object.entries(deltas).sort(([a], [b]) => order(a) - order(b)));
+      const amended = { ...words, ...(earlier.length ? { earlier } : {}), ...(Object.keys(sorted).length ? { deltas: sorted } : {}) };
+      writeFileSync(`${path}.new`, `${JSON.stringify(amended)}\n`);
+      renameSync(`${path}.new`, path);
+      lines.push(`${feedName}: merged (${said.join(", ") || "nothing"})`);
+    } catch (e) {
+      warnings.push(`${feedName}: deltas not merged: ${why(e)}`);
+    } finally {
+      for (const name of names) rmSync(join(dir, name), { force: true });
+    }
+  }
+  return { lines, warnings };
 }
 
 /** The feeds of a release directory: the apps' (…/latest.json) and the station's. */
@@ -729,7 +1117,7 @@ export async function releaseDeltas(dir: string, o: Options): Promise<{ lines: s
   const run = new Run(dir, o);
   try {
     const feeds: { name: string; feed: any; targets: Target[] }[] = [];
-    for (const name of feedsIn(dir)) {
+    for (const name of feedsIn(dir).filter((n) => !o.platform || n.startsWith("station"))) {
       try {
         const feed = JSON.parse(readFileSync(join(dir, name), "utf8"));
         const targets = name.startsWith("station") ? await run.stationTargets(name, feed) : [await run.appTarget(name, feed)].filter((t): t is Target => t !== null);
@@ -753,16 +1141,41 @@ export async function releaseDeltas(dir: string, o: Options): Promise<{ lines: s
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const usage = (): never => {
-    console.error("usage: release-deltas.ts <release dir> [--releases URL|DIR] [--bases N] [--jobs N] [--deadline SECONDS] [--into DIR] | --zst RAW OUT");
+    console.error("usage: release-deltas.ts <release dir> [--releases URL|DIR] [--bases N] [--jobs N] [--deadline SECONDS] [--into DIR] [--platform P] | --merge DIR | --zst RAW OUT");
     process.exit(2);
   };
   if (args[0] === "--pair") {
-    try { makePair(JSON.parse(readFileSync(args[1] ?? usage(), "utf8"))); } catch (e) { console.error(why(e)); process.exit(1); }
+    try { await makePair(JSON.parse(readFileSync(args[1] ?? usage(), "utf8"))); } catch (e) { console.error(why(e)); process.exit(1); }
+    process.exit(0);
+  }
+  if (args[0] === "--worker") {
+    const javaBatch = new JavaBatch();
+    const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        const { id, pair } = JSON.parse(line) as { id: number; pair: Pair };
+        try {
+          await makePair(pair, javaBatch);
+          process.stdout.write(`${JSON.stringify({ id, ok: true })}\n`);
+        } catch (e) {
+          process.stdout.write(`${JSON.stringify({ id, ok: false, error: why(e) })}\n`);
+        }
+      }
+    } finally {
+      await javaBatch.close();
+    }
     process.exit(0);
   }
   if (args[0] === "--zst") {
     const [raw, out] = [args[1] ?? usage(), args[2] ?? usage()];
     writeFileSync(out, zstdCompressSync(readFileSync(raw)));
+    process.exit(0);
+  }
+  if (args[0] === "--merge") {
+    const r = mergeDeltas(args[1] ?? usage());
+    for (const w of r.warnings) console.error(`${process.env.GITHUB_ACTIONS ? "::warning::" : ""}release-deltas: ${w}`);
+    for (const line of r.lines) console.log(`deltas: ${line}`);
     process.exit(0);
   }
   const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 ? (args[i + 1] ?? usage()) : undefined; };
@@ -782,7 +1195,9 @@ if (import.meta.main) {
     jobs: number("--jobs", jobs)!,
     deadline: number("--deadline", null),
     into: flag("--into") ?? dir,
+    platform: flag("--platform") ?? null,
   };
+  if (o.platform && !STATION_PLATFORMS.includes(o.platform)) usage();
   mkdirSync(o.into, { recursive: true });
   let result: { lines: string[]; warnings: string[] } = { lines: [], warnings: [] };
   try {

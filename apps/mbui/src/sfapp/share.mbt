@@ -101,11 +101,10 @@ let open_app_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, co
 let open_app_box : @ui.Style = @ui.css("px=S5 py=S2 pb=S6")
 
 ///|
-/// Over another app (ShareActivity): what is shared taken, its sheet over that app and nothing else (the window's tree
-/// draws it: share_sheet_node); the toasts.
+/// Over another app (ShareActivity), after the old frame's old views (view_in, which took what is shared before them:
+/// share_in_frame): its sheet over that app and nothing else (the window's tree draws it: share_sheet_node); the toasts.
 fn over_view(c : @ui.Ctx, src : Source) -> Unit {
   ignore(src)
-  share_in_frame(c)
   // a browser's window of its own (the extension's): nothing under the sheet to show, so what it holds is the window's
   // (over_tree's share_window)
   if share_inline() {
@@ -570,17 +569,15 @@ fn share_parts_node(v : @view.View, src : Source, scope : String, look : ShareLo
     })
     |> ignore
     line.show(at_once=true, fn() { share_in.searching.get() || rows().length() >= searched_from }, fn(k) {
-      k.box(fn(b) {
-        let words = fn() { if share_in.searching.get() { sh("common.cancel") } else { sh("android-misc.shareIn.search") } }
-        b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
-        @sf.presses_node(b, fn() {
-          let on = !share_in.searching.untracked()
-          share_in.searching.set(on)
-          if !on {
-            share_in.query.set("")
-            share_in.find.set("")
-          }
-        })
+      let words = fn() { if share_in.searching.get() { sh("common.cancel") } else { sh("android-misc.shareIn.search") } }
+      @sf.action_box_node(k, words, fn(_) {
+        let on = !share_in.searching.untracked()
+        share_in.searching.set(on)
+        if !on {
+          share_in.query.set("")
+          share_in.find.set("")
+        }
+      }, fn(b) {
         @sf.words_node(b, words, fn() { if @sf.lit_node(b) { share_search_lit } else { share_search_words } }) |> ignore
       })
       |> ignore
@@ -981,7 +978,7 @@ fn share_row_node(
   press : () -> Unit,
 ) -> Unit {
   let enabled = fn() { share_in.opening.get() is None }
-  b.box(fn(r) {
+  @sf.action_box_node(b, title, fn(_) { if enabled() { press() } }, disabled=fn() { !enabled() }, fn(r) {
     @sf.style_node(r, fn() {
       (if look.wide { share_row_look_wide } else { share_row_look }).then(
         @ui.style(
@@ -996,10 +993,10 @@ fn share_row_node(
     .radius(Is(look.row_corner))
     .alpha(By(fn() { if enabled() || busy() { 1.0 } else { share_row_faint } }))
     |> ignore
+    // (wide, lit under the pointer; narrow, a finger's press rippling over it: what it is to the hand, the keyboard and
+    // a screen reader the button's, said after this look)
     if look.wide {
       @sf.hover_ground_node(r, on=enabled)
-      @sf.presses_node(r, press, on=enabled)
-      r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     } else {
       @sf.rippled_node(r, fn() { if enabled() { press() } }, look.row_corner, title)
     }

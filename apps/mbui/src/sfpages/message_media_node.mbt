@@ -18,8 +18,8 @@
 /// and whose message it is (`by`, for 引用); `corner` how round it is (a message's file's, or a quote's own picture's,
 /// concentric with its card: quote_picture_corner). What shows of it (its share of the box, what it is decoded for, where
 /// it is cut from) is bound to its data too: a message sent from here, made before the core said its picture's size and
-/// told it as the core's row takes it over, keeps the same nodes, its flight and how it came in. `flies_from`: made in
-/// the change in which it is sent, where it stood in the composer then (its picture flies from there:
+/// told it as the core's row takes it over, keeps the same nodes, its flight and how it came in. `flies`: made in the
+/// change in which it is sent, how its picture flies from where it stood in the composer then (sent_flies:
 /// image_reveal_node's `flies`).
 fn message_image_node(
   parent : @view.View,
@@ -31,7 +31,7 @@ fn message_image_node(
   w : () -> Double,
   h : () -> Double,
   corner? : Double = @sf.message_file_corner,
-  flies_from? : (Double, Double, Double, Double)? = None,
+  flies? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   let station = fn() { (place.station)() }
   let owner = fn() { owner_of(place.here(), a()) }
@@ -77,7 +77,14 @@ fn message_image_node(
   }
   // the menu up by a finger's hold (its serial among what is presented: lifted while it is drawn)
   let held_menu : @signals.Signal[Int?] = @signals.signal(None)
-  parent.box(fn(f) {
+  let pressed = fn() {
+    if unreached() {
+      src.images.again(station())
+    } else {
+      open_file(place.here(), a(), at=at())
+    }
+  }
+  @sf.action_box_node(parent, fn() { @sf.t("web-main.file.view", args=[("name", a().name)]) }, fn(_) { pressed() }, fn(f) {
     // (all of it kept, one value, as it comes to another: what is bound to it worked out again only then, not as the
     // message's data is said again with its size, its picture's share and its likeness the same: @sf.value_kept)
     let kept = @sf.value_kept(f, fn() { (w(), h(), share(), most(), start_crop(), likeness()) })
@@ -94,7 +101,6 @@ fn message_image_node(
       .then(@ui.style(w=Fixed(w()), h=Fixed(h())))
       .then(frame_corner_node(corner))
     })
-    f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.file.view", args=[("name", a().name)]))) })) |> ignore
     let open_menu = fn(x : Double, y : Double, finger : Bool) {
       let here = place.here()
       let a = a()
@@ -111,25 +117,20 @@ fn message_image_node(
           items.push(x)
         }
       }
-      if shown != "" && shown != "!" {
-        items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(shown) }, icon="copy")))
-      }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
-      held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      with_reveal(src, here, a, owner_of(here, a), fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        if shown != "" && shown != "!" {
+          items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(shown) }, icon="copy")))
+        }
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+        held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      })
     }
     // (right clicked, its menu where the pointer is; held by a finger, there, felt, the press the menu's)
-    @sf.menu_presses_node(
-      f,
-      fn() {
-        if unreached() {
-          src.images.again(station())
-        } else {
-          open_file(place.here(), a(), at=at())
-        }
-      },
-      open_menu,
-    )
+    @sf.menu_presses_node(f, pressed, open_menu)
     // held by a finger for its menu: lifted over the menu's scrim while that menu is drawn
     @sf.lift_node(
       f,
@@ -202,7 +203,7 @@ fn message_image_node(
               comes=place.said,
               start_crop~,
               decoded_for=fn() { dmax(most().0, most().1) },
-              flies=flies_from.map(fn(from) { (sent_part_flight, from, sent_up_late) }),
+              flies~,
               corner~,
             )
             |> ignore

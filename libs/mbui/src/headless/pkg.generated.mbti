@@ -10,7 +10,7 @@ import {
 pub fn anchor_place((Double, Double, Double, Double), (Double, Double), (Double, Double), placement? : Placement, gap? : Double, insets? : (Double, Double, Double, Double)) -> AnchorPlaced
 
 #callsite(autofill(loc))
-pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Button) -> Unit, disabled? : () -> Bool, default_on? : () -> Bool, hold? : Hold, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Button) -> Unit, disabled? : () -> Bool, default_on? : () -> Bool, hold? : Hold, focusable? : Bool, value? : () -> String, range? : () -> (Double, Double, Double)?, label_is? : String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn choice(@view.View, ChoiceKind, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Choice) -> Unit, disabled? : () -> Bool, focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -30,7 +30,7 @@ pub fn[K : Eq] cmdk_move(Array[CmdkEntry[K]], K?, CmdkMove, wraps? : Bool) -> K?
 pub fn cmdk_score(String, String, keywords? : Array[String]) -> Double
 
 #callsite(autofill(loc))
-pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, moved? : (K) -> Unit, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub let combobox_choose : String
 
@@ -55,8 +55,21 @@ pub fn disclosure(@view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@
 
 pub fn edge_scroll_speed(Double, Double, Double, zone~ : Double, max_speed~ : Double) -> Double
 
+pub fn format_chord(Array[@view.Stroke], apple~ : Bool) -> String
+
+pub fn format_stroke(@view.Stroke, apple~ : Bool) -> String
+
+pub fn hover_reveal(@view.View, @view.View, also? : Array[@view.View], always? : () -> Bool) -> HoverReveal
+
 #callsite(autofill(loc))
-pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, takes_focus? : Bool, roving? : Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn overlay(@view.View, (OverlayDismiss) -> Unit, (@view.View, Overlay) -> Unit, modal? : Bool, dismiss_on_escape? : Bool, dismiss_on_outside? : Bool, inert? : () -> Bool, anchor? : @view.View, auto_focus? : Bool, return_focus? : Bool, label? : () -> String, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn overlays_open(@view.Tree) -> Int32
+
+pub fn platform_stroke(@view.Stroke, apple~ : Bool) -> @view.Stroke
 
 #callsite(autofill(loc))
 pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@view.View, RadioGroup[K]) -> Unit, kind? : GroupKind, axis? : GroupAxis, shown? : () -> Bool, selected? : Bool, in_node? : Bool, disabled? : () -> Bool, manual? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -64,21 +77,48 @@ pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@vie
 #callsite(autofill(loc))
 pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Slider) -> Unit, thumb_room? : Double, disabled? : () -> Bool, value_text? : (Double) -> String, drag? : (@view.Drag) -> Unit, vertical? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn slider_snap(Double, Double, Double, Double) -> Double
+
 #callsite(autofill(loc))
 pub fn split(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Split) -> Unit, axis? : SplitAxis, span? : () -> Double, reset? : () -> Unit, said_value? : (Double) -> String, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn stroke_caps(@view.Stroke, apple~ : Bool) -> Array[String]
 
 #callsite(autofill(loc))
 pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn tip_claim(TipOwner) -> Unit
+
+pub fn tip_node_owner() -> TipOwner
+
+pub fn tip_owns(TipOwner) -> Bool
+
+pub fn tip_slot_reset() -> Unit
+
 #callsite(autofill(loc))
-pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, (@view.View, Toggle) -> Unit, disabled? : () -> Bool, mixed? : () -> Bool, hold? : Hold, hold_press? : (Double, Double), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[T : Eq] toaster(@view.View, () -> Array[T], (T) -> String, (T) -> (String, String), (T) -> Double, (@view.View) -> Unit, (@view.View, ToastItem[T]) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, label? : String, leave? : Double, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn toaster_due(String) -> Double?
+
+pub fn toaster_rest(String) -> Double?
+
+#callsite(autofill(loc))
+pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, (@view.View, Toggle) -> Unit, disabled? : () -> Bool, mixed? : () -> Bool, hold? : Hold, hold_press? : (Double, Double), focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn tooltip_bubble(@view.View, () -> String, (@view.View) -> Unit, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub let tooltip_close : String
 
+pub let tooltip_delay_ms : Double
+
 pub let tooltip_keys : Array[@view.Binding]
+
+pub let tooltip_lifted_ms : Double
+
+pub let tooltip_skip_ms : Double
+
+pub let typeahead_ms : Double
 
 // Errors
 
@@ -109,6 +149,7 @@ pub fn Button::focus_shown(Self) -> Bool
 pub fn Button::hovered(Self) -> Bool
 pub fn Button::press(Self) -> Unit
 pub fn Button::pressed(Self) -> Bool
+pub fn Button::state(Self, selected? : Bool, busy? : Bool) -> ControlState
 
 pub struct Choice {
   // private fields
@@ -119,6 +160,7 @@ pub fn Choice::focus_shown(Self) -> Bool
 pub fn Choice::hovered(Self) -> Bool
 pub fn Choice::press(Self) -> Unit
 pub fn Choice::pressed(Self) -> Bool
+pub fn Choice::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum ChoiceKind {
@@ -173,6 +215,18 @@ pub fn[K] Combobox::node(Self[K]) -> @view.View
 #callsite(autofill(loc))
 pub fn[K : Eq] Combobox::option(Self[K], @view.View, () -> K, () -> String, (@view.View, ComboOption) -> Unit, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+#derive(Eq, @debug.Debug)
+pub(all) struct ControlState {
+  hovered : Bool
+  pressed : Bool
+  focused : Bool
+  focus_shown : Bool
+  disabled : Bool
+  selected : Bool
+  open : Bool
+  busy : Bool
+}
+
 pub struct Disclosure {
   // private fields
 }
@@ -182,6 +236,7 @@ pub fn Disclosure::hovered(Self) -> Bool
 pub fn Disclosure::open(Self) -> Bool
 pub fn Disclosure::press(Self) -> Unit
 pub fn Disclosure::pressed(Self) -> Bool
+pub fn Disclosure::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum GroupAxis {
@@ -209,6 +264,11 @@ pub(all) struct Hold {
 }
 pub fn Hold::new(Double, Double, () -> Bool, on_hold? : () -> Unit, on_lift? : () -> Unit, on_cancel? : () -> Unit, down? : (@view.Drag) -> Unit, tapped? : (@view.Drag) -> Unit, taps? : () -> Bool) -> Self
 
+pub struct HoverReveal {
+  // private fields
+}
+pub fn HoverReveal::shown(Self) -> Bool
+
 pub struct Menu {
   // private fields
 }
@@ -233,8 +293,24 @@ pub fn MenuItem::focused(Self) -> Bool
 pub fn MenuItem::hovered(Self) -> Bool
 pub fn MenuItem::press(Self) -> Unit
 pub fn MenuItem::pressed(Self) -> Bool
+pub fn MenuItem::state(Self) -> ControlState
 
 #derive(Eq, @debug.Debug)
+pub struct Overlay {
+  // private fields
+}
+pub fn Overlay::depth(Self) -> Int32
+pub fn Overlay::dismiss(Self, OverlayDismiss) -> Unit
+pub fn Overlay::is_top(Self) -> Bool
+pub fn Overlay::node(Self) -> @view.View
+
+#derive(Eq, @debug.Debug)
+pub(all) enum OverlayDismiss {
+  Escape
+  Outside
+  Back
+}
+
 pub(all) enum Placement {
   BelowStart
   BelowCenter
@@ -256,17 +332,19 @@ pub struct RadioGroup[K] {
 }
 pub fn[K] RadioGroup::disabled(Self[K]) -> Bool
 #callsite(autofill(loc))
-pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (K?) -> Unit, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] RadioGroup::item(Self[K], @view.View, () -> K, () -> String, (@view.View, RadioItem) -> Unit, disabled? : () -> Bool, space_only? : Bool, slop? : Double, slide? : (Double, (@view.Drag?) -> K?), on_close? : () -> Unit, closes? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub struct RadioItem {
   // private fields
 }
 pub fn RadioItem::chosen(Self) -> Bool
+pub fn RadioItem::close(Self) -> Unit
 pub fn RadioItem::disabled(Self) -> Bool
 pub fn RadioItem::focus_shown(Self) -> Bool
 pub fn RadioItem::hovered(Self) -> Bool
 pub fn RadioItem::press(Self) -> Unit
 pub fn RadioItem::pressed(Self) -> Bool
+pub fn RadioItem::state(Self) -> ControlState
 
 pub struct Slider {
   // private fields
@@ -295,6 +373,12 @@ pub(all) enum SplitAxis {
   Vertical
 }
 
+pub struct StateStyle[T] {
+  // private fields
+}
+pub fn[T] StateStyle::new(base~ : T, disabled? : T, busy? : T, pressed? : T, selected_hovered? : T, selected? : T, hovered? : T, focused? : T, open? : T) -> Self[T]
+pub fn[T] StateStyle::resolve(Self[T], ControlState) -> T
+
 pub struct Table {
   // private fields
 }
@@ -311,6 +395,24 @@ pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> Str
 pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 pub fn TableRow::node(Self) -> @view.View
 
+#derive(Eq, @debug.Debug)
+pub(all) enum TipOwner {
+  Built(Int32)
+  Node(Int32)
+}
+
+pub struct ToastItem[T] {
+  // private fields
+}
+pub fn[T] ToastItem::action(Self[T], @view.View, () -> String) -> @view.View
+pub fn[T] ToastItem::close(Self[T]) -> Unit
+pub fn[T] ToastItem::dx(Self[T]) -> Double
+pub fn[T] ToastItem::holds_focus(Self[T], @view.View) -> Unit
+pub fn[T] ToastItem::live(Self[T]) -> Bool
+pub fn[T] ToastItem::moves(Self[T], (Double) -> Double) -> Unit
+pub fn[T] ToastItem::row(Self[T]) -> @view.View
+pub fn[T] ToastItem::toast(Self[T]) -> T
+
 pub struct Toggle {
   // private fields
 }
@@ -321,6 +423,7 @@ pub fn Toggle::mixed(Self) -> Bool
 pub fn Toggle::on(Self) -> Bool
 pub fn Toggle::press(Self) -> Unit
 pub fn Toggle::pressed(Self) -> Bool
+pub fn Toggle::state(Self, busy? : Bool) -> ControlState
 
 #derive(Eq, @debug.Debug)
 pub(all) enum ToggleKind {
@@ -332,6 +435,7 @@ pub(all) enum ToggleKind {
 pub struct TooltipGroup[K] {
   // private fields
 }
+pub fn[K] TooltipGroup::glided_from(Self[K]) -> (@view.NodeId, Double)?
 pub fn[K : Eq] TooltipGroup::is_open(Self[K], K) -> Bool
 pub fn[K] TooltipGroup::new(() -> K?, (K?) -> Unit, open_delay_ms? : Double, warmup_ms? : Double) -> Self[K]
 pub fn[K] TooltipGroup::shown(Self[K]) -> K?

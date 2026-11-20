@@ -57,6 +57,52 @@ pub fn Scope::running(self : Scope) -> Int {
 /// Starts `f` as a fiber of the scope (forkScoped / FiberSet.add): interrupted
 /// when the scope closes. Forked into a closed scope, it never runs.
 pub fn[X] Scope::fork(self : Scope, f : async () -> X, name? : String = "") -> Fiber[X] {
+  self.fork_with(f, name, self.st.report)
+}
+
+///|
+/// Starts `f` as a fiber of the scope whose failure is left for `join` or
+/// `wait` alone, never told to `on_defect`; interrupted when the scope closes.
+pub fn[X] Scope::fork_quiet(
+  self : Scope,
+  f : async () -> X,
+  name? : String = "",
+) -> Fiber[X] {
+  self.fork_with(f, name, false)
+}
+
+///|
+/// Starts `f` as a named background fiber of the scope: a failure is given to
+/// `on_error` (never `on_defect`), while interruption ends it as `Interrupted`
+/// without calling `on_error`.
+pub fn Scope::fork_daemon(
+  self : Scope,
+  name : String,
+  f : async () -> Unit,
+  on_error~ : (Error) -> Unit,
+) -> Fiber[Unit] {
+  self.fork_quiet(name~, async fn() {
+    f() catch {
+      // A join that saw what it waited for interrupted because this fiber was
+      // too: the fiber ends interrupted, as a cut suspension would end it.
+      e =>
+        if e is Interrupt && is_interrupted() {
+          raise_cancel()
+        } else {
+          on_error(e)
+        }
+    }
+  })
+}
+
+///|
+/// A fiber of the scope; its failure told to `on_defect` when `report`.
+fn[X] Scope::fork_with(
+  self : Scope,
+  f : async () -> X,
+  name : String,
+  report : Bool,
+) -> Fiber[X] {
   let cell : Ref[X?] = Ref(None)
   let t = self.rt.start(name, async fn() { cell.val = Some(f()) })
   if self.st.closed {
@@ -66,7 +112,7 @@ pub fn[X] Scope::fork(self : Scope, f : async () -> X, name? : String = "") -> F
     ignore(
       t.watch(() => {
         self.st.children.remove(t.id)
-        if self.st.report && t.end is Raised(e) {
+        if report && t.end is Raised(e) {
           self.rt.report(e)
         }
       }),

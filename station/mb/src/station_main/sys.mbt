@@ -49,9 +49,6 @@ fn nul_split(b : Bytes) -> Array[String] {
 }
 
 ///|
-extern "C" fn wall_ms_ffi() -> Int64 = "sfs_wall_ms"
-
-///|
 #borrow(b)
 extern "C" fn err_ffi(b : Bytes) -> Int = "sfs_err"
 
@@ -90,6 +87,12 @@ extern "C" fn arch_ffi() -> Int = "sfs_arch"
 
 ///|
 extern "C" fn machine_ffi() -> Bytes = "sfs_machine"
+
+///|
+extern "C" fn open_fds_ffi() -> Int = "sfs_open_fds"
+
+///|
+extern "C" fn self_rss_ffi() -> Double = "sfs_self_rss"
 
 ///|
 #borrow(path)
@@ -156,9 +159,17 @@ extern "C" fn read_lines_ffi(id : Int64, fd : Int) = "sfs_read_lines"
 extern "C" fn signals_ffi(id : Int64, ignore : Int) = "sfs_signals"
 
 ///|
-/// Now, in ms since 1970 (`wall`: what is shared with other programs, file times, expiries).
+/// Now, in ms since 1970 (`wall`: what is shared with other programs, file times, expiries): `@host.wall_ms`.
 pub fn wall_ms() -> Int64 {
-  wall_ms_ffi()
+  @host.wall_ms()
+}
+
+///|
+/// Now, ms since the epoch and never going back (`@host.epoch_ms`): what the parts keep or compare as a time of the
+/// world's (a token's expiry, a record's `at`, a sample's time), never the host's clock alone, which counts from the
+/// machine's start (a date in January 1970).
+fn p5_epoch_ms() -> Int64 {
+  @host.epoch_ms()
 }
 
 ///|
@@ -231,6 +242,21 @@ pub fn tmpdir() -> String {
 }
 
 ///|
+/// A program started as the station's background work (platform `backgrounded`: macOS's `taskpolicy -b`, Linux's
+/// `ionice` and `nice`), by what this machine has.
+fn backgrounded(program : String, args : Array[String]) -> (String, Array[String]) {
+  if is_windows() {
+    return (program, args)
+  }
+  let how = @ops_platform.background_found(
+    platform() == "darwin",
+    p => (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) is Ok({ file: true, .. }),
+    p => attempt(() => @drive.realpath(p)).to_option(),
+  )
+  @ops_platform.backgrounded_on(how, program, args)
+}
+
+///|
 /// The system as Node's `process.platform` names it.
 pub fn platform() -> String {
   match os_ffi() {
@@ -277,6 +303,20 @@ fn parsed(b : Bytes) -> Json? {
 /// footprint}` (the last two this process's).
 pub fn machine() -> Json {
   parsed(machine_ffi()).unwrap_or(Json::object({}))
+}
+
+///|
+/// This process's open descriptors (handles on Windows), where the system says it: one call, no child.
+pub fn open_fds() -> Int? {
+  let n = open_fds_ffi()
+  if n < 0 { None } else { Some(n) }
+}
+
+///|
+/// This process's resident memory in bytes, where the system says it: its own counters, not `machine()`'s whole read.
+pub fn self_rss_bytes() -> Double? {
+  let n = self_rss_ffi()
+  if n <= 0.0 { None } else { Some(n) }
 }
 
 ///|
@@ -352,6 +392,14 @@ pub fn FileLock::release(self : FileLock) -> Unit {
 ///|
 pub(all) suberror SysError {
   SysError(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SysError with output(self, logger) {
+  match self {
+    SysError(m) => logger.write_string(m)
+  }
 }
 
 ///|

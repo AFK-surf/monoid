@@ -68,6 +68,8 @@ priv struct Config {
   // the framework's parts that read with no reader, an app's sources (scoped-computed, raw-effect)
   scoped_ok : Array[String]
   effect_ok : Array[String]
+  // when set, per-package bar shards live under this directory relative to root (`counts_dir`) instead of inline
+  counts_dir : String
 }
 
 ///|
@@ -130,6 +132,16 @@ fn Config::new(d : @rjson.Value) -> Config {
     app_words: strs(d.get("app_words"), []),
     scoped_ok: strs(sect(d, "signals").get("scoped_ok"), []),
     effect_ok: strs(sect(d, "signals").get("effect_ok"), []),
+    counts_dir: match d.get("counts_dir") {
+      Some(Str(s)) => {
+        let mut t = s
+        while t.has_suffix("/") && t.length() > 0 {
+          t = t.exact_view(end=t.length() - 1).to_owned()
+        }
+        t
+      }
+      _ => ""
+    },
   }
 }
 
@@ -154,6 +166,24 @@ fn pkg_of(rel : String) -> String {
 fn last_name(name : String) -> String {
   let parts = name.split("::").to_array()
   parts[parts.length() - 1].to_owned()
+}
+
+///|
+/// Whether the tokens at these indices are an anonymous function with nothing in its body (`fn(_c) {  }`, its
+/// parameters' types and what it gives back said or not, a body of only `()` too)
+fn MbtFile::empty_fn(self : MbtFile, a : Array[Int]) -> Bool {
+  let toks = self.toks
+  if a.length() < 4 || toks[a[0]].text != "fn" || toks[a[1]].text != "(" || toks[a[1]].end < 0 {
+    return false
+  }
+  let last = a[a.length() - 1]
+  let open = self.open_of(last)
+  if toks[last].text != "}" || open <= toks[a[1]].end || toks[open].text != "{" {
+    return false
+  }
+  let inner = last - open - 1
+  inner == 0 ||
+  (inner == 2 && toks[open + 1].text == "(" && toks[open + 2].text == ")")
 }
 
 ///|
@@ -194,6 +224,20 @@ fn lint_mbt(
     for k, tk in toks {
       if tk.kind == "ident" && cfg.one_look.contains(tk.text) && !f.in_test(k) {
         add("page-look", k, f.line_text(k))
+      }
+    }
+  }
+  // a page saying mbui's headless components itself (`@headless.<name>`, each), not in its tests: its controls are
+  // the library's parts, which are those components with the app's look
+  if under(f.rel, cfg.pages) {
+    for k, tk in toks {
+      if tk.kind == "at" &&
+        tk.text == "@headless" &&
+        k + 2 < toks.length() &&
+        toks[k + 1].text == "." &&
+        toks[k + 2].kind == "ident" &&
+        !f.in_test(k) {
+        add("page-headless", k, f.line_text(k))
       }
     }
   }
@@ -674,10 +718,40 @@ fn lint_mbt(
       c.args[0].1.map(fn(i) { f.toks[i].text }).join("") == "Button" {
       add("button-by-hand", c.at, f.line_text(c.at))
     }
+    // a page saying a control's role itself (`@view.said(Button, …)`, a check, a tab, a menu's, a combobox's, a
+    // list's option), where the library's part over a headless component is that control: what is left of them, which
+    // only goes (a link, a region, a status, a heading, a dialog: what a page is made of, not counted)
+    if c.name == "said" &&
+      c.kind == "pkg" &&
+      c.qual == "@view" &&
+      !in_t &&
+      under(f.rel, cfg.pages) &&
+      c.args.length() > 0 &&
+      c.args[0].0 is None &&
+      page_control_roles.contains(c.args[0].1.map(fn(i) { f.toks[i].text }).join("")) {
+      add("page-control-by-hand", c.at, f.line_text(c.at))
+    }
     // an old view hosted in a node of the window's tree (`@ui.old(v, build)`): what of the old view is left inside
     // what is made once, waiting for its part as nodes, which only goes
     if c.name == "old" && c.kind == "pkg" && c.qual == "@ui" && app && !in_t {
       add("old-island", c.at, f.line_text(c.at))
+    }
+    // the theme said by an old view as its frame is built (`c.set_theme(theme)`): a tree's window says it once as it
+    // starts (run_tree's theme, set_tree_theme), what is left only goes
+    if c.name == "set_theme" && c.kind == "method" && app && !in_t {
+      add("old-set-theme", c.at, f.line_text(c.at))
+    }
+    // a tree's window run through the old view's entry with an empty frame round it (`@ui.run_legacy_ctx(t, fn(_) {  }, tree=w)`):
+    // @ui.run runs it alone, what is left only goes (one passing its frame on, `tree?`, or a frame that builds, not)
+    if (c.name == "run_legacy_ctx" || c.name == "run") &&
+      ((c.kind == "pkg" && c.qual == "@ui") || c.kind == "bare") &&
+      app &&
+      !in_t &&
+      c.args.iter().any(fn(a) { a.0 == Some("tree") }) {
+      let plain = c.args.filter(fn(a) { a.0 is None })
+      if plain.length() >= 2 && f.empty_fn(plain[1].1) {
+        add("old-empty-around", c.at, f.line_text(c.at))
+      }
     }
     // a panel presented with an old body (`@sf.panel(title, body, ...)`): what is left of them, which only goes
     if c.name == "panel" && c.kind == "pkg" && c.qual == "@sf" && app && !in_t {
@@ -2089,7 +2163,7 @@ let build_clock_methods : Array[String] = ["now_before", "now_of", "shows_motion
 /// What a frame's paint is given to read as it paints, a closure each (Ctx::look_by and the rest): what is read in it
 /// is read as the frame is painted, not built (build-clock)
 let paint_takers : Array[String] = [
-  "look_by", "moved_by", "bg_by", "ink_by", "notch_by", "cut_across_by", "glyphs_by", "cycle_look",
+  "look_by", "moved_by", "bg_by", "ink_by", "notch_by", "cut_across_by", "glyphs_by", "cycle_look", "placeholder_by",
 ]
 
 ///|
@@ -2760,3 +2834,11 @@ fn chain_drags(toks : Array[Tok], j : Int) -> Bool {
   }
   false
 }
+
+///|
+/// The roles a page may not say itself (page-control-by-hand): a control's, which a headless component is, under the
+/// library's part; a page's link, region, status, heading, alert, dialog, group or picture are not.
+let page_control_roles : Array[String] = [
+  "Button", "Checkbox", "Radio", "Switch", "Tab", "Tablist", "Menu", "MenuItem", "MenuItemCheckbox", "MenuItemRadio",
+  "Combobox", "Listbox", "Option",
+]

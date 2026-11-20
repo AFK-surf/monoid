@@ -132,3 +132,46 @@ test "input_node in a layer that gives it the focus as it opens: opened, its; cl
   }
   assert_eq((got, f.text()), ([(Some("名字"), Some("别处")), (Some("名字"), Some("别处"))], "字字"))
 }
+
+///|
+test "field_node: its label tapped (or its hint), the focus to what is typed in under it; what stands at its head's end its own" {
+  for platform in [0, 2] {
+    let f = @ui.Field::new()
+    let aside = Ref(0)
+    let t = field_node_case(platform~, fn(b) {
+      field_node(
+        b,
+        fn() { "名字" },
+        fn(body) { input_node(body, f, placeholder="填名字") |> ignore },
+        aside=fn(e) { button_node(e, fn() { "清空" }, fn() { aside.val += 1 }, tone=Ghost) |> ignore },
+        hint=fn() { "最多二十个字" },
+      )
+    })
+    let before = t.focused().map(fn(s) { s.label })
+    t.tap_text("名字")
+    let by_label = t.focused().map(fn(s) { s.label })
+    t.act(Button, Focus, label="别处")
+    t.tap_text("最多二十个字")
+    let by_hint = t.focused().map(fn(s) { s.label })
+    t.act(Button, Focus, label="别处")
+    t.tap_text("清空")
+    let by_aside = t.focused().map(fn(s) { s.label })
+    t.type_text("新名")
+    assert_eq(
+      (before, by_label, by_hint, by_aside != Some("填名字"), aside.val),
+      (None, Some("填名字"), Some("填名字"), true, 1),
+      msg="platform \{platform}",
+    )
+    assert_eq(t.audit(), [], msg="platform \{platform}")
+  }
+}
+
+///|
+test "field_node: its label tapped while what is typed in is disabled, the focus nowhere in it" {
+  let f = @ui.Field::new()
+  let t = field_node_case(fn(b) {
+    field_node(b, fn() { "名字" }, fn(body) { input_node(body, f, placeholder="填名字", disabled=fn() { true }) |> ignore })
+  })
+  t.tap_text("名字")
+  assert_eq(t.focused().map(fn(s) { s.label }), None)
+}

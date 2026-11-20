@@ -397,6 +397,23 @@ test("the people's devices by app say which machine each is and when it was last
   // (asked about in a line of its own: which machine, then which app)
   const phoneRow = v.members.find((m: { sub: string }) => m.sub === "s1").groups[1].devices[0] as Row;
   assert.equal(phoneRow.fullText, "OPPO Find N5 · still.fail Android");
+  // (设置 › 安全's rows: a phone or a computer, the app, under the name in a line with no 此设备, which its row marks;
+  // each member's devices counted)
+  type Shown = { nameText: string; machine?: string; appText?: string; noteText: string; leftText?: string };
+  const rows = (sub: string) => v.members.find((m: { sub: string }) => m.sub === sub).groups
+    .flatMap((g: { devices: Shown[] }) => g.devices)
+    .map((d: Shown) => [d.nameText, d.machine ?? null, d.appText ?? null, d.noteText, d.leftText ?? null]);
+  assert.deepEqual(rows("s1"), [
+    ["this", "computer", null, "受信任", null],
+    ["客户端", "computer", null, "超过一个月未使用", null],
+    ["OPPO Find N5", "phone", "still.fail Android", "still.fail Android · 一天内使用过 · 受信任", null],
+    ["Pixel 9", "phone", "still.fail Android", "still.fail Android · 一天内使用过 · 受信任", null],
+    ["Chrome · macOS", null, "still.fail 网页版", "still.fail 网页版 · 3 天前使用过", null],
+  ]);
+  assert.deepEqual(v.members.map((m: { sub: string; devicesText: string }) => [m.sub, m.devicesText]).sort(), [
+    ["s1", "3 台受信任设备 · 1 台设备 · 1 个网页版"],
+    ["s2", "1 台设备 · 1 个网页版"],
+  ]);
   // Taken out: the entry this device signs, as any other change.
   await r.ask("lock.removeDevice", { workspace: "ws", device: PHONE });
   assert.deepEqual(r.cloud.posted.map((p) => [p.kind, p.id]), [["device.remove", PHONE]]);

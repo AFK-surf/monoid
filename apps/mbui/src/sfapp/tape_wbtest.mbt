@@ -798,12 +798,28 @@ test "on the tape what shows of the page dragged a little and let go: the tape b
 }
 
 ///|
+/// The composer's field among `bs` (the Tester's boxes held): the old composer's editor, else the box the field made as
+/// nodes is drawn in (composer_field's, by its place).
+fn tape_composer(t : @ui.Tester, bs : Array[@ui.Laid]) -> @ui.Laid? {
+  match bs.search_by(fn(b) { b.kind == "editor" }) {
+    Some(e) => Some(bs[e])
+    None =>
+      match composer_field(t) {
+        Some((x, y, w, h)) =>
+          bs
+          .iter()
+          .find_first(fn(b) { (b.x - x).abs() < 0.5 && (b.y - y).abs() < 0.5 && (b.w - w).abs() < 0.5 && (b.h - h).abs() < 0.5 })
+        None => None
+      }
+  }
+}
+
+///|
 /// Where the composer's field is drawn from the left and the bottom of the panel it is in (as drawn: a panel's move
 /// and any of the field's own); None when it is drawn out of every panel.
 fn composer_in_panel(t : @ui.Tester) -> (Double, Double)? {
   let bs = t.boxes_held()
-  guard bs.search_by(fn(b) { b.kind == "editor" }) is Some(e) else { return None }
-  let ed = bs[e]
+  guard tape_composer(t, bs) is Some(ed) else { return None }
   for b in bs {
     if b.radius == @sf.tape_corner && b.x <= ed.x && ed.x + ed.w <= b.x + b.w {
       return Some((ed.x - b.x, b.y + b.h - ed.y))
@@ -840,8 +856,7 @@ test "on the tape the composer is drawn with its page as the page moves, never a
 /// it, the theme's): their corners.
 fn composer_corners(t : @ui.Tester) -> (Double, Double, Double)? {
   let bs = t.boxes_held()
-  guard bs.search_by(fn(b) { b.kind == "editor" }) is Some(e) else { return None }
-  let ed = bs[e]
+  guard tape_composer(t, bs) is Some(ed) else { return None }
   let mut box : @ui.Laid? = None
   for b in bs {
     if b.glass && b.x <= ed.x && ed.x + ed.w <= b.x + b.w && b.y <= ed.y && ed.y + ed.h <= b.y + b.h {
@@ -908,8 +923,7 @@ test "on the tape the page panel's corner is its own: the composer and its butto
 /// composer's box (the glass round the field): as laid out.
 fn composer_and_panel(t : @ui.Tester) -> (@ui.Laid, @ui.Laid)? {
   let bs = t.boxes_held()
-  guard bs.search_by(fn(b) { b.kind == "editor" }) is Some(e) else { return None }
-  let ed = bs[e]
+  guard tape_composer(t, bs) is Some(ed) else { return None }
   let round = fn(b : @ui.Laid) { b.x <= ed.x && ed.x + ed.w <= b.x + b.w && b.y <= ed.y && ed.y + ed.h <= b.y + b.h }
   let mut panel : @ui.Laid? = None
   let mut box : @ui.Laid? = None
@@ -1215,6 +1229,51 @@ test "on the tape a panel's ground goes behind or comes in front with the tape's
 }
 
 ///|
+test "on the tape the page going behind the sidebar is not built again at each frame of the move, its ground eased" {
+  let t = tape_chat(0, 720.0, 800.0)
+  t.set_rows_on_pixels(true)
+  let settle = fn() {
+    t.run_for(kept_rows_still_ms)
+    t.run_for(@ui.move_most_ms)
+  }
+  settle()
+  page_over(t, 720.0)
+  settle()
+  // (the composer's own hint at rest: the page's side panel opened and closed, its width as it will stay)
+  let (x, y, w, h) = t.query(Button, label="打开侧栏").unwrap().rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  settle()
+  t.back()
+  settle()
+  let behind = @sf.behind_ground()
+  let bg = @sf.theme().p.bg
+  // back to the sidebar: the page goes behind it, its ground a step darker as far as the tape's move has got, worked
+  // out as it is painted (tape_behind); its old view built as the move sets off and at no frame of it after
+  let t0 = t.time()
+  t.advance(between_frames_ms)
+  t.back()
+  let built : Array[String] = []
+  let eased : Array[Int64] = []
+  for at = 16.0; at <= 480.0; at = at + 16.0 {
+    t.frame_at(t0 + at)
+    // (what the frame built of an old view for something it read in it: an island built again)
+    let why = t.built_why()
+    if why.has_prefix("what a part or a list's row read changed") {
+      built.push("\{at}: \{why}")
+    }
+    if at == 80.0 {
+      let (mx, my) = t.find("做完了：列表、跳到最新的按钮").unwrap()
+      eased.push(grounds_at(t, mx, my).filter(fn(g) { g != 0L })[0])
+    }
+  }
+  assert_true(built.is_empty(), msg=Repr(built).to_string())
+  // (on its way, between the page's ground and the darker one; there at the end)
+  assert_true(eased[0] != bg && eased[0] != behind, msg="\{eased[0]}")
+  let (mx, my, _, _) = t.rect_of("做完了：列表、跳到最新的按钮").unwrap()
+  assert_true(grounds_at(t, mx + 4.0, my).contains(behind))
+}
+
+///|
 test "on the tape the sidebar's rows stand in a side column's line, their words as 新建对话's; a phone's 22 from the screen's edge" {
   let t = tape_chat(2, 750.0, 830.0, width="medium", height="medium")
   // the sidebar's panel 6 from the window's edge, its list from 8 into the rail, the rail as much wider as its places
@@ -1377,7 +1436,7 @@ test "on the tape a settings page chosen in their list shows beside it, pressed 
 }
 
 ///|
-test "on the tape, a chat's service opened from the chat in use: its side panel comes over with it, the chat beside" {
+test "on the tape, a chat's service opened from the chat in use: over the whole window, nothing of the tape moving, back the chat in use; with ⌘ held, its side panel comes over with it, the chat beside" {
   new_run()
   let src = fixture("chat-jobs")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -1388,8 +1447,21 @@ test "on the tape, a chat's service opened from the chat in use: its side panel 
   @sfdesk.bring_page()
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
-  // (as its link in a message opens it: a page, which the frame lays beside its chat)
+  // (as its link in a message opens it: a page, which the frame lays over the whole window as its chat's tab)
   open_page(Service("ws1/st1", "j-web"))
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="over the whole window")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="the tape where it was under it")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="back: the chat in use, nothing slid")
+  // (with ⌘ held: beside its chat, its side panel brought over)
+  t.hold_mods(@ui.mod_cmd)
+  open_page(Service("ws1/st1", "j-web"))
+  t.hold_mods(0)
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }

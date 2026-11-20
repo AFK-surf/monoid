@@ -235,3 +235,65 @@ test "rows steady: keys that stay moved among a page's list's keys by data (reor
 /// How long after one key is moved among a page's list's keys the next is, in the test of two (the first still on its
 /// way then).
 let reorder_again_ms : Double = 120.0
+
+///|
+test "rows steady: a list's way set out on a frame's own moment takes its speed up from rest over the frames from it, and a whole step in its frames is a step all the same" {
+  let p = 1000.0 / 60.0
+  let t0 = 3383.3333333333335
+  // (a way set out at rest on the first frame's moment: 1.54, then 17.13 and 13.65 a frame as its curve has it)
+  let seen = [(t0, t0, 482.65), (3400.0, 3400.0, 481.11), (3416.6666666666665, 3416.6666666666665, 463.98), (
+    3433.3333333333335, 3433.3333333333335, 450.33,
+  )]
+  let (fault, _) = rows_steady_fault(seen, p, set_out=seen[0].1, turned=-1.0)
+  assert_eq(fault, None)
+  // (one frame going 34 between 1 and 2, the way set out on the first frame's moment all the same: a step)
+  let step = [(t0, t0, 480.0), (3400.0, 3400.0, 479.0), (3416.6666666666665, 3416.6666666666665, 445.0), (
+    3433.3333333333335, 3433.3333333333335, 443.0,
+  )]
+  let (fault, _) = rows_steady_fault(step, p, set_out=step[0].1, turned=-1.0)
+  assert_true(fault is Some(_), msg="a step as the way set out")
+}
+
+///|
+test "rows steady: a short list held at its foot (less than a screen of rows, nothing to scroll), its foot grown a little more each frame from outside (a composer opening its own way): the rows going up with it followed, no step of theirs" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
+  let tall = @signals.signal(40.0, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=300.0, platform=0)
+  rows_steady_bars[rows_steady.file] = 99
+  sizes_steady_bars[sizes_steady.file] = 99
+  set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))).height(Is(Some(300.0))) |> ignore
+      col.scrolls_window(
+        @view.Scroll::list(),
+        fn() { [0, 1, 2] },
+        est=40.0,
+        from_end=true,
+        follows=fn() { true },
+        foot=fn(f) {
+          f.box(fn(c) {
+            c.width(Is(Some(300.0))).height(By(fn() { Some(tall.get()) })).shrink(Is(0.0)).words(Is("脚")) |> ignore
+          })
+          |> ignore
+        },
+        fn(b, k) { b.width(Is(Some(200.0))).height(Is(Some(40.0))).ground(Is(0x445566FFL)).words(Is("第\{k}行")) |> ignore },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(row_size_ms * 2.0)
+  t.frame()
+  t.frame()
+  // (eased out from still: fast at first, as a way's first frames are)
+  for h in [54.0, 66.0, 76.0, 84.0, 90.0, 94.0, 96.0, 96.0, 96.0] {
+    view_event(fn() { tall.set(h) })
+    t.frame_as_host() |> ignore
+  }
+  let found : Array[String] = rows_steady.found.iter().collect()
+  assert_eq(found, [], msg="rows going up with a short list's foot judged a step: \{Repr(found)}")
+}

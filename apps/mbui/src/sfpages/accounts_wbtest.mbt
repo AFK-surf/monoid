@@ -106,15 +106,17 @@ test "a shared subscription's main switch and its station details remain usable 
       assert_eq(found[0].color, switch_title[0].color, msg="\{at}: \{title} ink")
     }
     t.tap_text("所在 station")
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_true(t.find("移到哪台 station？") is Some(_), msg=at)
     @sf.presenters_reset()
     // (what was presented let go at once by hand, the test's way to close it: no signal of it, said)
     t.stepped()
     t.frame()
     t.tap_text("可用的 station")
-    t.run_for(@kit.presence_in_ms)
+    presented_in(t)
     assert_true(t.find("以后新加的 station 也能用") is Some(_), msg=at)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(On), msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     @sf.presenters_reset()
     // (what was presented let go at once by hand, the test's way to close it: no signal of it, said)
     t.stepped()
@@ -149,19 +151,19 @@ test "which stations may use a share is said with the stations it was chosen amo
   }
   // Maple left out: the list of those ticked, and every one listed as what it was chosen among
   t.tap_text("可用的 station")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.click(Switch, label="Maple")
   t.frame()
   t.click(Button, label="完成")
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(calls.length(), 1)
   assert_eq(field(Some(calls[0]), "allow"), Some(Json::array([Json::string("st1")])))
   assert_eq(among(calls[0]), ["st1", "st2"])
   // all of them ticked: no list, so the station keeps what was chosen of the others where it is in several workspaces
   t.tap_text("可用的 station")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.click(Button, label="完成")
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(calls.length(), 2)
   assert_eq(field(Some(calls[1]), "allow"), None)
   assert_eq(among(calls[1]), ["st1", "st2"])
@@ -254,6 +256,37 @@ fn unshared_claude(s : Source) -> Source {
 }
 
 ///|
+/// Replaces the stations list on a profile's sharing entry (for 1-station and 3-station share tests).
+fn with_share_stations(s : Source, stations : Array[Json]) -> Source {
+  fn shaped(v : Json) -> Json {
+    match v {
+      Object(o) => {
+        let p = o.copy()
+        for k, x in o {
+          p[k] = shaped(x)
+        }
+        if o.contains("stations") && o.contains("members") {
+          p["stations"] = Json::array(stations)
+        }
+        Json::object(p)
+      }
+      Array(a) => Json::array(a.map(shaped))
+      _ => v
+    }
+  }
+  {
+    ..s,
+    topic_read: fn(name, params) {
+      let v = s.topic(name, params).get().snapshot()
+      match v.value {
+        Some(x) => { ..v, value: Some(shaped(x)) }
+        None => v
+      }
+    },
+  }
+}
+
+///|
 test "sharing a Claude subscription asks about requests on the target stations before enabling it" {
   for case in page_cases {
     let (w, platform) = case
@@ -275,18 +308,193 @@ test "sharing a Claude subscription asks about requests on the target stations b
     presented_in(t)
     assert_true(t.find("其他 station 会借用此账号的登录凭证，在各自的机器上直接向 Claude 发送请求") is Some(_), msg=at)
     assert_true(t.find("请自行确保目标 station 能安全访问 Claude") is Some(_), msg=at)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Willow").check, Some(On), msg=at)
+    assert_true(t.get(Switch, label="Willow").disabled, msg=at)
+    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="取消")
-    t.run_for(@kit.presence_out_ms)
+    t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 0, msg="\{at}: cancellation does not share")
     assert_eq(t.get(Switch, label="分享给其他 station").check, Some(Off), msg=at)
     t.click(Switch, label="分享给其他 station")
     presented_in(t)
+    t.click(Switch, label="Maple")
+    t.run_for(@ui.move_most_ms)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="已了解，分享账号")
     t.frame()
     assert_eq(asked.length(), 1, msg="\{at}: shared after confirmation")
     assert_eq(text(Some(asked[0]), "station"), "ws1/st1", msg=at)
     assert_eq(text(Some(asked[0]), "id"), "cc", msg=at)
     assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "among"), None, msg="\{at}: initial share omits among")
+  }
+}
+
+///|
+test "sharing an account with three stations starts all off, supports partial pick and select-all toggle without among" {
+  let three : Array[Json] = [
+    { "id": "st1", "name": "Willow", "online": true },
+    { "id": "st2", "name": "Maple", "online": true },
+    { "id": "st3", "name": "Birch", "online": true },
+  ]
+  for case in page_cases {
+    let (w, platform) = case
+    let asked : Array[Json] = []
+    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, over=fn(base) {
+      let s = with_share_stations(unshared_claude(base), three)
+      { ..s, call: fn(name, params, done) {
+        if name == "profile.share" {
+          asked.push(params)
+          done(Ok(obj([])))
+        } else {
+          (s.call)(name, params, done)
+        }
+      } }
+    })
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "分享给其他 station")
+    t.click(Switch, label="分享给其他 station")
+    presented_in(t)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
+    assert_true(t.find("以后新加的 station 不会自动加进来") is Some(_), msg=at)
+    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    // Partial pick: only Maple
+    t.click(Switch, label="Maple")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Button, label="已了解，分享账号")
+    t.run_for(@motion.presence_out_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "allow"), Some(Json::array([Json::string("st1"), Json::string("st2")])), msg=at)
+    assert_eq(field(Some(asked[0]), "among"), None, msg="\{at}: initial partial share omits among")
+    // Re-open and test select-all toggle on -> off -> on
+    t.click(Switch, label="分享给其他 station")
+    presented_in(t)
+    t.click(Switch, label="全部 station")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(On), msg=at)
+    assert_true(t.find("以后新加的 station 也能用") is Some(_), msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Switch, label="全部 station")
+    t.frame()
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
+    assert_true(t.find("以后新加的 station 不会自动加进来") is Some(_), msg=at)
+    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    t.click(Switch, label="全部 station")
+    t.frame()
+    t.click(Button, label="已了解，分享账号")
+    t.run_for(@motion.presence_out_ms)
+    assert_eq(asked.length(), 2, msg=at)
+    assert_eq(field(Some(asked[1]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[1]), "allow"), None, msg="\{at}: select-all omits allow")
+    assert_eq(field(Some(asked[1]), "among"), None, msg="\{at}: initial select-all omits among")
+  }
+}
+
+///|
+test "sharing an account with only its own station requires turning on all stations" {
+  let one : Array[Json] = [{ "id": "st1", "name": "Willow", "online": true }]
+  for case in page_cases {
+    let (w, platform) = case
+    let asked : Array[Json] = []
+    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, over=fn(base) {
+      let s = with_share_stations(unshared_claude(base), one)
+      { ..s, call: fn(name, params, done) {
+        if name == "profile.share" {
+          asked.push(params)
+          done(Ok(obj([])))
+        } else {
+          (s.call)(name, params, done)
+        }
+      } }
+    })
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "分享给其他 station")
+    t.click(Switch, label="分享给其他 station")
+    presented_in(t)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Switch, label="全部 station")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(On), msg=at)
+    assert_true(t.find("以后新加的 station 也能用") is Some(_), msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Button, label="已了解，分享账号")
+    t.run_for(@motion.presence_out_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "allow"), None, msg=at)
+    assert_eq(field(Some(asked[0]), "among"), None, msg=at)
+  }
+}
+
+///|
+test "editing allowed stations supports toggling all stations off and picking a subset with among" {
+  let three : Array[Json] = [
+    { "id": "st1", "name": "Willow", "online": true },
+    { "id": "st2", "name": "Maple", "online": true },
+    { "id": "st3", "name": "Birch", "online": true },
+  ]
+  for case in page_cases {
+    let (w, platform) = case
+    let asked : Array[Json] = []
+    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, h=2400.0, over=fn(base) {
+      let s = with_share_stations(base, three)
+      { ..s, call: fn(name, params, done) {
+        if name == "profile.share" {
+          asked.push(params)
+          done(Ok(obj([])))
+        } else {
+          (s.call)(name, params, done)
+        }
+      } }
+    })
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "可用的 station")
+    t.tap_text("可用的 station")
+    presented_in(t)
+    assert_eq(t.get(Switch, label="全部 station").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(On), msg=at)
+    assert_false(t.get(Button, label="完成").disabled, msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Switch, label="全部 station")
+    t.frame()
+    assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
+    assert_false(t.get(Button, label="完成").disabled, msg="\{at}: edit mode keeps Done enabled")
+    t.click(Switch, label="Maple")
+    t.frame()
+    assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
+    t.click(Button, label="完成")
+    t.run_for(@motion.presence_out_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(field(Some(asked[0]), "allow"), Some(Json::array([Json::string("st1"), Json::string("st2")])), msg=at)
+    assert_eq(
+      field(Some(asked[0]), "among"),
+      Some(Json::array([Json::string("st1"), Json::string("st2"), Json::string("st3")])),
+      msg=at,
+    )
   }
 }
 
@@ -314,17 +522,26 @@ test "sharing other accounts explains how they are used on target stations" {
       assert_true(t.find(body) is Some(_), msg=at)
       assert_true(t.find("在各自的机器上发送请求") is Some(_), msg=at)
       assert_true(t.find("安全访问 Claude") is None, msg=at)
+      assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+      assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+      assert_true(t.get(Button, label="分享账号").disabled, msg=at)
+      assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
       t.click(Button, label="取消")
-      t.run_for(@kit.presence_out_ms)
+      t.run_for(@motion.presence_out_ms)
       assert_eq(asked.length(), 0, msg=at)
       assert_eq(t.get(Switch, label="分享给其他 station").check, Some(Off), msg=at)
       t.click(Switch, label="分享给其他 station")
       presented_in(t)
+      t.click(Switch, label="Maple")
+      t.run_for(@ui.move_most_ms)
+      assert_false(t.get(Button, label="分享账号").disabled, msg=at)
+      assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
       t.click(Button, label="分享账号")
       t.frame()
       assert_eq(asked.length(), 1, msg=at)
       assert_eq(text(Some(asked[0]), "id"), profile, msg=at)
       assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+      assert_eq(field(Some(asked[0]), "among"), None, msg=at)
     }
   }
 }
@@ -400,7 +617,7 @@ test "a profile's quota, a narrow page with a mouse: its resets left at the row'
   assert_true(t.find("重置额度？") is Some(_))
   assert_true(t.find("将使用「ChatGPT 团队」的 1 次额度重置，剩余 2 次") is Some(_))
   // (with a mouse: the web's confirm, come in)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("使用一次重置")
   t.frame()
   t.frame()
@@ -435,7 +652,7 @@ test "a subscription's resets of two kinds, a row each: what each gives back sai
   t.frame()
   assert_true(@sf.presenting(), msg="asked first")
   assert_true(t.find("将使用「Claude 主账号」的 1 次 Fable 重置：把本周 Fable 用掉的额度还回每周额度") is Some(_))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.click(Button, label="使用一次重置")
   // (its row closing its room on its way)
   t.run_for(@ui.move_most_ms)
@@ -451,7 +668,7 @@ test "a profile's models, a narrow page with a mouse: how many in a row; all of 
   assert_true(t.find("勾选常用模型，或按名称添加自定义模型") is Some(_), msg="what clicking it does")
   assert_true(t.find("GPT-6-MINI") is None, msg="not laid out on the page")
   t.tap_text("可用模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(@sf.presenting(), msg="a panel")
   assert_true(t.find("GPT-6-MINI") is Some(_), msg="every one it runs")
   assert_true(t.query(Checkbox, label="喜欢 GPT-6-MINI") is Some(_), msg="its box")
@@ -478,13 +695,13 @@ test "a profile model's id appears beside the option the pointer is over" {
   let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
   scrolled_to(t, 1280.0, "可用模型")
   t.tap_text("可用模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   for (name, id) in [("Opus 5.5", "claude-opus-5-5"), ("Sonnet 5", "claude-sonnet-5")] {
     // (its name on its box's row in the panel, not where the page under it says it)
     let (bx, by, _, bh) = t.get(Checkbox, label="喜欢 \{name}").rect
     let (_, x, y, w, h, _) = t.words().filter(fn(e) { e.0 == name && e.1 > bx && (e.2 + e.4 / 2.0 - (by + bh / 2.0)).abs() < 2.0 })[0]
     t.move_to(x + w / 2.0, y + h / 2.0)
-    t.run_for(@sf.tip_delay_ms + @kit.presence_in_ms)
+    t.run_for(@sf.tip_delay_ms + @motion.presence_in_ms)
     let tip = t.get(Tooltip, label=id).rect
     let gap = tip.0 - (x + w)
     assert_true(gap >= 0.0 && gap <= 24.0, msg="\{name}: tip is directly to its right, gap \{gap}")
@@ -650,7 +867,7 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   assert_eq(calls.length(), 0)
   scrolled_to(t, 1280.0, "可用模型")
   t.tap_text("可用模型")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(calls.map(fn(x) { x.0 }), ["profile.fusion"])
   assert_true(t.find("Fusion 组合") is Some(_))
   // Already-ticked Fusion pair from another lead (`gpt-6-sol`) is shown in `Fusion 组合`, not duplicated in top series.

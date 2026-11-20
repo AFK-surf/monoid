@@ -341,7 +341,7 @@ let runtime_kinds : Array[String] = [
 /// that is no string throws there (`text.trim`).
 fn clean_endpoint(v : @jsjson.JValue) -> String? raise {
   guard v is Str(s) else { raise Failure("text.trim is not a function") }
-  let mut trimmed = @jscase.trim(@jsjson.raw_text(s))
+  let mut trimmed = @jscase.trim(s)
   while trimmed.has_suffix("/") {
     trimmed = trimmed.view(end_offset=trimmed.length() - 1).to_owned()
   }
@@ -377,7 +377,7 @@ fn endpoints_of(
     return Some((source.chat, source.responses, source.anthropic))
   }
   guard endpoint is Some(e) &&
-    clean_endpoint(Str(@jsjson.units(e))) is Some(base) else {
+    clean_endpoint(Str(e)) is Some(base) else {
     return None
   }
   let chosen = match protocol {
@@ -411,7 +411,7 @@ fn first_runtime(p : @jsjson.JValue) -> String raise {
   }
   let text = (v : @jsjson.JValue?) => {
     match v {
-      Some(Str(s)) => Some(@jsjson.raw_text(s))
+      Some(Str(s)) => Some(s)
       _ => None
     }
   }
@@ -485,19 +485,19 @@ fn config_profiles(
     Some(t) => @jsjson.parse(t) catch { _ => return Json::object(Map([])) }
     None => return Json::object(Map([]))
   }
-  let out : Array[(Array[Int32], @jsjson.JValue)] = []
+  let out : Array[(String, @jsjson.JValue)] = []
   if jget(Some(raw), "profiles") is Some(Arr(profiles)) {
     for p in profiles {
       guard jget(Some(p), "id") is Some(Str(id)) else { continue }
       let runtime = first_runtime(p)
       let name = match jget(Some(p), "name") {
-        Some(Str(n)) if @jscase.trim(@jsjson.raw_text(n)) != "" =>
-          @jscase.trim(@jsjson.raw_text(n))
-        _ => @jsjson.raw_text(id)
+        Some(Str(n)) if @jscase.trim(n) != "" =>
+          @jscase.trim(n)
+        _ => id
       }
       let value : @jsjson.JValue = Obj([
-        (@jsjson.units("name"), Str(@jsjson.units(name))),
-        (@jsjson.units("runtime"), Str(@jsjson.units(runtime))),
+        ("name", Str(name)),
+        ("runtime", Str(runtime)),
       ])
       match out.search_by(e => e.0 == id) {
         Some(i) => out[i] = (id, value)
@@ -520,28 +520,26 @@ fn config_profiles(
       }
       guard k is Obj(_) else { continue }
       guard jget(Some(k), "name") is Some(Str(n)) &&
-        @jscase.trim(@jsjson.raw_text(n)) != "" else {
+        @jscase.trim(n) != "" else {
         continue
       }
       let runtime = match jget(Some(k), "runtime") {
-        Some(Str(r)) if @jsjson.raw_text(r) != "" => @jsjson.raw_text(r)
+        Some(Str(r)) if r != "" => r
         _ => "claude"
       }
       out.push(
         (
           id,
           Obj([
-            (@jsjson.units("name"), Str(@jsjson.units(@jscase.trim(@jsjson.raw_text(n))))),
-            (@jsjson.units("runtime"), Str(@jsjson.units(runtime))),
+            ("name", Str(@jscase.trim(n))),
+            ("runtime", Str(runtime)),
           ]),
         ),
       )
     }
   }
   // As JSON.stringify orders an object's keys (an index first).
-  @json.parse(@jsjson.stringify(Obj(out))) catch {
-    _ => Json::object(Map([]))
-  }
+  @jsjson.JValue::to_json(Obj(out))
 }
 
 // ── the page's year (usage.ts `usageHistory`) ──
@@ -928,7 +926,7 @@ fn usage_answer(
       guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) else {
         continue
       }
-      let own = field(t, "surface") == Json::string("ember")
+      let own = field(t, "surface") == Json::string("chat")
       let first = if !own &&
         field(t, "title") is Null &&
         field(t, "auto_title") is Null {
@@ -944,7 +942,7 @@ fn usage_answer(
         let connect = match
           one(
             db,
-            "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'ember' ORDER BY joined_at, rowid LIMIT 1",
+            "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'chat' ORDER BY joined_at, rowid LIMIT 1",
             [id],
           ) {
           Some(r) =>

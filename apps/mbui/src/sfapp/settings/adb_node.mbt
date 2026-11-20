@@ -22,6 +22,7 @@ pub fn adb_node(
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
+  sub? : () -> String = fn() { "" },
 ) -> Unit {
   let view = fn() { (core.topic)("adbShare", Map([])).get().value }
   let phone = adb_phone_node(v)
@@ -37,20 +38,30 @@ pub fn adb_node(
     // about, its mark beside its title and said with it; narrow, the mark at the end of its bar's title line)
     about=fn() { tr("android-misc.adb.chats.about") },
     actions=fn(a) { @sf.narrow_about_node(a, fn() { tr("android-misc.adb.chats.about") }, tips.unwrap_or(@sf.window_tips())) },
-    fn() { adb_keys(view(), phone()) },
-    fn(b, k) { adb_block(b, core, view, phone, focus, k) },
+    fn() { adb_keys(view(), phone(), sub()) },
+    fn(b, k) { adb_block(b, core, view, phone, focus, sub, k) },
   )
 }
 
 ///|
-/// The person's own lock this device is off and has a step on (to be approved, or set up again elsewhere), where it is
-/// on none as a member.
-fn adb_lock_step(view : Json?) -> Json? {
+/// The person's own lock this device is off and has a step on (to be approved, or set up again elsewhere): the lock of
+/// the account whose workspace is in view (`sub`) where the core lists it, by its standing alone (another account signed
+/// in here being a member lends this one nothing); else, where it is on none as a member, the first with a step.
+pub fn personal_lock_step(view : Json?, sub : String) -> Json? {
   let locks = items(view, "personal")
+  let needs = fn(l : Json) {
+    text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced"
+  }
+  if sub != "" {
+    match locks.iter().find_first(fn(l) { text(Some(l), "sub") == sub }) {
+      Some(own) => return if needs(own) { Some(own) } else { None }
+      None => ()
+    }
+  }
   if locks.iter().any(fn(l) { text(Some(l), "standing") == "member" }) {
     return None
   }
-  locks.iter().find_first(fn(l) { text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced" })
+  locks.iter().find_first(needs)
 }
 
 ///|
@@ -80,8 +91,8 @@ fn adb_phone_step(view : Json?, phone : Json?, focus : String) -> (AdbStep, Stri
 /// 共享调试's blocks by their keys: the step alone off the person's own lock ("lock"); else the phone's switch where it
 /// lends ("switch"), its step ("phone-step"), an Android before 11 ("unsupported"), the grants from before signatures
 /// ("confirm"), the chats it is lent to now ("live-heading", "live").
-fn adb_keys(view : Json?, phone : Json?) -> Array[String] {
-  if adb_lock_step(view) is Some(_) {
+fn adb_keys(view : Json?, phone : Json?, sub : String) -> Array[String] {
+  if personal_lock_step(view, sub) is Some(_) {
     return ["lock"]
   }
   let out : Array[String] = []
@@ -104,9 +115,17 @@ fn adb_keys(view : Json?, phone : Json?) -> Array[String] {
 
 ///|
 /// 共享调试's block `k` (adb_keys') in `b`, as the core's `adbShare` (`view`) and the phone's host (`phone`) say it now.
-fn adb_block(b : @view.View, core : Core, view : () -> Json?, phone : () -> Json?, focus : String, k : String) -> Unit {
+fn adb_block(
+  b : @view.View,
+  core : Core,
+  view : () -> Json?,
+  phone : () -> Json?,
+  focus : String,
+  sub : () -> String,
+  k : String,
+) -> Unit {
   match k {
-    "lock" => adb_lock_node(b, core, fn() { adb_lock_step(view()) })
+    "lock" => personal_lock_node(b, core, fn() { personal_lock_step(view(), sub()) })
     "switch" =>
       @sf.group_node(b, fn(g) {
         // (the library's switch row, as every setting's; 2026-11-06 左子健: 共享调试的标题为啥没有加粗)
@@ -148,7 +167,22 @@ fn adb_block(b : @view.View, core : Core, view : () -> Json?, phone : () -> Json
       let step = fn() { now().map(fn(s) { s.0 }) }
       let note = fn() { now().map(fn(s) { s.2 }).unwrap_or("") }
       let acts = fn() { step().map(fn(s) { s.act != "" }).unwrap_or(false) }
-      b.show(fn() { adb_phone_step(view(), phone(), focus) is Some(_) }, fn(b) {
+      // (live phone wireless-debugging updates open or close this step smoothly in place, scoped to this block)
+      b.transitions_only() |> ignore
+      let step_open = fn() { adb_phone_step(view(), phone(), focus) is Some(_) }
+      let shown_step = @signals.signal(@signals.untracked(step_open), same=fn(a, b) { a == b })
+      b.reacts(
+        step_open,
+        fn(on) {
+          if !@view.answering_now() {
+            @view.transition(within=b, fn() { shown_step.set(on) })
+          } else {
+            shown_step.set(on)
+          }
+        },
+        at_start=false,
+      )
+      b.show(fn() { shown_step.get() }, fn(b) {
         @sf.page_card_node(b, footed=true, fn(k) {
           // (its title's line and what is said under it one block, line under line, as card_lines_node's)
           k.box(fn(t) {
@@ -295,7 +329,13 @@ fn adb_live_node(b : @view.View, core : Core, view : () -> Json?, phone : () -> 
 /// of its own, as a device waiting for a workspace's lock has (@sf.waiting_page_node, the shield), with the one step
 /// this device takes there: be approved (发送批准请求: a code a trusted device of theirs shows, typed in here), or say
 /// whether their trusted devices set up again elsewhere are theirs.
-fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
+pub fn personal_lock_node(
+  b : @view.View,
+  core : Core,
+  p : () -> Json?,
+  outside_note? : () -> String = fn() { tr("android-misc.personal.outside.note") },
+  restart_note? : () -> String = fn() { tr("android-misc.personal.restart.note") },
+) -> Unit {
   let said = fn() { obj([("sub", str(text(p(), "sub")))]) }
   let doing = fn() { is_doing(core, ["adb.personalOpen", "adb.personalJoin", "adb.personalCode", "adb.personalForget", "adb.personalRestart"], []) }
   let primary = fn(at : @view.View, words : String, call : String) {
@@ -305,7 +345,7 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
     match standing {
       "outside" => {
         let state = fn() { text(field(p(), "pair"), "state") }
-        @sf.waiting_page_node(w, "shield-check", fn() { tr("android-misc.adb.lock.join") }, fn() { tr("android-misc.personal.outside.note") }, fn(col) {
+        @sf.waiting_page_node(w, "shield-check", fn() { tr("android-misc.adb.lock.join") }, outside_note, fn(col) {
           col.show(fn() { state() != "" && state() != "done" }, fn(j) { personal_join_node(j, core, p) })
           col.show(fn() { state() == "" || state() == "none" || state() == "failed" || state() == "done" }, fn(s) {
             primary(s, tr("web-pages.security.request"), "adb.personalJoin")
@@ -316,7 +356,9 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
               act(core, tr("android-misc.personal.restart"), "adb.personalRestart", @signals.untracked(said))
             }, tone=Ghost, disabled=doing)
             |> ignore
-            @sf.words_node(s, fn() { tr("android-misc.personal.restart.note") }, fn() { personal_note_centred }) |> ignore
+            @sf.words_node(s, restart_note, fn() { personal_note_centred })
+            .words_centered(Is(true))
+            |> ignore
           })
         })
         |> ignore
@@ -339,7 +381,9 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
 fn personal_join_node(j : @view.View, core : Core, p : () -> Json?) -> Unit {
   let pair = fn() { field(p(), "pair") }
   let state = fn() { text(pair(), "state") }
-  let note = fn(at : @view.View, words : () -> String) { @sf.words_node(at, words, fn() { personal_note_centred }) |> ignore }
+  let note = fn(at : @view.View, words : () -> String) {
+    @sf.words_node(at, words, fn() { personal_note_centred }).words_centered(Is(true)) |> ignore
+  }
   // (what is typed, emptied for the next try where it is refused)
   let typed = @ui.Field::new()
   j.pick(fn() { if state() is ("code" | "wrong" | "checking") { "code" } else { state() } }, fn(s, at) {
@@ -371,7 +415,45 @@ fn personal_join_node(j : @view.View, core : Core, p : () -> Json?) -> Unit {
           },
         )
         |> ignore
-        s.show(fn() { text(pair(), "untilText") != "" }, fn(u) { note(u, fn() { text(pair(), "untilText") }) })
+        // (the code typed being checked: a turning ring on the first line of what it waits for, as the waiting page
+        // says it, where to look once the device showing the code asks its person there; how long the code holds
+        // otherwise)
+        s.show(fn() { state() == "checking" }, fn(c) {
+          @sf.style_node(c, fn() { personal_checking })
+          c.box(fn(row) {
+            @sf.style_node(row, fn() { personal_checking_row })
+            row.box(fn(g) {
+              g
+              .width(Is(Some(personal_spin)))
+              .height(By(fn() { Some(@sf.node_sp(g, @ui.tree_theme().text_size(Meta).1)) }))
+              .shrink(Is(0.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              |> ignore
+              @sf.spinner_node(g, size=personal_spin) |> ignore
+            })
+            |> ignore
+            row.box(fn(w) {
+              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(
+                w,
+                fn() {
+                  match text(pair(), "checkingText") {
+                    "" => tr("web-pages.security.pairChecking")
+                    words => words
+                  }
+                },
+                fn() { personal_checking_words },
+              )
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        s.show(fn() { state() != "checking" && text(pair(), "untilText") != "" }, fn(u) {
+          note(u, fn() { text(pair(), "untilText") })
+        })
       }
       "none" => note(s, fn() { tr("android-misc.personal.none.found") })
       "failed" => note(s, fn() { text(pair(), "error") })
@@ -388,6 +470,23 @@ let adb_step_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 ///|
 /// The code's words, its boxes and how long it holds, 12 apart.
 let personal_join_gap : Double = 12.0
+
+///|
+/// The code being checked (personal_join_node): its line in the middle under the boxes, as wide as its words, the
+/// ring 8 before them on their first line.
+// kept across runs: a value (no field of it changes)
+let personal_checking : @ui.Style = @ui.css("w=Full align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let personal_checking_row : @ui.Style = @ui.css("row gap=S2 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let personal_checking_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+
+///|
+let personal_spin : Double = 12.0
 
 ///|
 /// The step's title (a card's line's: 13 on 24, 600) and what is said under it (12 on 24, muted), as card_lines_node's.

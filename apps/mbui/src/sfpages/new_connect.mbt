@@ -103,7 +103,7 @@ pub fn new_connect_dialog(src : Source, core : Core, here : Here, station : Stri
     live=fn() { nc_words_at(f, view, 0) },
     fn(v, _) {
       // (the dialog's steps brought to the wizard's as the core says its step)
-      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, close, back) })
+      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, v, close, back) })
       v.pick(fn() { first.get() }, fn(p, step) {
         if step == "" {
           @sf.wait_line_node(p, fn() { @sf.t("common.reading") }) |> ignore
@@ -179,6 +179,7 @@ fn nc_follow(
   view : () -> Json?,
   step : String,
   first : @signals.Signal[String],
+  within : @view.View,
   close : () -> Unit,
   back : () -> Unit,
 ) -> Unit {
@@ -191,7 +192,7 @@ fn nc_follow(
     ()
   } else if n == 0 {
     f.pages.push(step)
-    first.set(step)
+    @view.transition(within=within.transitions_root(), fn() { first.set(step) })
   } else if f.pages[n - 1] == step {
     ()
   } else if n >= 2 && f.pages[n - 2] == step {
@@ -531,7 +532,7 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
           m.box(fn(l) {
             @sf.style_node(l, fn() { nc_manual_line })
             @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
-            cd_text_button_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) })
+            @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
           })
           |> ignore
         })
@@ -565,7 +566,7 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
         |> ignore
       })
       |> ignore
-      cd_text_button_node(r, fn() { @sf.t("web-pages.connect.manualShort") }, fn() { nc_go(core, f, "manual", close) })
+      @sf.quiet_action_node(r, fn() { @sf.t("web-pages.connect.manualShort") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
     })
     |> ignore
   })

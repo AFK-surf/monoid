@@ -831,6 +831,37 @@ fn is_init(unit : Bytes) -> Bool {
 }
 
 ///|
+/// Test source files' units (csplit): test.<unit>.c
+fn is_test_unit(unit : Bytes) -> Bool {
+  starts(unit, b"test.")
+}
+
+///|
+/// `flags` with its optimization level (each -O…) said by `level` instead, where the first was (or after them)
+fn with_level(flags : Array[Bytes], level : Array[Bytes]) -> Array[Bytes] {
+  let f = []
+  let mut put = false
+  for x in flags {
+    if starts(x, b"-O") {
+      if !put {
+        for l in level {
+          f.push(l)
+        }
+        put = true
+      }
+    } else {
+      f.push(x)
+    }
+  }
+  if !put {
+    for l in level {
+      f.push(l)
+    }
+  }
+  f
+}
+
+///|
 fn is_data(unit : Bytes) -> Bool {
   unit == b"data.c" || starts(unit, b"data_")
 }
@@ -839,6 +870,19 @@ fn is_data(unit : Bytes) -> Bool {
 /// MBC_LIGHT_UNITS lists unit name prefixes that use the init optimization level.
 fn is_light_unit(unit : Bytes) -> Bool {
   match getenv("MBC_LIGHT_UNITS") {
+    Some(list) =>
+      split_words(list).iter().any(fn(prefix) { prefix.length() > 0 && starts(unit, prefix) })
+    None => false
+  }
+}
+
+///|
+/// MBC_LIGHT_KEEP lists unit name prefixes that a program of MBC_LIGHT_TESTS keeps at its own level: the framework's
+/// units every test runs through each frame, at -O0 the whole program's tests 2.5 times as long (a branch changing them
+/// took them from no store, its app shards past five minutes, 44243493008, 2026-11-18), compiled at its level once
+/// and taken from MBC_STORE as main's after.
+fn is_light_keep(unit : Bytes) -> Bool {
+  match getenv("MBC_LIGHT_KEEP") {
     Some(list) =>
       split_words(list).iter().any(fn(prefix) { prefix.length() > 0 && starts(unit, prefix) })
     None => false
@@ -1016,10 +1060,17 @@ fn split_jobs(
   }
   let units = BSet::of(m.units)
   for old in list_dir(objdir) {
-    // a unit's object (u_<unit>.o and its .d, .mbc) when the split has fewer units than before
+    // a unit's object (u_<unit>.o and its .d, .mbc, .tmp) when the split has fewer units than before (a unit's name
+    // has dots of its own, test.<unit>, init.<package>: by its first, every test unit's object was taken for test.c's,
+    // no unit, and removed at each build)
     if starts(old, b"u_") {
-      let rest = sub(old, 2, old.length())
-      let dot = find_byte(rest, b'.', 0)
+      let mut rest = sub(old, 2, old.length())
+      for x in [b".d", b".mbc", b".tmp"] {
+        if ends(rest, x) {
+          rest = sub(rest, 0, rest.length() - x.length())
+        }
+      }
+      let dot = rfind_byte(rest, b'.')
       let base = if dot < 0 { rest } else { sub(rest, 0, dot) }
       if !units.has(cat([base, b".c"])) {
         let _ = c_remove(path_join(objdir, old))
@@ -1033,6 +1084,14 @@ fn split_jobs(
     ")",
   )
   let ext = if msvc { b".obj" } else { b".o" }
+  // MBC_TEST_OPT (-O1): the level a test's units (is_test_unit) compile at in a program at its own level, the store's
+  // object at that level taken first (alt_argv): -O2 took a change of mbui's 297 of sfapp's test units past the app
+  // build's five minutes on CI's four cores (44452414116, 2026-11-19), -O0 (MBC_LIGHT_TESTS) ran its tests 2.5 times
+  // as long (44243493008). Not in a program of MBC_LIGHT_TESTS, which is lighter already, nor with MSVC or LTO
+  let test_level = match getenv("MBC_TEST_OPT") {
+    Some(t) if !msvc && !lto && alt_flags is None => split_words(strip(t))
+    _ => []
+  }
   let jobs = []
   for name in m.units {
     if !ends(name, b".c") {
@@ -1040,7 +1099,30 @@ fn split_jobs(
     }
     // ThinLTO uses bitcode for every unit except moonbit_init's.
     let unopt = !lto && (is_data(name) || is_light_unit(name))
-    let base = if unopt { unopt_flags(flags, init_flags, msvc) } else { flags }
+    // (a unit MBC_LIGHT_KEEP names in a program of MBC_LIGHT_TESTS: at the program's own level, alt_flags, and nothing
+    // less optimised to fall back on)
+    let kept = match alt_flags {
+      Some(af) if !unopt && !is_init(name) && is_light_keep(name) => Some(af)
+      _ => None
+    }
+    let tested = if test_level.length() > 0 && !unopt && !is_init(name) && is_test_unit(name) {
+      let f = with_level(flags, test_level)
+      if f != flags {
+        Some(f)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+    let base = if unopt {
+      unopt_flags(flags, init_flags, msvc)
+    } else {
+      match tested {
+        Some(f) => f
+        None => kept.unwrap_or(flags)
+      }
+    }
     let f = base.copy()
     for x in gen_flags {
       f.push(x)
@@ -1061,7 +1143,9 @@ fn split_jobs(
     let obj = path_join(objdir, cat([b"u_", sub(name, 0, name.length() - 2), ext]))
     let (argv, dep) = compile_args(cc, f, src, obj, msvc)
     let fallback = match alt_flags {
+      _ if kept is Some(_) => None
       None if unopt && base != flags => Some(flags)
+      None if tested is Some(_) => Some(flags)
       _ => alt_flags
     }
     let alt_argv = fallback.map(fn(af) {
@@ -1728,7 +1812,7 @@ fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
 /// response file. Keep them on one line: /link applies only to the rest of its line in a CL command file.
 fn msvc_link_command(argv : Array[Bytes], rsp : Bytes) -> Array[Bytes] {
   if !write_file(rsp, cat([list2cmdline(argv[1:].to_owned()), b"\n"])) {
-    fatal("cannot write link response file \{str(rsp)}")
+    fatal("cannot write link response file \{str(rsp)}: \{write_error()}")
   }
   [argv[0], cat([b"@", rsp])]
 }
@@ -1934,7 +2018,7 @@ fn msvc_core_obj(real : Array[Bytes], wargs : Array[Bytes], c_file : Bytes, obj 
   )
   let objs = run_jobs_c(jobs, j, basename(c_file))
   if !write_file(cat([obj, b".mbc-units"]), join_words(objs, b"\n")) {
-    fatal("cannot write \{str(obj)}.mbc-units")
+    fatal("cannot write \{str(obj)}.mbc-units: \{write_error()}")
   }
   let ph = path_join(objdir, b"placeholder.c")
   let _ = write_file(ph, b"int mbc_link_core_placeholder;\n")

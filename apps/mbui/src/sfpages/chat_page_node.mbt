@@ -25,7 +25,11 @@ pub fn chat_page_body_node(
   foot? : () -> Double = fn() { list_foot },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
+  on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
+  // (what changes on it moves only for a cause said (a press, a key, a live cause its list judges so): what the core
+  // brings or a page coming to show is there at once, @view.transition)
+  v.transitions_only() |> ignore
   let draft = r.station + ":" + r.session
   let w = @signals.untracked(fn() { @sfbase.writing(src, draft) })
   // the chat's keys (keymap.ts's chat group: the keymap's Chat), its actions here, taken while the tree gives the page
@@ -52,17 +56,17 @@ pub fn chat_page_body_node(
   // machine's Finder, where it is a station, into the draft by their station and path, as a row of the 文件 tab put
   // there (its composer takes them: draft_give); words dragged in from another app into the composer's field at its
   // caret, as a paste's
-  // (by where they are only where this machine is a station, finder_by_station: elsewhere their paths, as words)
+  // (by where they are only where this machine is a station of the chat's workspace, finder_by_station_in: elsewhere,
+  // or where the host says no paths, read and put in as files picked are, picked_files_into)
   @ui.paths_into(
     v,
     w.field,
     fn(paths) {
-      for d in @sfbase.finder_dragged(src, paths) {
-        @sfbase.files_into(draft, d)
-      }
+      @sfbase.files_into_many(draft, @sfbase.finder_dragged(src, paths))
     },
-    takes=fn() { @sfbase.finder_by_station() },
+    takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
   )
+  |> @ui.files_into(w.field, fn(files) { @sfbase.picked_files_into(draft, files) })
   |> @ui.words_into(w.field)
   |> ignore
   // its words in pieces picked with the pointer (@ui.words_picked), as the old page's in its frame are (c.selectable):
@@ -75,8 +79,19 @@ pub fn chat_page_body_node(
   // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
   // view_of_chat works them out)
   let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
+  // (put by at rest (View::on_rest): what it last read given to whatever reads it meanwhile, the chat read for none of
+  // it; and read anew as it wakes, what reads it told then)
+  let at_rest = Ref(false)
+  let woken : @signals.Signal[Int] = @signals.signal(0)
   let read : @signals.Computed[(ChatView, Array[Entry])?] = @signals.computed(
     fn(was) {
+      woken.get() |> ignore
+      if at_rest.val {
+        match was {
+          Some(w) => return w
+          None => ()
+        }
+      }
       // (the head read first: what holds the topic, whose messages by key are then there; the chat a new chat became
       // as view_of_chat makes it, never said to be empty, till the core's view of it holds a message: sfbase's
       // chat_keyed_now)
@@ -89,7 +104,7 @@ pub fn chat_page_body_node(
           }
         _ => None
       }
-      match head {
+      let next = match head {
         Some(h) => Some(h)
         None =>
           match @sfbase.view_of_chat(src, r) {
@@ -100,6 +115,13 @@ pub fn chat_page_body_node(
                 None => None
               }
           }
+      }
+      // (the same head the same object as before, worked out anew as the page is woken from rest (its read let go of
+      // as it was put by): what reads it finds it as it left it, nothing of the page worked out again for it)
+      match (was, next) {
+        (Some(Some((pv, pe)) as prev), Some((nv, ne))) if physical_equal(pe, ne) &&
+          (physical_equal(pv, nv) || (physical_equal(ne, chat_no_entries) && pv == nv)) => prev
+        _ => next
       }
     },
     // (told only as the view or its entries are other ones: the chat's list keeps both while nothing of it changed,
@@ -112,6 +134,24 @@ pub fn chat_page_body_node(
       }
     },
   )
+  // (what it read let go of where nothing follows it as the page is put by at rest, as it is let go, and after its chat is
+  // told left (chat_read_left reads it once more): read untracked, it held the chat; worked out anew as it is read
+  // again, from what it last was)
+  let read_rest = fn() { if !read.watched() { read.dispose() } }
+  v.on_rest(
+    fn() {
+      at_rest.val = true
+      read_rest()
+    },
+    wake=fn() {
+      at_rest.val = false
+      woken.set(woken.untracked() + 1)
+      // (shown again from where it was put by, its `shows` the same as it rested so the reaction under tells nothing:
+      // its pictures that could not be had asked again, as it comes into view)
+      src.images.again(r.station)
+    },
+  )
+  |> ignore
   // its pictures that could not be had for want of its station asked again as the chat comes into view (made, or shown
   // again from under what covered it), and as its station is reached again (ChatImages::seen, as its view says it
   // offline or not), as the old page's list asks them (chat_list's)
@@ -205,12 +245,17 @@ pub fn chat_page_body_node(
         foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
         composer?,
         lead~,
-        read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }) },
+        read=fn(place, scroll, rows, reopening, on_reopened) {
+          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest, reopening~, on_reopened~, on_stack~)
+        },
         to=r,
         shows~,
         // (by key once the view is the chat's head (its entries none: chat_no_entries), as the core's view of a chat a
         // new chat became comes, the same list going on from what was sent from here)
         msgs=fn() {
+          // (its topic's version followed too: a subscription made anew gives its list once its first answer comes, the
+          // same head read or not)
+          src.topic("chat", @sfbase.chat_params(r)).get().version |> ignore
           match read.get() {
             Some((_, entries)) if physical_equal(entries, chat_no_entries) =>
               @signals.untracked(fn() { @sfbase.chat_messages(src, r) })

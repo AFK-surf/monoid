@@ -105,9 +105,20 @@ fn paper_by_key(key : String) -> ReaderPaper {
 ///|
 /// The bar's colours on the paper (-ink, -muted, -line); its buttons lit as the
 /// page's are (the paper is night while the app is dark, a day's paper while it is light: reader_paper).
-pub fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
+fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
   let page = theme().p
   { ground: p.ground, ink: p.ink, muted: p.muted, line: p.line, hover: page.hover, chosen: page.selected }
+}
+
+///|
+/// Where a reader is: a page of its own (the whole window's, a drive's), a tab beside a chat over the whole window or
+/// in a window of its own, or a tab in the chat's panel (its column wider there: panel_column_ems, the panel bounding
+/// it already).
+#derive(Eq)
+pub(all) enum ReaderHost {
+  OwnPage
+  Tab
+  PanelTab
 }
 
 ///|
@@ -166,6 +177,12 @@ pub(all) struct Reading {
   draft : @signals.Signal[Double]
   /// a desktop's bar, gone as the text is read on down (where the list stood when it was last seen: `seen`)
   bar_hidden : @signals.Signal[Bool]
+  /// taller than two screens (what shows could scroll further than its own height): told with what is in sight
+  long : @signals.Signal[Bool]
+  /// further than reader_end_away from its end, told with what is in sight
+  away : @signals.Signal[Bool]
+  /// the moment the column's list was first in sight (none yet: +inf): what floats over it stands as found till then
+  mut sight_from : Double
   mut seen : (Int, Double)
 }
 
@@ -205,6 +222,9 @@ pub fn reading_for(key : String) -> Reading {
         jumped: (-1, 0.0, -1, 0.0),
         draft: @signals.signal(-1.0),
         bar_hidden: @signals.signal(false),
+        long: @signals.signal(false),
+        away: @signals.signal(false),
+        sight_from: @double.infinity,
         seen: (0, 0.0),
       }
       readings[key] = r
@@ -247,6 +267,13 @@ pub fn reader_panel_of(key : String) -> ReaderPanel {
     Some(r) => r.panel.get()
     None => NoPanel
   }
+}
+
+///|
+/// Reading `r` scrolled to its end, at a cause: clears any held jump so `on_sight` records the end.
+fn reader_to_end(r : Reading) -> Unit {
+  r.jumped = (-1, 0.0, -1, 0.0)
+  r.list.to_end()
 }
 
 ///|
@@ -297,7 +324,7 @@ pub fn reader_panel_set(r : Reading, panel : ReaderPanel) -> Unit {
 ///|
 /// The file read, once: its bytes here already, or read whole (at most reader_most, how much
 /// has come told as it comes); decoded here, then read by the page's core as a reader shows it (read_book).
-pub fn reader_load(r : Reading, file : ViewerFile, markdown : Bool) -> Unit {
+fn reader_load(r : Reading, file : ViewerFile, markdown : Bool) -> Unit {
   r.file = Some(file)
   if r.asked {
     return
@@ -869,6 +896,29 @@ let desk_reader_foot : Double = 72.0
 let desk_column_ems : Double = 34.0
 
 ///|
+/// The column's width in a tab in the panel beside a chat: 48 of the text's size, the panel bounding it already.
+let panel_column_ems : Double = 48.0
+
+///|
+/// How far from its end a reader's list is before its scroll-to-bottom float shows (matches a chat's to_newest_away:
+/// a corner of the screen).
+let reader_end_away : Double = 120.0
+
+///|
+/// How far in from a tab's right edge its floating buttons' drawn circles sit (a chat's float_in = 6 sits inside the
+/// composer column; a tab has no composer).
+let beside_float_in : Double = 16.0
+
+///|
+/// How far up from a tab's bottom edge the scroll-to-bottom floating button's drawn circle sits (a chat's float_lift =
+/// 12 sits over the composer).
+let beside_float_lift : Double = 16.0
+
+///|
+/// How long a tab's scroll-to-bottom floating button fades in and out (matches a chat's float_ms).
+let beside_float_ms : Double = 160.0
+
+///|
 /// The panel's width (PANEL).
 pub let desk_panel_w : Double = 320.0
 
@@ -1051,7 +1101,7 @@ let desk_hairline : @ui.Style = @ui.css("row w=Full h=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub fn desk_panel_top() -> @ui.Style {
+fn desk_panel_top() -> @ui.Style {
   @ui.style(w=Full, h=Fixed(viewer_bar_under()))
 }
 

@@ -45,6 +45,20 @@ pub(all) enum Body {
 }
 
 ///|
+/// What a reader that stops before the body's end calls (the device gone mid-stream): the request's `signal` aborted,
+/// so what reads for it stops, then a `Streamed` body's own stop set going on `spawn`.
+pub fn Body::stop_with(self : Body, signal : Signal, spawn : (async () -> Unit) -> Unit) -> () -> Unit {
+  match self {
+    Whole(_) | Stream(_) => () => signal.abort()
+    Streamed(_, stop) =>
+      () => {
+        signal.abort()
+        spawn(stop)
+      }
+  }
+}
+
+///|
 pub struct Answer {
   status : Int32
   headers : Map[String, String]
@@ -114,6 +128,15 @@ pub fn ok(value : JV, status~ : Int32 = 200) -> Answer {
 pub(all) suberror Refused {
   Refused(Int32, String)
   Moved(String, JV)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Refused with output(self, logger) {
+  match self {
+    Refused(_, m) => logger.write_string(m)
+    Moved(m, _) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -191,39 +214,9 @@ pub fn header_exact(
 }
 
 ///|
-fn hex_digit(c : Int32) -> Int32 {
-  if c >= '0' && c <= '9' {
-    c - '0'
-  } else if c >= 'a' && c <= 'f' {
-    c - 'a' + 10
-  } else if c >= 'A' && c <= 'F' {
-    c - 'A' + 10
-  } else {
-    -1
-  }
-}
-
-///|
 /// admin/mod.rs `percent_decode`: `%xx` a byte, `+` a space, the rest as it is; then UTF-8, lossily.
 pub fn percent_decode(s : String) -> String {
-  let bytes = utf8(s)
-  let out = @buffer.new()
-  let mut i = 0
-  while i < bytes.length() {
-    let b = bytes[i].to_int()
-    if b == 0x25 && i + 2 < bytes.length() {
-      let h = hex_digit(bytes[i + 1].to_int())
-      let l = hex_digit(bytes[i + 2].to_int())
-      if h >= 0 && l >= 0 {
-        out.write_byte((h * 16 + l).to_byte())
-        i += 3
-        continue
-      }
-    }
-    out.write_byte(if b == 0x2b { b' ' } else { bytes[i] })
-    i += 1
-  }
-  utf8_text(out.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

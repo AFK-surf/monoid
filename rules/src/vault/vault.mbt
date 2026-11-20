@@ -24,8 +24,17 @@ pub(all) struct Device {
 pub(all) struct LockView {
   ws : String
   members : Map[String, Unit]
+  roles : Map[String, String]
   devices : Map[String, Device]
   sign_keys : Map[String, Array[String]]
+}
+
+///|
+fn is_admin(lock : LockView, sub : String) -> Bool {
+  match lock.roles.get(sub) {
+    Some("owner") | Some("admin") => true
+    _ => false
+  }
 }
 
 ///|
@@ -344,6 +353,11 @@ pub fn vault_ok(lock : LockView, prev : Json?, next : Json, copy : Bool, c : &Cr
   if field(v, "lasts") is Some(l) && !(l is String(s) && scopes.contains(s)) {
     return Some("lasts is once, hour or chat")
   }
+  let is_workspace = match field(v, "scope") {
+    None => false
+    Some(String("workspace")) => true
+    Some(_) => return Some("scope is workspace")
+  }
   let deleted = field(v, "deleted") is Some(True)
   if field(v, "deleted") is Some(_) && (!deleted || keys.length() > 0 || field(v, "recovery") is Some(_)) {
     return Some("a deleted vault is sealed to no one")
@@ -359,12 +373,22 @@ pub fn vault_ok(lock : LockView, prev : Json?, next : Json, copy : Bool, c : &Cr
       if text_of(field(p, "id")) != Some(id) {
         return Some("another vault")
       }
+      if field(p, "scope") != field(v, "scope") {
+        return Some("a vault's scope does not change")
+      }
       let held = num(field(p, "seq"))
       if !@history.follows(copy, held.to_int64(), seq.to_int64()) {
         return Some(if copy { "a copy is later than seq " + whole(held) } else { "seq " + whole(held + 1.0) + " follows " + whole(held) })
       }
       if text_of(field(p, "owner")) != Some(owner) {
-        return Some("a vault's owner does not change")
+        let key = text_of(field(field(v, "sig"), "key")).unwrap()
+        let takeover = is_workspace && (match signer_of(lock, key) {
+          Some((sub, _)) => is_admin(lock, sub) && owner == sub
+          None => false
+        })
+        if !takeover {
+          return Some("a vault's owner does not change")
+        }
       }
       if !@history.deletion_ok(field(p, "deleted") is Some(True), deleted) {
         return Some("a deleted vault stays deleted")
@@ -405,8 +429,25 @@ pub fn vault_ok(lock : LockView, prev : Json?, next : Json, copy : Bool, c : &Cr
   }
   let key = text_of(field(field(v, "sig"), "key")).unwrap()
   let by = signer_of(lock, key)
-  guard @role.signed_by(by is Some(_), by.map(fn(b) { b.0 == owner }).unwrap_or(false)) else {
-    return Some("a vault is signed by one of its owner's devices in the lock")
+  let signer_ok = match by {
+    None => false
+    Some((sub, _)) =>
+      if is_workspace {
+        members.contains(sub) &&
+        is_admin(lock, sub) &&
+        (if prev is None && seq == 0.0 { sub == owner } else { true })
+      } else {
+        sub == owner
+      }
+  }
+  guard @role.signed_by(by is Some(_), signer_ok) else {
+    return Some(
+      if is_workspace {
+        "a workspace vault is signed by a workspace owner or admin in the lock"
+      } else {
+        "a vault is signed by one of its owner's devices in the lock"
+      },
+    )
   }
   if !signed_ok(next, "stillfail-vault/1", c) {
     return Some("the vault's signature is invalid")

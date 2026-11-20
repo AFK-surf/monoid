@@ -30,50 +30,17 @@ let triggers : String = [
 ].join("\n")
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  row.get(name).unwrap_or(Json::null())
-}
-
-///|
-fn first_row(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? raise {
-  match db.all(sql, params) {
-    [r, ..] => Some(r)
-    _ => None
-  }
-}
-
-///|
-fn schema_version(db : @sql.Db) -> Json raise {
-  match first_row(db, "PRAGMA schema_version", []) {
-    Some(r) => value(r, "schema_version")
-    None => Json::null()
-  }
-}
-
-///|
-fn sql_of(db : @sql.Db, kind : String, name : String) -> String? raise {
-  match first_row(db, "SELECT sql FROM sqlite_master WHERE type=? AND name=?", [Json::string(kind), Json::string(name)]) {
-    Some(r) =>
-      match value(r, "sql") {
-        String(s) => Some(s)
-        _ => Some("")
-      }
-    None => None
-  }
-}
-
-///|
 /// The tables and marked triggers there, of this version.
 fn current(db : @sql.Db) -> Bool raise {
-  if sql_of(db, "table", "archive_last_meta") is None || sql_of(db, "table", "archive_last_guard") is None {
+  if db.sqlite_master_sql("table", "archive_last_meta") is None || db.sqlite_master_sql("table", "archive_last_guard") is None {
     return false
   }
-  guard first_row(db, "SELECT version FROM archive_last_meta WHERE id=1", []) is Some(v) else { return false }
-  guard value(v, "version") is Number(n, ..) && n.to_int() == version else {
+  guard db.first("SELECT version FROM archive_last_meta WHERE id=1", []) is Some(v) else { return false }
+  guard @sql.row_val(v, "version") is Number(n, ..) && n.to_int() == version else {
     fail("archive last metadata has an unsupported version")
   }
   for name in names {
-    guard sql_of(db, "trigger", name) is Some(sql) && sql.contains(mark) else { return false }
+    guard db.sqlite_master_sql("trigger", name) is Some(sql) && sql.contains(mark) else { return false }
   }
   true
 }
@@ -95,7 +62,7 @@ pub fn Archive::new(db : @sql.Db) -> Archive {
 /// trusted); false when they cannot be now.
 fn Archive::install(self : Archive) -> Bool raise {
   let db = self.db
-  let initial = schema_version(db)
+  let initial = db.schema_version()
   if self.checked == Some(initial) {
     return true
   }
@@ -109,9 +76,9 @@ fn Archive::install(self : Archive) -> Bool raise {
     db.exec(
       "CREATE TABLE IF NOT EXISTS archive_last_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL, epoch TEXT NOT NULL) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS archive_last_guard(thread INTEGER PRIMARY KEY,epoch TEXT NOT NULL, before_n INTEGER,at INTEGER,ready INTEGER NOT NULL) WITHOUT ROWID;",
     )
-    if first_row(db, "SELECT version FROM archive_last_meta WHERE id=1", []) is Some(v) &&
-      !(value(v, "version") is Number(n, ..) && n.to_int() == version) {
-      fail("archive last version \{value(v, "version").stringify()} is incompatible")
+    if db.first("SELECT version FROM archive_last_meta WHERE id=1", []) is Some(v) &&
+      !(@sql.row_val(v, "version") is Number(n, ..) && n.to_int() == version) {
+      fail("archive last version \{@sql.row_val(v, "version").stringify()} is incompatible")
     }
     ignore(
       db.run(
@@ -125,7 +92,7 @@ fn Archive::install(self : Archive) -> Bool raise {
     db.exec(triggers)
   }
   db.exec("COMMIT")
-  self.checked = Some(schema_version(db))
+  self.checked = Some(db.schema_version())
   true
 }
 
@@ -148,27 +115,26 @@ pub fn Archive::step(self : Archive, thread : Int64, limit? : Int = 64) -> Bool 
   let t = Json::number(thread.to_double())
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
-  if checked != Some(schema_version(db)) {
+  if checked != Some(db.schema_version()) {
     db.exec("COMMIT")
     return false
   }
-  guard first_row(db, "SELECT version,epoch FROM archive_last_meta WHERE id=1", []) is Some(meta) else {
+  guard db.first("SELECT version,epoch FROM archive_last_meta WHERE id=1", []) is Some(meta) else {
     db.exec("COMMIT")
     self.checked = None
     return false
   }
-  guard value(meta, "version") is Number(n, ..) && n.to_int() == version else {
+  guard @sql.row_val(meta, "version") is Number(n, ..) && n.to_int() == version else {
     fail("archive last metadata has an unsupported version")
   }
-  let epoch = value(meta, "epoch")
+  let epoch = @sql.row_val(meta, "epoch")
   ignore(
     db.run(
       "INSERT INTO archive_last_guard(thread,epoch,before_n,at,ready) VALUES(?,?,NULL,NULL,0) ON CONFLICT(thread) DO UPDATE SET epoch=excluded.epoch,before_n=NULL,at=NULL,ready=0 WHERE archive_last_guard.epoch!=excluded.epoch",
       [t, epoch],
     ),
   )
-  guard first_row(
-      db,
+  guard db.first(
       "SELECT CAST(before_n AS TEXT) AS before_n,at,ready FROM archive_last_guard WHERE thread=? AND epoch=?",
       [t, epoch],
     )
@@ -177,25 +143,25 @@ pub fn Archive::step(self : Archive, thread : Int64, limit? : Int = 64) -> Bool 
   }
   // (a ready guard of the earlier time-only worker has no key: its time serves archive reads, a message asked for
   // scans again)
-  let ready = value(state, "ready") is Number(r, ..) && r != 0.0
-  if ready && (!(value(state, "before_n") is Null) || value(state, "at") is Null) {
+  let ready = @sql.row_val(state, "ready") is Number(r, ..) && r != 0.0
+  if ready && (!(@sql.row_val(state, "before_n") is Null) || @sql.row_val(state, "at") is Null) {
     db.exec("COMMIT")
     return true
   }
   let lim = Json::number(limit.to_double())
-  let rows = if value(state, "before_n") is Null {
+  let rows = if @sql.row_val(state, "before_n") is Null {
     db.all(slice_first, [t, lim])
   } else {
-    db.all(slice_before, [t, value(state, "before_n"), lim])
+    db.all(slice_before, [t, @sql.row_val(state, "before_n"), lim])
   }
-  let last = rows.iter().find_first(r => !(value(r, "at") is Null))
+  let last = rows.iter().find_first(r => !(@sql.row_val(r, "at") is Null))
   let done = last is Some(_) || rows.length() < limit
   let before = match last {
-    Some(l) => value(l, "n")
-    None => if done { Json::null() } else { value(rows[rows.length() - 1], "n") }
+    Some(l) => @sql.row_val(l, "n")
+    None => if done { Json::null() } else { @sql.row_val(rows[rows.length() - 1], "n") }
   }
   let at = match last {
-    Some(l) => value(l, "at")
+    Some(l) => @sql.row_val(l, "at")
     None => Json::null()
   }
   ignore(

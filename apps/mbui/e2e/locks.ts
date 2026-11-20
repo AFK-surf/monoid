@@ -911,9 +911,11 @@ try {
   /// 16's web page, which signs nothing once in: `page`). How long from the code typed to let in, in ms.
   const approvedBy = async (approver: Device, x: Device, page = false): Promise<number> => {
     // (once it has heard the workspace's lock names no lock of its person's: until then its request would go to the
-    // devices of the lock named before, not to the workspace's)
+    // devices of the lock named before, not to the workspace's; or, its person's only device since it began their lock
+    // anew, be refused as rebound, `reboundText`, until it has heard they were taken out: round 12's K asked 3 ms after
+    // the removal and was refused so in two side runs of four)
     const t1 = Date.now();
-    const me = (await x.lock(workspace, (l) => l.me?.waiting && !l.me?.ownLock, 90_000)).me;
+    const me = (await x.lock(workspace, (l) => l.me?.waiting && !l.me?.ownLock && !l.me?.reboundText, 90_000)).me;
     log(`  ${x.name}'s page in Dev: ${JSON.stringify({ waiting: me.waiting, ownLock: me.ownLock ?? false })} after ${Date.now() - t1} ms`);
     const shown = approver.until({ topic: "lockPrompts" }, (v) => v?.pairing?.[0], 90_000);
     await x.call("lock.pair", { workspace });

@@ -194,3 +194,53 @@ test "a menu item in a row a structure made (in_node) is that row: read out a Me
   let item = t.get(MenuItem, label="一")
   assert_eq((t.all(Menu).length(), item.rect.2, item.rect.3), (1, 120.0, 28.0))
 }
+
+///|
+test "a menu that takes the focus and roves: given the focus it holds it, no item lit, ↓ the first; Tab stops on the last item that had the focus, else the first enabled;" {
+  let off = @signals.signal(false)
+  let box : Ref[@headless.Menu?] = Ref(None)
+  let node : Ref[@view.View?] = Ref(None)
+  let t = window(fn(root) {
+    root.box(fn(before) {
+      before
+      .width(Is(Some(40.0)))
+      .height(Is(Some(30.0)))
+      .presses(Is(true))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="前"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    @headless.menu(root, label=fn() { "菜单" }, takes_focus=true, roving=true, fn(m, menu) {
+      box.val = Some(menu)
+      node.val = Some(m)
+      for name in ["甲", "乙", "丙"] {
+        menu.item(m, fn() { name }, fn(_) {  }, menu_row, disabled=fn() { name == "丙" && off.get() }) |> ignore
+      }
+    })
+    |> ignore
+  })
+  // given the focus as a pointer opened it: the menu's own, nothing lit; ↓ the first
+  assert_true(node.val.unwrap().ask_focus(visible=false))
+  t.draw()
+  let own = (focus_name(t), t.focused().map(fn(s) { s.role }))
+  t.key(@ui.key_code_down)
+  let first = focus_name(t)
+  t.key(@ui.key_code_down)
+  t.key(@ui.key_code_down)
+  // Tab away and back: the menu itself, then its one item stop, the last with the focus ("丙")
+  t.act(Button, Focus, label="前")
+  t.tab()
+  let menu_stop = focus_name(t)
+  t.tab()
+  let item_stop = focus_name(t)
+  // "丙" disabled: the stop the first enabled, "甲"
+  off.set(true)
+  t.frame()
+  t.act(Button, Focus, label="前")
+  t.tab()
+  t.tab()
+  let fallen_back = focus_name(t)
+  assert_eq((own, first, menu_stop, item_stop, fallen_back), (("菜单", Some(@view.Role::Menu)), "甲", "菜单", "丙", "甲"))
+}

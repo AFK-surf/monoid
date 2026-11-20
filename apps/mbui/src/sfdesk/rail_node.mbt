@@ -262,24 +262,17 @@ fn rail_key_node(
   rest? : () -> Bool = fn() { false },
   lit? : Bool = true,
 ) -> @view.View {
-  let made : Ref[@view.View?] = Ref(None)
-  parent.box(fn(item) {
-    made.val = Some(item)
+  // (the library's block pressed as a whole, @headless.button's: read out a button, Enter and Space pressing it, its
+  // focus ring round it)
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(item) {
     @sf.style_node(item, fn() { if square { rail_sq } else { rail_item } })
-    let hover = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
-    let ink = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    item.reacts(fn() { @sf.lit_node(item) }, fn(h) { hover.go_ms(item, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    if lit {
-      item.reacts(on, fn(o) { chosen.go_ms(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hover = @motion.hover_fade(item, fn() { @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
+    let chosen = if lit {
+      @motion.hover_fade(item, on, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
     }
-    item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go_ms(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    item
-    .presses(Is(true))
-    .focusable(Is(true))
-    .on_press(press)
-    .says(By(fn() { Some(@view.said(Button, label=label())) }))
-    |> ignore
+    let ink = @motion.hover_fade(item, fn() { on() || @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
     if tipped {
       @sf.tip_node(tips, item, label, side=Right) |> ignore
     }
@@ -290,8 +283,8 @@ fn rail_key_node(
       sq.ground(By(fn() {
         let t = @sf.theme()
         let lit = if wide.closed.get() { @sf.alpha(t.p.text, lit_in_bar) } else { t.p.selected }
-        let h = dmax(hover.shown(item), if rest() { 1.0 } else { 0.0 })
-        let o = chosen.shown(item)
+        let h = dmax(hover(), if rest() { 1.0 } else { 0.0 })
+        let o = chosen()
         if h <= 0.0 && o <= 0.0 {
           0L
         } else {
@@ -303,7 +296,7 @@ fn rail_key_node(
         sq,
         ink: fn() {
           let t = @sf.theme()
-          @sf.mix(t.p.text, ink.shown(item), t.p.muted)
+          @sf.mix(t.p.text, ink(), t.p.muted)
         },
       })
     }
@@ -317,8 +310,6 @@ fn rail_key_node(
       |> ignore
     }
   })
-  |> ignore
-  made.val.unwrap_or(parent)
 }
 
 ///|
@@ -359,9 +350,9 @@ fn rail_hung_node(sq : @view.View, at : () -> RailAt, shown : () -> Double, mark
 }
 
 ///|
-/// What waits on a place: a red dot 8 across.
+/// What waits on a place: the library's count mark with no count, a red dot 8 across.
 fn rail_dot_node(ring : @view.View) -> Unit {
-  ring.box(fn(d) { @sf.style_node(d, fn() { rail_dot }) }) |> ignore
+  @sf.count_badge_node(ring) |> ignore
 }
 
 ///|
@@ -473,6 +464,11 @@ fn rail_place_node(
       return
     }
     guard ws() is Some(w) else { return }
+    // the lit place pressed again (not 待处理, a panel; not 看板, its board brought over) where its list is away from
+    // its top: that list back to its top, as a platform's tab pressed again (back_to_top.mbt); at its top, as follows
+    if rail_lit(src, w, place) && place != "attention" && place != "board" && rail_back_to_top(lit_place()) {
+      return
+    }
     // the lit place pressed again (not 待处理, a panel): its sidebar folded or opened, not gone to; folded so with the
     // pointer on the rail, it is shown a while; on the tape, the page brought over
     // (看板 pressed again: its board brought over on the tape, board_go's)
@@ -577,22 +573,22 @@ fn rail_place_node(
       |> ignore
     })
     |> ignore
-    e.box(fn(rm) {
-      @sf.style_node(rm, fn() { rail_remove })
-      rm
-      .over(Is(true), edges=(Some(rail_remove_in), Some(rail_remove_in), None, None))
-      .presses(Is(true))
-      .on_press(fn() {
+    @sf.action_box_node(
+      e,
+      fn() { @sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]) },
+      fn(_) {
         guard ws() is Some(w) else { return }
         let items = rail_items(src, w.id)
         if items.length() > 1 {
           rail_keep(src, w.id, items.filter(fn(i) { i != place }))
         }
-      })
-      .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]))) }))
-      |> ignore
-      @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
-    })
+      },
+      fn(rm) {
+        @sf.style_node(rm, fn() { rail_remove })
+        rm.over(Is(true), edges=(Some(rail_remove_in), Some(rail_remove_in), None, None)) |> ignore
+        @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
+      },
+    )
     |> ignore
   })
   // 对话's, 用量's: what the place is about at a glance, beside it as the pointer rests on it (in place of its tip)
@@ -642,8 +638,8 @@ fn rail_card_node(anchor : @view.View, src : Source, tips : @sf.TipLayer, place 
       // (a small panel's: @sf.small_panel)
       .ground(By(fn() { @sf.panel_ground() }))
       .radius(Is(@sf.r_menu))
-      .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-      .shadow(By(fn() { (16.0, 12.0, @sf.theme().p.shadow) }))
+      .edge(By(fn() { (1.0, @sf.panel_edge()) }))
+      .shadow(By(fn() { @sf.float_shadow() }))
       .clips(Is(true))
       .padding(Is((@sf.panel_pad, @sf.panel_pad, @sf.panel_pad, @sf.panel_pad)))
       // (a press on it its own: a ground, the arrow over it)
@@ -761,11 +757,19 @@ fn rail_transfers_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : (
   })
   |> ignore
   key.laid_nowhere(By(fn() { coming(src, ws()).none() })) |> ignore
+  // (its list: put up beside it as it is opened, closed as it is shut or once there is none: transfers.mbt
+  // rail_transfers_list)
+  key.reacts(fn() { (ftransfers.open.get(), coming(src, ws()).none()) }, fn(_) {
+    match @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) {
+      Some(w) => rail_transfers_list(src, w)
+      None => ()
+    }
+  })
 }
 
 ///|
 /// The key of what comes and goes as it is made (rail_transfers_node), and where it was as its list was opened from it:
-/// where the list opens beside (rail_overlays).
+/// where the list opens beside (rail_transfers_list).
 // kept across runs: let go with its node
 let rail_transfers_key : Ref[@view.View?] = Ref(None)
 
@@ -779,7 +783,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 /// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
-/// its menu (sfpages' workspace_menu, beside where it was as it was pressed: rail_overlays). Pressed, that workspace.
+/// its menu (sfpages' workspace_add_pressed, beside it). Pressed, that workspace.
 /// Giving way and scrolling where the window is short.
 fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
@@ -804,10 +808,10 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
           @sfpages.workspace_menu_open,
           fn() { @sf.t("web-main.rail.addWorkspace") },
           fn() {
-            if !@sfpages.workspace_menu_open() {
-              workspace_add_from.val = rail_add.val.map(fn(v) { v.placed_window_now() })
+            match rail_add.val {
+              Some(v) => @sfpages.workspace_add_pressed(src, from=Node(v))
+              None => ()
             }
-            @sfpages.workspace_add_pressed()
           },
           square=true,
           rest=@sfpages.workspace_menu_open,
@@ -913,14 +917,9 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
 }
 
 ///|
-/// The ＋ over the workspaces as it is made, and where it was as its menu was opened from it: where the menu opens beside
-/// (rail_overlays).
+/// The ＋ over the workspaces as it is made: what its menu opens beside (sfpages' workspace_add_pressed).
 // kept across runs: let go with its node
 let rail_add : Ref[@view.View?] = Ref(None)
-
-///|
-// kept across runs: said as the menu is opened from the ＋, put back by wide_reset
-let workspace_add_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// An invitation waiting, hung on the ＋'s corner (sfpages' invite_dot): the chats' blue dot, 8 across.

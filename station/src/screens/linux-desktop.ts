@@ -1,26 +1,38 @@
-// One Linux desktop source: select the current user's active X11 or Wayland session when it is asked for.
+// One Linux desktop source: select the current user's active X11 or Wayland session when it is asked for,
+// preferring the native `stillfail-screen-linux` helper when available and falling back to X11/Portal.
 import { hostname } from "node:os";
 import { wall } from "../ops/fibers.ts";
+import { LinuxNativeDesktop, type LinuxNativeOptions, type LinuxNativeStart } from "./linux-native.ts";
 import { desktopEnvironment } from "./linux-session.ts";
 import { LinuxScreenTools } from "./linux-tools.ts";
 import { LinuxGstDesktop } from "./linux-portal.ts";
 import type { ScreenAccess, ScreenSource, ScreenView, ViewOptions } from "./source.ts";
 import { X11Desktop, type X11DesktopOptions } from "./x11-desktop.ts";
 
-type LinuxOptions = { data: string; changed: () => void; title?: () => string; env?: NodeJS.ProcessEnv; discover?: (env: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv> };
+export type LinuxOptions = {
+  data: string;
+  changed: () => void;
+  title?: () => string;
+  env?: NodeJS.ProcessEnv;
+  discover?: (env: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>;
+  nativeBinary?: string | null;
+  nativeStart?: LinuxNativeStart;
+};
 
 export class LinuxDesktop implements ScreenSource {
   readonly id = "desktop";
   readonly kind = "desktop" as const;
   readonly #o: LinuxOptions;
+  readonly #nativeOptions: LinuxNativeOptions;
   readonly #x11Options: X11DesktopOptions;
   readonly #waylandOptions: { changed: () => void; title?: () => string; env: NodeJS.ProcessEnv };
   readonly #fallbackOptions: { changed: () => void; title?: () => string; env: NodeJS.ProcessEnv; mode: "x11" };
   readonly #tools: LinuxScreenTools;
+  readonly #native: LinuxNativeDesktop;
   readonly #x11: X11Desktop;
   readonly #wayland: LinuxGstDesktop;
   readonly #fallback: LinuxGstDesktop;
-  #current: X11Desktop | LinuxGstDesktop;
+  #current: LinuxNativeDesktop | X11Desktop | LinuxGstDesktop;
   #refreshing: Promise<void> | null = null;
   #looked = 0;
 
@@ -28,9 +40,11 @@ export class LinuxDesktop implements ScreenSource {
     this.#o = options;
     const env = { ...(options.env ?? process.env) };
     this.#tools = new LinuxScreenTools(options.data);
+    this.#nativeOptions = { binary: options.nativeBinary ?? null, changed: options.changed, title: options.title, env, start: options.nativeStart };
     this.#x11Options = { changed: options.changed, title: options.title, env, tools: this.#tools };
     this.#waylandOptions = { changed: options.changed, title: options.title, env };
     this.#fallbackOptions = { changed: options.changed, title: options.title, env, mode: "x11" };
+    this.#native = new LinuxNativeDesktop(this.#nativeOptions);
     this.#x11 = new X11Desktop(this.#x11Options);
     this.#wayland = new LinuxGstDesktop(this.#waylandOptions);
     this.#fallback = new LinuxGstDesktop(this.#fallbackOptions);
@@ -43,11 +57,17 @@ export class LinuxDesktop implements ScreenSource {
     if (!force && wall.now() - this.#looked < 2_000) return;
     this.#refreshing ??= (async () => {
       const env = await (this.#o.discover ?? desktopEnvironment)(this.#o.env ?? process.env);
+      this.#nativeOptions.env = env;
       this.#x11Options.env = env;
       this.#waylandOptions.env = env;
       this.#fallbackOptions.env = env;
-      let next: X11Desktop | LinuxGstDesktop;
-      if (env.XDG_SESSION_TYPE?.toLowerCase() === "wayland" || env.WAYLAND_DISPLAY) {
+      let next: LinuxNativeDesktop | X11Desktop | LinuxGstDesktop;
+      if (this.#nativeOptions.binary !== null) {
+        await this.#native.refresh(force);
+      }
+      if (this.#native.available()) {
+        next = this.#native;
+      } else if (env.XDG_SESSION_TYPE?.toLowerCase() === "wayland" || env.WAYLAND_DISPLAY) {
         next = this.#wayland;
       } else {
         await this.#x11.refresh(force);
@@ -56,7 +76,7 @@ export class LinuxDesktop implements ScreenSource {
         next = this.#x11.access().reason === "linuxTools" && !(await this.#tools.canPrepare(env)) ? this.#fallback : this.#x11;
       }
       if (next !== this.#current) { this.#current = next; this.#o.changed(); }
-      if (next !== this.#x11) await next.refresh(force);
+      if (next !== this.#x11 && next !== this.#native) await next.refresh(force);
     })().finally(() => { this.#looked = wall.now(); this.#refreshing = null; });
     await this.#refreshing;
   }
@@ -64,5 +84,5 @@ export class LinuxDesktop implements ScreenSource {
     await this.refresh(true);
     return this.#current.open(options);
   }
-  async close(): Promise<void> { await Promise.all([this.#x11.close(), this.#wayland.close(), this.#fallback.close()]); }
+  async close(): Promise<void> { await Promise.all([this.#native.close(), this.#x11.close(), this.#wayland.close(), this.#fallback.close()]); }
 }

@@ -8,7 +8,7 @@
 
 ///|
 /// The connects' files on this machine (connects_hub's `Fs`), through the shell's calls.
-fn connects_fs() -> @connects_hub.Fs {
+fn connects_fs(host : @host.Host) -> @connects_hub.Fs {
   let s = sep()
   let fail = (e : Error) => BusError("\{e}")
   {
@@ -19,15 +19,21 @@ fn connects_fs() -> @connects_hub.Fs {
         None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
       }
     },
-    read_bytes: async fn(p) { @drive.read_all(p) catch { e => raise fail(e) } },
+    read_bytes: async fn(p) {
+      match (host.read_bytes(p) catch { e => raise fail(e) }) {
+        Some(b) => b
+        None => raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{p}'")
+      }
+    },
+    read_part: async fn(p, at, n) { (@drive.read_part(p, at, n) catch { e => raise fail(e) }).0 },
     size: async fn(p) { (@drive.stat(p) catch { e => raise fail(e) }).size },
     write_text: async fn(p, t) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: @utf8.encode(t), at_least: None, truncate: Some(0.0), sync: false }) catch { e => raise fail(e) })
+      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: @utf8.encode(t), at_least: None, truncate: None, sync: false }) catch { e => raise fail(e) })
     },
     write_bytes: async fn(p, b) {
       ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: b, at_least: None, truncate: Some(0.0), sync: false }) catch { e => raise fail(e) })
+      ignore(@drive.write_part(p, { create: true, offset: 0.0, data: b, at_least: None, truncate: None, sync: false }) catch { e => raise fail(e) })
     },
     append_text: async fn(p, t) {
       let at = match (try { Ok(@drive.stat(p)) } catch { e => Err(e) }) {
@@ -41,36 +47,35 @@ fn connects_fs() -> @connects_hub.Fs {
     mkdir: async fn(p) { @drive.mkdir(p, true) catch { e => raise fail(e) } },
     readdir: async fn(p) { @drive.names(p) catch { e => raise fail(e) } },
     write_private: async fn(p, t) {
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(s, p), true)))
-      @drive.write_private(p, t) catch { e => raise fail(e) }
+      host.write_private(p, @utf8.encode(t), sep=s) catch { e => raise fail(e) }
     },
   }
 }
 
 ///|
 fn connects_log() -> @connects_hub.Log {
-  { write: (level, part, words, fields) => slice_log(level, part, words, to_core(fields)) }
+  { write: (level, part, words, fields) => slice_log(level, part, words, of_jv(fields)) }
 }
 
 ///|
 /// A Slack connect of config.json as connects_hub hands it back (SlackConnect::to_j's): its fields.
 fn slack_connect_of(j : @jsjson.JValue) -> @slack.SlackConnect {
-  let c = to_core(j)
-  let team = p55_jfield(c, "team")
+  let c = of_jv(j)
+  let team = jfield(c, "team")
   {
-    id: p55_jtext(c, "id"),
-    enabled: !(p55_jfield(c, "enabled") is False),
-    app_token: p55_jtext(c, "appToken"),
-    bot_token: p55_jtext(c, "botToken"),
-    app_id: p55_jstr(c, "appId"),
-    team: match p55_jstr(team, "id") {
-      Some(id) => Some((id, p55_jtext(team, "name")))
+    id: jtext_or_empty(c, "id"),
+    enabled: !(jfield(c, "enabled") is False),
+    app_token: jtext_or_empty(c, "appToken"),
+    bot_token: jtext_or_empty(c, "botToken"),
+    app_id: jtext(c, "appId"),
+    team: match jtext(team, "id") {
+      Some(id) => Some((id, jtext_or_empty(team, "name")))
       None => None
     },
-    bot_name: p55_jstr(c, "botName"),
-    bot_image: p55_jstr(c, "botImage"),
-    owner: p55_jstr(c, "owner"),
-    workspace: p55_jstr(c, "workspace"),
+    bot_name: jtext(c, "botName"),
+    bot_image: jtext(c, "botImage"),
+    owner: jtext(c, "owner"),
+    workspace: jtext(c, "workspace"),
   }
 }
 
@@ -79,8 +84,8 @@ fn slack_connect_of(j : @jsjson.JValue) -> @slack.SlackConnect {
 fn thread_of_j(v : @jsjson.JValue?) -> (String, String) {
   match v {
     Some(t) => {
-      let c = to_core(t)
-      (p55_jtext(c, "channel"), p55_jtext(c, "threadTs"))
+      let c = of_jv(t)
+      (jtext_or_empty(c, "channel"), jtext_or_empty(c, "threadTs"))
     }
     None => ("", "")
   }
@@ -98,22 +103,22 @@ let slack_calls : Array[String] = [
 ///|
 /// A Slack surface as the connects and the hub take it (connects_hub's `Connection`, its `Surface` called by name).
 fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
-  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
-  let opt = (v : String?) => match v { Some(t) => of_core(Json::string(t)); None => @jsjson.JValue::Null }
+  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
+  let opt = (v : String?) => match v { Some(t) => to_jv(Json::string(t)); None => @jsjson.JValue::Null }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
     match name {
-      "botUserId" => of_core(Json::string(s.bot_user_id()))
-      "botName" => of_core(Json::string(s.bot_name()))
+      "botUserId" => to_jv(Json::string(s.bot_user_id()))
+      "botName" => to_jv(Json::string(s.bot_name()))
       "identity" => match s.identity() { Some(i) => i.to_j(); None => Null }
-      "platform" => of_core(Json::string(s.platform()))
+      "platform" => to_jv(Json::string(s.platform()))
       "workspace" => opt(s.workspace())
       "cards" | "loginCards" | "joins" => Bool(name != "joins" || s.joins())
-      "mention" => of_core(Json::string("<@\{txt(a, 0)}>"))
+      "mention" => to_jv(Json::string("<@\{txt(a, 0)}>"))
       "knownPerson" => s.known_person(txt(a, 0)).unwrap_or(Null)
       "knownChannel" => opt(s.known_channel(txt(a, 0)))
       "threadOf" =>
         match s.thread_of(txt(a, 0)) {
-          Some((ch, ts)) => of_core({ "channel": Json::string(ch), "threadTs": Json::string(ts) })
+          Some((ch, ts)) => to_jv({ "channel": Json::string(ch), "threadTs": Json::string(ts) })
           None => Null
         }
       "permalink" => {
@@ -122,7 +127,7 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
       }
       "working" => {
         let (ch, ts) = thread_of_j(a.get(0))
-        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.text(u))); _ => None })
+        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.sanitize_str(u))); _ => None })
         Null
       }
       "standsAt" => {
@@ -142,14 +147,14 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
           let (ch, ts) = thread_of_j(a.get(0))
           let files = match a.get(2) { Some(Arr(xs)) => xs; _ => [] }
           let card = match a.get(3) { Some(Null) | None => None; c => c }
-          of_core(Json::string(s.post(ch, ts, txt(a, 1), files, card~)))
+          to_jv(Json::string(s.post(ch, ts, txt(a, 1), files, card~)))
         }
         "cardEnded" => {
           let (ch, ts) = thread_of_j(a.get(0))
           s.card_ended(ch, ts, txt(a, 1), txt(a, 2), a.get(3), a.get(4))
           Null
         }
-        "download" => of_core(Json::string(@drive.hex(s.download(a.get(0).unwrap_or(Null)))))
+        "download" => to_jv(Json::string(@drive.hex(s.download(a.get(0).unwrap_or(Null)))))
         "history" => {
           let (ch, ts) = thread_of_j(a.get(0))
           Arr(s.history(ch, ts, txt(a, 1), match a.get(2) { Some(Num(n)) => n.to_int(); _ => 50 }))
@@ -164,7 +169,7 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
         "begin" => {
           let ch = txt(a, 0)
           let ts = s.begin(ch, txt(a, 1))
-          of_core({ "thread": { "channel": Json::string(ch), "threadTs": Json::string(ts) }, "ts": Json::string(ts) })
+          to_jv({ "thread": { "channel": Json::string(ch), "threadTs": Json::string(ts) }, "ts": Json::string(ts) })
         }
         "edit" => {
           let (ch, ts) = thread_of_j(a.get(0))
@@ -193,7 +198,7 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
     stop: async fn() { s.stop() },
     socket: () => {
       let (connected, last) = s.socket()
-      of_core({ "connected": Json::boolean(connected), "lastError": p55_jopt(last) })
+      to_jv({ "connected": Json::boolean(connected), "lastError": jopt(last) })
     },
     identity: () => match s.identity() { Some(i) => i.to_j(); None => Null },
     on_change: f => {
@@ -219,15 +224,13 @@ priv struct ConnectsLive {
 }
 
 ///|
-/// A connect's connection, whichever platform's it is.
+/// A connect's connection, whichever platform's it is, or that of another station's connect a chat here runs on
+/// (sessions/agents.ts `chats`, connects/workspace.ts `agents.surfaces`: its calls asked of that station).
 fn ConnectsLive::chat(self : ConnectsLive, id : String) -> @connects_hub.Surface? {
   for _, c in self.kinds {
-    match c.chats(id) {
-      Some(s) => return Some(s)
-      None => ()
-    }
+    if c.chats(id) is Some(s) { return Some(s) }
   }
-  None
+  self.workspace.remote.surface(id).map(r => r.surface())
 }
 
 ///|
@@ -239,28 +242,25 @@ async fn P55::coord_connects(self : P55, name : String, args : Array[Json]) -> J
   guard connects_live.val is Some(live) else { return Json::null() }
   let wc = live.workspace
   let s = (i : Int) => match args.get(i) { Some(String(x)) => x; _ => "" }
-  let ownc = (cs : Array[@jsjson.JValue]) => Json::array(cs.map(to_core))
+  let ownc = (cs : Array[@jsjson.JValue]) => Json::array(cs.map(of_jv))
   match name {
     "connects.kindOf" =>
       match wc.kind_mode(s(0)) {
-        Some(k) => to_core(k)
+        Some(k) => of_jv(k)
         None => Json::null()
       }
     "connects.ownKinds" => ownc(wc.own_kinds(s(0)))
     // (agents.ts `heldBy`: the station of the workspace a connect with these tokens runs on already, by its name)
     "connects.heldBy" => {
-      let ws = match args.get(0) {
-        Some(String(w)) => Some(w)
-        _ => None
-      }
+      let ws = opt_str(args.get(0))
       let own = match args.get(2) {
-        Some(o) => Some(of_core(o))
+        Some(o) => Some(to_jv(o))
         None => None
       }
-      p55_jopt(wc.held_by(ws, s(1), own))
+      jopt(wc.held_by(ws, s(1), own))
     }
     "connects.movedAway" => ownc(wc.moved_away(s(0)))
-    "connects.runsOn" => p55_jopt(wc.runs_on(s(0)))
+    "connects.runsOn" => jopt(wc.runs_on(s(0)))
     "connects.move" => {
       wc.move_to(s(0), s(1), None, awaiting=core_strs(args.get(2).unwrap_or(Json::null())))
       Json::null()
@@ -275,12 +275,12 @@ async fn P55::coord_connects(self : P55, name : String, args : Array[Json]) -> J
     }
     "connects.describedFor" =>
       match wc.described_for(s(0)) {
-        Some((station, described)) => { "station": Json::string(station), "described": to_core(described) }
+        Some((station, described)) => { "station": Json::string(station), "described": of_jv(described) }
         None => Json::null()
       }
     "connects.learnOf" => {
       let k = args.get(0).unwrap_or(Json::null())
-      wc.learn_of({ id: p55_jtext(k, "id"), origin: p55_jtext(k, "origin") }, s(1), of_core(args.get(2).unwrap_or(Json::null())))
+      wc.learn_of({ id: jtext_or_empty(k, "id"), origin: jtext_or_empty(k, "origin") }, s(1), to_jv(args.get(2).unwrap_or(Json::null())))
       Json::null()
     }
     "retire.of" => Json::array(wc.own_in(s(0)).map(Json::string(_)))
@@ -302,15 +302,15 @@ async fn P55::start_connects(self : P55) -> Unit {
   let bus = self.bus
   let host = bus.host
   let data = bus.data
-  let fs = connects_fs()
+  let fs = connects_fs(host)
   let log = connects_log()
-  let clock = @connects_hub.Clock::live()
+  let clock = p5_connects_clock()
   let (zh, en) = catalogs_json()
-  let words = @replica_coord.station_words(of_core(zh), of_core(en))
+  let words = @replica_coord.station_words(to_jv(zh), to_jv(en))
   let lang = Ref((bus.lang.val)())
   let config : @connects_hub.Config = {
-    raw: () => of_core((bus.config_raw.val)()),
-    update_soon: async fn(f) { ignore((bus.config_update.val)(raw => to_core(f(of_core(raw))))) },
+    raw: () => to_jv((bus.config_raw.val)()),
+    update_soon: async fn(f) { ignore((bus.config_update.val)(raw => of_jv(f(to_jv(raw))))) },
     listen: f => (bus.config_listen.val)(_raw => f()),
     written: async fn() { () },
   }
@@ -321,16 +321,46 @@ async fn P55::start_connects(self : P55) -> Unit {
     Some(w) => self.memberships().iter().any(m => m.0 == w)
   }
   let workspace_ref : Ref[@connects_hub.WorkspaceConnects?] = Ref(None)
+  let kinds : Map[String, @connects_hub.Connects] = {}
+  // (each connect's surface as the hub reads it at once, sessions/chat.ts `ChatSurface`: this station's, and those of
+  // the connects of other stations a chat here runs on, connects/workspace.ts `agents.surfaces`)
+  let all_surfaces = () => {
+    let all : Map[String, Json] = {}
+    for _, c in kinds {
+      for conf in c.connects() {
+        guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) else { continue }
+        if c.chats(id) is Some(s) { all[id] = p55_surface_json(s) }
+      }
+    }
+    if workspace_ref.val is Some(wc) {
+      for conf in wc.remote.connects() {
+        guard of_jv(conf) is Object(m) && m.get("id") is Some(String(id)) && !all.contains(id) else { continue }
+        if wc.remote.surface(id) is Some(r) { all[id] = p55_surface_json(r.surface()) }
+      }
+    }
+    all
+  }
+  // (the connects of other stations a chat here runs on told the hub with their surfaces, connects/workspace.ts
+  // `agents.connects`: before it is handed an event of one, so that it knows the connect)
+  let sync_remote_to_hub = async fn() {
+    guard workspace_ref.val is Some(wc) else { return }
+    ignore((bus.hub_ask.val)("remoteConnects", Json::array(wc.remote.connects().map(of_jv)))) catch {
+      e => self.warn("connects", "the connects of other stations not told the hub", e)
+    }
+    ignore((bus.hub_ask.val)("surfaces", Json::object(all_surfaces()))) catch {
+      e => self.warn("connects", "the connects' surfaces not told the hub", e)
+    }
+  }
   let receive = async fn(connect : String, event : @jsjson.JValue) -> Unit {
     match workspace_ref.val {
       Some(wc) => wc.receive(connect, event)
-      None => ignore(self.hub("hub.receive", [Json::string(connect), to_core(event)]))
+      None => ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)]))
     }
   }
   let options : @connects_hub.ConnectsOptions = {
     data,
     store: {
-      live_sessions: () => attempt(() => bus.store.running_sessions()).unwrap_or([]).filter_map(r => p55_jstr(r, "key")),
+      live_sessions: () => attempt(() => bus.store.running_sessions()).unwrap_or([]).filter_map(r => jtext(r, "key")),
       notify: key => bus.notify_store({ "type": Json::string("session"), "key": Json::string(key) }),
     },
     config,
@@ -344,7 +374,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   // Slack: a connect's surface on Slack's Web API and Socket Mode ($STILLFAIL_SLACK_API: a stand-in's), each socket's
   // events taken as the hub's.
   let client = @slack.SlackClient::new(@slack.host_net(host, @slack.Wall::new(wall_ms().to_double())), base=@slack.api_base(env_get("STILLFAIL_SLACK_API")))
-  let slack_log = (level : String, part : String, said : String, fields : @jsjson.JValue) => slice_log(level, part, said, to_core(fields))
+  let slack_log = (level : String, part : String, said : String, fields : @jsjson.JValue) => slice_log(level, part, said, of_jv(fields))
   let slack = @connects_hub.make_connects(options, {
     kind: "slack",
     names: "slack-names.json",
@@ -355,7 +385,7 @@ async fn P55::start_connects(self : P55) -> Unit {
       // (its names kept in the connects' book, the one its pages read: connects/names.ts)
       let names : @slack.Names = {
         person: (key, fetch, stale) => book.person(key, fetch, stale~),
-        channel: (key, fetch) => match to_core(book.channel(key, async fn() { of_core(p55_jopt(fetch())) })) {
+        channel: (key, fetch) => match of_jv(book.channel(key, async fn() { to_jv(jopt(fetch())) })) {
           String(n) => Some(n)
           _ => None
         },
@@ -365,7 +395,7 @@ async fn P55::start_connects(self : P55) -> Unit {
           sc.app_token,
           sc.bot_token,
           client,
-          @slack.host_clock(host),
+          @slack.host_clock(host, now=() => p5_epoch_ms().to_double()),
           @slack.host_ws(host),
           words,
           lang,
@@ -378,21 +408,21 @@ async fn P55::start_connects(self : P55) -> Unit {
       slack_connection(surface)
     },
     seen: (c, i) => {
-      let id = to_core(i)
+      let id = of_jv(i)
       @slack.slack_seen(slack_connect_of(c), {
-        team: p55_jtext(id, "team"),
-        team_id: p55_jtext(id, "teamId"),
-        url: p55_jtext(id, "url"),
-        bot_user_id: p55_jtext(id, "botUserId"),
-        bot_name: p55_jtext(id, "botName"),
-        bot_image: p55_jstr(id, "botImage"),
-        bot_id: p55_jtext(id, "botId"),
+        team: jtext_or_empty(id, "team"),
+        team_id: jtext_or_empty(id, "teamId"),
+        url: jtext_or_empty(id, "url"),
+        bot_user_id: jtext_or_empty(id, "botUserId"),
+        bot_name: jtext_or_empty(id, "botName"),
+        bot_image: jtext(id, "botImage"),
+        bot_id: jtext_or_empty(id, "botId"),
       })
     },
   })
   self.closing(async fn() { slack.close() })
   // The other platforms' (live_p5_5_platforms.mbt), each on its own: one that is not made is said, the rest are.
-  let kinds : Map[String, @connects_hub.Connects] = { "slack": slack }
+  kinds["slack"] = slack
   let more : Array[(String, async () -> @connects_hub.Connects)] = [
     ("feishu", async fn() { self.start_feishu(options) }),
     ("comma", async fn() { self.start_comma(options) }),
@@ -407,40 +437,44 @@ async fn P55::start_connects(self : P55) -> Unit {
   // The workspace's connects: a thread's chat on another station of the workspace reached there.
   let peer_bus : @connects_hub.Bus = {
     ask: async fn(station, request, body) {
-      let r = to_core(request)
+      let r = of_jv(request)
       let bytes = match body {
         NoBody => None
         DataBody(b) => Some(b)
         FileBody(p, from, len) => Some((@drive.read_part(p, from, len) catch { _ => (b"", 0.0, 0.0) }).0)
       }
-      let (value, back) = bus.call_peer(station, p55_jstr(r, "workspace"), p55_jtext(r, "method"), r, bytes?)
-      { json: of_core(value), bytes: back }
+      let (value, back) = bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r, bytes?)
+      { json: to_jv(value), bytes: back }
     },
     on: (meth, handler) => bus.on_peer(meth, async fn(from, ws, params, bytes) {
-      let a = handler(from, of_core(with_method(params, meth)), ws, bytes)
-      (to_core(a.json), a.bytes)
+      let a = handler(from, to_jv(with_method(params, meth)), ws, bytes)
+      (of_jv(a.json), a.bytes)
     }),
-    heard: None,
+    // (peer.ts `heard`: a station heard from again, a connect's move it may hold settled)
+    heard: Some(f => bus.on_peer_heard(f)),
   }
   let wc = @connects_hub.WorkspaceConnects::new({
     data,
     hub: {
       chat_of: async fn(id) {
         for _, c in kinds {
-          match c.chats(id) {
-            Some(s) => return Some(s)
-            None => ()
-          }
+          if c.chats(id) is Some(s) { return Some(s) }
         }
-        None
+        match workspace_ref.val {
+          Some(wc) => wc.remote.surface(id).map(r => r.surface())
+          None => None
+        }
       },
-      config_connects: async fn() { core_items(p55_jfield((bus.config_raw.val)(), "connects")).map(of_core) },
-      receive: async fn(connect, event) { ignore(self.hub("hub.receive", [Json::string(connect), to_core(event)])) },
-      moved_to: async fn(connect, channel, ts) {
-        match self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]) {
-          String(s) => Some(s)
-          _ => None
+      config_connects: async fn() { jitems(jfield((bus.config_raw.val)(), "connects")).map(to_jv) },
+      receive: async fn(connect, event) {
+        // (one of another station's connects is learned just before its event is handed on: the hub knows it first)
+        if workspace_ref.val is Some(wc) && wc.remote.surface(connect) is Some(_) {
+          sync_remote_to_hub()
         }
+        ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)]))
+      },
+      moved_to: async fn(connect, channel, ts) {
+        as_text(self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]))
       },
       quiet_in: async fn(ws) { self.hub("hub.quietIn", [Json::string(ws)]) is True },
       surface: async fn(id) {
@@ -456,7 +490,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     here: () => bus.key.id,
     home: () => self.home(),
     stations: ws => match self.memberships().search_by(m => m.0 == ws) {
-      Some(i) => self.memberships()[i].3.map(of_core)
+      Some(i) => self.memberships()[i].3.map(to_jv)
       None => []
     },
     bus: peer_bus,
@@ -465,25 +499,22 @@ async fn P55::start_connects(self : P55) -> Unit {
     log,
     speech: { words, lang },
     uuid: () => @drive.random_uuid(),
+    self_load: Some(async fn() {
+      to_jv((bus.jobs_ask.val)("remote.describe", Json::object({})) catch { _ => Json::null() })
+    }),
   })
   workspace_ref.val = Some(wc)
   let live : ConnectsLive = { slack, kinds, workspace: wc }
   connects_live.val = Some(live)
+  // (the connects of other stations its chats run on, known before the hub asks for them: connects/workspace.ts)
+  wc.remote.ready()
+  sync_remote_to_hub()
   // (the agents' side keeps each connect's surface as the hub reads it at once, sessions/chat.ts `ChatSurface`: told
   // each time a connect starts, changes or stops)
   let tell_surfaces = () => {
-    let all : Map[String, Json] = {}
-    for _, c in kinds {
-      for conf in c.connects() {
-        guard to_core(conf) is Object(m) && m.get("id") is Some(String(id)) else { continue }
-        match c.chats(id) {
-          Some(s) => all[id] = p55_surface_json(s)
-          None => ()
-        }
-      }
-    }
+    let all = all_surfaces()
     ignore(
-      bus.host.rt.fork(name="connects' surfaces told", async fn() {
+      bus.host.rt.fork_quiet(name="connects' surfaces told", async fn() {
         ignore((bus.hub_ask.val)("surfaces", Json::object(all))) catch {
           _ => ()
         }
@@ -516,7 +547,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   self.op("agents.along", async fn(arg) {
     let which = match arg {
       String(w) => w
-      _ => p55_jtext(arg, "which")
+      _ => jtext_or_empty(arg, "which")
     }
     match which {
       "left" =>
@@ -534,19 +565,60 @@ async fn P55::start_connects(self : P55) -> Unit {
   }
   // The Slack workspaces a viewer can make apps in, and the apps they made that wait for a connect.
   bus.parts.overview("slackTeams", async fn(viewer, _lang) {
-    p55_jfield(to_core(@slack.slack_overview(Some(of_core((bus.config_raw.val)())), p55_jtext(viewer, "email"))), "slackTeams")
+    jfield(of_jv(@slack.slack_overview(Some(to_jv((bus.config_raw.val)())), jtext_or_empty(viewer, "email"))), "slackTeams")
   })
   bus.parts.overview("slackApps", async fn(viewer, _lang) {
-    p55_jfield(to_core(@slack.slack_overview(Some(of_core((bus.config_raw.val)())), p55_jtext(viewer, "email"))), "slackApps")
+    jfield(of_jv(@slack.slack_overview(Some(to_jv((bus.config_raw.val)())), jtext_or_empty(viewer, "email"))), "slackApps")
+  })
+  // (what the overview shows of each connect config.json names, as its kind says it (connectKind `shown`: slack/index.ts
+  // `slackShown`, the Feishu, Comma and group parts' `shown`), where its connection stands, and every kind a part is
+  // made for: one ask for the overview)
+  self.op("connects.overview", async fn(_arg) {
+    let out = []
+    for c in jitems(jfield((bus.config_raw.val)(), "connects")) {
+      let id = jtext_or_empty(c, "id")
+      let kind = match jfield(c, "kind") {
+        String(k) if k != "" => k
+        _ => "slack"
+      }
+      guard kinds.get(kind) is Some(k) else { continue }
+      let shown = match kind {
+        "slack" => of_jv(@slack.slack_shown(Some(to_jv(c))))
+        "feishu" => {
+          let live = match k.chat(id) {
+            Some(conn) => p55_bot_identity(of_jv((conn.identity)()))
+            None => None
+          }
+          @feishu.shown(@feishu.JV::of_json(c), live).to_json()
+        }
+        "comma" => of_jv(@comma.shown(to_jv(c)))
+        "group" =>
+          match p55_group_parts.val {
+            Some(g) => of_jv(g.shown(to_jv(c)))
+            None => Json::object({})
+          }
+        _ => Json::object({})
+      }
+      let st = match k.state(to_jv(Json::string(id))) {
+        Some(s) => of_jv(s)
+        None => Json::null()
+      }
+      out.push(({ "id": Json::string(id), "kind": Json::string(kind), "connection": st, "shown": shown } : Json))
+    }
+    let made = []
+    for kind, _ in kinds {
+      made.push(Json::string(kind))
+    }
+    { "kinds": Json::array(made), "connects": Json::array(out) }
   })
   // (each connect and where its connection stands: what the agents' overview shows of them, connectKind's)
   self.op("connects.states", async fn(_arg) {
     let out = []
     for kind, k in kinds {
       for c in k.connects() {
-        let id = p55_jtext(to_core(c), "id")
-        let st = match k.state(of_core({ "id": Json::string(id) })) {
-          Some(s) => to_core(s)
+        let id = jv_text(c, "id").unwrap_or("")
+        let st = match k.state(to_jv(Json::string(id))) {
+          Some(s) => of_jv(s)
           None => Json::null()
         }
         out.push(({ "id": Json::string(id), "kind": Json::string(kind), "connection": st } : Json))
@@ -559,12 +631,12 @@ async fn P55::start_connects(self : P55) -> Unit {
   bus.parts.routes([
     p55_route("POST", "^/connects/([^/]+)/move$", async fn(r) {
       let lang = lang_in(r)
-      let to = p55_jtext(p55_jfield(r, "body"), "station")
+      let to = jtext_or_empty(jfield(r, "body"), "station")
       if to == "" {
         return refused(400, tr(lang, "station.connect.moveWhere"))
       }
-      let viewer = p55_jfield(r, "viewer")
-      match (try { Ok(wc.move_to(path_seg(r, 2), to, p55_jstr(viewer, "workspace"), lang=Some(lang))) } catch { e => Err(e) }) {
+      let viewer = jfield(r, "viewer")
+      match (try { Ok(wc.move_to(path_seg(r, 2), to, jtext(viewer, "workspace"), lang=Some(lang))) } catch { e => Err(e) }) {
         Ok(_) => answered(200, self.hub("agents.overview", [viewer, Json::string(lang)]))
         Err(e) => refused(500, "\{e}")
       }
@@ -594,20 +666,28 @@ async fn P55::start_connects(self : P55) -> Unit {
     }
   })
   for op in ["connects.kindOf", "connects.ownKinds", "connects.heldBy", "connects.movedAway", "connects.runsOn", "connects.move", "connects.arrived", "connects.route", "connects.describedFor", "connects.learnOf", "retire.of", "retire.named", "retire.move", "retire.takeHeld"] {
-    self.op(op, async fn(arg) { self.coord_connects(op, core_items(arg)) })
+    // (those that may change what this station knows of other stations' connects tell the hub again after)
+    let changes = ["connects.move", "connects.arrived", "connects.route", "connects.learnOf", "retire.move", "retire.takeHeld"].contains(op)
+    self.op(op, async fn(arg) {
+      let out = self.coord_connects(op, jitems(arg))
+      if changes {
+        sync_remote_to_hub()
+      }
+      out
+    })
   }
   // A connect's chat surface by its call's name (sessions/chat.ts `ChatSurface`), as the agents' side and its storage ask
   // it: `[connect, ...args]`, `{connect, args}`, or `{connect, thread, text, files, user, …}` by the call's fields.
   self.prefix_op("chat.", async fn(name, arg) {
     let meth = name[5:].to_owned()
     guard connects_live.val is Some(live) else { raise BusError("no connects here") }
-    let field = (k : String) => p55_jfield(arg, k)
+    let field = (k : String) => jfield(arg, k)
     let (connect, args) : (String, Array[Json]) = match arg {
       Array([String(c), .. rest]) => (c, rest.to_array())
-      Object(m) if m.get("args") is Some(Array(a)) => (p55_jtext(arg, "connect"), a)
+      Object(m) if m.get("args") is Some(Array(a)) => (jtext_or_empty(arg, "connect"), a)
       Object(_) =>
         (
-          p55_jtext(arg, "connect"),
+          jtext_or_empty(arg, "connect"),
           match meth {
             "post" => [field("thread"), field("text"), field("files"), field("card")]
             "working" => [field("thread"), field("ts"), field("status"), field("page")]
@@ -635,32 +715,32 @@ async fn P55::start_connects(self : P55) -> Unit {
           },
         )
       "bot" => {
-        let name = if (s.has)("botName") { to_core((s.get)("botName", [])) } else { Json::null() }
-        { "name": name, "user": to_core((s.get)("botUserId", [])) }
+        let name = if (s.has)("botName") { of_jv((s.get)("botName", [])) } else { Json::null() }
+        { "name": name, "user": of_jv((s.get)("botUserId", [])) }
       }
       // (what answers at once is the surface's `get`: connects_hub chat.mbt `Surface`)
-      "botUserId" | "workspace" => to_core((s.get)(meth, args.map(of_core)))
-      "post" => to_core((s.call)(meth, args.map(of_core)))
+      "botUserId" | "workspace" => of_jv((s.get)(meth, args.map(to_jv)))
+      "post" => of_jv((s.call)(meth, args.map(to_jv)))
       "botName" | "identity" | "platform" | "mention" | "cards" | "loginCards" | "sessionLink" | "answerFiles" | "knownPerson"
       | "knownChannel" | "working" | "standsAt" =>
         if (s.has)(meth) {
-          to_core((s.get)(meth, args.map(of_core)))
+          of_jv((s.get)(meth, args.map(to_jv)))
         } else {
-          to_core(@connects_hub.undefined())
+          of_jv(@connects_hub.undefined())
         }
       _ =>
         if (s.has)(meth) {
-          to_core((s.call)(meth, args.map(of_core)))
+          of_jv((s.call)(meth, args.map(to_jv)))
         } else {
-          to_core(@connects_hub.undefined())
+          of_jv(@connects_hub.undefined())
         }
     }
   })
   self.op("connects.chat", async fn(arg) {
     // (a connect's surface called by name: the hub's posting, P5-2's)
-    let id = p55_jtext(arg, "connect")
+    let id = jtext_or_empty(arg, "connect")
     match live.chat(id) {
-      Some(s) => to_core((s.call)(p55_jtext(arg, "call"), core_items(p55_jfield(arg, "args")).map(of_core)))
+      Some(s) => of_jv((s.call)(jtext_or_empty(arg, "call"), jitems(jfield(arg, "args")).map(to_jv)))
       None => raise BusError("no such connect connected here: \{id}")
     }
   })
@@ -692,14 +772,14 @@ fn P55::connect_threads_store(self : P55) -> @connects_hub.WsStore {
     },
     drop_connect_threads: async fn(c) { run("DELETE FROM connect_threads WHERE connect = ?", [Json::string(c)]) },
     connect_threads: async fn(c) {
-      all("SELECT channel, thread_ts, station FROM connect_threads WHERE connect = ?", [Json::string(c)]).map(r => of_core({
+      all("SELECT channel, thread_ts, station FROM connect_threads WHERE connect = ?", [Json::string(c)]).map(r => to_jv({
         "channel": Json::string(txt(r, "channel")),
         "threadTs": Json::string(txt(r, "thread_ts")),
         "station": Json::string(txt(r, "station")),
       }))
     },
     connect_local_threads: async fn(c) {
-      all("SELECT DISTINCT t.channel, t.thread_ts FROM thread_sessions s JOIN threads t ON t.id = s.thread WHERE s.connect = ?", [Json::string(c)]).map(r => of_core({
+      all("SELECT DISTINCT t.channel, t.thread_ts FROM thread_sessions s JOIN threads t ON t.id = s.thread WHERE s.connect = ?", [Json::string(c)]).map(r => to_jv({
         "channel": Json::string(txt(r, "channel")),
         "threadTs": Json::string(txt(r, "thread_ts")),
       }))
@@ -707,7 +787,7 @@ fn P55::connect_threads_store(self : P55) -> @connects_hub.WsStore {
     thread_at: async fn(surface, ch, ts) {
       match all("SELECT id, surface, channel, thread_ts FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?", [Json::string(surface), Json::string(ch), Json::string(ts)]) {
         [r, ..] =>
-          of_core({
+          to_jv({
             "id": r.get("id").unwrap_or(Json::null()),
             "surface": Json::string(txt(r, "surface")),
             "channel": Json::string(txt(r, "channel")),
@@ -724,7 +804,7 @@ fn P55::connect_threads_store(self : P55) -> @connects_hub.WsStore {
 /// connect, or the station's one bot named by `bot`); not the methods that manage the app itself. A write in a thread is
 /// told the hub, whose the thread's sessions are (`hub.slackWrote`).
 async fn P55::slack_api(self : P55, slack : @connects_hub.Connects, session : String, args : Json) -> String {
-  let meth = p55_jtext(args, "method").trim().to_owned()
+  let meth = jtext_or_empty(args, "method").trim().to_owned()
   let valid = meth != "" && meth.iter().all(c => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_')
   if !valid || !meth.contains(".") {
     raise BusError("not a Slack method: \{Json::string(meth).stringify()}")
@@ -732,19 +812,19 @@ async fn P55::slack_api(self : P55, slack : @connects_hub.Connects, session : St
   if meth.has_prefix("admin.") || meth.has_prefix("apps.") || meth.has_prefix("oauth.") || meth == "auth.revoke" {
     raise BusError("\{meth} is not for agents: it manages the Slack app itself")
   }
-  let params = match p55_jfield(args, "params") {
+  let params = match jfield(args, "params") {
     Object(_) as p => p
     _ => Json::object({})
   }
-  let ids = slack.connects().map(c => p55_jtext(to_core(c), "id"))
+  let ids = slack.connects().map(c => jv_text(c, "id").unwrap_or(""))
   let own = match (try { Ok(self.bus.store.get_session(session)) } catch { e => Err(e) }) {
-    Ok(row) => p55_jstr(row, "connect")
+    Ok(row) => jtext(row, "connect")
     Err(_) => None
   }
-  let connect = match (p55_jstr(args, "bot"), own) {
+  let connect = match (jtext(args, "bot"), own) {
     (Some(b), _) if b.trim() != "" =>
-      match slack.connects().search_by(c => p55_jtext(to_core(c), "id") == b || p55_jstr(to_core(c), "botName") == Some(b)) {
-        Some(i) => p55_jtext(to_core(slack.connects()[i]), "id")
+      match slack.connects().search_by(c => jv_text(c, "id").unwrap_or("") == b || jv_text(c, "botName") == Some(b)) {
+        Some(i) => jv_text(slack.connects()[i], "id").unwrap_or("")
         None => raise BusError("no Slack bot \{b} on this station: \{ids}")
       }
     (_, Some(c)) if ids.contains(c) => c
@@ -756,9 +836,9 @@ async fn P55::slack_api(self : P55, slack : @connects_hub.Connects, session : St
       }
   }
   guard slack.chats(connect) is Some(chat) else { raise BusError("the Slack connect \{connect} is not connected") }
-  let result = to_core((chat.call)("api", [of_core(Json::string(meth)), of_core(params)]))
+  let result = of_jv((chat.call)("api", [to_jv(Json::string(meth)), to_jv(params)]))
   let write = meth == "chat.postMessage" || meth == "chat.update" || meth == "chat.delete" || meth.has_prefix("reactions.") || meth == "files.completeUploadExternal" || meth == "chat.postEphemeral"
-  if write && (p55_jstr(params, "channel") is Some(_) || p55_jstr(params, "channel_id") is Some(_)) {
+  if write && (jtext(params, "channel") is Some(_) || jtext(params, "channel_id") is Some(_)) {
     ignore(self.hub("hub.slackWrote", [Json::string(session), Json::string(connect), Json::string(meth), params, result])) catch {
       _ => ()
     }
@@ -822,7 +902,7 @@ let p55_surface_calls : Array[String] = [
 ///|
 /// A connect's surface as the agents' side keeps it: its bot, its platform's workspace, the calls it has.
 fn p55_surface_json(s : @connects_hub.Surface) -> Json {
-  let got = (name : String) => match to_core((s.get)(name, [])) {
+  let got = (name : String) => match of_jv((s.get)(name, [])) {
     Object(m) if m.contains("$u") => Json::null()
     v => v
   }
@@ -839,4 +919,31 @@ fn p55_surface_json(s : @connects_hub.Surface) -> Json {
     }
   }
   Json::object(out)
+}
+
+///|
+/// A Feishu connection's identity as its surface says it (`BotIdentity::to_jv`), None where it has none yet.
+fn p55_bot_identity(j : Json) -> @feishu.BotIdentity? {
+  guard j is Object(m) && m.get("botUserId") is Some(String(_)) else { return None }
+  let t = (k : String) => opt_str(m.get(k)).unwrap_or("")
+  Some({
+    team: t("team"),
+    team_id: t("teamId"),
+    url: t("url"),
+    bot_user_id: t("botUserId"),
+    bot_name: t("botName"),
+    bot_image: opt_str(m.get("botImage")),
+    bot_id: t("botId"),
+  })
+}
+
+///|
+/// The group's part, made by `start_group`, for what the overview shows of a group connect.
+let p55_group_parts : Ref[@connects_hub.GroupParts?] = Ref(None)
+
+///|
+/// The connects' clock (`@connects_hub.Clock::live`) with its time since the epoch: what it keeps (a name's `at`) is
+/// read again by the next process.
+fn p5_connects_clock() -> @connects_hub.Clock {
+  { ..@connects_hub.Clock::live(), now: () => p5_epoch_ms().to_double() }
 }

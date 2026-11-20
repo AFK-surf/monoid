@@ -1,9 +1,9 @@
 #!/bin/bash
 # station/mb/build.sh with every tool it runs made up (moon, mbc, cc, ar, getconf: none compiles anything): the jobs it
 # gives mbc (every core alone, shared among the readers scripts/native.ts builds side by side, MBC_JOBS over both),
-# moonbit.h taken from the store by its content (so two moons of one machine, ci-1's runners, compile the same units),
-# MoonBit's runtime archived once and kept in MBC_STORE until what it is made of changes, and moon's lock left by a
-# build gone taken over.
+# MoonBit headers taken from the store by their names and contents (so ci-1's runners compile the same units),
+# MoonBit's runtime archived once and kept in MBC_STORE until what it is made of changes, moon's lock left by a
+# build gone taken over, and --harness building the tests' program (src/reader_harness) beside the reader, each its own.
 #   bash scripts/station-mb-build-test.sh [BUILD_SH]     (BUILD_SH: another build.sh to hold to the same, e.g. an older one)
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -15,9 +15,9 @@ fail() { echo "station-mb-build-test: $*" >&2; exit 1; }
 
 # The tree build.sh is run in: its own place, libs/mbui/scripts/mbc beside it, the tools on PATH.
 mkdir -p "$t/root/station/mb/src/reader" "$t/root/libs/mbui/scripts" "$t/bin" "$t/moon/lib/runtime" "$t/moon/include" "$t/log" \
-  "$t/root/rules/src" "$t/root/libs/mbui/src/effect" "$t/root/libs/mbui/src/halt"
+  "$t/root/rules/src" "$t/root/libs/base/src" "$t/root/libs/mbui/src/effect" "$t/root/libs/mbui/src/halt"
 # (what the prepared C's key reads: build.sh's own tree's files)
-for f in station/mb/moon.mod station/mb/moon.work station/mb/src/reader/reader.mbt rules/moon.mod rules/src/a.mbt \
+for f in station/mb/moon.mod station/mb/moon.work station/mb/src/reader/reader.mbt rules/moon.mod rules/src/a.mbt libs/base/moon.mod libs/base/src/a.mbt \
   libs/mbui/moon.mod libs/mbui/scripts/mbc-stub.sh libs/mbui/src/effect/a.mbt libs/mbui/src/halt/a.mbt; do
   echo "$f" > "$t/root/$f"
 done
@@ -39,8 +39,10 @@ if [ -n "$dir" ]; then
   chmod +x "$dir/native/release/build/station/cprep/cprep.exe"
   exit 0
 fi
-mkdir -p _build/native/release/build/station/reader
-echo 'int main(void){return 0;}' > _build/native/release/build/station/reader/reader.c
+pkg=$(basename "${@: -1}")
+mkdir -p "_build/native/release/build/station/$pkg"
+echo "int main(void){return 0;} /* $pkg */" > "_build/native/release/build/station/$pkg/$pkg.c"
+echo "$pkg" >> "$LOG/moon-builds"
 EOF
 cat > "$t/bin/getconf" <<'EOF'
 #!/bin/bash
@@ -56,6 +58,7 @@ for a in "$@"; do
   [ "$prev" = -j ] && j=$a
   prev=$a
 done
+cat "$a" > "$LOG/c"
 echo "$j" > "$LOG/jobs"
 mkdir -p "$obj"; echo unit > "$obj/unit.o"; echo "$obj/unit.o"
 EOF
@@ -153,14 +156,31 @@ fresh
 run header || fail "build after a header changed: $(cat "$t/log/build-header.out")"
 [ "$(compiles)" = 2 ] || fail "a runtime header changed: $(compiles) runtime files compiled, not 2"
 
-# 3. Two moons with the same moonbit.h (ci-1's runners, each its own _tool/moon-ci): the same command for mbc, so the
-#    same units, and the same runtime kept.
-cp -R "$t/moon" "$t/moon2"
-fresh; run home1 || fail "MOON_HOME one: $(cat "$t/log/build-home1.out")"
+# 3. Adding or changing a sibling of moonbit.h changes mbc's include directory. Two moons with the same headers
+#    (ci-1's runners, each its own _tool/moon-ci) share the include directory, cflags, and runtime.
+moon_include() { sed -n 's/^-I"\([^"]*\)".*/\1/p' "$t/log/cflags"; }
+inc_before=$(moon_include)
+case "$inc_before" in
+  "$MBC_STORE"/moon-include-*) ;;
+  *) fail "expected a cached MoonBit include directory in mbc's cflags: $(cat "$t/log/cflags")" ;;
+esac
+printf '%s\n' 'int moonbit_unsafe_string_substring(void);' > "$t/moon/include/extra.h"
+fresh; run added || fail "build after adding extra.h: $(cat "$t/log/build-added.out")"
+inc_added=$(moon_include)
+[ "$inc_added" != "$inc_before" ] || fail "adding extra.h reused $inc_before"
+cmp -s "$t/moon/include/extra.h" "$inc_added/extra.h" || fail "extra.h missing or out of date in $inc_added"
+
+printf '%s\n' 'int moonbit_unsafe_string_substring(int);' > "$t/moon/include/extra.h"
+fresh; run home1 || fail "build after changing extra.h: $(cat "$t/log/build-home1.out")"
+inc_changed=$(moon_include)
+[ "$inc_changed" != "$inc_added" ] || fail "changing extra.h reused $inc_added"
+cmp -s "$t/moon/include/extra.h" "$inc_changed/extra.h" || fail "extra.h missing or out of date in $inc_changed"
+
 c1=$(cat "$t/log/cflags")
+cp -R "$t/moon" "$t/moon2"
 fresh; MOON_HOME="$t/moon2" run home2 || fail "MOON_HOME two: $(cat "$t/log/build-home2.out")"
 c2=$(cat "$t/log/cflags")
-[ "$c1" = "$c2" ] || fail "two moons of one moonbit.h: mbc given other cflags ($c1 / $c2)"
+[ "$c1" = "$c2" ] || fail "two moons with identical headers: mbc given different cflags ($c1 / $c2)"
 case "$c1" in *"$t/moon"*) fail "mbc's cflags name a moon's own directory: $c1" ;; esac
 [ "$(compiles)" = 0 ] || fail "the second moon, its runtime the same: $(compiles) runtime files compiled, not 0"
 
@@ -173,4 +193,21 @@ bounded "$p" "a build after one gone left moon's lock" || fail "a build after on
 pids=()
 [ ! -e "$t/root/station/mb/_build/moon-gen.lock" ] || fail "moon's lock left after a build ended"
 
-echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over"
+# 5. --harness: the tests' program from src/reader_harness, into stillfail-reader-harness-TARGET by default, its C
+#    prepared and kept apart from the reader's (prepped-reader_harness.c), each taken as it was made thereafter.
+rm -rf "$t/root/station/mb/_build"; fresh
+bash "$t/root/station/mb/build.sh" --harness darwin-arm64 > "$t/log/build-harness.out" 2>&1 || fail "--harness: $(cat "$t/log/build-harness.out")"
+[ -f "$t/root/station/mb/_build/stillfail-reader-harness-darwin-arm64" ] || fail "--harness: not built into _build/stillfail-reader-harness-darwin-arm64"
+[ ! -e "$t/root/station/mb/_build/stillfail-reader-darwin-arm64" ] || fail "--harness: built the reader too"
+[ "$(cat "$t/log/moon-builds")" = reader_harness ] || fail "--harness: moon built $(cat "$t/log/moon-builds"), not reader_harness"
+grep -q 'reader_harness' "$t/log/c" || fail "--harness: mbc given $(cat "$t/log/c"), not the harness's C"
+[ -f "$t/root/station/mb/_build/prepped-reader_harness.c" ] || fail "--harness: its prepared C not kept as prepped-reader_harness.c"
+fresh; run plain || fail "the reader after the harness: $(cat "$t/log/build-plain.out")"
+[ "$(cat "$t/log/moon-builds")" = reader ] || fail "the reader after the harness: moon built $(cat "$t/log/moon-builds"), not reader"
+grep -q '/\* reader \*/' "$t/log/c" || fail "the reader after the harness: mbc given $(cat "$t/log/c"), not the reader's C"
+fresh; bash "$t/root/station/mb/build.sh" --harness darwin-arm64 "$t/out/harness2" > "$t/log/build-harness2.out" 2>&1 || fail "--harness again: $(cat "$t/log/build-harness2.out")"
+[ ! -e "$t/log/moon-builds" ] || fail "--harness again, nothing changed: moon built $(cat "$t/log/moon-builds") again"
+grep -q 'reader_harness' "$t/log/c" || fail "--harness again: mbc given $(cat "$t/log/c"), not the harness's kept C"
+grep -q 'unit.o' "$t/out/harness2" || fail "--harness into OUT: not linked there"
+
+echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over, --harness's program apart from the reader"

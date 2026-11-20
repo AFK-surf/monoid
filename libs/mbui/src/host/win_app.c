@@ -61,7 +61,8 @@ static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
 // taskbar for each. The window drawn or handing input now is put in place for it (win_use: `ws`, and the renderer's)
 // and the first put back after: what the app asks of the window then (its size, its scale, a frame, its input method,
 // a drag, its cursor) is that window's, and the app is told which it is (mb_host_windows' 4). Closed by the person,
-// the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes on; the first put away, they close with it.
+// the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes on; the first put away (hidden, not destroyed),
+// the windows beside it stay.
 typedef struct WinSlot {
   HWND h;  // NULL: no window of that number
   int want_frame;
@@ -73,6 +74,10 @@ typedef struct WinSlot {
   double caret[4];
   int marked_len;
   WCHAR high_surrogate;
+  // the kind of field it is (mb_host_ime_action: @hostapi.ime_action_*), and whether the system's input method is
+  // given the window now (ime_sync): never while a field of digits or a secret has the keys
+  int32_t ime_action;
+  int ime_associated;
   // the pointer's shape (@hostapi.set_cursor), whether its leaving is asked to be told (TrackMouseEvent), whether the
   // right button is down
   int cursor_kind, tracking_leave, right_down;
@@ -91,6 +96,22 @@ typedef struct WinSlot {
   int touch_moving;
   // a window beside the first, out of sight (cloaked) till its first frame is presented (win_open, held_shown)
   int held;
+  // what the app opened it as (mb_host_windows' 1, its spec; the first's, window_setup): its role (its place and size
+  // kept under it as it closes, a second of the role set down and to the right of the one before), when it opened,
+  // its least size (points) and whether its top row is the app's (an inset window: WM_NCCALCSIZE and the rest)
+  char role[64];
+  int opened;
+  double min_w, min_h;
+  int inset;
+  // filling its monitor (mb_host_set_full_screen): its place, styles and frame before, put back as it comes out
+  int full_screen;
+  WINDOWPLACEMENT saved_place;
+  LONG_PTR saved_style, saved_ex_style;
+  // the last press in its top row that asked to drag it (mb_host_window_drag): when and where, for the second of a
+  // double click there, its own (a press in another window is no first half of it); the move itself begun once the
+  // app's handling of the press is over (WM_MB_DRAG: Windows' move is a loop of its own, which draws frames as it goes)
+  DWORD drag_time;
+  POINT drag_at;
 } WinSlot;
 // (each beside the first made fresh as it opens: win_slot_fresh)
 static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0}};
@@ -137,11 +158,6 @@ static double setup_w, setup_h, setup_min_w, setup_min_h;
 // An inset window (@hostapi.window_setup's inset): no title bar of the system's, the app's top row its title bar, the
 // window's buttons the app's to draw (@ui's window_keys_own; each window's: WinSlot's snap_*)
 static int setup_inset;
-// the last press that asked to drag the window (mb_host_window_drag): when and where, for the second of a double click;
-// the move itself begun once the app's handling of the press is over (WM_MB_DRAG: Windows' move is a loop of its own,
-// which draws frames as it goes)
-static DWORD drag_time;
-static POINT drag_at;
 // a message posted from outside (mb_post_wake), a stream shown by its layer that said something (mb_app_streamed:
 // wParam its id), each told the app between frames, which asks for a frame only where something is left for one
 enum { WM_MB_DRAG = WM_APP + 6, WM_MB_POSTED = WM_APP + 7, WM_MB_STREAMED = WM_APP + 8, WM_MB_CALL = WM_APP + 9,
@@ -194,10 +210,10 @@ static void ime_place(void);
 
 // The window's size for a client area of `r` (pixels, at `dpi`): the system's frame around it; an inset window's
 // without its title bar and its top border, which its client area takes (WM_NCCALCSIZE)
-static void window_for_client(RECT *r, UINT dpi) {
+static void window_for_client(RECT *r, UINT dpi, int inset) {
   LONG top = r->top;
   AdjustWindowRectExForDpi(r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi ? dpi : 96);
-  if (setup_inset) r->top = top;
+  if (inset) r->top = top;
 }
 
 // How thick the system's frame is at the window's top (its resize border with its padding), in pixels: what a
@@ -374,6 +390,38 @@ static int frames_round(void) {
 }
 
 // ---- input method ----
+
+static void ime_compose(const WCHAR *s, int n, int cursor);
+static int key_catching;  // (win_keys.h: a key catcher has the focus, whatever field had it before)
+
+// The system's input method given the window while a field takes the keys, but one of digits (a code) or a secret (a
+// password; @hostapi.ime_action_number, ime_action_secret): an input method there catches the digits and letters
+// typed (a Chinese one, on by default, turned 1 into a candidate), and a secret's words would go through it. Without
+// one the keys still come as WM_CHAR, as a keyboard's own. Taken away, what it was composing is let go.
+static void ime_sync(void) {
+  int want = ws->ime_active && (key_catching || (ws->ime_action != 3 && ws->ime_action != 4));
+  if (want == ws->ime_associated) return;
+  if (want) {
+    ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
+  } else {
+    HIMC imc = ImmGetContext(ws->h);
+    if (imc) {
+      ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
+      ImmReleaseContext(ws->h, imc);
+    }
+    ImmAssociateContextEx(ws->h, NULL, 0);
+    // (a field still taking the keys is told its composition went)
+    if (ws->ime_active && ws->marked_len) ime_compose(NULL, 0, 0);
+    ws->marked_len = 0;
+  }
+  ws->ime_associated = want;
+}
+
+// the kind of field taking the keys (@hostapi.ime_action_*), said just before set_ime (editor.mbt)
+void mb_host_ime_action(int32_t kind) {
+  ws->ime_action = kind;
+  ime_sync();
+}
 
 static void ime_place(void) {
   if (!ws->ime_active) return;
@@ -581,6 +629,110 @@ static void pointer_button(int kind, LPARAM lp, int button) {
   pointer_by(0, kind, GET_X_LPARAM(lp) / ws->scale, GET_Y_LPARAM(lp) / ws->scale, button);
 }
 
+// The pointer held by a window (@hostapi.set_pointer_lock): the system's pointer hidden and held where it is (clipped to
+// that one pixel), the mouse read raw (WM_INPUT's RAWMOUSE, its own distance each time in the mouse's own counts, as a
+// browser's movementX on Windows and as the other machine's SendInput moves by them, summed till the app takes it:
+// mb_host_pointer_delta) and each read a move where the pointer stays; let
+// go of as the window goes out of focus (WM_KILLFOCUS, WM_ACTIVATE) or is closed.
+static int lock_win = -1;
+static POINT lock_at;
+static double lock_dx, lock_dy;
+static void lock_set(int on) {
+  if (on == (lock_win >= 0)) return;
+  RAWINPUTDEVICE rid = {0x01, 0x02, on ? 0 : RIDEV_REMOVE, on ? ws->h : NULL};
+  if (on) {
+    if (!ws->h || GetForegroundWindow() != ws->h) return;
+    if (!RegisterRawInputDevices(&rid, 1, sizeof rid)) return;
+    lock_win = win_active;
+    GetCursorPos(&lock_at);
+    RECT r = {lock_at.x, lock_at.y, lock_at.x + 1, lock_at.y + 1};
+    ClipCursor(&r);
+    ShowCursor(FALSE);
+  } else {
+    lock_win = -1;
+    RegisterRawInputDevices(&rid, 1, sizeof rid);
+    ClipCursor(NULL);
+    ShowCursor(TRUE);
+  }
+  lock_dx = lock_dy = 0;
+}
+void mb_host_pointer_lock(int32_t on) { lock_set(on ? 1 : 0); }
+int32_t mb_host_pointer_locked(void) { return lock_win >= 0; }
+void mb_host_pointer_delta(double *out) {
+  out[0] = lock_dx;
+  out[1] = lock_dy;
+  lock_dx = lock_dy = 0;
+}
+// A raw read of the mouse while the pointer is held: its distance summed, a move told where the pointer stays.
+static void lock_input(HWND h, LPARAM lp) {
+  if (lock_win != win_active) return;
+  RAWINPUT in;
+  UINT size = sizeof in;
+  if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &in, &size, sizeof(RAWINPUTHEADER)) == (UINT)-1) return;
+  if (in.header.dwType != RIM_TYPEMOUSE || (in.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) return;
+  if (in.data.mouse.lLastX == 0 && in.data.mouse.lLastY == 0) return;
+  lock_dx += in.data.mouse.lLastX;
+  lock_dy += in.data.mouse.lLastY;
+  POINT p = lock_at;
+  ScreenToClient(h, &p);
+  pointer_by(0, 1, p.x / ws->scale, p.y / ws->scale, 0);
+}
+
+// The game controllers connected (@hostapi.gamepads): XInput's four slots, read as the W3C's Standard Gamepad (its
+// sticks down positive: XInput's up), from whichever of its DLLs the system has (none: no controllers).
+typedef struct {
+  WORD wButtons;
+  BYTE bLeftTrigger, bRightTrigger;
+  SHORT sThumbLX, sThumbLY, sThumbRX, sThumbRY;
+} XPad;
+typedef struct {
+  DWORD dwPacketNumber;
+  XPad Gamepad;
+} XState;
+typedef DWORD(WINAPI *XGetState)(DWORD, XState *);
+static XGetState xinput_get(void) {
+  static int tried;
+  static XGetState get;
+  if (!tried) {
+    tried = 1;
+    HMODULE m = LoadLibraryW(L"xinput1_4.dll");
+    if (!m) m = LoadLibraryW(L"xinput9_1_0.dll");
+    if (m) get = (XGetState)(void *)GetProcAddress(m, "XInputGetState");
+  }
+  return get;
+}
+static double stick(SHORT v) { return v < 0 ? v / 32768.0 : v / 32767.0; }
+int32_t mb_host_gamepads(double *out) {
+  XGetState get = xinput_get();
+  if (!get) return 0;
+  int n = 0;
+  for (DWORD i = 0; i < 4; i++) {
+    XState st;
+    if (get(i, &st) != ERROR_SUCCESS) continue;
+    XPad *g = &st.Gamepad;
+    WORD w = g->wButtons;
+    // XInput's bits: 0x1 up, 0x2 down, 0x4 left, 0x8 right, 0x10 start, 0x20 back, 0x40 L3, 0x80 R3, 0x100 LB,
+    // 0x200 RB, 0x1000 A, 0x2000 B, 0x4000 X, 0x8000 Y
+    int b = ((w & 0x1000) ? 1 << 0 : 0) | ((w & 0x2000) ? 1 << 1 : 0) | ((w & 0x4000) ? 1 << 2 : 0) |
+            ((w & 0x8000) ? 1 << 3 : 0) | ((w & 0x100) ? 1 << 4 : 0) | ((w & 0x200) ? 1 << 5 : 0) |
+            (g->bLeftTrigger > 30 ? 1 << 6 : 0) | (g->bRightTrigger > 30 ? 1 << 7 : 0) | ((w & 0x20) ? 1 << 8 : 0) |
+            ((w & 0x10) ? 1 << 9 : 0) | ((w & 0x40) ? 1 << 10 : 0) | ((w & 0x80) ? 1 << 11 : 0) |
+            ((w & 0x1) ? 1 << 12 : 0) | ((w & 0x2) ? 1 << 13 : 0) | ((w & 0x4) ? 1 << 14 : 0) | ((w & 0x8) ? 1 << 15 : 0);
+    double *o = out + n * 9;
+    o[0] = i;
+    o[1] = 1;
+    o[2] = b;
+    o[3] = stick(g->sThumbLX);
+    o[4] = -stick(g->sThumbLY);
+    o[5] = stick(g->sThumbRX);
+    o[6] = -stick(g->sThumbRY);
+    o[7] = g->bLeftTrigger / 255.0;
+    o[8] = g->bRightTrigger / 255.0;
+    n++;
+  }
+  return n;
+}
+
 // A touch screen's fingers (WM_POINTER*), each by its pointer id, handed on as they come (pointer kinds 10 down, 11
 // moved, 12 up, 13 called off: cancelled, the capture taken; the id where a button goes), what they come to the app's
 // to work out (touches.mbt: two of them its, the first let go the second the first, one called off all of it); not a
@@ -738,7 +890,10 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       case WM_ACTIVATE:
       case WM_SHOWWINDOW:
       case WM_SIZE: PostMessageW(hwnd, WM_MB_STATE, 0, 0); break;
-      case WM_DESTROY: win_closed(win_active); return 0;
+      case WM_DESTROY:
+        if (lock_win == win_active) lock_set(0);
+        win_closed(win_active);
+        return 0;
     }
   } else if (life_message(msg, wp, lp, &taken)) {
     return taken;
@@ -755,7 +910,9 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     // its shadow, Windows 11's corners), its title bar and top border the app's top row; maximized, without what of it
     // is past the screen's top edge, as the title bar it has not would have been
     case WM_NCCALCSIZE:
-      if (setup_inset && wp) {
+      // (filling its monitor: all of it the client's, no frame of the system's)
+      if (wp && ws->full_screen) return 0;
+      if (ws->inset && wp) {
         NCCALCSIZE_PARAMS *nc = (NCCALCSIZE_PARAMS *)lp;
         LONG top = nc->rgrc[0].top;
         LRESULT r = DefWindowProcW(h, msg, wp, lp);
@@ -768,7 +925,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     // button (the app's, window_snap: the system's Snap Layouts over it as the pointer rests there); the rest of the
     // top row the app's (it drags the window where it says: mb_host_window_drag)
     case WM_NCHITTEST:
-      if (setup_inset) {
+      if (ws->inset && !ws->full_screen) {
         LRESULT hit = DefWindowProcW(h, msg, wp, lp);
         if (hit != HTCLIENT) return hit;
         POINT p = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -787,7 +944,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     // the system's own handling of its hover; its press and its letting go the host's (not the system's, which would
     // draw a button of its own there)
     case WM_NCMOUSEMOVE:
-      if (setup_inset) {
+      if (ws->inset) {
         if (!ws->tracking_nc_leave) {
           TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE | TME_NONCLIENT, h, 0};
           ws->tracking_nc_leave = TrackMouseEvent(&t) ? 1 : 0;
@@ -801,7 +958,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     case WM_NCLBUTTONDOWN:
     case WM_NCLBUTTONDBLCLK:
-      if (setup_inset && wp == HTMAXBUTTON) {
+      if (ws->inset && wp == HTMAXBUTTON) {
         ws->snap_held = 1;
         SetCapture(h);
         snap_set(2);
@@ -809,7 +966,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       break;
     case WM_NCLBUTTONUP:
-      if (setup_inset && wp == HTMAXBUTTON) return 0;
+      if (ws->inset && wp == HTMAXBUTTON) return 0;
       break;
     case WM_CAPTURECHANGED:
       if (ws->snap_held && (HWND)lp != h) {
@@ -833,11 +990,18 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MB_CALL: ((void (*)(void *))wp)((void *)lp); return 0;  // mb_app_call
     case WM_MB_DRAG:
       if (GetKeyState(VK_LBUTTON) < 0) {
+        int k = win_of(h);
+        POINT at = k >= 0 ? win_slots[k].drag_at : ws->drag_at;
         ReleaseCapture();
-        SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(drag_at.x, drag_at.y));
+        SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(at.x, at.y));
       }
       return 0;
+    // minimized or hidden: what drawing holds beyond its frames given back (glass's levels), made again as it draws
+    case WM_SHOWWINDOW:
+      if (!wp) mb_render_trim();
+      break;
     case WM_SIZE:
+      if (wp == SIZE_MINIMIZED) mb_render_trim();
       ws->want_frame = 1;
       if (sizing) {
         draw_frame();
@@ -845,7 +1009,12 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_ENTERSIZEMOVE: sizing = 1; SetTimer(h, 1, 16, NULL); return 0;
-    case WM_EXITSIZEMOVE: sizing = 0; KillTimer(h, 1); return 0;
+    case WM_EXITSIZEMOVE:
+      sizing = 0;
+      KillTimer(h, 1);
+      // (the first's place kept as it was moved or sized: not a window beside it's)
+      if (h == hwnd) place_keep();
+      return 0;
     case WM_TIMER:
       // (inside the system's move or size loop, its window's frames: the others' as the loop ends)
       if (wake_at >= 0 && mb_now_ms() >= wake_at) {
@@ -893,6 +1062,13 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (ws->right_down) pointer_button(2, lp, 2);
       ws->right_down = 0;
       return 0;
+    // the middle button: the host's 3, down and up, held as the primary is (the window's till it is let go)
+    case WM_MBUTTONDOWN: SetCapture(h); SetFocus(h); pointer_button(0, lp, 3); return 0;
+    case WM_MBUTTONUP:
+      if (!(wp & (MK_LBUTTON | MK_RBUTTON))) ReleaseCapture();
+      pointer_button(2, lp, 3);
+      return 0;
+    case WM_INPUT: lock_input(h, lp); break;
     case WM_CONTEXTMENU: return 0;
     case WM_SETCURSOR:
       if (LOWORD(lp) == HTCLIENT) {
@@ -910,12 +1086,13 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (mm->ptMaxTrackSize.x < 4096) mm->ptMaxTrackSize.x = 4096;
         if (mm->ptMaxTrackSize.y < 4096) mm->ptMaxTrackSize.y = 4096;
       }
-      // the least the app asked for (@hostapi.window_setup), as a client area at the window's scale
-      if (setup_min_w > 0 || setup_min_h > 0) {
+      // the least the app asked for (@hostapi.window_setup, or the spec the window was opened with: its slot's), as a
+      // client area at the window's scale
+      if (ws->min_w > 0 || ws->min_h > 0) {
         UINT dpi = GetDpiForWindow(h);
         double k = win_scale(h);
-        RECT r = {0, 0, (LONG)lround(setup_min_w * k), (LONG)lround(setup_min_h * k)};
-        window_for_client(&r, dpi);
+        RECT r = {0, 0, (LONG)lround(ws->min_w * k), (LONG)lround(ws->min_h * k)};
+        window_for_client(&r, dpi, ws->inset);
         mm->ptMinTrackSize.x = r.right - r.left;
         mm->ptMinTrackSize.y = r.bottom - r.top;
       }
@@ -960,7 +1137,10 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         ime_place();
       }
       return 0;
-    case WM_KILLFOCUS: mb_cb.key(0, 0); catch_keys_focus(0); DestroyCaret(); return 0;
+    case WM_KILLFOCUS:
+      // (the pointer it held let go of, seen again)
+      if (lock_win == win_active) lock_set(0);
+      mb_cb.key(0, 0); catch_keys_focus(0); DestroyCaret(); return 0;
     case WM_IME_SETCONTEXT:
       // we draw the composition ourselves; the system draws the candidates
       lp &= ~(LPARAM)ISC_SHOWUICOMPOSITIONWINDOW;
@@ -970,7 +1150,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_IME_ENDCOMPOSITION:
       if (ws->marked_len) ime_compose(NULL, 0, 0);
       return 0;
-    case WM_DESTROY: exit(0);
+    case WM_DESTROY: place_keep(); exit(0);
   }
   return DefWindowProcW(h, msg, wp, lp);
 }
@@ -1106,6 +1286,9 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   double ww = setup_w > 0 ? setup_w : 900, wh = setup_h > 0 ? setup_h : 720;
   const char *win = getenv("MBUI_WIN");
   if (win) sscanf(win, "%lfx%lf", &ww, &wh);
+  win_slots[0].inset = setup_inset;
+  win_slots[0].min_w = setup_min_w;
+  win_slots[0].min_h = setup_min_h;
   win_making = 0;
   hwnd = CreateWindowExW(0, cls, t, style, CW_USEDEFAULT, CW_USEDEFAULT, (int)ww, (int)wh, NULL, NULL,
                          wc.hInstance, NULL);
@@ -1115,16 +1298,18 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   UINT dpi = GetDpiForWindow(hwnd);
   ws->scale = win_scale(hwnd);
   RECT r = {0, 0, (LONG)lround(ww * ws->scale), (LONG)lround(wh * ws->scale)};
-  window_for_client(&r, dpi);
+  window_for_client(&r, dpi, setup_inset);
   // (SWP_FRAMECHANGED: its frame asked for again, an inset window's without the title bar: WM_NCCALCSIZE)
   SetWindowPos(hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
   ImmAssociateContextEx(hwnd, NULL, 0);  // no input method until an editor has focus
+  // (where it was last left, an app's: win_life.h place_put_back)
+  int show = place_put_back();
   if (!mb_render_init(hwnd)) exit(1);
   // (held: out of sight till the app shows it, mb_host_window_show; shown at once where DWM cannot cloak it)
   if (window_held && !window_shown && !cloak(hwnd, TRUE)) window_shown = 1;
-  ShowWindow(hwnd, SW_SHOW);
+  ShowWindow(hwnd, show);
   life_start(t);
-  files_start();
+  drop_start(0);
   free(given);
   ws->want_frame = 1;
 
@@ -1228,25 +1413,78 @@ void *mb_app_hwnd_of(int wid) { return wid >= 0 && wid < MB_WINS ? win_slots[wid
 // Window `wid` gone (closed by the person, or by the app: mb_host_windows' 3; its WM_DESTROY): its views taken off it,
 // what it drew let go of, the app told between frames (MB_OUTSIDE_WINDOW; one the app closed itself it knows of
 // already).
+// Where each role's window was last left as it closed (screen pixels, its frame; its normal place where it was
+// maximized, minimized or filling its monitor), for the next of the role (win_open): the run's, the most recent kept.
+#define ROLES_KEPT 16
+static struct {
+  char role[64];
+  RECT rect;
+  ULONGLONG at;
+} roles_kept[ROLES_KEPT];
+static void role_keep(const WinSlot *w) {
+  if (!w->role[0] || !w->h) return;
+  RECT r;
+  WINDOWPLACEMENT pl;
+  memset(&pl, 0, sizeof pl);
+  pl.length = sizeof pl;
+  if (w->full_screen) {
+    r = w->saved_place.rcNormalPosition;
+  } else if (IsIconic(w->h) || IsZoomed(w->h) || !GetWindowRect(w->h, &r)) {
+    if (!GetWindowPlacement(w->h, &pl)) return;
+    r = pl.rcNormalPosition;
+  }
+  int at = 0;
+  for (int i = 0; i < ROLES_KEPT; i++) {
+    if (!strcmp(roles_kept[i].role, w->role)) {
+      at = i;
+      break;
+    }
+    if (roles_kept[i].at < roles_kept[at].at) at = i;
+  }
+  snprintf(roles_kept[at].role, sizeof roles_kept[at].role, "%s", w->role);
+  roles_kept[at].rect = r;
+  roles_kept[at].at = GetTickCount64() | 1;
+}
+static const RECT *role_kept(const char *role) {
+  for (int i = 0; i < ROLES_KEPT; i++)
+    if (role[0] && roles_kept[i].at && !strcmp(roles_kept[i].role, role)) return &roles_kept[i].rect;
+  return NULL;
+}
+
 static void win_closed(int wid) {
   if (wid <= 0 || wid >= MB_WINS || !win_slots[wid].h) return;
   if (win_active == wid) win_use(0);
+  role_keep(&win_slots[wid]);
+  drop_stop(wid);
   mb_views_forget(wid);
   mb_render_forget(wid);
   win_slot_fresh(&win_slots[wid]);
+  // (a bare run whose first was hidden as it closed ends as the last window beside it closes: none is left to be seen)
+  int beside = 0;
+  for (int k = 1; k < MB_WINS; k++)
+    if (win_slots[k].h) beside = 1;
+  if (first_hidden_bare && !beside && !IsWindowVisible(hwnd)) PostQuitMessage(0);
+  tell_state();
   PostMessageW(hwnd, WM_MB_TOLD, (WPARAM)MB_OUTSIDE_WINDOW, (LPARAM)wid);
 }
 
-// The windows beside the first closed (the first put away: win_life.h put_away), as the person closes them.
-static void wins_close_beside(void) {
-  for (int k = 1; k < MB_WINS; k++)
-    if (win_slots[k].h) DestroyWindow(win_slots[k].h);
+// UTF-16 `s` (n of its units) as UTF-8, malloc'd (NULL: none)
+static char *utf8_of(const WCHAR *s, int n) {
+  int m = n > 0 ? WideCharToMultiByte(CP_UTF8, 0, s, n, NULL, 0, NULL, NULL) : 0;
+  char *u = (char *)malloc((size_t)m + 1);
+  if (!u) return NULL;
+  if (m) WideCharToMultiByte(CP_UTF8, 0, s, n, u, m, NULL, NULL);
+  u[m] = 0;
+  return u;
 }
 
-// A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, down and to the
-// right of it, its title the first's, its top row the app's as the first's; out of sight (cloaked) till its first
-// frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
-static int win_open(void) {
+// A window of this run (@hostapi.window_open_id): its id, 0 where none. `what` a spec (a JSON object: role, title, w,
+// h, minW, minH, inset, each left out as the first's), else the app's words for what it shows. As large as the first
+// is now, down and to the right of it, its title the first's, its top row the app's as the first's, but for what the
+// spec says; one of a role where the last of the role was left as it closed (roles_kept), a second of a role open
+// beside the first of it down and to the right of the last one opened, never over it. Out of sight (cloaked) till its
+// first frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
+static int win_open(moonbit_string_t what) {
   if (!hwnd || !*win_class) return 0;
   int wid = 0;
   for (int k = 1; k < MB_WINS; k++)
@@ -1255,16 +1493,67 @@ static int win_open(void) {
       break;
     }
   if (!wid) return 0;
+  // (its spec, where `what` is one)
+  jv spec;
+  memset(&spec, 0, sizeof spec);
+  int n = what ? Moonbit_array_length(what) : 0;
+  char *u = n && what[0] == '{' ? utf8_of(what, n) : NULL;
+  const char *at = u;
+  if (u && !jparse(&at, &spec, 0)) {
+    jv_free(&spec);
+    memset(&spec, 0, sizeof spec);
+  }
+  const jv *inset_v = jget(&spec, "inset");
   WinSlot *w = &win_slots[wid];
   win_slot_fresh(w);
+  snprintf(w->role, sizeof w->role, "%s", jtext(&spec, "role"));
+  w->min_w = jnum(&spec, "minW", 0) > 0 ? jnum(&spec, "minW", 0) : setup_min_w;
+  w->min_h = jnum(&spec, "minH", 0) > 0 ? jnum(&spec, "minH", 0) : setup_min_h;
+  w->inset = inset_v && (inset_v->kind == 't' || inset_v->kind == 'f') ? inset_v->kind == 't' : setup_inset;
+  static int opened;
+  w->opened = ++opened;
   RECT fr;
   GetWindowRect(hwnd, &fr);
   WCHAR title[256];
-  if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
-  int off = (int)lround(32 * wid * (GetDpiForWindow(hwnd) / 96.0));
+  const char *given = jtext(&spec, "title");
+  if (!*given || !MultiByteToWideChar(CP_UTF8, 0, given, -1, title, 256)) {
+    if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
+  }
+  title[255] = 0;
+  UINT dpi = GetDpiForWindow(hwnd);
+  double k = dpi ? dpi / 96.0 : 1;
+  // its size: the spec's (points, a client area at the first's scale, framed as the window's: window_for_client),
+  // else the first's
+  int x = fr.left + (int)lround(32 * wid * k), y = fr.top + (int)lround(32 * wid * k);
+  int cx = fr.right - fr.left, cy = fr.bottom - fr.top;
+  double spec_w = jnum(&spec, "w", 0), spec_h = jnum(&spec, "h", 0);
+  if (spec_w > 0 || spec_h > 0) {
+    RECT c;
+    GetClientRect(hwnd, &c);
+    RECT r = {0, 0, spec_w > 0 ? (LONG)lround(spec_w * k) : c.right - c.left,
+              spec_h > 0 ? (LONG)lround(spec_h * k) : c.bottom - c.top};
+    window_for_client(&r, dpi, w->inset);
+    cx = r.right - r.left, cy = r.bottom - r.top;
+  }
+  // its place: down and to the right of the last of its role open now, else where the last of it was left
+  const WinSlot *same = NULL;
+  for (int i = 1; i < MB_WINS && w->role[0]; i++)
+    if (i != wid && win_slots[i].h && !strcmp(win_slots[i].role, w->role) && (!same || win_slots[i].opened > same->opened))
+      same = &win_slots[i];
+  const RECT *kept = role_kept(w->role);
+  if (same) {
+    RECT sr;
+    GetWindowRect(same->h, &sr);
+    int step = (int)lround(28 * (GetDpiForWindow(same->h) / 96.0));
+    x = sr.left + step, y = sr.top + step;
+  } else if (kept) {
+    x = kept->left, y = kept->top, cx = kept->right - kept->left, cy = kept->bottom - kept->top;
+  }
+  jv_free(&spec);
+  free(u);
   win_making = wid;
-  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, fr.left + off, fr.top + off, fr.right - fr.left,
-                           fr.bottom - fr.top, NULL, NULL, GetModuleHandleW(NULL), NULL);
+  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, x, y, cx, cy, NULL, NULL, GetModuleHandleW(NULL),
+                           NULL);
   win_making = -1;
   if (!h) {
     win_slot_fresh(w);
@@ -1281,6 +1570,7 @@ static int win_open(void) {
     return 0;
   }
   title_dark_of(h);
+  drop_start(wid);
   w->held = cloak(h, TRUE) ? 1 : 0;
   ShowWindow(h, SW_SHOW);
   w->want_frame = 1;
@@ -1288,14 +1578,20 @@ static int win_open(void) {
 }
 
 // The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a run
-// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now.
+// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now, 5 a
+// window's title set to `what` (`wid` -1: the window in place's). 2 with `wid` 0 brings the first back (put away or
+// hidden: bring_back).
 int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
-  (void)what;
   HWND h = wid > 0 && wid < MB_WINS ? win_slots[wid].h : NULL;
   switch (op) {
     case 0: return !window_run();
-    case 1: return win_open();
+    case 1: return win_open(what);
     case 2:
+      if (wid == 0) {
+        if (!hwnd) return 0;
+        bring_back();
+        return 1;
+      }
       if (!h) return 0;
       if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
       SetForegroundWindow(h);
@@ -1305,6 +1601,18 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       if (h) PostMessageW(h, WM_CLOSE, 0, 0);
       return 0;
     case 4: return win_active;
+    case 5: {
+      int target = wid < 0 ? win_active : wid;
+      HWND t = target >= 0 && target < MB_WINS ? win_slots[target].h : NULL;
+      if (!t) return 0;
+      int n = what ? Moonbit_array_length(what) : 0;
+      WCHAR *title = (WCHAR *)calloc((size_t)n + 1, sizeof(WCHAR));
+      if (!title) return 0;
+      if (n) memcpy(title, what, (size_t)n * sizeof(WCHAR));
+      SetWindowTextW(t, title);
+      free(title);
+      return 1;
+    }
     default: return 0;
   }
 }
@@ -1339,18 +1647,13 @@ void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moo
   ws->caret[2] = w;
   ws->caret[3] = h;
   if (ws->ime_active && !was) {
-    ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
     if (GetFocus() == ws->h) CreateCaret(ws->h, NULL, 1, (int)lround(h * ws->scale));
   } else if (!ws->ime_active && was) {
-    HIMC imc = ImmGetContext(ws->h);
-    if (imc) {
-      ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
-      ImmReleaseContext(ws->h, imc);
-    }
-    ImmAssociateContextEx(ws->h, NULL, 0);
     DestroyCaret();
-    ws->marked_len = 0;
   }
+  // (the input method given or taken by the field's kind too: mb_host_ime_action, said just before this)
+  ime_sync();
+  if (!ws->ime_active) ws->marked_len = 0;
   ime_place();
 }
 
@@ -1657,7 +1960,7 @@ int32_t mb_host_drive(int32_t kind, moonbit_string_t text) {
     if (swscanf(w, L"%lfx%lf", &cw, &ch) != 2 || cw <= 0 || ch <= 0) return 0;
     UINT dpi = GetDpiForWindow(hwnd);
     RECT r = {0, 0, (LONG)lround(cw * ws->scale), (LONG)lround(ch * ws->scale)};
-    window_for_client(&r, dpi);
+    window_for_client(&r, dpi, win_slots[0].inset);
     SetWindowPos(hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
     fprintf(stdout, "RESIZED %.0fx%.0f\n", cw, ch);
     fflush(stdout);
@@ -1674,16 +1977,49 @@ void mb_host_window_setup(double min_w, double min_h, double w, double h, int32_
   setup_inset = inset != 0;
   setup_min_w = min_w;
   setup_min_h = min_h;
+  win_slots[0].inset = setup_inset;
+  win_slots[0].min_w = min_w;
+  win_slots[0].min_h = min_h;
   setup_w = w;
   setup_h = h;
 }
 
-// Whether the app's top row is the window's title bar (an inset window, maximized too: Windows has no full screen of
-// a window's own here), the window's buttons in it the app's.
-int32_t mb_host_window_inset(void) { return setup_inset; }
-// A window filling the screen (@hostapi.full_screen): not one of this host's.
-int32_t mb_host_full_screen(void) { return 0; }
-void mb_host_set_full_screen(int32_t on) { (void)on; }
+// Whether the app's top row is the window's title bar (an inset window, maximized too, not filling its monitor), the
+// window's buttons in it the app's: the window in place's.
+int32_t mb_host_window_inset(void) { return ws->inset && !ws->full_screen; }
+// The window in place filling its monitor (@hostapi.full_screen), and made to or back: no frame of the system's, its
+// monitor's whole rectangle (the taskbar's too); back to its place, its styles and its frame as they were.
+int32_t mb_host_full_screen(void) { return ws->h && ws->full_screen ? 1 : 0; }
+void mb_host_set_full_screen(int32_t on) {
+  HWND h = ws->h;
+  if (!h || (on != 0) == ws->full_screen) return;
+  if (on) {
+    MONITORINFO mi;
+    memset(&mi, 0, sizeof mi);
+    mi.cbSize = sizeof mi;
+    ws->saved_place.length = sizeof ws->saved_place;
+    if (!GetWindowPlacement(h, &ws->saved_place) ||
+        !GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi))
+      return;
+    ws->saved_style = GetWindowLongPtrW(h, GWL_STYLE);
+    ws->saved_ex_style = GetWindowLongPtrW(h, GWL_EXSTYLE);
+    ws->full_screen = 1;
+    SetWindowLongPtrW(h, GWL_STYLE, ws->saved_style & ~(LONG_PTR)(WS_CAPTION | WS_THICKFRAME));
+    SetWindowLongPtrW(h, GWL_EXSTYLE,
+                      ws->saved_ex_style & ~(LONG_PTR)(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
+                                                       WS_EX_STATICEDGE));
+    SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                 mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  } else {
+    ws->full_screen = 0;
+    SetWindowLongPtrW(h, GWL_STYLE, ws->saved_style);
+    SetWindowLongPtrW(h, GWL_EXSTYLE, ws->saved_ex_style);
+    SetWindowPlacement(h, &ws->saved_place);
+    SetWindowPos(h, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  }
+  ws->want_frame = 1;
+}
 void mb_host_window_buttons_down(double by, double ms) { (void)by; (void)ms; }
 
 // How round the system draws the window's corners (@hostapi.window_corner): Windows 11's 8 (its build 22000 on: the
@@ -1698,7 +2034,7 @@ double mb_host_window_corner(void) {
     OSVERSIONINFOW v = {sizeof v};
     if (get && get(&v) == 0) build = (int)v.dwBuildNumber;
   }
-  if (build < 22000 || !ws->h || IsZoomed(ws->h)) return 0;
+  if (build < 22000 || !ws->h || IsZoomed(ws->h) || ws->full_screen) return 0;
   return 8;
 }
 
@@ -1717,16 +2053,16 @@ void mb_host_window_drag(void) {
   // (a finger's: where it is, not the cursor, which it does not move)
   if (event_by == 1) at = ws->touch_screen;
   else GetCursorPos(&at);
-  if (drag_time && now - drag_time <= GetDoubleClickTime() &&
-      abs(at.x - drag_at.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
-      abs(at.y - drag_at.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
-    drag_time = 0;
+  if (ws->drag_time && now - ws->drag_time <= GetDoubleClickTime() &&
+      abs(at.x - ws->drag_at.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+      abs(at.y - ws->drag_at.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
+    ws->drag_time = 0;
     ReleaseCapture();
     ShowWindow(ws->h, IsZoomed(ws->h) ? SW_RESTORE : SW_MAXIMIZE);
     return;
   }
-  drag_time = now;
-  drag_at = at;
+  ws->drag_time = now;
+  ws->drag_at = at;
   if (event_by == 1) {
     // (a maximized window stays: its title bar's drag would make it as it was first)
     if (!IsZoomed(ws->h)) ws->touch_moving = 1, ws->touch_move_from = at, GetWindowRect(ws->h, &ws->touch_move_rect);
@@ -1804,6 +2140,15 @@ double mb_host_cpu_ms(void) {
   return (double)(k.QuadPart + u.QuadPart) / 10000.0;
 }
 
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  FILETIME create, exit, kernel, user;
+  if (!GetThreadTimes(GetCurrentThread(), &create, &exit, &kernel, &user)) return -1.0;
+  ULARGE_INTEGER k = {.LowPart = kernel.dwLowDateTime, .HighPart = kernel.dwHighDateTime};
+  ULARGE_INTEGER u = {.LowPart = user.dwLowDateTime, .HighPart = user.dwHighDateTime};
+  return (double)(k.QuadPart + u.QuadPart) / 10000.0;
+}
+
 double mb_host_mem_bytes(void) {
   PROCESS_MEMORY_COUNTERS_EX pmc = {sizeof pmc};
   if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof pmc)) return 0;
@@ -1837,6 +2182,36 @@ int32_t mb_host_save_file(moonbit_string_t name, moonbit_bytes_t data);  // belo
 #include <knownfolders.h>
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "uuid.lib")
+
+// A file shown chosen in its folder in Explorer (@hostapi.reveal_file: 在资源管理器中显示), or whether that can be
+// done here (go 0): it can. Only a file that is there; a scripted run (MBUI_SCRIPT) says it on the log alone.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  int n = Moonbit_array_length(s);
+  if (n <= 0) return 0;
+  WCHAR *w = (WCHAR *)malloc(((size_t)n + 1) * sizeof(WCHAR));
+  memcpy(w, s, (size_t)n * sizeof(WCHAR));
+  w[n] = 0;
+  for (int i = 0; i < n; i++) if (w[i] == L'/') w[i] = L'\\';
+  int ok = 0;
+  if (GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES) {
+    mb_host_log(s);
+    if (getenv("MBUI_SCRIPT")) {
+      ok = 1;
+    } else {
+      PIDLIST_ABSOLUTE item = ILCreateFromPathW(w);
+      if (item) {
+        // (COM on this thread for the shell, as it may not be yet; a mode it already has is kept)
+        HRESULT com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        ok = SUCCEEDED(SHOpenFolderAndSelectItems(item, 0, NULL, 0));
+        if (SUCCEEDED(com)) CoUninitialize();
+        ILFree(item);
+      }
+    }
+  }
+  free(w);
+  return ok;
+}
 
 // where downloads go: MBUI_DOWNLOADS_DIR, else the Downloads known folder; made if it is not there
 static int keep_dir(wchar_t *dir) {

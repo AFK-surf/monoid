@@ -304,6 +304,11 @@ pub fn workspace_switch_node(
 }
 
 ///|
+/// The workspace the stack last kept pages of (opens_ahead_node): its kept let go of as another comes in view.
+// kept across runs: put back by declared_reset
+let shelf_workspace : Ref[String?] = Ref(None)
+
+///|
 /// What the workspace in view opens on (`opens`: the shell's, as workspace_switch_node is given it, which asks what its
 /// first screen reads), declared at the moment it is known to be the one in view, in the app's node `v` that outlives
 /// the splash and every shell: each topic asked of the core then (declare_topic), not as the frame that builds the
@@ -338,6 +343,15 @@ pub fn opens_ahead_node(
     fn(now) {
       if opens_declared.val == now {
         return
+      }
+      // (another workspace in view: what the stack kept of the one before (its shelf, its kept left) let go of, on every
+      // screen, read by nothing more than this already reads; not as what it opens on is only asked anew)
+      match (shelf_workspace.val, now) {
+        (Some(was), Some(ws)) if was != ws => app.nav.shelf_empty()
+        _ => ()
+      }
+      if now is Some(ws) {
+        shelf_workspace.val = Some(ws)
       }
       declared_let_go()
       page_declared_let_go()

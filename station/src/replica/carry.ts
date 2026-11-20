@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../sessions/agent-home.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../sessions/agent-home.ts";
 
 /// A file that goes along, a line of its session's list: where it is (under the station's data directory), its bytes'
 /// hash, how big, its mode and time; a symbolic link its target instead (nothing to send).
@@ -105,7 +105,7 @@ export const indexFile = (scratch: string) => join(scratch, "index.json");
 export const listFile = (scratch: string, key: string) => join(scratch, "lists", `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.jsonl`);
 
 /// The agent home's skills that are the station's own, which it writes again at every start: none of them goes along.
-const OWN_SKILLS = [...BUILTIN_SKILLS, FEEDBACK_SKILL];
+const OWN_SKILLS = [...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS];
 
 /// One ask of the program (`--builder replica-carry`): its answer, or its error; ended at once where `signal` says (a
 /// cancel: "called off"). `binary`: the program (mbReaderBinary unless a test says). Settled only once the program has

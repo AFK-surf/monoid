@@ -130,56 +130,10 @@ pub fn skill_path(sep : String, path : String) -> Array[String]? {
 }
 
 ///|
-/// The value of a base64 character as Node's decoder takes it (the URL-safe ones too); -1 for one it passes over.
-fn base64_value(c : Int) -> Int {
-  if c >= 'A' && c <= 'Z' {
-    c - 'A'
-  } else if c >= 'a' && c <= 'z' {
-    c - 'a' + 26
-  } else if c >= '0' && c <= '9' {
-    c - '0' + 52
-  } else if c == '+' || c == '-' {
-    62
-  } else if c == '/' || c == '_' {
-    63
-  } else {
-    -1
-  }
-}
-
-///|
 /// `text`'s bytes as Node's `Buffer.from(text, "base64")` gives them: what is no base64 passed over, ended at the
 /// first `=`, a last character alone dropped.
 pub fn base64_bytes(text : String) -> Bytes {
-  let out = Buffer(size_hint=text.length() / 4 * 3)
-  let mut acc = 0
-  let mut count = 0
-  for i in 0..<text.length() {
-    let c = text[i].to_int()
-    if c == '=' {
-      break
-    }
-    let v = base64_value(c)
-    if v < 0 {
-      continue
-    }
-    acc = (acc << 6) | v
-    count += 1
-    if count == 4 {
-      out.write_byte((acc >> 16).to_byte())
-      out.write_byte((acc >> 8).to_byte())
-      out.write_byte(acc.to_byte())
-      acc = 0
-      count = 0
-    }
-  }
-  if count == 2 {
-    out.write_byte((acc >> 4).to_byte())
-  } else if count == 3 {
-    out.write_byte((acc >> 10).to_byte())
-    out.write_byte((acc >> 2).to_byte())
-  }
-  out.to_bytes()
+  @codec.base64_decode_loose(text)
 }
 
 ///|
@@ -284,4 +238,11 @@ async fn skill_conflict(host : @host.Host, sep : String, dir : String, peer : St
       bytes=base64_bytes(content),
     ),
   )
+}
+
+///|
+/// The SHA-256 digest of `data`, in lower-case hex (as Node's `digest("hex")`): `@hash.sha256_hex`'s, kept here for
+/// what calls it by this package.
+pub fn sha256_hex(data : BytesView) -> String {
+  @hash.sha256_hex(data)
 }

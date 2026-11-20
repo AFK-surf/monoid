@@ -51,6 +51,8 @@ fn pane_bar_node(
     .lines_up(Is(Some(Middle)))
     .ground(By(ground))
     .hides(By(hidden))
+    // (the desktop app has no title bar: the bar drags the window as a chat's does, where nothing in it takes the press)
+    .moves_window(By(@ui.window_inset_now))
     |> ignore
     // (its rooms at its ends, what is in it 16 apart and not from them; back in the panel's top left corner concentric
     // with it)

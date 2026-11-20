@@ -109,17 +109,6 @@ pub fn ProcessInfo::to_json(self : ProcessInfo) -> Json {
 }
 
 ///|
-fn process_info_of(j : Json) -> ProcessInfo {
-  {
-    pid: num_field(j, "pid").unwrap_or(0.0),
-    ppid: num_field(j, "ppid").unwrap_or(0.0),
-    pgid: num_field(j, "pgid").unwrap_or(0.0),
-    bytes: num_field(j, "bytes").unwrap_or(0.0),
-    command: str_or(j, "command", ""),
-  }
-}
-
-///|
 /// Digits from `i`: where they end.
 fn digits_from(s : String, i : Int) -> Int {
   let mut k = i

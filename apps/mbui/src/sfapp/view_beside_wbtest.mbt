@@ -5,13 +5,21 @@
 // on 小屏 the same press opens the whole window, and nothing offers beside.
 
 ///|
-/// The first row's chat of the made-up core (MBUI_FIXTURE `mode`), in a window `w` by `h` of `platform`'s, at rest.
-fn beside_tester(mode? : String = "chat", w? : Double = 1280.0, h? : Double = 800.0, platform? : Int = 0) -> @ui.Tester {
+/// The first row's chat of the made-up core (MBUI_FIXTURE `mode`), in a window `w` by `h` of `platform`'s (its buttons
+/// in its top row where `inset` says, its corner `corner`), at rest.
+fn beside_tester(
+  mode? : String = "chat",
+  w? : Double = 1280.0,
+  h? : Double = 800.0,
+  platform? : Int = 0,
+  inset? : Bool = false,
+  corner? : Double = 0.0,
+) -> @ui.Tester {
   new_run()
   let src = fixture(mode)
   beside_src.val = Some(src)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_inset=inset, window_corner=corner)
   nav_rested(t)
   t.run_for(@ui.move_most_ms)
   t
@@ -131,6 +139,15 @@ fn full_now(name : String) -> Bool {
 }
 
 ///|
+/// Whether the whole window's viewer shows the file named `name`.
+fn viewer_of(name : String) -> Bool {
+  match @sfbase.viewer.get() {
+    Some(v) => v.file.name == name
+    None => false
+  }
+}
+
+///|
 /// A made-up file of the chat's (sffixture's preview_files), by its name.
 fn made_file(name : String) -> Attachment raise {
   for f in @sffixture.preview_files() {
@@ -142,41 +159,44 @@ fn made_file(name : String) -> Attachment raise {
 }
 
 ///|
-test "大屏: a press with ⌘ held on a message's picture opens its tab over the whole window, in front in the panel under it, nothing of the whole window's viewer; Escape puts it back; again, that tab, never a second; a plain press opens the whole window" {
+test "大屏: a press on a message's picture opens it in the whole window's viewer, no tab; Escape closes it; with ⌘ held, its tab in the panel; pressed again, the whole window's viewer over it, never a second tab, the tab in front after" {
   let t = beside_tester()
   let (x, y) = chat_picture(t)
-  press_held(t, x, y, @ui.mod_cmd)
-  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
-  assert_eq(view_tabs(t).length(), 1)
-  assert_true(full_now("compare.png"), msg="its tab over the whole window")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(viewer_of("compare.png"), msg="in the whole window's viewer")
+  assert_true(@sfbase.tab_full.get() is None, msg="no tab over the whole window")
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
   for f in t.audit() {
     println("audit: \{f}")
   }
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None, msg="back in the panel")
-  assert_eq(view_tabs(t).length(), 1, msg="the tab stays")
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0, msg="nothing left in the panel")
+  assert_eq(t.all(Tab, label="compare.png").length(), 0)
+  // with ⌘ held: its tab in the panel, in front, nothing over the whole window
+  let (x, y) = chat_picture(t)
+  press_held(t, x, y, @ui.mod_cmd)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_true(@sfbase.tab_full.get() is None, msg="in the panel")
+  assert_eq(view_tabs(t).length(), 1)
   assert_eq(t.all(Tab, label="compare.png", selected=true).length(), 1, msg="its tab, in front")
-  // another file beside it, in front; the picture pressed so again: its tab to the front, still one
+  // another file beside it, in front; the picture pressed again: that tab over the whole window, still one
   @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
   t.run_for(@ui.move_most_ms)
   assert_eq(t.all(Tab, label="说明.md", selected=true).length(), 1)
   let (x, y) = chat_picture(t)
-  press_held(t, x, y, @ui.mod_cmd)
-  assert_true(full_now("compare.png"))
-  assert_eq(view_tabs(t).length(), 2)
-  assert_true(@sfbase.viewer.get() is None)
-  t.back()
-  t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None, msg="back puts it back in the panel")
-  assert_eq(t.all(Tab, label="compare.png").length(), 1, msg="never a second")
-  assert_eq(t.all(Tab, label="compare.png", selected=true).length(), 1, msg="brought to the front")
-  // a plain press: the whole window, as before
-  let (x, y) = chat_picture(t)
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is Some(_), msg="the whole window's preview")
-  assert_eq(view_tabs(t).length(), 2, msg="no tab more")
+  assert_true(viewer_of("compare.png"), msg="the whole window's viewer over it")
+  assert_eq(view_tabs(t).length(), 2, msg="never a second tab")
+  assert_true(@sfbase.tab_full.get() is None)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None, msg="back closes the viewer")
+  assert_eq(view_tabs(t).length(), 2, msg="the tabs stay")
+  assert_eq(t.all(Tab, label="说明.md", selected=true).length(), 1, msg="the panel as it was")
 }
 
 ///|
@@ -228,12 +248,13 @@ test "大屏: a picture's menu opens it beside; the whole window's 移到侧边 
   t.run_for(@ui.move_most_ms)
   assert_eq(view_tabs(t).length(), 1)
   assert_true(@sfbase.viewer.get() is None)
-  // closed; opened over the whole window; 移到侧边
+  // closed; opened over the whole window in the viewer of its own (as what can open nowhere else is); 移到侧边
+  let vw = tab_viewer_named(t, "compare.png")
+  let (station, key, file) = (vw.station, vw.key, vw.file)
   t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", "compare.png")]))
   t.run_for(@ui.move_most_ms)
   assert_eq(view_tabs(t).length(), 0)
-  let (x, y) = chat_picture(t)
-  t.tap(x, y)
+  @sfbase.open_preview(station, key, file, beside=false)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.viewer.get() is Some(_))
   t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
@@ -364,6 +385,160 @@ test "大屏: a tab's 排版 is the tab's: another tab brought to the front take
 }
 
 ///|
+test "大屏: a long Markdown beside a chat keeps 目录 in the toolbar and floats 滚动到底部 at bottom-right without blocking wheel or text selection; pressing ↓ scrolls to the end and hides ↓; wheeling up brings ↓ back; panels cover or shift ↓" {
+  let t = beside_tester(mode="chat-view-side-md-long")
+  let contents = @sf.t("web-pages.drive.reader.contents")
+  let to_end = @sf.t("web-pages.drive.reader.toEnd")
+  let (bx, by, bw, bh) = t.get(Toolbar, label="长说明.md").rect
+  let in_bar = t
+    .all(Button)
+    .filter(fn(n) {
+      let (nx, ny, nw, nh) = n.rect
+      nx >= bx - 1.0 && ny >= by - 1.0 && nx + nw <= bx + bw + 1.0 && ny + nh <= by + bh + 1.0
+    })
+    .map(fn(n) { n.label })
+  let want_bar = [
+    contents,
+    @sf.t("web-pages.drive.reader.find"),
+    @sf.t("web-pages.drive.reader.layout"),
+    @sf.t("web-main.preview.download"),
+    @sf.t("web-main.preview.fullWindow"),
+  ]
+  assert_eq(in_bar, want_bar, msg="toolbar buttons: \{Repr(in_bar)}")
+  assert_eq(t.all(Button, label=contents).length(), 1, msg="exactly one 目录 button (in toolbar)")
+  assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 float shown for long Markdown")
+  let tab_right = bx + bw
+  let tab_bottom = 800.0
+  let (ex, ey, ew, eh) = t.get(Button, label=to_end).rect
+  // float is outside toolbar: the button the drawn 32×32 circle (what a screen reader reads), 16±1 from right and
+  // bottom (a finger's press box round it: float_button_node_wbtest's; a mouse's on 大屏 is the app's mouse rule)
+  assert_true(ey > by + bh, msg="滚动到底部 floats below toolbar")
+  let side = @sf.float_button_side
+  assert_true(
+    (ew - side).abs() <= 0.5 && (eh - side).abs() <= 0.5,
+    msg="滚动到底部 the drawn circle: \{ew}×\{eh}",
+  )
+  assert_true((tab_right - (ex + ew) - 16.0).abs() <= 1.0, msg="↓ right margin \{tab_right - (ex + ew)}")
+  assert_true((tab_bottom - (ey + eh) - 16.0).abs() <= 1.0, msg="↓ bottom margin \{tab_bottom - (ey + eh)}")
+  // narrow tab: opening contents panel covers the floating ↓ button
+  t.click(Button, label=contents)
+  t.run_for(@ui.move_most_ms)
+  let landed = t.press_lands_at(ex + ew / 2.0, ey + eh / 2.0)
+  assert_true(!landed.contains(to_end), msg="floating ↓ covered by narrow contents panel, got \{landed}")
+  t.click(Button, label=contents)
+  t.run_for(@ui.move_most_ms)
+  // over container has no ground: wheel and text drag-selection to the left of ↓ reach the reader body
+  let has = fn(words : String) { t.words().iter().any(fn(w) { w.0.contains(words) }) }
+  assert_true(has("发布前长说明"), msg="start words shown at top")
+  assert_true(!has("所有检查项已核对完毕"), msg="end words not shown at top")
+  let top_y_before = match t.words().iter().find_first(fn(w) { w.0.contains("发布前长说明") }) {
+    Some((_, _, y, _, _, _)) => y
+    None => fail("no top heading")
+  }
+  t.wheel(bx + 60.0, ey + eh / 2.0, 200.0)
+  t.run_for(@ui.move_most_ms)
+  let top_moved = match t.words().iter().find_first(fn(w) { w.0.contains("发布前长说明") }) {
+    Some((_, _, y, _, _, _)) => y < top_y_before - 10.0
+    None => true
+  }
+  assert_true(top_moved, msg="wheel to the left of ↓ scrolls the reader body")
+  // drag-select text on a line beside ↓ (a paragraph block overlapping ↓'s vertical band)
+  match t.words().iter().find_first(fn(w) { w.1 >= bx && w.1 + 40.0 < ex && w.2 < ey + eh && w.2 + w.4 > ey && w.3 >= 40.0 }) {
+    Some((_, wx, wy, ww, wh, _)) => {
+      let sy = if wy + 8.0 > ey + 8.0 { wy + 8.0 } else if ey + 8.0 < wy + wh - 4.0 { ey + 8.0 } else { wy + wh / 2.0 }
+      let x1 = if wx + ww - 4.0 < ex - 8.0 { wx + ww - 4.0 } else { ex - 8.0 }
+      let x1 = if x1 < wx + 80.0 { x1 } else { wx + 80.0 }
+      t.drag(wx + 4.0, sy, x1, sy)
+      t.run_for(@ui.move_most_ms)
+      let picked = t.picking().map(fn(p) { p.text }).unwrap_or("")
+      assert_true(picked != "", msg="text beside ↓ can be drag-selected")
+      t.key(@ui.key_code_copy, mods=@ui.mod_cmd)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(t.clipboard(), picked, msg="selected text beside ↓ copied")
+    }
+    None => fail("no reader line beside ↓ to drag-select")
+  }
+  // pressing ↓ scrolls to the end and hides ↓
+  t.click(Button, label=to_end)
+  t.run_for(@ui.move_most_ms)
+  assert_true(has("所有检查项已核对完毕"), msg="end words shown after pressing 滚动到底部")
+  assert_true(!has("发布前长说明"), msg="start words scrolled out after pressing 滚动到底部")
+  assert_eq(t.all(Button, label=to_end).length(), 0, msg="滚动到底部 hides at the end")
+  // wheeling up past reader_end_away (120) brings ↓ back
+  t.wheel(bx + bw / 2.0, 400.0, -240.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 returns after wheeling up > 120")
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
+  assert_eq(faults, [], msg="audit faults: \{Repr(faults)}")
+  // wide tab: opening contents panel shifts ↓ left of the 320 docked panel
+  let tw = beside_tester(mode="chat-view-side-md-long", w=2400.0, h=600.0)
+  let (wtx, _, wtw, _) = tw.get(Toolbar, label="长说明.md").rect
+  tw.click(Button, label=contents)
+  tw.run_for(@ui.move_most_ms)
+  let (ex2, _, ew2, _) = tw.get(Button, label=to_end).rect
+  let right_gap = wtx + wtw - (ex2 + ew2)
+  assert_true((right_gap - (320.0 + 16.0)).abs() <= 1.0, msg="↓ right gap with docked panel: \{right_gap}, want 336 ±1")
+}
+
+///|
+test "大屏: a short Markdown beside a chat does not show 滚动到底部, keeping all five reader keys in the toolbar" {
+  let t = beside_tester(mode="chat-view-side")
+  assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.toEnd")).length(), 0, msg="no 滚动到底部 for short Markdown")
+  let (bx, by, bw, bh) = t.get(Toolbar, label="说明.md").rect
+  let in_bar = t
+    .all(Button)
+    .filter(fn(n) {
+      let (nx, ny, nw, nh) = n.rect
+      nx >= bx - 1.0 && ny >= by - 1.0 && nx + nw <= bx + bw + 1.0 && ny + nh <= by + bh + 1.0
+    })
+    .map(fn(n) { n.label })
+  let want_bar = [
+    @sf.t("web-pages.drive.reader.contents"),
+    @sf.t("web-pages.drive.reader.find"),
+    @sf.t("web-pages.drive.reader.layout"),
+    @sf.t("web-main.preview.download"),
+    @sf.t("web-main.preview.fullWindow"),
+  ]
+  assert_eq(in_bar, want_bar, msg="toolbar buttons: \{Repr(in_bar)}")
+}
+
+///|
+test "大屏: a reader tab in the chat's panel widens its column to 48em (768) when the panel is wide, stays panel_w - 44 when narrower than 812, and returns to 34em (544) over the whole window" {
+  // wide window so the side panel is >= 1000 wide
+  let t = beside_tester(mode="chat-view-side", w=3000.0, h=900.0)
+  let (_, _, panel_w, _) = t.get(Toolbar, label="说明.md").rect
+  assert_true(panel_w >= 1000.0, msg="panel wide enough: \{panel_w}")
+  let col_w = fn(label : String) -> Double raise {
+    match t.words().iter().find_first(fn(w) { w.0.contains(label) }) {
+      Some((_, _, _, w, _, _)) => w
+      None => fail("no words containing \{label}")
+    }
+  }
+  let wide_w = col_w("发布前要做的")
+  assert_true((wide_w - 768.0).abs() <= 1.0, msg="panel tab column text width \{wide_w}, want 768 ±1")
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
+  assert_eq(faults, [], msg="audit faults in wide panel: \{Repr(faults)}")
+  // fullscreen over the whole window: returns to 34em (544)
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("说明.md"), msg="tab over the whole window")
+  let full_w = col_w("发布前要做的")
+  assert_true((full_w - 544.0).abs() <= 1.0, msg="fullscreen tab column text width \{full_w}, want 544 ±1")
+  // back in a panel narrower than 812: text width = panel_w - 44
+  t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
+  t.run_for(@ui.move_most_ms)
+  t.resize(1280.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, _, narrow_panel_w, _) = t.get(Toolbar, label="说明.md").rect
+  assert_true(narrow_panel_w < 812.0, msg="narrow panel width: \{narrow_panel_w}")
+  let narrow_w = col_w("发布前要做的")
+  assert_true(
+    (narrow_w - (narrow_panel_w - 44.0)).abs() <= 1.0,
+    msg="narrow panel text width \{narrow_w}, want \{narrow_panel_w - 44.0} ±1",
+  )
+}
+
+///|
 test "大屏: a file kept only while the app runs (a draft's: a Mermaid picture, an attachment waiting) asked beside opens the whole window, no tab, and its bar offers no 移到侧边" {
   let t = beside_tester()
   let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='40' height='30'><rect width='40' height='30' fill='red'/></svg>"
@@ -396,10 +571,17 @@ test "大屏: a file kept only while the app runs (a draft's: a Mermaid picture,
 }
 
 ///|
+/// Picture `a` as big as its message says, said as big as the Tester decodes every picture (fake_image's 400 × 300),
+/// as a device's message says its picture's own size: its tab laid out at the size it is drawn at.
+fn as_decoded(a : Attachment) -> Attachment {
+  { ..a, width: 400.0, height: 300.0 }
+}
+
+///|
 test "大屏: a picture in a tab is fitted as over the whole window: one larger than its stage 12 in from its nearer edges, one smaller at its own size in its middle" {
-  // larger: wider than a stage 373 wide (its own size the Tester's decode's)
+  // larger: wider than a stage 373 wide (its own size as its message says it, the Tester's decode's)
   let t = beside_tester()
-  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), beside=true)
+  @sfbase.open_preview("ws1/st1", "s-c1", as_decoded(made_file("界面草图.png")), beside=true)
   t.run_for(@ui.move_most_ms)
   let (left, _, wide, _) = t.get(Toolbar, label="界面草图.png").rect
   // (the stage's middle: the middle of the room the hand takes it in, as far in from each of its edges)
@@ -416,7 +598,7 @@ test "大屏: a picture in a tab is fitted as over the whole window: one larger 
   assert_eq(tab_apart(t), [])
   // smaller: the same in a window wide enough for a stage wider than it and its margins
   let t = beside_tester(w=2400.0, h=1000.0)
-  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), beside=true)
+  @sfbase.open_preview("ws1/st1", "s-c1", as_decoded(made_file("界面草图.png")), beside=true)
   t.run_for(@ui.move_most_ms)
   let (left, _, wide, _) = t.get(Toolbar, label="界面草图.png").rect
   let (nw, nh) = tab_natural(t)
@@ -546,21 +728,25 @@ fn kept_film_played(t : @ui.Tester) -> Int raise {
 }
 
 ///|
-test "大屏: a film pressed with ⌘ held opens its tab over the whole window, playing; Escape puts it in the panel, its player in the tab's stage, playing on; nothing of the whole window's viewer; its menu's 在侧边打开 too" {
+test "大屏: a film pressed opens in the whole window's viewer, no tab; Escape closes it; with ⌘ held, in the panel, its player in the tab's stage, playing at once; nothing of the whole window's viewer then; its menu's 在侧边打开 too" {
   let t = beside_tester(mode="chat-download")
   let (x, y) = chat_film(t)
-  press_held(t, x, y, @ui.mod_cmd)
-  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
-  assert_eq(view_tabs(t).length(), 1)
-  assert_true(full_now(beside_film), msg="its tab over the whole window")
-  let id = tab_player_view(t, beside_film)
-  assert_true(told_playing(t, id), msg="played at once: \{Repr(t.views())}")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(viewer_of(beside_film), msg="in the whole window's viewer")
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
+  assert_true(@sfbase.tab_full.get() is None)
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None)
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0)
+  // with ⌘ held: in the panel, playing at once
+  let (x, y) = chat_film(t)
+  press_held(t, x, y, @ui.mod_cmd)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_true(@sfbase.tab_full.get() is None, msg="in the panel")
   assert_eq(t.all(Tab, label=beside_film, selected=true).length(), 1, msg="its tab, in front")
-  assert_eq(tab_player_view(t, beside_film), id, msg="the same player")
-  assert_true(told_playing(t, id), msg="playing on in the panel: \{Repr(t.views())}")
+  assert_true(told_playing(t, tab_player_view(t, beside_film)), msg="playing in the panel: \{Repr(t.views())}")
   // its picture in the stage under the tab's tools, its controls there (a phone's: the stage 373 wide)
   let (left, top, wide, tall) = t.get(Toolbar, label=beside_film).rect
   let holes = holes_beside(t, left)
@@ -579,6 +765,7 @@ test "大屏: a film pressed with ⌘ held opens its tab over the whole window, 
   t.run_for(@ui.move_most_ms)
   assert_eq(view_tabs(t).length(), 1)
   assert_true(@sfbase.viewer.get() is None)
+  assert_true(@sfbase.tab_full.get() is None)
   assert_true(told_playing(t, tab_player_view(t, beside_film)), msg="played at once")
 }
 
@@ -706,7 +893,15 @@ test "大屏: the whole window's 移到侧边 puts a film back in its tab from w
 test "大屏: the whole window's 移到侧边 with no tab of the film before: the tab's player made from where the whole window's was, playing" {
   let t = beside_tester(mode="chat-download")
   let (x, y) = chat_film(t)
-  t.tap(x, y)
+  // (pressed with ⌘ held, it opens beside: what it is read off its tab, the tab closed, then opened over the whole
+  // window in the viewer of its own)
+  press_held(t, x, y, @ui.mod_cmd)
+  let vw = tab_viewer_named(t, beside_film)
+  let (station, key, file) = (vw.station, vw.key, vw.file)
+  t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", beside_film)]))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_tabs(t).length(), 0)
+  @sfbase.open_preview(station, key, file, beside=false)
   t.run_for(@ui.move_most_ms)
   let wid = @sfbase.viewer.get().unwrap().media.unwrap().native().unwrap().id()
   t.set_player(wid, position=5000.0, playing=true)
@@ -832,7 +1027,7 @@ test "大屏: a film playing in a narrow tab keeps its controls after a single p
   t.run_for(@ui.move_most_ms)
   let (x, y, w, h) = film_hole(t, beside_film)
   t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@ui.double_tap_ms + @kit.media_sleep_ms + @ui.move_most_ms)
+  t.run_for(@ui.double_tap_ms + @player.media_sleep_ms + @ui.move_most_ms)
   let pause = t.get(Button, label=@sf.t("android-chat.video.pause"), disabled=false)
   let (kx, ky, kw, kh) = pause.rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
@@ -847,13 +1042,13 @@ test "大屏: a film playing in a wide tab keeps its controls with the pointer n
   t.set_player(id, playing=true)
   t.run_for(@ui.move_most_ms)
   // (untouched while it plays: there all along)
-  t.run_for(@kit.media_rest_ms + @ui.move_most_ms)
+  t.run_for(@player.media_rest_ms + @ui.move_most_ms)
   assert_eq(t.all(Button, label=@sf.t("android-chat.video.pause"), disabled=false).length(), 1, msg="drawn while it plays")
   let (x, y, w, h) = film_hole(t, beside_film)
   t.tap(x + w / 2.0, y + h / 2.0)
   // the pointer far from them, in the chat
   t.move_to(600.0, 300.0)
-  t.run_for(@ui.double_tap_ms + @kit.media_sleep_ms + @ui.move_most_ms)
+  t.run_for(@ui.double_tap_ms + @player.media_sleep_ms + @ui.move_most_ms)
   let pause = t.get(Button, label=@sf.t("android-chat.video.pause"), disabled=false)
   let (kx, ky, kw, kh) = pause.rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
@@ -917,7 +1112,7 @@ test "大屏: a song playing in a tab cuts no hole in it (its player placed out 
     let t = beside_tester(mode="chat-view-side-audio", w~, h~)
     let id = tab_player_view(t, beside_song)
     t.click(Button, label=@sf.t("android-chat.video.play"))
-    t.run_for(@kit.media_rest_ms + @ui.move_most_ms)
+    t.run_for(@player.media_rest_ms + @ui.move_most_ms)
     assert_true(told_playing(t, id), msg="\{w} wide: it plays")
     assert_eq(holes_beside(t, tab_left(t, beside_song)), [], msg="\{w} wide: no hole for a song")
     let f = beside_tester(mode="chat-view-side-video", w~, h~)
@@ -935,12 +1130,22 @@ test "大屏: a film opened beside keeps what its message knew of it: its size, 
 }
 
 ///|
-test "text files default beside the chat; the panel's 全屏 puts their tab over the whole window" {
+test "text files open over the whole window as their tab, closed with it; asked beside, in the panel, its 全屏 putting their tab over the whole window" {
   let t = beside_tester()
   for name in ["说明.md", "list.ts", "数据.csv", "报告.html"] {
     @sfbase.open_preview("ws1/st1", "s-c1", made_file(name))
     t.run_for(@ui.move_most_ms)
-    assert_true(@sfbase.viewer.get() is None, msg=name + " opens beside")
+    assert_true(@sfbase.viewer.get() is None, msg=name + " as its tab")
+    assert_true(full_now(name), msg=name + " over the whole window")
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfbase.tab_full.get() is None)
+    assert_eq(view_tabs(t).length(), 0, msg=name + " closed, its tab with it")
+  }
+  for name in ["说明.md", "list.ts", "数据.csv", "报告.html"] {
+    @sfbase.open_preview("ws1/st1", "s-c1", made_file(name), beside=true)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfbase.tab_full.get() is None, msg=name + " beside")
     assert_eq(t.all(Tab, label=name, selected=true).length(), 1)
     assert_true(t.all(Toolbar, label=name).length() > 0)
   }
@@ -962,11 +1167,580 @@ test "text files without a side panel fall back to the whole-window preview" {
 }
 
 ///|
-test "a plain press on a message's text attachment opens its side tab" {
+test "a press on a message's text attachment opens its tab over the whole window; with ⌘ held, in the panel" {
   let t = beside_tester(mode="chat-files-sent")
   t.click(Group, label="list.ts")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.viewer.get() is None)
+  assert_true(full_now("list.ts"), msg="over the whole window")
+  assert_true(t.find("export const estimate") is Some(_), msg="its words")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_tabs(t).length(), 0)
+  let b = t.get(Group, label="list.ts").rect
+  press_held(t, b.0 + b.2 / 2.0, b.1 + b.3 / 2.0, @ui.mod_cmd)
+  assert_true(@sfbase.tab_full.get() is None)
   assert_eq(t.all(Tab, label="list.ts", selected=true).length(), 1)
   assert_true(shown_beside(t, "list.ts", "export const estimate"))
+}
+
+///|
+/// beside_tester's, its windows opening in the run (a Mac's), each beside the first `w` by `h`: window 1 the first
+/// opened.
+fn beside_windows(t : @ui.Tester, w? : Double = 960.0, h? : Double = 720.0) -> Unit {
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.set_window_beside_size(1, w, h)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// The words window `wid` of the run draws now (0 the first).
+fn beside_window_words(t : @ui.Tester, wid : Int) -> Array[String] {
+  let out = Ref([])
+  t.in_window(wid, fn() { out.val = t.words().map(fn(w) { w.0 }) })
+  out.val
+}
+
+///|
+/// The audit's faults of window `wid` of the run, as it is drawn now.
+fn beside_window_audit(t : @ui.Tester, wid : Int) -> Array[String] {
+  let out = Ref([])
+  t.in_window(wid, fn() { out.val = t.audit() })
+  out.val
+}
+
+///|
+/// The button named `label` in window `wid` of the run pressed (its middle tapped there): whether there was one.
+fn beside_window_press(t : @ui.Tester, wid : Int, label : String) -> Bool {
+  let found = Ref(false)
+  t.in_window(wid, fn() {
+    match t.query(Button, label~) {
+      Some(b) => {
+        found.val = true
+        t.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
+      }
+      None => ()
+    }
+  })
+  found.val
+}
+
+///|
+/// The file named `name` beside the chat, in front, sent to a window of its own by the panel's 在新窗口打开.
+fn file_to_window(t : @ui.Tester, name : String) -> Unit raise {
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file(name), beside=true)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=@sf.t("web-pages.screen.window"))
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "大屏: a file's tab sent to a window of its own by the panel's 在新窗口打开: the window made as a tab's (WindowSpec), the reader there, none of it in the panel; asked again, that window to the front; its 移到侧边 puts it back in the panel and closes the window" {
+  let t = beside_tester()
+  // (no size said for the window here: it opens at the size its WindowSpec says, as a host makes it)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.run_for(@ui.move_most_ms)
+  file_to_window(t, "说明.md")
+  assert_eq(t.windows_beside().length(), 1, msg="one window of this run")
+  assert_eq(t.windows_opened(), [], msg="no run of its own")
+  let (wid, what) = t.windows_beside()[0]
+  for field in ["\"role\":\"tab\"", "\"title\":\"说明.md\"", "\"w\":960", "\"h\":720", "\"minW\":420", "\"minH\":320", "\"sideTab\":"] {
+    assert_true(what.contains(field), msg="\{field} in \{what}")
+  }
+  let size = Ref((0.0, 0.0))
+  t.in_window(wid, fn() { size.val = t.size() })
+  assert_eq(size.val, (960.0, 720.0), msg="made at its WindowSpec's size")
+  assert_eq((t.window_title(wid~), t.window_role(wid)), ("说明.md", "tab"))
+  // its reader there, its tools in its bar; none of it in the panel (the tab left it, its viewer that window's)
+  let words = beside_window_words(t, wid)
+  assert_true(words.iter().any(fn(w) { w.contains("发布前要做的") }), msg="the reader in the window: \{Repr(words)}")
+  assert_true(words.contains("说明.md"), msg="its name in its bar: \{Repr(words)}")
+  assert_eq(view_tabs(t), [], msg="off the panel")
+  assert_true(t.find("发布前要做的") is None, msg="not drawn in the first window")
+  assert_true(@sfbase.tab_viewer_held(beside_chat, @sfbase.window_here_page(wid).map(fn(p) { match p { SideTab(f) => f.tab; _ => "" } }).unwrap_or("")))
+  assert_eq(beside_window_audit(t, wid), [], msg="the window at 960 × 720: \{Repr(beside_window_audit(t, wid))}")
+  // the same file asked beside again (a message's card): that window to the front, never a second, the panel not
+  // opened on it here
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 1, msg="never a second window")
+  assert_eq(t.window_ids_fronted(), [wid])
+  assert_eq(view_tabs(t), [], msg="the panel not opened on it")
+  assert_true(t.find("发布前要做的") is None, msg="not drawn in the first window")
+  // 移到侧边 there: back in the panel, in front, the window closed, the reader as it was
+  assert_true(beside_window_press(t, wid, @sf.t("web-main.preview.moveBeside")), msg="移到侧边 in the window's bar")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 0, msg="the window closed")
+  assert_eq(view_tabs(t).length(), 1, msg="back in the panel")
+  assert_eq(t.all(Tab, label="说明.md", selected=true).length(), 1, msg="in front")
+  assert_true(shown_beside(t, "说明.md", "发布前要做的"), msg="drawn beside the chat again")
+}
+
+///|
+test "大屏: a file's tab over the whole window sent to a window of its own by its bar's 在新窗口打开: the whole window put away at once; that window closed by the person lets the tab go" {
+  let t = beside_tester()
+  beside_windows(t, w=420.0, h=320.0)
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  let tab = view_tabs(t)[0]
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("说明.md"), msg="over the whole window")
+  let keys = t.all(Button, label=@sf.t("web-pages.screen.window"))
+  assert_true(keys.length() > 0, msg="在新窗口打开 in its bar")
+  let k = keys[keys.length() - 1]
+  t.tap(k.rect.0 + k.rect.2 / 2.0, k.rect.1 + k.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="the whole window put away")
+  assert_true(app.nav.top() is Chat(_), msg="back on the chat")
+  assert_eq(t.windows_beside().length(), 1)
+  let wid = t.windows_beside()[0].0
+  assert_true(beside_window_words(t, wid).iter().any(fn(w) { w.contains("发布前要做的") }), msg="the reader there")
+  assert_eq(beside_window_audit(t, wid), [], msg="the window at its least, 420 × 320: \{Repr(beside_window_audit(t, wid))}")
+  // closed by its own close button: the tab let go of, as its tab closed beside the chat would be
+  t.close_window_beside(wid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.windows_beside().length(), 0)
+  assert_eq(view_tabs(t), [], msg="not back in the panel")
+  assert_true(!@sfbase.tab_viewer_held(beside_chat, tab), msg="its viewer let go of")
+  assert_true(@sfbase.tab_full.get() is None)
+}
+
+///|
+/// Where the node read out `label` (its role `role`) is in window `wid` of the run: its rectangle, if there is one.
+fn beside_window_rect(t : @ui.Tester, wid : Int, role : @ui.Role, label : String) -> (Double, Double, Double, Double)? {
+  let out = Ref(None)
+  t.in_window(wid, fn() { out.val = t.query(role, label~).map(fn(n) { n.rect }) })
+  out.val
+}
+
+///|
+test "大屏: a file's tab in a window of its own on a Mac and on Windows, its buttons in its top row, at 960 × 720 and at its least 420 × 320: nothing the audit finds; its name in its middle; Windows' own buttons on its bar's line after 移到侧边; at its least its keys in its ⋯; its own close button and Ctrl+W close it, the tab let go" {
+  for platform in [0, 3] {
+    let corner = if platform == 3 { 8.0 } else { 16.0 }
+    let at = "platform \{platform}"
+    let t = beside_tester(platform~, inset=true, corner~)
+    t.set_window_opens(true)
+    t.set_windows_in_process(true)
+    t.run_for(@ui.move_most_ms)
+    file_to_window(t, "说明.md")
+    assert_eq(t.windows_beside().length(), 1, msg=at)
+    let wid = t.windows_beside()[0].0
+    t.run_for(@ui.move_most_ms)
+    assert_eq(beside_window_audit(t, wid), [], msg="\{at}, 960 × 720: \{Repr(beside_window_audit(t, wid))}")
+    // its name in the window's middle, whichever side the window's buttons are on
+    let name = Ref(None)
+    t.in_window(wid, fn() { name.val = t.words().iter().find_first(fn(w) { w.0 == "说明.md" }) })
+    match name.val {
+      Some((_, x, _, w, _, _)) => assert_true(((x + w / 2.0) - 480.0).abs() < 2.0, msg="\{at}: its name at \{x}, \{w} wide")
+      None => fail("\{at}: no name in its bar")
+    }
+    let beside = beside_window_rect(t, wid, Button, @sf.t("web-main.preview.moveBeside"))
+    assert_true(beside is Some(_), msg="\{at}: 移到侧边")
+    if platform == 3 {
+      // Windows' own buttons the app's, on the line of its bar, after its last key
+      let (bx, by, bw, bh) = beside.unwrap()
+      for key in ["desktop.menu.minimize", "desktop.window.maximize", "desktop.menu.close"] {
+        match beside_window_rect(t, wid, Button, @sf.t(key)) {
+          Some((kx, ky, _, kh)) => {
+            assert_true(((ky + kh / 2.0) - (by + bh / 2.0)).abs() < 1.0, msg="\{at}: \{key} on 移到侧边's line: \{ky}, \{by}")
+            assert_true(kx >= bx + bw, msg="\{at}: \{key} after 移到侧边: \{kx}, \{bx + bw}")
+          }
+          None => fail("\{at}: no \{key} in the window")
+        }
+      }
+    }
+    // at its least: the audit still finds nothing; what has not the room in its ⋯
+    t.set_window_beside_size(wid, 420.0, 320.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(beside_window_audit(t, wid), [], msg="\{at}, 420 × 320: \{Repr(beside_window_audit(t, wid))}")
+    // its name and what it is whole, the room given for the other side's buttons given back first
+    let said = beside_window_words(t, wid)
+    assert_true(said.contains("说明.md") && said.contains("500 B · Markdown"), msg="\{at}: its name whole at its least: \{Repr(said)}")
+    if platform == 3 {
+      assert_true(beside_window_press(t, wid, @sf.t("web-main.menu.more")), msg="\{at}: its ⋯ at its least")
+      t.run_for(@ui.move_most_ms)
+      let words = beside_window_words(t, wid)
+      let reader = [
+        @sf.t("web-pages.drive.reader.contents"),
+        @sf.t("web-pages.drive.reader.find"),
+        @sf.t("web-pages.drive.reader.layout"),
+        @sf.t("web-main.preview.download"),
+      ]
+      assert_true(reader.iter().any(fn(k) { words.contains(k) }), msg="\{at}: what left its bar in its ⋯: \{Repr(words)}")
+      t.in_window(wid, fn() { t.key(@ui.key_escape) })
+      t.run_for(@ui.move_most_ms)
+    }
+    // closed by its own close button (the app's on Windows: @hostapi.window_act; the system's on a Mac: the person's)
+    if platform == 3 {
+      assert_true(beside_window_press(t, wid, @sf.t("desktop.menu.close")), msg="\{at}: its close button")
+      t.run_for(@ui.move_most_ms)
+      assert_eq(t.window_acts_of(wid~), [3], msg=at)
+    } else {
+      t.close_window_beside(wid)
+      t.run_for(@ui.move_most_ms)
+    }
+    assert_eq(t.windows_beside(), [], msg="\{at}: closed")
+    assert_eq(view_tabs(t), [], msg="\{at}: not back beside the chat")
+    // again, closed by Ctrl+W (⌘W on a Mac)
+    file_to_window(t, "说明.md")
+    assert_eq(t.windows_beside().length(), 1, msg=at)
+    let again = t.windows_beside()[0].0
+    t.in_window(again, fn() { t.key(@ui.key_of_char('w'), mods=if platform == 3 { @ui.mod_ctrl } else { @ui.mod_cmd }) })
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.windows_beside(), [], msg="\{at}: closed by its keys")
+    assert_eq(view_tabs(t), [], msg="\{at}: let go")
+  }
+}
+
+///|
+test "a terminal and a station's screen each alone in a window of its own, on a Mac and on Windows, its buttons in its top row, at 960 × 720 and at its least 420 × 320: its one bar its top row, nothing the audit finds" {
+  let pages : Array[(String, @sfbase.Page)] = [
+    ("terminal", Terminal({ station: "ws1/st1", terminal: "term-2", watch: false, cwd: "~/still.fail" })),
+    ("screen-live", Screen({ station: "ws-1/st-1", screen: "browser:tab-1", title: "Chrome", until_gone: false })),
+  ]
+  for kind in pages {
+    let (mode, page) = kind
+    for platform in [0, 3] {
+      for size in [(960.0, 720.0), (420.0, 320.0)] {
+        let (w, h) = size
+        let at = "\{mode}, platform \{platform}, \{w} × \{h}"
+        let calls : Array[Made] = []
+        let t = wide_tester(
+          calls,
+          mode~,
+          w~,
+          h~,
+          platform~,
+          window_corner=if platform == 3 { 8.0 } else { 16.0 },
+          window_inset=true,
+          before=fn(_) {
+            if mode == "screen-live" {
+              @sfpages.open_screen_fixture("screen-live")
+            }
+            @sfbase.lone_page.val = Some(page)
+          },
+        )
+        t.run_for(@ui.move_most_ms)
+        assert_eq(t.audit(), [], msg="\{at}: \{Repr(t.audit())}")
+        @sfbase.lone_page.val = None
+      }
+    }
+  }
+}
+
+///|
+/// Where the stage of the file tab in front begins (its tools' row's foot, its left), its file named `name`.
+fn tab_stage_at(t : @ui.Tester, name : String) -> (Double, Double) raise {
+  let (x, y, _, h) = t.get(Toolbar, label=name).rect
+  (x, y + h)
+}
+
+///|
+/// A press let go on the middle of the button named `label`.
+fn press_button(t : @ui.Tester, label : String) -> Unit raise {
+  let (x, y, w, h) = t.get(Button, label~).rect
+  t.touch(0, x + w / 2.0, y + h / 2.0)
+  t.touch(2, x + w / 2.0, y + h / 2.0)
+}
+
+///|
+test "大屏: a plain press on a message's picture opens it in the whole window's viewer, flown from its thumbnail, no tab; back closes it, flown back" {
+  let t = beside_tester()
+  let (x, y) = chat_picture(t)
+  t.tap(x, y)
+  t.frame()
+  t.frame()
+  match @sfbase.viewer.get() {
+    // (flown by the window's tree from its thumbnail in the chat made as nodes: View::shared, Viewer::tree_way)
+    Some(v) => assert_true(v.flies || v.tree_way.get(), msg="flown from its thumbnail")
+    None => fail("not in the whole window's viewer")
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(viewer_of("compare.png"))
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
+  assert_true(@sfbase.tab_full.get() is None)
+  t.back()
+  t.frame()
+  match @sfbase.viewer.get() {
+    Some(v) => assert_true(v.flies || v.tree_back.get(), msg="flown back into its thumbnail")
+    None => ()
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0)
+}
+
+///|
+test "大屏: a picture's tab copies it as the whole window's viewer did: 复制 in its tools, the picture on the clipboard, a check a moment after" {
+  let t = beside_tester()
+  t.host_says_finger(Some(false))
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"), full=false)
+  t.run_for(@ui.move_most_ms)
+  let vw = tab_viewer_named(t, "界面草图.png")
+  let was = vw.copied
+  press_button(t, @sf.t("common.copy"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(vw.copied, was + 1, msg="copied once")
+  assert_eq(t.all(Button, label=@sf.t("common.copied")).length(), 1, msg="its check")
+  t.run_for(@sf.copied_ms)
+  assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 1, msg="back to 复制")
+}
+
+///|
+test "大屏: a picture marked in its tab: 标注图片 in its tools, a box drawn on it, 添加到对话: put in the chat's draft once, the tab staying, marking left" {
+  let t = beside_tester()
+  t.host_says_finger(Some(false))
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"), full=false)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_tabs(t).length(), 1, msg="its tab")
+  press_button(t, @sf.t("web-main.annotate.image"))
+  t.draw()
+  let vw = tab_viewer_named(t, "界面草图.png")
+  assert_true(vw.marks_here() && vw.draft_key() == "ws1/st1:s-c1", msg="marked in its tab, a draft to put it in: \{vw.draft_key()}")
+  assert_eq(t.all(Button, label=pv("android-chat.marks.tool.rect")).length(), 1, msg="marking's tools under it")
+  let (sx, sy) = tab_stage_at(t, "界面草图.png")
+  let (rx, ry, rw, rh) = vw.zoom.rect_at(t.time()).unwrap()
+  let (px, py) = (sx + rx + rw / 3.0, sy + ry + rh / 3.0)
+  t.touch(0, px, py)
+  t.touch(1, px + 60.0, py + 40.0)
+  t.touch(2, px + 60.0, py + 40.0)
+  t.draw()
+  assert_eq(marking.shapes.length(), 1, msg="a box drawn on it")
+  for f in t.audit() {
+    println("audit marking: \{f}")
+  }
+  if marking.note >= 0 {
+    press_button(t, pv("android-chat.annotate.done"))
+    t.draw()
+  }
+  let quoted = fn() { @sfbase.writings.get("ws1/st1:s-c1").map(fn(w) { w.quotes.get().length() }).unwrap_or(0) }
+  let before = quoted()
+  press_button(t, pv("android-chat.preview.put"))
+  assert_true(marking.busy && marking.to_draft, msg="being made for the draft")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.marks_drawn().length(), 1, msg="asked for once")
+  assert_eq(quoted() - before, 1, msg="put in the chat's draft once")
+  assert_true(!marking.on, msg="marking left")
+  assert_eq(view_tabs(t).length(), 1, msg="the tab stays")
+  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
+}
+
+///|
+test "大屏: a picture's tab steps to the one after it in its chat and back by its ways at its sides: the tab put in its place, one tab all along" {
+  let t = beside_tester()
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"), full=false)
+  t.run_for(@ui.move_most_ms)
+  let first = view_tabs(t)
+  assert_eq(first.length(), 2)
+  // (the pointer over its picture: its ways at its sides; the one after's pressed)
+  let (sx, sy) = tab_stage_at(t, "界面草图.png")
+  t.move_to(sx + 100.0, sy + 100.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=@sf.t("web-main.preview.nextKey"))
+  t.run_for(@ui.move_most_ms)
+  let after = view_tabs(t)
+  assert_eq(after.length(), 2, msg="one tab all along: \{Repr(after)}")
+  assert_eq(after[0], first[0], msg="说明.md where it was")
+  assert_true(@sfbase.view_tab_file(after[1]).map(fn(f) { f.file.name }) == Some("第二版.png"), msg="the one after in its place: \{Repr(after)}")
+  assert_eq(t.all(Tab, label="第二版.png", selected=true).length(), 1, msg="in front")
+  // back by its way at its side
+  t.move_to(sx + 100.0, sy + 100.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=@sf.t("web-main.preview.prevKey"))
+  t.run_for(@ui.move_most_ms)
+  let back = view_tabs(t)
+  assert_eq(back.length(), 2)
+  assert_true(@sfbase.view_tab_file(back[1]).map(fn(f) { f.file.name }) == Some("界面草图.png"), msg="back: \{Repr(back)}")
+  assert_true(@sfbase.viewer.get() is None)
+}
+
+///|
+test "大屏: a picture's tab over the whole window steps by → there, still over the whole window, the one after in the panel's place under it; Escape closes it, its tab with it (put there only to go over the whole window)" {
+  let t = beside_tester()
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"), full=true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("界面草图.png"))
+  t.key(@ui.key_code_right)
+  t.run_for(@ui.move_most_ms)
+  assert_true(full_now("第二版.png"), msg="the one after over the whole window")
+  assert_eq(view_tabs(t).length(), 1, msg="one tab")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0, msg="its tab with it")
+}
+
+///|
+/// A beside-chat Tester whose `station.file` for `target_name` is controlled asynchronously so tests can drive
+/// initial loading, progress updates, preview arrival, zoom upgrade, and whole image arrival.
+fn beside_preview_async(
+  target_name : String,
+  w : Double,
+  h : Double,
+) -> (
+  @ui.Tester,
+  Source,
+  Array[Bool],
+  Ref[(Json) -> Unit],
+  Ref[(Result[(Json, Bytes), Json]) -> Unit],
+  Ref[Bytes],
+) {
+  new_run()
+  let base = fixture("chat")
+  let asked : Array[Bool] = []
+  let on_progress : Ref[(Json) -> Unit] = Ref(fn(_) {  })
+  let on_done : Ref[(Result[(Json, Bytes), Json]) -> Unit] = Ref(fn(_) {  })
+  let sample_bytes : Ref[Bytes] = Ref(b"")
+  let src : Source = {
+    ..base,
+    read_going: fn(name, params, on_value, done) {
+      if name == "station.file" && text(Some(params), "name") == target_name {
+        let preview = field(Some(params), "preview") is Some(True)
+        asked.push(preview)
+        on_progress.val = on_value
+        on_done.val = done
+        if sample_bytes.val.length() == 0 {
+          (base.read_going)(name, params, fn(_) {  }, fn(r) {
+            match r {
+              Ok((_, b)) => sample_bytes.val = b
+              _ => ()
+            }
+          })
+        }
+      } else {
+        (base.read_going)(name, params, on_value, done)
+      }
+    },
+  }
+  beside_src.val = Some(src)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=0)
+  nav_rested(t)
+  t.run_for(@ui.move_most_ms)
+  (t, src, asked, on_progress, on_done, sample_bytes)
+}
+
+///|
+test "大屏: beside sidebar (1280 and narrow 1100/360) and tab_full show loading & upgrade progress without duplicate card, zoom triggers whole fetch, zero audit faults" {
+  let preview_png = @sffixture.fixture_png(300, 200)
+  let clean_audit = fn(t : @ui.Tester) {
+    t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") && !f.contains("quote_card_node.mbt") })
+  }
+  for w in [1280.0, 1100.0] {
+    let (t, src, asked, on_progress, on_done, sample) = beside_preview_async("compare.png", w, 800.0)
+    let (cx, cy) = chat_picture(t)
+    press_held(t, cx, cy, @ui.mod_cmd)
+    let vw = tab_viewer_named(t, "compare.png")
+    assert_true(vw.stand_in(src) != "", msg="non-empty chat thumbnail stand_in at w=\{w}")
+    assert_eq(asked, [true], msg="preview asked first at w=\{w}")
+    assert_true(vw.coming() && vw.image_loading(), msg="initial loading at w=\{w}")
+    // Phase 1: progress in sidebar toolbar, no duplicate stage progress card
+    (on_progress.val)({ "loaded": 120_000.0, "total": 402_000.0 })
+    t.draw()
+    let loaded1 = @sf.file_size(120_000.0)
+    let matches1 = t.words().filter(fn(x) { x.0.contains(loaded1) })
+    assert_eq(matches1.length(), 1, msg="exactly one progress readout in sidebar at w=\{w}: \{Repr(matches1)}")
+    assert_eq(clean_audit(t), [], msg="audit during sidebar initial loading at w=\{w}: \{Repr(clean_audit(t))}")
+    // Switch to tab fullscreen: progress in top bar, no duplicate card
+    t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(full_now("compare.png"), msg="tab_full active at w=\{w}")
+    let matches_full = t.words().filter(fn(x) { x.0.contains(loaded1) })
+    assert_eq(matches_full.length(), 1, msg="exactly one progress readout in tab_full at w=\{w}")
+    assert_eq(clean_audit(t), [], msg="audit during tab_full initial loading at w=\{w}")
+    // Move back to sidebar
+    t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
+    t.run_for(@ui.move_most_ms)
+    // Preview arrives
+    (on_done.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+    t.run_for(@ui.move_most_ms)
+    assert_true(vw.previewed.get(), msg="previewed at w=\{w}")
+    assert_eq(vw.image, "mem:preview-p/" + vw.id(), msg="preview key at w=\{w}")
+    let preview_tag = "bytes:\{preview_png.length()}"
+    let whole_tag = "bytes:\{sample.val.length()}"
+    assert_true(preview_tag != whole_tag, msg="preview bytes differ from whole bytes")
+    assert_true(
+      t.image_loads().iter().any(fn(l) { l.0 == preview_tag && l.1 <= 2048 }),
+      msg="preview decoded with cap <= 2048 in tab at w=\{w}",
+    )
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 1, msg="mark shown after preview")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 1, msg="copy shown after preview")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 1, msg="download shown after preview")
+    // Zoom in -> triggers whole fetch & upgrading progress
+    vw.zoom.zoom_to(vw.zoom.fit() * 2.0, vw.zoom.bw / 2.0, vw.zoom.bh / 2.0, false, at=t.time())
+    t.draw()
+    assert_true(vw.zoomed_in.get(), msg="zoomed_in set in tab_picture_node at w=\{w}")
+    assert_eq(asked, [true, false], msg="zoom triggers whole fetch in tab at w=\{w}")
+    assert_true(vw.upgrading() && vw.image_loading(), msg="upgrading at w=\{w}")
+    (on_progress.val)({ "loaded": 250_000.0, "total": 402_000.0 })
+    t.draw()
+    let loaded2 = @sf.file_size(250_000.0)
+    assert_eq(t.words().filter(fn(x) { x.0.contains(loaded2) }).length(), 1, msg="upgrade progress shown in sidebar at w=\{w}")
+    // Narrow sidebar hides mark/copy/download while upgrading, keeping fullWindow
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 0, msg="mark hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 0, msg="copy hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 0, msg="download hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.fullWindow")).length(), 1, msg="fullWindow kept during sidebar upgrade")
+    assert_eq(clean_audit(t), [], msg="audit during sidebar upgrade at w=\{w}")
+    // Whole image arrives -> key switches, preview stands in during decode, then preview dropped, progress gone, tools restored
+    (on_done.val)(Ok(({ "type": "image/png" }, sample.val)))
+    assert_eq(vw.image, "mem:preview/" + vw.id(), msg="whole key at w=\{w}")
+    assert_eq(vw.stand_in(src), "mem:preview-p/" + vw.id(), msg="preview stand-in at w=\{w}")
+    t.run_for(@ui.move_most_ms)
+    assert_true(!vw.previewed.get() && !vw.upgrading() && !vw.image_loading(), msg="whole arrived at w=\{w}")
+    assert_eq(vw.preview_image, "", msg="preview image dropped once whole decoded at w=\{w}")
+    assert_true(
+      t.image_loads().iter().any(fn(l) { l.0 == whole_tag }),
+      msg="whole image re-decoded by host in tab at w=\{w}",
+    )
+    assert_eq(t.words().filter(fn(x) { x.0.contains(loaded2) }).length(), 0, msg="progress gone after whole")
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 1, msg="mark restored")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 1, msg="copy restored")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 1, msg="download restored")
+    assert_eq(clean_audit(t), [], msg="audit after whole at w=\{w}")
+  }
+}
+
+///|
+test "大屏: beside tab copy and mark on previewed image trigger whole fetch and wait for whole" {
+  let preview_png = @sffixture.fixture_png(300, 200)
+  // copy in beside tab
+  let (t, _, asked, _, on_done, sample) = beside_preview_async("compare.png", 1280.0, 800.0)
+  let (cx, cy) = chat_picture(t)
+  press_held(t, cx, cy, @ui.mod_cmd)
+  let vw = tab_viewer_named(t, "compare.png")
+  (on_done.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+  t.run_for(@ui.move_most_ms)
+  press_button(t, @sf.t("common.copy"))
+  t.draw()
+  assert_eq(asked, [true, false], msg="tab copy triggers whole fetch")
+  assert_eq(vw.copied, 0, msg="not copied from preview")
+  assert_true(vw.copy_after, msg="copy_after armed in tab")
+  (on_done.val)(Ok(({ "type": "image/png" }, sample.val)))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(vw.copied, 1, msg="copied once whole arrived in tab")
+  assert_true(!vw.copy_after)
+  // mark in beside tab
+  let (t2, _, asked2, _, on_done2, sample2) = beside_preview_async("compare.png", 1280.0, 800.0)
+  let (cx2, cy2) = chat_picture(t2)
+  press_held(t2, cx2, cy2, @ui.mod_cmd)
+  let vw2 = tab_viewer_named(t2, "compare.png")
+  (on_done2.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+  t2.run_for(@ui.move_most_ms)
+  press_button(t2, @sf.t("web-main.annotate.image"))
+  t2.draw()
+  assert_eq(asked2, [true, false], msg="tab mark triggers whole fetch")
+  vw2.finish_marks(true)
+  t2.draw()
+  assert_true(marking.busy && vw2.marks_after == Some(true), msg="tab finish_marks waits for whole")
+  assert_eq(t2.marks_drawn().length(), 0, msg="never draws marks on preview in tab")
+  (on_done2.val)(Ok(({ "type": "image/jpeg" }, sample2.val)))
+  t2.run_for(@ui.move_most_ms)
+  assert_true(vw2.marks_after is None)
+  assert_eq(t2.marks_drawn().length(), 1, msg="tab marks drawn once whole arrived")
 }

@@ -1,0 +1,9 @@
+import {
+  "base/shell",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+}
+
+import {
+  "mbui/effect",
+} for "wbtest"

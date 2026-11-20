@@ -38,6 +38,14 @@ pub fn ChatMessages::get(self : ChatMessages, k : String) -> Message? {
 }
 
 ///|
+/// Message `k`'s item as the core keeps it, its JSON (none where it is not there), not read as a Message: what reads it
+/// is told as that message changes, comes or goes. For what is worked out of a field or two of every message the list
+/// holds (which rows each is shown in), so that only those that show are read whole (get).
+pub fn ChatMessages::raw(self : ChatMessages, k : String) -> Json? {
+  self.list.get(k)
+}
+
+///|
 /// Message `k` as it stands, read by nothing.
 pub fn ChatMessages::peek(self : ChatMessages, k : String) -> Message? {
   match self.list.peek(k) {
@@ -75,7 +83,7 @@ fn ChatMessages::of(self : ChatMessages, k : String, j : Json) -> Message {
     Some((was, m)) if physical_equal(was, j) => m
     _ => {
       chat_messages_read.val += 1
-      let m = message_of(j)
+      let m = message_read(j)
       self.read[k] = (j, m)
       m
     }
@@ -103,12 +111,133 @@ pub fn chat_messages(src : Source, r : ChatRef) -> ChatMessages? {
   let key = chat_inputs_key(r)
   match chat_messages_kept.get(key) {
     Some(m) if physical_equal(m.list, list) => Some(m)
-    _ => {
-      let m = { list, read: {} }
+    was => {
+      // (its messages as they were read where it was read before: as its page was left (chat_messages_seeds), or by
+      // the list before this one; each taken only while its item is the same JSON: ChatMessages::of)
+      let read = match seeds_take(chat_messages_seeds, key) {
+        Some(read) => read
+        None =>
+          match was {
+            Some(w) => chat_messages_read_of(w)
+            None => {}
+          }
+      }
+      let m = { list, read }
       chat_messages_kept[key] = m
       Some(m)
     }
   }
+}
+
+///|
+/// What `ms` read of its messages that its list holds now (ChatMessages' `read`, those gone from it left out).
+fn chat_messages_read_of(ms : ChatMessages) -> Map[String, (Json, Message)] {
+  let read : Map[String, (Json, Message)] = Map([])
+  for k in ms.list.peek_keys() {
+    match ms.read.get(k) {
+      Some(p) => read[k] = p
+      None => ()
+    }
+  }
+  read
+}
+
+///|
+/// The messages read of each chat by key as its page was left (ChatMessages' `read`, chat_seeds_put), the last
+/// `chats_kept` of them by the chat's key: taken by its messages by key as they are read again (chat_messages), so a
+/// page of it opened again reads none of those whose item is the same JSON (the core's client keeps the chat's value
+/// as it lets it go: @core.Client::keep).
+// kept across runs: emptied as a run begins (chat_seeds_reset)
+let chat_messages_seeds : Array[(String, Map[String, (Json, Message)])] = []
+
+///|
+/// The heads read of chats as their pages were left (chat_head_read's, chat_seeds_put), the last `chats_kept` of them:
+/// a page of one opened again (a source of its own) reads its head from the one kept where it is the same chat's
+/// (chat_head_seed), as from the head before.
+// kept across runs: emptied as a run begins (chat_seeds_reset)
+let chat_head_seeds : Array[(String, ChatHead)] = []
+
+///|
+/// The head kept of the chat whose value `v` is (chat_head_seeds): one whose value is it, or whose people's or agents'
+/// are the same JSON as its (the newest first); none else.
+fn chat_head_seed(v : Json) -> ChatHead? {
+  let s = Some(v)
+  let mut i = chat_head_seeds.length() - 1
+  while i >= 0 {
+    let w = chat_head_seeds[i].1
+    if physical_equal(w.raw, v) || chat_head_part_same(field(s, "people"), field(Some(w.raw), "people")) ||
+      chat_head_part_same(field(s, "agents"), field(Some(w.raw), "agents")) {
+      return Some(w)
+    }
+    i -= 1
+  }
+  None
+}
+
+///|
+/// Whether parts `a` and `b` of two chats' values are the same JSON (none is no part).
+fn chat_head_part_same(a : Json?, b : Json?) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => physical_equal(x, y)
+    _ => false
+  }
+}
+
+///|
+/// What was read of chat `key` as a page of it is left (by its source: its read whole, `read`; its head, `head`; its
+/// messages by key, chat_messages_kept's), kept for a page of it opened again (chat_read_seeds, chat_head_seeds,
+/// chat_messages_seeds), each the newest `chats_kept`.
+fn chat_seeds_put(key : String, read : ChatRead?, head : ChatHead?) -> Unit {
+  match read {
+    Some(c) => seeds_put(chat_read_seeds, key, c)
+    None => ()
+  }
+  match head {
+    Some(h) => seeds_put(chat_head_seeds, key, h)
+    None => ()
+  }
+  match chat_messages_kept.get(key) {
+    Some(ms) => seeds_put(chat_messages_seeds, key, chat_messages_read_of(ms))
+    None => ()
+  }
+}
+
+///|
+/// `value` kept for `key` in `seeds`, in place of one kept for it before, the oldest let go past `chats_kept`.
+fn[T] seeds_put(seeds : Array[(String, T)], key : String, value : T) -> Unit {
+  match seeds.search_by(fn(s) { s.0 == key }) {
+    Some(i) => seeds.remove(i) |> ignore
+    None => ()
+  }
+  seeds.push((key, value))
+  while seeds.length() > chats_kept {
+    seeds.remove(0) |> ignore
+  }
+}
+
+///|
+/// What `seeds` keeps for `key`, taken out of it.
+fn[T] seeds_take(seeds : Array[(String, T)], key : String) -> T? {
+  match seeds.search_by(fn(s) { s.0 == key }) {
+    Some(i) => Some(seeds.remove(i).1)
+    None => None
+  }
+}
+
+///|
+fn init {
+  // a run anew (a Tester begun: another test's) keeps nothing read of another's chats
+  @ui.on_reset(chat_seeds_reset)
+}
+
+///|
+/// What was kept of chats read to be read again let go (chat_seeds_put's, chat_opening's).
+fn chat_seeds_reset() -> Unit {
+  chat_read_seeds.clear()
+  chat_head_seeds.clear()
+  chat_messages_seeds.clear()
+  chat_openings.clear()
+  messages_read_last.clear()
 }
 
 ///|
@@ -171,6 +300,11 @@ fn chat_head_same(a : ChatView, b : ChatView) -> Bool {
 let chat_head_read : Derived[ChatHead] = Derived::new_by(
   "chat",
   fn(v, was) {
+    // (made from nothing, a source's first: from the head read of this chat as a page of it was left: chat_head_seeds)
+    let was = match was {
+      Some(_) => was
+      None => chat_head_seed(v)
+    }
     let view = chat_view_of(v, [], match was {
       Some(w) => Some((w.raw, w.view))
       None => None
@@ -273,7 +407,13 @@ pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
       }
     None => ()
   }
-  view_of_chat(src, r).0
+  match view_of_chat(src, r) {
+    (Some(v), _, _) => Some(v)
+    // (none read yet where no error says why: a page taken back from the stack's kept left, its chat asked again, shows
+    // what it read last till the core's first answer, never its bones in between)
+    (None, _, None) => page_chat_view_kept(src, r)
+    _ => None
+  }
 }
 
 ///|
@@ -352,3 +492,4 @@ pub fn chat_card_answered(m : Message) -> Message {
   let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
   { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
 }
+

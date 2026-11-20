@@ -270,7 +270,7 @@ fn new_profile_stations_node(
   let waiting : Ref[@sfbase.PressWait?] = Ref(None)
   b.box(fn(r) {
     @sf.style_node(r, fn() { ap_stations })
-    @sf.labelled_field_node(r, fn() { @sf.t("web-pages.addProfile.station") }, fn(f) {
+    @sf.field_node(r, fn() { @sf.t("web-pages.addProfile.station") }, fn(f) {
       @sf.page_choice_node(
         f,
         fn() { list().map(fn(s) { text(Some(s), "name") }) },
@@ -337,7 +337,7 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
           None => None
         }
       }
-      provider_mark_node(m, fn() {
+      @sf.provider_mark_node(m, fn() {
         (
           match text(pv(), "runtime") {
             "" => "claude"
@@ -353,13 +353,6 @@ fn provider_group_node(b : @view.View, g : () -> Json?, pick : (String) -> Unit)
     },
     pick,
   )
-}
-
-///|
-/// A provider's mark (provider_logo_node's) in node `m`, `size` across, by its runtime, its kind and its own mark as
-/// `of` says them now.
-fn provider_mark_node(m : @view.View, of : () -> (String, String, String), size : Double) -> Unit {
-  m.pick(of, fn(l, k) { @sf.provider_logo_node(l, k.0, k.1, size, k.2) |> ignore })
 }
 
 ///|
@@ -386,7 +379,7 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     fn() { items(d(), "choices").map(fn(c) { (text(Some(c), "id"), text(Some(c), "title"), text(Some(c), "hint")) }) },
     choose,
     mark=fn(m, id) {
-      provider_mark_node(m, fn() {
+      @sf.provider_mark_node(m, fn() {
         let t = tile()
         let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"
@@ -594,7 +587,7 @@ fn new_profile_form_node(
   b.box(fn(f) {
     @sf.style_node(f, fn() { ap_form })
     f.show(fn() { flag(d(), "showEndpoint") }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("common.provider.endpoint") }, hint=fn() { text(d(), "endpointHint") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("common.provider.endpoint") }, hint=fn() { text(d(), "endpointHint") }, fn(c) {
         @sf.input_node(
           c,
           endpoint,
@@ -612,7 +605,7 @@ fn new_profile_form_node(
     })
     let regions = fn() { items(d(), "regions") }
     f.show(fn() { regions().length() > 1 }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("web-pages.addProfile.region") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("web-pages.addProfile.region") }, fn(c) {
         @sf.page_choice_node(
           c,
           fn() { regions().map(fn(r) { text(Some(r), "label") }) },
@@ -628,7 +621,7 @@ fn new_profile_form_node(
     })
     let protocols = fn() { items(d(), "protocols") }
     f.show(fn() { protocols().length() > 1 }, fn(x) {
-      @sf.labelled_field_node(x, fn() { @sf.t("web-pages.addProfile.protocol") }, fn(c) {
+      @sf.field_node(x, fn() { @sf.t("web-pages.addProfile.protocol") }, fn(c) {
         @sf.page_choice_node(
           c,
           fn() { protocols().map(fn(p) { text(Some(p), "label") }) },
@@ -643,7 +636,7 @@ fn new_profile_form_node(
       })
     })
     f.show(fn() { flag(d(), "showKey") }, fn(x) {
-      @sf.labelled_field_node(x, fn() { text(d(), "keyLabel") }, hint=fn() { text(d(), "keyHint") }, error=fn() { text(d(), "error") }, fn(c) {
+      @sf.field_node(x, fn() { text(d(), "keyLabel") }, hint=fn() { text(d(), "keyHint") }, error=fn() { text(d(), "error") }, fn(c) {
         @sf.input_node(c, key, placeholder=@sf.t("android-settings.profile.keyPlaceholder"), secret=true, disabled=pending, submitted=fn(_) {
           submit()
         })
@@ -706,11 +699,7 @@ fn machine_offers_node(
         @sf.style_node(c, fn() { if blocked { ap_offer } else { ap_offer_footed_style() } })
         c.box(fn(h) {
           @sf.style_node(h, fn() { ap_offer_head })
-          h.box(fn(m) {
-            @sf.style_node(m, fn() { ap_offer_mark })
-            @sf.provider_logo_node(m, rt, "subscription", ap_offer_glyph, "") |> ignore
-          })
-          |> ignore
+          @sf.provider_badge_node(h, rt, "subscription", ap_offer_glyph)
           // (short of room, its name kept: whether it is signed in leaves its line first, then its plan)
           h.box(fn(w) {
             @sf.style_node(w, fn() { ap_offer_text }, in_row=true)
@@ -948,14 +937,6 @@ fn ap_offer_footed_style() -> @ui.Style {
 ///|
 // kept across runs: a value (no field of it changes)
 let ap_offer_head : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
-
-///|
-/// An offer's mark: 32 on the neutral ground in the card's corner, where the ladder's small block's corner (10) is
-/// concentric with the card's (@sf.card_mark_out).
-// kept across runs: a value (no field of it changes)
-let ap_offer_mark : @ui.Style = @ui.css("w=S8 h=S8 bg=Neutral align=ACenter justify=JCenter").then(
-  @ui.style(radius=@sf.small_radius),
-).then(@sf.card_mark_out)
 
 ///|
 /// What leaves a machine's login's line first, short of room: whether it is signed in, then its plan.

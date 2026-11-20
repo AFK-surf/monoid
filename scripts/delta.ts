@@ -21,10 +21,14 @@
 // Making: the old files found whole in the made bytes (wholeFiles: an old tree's files, an apk's entries), and the old
 // bytes found as they were between them (sameBlocks: what a build left of a big binary, shifted), are matched where they
 // were found, and only the rest of the old blob is sorted for bsdiff to search (sparseSuffixArray), each search starting
-// in the bucket of its first 3 bytes.
+// in the bucket of its first 3 bytes. From PREFIXED_FROM old bytes the search, the records and their deflating are
+// scripts/delta-fast.c's, the same steps in C (ensureNativeDelta), where a C compiler with zlib is at hand.
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gunzipSync, inflateRawSync } from "node:zlib";
 import { CHUNK, type Header, MAGIC, type Range, apply, applyFile, parseHeader, patch, readOld } from "../station/src/updates/delta.ts";
 
@@ -398,10 +402,9 @@ function chunker() {
   let fill = 0;
   const flush = () => {
     if (fill === 0) return;
-    // (any deflate is the format's, the appliers inflating what comes. Level 8: on bsdiff's records, mostly zeros,
-    // level 9 walked its chains 3 times as long for 1.5-2.3% less, about a quarter of a far base's time; measured on the
-    // published deltas of 0.1.9570, 2026-11-16)
-    const packed = deflateRawSync(buf.subarray(0, fill), { level: 8 }), head = Buffer.alloc(8);
+    // (any deflate is the format's, the appliers inflating what comes. Level 6, as delta-fast.c's: on 120 MB of a far
+    // base's records level 8 took 6 times as long for about 5% less (2026-11-19); level 9 3 times level 8 again)
+    const packed = deflateRawSync(buf.subarray(0, fill), { level: 6 }), head = Buffer.alloc(8);
     head.writeUInt32LE(fill, 0);
     head.writeUInt32LE(packed.length, 4);
     parts.push(head, packed);
@@ -496,27 +499,148 @@ const END = Buffer.alloc(8);
 /** Below this share of the old blob found whole, the whole of it is sorted, as without `oldFiles`. */
 const WHOLE_ENOUGH = 1 / 8;
 
-/** A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted. */
-export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[]): Buffer {
-  const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: sha256(old), deflate, madeSize: made.length });
+function makeDeltaJs(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[], oldHash = sha256(old)): Buffer {
+  const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: oldHash, deflate, madeSize: made.length });
   const runs = sameBlocks(old, made, oldFiles ? wholeFiles(old, oldFiles, made) : []);
   const covered = old.length - outside(old.length, runs).m;
   const body = covered > 0 && covered >= old.length * WHOLE_ENOUGH ? bsdiff(old, made, sparseSuffixArray(old, runs), runs) : bsdiff(old, made);
   return Buffer.concat([head, ...body, END]);
 }
 
+/**
+ * A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted.
+ * `madeFile`: where `made` is on disk already, for delta-fast.c to read rather than a copy.
+ */
+export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[], madeFile?: string): Buffer {
+  const oldHash = sha256(old);
+  const native = old.length >= PREFIXED_FROM || process.env.STILLFAIL_DELTA_FAST_FORCE === "1" ? nativeChunksFiles(old, made, oldFiles, madeFile) : null;
+  lastMaker = native ? "native" : "js";
+  if (native) {
+    const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: oldHash, deflate, madeSize: made.length });
+    return Buffer.concat([head, native, END]);
+  }
+  return makeDeltaJs(old, made, files, inflate, deflate, oldFiles, oldHash);
+}
+
+/** Which made the last delta's chunks: delta-fast.c or this file's bsdiff (the tests see the native one was used). */
+export let lastMaker: "native" | "js" | null = null;
+
+const fastSource = fileURLToPath(new URL("./delta-fast.c", import.meta.url));
+const nativeBins = new Map<string, string | null>();
+
+/**
+ * delta-fast.c compiled, once for its source (`cacheDir`/stillfail-delta-fast-<its sha256's first 16>; the system's temp
+ * by default), or null: STILLFAIL_DELTA_JS=1, Windows, or no C compiler or zlib here, where this file's bsdiff makes
+ * the chunks. STILLFAIL_DELTA_FAST_BIN names one compiled already (release-deltas.ts hands it its makers).
+ */
+export function ensureNativeDelta(cacheDir?: string): string | null {
+  if (process.env.STILLFAIL_DELTA_JS === "1") return null;
+  const given = process.env.STILLFAIL_DELTA_FAST_BIN;
+  if (given) {
+    try { accessSync(given, fsConstants.X_OK); return given; } catch { /* not there: compiled here */ }
+  }
+  if (process.platform === "win32" || !existsSync(fastSource)) return null;
+  const dir = cacheDir ?? tmpdir();
+  if (nativeBins.has(dir)) return nativeBins.get(dir)!;
+  const bin = join(dir, `stillfail-delta-fast-${sha256(readFileSync(fastSource)).slice(0, 16)}`);
+  let found: string | null = bin;
+  if (!existsSync(bin)) {
+    // (into a name of its own, then renamed: makers compiling at once each leave a whole binary)
+    const tmp = `${bin}.tmp.${process.pid}`;
+    const cc = (defines: string[], lib: string) =>
+      spawnSync("cc", ["-O3", "-std=c11", ...defines, "-o", tmp, fastSource, lib], { encoding: "utf8" });
+    let r = cc([], "-lz");
+    // (no zlib.h here, as on a runner without zlib1g-dev: the system's libz loaded at run time instead)
+    if (r.status !== 0) r = cc(["-DDELTA_DLOPEN_ZLIB"], "-ldl");
+    if (r.status === 0) renameSync(tmp, bin);
+    else {
+      rmSync(tmp, { force: true });
+      // (the first error, not the last line: gcc ends with "compilation terminated.")
+      const lines = (r.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+      const why = r.error?.message ?? lines.find((l) => /error/i.test(l)) ?? lines[0] ?? `cc exited ${r.status}`;
+      console.error(`delta: delta-fast.c not compiled (${why}): the deltas are made in JavaScript`);
+      found = null;
+    }
+  }
+  nativeBins.set(dir, found);
+  return found;
+}
+
+/** The chunks delta-fast.c makes of `old` to `made`, computing wholeFiles/sameBlocks in C (`--files`), or null. */
+function nativeChunksFiles(old: Buffer, made: Buffer | null, oldFiles?: Range[], madeFile?: string, verify = false): Buffer | null {
+  const bin = ensureNativeDelta();
+  if (!bin) return null;
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-"));
+  try {
+    const list = oldFiles ?? [];
+    const filesBin = Buffer.alloc(list.length * 8);
+    list.forEach((f, i) => { filesBin.writeUInt32LE(f.at, i * 8); filesBin.writeUInt32LE(f.len, i * 8 + 4); });
+    const oldPath = join(dir, "old"), filesPath = join(dir, "files"), outPath = join(dir, "out");
+    let madePath = madeFile;
+    writeFileSync(oldPath, old);
+    writeFileSync(filesPath, filesBin);
+    if (!madePath) {
+      if (!made) throw new Error("made buffer or madeFile is required");
+      writeFileSync((madePath = join(dir, "made")), made);
+    }
+    const args = verify ? ["--files", "--verify", oldPath, madePath, filesPath, outPath] : ["--files", oldPath, madePath, filesPath, outPath];
+    execFileSync(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
+    return readFileSync(outPath);
+  } catch (e) {
+    const err = e as { stderr?: Buffer; message: string };
+    if (!nativeFailed) console.error(`delta: delta-fast failed (${err.stderr?.toString().trim() || err.message}): the deltas are made in JavaScript`);
+    nativeFailed = true;
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+let nativeFailed = false;
+
+/** A delta from an in-memory tree (`files`, `ranges`, `old`) to `newFile`, written to `out` once applying it gives that file. */
+export function makeTreeFromBuffer(files: string[], ranges: Range[], old: Buffer, newFile: string, out: string): void {
+  const oldHash = sha256(old);
+  const madeSize = statSync(newFile).size;
+  const tryNative = old.length >= PREFIXED_FROM || process.env.STILLFAIL_DELTA_FAST_FORCE === "1";
+  const native = tryNative ? nativeChunksFiles(old, null, ranges, newFile, true) : null;
+  let deltaBuf: Buffer;
+  let neu: Buffer | undefined;
+  if (native) {
+    lastMaker = "native";
+    const head = encodeHeader({ files, inflate: [], oldSize: old.length, oldSha256: oldHash, deflate: [], madeSize });
+    deltaBuf = Buffer.concat([head, native, END]);
+  } else {
+    neu = readFileSync(newFile);
+    deltaBuf = makeDeltaJs(old, neu, files, [], [], ranges, oldHash);
+    lastMaker = "js";
+  }
+  writeFileSync(out, deltaBuf);
+  // Checked against the old blob already read, as readOld would (its reading of a folder: test/delta.test.ts, applyFile).
+  verified(out, () => {
+    const h = parseHeader(deltaBuf);
+    if (h.files.join("\0") !== files.join("\0")) throw new Error("the delta's old files are not the folder's");
+    if (h.oldSize !== old.length || h.oldSha256 !== oldHash) throw new Error("the old blob's sha256 is not the delta's");
+    if (h.madeSize !== madeSize) throw new Error("the delta's made_size is not the package's");
+    if (h.deflate.length !== 0) throw new Error("a folder's delta has deflate ranges");
+    if (lastMaker === "native") {
+      if (deltaBuf.length < h.payload! + 8 || !deltaBuf.subarray(deltaBuf.length - 8).equals(END)) {
+        throw new Error("the delta has no end chunk");
+      }
+    } else {
+      const want = expecting(neu!);
+      apply(h, old, deltaBuf, want.sink);
+      want.done();
+    }
+  });
+}
+
 /** A delta from the folder `oldDir` to the file `newFile`, written to `out` once applying it gives that file. */
 export function makeTree(oldDir: string, newFile: string, out: string): void {
   const files = treeFiles(oldDir);
-  const neu = readFileSync(newFile);
   const data = files.map((f) => readFileSync(join(oldDir, f))), ranges: Range[] = [];
   for (let at = 0, i = 0; i < data.length; at += data[i]!.length, i++) ranges.push({ at, len: data[i]!.length });
-  writeFileSync(out, makeDelta(Buffer.concat(data), neu, files, [], [], ranges));
-  verified(out, () => {
-    const d = readFileSync(out), h = parseHeader(d), want = expecting(neu);
-    apply(h, readOld(h, { dir: oldDir }), d, want.sink);
-    want.done();
-  });
+  const old = Buffer.concat(data);
+  makeTreeFromBuffer(files, ranges, old, newFile, out);
 }
 
 function verified(out: string, check: () => void) {
@@ -617,20 +741,23 @@ export function entriesInBlob(zip: Buffer, inflate: Range[]): Range[] {
 }
 
 /** A delta from one apk to another, written to `out` once applying it checks (`node`: the new apk made again with
- * node's deflater; `none`: bspatch's made bytes only). Returns how many entries were transparent. */
-export function makeApk(oldApk: string, newApk: string, out: string, check: "node" | "none" = "node"): number {
+ * node's deflater; `none`: bspatch's made bytes only; `skip`: caller immediately verifies with `dev.mbui.Delta apply`).
+ * Returns how many entries were transparent. */
+export function makeApk(oldApk: string, newApk: string, out: string, check: "node" | "none" | "skip" = "node"): number {
   const oldZip = readFileSync(oldApk), newZip = readFileSync(newApk);
   const t = transparent(oldZip, newZip);
   const old = inflated(oldZip, t.old), made = inflated(newZip, t.neu);
   const inflate = t.old.map((e) => ({ at: e.at, len: e.packed }));
   writeFileSync(out, makeDelta(old.blob, made.blob, [], inflate, made.ranges, entriesInBlob(oldZip, inflate)));
-  verified(out, () => {
-    const d = readFileSync(out), h = parseHeader(d), blob = readOld(h, { apk: oldApk });
-    const want = expecting(check === "node" ? newZip : made.blob);
-    if (check === "node") apply(h, blob, d, want.sink);
-    else patch(h, blob, d, want.sink);
-    want.done();
-  });
+  if (check !== "skip") {
+    verified(out, () => {
+      const d = readFileSync(out), h = parseHeader(d), blob = readOld(h, { apk: oldApk });
+      const want = expecting(check === "node" ? newZip : made.blob);
+      if (check === "node") apply(h, blob, d, want.sink);
+      else patch(h, blob, d, want.sink);
+      want.done();
+    });
+  }
   return t.old.length;
 }
 

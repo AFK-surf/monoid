@@ -106,9 +106,11 @@ final class Daemon {
     }
     switch request["op"] as? String {
     case "hello":
-      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui"]])
+      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui", "resolution"]])
     case "status":
       var status = Status.fresh() ?? Status.now()
+      // (the display a view captures: still.fail's own where there is one, which a new process knows nothing of)
+      if let own = VirtualDisplays.shared.id { status["display"] = Status.display(own) }
       status["live"] = ["capture": CGPreflightScreenCaptureAccess(), "control": Status.inputAllowed()]
       let window = DispatchQueue.main.sync { MainActor.assumeIsolated { (Permissions.shared.isShown, Permissions.shared.asked) } }
       status["asking"] = window.0
@@ -128,6 +130,16 @@ final class Daemon {
         return
       }
       channel.line(Ui.run(arguments))
+    case "resolution":
+      // A display's resolution (Resolution.swift): read, or set to one of its modes (on the main thread, as the
+      // display's configuration is AppKit's too) and read again.
+      let display = (request["display"] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) } ?? CGMainDisplayID()
+      if let width = (request["width"] as? NSNumber)?.intValue, let height = (request["height"] as? NSNumber)?.intValue {
+        let modeID = (request["modeID"] as? NSNumber)?.int32Value
+        channel.line(DispatchQueue.main.sync { Resolution.set(display, width: width, height: height, modeID: modeID) })
+      } else {
+        channel.line(Resolution.read(display))
+      }
     case "screen.view":
       // Granted since this process started: it starts again to have it (the station asks again once it is back).
       if !CGPreflightScreenCaptureAccess() && request["synthetic"] == nil {
@@ -136,7 +148,13 @@ final class Daemon {
         if granted { DispatchQueue.main.async { self.restart() } }
         return
       }
-      ScreenView(channel: channel, options: request).run()
+      // A Mac with no display: one of the helper's own to capture (1920×1080 points, HiDPI), until the view's end.
+      var options = request
+      if request["synthetic"] == nil, VirtualDisplays.headless() || VirtualDisplays.shared.id != nil {
+        if VirtualDisplays.shared.id == nil { _ = VirtualDisplays.shared.show(width: 1920, height: 1080, physical: nil) }
+        if let own = VirtualDisplays.shared.id { options["display"] = NSNumber(value: own) }
+      }
+      ScreenView(channel: channel, options: options).run()
     case "simulator.view":
       // A booted simulator's screen: nothing of macOS's to grant (SimulatorView.swift).
       guard let udid = request["udid"] as? String, UUID(uuidString: udid) != nil else {
@@ -158,7 +176,8 @@ final class Daemon {
       channel.line(["ok": true])
       DispatchQueue.main.async { self.restart() }
     case "quit":
-      // Gone from its path before it answers: whoever asks next starts another.
+      // Gone from its path before it answers: whoever asks next starts another. No display of its own left behind.
+      VirtualDisplays.shared.remove()
       unlink(socketPath)
       close(server)
       channel.line(["ok": true])

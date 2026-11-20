@@ -33,14 +33,14 @@ fn ids_json(ids : Array[Json]) -> Json {
 ///|
 /// Whether a number is an integer (Number.isInteger).
 fn is_integer(v : Json) -> Bool {
-  v is Number(n, ..) && n == n.floor() && !n.is_inf()
+  v is Number(n, ..) && @jsjson.is_integer(n)
 }
 
 // ── where a chat's latest message stands ──
 
 ///|
 /// legacy-said-build.ts `legacySaidReadHead`: (known, the head row).
-fn legacy_said_head(db : @sql.Db, thread : Json) -> (Bool, Map[String, Json]?) raise {
+pub fn legacy_said_head(db : @sql.Db, thread : Json) -> (Bool, Map[String, Json]?) raise {
   guard one(db, legacy_said_head_first_sql, [thread]) is Some(first) else { return (true, None) }
   if !(field(first, "n") is Null) {
     return (true, Some(first))
@@ -813,7 +813,7 @@ fn chat_shares(db : @sql.Db, ids : Array[String]?, now : Double) -> Map[String, 
         _ => num(field(r, "at"))
       }
       if now - used < 6.0 * 3600000.0 {
-        live.push(Json::string(@jsjson.text(ws)))
+        live.push(Json::string(@jsjson.sanitize_str(ws)))
       }
     }
     if live.length() > 0 {

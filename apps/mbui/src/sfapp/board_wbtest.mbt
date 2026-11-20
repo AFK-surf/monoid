@@ -18,7 +18,14 @@ fn board_at(mode : String, w : Double, h : Double, platform? : Int = 0, corners_
 /// The audit's faults made in the board's own files. (Not what is under the phone's bottom bar where its glass takes
 /// presses, as it does once the bar has been told again: Home's list's rows are so too, the bar's.)
 fn board_faults(t : @ui.Tester) -> Array[String] {
-  t.audit().filter(fn(f) { (f.contains("board_node") || f.contains("sfdesk/board")) && !f.contains("sfapp/bar.mbt") })
+  t
+  .audit()
+  .filter(fn(f) {
+    (f.contains("board_node") || f.contains("sfdesk/board")) &&
+    !f.contains("sfapp/bar.mbt") &&
+    // (the edge of the chat beside the board, half over each side as a side panel's is: board_beside_faults')
+    !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:")
+  })
 }
 
 ///|
@@ -366,8 +373,9 @@ test "大屏: opening and closing a 待收口 chat keeps the board's column widt
   let (open_x, _, open_w, _) = t.get(Button, label=title).rect
   assert_true((open_w - before_w).abs() < 1.0, msg="column width changed from \{before_w} to \{open_w}")
   assert_true(open_x >= 0.0 && open_x + open_w <= 1280.0 - 460.0, msg="selected card outside the board")
-  // (the board's room: short of the chat by its edge's reach over the board, 7 / 2 - 0.5, then the board's margin)
-  let nearest_x = before_x.min(1280.0 - 460.0 - 3.0 - 16.0 - before_w)
+  assert_eq(edge_divider_faults(t), [], msg="a line between the chat and the board at rest")
+  // (the board's room: short of the chat by its edge's reach over the board, handle_out (4), then the board's margin)
+  let nearest_x = before_x.min(1280.0 - 460.0 - @sf.handle_out - 16.0 - before_w)
   assert_true((open_x - nearest_x).abs() < 1.0, msg="board scrolled farther than needed: \{open_x}, expected \{nearest_x}")
   t.click(TextField, label="发消息")
   t.run_for(@ui.move_most_ms)
@@ -478,7 +486,7 @@ test "中屏 760: on the tape the rail's 看板 brings the board's panel over, �
 }
 
 ///|
-/// The drafts of ws1 as the made-up core keeps them (the prefs' `boardDrafts`): each one's words.
+/// The drafts of ws1 as the made-up core keeps them (its `boardDrafts` topic): each one's words.
 fn board_kept_drafts() -> Array[String] {
   match @sffixture.board_prefs["boardDrafts"].get("ws1") {
     Some(Array(a)) => a.map(fn(d) { text(Some(d), "title") })
@@ -532,7 +540,8 @@ test "the new action on 小屏 brings 待派发 into view; on the list it still 
   assert_true(@sfbase.board_on_of(src, "ws1"))
   assert_eq(@sfbase.board_lane.get(), "draft")
   t.type_text("小屏上的待办")
-  t.enter()
+  // (the screen's keyboard's Enter a new line, as in a chat's composer: 添加 adds it)
+  t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
   assert_eq(board_kept_drafts()[0], "小屏上的待办")
   let (t, src) = board_at("board-list", 1440.0, 900.0)
@@ -560,8 +569,8 @@ test "待派发: a pasted picture is kept with an image-only task and sent after
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
   // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
   t.hold_mods(0)
-  t.frame()
-  t.frame()
+  // (its picture over its words, what is under it moved down for it)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="移除 image.png") is Some(_))
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
@@ -598,10 +607,10 @@ test "待派发: removing a pasted picture leaves the words and sends no file" {
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
   // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
   t.hold_mods(0)
-  // (its strip's room open over the words)
+  // (its picture over its words, what is under it moved down for it)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 image.png")
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
   let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
@@ -666,7 +675,7 @@ test "小屏: a picture pasted with words is kept in 待派发" {
   t.type_text("检查图片")
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
-  // (its strip's room open over the words)
+  // (its picture over its words, what is under it moved down for it)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
@@ -708,6 +717,8 @@ test "大屏: a draft started becomes its chat by the core's own way, newChat.cr
   t.run_for(@ui.move_most_ms)
   // (its draft let go of as its chat is made: the core's pending chat keeps it)
   assert_eq(board_kept_drafts(), ["看一下 Android 冷启动为什么慢了 300ms"])
+  // (made with what was picked for the draft: its own model control's)
+  assert_eq(@sffixture.board_created_of.get("new:board-seed-1"), Some("board:new:board-seed-1"))
   let made = @sfbase.board_items(src, "ws1").filter(fn(i) { i.client_key == "new:board-seed-1" })
   assert_eq(made.map(fn(i) { (i.title, @sfbase.board_lane_of(i)) }), [("给导出加上按月份筛选", "run")])
   assert_true(board_words_at(t, "正在读取仓库与分析改动点…") is Some(_))
@@ -985,15 +996,18 @@ test "大屏: the chat beside the board as wide as its edge is dragged, the colu
   assert_true(@sfbase.board_pick.get() is Some(_))
   let edge = fn() { t.query(Separator, label="调整侧栏宽度").map(fn(n) { n.rect }).unwrap_or((0.0, 0.0, 0.0, 0.0)) }
   let mid = fn(r : (Double, Double, Double, Double)) { (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0) }
+  // (how wide the chat is: from where it starts, handle_out into its edge, to the window's end)
+  let wide = fn() { (1440.0 - edge().0 - @sf.handle_out).round().to_int() }
   let (x0, y0) = mid(edge())
-  // (its own width: 460 from the window's end)
-  assert_eq((1440.0 - x0).round().to_int(), 460)
+  // (no line between it and the board at rest: edge_divider_wbtest.mbt; its own width, 460 from the window's end)
+  assert_eq(edge_divider_faults(t), [])
+  assert_eq(wide(), 460)
   assert_eq(board_faults(t), [])
   // dragged 160 further in: 620 wide, kept so
   board_edge_drag(t, x0, y0, x0 - 160.0)
   t.run_for(@ui.move_most_ms)
   let (x1, _) = mid(edge())
-  assert_eq((1440.0 - x1).round().to_int(), 620)
+  assert_eq(wide(), 620)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "620")
   assert_true(board_words_at(t, "整理发布清单") is Some((cx, _, cw, _)) && cx + cw <= x1, msg="its card left of it")
   assert_eq(board_faults(t), [])
@@ -1001,15 +1015,14 @@ test "大屏: the chat beside the board as wide as its edge is dragged, the colu
   board_edge_drag(t, x1, y0, 1400.0)
   t.run_for(@ui.move_most_ms)
   let (x2, _) = mid(edge())
-  assert_eq((1440.0 - x2).round().to_int(), 360)
+  assert_eq(wide(), 360)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "360")
   assert_eq(board_faults(t), [])
   // pressed twice: its own width again, nothing kept
   t.tap(x2, y0)
   t.tap(x2, y0)
   t.run_for(@ui.move_most_ms)
-  let (x3, _) = mid(edge())
-  assert_eq((1440.0 - x3).round().to_int(), 460)
+  assert_eq(wide(), 460)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "")
   assert_true(@sfbase.board_pick.get() is Some(_), msg="still open")
   assert_eq(board_faults(t), [])
@@ -1652,7 +1665,7 @@ test "小屏: a card held by a finger lifts over its menu's scrim, clear of its 
   board_lifted_over(t, "分享") |> ignore
   @sf.close_presented_of(@sf.last_presented())
   // (back down on its spring from the moment the menu went)
-  t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+  t.run_for(@ui.move_most_ms + @motion.tactile_bounce.duration(1.0, 0.0, 0.0))
   assert_true(!@sf.presented_drawn())
   assert_true(board_lifted_card(t) is None, msg="still lifted")
   assert_eq(board_rect_of(t, Button, name), Some(laid))
@@ -1753,6 +1766,55 @@ test "大屏: a chat put in the pane's place from the board (⌘N, 待处理's, 
     assert_eq(board_faults(t), [])
   }
 }
+
+///|
+test "大屏: words written in 待派发 kept as the board makes way for the list or a chat, there again as 看板 is pressed" {
+  let chat : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("作为文件")
+  t.run_for(@ui.move_most_ms)
+  // (对话: the list again, the board gone)
+  board_rail_press(t, "对话")
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(t.query(TextField, label="要做什么？") is None)
+  // (看板 again: its line open on what was written, nothing added)
+  board_rail_press(t, "看板")
+  assert_true(@sfbase.board_adding.get())
+  assert_eq(t.field_words(), "作为文件")
+  assert_false(board_kept_drafts().contains("作为文件"))
+  // (a chat put in the board's place: the words kept for the board to come back to)
+  open_page(Chat(chat))
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(@sfbase.board_writing_kept(src, "ws1"))
+  assert_false(board_kept_drafts().contains("作为文件"))
+}
+
+///|
+test "大屏: 待派发's line put away by Escape is empty as it opens again; once added, empty for the next" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("留待稍后")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_kept_drafts().contains("留待稍后"))
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_writing_kept(src, "ws1"))
+  assert_eq(t.field_words(), "")
+  t.type_text("现在执行")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_writing_kept(src, "ws1"))
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.field_words(), "")
+  assert_eq(board_faults(t), [])
+}
+
 
 ///|
 test "大屏: 看板 taken out of the rail from its menu, kept so; 侧边条恢复默认 puts it back right under 对话" {
@@ -1865,7 +1927,7 @@ test "大屏: Ctrl Enter dispatches with a Windows keyboard" {
 
 
 ///|
-test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps its identity and destination, and can be cancelled" {
+test "待派发: pressing a draft opens its panel on 大屏 and 小屏: its words kept as it closes, its identity and destination kept, 派发 starts it" {
   for (w, h, platform) in [(1440.0, 900.0, 0), (390.0, 844.0, 2)] {
     let (t, src) = board_at("board", w, h, platform~)
     if platform == 2 {
@@ -1876,42 +1938,36 @@ test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps 
     t.click(Button, label=before.title)
     t.run_for(@ui.move_most_ms)
     assert_eq(t.focused().map(fn(f) { (f.role, f.value) }), Some((TextField, before.title)))
+    // (where it runs, and on what, in its panel)
+    assert_true(board_words_at(t, "编辑待办") is Some(_))
     assert_eq(board_faults(t), [])
     t.type_text("，包括 CSV")
-    t.click(Button, label="保存")
+    t.click(Button, label="完成")
     t.run_for(@ui.move_most_ms)
     let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
     assert_eq((after.id, after.station, after.station_name), (before.id, before.station, before.station_name))
     assert_eq(after.title, before.title + "，包括 CSV")
     assert_eq(board_kept_drafts()[0], after.title)
+    // (closed by Escape: what was written kept as well)
     t.click(Button, label=after.title)
     t.run_for(@ui.move_most_ms)
-    t.type_text(" 不保存")
+    t.type_text(" 文件")
     t.key(@ui.key_escape)
     t.run_for(@ui.move_most_ms)
-    assert_eq(board_kept_drafts()[0], after.title)
-    assert_true(t.query(Button, label=after.title) is Some(_))
+    let edited = after.title + " 文件"
+    assert_eq(board_kept_drafts()[0], edited)
     assert_eq(board_faults(t), [])
-    if platform == 0 {
-      // The same card can be reached and activated from the keyboard.
-      t.act(Button, Focus, label=after.title)
-      t.enter()
-      t.run_for(@ui.move_most_ms)
-      assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
-      t.click(Button, label="取消")
-      t.run_for(@ui.move_most_ms)
-      let starts = t.all(Button, label="开始")
-      let (sx, sy, sw, sh) = starts[0].rect
-      t.tap(sx + sw / 2.0, sy + sh / 2.0)
-      t.run_for(@ui.move_most_ms)
-      assert_eq(board_lane_now(src, after.title), "run")
-    }
+    // (派发 from its panel: its chat made)
+    t.click(Button, label=edited)
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="派发")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(board_lane_now(src, edited), "run")
   }
 }
 
-
 ///|
-test "大屏: Enter or pressing another card keeps edited words; an empty edit does not replace the draft" {
+test "大屏: Enter in a draft's panel keeps its words; emptied, with nothing carried, the words it had are kept" {
   let (t, _) = board_at("board", 1440.0, 900.0)
   t.click(Button, label="给导出加上按月份筛选")
   t.run_for(@ui.move_most_ms)
@@ -1921,18 +1977,134 @@ test "大屏: Enter or pressing another card keeps edited words; an empty edit d
   assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
   t.click(Button, label=board_kept_drafts()[0])
   t.run_for(@ui.move_most_ms)
-  t.type_text(" 文件")
-  t.click(Button, label="看一下 Android 冷启动为什么慢了 300ms")
-  t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV 文件")
-  assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
   t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
   t.type_text(" ")
   t.enter()
   t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[1], "看一下 Android 冷启动为什么慢了 300ms")
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
   assert_eq(board_faults(t), [])
 }
 
+///|
+test "大屏: the new task's card holds its words and send alone, no ＋ and no station in it" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="发送文件") is None)
+  assert_true(t.query(Button, label="在哪台机器上运行: Willow") is None)
+  assert_true(t.query(Button, label="添加") is Some(_))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+/// Whether the chat beside the board is its page made as nodes, by the message `words` it shows (whole, as no card's
+/// line says it): drawn by a node of its messages' (sfpages' chat_page_node, chat_body_node) and no old view's list
+/// under it, its composer sfpages' composer_node's (its field's words, the cursor in it or not); the old page the
+/// other way round.
+fn board_beside_made_nodes(t : @ui.Tester, words : String, at : String) -> Bool raise {
+  let said = t.sources_of(words)
+  let by_nodes = said.contains("sfpages/chat_page_node.mbt") || said.contains("sfpages/chat_body_node.mbt")
+  let old_rows = t.old_list_row_boxes().iter().any(fn(rows) { !rows.is_empty() })
+  assert_true(by_nodes != old_rows, msg="\{at}: its message drawn by nodes \{by_nodes}, an old list's rows \{old_rows}")
+  // (its field's words: 发消息 with the cursor in it, 按空格输入 without)
+  let composed = ["发消息", "按空格输入"].iter().any(fn(w) { t.sources_of(w).contains("sfpages/composer_node.mbt") })
+  assert_eq(composed, by_nodes, msg="\{at}: its composer made as nodes \{composed}")
+  by_nodes
+}
+
+///|
+/// board_faults but the edge of the chat beside the board where it reaches over that chat's page made as nodes (sfpages'
+/// board_beside_edge, half over each side as a side panel's edge is: the framework's edge a press takes where it is
+/// drawn, as experimental_wbtest leaves out the pane's).
+fn board_beside_faults(t : @ui.Tester) -> Array[String] {
+  board_faults(t).filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:") })
+}
+
+///|
+test "大屏, 试用新对话页 on: the chat beside the board made as nodes, its composer too; words sent from it, another card's chat in its place, the switch turned either way at once" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("board")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_fixture_over("board", src)
+  @sfbase.hold_chat_page_nodes(Some(true))
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="给设置页加一个深色模式开关")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  let c4_last = "做完了：开关和三处颜色都改好了，已合进 main（a3f9c21）。"
+  assert_true(board_beside_made_nodes(t, c4_last, "opened"), msg="opened: the page made as nodes")
+  assert_eq(board_beside_faults(t), [])
+  assert_eq(t.audit().filter(fn(f) { f.contains("sfdesk/board_beside_node") }), [])
+  // words written in its composer and sent, by its chat
+  t.tap_text("发消息")
+  t.type_text("再加一个跟随系统")
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "text"), "再加一个跟随系统")
+  assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "再加一个跟随系统") is Some(_), msg="what was sent in its list")
+  assert_eq(board_beside_faults(t), [])
+  // another card pressed: its chat in its place at once, the one before let go
+  t.click(Button, label="Slack 里问的报销流程")
+  t.run_for(@ui.move_most_ms)
+  let c7_last = "做完了：三个步骤整理成了一页文档，放在共享盘的「行政」里。"
+  assert_true(board_beside_made_nodes(t, c7_last, "another"), msg="another: the page made as nodes")
+  assert_false(t.sources_of(c4_last).contains("sfpages/chat_body_node.mbt"), msg="the chat before let go")
+  assert_eq(board_beside_faults(t), [])
+  // 试用新对话页 turned off while it shows: its old page at once; on again, nodes
+  @sfbase.hold_chat_page_nodes(Some(false))
+  t.run_for(@ui.move_most_ms)
+  assert_false(board_beside_made_nodes(t, c7_last, "turned off"), msg="turned off: the old page")
+  @sfbase.hold_chat_page_nodes(Some(true))
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_beside_made_nodes(t, c7_last, "turned on"), msg="turned on: the page made as nodes")
+  assert_eq(board_beside_faults(t), [])
+}
+
+///|
+test "待派发: a draft's picture the device reads late comes to its tile, and a video picked here stands on a video's black with its play mark" {
+  new_run()
+  let base = fixture("board")
+  let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    // (no bytes of the picture here: the device's kept one, read as composer.picture answers, late)
+    draft_picture: fn(key, id) {
+      base.images.get("", "draft\u{1}" + key + "\u{1}" + id, "mem:test/board-restored", fn(_, done) { answer.val = Some(done) })
+    },
+  }
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  // (the video's still drawn here, as one picked here keeps it; a few bytes, as a test's pictures are)
+  let still = "mem:test/board-still"
+  @ui.add_image(still, @pixels.png(2, 2, FixedArray::make(16, b'\x30')))
+  @sfbase.writing_picture_put("board-vid", still)
+  @sfbase.board_draft_add(src, "ws1", "带图和视频的待办", "ws1/st1", "Willow", files=[
+    { id: "board-img", name: "恢复.png" },
+    { id: "board-vid", name: "录屏.mp4" },
+  ])
+  |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(answer.val is Some(_), msg="the device's kept picture was not asked")
+  assert_eq(t.locate("img:mem:test/board-restored").length(), 0)
+  (answer.val.unwrap())(Ok((Json::object({}), Some(@pixels.png(2, 2, FixedArray::make(16, b'\xff'))))))
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  assert_true(t.locate("img:mem:test/board-restored").length() > 0, msg="the restored picture did not come to its tile")
+  // (the video's tile: its still on a video's black, its play mark over it)
+  guard t.locate("img:" + still).get(0) is Some((vx, vy)) else { fail("the video's still is not drawn") }
+  let grounds = t.drawn_rects().filter(fn(r) { vx >= r.0 && vx <= r.0 + r.2 && vy >= r.1 && vy <= r.1 + r.3 }).map(fn(r) { r.4 })
+  assert_true(grounds.contains(0x000000FFL), msg="\{Repr(grounds)}")
+  let marks = t.locate("icon:play-mark").filter(fn(p) { (p.0 - vx).abs() < 28.0 && (p.1 - vy).abs() < 28.0 })
+  assert_true(marks.length() > 0, msg="no play mark on the video's tile: \{Repr(t.locate("icon:play-mark"))} at \{vx},\{vy}")
+}

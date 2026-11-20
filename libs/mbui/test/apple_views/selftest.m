@@ -561,6 +561,91 @@ static void video_steps(NSString *file, NSString *mime, double dur, double vw, d
   }];
 }
 
+// AVPlayer scrub flow (op 9 1 -> multiple op 11 near seeks -> op 3 exact seek -> op 9 0) and local block cache reuse.
+static void scrub_cache_steps(NSString *file) {
+  NSData *data = [NSData dataWithContentsOfFile:file];
+  __block int32_t vid = 0;
+  __block int reads = 0;
+  __block int readsBefore = 0;
+  double *info = calloc(10, sizeof(double));
+  __block int state = 0;
+  NSString *tag = @"scrub-cache";
+  void (^pump)(void) = ^{
+    double o[2];
+    int32_t rid;
+    while ((rid = mb_host_view_read_next(vid, o)) != 0) {
+      if (rid < 0) continue;
+      reads++;
+      long long off = (long long)o[0], len = (long long)o[1];
+      long long n = MAX(0, MIN(len, (long long)data.length - off));
+      for (long long at = 0; at < n; at += 64 << 10) {
+        long long k = MIN(n - at, 64 << 10);
+        mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes + off + at, (size_t)k), (double)data.length, 1);
+      }
+      mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes, 0), (double)data.length, 0);
+    }
+    state = mb_host_view_info(vid, info);
+  };
+  [steps addObject:^BOOL(int t) {
+    vid = mb_host_view_open(1, mb_string_from_ns(@"video/mp4"));
+    mb_host_view_place(vid, 40, 30, 320, 240, 40, 30, 360, 270, 0, 0, 0, 0, 1);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((state == 0 || state == 2) && t < 20 * 60) return NO;
+    check(state == 1, [NSString stringWithFormat:@"%@: ready (state %d)", tag, state]);
+    mb_host_view_control(vid, 1, 0);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((info[6] == 0 || info[1] < 1500) && t < 20 * 60) return NO;
+    check(info[6] == 1 && info[1] >= 1500, [NSString stringWithFormat:@"%@: played to %.0f ms", tag, info[1]]);
+    mb_host_view_control(vid, 2, 0);
+    // Start scrub across multiple ticks: near seek first, let it advance, then another near seek preempted by exact seek.
+    mb_host_view_control(vid, 9, 1);
+    mb_host_view_control(vid, 11, 900);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if (t < 6) return NO;
+    check(info[6] == 1 && info[1] < 1400, [NSString stringWithFormat:@"%@: mid-scrub near seek at %.1f ms", tag, info[1]]);
+    mb_host_view_control(vid, 11, 1400);
+    mb_host_view_control(vid, 3, 750);
+    mb_host_view_control(vid, 9, 0);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((fabs(info[1] - 750) > 0.5 || t < 20) && t < 10 * 60) return NO;
+    check(fabs(info[1] - 750) <= 0.5 && info[2] == 0 && info[6] == 1,
+          [NSString stringWithFormat:@"%@: scrub landed at %.1f ms (shown %.0f)", tag, info[1], info[6]]);
+    readsBefore = reads;
+    // Seek back and forth over the already-cached prefix: local block cache should absorb repeated reads.
+    mb_host_view_control(vid, 9, 1);
+    mb_host_view_control(vid, 11, 200);
+    mb_host_view_control(vid, 11, 1000);
+    mb_host_view_control(vid, 11, 400);
+    mb_host_view_control(vid, 3, 500);
+    mb_host_view_control(vid, 9, 0);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((fabs(info[1] - 500) > 0.5 || t < 20) && t < 10 * 60) return NO;
+    int delta = reads - readsBefore;
+    check(fabs(info[1] - 500) <= 0.5 && info[6] == 1,
+          [NSString stringWithFormat:@"%@: cached scrub landed at %.1f ms", tag, info[1]]);
+    check(delta == 0,
+          [NSString stringWithFormat:@"%@: cached prefix scrub triggered %d upstream reads (before %d, after %d)",
+           tag, delta, readsBefore, reads]);
+    mb_host_view_close(vid);
+    return YES;
+  }];
+}
+
 // A video whose bytes come slower than it plays (as over a slow network): it plays what came (playWhatCame), stops
 // where that runs out and plays again once the next has come; while its picture moves on it is not buffering, though
 // the player reckons it will not keep up.
@@ -812,6 +897,7 @@ int main(int argc, char **argv) {
     steps = [NSMutableArray new];
     // test.mp4 is some 1.5 MB a second
     slow_steps([out_dir stringByAppendingPathComponent:@"test.mp4"], @"video/mp4", 0.75e6);
+    scrub_cache_steps([out_dir stringByAppendingPathComponent:@"test.mp4"]);
     for (int i = 3; i < argc; i++) {
       NSArray<NSString *> *a = [@(argv[i]) componentsSeparatedByString:@"|"];
       video_steps(a[0], a[1], a[2].doubleValue, a[3].doubleValue, a[4].doubleValue);

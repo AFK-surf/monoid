@@ -149,7 +149,7 @@ test "a traceparent is read as W3C says, and a route keeps no ids" {
 }
 
 ///|
-test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, dropped when they cannot go" {
+test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, a failed one sent again at the next flush" {
   let sent = []
   let said = []
   let hr = Ref(0L)
@@ -174,15 +174,19 @@ test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, dropp
   rt.advance(2999)
   assert_eq(sent, [])
   rt.advance(1)
-  assert_eq(sent, [500, 200])
-  assert_eq(said, ["warn traces dropped", "info traces sent", "info traces sent"])
+  // (the first batch failed: put back, the rest left for the next flush)
+  assert_eq(sent, [])
+  assert_eq(traces.spans.length(), 1200)
+  rt.advance(3000)
+  assert_eq(sent, [500, 500, 200])
+  assert_eq(said, [])
   assert_eq(traces.spans.length(), 0)
   let span = traces.start(parent, "0000000000000001", 2L).unwrap()
   assert_eq(@mesh_runtime.traceparent(span), "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000001-01")
   traces.end(span, "x", [], true)
   traces.close()
   rt.advance(10_000)
-  assert_eq(sent, [500, 200])
+  assert_eq(sent, [500, 500, 200])
   inspect(
     @mesh_runtime.attribute("n", Json::number(1.0e21)).stringify(),
     content="{\"key\":\"n\",\"value\":{\"intValue\":\"1e+21\"}}",
@@ -224,6 +228,46 @@ test "a pacer's 帧率 slots its frames, a late one letting the next come sooner
 }
 
 ///|
+test "a pacer decouples viewer_wait_ms from network RTT, caps at 100ms, ignores invalid waits, and decays after 10s" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val)
+  let own = @mesh_runtime.own_rate(1920.0, 1080.0)
+  p.set_ceiling(own)
+  p.sent(1000.0, 10_000.0)
+  now.val = 70.0
+  p.acked(1000.0, viewer_wait_ms=60.0)
+  assert_eq(p.rtt(), Some(10.0))
+  assert_eq(p.viewer_wait(), 60.0)
+  assert_eq(p.asked_rate(), Some(own))
+  // In-flight window credits viewer_wait (60ms) + rtt (10ms) + queue_ms(10) (30ms) = 100ms.
+  p.sent(2000.0, 10_000.0)
+  p.sent(3000.0, 10_000.0)
+  now.val = 170.0
+  assert_true(p.may())
+  assert_false(p.backlogged())
+  now.val = 171.0
+  assert_false(p.may())
+  assert_true(p.backlogged())
+  // Capped at viewer_hold_limit_ms (100ms).
+  p.acked(3000.0, viewer_wait_ms=100.0)
+  now.val = 300.0
+  p.sent(4000.0, 10_000.0)
+  now.val = 460.0
+  p.acked(4000.0, viewer_wait_ms=150.0)
+  assert_eq(p.viewer_wait(), @mesh_runtime.viewer_hold_limit_ms)
+  // Bogus wait > total_trip or NaN is treated as 0 and ages out after rtt_window_ms.
+  now.val = 11_000.0
+  p.sent(5000.0, 10_000.0)
+  now.val = 11_020.0
+  p.acked(5000.0, viewer_wait_ms=50.0)
+  assert_eq(p.viewer_wait(), 0.0)
+  p.sent(6000.0, 10_000.0)
+  now.val = 11_040.0
+  p.acked(6000.0, viewer_wait_ms=@double.not_a_number)
+  assert_eq(p.viewer_wait(), 0.0)
+}
+
+///|
 test "a sizer asks the smaller picture once the link carries a quarter for DOWNSIZE_MS, and back" {
   let now = Ref(0.0)
   let z = @mesh_runtime.Sizer::new(() => now.val, { max_width: 1920.0, max_height: 1080.0 })
@@ -244,7 +288,7 @@ test "a sizer asks the smaller picture once the link carries a quarter for DOWNS
 test "a still screen's picture goes again sharper, and a view's lateness is said once a second" {
   let s = @mesh_runtime.Sharpener::new()
   s.sent(0.0, Some(1_000_000.0))
-  assert_eq(s.left(100.0), 400.0)
+  assert_eq(s.left(100.0), 150.0)
   assert_false(s.due(500.0, Some(1_100_000.0)))
   assert_true(s.due(500.0, Some(1_100_001.0)))
   assert_false(s.due(500.0, None))
@@ -376,33 +420,6 @@ test "the locks' tells: a head moved told its workspace's members, a person's lo
 }
 
 ///|
-test "a reply that went slowly is said with the ways it had, once taken in" {
-  let way = (relay : String?, selected : Bool, tx : Double, rtt : Double?) => {
-    let w : @mesh_runtime.WayPath = {
-      selected,
-      relay,
-      ip: Some("1.2.3.4:5"),
-      rtt_ms: rtt,
-      tx_packets: tx,
-      lost_packets: 1.0,
-      cwnd: None,
-      congestion_events: None,
-    }
-    w
-  }
-  let before = @mesh_runtime.sent_on([way(Some("r"), false, 2.0, None), way(Some("r"), true, 3.0, Some(9.5))])
-  assert_eq(before, [("r", 2.0), ("r#1", 3.0)])
-  let after = [way(Some("r"), false, 5.0, None), way(Some("r"), true, 10.0, Some(9.5)), way(None, false, 1.0, Some(0.2))]
-  assert_eq(@mesh_runtime.paths_of(after), "r ? 5/1, *r 10ms 10/1, 1.2.3.4:5 0ms 1/1")
-  assert_eq(@mesh_runtime.slow_line(before, Some(0), 9000.0, after, () => "r", 1.0, 1.0, "d"), None)
-  assert_eq(@mesh_runtime.slow_line(before, None, 4999.0, after, () => "r", 1.0, 1.0, "d"), None)
-  let line = @mesh_runtime.slow_line(before, None, 8000.0, after, () => "GET /x", 400_000.0, 3.0, "d").unwrap()
-  assert_eq(line.as_object().unwrap().get("ways"), Some(Json::string("r ? +3/1 cwnd=?, *r#1 10ms +7/1 cwnd=?, 1.2.3.4:5 0ms +1/1 cwnd=?")))
-  assert_eq(line.as_object().unwrap().get("bytesPerSecond"), Some(Json::number(50_000.0)))
-  assert_eq(line.as_object().unwrap().get("rtt"), Some(Json::number(10.0)))
-}
-
-///|
 test "the device tools: only a gateway's, of this station's workspace, each op answered once" {
   let said = []
   let d : @mesh_runtime.ToolsDeps = {
@@ -501,31 +518,6 @@ test "a file's bytes are read as they are sent, opened at the first and closed a
 }
 
 ///|
-test "the served programs are told a member as it changes, and the pieces of their streams together" {
-  let t = @mesh_runtime.ServedTold::new()
-  let ada = o([("email", "a@x"), ("name", "Ada")])
-  assert_eq(t.viewer(1, Some(ada), false, None).length(), 2)
-  assert_eq(t.viewer(1, Some(ada), false, None).length(), 0)
-  assert_eq(t.viewer(1, Some(ada), true, Some(9144.0)).length(), 1)
-  assert_eq(t.viewer_of(1), Some(ada))
-  assert_eq(t.again().length(), 2)
-  assert_eq(t.viewer(1, None, false, None).length(), 1)
-  assert_eq(t.viewer_of(1), None)
-  assert_eq(@mesh_runtime.served_again_after(5000.0), 0.0)
-  assert_eq(@mesh_runtime.served_again_after(4999.0), 1000.0)
-  let q = @mesh_runtime.PieceQueue::new()
-  q.piece(1, Some("a"))
-  q.piece(2, Some("a"))
-  q.piece(3, Some("b"))
-  q.piece(3, None)
-  q.piece(4, None)
-  assert_eq(q.drain().map(j => j.stringify()), [
-    "{\"pieces\":\"a\",\"to\":[1,2]}", "{\"chunk\":3,\"text\":\"b\"}", "{\"done\":3}", "{\"done\":4}",
-  ])
-  assert_eq(q.drain(), [])
-}
-
-///|
 test "a screen's id as its path has it, decoded as decodeURIComponent does" {
   assert_eq(@mesh_runtime.decode_uri_component("browser%3At1"), Some("browser:t1"))
   assert_eq(@mesh_runtime.decode_uri_component("%E4%BD%A0%F0%9F%98%80"), Some("你😀"))
@@ -563,6 +555,7 @@ test "a view of a screen not there is refused, said in the asker's language" {
     finish: async fn() { finished.val = true },
     stopped: async fn() -> Int? { None },
     reset: async fn(_) {  },
+    media_datagrams: None,
   }
   let hub : @mesh_runtime.ScreenHubPort = {
     get: _ => None,
@@ -590,80 +583,8 @@ test "a view of a screen not there is refused, said in the asker's language" {
 }
 
 ///|
-test "a connection's streams come in the order its other end opened them" {
-  let steps = [
-    o([("give", Json::array([1.0, 1.0]))]),
-    o([("take", true)]),
-    o([("skip", 0.0)]),
-    o([("give", Json::array([3.0, 3.0]))]),
-    o([("give", Json::array([9.0]))]),
-    o([("skip", 2.0)]),
-    o([("take", true)]),
-    o([("take", true)]),
-    o([("end", true)]),
-    o([("give", Json::array([4.0, 4.0]))]),
-    o([("take", true)]),
-  ]
-  inspect(@mesh_runtime.incoming_steps_json(steps).stringify(), content="{\"taken\":[1,9,3,null],\"destroyed\":[4]}")
+test "bare strips trailing slashes" {
   assert_eq(@mesh_runtime.bare("https://r///"), "https://r")
-}
-
-///|
-test "the served programs: started, a member told as it changes, one that ends started again as long as it ran" {
-  let rt = @effect.Runtime::new()
-  let posted : Array[Array[Json]] = []
-  let hooks : Array[((Json) -> Unit, (Int) -> Unit)] = []
-  let now = Ref(0.0)
-  let due : Array[(Double, () -> Unit)] = []
-  let w : @mesh_runtime.ServedWith = {
-    spawn: (_, _, said, exited) => {
-      let told = []
-      posted.push(told)
-      hooks.push((said, exited))
-      { post: m => told.push(m), terminate: async fn() {  } }
-    },
-    now: () => now.val,
-    after: (ms, f) => {
-      due.push((now.val + ms, f))
-      () => ()
-    },
-    wall: () => 5.0,
-    answer: async fn(_, _, _) { { status: 200, headers: o([]), body: b"" } },
-    built: (_, _) => (),
-    stream: None,
-    prepare: _ => (),
-    remove: async fn(_) {  },
-    set: () => Json::string("set"),
-    pid: 7,
-    sep: "/",
-    log: (_, _, _, _) => (),
-  }
-  let served = @mesh_runtime.Served::new("reader", "/d", w, rt)
-  let live = []
-  ignore(rt.fork(() => live.append(served.start())))
-  ignore(rt.run_ready())
-  assert_eq(posted.length(), 2)
-  (hooks[0].0)(o([("listening", "/d/run/serve-7-0.sock")]))
-  (hooks[1].0)(o([("listening", "/d/run/serve-7-1.sock")]))
-  ignore(rt.run_ready())
-  assert_eq(live, ["/d/run/serve-7-0.sock", "/d/run/serve-7-1.sock"])
-  served.viewer(1, Some(o([("email", "a@x")])))
-  served.viewer(1, Some(o([("email", "a@x")])))
-  assert_eq(posted[0].length(), 2)
-  // ended soon after it started: started again a second later
-  (hooks[0].1)(1)
-  assert_eq(posted.length(), 2)
-  now.val = 1000.0
-  for d in due {
-    if d.0 <= now.val {
-      (d.1)()
-    }
-  }
-  assert_eq(posted.length(), 3)
-  // ended having run long: at once
-  now.val = 10_000.0
-  (hooks[1].1)(1)
-  assert_eq(posted.length(), 4)
 }
 
 ///|
@@ -678,4 +599,278 @@ test "the front's streams' socket beside its own, by that path's separator: a Wi
   assert_eq(@mesh_runtime.streams_path_of("C:\\front.sock", 7, 5), "C:\\mesh-7-5.sock")
   assert_eq(@mesh_runtime.dirname("C:\\a\\b.sock"), "C:\\a")
   assert_eq(@mesh_runtime.dirname("/a/b\\c.sock"), "/a/b")
+}
+
+///|
+test "a listener's next connection taken through a try that failed while it listens, none once it is gone or closed" {
+  let rt = @effect.Runtime::new()
+  let tries = []
+  let pauses = Ref(0)
+  let got = []
+  // (the machine out of descriptors for a while, then a connection: taken after a pause)
+  let answers : Array[Result[Int, Error]] = [
+    Err(Failure("Too many open files (os error 24)")),
+    Err(Failure("Software caused connection abort (os error 53)")),
+    Ok(7),
+    Err(Failure("no handle 12")),
+  ]
+  let accept = async fn() -> Int {
+    tries.push(tries.length())
+    match answers.remove(0) {
+      Ok(n) => n
+      Err(e) => raise e
+    }
+  }
+  let pause = async fn() { pauses.val += 1 }
+  ignore(rt.fork(() => {
+    got.push(@mesh_runtime.accept_through(accept, pause~))
+    // (closed here: `no handle`, the listener let go)
+    got.push(@mesh_runtime.accept_through(accept, pause~))
+  }))
+  ignore(rt.run_ready())
+  assert_eq(got, [Some(7), None])
+  assert_eq(pauses.val, 2)
+  assert_eq(tries.length(), 4)
+  // closed meanwhile: no try after its pause
+  let closed = Ref(false)
+  let later = []
+  ignore(rt.fork(() => later.push(
+    @mesh_runtime.accept_through(
+      async fn() -> Int { raise Failure("Too many open files (os error 24)") },
+      closed=() => closed.val,
+      pause=async fn() { closed.val = true },
+    ),
+  )))
+  ignore(rt.run_ready())
+  assert_eq(later, [None])
+  // the default pause: accept_again_ms on the runtime's clock
+  let waited = []
+  let failed = Ref(false)
+  ignore(rt.fork(() => waited.push(
+    @mesh_runtime.accept_through(async fn() -> Int {
+      if failed.val {
+        return 3
+      }
+      failed.val = true
+      raise Failure("Too many open files (os error 24)")
+    }),
+  )))
+  ignore(rt.run_ready())
+  rt.advance(@mesh_runtime.accept_again_ms - 1)
+  assert_eq(waited, [])
+  rt.advance(1)
+  assert_eq(waited, [Some(3)])
+  assert_true(@mesh_runtime.listener_gone(Failure("not a listening socket")))
+  assert_false(@mesh_runtime.listener_gone(Failure("Too many open files (os error 24)")))
+}
+
+///|
+test "where only the tail is kept: a failed or slow span, never a quick one that did not fail" {
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let parent = @mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+  let ended = (traces : @mesh_runtime.Traces, name : String, ms : Int64, failed : Bool) => {
+    let span = traces.start(parent, "0000000000000001", 1000L).unwrap()
+    hr.val += ms * 1_000_000L
+    traces.end(span, name, [], failed)
+  }
+  let names = (traces : @mesh_runtime.Traces) => traces.spans.map(s => match s {
+    { "name": String(n), .. } => n
+    _ => ""
+  })
+  let tail = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => (), tail_only=true)
+  ended(tail, "quick", 20L, false)
+  ended(tail, "failed", 20L, true)
+  ended(tail, "almost", 999L, false)
+  ended(tail, "slow", 1000L, false)
+  assert_eq(names(tail), ["failed", "slow"])
+  tail.close()
+  let all = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => ())
+  ended(all, "quick", 20L, false)
+  ended(all, "failed", 20L, true)
+  assert_eq(names(all), ["quick", "failed"])
+  all.close()
+  let slower = @mesh_runtime.Traces::new(true, rt, () => hr.val, (_, _, _) => (), tail_only=true, slow_ms=5_000)
+  ended(slower, "slow", 1000L, false)
+  assert_eq(slower.spans.length(), 0)
+  slower.close()
+  let off = @mesh_runtime.Traces::new(false, rt, () => hr.val, (_, _, _) => ())
+  assert_true(off.start(parent, "0000000000000001", 0L) is None)
+}
+
+///|
+test "a batch that fails again is dropped, said once in 10 min; a 4xx is not sent again" {
+  let said = []
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let traces = @mesh_runtime.Traces::new(true, rt, () => hr.val, (level, words, with_) => said.push("\{level} \{words} \{with_.stringify()}"))
+  let calls = Ref(0)
+  let error = Ref("still.fail cloud answered 503")
+  traces.export_to(async fn(_) {
+    calls.val += 1
+    raise Failure(error.val)
+  })
+  let parent = @mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+  let one = () => {
+    let span = traces.start(parent, "0000000000000001", 1000L).unwrap()
+    hr.val += 5_000_000L
+    traces.end(span, "GET /", [], false)
+  }
+  one()
+  rt.advance(3000)
+  rt.advance(3000)
+  assert_eq(calls.val, 2)
+  assert_eq(traces.spans.length(), 0)
+  assert_eq(said, ["warn traces dropped {\"error\":\"still.fail cloud answered 503\",\"count\":1}"])
+  said.clear()
+  one()
+  rt.advance(3000)
+  rt.advance(3000)
+  assert_eq(calls.val, 4)
+  assert_eq(said, [])
+  error.val = "still.fail cloud answered 413"
+  one()
+  one()
+  rt.advance(3000)
+  assert_eq(calls.val, 5)
+  assert_eq(traces.spans.length(), 0)
+  assert_eq(said, [])
+  hr.val += 600_000_000_000L
+  one()
+  rt.advance(3000)
+  assert_eq(calls.val, 6)
+  assert_eq(said, ["warn traces dropped {\"error\":\"still.fail cloud answered 413\",\"count\":1}"])
+  traces.close()
+}
+
+///|
+test "an OTLP batch says what describes the station, an empty one left out" {
+  assert_eq(@mesh_runtime.otlp_body("s1", []), @mesh_runtime.otlp_body("s1", [], resource=[]))
+  let body = @json.parse(
+    @mesh_runtime.otlp_body("s1", [], resource=[("service.version", "0.1.1"), ("host.arch", ""), ("", "x")]),
+  )
+  guard body is { "resourceSpans": [{ "resource": { "attributes": attributes, .. }, .. }], .. } else { fail("no resource") }
+  inspect(
+    attributes.stringify(),
+    content="[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"stillfail-mesh\"}},{\"key\":\"stillfail.station\",\"value\":{\"stringValue\":\"s1\"}},{\"key\":\"service.version\",\"value\":{\"stringValue\":\"0.1.1\"}}]",
+  )
+}
+
+///|
+test "2K (qhd): the most a view is asked at, more over 60 frames a second, at most max_rate" {
+  assert_eq(@mesh_runtime.max_rate, 100_000_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("original")), 1920.0 * 1080.0 * 20.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd")), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(60.0)), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(30.0)), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("hd"), fps=Some(90.0)), 1920.0 * 1080.0 * 16.0 * 1.25)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("hd"), fps=Some(120.0)), 1920.0 * 1080.0 * 16.0 * 1.5)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(90.0)), 92_160_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(120.0)), @mesh_runtime.max_rate)
+  assert_eq(@mesh_runtime.rate_ceiling(200.0, 100.0, Some("original"), fps=Some(120.0)), 1_000_000.0)
+  assert_eq(@mesh_runtime.lan_rate, 25_000_000.0)
+}
+
+///|
+test "2K (qhd) and 原画 are never made smaller; 高清 is" {
+  let now = Ref(0.0)
+  let asked : @mesh_runtime.Bounds = { max_width: 7680.0, max_height: 4320.0 }
+  for quality in ["original", "qhd"] {
+    let whole = @mesh_runtime.Sizer::new(() => now.val, asked, quality=Some(quality))
+    for _ in 0..<100 {
+      assert_eq(whole.step(1_000_000.0, 1_000_000.0, 3840.0, 2160.0), None)
+      now.val += 100.0
+    }
+  }
+  let hd = @mesh_runtime.Sizer::new(() => now.val, asked, quality=Some("hd"))
+  let mut made : @mesh_runtime.Bounds? = None
+  for _ in 0..<100 {
+    if made is None {
+      made = hd.step(1_000_000.0, 1_000_000.0, 3840.0, 2160.0)
+    }
+    now.val += 100.0
+  }
+  assert_eq(made, Some({ max_width: 1280.0, max_height: 720.0 }))
+}
+
+///|
+/// A pacer whose round trip is 10 ms, its rate at `rate` and no higher, frames of `bytes` each 16 ms acknowledged 10 ms
+/// on for 1.5 s, then one of `key` bytes as a key frame, never acknowledged: its rate each ms after that.
+fn burst(rate : Double, bytes : Double, key : Double) -> (Array[Double], @mesh_runtime.Pacer, Ref[Double]) {
+  let now = Ref(0.0)
+  let pacer = @mesh_runtime.Pacer::new(() => now.val, start=Some(rate))
+  pacer.set_ceiling(rate)
+  let mut ts = 0.0
+  let due : Array[(Double, Double)] = []
+  while now.val < 1500.0 {
+    while due.length() > 0 && due[0].0 <= now.val {
+      pacer.acked(due.remove(0).1)
+    }
+    if now.val.to_int() % 16 == 0 && pacer.may() {
+      ts += 1000.0
+      pacer.sent(ts, bytes)
+      due.push((now.val + 10.0, ts))
+    }
+    now.val += 1.0
+  }
+  while due.length() > 0 {
+    pacer.acked(due.remove(0).1)
+    now.val += 1.0
+  }
+  pacer.sent(ts + 1000.0, key, key=true)
+  let rates = []
+  let start = now.val
+  while now.val < start + 1000.0 {
+    pacer.may() |> ignore
+    rates.push(pacer.asked_rate().unwrap())
+    now.val += 1.0
+  }
+  (rates, pacer, now)
+}
+
+///|
+test "a large picture after a dark scene lowers the rate by light_cut first; a key frame may wait key_queue_ms more" {
+  assert_eq(@mesh_runtime.cut, 0.65)
+  assert_eq(@mesh_runtime.light_cut, 0.8)
+  assert_eq(@mesh_runtime.key_queue_ms, 25.0)
+  let (rates, _, _) = burst(20_000_000.0, 3_000.0, 1_000_000.0)
+  let steps : Array[Double] = []
+  for r in rates {
+    if !steps.contains(r) {
+      steps.push(r)
+    }
+  }
+  assert_eq(steps[0], 20_000_000.0)
+  assert_eq(steps[1], 20_000_000.0 * @mesh_runtime.light_cut)
+  let first = rates.search(steps[1]).unwrap()
+  assert_eq(first.to_double(), 10.0 + 30.0 + @mesh_runtime.key_queue_ms + 1.0 + @mesh_runtime.hold_ms)
+  assert_eq(steps[2], 20_000_000.0 * @mesh_runtime.light_cut * @mesh_runtime.cut)
+}
+
+///|
+test "a key frame on the way may wait key_queue_ms more before a queue is taken to build; free asks nothing of the pace" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val, start=Some(10_000_000.0))
+  p.sent(1000.0, 10_000.0)
+  now.val = 20.0
+  p.acked(1000.0)
+  assert_eq(p.rtt(), Some(20.0))
+  p.sent(2000.0, 500_000.0, key=true)
+  p.sent(3000.0, 10_000.0)
+  let edge = 20.0 + 20.0 + @mesh_runtime.queue_ms(20.0) + @mesh_runtime.key_queue_ms
+  now.val = edge
+  assert_false(p.backlogged())
+  assert_true(p.free())
+  assert_true(p.may())
+  now.val = edge + 1.0
+  assert_true(p.backlogged())
+  assert_false(p.free())
+  // (free asked again and again: the rate as it was)
+  let (_, b, at) = burst(20_000_000.0, 3_000.0, 1_000_000.0)
+  let rate = b.asked_rate()
+  at.val += 5_000.0
+  for _ in 0..<50 {
+    assert_false(b.free())
+  }
+  assert_eq(b.asked_rate(), rate)
 }

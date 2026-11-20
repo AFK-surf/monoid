@@ -2,7 +2,9 @@
 // chat_read, session_history): people refer to another chat by its link, and the agent reads what was said there and
 // what its agents did.
 import { parseThreadAddress, threadAddress } from "../agents/instructions.ts";
+import { wall } from "../ops/fibers.ts";
 import { iso, type TimelineEntry } from "../read/transcript.ts";
+import { type ChatListFilter, matchesChatFilter } from "../store/chat-list.ts";
 import { LAPSED } from "../store/rows.ts";
 import { type Attachment, STILLFAIL_SURFACE, type SessionThread, type ThreadRow } from "../store/store.ts";
 import { type Args, jsNumber, jsString } from "./args.ts";
@@ -17,6 +19,9 @@ type Json = any;
 
 /// The method another station's agent reads a chat of this one by (chat_read and session_history with its link).
 export const READ = "session.read";
+/// The method another station's agent lists this one's chats by (chat_list with station).
+export const LIST = "session.list";
+const LIST_WAIT_MS = 20_000;
 
 /// What an agent named: a conversation, or a session (maybe one entry of its execution history).
 export type Named = { type: "thread"; thread: ThreadRow } | { type: "session"; key: string; entry: number | null };
@@ -282,21 +287,41 @@ export function sessionThreadOf(hub: Hub, key: string): SessionThread {
   return latest;
 }
 
-/// chat_list: the station's conversations of session `key`'s workspace, the latest first, each with its agents
-/// (session keys).
-export async function chatList(hub: Hub, key: string, args: Args, signal?: AbortSignal): Promise<string> {
+function resolveCreator(hub: Hub, key: string, raw: string): string {
+  const s = raw.trim();
+  if (s === "") return "";
+  if (s.toLowerCase() === "me") {
+    if (key === "") return "";
+    let creator: string | null = null;
+    try {
+      creator = sessionThreadOf(hub, key).thread.createdBy;
+    } catch {}
+    creator ??= hub.store.getSession(key)?.createdBy ?? null;
+    if (!creator) throw new Error("cannot determine who started this chat: pass an email in created_by");
+    return creator;
+  }
+  return s;
+}
+
+/// chat_list on this station for workspace `ws`.
+async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null, signal?: AbortSignal): Promise<string> {
   const given = args.limit === undefined ? null : jsNumber(args.limit);
   const limit = given === null ? 20 : Number.isNaN(given) ? 0 : Math.trunc(Math.min(100, Math.max(1, given)));
   const query = (args.query === undefined ? "" : jsString(args.query)).trim().toLowerCase();
-  // Its workspace's only: a thread is its own session's, else its agents'.
-  const ws = scopeOf(hub, key);
+  const model = (args.model === undefined ? "" : jsString(args.model)).trim().toLowerCase();
+  const createdBy = args.created_by === undefined ? "" : resolveCreator(hub, key, jsString(args.created_by)).toLowerCase();
+  const archived = typeof args.archived === "boolean" ? args.archived : undefined;
+  const filter: ChatListFilter | undefined =
+    model !== "" || createdBy !== "" || archived !== undefined
+      ? { ...(model !== "" ? { model } : {}), ...(createdBy !== "" ? { createdBy } : {}), ...(archived !== undefined ? { archived } : {}) }
+      : undefined;
   const home = hub.wsOf(null);
-  // The reader counts and selects before returning the page. A search still checks each scoped chat's titles and words.
-  const listed = query === ""
+  // The reader counts and selects before returning the page. A search or filter still checks each scoped chat.
+  const listed = query === "" && filter === undefined
     ? hub.recentChatList != null ? await hub.recentChatList(ws, home, limit, signal)
       : hub.threadList == null ? hub.store.recentChatList(ws, home, limit) : null
-    : hub.searchChatList != null ? await hub.searchChatList(ws, home, limit, query)
-      : hub.threadList == null ? hub.store.searchChatList(ws, home, limit, query) : null;
+    : hub.searchChatList != null ? await hub.searchChatList(ws, home, limit, query, filter)
+      : hub.threadList == null ? hub.store.searchChatList(ws, home, limit, query, filter) : null;
   const sessions = new Map((listed?.sessions ?? hub.store.listSessions()).map((s) => [s.key, s]));
   const inWs = (k: string) => (sessions.get(k)?.ws ?? home) === ws;
   const ours = (t: { thread: ThreadRow; sessions: { session: string }[] }) =>
@@ -309,11 +334,20 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
   for (const t of threads) {
     const titles = [t.thread.title, t.thread.autoTitle, t.firstText, ...t.sessions.map((m) => sessions.get(m.session)?.title ?? null)].filter((x): x is string => x !== null);
     const last = t.lastMessage?.text ?? "";
-    if (query !== "" && listed === null) {
-      const haystack = `${titles.join(" ")} ${last} ${t.sessions.map((m) => m.session).join(" ")}`.toLowerCase();
-      if (!haystack.includes(query)) continue;
+    if (listed === null) {
+      if (filter !== undefined) {
+        const members = t.sessions.map((m) => {
+          const s = sessions.get(m.session);
+          return { session: m.session, archivedAt: s?.archivedAt ?? null, model: s?.model ?? null, createdBy: s?.createdBy ?? null };
+        });
+        if (!matchesChatFilter(t.thread, members, filter)) continue;
+      }
+      if (query !== "") {
+        const haystack = `${titles.join(" ")} ${last} ${t.sessions.map((m) => m.session).join(" ")}`.toLowerCase();
+        if (!haystack.includes(query)) continue;
+      }
+      matched++;
     }
-    if (listed === null) matched++;
     if (lines.length >= limit) continue;
     const address = threadAddress(t.thread.channel, t.thread.threadTs);
     const place = t.thread.surface === STILLFAIL_SURFACE ? "still.fail chat" : "Slack thread";
@@ -323,19 +357,113 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
     const hidden = t.thread.hiddenAt !== null ? ", archived" : "";
     let entry = `- ${address} (${place}${hidden}) "${title}"\n  agents: ${agents.length === 0 ? "none" : agents.join(", ")}; last message ${at}`;
     if (last !== "") entry += `: ${line(last, 120)}`;
+    const runInfo = t.sessions
+      .map((m) => {
+        const s = sessions.get(m.session);
+        if (!s?.runtime) return null;
+        const mName = s.model ? `/${s.model}` : "";
+        const effort = s.effort ? ` (${s.effort})` : "";
+        const running = s.running ? " running" : "";
+        return `${s.runtime}${mName}${effort}${running}`;
+      })
+      .filter((x): x is string => x !== null);
+    const creator = t.thread.createdBy ?? t.sessions.map((m) => sessions.get(m.session)?.createdBy ?? null).find((c) => c !== null) ?? null;
+    const details: string[] = [];
+    if (runInfo.length > 0) details.push(`model: ${runInfo.join(", ")}`);
+    if (creator) details.push(`by: ${creator}`);
+    if (details.length > 0) entry += `\n  ${details.join("; ")}`;
     // Its link: what to give people, who cannot open an address or a session key.
     const link = t.sessions[0] ? hub.link(t.sessions[0].session) : undefined;
     if (link) entry += `\n  link: ${link}`;
     lines.push(entry);
   }
   // Chats other workspaces share with this one: read with chat_read, written to with session_send where allowed.
-  const outside = hub.outsideChats(ws).filter((c) => query === "" || `${c.title} ${c.workspaceName} ${c.link}`.toLowerCase().includes(query));
+  const outside = filter !== undefined
+    ? []
+    : hub.outsideChats(ws).filter((c) => query === "" || `${c.title} ${c.workspaceName} ${c.link}`.toLowerCase().includes(query));
   const shared = outside.slice(0, limit).map((c) => `- ${c.link} (shared from workspace "${line(c.workspaceName, 40)}", ${c.write ? "you may send to it" : "read only"}) "${line(c.title, 80)}"`);
   const sharedMore = outside.length > shared.length ? `\n(${outside.length - shared.length} more shared; narrow query)` : "";
   const sharedPart = shared.length > 0 ? `\n\nShared with this workspace by other workspaces (read with chat_read, by the link):\n${shared.join("\n")}${sharedMore}` : "";
-  if (lines.length === 0) return (query === "" ? "No conversations on this station." : `No conversation matches ${JSON.stringify(query)}.`) + sharedPart;
+  if (lines.length === 0) {
+    const empty = query === "" && filter === undefined
+      ? "No conversations on this station."
+      : query !== "" && filter === undefined
+        ? `No conversation matches ${JSON.stringify(query)}.`
+        : "No conversation matches the filter.";
+    return empty + sharedPart;
+  }
   const more = matched > lines.length ? `\n(${matched - lines.length} more; raise limit or narrow query)` : "";
   return `${lines.join("\n")}${more}${sharedPart}`;
+}
+
+/// chat_list: the station's conversations of session `key`'s workspace, or another/all stations of the workspace.
+export async function chatList(hub: Hub, key: string, args: Args, signal?: AbortSignal): Promise<string> {
+  const ws = scopeOf(hub, key);
+  const station = typeof args.station === "string" ? args.station.trim() : "";
+  if (station === "") return chatListHere(hub, key, args, ws, signal);
+  const resolvedCreator = args.created_by === undefined ? "" : resolveCreator(hub, key, jsString(args.created_by));
+  const forwarded: Args = {
+    ...(args.query !== undefined ? { query: args.query } : {}),
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(resolvedCreator !== "" ? { created_by: resolvedCreator } : {}),
+    ...(typeof args.archived === "boolean" ? { archived: args.archived } : {}),
+    ...(args.limit !== undefined ? { limit: args.limit } : {}),
+  };
+  const link = hub.link(key);
+  const here = link !== undefined ? linkedStation(link) : null;
+  if (here !== null && station === here) return chatListHere(hub, key, forwarded, ws, signal);
+  const call = peersOf(hub, key);
+  if (!call) {
+    if (station.toLowerCase() === "all") return chatListHere(hub, key, forwarded, ws, signal);
+    throw new Error("other stations cannot be reached from this one yet: leave station out to list this station");
+  }
+  const roster: Json = await call("", { method: "peers" });
+  const stations: { id: string; name: string }[] = (Array.isArray(roster?.stations) ? roster.stations : [])
+    .filter((s: Json) => typeof s?.id === "string" && s.id !== "")
+    .map((s: Json) => ({ id: s.id as string, name: typeof s.name === "string" && s.name !== "" ? (s.name as string) : (s.id as string) }));
+  if (station.toLowerCase() === "all") {
+    const targets = stations.some((s) => s.id === here) ? stations : [{ id: here ?? "", name: "this station" }, ...stations];
+    const parts = await Promise.all(
+      targets.map(async (s) => {
+        const isHere = s.id === "" || (here !== null && s.id === here);
+        const header = isHere ? `## ${s.name} (this station)` : `## ${s.name}`;
+        try {
+          if (isHere) return `${header}\n${await chatListHere(hub, key, forwarded, ws, signal)}`;
+          const answer = await wall.within(LIST_WAIT_MS, call(s.id, { method: LIST, session: key, args: forwarded }), `did not answer within ${LIST_WAIT_MS / 1000} s`);
+          if (typeof answer?.text !== "string") return `${header}\nNot listed: station answered without a list`;
+          return `${header}\n${answer.text}`;
+        } catch (error) {
+          const why = (error as Error).message;
+          if (error instanceof Refused && fromBefore(why)) return `${header}\nNot listed: station is not updated yet`;
+          return `${header}\nNot listed: ${why}`;
+        }
+      }),
+    );
+    return parts.join("\n\n");
+  }
+  const lower = station.toLowerCase();
+  const found = stations.find((s) => s.id === station) ?? stations.find((s) => s.name.toLowerCase() === lower);
+  if (!found) {
+    const names = stations.map((s) => s.name);
+    throw new Error(`no station ${station} in this workspace${names.length > 0 ? `; its stations: ${names.join(", ")}` : ""}`);
+  }
+  if (here !== null && found.id === here) return chatListHere(hub, key, forwarded, ws, signal);
+  let answer: Json;
+  try {
+    answer = await wall.within(LIST_WAIT_MS, call(found.id, { method: LIST, session: key, args: forwarded }), `did not answer within ${LIST_WAIT_MS / 1000} s`);
+  } catch (error) {
+    const why = (error as Error).message;
+    if (error instanceof Refused && fromBefore(why)) throw new Error(`station ${found.name} is not updated yet: its chats cannot be listed from here`);
+    throw new Error(`not listed from station ${found.name}: ${why}`);
+  }
+  if (typeof answer?.text !== "string") throw new Error(`station ${found.name} answered without a list`);
+  return answer.text;
+}
+
+/// Another station's agent lists this station's chats in workspace `ws`.
+export async function listForPeer(hub: Hub, request: Json, ws: string | null = null): Promise<{ text: string }> {
+  const args: Args = request?.args !== null && typeof request?.args === "object" && !Array.isArray(request.args) ? request.args : {};
+  return { text: await chatListHere(hub, "", args, ws) };
 }
 
 /// chat_read: the messages of any conversation of the station that workspace `ws` reaches (`named`). `seen` gets the

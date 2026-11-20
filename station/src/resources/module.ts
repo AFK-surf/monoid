@@ -16,11 +16,12 @@ import { SelfMemoryGovernor } from "../ops/self-memory.ts";
 import { MbProcess } from "../read/mb-reader.ts";
 import { Parts, Paths, Readers, Store } from "../services.ts";
 import { linuxUsage } from "./linux.ts";
+import { PRODUCTS, STILLFAIL } from "../../../client/i18n/brand.ts";
 import { ResourceWatch } from "./watch.ts";
 
-/// The desktop app's bundle ids begin so (fail.still.desktop, fail.still.desktop.beta, …: apps/mbui's, in the Electron
-/// app's place, as that app's were).
-const APP_ID = "fail.still.desktop";
+/// The desktop app's bundle ids begin so, each product's (fail.still.desktop, fail.still.desktop.beta,
+/// build.monoid.desktop, …: apps/mbui's, in the Electron app's place, as that app's were).
+const APP_IDS = [STILLFAIL, ...PRODUCTS.map((p) => p.product)].map((p) => `${p.reverse}.desktop`);
 
 /// Whether `command` runs from a bundle of the desktop app's: its Info.plist names the id (as text in an XML plist or a
 /// binary one alike). Each bundle read once, off the station's thread: one not read yet is none until it is (the next
@@ -35,7 +36,7 @@ export function appBundles(read: (path: string) => Promise<Buffer> = (path) => r
     const is = known.get(bundle);
     if (is !== undefined) return is;
     known.set(bundle, false);
-    read(`${bundle}/Contents/Info.plist`).then((plist) => known.set(bundle, plist.includes(APP_ID)), () => {});
+    read(`${bundle}/Contents/Info.plist`).then((plist) => known.set(bundle, APP_IDS.some((id) => plist.includes(id))), () => {});
     return false;
   };
 }

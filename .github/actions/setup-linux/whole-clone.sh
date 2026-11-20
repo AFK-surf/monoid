@@ -11,15 +11,30 @@
 #     promisor marks taken out once nothing is missing. Once; a checkout already whole costs a `git config` read.
 set -u
 [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || exit 0
-[ "$(git config --local --get remote.origin.promisor 2>/dev/null)" = true ] || exit 0
 G=$(git rev-parse --absolute-git-dir)
+[ ! -f "$G/shallow" ] || exit 0
 whole() {
   git config --local --unset-all remote.origin.promisor 2>/dev/null || true
   git config --local --unset-all remote.origin.partialclonefilter 2>/dev/null || true
   git config --local --unset-all extensions.partialclone 2>/dev/null || true
 }
+# Collapse duplicate packfiles left by earlier shallow/unshallow cycles once no promisor pack remains.
+repack_many() {
+  [ -z "$(find "$G/objects/pack" -maxdepth 1 -name '*.promisor' 2>/dev/null | head -1)" ] || return 0
+  packs=$(find "$G/objects/pack" -maxdepth 1 -name 'pack-*.pack' 2>/dev/null | wc -l | tr -d ' ')
+  [ "${packs:-0}" -gt 50 ] || return 0
+  rt0=$(date +%s)
+  if git repack -adq --threads=4 && git prune-packed -q; then
+    echo "whole-clone: repacked $packs packs in $(( $(date +%s) - rt0 )) s"
+  fi
+}
+if [ "$(git config --local --get remote.origin.promisor 2>/dev/null)" != true ]; then
+  repack_many
+  exit 0
+fi
 if [ -z "$(find "$G/objects/pack" -maxdepth 1 -name '*.promisor' 2>/dev/null | head -1)" ]; then
   whole
+  repack_many
   echo "whole-clone: no promisor pack; the partial clone's settings taken out"
   exit 0
 fi
@@ -39,16 +54,20 @@ for p in "$full"/objects/pack/pack-*; do
   [ -f "$p" ] || continue
   dst="$G/objects/pack/${p##*/}"
   [ -f "$dst" ] && continue
+  # shellcheck disable=SC2086 # pack file paths have no spaces
   ln "$p" "$dst" 2>/dev/null || cp -p "$p" "$dst" || { rm -f $copied; exit 1; }
   copied="$copied $dst"
 done
 missing() { git rev-list --objects --missing=print --all HEAD 2>/dev/null | sed -n 's/^?//p'; }
 m=$(missing)
 if [ -n "$m" ]; then
+  # shellcheck disable=SC2086 # pack file paths have no spaces
   printf '%s\n' "$m" | git -c fetch.negotiationAlgorithm=noop fetch -q --no-tags --no-write-fetch-head --stdin origin || { rm -f $copied; exit 1; }
 fi
 n=$(missing | wc -l | tr -d ' ')
+# shellcheck disable=SC2086 # pack file paths have no spaces
 [ "$n" = 0 ] || { rm -f $copied; echo "whole-clone: $n objects still missing; left a partial clone"; exit 1; }
 rm -f "$G"/objects/pack/*.promisor
 whole
+repack_many
 echo "whole-clone: made whole in $(( $(date +%s) - t0 )) s ($(echo "$m" | grep -c . || true) fetched)"

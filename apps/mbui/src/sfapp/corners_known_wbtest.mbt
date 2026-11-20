@@ -27,10 +27,8 @@ let corners_everywhere_known : Map[String, Int] = {
   // gone as the page's height is any other (English's has none).
   known["touch-zh settings-vault-waits"] = 3
   // 安全 made its person's only trusted device (lock-rebound-security) in the 600 wide window touch is in, in Chinese: the rail's
-  // one, and its page, which does not fill its panel, ending with 网页版's card 17 over the panel's foot, 16 in, its foot
-  // corners where the panel's 42 would want them 25. Where it ends is its words' and the window's, as 密钥's above: gone
-  // as the page's height is any other (English's has none).
-  known["touch-zh lock-rebound-security"] = 3
+  // one (its workspace's mark in the panel's top left corner).
+  known["touch-zh lock-rebound-security"] = 1
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the
@@ -48,6 +46,15 @@ let corners_everywhere_known : Map[String, Int] = {
   // the board's.
   known["wide-win-zh board"] = 4
   known["wide-win-en board"] = 4
+  // The same with a card's chat open beside the board (board-side, its first sweep 2026-11-17): the rail's four as the
+  // board's, each said against two nodes of the whole window (170 and 174 then); and on a Mac's (wide), the chat's
+  // bar's last key, 32 square, 6 from the window's end and 6.5 from its top where the window's corner (16) wants it
+  // concentric, said against the same two (sfdesk board.mbt board_beside's bar, pane_chat_bar_ends): what was there
+  // before the sweep saw this screen, not the line taken from between the chat and the board then.
+  known["wide-win-zh board-side"] = 8
+  known["wide-win-en board-side"] = 8
+  known["wide-zh board-side"] = 2
+  known["wide-en board-side"] = 2
   // An account on three stations' page in a 中屏 window (desk, desk-win; the rail's one besides it on the tape): its
   // stations' card's foot corners (Birch's row, 16 in from the panel's sides, 26 round; one on the Mac's, both on
   // Windows'): the page is shorter than its panel, so it does not scroll and its last card stands
@@ -58,10 +65,10 @@ let corners_everywhere_known : Map[String, Int] = {
   known["desk-en settings-profile-account"] = 1
   known["desk-win-zh settings-profile-account"] = 3
   known["desk-win-en settings-profile-account"] = 3
-  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape, said
-  // twice (the bell's panel holds the rail drawn as it was pressed, rail_drawn, beside the rail itself).
-  known["desk-win-zh home-shared-bell"] = 2
-  known["desk-win-en home-shared-bell"] = 2
+  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape (the
+  // panel a presenter's of the window's tree, no old view holding the rail drawn again beside it).
+  known["desk-win-zh home-shared-bell"] = 1
+  known["desk-win-en home-shared-bell"] = 1
   known
 }
 
@@ -76,11 +83,11 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "board-side", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
-  "chat-history-side", "chat-history-side-working", "chat-info", "chat-job", "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters",
+  "chat-history-side", "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job", "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters",
   "chat-letters-info", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-things",
   "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
   "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk",
@@ -102,7 +109,7 @@ let corners_tape_rail : Array[String] = [
   "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
   "newchat-preset-new-clone", "newchat-preset-new-clones",
   // (the presets' menu and its level further in: the rail behind them, not the menu)
-  "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
+  "newchat-preset", "newchat-preset-many", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
     "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
   "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized",
   "service-stopped", "share-in", "share-in-files", "share-in-stations", "lock-security", "lock-upgrade", "lock-needs-app-security", "lock-out-security",
@@ -129,7 +136,7 @@ let corners_tape_rail : Array[String] = [
   "settings-profile", "settings-profile-fable", "settings-profile-own3",
   "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
   "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed",
-  "settings-profile-quota-failed", "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-profile-copy",
+  "settings-profile-quota-failed", "settings-profile-verify", "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-profile-copy",
   "settings-new-profile", "settings-new-profile-stations", "settings-new-profile-key", "settings-connects", "settings-connect", "settings-connect-menu", "settings-connect-mode",
   "settings-connect-run", "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan",
   "settings-new-connect-app", "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu", "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group", "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage",
@@ -137,7 +144,7 @@ let corners_tape_rail : Array[String] = [
   "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add", "settings-vault-editor", "settings-vault-recover",
   "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
   "settings-policy", "settings-policy-text", "settings-policy-option", "settings-security-join",
-  "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts",
+  "settings-security-off", "settings-security-open", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-fonts",
   "settings-fonts-code", "settings-decisions", "settings-completion", "settings-bars", "settings-about",
   "settings-changelog", "settings-prices", "settings-notify-off", "settings-notify-denied", "share-card-poster",
   "share-card-receipt", "share-card-senren-adv", "share-card-senren-affection", "share-card-senren-cg",
@@ -179,7 +186,8 @@ let corners_heights_known : Map[String, Int] = Map([])
 /// file's card in a chat (published files), a found message in the outline, 决策's chevron, a run's model in its
 /// history's details (its icon and chevron). And what old views hosted in the window's tree show, measured once the
 /// rules took the tree's nodes in each after its parent (#6294, 2026-11-15): a chat's files and references, its
-/// agent's card, 文件's rows, a station's settings.
+/// agent's card, 文件's rows, a station's settings; fewer since a chat's page is made as nodes on the test channel
+/// (2026-11-19): its files, references and screens there on their first lines.
 let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
@@ -271,58 +279,24 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-zh settings-new-connect-platform-group", 2),
   ("wide-zh settings-new-connect-group", 2),
   ("wide-zh settings-new-connect-scan", 2),
-  ("phone-en chat-attach-row", 3),
-  ("phone-en chat-attach", 2),
-  ("phone-en chat-download", 1),
-  ("phone-en chat-station-file", 2),
-  ("phone-en chat-station-ref", 1),
-  ("phone-en chat-station-sheet", 2),
+  ("phone-en chat-station-file", 1),
+  ("phone-en chat-station-sheet", 1),
   ("phone-en service-restart", 1),
-  ("phone-zh chat-attach-row", 3),
-  ("phone-zh chat-attach", 2),
-  ("phone-zh chat-download", 1),
-  ("phone-zh chat-station-file", 2),
-  ("phone-zh chat-station-ref", 1),
-  ("phone-zh chat-station-sheet", 2),
+  ("phone-zh chat-station-file", 1),
+  ("phone-zh chat-station-sheet", 1),
   ("phone-zh service-restart", 1),
-  ("tablet-en chat-attach-row", 3),
-  ("tablet-en chat-attach", 2),
-  ("tablet-en chat-download", 1),
-  ("tablet-en chat-screens", 3),
-  ("tablet-en chat-station-file", 2),
-  ("tablet-en chat-station-ref", 1),
-  ("tablet-en chat-station-sheet", 2),
-  ("tablet-zh chat-attach-row", 3),
-  ("tablet-zh chat-attach", 2),
-  ("tablet-zh chat-download", 1),
-  ("tablet-zh chat-screens", 3),
-  ("tablet-zh chat-station-file", 2),
-  ("tablet-zh chat-station-ref", 1),
-  ("tablet-zh chat-station-sheet", 2),
-  ("wide-en chat-attach-row", 3),
-  ("wide-en chat-attach", 2),
-  ("wide-en chat-download", 1),
-  ("wide-en chat-station-file", 2),
-  ("wide-en chat-station-ref", 1),
-  ("wide-en chat-station-sheet", 2),
-  ("wide-win-en chat-attach-row", 3),
-  ("wide-win-en chat-attach", 2),
-  ("wide-win-en chat-download", 1),
-  ("wide-win-en chat-station-file", 2),
-  ("wide-win-en chat-station-ref", 1),
-  ("wide-win-en chat-station-sheet", 2),
-  ("wide-win-zh chat-attach-row", 3),
-  ("wide-win-zh chat-attach", 2),
-  ("wide-win-zh chat-download", 1),
-  ("wide-win-zh chat-station-file", 2),
-  ("wide-win-zh chat-station-ref", 1),
-  ("wide-win-zh chat-station-sheet", 2),
-  ("wide-zh chat-attach-row", 3),
-  ("wide-zh chat-attach", 2),
-  ("wide-zh chat-download", 1),
-  ("wide-zh chat-station-file", 2),
-  ("wide-zh chat-station-ref", 1),
-  ("wide-zh chat-station-sheet", 2),
+  ("tablet-en chat-station-file", 1),
+  ("tablet-en chat-station-sheet", 1),
+  ("tablet-zh chat-station-file", 1),
+  ("tablet-zh chat-station-sheet", 1),
+  ("wide-en chat-station-file", 1),
+  ("wide-en chat-station-sheet", 1),
+  ("wide-win-en chat-station-file", 1),
+  ("wide-win-en chat-station-sheet", 1),
+  ("wide-win-zh chat-station-file", 1),
+  ("wide-win-zh chat-station-sheet", 1),
+  ("wide-zh chat-station-file", 1),
+  ("wide-zh chat-station-sheet", 1),
 ])
 
 ///|

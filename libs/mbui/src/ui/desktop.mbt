@@ -607,6 +607,20 @@ pub fn Ctx::right_clicked(self : Ctx, id : Int) -> (Double, Double)? {
 }
 
 ///|
+/// Where `id` itself (the topmost target under the pointer, not a descendant inside it) was clicked with the secondary
+/// button since the last frame.
+pub fn Ctx::right_clicked_own(self : Ctx, id : Int) -> (Double, Double)? {
+  ignore(self)
+  hand_events_read()
+  for m in desk.menus {
+    if m.0.get(0) == Some(id) {
+      return Some((m.1, m.2))
+    }
+  }
+  None
+}
+
+///|
 /// Where a menu of `id` was asked for since the last frame, in the window's terms: by a mouse, its secondary button
 /// clicked on it (Ctx::right_clicked); by a finger, held on it (long_press_ms, still: the press is then no click).
 /// For a menu the web's `contextmenu` opens (a row's, a place's), on either hand. One press, one menu: a right click is
@@ -667,7 +681,7 @@ pub fn Ctx::mouse_drags_lists(self : Ctx, on : Bool) -> Unit {
 ///|
 /// Whether key `code` came since the last frame with exactly `mods` held (with `in_field`, also one a focused field
 /// took: an Enter it sent, an arrow it moved by).
-pub fn Ctx::key_pressed(self : Ctx, code : Int, mods? : Int = 0, in_field? : Bool = false) -> Bool {
+fn Ctx::key_pressed(self : Ctx, code : Int, mods? : Int = 0, in_field? : Bool = false) -> Bool {
   hand_keys_read()
   // (under an open menu or dialog, none: they are its)
   if !self.keys_here() {
@@ -780,6 +794,17 @@ fn Ctx::secondary_press(self : Ctx, x : Double, y : Double) -> Unit {
   self.layer_keys_now()
   self.px = x
   self.py = y
+  if !field_menu_asked.is_empty() {
+    for id in under {
+      if self.editors.contains(id) {
+        if self.focus != id {
+          self.focus_on(id)
+        }
+        notify_field_menu(id, x, y, self.field_can(id))
+        break
+      }
+    }
+  }
 }
 
 ///|
@@ -836,6 +861,13 @@ pub fn Ctx::selectable(self : Ctx, body : () -> Unit, color? : Int64 = 0x3B82F64
 /// The words picked with the pointer ("" none).
 pub fn Ctx::selected_text(self : Ctx) -> String {
   ignore(self)
+  selected_words()
+}
+
+///|
+/// The words picked with the pointer now, an old view's or the window's tree's ("" none): Ctx::selected_text's, for
+/// what has no build to ask it of (a node's handler as a right click's menu opens).
+pub fn picked_words() -> String {
   selected_words()
 }
 

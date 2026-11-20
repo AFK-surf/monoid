@@ -15,6 +15,7 @@ pub(all) struct Seen {
   workspace : String
   sub : String
   email : String
+  role : String?
   device : String
   base : String?
   kind : String?
@@ -26,7 +27,7 @@ pub(all) struct Seen {
 ///|
 pub fn Seen::to_json(self : Seen) -> Json {
   let opt = (v : String?) => match v { Some(s) => Json::string(s); None => Json::null() }
-  {
+  let m : Map[String, Json] = {
     "workspace": Json::string(self.workspace),
     "sub": Json::string(self.sub),
     "email": Json::string(self.email),
@@ -37,6 +38,11 @@ pub fn Seen::to_json(self : Seen) -> Json {
     "first_seen": Json::number(self.first_seen.to_double()),
     "last_seen": Json::number(self.last_seen.to_double()),
   }
+  match self.role {
+    Some(r) if r != "" => m["role"] = Json::string(r)
+    _ => ()
+  }
+  Json::object(m)
 }
 
 ///|
@@ -48,6 +54,7 @@ pub fn Seen::from_json(j : Json) -> Seen? {
     workspace,
     sub,
     email: s("email").unwrap_or(""),
+    role: s("role"),
     device,
     base: s("base"),
     kind: s("kind"),
@@ -109,15 +116,21 @@ pub fn SeenDevices::saw(
   device : String,
   base : String?,
   said : Json,
+  role? : String,
 ) -> Unit {
   let kind = match said { { "kind": String(k), .. } if k == "app" || k == "web" => Some(k); _ => None }
   let label = match said { { "label": String(l), .. } => Some(first_units(l, 120)); _ => None }
   let k = seen_key(workspace, sub, device)
   let was = self.rows.get(k)
+  let next_role = match role {
+    Some(r) if r != "" => Some(r)
+    _ => was.bind(w => w.role)
+  }
   let next : Seen = {
     workspace,
     sub,
     email,
+    role: next_role,
     device,
     base: either(base, was.bind(w => w.base)),
     kind: either(kind, was.bind(w => w.kind)),
@@ -130,7 +143,8 @@ pub fn SeenDevices::saw(
     w.base == next.base &&
     w.kind == next.kind &&
     w.label == next.label &&
-    w.email == next.email {
+    w.email == next.email &&
+    w.role == next.role {
     return
   }
   self.rows.remove(k)

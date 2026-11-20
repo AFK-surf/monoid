@@ -55,10 +55,7 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
           }
         },
         end_input: last => {
-          match last {
-            Some(b) => ignore(child.proc.write(b))
-            None => ()
-          }
+          if last is Some(b) { ignore(child.proc.write(b)) }
           input_open.val = false
           child.proc.end_input()
         },
@@ -77,7 +74,7 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
         e =>
           raise @screens.ExecFailed(
             message=p54_message(e),
-            code=@jsjson.JValue::Str(@jsjson.units("ENOENT")),
+            code=@jsjson.JValue::Str("ENOENT"),
             signal=None,
             stdout="",
             stderr="",
@@ -124,8 +121,14 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
 ///|
 /// The machine as the screens' parts know it (screens `Os`).
 fn p54_screen_os(bus : LiveBus) -> @screens.Os {
+  p54_screen_os_of(bus.argv0)
+}
+
+///|
+/// `p54_screen_os` of the program at `argv0`.
+fn p54_screen_os_of(argv0 : String) -> @screens.Os {
   let env = () => @screens.Env::new(env_all())
-  let code_dir = @nodepath.dirname(sep(), @drive.real_of(bus.argv0))
+  let code_dir = @nodepath.dirname(sep(), @drive.real_of(argv0))
   let os = match platform() {
     "darwin" => "darwin"
     "windows" => "win32"
@@ -138,7 +141,7 @@ fn p54_screen_os(bus : LiveBus) -> @screens.Os {
     arch: arch(),
     os,
     uid: Some(@drive.uid()),
-    exec_path: bus.argv0,
+    exec_path: argv0,
     pid: @drive.pid(),
     env,
     runnable: (file, args, _) => { file, args, verbatim: false },
@@ -151,16 +154,17 @@ fn p54_screen_os(bus : LiveBus) -> @screens.Os {
 }
 
 ///|
-fn p54_screen_words() -> @screens.Words {
+/// `station_lang`: the station's own language (what is said to nobody in particular).
+fn p54_screen_words(station_lang : () -> String) -> @screens.Words {
   {
     tr: (lang, key, args) => {
-      let given = match p54_of_jv(args) {
+      let given = match of_jv(args) {
         Object(m) => m.iter().map(kv => (kv.0, match kv.1 { String(s) => s; v => v.stringify() })).collect()
         _ => []
       }
       tr(lang, key, args=given)
     },
-    station_lang: () => "zh",
+    station_lang,
   }
 }
 
@@ -179,17 +183,72 @@ priv struct P54Screens {
 }
 
 ///|
+/// How still.fail Helper of `dir` is launched (`opened`: by LaunchServices), one holding its lock with no socket ended
+/// first (`p54_helper_evict`).
+fn p54_helper_launch(
+  host : @host.Host,
+  dir : String,
+  opened : async (String, Array[(String, String)]) -> Unit,
+) -> async (String, Array[(String, String)]) -> Unit {
+  async fn(app_path, env) {
+    p54_helper_evict(host, dir)
+    opened(app_path, env)
+  }
+}
+
+///|
+/// Before still.fail Helper is launched (no helper answered its socket): one of this directory's that still holds its
+/// lock (`helper.lock`) with its socket gone would make the one launched exit at once, every launch after it too, so it
+/// is ended first. Its pid is said in the lock by a helper of now; one from before left it empty, found by `lsof`.
+/// Only a `stillfail-helper` that is this directory's is ended: its command in it (the copy installed here, as
+/// LaunchServices starts it), or the lock open in it as `lsof` says.
+async fn p54_helper_evict(host : @host.Host, dir : String) -> Unit {
+  let lock = path([dir, "helper.lock"])
+  let pids : Array[Int] = []
+  let add = (t : String) => for line in t.split("\n") {
+    let n = @string.parse_int(line.trim().to_owned()) catch { _ => continue }
+    if n > 1 && n != @drive.pid() && !pids.contains(n) {
+      pids.push(n)
+    }
+  }
+  match read_text(lock) {
+    Some(t) => add(t)
+    None => return
+  }
+  let by_lsof = pids.is_empty()
+  if by_lsof {
+    if shell_proc_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) is Some(t) { add(t) }
+  }
+  for pid in pids {
+    guard shell_proc_run(host, "ps", ["-ww", "-p", pid.to_string(), "-o", "command="], timeout_ms=2000) is Some(command) else {
+      continue
+    }
+    let here = by_lsof ||
+      command.contains(dir) ||
+      (shell_proc_run(host, "lsof", ["-t", "-a", "-p", pid.to_string(), "--", lock], timeout_ms=2000) is Some(t) && t.trim() != "")
+    if here && command.contains("stillfail-helper") {
+      p51_log("WARN", "helper", "ending a still.fail Helper that holds its lock with no socket", fields={ "pid": Json::number(pid.to_double()) })
+      ignore(kill(pid, "SIGKILL"))
+      @effect.sleep(100)
+    }
+  }
+}
+
+///|
 /// The screens made (services.ts `Helper`, `Grants`, `HelperFolders`, `ScreenRegistry`), each list's change told.
 fn p54_screens_start(bus : LiveBus) -> P54Screens {
   let host = bus.host
-  let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os(bus), p54_screen_words(), now=Some(() => wall_ms().to_double()))
+  let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os(bus), p54_screen_words(() => (bus.lang.val)()), now=Some(() => wall_ms().to_double()))
   let downloads = path([homedir(), "Downloads"])
   let hub = @screens.ScreenHub::new(io, drop=Some(() => if (try { Ok(@drive.stat(downloads)) } catch { e => Err(e) }) is Ok(_) { Some(downloads) } else { None }))
   let mac = platform() == "darwin"
   let env = @screens.Env::new(env_all())
   let helper = if mac {
     match @screens.helper_app(io, env) {
-      Some(app) => Some(@screens.HelperApp::new(io, app, path([bus.data, "helper"])))
+      Some(app) => {
+        let dir = path([bus.data, "helper"])
+        Some(@screens.HelperApp::new(io, app, dir, launch=Some(p54_helper_launch(host, dir, @screens.open_app(io)))))
+      }
       None => None
     }
   } else {
@@ -209,7 +268,7 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
     Some("1") => Some(() => "test-station")
     _ => None
   }
-  let fork = (f : async () -> Unit) => ignore(host.rt.fork(name="screens", async fn() { f() catch { _ => () } }))
+  let fork = (f : async () -> Unit) => ignore(host.rt.fork_quiet(name="screens", async fn() { f() catch { _ => () } }))
   match platform() {
     "win32" => {
       let desktop = @screens.WindowsDesktop::new(io, {
@@ -223,7 +282,15 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
       ignore(hub.refresher(async fn() { desktop.refresh() }))
     }
     "linux" => {
-      let desktop = @screens.LinuxDesktop::new(io, { data: bus.data, changed, title, env: None, discover: None })
+      let desktop = @screens.LinuxDesktop::new(io, {
+        data: bus.data,
+        changed,
+        title,
+        env: None,
+        discover: None,
+        native_binary: @screens.linux_screen_binary(io, env),
+        native_start: None,
+      })
       ignore(hub.add(desktop.source()))
       ignore(hub.refresher(async fn() { desktop.refresh() }))
     }
@@ -254,28 +321,29 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
   }
   // The screens' list changed: told on the members' streams (api/events.ts `screens`).
   ignore(hub.watch(_ => {
-    (bus.events_tell.val)("screens", p54_of_jv(hub.listed((bus.lang.val)())), "screens", Json::object({}))
+    (bus.events_tell.val)("screens", of_jv(hub.listed((bus.lang.val)())), "screens", Json::object({}))
     (bus.overview_changed.val)()
   }))
   match grants {
     Some(g) => ignore(g.on_change(() => (bus.overview_changed.val)()))
     None => ()
   }
-  { bus, hub, io, helper, grants, files, views: Map([]), debugs: Map([]), next_view: 0 }
-}
-
-///|
-fn p54_api_jv(j : Json) -> @api_routes.JV {
-  @api_routes.parse(j.stringify()) catch {
-    _ => @api_routes.JV::Null
-  }
-}
-
-///|
-fn p54_of_api(v : @api_routes.JV) -> Json {
-  @json.parse(@api_routes.stringify(v)) catch {
-    _ => Json::null()
-  }
+  let views : Map[String, @screens.ScreenView] = Map([])
+  // The station stopping (services.ts's release of the hub, `hub.close`): every view ends, said so; the agents' views
+  // too (tools/computer.ts `whenStopping` → `closeAll`), which are this slice's.
+  ignore(hub.when_stopping(() => {
+    for _, view in views.copy() {
+      (view.close)()
+    }
+    views.clear()
+  }))
+  fork_bg(host, "screens stopping", async fn() {
+    ignore(bus.stopped.wait()) catch {
+      _ => ()
+    }
+    hub.close()
+  })
+  { bus, hub, io, helper, grants, files, views, debugs: Map([]), next_view: 0 }
 }
 
 ///|
@@ -285,7 +353,7 @@ fn p54_ref(name : String) -> Json {
 
 ///|
 fn p54_ref_of(v : Json?) -> String? {
-  p54_text(v, "$ref")
+  opt_text(v, "$ref")
 }
 
 ///|
@@ -296,36 +364,35 @@ fn p54_screen_thrown(e : Error) -> Error {
       let said : Map[String, Json] = {
         "status": Json::number(status.to_double()),
         "key": Json::string(key),
-        "args": p54_of_jv(args),
+        "args": of_jv(args),
         "message": Json::string(message),
       }
-      match access {
-        Some(a) => said["access"] = p54_of_jv(a.to_j())
-        None => ()
-      }
+      if access is Some(a) { said["access"] = of_jv(a.to_j()) }
       P54Refused("ScreenRefused", Json::object(said))
     }
+    @screens.GrantRefused(key) =>
+      P54Refused("GrantRefused", { "key": Json::string(key), "message": Json::string(key) })
     other => other
   }
 }
 
 ///|
 fn p54_view_options(j : Json?) -> @screens.ViewOptions {
-  @screens.view_options_of(p54_jv(j.unwrap_or(Json::object({}))))
+  @screens.view_options_of(to_jv(j.unwrap_or(Json::object({}))))
 }
 
 ///|
 fn p54_view_shown(v : Json?) -> @screens.ViewShown {
   {
-    id: p54_text(v, "id").unwrap_or(""),
-    name: p54_text(v, "name").unwrap_or(""),
-    control: p54_bool(p54_get(v, "control")),
-    at: p54_num(p54_get(v, "at")).unwrap_or(0.0),
-    device: p54_text(v, "device"),
-    self_: p54_text(v, "self"),
-    client: p54_text(v, "client"),
-    app: p54_text(v, "app"),
-    agent: p54_bool(p54_get(v, "agent")),
+    id: opt_text(v, "id").unwrap_or(""),
+    name: opt_text(v, "name").unwrap_or(""),
+    control: opt_true(opt_field(v, "control")),
+    at: opt_num(opt_field(v, "at")).unwrap_or(0.0),
+    device: opt_text(v, "device"),
+    self_: opt_text(v, "self"),
+    client: opt_text(v, "client"),
+    app: opt_text(v, "app"),
+    agent: opt_true(opt_field(v, "agent")),
   }
 }
 
@@ -337,10 +404,7 @@ fn p54_frame_json(f : @screens.Frame) -> Json {
     "ts": Json::number(f.ts),
     "data": p54_bytes_json(f.data),
   }
-  match f.config {
-    Some(c) => out["config"] = p54_of_jv(c.to_j())
-    None => ()
-  }
+  if f.config is Some(c) { out["config"] = of_jv(c.to_j()) }
   Json::object(out)
 }
 
@@ -348,7 +412,7 @@ fn p54_frame_json(f : @screens.Frame) -> Json {
 /// What is asked of the screens by name: the hub's (`screens.<method>`), a source's (`screen:<id>.<method>`), a
 /// view's (`view:<n>.<method>`), and the hub's pure helpers; None where it is not the screens'.
 async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
-  let s = (i : Int) => p54_arg_text(a, i)
+  let s = (i : Int) => call_arg_text(a, i)
   let hub = self.hub
   let answer : Json = try {
     // A member's view of a screen, answered while it lasts (P5-1's `member_screens`).
@@ -357,7 +421,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
       return Some(Json::boolean(true))
     }
     if op == "$source" {
-      match p54_ref_of(p54_arg(a, 0)) {
+      match p54_ref_of(call_arg(a, 0)) {
         Some(r) if r.has_prefix("screen:") =>
           match hub.get(r[7:].to_owned()) {
             Some(src) =>
@@ -374,28 +438,28 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
     } else if op.has_prefix("screens/") {
       match op {
         "screens/hub.accessShown" => {
-          let access = match p54_arg(a, 0) {
+          let access = match call_arg(a, 0) {
             Some(Object(_) as acc) =>
               Some(
                 @screens.ScreenAccess::new(
-                  p54_bool(p54_get(Some(acc), "capture")),
-                  p54_bool(p54_get(Some(acc), "control")),
-                  unsupported=p54_text(Some(acc), "unsupported"),
-                  reason=p54_text(Some(acc), "reason"),
-                  app=p54_text(Some(acc), "app"),
-                  path=p54_text(Some(acc), "path"),
-                  asking=p54_bool(p54_get(Some(acc), "asking")),
+                  opt_true(opt_field(Some(acc), "capture")),
+                  opt_true(opt_field(Some(acc), "control")),
+                  unsupported=jtext(acc, "unsupported"),
+                  reason=jtext(acc, "reason"),
+                  app=jtext(acc, "app"),
+                  path=jtext(acc, "path"),
+                  asking=opt_true(opt_field(Some(acc), "asking")),
                 ),
               )
             _ => None
           }
-          match @screens.access_shown(p54_screen_words(), access, s(1)) {
-            Some(shown) => p54_of_jv(shown.to_j())
+          match @screens.access_shown(p54_screen_words(() => (self.bus.lang.val)()), access, s(1)) {
+            Some(shown) => of_jv(shown.to_j())
             None => Json::null()
           }
         }
-        "screens/hub.viewOn" => Json::string(@screens.view_on(p54_view_shown(p54_arg(a, 0)), wall_ms().to_double()))
-        "screens/ui.treeText" => Json::string(@screens.tree_text(p54_jv(p54_arg(a, 0).unwrap_or(Json::null()))))
+        "screens/hub.viewOn" => Json::string(@screens.view_on(p54_view_shown(call_arg(a, 0)), wall_ms().to_double()))
+        "screens/ui.treeText" => Json::string(@screens.tree_text(to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
         _ => return None
       }
     } else if op.has_prefix("screens.") {
@@ -416,14 +480,16 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
             None => Json::null()
           }
         "list" => Json::array(hub.list().map(src => { "id": Json::string(src.id), "$ref": Json::string("screen:" + src.id) }))
-        "listed" => p54_of_jv(hub.listed(s(0)))
-        "people" => p54_of_jv(hub.people(s(0)))
+        "listed" => of_jv(hub.listed(s(0)))
+        "people" => of_jv(hub.people(s(0)))
         "refresh" => {
           hub.refresh()
           Json::null()
         }
+        // (the agents' views end as the station stops: closed by the hook the hub was given as it was made, the views
+        // being this slice's, so the tools' callback is not needed)
         "whenStopping" => Json::null()
-        "takeControl" => Json::number(hub.take_control(s(0), by=p54_str(p54_arg(a, 1))).to_double())
+        "takeControl" => Json::number(hub.take_control(s(0), by=opt_str(call_arg(a, 1))).to_double())
         "endView" => {
           hub.end_view(s(0), s(1), s(2))
           Json::null()
@@ -434,14 +500,14 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           Json::null()
         }
         "openAs" => {
-          let who = p54_arg(a, 2)
-          let view = hub.open_as(s(0), p54_view_options(p54_arg(a, 1)), p54_text(who, "name").unwrap_or("agent"), p54_bool(p54_get(who, "control")))
+          let who = call_arg(a, 2)
+          let view = hub.open_as(s(0), p54_view_options(call_arg(a, 1)), opt_text(who, "name").unwrap_or("agent"), opt_true(opt_field(who, "control")))
           self.next_view += 1
           let name = "view:\{self.next_view}"
           self.views[name] = view
           p54_ref(name)
         }
-        "openBrowser" => Json::string(hub.open_browser(s(0), id=p54_str(p54_arg(a, 1))))
+        "openBrowser" => Json::string(hub.open_browser(s(0), id=opt_str(call_arg(a, 1))))
         "openUrl" => {
           hub.open_url(s(0), s(1))
           Json::null()
@@ -459,7 +525,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           Json::null()
         }
         "historyScreen" => {
-          hub.history_screen(s(0), p54_num(p54_arg(a, 1)).unwrap_or(0.0).to_int())
+          hub.history_screen(s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
           Json::null()
         }
         "debugOf" => {
@@ -467,6 +533,14 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           self.debugs[id] = hub.debug_of(id)
           p54_ref("debug:" + id)
         }
+        "chromeOf" =>
+          of_jv(
+            hub.chrome_of(
+              s(0),
+              opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int(),
+              opt_num(call_arg(a, 2)).unwrap_or(0.0),
+            ).to_j(),
+          )
         _ => return None
       }
     } else if op.has_prefix("screen:") {
@@ -477,7 +551,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
       match meth {
         "access" =>
           match src.access {
-            Some(f) => p54_of_jv(f().to_j())
+            Some(f) => of_jv(f().to_j())
             None => Json::null()
           }
         "size" => {
@@ -487,7 +561,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
         "title" => Json::string((src.title)())
         "ui" =>
           match src.ui {
-            Some(f) => p54_of_jv(f(p54_strs(p54_arg(a, 0))))
+            Some(f) => of_jv(f(opt_strs(call_arg(a, 0))))
             None => Json::null()
           }
         _ => return None
@@ -504,29 +578,29 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           d
         }
       }
-      let arg = (i : Int) => p54_arg(a, i)
+      let arg = (i : Int) => call_arg(a, i)
       match meth {
         "logs" => {
-          let (next, lines) = d.logs(p54_num(arg(0)).unwrap_or(0.0))
-          { "next": Json::number(next.to_double()), "lines": Json::array(lines.map(l => p54_of_jv(l.to_j()))) }
+          let (next, lines) = d.logs(opt_num(arg(0)).unwrap_or(0.0))
+          { "next": Json::number(next.to_double()), "lines": Json::array(lines.map(l => of_jv(l.to_j()))) }
         }
-        "apps" => Json::array(d.apps().map(x => p54_of_jv(x.to_j())))
+        "apps" => Json::array(d.apps().map(x => of_jv(x.to_j())))
         "relaunch" => Json::boolean(d.relaunch(s(0)))
-        "settings" => p54_of_jv(d.settings())
+        "settings" => of_jv(d.settings())
         "setSetting" => Json::boolean(d.set_setting(s(0), s(1)))
         "openUrl" => Json::boolean(d.open_url(s(0)))
-        "location" => Json::boolean(d.location(p54_str(arg(0))))
+        "location" => Json::boolean(d.location(opt_str(arg(0))))
         "statusBar" => {
-          d.status_bar(p54_bool(arg(0)))
+          d.status_bar(opt_true(arg(0)))
           Json::null()
         }
         "push" => Json::boolean(d.push(s(0), s(1)))
         "installFolder" => Json::string(d.install_folder())
-        "install" => p54_opt(d.install(s(0)))
+        "install" => jopt(d.install(s(0)))
         "uninstall" => Json::boolean(d.uninstall(s(0)))
         "biometrics" => Json::boolean(d.biometrics(s(0)))
         "recordStart" => {
-          d.record_start(p54_str(arg(0)))
+          d.record_start(opt_str(arg(0)))
           Json::null()
         }
         "recording" => Json::boolean(d.recording())
@@ -555,10 +629,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
             None => Json::null()
           }
         "input" => {
-          match @screens.input_of(p54_jv(p54_arg(a, 0).unwrap_or(Json::null()))) {
-            Some(i) => (view.input)(i)
-            None => ()
-          }
+          if @screens.input_of(to_jv(call_arg(a, 0).unwrap_or(Json::null()))) is Some(i) { (view.input)(i) }
           Json::null()
         }
         "keyframe" => {
@@ -575,30 +646,30 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
     } else if op.has_prefix("helper/grants.") || op.has_prefix("grants.") || op.has_prefix("helper/files.") {
       match op {
         "helper/grants.isGrant" => Json::boolean(@screens.is_grant(s(0)))
-        "helper/files.askWords" => p54_of_jv(@screens.files_words(self.io, s(0)))
+        "helper/files.askWords" => of_jv(@screens.files_words(self.io, s(0)))
         "grants.request" =>
           match self.grants {
             Some(g) => {
-              let (state, asked) = g.request(s(0), p54_jv(p54_arg(a, 1).unwrap_or(Json::null())), again=p54_bool(p54_arg(a, 2)))
-              { "state": Json::string(state), "asked": Json::boolean(asked) }
+              let (window, screen) = g.request(s(0), to_jv(call_arg(a, 1).unwrap_or(Json::null())), again=opt_true(call_arg(a, 2)))
+              { "window": Json::string(window), "screen": Json::boolean(screen) }
             }
-            None => Json::null()
+            None => raise @screens.GrantRefused("station.permissions.noHelper")
           }
         "grants.status" =>
           match self.grants {
-            Some(g) => g.status().map(p54_of_jv).unwrap_or(Json::null())
+            Some(g) => g.status().map(of_jv).unwrap_or(Json::null())
             None => Json::null()
           }
         "grants.view" =>
           match self.grants {
-            Some(g) => g.view().map(p54_of_jv).unwrap_or(Json::null())
+            Some(g) => g.view().map(of_jv).unwrap_or(Json::null())
             None => Json::null()
           }
         // (the permissions tool's: Helper asked again, `force` where the person changed one in System Settings)
         "grants.refresh" =>
           match self.grants {
             Some(g) => {
-              g.refresh(force=p54_bool(p54_arg(a, 0)))
+              g.refresh(force=opt_true(call_arg(a, 0)))
               Json::null()
             }
             None => Json::null()
@@ -619,26 +690,26 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
 /// by name as P54Screens answers, the rest of what they ask (who an agent is, the station's pages) through the bus.
 async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
   let (zh, en) = catalogs_json()
-  let words = @api_routes.Words::new(p54_api_jv(zh), p54_api_jv(en))
+  let words = @api_routes.Words::new(to_jv(zh), to_jv(en))
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
-    let a = Json::array(args.map(p54_of_api))
+    let a = Json::array(args.map(of_jv))
     match op {
-      "agentName" => p54_api_jv(Json::string("agent"))
+      "agentName" => to_jv(Json::string("agent"))
       "base" =>
-        match ((bus.cloud_state.val)(), p54_home(bus), p54_station_id(bus)) {
+        match ((bus.cloud_state.val)(), bus_home(bus), bus_station_id_opt(bus)) {
           (Some(st), Some(w), Some(id)) =>
-            match p54_text(Some(st), "origin") {
-              Some(o) => p54_api_jv(Json::string("\{o}/w/\{w}/s/\{id}"))
+            match jtext(st, "origin") {
+              Some(o) => to_jv(Json::string("\{o}/w/\{w}/s/\{id}"))
               None => @api_routes.JV::Null
             }
           _ => @api_routes.JV::Null
         }
       _ =>
         match (try { Ok(s.ask(op, a)) } catch { e => Err(e) }) {
-          Ok(Some(v)) => p54_api_jv(v)
-          Ok(None) => p54_api_jv((bus.ui_ask.val)(op, a))
+          Ok(Some(v)) => to_jv(v)
+          Ok(None) => to_jv((bus.ui_ask.val)(op, a))
           // (a refusal as the tools take it: mcp_tools' `thrown_as`)
-          Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, p54_api_jv(said))
+          Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, to_jv(said))
           Err(e) => raise e
         }
     }
@@ -646,14 +717,14 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
   let ctx = @mcp_tools.Ctx::new(backend, words, {
     runtime_kinds: [],
     station_lang: (bus.lang.val)(),
-    os: p54_os(),
+    os: platform_os(),
     arch: arch(),
   })
   let computer = @mcp_tools.Computer::new(ctx)
   let tools = @mcp_tools.screen_tools(ctx) + @mcp_tools.computer_tools(computer)
   bus.parts.tools(
     tools.map(t => {
-      let declared = p54_of_api(@mcp_tools.declared(t))
+      let declared = of_jv(@mcp_tools.declared(t))
       ({
         name: t.name,
         declared,
@@ -661,8 +732,8 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
           let session = p54_session(context)
           match t.content {
             Some(content) => {
-              let reply = content(session, p54_api_jv(args)) catch {
-                e => return p54_tool_answer(p54_message(e), error=true)
+              let reply = content(session, to_jv(args)) catch {
+                e => return tool_answer(p54_message(e), error=true)
               }
               let parts = reply.content.map(c => match c {
                 Text(text) => ({ "type": "text", "text": Json::string(text) } : Json)
@@ -675,16 +746,16 @@ async fn p54_screen_tools(bus : LiveBus, s : P54Screens) -> Unit {
               }
             }
             None =>
-              match (try { Ok((t.run)(session, p54_api_jv(args), p54_api_jv(context))) } catch { e => Err(e) }) {
-                Ok(text) => p54_tool_answer(text)
-                Err(e) => p54_tool_answer(p54_message(e), error=true)
+              match (try { Ok((t.run)(session, to_jv(args), to_jv(context))) } catch { e => Err(e) }) {
+                Ok(text) => tool_answer(text)
+                Err(e) => tool_answer(p54_message(e), error=true)
               }
           }
         },
       } : PartTool)
     }),
   )
-  bus.parts.session_ended(session => ignore(bus.host.rt.fork(name="computer", async fn() {
+  bus.parts.session_ended(session => ignore(bus.host.rt.fork_quiet(name="computer", async fn() {
     computer.close_session(session) catch {
       _ => ()
     }

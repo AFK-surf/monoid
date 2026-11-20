@@ -52,11 +52,9 @@ pub fn files_to_look_up(@jsjson.JValue?) -> Array[String]
 
 pub fn form_encoded(Array[(String, String)]) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn header(Array[(String, String)], String) -> String?
 
-pub fn host_clock(@host.Host) -> Clock
+pub fn host_clock(@host.Host, now? : () -> Double) -> Clock
 
 pub fn host_log() -> (String, String, String, @jsjson.JValue) -> Unit
 
@@ -201,10 +199,12 @@ pub impl Show for Thrown
 pub(all) suberror Unanswered {
   Unanswered(String)
 }
+pub impl Show for Unanswered
 
 pub(all) suberror WsRefused {
   WsRefused(Int32, String)
 }
+pub impl Show for WsRefused
 
 // Types and methods
 pub(all) struct BotIdentity {
@@ -487,10 +487,16 @@ pub fn Wall::now(Self) -> Double
 pub fn Wall::told(Self, Double) -> Unit
 
 pub struct WsConn {
-  next : async () -> String?
+  next : async () -> WsFrame?
   send : (String) -> Unit
   close : () -> Unit
   ping : (() -> Unit)?
+}
+
+pub(all) enum WsFrame {
+  Text(String)
+  Ping
+  Pong
 }
 
 pub struct WsIO {

@@ -3,7 +3,7 @@
 // was decoded (a frame later; the whole way back where the decode came late). From the close till the viewer is gone,
 // each frame as a device's host draws it shows the player or draws a picture where the film is: the grabbed frame's
 // picture decoded at once, a frame late, long after the old way back would have landed, or never (its still flown
-// then); 小屏 by touch, 大屏 by the mouse, closed by back, by a drag down let go, zoomed, and while it plays.
+// then); 小屏 by touch and by the mouse, closed by back, by a drag down let go, zoomed, and while it plays.
 
 ///|
 /// How the host answers the decode of a frame grabbed as a film closes: its name, and what it does with it at a frame's
@@ -297,11 +297,12 @@ test "a film closed shows its player or a picture where it is in every frame til
 }
 
 ///|
-test "a film closed shows its player or a picture where it is in every frame till it is gone: 大屏, a mouse; the old page's and one made as nodes" {
+test "a film closed shows its player or a picture where it is in every frame till it is gone: a window 小屏 wide, a mouse; the old page's and one made as nodes" {
+  // (on 中屏 and 大屏 a film opens in a tab beside the chat: view_beside_wbtest.mbt)
   for nodes in [false, true] {
     for how in ["back", "zoomed", "playing"] {
       for decode in fc_decodes() {
-        fc_closed(0, 1280.0, how, decode, nodes~)
+        fc_closed(0, 560.0, how, decode, nodes~)
       }
     }
   }

@@ -3,9 +3,11 @@
 // kept until the app takes it. `op` signed in through 1Password's desktop app asks the person itself (Touch ID, in its
 // own window). Found where Homebrew and 1Password's installer put it, else on PATH. None on iOS.
 #import <Foundation/Foundation.h>
-#if !TARGET_OS_IPHONE
-#import <AppKit/AppKit.h>
 #import <AuthenticationServices/AuthenticationServices.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#else
+#import <AppKit/AppKit.h>
 #include <dlfcn.h>
 #endif
 #import "apple.h"
@@ -18,12 +20,6 @@ int32_t mb_host_passwords_able(void) { return 0; }
 int32_t mb_host_passwords_run(moonbit_string_t args) { (void)args; return 0; }
 moonbit_string_t mb_host_passwords_out(int32_t id) { (void)id; return mb_string_from_ns(@""); }
 void mb_host_passwords_end(int32_t id) { (void)id; }
-
-// This device's passkeys (host_native.mbt `wa_*`): none on iOS yet.
-int32_t mb_host_passkeys_able(void) { return 0; }
-int32_t mb_host_passkeys_get(moonbit_string_t ask) { (void)ask; return 0; }
-moonbit_string_t mb_host_passkeys_out(int32_t id) { (void)id; return mb_string_from_ns(@""); }
-void mb_host_passkeys_end(int32_t id) { (void)id; }
 
 #else
 
@@ -144,20 +140,47 @@ void mb_host_passwords_end(int32_t id) {
   if (t.running) [t terminate];
 }
 
+#endif
 
-// This device's passkeys for the macOS host (host_native.mbt `wa_*`, hostapi/passkeys.mbt): AuthenticationServices as a
-// browser asks it (ASAuthorizationWebBrowserPublicKeyCredentialManager, a platform passkey's or a security key's
-// assertion for any relying party with the client data given), which macOS lets only an app entitled
-// com.apple.developer.web-browser.public-key-credential do: without it there are none here. macOS asks the person
-// itself (Touch ID, a phone, a key, a provider such as 1Password) in its own sheet over the app's window, and makes
-// the client data JSON itself of the challenge and the origin given: it comes back with the signature. The framework
-// is found as the app runs (an app of mbui's own may link none of it).
+// This device's passkeys for the macOS and iOS hosts (host_native.mbt `wa_*`, hostapi/passkeys.mbt):
+// AuthenticationServices as a browser asks it (ASAuthorizationWebBrowserPublicKeyCredentialManager, a platform
+// passkey's or a security key's assertion for any relying party with the client data given), which Apple lets only an
+// app entitled com.apple.developer.web-browser.public-key-credential do: without it there are none here. The OS asks
+// the person itself (Touch ID / Face ID, a phone, a key, a provider such as 1Password) in its own sheet over the app's
+// window, and makes the client data JSON itself of the challenge and the origin given: it comes back with the
+// signature. The framework is found as the app runs (an app of mbui's own may link none of it).
 
 /// Whether this app may ask for any site's passkeys (its entitlement), once.
 static BOOL passkeys_entitled(void) {
   static int known = -1;
   if (known >= 0) return known;
   known = 0;
+#if TARGET_OS_IPHONE
+  if ([[[NSBundle mainBundle] objectForInfoDictionaryKey:@"MBUIWebBrowserPasskeys"] isEqual:@YES]) {
+    known = 1;
+  } else {
+    NSString *prov = [[NSBundle mainBundle] pathForResource:@"embedded" ofType:@"mobileprovision"];
+    NSData *raw = prov ? [NSData dataWithContentsOfFile:prov] : nil;
+    if (raw) {
+      NSData *startTag = [@"<?xml" dataUsingEncoding:NSUTF8StringEncoding];
+      NSData *endTag = [@"</plist>" dataUsingEncoding:NSUTF8StringEncoding];
+      NSRange r0 = [raw rangeOfData:startTag options:0 range:NSMakeRange(0, raw.length)];
+      if (r0.location != NSNotFound) {
+        NSRange r1 = [raw rangeOfData:endTag options:0 range:NSMakeRange(r0.location, raw.length - r0.location)];
+        if (r1.location != NSNotFound) {
+          NSData *xml = [raw subdataWithRange:NSMakeRange(r0.location, NSMaxRange(r1) - r0.location)];
+          id plist = [NSPropertyListSerialization propertyListWithData:xml options:0 format:NULL error:NULL];
+          if ([plist isKindOfClass:NSDictionary.class]) {
+            id ent = ((NSDictionary *)plist)[@"Entitlements"];
+            if ([ent isKindOfClass:NSDictionary.class] && [((NSDictionary *)ent)[@"com.apple.developer.web-browser.public-key-credential"] isEqual:@YES]) {
+              known = 1;
+            }
+          }
+        }
+      }
+    }
+  }
+#else
   void *sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY);
   void *(*create)(CFAllocatorRef) = sec ? dlsym(sec, "SecTaskCreateFromSelf") : NULL;
   CFTypeRef (*value)(void *, CFStringRef, CFErrorRef *) = sec ? dlsym(sec, "SecTaskCopyValueForEntitlement") : NULL;
@@ -170,8 +193,11 @@ static BOOL passkeys_entitled(void) {
     CFRelease(v);
   }
   CFRelease(task);
-  if (known && ![[NSBundle bundleWithPath:@"/System/Library/Frameworks/AuthenticationServices.framework"] load]) known = 0;
-  if (known && !NSClassFromString(@"ASAuthorizationWebBrowserPublicKeyCredentialManager")) known = 0;
+#endif
+  if (known && !NSClassFromString(@"ASAuthorizationWebBrowserPublicKeyCredentialManager")) {
+    [[NSBundle bundleWithPath:@"/System/Library/Frameworks/AuthenticationServices.framework"] load];
+    if (!NSClassFromString(@"ASAuthorizationWebBrowserPublicKeyCredentialManager")) known = 0;
+  }
   return known;
 }
 
@@ -211,7 +237,7 @@ static void ask_done(int id, NSString *done) {
 }
 
 /// One ask's delegate and window: the controller holds it weakly, so the ask's own entry keeps it.
-API_AVAILABLE(macos(14.0))
+API_AVAILABLE(macos(14.0), ios(17.4))
 @interface MBPasskeyAsk : NSObject <ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding>
 @property int ident;
 @property(strong) id controller;
@@ -238,19 +264,29 @@ API_AVAILABLE(macos(14.0))
 }
 
 - (ASPresentationAnchor)presentationAnchorForAuthorizationController:(ASAuthorizationController *)controller {
+#if TARGET_OS_IPHONE
+  for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+    if (![scene isKindOfClass:UIWindowScene.class]) continue;
+    UIWindowScene *ws = (UIWindowScene *)scene;
+    for (UIWindow *w in ws.windows) if (w.isKeyWindow) return w;
+    if (ws.windows.firstObject) return ws.windows.firstObject;
+  }
+  return nil;
+#else
   return NSApp.keyWindow ?: NSApp.mainWindow ?: NSApp.windows.firstObject;
+#endif
 }
 @end
 
 int32_t mb_host_passkeys_able(void) {
-  if (@available(macOS 14.0, *)) return passkeys_entitled() ? 1 : 0;
+  if (@available(macOS 14.0, iOS 17.4, *)) return passkeys_entitled() ? 1 : 0;
   return 0;
 }
 
-/// `ask`: the relying party, the client data (JSON: its challenge and origin are what macOS makes its own of), the
+/// `ask`: the relying party, the client data (JSON: its challenge and origin are what the OS makes its own of), the
 /// verification and the credential ids (hex, joined by commas), each ended by a unit separator, as
 /// hostapi/passkeys.mbt gives them.
-API_AVAILABLE(macos(14.0)) static int32_t passkeys_get(NSString *ask) {
+API_AVAILABLE(macos(14.0), ios(17.4)) static int32_t passkeys_get(NSString *ask) {
   if (!passkeys_entitled()) return 0;
   NSArray<NSString *> *parts = [ask componentsSeparatedByString:@"\x1f"];
   if (parts.count < 4) return 0;
@@ -313,12 +349,12 @@ API_AVAILABLE(macos(14.0)) static int32_t passkeys_get(NSString *ask) {
 }
 
 int32_t mb_host_passkeys_get(moonbit_string_t ask) {
-  if (@available(macOS 14.0, *)) return passkeys_get(mb_ns_from_string(ask));
+  if (@available(macOS 14.0, iOS 17.4, *)) return passkeys_get(mb_ns_from_string(ask));
   return 0;
 }
 
 /// How it ended, once it has: its code, the credential, the authenticator data, the signature, the user handle, why,
-/// and the client data macOS signed (hex), each ended by a unit separator; "" before.
+/// and the client data the OS signed (hex), each ended by a unit separator; "" before.
 moonbit_string_t mb_host_passkeys_out(int32_t id) {
   NSString *done = nil;
   @synchronized(asks) {
@@ -332,8 +368,6 @@ void mb_host_passkeys_end(int32_t id) {
     [asks removeObjectForKey:@(id)];
   }
 }
-
-#endif
 
 // The system's autofill (host_native.mbt `af_*`): none on macOS or iOS (android_host.c).
 int32_t mb_host_autofill_able(void) { return 0; }

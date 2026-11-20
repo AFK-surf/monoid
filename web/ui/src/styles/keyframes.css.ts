@@ -5,11 +5,11 @@ export const fadeKeyframes = keyframes({ "from": { opacity: "0" } });
 export const toastInKeyframes = keyframes({ "from": { opacity: "0", transform: "translateY(8px)" } });
 export const appearKeyframes = keyframes({ "from": { opacity: "0" }, "to": { opacity: "1" } });
 export const spinKeyframes = keyframes({ "to": { transform: "rotate(360deg)" } });
-/** A quote's passage marked where it was said (global.css.ts [data-passage-marks]): in over 160ms, held until 1400ms,
- *  faded out until 2400ms. */
+/** A quote's passage marked where it was said (global.css.ts [data-passage-marks]): in over 160ms, held until 900ms,
+ *  faded out until 1700ms. */
 export const passageFlashKeyframes = keyframes({
   "0%": { opacity: "0", animationTimingFunction: "cubic-bezier(.2, .7, .2, 1)" },
-  "6.7%, 58%": { opacity: "1", animationTimingFunction: "cubic-bezier(.4, 0, 1, 1)" },
+  "9.4%, 52.9%": { opacity: "1", animationTimingFunction: "cubic-bezier(.4, 0, 1, 1)" },
   "100%": { opacity: "0" },
 });
 export const passageFlashHeldKeyframes = keyframes({ "0%, 100%": { opacity: "1" } });

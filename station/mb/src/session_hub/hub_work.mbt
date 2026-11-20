@@ -4,42 +4,9 @@
 // connect's session made (`createSession`).
 
 ///|
-let hex_digits : String = "0123456789abcdef"
-
-///|
-fn hex_bytes(hex : String) -> Array[Int] {
-  let out = []
-  let mut i = 0
-  while i + 1 < hex.length() {
-    let d = (c : Int) => if c >= 'a'.to_int() { c - 'a'.to_int() + 10 } else { c - '0'.to_int() }
-    out.push(d(u(hex, i)) * 16 + d(u(hex, i + 1)))
-    i += 2
-  }
-  out
-}
-
-///|
 /// Bytes as base64url, without padding (`toString("base64url")`).
 pub fn base64url(bytes : Array[Int]) -> String {
-  let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-  let b = StringBuilder()
-  let mut i = 0
-  while i < bytes.length() {
-    let b0 = bytes[i]
-    let b1 = if i + 1 < bytes.length() { bytes[i + 1] } else { 0 }
-    let b2 = if i + 2 < bytes.length() { bytes[i + 2] } else { 0 }
-    let n = (b0 << 16) | (b1 << 8) | b2
-    b.write_char(alphabet.get_char((n >> 18) & 63).unwrap())
-    b.write_char(alphabet.get_char((n >> 12) & 63).unwrap())
-    if i + 1 < bytes.length() {
-      b.write_char(alphabet.get_char((n >> 6) & 63).unwrap())
-    }
-    if i + 2 < bytes.length() {
-      b.write_char(alphabet.get_char(n & 63).unwrap())
-    }
-    i += 3
-  }
-  b.to_string()
+  @codec.base64url_encode(Bytes::makei(bytes.length(), i => bytes[i].to_byte()))
 }
 
 ///|
@@ -57,7 +24,7 @@ pub fn Hub::new_chat_key(self : Hub) -> String {
 ///|
 /// `newToken`: the bearer token a session presents to the MCP endpoint.
 pub fn Hub::new_token(self : Hub) -> String {
-  base64url(hex_bytes((self.world.random_hex)(24)))
+  @codec.base64url_encode(@codec.hex_decode((self.world.random_hex)(24)).unwrap_or(b""))
 }
 
 ///|
@@ -81,7 +48,8 @@ pub fn Hub::next_ts(self : Hub) -> String {
 // ── warm processes ──
 
 ///|
-/// Ends idle claude and dsh processes beyond the warm limit, oldest first, once they have idled past warmMs.
+/// Ends idle claude and dsh processes beyond the warm limit (immediately, oldest first), and any remaining idle
+/// processes once they have idled past warmMs (when warmMs > 0).
 fn Hub::evict_idle(self : Hub) -> Unit {
   let config = self.config()
   let now = self.now()
@@ -105,28 +73,34 @@ fn Hub::evict_idle(self : Hub) -> Unit {
       0
     }
   })
-  let mut excess = sorted.length() - num_of(config, "maxWarmClaude").unwrap_or(4.0).to_int()
+  let raw_cap = num_of(config, "maxWarmClaude").unwrap_or(4.0).to_int()
+  let cap = if raw_cap > 0 { raw_cap } else { 0 }
+  let mut excess = sorted.length() - cap
   let warm = num_of(config, "warmMs").unwrap_or(1_800_000.0)
   for x in sorted {
-    if excess <= 0 || x.1 < warm {
+    if excess > 0 {
+      self.act(x.0, "evict")
+      excess -= 1
+    } else if warm > 0.0 && x.1 >= warm {
+      self.act(x.0, "evict")
+    } else {
       break
     }
-    self.act(x.0, "evict")
-    excess -= 1
   }
 }
 
 ///|
 /// A process went idle: look again when it has idled past warmMs.
 pub fn Hub::idle_now(self : Hub, key : String) -> Unit {
-  match self.get_session(key) {
+  // (finished archive: what it left in the background ends with it, then its archive is cleaned, as `archive` asks
+  // them: the actor has no call of the two at once. Its clean asked last, as hub.ts asks it once the evict is answered)
+  let archived = match self.get_session(key) {
     Some(row) if field(row, "archivedAt") is Some(Number(_)) =>
-      // (finished archive: what it left in the background ends with it)
-      match (try { Some(self.actor(row)) } catch { _ => None }) {
-        Some(actor) => self.act(actor, "evictThenCleanArchive")
-        None => ()
-      }
-    _ => ()
+      try { Some(self.actor(row)) } catch { _ => None }
+    _ => None
+  }
+  if archived is Some(actor) {
+    self.act(actor, "evict", args=[Json::boolean(true)])
   }
   match self.deadlines.get(key) {
     Some(id) => self.cancel(id)
@@ -145,6 +119,9 @@ pub fn Hub::idle_now(self : Hub, key : String) -> Unit {
   })
   self.deadlines[key] = id
   self.evict_idle()
+  if archived is Some(actor) {
+    self.act(actor, "cleanArchive")
+  }
 }
 
 ///|
@@ -402,24 +379,84 @@ fn Hub::stop_timers(self : Hub) -> Unit {
 
 ///|
 /// Hands the sessions to the next station: turns held, every queue run out, each actor's snapshot written to
-/// <data>/run/handover.json, and the drivers let go of their processes.
-pub async fn Hub::hand_over(self : Hub, limit_ms? : Double = 30_000.0) -> Json {
+/// <data>/run/handover.json, and the drivers let go of their processes. With `partial=true`, sessions that fail to
+/// settle in time are skipped (closed without snapshotting or disposing their runners) so every other session's
+/// snapshot is still preserved and handed over.
+pub async fn Hub::hand_over(
+  self : Hub,
+  limit_ms? : Double = 30_000.0,
+  partial? : Bool = false,
+) -> Json {
   self.hold("drain")
   self.holds_runners = false
+  let skipped : Set[String] = Set([])
   let settled = (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
   if str_of(settled, "error") is Some(m) {
-    self.release("drain")
-    raise Refused(m)
+    if !partial {
+      self.release("drain")
+      raise Refused(m)
+    }
+    let names : Array[String] = []
+    for k in items(field(settled, "unsettled")) {
+      let s = js_string(k)
+      if s != "" {
+        skipped.add(s)
+        names.push(s)
+      }
+    }
+    let who = if names.length() > 0 { " (" + names.join(", ") + ")" } else { "" }
+    (self.world.tell)("log", {
+      "warn": Json::string("some sessions did not settle in time\{who}; handing over the rest"),
+    })
   }
-  let frozen = (self.world.ask)("drivers.freeze", { "limitMs": num(limit_ms) })
+  let freeze_ms = if partial && limit_ms > 5_000.0 { 5_000.0 } else { limit_ms }
+  let frozen = (self.world.ask)("drivers.freeze", { "limitMs": num(freeze_ms) })
+  // What the drivers took in as they froze settled too (hub.ts: `settled` again after `freeze`), so the snapshots say
+  // where each stands then.
   if str_of(frozen, "error") is Some(m) {
-    (self.world.tell)("drivers", { "call": "thaw", "args": [] })
-    self.release("drain")
-    raise Refused(m)
+    if !partial {
+      (self.world.tell)("drivers", { "call": "thaw", "args": [] })
+      self.release("drain")
+      raise Refused(m)
+    }
+    (self.world.tell)("log", {
+      "warn": Json::string("drivers did not freeze in time (\{m}); continuing handover"),
+    })
+  } else {
+    let settled2 = if partial {
+      let settle2_ms = if limit_ms > 3_000.0 { 3_000.0 } else { limit_ms }
+      let skip_json = skipped.iter().map(k => Json::string(k)).collect()
+      (self.world.ask)("actors.settled", { "limitMs": num(settle2_ms), "skip": Json::array(skip_json) })
+    } else {
+      (self.world.ask)("actors.settled", { "limitMs": num(limit_ms) })
+    }
+    if str_of(settled2, "error") is Some(m) {
+      if !partial {
+        (self.world.tell)("drivers", { "call": "thaw", "args": [] })
+        self.release("drain")
+        raise Refused(m)
+      }
+      let names : Array[String] = []
+      for k in items(field(settled2, "unsettled")) {
+        let s = js_string(k)
+        if s != "" {
+          skipped.add(s)
+          names.push(s)
+        }
+      }
+      let who = if names.length() > 0 { " (" + names.join(", ") + ")" } else { "" }
+      (self.world.tell)("log", {
+        "warn": Json::string("some sessions did not settle after freeze\{who}; handing over the rest"),
+      })
+    }
   }
   self.stopping = true
   let sessions = []
   for key in self.actor_keys() {
+    if skipped.contains(key) {
+      self.act(key, "close")
+      continue
+    }
     let holds = (self.world.ask)("actor", { "key": Json::string(key), "call": "holdsState", "args": [] })
     if (self.world.process_state)(key) != "cold" || holds == Json::boolean(true) {
       sessions.push(self.ask_actor(key, "snapshot"))
@@ -443,6 +480,7 @@ pub async fn Hub::take_up(self : Hub) -> Unit {
   let file = join_path([str_of(self.config(), "dataDir").unwrap_or(""), "run", "handover.json"])
   let mut handed : Json = { "sessions": [] }
   let text = (self.world.ask)("fs.read", { "path": Json::string(file) })
+  self.non_update_restart = text is Null
   match text {
     Null => ()
     _ => {

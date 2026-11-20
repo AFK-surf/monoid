@@ -35,8 +35,8 @@ pub fn watch_agy_download(w : World, o : AgyWatch) -> () -> Unit {
             let manifest = m.json(w)
             match (get(Some(manifest), "version"), get(Some(manifest), "url")) {
               (Some(Str(v)), Some(Str(u))) => {
-                let version = @jsjson.text(v)
-                let url = @jsjson.text(u)
+                let version = @jsjson.sanitize_str(v)
+                let url = @jsjson.sanitize_str(u)
                 let file = (o.staging)(url)
                 let head = w.fetch("fetch", url, meth="HEAD")
                 let total = js_number(head.header("content-length").unwrap_or(""))

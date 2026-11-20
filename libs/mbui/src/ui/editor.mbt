@@ -920,14 +920,16 @@ pub fn Ctx::editor(
       s
     }
   }
+  // (let go with the old view it is built in, if it is: old_presses_gone)
+  island_said_id(3, id)
   // (what the app wrote in it from outside the hand: a part kept is built again to show it)
   st.written.get() |> ignore
   st.limit = paste_limit
   st.enter_sends = enter_sends.unwrap_or(enter_sends_by(max_lines, ime_action))
   st.command_sends = command_sends
-  st.on_submit = on_submit
-  st.on_change = on_change
-  st.on_edit = on_edit
+  st.on_submit = on_submit.map(fn(f) { self.in_said_scope_1(f) })
+  st.on_change = on_change.map(fn(f) { self.in_said_scope_1(f) })
+  st.on_edit = on_edit.map(fn(f) { self.in_said_scope_1(f) })
   st.leaves = leaves
   st.ime_action = ime_action
   st.secret = secret
@@ -1014,6 +1016,8 @@ pub fn Ctx::editor(
   }
   st.color = color
   st.ph_color = placeholder_color
+  // (how far its placeholder shows by its paint: said again after it each build that has one, Ctx::placeholder_by)
+  st.ph_alpha_by = None
   st.caret_color = caret_color
   st.sel_color = (caret_color & 0xFFFFFF00L) | 0x40L
   let focused = self.has_focus(id)
@@ -1471,7 +1475,8 @@ fn Ctx::paint_float_caret(
   if f.let_go < 0.0 {
     let (ax, ay) = (fx - lx, fy - ly)
     if ax * ax + ay * ay >= float_caret_apart * float_caret_apart {
-      let grey = if (st.ph_color & 0xFFL) != 0L { st.ph_color } else { (st.color & 0xFFFFFF00L) | 0x66L }
+      let ph = st.ph_shown()
+      let grey = if (ph & 0xFFL) != 0L { ph } else { (st.color & 0xFFFFFF00L) | 0x66L }
       self.emit_rect(gx, gy, gw, gh, gw / 2.0, grey, 0.0, 0L, alpha)
     }
   }
@@ -1604,9 +1609,9 @@ fn Ctx::paint_field(
   let bar = bar()
   let focused = self.has_focus(fb.id)
   let ml = st.marked.length()
-  // selection
+  // selection (kept visible while a menu or modal parks the field's focus)
   let (a, b) = st.sel()
-  if focused && a != b && ml == 0 {
+  if (focused || self.focus_parked(fb.id)) && a != b && ml == 0 {
     let (x0, l0) = st.place_of(tl, a)
     let (x1, l1) = st.place_of(tl, b)
     for l in l0..=l1 {
@@ -1627,8 +1632,9 @@ fn Ctx::paint_field(
   }
   if st.text.length() == 0 && ml == 0 && fb.hint.length() > 0 {
     // (a placeholder in no ink at all, hidden for now, is not drawn: nothing there to be seen or read)
-    if (st.ph_color & 0xFFL) != 0L {
-      self.emit_text(fb.hint_shown(), st.ox, st.oy, st.ph_color, alpha)
+    let ph = st.ph_shown()
+    if (ph & 0xFFL) != 0L {
+      self.emit_text(fb.hint_shown(), st.ox, st.oy, ph, alpha)
     }
   } else {
     let spans = if st.secret { [] } else { st.look_shown().1 }
@@ -1825,6 +1831,29 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
 }
 
 ///|
+/// What it was told to do as it is edited, sent or drawn (Ctx::editor's on_submit, on_change, on_edit, look; a tree
+/// field's placeholder fade) let go: the editor that said them gone, they hold what it was built in (its page, the
+/// draft it writes into, what it read), and the Field that keeps this, held by what keeps the draft, held them: a ring
+/// native's counting never frees once the draft is let go. Said again by the next editor built over it.
+fn EditorState::clear_handlers(self : EditorState) -> Unit {
+  self.on_submit = None
+  self.on_change = None
+  self.on_edit = None
+  self.look = None
+  self.looked = None
+  self.ph_alpha_by = None
+}
+
+///|
+/// An editor of id `id` let go of: what it was told let go, unless its state is another's by now (a field of the
+/// window's tree's, or an editor of another id built over the same Field).
+fn editor_gone(st : EditorState, id : Int) -> Unit {
+  if st.built_id == id && st.tree_node is None {
+    st.clear_handlers()
+  }
+}
+
+///|
 /// An editor's state as it starts: `text` in it, the caret at its end.
 fn EditorState::fresh(text : String, now : Double) -> EditorState {
   {
@@ -1874,6 +1903,7 @@ fn EditorState::fresh(text : String, now : Double) -> EditorState {
     ime_action: 0,
     color: 0L,
     ph_color: 0L,
+    ph_alpha_by: None,
     caret_color: 0L,
     sel_color: 0L,
     secret: false,
@@ -2056,6 +2086,30 @@ pub fn Field::colors(self : Field, placeholder~ : Int64, caret~ : Int64) -> Unit
   self.st.ph_color = placeholder
   self.st.caret_color = caret
   self.st.sel_color = (caret & 0xFFFFFF00L) | 0x40L
+}
+
+///|
+/// The placeholder of the editor keyed `key` (Ctx::editor, built just before in this scope) shown as far as `alpha`
+/// says (0 → 1, of its `placeholder_color`'s own), worked out as it is painted, not as it is built (as Ctx::look_by): a
+/// fade of what it says while empty. What `alpha` reads (where a motion is, read by the clock) paints the frame again
+/// as it changes, nothing built or laid out (frame_watch.mbt). Said again each build, or it shows as its colour says.
+pub fn Ctx::placeholder_by(self : Ctx, key : String, alpha : () -> Double) -> Unit {
+  match self.editors.get(self.id(key)) {
+    Some(st) => st.ph_alpha_by = Some(alpha)
+    None => ()
+  }
+}
+
+///|
+/// Its placeholder's colour as it is painted now: `ph_color`, as far as Ctx::placeholder_by says (read now).
+fn EditorState::ph_shown(self : EditorState) -> Int64 {
+  match self.ph_alpha_by {
+    Some(f) => {
+      let a = (self.ph_color & 0xFFL).to_double() * dmax(0.0, dmin(1.0, f()))
+      (self.ph_color & 0xFFFFFF00L) | a.round().to_int64()
+    }
+    None => self.ph_color
+  }
 }
 
 ///|
@@ -2387,6 +2441,17 @@ pub fn Ctx::field_edit(self : Ctx, id : Int, what : Int, paste? : String = "") -
       }
       self.focus_on(id)
       self.read_changed("a field edited")
+      match tree_said_ids.get(id) {
+        Some(nid) =>
+          match tree_fields.get(nid) {
+            Some(tf) => {
+              tree_field_told(tf)
+              tree_field_redraw()
+            }
+            None => ()
+          }
+        None => ()
+      }
     }
     None => ()
   }

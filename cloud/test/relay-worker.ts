@@ -2,6 +2,7 @@
 // process (an echo, or TEST_RELAY, counting like iroh-relay's metrics) and ways to look into its budget.
 import { DurableObject } from "cloudflare:workers";
 import worker, { RelayBudget as ProductionRelayBudget } from "../src/relay-worker";
+import type { BudgetStanding, Quota } from "../src/relay";
 import { clock, nowSeconds } from "../src/auth";
 import { LIMITS } from "../src/limits";
 import { TEST_CONNECTIONS } from "./relay-limit";
@@ -20,10 +21,28 @@ export class RelayBudget extends ProductionRelayBudget {
     this.ctx.storage.kv.put("quota", q);
   }
   /** A day's budget used up as counted before COUNTING (relay.ts), kept the way it was then. */
-  exhaustedBefore() {
+  /** With `counting`, as that counting kept it, having seen the relay's process count 30 GiB both ways. */
+  exhaustedBefore(counting?: number) {
     const now = nowSeconds();
     this.quota = undefined;
-    this.ctx.storage.kv.put("quota", { minute: Math.floor(now / 60), day: Math.floor(now / 86400), at: now, connects: 0, bytes: LIMITS.bytesPerDay, frames: 0 });
+    const seen = counting === undefined ? {} : { counting, seen: { bytes: 30 * 1024 ** 3, frames: 1000, accepts: 1, disconnects: 0 } };
+    this.ctx.storage.kv.put("quota", { minute: Math.floor(now / 60), day: Math.floor(now / 86400), at: now, connects: 0, bytes: LIMITS.bytesPerDay, frames: 0, ...seen });
+  }
+  /** The frames a day the budget held to before 2026-11-19 (limits.ts), with no `standing` yet. */
+  private before: number | null = null;
+  /** As a budget deployed before `standing`, run out at its frames a day then: the API's Worker is deployed first. */
+  exhaustedAsBefore() {
+    this.before = 60_000_000;
+    const q = this.load();
+    q.frames = this.before;
+    this.ctx.storage.kv.put("quota", q);
+  }
+  override standing(): BudgetStanding {
+    if (this.before !== null) throw new TypeError("The RPC receiver does not implement the method \"standing\".");
+    return super.standing();
+  }
+  protected override exhausted(q: Quota): boolean {
+    return this.before === null ? super.exhausted(q) : q.bytes >= LIMITS.bytesPerDay || (q.frames ?? 0) >= this.before;
   }
   /** What the alarm does every minute while connections are open. */
   poll() {
@@ -41,23 +60,29 @@ export class Relay extends DurableObject<{ TEST_RELAY?: Fetcher }> {
   private closings: { n: number; resolve: () => void }[] = [];
   private destroyed = 0;
   private bytes = 0;
+  private recvBytes = 0;
   private failing = 0;
   private accepts = 0;
   private disconnects = 0;
   private sockets = new Set<WebSocket>();
+  /** Whether the process runs: a connection starts it, destroy() stops it. */
+  private running = true;
   destroy() {
     this.destroyed++;
+    this.running = false;
     // Like the process going away: every connection drops.
     for (const socket of this.sockets) socket.close(1012, "restarted");
     this.disconnects += this.sockets.size;
     this.sockets.clear();
   }
   async metrics() {
+    // Not started by being asked, as Container.metrics (relay-worker.ts).
+    if (!this.running) return null;
     if (this.failing > 0) {
       this.failing--;
       throw new Error("the relay process did not answer");
     }
-    const text = `relayserver_bytes_sent_total ${this.bytes}\nrelayserver_accepts_total ${this.accepts}\nrelayserver_disconnects_total ${this.disconnects}\n`;
+    const text = `relayserver_bytes_sent_total ${this.bytes}\nrelayserver_bytes_recv_total ${this.recvBytes}\nrelayserver_accepts_total ${this.accepts}\nrelayserver_disconnects_total ${this.disconnects}\n`;
     // Read now, answered only once the test lets it go (slowRead): what it says is what was counted when it was asked.
     if (this.slow > 0) {
       this.slow--;
@@ -81,6 +106,10 @@ export class Relay extends DurableObject<{ TEST_RELAY?: Fetcher }> {
   /** Traffic through it, as the process counts it. */
   carried(bytes: number) {
     this.bytes += bytes;
+  }
+  /** Traffic it received from clients, as the process counts it. */
+  received(bytes: number) {
+    this.recvBytes += bytes;
   }
   /** The next `n` reads of its counters fail, as while the process is too busy to answer. */
   failReads(n = 1) {
@@ -129,6 +158,7 @@ export class Relay extends DurableObject<{ TEST_RELAY?: Fetcher }> {
     if (request.headers.has("authorization") || request.headers.has("cookie") || new URL(request.url).search) {
       return new Response("credential leak", { status: 500 });
     }
+    this.running = true;
     if (this.env.TEST_RELAY) {
       return this.env.TEST_RELAY.fetch(request);
     }

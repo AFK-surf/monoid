@@ -80,6 +80,14 @@ pub(all) suberror ChangeRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for ChangeRefused with output(self, logger) {
+  match self {
+    ChangeRefused(key) => logger.write_string(key)
+  }
+}
+
+///|
 pub struct Elevation {
   priv d : ElevationDeps
   priv mut probed : (Bool, Bool)?
@@ -96,36 +104,7 @@ pub struct Elevation {
 ///|
 /// Paths joined and made normal, as node's posix `join` does.
 pub fn path_join(parts : Array[String]) -> String {
-  let joined = parts.filter(p => p != "").join("/")
-  if joined == "" {
-    return "."
-  }
-  let absolute = joined.has_prefix("/")
-  let out : Array[String] = []
-  for seg in joined.split("/") {
-    let s = seg.to_string()
-    if s == "" || s == "." {
-      continue
-    }
-    if s == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        out.pop() |> ignore
-      } else if !absolute {
-        out.push("..")
-      }
-      continue
-    }
-    out.push(s)
-  }
-  let trailing = joined.has_suffix("/") && out.length() > 0
-  let body = out.join("/") + (if trailing { "/" } else { "" })
-  if absolute {
-    "/" + body
-  } else if body == "" {
-    "."
-  } else {
-    body
-  }
+  @nodepath.join("/", parts)
 }
 
 ///|
@@ -281,6 +260,18 @@ pub fn Elevation::view(self : Elevation, manage : Bool) -> Json {
 }
 
 ///|
+/// windows.ts `defaultWindowsTask` (ops_platform's `default_windows_task`): the station's own task where windows.json
+/// names none, its data directory's product's (`.monoid`: monoid's; any other: still.fail's).
+fn default_windows_task(data : String) -> String {
+  let leaf = data.replace_all(old="\\", new="/").split("/").to_array().rev_iter().find_first(p => p != "")
+  if js_lower(leaf.map(p => p.to_owned()).unwrap_or("")) == ".monoid" {
+    "monoid station"
+  } else {
+    "still.fail station"
+  }
+}
+
+///|
 /// Switched to `on`: asked of Windows, applied elevated, the station restarted as its task then runs it (see above).
 /// Answered as soon as it is asked; the overview says how it goes.
 pub fn Elevation::change(self : Elevation, on : Bool) -> Unit raise {
@@ -303,7 +294,7 @@ pub fn Elevation::change(self : Elevation, on : Bool) -> Unit raise {
     let kept = Some(windows_json_in((self.d.files.read)(path_join([self.d.data, "windows.json"]))))
     let task = match get(kept, "task") {
       Some(String(t)) if t != "" => t
-      _ => "still.fail station"
+      _ => default_windows_task(self.d.data)
     }
     // Copied out of <app>: what runs from there is stopped as the station is.
     let runner = path_join([run, "stillfail-elevation-w.exe"])

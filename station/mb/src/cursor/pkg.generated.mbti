@@ -6,9 +6,9 @@ import {
 }
 
 // Values
-pub fn cursor_call(Array[Int32], @jsjson.JValue?) -> (Array[Int32], @jsjson.JValue)
+pub fn cursor_call(String, @jsjson.JValue?) -> (String, @jsjson.JValue)
 
-pub fn cursor_output(@jsjson.JValue?) -> Array[Int32]
+pub fn cursor_output(@jsjson.JValue?) -> String
 
 pub fn outcome_of(@jsjson.JValue?) -> @jsjson.JValue
 
@@ -16,8 +16,8 @@ pub fn outcome_of(@jsjson.JValue?) -> @jsjson.JValue
 
 // Types and methods
 pub(all) struct Live {
-  open : Array[(Array[Int32], String)]
-  mut said : Array[Int32]?
+  open : Array[(String, String)]
+  mut said : String?
   mut n : Int32
   mut phase : String?
 }
@@ -29,7 +29,7 @@ pub fn Live::prompted(Self) -> Array[@jsjson.JValue]
 pub fn Live::state(Self) -> @jsjson.JValue
 
 pub(all) struct Replay {
-  mut session : Array[Int32]?
+  mut session : String?
   turn : Turn
   live : Live
 }
@@ -44,7 +44,7 @@ pub(all) struct Said {
 pub(all) struct Session {
   turn : Turn
   live : Live
-  calls : Array[Array[Int32]]
+  calls : Array[String]
 }
 pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
 pub fn Session::line(Self, @jsjson.JValue) -> Said

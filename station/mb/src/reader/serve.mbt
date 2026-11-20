@@ -63,7 +63,7 @@ const BODY_MOST : Int = 1048576
 
 ///|
 pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) -> Unit {
-  let (said, _) = host.shell("unix.listen", { "path": Json::string(socket) }) catch {
+  let listening = host.unix_listen(socket) catch {
     @wire.ShellError(m) => {
       @host.note("serve: not listening at \{socket}: \{m}")
       @host.exit(1)
@@ -71,7 +71,6 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
     }
     e => raise e
   }
-  guard said is { "id": listening, .. } else { fail("the shell gave no listening socket") }
   let s : Serving = {
     host,
     reader,
@@ -88,24 +87,25 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
   }
   host.say(({ "listening": Json::string(socket) } : Json).stringify())
   ignore(
-    host.rt.fork(name="serve told", () => {
+    host.rt.fork_daemon("serve told", on_error=e => @host.note("serve told failed: \{e}"), () => {
       while host.line() is Some(line) {
         s.told(line)
       }
       @host.exit(0)
     }),
   )
-  while true {
-    let accepted = try { Ok(host.shell("tcp.accept", { "id": listening })) } catch { e => Err(e) }
-    guard accepted is Ok(({ "id": id, .. }, _)) else {
-      if accepted is Err(e) {
-        @host.note("serve: accept failed: \{e}")
-        @effect.sleep(100)
+  // (a failed accept tried again after 100 ms, one that says the listening socket is gone ending it)
+  host
+  .listener_of(listening.id)
+  .serve(
+    host.rt.root(),
+    async fn(accepted) {
+      s.stream(accepted.id) catch {
+        e => @host.note("serve: a stream failed: \{e}")
       }
-      continue
-    }
-    ignore(host.rt.fork(name="serve stream", () => s.stream(id)))
-  }
+    },
+    on_error=e => @host.note("serve: accept failed: \{e}"),
+  )
 }
 
 ///|
@@ -196,9 +196,8 @@ async fn Taken::need(self : Taken, n : Int) -> Bool {
     if self.ended {
       return false
     }
-    let read = try { Ok(self.host.shell("tcp.read", { "id": self.id })) } catch { e => Err(e) }
-    match read {
-      Ok((said, Some(bytes))) if !(said is { "end": true, .. }) => self.have = self.have + bytes
+    match (try { Ok(self.host.tcp_read(self.id)) } catch { e => Err(e) }) {
+      Ok(Some(bytes)) => self.have = self.have + bytes
       _ => self.ended = true
     }
   }
@@ -236,10 +235,13 @@ fn be32(n : Int) -> Bytes {
 ///|
 /// One stream: its request read, answered, written back.
 async fn Serving::stream(self : Serving, id : Json) -> Unit {
-  self.answer_stream(id)
-  ignore(self.host.shell("tcp.close", { "id": id })) catch {
-    _ => ()
+  self.answer_stream(id) catch {
+    e => {
+      self.host.tcp_close(id)
+      raise e
+    }
   }
+  self.host.tcp_close(id)
 }
 
 ///|
@@ -307,7 +309,7 @@ async fn Serving::answer_stream(self : Serving, id : Json) -> Unit {
     at += n
   }
   out.write_bytes(be32(PIPE_END))
-  ignore(self.host.shell("tcp.write", { "id": id }, bytes=out.to_bytes())) catch {
+  self.host.tcp_write(id, out.to_bytes()) catch {
     _ => ()
   }
 }
@@ -461,7 +463,7 @@ async fn Serving::answer(self : Serving, id : Json, conn : Json, who : Member, a
       }
       answers.write_string("{\"status\":\{status},\"body\":\{if text == "" { "\"\"" } else { text }}}")
     }
-    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"), level=9)
+    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"))
   }
   // A mark the member puts on a chat or a session (api/routes/marks.ts): written here, Node told what changed.
   let marked = match (asked.value("method"), route_of_path(path)) {
@@ -585,7 +587,7 @@ fn Serving::read_path(
 ///|
 /// An answer's head and its body as it goes: the admin API's headers, compressed where the core asks so
 /// (mesh/compress.ts: zstd, from 512 bytes, at its level and window).
-async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200, level? : Int = 3) -> (Json, Bytes) raise {
+async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200) -> (Json, Bytes) raise {
   let headers : Map[String, Json] = {
     "content-type": "application/json",
     "cache-control": "no-store",
@@ -598,7 +600,7 @@ async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : I
   }
   let status = Json::number(status.to_double())
   if zstd && bytes.length() >= 512 {
-    let (_, out) = self.host.shell("zstd.compress", { "level": Json::number(level.to_double()), "window": 20 }, bytes~)
+    let (_, out) = self.host.shell("zstd.compress", { "level": 3, "window": 20 }, bytes~)
     headers["content-encoding"] = "zstd"
     return ({ "status": status, "headers": Json::object(headers) }, out.unwrap_or(b""))
   }
@@ -978,32 +980,7 @@ fn query_pairs(query : String) -> Array[(String, String)] {
 ///|
 /// api/request.ts `percentDecode`: `%xx` a byte, `+` a space, the rest as it is; then UTF-8, lossily.
 fn percent_decode(s : String) -> String {
-  let bytes = @utf8.encode(s)
-  let out = @buffer.new()
-  let hex = (b : Byte) => {
-    let c = b.to_int()
-    if c >= 48 && c <= 57 {
-      c - 48
-    } else if c >= 97 && c <= 102 {
-      c - 87
-    } else if c >= 65 && c <= 70 {
-      c - 55
-    } else {
-      -1
-    }
-  }
-  let mut i = 0
-  while i < bytes.length() {
-    let b = bytes[i]
-    if b == b'%' && i + 2 < bytes.length() + 0 && i + 2 <= bytes.length() - 1 && hex(bytes[i + 1]) >= 0 && hex(bytes[i + 2]) >= 0 {
-      out.write_byte((hex(bytes[i + 1]) * 16 + hex(bytes[i + 2])).to_byte())
-      i += 3
-    } else {
-      out.write_byte(if b == b'+' { b' ' } else { b })
-      i += 1
-    }
-  }
-  @utf8.decode_lossy(out.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|
@@ -1093,7 +1070,7 @@ async fn Serving::relay(self : Serving, id : Json, conn : Json, asked : Json, bo
     }
   }
   if open {
-    ignore(self.host.shell("tcp.write", { "id": id }, bytes=be32(PIPE_END))) catch {
+    self.host.tcp_write(id, be32(PIPE_END)) catch {
       _ => ()
     }
   } else {
@@ -1114,7 +1091,7 @@ async fn Serving::frames(self : Serving, id : Json, bytes : Bytes) -> Bool {
     at += k
   }
   try {
-    ignore(self.host.shell("tcp.write", { "id": id }, bytes=out.to_bytes()))
+    self.host.tcp_write(id, out.to_bytes())
     true
   } catch {
     _ => false
@@ -1183,10 +1160,11 @@ fn Serving::mark(
     guard db.all("SELECT 1 AS x FROM sessions WHERE key = ?", [Json::string(id)]) is [_, ..] else {
       return Text(404, error("unknown session \{id}"))
     }
+    let anchor = @sql.conversation_of(db, id)
     let name = title_of(input)
     let home = self.writing(db, () => {
-      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(id)]))
-      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(id)]) {
+      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(anchor)]))
+      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(anchor)]) {
         [r, ..] => {
           let home = r.get("id").unwrap_or(Json::null())
           ignore(db.run("UPDATE threads SET title = ?1 WHERE id = ?2", [name, home]))
@@ -1195,7 +1173,7 @@ fn Serving::mark(
         _ => Json::null()
       }
     })
-    let changes : Array[Json] = [{ "type": "session", "key": Json::string(id) }]
+    let changes : Array[Json] = [{ "type": "session", "key": Json::string(anchor) }]
     if home is Null {
       self.changed(changes)
     } else {
@@ -1209,7 +1187,8 @@ fn Serving::mark(
       return Text(404, error("unknown session \{id}"))
     }
     let pinned = method == "PUT"
-    let key = Json::string(id)
+    let anchor = @sql.conversation_of(db, id)
+    let key = Json::string(anchor)
     let at = self.writing(db, () => {
       if pinned {
         ignore(db.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [Json::string(email), key, now]))
@@ -1218,7 +1197,18 @@ fn Serving::mark(
           _ => Json::null()
         }
       } else {
-        ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), key]))
+        let targets : Array[String] = [anchor]
+        if !targets.contains(id) {
+          targets.push(id)
+        }
+        for m in @sql.members_of(db, anchor) {
+          if !targets.contains(m) {
+            targets.push(m)
+          }
+        }
+        for m in targets {
+          ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), Json::string(m)]))
+        }
         Json::null()
       }
     })
@@ -1235,7 +1225,7 @@ fn Serving::mark(
   match what {
     // A chat named by hand; none names it by its first message again. Answered as the chat is read.
     "title" => {
-      if found.get("surface") != Some(Json::string("ember")) {
+      if found.get("surface") != Some(Json::string("chat")) {
         return Text(400, error(word("renameOnlyStillfail")))
       }
       let name = title_of(input)
@@ -1451,7 +1441,7 @@ async fn Serving::say(
   let thread = Json::number(signed_number(id))
   let found = db.all("SELECT surface, hidden_at, home FROM threads WHERE id = ?", [thread])
   guard found is [t, ..] else { return error(404, "unknown thread \{id}") }
-  if t.get("surface") != Some(Json::string("ember")) {
+  if t.get("surface") != Some(Json::string("chat")) {
     return error(400, word("postOnlyStillfail"))
   }
   if body.length() > 1000000 {
@@ -1486,7 +1476,7 @@ async fn Serving::say(
   }
   let said = match js.get("text") {
     None | Some(Null) => ""
-    Some(Str(u)) => @jscase.trim(@jsjson.raw_text(u))
+    Some(Str(u)) => @jscase.trim(u)
     Some(v) => @jscase.trim(@jsjson.stringify(v))
   }
   let given_quotes = js.get("quotes")
@@ -1538,7 +1528,7 @@ async fn Serving::say(
     Some(Str(u)) => {
       let kept = StringBuilder::new()
       let mut count = 0
-      for ch in @jscase.trim(@jsjson.text(u)) {
+      for ch in @jscase.trim(@jsjson.sanitize_str(u)) {
         let code = ch.to_int()
         if code < 0x20 || (code >= 0x7F && code < 0xA0) {
           continue
@@ -1620,7 +1610,7 @@ async fn Serving::say(
         ignore(
           db.run(
             "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change) VALUES (?, ?, 'message', NULL, ?, 'person', ?, ?, NULL, ?, NULL, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL)",
-            [thread, k, ts, email, Json::string(@jsjson.text(@jsjson.units(said))), kept_quotes, client, at],
+            [thread, k, ts, email, Json::string(@jsjson.sanitize_str(said)), kept_quotes, client, at],
           ),
         )
         match db.all("SELECT thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change FROM entries WHERE thread = ? AND n = ?", [thread, k]) {
@@ -1707,7 +1697,7 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
     Some(c) => Some(c)
     None =>
       match parsed(row.get("options")) {
-        Some(o) => Some(@jsjson.JValue::Obj([(@jsjson.units("type"), Str(@jsjson.units("options"))), (@jsjson.units("options"), o)]))
+        Some(o) => Some(@jsjson.JValue::Obj([("type", Str("options")), ("options", o)]))
         None => None
       }
   }
@@ -1721,23 +1711,8 @@ fn Serving::pending_card(self : Serving, db : @sql.Db, thread : Json) -> Pending
 
 ///|
 /// The first `max` characters of code units (`[...s].slice(0, max)`: a pair one, a lone surrogate one).
-fn js_chars(u : Array[Int], max : Int) -> Array[Int] {
-  let out = []
-  let mut count = 0
-  let mut i = 0
-  while i < u.length() && count < max {
-    let c = u[i]
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < u.length() && u[i + 1] >= 0xdc00 && u[i + 1] <= 0xdfff {
-      out.push(c)
-      out.push(u[i + 1])
-      i += 2
-    } else {
-      out.push(c)
-      i += 1
-    }
-    count += 1
-  }
-  out
+fn js_chars(u : String, max : Int) -> String {
+  @jsjson.chars(u, max)
 }
 
 ///|
@@ -1752,28 +1727,28 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
     let o : @jsjson.JValue = if q is Obj(_) { q } else { Obj([]) }
     let field = (name : String, fallback : String, max : Int) => {
       let v = match o.get(name) {
-        None | Some(Null) => @jsjson.units(fallback)
+        None | Some(Null) => fallback
         Some(Str(s)) => s
-        Some(v) => @jsjson.units(@jsjson.stringify(v))
+        Some(v) => @jsjson.stringify(v)
       }
       js_chars(v, max)
     }
     let text = field("text", "", 4000)
-    let quote : Array[(Array[Int], @jsjson.JValue)] = [
-      (@jsjson.units("author"), Str(field("author", "消息", 100))),
-      (@jsjson.units("text"), Str(text)),
-      (@jsjson.units("comment"), Str(field("comment", "", 4000))),
+    let quote : Array[(String, @jsjson.JValue)] = [
+      ("author", Str(field("author", "消息", 100))),
+      ("text", Str(text)),
+      ("comment", Str(field("comment", "", 4000))),
     ]
     if o.get("ts") is Some(Str(ts)) && ts_like(ts) {
-      quote.push((@jsjson.units("ts"), Str(ts)))
+      quote.push(("ts", Str(ts)))
     }
-    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].iter().any(r => @jsjson.units(r) == role) {
-      quote.push((@jsjson.units("role"), Str(role)))
+    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].contains(role) {
+      quote.push(("role", Str(role)))
     }
     if o.get("file") is Some(Str(file)) && file.length() > 0 {
-      quote.push((@jsjson.units("file"), Str(js_chars(file, 200))))
+      quote.push(("file", Str(js_chars(file, 200))))
     }
-    if @jscase.trim(@jsjson.raw_text(text)) != "" {
+    if @jscase.trim(text) != "" {
       out.push(@jsjson.JValue::Obj(quote))
     }
   }
@@ -1782,9 +1757,10 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
 
 ///|
 /// `^[0-9]+\.[0-9]+$`
-fn ts_like(u : Array[Int]) -> Bool {
+fn ts_like(u : String) -> Bool {
   let mut dot = -1
-  for i, c in u {
+  for i in 0..<u.length() {
+    let c = u.unsafe_get(i).to_int()
     if c == '.'.to_int() {
       if dot >= 0 {
         return false
@@ -1801,7 +1777,7 @@ fn ts_like(u : Array[Int]) -> Bool {
 /// Whether `v` is the string `s` (code unit for code unit, as `===`).
 fn is_str(v : @jsjson.JValue?, s : String) -> Bool {
   match v {
-    Some(Str(u)) => u == @jsjson.units(s)
+    Some(Str(u)) => u == s
     _ => false
   }
 }

@@ -8,7 +8,7 @@ test "each place comes in the same way the first time and again" {
     t.frame()
     to_bar_rest(t)
     let tap_place = fn(index : Int) {
-      let xs = bar_centres(390.0 - 44.0, bar.k.x, 2)
+      let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
       t.tap_once(xs[index] + 22.0, 844.0 - 22.0 - 28.0)
     }
     let sample = fn() {
@@ -57,7 +57,7 @@ test "the pages of the stack come in the same way the first time and again" {
     "settings-security-pending", "settings-security-open", "settings-vault", "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station",
     "settings-profiles", "settings-profile", "settings-new-profile", "settings-connects", "settings-connect",
     "settings-memories", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
-    "settings-adb-chats", "settings-decisions", "settings-completion", "settings-policy", "settings-bars", "settings-run",
+    "settings-adb-chats", "settings-decisions", "settings-completion", "settings-policy", "settings-bars",
     "settings-about", "settings-changelog", "settings-prices", "settings-notify", "settings-notify-off", "settings-permissions",
     "settings-archiving", "settings-shortcuts", "settings-local-station",
   ] {
@@ -202,7 +202,7 @@ fn usage_coming_in(rebuilt : Bool) -> Array[(Double, Double)] {
   bars_picked.set(Some(([["chats", "usage"]], 0)))
   t.frame()
   to_bar_rest(t)
-  let xs = bar_centres(390.0 - 44.0, bar.k.x, 2)
+  let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
   t.tap_once(xs[1] + 22.0, 844.0 - 22.0 - 28.0)
   let at = t.time()
   let duration = @ui.move_ms(switch_slide)
@@ -237,7 +237,7 @@ test "a place made once, its place tapped again on the bar (no switch), then mad
   bars_picked.set(Some(([["chats", "usage"]], 0)))
   t.frame()
   to_bar_rest(t)
-  let xs = bar_centres(390.0 - 44.0, bar.k.x, 2)
+  let xs = bar_centres(390.0 - 44.0, bar.k.at(t.time()).0, 2)
   t.tap_once(xs[1] + 22.0, 844.0 - 22.0 - 28.0)
   t.run_for(@ui.move_most_ms)
   to_bar_rest(t)
@@ -323,8 +323,9 @@ test "a place of the bar in view shows what the device holds the first time it i
 ///|
 /// What Station draws in its bones when all but how each station up is reached is held (stationNet, asked only from its
 /// tab: bars.mbt place_reads): the network line of each online station of the fixture's, its bars (a bar a word of it:
-/// sfpages' sl_net_node, a card's: how it goes and packets lost, ·, 当前延迟, its round trip, ↑, ↓ and their speeds), nothing else.
-let station_net_bones : Int = 17
+/// @sf.station_net_line_node, a card's: how it goes and packets lost, ·, 当前延迟, its round trip, ↑, ↓ and their speeds, and the
+/// boxes round them), nothing else.
+let station_net_bones : Int = 16
 
 ///|
 test "Station left before the core said how its stations are reached: come back to, its network line still alone in its bones (nothing said to keep), the rest as the device holds it" {

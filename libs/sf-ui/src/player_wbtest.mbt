@@ -61,7 +61,7 @@ fn player_tester(
   window? : (Double, Double, Int),
   subtitled? : Bool = false,
   keyed? : Bool = false,
-  pin? : @kit.MediaStatus,
+  pin? : @player.MediaStatus,
 ) -> @ui.Tester {
   let (w, h, platform) = window.unwrap_or(if narrow { (390.0, 844.0, 1) } else { (1280.0, 800.0, 0) })
   set_viewer_host(viewer_host_default())
@@ -166,21 +166,24 @@ test "a desktop's timeline dragged: paused, the picture going to the start of ea
   t.run_for(@ui.frame_period_default)
   assert_true(told(t, 2))
   assert_true(told(t, 9, value="1"))
-  assert_true(told(t, 3, value="200"))
+  assert_true(told(t, 11, value="200"))
+  assert_false(told(t, 3, value="200"))
   let (x1, y1) = at(0.75)
   t.move_to(x1, y1)
-  assert_true(told(t, 3, value="700"))
+  assert_true(told(t, 11, value="700"))
+  assert_false(told(t, 3, value="700"))
   // the frame it is at, of how many, while the finger is on it
   assert_true(t.find("8 / 10 帧") is Some(_))
   t.release(x1, y1)
   t.draw()
+  assert_true(told(t, 3, value="700"))
   assert_true(told(t, 9, value="0"))
   assert_true(told(t, 1))
 }
 
 ///|
 /// How the player stands, pinned (as a fixture's): playing at `position` of 10 s, or at its end.
-fn pinned(position : Double, ended? : Bool = false) -> @kit.MediaStatus {
+fn pinned(position : Double, ended? : Bool = false) -> @player.MediaStatus {
   {
     state: 1,
     duration: 10000.0,
@@ -229,6 +232,40 @@ test "at its end the next one plays a moment after, its seconds counted down, un
 }
 
 ///|
+test "at its end 选集 opened: the card goes at once and the next one is let go, played neither while it is open nor once it closes" {
+  for narrow in [true, false] {
+    let gone = []
+    let t = player_tester(narrow, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [], pin=pinned(10000.0, ended=true))
+    t.draw()
+    assert_true(t.find("播放结束") is Some(_))
+    t.click(Button, label="web-pages.drive.player.list")
+    assert_true(t.find("播放结束") is None)
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    // closed (as the system's bars close it too): the card not back, nothing played
+    player_list_toggle("k")
+    t.run_for(player_next_ms * 2.0)
+    assert_eq(gone.length(), 0)
+    assert_true(t.find("播放结束") is None)
+  }
+}
+
+///|
+test "a desktop's with 选集 open beside it as it ends: the card comes and the next one plays a moment after, as with it shut" {
+  let gone = []
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], gone, [])
+  t.draw()
+  t.set_player(1, position=5000.0, duration=10000.0, playing=true)
+  t.draw()
+  t.click(Button, label="web-pages.drive.player.list")
+  t.set_player(1, position=10000.0, duration=10000.0, playing=false, ended=true)
+  t.draw()
+  assert_true(t.find("播放结束") is Some(_))
+  t.run_for(player_next_ms)
+  assert_eq(gone, ["E2.mp4"])
+}
+
+///|
 test "a phone's: a finger down the film takes it away with it, past 120 back" {
   let backs = []
   let t = player_tester(true, "a.mp4", [], [], backs)
@@ -249,7 +286,7 @@ test "a phone's: a finger along the film moves through the time, the player sent
 test "a phone's song: its mark and name in the middle, on the page's colours, the controls staying" {
   let t = player_tester(true, "曲.mp3", [], [], [], kind="audio")
   t.draw()
-  t.run_for(@kit.media_rest_ms + @kit.media_sleep_ms)
+  t.run_for(@player.media_rest_ms + @player.media_sleep_ms)
   assert_true(t.find("0:00 / 0:10") is Some(_))
   assert_true(t.find_last("曲.mp3") is Some(_))
 }
@@ -267,7 +304,7 @@ test "a desktop's: a double click in the middle of the film plays it, as a phone
   }
   let before = plays()
   t.tap(640.0, 400.0)
-  t.run_for(@kit.media_note_ms)
+  t.run_for(@player.media_note_ms)
   assert_eq(plays(), before)
   t.tap(640.0, 400.0)
   t.advance(@ui.double_tap_ms / 2.0)
@@ -338,18 +375,20 @@ test "a desktop's: the bar says the film's size, length and rate as its message 
 
 ///|
 test "a desktop's on a narrow stage: short of room for its keys, 保存此帧 leaves them for their ⋯" {
-  // short of a little room (选集 docked beside a stage 850 wide): 保存此帧 leaves first, the speed still on the row
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(850.0, 900.0, 2), subtitled=true)
+  // short of a little room (选集 docked beside a stage 760 wide; a finger's, no volume line beside the sound's key):
+  // 保存此帧 leaves first, the speed still on the row
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(760.0, 900.0, 2), subtitled=true)
   t.draw()
+  assert_true(t.query(Slider, label="web-pages.drive.player.volume") is None)
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
   // (the speed the last to go)
   assert_true(t.find("1×") is Some(_))
   t.click(Button, label="web-main.menu.more")
   assert_true(t.find("android-chat.video.saveFrame") is Some(_))
-  // shorter still (beside a stage 780 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
+  // shorter still (beside a stage 690 wide), the speed gone to the ⋯ too, its speeds under their name there (the old
   // view left its 1× in its draw list at no size)
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(780.0, 900.0, 2), subtitled=true)
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4", "E1.srt"], [], [], window=(690.0, 900.0, 2), subtitled=true)
   t.draw()
   t.click(Button, label="web-pages.drive.player.list")
   assert_true(t.query(Button, label="android-chat.video.saveFrame") is None)
@@ -368,15 +407,15 @@ test "a frame the host never gives is given up by the app's clock, told as faile
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms / 2.0)
+  t.run_for(@player.media_grab_wait_ms / 2.0)
   assert_eq(said.length(), 0)
-  t.run_for(@kit.media_grab_wait_ms)
+  t.run_for(@player.media_grab_wait_ms)
   assert_eq(said, ["android-chat.video.saveFrame.failed"])
   t.click(Button, label="android-chat.video.saveFrame")
   t.draw()
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"89504e47\"}"))
   t.draw()
-  t.run_for(@kit.media_grab_wait_ms * 2.0)
+  t.run_for(@player.media_grab_wait_ms * 2.0)
   assert_eq(said.length(), 1)
 }
 
@@ -412,4 +451,19 @@ test "a song's end and its failure on the page's own colours: their cards' butto
   let failed = player_tester(true, "曲.mp3", [], [], [], kind="audio", pin={ ..pinned(1000.0), state: -1, playing: false })
   failed.draw()
   assert_true(under(failed, "android-misc.drive.player.retry", theme().p.primary), msg="重试 on the primary")
+}
+
+///|
+test "what it waits on is said in its bar beside its name, a phone's and a desktop's, never over the middle of the film" {
+  let buffering : @player.MediaStatus = { ..pinned(1000.0), buffered: 1000.0, buffering: true }
+  for narrow in [true, false] {
+    let t = player_tester(narrow, "a.mp4", [], [], [], pin=buffering)
+    t.draw()
+    assert_true(t.find("web-pages.drive.player.buffering") is None, msg="narrow \{narrow}: not said before it has waited")
+    t.run_for(playing_for("k").media.times().0)
+    match t.find("web-pages.drive.player.buffering") {
+      Some((_, y)) => assert_true(y < 100.0, msg="narrow \{narrow}: said in its bar along the top, at \{y}")
+      None => fail("narrow \{narrow}: not said once it has waited")
+    }
+  }
 }

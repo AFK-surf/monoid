@@ -23,7 +23,8 @@ import { CoreError } from "./error.ts";
 import { Beside } from "./protocol.ts";
 import { Kind } from "./trace.ts";
 import { Priority } from "./sync/scheduler.ts";
-import { AGAIN_MS, DOWNLOAD_PART, titleOf } from "./views/downloads.ts";
+import { AGAIN_MS, DOWNLOAD_CONCURRENCY_MAX, DOWNLOAD_PART, titleOf } from "./views/downloads.ts";
+import { StationAddr } from "./station/addr.ts";
 import { chatKeptId, type Unfinished } from "./drive-kept.ts";
 import { bytes } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -92,6 +93,8 @@ export class Fill {
   /// The one coming now, and how much of it is here; given way to what is waited on (`yielding`).
   #going: { id: string; loaded: number } | null = null;
   #yielding = false;
+  /// Last background part was preempted before finishing: back off IDLE_MS before retrying so scheduler preemption does not tight-loop.
+  #preempted = false;
   /// Stopped as it came (`stop`): let go once its part has stopped.
   readonly #stopping = new Set<string>();
   #stop: (() => void) | null = null;
@@ -230,12 +233,16 @@ export class Fill {
     return Effect.gen(function* () {
       // (one a person asked to load and can be had now: at once, not after what is waited on)
       const urgent = (yield* self.#look()).some((f) => f.wanted && self.#ready(f));
+      const preempted = self.#preempted;
+      self.#preempted = false;
       if (!urgent) {
-        if (inner.waited.count > 0 && self.#list.length > 0) self.#yield(true);
-        yield* Effect.raceFirst(inner.waited.idle(IDLE_MS), Effect.callback<void>((resume) => {
+        if ((inner.waited.count > 0 || preempted) && self.#list.length > 0) self.#yield(true);
+        const wait = preempted ? Effect.andThen(Effect.sleep(IDLE_MS), inner.waited.idle(IDLE_MS)) : inner.waited.idle(IDLE_MS);
+        yield* Effect.raceFirst(wait, Effect.callback<void>((resume) => {
           self.#wake = () => resume(Effect.void);
-        }));
-        self.#wake = null;
+        })).pipe(Effect.ensuring(Effect.sync(() => {
+          self.#wake = null;
+        })));
         self.#yield(false);
       }
       self.#dirty = false;
@@ -266,14 +273,62 @@ export class Fill {
         const loaded = isObject(v) && typeof v.loaded === "number" ? v.loaded : 0;
         self.#moved(id, f.have + loaded, f.size);
       };
-      const reading = Effect.map(read(inner, call, heard, [0, 0], span.context), (got) => {
-        [ended, answer] = [true, got];
-      });
-      // (one asked to load is what a person waits on itself: nothing else stops it but its being stopped)
+      const lanes = f.wanted && f.size > DOWNLOAD_PART
+        ? Math.min(DOWNLOAD_CONCURRENCY_MAX, Math.max(1, inner.stations.requests.wire.bulkLanes?.(StationAddr.parse(station)) ?? 1))
+        : 1;
+      const batch: { offset: number; length: number }[] = [];
+      if (lanes > 1) {
+        let scan = f.at;
+        while (scan < f.size && batch.length < lanes) {
+          const until = yield* inner.driveKept.keptUntil(id, f.mtime, f.size, scan, f.size);
+          if (until > scan) {
+            scan = until;
+            continue;
+          }
+          const nextAt = yield* inner.driveKept.nextKept(id, f.mtime, f.size, scan, f.size);
+          while (scan < nextAt && batch.length < lanes) {
+            const length = Math.min(DOWNLOAD_PART, nextAt - scan);
+            batch.push({ offset: scan, length });
+            scan += length;
+          }
+        }
+      }
+      let reading: Effect.Effect<void, CoreError>;
+      if (f.wanted && batch.length >= 2) {
+        const inflight = new Map<number, number>();
+        reading = Effect.forEach(
+          batch,
+          (chunk, idx) => {
+            const chunkCall = { ...call, offset: chunk.offset, length: chunk.length, lane: idx };
+            const chunkHeard = (v: unknown) => {
+              const loaded = isObject(v) && typeof v.loaded === "number" ? v.loaded : 0;
+              inflight.set(chunk.offset, loaded);
+              let live = 0;
+              for (const n of inflight.values()) live += n;
+              self.#moved(id, f.have + live, f.size);
+            };
+            return Effect.map(read(inner, chunkCall, chunkHeard, [0, 0], span.context), (got) => {
+              ended = true;
+              const said = (got instanceof Beside ? got.value : got) as { total?: unknown } | null;
+              if (answer === null || (call.kind === "stationFilePart" && said?.total !== f.size)) answer = got;
+            });
+          },
+          { concurrency: batch.length, discard: true },
+        );
+      } else {
+        // (one not asked for is brought after all else: never asked twice at once on a slow link)
+        const asked = f.wanted ? call : { ...call, noHedge: true };
+        reading = Effect.map(read(inner, asked, heard, [0, 0], span.context), (got) => {
+          [ended, answer] = [true, got];
+        });
+      }
+      // (one asked to load is what a person waits on itself: nothing else stops it but its being stopped; any other
+      // gives way to what is waited on, and to what its station's sync asks that is more urgent than the background,
+      // a read in the background too that is waited on by nobody: scheduler.ts `preempted`)
       const part = Effect.suspend(() =>
         f.wanted ? Effect.raceFirst(reading, stopped)
         : inner.waited.count > 0 ? Effect.void
-        : Effect.raceFirst(reading, Effect.raceFirst(inner.waited.begun(), stopped)),
+        : Effect.raceFirst(reading, Effect.raceFirst(inner.waited.begun(), Effect.raceFirst(inner.scheduler.preempted(station), stopped))),
       );
       const done = yield* Effect.result(inner.scheduler.ask(station, `${station} fill`, f.wanted ? Priority.asked : Priority.idle, part));
       span.end();
@@ -281,6 +336,10 @@ export class Fill {
       self.#stop = null;
       if (self.#stopping.delete(id)) return;
       if (done._tag === "Success") {
+        if (!f.wanted && !ended) {
+          self.#preempted = true;
+          return;
+        }
         // read through and still not kept (the station says it is another size than its message did): not again
         const said = (answer instanceof Beside ? answer.value : answer) as { total?: unknown } | null;
         if (ended && call.kind === "stationFilePart" && said?.total !== f.size) {

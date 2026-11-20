@@ -3,7 +3,6 @@ package "station/history"
 
 import {
   "moonbitlang/core/json",
-  "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",
   "station/locate",
@@ -26,13 +25,17 @@ pub fn entries_of(@host.Host, String, Array[Marked], Double, Double, Bool) -> Ar
 
 pub fn entry_json(Entry, Bool) -> @json.Json
 
-pub let in_script_output : @ref.Ref[String]
-
 pub fn is_alphanumeric(Int32) -> Bool
 
 pub fn length_of(Array[Marked]) -> Int32
 
 pub fn marks_dir(String, String) -> String
+
+pub fn packed_frames_of(@host.Host, String) -> Array[PackedFrame]? raise
+
+pub fn packed_read_segments(@host.Host, String, Int64, end? : Int64, check_size? : Bool, (BytesView) -> Bool raise) -> Bool raise
+
+pub fn packed_written_size(@host.Host, String) -> Int64? raise
 
 pub fn script_calls(String) -> (Array[(String, @jsjson.JValue)], Bool)
 
@@ -54,6 +57,7 @@ pub(all) struct Entry {
   call_id : String?
   subagent : Bool
   said : String?
+  in_script : Bool
 }
 
 pub struct Histories {
@@ -71,6 +75,13 @@ pub struct Mark {
 pub struct Marked {
   state : TailState
   marks : Array[Mark]
+}
+
+pub(all) struct PackedFrame {
+  at : Int64
+  packed : Int64
+  from : Int64
+  size : Int64
 }
 
 pub struct ReadState {

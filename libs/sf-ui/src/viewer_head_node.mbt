@@ -68,7 +68,8 @@ pub fn viewer_head_node(
       h.box(fn(title) {
         title
         .row(Is(true))
-        .lines_up(Is(Some(End)))
+        // (the meta on the name's baseline, not its foot)
+        .lines_up_baseline(Is(true))
         .gap(Is(@ui.Space::px(S2_5)))
         .padding(Is((0.0, 0.0, @ui.Space::px(S3), 0.0)))
         .shrink(Is(1.0))

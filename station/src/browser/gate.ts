@@ -49,6 +49,23 @@ const BROWSER_METHODS: Record<string, "target" | "context" | "pass" | "answer" |
 
 /// Target sessions' methods answered here: they would bring the browser in front.
 const FRONT = new Set(["Page.bringToFront"]);
+/// Target sessions' methods that operate a tab (navigation, input, script evaluation, file selection): announced on the
+/// screen (`controlledBy`) and refused while a person explicitly took control of the tab (`[接管]`).
+const ACTING = new Set([
+  "Page.navigate",
+  "Page.reload",
+  "Page.navigateToHistoryEntry",
+  "Page.setDocumentContent",
+  "Input.dispatchMouseEvent",
+  "Input.dispatchKeyEvent",
+  "Input.dispatchTouchEvent",
+  "Input.insertText",
+  "Input.imeSetComposition",
+  "Runtime.callFunctionOn",
+  "Runtime.evaluate",
+  "DOM.focus",
+  "DOM.setFileInputFiles",
+]);
 /// A context's cookies: gated as on the browser's target wherever they are asked (they name a context).
 const COOKIES = new Set(["Storage.getCookies", "Storage.setCookies", "Storage.clearCookies"]);
 
@@ -67,6 +84,9 @@ export type GateParts = {
   opened?(targetId: string): void;
   /// A deliberate action on a tab (not page background traffic).
   used?(targetId: string, url?: string): void;
+  /// An operating command on a tab (`ACTING`, `Target.closeTarget`): returns why it is refused (a person took control
+  /// of the tab), or null to let it pass while showing the agent on the screen.
+  act?(targetId: string, method: string): string | null;
 };
 
 /// What to do with a message: send these to Chrome, these back to the agent.
@@ -124,6 +144,10 @@ export class Gate {
     if (typeof m.sessionId === "string") {
       if (!this.#sessions.has(m.sessionId)) return { up: [], down: [error(m.id, m.sessionId, "No such session of this chat's.")] };
       const target = this.#targets.get(m.sessionId);
+      if (target && ACTING.has(m.method)) {
+        const refused = this.#p.act?.(target, m.method) ?? null;
+        if (refused !== null) return { up: [], down: [error(m.id, m.sessionId, refused)] };
+      }
       if (target && typeof m.id === "number" && (m.method === "Page.navigate" || m.method === "Runtime.callFunctionOn" || (m.method === "Input.dispatchMouseEvent" && params.type === "mousePressed") || (m.method === "Input.dispatchKeyEvent" && params.type === "keyDown"))) {
         this.#asked.set(`${m.sessionId}\0${m.id}`, (answer) => {
           if (answer.error === undefined) this.#p.used?.(target, typeof params.url === "string" ? params.url : undefined);
@@ -157,6 +181,10 @@ export class Gate {
         // Without one, the browser's own target (Target.getTargetInfo): nothing of a chat's.
         if (params.targetId === undefined && m.method !== "Target.attachToTarget" && m.method !== "Target.closeTarget") return { up: [JSON.stringify(m)], down: [] };
         if (!this.#target(params.targetId)) return no("No such target of this chat's.");
+        if (m.method === "Target.closeTarget") {
+          const refused = this.#p.act?.(params.targetId, m.method) ?? null;
+          if (refused !== null) return no(refused);
+        }
         if (m.method === "Target.attachToTarget") this.#asked.set(key, (a) => {
           if (typeof a.result?.sessionId === "string") {
             this.#sessions.add(a.result.sessionId);

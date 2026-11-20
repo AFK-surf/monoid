@@ -129,7 +129,7 @@ pub fn SimInput::new() -> SimInput {
 /// What `e` is posted as (a touchscreen counts no clicks).
 pub fn SimInput::ops(self : SimInput, e : ScreenInput) -> Array[J] {
   match e {
-    Pointer(kind~, x~, y~, buttons~) => {
+    Pointer(kind~, x~, y~, buttons~, ..) => {
       let x = clamp01(x)
       let y = clamp01(y)
       let left = (buttons & 1) == 1
@@ -160,6 +160,7 @@ pub fn SimInput::ops(self : SimInput, e : ScreenInput) -> Array[J] {
     Key(kind~, code~, mods~, ..) => self.key(kind == "down", code, mods)
     Text(t) => self.typed(t)
     Pose(name) => [jo([("op", js("pose")), ("name", js(name))])]
+    Gamepad(_) => []
     Button(page~, usage~, down~) => [jo([("op", js("hid")), ("page", ji(page)), ("usage", ji(usage)), ("down", jb(down))])]
     Device(name) =>
       if name == "memory_warning" {

@@ -30,7 +30,7 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskLow, diskSoft, diskTier } from "../ops/disk.ts";
 import { Upkeep, diskOf } from "../ops/storage.ts";
 import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
@@ -68,6 +68,7 @@ import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
 import { ChatShareIndexBuilder } from "../xshare/index-builder.ts";
 import { overview } from "../api/overview.ts";
+import { builtAt } from "../ops/version.ts";
 import type { ConnectKind } from "../connects/connections.ts";
 import { agentsRoutes } from "../api/admin.ts";
 import type { ChatEvent, ChatSurface } from "./chat.ts";
@@ -85,15 +86,17 @@ import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
 import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
+import { buildConversationBackfill } from "./conversation-backfill.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
+import { expireArchived, relieveLowDiskFull, runArchiveUpkeepIfDue, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
-import { chatsTouched, forPeer, READ } from "./others.ts";
+import { CONFIGURE, configureForPeer } from "./chat-configure.ts";
+import { chatsTouched, forPeer, LIST, listForPeer, READ } from "./others.ts";
 import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
 import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
@@ -330,6 +333,7 @@ export const AgentsLive = (control: Control) =>
           new PiDriver({ data }),
         ],
         mcpUrl: () => door?.url ?? "",
+        toolsHeard: (session) => mcp.heard(session),
         internal: new InternalChat(),
         link: pageOf,
         workspaces: () => cloud.memberships().map((m) => m.workspace),
@@ -344,6 +348,10 @@ export const AgentsLive = (control: Control) =>
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => buildConversationBackfill(store, previous)),
+        (builder) => Effect.promise(() => builder.close()),
+      );
       const sessionCounts = yield* Effect.acquireRelease(
         Effect.sync(() => buildSessionCounts(store, previous)),
         (builder) => Effect.promise(() => builder.close()),
@@ -376,7 +384,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
       // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
       remote.setSandboxes(() => sandboxesOf(config.raw()));
       jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
@@ -488,6 +496,10 @@ export const AgentsLive = (control: Control) =>
             return createForPeer(hub, peer, request, ws);
           case ARCHIVE:
             return archiveForPeer(hub, request, ws);
+          case CONFIGURE:
+            return configureForPeer(hub, request, ws);
+          case LIST:
+            return listForPeer(hub, request, ws);
           case NOTICE:
             return noticeForPeer(hub, peer, request, ws);
           default:
@@ -685,11 +697,12 @@ export const AgentsLive = (control: Control) =>
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
-      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
+      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
       // And the fields the station's parts add (parts.ts).
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
+      hub.onInterruptedChanged(() => events.overviewChanged());
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {
@@ -717,7 +730,7 @@ export const AgentsLive = (control: Control) =>
       parts.carry("live.tails", async () => (await liveCarried()).tails, (what) => hub.live.takeTails(what));
       hub.threadList = async () => JSON.parse(await readers.read("threadList", {}, "zh"));
       hub.recentChatList = async (ws, home, limit, signal) => JSON.parse(await readers.read("recentChatList", { ws, home, limit }, "zh", { signal }));
-      hub.searchChatList = async (ws, home, limit, query) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query }, "zh"));
+      hub.searchChatList = async (ws, home, limit, query, filter) => JSON.parse(await readers.read("searchChatList", { ws, home, limit, query, ...(filter ?? {}) }, "zh"));
       hub.latestMessages = async (thread, limit) => JSON.parse(await readers.read("latestMessages", { thread, limit }, "zh"));
       hub.policyChecks = async (since, viewer) => JSON.parse(await readers.read("policyChecks", { since, viewer: { workspace: viewer.workspace, home: viewer.home } }, "zh"));
       hub.openedChatSaid = async (thread, author, agentOnly) => JSON.parse(await readers.read("openedChatSaid", { thread, author, agentOnly }, "zh"));
@@ -767,7 +780,7 @@ export const AgentsLive = (control: Control) =>
       });
       // A runtime installed or updated from the pages: the machine's logins read again.
       updates.onRuntimeChanged((kind, installed, replaced) => {
-        void accounts.machine?.refresh();
+        void accounts.machine?.refresh().catch(() => {});
         // Installed: the sessions whose start found it missing take what waits.
         if (installed) hub.installed(kind);
         // Codex updated: its app-servers of the old version are replaced (their files are gone).
@@ -924,10 +937,14 @@ export const AgentsLive = (control: Control) =>
         hub.toolsAt(opened.url);
         parts.doorOpen(opened.url);
         taken = true;
-        hub.release("starting");
+        // What was cut off is found while turns are still held (as `follow` does), so that releasing them starts each
+        // session's once: its recovery, or what waits for it.
         if (inWorkspace) {
           for (const a of along) await a.taken?.();
           hub.recover();
+        }
+        hub.release("starting");
+        if (inWorkspace) {
           await jobs.relaunch();
         } else if (cloud.removed()) {
           // Removed, and the station stopped before it stopped its jobs (or crashed): what still runs is ended now.
@@ -943,7 +960,7 @@ export const AgentsLive = (control: Control) =>
 
 
       // What the chats' people hear about while no client of theirs runs: pushed by the control plane.
-      const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)));
+      const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)), { now: () => hub.clock.currentTimeMillisUnsafe(), deadline: (login) => hub.logins?.deadline?.(login) ?? null });
 
       // What runs on a clock here (on the hub's): ended at the handover, below.
       const time = new Fibers("station", hub.clock);
@@ -953,7 +970,8 @@ export const AgentsLive = (control: Control) =>
       const stopArchiving = startAutoArchiveTimer(hub, time, readers);
 
       // Chats archived long enough keep only their history and the files sent in them: looked at when the next one
-      // comes due, and every hour for the setting changed.
+      // comes due, and every hour for the setting changed. Also backfills unfinished archive packs and cleans
+      // rebuildable directories of idle unarchived sessions (each bounded per round).
       const emptying = async () => {
         let next: number | null = null;
         try {
@@ -961,6 +979,7 @@ export const AgentsLive = (control: Control) =>
         } catch (error) {
           log.warn("hub", "emptying long-archived workspaces failed", { error: (error as Error).message });
         }
+        await runArchiveUpkeepIfDue(hub, hub.now());
         time.after(Math.min(3_600_000, next === null ? Infinity : next - hub.now()), emptying);
       };
       time.after(300_000, emptying);
@@ -974,22 +993,27 @@ export const AgentsLive = (control: Control) =>
         jobs: (now) => jobs.upkeep(now),
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),
+        orphans: store,
+        clonesActive: () => hub.clones.hasActive(),
       });
       upkeep.start();
 
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
-      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
+      // stations' tasks not in use; below low, runs a full pass across idle unarchived rebuildables, archived
+      // workspaces, orphan UUID transcripts, and unreferenced shared clones (throttled to once per RELIEVE_FULL_EVERY_MS).
       const relieving = async () => {
         const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
         try {
+          const now = hub.now();
           const disk = await diskOf(data).catch(() => null);
           tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
           if (tier !== "ok") {
-            await upkeep.renewables(hub.now());
-            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
+            await upkeep.renewables(now);
+            await remote.relieve(now, disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
-          if ((await free()) < DISK_LOW_BYTES) await relieveArchived(hub, free);
+          const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
+          await relieveLowDiskFull(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }
@@ -1004,11 +1028,17 @@ export const AgentsLive = (control: Control) =>
       // not only the ones that end all_done from now on; and once after the start (the profiles' checks read by then).
       const reviewing = () => void reviewUndecided(hub).catch((error) => log.warn("hub", "reviewing done chats failed", { error: (error as Error).message }));
       let rule = hub.config().automaticDecisions.completion;
+      let maxConcurrentTurns = hub.config().maxConcurrentTurns;
       const unlistenRule = config.listen(() => {
-        const now = hub.config().automaticDecisions.completion;
+        const cfg = hub.config();
+        const now = cfg.automaticDecisions.completion;
         const changed = now.enabled && (!rule.enabled || now.model !== rule.model);
         rule = now;
         if (changed) reviewing();
+        if (cfg.maxConcurrentTurns !== maxConcurrentTurns) {
+          maxConcurrentTurns = cfg.maxConcurrentTurns;
+          hub.setMaxConcurrentTurns(maxConcurrentTurns);
+        }
       });
       time.after(120_000, reviewing);
 

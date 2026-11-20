@@ -74,7 +74,23 @@ fn card_place(store : Store, session : String, thread : Int?, ts : String?) -> (
 priv suberror CardPreparationNeeded
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for CardPreparationNeeded with output(self, logger) {
+  match self {
+    CardPreparationNeeded => logger.write_string("the card is to be prepared again")
+  }
+}
+
+///|
 priv suberror CardNoLongerNeeded
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for CardNoLongerNeeded with output(self, logger) {
+  match self {
+    CardNoLongerNeeded => logger.write_string("the card is no longer needed")
+  }
+}
 
 ///|
 /// Once the surface has given the post its ts, it is recorded only while the request and card are still valid; the

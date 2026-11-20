@@ -237,7 +237,11 @@ fn ffi_thermal_throttled() -> Int = "mbhost" "mb_host_thermal_throttled"
 
 fn ffi_gpu_ms() -> Double = "mbhost" "mb_host_gpu_ms"
 
+fn ffi_frames_dropped() -> Int = "mbhost" "mb_host_frames_dropped"
+
 fn ffi_cpu_ms() -> Double = "mbhost" "mb_host_cpu_ms"
+
+fn ffi_thread_cpu_ms() -> Double = "mbhost" "mb_host_thread_cpu_ms"
 
 fn ffi_perf_state() -> Int = "mbhost" "mb_host_perf_state"
 
@@ -259,6 +263,14 @@ fn ffi_perf_where() -> String {
 
 ///|
 fn ffi_perf_open(go : Int) -> Int = "mbhost" "mb_host_perf_open"
+
+///|
+fn mbw_mb_host_reveal_file(path : Int, go : Int) -> Int = "mbhost" "mb_host_reveal_file"
+
+///|
+fn ffi_reveal_file(path : String, go : Int) -> Int {
+  mbw_mb_host_reveal_file(@wasmrt.string_addr(path), go)
+}
 
 fn ffi_perf_size() -> Double = "mbhost" "mb_host_perf_size"
 
@@ -683,6 +695,51 @@ fn mods_held() -> Int {
 }
 
 ///|
+fn ffi_pointer_lock(on : Int) = "mbhost" "mb_host_pointer_lock"
+
+///|
+/// The pointer held by the window or let go of (@hostapi.set_pointer_lock).
+fn pointer_lock(on : Bool) -> Unit {
+  ffi_pointer_lock(if on { 1 } else { 0 })
+}
+
+///|
+fn ffi_pointer_locked() -> Int = "mbhost" "mb_host_pointer_locked"
+
+///|
+fn pointer_locked() -> Bool {
+  ffi_pointer_locked() != 0
+}
+
+///|
+fn mbw_mb_host_pointer_delta(out : Int) = "mbhost" "mb_host_pointer_delta"
+
+///|
+fn ffi_pointer_delta(out : FixedArray[Double]) -> Unit {
+  mbw_mb_host_pointer_delta(@wasmrt.doubles_addr(out))
+}
+
+///|
+/// How far the mouse moved while the pointer is held, since last asked (two numbers in `out`), taken.
+fn pointer_delta(out : FixedArray[Double]) -> Unit {
+  ffi_pointer_delta(out)
+}
+
+///|
+fn mbw_mb_host_gamepads(out : Int) -> Int = "mbhost" "mb_host_gamepads"
+
+///|
+fn ffi_gamepads(out : FixedArray[Double]) -> Int {
+  mbw_mb_host_gamepads(@wasmrt.doubles_addr(out))
+}
+
+///|
+/// The game controllers connected now (@hostapi.gamepads' numbers in `out`): how many slots it wrote.
+fn gamepads(out : FixedArray[Double]) -> Int {
+  ffi_gamepads(out)
+}
+
+///|
 fn run(
   title : String,
   frame : FuncRef[(Double, Double, Double, Double) -> Unit],
@@ -1048,9 +1105,20 @@ fn gpu_ms() -> Double {
 }
 
 ///|
+/// How many frames the app made were never drawn, a newer one taking each's place, since the run began.
+fn frames_dropped() -> Int {
+  ffi_frames_dropped()
+}
+
+///|
 /// The CPU's time the process has had, every thread's, in ms (-1: not known on this host).
 fn cpu_ms() -> Double {
   ffi_cpu_ms()
+}
+
+///|
+fn thread_cpu_ms() -> Double {
+  ffi_thread_cpu_ms()
 }
 
 ///|
@@ -1077,6 +1145,12 @@ fn perf_where() -> String {
 ///|
 fn perf_open(go : Bool) -> Bool {
   ffi_perf_open(if go { 1 } else { 0 }) != 0
+}
+
+///|
+/// The file at `path` shown in its folder in the system's file manager (`go`), or whether that can be done here.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ffi_reveal_file(path, if go { 1 } else { 0 }) != 0
 }
 
 ///|
@@ -2086,5 +2160,47 @@ fn post_next() -> (String, String, Bytes)? {
   } else {
     Some((channel, ffi_post_json(), ffi_post_bytes()))
   }
+}
+
+///|
+fn ffi_auto_launch() -> Int = "mbhost" "mb_host_auto_launch"
+
+///|
+fn ffi_set_auto_launch(enabled : Int) -> Int = "mbhost" "mb_host_set_auto_launch"
+
+///|
+fn mbw_mb_host_hotkey_set(id : Int, accel : Int) -> Int = "mbhost" "mb_host_hotkey_set"
+
+///|
+fn ffi_hotkey_set(id : String, accel : String) -> Int {
+  mbw_mb_host_hotkey_set(@wasmrt.string_addr(id), @wasmrt.string_addr(accel))
+}
+
+///|
+fn mbw_mb_host_hotkey_clear(id : Int) = "mbhost" "mb_host_hotkey_clear"
+
+///|
+fn ffi_hotkey_clear(id : String) -> Unit {
+  mbw_mb_host_hotkey_clear(@wasmrt.string_addr(id))
+}
+
+///|
+fn auto_launch() -> Bool {
+  ffi_auto_launch() != 0
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  ffi_set_auto_launch(if enabled { 1 } else { 0 }) != 0
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  ffi_hotkey_set(id, accel) != 0
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  ffi_hotkey_clear(id)
 }
 

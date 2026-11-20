@@ -71,7 +71,7 @@ fn beside_tester(
         )
         |> ignore
       })
-      let m = moves_for(p, fn() { sel.get() }, spec=move_spring)
+      let m = moves_for(p, fn() { sel.get() }, spec=move_damped)
       m.reshapes(p)
       m.moves_with(words_at)
       moves.val = Some(m)
@@ -247,7 +247,7 @@ fn beside_wide_tester(sel : @signals.Signal[Int]) -> @ui.Tester {
         )
         |> ignore
       })
-      let m = moves_for(p, fn() { sel.get() }, spec=move_spring)
+      let m = moves_for(p, fn() { sel.get() }, spec=move_damped)
       m.reshapes(p)
       m.moves_with(words_at)
     })

@@ -27,6 +27,7 @@ import {
   continueMachineSession,
   deleteSession,
   newSession,
+  ensureConversationChat,
   openChat,
   say,
 } from "../../sessions/lifecycle.ts";
@@ -540,7 +541,7 @@ export const routes = (tools: Tools): Route[] => {
           const key = text(i.session);
           session(s, key, r);
           const t = typeof i.title === "string" ? i.title.trim() : "";
-          const chat = openChat(a.hub, key, r.viewer.email, t === "" ? null : chars(t, 80));
+          const chat = ensureConversationChat(a.hub, key, r.viewer.email, t === "" ? null : chars(t, 80));
           return threadView(r, chat.id);
         }),
     },
@@ -609,6 +610,31 @@ export const routes = (tools: Tools): Route[] => {
           }),
       }),
     ),
+    // Batch resume or dismiss sessions cut off by a non-update station restart in the viewer's workspace.
+    {
+      method: "POST",
+      pattern: /^\/*sessions\/+resume-interrupted\/*$/,
+      handle: (r) =>
+        write(async (_s, a) => {
+          const raw = input(r).keys;
+          const keys = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string" && x !== "") : undefined;
+          const resumed = a.hub.resumeInterrupted(r.viewer, keys);
+          log.info("admin", "resumed sessions interrupted by restart", { resumed, by: r.viewer.email });
+          return ok({ ok: true, resumed });
+        }),
+    },
+    {
+      method: "POST",
+      pattern: /^\/*sessions\/+dismiss-interrupted\/*$/,
+      handle: (r) =>
+        write(async (_s, a) => {
+          const raw = input(r).keys;
+          const keys = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string" && x !== "") : undefined;
+          const dismissed = a.hub.dismissInterrupted(r.viewer, keys);
+          log.info("admin", "dismissed sessions interrupted by restart", { dismissed, by: r.viewer.email });
+          return ok({ ok: true, dismissed });
+        }),
+    },
     {
       method: "POST",
       pattern: /^\/*sessions\/+([^/]+)\/+(stop|cancel-retry|retry|reassign|evict|warm|compact|clear|settings)(?:\/.*)?$/,

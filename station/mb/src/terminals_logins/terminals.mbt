@@ -127,6 +127,14 @@ pub suberror TerminalRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for TerminalRefused with output(self, logger) {
+  match self {
+    TerminalRefused(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// What the station gives the terminals: how one is started (its runner, its link), the folder one opens in when none
 /// is asked, what is told as they change.
 pub(all) struct TerminalDeps {
@@ -791,7 +799,7 @@ pub fn asked(v : J?) -> Asked? {
     return None
   }
   let text_of = (x : J?) => match x {
-    Some(Str(u)) if u.length() > 0 && u.length() <= 4096 => Some(@jsjson.raw_text(u))
+    Some(Str(u)) if u.length() > 0 && u.length() <= 4096 => Some(u)
     _ => None
   }
   Some({

@@ -156,7 +156,10 @@ export class Station {
         // (stopped by the device before its answer's end: let go of)
         let ended = false;
         if (head !== null) void stream.stopped().then((code: number | null) => code !== null && !ended && this.letGo.push(JSON.parse(head).path), () => {});
-        if (head !== null && JSON.parse(head).screen !== undefined) return this.#view(stream, JSON.parse(head), c.bytes);
+        if (head !== null && JSON.parse(head).screen !== undefined) {
+          if (dead()) return;
+          return this.#view(stream, JSON.parse(head), c.bytes);
+        }
         if (head !== null && JSON.parse(head).adb?.op === "share") {
           this.offers.push({ conn, head: JSON.parse(head) });
           await stream.write(Buffer.from(`${JSON.stringify({ status: 200, headers: { "content-type": "application/x-ndjson", "stillfail-build": "0.1.0" } })}\n`));
@@ -181,6 +184,13 @@ export class Station {
         if (parsed.path.startsWith("/admin/api/big")) {
           const pieces = 16 * Number(new URL(parsed.path, "https://station.test").searchParams.get("mb") ?? 1);
           for (let i = 0; i < pieces; i++) await stream.write(Buffer.alloc(64 * 1024, 7)).catch(() => {});
+          ended = true;
+          await stream.finish().catch(() => {});
+          return;
+        }
+        // A part uploaded: answered in a few bytes, as the station answers one (station/src/api/routes/hub.ts), whatever its size.
+        if (parsed.path.startsWith("/uploads/parts")) {
+          await stream.write(Buffer.from(JSON.stringify({ have: body.length })));
           ended = true;
           await stream.finish().catch(() => {});
           return;

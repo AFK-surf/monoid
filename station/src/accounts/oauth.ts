@@ -57,15 +57,19 @@ function usable(c: Credentials, rejected: string | null, lang: Lang, margin = MA
 const homeOf = (env: Env) => platform.home(env) ?? ".";
 
 async function run(command: string, args: string[], env: Env, input?: string): Promise<{ ok: boolean; stdout: string } | undefined> {
-  const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
-  return new Promise((resolve) => {
-    const child = execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 10_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout) => {
-      if (error && (error as NodeJS.ErrnoException).code === "ENOENT") resolve(undefined);
-      else resolve({ ok: !error, stdout: String(stdout) });
+  try {
+    const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
+    return await new Promise((resolve) => {
+      const child = execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 10_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout) => {
+        if (error && (error as NodeJS.ErrnoException).code === "ENOENT") resolve(undefined);
+        else resolve({ ok: !error, stdout: String(stdout) });
+      });
+      if (input !== undefined) child.stdin?.end(input);
+      else child.stdin?.end();
     });
-    if (input !== undefined) child.stdin?.end(input);
-    else child.stdin?.end();
-  });
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? undefined : { ok: false, stdout: "" };
+  }
 }
 
 async function read(env: Env, home: string, machine: boolean, lang: Lang): Promise<Credentials> {

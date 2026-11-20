@@ -1,0 +1,22 @@
+ui.monoid Liquid Glass (liquid-glass)
+Copyright 2026 still.fail contributors
+
+This library is a port of the component catalog of AndroidLiquidGlass
+(catalog/components, catalog/utils, catalog/destinations) to mbui's window
+tree, in MoonBit. Every number it draws with (colours, sizes, springs, lens
+heights and amounts, highlights, shadows) is the catalog's.
+
+AndroidLiquidGlass
+Copyright 2025 Kyant
+https://github.com/Kyant0/AndroidLiquidGlass
+Ported from revision eb4a0ea2e17542ea28c2e71088f7dd9acf77aad5
+https://github.com/Kyant0/AndroidLiquidGlass/tree/eb4a0ea2e17542ea28c2e71088f7dd9acf77aad5
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Each source file ported from it says so in its head
+("Ported from Kyant0/AndroidLiquidGlass (Apache-2.0)") and names the Kotlin
+file it comes from. The files were changed in the port: rewritten in MoonBit
+over mbui's headless components, motion and glass instead of Jetpack Compose.
+
+mbui (../mbui), the framework it is drawn with, is licensed under the MIT
+License; its own notices are in ../mbui/THIRD_PARTY_NOTICES.md.

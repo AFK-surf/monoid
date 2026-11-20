@@ -56,6 +56,8 @@ pub(all) struct Fixture {
   /// the look the card to share is drawn in (the prefs' `shareLook`; "" none kept): share-card-<key> (but -dark) opens
   /// it in that look
   mut share_look : String
+  /// how a machine's CPU dial says it on this device (the prefs' `cpuDial`; "" none kept: idle)
+  mut cpu_dial : String
   /// each chats' list's window as it was told (`chats.window`, by fixture_window_key), as the core's views.ts keeps it:
   /// only grows; long-paged's lists give that many of their rows, 50 where untold
   windows : Map[String, Int]
@@ -71,7 +73,7 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
   let kept = fn(tab : String) -> Json { { "tabs": [Json::string(tab)], "active": Json::string(tab) } }
   match mode {
     "newchat-files" => { "new:ws1": kept("files") }
-    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
+    "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
     "chat-letters-side" => { "ws1/st1:s-c1": kept("letters") }
     "chat-things-side" => { "ws1/st1:s-c1": kept("things") }
     "chat-jobs-side" => { "ws1/st1:s-c1": kept("jobs") }
@@ -82,18 +84,21 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "tabs": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "active": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-md-wide" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
       { "ws1/st1:s-c1": kept(fixture_view_tab(mode)) }
     _ => {}
   }
 }
 
 ///|
-/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-image:
-/// 界面草图.png; chat-view-side-video: 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui:
-/// release.mbui; chat-view-side-memory-mbui: memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
+/// The file of the first row's chat open beside it in the viewer (chat-view-side: 说明.md; chat-view-side-md-long:
+/// 长说明.md; chat-view-side-md-wide: 宽表格说明.md; chat-view-side-image: 界面草图.png; chat-view-side-video:
+/// 演示录屏.mp4; chat-view-side-audio: 会议录音.m4a; chat-view-side-mbui: release.mbui; chat-view-side-memory-mbui:
+/// memory-schemes.mbui), its tab as the app keeps it (sfbase's view_tab_key).
 pub fn fixture_view_tab(mode : String) -> String {
   let name = match mode {
+    "chat-view-side-md-long" => "长说明.md"
+    "chat-view-side-md-wide" => "宽表格说明.md"
     "chat-view-side-image" => "界面草图.png"
     "chat-view-side-video" => "演示录屏.mp4"
     "chat-view-side-audio" => "会议录音.m4a"
@@ -114,10 +119,10 @@ pub fn fixture_view_tab(mode : String) -> String {
 /// panel's two tabs pointed at), as the core shows what is kept (chat-tabs.ts tabsOf).
 pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
   match mode {
-    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
+    "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "open": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "shown": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
-    "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
+    "chat-view-side" | "chat-view-side-md-long" | "chat-view-side-md-wide" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
       let tab = fixture_view_tab(mode)
       { "ws1/st1:s-c1": { "open": [Json::string(tab)], "shown": Json::string(tab) } }
     }
@@ -175,8 +180,8 @@ pub fn fixture_with_tabs(f : Fixture, params : Map[String, Json], value : Json?)
 }
 
 ///|
-/// `chat.tabs.open / close / front / clear` (`chat`: its key, `tab`, `auto`): what is kept for the chat changed as the
-/// core changes it (nothing, where it says nothing changes).
+/// `chat.tabs.open / close / front / clear / replace` (`chat`: its key, `tab`, `auto`; `was`, the tab replaced): what
+/// is kept for the chat changed as the core changes it (nothing, where it says nothing changes).
 pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Json, Json] {
   let key = text(Some(params), "chat")
   let chat = match key.find(":") {
@@ -234,11 +239,17 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
     f.changed()
     return Ok(Json::null())
   }
-  let change : Json = {
+  let change : Map[String, Json] = {
     "action": Json::string(act),
     "tab": if tab_str != "" { Json::string(tab_str) } else { Json::null() },
     "auto": Json::boolean(!(field(Some(params), "auto") is Some(False))),
   }
+  // (a tab put in another's place: the one it replaces)
+  match field(Some(params), "was") {
+    Some(String(w)) => change["was"] = Json::string(w)
+    _ => ()
+  }
+  let change = Json::object(change)
   match fixture_kept("chat.tabs", fixture_tabs_ask(f, key, chat, Some(change)), None) {
     Some(Ok((r, _))) => {
       match (field(Some(r), "next"), field(Some(r), "tabs")) {
@@ -1207,7 +1218,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
         Some(Array(list)) =>
           for x in list {
-            if text(Some(x), "station") == address && flag(Some(x), "online") {
+            if text(Some(x), "station") == address {
               net = field(Some(x), "net")
             }
           }
@@ -1216,6 +1227,24 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       // (answered whatever it has, as the core does: a station that says no network, none, client/core-ts views.ts
       // stationNet's `ok: null`)
       Some(net.unwrap_or(Json::null()))
+    }
+    "stationDiag" => {
+      let address = text(Some(Json::object(params)), "station")
+      let ws = match address.find("/") {
+        Some(i) => address.exact_view(end=i).to_owned()
+        None => address
+      }
+      let mut diag = None
+      match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
+        Some(Array(list)) =>
+          for x in list {
+            if text(Some(x), "station") == address {
+              diag = field(Some(x), "diag")
+            }
+          }
+        _ => ()
+      }
+      Some(diag.unwrap_or(Json::null()))
     }
     _ => value
   }
@@ -1361,20 +1390,40 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "on": f.mode != "chat-phone-off" && f.mode != "chat-phone-step-off",
         "lends": fixture_phone_lend(f.mode),
         "pairPort": if f.mode == "chat-phone-step-code" { Json::number(37115.0) } else { Json::null() },
-        "personal": [
-          {
-            "sub": "s",
-            "email": "lin@example.com",
-            "standing": match f.mode {
-              "chat-phone-outside" => "outside"
-              "chat-phone-none" => "none"
-              _ => "member"
+        "personal": if f.mode == "chat-phone-multi" {
+          // (two accounts signed in here: another's lock has this device on it; the workspace's account, u1, is to be
+          // approved on its own, a trusted device of theirs showing the code once it asks)
+          [
+            { "sub": "s-work", "email": "lin@work.example", "standing": "member", "devices": [] },
+            {
+              "sub": "u1",
+              "email": "lin@example.com",
+              "standing": "outside",
+              "devices": [],
+              "pair": if fix_phone_join.val {
+                { "state": "code", "devices": 1, "untilText": "14:05 前有效", "showing": ["MacBook Pro"] }
+              } else {
+                Json::null()
+              },
             },
-            "devices": [],
-          },
-        ],
+          ]
+        } else {
+          [
+            {
+              "sub": "s",
+              "email": "lin@example.com",
+              "standing": match f.mode {
+                "chat-phone-outside" => "outside"
+                "chat-phone-none" => "none"
+                _ => "member"
+              },
+              "devices": [],
+            },
+          ]
+        },
         "grants": match f.mode {
           "chat-phone-outside" => [{ "id": "p-1", "status": "pending", "sub": "s", "join": true }]
+          "chat-phone-multi" => [{ "id": "p-1", "status": "pending", "sub": "u1", "join": true }]
           "chat-phone-none" => [{ "id": "p-1", "status": "pending", "sub": "s" }]
           _ => []
         },
@@ -1445,12 +1494,15 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
+        "screenQuality": f_screen_prefs(f).get("screenQuality").unwrap_or(Json::null()),
+        "screenFps": f_screen_prefs(f).get("screenFps").unwrap_or(Json::null()),
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
         "haptics": Json::string(f.haptics),
         "appUpdate": Json::string(f.app_update),
         "shareLook": if f.share_look == "" { Json::null() } else { Json::string(f.share_look) },
+        "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
         "fonts": fixture_fonts(f.fonts),
         "faces": fixture_faces(f.fonts),
         "keys": fixture_keys(f.keys),
@@ -1471,6 +1523,9 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       }
       // the board's (board_fixture.mbt)
       board_prefs_into(o)
+      if f.mode == "home-stale-build" {
+        o["staleBuild"] = Json::boolean(true)
+      }
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)
@@ -1483,8 +1538,31 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "shareIn" => fixture_share_topic(params)
     "imageNear" => fixture_image_near(params)
     // (待处理 open, Maple offline: decide_fixture.mbt)
-    "chats" if f.mode == "home-attention" || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
+    "chats" if f.mode.has_prefix("home-attention") || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
+    "chats" if f.mode == "home-restart-interrupted" && f.step == 0 =>
+      fixture_chats(f, params).map(fn(v) {
+        let base = listed_chats(v)
+        match base {
+          Object(m) => {
+            let m = m.copy()
+            m["interrupted"] = Json::array([
+              {
+                "station": "ws1/st1",
+                "stationName": "AFK-东京服务器",
+                "count": 12,
+                "chats": [
+                  { "key": "s-c1", "thread": 1, "title": "修复登录态失效续跑问题" },
+                  { "key": "s-c2", "thread": 2, "title": "检查 macOS 内存压力检测逻辑" },
+                  { "key": "s-c3", "thread": 3, "title": "排查飞书长连接断连原因" },
+                ],
+              },
+            ])
+            Json::object(m)
+          }
+          _ => base
+        }
+      })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
@@ -1510,6 +1588,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "archive" => @settings.fixture_topic(f.mode, name, params)
     // (the web's demo has none)
     "workspaceMarks" if f.mode == "webdemo" => Some({ "workspaces": { "ws1": {} } })
+    // home-attention-login: and another chat's login card waiting for the viewer, first, in its own words
+    "workspaceMarks" if f.mode == "home-attention-login" => Some(fix_attention_marks(login=true))
     "workspaceMarks" if f.mode == "home-attention" || f.mode.has_prefix("home-shared") =>
       Some(fix_attention_marks())
     "workspaceMarks" if board_mode(f.mode) => Some(board_marks())
@@ -1549,9 +1629,6 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "adbCard" if f.mode == "chat-screens-pc" =>
       Some({ "title": "共享调试", "line": "仅安卓 app 支持共享调试", "sharing": false, "lendable": false })
     "screenCard" | "adbCard" | "terminalCard" => fixture_link_card(name, params)
-    // (a chat's agent's run settings, a settings page: the settings' own)
-    "pick" if f.mode == "settings-run" || f.mode == "settings-run-models" || f.mode == "settings-run-accounts" || f.mode == "settings-run-runtime" =>
-      @settings.fixture_topic(f.mode, name, params)
     "pick" if params.get("of") is Some(String(o)) && o.has_prefix("session:") => Some(fix_session_pick())
     "pick" if params.get("of") is Some(String("connect-new:preset")) && preset_model_cleared.val =>
       match fix_pick() {
@@ -1587,6 +1664,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (a preset whole, and the other members': the new chat's preset menu's and its dialog's)
     "preset" => fix_preset_one(text(Some(Json::object(params)), "id"))
     "otherPresets" => Some(fix_other_presets())
+    // (the person's drafts of 待派发: board_fixture.mbt)
+    "boardDrafts" => Some(board_drafts_topic(text(Some(Json::object(params)), "scope")))
     "newChat" | "pick" => fixture_new_topic(f, name, scope=text(Some(Json::object(params)), "scope"))
     // none left up long, as the core answers it (the first page waits for it); decide_fixture.mbt's modes say theirs
     "longJobs" if !decide_mode(f.mode) => Some({ "groups": [], "lit": false, "ids": [] })
@@ -1884,6 +1963,7 @@ pub fn round_trip_again(
       // the calls whose answers change only signals; what more a run said there kept)
       @ui.on_message("core", @core.receive)
       @ui.on_message_said("core", @core.receive_said)
+      @ui.on_messages_ahead("core", @core.receive_ahead)
       for name in @sfbase.calls_said() {
         @core.said(name)
       }
@@ -2002,12 +2082,15 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// The core's experimental features (client/core-ts/src/features.ts `FEATURES`, stage `experimental`), in its order,
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
-  ("chatPage", true),
-  ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
   ("apps", false),
 ]
+
+///|
+/// The core's `beta` features of the device's own (features.ts `FEATURES`, stage `beta`, not `station`), in its order:
+/// on as the made-up app is of the test channel, off on stable (scripts/features-check.ts holds it to the core's).
+let fixture_beta_features : Array[String] = ["chatPage"]
 
 ///|
 /// The prefs' `experimental`: the switches on of those the core has.
@@ -2022,9 +2105,13 @@ fn fixture_experimental_json(on : Map[String, Bool]) -> Json {
 }
 
 ///|
-/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `betaOnly` one never on a stable app.
+/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `beta` one on the test channel alone, a
+/// `betaOnly` one never on a stable app.
 fn fixture_features_json(test_channel : Bool, on : Map[String, Bool]) -> Json {
   let out : Map[String, Json] = Map([])
+  for id in fixture_beta_features {
+    out[id] = Json::boolean(test_channel)
+  }
   for e in fixture_experimental_features {
     out[e.0] = Json::boolean((!e.1 || test_channel) && on.get(e.0) == Some(true))
   }
@@ -2086,6 +2173,25 @@ let fixture_remote_tabs : Map[Int, Map[String, Json]] = Map([])
 let fixture_terminal_zooms : Map[Int, String] = Map([])
 
 ///|
+// kept across runs: by fixture_ids', each fixture's alone (a screen's 画质 and 帧率 kept by the prefs: `screenQuality`,
+// `screenFps`)
+let fixture_screen_prefs : Map[Int, Map[String, Json]] = Map([])
+
+///|
+/// The fixture's screens' 画质 and 帧率 as the prefs keep them (none: 自动).
+fn f_screen_prefs(f : Fixture) -> Map[String, Json] {
+  let id = fixture_id(f)
+  match fixture_screen_prefs.get(id) {
+    Some(m) => m
+    None => {
+      let m : Map[String, Json] = Map([])
+      fixture_screen_prefs[id] = m
+      m
+    }
+  }
+}
+
+///|
 fn fixture_id(f : Fixture) -> Int {
   f.windows.get(fixture_id_key).unwrap_or(0)
 }
@@ -2142,6 +2248,7 @@ fn made_fixture(mode : String) -> Fixture {
     tabs_shown: fixture_tabs_shown(mode),
     sidebars: {},
     windows: Map::from_array([(fixture_id_key, fixture_ids.next())]),
+    cpu_dial: "",
     share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" && mode != "share-card-motion" {
       // (share-card-<key>-coming, -failed: its files of the looks on their way, not had)
       let look = mode.unsafe_substring(start="share-card-".length(), end=mode.length())
@@ -2166,6 +2273,11 @@ pub fn fixture(mode : String) -> Source {
   board_prefs_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
+  if mode == "newchat-preset-many" {
+    new_fix.presets.clear()
+    new_fix.presets.push_iter(fix_preset_many().iter())
+    new_fix.preset = "p-arch"
+  }
   let f = made_fixture(mode)
   if f.mode == "drive-motion" {
     // the folder changing on its own: a note made at 2 s, 发布清单.md taken out at 3.6 s (rows_view's rows coming and
@@ -2376,6 +2488,15 @@ pub fn fixture(mode : String) -> Source {
         })
         return
       }
+      // a code typed on a page that waits: the trusted device asks its person there, who is not through its prompt the
+      // first time (the same code typed again lets it in)
+      if @settings.fixture_pair_typed(name) {
+        fix_later(800.0, fn() {
+          @settings.fixture_pair_asking()
+          fix_later(2500.0, fn() { done(@settings.fixture_pair_answer()) })
+        })
+        return
+      }
       match @settings.fixture_call(name, params) {
         Some(r) => {
           done(r)
@@ -2453,6 +2574,13 @@ pub fn fixture(mode : String) -> Source {
         }
         "session.cancelRetry" => {
           if f.mode == "chat-overload-after" {
+            f.step += 1
+            f.changed()
+          }
+          done(Ok(Json::object({})))
+        }
+        "station.resumeInterrupted" | "station.dismissInterrupted" => {
+          if f.mode == "home-restart-interrupted" {
             f.step += 1
             f.changed()
           }
@@ -2542,13 +2670,18 @@ pub fn fixture(mode : String) -> Source {
           done(Ok(Json::object({})))
         }
         "screen.settings" | "screen.setSetting" => done(Ok({ "appearance": "light", "textSize": "large" }))
-        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" =>
+        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" | "chat.tabs.replace" =>
           done(fixture_tabs_call(f, name, params))
         "decision.show" => done(Ok(Json::null()))
         "keys.set" => {
           let r = fixture_keys_set(f.keys, params)
           f.changed()
           done(Ok(r))
+        }
+        "board.drafts" => {
+          board_drafts_set(params)
+          f.changed()
+          done(Ok(Json::object({})))
         }
         "prefs.set" => {
           match field(Some(params), "windowZoom") {
@@ -2566,6 +2699,11 @@ pub fn fixture(mode : String) -> Source {
           }
           match field(Some(params), "shareLook") {
             Some(String(l)) => f.share_look = l
+            _ => ()
+          }
+          match field(Some(params), "cpuDial") {
+            Some(String(d)) => f.cpu_dial = d
+            Some(Null) => f.cpu_dial = ""
             _ => ()
           }
           match field(Some(params), "motion") {
@@ -2633,6 +2771,14 @@ pub fn fixture(mode : String) -> Source {
             Some(String(z)) => fixture_terminal_zooms[fixture_id(f)] = z
             Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
             _ => ()
+          }
+          // a screen's 画质 and 帧率 (null: 自动)
+          for k in ["screenQuality", "screenFps"] {
+            match field(Some(params), k) {
+              Some(Null) => f_screen_prefs(f).remove(k)
+              Some(v) => f_screen_prefs(f)[k] = v
+              None => ()
+            }
           }
           // the board's (board_fixture.mbt)
           board_prefs_set(params)
@@ -3125,14 +3271,25 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
       if state == "failed" {
         item["detail"] = Json::string(text(Some(u), "message"))
       }
+      if f.mode == "station-updates-stale" && state == "offered" && listed.is_empty() {
+        item["stale"] = Json::boolean(true)
+        item["detail"] = Json::string("版本已超过 7 天，请尽快升级")
+      }
       listed.push(Json::object(item))
     }
   }
   let n = listed.filter(fn(i) { text(Some(i), "state") != "updating" }).length()
+  let any_stale = listed.iter().any(fn(i) { text(Some(i), "state") != "updating" && flag(Some(i), "stale") })
   {
     "items": Json::array(listed),
     "offered": Json::number(n.to_double()),
-    "labelText": Json::string(if n > 0 { "\{n} 台 station 有新版本" } else { "" }),
+    "labelText": Json::string(
+      if n > 0 {
+        if any_stale { "\{n} 台 station 需要更新" } else { "\{n} 台 station 有新版本" }
+      } else {
+        ""
+      },
+    ),
     "titleText": "Station 更新",
   }
 }

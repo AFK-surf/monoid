@@ -14,10 +14,25 @@ pub(all) suberror Said {
 }
 
 ///|
+/// Its words alone, as the TypeScript's `message` (a suberror shows its constructor's path otherwise).
+pub impl Show for Said with output(self, logger) {
+  match self {
+    Said(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// A sign-in that can no longer be renewed (console.ts `RenewRefused`): its refresh token turned down (`status`), or
 /// none kept. It is a `Said` too: what it says is for people.
 pub(all) suberror RenewRefused {
   RenewRefused(Int?, String)
+}
+
+///|
+pub impl Show for RenewRefused with output(self, logger) {
+  match self {
+    RenewRefused(_, m) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -27,9 +42,23 @@ pub(all) suberror Failed {
 }
 
 ///|
+pub impl Show for Failed with output(self, logger) {
+  match self {
+    Failed(m) => logger.write_string(m)
+  }
+}
+
+///|
 /// A file system's failure: its code (ENOENT, EEXIST…) and its words.
 pub(all) suberror FsError {
   FsError(String, String)
+}
+
+///|
+pub impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

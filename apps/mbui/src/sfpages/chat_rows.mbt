@@ -208,33 +208,38 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
     |> ignore
     if failed {
       outbox_unsent(c, src, here, o)
-    } else if o.followed {
+    } else if o.followed && !o.held {
+      // (one held is taken back on its own: what takes it back under each)
       ()
-    } else if o.state == "sent" {
-      // the station took it: its time under it, as its message has it, until the message takes its place
-      let at = c.box(fn() { message_time(c, "o:" + o.id, o.time) })
-      match flight_here(here) {
-        // (how settled they are read as it is painted, not as its row is built)
-        Some(f) if f.text != "" => c.look_by(at, fn() { @ui.look(alpha=flight_settled_of(c, f)) })
-        _ => ()
-      }
     } else {
-      let words = if o.waits != "" { o.waits } else { @sf.t("web-main.chat.sending") }
-      // (shown once it has been on its way a while, counted from when it was sent (the time of day): a chat opened on
-      // one long on its way shows it at once, and the row taken over by the core's, its id another, goes on as it was;
-      // from when its row was first drawn as well, for a source whose time of day stands still)
+      // (on its way a while, counted from when it was sent (the time of day): a chat opened on one long on its way
+      // shows it at once, and the row taken over by the core's, its id another, goes on as it was; from when its row
+      // was first drawn as well, for a source whose time of day stands still)
       let gone = (src.now)() - o.created_at
-      let shows = gone >= sending_shows_ms || @kit.after(c, "sending/" + o.id, true, sending_shows_ms)
-      if !shows {
+      let late = o.state != "sent" &&
+        (gone >= sending_shows_ms || c.held("sending/" + o.id, true, sending_shows_ms))
+      if o.state != "sent" && !late {
         c.wake_in(sending_shows_ms - gone)
       }
-      let w = c.box(style=msg_waiting, fn() {
-        @sf.progress_spinner(c, "sending/" + o.id, o.progress, size=waiting_spin) |> ignore
-        c.text(words, style=msg_time) |> ignore
-      })
-      // (while its words fly here, its room kept and nothing of it seen)
-      if !shows || flight_here(here) is Some(_) {
-        c.look(w, @ui.look(alpha=0.0))
+      if !late && o.time is Some(_) {
+        // its time under it from the moment the core has it (taken by the station or not: the station taking it
+        // changes nothing seen, as mine_said_node has it), until the message takes its place
+        let at = c.box(fn() { message_time(c, "o:" + o.id, o.time) })
+        mine_time_flight(c, here, at, "o:" + o.id)
+      } else {
+        let words = if o.waits != "" { o.waits } else { @sf.t("web-main.chat.sending") }
+        let w = c.box(style=msg_waiting, fn() {
+          @sf.progress_spinner(c, "sending/" + o.id, o.progress, size=waiting_spin) |> ignore
+          c.text(words, style=msg_time) |> ignore
+          // held here till its station is reached: nothing of it gone, so it may still be taken back
+          if o.held {
+            c.box(style=held_buttons, fn() { outbox_take_back(c, src, here, o) }) |> ignore
+          }
+        })
+        // (while its words fly here, or before it is late (no time said yet), its room kept and nothing of it seen)
+        if !late || flight_here(here) is Some(_) {
+          c.look(w, @ui.look(alpha=0.0))
+        }
       }
     }
   })
@@ -242,8 +247,9 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
 }
 
 ///|
-/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除; each turning while it is
-/// done (the core's doing), a red mark there a few seconds if it failed.
+/// Under what did not go (msgUnsent): 未发送 (why in its tip), then 重试 or 编辑, then 删除 (not where it may be the
+/// station's already: `unsure`); each turning while it is done (the core's doing), a red mark there a few seconds if it
+/// failed.
 fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
   let p = @sf.theme().p
   let locked = here.view.offline
@@ -289,19 +295,46 @@ fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) ->
         on_press=fn() { outbox_call(src, here, "chat.retry", id) },
       )
     }
-    let id = o.id
-    unsent_button(
-      c,
-      "unsent/drop/" + o.id,
-      "trash",
-      @sf.t("common.delete"),
-      !busy,
-      dropping,
-      core_failed(src, ["chat.discard"], on),
-      on_press=fn() { outbox_call(src, here, "chat.discard", id) },
-    )
+    // (one that may be the station's already is only sent again: deleted here it would not be unsaid there)
+    if !o.unsure {
+      let id = o.id
+      unsent_button(
+        c,
+        "unsent/drop/" + o.id,
+        "trash",
+        @sf.t("common.delete"),
+        !busy,
+        dropping,
+        core_failed(src, ["chat.discard"], on),
+        on_press=fn() { outbox_call(src, here, "chat.discard", id) },
+      )
+    }
   })
   |> ignore
+}
+
+///|
+/// Beside what is held till its station is reached (连上后发出): 编辑 (its words back in the composer, the entry
+/// dropped) and 删除, each pressed whether or not the station is reached (neither asks it anything), none while one is
+/// done.
+fn outbox_take_back(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
+  let on = [("station", here.station), ("id", o.id)]
+  let dropping = core_doing(src, ["chat.discard"], on)
+  let draft = here.station + ":" + here.session
+  let id = o.id
+  unsent_button(c, "held/edit/" + o.id, "edit", @sf.t("common.edit"), !dropping, false, None, on_press=fn() {
+    outbox_edit(src, draft, o, fn() { outbox_call(src, here, "chat.discard", id) })
+  })
+  unsent_button(
+    c,
+    "held/drop/" + o.id,
+    "trash",
+    @sf.t("common.delete"),
+    !dropping,
+    dropping,
+    core_failed(src, ["chat.discard"], on),
+    on_press=fn() { outbox_call(src, here, "chat.discard", id) },
+  )
 }
 
 ///|
@@ -902,6 +935,11 @@ let unsent_row : @ui.Style = @ui.css("row pt=S1 gap=SPx align=ACenter")
 let unsent_note : @ui.Style = @ui.css("row pr=S1_5 gap=S1 align=ACenter")
 
 ///|
+/// What takes back what is held till its station is reached, after 连上后发出 in its line (outbox_row's).
+// kept across runs: a value (no field of it changes)
+let held_buttons : @ui.Style = @ui.css("row gap=SPx align=ACenter")
+
+///|
 // kept across runs: a value (no field of it changes)
 let unsent_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Danger, wrap=false)
 
@@ -934,14 +972,15 @@ let activity_row_box : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
 ///|
 /// Its line (activityLine): its picture where the messages' pictures are, out in the margin before the words
-/// (message_avatar_out), the picture and what it does 8 apart, 6 round.
+/// (message_avatar_out), the picture and what it does 8 apart, 6 round; fills the row so shrinking words during a
+/// click never drop the press.
 // kept across runs: a value (no field of it changes)
-let activity_line : @ui.Style = @ui.style(row=true, gap=S2, radius=Md, align=ACenter, ml=@sf.message_avatar_out)
+let activity_line : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter, ml=@sf.message_avatar_out)
 
 ///|
 /// Narrow: its picture at the row's start, as the messages' are there (inlineHeads).
 // kept across runs: a value (no field of it changes)
-let activity_line_narrow : @ui.Style = @ui.css("row gap=S2 radius=Md align=ACenter")
+let activity_line_narrow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter)
 
 ///|
 /// Its picture with the ring round it (activityAvatar): 24 across, the picture in its middle; the ring reaching 3 past

@@ -29,8 +29,8 @@ pub fn directory_schema() -> String {
 
 ///|
 fn directory_check(db : @sql.Db) -> Unit raise {
-  let v = match first(db, "SELECT version FROM session_dir_meta WHERE id = 1", []) {
-    Some(m) => get(m, "version")
+  let v = match db.first("SELECT version FROM session_dir_meta WHERE id = 1", []) {
+    Some(m) => @sql.row_val(m, "version")
     None => Json::null()
   }
   guard v is Number(n, ..) && n.to_int() == directory_version else {
@@ -41,7 +41,7 @@ fn directory_check(db : @sql.Db) -> Unit raise {
 
 ///|
 fn directory_installed(db : @sql.Db) -> Bool raise {
-  first(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_dir_meta'", []) is Some(_)
+  db.first("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_dir_meta'", []) is Some(_)
 }
 
 ///|
@@ -67,15 +67,15 @@ pub fn directory_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   directory_check(db)
-  guard first(db, "SELECT phase, cursor, end_session FROM session_dir_meta WHERE id = 1", []) is Some(meta) else {
+  guard db.first("SELECT phase, cursor, end_session FROM session_dir_meta WHERE id = 1", []) is Some(meta) else {
     raise Failure("session directory index version missing is incompatible with \{directory_version}")
   }
-  let end = get(meta, "end_session")
-  let mut phase = match get(meta, "phase") {
+  let end = @sql.row_val(meta, "end_session")
+  let mut phase = match @sql.row_val(meta, "phase") {
     Number(p, ..) => p.to_int()
     _ => 0
   }
-  let mut cursor = get(meta, "cursor")
+  let mut cursor = @sql.row_val(meta, "cursor")
   let mut visited = 0
   while visited < limit {
     let lim = Json::number((limit - visited).to_double())
@@ -101,7 +101,7 @@ pub fn directory_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
       found
     }
     for row in rows {
-      let session = get(row, "session")
+      let session = @sql.row_val(row, "session")
       ignore(db.run("DELETE FROM session_dir_rows WHERE session = ?", [session]))
       ignore(
         db.run(
@@ -117,7 +117,7 @@ pub fn directory_step(db : @sql.Db, limit? : Int = 64) -> Bool raise {
     }
   }
   ignore(db.run("UPDATE session_dir_meta SET phase = ?, cursor = ? WHERE id = 1", [Json::number(phase.to_double()), cursor]))
-  let done = phase == 1 && first(db, "SELECT 1 FROM session_dir_dirty LIMIT 1", []) is None
+  let done = phase == 1 && db.first("SELECT 1 FROM session_dir_dirty LIMIT 1", []) is None
   db.exec("COMMIT")
   done
 }

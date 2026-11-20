@@ -105,6 +105,11 @@ fn Actors::local_store(self : Actors, f : String, args : Array[Json]) -> Json? r
         [r, ..] => Some(turn_summary(r))
         _ => Some(Json::null())
       }
+    "latestTurn" =>
+      match db.all("SELECT * FROM turns WHERE session_key = ? ORDER BY started_at DESC, rowid DESC LIMIT 1", [arg(0)]) {
+        [r, ..] => Some({ "id": col(r, "id"), "summary": turn_summary(r) })
+        _ => Some(Json::null())
+      }
     "slackStop" =>
       match db.all("SELECT event_ts, turn_id FROM slack_stops WHERE session = ? AND connect = ? AND channel = ? AND thread_ts = ?", [arg(0), arg(1), arg(2), arg(3)]) {
         [r, ..] => Some({ "ts": col(r, "event_ts"), "turn": col(r, "turn_id") })
@@ -146,8 +151,13 @@ fn Actors::local_store(self : Actors, f : String, args : Array[Json]) -> Json? r
       self.changed_store([session_changed(key)])
       Some(Json::null())
     }
+    "noteCompacted" => {
+      ignore(db.run("UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1", [arg(0)]))
+      self.changed_store([session_changed(key)])
+      Some(Json::null())
+    }
     "setRuntimeSessionId" => {
-      ignore(db.run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", [arg(1), arg(0)]))
+      ignore(db.run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", [arg(1), arg(0)]))
       self.changed_store([session_changed(key), { "type": "conversation", "key": jstr(key) }])
       Some(Json::null())
     }

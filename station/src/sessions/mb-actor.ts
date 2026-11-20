@@ -82,7 +82,7 @@ export class ActorsProgram {
 
   readonly #store: { told(changes: any[]): void } | null;
 
-  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
+  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null, maxConcurrentTurns = 0) {
     this.#clock = clock;
     this.#store = store;
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
@@ -94,6 +94,7 @@ export class ActorsProgram {
     // memory (a test's) is this process's alone, asked as the rest is. Said first: the program's actors begin here.
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
     this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
+    if (maxConcurrentTurns > 0) this.setMaxConcurrentTurns(maxConcurrentTurns);
   }
 
   #lost(code: number) {
@@ -117,9 +118,15 @@ export class ActorsProgram {
   }
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
-  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
+  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null, maxConcurrentTurns = 0): ActorsProgram | null {
     if (mbReaderBinary() === null) return null;
-    return new ActorsProgram(data, clock, store);
+    return new ActorsProgram(data, clock, store, maxConcurrentTurns);
+  }
+
+  /// Updates the maximum concurrent running turns in the sessions program without restarting.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.post({ maxConcurrentTurns: limit });
   }
 
   now() {
@@ -325,7 +332,8 @@ export class MbActor {
   #sent = 0;
   #next = 0;
   /// Its runtime sessions, by the number the program knows each by.
-  readonly #agents = new Map<number, { generation: number; session: AgentSession }>();
+  /// `heard`: how many requests its token had made of the station's tools as it was opened (none for one taken up).
+  readonly #agents = new Map<number, { generation: number; session: AgentSession; heard?: number }>();
   #generation = 0;
   #closed = false;
   /// What is being read and formatted for it (`pendingAndFormat`): given up at once on a stop or a suspension.
@@ -452,6 +460,7 @@ export class MbActor {
   goOn() { return this.#call("goOn").then(() => undefined); }
   allowanceReset() { return this.#call("allowanceReset").then(() => undefined); }
   recover() { return this.#call("recover").then(() => undefined); }
+  cutOffByRestart(): Promise<boolean> { return this.#call("cutOffByRestart").then((v) => v === true); }
   takeWait() { return this.#call("takeWait").then(() => undefined); }
   takeRefill() { return this.#call("takeRefill").then(() => undefined); }
   release() { return this.#call("release").then(() => undefined); }
@@ -570,7 +579,8 @@ export class MbActor {
       // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
       // take of it, its unread cleared and a turn's outcome)
       if (event.type === "live") {
-        if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
+        // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+        if (event.event.kind === "phase" && event.event.phase === "requesting") {
           this.#mirror = { ...this.#mirror, unread: [] };
           this.#routing.cleared = true;
         }
@@ -583,7 +593,7 @@ export class MbActor {
       const e = event.event;
       if (e.kind === "tasks" || e.kind === "plan" || (e.kind === "delta" && e.field !== "text")) return;
       if (e.kind === "start" && e.step === "thinking") return;
-      if (e.kind === "phase" && e.phase === "requesting" && this.#mirror.unread.length > 0) {
+      if (e.kind === "phase" && e.phase === "requesting") {
         this.#mirror = { ...this.#mirror, unread: [] };
         this.#readAt = this.#sent + 1;
       }
@@ -644,7 +654,7 @@ export class MbActor {
     }
     if (part === "deps") {
       const d = deps as Json;
-      if (typeof d[name] !== "function") return null;
+      if (typeof d[name] !== "function") return name === "canAuthRetry" ? true : null;
       return await d[name](...args);
     }
     if (part === "agent") {
@@ -734,6 +744,7 @@ export class MbActor {
       case "open": {
         const [stopped, readBack, profile] = args;
         let generation = 0;
+        const heard = deps.toolsHeard?.(this.key);
         const opened = await openAgent(deps, this.key, {
           stopped,
           readBack,
@@ -743,7 +754,7 @@ export class MbActor {
           listener: (g) => this.listener(g),
         });
         const handle = ++this.#next;
-        this.#agents.set(handle, { generation, session: opened.session });
+        this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
         return { ...rest, handle, runtime: this.runtime };
@@ -755,6 +766,14 @@ export class MbActor {
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
       case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
+      // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
+      // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
+      // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.
+      case "toolsUnheard": {
+        const heard = this.#agents.get(args[0])?.heard;
+        if (heard === undefined || this.runtime === "codex" || deps.toolsHeard === undefined) return null;
+        return deps.toolsHeard(this.key) === heard ? "its process never reached the station's tools" : null;
+      }
       case "outlived": {
         const session = this.#agents.get(args[0])?.session;
         return session?.outlived?.() === true;

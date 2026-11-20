@@ -44,7 +44,7 @@ pub fn chat_row_node(
   rows.swiped_off.remove(swiped_key(first))
   let r = fn() { row_ref(item()) }
   let offline = fn() { item().offline is Some(_) }
-  let menu_ok = fn() { item().offline is None && !item().pending }
+  let menu_ok = fn() { row_menu_offered(item()) }
   let menu_on = fn() { row_menu_open(item()) }
   // (its title a field in its place, from a mouse's 重命名: rename_node)
   let renaming = fn() { row_renaming.get() == key() }
@@ -97,6 +97,9 @@ pub fn chat_row_node(
     match reader { Some(reader) => @sfbase.handoff_chat_open(r, reader); None => () }
   }
   parent.box(fn(slot) {
+    // (row-internal marks, badges and icons settle at once unless an explicit transition moves the row itself,
+    // isolating them from the sidebar list's own slot transitions: libs/mbui/src/view/transition.mbt)
+    slot.transitions_only() |> ignore
     // (in its slot, cut to its corners where its list stands: moved across in it, its tray beside it; a finger's in a
     // box of its own, its slot lifted round it; a mouse's its slot itself, the room under it its margin)
     @sf.style_node(slot, fn() {
@@ -141,7 +144,7 @@ pub fn chat_row_node(
             0.0
           }
         },
-        fn(to) { lift.go(slot, to, @motion.lift_spring) },
+        fn(to) { lift.go(slot, to, @motion.tactile_bounce) },
       )
       slot
       .ground(By(fn() {
@@ -201,8 +204,12 @@ pub fn chat_row_node(
     // (a finger's press's ground, beside the chat: on at once, off over dur_ms)
     let pressed = @motion.NodeWay::new(0.0)
     let off = tray.off
-    let hand = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    let hand = if !finger {
+      @motion.hover_fade_keyed(row, key, fn() { @sf.lit_in_node(hover_in) }, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
+    }
+    let chosen = @motion.hover_fade_keyed(row, key, on, duration_ms=@sf.dur_ms)
     let ground = fn() {
       let p = t().p
       if finger {
@@ -211,8 +218,8 @@ pub fn chat_row_node(
           0L
         } else if held.get() || menu_on() || (at == Whole && press_lit.get()) {
           @sf.alpha(p.text, 0.05)
-        } else if at != Whole && (pressed.shown(row) > 0.0 || chosen.shown(row) > 0.0 || left.shown(row) > 0.0) {
-          let o = dmax(chosen.shown(row), left.shown(row))
+        } else if at != Whole && (pressed.shown(row) > 0.0 || chosen() > 0.0 || left.shown(row) > 0.0) {
+          let o = dmax(chosen(), left.shown(row))
           @sf.over(@sf.alpha(p.text, 0.05 * pressed.shown(row) * (1.0 - o)), @sf.alpha(p.selected, o))
         } else if on() {
           p.selected
@@ -228,8 +235,8 @@ pub fn chat_row_node(
           }
         }
       } else {
-        let h = hand.shown(row)
-        let o = chosen.shown(row)
+        let h = hand()
+        let o = chosen()
         if h <= 0.0 && o <= 0.0 {
           0L
         } else {
@@ -262,7 +269,7 @@ pub fn chat_row_node(
       fn(h) {
         let tone = fn() { @sfbase.row_tone(item()) }
         // (the show's own box its slot: a box a part, no box round one)
-        h.show(fn() { tone() != "" && !renaming() }, fn(m) {
+        h.show(fn() { tone() != "" && !renaming() }, along_row=true, fn(m) {
           @sf.style_node(m, fn() { mark_slot }, in_row=true)
           chat_mark_node(m, tone)
         })
@@ -287,7 +294,7 @@ pub fn chat_row_node(
           |> ignore
         })
         // failed a moment ago: a red mark, why on it
-        h.show(fn() { failed() is Some(_) }, fn(s) {
+        h.show(fn() { failed() is Some(_) }, along_row=true, fn(s) {
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
           let why = fn() { failed().unwrap_or("") }
           s.says(By(fn() { Some(@view.said(Image, label=why())) })) |> ignore
@@ -311,7 +318,7 @@ pub fn chat_row_node(
             0
           }
         }
-        h.pick(away_which, fn(s, which) {
+        h.pick(away_which, along_row=true, fn(s, which) {
           if which == 0 {
             // An empty pick is still a box in this row. Leave it out of layout too, including its gap.
             s.laid_nowhere(Is(true)) |> ignore
@@ -340,7 +347,7 @@ pub fn chat_row_node(
           @sf.tip_node(tips, s, said, within=true) |> ignore
         })
         // opened by another chat's agent: marked so, that chat named on it
-        h.show(fn() { item().opener is Some(_) && !renaming() }, fn(s) {
+        h.show(fn() { item().opener is Some(_) && !renaming() }, along_row=true, fn(s) {
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
           let said = fn() {
             match item().opener {
@@ -513,7 +520,9 @@ pub fn chat_row_node(
         .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @ui.capsule_in(@sf.row_corner, row_key_side), 0.0)))
         .offset(By(fn() { (off.shown(o), 0.0) }))
         |> ignore
-        o.box(fn(k) {
+        @sf.action_box_node(o, fn() { @sf.t("web-main.chat.archiveNamed", args=[("title", item().title)]) }, fn(_) {
+          then_whole(fn(w) { archive_row(src, w, here=kept is Some(_)) }, fn() {  })
+        }, fn(k) {
           k
           .width(Is(Some(row_key_side)))
           .height(Is(Some(row_key_side)))
@@ -522,13 +531,8 @@ pub fn chat_row_node(
           .lies_along(Is(Middle))
           |> ignore
           @sf.hover_ground_node(k)
-          @sf.presses_node(k, fn() { then_whole(fn(w) { archive_row(src, w, here=kept is Some(_)) }, fn() {  }) })
           // (beside the row now, not in it: right clicked, the row's menu still, as on its name)
           k.on_menu(fn(m) { open_menu(m.wx, m.wy, false) }) |> ignore
-          k.says(By(fn() {
-            Some(@view.said(Button, label=@sf.t("web-main.chat.archiveNamed", args=[("title", item().title)])))
-          }))
-          |> ignore
           @sf.icon_node(k, "archive", row_icon, By(fn() { if @sf.lit_node(k) { t().p.text } else { t().p.muted } })) |> ignore
           @sf.tip_node(tips, k, fn() { @sf.t("web-main.chat.archive") }) |> ignore
         })
@@ -539,7 +543,6 @@ pub fn chat_row_node(
     if swipes {
       swipe_node(holder, src, item, tray, here, ask_whole, then_whole, come_back)
     }
-    row.reacts(fn() { @sf.lit_in_node(hover_in) }, fn(h) { hand.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
     // (a pointer come to rest over it: its whole row asked for its time, its 归档 and its menu; gone, let go of)
     if !finger {
       row.reacts(fn() { @sf.lit_in_node(hover_in) }, fn(h) {
@@ -554,18 +557,6 @@ pub fn chat_row_node(
     // (its menu gone, what waited answered: let go of where nothing else holds it)
     row.reacts(fn() { menu_on() }, fn(on) { if !on { whole_idle() } })
     row.owns(fn() { whole.drop() }) |> ignore
-    // (its chat in view or no more, eased; taken for another chat, as that one's at once, as it would be made)
-    let chosen_for = Ref(@sfbase.row_name(first))
-    row.reacts(fn() { (key(), on()) }, fn(now) {
-      let (k, o) = now
-      let to = if o { 1.0 } else { 0.0 }
-      if k == chosen_for.val {
-        chosen.go_ms(row, to, @sf.dur_ms)
-      } else {
-        chosen.put(to)
-      }
-      chosen_for.val = k
-    })
     // (taken for another chat: what was the one before's let go, as it would be were it made anew for this one)
     let made_for = Ref(@sfbase.row_name(first))
     row.reacts(key, fn(k) {
@@ -596,7 +587,7 @@ pub fn chat_row_node(
       // as the list scrolls), what a frame found, no cause; what it shows is put back as it would be were it made anew
       // for that chat, as a list's reused row's looks always are (a way said here was the frame's, at 60 a second and
       // 120 at other moments and other times over: tape_wbtest's ways, 2026-11-11))
-      for w in [left, pressed, hand] {
+      for w in [left, pressed] {
         w.put(0.0)
       }
       lift.put(0.0)
@@ -783,9 +774,9 @@ fn Tray::back(self : Tray, n : @view.View, w : Double, done : () -> Unit) -> Uni
   self.since.set(0.0)
   if self.parked.untracked() {
     self.parked.set(false)
-    self.off.go_from(n, -w, 0.0, @motion.move_spring)
+    self.off.go_from(n, -w, 0.0, @motion.move_damped)
   } else {
-    self.off.go(n, 0.0, @motion.move_spring)
+    self.off.go(n, 0.0, @motion.move_damped)
   }
   self.due = n.at_moment(self.off.end(), fn() {
     self.due = fn() {  }
@@ -851,11 +842,23 @@ fn tray_check_to_words() -> Double {
 /// Where 归档's words stand across a slot `w` wide (their start) as the row's end is at `edge`, they `words` wide, the
 /// row's own inset `pad`: at the slot's end at first as the row uncovers them; once its end is close behind them, with
 /// it, a point less behind it than the check is before them (so the check is never uncovered on the way); docked where
-/// a marked row's title starts, the check in the row's mark's column, the row going on.
+/// a marked row's title starts, the check in the row's mark's column, the row going on. They come into the dock
+/// slowing down evenly over the last `k` before it (no corner where they meet it: a row springing back on its way past
+/// it brings them to rest there, not to a stop in one frame), at `dock` exactly once the row's end is at 0.
 fn tray_words_x(w : Double, edge : Double, words : Double, pad : Double) -> Double {
   let rest = w - pad - words
   let dock = pad + row_mark_w() + row_mark_gap()
-  dmax(dock, dmin(edge + tray_check_to_words() - 1.0, rest))
+  let reach = tray_check_to_words() - 1.0
+  let raw = dmin(edge + reach, rest)
+  let k = dmin(32.0, dmax(1.0, dock - reach))
+  let u = raw - dock
+  if u <= -k {
+    dock
+  } else if u >= k {
+    raw
+  } else {
+    dock + (u + k) * (u + k) / (4.0 * k)
+  }
 }
 
 ///|
@@ -1045,7 +1048,7 @@ fn swipe_node(
     tray.due = sw.at_moment(off.end(), fn() { tray.out.set(false) })
   }
   let back = fn(vx : Double) {
-    off.go(sw, 0.0, @motion.move_spring, velocity=vx * 1000.0)
+    off.go(sw, 0.0, @motion.move_damped, velocity=vx * 1000.0)
     rests()
   }
   sw
@@ -1174,57 +1177,35 @@ fn row_aside_w_node(v : @view.View, item : ChatItem, lead : String) -> Double {
 }
 
 ///|
-/// A row's title as a field in its place (row_rename's, from a mouse's 重命名) in `n`: its words
-/// the title's, the focus in it as it comes; Enter saves it (`chat.rename`), Esc or leaving it lets it be; as far in as where its list stands
-/// (`at`) has it (rename_box).
+/// A row's title as a field in its place (row_rename's, from a mouse's 重命名) in `n`: the library's name changed in
+/// place (@sf.inline_rename_node), its words the title's, all of them picked, the focus in it as it comes; Enter or
+/// leaving it saves it (`chat.rename`) where it changed, Esc lets it be; as far in as where its list stands (`at`) has
+/// it (rename_box).
 fn rename_node(n : @view.View, src : Source, item : () -> ChatItem, at : @sf.ListAt) -> Unit {
-  rows.rename_field.set(@signals.untracked(item).title)
-  let done = fn() { stop_rename() }
-  n.box(fn(b) {
-    @sf.style_node(b, fn() { rename_box(at) }, in_row=true)
-    b.row(Is(true)).lines_up(Is(Some(Middle))).edge(By(fn() { (1.0, @sf.theme().p.line_strong) })) |> ignore
-    let f = @ui.field(
-      b,
-      rows.rename_field,
-      font_size=rename_size,
-      label=@sf.t("web-main.chat.rename"),
-      line=rename_line,
-      max_lines=1,
-      enter_sends=true,
-      colors_by=fn() {
-        let p = @sf.theme().p
-        (p.text, p.subtle, p.accent)
-      },
-      submitted=fn(title) {
-        done()
-        rename(src, @signals.untracked(item), title)
-      },
-    )
-    f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
-    b.focus_opens(f) |> ignore
-    // A press outside the field ends the rename even when its target cannot take the focus. It still reaches that
-    // target. The press that opened the menu predates this field, so only later presses are considered.
-    let opened = @signals.untracked(fn() { b.window_downs() })
-    b.reacts(fn() { b.window_downs() }, fn(count) {
-      if count > opened {
-        let (x, y) = b.window_down_point()
-        let (left, top, w, h) = b.placed_window_now()
-        if x < left || x >= left + w || y < top || y >= top + h {
-          b.focus_let_go()
-          done()
-        }
-      }
-    })
-    // (left: let be)
-    let seen = Ref(false)
-    b.reacts(fn() { f.focused() }, fn(on) {
-      if on {
-        seen.val = true
-      } else if seen.val {
-        done()
-      }
-    })
-  })
+  let title = @signals.untracked(item).title
+  rows.rename_field.set(title)
+  @sf.inline_rename_node(
+    n,
+    rows.rename_field,
+    title,
+    @sf.t("web-main.chat.rename"),
+    fn(words) {
+      stop_rename()
+      rename(src, @signals.untracked(item), words)
+    },
+    fn() { stop_rename() },
+    picks=NameWhole,
+    frame=fn(b) {
+      @sf.style_node(b, fn() { rename_box(at) }, in_row=true)
+      b.row(Is(true)).lines_up(Is(Some(Middle))).edge(By(fn() { (1.0, @sf.theme().p.line_strong) })) |> ignore
+    },
+    size_by=fn() { rename_size },
+    line=rename_line,
+    colors_by=fn() {
+      let p = @sf.theme().p
+      (p.text, p.subtle, p.accent)
+    },
+  )
   |> ignore
 }
 

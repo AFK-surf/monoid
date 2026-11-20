@@ -48,7 +48,7 @@ test("every tool has a name, a description and an object's input schema; the cha
   const ours = [...chatTools(r.hub), ...archiveTools(r.hub), ...remoteTools({} as Remote), ...adbTools(() => []), ...feedbackTools(r.store, () => null, () => null)];
   assert.deepEqual(
     chatTools(r.hub).map((t) => t.name),
-    ["chat_post", "slack_api", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "session_history"],
+    ["chat_post", "slack_api", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "chat_configure", "session_history"],
   );
   assert.equal(new Set(ours.map((t) => t.name)).size, ours.length, "no name twice");
   for (const tool of ours) {
@@ -1290,7 +1290,7 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   assert.ok(runtimeOf(r, child).prompts[0]!.includes("build the android app"));
   // Said in the opener's chat, for people.
   const notice = r.said(r.thread("C1", a.threadTs).id).at(-1)!;
-  assert.equal(notice.authorKind, "ember");
+  assert.equal(notice.authorKind, "station");
   assert.ok(notice.text.includes(`<https://ember.test/o/ws/st/${child.replaceAll(":", "%3A")}|安卓构建>`), notice.text);
   // Its row in the list leads back to the chat that opened it, named as that chat was then; the opener's row says
   // nothing of it, and archiving the opener leaves it as it was.
@@ -1548,7 +1548,7 @@ test("an agent opens a chat on another station: made there once per key, its fir
   runtimeOf(far, child!).complete();
   await settle();
   const last = far.said(thread.id).at(-1)!;
-  assert.ok(last.authorKind === "ember" && last.text.includes("peer unavailable"), last.text);
+  assert.ok(last.authorKind === "station" && last.text.includes("peer unavailable"), last.text);
   // A station that cannot be reached: not opened, and it says how to go on.
   farDown = true;
   const down = await near.refused(keyA, "chat_create", { for: "me", key: "again", station: "far", text: "x" });
@@ -1562,6 +1562,26 @@ test("an agent opens a chat on another station: made there once per key, its fir
   assert.ok((await near.refused(keyA, "chat_create", { for: "me", key: "nowhere", station: "mars", text: "x" })).includes("orchard"));
   await near.close();
   await far.close();
+});
+
+test("a chat opened here and moved to another station since: that station tells its opener here how its turns end", async () => {
+  // (real run, 2026-11-20: a led chat moved to pvg-office-2 and its turn's end came back "opened no chat")
+  const near = new Rig({ link: true });
+  const a = say("<@UBOT> lead a drill");
+  await near.accept(a);
+  await settle();
+  const keyA = sessionKey("cl", "C1", a.threadTs);
+  const child = "chat:c-drill";
+  near.store.insertOpened({ childStation: "", child, parentStation: "", parent: keyA, key: "drill", title: "演练", link: null, led: true });
+  near.store.db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?, 'far', NULL, NULL, NULL, 0)").run(child);
+  assert.deepEqual(noticeForPeer(near.hub, "far", { session: child, to: keyA, state: "all_done", words: "读回 drill.txt" }), { told: true });
+  assert.equal(near.store.openedBy(keyA)[0]!.state, "all_done");
+  await settle();
+  const told = [...runtimeOf(near, keyA).steers, ...runtimeOf(near, keyA).prompts.slice(1)].join("\n");
+  assert.ok(matches(told, ["演练", "ended its turn all_done", "读回 drill.txt"]), told);
+  // Only the station it went to.
+  assert.throws(() => noticeForPeer(near.hub, "elsewhere", { session: child, to: keyA, state: "all_done" }), /opened no chat/);
+  await near.close();
 });
 
 test("an agent opens a chat with a preset as a person would in the app: taken as it is, nothing given beside what it names", async () => {

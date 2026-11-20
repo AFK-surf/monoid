@@ -1,22 +1,53 @@
 // What a station's page shows of the machine and its software (still.fail web/src/components.tsx MeterDials, Dial;
-// cloud/StationCards.tsx Net, HostDetails; Versions.tsx SoftwareList, SoftwareRow; MachineLogins.tsx LoginsSection,
+// cloud/StationCards.tsx HostDetails; Versions.tsx SoftwareList, SoftwareRow; MachineLogins.tsx LoginsSection,
 // PastRow; their css.ts), all of it as the core says it.
 
 ///|
 /// A meter as its dial: what is left large, filled as far as is used, its name and its total under (each its short
-/// words too).
-fn meter_dial(m : Json) -> @sf.Dial {
+/// words too). The CPU's (`short` CPU) turns: `busy`, how much of it is used large instead, as its cells are filled.
+fn meter_dial(m : Json, busy : Bool) -> @sf.Dial {
   let mv = Some(m)
-  {
-    number: text(mv, "big"),
-    unit: text(mv, "unit"),
-    fill: 100 - count(mv, "left"),
-    level: text(mv, "level"),
-    label: text(mv, "title"),
-    note: text(mv, "total"),
-    label_short: text(mv, "titleShort"),
-    note_short: text(mv, "totalShort"),
+  let cpu = text(mv, "short") == "CPU"
+  if cpu && busy {
+    let used = count(mv, "percent")
+    {
+      number: used.to_string(),
+      unit: "%",
+      fill: used,
+      level: text(mv, "level"),
+      label: @sf.t("web-pages.stations.page.cpuBusy"),
+      note: text(mv, "total"),
+      label_short: @sf.t("web-pages.stations.page.cpuBusyShort"),
+      note_short: text(mv, "totalShort"),
+      turns: true,
+    }
+  } else {
+    {
+      number: text(mv, "big"),
+      unit: text(mv, "unit"),
+      fill: 100 - count(mv, "left"),
+      level: text(mv, "level"),
+      label: text(mv, "title"),
+      note: text(mv, "total"),
+      label_short: text(mv, "titleShort"),
+      note_short: text(mv, "totalShort"),
+      turns: cpu,
+    }
   }
+}
+
+///|
+/// Whether this device shows its machines' CPU as how much of it is used (the prefs' `cpuDial` busy), not how much is
+/// idle: pressing the CPU's dial turns it, kept on this device alone.
+fn cpu_busy(src : Source) -> Bool {
+  @settings.cpu_busy_of(src.topic("prefs", {}).get().value)
+}
+
+///|
+/// The CPU's dial pressed: the other way kept on this device.
+fn cpu_dial_turn(src : Source) -> Unit {
+  let to = if cpu_busy(src) { Json::null() } else { Json::string("busy") }
+  (src.call)("prefs.set", { "cpuDial": to }, @sfbase.answer_unread)
 }
 
 ///|
@@ -30,14 +61,16 @@ fn station_dials_of(meters : Array[Json], gpus : Array[Json]) -> (Array[Json], A
 }
 
 ///|
-/// The machine's dials, as `host` says them now.
-fn station_dials_node(p : @view.View, host : () -> Json?) -> Unit {
+/// The machine's dials, as `host` says them now, the CPU's turned by a press (cpu_dial_turn).
+fn station_dials_node(p : @view.View, src : Source, host : () -> Json?) -> Unit {
+  let busy = @signals.computed(fn(_) { cpu_busy(src) })
+  let press = fn(_i : Int) { cpu_dial_turn(src) }
   p.pick(fn() { items(host(), "gpus").length() > 0 }, fn(d, gpus) {
     if gpus {
       let both = fn() { station_dials_of(items(host(), "meters"), items(host(), "gpus")) }
-      @sf.dials_node(d, fn() { both().0.map(meter_dial) }, details=fn() { both().1 }, columns=3)
+      @sf.dials_node(d, fn() { both().0.map(fn(m) { meter_dial(m, busy.get()) }) }, details=fn() { both().1 }, columns=3, press~)
     } else {
-      @sf.dials_node(d, fn() { items(host(), "meters").map(meter_dial) })
+      @sf.dials_node(d, fn() { items(host(), "meters").map(fn(m) { meter_dial(m, busy.get()) }) }, press~)
     }
   })
 }
@@ -49,78 +82,14 @@ fn quota_dials_of(windows : Array[Json]) -> Array[@sf.Dial] {
   windows.map(fn(w) {
     let wv = Some(w)
     let left = count(wv, "left")
-    { number: left.to_string(), unit: "%", fill: left, level: text(wv, "level"), label: text(wv, "label"), note: text(wv, "refills"), label_short: "", note_short: "" }
+    { number: left.to_string(), unit: "%", fill: left, level: text(wv, "level"), label: text(wv, "label"), note: text(wv, "refills"), label_short: "", note_short: "", turns: false }
   })
-}
-
-///|
-/// This device's connection to it (station_net's, as nodes), as `net` says it now: how it goes and packets lost, its
-/// round trip; beside them ↑ and ↓ (under them where the line has not the room).
-fn station_net_node(p : @view.View, net : () -> Json?) -> Unit {
-  let has = fn(key : String) { field(net(), key) is Some(Object(_)) }
-  p.box(fn(r) {
-    @sf.style_node(r, fn() { nt_row })
-    r.wraps(Is(Some(nt_lines))) |> ignore
-    r.box(fn(part) {
-      @sf.style_node(part, fn() { nt_part }, in_row=true)
-      part.box(fn(l) {
-        @sf.style_node(l, fn() { nt_line }, in_row=true)
-        @sf.words_node(l, fn() { text(net(), "path") }, fn() { nt_words_cut }) |> ignore
-        l.show(fn() { has("loss") }, fn(f) { figure_node(f, fn() { field(net(), "loss") }) })
-      })
-      |> ignore
-      part.show(fn() { has("rtt") }, fn(x) {
-        x.box(fn(l) {
-          @sf.style_node(l, fn() { nt_line }, in_row=true)
-          @sf.words_node(l, fn() { "·" }, fn() { nt_words }) |> ignore
-          let parts = fn() {
-            let words = @sf.t("web-pages.stations.latency", args=[("latency", "\u{0}")])
-            words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
-          }
-          @sf.words_node(l, fn() { parts().get(0).unwrap_or("") }, fn() { nt_words }) |> ignore
-          figure_node(l, fn() { field(net(), "rtt") })
-          @sf.words_node(l, fn() { parts().get(1).unwrap_or("") }, fn() { nt_words_cut }) |> ignore
-        })
-        |> ignore
-      })
-    })
-    |> ignore
-    r.box(fn(rates) {
-      @sf.style_node(rates, fn() { nt_rates }, in_row=true)
-      for way in [("↑", "up"), ("↓", "down")] {
-        rates.box(fn(l) {
-          @sf.style_node(l, fn() { nt_rate }, in_row=true)
-          @sf.words_node(l, fn() { way.0 }, fn() { nt_words }) |> ignore
-          @sf.words_node(l, fn() { text(net(), way.1) }, fn() { nt_figure }) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A figure (figure's, as a node), as `f` says it now.
-fn figure_node(p : @view.View, f : () -> Json?) -> Unit {
-  @sf.words_node(p, fn() { text(f(), "text") }, fn() { figure_style(text(f(), "level")) }) |> ignore
-}
-
-///|
-/// A figure's words by its level: bold in the words' ink, in its level's colour when off.
-fn figure_style(level : String) -> @ui.TextStyle {
-  match level {
-    "amber" => nt_figure.then(@ui.text_style(color=WarnInk))
-    "red" => nt_figure.then(@ui.text_style(color=Danger))
-    _ => nt_figure
-  }
 }
 
 ///|
 /// A figure (Figure): bold in the words' ink, in its level's colour when off.
 pub fn figure(c : @ui.Ctx, f : Json?) -> Unit {
-  c.text(text(f, "text"), style=figure_style(text(f, "level"))) |> ignore
+  c.text(text(f, "text"), style=@sf.level_figure_style(text(f, "level"), nt_figure)) |> ignore
 }
 
 ///|
@@ -161,43 +130,8 @@ let st_logins_open : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 // ── styles ──────────────────────────────────────────────────────────────
 
 ///|
-/// The connection (net: 8 apart, 8 between its lines where the speeds go under, the ui's 13 muted, its figures bold
-/// in the words' ink).
-// kept across runs: a value (no field of it changes)
-let nt_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify=JBetween")
-
-///|
-let nt_lines : Double = 8.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_part : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_line : @ui.Style = @ui.css("row gap=S1 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
-
-///|
-/// The last of a line's words, cut short where the line is (netLine's last child).
-// kept across runs: a value (no field of it changes)
-let nt_words_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false, w=Cut)
-
-///|
 // kept across runs: a value (no field of it changes)
 let nt_figure : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false)
-
-///|
-/// ↑ and ↓ side by side.
-// kept across runs: a value (no field of it changes)
-let nt_rates : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_rate : @ui.Style = @ui.css("row min_w=S16 gap=S1 align=ACenter")
 
 ///|
 /// The rest of a machine (hostDetails: its labels beside each, 14 apart, rows 8 apart, the meta's 12 muted).

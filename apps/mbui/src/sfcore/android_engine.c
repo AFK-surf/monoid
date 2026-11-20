@@ -15,7 +15,7 @@
 void mb_host_web_auth(const char *url, const char *scheme, void (*done)(const char *, const char *, void *), void *ctx);
 const char *mb_host_app_scheme(void);
 
-static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, mb_core_data_dir, mb_host_web_auth, mb_post, mb_post_drop, mb_core_screen_ack, mb_host_app_scheme};
+static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, mb_core_data_dir, mb_host_web_auth, mb_post, mb_post_drop, mb_core_screen_ack, mb_host_app_scheme, mb_core_screen_input};
 
 // mbui's android_host.c: a remote screen's frames taken straight to the stream the app routed them to
 int mb_stream_route_take(uint64_t route, int kind, int key, uint64_t seq, uint64_t ts, const uint8_t *bytes, size_t len);

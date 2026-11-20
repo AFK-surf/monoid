@@ -14,6 +14,112 @@
 priv struct P54Cloud {
   locks : Map[String, Json]
   mut memberships : Array[Json]
+  /// Each workspace not in security mode: the lock its vault goes by, its members' own locks as one
+  /// (cloud/vault-lock.ts), as made last (`p54_personal_lock`).
+  personal : Map[String, Json]
+  /// Who asked the vault of each workspace here (vault/module.ts `lock`'s `viewer`), by sub: their email.
+  viewers : Map[String, Map[String, String]]
+  /// Their workspace role from their credential, by workspace and sub: `(role, seen_secs)`.
+  viewer_roles : Map[String, Map[String, (String, Double)]]
+  /// The personal chains selected for each member outside security mode (GET /vault/boxes).
+  personal_chains : Map[String, Map[String, Array[Json]]]
+  /// The vault's records of a workspace (its vaults, its box certificates) and its check of a box certificate against
+  /// a lock: the vault's part's, once it is made.
+  held : Ref[((String) -> (Array[Json], Array[Json]))?]
+  cert_ok : Ref[((Json, Json) -> Bool)?]
+}
+
+///|
+fn P54Cloud::new() -> P54Cloud {
+  { locks: Map([]), memberships: [], personal: Map([]), viewers: Map([]), viewer_roles: Map([]), personal_chains: Map([]), held: Ref(None), cert_ok: Ref(None) }
+}
+
+///|
+/// Whether `ws` is the home workspace or one this station is in.
+fn P54Cloud::has(self : P54Cloud, bus : LiveBus, ws : String) -> Bool {
+  bus_home(bus) == Some(ws) || self.memberships.iter().any(m => jtext(m, "workspace") == Some(ws))
+}
+
+///|
+/// The members of `ws` whose devices came to this station (mesh/seen-devices.json, the gate's), by sub: their email
+/// and role, as they said them last.
+fn p54_seen_members(bus : LiveBus, ws : String) -> (Map[String, String], Map[String, (String, Double)]) {
+  let out : Map[String, (String, Double)] = Map([])
+  let roles_at : Map[String, (String, Double)] = Map([])
+  let rows = match read_text(path([bus.data, "mesh", "seen-devices.json"])).bind(@cloud_lock.parse) {
+    Some(Array(a)) => a
+    _ => []
+  }
+  for r in rows {
+    guard jtext(r, "workspace") == Some(ws) else { continue }
+    guard jtext(r, "sub") is Some(sub) else { continue }
+    let at = match r {
+      { "last_seen": Number(n, ..), .. } => n
+      _ => 0.0
+    }
+    if jtext(r, "email") is Some(email) && email != "" {
+      match out.get(sub) {
+        Some((_, had)) if had > at => ()
+        _ => out[sub] = (email, at)
+      }
+    }
+    if jtext(r, "role") is Some(role) && role != "" {
+      match roles_at.get(sub) {
+        Some((_, had)) if had > at => ()
+        _ => roles_at[sub] = (role, at)
+      }
+    }
+  }
+  let said : Map[String, String] = Map([])
+  for sub, v in out {
+    said[sub] = v.0
+  }
+  (said, roles_at)
+}
+
+///|
+/// The lock `ws`'s vault goes by where it is not in security mode (Cloud `vaultLock`), made again of the person logs
+/// the control plane keeps, the members known and the vault's records; None where it is in security mode or this
+/// station is not in it.
+async fn p54_personal_lock(bus : LiveBus, c : P54Cloud, ws : String) -> Json? {
+  if c.locks.contains(ws) || !c.has(bus, ws) {
+    c.personal.remove(ws)
+    c.personal_chains.remove(ws)
+    return None
+  }
+  let chains : Array[(String, Array[Json])] = match (try { Ok((bus.cloud_call.val)("personChains", Json::null())) } catch { e => Err(e) }) {
+    Ok(Array(a)) =>
+      a.filter_map(p => match p {
+        Array([String(g), Array(ch)]) => Some((g, ch))
+        _ => None
+      })
+    _ => []
+  }
+  let (emails, roles_at) = p54_seen_members(bus, ws)
+  for sub, e in c.viewers.get(ws).unwrap_or(Map([])) {
+    emails[sub] = e
+  }
+  let roles : Map[String, String] = Map([])
+  for sub, v in roles_at {
+    roles[sub] = v.0
+  }
+  for sub, v in c.viewer_roles.get(ws).unwrap_or(Map([])) {
+    let (r, at) = v
+    match roles_at.get(sub) {
+      Some((_, seen_at)) if seen_at > at => ()
+      _ => roles[sub] = r
+    }
+  }
+  let (vaults, boxes) = match c.held.val {
+    Some(f) => f(ws)
+    None => ([], [])
+  }
+  let cert_ok = c.cert_ok.val.unwrap_or((_, _) => false)
+  let crypto = @cloud_lock.Crypto::of_host(bus.host)
+  let lock = @cloud_lock.personal_vault_lock(crypto, ws, chains, emails, vaults, boxes, cert_ok, roles~)
+  c.personal[ws] = lock
+  c.personal_chains[ws] = @cloud_lock.personal_vault_chains(crypto, ws, chains, vaults, boxes, cert_ok)
+  Some(lock)
 }
 
 ///|
@@ -27,19 +133,16 @@ fn P54Cloud::lock(self : P54Cloud, ws : String) -> Json? {
 ///|
 /// The locks and memberships asked again of the control plane (at the start and as its state changes).
 async fn p54_cloud_refresh(bus : LiveBus, c : P54Cloud) -> Unit {
-  let home = p54_home(bus)
+  let home = bus_home(bus)
   let ms = match (try { Ok((bus.cloud_call.val)("memberships", Json::null())) } catch { e => Err(e) }) {
     Ok(Array(a)) => a
     _ => []
   }
   c.memberships = ms
   let wss : Array[String] = []
-  match home {
-    Some(h) => wss.push(h)
-    None => ()
-  }
+  if home is Some(h) { wss.push(h) }
   for m in ms {
-    match p54_text(Some(m), "workspace") {
+    match jtext(m, "workspace") {
       Some(w) if !wss.contains(w) => wss.push(w)
       _ => ()
     }
@@ -51,6 +154,7 @@ async fn p54_cloud_refresh(bus : LiveBus, c : P54Cloud) -> Unit {
       Ok({ "state": Object(_) as st, .. }) => c.locks[w] = st
       _ => c.locks.remove(w)
     }
+    ignore(p54_personal_lock(bus, c, w))
   }
 }
 
@@ -58,11 +162,11 @@ async fn p54_cloud_refresh(bus : LiveBus, c : P54Cloud) -> Unit {
 /// A station's name among the workspaces' (peer-http.ts `nameOf`): its id where none is said.
 fn P54Cloud::station_name(self : P54Cloud, id : String) -> String {
   for m in self.memberships {
-    match p54_get(Some(m), "peers") {
+    match opt_field(Some(m), "peers") {
       Some(Array(ps)) =>
         for p in ps {
-          if p54_text(Some(p), "id") == Some(id) {
-            match p54_text(Some(p), "name") {
+          if jtext(p, "id") == Some(id) {
+            match jtext(p, "name") {
               Some(n) if n != "" => return n
               _ => ()
             }
@@ -79,11 +183,11 @@ fn P54Cloud::station_name(self : P54Cloud, id : String) -> String {
 fn P54Cloud::person_name(self : P54Cloud, email : String) -> String? {
   let lower = email.to_lower()
   for m in self.memberships {
-    match p54_get(Some(m), "members") {
+    match opt_field(Some(m), "members") {
       Some(Array(ms)) =>
         for p in ms {
-          if p54_text(Some(p), "email").map(e => e.to_lower()) == Some(lower) {
-            match p54_text(Some(p), "name") {
+          if jtext(p, "email").map(e => e.to_lower()) == Some(lower) {
+            match jtext(p, "name") {
               Some(n) if n != "" => return Some(n)
               _ => ()
             }
@@ -98,18 +202,18 @@ fn P54Cloud::person_name(self : P54Cloud, email : String) -> String? {
 ///|
 /// A station of the workspaces by id or name (peer-http.ts `peerNamed`): None for this station.
 fn P54Cloud::peer(self : P54Cloud, bus : LiveBus, given : String) -> @vault_service.Peer? raise {
-  let own = p54_station_id(bus)
+  let own = bus_station_id_opt(bus)
   let lower = given.to_lower()
-  if Some(given) == own || self.memberships.iter().any(m => p54_text(Some(m), "name").map(n => n.to_lower()) == Some(lower)) {
+  if Some(given) == own || self.memberships.iter().any(m => jtext(m, "name").map(n => n.to_lower()) == Some(lower)) {
     return None
   }
   let found : Array[(String, String)] = []
   for m in self.memberships {
-    match p54_get(Some(m), "peers") {
+    match opt_field(Some(m), "peers") {
       Some(Array(ps)) =>
         for p in ps {
-          let id = p54_text(Some(p), "id").unwrap_or("")
-          let name = p54_text(Some(p), "name").unwrap_or("")
+          let id = jtext(p, "id").unwrap_or("")
+          let name = jtext(p, "name").unwrap_or("")
           if id != "" && (id == given || name.to_lower() == lower) && !found.iter().any(f => f.0 == id) {
             found.push((id, if name == "" { id } else { name }))
           }
@@ -125,16 +229,6 @@ fn P54Cloud::peer(self : P54Cloud, bus : LiveBus, given : String) -> @vault_serv
 }
 
 ///|
-/// The store's changes of thread entries told to its listeners (store.ts' change, then the events).
-fn p54_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
-  let sent = threads.sent.copy()
-  threads.sent.clear()
-  for c in sent {
-    bus.notify_store(c)
-  }
-}
-
-///|
 /// The vault's store as it reads and writes the chats (secrets.ts `hub.store`).
 fn p54_vault_store(bus : LiveBus, threads : @store_threads.Store) -> @vault_service.Store {
   let thread_of = (v : Json) => match v {
@@ -142,31 +236,39 @@ fn p54_vault_store(bus : LiveBus, threads : @store_threads.Store) -> @vault_serv
     _ => None
   }
   {
-    get_session: k => match p54_session_row(bus, k) {
+    get_session: k => match bus_session_row_opt(bus, k) {
       Some(row) =>
         Some({
-          ws: p54_session_ws(bus, k),
-          archived: p54_num(p54_get(Some(row), "archivedAt")) is Some(_),
+          ws: bus_session_ws(bus, k),
+          archived: opt_num(opt_field(Some(row), "archivedAt")) is Some(_),
         })
       None => None
     },
-    starter: k => p54_str(Some(threads.starter(Json::string(k)) catch { _ => Json::null() })),
-    participants: k => p54_strs(Some(threads.participants(Json::string(k)) catch { _ => Json::null() })),
-    latest_thread: k => thread_of(threads.latest_thread(Json::string(k)) catch { _ => Json::null() }),
-    latest_thread_if_ready: Some(k => match (threads.latest_thread_if_ready(Json::string(k)) catch { _ => Json::null() }) {
-      Object(m) if m.get("ready") is Some(False) => None
-      v => Some(thread_of(v))
+    starter: k => opt_str(Some(threads.starter(Json::string(k)) catch { _ => Json::null() })),
+    participants: k => opt_strs(Some(threads.participants(Json::string(k)) catch { _ => Json::null() })),
+    latest_thread: k => {
+      let t = thread_of(threads.latest_thread(Json::string(k)) catch { _ => Json::null() })
+      bus.drain_thread_requests(threads)
+      t
+    },
+    latest_thread_if_ready: Some(k => {
+      let v = threads.latest_thread_if_ready(Json::string(k)) catch { _ => Json::null() }
+      bus.drain_thread_requests(threads)
+      match v {
+        Object(m) if m.get("ready") is Some(False) => None
+        v => Some(thread_of(v))
+      }
     }),
     session_thread_by_id: (k, id) => thread_of(
       threads.session_thread_by_id(Json::string(k), Json::number(id.to_double())) catch {
         _ => Json::null()
       },
     ),
-    pending_card_header: id => p54_str(Some(threads.pending_card_header(Json::number(id.to_double())) catch { _ => Json::null() })),
+    pending_card_header: id => opt_str(Some(threads.pending_card_header(Json::number(id.to_double())) catch { _ => Json::null() })),
     pending_card_header_if_ready: None,
     insert_message: (m, before) => {
-      let got = threads.insert_message(p54_jv(m), before~)
-      p54_told_threads(bus, threads)
+      let got = threads.insert_message(to_jv(m), before~)
+      told_threads(bus, threads)
       match got {
         Array([Number(n, ..), ..]) => n.to_int()
         Number(n, ..) => n.to_int()
@@ -177,16 +279,16 @@ fn p54_vault_store(bus : LiveBus, threads : @store_threads.Store) -> @vault_serv
       let done = threads.withdraw_card(Json::string(session), Json::number(thread.to_double()), Json::string(ts)) catch {
         _ => Json::boolean(false)
       }
-      p54_told_threads(bus, threads)
+      told_threads(bus, threads)
       done is True
     },
     restate_card: (session, thread, ts, f) => {
-      let done = threads.restate_card(Json::string(session), Json::number(thread.to_double()), Json::string(ts), card => p54_jv(
-        f(card.map(p54_of_jv)),
+      let done = threads.restate_card(Json::string(session), Json::number(thread.to_double()), Json::string(ts), card => to_jv(
+        f(card.map(of_jv)),
       )) catch {
         _ => Json::boolean(false)
       }
-      p54_told_threads(bus, threads)
+      told_threads(bus, threads)
       done is True
     },
   }
@@ -217,14 +319,14 @@ fn p54_vault_machine(bus : LiveBus) -> @vault_service.Machine {
       }
     },
     write_file: async fn(p, b, mode) {
-      @drive.write_private_bytes(p, b)
+      host.write_atomic(p, b, mode~, sync=true, mkdir=true, sep=sep())
       if mode != 0o600 {
         ignore(host.shell("fs.chmod", { "path": Json::string(p), "mode": Json::number(mode.to_double()) })) catch {
           _ => ()
         }
       }
     },
-    read_file: async fn(p) { (try { Some(@drive.read_all(p)) } catch { _ => None }) },
+    read_file: async fn(p) { host.read_bytes(p) catch { _ => None } },
     mkdir: async fn(p, mode) { @drive.mkdir(p, true, mode~) },
     shell_for: async fn(_env) {
       if is_windows() {
@@ -289,6 +391,7 @@ priv struct P54Vault {
   crypto : @vault_crypto.Crypto
   db : @vault_crypto.Db
   cloud : P54Cloud
+  bus : LiveBus
 }
 
 ///|
@@ -298,23 +401,41 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
   let crypto = @vault_crypto.Crypto::of_host(host)
   let db_path = path([bus.data, "stillfail.db"])
   let db = @vault_crypto.Db::attach(crypto, db_path, wait=5000)
+  let world = p54_vault_world(bus, cloud, threads, crypto, Some(db))
+  p54_vault_live(bus, cloud, world, crypto, db)
+}
+
+///|
+/// What the vault asks of the station (vault/module.ts's deps): its chats' store, the hub, the machine, the mesh. With
+/// the vault's own connection (`db`), a decided card's outcome is queued for the agents' side's worker; a rig, which
+/// keeps no cards, has none.
+fn p54_vault_world(
+  bus : LiveBus,
+  cloud : P54Cloud,
+  threads : @store_threads.Store,
+  crypto : @vault_crypto.Crypto,
+  db : @vault_crypto.Db?,
+) -> @vault_service.World {
+  let host = bus.host
+  let db_path = path([bus.data, "stillfail.db"])
   let previous_gone = match bus.previous_pid {
     Some(_) => Some(bus.previous_gone)
     None => None
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
-  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork(name~, async fn() { f() catch { _ => () } }))
-  let world : @vault_service.World = {
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
+  let backfill = P54Backfill::new()
+  ({
     hub: {
       store: p54_vault_store(bus, threads),
       prepare_latest_threads: Some(async fn(keys) { ignore(hub_ask("store.prepareLatestThreads", [Json::array(keys.map(Json::string))])) }),
       prepare_card_posts: Some(async fn(threads) {
         ignore(hub_ask("hub.prepareCardPosts", [Json::array(threads.map(t => Json::number(t.to_double())))]))
       }),
-      post: async fn(session, connect, channel, text) {
-        match hub_ask("hub.post", [Json::string(session), Json::string(connect), Json::string(channel), Json::string(text)]) {
+      post: async fn(connect, channel, thread_ts, text) {
+        match hub_ask("hub.post", [Json::string(connect), Json::string(channel), Json::string(thread_ts), Json::string(text)]) {
           String(ts) => ts
-          Object(_) as got => p54_text(Some(got), "ts").unwrap_or("")
+          Object(_) as got => jtext(got, "ts").unwrap_or("")
           _ => raise Failure("the chat's post was not said (the agents' side is not up)")
         }
       },
@@ -329,34 +450,48 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
         )
       }),
       notify: (session, text) => {
-        if p54_session_row(bus, session) is None {
+        if bus_session_row_opt(bus, session) is None {
           raise Failure("no session \{session}")
         }
         fork("vault notify", async fn() { ignore(hub_ask("hub.notify", [Json::string(session), Json::string(text)])) })
       },
-      identity: _ => None,
+      // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: none where the actor is not up)
+      identity: async fn(session) {
+        let got = hub_ask("hub.identity", [Json::string(session)]) catch { _ => Json::null() }
+        match got {
+          Null => None
+          // (JavaScript's undefined as the bus carries it: session_chats `is_undefined`)
+          Object(m) if m.size() == 1 && m.contains("$u") => None
+          other => Some(other)
+        }
+      },
     },
-    card_outcomes: None,
-    home: () => p54_home(bus),
-    title: Some(session => p54_text(p54_session_row(bus, session), "title")),
+    card_outcomes: db.map(db => p54_vault_outcomes(bus, threads, db)),
+    home: () => bus_home(bus),
+    title: Some(session => opt_text(bus_session_row_opt(bus, session), "title")),
     title_if_ready: None,
     data: bus.data,
     lock: ws => {
       let w = match ws {
         Some(w) => Some(w)
-        None => p54_home(bus)
+        None => bus_home(bus)
       }
       match w {
-        Some(x) => cloud.lock(x).map(@vault_service.Lock::of_json)
+        // (its lock in force in security mode, else its members' own as made last)
+        Some(x) =>
+          match cloud.lock(x) {
+            Some(l) => Some(@vault_service.Lock::of_json(l))
+            None => cloud.personal.get(x).map(@vault_service.Lock::of_json)
+          }
         None => None
       }
     },
     now: () => wall_ms().to_double(),
-    after: (ms, f) => p54_after(host, ms, f),
+    after: (ms, f) => bus_after(host, ms, f),
     sleep: async fn(ms) { @effect.sleep(if ms < 0.0 { 0 } else { ms.to_int() }) },
     peer: Some(given => cloud.peer(bus, given)),
     ask: Some(async fn(station, request) {
-      let meth = p54_text(Some(request), "method").unwrap_or("")
+      let meth = jtext(request, "method").unwrap_or("")
       let (answer, _) = bus.call_peer(station, None, meth, request)
       answer
     }),
@@ -365,7 +500,7 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
     previous: { gone: previous_gone },
     browsers: Some({
       cookies: async fn(session, sites, station) {
-        p54_str(Some((bus.ui_ask.val)("browser.cookies", [Json::string(session), Json::array(sites.map(Json::string)), Json::boolean(station)]))).unwrap_or(
+        opt_str(Some((bus.ui_ask.val)("browser.cookies", [Json::string(session), Json::array(sites.map(Json::string)), Json::boolean(station)]))).unwrap_or(
           "",
         )
       },
@@ -376,15 +511,60 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
       })),
     }),
     machine: p54_vault_machine(bus),
-    hold: () => () => (),
+    hold: () => @updates.hold(),
     log: (level, part, said, about) => slice_log(level, part, said, about),
     random: n => crypto.random(n) catch { _ => @drive.random_bytes(n) },
     env: () => env_all(),
     index_db: Some(() => @sql.Db::attach(host, db_path, wait=5000)),
-    backfill_take: () => true,
-    backfill_give: () => (),
-    foreground: _ => (),
+    backfill_take: () => backfill.take(),
+    backfill_give: () => backfill.give(),
+    foreground: begins => backfill.foreground(begins),
+  } : @vault_service.World)
+}
+
+///|
+/// The vault's backfills' one permit (store/backfill.ts): one batch at a time, taken only while no foreground write is
+/// under way; a write that begins meanwhile waits only for the batch already running.
+priv struct P54Backfill {
+  mut busy : Bool
+  mut writes : Int
+}
+
+///|
+fn P54Backfill::new() -> P54Backfill {
+  { busy: false, writes: 0 }
+}
+
+///|
+fn P54Backfill::take(self : P54Backfill) -> Bool {
+  if self.busy || self.writes > 0 {
+    return false
   }
+  self.busy = true
+  true
+}
+
+///|
+fn P54Backfill::give(self : P54Backfill) -> Unit {
+  self.busy = false
+}
+
+///|
+fn P54Backfill::foreground(self : P54Backfill, begins : Bool) -> Unit {
+  self.writes = if begins { self.writes + 1 } else { (self.writes - 1).max(0) }
+}
+
+///|
+/// The vault made on its world and its part said (module.ts `VaultLive`).
+async fn p54_vault_live(
+  bus : LiveBus,
+  cloud : P54Cloud,
+  world : @vault_service.World,
+  crypto : @vault_crypto.Crypto,
+  db : @vault_crypto.Db,
+) -> P54Vault {
+  let host = bus.host
+  let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
   let vault = @vault_service.Vault::new(world, db, crypto, {
     tell: (ev, data, key, to) => (bus.events_tell.val)(ev, data, key, to),
     tabs: session => p54_browser_tabs(session),
@@ -398,16 +578,16 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
         Json::array(used.keys().map(Json::string).collect()),
       ])
     },
-    screen_link: tab => match (p54_home(bus), p54_station_id(bus), (bus.cloud_state.val)()) {
+    screen_link: tab => match (bus_home(bus), bus_station_id_opt(bus), (bus.cloud_state.val)()) {
       (Some(ws), Some(station), Some(s)) =>
-        match p54_text(Some(s), "origin") {
+        match jtext(s, "origin") {
           Some(origin) => Some("\{origin}/w/\{ws}/s/\{station}/screen/\{@drive.encode_uri("browser:" + tab)}")
           None => None
         }
       _ => None
     },
-    session_ws: session => p54_session_ws(bus, session),
-    session_dir: session => p54_session_dir(bus, session),
+    session_ws: session => bus_session_ws(bus, session),
+    session_dir: session => bus_session_dir(bus, session),
     join_path: (a, b) => path([a, b]),
     signin_id: None,
     passkeys_again_all: () => fork("vault passkeys", async fn() { ignore((bus.ui_ask.val)("browser.passkeysAgain", [])) }),
@@ -415,6 +595,8 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
   // The grants, the boxes of requests waiting and the secrets to keep, only in memory: over to the next process at a
   // handover (an update), so no agent asks again.
   bus.parts.carry("vault", async fn() { vault.carried() }, what => vault.carry(what))
+  // (vault/module.ts `readers.onTrim`: the use index's reader let go short of memory)
+  bus.on_trim(() => vault.secrets.trim_idle())
   // Another station's requests (`vault.`): a command run here with a secret, a secret read here.
   bus.on_peer_prefix("vault.", async fn(peer, ws, meth, params, _bytes) {
     let request = match params {
@@ -430,7 +612,7 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
     (vault.heard(world, peer, ws, request), None)
   })
   // A session's chat changed or gone: what waits for it let go.
-  ignore(bus.subscribe_store(change => match p54_text(Some(change), "session") {
+  ignore(bus.subscribe_store(change => match jtext(change, "session") {
     Some(k) => vault.session_changed(k)
     None => ()
   }))
@@ -447,8 +629,8 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
         call: async fn(args, context) {
           let session = p54_session(context)
           match (try { Ok((t.run)(session, args, None)) } catch { e => Err(e) }) {
-            Ok(text) => p54_tool_answer(text)
-            Err(e) => p54_tool_answer(@vault_service.message_of(e), error=true)
+            Ok(text) => tool_answer(text)
+            Err(e) => tool_answer(@vault_service.message_of(e), error=true)
           }
         },
       } : PartTool)
@@ -460,7 +642,14 @@ async fn p54_vault_start(bus : LiveBus, cloud : P54Cloud, threads : @store_threa
       events.follow(in_vault=(viewer, id) => vault.secrets.in_vault(viewer.sub, viewer.workspace, id) catch { _ => false })
     None => ()
   }
-  { vault, world, crypto, db, cloud }
+  // (the lock of a workspace not in security mode is made of the vault's records too: p54_personal_lock)
+  cloud.held.val = Some(ws => {
+    let vs = vault.vaults.vaults(ws) catch { _ => [] }
+    let bs = vault.vaults.boxes(ws) catch { _ => [] }
+    (vs, bs)
+  })
+  cloud.cert_ok.val = Some((lock, cert) => @vault_crypto.cert_ok(crypto, @vault_crypto.lock_view(lock), Some(cert)) is None)
+  { vault, world, crypto, db, cloud, bus }
 }
 
 ///|
@@ -474,12 +663,12 @@ fn p54_browser_tabs(session : String) -> Array[(String, String)] {
 
 ///|
 fn p54_viewer_sub(v : Json?) -> String {
-  p54_text(v, "sub").unwrap_or("")
+  opt_text(v, "sub").unwrap_or("")
 }
 
 ///|
 fn p54_viewer_email(v : Json?) -> String {
-  p54_text(v, "email").unwrap_or("")
+  opt_text(v, "email").unwrap_or("")
 }
 
 ///|
@@ -498,18 +687,6 @@ fn p54_result(r : Result[Json, String]) -> Json {
   }
 }
 
-///|
-fn p54_arr(xs : Array[Json]) -> Json {
-  Json::array(xs)
-}
-
-///|
-fn p54_snapshot(s : (Json, String)?) -> Json {
-  match s {
-    Some((v, body)) => [v, Json::string(body)]
-    None => Json::null()
-  }
-}
 
 ///|
 fn p54_opt_json(v : Json?) -> Json {
@@ -523,8 +700,8 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
   let vaults = v.vault.vaults
   let secrets = v.vault.secrets
   let plain = secrets.plain
-  let s = (i : Int) => p54_arg_text(a, i)
-  let j = (i : Int) => p54_arg(a, i).unwrap_or(Json::null())
+  let s = (i : Int) => call_arg_text(a, i)
+  let j = (i : Int) => call_arg(a, i).unwrap_or(Json::null())
   let lv = (i : Int) => @vault_crypto.lock_view(j(i))
   let some = (x : Json) => match x {
     Null => None
@@ -534,14 +711,61 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
   let answer : Json = match op {
     // the lock pinned in a workspace (null: none), the write gate, a certificate's boxes
     "vault.lock" => {
-      let ws = match some(j(0)) {
-        Some(String(w)) => Some(w)
-        _ => None
+      let ws = opt_str(some(j(0)))
+      // (who asks is known by its members' own locks from then on: vault/module.ts `lock`'s `viewer`)
+      match (ws, some(j(1))) {
+        (Some(w), Some(viewer)) =>
+          match (jtext(viewer, "sub"), jtext(viewer, "email")) {
+            (Some(sub), Some(email)) if sub != "" && email != "" => {
+              let of = match v.cloud.viewers.get(w) {
+                Some(m) => m
+                None => {
+                  let m = Map([])
+                  v.cloud.viewers[w] = m
+                  m
+                }
+              }
+              of[sub] = email.to_lower()
+              if jtext(viewer, "role") is Some(role) && role != "" {
+                let rof = match v.cloud.viewer_roles.get(w) {
+                  Some(m) => m
+                  None => {
+                    let m = Map([])
+                    v.cloud.viewer_roles[w] = m
+                    m
+                  }
+                }
+                rof[sub] = (role, @host.epoch_ms().to_double() / 1000.0)
+              }
+            }
+            _ => ()
+          }
+        _ => ()
+      }
+      let w = match ws {
+        Some(x) => Some(x)
+        None => bus_home(v.bus)
+      }
+      match w {
+        Some(x) if !v.cloud.locks.contains(x) => ignore(p54_personal_lock(v.bus, v.cloud, x))
+        _ => ()
       }
       match (v.world.lock)(ws) {
         Some(l) => l.json
         None => Json::null()
       }
+    }
+    "vault.personalChains" => {
+      let ws = s(0)
+      let out : Map[String, Json] = Map([])
+      match v.cloud.personal_chains.get(ws) {
+        Some(chains) =>
+          for sub, ch in chains {
+            out[sub] = Json::array(ch)
+          }
+        None => ()
+      }
+      Json::object(out)
     }
     "vault.beforeWrite" =>
       match v.vault.writes.wait() {
@@ -550,21 +774,21 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
         Some(Some(d)) => Json::boolean(d.wait())
       }
     "vault.boxed" => Json::boolean(secrets.boxed(@vault_service.Lock::of_json(j(0)), j(1)))
-    "vault/store.isDeletedVaultWrite" => Json::boolean(p54_text(Some(j(0)), "message").map(m => m.contains("deleted")).unwrap_or(false))
-    "vault/plain.plainOk" => p54_opt(@vault_crypto.plain_ok(some(j(0)), j(1), s(2)))
+    "vault/store.isDeletedVaultWrite" => Json::boolean(opt_text(Some(j(0)), "message").map(m => m.contains("deleted")).unwrap_or(false))
+    "vault/plain.plainOk" => jopt(@vault_crypto.plain_ok(some(j(0)), j(1), s(2)))
     "vault/plain.shown" => @vault_crypto.shown(j(0))
     // the vaults, items and boxes kept here (store.ts)
     "vaults.vault" => p54_opt_json(vaults.vault(s(0), s(1)))
-    "vaults.vaultSnapshot" => p54_snapshot(vaults.vault_snapshot(s(0), s(1)))
-    "vaults.memberVaults" => p54_arr(vaults.member_vaults(s(0), s(1)))
-    "vaults.items" => p54_arr(vaults.items(s(0), s(1)))
-    "vaults.itemSnapshot" => p54_snapshot(vaults.item_snapshot(s(0), s(1), s(2)))
-    "vaults.boxes" => p54_arr(vaults.boxes(s(0)))
-    "vaults.boxesFor" => p54_arr(vaults.boxes_for(s(0), p54_strs(Some(j(1)))))
-    "vaults.boxSnapshot" => p54_snapshot(vaults.box_snapshot(s(0), s(1)))
-    "vaults.putVaultIf" => Json::boolean(vaults.put_vault_if(j(0), p54_str(some(j(1)))))
-    "vaults.putItemIf" => Json::boolean(vaults.put_item_if(j(0), s(1), p54_str(some(j(2)))))
-    "vaults.putBoxIf" => Json::boolean(vaults.put_box_if(j(0), p54_str(some(j(1)))))
+    "vaults.vaultSnapshot" => @vault_crypto.snapshot_json(vaults.vault_snapshot(s(0), s(1)))
+    "vaults.memberVaults" => Json::array(vaults.member_vaults(s(0), s(1)))
+    "vaults.items" => Json::array(vaults.items(s(0), s(1)))
+    "vaults.itemSnapshot" => @vault_crypto.snapshot_json(vaults.item_snapshot(s(0), s(1), s(2)))
+    "vaults.boxes" => Json::array(vaults.boxes(s(0)))
+    "vaults.boxesFor" => Json::array(vaults.boxes_for(s(0), opt_strs(Some(j(1)))))
+    "vaults.boxSnapshot" => @vault_crypto.snapshot_json(vaults.box_snapshot(s(0), s(1)))
+    "vaults.putVaultIf" => Json::boolean(vaults.put_vault_if(j(0), opt_str(some(j(1)))))
+    "vaults.putItemIf" => Json::boolean(vaults.put_item_if(j(0), s(1), opt_str(some(j(2)))))
+    "vaults.putBoxIf" => Json::boolean(vaults.put_box_if(j(0), opt_str(some(j(1)))))
     // the checks of what a member's device signed (vault/crypto.ts)
     "vault/crypto.signedOk" => Json::boolean(@vault_crypto.signed_ok(v.crypto, j(0), s(1)))
     "vault/crypto.signerOf" =>
@@ -574,46 +798,110 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
       }
     "vault/crypto.vaultSupersedes" => Json::boolean(@vault_crypto.vault_supersedes(j(0), j(1)))
     "vault/crypto.itemSupersedes" => Json::boolean(@vault_crypto.item_supersedes(j(0), j(1)))
-    "vault/crypto.vaultOk" => p54_opt(@vault_crypto.vault_ok(v.crypto, lv(0), some(j(1)), j(2), copy=p54_bool(p54_arg(a, 3))))
-    "vault/crypto.itemOk" => p54_opt(@vault_crypto.item_ok(v.crypto, lv(0), j(1), some(j(2)), j(3), copy=p54_bool(p54_arg(a, 4))))
-    "vault/crypto.certOk" => p54_opt(@vault_crypto.cert_ok(v.crypto, lv(0), some(j(1))))
+    "vault/crypto.vaultOk" => jopt(@vault_crypto.vault_ok(v.crypto, lv(0), some(j(1)), j(2), copy=opt_true(call_arg(a, 3))))
+    "vault/crypto.itemOk" => jopt(@vault_crypto.item_ok(v.crypto, lv(0), j(1), some(j(2)), j(3), copy=opt_true(call_arg(a, 4))))
+    "vault/crypto.certOk" => jopt(@vault_crypto.cert_ok(v.crypto, lv(0), some(j(1))))
     // the agents' requests and what members decide of them (vault-requests.ts)
     "secrets.preparePending" => {
-      secrets.prepare_pending(s(0), members=p54_bool(p54_arg(a, 1)))
+      secrets.prepare_pending(s(0), members=opt_true(call_arg(a, 1)))
       Json::null()
     }
     "secrets.pending" =>
-      p54_arr(secrets.pending(s(0), p54_lock_arg(some(j(1))), p54_viewer_sub(some(j(2))), p54_viewer_email(some(j(2)))))
+      Json::array(secrets.pending(s(0), p54_lock_arg(some(j(1))), p54_viewer_sub(some(j(2))), p54_viewer_email(some(j(2)))))
     "secrets.uses" =>
-      p54_arr(secrets.uses(s(0), p54_lock_arg(some(j(1))), s(2), p54_viewer_sub(some(j(3))), p54_viewer_email(some(j(3)))))
-    "secrets.grantPlain" => p54_opt(secrets.grant_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
-    "secrets.denyPlain" => p54_opt(secrets.deny_plain(s(0), s(1), j(2)))
+      Json::array(secrets.uses(s(0), p54_lock_arg(some(j(1))), s(2), p54_viewer_sub(some(j(3))), p54_viewer_email(some(j(3)))))
+    "secrets.grantPlain" => jopt(secrets.grant_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
+    "secrets.denyPlain" => jopt(secrets.deny_plain(s(0), s(1), j(2)))
     "secrets.describedPlain" => p54_result(secrets.described_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
     "secrets.removedPlain" => p54_result(secrets.removed_plain(s(0), s(1), j(2)))
     "secrets.savedPlain" => p54_result(secrets.saved_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
-    "secrets.grant" => p54_opt(secrets.grant(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
-    "secrets.deny" => p54_opt(secrets.deny(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
-    "secrets.saved" => p54_opt(secrets.saved(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
-    "secrets.described" => p54_opt(secrets.described(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
-    "secrets.removed" => p54_opt(secrets.removed(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.grant" => jopt(secrets.grant(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.deny" => jopt(secrets.deny(@vault_service.Lock::of_json(j(0)), s(1), j(2), email?=opt_str(some(j(3)))))
+    "secrets.saved" => jopt(secrets.saved(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.described" => jopt(secrets.described(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.removed" => jopt(secrets.removed(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.inVault" => Json::boolean(secrets.in_vault(s(0), s(1), s(2)))
     "secrets.status" => Json::string(secrets.status(s(0)))
-    "secrets.plain.items" => p54_arr(plain.items(s(0), s(1)))
+    "secrets.plain.items" => Json::array(plain.items(s(0), s(1)))
     "secrets.plain.item" => p54_opt_json(plain.item(s(0), s(1)))
     "secrets.plain.lasts" =>
       match plain.lasts(s(0), s(1)) {
         Some((lasts, at)) => { "lasts": lasts, "at": at }
         None => Json::null()
       }
-    "secrets.plain.setLasts" => p54_opt(plain.set_lasts(s(0), s(1), some(j(2)), some(j(3))))
+    "secrets.plain.setLasts" => jopt(plain.set_lasts(s(0), s(1), some(j(2)), some(j(3))))
     "secrets.plain.put" => {
       plain.put(j(0))
       Json::null()
     }
+    "secrets.plain.forget" => {
+      plain.forget(s(0), s(1))
+      Json::null()
+    }
+    // the moves' vault module (move/live.ts `vault`): an owner's rows sent as they are, taken out on a move back
+    "vaults.vaults" => Json::array(vaults.vaults(s(0)))
+    "vaults.item" => p54_opt_json(vaults.item(s(0), s(1), s(2)))
+    "vaults.putVault" => {
+      vaults.put_vault(j(0))
+      Json::null()
+    }
+    "vaults.putItem" => {
+      vaults.put_item(j(0))
+      Json::null()
+    }
+    "vaults.forgetItem" => {
+      vaults.forget_item(s(0), s(1), s(2))
+      Json::null()
+    }
+    "vaults.forgetVault" => {
+      vaults.forget_vault(s(0), s(1))
+      Json::null()
+    }
+    // (move/live.ts `vault.owners`: whose plain items and vaults a workspace keeps here)
+    "vault.moveOwners" => {
+      let out : Array[String] = []
+      for r in v.db.all("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500", [Json::string(s(0))]) {
+        if r.get(0) is Some(String(o)) && !out.contains(o) {
+          out.push(o)
+        }
+      }
+      for x in vaults.vaults(s(0)) {
+        if x is { "owner": String(o), .. } && !out.contains(o) {
+          out.push(o)
+        }
+      }
+      Json::array(out.map(Json::string(_)))
+    }
+    // (move/live.ts `vault.grantOwners`: each session's owners, of the grants it holds: one read for a page of chats)
+    "vault.moveGrantOwners" => {
+      let keys = opt_strs(Some(j(0)))
+      let out : Map[String, Json] = {}
+      let rows = v.db.all(
+        "SELECT session, body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) ORDER BY session, rowid LIMIT ?",
+        [Json::string(Json::array(keys.map(Json::string(_))).stringify()), Json::number((keys.length() * 50).to_double())],
+      )
+      for r in rows {
+        guard r.get(0) is Some(String(session)) && r.get(1) is Some(String(body)) else { continue }
+        let owner = match (try Some(@json.parse(body)) catch { _ => None }) {
+          Some({ "request": { "owner": String(o), .. }, .. }) => Some(o)
+          _ => None
+        }
+        guard owner is Some(o) else { continue }
+        let list = match out.get(session) {
+          Some(Array(l)) => l
+          _ => []
+        }
+        if !list.contains(Json::string(o)) {
+          list.push(Json::string(o))
+        }
+        out[session] = Json::array(list)
+      }
+      Json::object(out)
+    }
     // a sign-in from a card (signin.ts), by the member who has it: [email, workspace, id, …]
-    "signIns.fill" => p54_opt(v.vault.sign_ins.fill(s(0), s(1), s(2), j(3)))
-    "signIns.self" => p54_opt(v.vault.sign_ins.self_(s(0), s(1), s(2), p54_bool(p54_arg(a, 3))))
-    "signIns.deny" => p54_opt(v.vault.sign_ins.deny(s(0), s(1), s(2)))
+    "signIns.fill" => jopt(v.vault.sign_ins.fill(s(0), s(1), s(2), j(3)))
+    "signIns.self" => jopt(v.vault.sign_ins.self_(s(0), s(1), s(2), opt_true(call_arg(a, 3))))
+    "signIns.deny" => jopt(v.vault.sign_ins.deny(s(0), s(1), s(2)))
     "signIns.get" => p54_opt_json(v.vault.sign_ins.get(s(0)))
     // the members' event streams: whether a viewer is a vault's member (events.follow `inVault`)
     "vault.carried" => v.vault.carried()
@@ -621,13 +909,42 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     "test.sshAgent" if p54_testing() => {
       let key = @vault_service.parse_ssh_key(v.world.machine, s(0))
       ignore(@vault_service.serve_agent(v.world.machine, s(1), key, () => true))
-      { "blob": Json::string(p54_hex(key.blob)), "kind": Json::string(key.kind) }
+      { "blob": Json::string(@drive.hex(key.blob)), "kind": Json::string(key.kind) }
+    }
+    // (a test's: the backfills' one permit as the vault's world gives it, a foreground write before it; and a hold on
+    // the station's updating itself, while a command with a secret runs)
+    "test.backfillPermit" if p54_testing() => {
+      let w = v.world
+      let first = (w.backfill_take)()
+      let second = (w.backfill_take)()
+      (w.backfill_give)()
+      let given_back = (w.backfill_take)()
+      (w.backfill_give)()
+      (w.foreground)(true)
+      let while_writing = (w.backfill_take)()
+      (w.foreground)(false)
+      let written = (w.backfill_take)()
+      (w.backfill_give)()
+      let before = @updates.holding()
+      let let_go = (w.hold)()
+      let held = @updates.holding()
+      let_go()
+      let_go()
+      {
+        "first": Json::boolean(first),
+        "second": Json::boolean(second),
+        "givenBack": Json::boolean(given_back),
+        "whileWriting": Json::boolean(while_writing),
+        "written": Json::boolean(written),
+        "held": Json::number((held - before).to_double()),
+        "after": Json::number((@updates.holding() - before).to_double()),
+      }
     }
     "test.proxy" if p54_testing() => {
       let proxy = secrets.proxy
       ignore(proxy.start())
       let (url, _) = proxy.admit({
-        hosts: p54_strs(p54_arg(a, 0)),
+        hosts: opt_strs(call_arg(a, 0)),
         placeholder: s(1),
         value: s(2),
         used: _ => (),
@@ -637,6 +954,20 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     }
     _ => return None
   }
+  // (a vault or a box certificate written where no workspace lock is pinned: the lock its vaults go by, made of its
+  // members' own locks and named by its vaults' owners and members, made again: vault/module.ts `held.version`)
+  let written = match op {
+    "vaults.putVault" | "vaults.forgetVault" => true
+    "vaults.putVaultIf" | "vaults.putBoxIf" => answer is True
+    _ => false
+  }
+  if written {
+    let w = if op == "vaults.forgetVault" { Some(s(0)) } else { opt_text(Some(j(0)), "ws") }
+    match w {
+      Some(x) if x != "" && !v.cloud.locks.contains(x) => ignore(p54_personal_lock(v.bus, v.cloud, x))
+      _ => ()
+    }
+  }
   Some(answer)
 }
 
@@ -645,39 +976,29 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
 /// answers written back, the connection closed where it says so; what it gives stops it and removes the socket.
 async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, Bytes) -> (Bytes, Bool)) -> () -> Unit {
   @drive.rm_force(path)
-  let (opened, _) = host.shell("unix.listen", { "path": Json::string(path) })
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
+  let id = host.unix_listen(path).id
   let stopped = Ref(false)
   let next = Ref(0)
   let conns : Map[Int, P54Conn] = Map([])
-  ignore(
-    host.rt.fork(name="unix serve", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
-        next.val += 1
-        let n = next.val
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
-        conns[n] = conn
-        ignore(
-          host.rt.fork(name="unix conn", async fn() {
-            while conn.read() is Some(chunk) {
-              let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
-              if reply.length() > 0 {
-                conn.write(reply) catch {
-                  _ => break
-                }
-              }
-              if close {
-                break
-              }
-            }
-            conn.close()
-            conns.remove(n)
-          }),
-        )
-      }
-    }),
-  )
+  fork_bg(host, "unix serve", async fn() {
+    while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+      next.val += 1
+      let n = next.val
+      let conn : P54Conn = { host, id: got.id, closed: false }
+      conns[n] = conn
+      fork_bg(host, "unix conn", async fn() {
+        while conn.read() is Some(chunk) {
+          let (reply, close) = answer(n, chunk) catch { _ => (b"", true) }
+          if reply.length() > 0 {
+            conn.write(reply) catch { _ => break }
+          }
+          if close { break }
+        }
+        conn.close()
+        conns.remove(n)
+      })
+    }
+  })
   () => {
     if stopped.val {
       return
@@ -686,14 +1007,10 @@ async fn p54_unix_serve(host : @host.Host, path : String, answer : async (Int, B
     for _, c in conns {
       c.close()
     }
-    ignore(
-      host.rt.fork(name="unix close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
-        @drive.rm_force(path)
-      }),
-    )
+    fork_bg(host, "unix close", async fn() {
+      host.listen_close(id)
+      @drive.rm_force(path)
+    })
   }
 }
 
@@ -713,7 +1030,7 @@ async fn p54_roots(host : @host.Host) -> Array[String] {
     }
   }
   if platform() == "darwin" {
-    let (code, out, _) = p54_run(host, "/usr/bin/security", [
+    let (code, out, _) = run_cmd(host, "/usr/bin/security", [
       "find-certificate", "-a", "-p", "/System/Library/Keychains/SystemRootCertificates.keychain",
     ]) catch {
       _ => return []
@@ -726,12 +1043,12 @@ async fn p54_roots(host : @host.Host) -> Array[String] {
     // (certutil writes the ROOT store's certificates, each its own file, into a folder of this process's)
     let dir = path([tmpdir(), "sf-roots-" + @drive.hex(@drive.random_bytes(4))])
     @drive.mkdir(dir, true)
-    let (code, _, _) = p54_run(host, "certutil", ["-split", "-store", "-silent", "Root"], cwd=dir) catch { _ => return [] }
+    let (code, _, _) = run_cmd(host, "certutil", ["-split", "-store", "-silent", "Root"], cwd=dir) catch { _ => return [] }
     let out = []
     if code == Some(0) {
       for name in @drive.names(dir) catch { _ => [] } {
         if name.has_suffix(".crt") || name.has_suffix(".cer") {
-          let der = @drive.read_all(path([dir, name])) catch { _ => continue }
+          guard (host.read_bytes(path([dir, name])) catch { _ => None }) is Some(der) else { continue }
           out.push(p54_pem("CERTIFICATE", der).trim().to_owned())
         }
       }
@@ -754,39 +1071,32 @@ async fn p54_proxy_listen(
   connect : async (@vault_service.ConnectAsk) -> @vault_service.ConnectDecision,
   forward : async (@vault_service.ForwardAsk) -> @vault_service.ForwardDecision,
 ) -> Int {
-  let (opened, _) = host.shell("tcp.listen", { "port": Json::number(0.0) }) // 127.0.0.1 only: the shell binds no other address
-  let id = p54_get(Some(opened), "id").unwrap_or(Json::null())
-  let port = p54_num(p54_get(Some(opened), "port")).unwrap_or(0.0).to_int()
+  let listening = host.tcp_listen_local(0)
+  let id = listening.id
+  let port = listening.port
   let stopped = Ref(false)
   stop.val = () => {
     if stopped.val {
       return
     }
     stopped.val = true
-    ignore(
-      host.rt.fork(name="proxy close", async fn() {
-        ignore(host.shell("listen.close", { "id": id })) catch {
-          _ => ()
-        }
-      }),
-    )
+    fork_bg(host, "proxy close", async fn() {
+      host.listen_close(id)
+    })
   }
-  ignore(
-    host.rt.fork(name="vault proxy", async fn() {
-      while !stopped.val {
-        let (got, _) = host.shell("tcp.accept", { "id": id }) catch { _ => break }
-        let conn : P54Conn = { host, id: p54_get(Some(got), "id").unwrap_or(Json::null()), closed: false }
-        ignore(
-          host.rt.fork(name="proxy connection", async fn() {
-            p54_proxy_connection(host, conn, connect, forward) catch {
-              _ => ()
-            }
-            conn.close()
-          }),
-        )
-      }
-    }),
-  )
+  fork_bg(host, "vault proxy", async fn() {
+    while @mesh_runtime.accept_through(closed=() => stopped.val, async fn() { host.accept(id) }) is Some(got) {
+      let conn : P54Conn = { host, id: got.id, closed: false }
+      ignore(
+        host.rt.fork_quiet(name="proxy connection", async fn() {
+          p54_proxy_connection(host, conn, connect, forward) catch {
+            _ => ()
+          }
+          conn.close()
+        }),
+      )
+    }
+  })
   port
 }
 
@@ -856,7 +1166,7 @@ async fn p54_proxy_connection(
             _ => break
           }
         }
-        ignore(host.shell("tcp.end", { "id": conn.id })) catch {
+        host.tcp_end(conn.id) catch {
           _ => ()
         }
       })
@@ -897,4 +1207,71 @@ fn p54_testing() -> Bool {
     Some(t) => t != ""
     None => false
   }
+}
+
+///|
+/// secrets.ts and signin.ts `cardOutcomes`: a decided card's request written on the vault's own connection in its own
+/// write, then its outcome queued on the chats' (the card closed there where asked, the close told), and the agents'
+/// side's worker woken to restate it. Two connections, so two writes: one write would wait on the other's lock.
+fn p54_vault_outcomes(bus : LiveBus, threads : @store_threads.Store, db : @vault_crypto.Db) -> @vault_service.CardOutcomes {
+  {
+    save: (item, tx) => {
+      let nested = db.in_transaction()
+      db.exec(if nested { "SAVEPOINT vault_outcome" } else { "BEGIN IMMEDIATE" })
+      (fn() raise {
+        tx()
+        db.exec(if nested { "RELEASE vault_outcome" } else { "COMMIT" })
+      })() catch {
+        e => {
+          db.exec(if nested { "ROLLBACK TO vault_outcome; RELEASE vault_outcome" } else { "ROLLBACK" }) catch {
+            _ => ()
+          }
+          raise e
+        }
+      }
+      // (the request is written: its card left as it is where its outcome is not queued, said, not undone)
+      threads.set_now(wall_ms().to_double())
+      ignore(threads.save_card_outcome(@store_threads.CardOutcome::from_json(to_jv(item)), () => ())) catch {
+        e => slice_log("warn", "vault", "a card's outcome was not queued", { "error": Json::string(p54_message(e)) })
+      }
+      told_threads(bus, threads)
+      ignore(
+        bus.host.rt.fork_quiet(name="card outcome", async fn() {
+          bus.hub_card_outcomes_wake() catch {
+            _ => ()
+          }
+        }),
+      )
+    },
+  }
+}
+
+///|
+/// rig/main.ts `Incoming`: on a station that only runs tasks, a command another station sends to run here with a
+/// secret one of its chats was granted (`vault.run`, `vault.capture`, `vault.revoke`, `vault.capabilities`), the
+/// secret in no file; asked in the workspace the request says, else the station's home.
+fn p54_rig_incoming(bus : LiveBus, cloud : P54Cloud, threads : @store_threads.Store) -> Unit {
+  let crypto = @vault_crypto.Crypto::of_host(bus.host)
+  let world = p54_vault_world(bus, cloud, threads, crypto, None)
+  let runs = @vault_service.Incoming::new(
+    world,
+    @vault_service.Proxy::new(world.machine, path([bus.data, "vault"]), () => wall_ms().to_double()),
+  )
+  bus.on_peer_prefix("vault.", async fn(peer, ws, meth, params, _bytes) {
+    let request = match params {
+      Object(m) => {
+        let c = m.copy()
+        if !c.contains("method") {
+          c["method"] = Json::string(meth)
+        }
+        Json::object(c)
+      }
+      _ => { "method": Json::string(meth) }
+    }
+    let workspace = match ws {
+      Some(w) => w
+      None => bus_home(bus).unwrap_or("")
+    }
+    (runs.heard(peer, workspace, request), None)
+  })
 }

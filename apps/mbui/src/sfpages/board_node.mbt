@@ -61,9 +61,6 @@ priv struct BoardOwn {
   /// each by its key (board_cards'), each worked out once for all that reads it, told only as it comes out otherwise
   mut columns : () -> Array[(String, String)]
   mut cards_of : (String) -> Array[BoardKey]
-  field : @ui.Field
-  /// the line's node while made, for returning the focus to an unfinished draft
-  mut input : @view.View?
   /// The task currently being written, whose files have their own persisted composer.
   draft_id : @signals.Signal[String]
   station : @signals.Signal[String]
@@ -108,10 +105,10 @@ fn board_new(own : BoardOwn) -> Unit {
     (own.reveal)("draft")
     // An unfinished line is kept; the action brings the cursor back to it.
     if was_adding {
-      match own.input {
-        Some(input) => @signals.after_flush(fn() { input.ask_focus() |> ignore })
-        None => ()
-      }
+      let ws = @signals.untracked(own.ws)
+      @signals.after_flush(fn() {
+        @signals.untracked(fn() { @sfbase.writing(own.src, @sfbase.board_file_key(ws, own.draft_id.get())) }).field.focus()
+      })
     }
   }
 }
@@ -130,6 +127,7 @@ fn board_words(key : String) -> String {
     "new-here" => @sf.t("web-main.board.new_here")
     "add" => @sf.t("web-main.board.add")
     "dispatch" => @sf.t("web-main.board.dispatch")
+    "edit" => @sf.t("web-main.board.edit")
     "cancel" => @sf.t("web-main.board.cancel")
     "goes-on" => @sf.t("web-main.board.goes_on")
     "start" => @sf.t("web-main.board.start")
@@ -414,13 +412,13 @@ pub fn board_node(
     me: fn() { me_now.get() },
     columns: fn() { [] },
     cards_of: fn(_) { [] },
-    field: @ui.Field::new(),
-    input: None,
-    draft_id: @signals.signal(@sfbase.board_next_id()),
+    draft_id: @signals.signal(@sfbase.board_writing_id(@signals.untracked(ws))),
     station: @signals.signal(""),
     archived: archive,
     stint,
   }
+  // (another workspace in view: the line its own task's, as it was left there)
+  v.reacts(ws, fn(w) { own.draft_id.set(@sfbase.board_writing_id(w)) }, at_start=false)
   let raw_columns_now = @signals.computed(fn(_) { board_columns(own, items(), drafts()) })
   // (every column's cards and every state's (a narrow board's chips count them whatever the grouping), worked out
   // together as a chat or a draft changes; a map made anew each time: each column's own computed says whether its
@@ -543,8 +541,11 @@ fn board_wide(
     }
     left.box(fn(area) {
       area.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-      // (short of the chat beside it by as much as that chat's edge reaches over the line between them: a press there
-      // the edge's alone)
+      // (a card going to another column (View::shared, board_chat_card) drawn within the board as it goes, never over
+      // its bar, the chat beside it or the window's edge round it)
+      area.flights_within() |> ignore
+      // (short of the chat beside it by as much as that chat's edge reaches over the board: a press there the edge's
+      // alone)
       area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore
       let across = @view.Scroll::across()
       // (the part of the scroll drawn apart from its anchor while the columns are on their way)
@@ -596,6 +597,13 @@ fn board_wide(
         glide.put(1.0)
         across.put(0.0)
       }
+      // (both let go of with the area, as they were before it: reveal names `own`, which holds it, a ring native's
+      // counting never frees)
+      area.owns(fn() {
+        own.reveal = fn(_) {  }
+        own.to_start = fn() {  }
+      })
+      |> ignore
       // (the chat beside them opened or closed: its way starts at that moment)
       area.reacts(split, fn(open) {
         let at = area.cause_at()
@@ -714,9 +722,11 @@ fn board_wide(
 }
 
 ///|
-/// The edge of the chat beside the board in `e` (over its start, its middle on the line between them, half over the
-/// board), as a side panel's is (sfdesk's side_edge_node): dragged, its width, kept as it is let go (sfbase's
-/// set_board_chat_w); pressed twice, its own width again; pressed once, nothing (× in its bar closes it).
+/// The edge of the chat beside the board in `e` (over its start, handle_out of it over the board), as a side panel's is
+/// (sfdesk's side_edge_node): its line and bar only under a pointer, focused or in hand, nothing drawn at rest; dragged,
+/// its width, kept as it is let go (sfbase's set_board_chat_w), dragged on past either end its line drawn aside as a
+/// string, sprung back as it is let go; pressed twice, its own width again; pressed once, nothing (× in its bar closes
+/// it).
 fn board_beside_edge(
   e : @view.View,
   src : Source,
@@ -726,6 +736,7 @@ fn board_beside_edge(
 ) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   e.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-board_edge_reach, 0.0))) |> ignore
+  let pull = @sf.EdgePull::new()
   let edge = @sf.edge_node(
     e,
     fn() { @sf.t("web-pages.chat.resizePanel") },
@@ -744,21 +755,26 @@ fn board_beside_edge(
     fn(h) { held.set(h) },
     tips~,
     side=Left,
+    pull~,
   )
   edge.box(fn(g) {
     g.over(Is(true)) |> ignore
-    @sf.edge_look_node(g, fn() { @sf.edge_over() }, fn() { edge.pointed() || edge.focus_shown() || held.get() }, fn() {
-      held.get()
-    })
+    @sf.edge_look_node(
+      g,
+      fn() { false },
+      fn() { edge.pointed() || edge.focus_shown() || held.get() },
+      fn() { held.get() },
+      pull~,
+    )
     |> ignore
   })
   |> ignore
 }
 
 ///|
-/// How far the edge of the chat beside the board reaches over the board, its middle on the 1 point line between them
-/// (board_beside_edge).
-let board_edge_reach : Double = @sf.handle_w / 2.0 - 0.5
+/// How far the edge of the chat beside the board reaches over the board (board_beside_edge), as a side panel's over its
+/// page (sfdesk's side_edge_node).
+let board_edge_reach : Double = @sf.handle_out
 
 ///|
 /// How wide each of `n` columns is in `room`: as many whole columns as `room` holds at the least, sharing it, at most
@@ -1307,13 +1323,8 @@ let board_card_est : Double = 116.0
 /// under it going with it, a Move as far as the card is tall; opened, the card empty. Put away by what was written in
 /// it, gone at once: its draft comes in its place, grown from it (draft_card's), the cards under it going on one Move.
 fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
+  // (opened on what was written in it and left: emptied only as that is added or put away, board_add's)
   let open = fn() { @sfbase.board_adding.get() }
-  // (opened: empty)
-  b.reacts(open, fn(o) {
-    if o {
-      own.field.set("")
-    }
-  }, at_start=false)
   // (made anew at once as what was written in it is added, closed and laid nowhere: the one that held it let go with
   // what makes the cards under it, so that what moves for its draft finds both done; opened, mbui's room's way)
   b.pick(fn() { own.room_made.get() }, fn(room, _) {
@@ -1326,8 +1337,12 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
 }
 
 ///|
-/// The card a draft is written in at 待派发's top, as the cards under it look: what it is, × to put it away (wide), the
-/// station it goes to, ＋ to add it; while the command key is held, the send arrow starts it at once.
+/// The card a draft is written in at 待派发's top: a chat's composer's box (composer_alone_node), opened all along, its
+/// words and send alone (what is pasted or dropped in over its words), × to put it away (wide): where it goes, what it
+/// runs on and what more it takes are its card's panel's once it is added (draft_panel), as a card has not the room for
+/// so many keys a finger can press. Its send adds the draft (its own ＋) to the station last chosen; while the command
+/// key is held it is the send arrow and starts it at once, as ⌘Enter does. Made again for each draft and each station:
+/// its draft is that one's, its files go up to that station.
 fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -> Unit {
   let card_at : Ref[@view.View?] = Ref(None)
   let dispatching = fn() {
@@ -1339,20 +1354,25 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
   let files = fn() {
     writing().files.get().map(fn(f) -> @sfbase.BoardFile { { id: text(Some(f), "id"), name: text(Some(f), "name") } })
   }
-  let ready = fn() {
-    let w = writing()
-    (own.field.text().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()) &&
-    w.pending.get() == 0 && !w.files.get().iter().any(fn(f) { text(Some(f), "error") != "" }) &&
-    board_station_now(own) != ""
+  // (its words let go of with it: the next draft's are its own)
+  let emptied = fn(w : Writing) {
+    w.field.set("")
+    writing_text(own.src, w, "")
   }
   let discard = fn() {
     @sfbase.board_files_discard(own.src, ws, own.draft_id.untracked(), @signals.untracked(files))
-    own.draft_id.set(@sfbase.board_next_id())
+    @sfbase.board_pick_forget(own.src, @signals.untracked(fn() { board_station_now(own) }), own.draft_id.untracked())
+    emptied(@signals.untracked(writing))
+    own.draft_id.set(@sfbase.board_writing_renew(ws))
   }
-  let add = fn(start : Bool) {
-    guard @signals.untracked(ready) else { return }
-    let words = own.field.text()
+  let add = fn(w : Writing, start : Bool) {
     let st = @signals.untracked(fn() { board_station_now(own) })
+    guard st != "" &&
+      w.pending.untracked() == 0 &&
+      !w.files.untracked().iter().any(fn(f) { text(Some(f), "error") != "" }) else {
+      return
+    }
+    let words = w.field.text()
     let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or("")
     let from = match card_at.val {
       Some(c) if c.alive() => Some(c.placed_window_now())
@@ -1372,152 +1392,74 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     if wide && !start && added is Some(id) {
       own.added_from = from.map(fn(r) { (id, r) })
     }
-    if added is Some(_) { own.draft_id.set(@sfbase.board_next_id()) }
-    @signals.end_batch()
-    guard added is Some(id) else { return }
-    if start {
-      let draft : @sfbase.BoardDraft = {
-        id,
-        title: words.trim(chars=" \n\r\t").to_owned(),
-        station: st,
-        station_name: name,
-        files: attached,
-      }
-      own.start_from = from.map(fn(r) { (st + "/" + @sfbase.board_key_of(draft), r) })
-      @sfbase.board_start(own.src, ws, draft)
-    }
-    if !wide {
+    if added is Some(_) {
       // (narrow it stays, 待派发's own line, empty for the next)
-      own.field.set("")
+      emptied(w)
+      own.draft_id.set(@sfbase.board_writing_renew(ws))
     }
+    @signals.end_batch()
+    guard start && added is Some(id) else { return }
+    let draft : @sfbase.BoardDraft = {
+      id,
+      title: words.trim(chars=" \n\r\t").to_owned(),
+      station: st,
+      station_name: name,
+      files: attached,
+    }
+    own.start_from = from.map(fn(r) { (st + "/" + @sfbase.board_key_of(draft), r) })
+    @sfbase.board_start(own.src, ws, draft)
   }
   let cancel = fn() {
     discard()
-    own.field.set("")
     @sfbase.board_adding.set(false)
   }
-  // (what stands in its foot's corners, as tall as a control, concentric with the card's: as far in as that leaves)
-  let h = fn() { @sf.theme().control_h }
-  let foot_in = fn() { @sf.card_corner - h() / 2.0 }
-  // (the round key sits concentric with the card's foot corner)
-  let add_in = fn() {
-    let d = h() - @sf.theme().round.side
-    if d > 0.0 { d / 2.0 } else { 0.0 }
-  }
   a.box(fn(card) {
-    card.owns(fn() { discard() }) |> ignore
+    // (let go of with the board, its words and pictures kept for it to come back to: put away only by × or Escape)
     card_at.val = Some(card)
     card.reacts(fn() {
       writing().files.get().map(fn(f) { text(Some(f), "error") }).filter(fn(e) { e != "" }).join("\n")
     }, fn(error) {
       if error != "" { @sfbase.toast_later(error) }
     }, at_start=false)
-    card
-    .ground(By(fn() { @sf.theme().p.card }))
-    .radius(Is(@sf.card_corner))
-    .padding(By(fn() { (foot_in(), card_pad, foot_in(), foot_in()) }))
-    .gap(Is(12.0))
-    |> ignore
-    // its pictures over its words, as the composer has them, only once there are some (pasted, dropped or picked: the
-    // field takes them, nothing says it does); clear of 取消's corner where that stands. A room opening on them and
-    // closing on them (the last one removed from its own ✕ too), the words, 添加 and the cards under the entry going
-    // with it, never a jump; shut, nothing at all over the words, not even the card's gap.
-    card.box(fn(top) {
-      @motion.reveal_node(top, fn() { !files().is_empty() }, fn(at) {
-        at.padding(By(fn() { (0.0, 0.0, if wide { card_title_end() + card_pad - foot_in() } else { 0.0 }, 12.0) })) |> ignore
-        board_files_node(at, own.src, fn() { @sfbase.board_file_key(ws, own.draft_id.get()) }, files, remove=fn(f) {
-          @sfbase.writing_remove(own.src, @signals.untracked(writing), f.id)
-        })
-      }, deferred=true)
-      |> ignore
-      // its words, on the card's own paper: no frame round them, where a card's title begins
-      top.box(fn(w) {
-        w.row(Is(true)).padding(By(fn() { (card_pad - foot_in(), 0.0, if wide { card_title_end() + card_pad - foot_in() } else { card_pad - foot_in() }, 0.0) })) |> ignore
-        let typed = @ui.field(
-          w,
-          own.field,
-          placeholder=board_words("placeholder"),
-          label=board_words("placeholder"),
-          max_lines=3,
-          enter_sends=true,
-          submitted=fn(_) { add(@signals.untracked(dispatching)) },
-          files=fn(got) {
-            let w = @signals.untracked(writing)
-            let station = @signals.untracked(fn() { board_station_now(own) })
-            for f in got { @sfbase.writing_add(own.src, w, station, f.0, f.1) }
-          },
-          leaves=[@ui.key_escape],
-          size_by=fn() { @sf.theme().t.ui },
-          colors_by=fn() {
-            let th = @ui.tree_theme()
-            (th.fg, th.subtle, th.accent)
-          },
-        )
-        own.input = Some(typed)
-        typed.owns(fn() {
-          match own.input {
-            Some(input) if input.id() == typed.id() => own.input = None
-            _ => ()
-          }
-        }) |> ignore
-        // (tall enough to be found by a finger, all of it the field's)
-        typed.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_height(Is(Some(32.0))) |> ignore
-        // (Escape puts it away, as × does)
-        if wide {
-          w.on_key(fn(k) {
-            if k.code == @ui.key_escape {
-              cancel()
-              true
-            } else {
-              false
-            }
-          })
-          |> ignore
+    // (Escape puts it away, as × does)
+    if wide {
+      card.on_key(fn(k) {
+        if k.code == @ui.key_escape {
+          cancel()
+          true
+        } else {
+          false
         }
-        // (opened to be written in: the cursor in it, each time it opens)
-        // (once what opened it is done: its room in use by then)
-        typed.reacts(fn() { @sfbase.board_adding.get() }, fn(on) {
-          if on {
-            @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-            // (and once its room is laid out open where the host gives the focus by where it is: a browser's)
-            typed.at_moment(typed.cause_at() + 1.0, fn() { if @sfbase.board_adding.untracked() { typed.ask_focus() |> ignore } })
-            |> ignore
-          }
+      })
+      |> ignore
+    }
+    card.pick(fn() { (own.draft_id.get(), board_station_now(own)) }, at_once=true, fn(c, made) {
+      let (id, st) = made
+      let spec : BoxSpec = {
+        chat: false,
+        roomy: true,
+        placeholder: board_words("placeholder"),
+        attach: false,
+        tools: None,
+        // (wide, clear of × in its corner)
+        words_end: if wide { card_title_end() } else { 0.0 },
+        sends: fn() { board_words(if dispatching() { "dispatch" } else { "add" }) },
+        send_icon: fn() { if dispatching() { "arrow-up" } else { "plus" } },
+        send: Some(fn(w) { add(w, @signals.untracked(dispatching)) }),
+      }
+      composer_alone_node(c, own.src, st, @sfbase.board_file_key(ws, id), spec, tips)
+    })
+    // (opened to be written in: the cursor in it, each time it opens; once what opened it is done, its room in use by
+    // then, and once its room is laid out open where the host gives the focus by where it is: a browser's)
+    card.reacts(fn() { @sfbase.board_adding.get() }, fn(on) {
+      if on {
+        @signals.after_flush(fn() { @signals.untracked(writing).field.focus() })
+        card.at_moment(card.cause_at() + 1.0, fn() {
+          if @sfbase.board_adding.untracked() { @signals.untracked(writing).field.focus() }
         })
-      })
-      |> ignore
-    })
-    |> ignore
-    card.box(fn(r) {
-      r.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-      // (where it goes: the library's choice of a station, round as the foot's buttons, its mark where a card's words
-      // begin)
-      @sf.station_choice_node(
-        r,
-        own.stations,
-        fn() { board_station_now(own) },
-        fn(at) { own.station.set(at) },
-        title=board_words("goes-on"),
-        label=fn(name) { board_words("goes-on") + ": " + name },
-        round=true,
-      )
-      |> ignore
-      r.box(fn(g) { g.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
-      r.box(fn(k) {
-        k.shrink(Is(0.0)).margin(By(fn() { (0.0, 0.0, add_in(), 0.0) })) |> ignore
-        @sf.send_button_node(
-          k,
-          fn() { board_words(if dispatching() { "dispatch" } else { "add" }) },
-          ready,
-          fn() { false },
-          fn() { add(@signals.untracked(dispatching)) },
-          icon_now=fn() { if dispatching() { "arrow-up" } else { "plus" } },
-        )
         |> ignore
-      })
-      |> ignore
+      }
     })
-    |> ignore
   })
   |> ignore
   if wide {
@@ -1532,7 +1474,6 @@ fn board_files_node(
   src : Source,
   key : () -> String,
   files : () -> Array[@sfbase.BoardFile],
-  remove? : (@sfbase.BoardFile) -> Unit,
 ) -> Unit {
   let strip = fn(p : @view.View) {
     p.height(Is(Some(64.0))).min_width(Is(Some(0.0))) |> ignore
@@ -1541,46 +1482,53 @@ fn board_files_node(
       let by_id = row.keyed_by(files, fn(f) { f.id })
       row.each(fn() { by_id.keys() }, fn(id) { id }, fn(slot, id) {
         let file = fn() { by_id.get(id.get()).unwrap_or({ id: "", name: "" }) }
+        let is_video = fn() { file_kind(file().name) == "video" }
+        // (the picture picked here, else the device's kept one of an image (told as each comes); a video's its still
+        // picked or drawn here; "!" none)
         let picture = fn() {
           let f = file()
-          if file_kind(f.name) != "image" {
-            "!"
-          } else {
-            match @sfbase.writing_pictures.get(f.id) {
-              Some(p) => p
-              None => (src.draft_picture)(key(), f.id)
-            }
+          match file_kind(f.name) {
+            "image" =>
+              match @sfbase.writing_picture_told(f.id) {
+                Some(p) => p
+                None => src.draft_picture_told(key(), f.id)
+              }
+            "video" => @sfbase.writing_picture_told(f.id).unwrap_or("!")
+            _ => "!"
           }
         }
-        let tile = fn(at : @view.View) {
-          @sf.waiting_tile_node(at, fn(p) {
+        @sf.waiting_tile_node(
+          slot,
+          fn(p) {
             p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
               if has_picture {
-                v.image(By(fn() { Some((picture(), "", 56)) })) |> ignore
+                // (as big as the tile, covering it, decoded for the device's pixels it is drawn at; a video's on its
+                // black, as the composer's)
+                v
+                .width(Is(Some(@sf.waiting_tile_side)))
+                .height(Is(Some(@sf.waiting_tile_side)))
+                .ground(By(fn() { if is_video() { @ui.tree_theme().color(@sf.video_ground) } else { 0L } }))
+                .image(By(fn() { Some((picture(), "", (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int())) }))
+                .image_covers(Is(true))
+                |> ignore
               } else {
                 v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
                 @sf.icon_node(v, "file", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
               }
             })
-          }, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "" })
-          |> ignore
-        }
-        match remove {
-          Some(drop) => {
-            @sf.with_corner_remove_node(slot, fn() { @sf.t("web-main.file.remove", args=[("name", file().name)]) }, @sf.card_corner, tile, fn() { drop(@signals.untracked(file)) })
-            |> ignore
-          }
-          None => tile(slot)
-        }
+          },
+          fn() { false },
+          fn() { None },
+          fn() { false },
+          fn() {  },
+          fn() { "" },
+          video=fn() { is_video() && picture() != "" && picture() != "!" },
+        )
+        |> ignore
       })
     }) |> ignore
   }
-  // (with `remove`, the entry's: in a room of its own that opens while it has some and closes as it has none; a card's
-  // only where it has some)
-  match remove {
-    Some(_) => parent.box(strip) |> ignore
-    None => parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
-  }
+  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
 }
 
 
@@ -1899,8 +1847,8 @@ fn CardHand::up(self : CardHand) -> Unit {
 }
 
 ///|
-/// A draft's card (待派发's): its words, where it is to run, 开始 at its top end; pressed, its words are edited in
-/// place; held long (or right clicked), its menu (立即派发, 删除). Never dragged, wide or narrow: a finger on it scrolls
+/// A draft's card (待派发's): its words, where it is to run, 开始 at its top end; pressed, its panel beside it
+/// (draft_panel: its words, where and on what it runs, 派发); held long (or right clicked), its menu (立即派发, 删除). Never dragged, wide or narrow: a finger on it scrolls
 /// its column.
 fn draft_card(
   row : @view.View,
@@ -1913,15 +1861,6 @@ fn draft_card(
   let d = fn() { (own.drafts_by)().get(id) }
   let title = fn() {
     d().map(fn(d) { if d.title == "" { d.files.get(0).map(fn(f) { f.name }).unwrap_or("") } else { d.title } }).unwrap_or("")
-  }
-  let editing = @signals.signal(false)
-  let edit_field = @ui.Field::new()
-  let edit_ws = Ref("")
-  let edit = fn() {
-    edit_ws.val = @signals.untracked(own.ws)
-    // (its own words, not the name of its first file standing in for them)
-    edit_field.set(@signals.untracked(fn() { d().map(fn(d) { d.title }).unwrap_or("") }))
-    editing.set(true)
   }
   let card_at : Ref[@view.View?] = Ref(None)
   // (started from `from` in the window: its chat's card flies in from there, board_chat_card's)
@@ -1942,6 +1881,13 @@ fn draft_card(
     }
   }
   let delete = fn() { @sfbase.board_draft_remove(src, @signals.untracked(own.ws), id) }
+  // (pressed: its panel beside it, where it is edited and started)
+  let edit = fn() {
+    match card_at.val {
+      Some(c) if c.alive() => draft_panel(src, own, id, c, start)
+      _ => ()
+    }
+  }
   let hand = CardHand::new()
   let lift = CardLift::new()
   // (its menu: start it now, delete it; held long, from the card, felt as it opens, the card lifted over its scrim)
@@ -1971,10 +1917,7 @@ fn draft_card(
     let st = d().map(fn(d) { d.station }).unwrap_or("")
     own.stations_by.get(st)
   }
-  row.pick(fn() { editing.get() }, at_once=true, fn(w, is_editing) {
-  if is_editing {
-    draft_edit_card(w, src, edit_ws.val, id, edit_field, editing)
-  } else {
+  row.box(fn(w) {
   let lifted = lift.node(w)
   w.box(fn(card) {
     card_at.val = Some(card)
@@ -2048,93 +1991,111 @@ fn draft_card(
   })
   |> ignore
   card_corner_key(w, tips, fn() { true }, "play", fn() { board_words("start") }, start)
-  }
   })
+  |> ignore
   ignore(lane)
 }
 
 ///|
-/// The draft's words in its card: Enter or 保存 keeps them, Escape or 取消 leaves them as they were. A press outside
-/// keeps what was written before reaching its target, as does the card leaving the virtual list.
-fn draft_edit_card(
-  parent : @view.View,
-  src : Source,
-  ws : String,
-  id : String,
-  field : @ui.Field,
-  editing : @signals.Signal[Bool],
-) -> Unit {
-  let done = Ref(false)
-  let keep = fn() { @sfbase.board_draft_edit(src, ws, id, @signals.untracked(fn() { field.text() })) }
-  let finish = fn(save : Bool) {
-    if !done.val {
-      done.val = true
-      if save { keep() }
-      editing.set(false)
-    }
+/// Draft `id`'s panel, opened by its card `from` (beside it; a sheet from the foot on 小屏): its words, the pictures and
+/// files it carries, where it runs (the workspace's stations; kept to its own while it carries files, as they went up
+/// there) and on what (the one model control, picked for it alone: `board:<id>`); at its foot 完成 and 派发 (`start`).
+/// What is changed is kept as it closes, however it closes: 完成, 派发, Escape, back or a press outside; words left
+/// empty with nothing carried keep the words it had.
+fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, start : () -> Unit) -> Unit {
+  let ws = @signals.untracked(own.ws)
+  guard @signals.untracked(fn() { (own.drafts_by)().get(id) }) is Some(d0) else { return }
+  let field = @ui.Field::new()
+  // (its own words, not the name of its first file standing in for them)
+  field.set(d0.title)
+  let station = @signals.signal(d0.station)
+  let kept = Ref(false)
+  let keep = fn() {
+    guard !kept.val else { return }
+    kept.val = true
+    let st = station.untracked()
+    let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or(d0.station_name)
+    @sfbase.board_draft_set(src, ws, id, field.text(), st, name)
+    // (the next one written goes where this one was sent last)
+    if st != d0.station { own.station.set(st) }
   }
-  let valid = fn() { !field.text().trim(chars=" \n\r\t").is_empty() }
-  let foot_in = fn() { @sf.card_corner - @sf.theme().control_h / 2.0 }
-  let save_in = fn() { (@sf.theme().control_h - @sf.button_height()).max(0.0) / 2.0 }
-  parent.box(fn(card) {
-    card.ground(By(fn() { @sf.theme().p.card })).radius(Is(@sf.card_corner)).padding(By(fn() { (foot_in(), card_pad, foot_in(), foot_in()) })).gap(Is(12.0)) |> ignore
-    card.owns(fn() { if !done.val { keep() } }) |> ignore
-    card.on_key(fn(k) {
-      if k.code == @ui.key_escape && k.mods == 0 {
-        finish(false)
-        true
-      } else {
-        false
-      }
-    }) |> ignore
-    let words = card.box(fn(w) {
-      w.padding(By(fn() { (card_pad - foot_in(), 0.0, card_pad - foot_in(), 0.0) })) |> ignore
-    })
-    let typed = @ui.field(
-      words,
-      field,
-      placeholder=board_words("placeholder"),
-      label=board_words("placeholder"),
-      max_lines=5,
-      enter_sends=true,
-      leaves=[@ui.key_escape],
-      submitted=fn(_) { if @signals.untracked(valid) { finish(true) } },
-      size_by=fn() { @sf.theme().t.ui },
-      colors_by=fn() {
-        let p = @sf.theme().p
-        (p.text, p.subtle, p.accent)
-      },
-    )
-    typed.min_height(Is(Some(32.0))) |> ignore
-    // (the cursor in it as it is made, once what made it is done; and again as it comes to take input, the change that
-    // put it in the card's place committed whole (View::takes_input): where the host gives the focus by where it is
-    // (a browser's), or where what was pressed still holds it, as soon as it can have it)
-    @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-    typed.reacts(fn() { typed.takes_input() }, fn(takes) {
-      if takes && !done.val && !@signals.untracked(fn() { typed.focused() }) {
-        typed.ask_focus() |> ignore
-      }
-    })
-    let opened = @signals.untracked(fn() { card.window_downs() })
-    card.reacts(fn() { card.window_downs() }, fn(count) {
-      if count > opened && !done.val {
-        let (x, y) = card.window_down_point()
-        let (left, top, w, h) = card.placed_window_now()
-        if x < left || x >= left + w || y < top || y >= top + h {
-          finish(true)
-        }
-      }
-    }, at_start=false)
-    card.box(fn(foot) {
-      foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-      foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
-      @sf.button_node(foot, fn() { board_words("cancel") }, fn() { finish(false) }) |> ignore
-      foot.box(fn(k) {
-        k.margin(By(fn() { (0.0, 0.0, save_in(), save_in()) })).shrink(Is(0.0)) |> ignore
-        @sf.button_node(k, fn() { @sf.t("common.save") }, fn() { finish(true) }, tone=Primary, disabled=fn() { !valid() }) |> ignore
-      }) |> ignore
-    }) |> ignore
-  }) |> ignore
+  // (where it may go: the workspace's stations, or its own alone while it carries files gone up there)
+  let stations = fn() {
+    let all = (own.stations)()
+    if d0.files.is_empty() { all } else { all.filter(fn(s) { s.station == d0.station }) }
+  }
+  @sf.panel_nodes(
+    board_words("edit"),
+    fn(p, close) {
+      p.gap(Is(12.0)) |> ignore
+      // (everything it holds starting on its title's line: the words where they start, the station's and the model's
+      // marks past the room their own grounds keep round them)
+      let words_at = fn() { @sf.panel_title_at_node(p) }
+      p.box(fn(fb) {
+      fb.padding(By(fn() { (words_at(), 0.0, words_at(), 0.0) })) |> ignore
+      let typed = @ui.field(
+        fb,
+        field,
+        placeholder=board_words("placeholder"),
+        label=board_words("placeholder"),
+        max_lines=8,
+        enter_sends=true,
+        submitted=fn(_) {
+          keep()
+          close()
+        },
+        size_by=fn() { @sf.theme().t.ui },
+        colors_by=fn() {
+          let pal = @sf.theme().p
+          (pal.text, pal.subtle, pal.accent)
+        },
+      )
+      typed.min_height(Is(Some(32.0))) |> ignore
+      // (the keys in it as the panel opens, however it is shown: the panel's layer gives them)
+      @sf.panel_opens_in_node(typed)
+      })
+      |> ignore
+      board_files_node(p, src, fn() { @sfbase.board_file_key(ws, id) }, fn() { d0.files })
+      // (where it runs, and on what under it)
+      p.box(fn(on) {
+        on.gap(Is(4.0)).lines_up(Is(Some(Start))) |> ignore
+        // (in a box of its own, the choice making none it gives back, put down to the words' first line)
+        on.box(fn(c) {
+          c.margin(By(fn() { ((words_at() - @ui.Space::px(S1)).max(0.0), 0.0, 0.0, 0.0) })) |> ignore
+          @sf.station_choice_node(
+            c,
+            stations,
+            fn() { station.get() },
+            fn(at) { station.set(at) },
+            title=board_words("goes-on"),
+            label=fn(name) { board_words("goes-on") + ": " + name },
+          )
+        })
+        |> ignore
+        // (what was picked for it on the station it goes to: its own on each)
+        on.pick(fn() { station.get() }, at_once=true, fn(m, st) {
+          m.shrink(Is(1.0)).min_width(Is(Some(0.0))).margin(By(fn() { ((words_at() - @ui.Space::px(S2_5)).max(0.0), 0.0, 0.0, 0.0) })) |> ignore
+          model_triple_node(m, src, st, @sfbase.board_pick_of(id))
+        })
+      })
+      |> ignore
+    },
+    from=Node(from),
+    gone=keep,
+    foot=fn(f, close) {
+      @sf.button_node(f, fn() { @sf.t("common.done") }, fn() {
+        keep()
+        close()
+      })
+      |> ignore
+      @sf.button_node(f, fn() { board_words("dispatch") }, fn() {
+        keep()
+        close()
+        start()
+      }, tone=Primary)
+      |> ignore
+    },
+  )
 }
 
 ///|
@@ -2272,7 +2233,7 @@ fn board_chat_card(
   let pressing = Ref(false)
   let whole = WholeHeld::new(src, item_now, fn() { pressing.val || menu_on() })
   let card_at : Ref[@view.View?] = Ref(None)
-  let menu_ok = fn() { item().map(fn(i) { i.offline is None && !i.pending }).unwrap_or(false) }
+  let menu_ok = fn() { item().map(row_menu_offered).unwrap_or(false) }
   // (its menu, once its whole row is answered, whole: right clicked at the pointer; held long from the card, felt)
   let open_menu = fn(x : Double, y : Double, held : Bool) {
     hand.up()

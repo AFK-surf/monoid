@@ -181,33 +181,14 @@ fn title_of(row : Map[String, Json], first_text : String?) -> String {
 ///|
 /// titles.ts `withoutMentions`: Slack's `<@U123>` taken out.
 fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(at) {
-    out.write_string(rest.view(end_offset=at).to_owned())
-    let after = rest.view(start_offset=at + 2).to_owned()
-    let end = after.find(">").unwrap_or(-1)
-    let id_ok = end > 0 &&
-      after
-      .view(end_offset=end)
-      .iter()
-      .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
-    if id_ok {
-      rest = after.view(start_offset=end + 1).to_owned()
-    } else {
-      out.write_string("<@")
-      rest = after
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
+  @jsjson.without_mentions(text)
 }
 
 ///|
 /// A merged row's JSON column as JSON.parse reads it, none when it does not parse or is empty.
 fn parsed(v : Json) -> @jsjson.JValue? {
   match v {
-    String(s) if s != "" => Some(@jsjson.parse(s)) catch { _ => None }
+    String(s) if s != "" => @jsjson.jval_try_parse(s)
     _ => None
   }
 }
@@ -215,20 +196,7 @@ fn parsed(v : Json) -> @jsjson.JValue? {
 ///|
 /// A value read by JSON.parse as the JSON a hit carries.
 fn to_json(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.text(s))
-    Arr(xs) => Json::array(xs.map(to_json))
-    Obj(fields) => {
-      let m : Map[String, Json] = Map([])
-      for f in fields {
-        m[@jsjson.text(f.0)] = to_json(f.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|
@@ -238,19 +206,10 @@ fn with_runtime(identity : @jsjson.JValue?, runtime : String) -> Json {
   match identity {
     Some(Obj(_) as o) => if to_json(o) is Object(fields) { for k, v in fields { m[k] = v } }
     Some(Arr(xs)) => for i, x in xs { m[i.to_string()] = to_json(x) }
-    Some(Str(units)) => {
-      // (a string spreads by its characters, a pair of surrogates one)
-      let s = @jsjson.text(units)
-      let mut i = 0
-      let mut n = 0
-      while i < s.length() {
-        let c = s.unsafe_charcode_at(i)
-        let w = if c >= 0xd800 && c <= 0xdbff && i + 1 < s.length() && s.unsafe_charcode_at(i + 1) >= 0xdc00 && s.unsafe_charcode_at(i + 1) <= 0xdfff { 2 } else { 1 }
-        m[n.to_string()] = Json::string(s.view(start_offset=i, end_offset=i + w).to_owned())
-        i += w
-        n += 1
+    Some(Str(s)) =>
+      for i, ch in @jsjson.points(@jsjson.sanitize_str(s)) {
+        m[i.to_string()] = Json::string(ch)
       }
-    }
     _ => ()
   }
   m["runtime"] = Json::string(runtime)
@@ -299,7 +258,7 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
   if self.archived && !archived {
     return
   }
-  let surface = if field(row, "surface") == Json::string("ember") { "stillfail" } else { "slack" }
+  let surface = if field(row, "surface") == Json::string("chat") { "stillfail" } else { "slack" }
   let first_text = match
     one(
       self.db,
@@ -324,9 +283,17 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
   } else {
     ""
   }
-  let chat = match sessions.get(0) {
-    Some(s) => field(s, "key")
-    None => Json::null()
+  let chat = match text_of(field(row, "home")) {
+    Some(h) if h != "" => Json::string(h)
+    _ =>
+      match sessions.get(0) {
+        Some(s) =>
+          match text_of(field(s, "key")) {
+            Some(k) => Json::string(@sql.conversation_of(self.db, k))
+            None => field(s, "key")
+          }
+        None => Json::null()
+      }
   }
   let refs : Array[(String, Json)] = [
     ("thread", id),
@@ -384,7 +351,7 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
         Some(Arr(xs)) =>
           for a in xs {
             if a.get("name") is Some(Str(n)) {
-              let name = @jsjson.text(n)
+              let name = @jsjson.sanitize_str(n)
               if name != "" {
                 files.push(name)
               }
@@ -607,10 +574,14 @@ fn job_doc(r : Map[String, Json], key : Json, session : Map[String, Json], threa
   body.push(match field(r, "command") { Null => None; v => Some(js_string(v)) })
   body.push(Some(match field(r, "cwd") { Null => ""; v => js_string(v) }))
   body.push(Some(if port is Null { "" } else { ":" + js_string(port) }))
+  let chat_key = match text_of(field(session, "conv")) {
+    Some(c) if c != "" => Json::string(c)
+    _ => key
+  }
   let refs : Array[(String, Json)] = [
     ("job", field(r, "id")),
     ("session", key),
-    ("chat", key),
+    ("chat", chat_key),
     ("state", field(r, "state")),
   ]
   if !(port is Null) {
@@ -639,7 +610,7 @@ fn js_string(v : Json) -> String {
     Null => "null"
     True => "true"
     False => "false"
-    Number(n, ..) => if n == n.floor() && n.abs() < 1.0e21 { n.to_int64().to_string() } else { n.to_string() }
+    Number(n, ..) => @jsjson.num_text(n)
     v => v.stringify()
   }
 }
@@ -649,7 +620,7 @@ fn js_string(v : Json) -> String {
 fn Reading::job_thread(self : Reading, key : Json) -> Json? raise {
   for t in
     self.db.all(
-      "SELECT t.id FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = 'ember' ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
+      "SELECT t.id FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = 'chat' ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
       [key],
     ) {
     return Some(field(t, "id"))
@@ -894,7 +865,7 @@ fn Reading::config(self : Reading) -> @jsjson.JValue {
 ///|
 fn jstr(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }

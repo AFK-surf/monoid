@@ -103,12 +103,14 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           s
         }
         if dark { @sf.set_dark(Some(true)) }
-        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页, as a run that chose it begins);
-        // `composed`: its composer too (试用新输入框)
-        if arg("MBUI_CHAT_PAGE") == "nodes" || arg("MBUI_CHAT_PAGE") == "composed" {
-          @sfbase.chat_page_nodes.set(true)
+        // MBUI_CHAT_PAGE=nodes: the chat's page, its composer and the new chat made as nodes whatever the channel
+        // (`composed`, as scripts of before say it, the same); `old`: their old views, as on stable; else as the
+        // mode's channel has them (the test channel's as nodes)
+        match arg("MBUI_CHAT_PAGE") {
+          "nodes" | "composed" => @sfbase.hold_chat_page_nodes(Some(true))
+          "old" => @sfbase.hold_chat_page_nodes(Some(false))
+          _ => ()
         }
-        if arg("MBUI_CHAT_PAGE") == "composed" { @sfbase.composer_nodes.set(true) }
         @sf.give_faces()
         src.val = Some(s)
         s

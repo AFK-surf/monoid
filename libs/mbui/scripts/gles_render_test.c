@@ -4,7 +4,8 @@
 // to differ in parts is drawn into the canvas and shown, the surface then the same to the byte as the frame drawn
 // whole; the blur under glass kept while what is under it is the same, made again once it is not, never kept while a
 // picture under it had no texture yet; a group the host keeps drawn out to the float the app's own instance would be;
-// a frame handed over from another thread (frame_mail.h) taken only to read back leaving the next drawn whole.
+// a frame handed over from another thread (frame_mail.h) taken only to read back leaving the next drawn whole; three
+// groups of glass on one screen each keeping its own blur, made again only for the one something moved under.
 //   cc -Wall -Wno-unused-function -I src/host -I "$MOON_HOME/include" scripts/gles_render_test.c
 //     $(pkg-config --cflags --libs epoxy zlib) -lm -o out/gles_render_test && out/gles_render_test
 #include <epoxy/gl.h>
@@ -72,6 +73,7 @@ static unsigned char *pixels_of_fb(GLuint fb) {
 }
 
 // The surface the same to the byte as the frame kept drawn whole again (draw_kept_read, as drawn_pixels reads it).
+// (the blurs kept by glass shown again there as they are: surface_as_fresh makes them anew)
 static int surface_as_whole(GLuint surface) {
   unsigned char *shown = pixels_of_fb(surface);
   draw_kept_read();
@@ -81,6 +83,12 @@ static int surface_as_whole(GLuint surface) {
   free(shown);
   free(whole);
   return same;
+}
+
+// The surface the same to the byte as the frame kept drawn whole again with no blur kept, each made anew.
+static int surface_as_fresh(GLuint surface) {
+  glass_forget();
+  return surface_as_whole(surface);
 }
 
 // A frame handed over from the thread that makes it (frame_mail.h: Android's app thread), what it says differs a
@@ -253,6 +261,208 @@ int main(void) {
   CHECK(blurs_made == made + 1);
   CHECK(kept_ok == 1);
   CHECK(pictures_missing == 0);
+
+  // Three groups of glass on one screen (frosted at the top, liquid in the middle, frosted at the foot, each with
+  // something of its own under it, a caret over all): each keeps its own blur. A frame where only what is over them
+  // moves makes none; one where something moves under the middle one alone makes that one's again, the others kept.
+  // The surface each time the same to the byte as the frame drawn whole with every blur made anew.
+  double s3[8 * MB_INST];
+  rect_at(s3, 0, 0, W, H, 0, 0.95, 0.95, 0.9, 0);
+  rect_at(s3 + 1 * MB_INST, 8, 4, 26, 8, 0, 0.9, 0.1, 0.1, 0);
+  rect_at(s3 + 2 * MB_INST, 5, 2, 36, 10, 5, 1, 1, 1, -2);
+  s3[2 * MB_INST + 7] = 2;
+  s3[2 * MB_INST + 11] = 0.5;
+  rect_at(s3 + 3 * MB_INST, 62, 32, 20, 8, 0, 0.1, 0.7, 0.2, 0);
+  rect_at(s3 + 4 * MB_INST, 60, 30, 30, 12, 6, 1, 1, 1, -3);
+  s3[4 * MB_INST + 4] = 6;
+  s3[4 * MB_INST + 7] = 2;
+  s3[4 * MB_INST + 11] = 0.3;
+  s3[4 * MB_INST + 21] = 2;
+  s3[4 * MB_INST + 23] = 1;
+  rect_at(s3 + 5 * MB_INST, 10, 60, 25, 6, 0, 0.2, 0.2, 0.9, 0);
+  rect_at(s3 + 6 * MB_INST, 5, 57, 40, 12, 5, 1, 1, 1, -4);
+  s3[6 * MB_INST + 7] = 2;
+  s3[6 * MB_INST + 11] = 0.5;
+  rect_at(s3 + 7 * MB_INST, 90, 65, 2, 6, 0, 0, 0, 0, 0);
+  made = blurs_made;
+  gl_present(s3, 8, 0.1, 0.2, 0.3);
+  LOG("three groups, first frame: %d blurs", blurs_made - made);
+  CHECK(blurs_made == made + 3);
+  CHECK(surface_as_fresh(surface));
+  for (int i = 0; i < 3; i++) {
+    s3[7 * MB_INST + 1] = 62 + i;  // the caret: moved
+    made = blurs_made;
+    gl_present(s3, 8, 0.1, 0.2, 0.3);
+    LOG("three groups, the caret moved: %d blurs", blurs_made - made);
+    CHECK(blurs_made == made);
+    CHECK(kept_ok == 1);
+    CHECK(surface_as_fresh(surface));
+  }
+  s3[3 * MB_INST + 0] = 64;  // under the liquid glass alone: moved
+  made = blurs_made;
+  gl_present(s3, 8, 0.1, 0.2, 0.3);
+  LOG("three groups, what is under the middle one moved: %d blurs", blurs_made - made);
+  CHECK(blurs_made == made + 1);
+  CHECK(surface_as_fresh(surface));
+  s3[7 * MB_INST + 1] = 60;
+  made = blurs_made;
+  gl_present(s3, 8, 0.1, 0.2, 0.3);
+  CHECK(blurs_made == made);
+  CHECK(surface_as_fresh(surface));
+  s3[1 * MB_INST + 0] = 9;  // under the top one: moved, that one's alone made again
+  made = blurs_made;
+  gl_present(s3, 8, 0.1, 0.2, 0.3);
+  CHECK(blurs_made == made + 1);
+  CHECK(surface_as_fresh(surface));
+
+  // What drawing holds beyond its frames given back: the trim lets go of glass's textures and the read back's
+  // framebuffer; glass's textures go once MB_GLASS_IDLE frames in a row drew none. Each made again as it is next
+  // needed, the surface then the same to the byte as the frame drawn whole.
+  {
+    double g1[2 * MB_INST];
+    rect_at(g1, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    rect_at(g1 + MB_INST, 5, 5, 50, 25, 6, 1, 1, 1, -5);
+    g1[MB_INST + 4] = 6;
+    g1[MB_INST + 7] = 2;
+    g1[MB_INST + 11] = 0.3;
+    g1[MB_INST + 21] = 2;
+    g1[MB_INST + 23] = 1;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(lv[0].t != 0 && lv_w > 0);
+    CHECK(slots[0].bt != 0);
+    CHECK(surface_as_fresh(surface));
+    // the same capture frosted (kind 5), kept in the same slot
+    g1[MB_INST + 5] = 5;
+    g1[0] = 11;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(slots[0].bt != 0);
+    CHECK(surface_as_fresh(surface));
+
+    CHECK(read_fb != 0);
+    mb_render_trim();
+    CHECK(read_fb == 0 && read_tex == 0);
+    CHECK(lv[0].t == 0 && lv[4].t == 0 && lv_w == 0 && lv_h == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].under == NULL);
+    g1[0] = 12;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(lv[0].t != 0);
+    CHECK(surface_as_fresh(surface));
+
+    // frames with no glass: glass's textures kept till the MB_GLASS_IDLE-th, then let go
+    double plain[MB_INST];
+    rect_at(plain, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    for (int i = 1; i <= MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+      if (i == MB_GLASS_IDLE - 1) CHECK(lv[0].t != 0 && slots[0].bt != 0);
+    }
+    CHECK(lv[0].t == 0 && lv_w == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0);
+    g1[0] = 13;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(surface_as_fresh(surface));
+    // a frame with glass among those without keeps them: the count starts again
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    g1[0] = 14;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    CHECK(lv[0].t != 0);
+  }
+
+  // Unmerged liquid glass (kind 6, a[23] <= 0):
+  // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1e-7 (merged_liquid + sd_group, same float32 quad bounds) byte-for-byte;
+  // (2) two unmerged liquid shapes separated by a shadow (kind 2) sharing one capture make only 1 blur and preserve each
+  //     instance's own spot, matching separate captures byte-for-byte at k == 0.
+  {
+    double eq[2 * MB_INST];
+    rect_at(eq, 0, 0, W, H, 0, 0.85, 0.30, 0.20, 0);
+    rect_at(eq + MB_INST, 18, 22, 54, 24, 6, 1, 1, 1, -9);
+    eq[MB_INST + 4] = 12;
+    eq[MB_INST + 6] = 1;
+    eq[MB_INST + 7] = 2;
+    eq[MB_INST + 11] = 0.25;
+    eq[MB_INST + 12] = 0.8;
+    eq[MB_INST + 13] = 8;
+    eq[MB_INST + 14] = 0;
+    eq[MB_INST + 15] = 1;
+    eq[MB_INST + 21] = 4;
+    eq[MB_INST + 22] = 0.2;
+    eq[MB_INST + 23] = 0;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_single = pixels_of_fb(surface);
+
+    eq[MB_INST + 23] = 1e-7;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_single);
+    free(px_merged);
+
+    double lq[5 * MB_INST];
+    rect_at(lq, 0, 0, W, H, 0, 0.92, 0.90, 0.85, 0);
+    rect_at(lq + 1 * MB_INST, 10, 46, 76, 18, 0, 0.85, 0.25, 0.20, 0);
+    // left capsule (no spot, merge=0)
+    rect_at(lq + 2 * MB_INST, 6, 48, 30, 14, 6, 1, 1, 1, -9);
+    lq[2 * MB_INST + 4] = 7;
+    lq[2 * MB_INST + 6] = 1;
+    lq[2 * MB_INST + 7] = 1.5;  // sp = 3.0 -> k == 0
+    lq[2 * MB_INST + 11] = 0.25;
+    lq[2 * MB_INST + 12] = 0.8;
+    lq[2 * MB_INST + 13] = 6;
+    lq[2 * MB_INST + 14] = 0;
+    lq[2 * MB_INST + 15] = 1;
+    lq[2 * MB_INST + 21] = 2;
+    lq[2 * MB_INST + 22] = 0;
+    lq[2 * MB_INST + 23] = 0;
+    // shadow between the two shapes (outside the right disc's capture box)
+    rect_at(lq + 3 * MB_INST, 6, 48, 10, 6, 2, 0, 0, 0, 0);
+    lq[3 * MB_INST + 7] = 1;
+    lq[3 * MB_INST + 11] = 0.2;
+    // right disc (with its own spot, merge=0, sharing capture -9)
+    rect_at(lq + 4 * MB_INST, 68, 48, 18, 14, 6, 1, 1, 1, -9);
+    lq[4 * MB_INST + 4] = 7;
+    lq[4 * MB_INST + 6] = 1;
+    lq[4 * MB_INST + 7] = 1.5;
+    lq[4 * MB_INST + 11] = 0.25;
+    lq[4 * MB_INST + 12] = 0.8;
+    lq[4 * MB_INST + 13] = 6;
+    lq[4 * MB_INST + 14] = 537.0 * 4096.0 + 528.0 + 1.0;
+    lq[4 * MB_INST + 15] = 1;
+    lq[4 * MB_INST + 21] = 2;
+    lq[4 * MB_INST + 22] = 0;
+    lq[4 * MB_INST + 23] = 0;
+
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    unsigned char *px_lq_shared = pixels_of_fb(surface);
+
+    lq[2 * MB_INST + 20] = -10;
+    lq[4 * MB_INST + 20] = -11;
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 2);
+    unsigned char *px_lq_sep = pixels_of_fb(surface);
+    CHECK(memcmp(px_lq_shared, px_lq_sep, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_lq_shared);
+    free(px_lq_sep);
+  }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.

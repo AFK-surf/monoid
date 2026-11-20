@@ -48,7 +48,7 @@ fn to_sheet_rest(t : @ui.Tester) -> Unit {
 /// What is presented over the screen closed (Escape), and gone.
 fn shut(r : ScreenRig) -> Unit {
   r.t.press("Escape")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   to_sheet_rest(r.t)
   // (a segmented choice's thumb gone on its spring to the one chosen: run to its rest)
   let rest = r.t.rest_of("spring")
@@ -174,6 +174,8 @@ test "a host that decodes H.265 asks for it first; 自动 says no 画质" {
   let asked = r.told("screen.view").last().unwrap()
   assert_eq(items(Some(asked), "codecs"), [Json::string("h265"), Json::string("jpeg")])
   assert_true(field(Some(asked), "quality") is None)
+  // (Android's decoder takes Main and Main 10 only: no 4:4:4 asked)
+  assert_true(field(Some(asked), "chroma444") is None)
   // its config to the stream as H.265, its frames handed over after it
   r.live()
   r.say({ "config": { "codec": "h265", "width": 1920, "height": 1080 } }, bytes=b"\x01\x01")
@@ -694,11 +696,11 @@ test "a device's picture fitted still once its poses take room from the stage: i
   // tall enough that the stage's height is what it is fitted to
   r.say({ "config": { "codec": "jpeg", "width": 1000.0, "height": 2040.0 } })
   r.t.draw()
-  assert_true(!r.ui().zoom.zoomed(r.t.ctx()))
+  assert_true(!r.ui().zoom.zoomed_at(r.t.time()))
   r.state("live", more={ "kind": Json::string("simulator"), "poses": Json::boolean(true) })
   r.t.draw()
   r.t.draw()
-  assert_true(!r.ui().zoom.zoomed(r.t.ctx()))
+  assert_true(!r.ui().zoom.zoomed_at(r.t.time()))
   screen_done(r.t)
 }
 
@@ -1067,12 +1069,8 @@ test "a person's page as a browser shows it: its tabs over it, ← → ⟳ and i
     assert_true(r.labelled(tr(label)) is Some(_), msg=label)
   }
   assert_true(r.labelled("页面") is None, msg="no 页面 menu any more")
-  // (a tab's × 40 beside its tabs' 36: the one height rule's, counted in corners_heights_known (屏幕's pages), said here
-  // once audit() held that rule too, 2026-11-15)
-  assert_eq(
-    r.t.audit().filter(fn(f) { !(f.has_prefix("height: a box in 「") && f.contains(" 40 tall, the others pressed in its row 36 beside ")) }),
-    [],
-  )
+  // (a tab's × over its capsule's end, @sf.tab_bar_node's, concentric with it: one height in its row, 2026-11-18)
+  assert_eq(r.t.audit(), [])
   // ← → ⟳, each one press
   r.tap_label(tr("web-pages.screen.back"))
   r.tap_label(tr("web-pages.screen.forward"))
@@ -1225,4 +1223,18 @@ test "a desktop's windows as its tabs: the whole screen and each window; pressed
   assert_true(p.labelled(tr("web-pages.screen.windows") + " 3") is Some(_))
   assert_eq(p.t.audit(), [])
   screen_done(p.t)
+}
+
+///|
+test "a Mac that decodes H.265 says it decodes its 4:4:4 too (the core asks it of the station with 原画 alone)" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.t.set_h265(true)
+  let s = screens_open.get(screen_key("ws-1/st-1", "browser:tab-1")).unwrap()
+  s.pause(s.src)
+  s.open(s.src)
+  let asked = r.told("screen.view").last().unwrap()
+  assert_eq(items(Some(asked), "codecs"), [Json::string("h265"), Json::string("jpeg")])
+  assert_eq(field(Some(asked), "chroma444"), Some(Json::boolean(true)))
+  s.pause(s.src)
+  screen_done(r.t)
 }

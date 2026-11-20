@@ -506,11 +506,107 @@ priv struct GifCycle {
   made : FixedArray[Bool]
   mut unmade : Int
   mut decoder : GifDecoder?
+  /// what it was handed over as, its screen and where its blocks start (gif_screen's): a decoder made again from them
+  /// where its frames are wanted again after they were let go of (trim_gif_frames)
+  data : Bytes
+  w : Int
+  h : Int
+  start : Int
+  /// the frame of the window it was last drawn in (Ctx::moving_key)
+  mut last_used : Int
+  /// the bytes of each frame made (its PNG's), 0 where it is not: those past the first counted in gif_expanded_bytes
+  frame_bytes : FixedArray[Int]
 }
 
 ///|
 /// The GIFs that move, by the key they were handed over as.
 let moving_images : Map[String, GifCycle] = Map([])
+
+///|
+/// The bytes of the frames of the GIFs that move made past each one's first (what trim_gif_frames holds to its budget).
+let gif_expanded_bytes : Ref[Int] = Ref(0)
+
+///|
+/// How many bytes of frames made past their first the GIFs that move keep: past it, those of GIFs not drawn this frame
+/// (drawn longest ago first) let go of, made again from their GIF as each is wanted again. Each one's first is kept (a
+/// still of it: what stands in for a frame not decoded yet, never a frame of nothing).
+let gif_frames_budget_most : Int = 64 * 1024 * 1024
+
+///|
+/// gif_frames_budget_most, but where a test says less.
+let gif_frames_budget : Ref[Int] = Ref(gif_frames_budget_most)
+
+///|
+/// Every GIF that moves let go of, and what is counted of them (Tester's reset).
+fn moving_reset() -> Unit {
+  moving_images.clear()
+  gif_expanded_bytes.val = 0
+  gif_frames_budget.val = gif_frames_budget_most
+}
+
+///|
+/// Frame `k` of it (made) let go of: its bytes, its host's decodes of it and what is said of it,
+/// what was read back of it; made again as it is wanted again (GifCycle::make).
+fn GifCycle::unmake(self : GifCycle, k : Int) -> Unit {
+  guard self.made[k] else { return }
+  let fk = self.keys[k]
+  image_data.remove(fk)
+  match image_cache.get(fk) {
+    Some(list) => {
+      for e in list {
+        h_image_free(e.id)
+        image_dropped(e)
+      }
+      image_cache.remove(fk)
+    }
+    None => ()
+  }
+  image_forget(fk)
+  pixels_forget(fk)
+  self.made[k] = false
+  self.unmade = self.unmade + 1
+  if k > 0 {
+    gif_expanded_bytes.val = gif_expanded_bytes.val - self.frame_bytes[k]
+  }
+  self.frame_bytes[k] = 0
+}
+
+///|
+/// The GIF that moves handed over as `key` let go of, where there is one: each of its frames (GifCycle::unmake) and
+/// what it is made from. What is handed over as `key` again (another GIF, a still, a vector picture) or `key` forgotten
+/// (forget_image) lets go of it first, so none of its frames is left behind under a key nothing names any more.
+fn moving_forget(key : String) -> Unit {
+  guard moving_images.get(key) is Some(m) else { return }
+  for k in 0..<m.keys.length() {
+    m.unmake(k)
+  }
+  m.decoder = None
+  moving_images.remove(key)
+}
+
+///|
+/// The frames made past their first of the GIFs that move held to gif_frames_budget: of those not drawn in frame
+/// `frame_no`, the one drawn longest ago first, all of its frames past its first let go of and its decoder with them
+/// (made again from its bytes as one is wanted again: GifCycle::make).
+fn trim_gif_frames(frame_no : Int) -> Unit {
+  guard gif_expanded_bytes.val > gif_frames_budget.val else { return }
+  let all : Array[GifCycle] = []
+  for _, m in moving_images {
+    if m.last_used < frame_no {
+      all.push(m)
+    }
+  }
+  all.sort_by(fn(a, b) { a.last_used.compare(b.last_used) })
+  for m in all {
+    if gif_expanded_bytes.val <= gif_frames_budget.val {
+      break
+    }
+    for k in 1..<m.keys.length() {
+      m.unmake(k)
+    }
+    m.decoder = None
+  }
+}
 
 ///|
 /// `data` handed over as `key` when it is a GIF of more than one frame: its frames each a picture of its own, its first
@@ -538,6 +634,12 @@ fn add_gif(key : String, data : Bytes) -> Bool {
     made: FixedArray::make(count, false),
     unmade: count,
     decoder: Some(GifDecoder::new(data, w, h, start)),
+    data,
+    w,
+    h,
+    start,
+    last_used: -1,
+    frame_bytes: FixedArray::make(count, 0),
   }
   moving_images[key] = m
   m.make(0)
@@ -547,20 +649,32 @@ fn add_gif(key : String, data : Bytes) -> Bool {
 
 ///|
 /// Frame `k` made, where it is not yet: its decoder taken on to it (the frames on the way decoded onto its canvas, not
-/// made; begun again from the first where it is past it), its pixels made a PNG in image_data, said to be here. The
-/// decoder let go once every frame is made.
+/// made; begun again from the first where it is past it, or made again from its GIF where it was let go of:
+/// trim_gif_frames), its pixels made a PNG in image_data, said to be here. The decoder let go once every frame is made.
 fn GifCycle::make(self : GifCycle, k : Int) -> Unit {
   if self.made[k] {
     return
   }
-  guard self.decoder is Some(d) else { return }
+  let d = match self.decoder {
+    Some(d) => d
+    None => {
+      let d = GifDecoder::new(self.data, self.w, self.h, self.start)
+      self.decoder = Some(d)
+      d
+    }
+  }
   if d.decoded > k + 1 {
     d.restart()
   }
   while d.decoded < k + 1 && d.next() {
     ()
   }
-  image_data[self.keys[k]] = png_of(d.w, d.h, d.canvas)
+  let png = png_of(d.w, d.h, d.canvas)
+  image_data[self.keys[k]] = png
+  self.frame_bytes[k] = png.length()
+  if k > 0 {
+    gif_expanded_bytes.val = gif_expanded_bytes.val + png.length()
+  }
   self.made[k] = true
   self.unmade = self.unmade - 1
   if self.unmade == 0 {

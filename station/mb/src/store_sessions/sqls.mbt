@@ -10,6 +10,11 @@ let any_running : String =
   #|SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1
 
 ///|
+/// The sessions in use (`live_sessions` and `running_sessions` both), only their keys and directories.
+let in_use_places : String =
+  #|SELECT key, workspace, cwd FROM sessions WHERE archived_at IS NULL UNION SELECT key, workspace, cwd FROM sessions WHERE running = 1
+
+///|
 let running_sessions : String =
   #|SELECT * FROM sessions WHERE running = 1
 
@@ -42,6 +47,20 @@ let transcript_in_use : String =
   #|    WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3 AND (s.archived_at IS NULL OR s.running = 1)
   #|      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
   #|  LIMIT 1
+
+///|
+let transcript_referenced : String =
+  #|SELECT 1 FROM runtime_sessions r INDEXED BY runtime_sessions_by_id
+  #|    CROSS JOIN sessions s ON s.key = r.session_key
+  #|    WHERE r.id = ?1 AND COALESCE(r.runtime, s.original_runtime, s.runtime) = ?2 AND s.key <> ?3
+  #|  UNION ALL SELECT 1 FROM sessions s INDEXED BY sessions_by_runtime_id
+  #|    WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3
+  #|      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
+  #|  LIMIT 1
+
+///|
+let session_paths_page : String =
+  #|SELECT key, workspace, cwd, archived_at FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2
 
 ///|
 let stats_of : String =
@@ -149,6 +168,11 @@ let jobs_running : String =
 ///|
 let jobs_up : String =
   #|SELECT * FROM (SELECT * FROM jobs WHERE state = 'running' UNION ALL SELECT * FROM jobs WHERE state = 'exited' AND port IS NOT NULL) ORDER BY started_at DESC
+
+///|
+/// `jobs_up`'s jobs, only whose session and directory: what cold storage asks of each of them.
+let jobs_up_places : String =
+  #|SELECT session_key, cwd FROM jobs WHERE state = 'running' UNION ALL SELECT session_key, cwd FROM jobs WHERE state = 'exited' AND port IS NOT NULL
 
 ///|
 let live_on_profile : String =
@@ -427,10 +451,6 @@ let speed_quarters_read : String =
   #|  ORDER BY quarter, profile, model
 
 ///|
-let active_sessions : String =
-  #|SELECT session_key FROM turns WHERE ended_at IS NULL UNION ALL SELECT session_key FROM turns WHERE ended_at >= ?
-
-///|
 let turns_from : String =
   #|SELECT IFNULL((SELECT MAX(started_at) FROM turns WHERE session_key = ?1 AND started_at <= ?2),
   #|  (SELECT MIN(started_at) FROM turns WHERE session_key = ?1)) AS at
@@ -450,76 +470,3 @@ let taken_since : String =
 let last_contexts : String =
   #|SELECT u.turn, u.profile, u.model, u.context, u.context_window, u.at, u.fast, u.cache_write, u.cache_write_long
   #|  FROM usage_main_calls m JOIN usage u ON u.id = m.id WHERE m.session = ?1 ORDER BY m.at DESC, m.id DESC LIMIT ?2
-
-///|
-/// Each statement by its name (the harness's `sql`).
-let statements : Array[(String, String)] = [
-  ("live_sessions", live_sessions),
-  ("any_running", any_running),
-  ("running_sessions", running_sessions),
-  ("waiting_for_people", waiting_for_people),
-  ("failed_turn_near", failed_turn_near),
-  ("process_by_group", process_by_group),
-  ("transcript_in_use", transcript_in_use),
-  ("stats_of", stats_of),
-  ("last_turn_of_session", last_turn_of_session),
-  ("work_of_session", work_of_session),
-  ("last_read_at", last_read_at),
-  ("models_used_by", models_used_by),
-  ("efforts_used_by", efforts_used_by),
-  ("efforts_used_by_before_index", efforts_used_by_before_index),
-  ("people_said_after", people_said_after),
-  ("post_blocks_ready", post_blocks_ready),
-  ("post_after_first", post_after_first),
-  ("post_after_indexed", post_after_indexed),
-  ("jobs_running", jobs_running),
-  ("jobs_up", jobs_up),
-  ("live_on_profile", live_on_profile),
-  ("last_jobs_of", last_jobs_of),
-  ("job_at_port", job_at_port),
-  ("session_jobs", session_jobs),
-  ("session_of_runtime", session_of_runtime),
-  ("recover_waits", recover_waits),
-  ("recover_awake_waits", recover_awake_waits),
-  ("awake_wait_status", awake_wait_status),
-  ("session_count_total", session_count_total),
-  ("session_count_connect", session_count_connect),
-  ("session_counts", session_counts),
-  ("session_counts_visible", session_counts_visible),
-  ("session_counts_home", session_counts_home),
-  ("share_dirty", share_dirty),
-  ("share_live", share_live_rows),
-  ("share_due", share_due),
-  ("share_next_time", share_next_time),
-  ("share_lapsed_workspace", share_lapsed_workspace),
-  ("session_up_job", session_up_job),
-  ("session_up_jobs", session_up_jobs),
-  ("session_bindings_exists", session_bindings_exists),
-  ("session_bindings_delete", session_bindings_delete),
-  ("widget_source_missing", widget_source_missing),
-  ("widget_source_unusual", widget_source_unusual),
-  ("widget_source", widget_source),
-  ("widget_source_original", widget_source_original),
-  ("awake_jobs", awake_jobs),
-  ("running_limit", running_limit),
-  ("running_job_sessions", running_job_sessions),
-  ("running_wait_jobs", running_wait_jobs),
-  ("up_jobs_of_session", up_jobs_of_session),
-  ("remote_queue_jobs", remote_queue_jobs),
-  ("awake_jobs_before_upgrade", awake_jobs_before_upgrade),
-  ("running_limit_before_upgrade", running_limit_before_upgrade),
-  ("running_job_sessions_before_upgrade", running_job_sessions_before_upgrade),
-  ("running_wait_jobs_before_upgrade", running_wait_jobs_before_upgrade),
-  ("up_jobs_before_upgrade", up_jobs_before_upgrade),
-  ("remote_queue_before_upgrade", remote_queue_before_upgrade),
-  ("remote_queue_prepared", remote_queue_prepared),
-  ("delete_expired_remote_runs", delete_expired_remote_runs),
-  ("quota_hours_read", quota_hours_read),
-  ("spend_hours_read", spend_hours_read),
-  ("speed_quarters_read", speed_quarters_read),
-  ("active_sessions", active_sessions),
-  ("turns_from", turns_from),
-  ("turns_between", turns_between),
-  ("taken_since", taken_since),
-  ("last_contexts", last_contexts),
-]

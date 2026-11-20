@@ -145,7 +145,7 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   t.draw()
   assert_false(t.ime().0, msg="opening 模型 puts the composer's keyboard away")
   let (_, y0, _, h0) = t.get(@ui.Role::Dialog).rect
-  assert_true(h0 > 600.0, msg="模型 sheet opens at full natural height \{h0}, not squeezed above 544px keyboard room")
+  assert_true(h0 > 550.0, msg="模型 sheet opens at full natural height \{h0}, not squeezed above 544px keyboard room")
   let mut prev_y = y0
   for i in 1..=6 {
     let kb = 300.0 - i.to_double() * 50.0

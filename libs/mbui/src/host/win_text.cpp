@@ -600,6 +600,51 @@ static bool family_metrics(const WCHAR *name, int weight, int style, DWRITE_FONT
   return ok;
 }
 
+// The ink of code point `cp` in a family at this weight and style, in its design units: how far it reaches above the
+// baseline and below it (false: not on this system, or no such glyph). In a face's collection where one is given.
+static bool family_ink(const WCHAR *name, int weight, int style, UINT32 cp, double *above, double *below,
+                       IDWriteFontCollection *in = NULL) {
+  IDWriteFontCollection *fc = NULL;
+  IDWriteFontFamily *fam = NULL;
+  IDWriteFont *font = NULL;
+  IDWriteFontFace *ff = NULL;
+  UINT32 i = 0;
+  BOOL found = FALSE;
+  bool ok = false;
+  if (in) {
+    fc = in;
+    fc->AddRef();
+  } else {
+    dw->GetSystemFontCollection(&fc, FALSE);
+  }
+  UINT16 gi = 0;
+  DWRITE_GLYPH_METRICS gm = {};
+  if (SUCCEEDED(fc->FindFamilyName(name, &i, &found)) && found && SUCCEEDED(fc->GetFontFamily(i, &fam)) &&
+      SUCCEEDED(fam->GetFirstMatchingFont((DWRITE_FONT_WEIGHT)weight, DWRITE_FONT_STRETCH_NORMAL,
+                                          (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, &font)) &&
+      SUCCEEDED(font->CreateFontFace(&ff)) && SUCCEEDED(ff->GetGlyphIndices(&cp, 1, &gi)) && gi &&
+      SUCCEEDED(ff->GetDesignGlyphMetrics(&gi, 1, &gm, FALSE))) {
+    *above = (double)gm.verticalOriginY - gm.topSideBearing;
+    *below = (double)gm.advanceHeight - gm.bottomSideBearing - gm.verticalOriginY;
+    ok = true;
+  }
+  if (ff) ff->Release();
+  if (font) font->Release();
+  if (fam) fam->Release();
+  fc->Release();
+  return ok;
+}
+
+// A line's ascent and descent for a face, as tall in all as the face's own (its ascent and descent, design units),
+// the baseline moved so that the line's middle is the middle of the ink reaching `above` over it and `below` under it: a line
+// centred in a box then shows its words centred in it (Segoe UI's ascent, 1.08 em, keeps room for accents over
+// capitals 0.70 high, and set its words low in every capsule).
+static void centred_line(double ascent, double descent, double above, double below, double *a, double *d) {
+  double half = (ascent + descent) / 2.0, mid = (above - below) / 2.0;
+  *a = half + mid;
+  *d = half - mid;
+}
+
 extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style, double *out) {
   init();
   DWRITE_FONT_METRICS m = {};
@@ -610,16 +655,25 @@ extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style,
   bool han = false;
   if (face) family_metrics(faces[face].family, weight, style, &m, faces[face].fc, &han);
   else family_metrics((style & 2) ? MONO : (style & 4) ? SERIF : FAMILY, weight, style, &m, NULL, &han);
-  out[0] = size * m.ascent / m.designUnitsPerEm;
-  out[1] = size * m.descent / m.designUnitsPerEm;
+  // (centred on its capitals' ink, H's; on the face's cap height where it has no H)
+  double em = m.designUnitsPerEm, a = m.ascent, d = m.descent, above = m.capHeight, below = 0.0;
+  const WCHAR *fam_name = face ? faces[face].family : (style & 2) ? MONO : (style & 4) ? SERIF : FAMILY;
+  family_ink(fam_name, weight, style, 'H', &above, &below, face ? faces[face].fc : NULL);
+  centred_line(m.ascent, m.descent, above, below, &a, &d);
+  out[0] = size * a / em;
+  out[1] = size * d / em;
   out[2] = round(size * 1.42);
   // the face a Han ideograph is drawn in: a line with Chinese in it is measured by the taller of the two (as
   // apple_text.m asks Core Text for 国's): the face's own where it has Han (Noto Sans SC, LXGW WenKai, SimSun), else
   // the one Han falls back to (Chinese Windows' UI font)
   DWRITE_FONT_METRICS h = m;
   if (!han) family_metrics(L"Microsoft YaHei UI", weight, style, &h);
-  out[3] = size * h.ascent / h.designUnitsPerEm;
-  out[4] = size * h.descent / h.designUnitsPerEm;
+  // (centred on an ideograph's ink, 国's, in the face Han is drawn in)
+  double ha = h.ascent, hd = h.descent, habove = h.capHeight, hbelow = 0.0;
+  family_ink(han ? fam_name : L"Microsoft YaHei UI", weight, style, 0x56FD, &habove, &hbelow, han && face ? faces[face].fc : NULL);
+  centred_line(h.ascent, h.descent, habove, hbelow, &ha, &hd);
+  out[3] = size * ha / h.designUnitsPerEm;
+  out[4] = size * hd / h.designUnitsPerEm;
   out[5] = 0;  // lines as asked, not on whole pixels
 }
 
@@ -777,7 +831,43 @@ extern "C" int32_t mb_host_text_key(moonbit_string_t text, double size, int32_t 
   return intern((const WCHAR *)text, Moonbit_array_length(text), size, weight, style);
 }
 
-extern "C" int32_t mb_host_atlas_generation(void) { return generation; }
+// The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: each a cluster of a
+// size, weight and style ever shaped, a run left open on changing text growing them without end), the generation moved
+// on. Only where MoonBit reads the generation (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it
+// sees it moved; faces.mbt words_forgotten, what it shaped dropped just before), never where it may still draw by a key
+// made before (a face given in a frame); a key past the table draws nothing (mb_host_glyph). What the threads drawing
+// ahead hold is their own (Ahead: its text copied), let go of by ahead_forget.
+#define KEYS_MOST 65536
+static int keys_stale;  // set as the faces change (faces_changed)
+static void ahead_forget(void);
+static void keys_sweep(void) {
+  if (!keys_stale && n_entries <= KEYS_MOST) return;
+  keys_stale = 0;
+  ahead_forget();
+  layout_cache_clear();
+  n_entries = 0;
+  pool_len = 0;
+  if (cap_entries > 1024) {
+    free(entries);
+    entries = NULL;
+    cap_entries = 0;
+    free(pool);
+    pool = NULL;
+    pool_cap = 0;
+  }
+  free(table);
+  table = NULL;
+  table_cap = 0;
+  free(held_px);
+  held_px = NULL;
+  held_key = -1;
+  generation++;
+}
+
+extern "C" int32_t mb_host_atlas_generation(void) {
+  keys_sweep();
+  return generation;
+}
 
 // (one atlas: colour glyphs in it with the others)
 extern "C" int32_t mb_host_atlas_size(int32_t colour) { return colour ? 0 : mb_atlas_size; }
@@ -801,6 +891,7 @@ static void faces_changed(void) {
   }
   ahead_forget();
   reset_atlas();
+  keys_stale = 1;
 }
 
 extern "C" void mb_text_set_scale(double scale) {
@@ -1136,7 +1227,9 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
 }
 
 // ---- drawing ahead: the glyphs a frame shaped (text.mbt glyphs_ahead) and the remaining subpixel phases of any
-// glyph first drawn on the main thread, drawn by threads of their own across all 4 horizontal quarter-pixel phases ----
+// glyph first drawn on the main thread, drawn by threads of their own a phase at a time: each glyph's first at the
+// phase its key says (where its line put it), every glyph's before the rest of any; the frames' thread waits only for
+// the phase it asks for while a thread draws it, and draws one no thread has begun ----
 
 #define SUB_COUNT 4
 #define SUB_ALL 0x0F
@@ -1153,7 +1246,12 @@ static double sub_dx(int sub) {
   }
 }
 
-enum { AHEAD_ASKED, AHEAD_DRAWING, AHEAD_DRAWN };
+// One glyph cluster asked to be drawn ahead: what it is drawn from (set before a thread has it, not changed after);
+// under ahead_lock, by phase (bit `sub`), those asked and not begun (`want_mask`), those of them drawn before any other
+// phase of any glyph (`first_mask`: the phase its line put it at, text.mbt laid_ahead), those a thread draws now
+// (`drawing_mask`), those drawn and not taken (`have_mask`, their pictures in `drawn`); whether the frames' thread let
+// go of it (`dropped`: what is still drawn of it then is let go); and how many hold it (`refs`: the frames' thread
+// while it keeps it, each place in a queue, each thread drawing it), freed by the last of them.
 struct Ahead {
   int key;
   WCHAR *text;
@@ -1163,11 +1261,19 @@ struct Ahead {
   double scale;
   double size;
   int weight;
-  int state;
   uint8_t want_mask;
+  uint8_t first_mask;
+  uint8_t drawing_mask;
   uint8_t have_mask;
   bool dropped;
+  int refs;
   Drawn drawn[SUB_COUNT];
+};
+
+// A queue of glyphs for the threads ahead, oldest first (under ahead_lock).
+struct AheadQueue {
+  Ahead **at;
+  int head, n, cap;
 };
 
 // The most glyph clusters asked for or drawn ahead and not all placed yet (the oldest drawn let go past it).
@@ -1175,9 +1281,9 @@ struct Ahead {
 static CRITICAL_SECTION ahead_lock;
 static CONDITION_VARIABLE ahead_more, ahead_done;
 static int ahead_started;
-// (under ahead_lock) what the threads are to draw, in the order asked
-static Ahead **ahead_queue;
-static int ahead_head, ahead_n, ahead_cap;
+// (under ahead_lock) what the threads are to draw: each glyph's first phases, an item a phase, before any of the rest
+// (an item a glyph)
+static AheadQueue ahead_first, ahead_rest;
 // (the frames' thread's) what was asked for and not placed yet, by key, and in the order asked
 static Ahead **ahead_of;  // by key, n_entries' room
 static int ahead_of_cap;
@@ -1192,6 +1298,34 @@ static void ahead_free(Ahead *a) {
   free(a);
 }
 
+// `a` put last in `q`, which holds it (under ahead_lock).
+static void queue_push(AheadQueue *q, Ahead *a) {
+  if (q->n + 1 > q->cap) {
+    int cap = q->cap ? q->cap * 2 : 256;
+    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
+    for (int j = 0; j < q->n; j++) next[j] = q->at[(q->head + j) % q->cap];
+    free(q->at);
+    q->at = next;
+    q->head = 0;
+    q->cap = cap;
+  }
+  q->at[(q->head + q->n++) % q->cap] = a;
+  a->refs++;
+}
+
+// The first of `q`, taken out with its hold (under ahead_lock; `q` not empty).
+static Ahead *queue_pop(AheadQueue *q) {
+  Ahead *a = q->at[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->n--;
+  return a;
+}
+
+// A hold on `a` let go (under ahead_lock): whether it was the last, `a` to be freed (outside the lock).
+static bool ahead_unref(Ahead *a) {
+  return --a->refs == 0;
+}
+
 static IDWriteTextLayout *layout_with(const WCHAR *s, int len, IDWriteTextFormat *f, IDWriteTypography *typo) {
   IDWriteTextLayout *l = NULL;
   if (FAILED(dw->CreateTextLayout(s, (UINT32)len, f, 1e6f, 1e6f, &l))) return NULL;
@@ -1204,7 +1338,8 @@ static IDWriteTextLayout *layout_with(const WCHAR *s, int len, IDWriteTextFormat
   return l;
 }
 
-// A thread drawing ahead: what is asked, oldest first, with a target of its own (on COM's multithreaded apartment)
+// A thread drawing ahead (with a target of its own, on COM's multithreaded apartment): a glyph's first phase not begun,
+// the oldest asked, else the rest of a glyph's phases, each phase given to the frames' thread as it is drawn.
 static DWORD WINAPI ahead_thread(void *) {
   CoInitializeEx(NULL, COINIT_MULTITHREADED);
   Target t = {};
@@ -1212,55 +1347,73 @@ static DWORD WINAPI ahead_thread(void *) {
   CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory), (void **)&t.wic);
   for (;;) {
     EnterCriticalSection(&ahead_lock);
-    while (ahead_n == 0) SleepConditionVariableCS(&ahead_more, &ahead_lock, INFINITE);
-    Ahead *a = ahead_queue[ahead_head];
-    ahead_head = (ahead_head + 1) % ahead_cap;
-    ahead_n--;
-    uint8_t mask = a->want_mask;
-    bool gone = a->dropped || mask == 0;
-    if (!gone) a->state = AHEAD_DRAWING;
-    LeaveCriticalSection(&ahead_lock);
-    if (gone) {
-      ahead_free(a);
-      continue;
-    }
-    Drawn local_d[SUB_COUNT] = {};
-    uint8_t built_mask = 0;
-    IDWriteTextLayout *l = t.d2d && t.wic ? layout_with(a->text, a->len, a->format, a->typography) : NULL;
-    if (l) {
-      ClusterBounds cb = {};
-      measure_bounds(l, &cb);
-      for (int s = 0; s < SUB_COUNT; s++) {
-        if (!(mask & (1 << s))) continue;
-        EnterCriticalSection(&ahead_lock);
-        bool drop_now = a->dropped;
-        LeaveCriticalSection(&ahead_lock);
-        if (drop_now) break;
-        draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, a->size, a->weight, &t, &local_d[s]);
-        built_mask |= (uint8_t)(1 << s);
+    Ahead *a = NULL;
+    uint8_t claim = 0;
+    for (;;) {
+      while (ahead_first.n == 0 && ahead_rest.n == 0) SleepConditionVariableCS(&ahead_more, &ahead_lock, INFINITE);
+      if (ahead_first.n) {
+        a = queue_pop(&ahead_first);
+        uint8_t f = (uint8_t)(a->want_mask & a->first_mask);
+        claim = (uint8_t)(f & -f);
+      } else {
+        a = queue_pop(&ahead_rest);
+        claim = (uint8_t)(a->want_mask & ~a->first_mask);
       }
-      l->Release();
+      if (a->dropped) claim = 0;
+      if (claim) break;
+      // (nothing left of it to draw: its place in the queue let go)
+      if (ahead_unref(a)) {
+        LeaveCriticalSection(&ahead_lock);
+        ahead_free(a);
+        EnterCriticalSection(&ahead_lock);
+      }
     }
-    EnterCriticalSection(&ahead_lock);
+    // (its place in the queue's hold this thread's while it draws)
+    a->want_mask &= (uint8_t)~claim;
+    a->first_mask &= (uint8_t)~claim;
+    a->drawing_mask |= claim;
+    LeaveCriticalSection(&ahead_lock);
+    IDWriteTextLayout *l = t.d2d && t.wic ? layout_with(a->text, a->len, a->format, a->typography) : NULL;
+    ClusterBounds cb = {};
+    if (l) measure_bounds(l, &cb);
     for (int s = 0; s < SUB_COUNT; s++) {
-      if (built_mask & (1 << s)) a->drawn[s] = local_d[s];
+      uint8_t bit = (uint8_t)(1 << s);
+      if (!(claim & bit)) continue;
+      EnterCriticalSection(&ahead_lock);
+      bool drop_now = a->dropped;
+      LeaveCriticalSection(&ahead_lock);
+      Drawn d = {};
+      bool built = l && !drop_now;
+      if (built) draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, a->size, a->weight, &t, &d);
+      EnterCriticalSection(&ahead_lock);
+      a->drawing_mask &= (uint8_t)~bit;
+      if (built && !a->dropped) {
+        a->drawn[s] = d;
+        a->have_mask |= bit;
+      } else {
+        free(d.px);
+      }
+      WakeAllConditionVariable(&ahead_done);
+      LeaveCriticalSection(&ahead_lock);
     }
-    a->have_mask = built_mask;
-    a->state = AHEAD_DRAWN;
-    bool free_it = a->dropped;
-    WakeAllConditionVariable(&ahead_done);
+    if (l) l->Release();
+    EnterCriticalSection(&ahead_lock);
+    bool free_it = ahead_unref(a);
     LeaveCriticalSection(&ahead_lock);
     if (free_it) ahead_free(a);
   }
 }
 
-// (the frames' thread) its hold on `a` let go: freed here when no thread has it, else by the one that does
+// (the frames' thread) its hold on `a` let go, and with it what is not begun of it: freed here when nothing else holds
+// it, else by the last that does
 static void ahead_drop(Ahead *a) {
   EnterCriticalSection(&ahead_lock);
-  bool mine = a->state == AHEAD_DRAWN;
   a->dropped = true;
+  a->want_mask = 0;
+  a->first_mask = 0;
+  bool free_it = ahead_unref(a);
   LeaveCriticalSection(&ahead_lock);
-  if (mine) ahead_free(a);
+  if (free_it) ahead_free(a);
 }
 
 static void order_remove_front(void) {
@@ -1290,62 +1443,52 @@ static void ahead_forget(void) {
   order_n = order_head = 0;
 }
 
-// The oldest asked, let go if it is drawn (the threads draw about in the order asked: hardly any is when it is not);
-// false when not.
+// The oldest asked, let go with what of it is not begun, unless a thread draws a phase of it now; false when not. What
+// of it was drawn and never taken, or never drawn, may be asked again.
 static bool drop_oldest_drawn(void) {
   while (order_n > 0 && !ahead_order[order_head]) order_remove_front();
   if (order_n == 0) return false;
   Ahead *a = ahead_order[order_head];
   EnterCriticalSection(&ahead_lock);
-  bool drawn = a->state == AHEAD_DRAWN;
-  uint8_t left_mask = a->have_mask;
+  bool idle = a->drawing_mask == 0;
+  uint8_t left_mask = (uint8_t)(a->have_mask | a->want_mask);
   LeaveCriticalSection(&ahead_lock);
-  if (!drawn) return false;
+  if (!idle) return false;
   if (a->key >= 0 && a->key < n_entries) entries[a->key].subs_queued &= (uint8_t)~left_mask;
   ahead_of[a->key] = NULL;
   order_remove_front();
-  ahead_free(a);
+  ahead_drop(a);
   return true;
 }
 
-// What was drawn ahead of `key` at subpixel phase `sub` and the scale of now, taken (true, its picture in *d);
-// false when it was not (asked and not begun: removed from want_mask and drawn here).
+// What was drawn ahead of `key` at subpixel phase `sub` and the scale of now, taken (true, its picture in *d); false
+// when it was not (asked and not begun: no longer asked, drawn here). Waited for only while a thread draws that phase.
 static bool drawn_ahead(int key, int sub, Drawn *d) {
   if (sub < 0 || sub >= SUB_COUNT) return false;
   Ahead *a = key < ahead_of_cap ? ahead_of[key] : NULL;
   if (!a) return false;
   uint8_t bit = (uint8_t)(1 << sub);
+  bool ok = false;
   EnterCriticalSection(&ahead_lock);
-  if (a->state == AHEAD_ASKED) {
+  if (a->want_mask & bit) {
+    // (left out of what the threads draw, which pass over it where nothing is left)
     a->want_mask &= (uint8_t)~bit;
-    bool empty = a->want_mask == 0;
-    if (empty) a->dropped = true;
-    LeaveCriticalSection(&ahead_lock);
-    if (empty) {
-      ahead_of[key] = NULL;
-      order_clear_ptr(a);
+    a->first_mask &= (uint8_t)~bit;
+  } else {
+    while (a->drawing_mask & bit) SleepConditionVariableCS(&ahead_done, &ahead_lock, INFINITE);
+    if ((a->have_mask & bit) && a->scale == text_scale) {
+      *d = a->drawn[sub];
+      a->drawn[sub] = {};
+      a->have_mask &= (uint8_t)~bit;
+      ok = true;
     }
-    return false;
   }
-  if (a->state == AHEAD_DRAWING) {
-    if (!(a->want_mask & bit)) {
-      LeaveCriticalSection(&ahead_lock);
-      return false;
-    }
-    while (a->state == AHEAD_DRAWING) SleepConditionVariableCS(&ahead_done, &ahead_lock, INFINITE);
-  }
-  bool ok = a->scale == text_scale && (a->have_mask & bit) != 0;
-  if (ok) {
-    *d = a->drawn[sub];
-    a->drawn[sub] = {};
-    a->have_mask &= (uint8_t)~bit;
-  }
-  bool done = a->have_mask == 0 || a->scale != text_scale;
+  bool done = (a->want_mask | a->drawing_mask | a->have_mask) == 0 || a->scale != text_scale;
   LeaveCriticalSection(&ahead_lock);
   if (done) {
     ahead_of[key] = NULL;
     order_clear_ptr(a);
-    ahead_free(a);
+    ahead_drop(a);
   }
   return ok;
 }
@@ -1368,7 +1511,9 @@ static void ahead_ensure_started(void) {
   }
 }
 
-static bool ahead_enqueue_one(int k, uint8_t mask) {
+// Glyph `k` asked of the threads ahead at the phases of `mask`, those of `first` before any other phase of any glyph,
+// where it is not asked already (and there is room): whether it was.
+static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   if (k < 0 || k >= n_entries || mask == 0) return false;
   ahead_ensure_started();
   if (ahead_of_cap <= k) {
@@ -1394,8 +1539,10 @@ static bool ahead_enqueue_one(int k, uint8_t mask) {
   a->scale = text_scale;
   a->size = e->size;
   a->weight = e->weight;
-  a->state = AHEAD_ASKED;
   a->want_mask = mask;
+  a->first_mask = (uint8_t)(first & mask);
+  // (the frames' thread's hold, till it lets go of it)
+  a->refs = 1;
   ahead_of[k] = a;
   if (order_n + 1 > order_cap) {
     int cap = order_cap ? order_cap * 2 : 256;
@@ -1408,28 +1555,39 @@ static bool ahead_enqueue_one(int k, uint8_t mask) {
   }
   ahead_order[(order_head + order_n++) % order_cap] = a;
   EnterCriticalSection(&ahead_lock);
-  if (ahead_n + 1 > ahead_cap) {
-    int cap = ahead_cap ? ahead_cap * 2 : 256;
-    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
-    for (int j = 0; j < ahead_n; j++) next[j] = ahead_queue[(ahead_head + j) % ahead_cap];
-    free(ahead_queue);
-    ahead_queue = next;
-    ahead_head = 0;
-    ahead_cap = cap;
+  for (int s = 0; s < SUB_COUNT; s++) {
+    if (a->first_mask & (1 << s)) queue_push(&ahead_first, a);
   }
-  ahead_queue[(ahead_head + ahead_n++) % ahead_cap] = a;
+  if (a->want_mask & ~a->first_mask) queue_push(&ahead_rest, a);
   LeaveCriticalSection(&ahead_lock);
   return true;
 }
 
+// The glyphs of keys[0..n) (each with the phase to draw first: bits 26..27, where its line put it) to draw ahead at
+// the phases of each not drawn or asked yet; a glyph asked again at another phase not begun has that phase drawn first
+// too.
 extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
   if (n <= 0 || !dw) return;
   int asked = 0;
   for (int32_t i = 0; i < n; i++) {
-    int k = keys[i];
-    if (k < 0 || k >= n_entries) continue;
+    if (keys[i] < 0) continue;
+    int k = keys[i] & 0x03FFFFFF;
+    int sub = (keys[i] >> 26) & 3;
+    if (k >= n_entries) continue;
+    uint8_t bit = (uint8_t)(1 << sub);
+    Ahead *a = ahead_started && k < ahead_of_cap ? ahead_of[k] : NULL;
+    if (a) {
+      EnterCriticalSection(&ahead_lock);
+      if ((a->want_mask & bit) && !(a->first_mask & bit) && !a->dropped) {
+        a->first_mask |= bit;
+        queue_push(&ahead_first, a);
+        asked++;
+      }
+      LeaveCriticalSection(&ahead_lock);
+      continue;
+    }
     uint8_t rem = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
-    if (ahead_enqueue_one(k, rem)) asked++;
+    if (ahead_enqueue_one(k, rem, bit)) asked++;
   }
   if (asked) WakeAllConditionVariable(&ahead_more);
 }
@@ -1454,7 +1612,7 @@ static void rasterize(int full_key) {
     draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, e->size, e->weight, &main_target, &d);
     e->subs_queued |= (uint8_t)(1 << sub);
     uint8_t rem = (uint8_t)(SUB_ALL & ~e->subs_queued);
-    if (rem && ahead_enqueue_one(key, rem)) WakeAllConditionVariable(&ahead_more);
+    if (rem && ahead_enqueue_one(key, rem, 0)) WakeAllConditionVariable(&ahead_more);
   } else {
     entries[key].subs_queued |= (uint8_t)(1 << sub);
   }

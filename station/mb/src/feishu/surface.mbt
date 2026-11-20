@@ -287,7 +287,8 @@ pub fn file_type(name : String) -> String {
   let ext = @jscase.lower(extname(name))
   if ext == ".opus" {
     "opus"
-  } else if ext is (".mp4" | ".mov" | ".m4v") {
+  } else if ext == ".mp4" {
+    // Only MP4 itself: Feishu checks the container, so a QuickTime .mov goes as a plain file.
     "mp4"
   } else if ext == ".pdf" {
     "pdf"
@@ -299,6 +300,18 @@ pub fn file_type(name : String) -> String {
     "ppt"
   } else {
     "stream"
+  }
+}
+
+///|
+/// The message type a file of that type is sent as: Feishu refuses any other (230055).
+fn file_msg_type(kind : String) -> String {
+  if kind == "mp4" {
+    "media"
+  } else if kind == "opus" {
+    "audio"
+  } else {
+    "file"
   }
 }
 
@@ -362,6 +375,9 @@ pub(all) struct FeishuSurfaceOptions {
   /// In a group, one conversation for each thread, begun by an @ and answered in it (「会话怎么分」); else one
   /// for the group.
   thread_mode : Bool
+  /// In a direct chat, one conversation for each thread, as a group's in thread mode: each message outside a thread
+  /// begins one, answered in it; else one for the chat.
+  direct_threads : Bool
   /// Keeps names across restarts and lets the admin API ask without waiting (knownPerson, knownChannel).
   book : NameBook?
   /// The client (tests: one pointed at a stand-in); None: one of the app's.
@@ -382,6 +398,7 @@ pub struct FeishuSurface {
   priv options : FeishuSurfaceOptions
   priv threads : FeishuThreads
   priv thread_mode : Bool
+  priv direct_threads : Bool
   priv words : Words
   priv log : Log
   priv book : NameBook?
@@ -432,6 +449,7 @@ pub fn FeishuSurface::new(
     options,
     threads: options.threads,
     thread_mode: options.thread_mode,
+    direct_threads: options.direct_threads,
     words: options.words,
     log: options.log,
     book: options.book,
@@ -454,18 +472,23 @@ pub fn FeishuSurface::new(
 ///|
 /// Who its bot is, as Feishu says now.
 pub async fn FeishuSurface::identify(self : FeishuSurface) -> BotIdentity {
-  identity_of(self.client)
+  let me = identity_of(self.client)
+  if me.bot_user_id != "" {
+    self.me = Some(me)
+  }
+  me
 }
 
 ///|
 /// An identity it cannot work as: a Feishu app without a bot.
 pub fn FeishuSurface::usable(
-  _self : FeishuSurface,
+  self : FeishuSurface,
   identity : BotIdentity,
 ) -> Unit raise FeishuError {
   if identity.bot_user_id == "" {
     raise FeishuError("this Feishu app has no bot: turn on its bot capability")
   }
+  self.me = Some(identity)
 }
 
 ///|
@@ -580,7 +603,7 @@ pub fn FeishuSurface::socket_hooks(
         _ => ()
       }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu catch up", on_error=_ => (), async fn() {
           self.catch_up(handler) catch {
             e =>
               self.log.warn(
@@ -618,7 +641,7 @@ pub fn FeishuSurface::socket_hooks(
       let whole = self.parts.add(frame, now)
       guard whole is Some(whole) else { return }
       ignore(
-        self.rt.fork(async fn() {
+        self.rt.fork_daemon("feishu event", on_error=e => self.log.warn("feishu", "a feishu event was not answered", jobj([("connect", Some(js(self.connect))), ("error", Some(js(error_words(e))))])), async fn() {
           let answer = try {
             let envelope = parse(frame_text(whole))
             self.take(envelope, handler)
@@ -827,7 +850,7 @@ async fn FeishuSurface::heard(
     let topic = m.topic.unwrap()
     self.threads.heard_topic(self.connect, topic, m.root.unwrap_or(m.id))
     js(topic)
-  } else if self.thread_mode && !m.p2p {
+  } else if (if m.p2p { self.direct_threads } else { self.thread_mode }) {
     let ts = m.root.unwrap_or(m.id)
     if m.topic is Some(_) || m.addressed {
       self.threads.heard_topic(self.connect, ts, ts)
@@ -1035,7 +1058,8 @@ fn line_key(thread : ThreadRef) -> String {
 
 ///|
 /// The agent's words as rich text (a question's as a card, its buttons or field with them), then each file as a message
-/// of its own. The first message's id stands for the whole.
+/// of its own. Every file is uploaded before anything is sent, so a file that fails leaves no words posted alone. The
+/// first message's id stands for the whole.
 pub async fn FeishuSurface::post(
   self : FeishuSurface,
   thread : ThreadRef,
@@ -1043,11 +1067,6 @@ pub async fn FeishuSurface::post(
   files : Array[Attachment],
   card? : JV? = None,
 ) -> String {
-  match self.lines.get(line_key(thread)) {
-    Some(line) => line.spoke()
-    None => ()
-  }
-  let mut first : String? = None
   let lang = (self.words.station_lang)()
   let question = match card {
     Some(Obj(_) as c) if jget(Some(c), "type") is Some(Str("options" | "text")) =>
@@ -1064,6 +1083,65 @@ pub async fn FeishuSurface::post(
       ]
     None => text_posts(message).map(p => ("post", p))
   }
+  if sends.length() == 0 && files.length() == 0 {
+    raise FeishuError("nothing to post")
+  }
+  let uploaded : Array[(String, String)] = []
+  for file in files {
+    let bytes = match (self.options.disk.read)(file.path) {
+      Some(b) => b
+      None =>
+        raise FeishuError(
+          "ENOENT: no such file or directory, open '\{file.path}'",
+        )
+    }
+    if is_image_name(file.name) && bytes.length() <= max_image {
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/images",
+        body=Some(jobj([("image_type", Some(js("message")))])),
+        files=[
+          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          "image",
+          stringify(
+            jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
+          ),
+        ),
+      )
+    } else {
+      let kind = file_type(file.name)
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/files",
+        body=Some(
+          jobj([
+            ("file_type", Some(js(kind))),
+            ("file_name", Some(js(file.name))),
+          ]),
+        ),
+        files=[
+          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          file_msg_type(kind),
+          stringify(
+            jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))]),
+          ),
+        ),
+      )
+    }
+  }
+  match self.lines.get(line_key(thread)) {
+    Some(line) => line.spoke()
+    None => ()
+  }
+  let mut first : String? = None
   for s in sends {
     let id = self.send(thread, s.0, s.1)
     if first is None {
@@ -1088,50 +1166,8 @@ pub async fn FeishuSurface::post(
       None => ()
     }
   }
-  for file in files {
-    let bytes = match (self.options.disk.read)(file.path) {
-      Some(b) => b
-      None =>
-        raise FeishuError(
-          "ENOENT: no such file or directory, open '\{file.path}'",
-        )
-    }
-    let id = if is_image_name(file.name) && bytes.length() <= max_image {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/images",
-        body=Some(jobj([("image_type", Some(js("message")))])),
-        files=[
-          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "image",
-        stringify(
-          jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
-        ),
-      )
-    } else {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/files",
-        body=Some(
-          jobj([
-            ("file_type", Some(js(file_type(file.name)))),
-            ("file_name", Some(js(file.name))),
-          ]),
-        ),
-        files=[
-          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "file",
-        stringify(jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))])),
-      )
-    }
+  for u in uploaded {
+    let id = self.send(thread, u.0, u.1)
     if first is None {
       first = Some(id)
     }
@@ -1291,7 +1327,8 @@ pub async fn FeishuSurface::begin(
   chat : String,
   message : String,
 ) -> (ThreadRef, String) {
-  let topics = self.chat_info(chat).topics
+  let info = self.chat_info(chat)
+  let topics = info.topics
   let mut first : JV = Null
   let mut thread : ThreadRef? = None
   for content in text_posts(message) {
@@ -1354,7 +1391,7 @@ pub async fn FeishuSurface::begin(
       self.threads.heard_topic(self.connect, topic, id)
       thread = Some({ channel: chat, thread_ts: topic })
     } else {
-      if self.thread_mode {
+      if (if info.p2p { self.direct_threads } else { self.thread_mode }) {
         self.threads.heard_topic(self.connect, id, id)
       } else {
         self.threads.begin(self.connect, chat, id)
@@ -1913,7 +1950,7 @@ pub async fn FeishuSurface::api(
     }
     return self.client.api(verb, path, body=None, query~, take_file=true)
   }
-  let body = Obj([])
+  let body = JV::Obj([])
   let mut query : JV? = None
   for k in jkeys(params) {
     if k == "query" {

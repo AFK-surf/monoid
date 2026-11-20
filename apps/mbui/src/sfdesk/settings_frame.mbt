@@ -52,6 +52,26 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "new-connect" => @sfpages.new_connect_dialog(src, core, @settings.here_of(core, "ws1", "星火工作室"), "ws1/st1")
     "vault-add" => @sfpages.fx_vault_add_up.val = true
     "vault-editor" => @sfpages.vault_editor_dialog(core, "ws1", "v1", None, kind="token")
+    "vault-workspace-members" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      let row = items((core.topic)("vaults", { "workspace": str("ws1") }).get().value, "vaults").iter().find_first(fn(r) {
+        text(Some(r), "scope") == "workspace"
+      })
+      @sfpages.vault_members_dialog(core, here, row)
+    }
+    "vault-devices-dialog" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      @sfpages.vault_devices_dialog(core, here, "v-ws")
+    }
+    "vault-workspace-editor" =>
+      @sfpages.vault_editor_dialog(
+        core,
+        "ws1",
+        "v1",
+        None,
+        kind="token",
+        targets=[("v1", "林的库"), ("v-ws", @sf.t("web-pages.vault.workspaceVault"))],
+      )
     "vault-recover" => @sfpages.vault_recover_dialog(core, "ws1")
     "copies-confirm" =>
       match items(@settings.fixture_copies(), "offers") {
@@ -85,7 +105,9 @@ fn settings_reset() -> Unit {
 /// and the update beside it where one is offered, the search, then the settings' list (sfpages' settings_list.mbt: the
 /// same rows in the same groups as a small screen's settings page) scrolling under them, the row of the page beside
 /// it lit; a row pressed, its page beside it, in place of the one there. For the workspace in view, made again for
-/// another.
+/// another. What was searched for is let go once the settings are left (another place of the rail's, a chat opened
+/// by ⌘K: no page of theirs in the stack, even where the sidebar stays folded beside a bare place) and as another
+/// workspace comes in view, so they come back whole; going in among their pages, and the window's width, keep it.
 fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   let list_at = side_list_at(@signals.untracked(at))
@@ -102,10 +124,25 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     }
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
-  s.switch_by(fn() { workspace().map(fn(w) { w.id }) }, fn(q, _id) {
+  let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
+  s.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })
+  s.owns(fn() { if !@signals.untracked(in_settings) { @sfpages.settings_search_reset() } }) |> ignore
+  s.switch_by(fn() { workspace().map(fn(w) { w.id }) }, fn(q, id) {
     q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    // (let go for another workspace in view, or for none of the settings' pages left)
+    q.owns(fn() {
+      let now = @signals.untracked(fn() { workspace().map(fn(w) { w.id }) })
+      if now != id || !@signals.untracked(in_settings) {
+        @sfpages.settings_search_reset()
+      }
+    })
+    |> ignore
     guard @signals.untracked(workspace) is Some(w) else { return }
     let core = settings_core(src, w)
     let here = fn() { @settings.here_of(core, w.id, w.name) }
@@ -175,10 +212,25 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
         |> ignore
       }
     })
+    // (a row pressed or Enter's result: its page in place of the one open; on the tape brought over to show it)
+    let open = fn(r : Route) {
+      @sfbase.history_push()
+      app.nav.replace_above(1, [Setting(r)])
+      @sfbase.show_chosen()
+    }
+    // (what the list under it finds, for the field's ↑ ↓ and Enter: told once the list is made, read as a key is pressed)
+    let found : Ref[() -> Array[@sfpages.SettingsRow]] = Ref(fn() { [] })
     // Without the back row, keep the field below the sidebar's upper corners.
     q.box(fn(k) {
       @sf.style_node(k, fn() { @sf.side_list().then(if @sf.native_on() { settings_search_native_band } else { settings_search_band }) })
-      @sfpages.settings_search_node(k, at=list_at, page=false)
+      @sfpages.settings_search_node(
+        k,
+        at=list_at,
+        page=false,
+        results=fn() { (found.val)() },
+        choose=fn(r) { @sfpages.settings_search_chose(r, open) },
+        steps=true,
+      )
     })
     |> ignore
     // the list under the band (side_scroll's): the rows keep their inset; the scroll track belongs to the whole sidebar.
@@ -194,12 +246,7 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
             back.margin(Is((-side_into_rail, 0.0, 0.0, 0.0))) |> ignore
             back.box(fn(rows) {
               @sf.style_node(rows, fn() { @sf.theme().chat_list.side_list.then(@ui.style(h=Hug)) })
-              // (a row's page in place of the one open; on the tape brought over to show it)
-              @sfpages.settings_side_rows_node(rows, core, here, lit, fn(r) {
-                @sfbase.history_push()
-                app.nav.replace_above(1, [Setting(r)])
-                @sfbase.show_chosen()
-              }, list_at)
+              found.val = @sfpages.settings_side_rows_node(rows, core, here, lit, open, list_at)
               // (the room under its last)
               rows.box(fn(foot) { foot.height(Is(Some(@sf.list_foot_in(Side)))) |> ignore }) |> ignore
             })
@@ -233,10 +280,8 @@ fn settings_back_node(parent : @view.View, band : Bool, at : @sf.ListAt) -> Unit
   if band {
     @sf.band_row_node(parent, fn() { false }, label, back, at, body)
   } else {
-    parent.box(fn(r) {
+    @sf.action_box_node(parent, label, fn(_) { back() }, fn(r) {
       @sf.style_node(r, fn() { @sf.side_row_at(at).then(settings_back_row).then(@sf.row_least_h()) })
-      @sf.presses_node(r, back)
-      r.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
       @sf.nav_ground_node(r, fn() { false })
       body(r)
     })

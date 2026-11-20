@@ -8,11 +8,14 @@ pub(all) struct LinuxOptions {
   title : (() -> String)?
   env : Env?
   discover : (async (Env) -> Env)?
+  native_binary : String?
+  native_start : LinuxNativeStart?
 }
 
 ///|
 #derive(Eq)
 priv enum Current {
+  CurNative
   CurX11
   CurWayland
   CurFallback
@@ -24,6 +27,7 @@ pub struct LinuxDesktop {
   priv io : Io
   priv o : LinuxOptions
   priv tools : LinuxScreenTools
+  priv native_ : LinuxNativeDesktop
   priv x11 : X11Desktop
   priv wayland : LinuxGstDesktop
   priv fallback : LinuxGstDesktop
@@ -36,6 +40,7 @@ pub struct LinuxDesktop {
 pub fn LinuxDesktop::new(io : Io, o : LinuxOptions) -> LinuxDesktop {
   let env = o.env.unwrap_or((io.os.env)()).copy()
   let tools = LinuxScreenTools::new(io, o.data)
+  let native_ = LinuxNativeDesktop::new(io, { binary: o.native_binary, changed: o.changed, title: o.title, env: Some(env), start: o.native_start })
   let x11 = X11Desktop::new(io, { changed: o.changed, title: o.title, tools: Some(tools), env: Some(env), ffmpeg: None, xdotool: None, prepare_wait_ms: None })
   let wayland = LinuxGstDesktop::new(io, { changed: o.changed, env, mode: None, title: o.title, python: None, helper: None, consent_wait_ms: None })
   let fallback = LinuxGstDesktop::new(io, { changed: o.changed, env, mode: Some("x11"), title: o.title, python: None, helper: None, consent_wait_ms: None })
@@ -44,6 +49,7 @@ pub fn LinuxDesktop::new(io : Io, o : LinuxOptions) -> LinuxDesktop {
     io,
     o,
     tools,
+    native_,
     x11,
     wayland,
     fallback,
@@ -64,6 +70,7 @@ pub fn LinuxDesktop::title(self : LinuxDesktop) -> String {
 ///|
 pub fn LinuxDesktop::size(self : LinuxDesktop) -> (Double, Double) {
   match self.current {
+    CurNative => self.native_.size()
     CurX11 => self.x11.size()
     CurWayland => self.wayland.size()
     CurFallback => self.fallback.size()
@@ -73,6 +80,7 @@ pub fn LinuxDesktop::size(self : LinuxDesktop) -> (Double, Double) {
 ///|
 pub fn LinuxDesktop::access(self : LinuxDesktop) -> ScreenAccess {
   match self.current {
+    CurNative => self.native_.access()
     CurX11 => self.x11.access()
     CurWayland => self.wayland.access()
     CurFallback => self.fallback.access()
@@ -92,10 +100,16 @@ pub async fn LinuxDesktop::refresh(self : LinuxDesktop, force? : Bool = false) -
         Some(f) => f(base)
         None => desktop_environment(self.io, base)
       }
+      self.native_.set_env(env)
       self.x11.set_env(env)
       self.wayland.set_env(env)
       self.fallback.set_env(env)
-      let next = if env.get("XDG_SESSION_TYPE").map(t => t.to_lower()) == Some("wayland") ||
+      if self.o.native_binary is Some(_) {
+        self.native_.refresh(force~)
+      }
+      let next = if self.native_.available() {
+        CurNative
+      } else if env.get("XDG_SESSION_TYPE").map(t => t.to_lower()) == Some("wayland") ||
         env.truthy("WAYLAND_DISPLAY") is Some(_) {
         CurWayland
       } else {
@@ -115,7 +129,7 @@ pub async fn LinuxDesktop::refresh(self : LinuxDesktop, force? : Bool = false) -
       match next {
         CurWayland => self.wayland.refresh(force~)
         CurFallback => self.fallback.refresh(force~)
-        CurX11 => ()
+        CurNative | CurX11 => ()
       }
     }) catch {
       e => Err(e)
@@ -133,6 +147,7 @@ pub async fn LinuxDesktop::refresh(self : LinuxDesktop, force? : Bool = false) -
 pub async fn LinuxDesktop::open(self : LinuxDesktop, options : ViewOptions) -> ScreenView {
   self.refresh(force=true)
   match self.current {
+    CurNative => self.native_.open(options)
     CurX11 => self.x11.open(options)
     CurWayland => self.wayland.open(options)
     CurFallback => self.fallback.open(options)
@@ -141,6 +156,7 @@ pub async fn LinuxDesktop::open(self : LinuxDesktop, options : ViewOptions) -> S
 
 ///|
 pub async fn LinuxDesktop::close(self : LinuxDesktop) -> Unit {
+  self.native_.close()
   ignore(
     @effect.all([
       async fn() { self.x11.close() },

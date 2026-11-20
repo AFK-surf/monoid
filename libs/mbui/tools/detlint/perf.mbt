@@ -289,6 +289,87 @@ fn lint_pick_loop(f : MbtFile, made : Array[Made], given : Map[Int, (Call, Strin
 }
 
 ///|
+/// structure-box: a `.show(…)` / `.pick(…)` / `.switch_by(…)` callback `fn(x) { … }` or `fn(x, _) { … }` whose body
+/// has only a single top-level `x.box(…)` call (with optional chain and `|> ignore` / `ignore(…)` / `let _ = …`)
+/// and no other statements on `x`.
+fn lint_structure_box(f : MbtFile, made : Array[Made], out : Array[Finding]) -> Unit {
+  let toks = f.toks
+  for m in made {
+    if !(m.kind == "show" || m.kind == "pick" || m.kind == "switch_by") || f.in_test(m.open) {
+      continue
+    }
+    let mut i = m.open + 1
+    let mut end = m.close
+    while end > i && toks[end - 1].kind == "op" && toks[end - 1].text == ";" {
+      end -= 1
+    }
+    if i >= end {
+      continue
+    }
+    let mut wrapped_ignore = false
+    if i + 2 < end &&
+      toks[i].kind == "ident" &&
+      toks[i].text == "let" &&
+      toks[i + 1].kind == "ident" &&
+      toks[i + 1].text == "_" &&
+      toks[i + 2].kind == "op" &&
+      toks[i + 2].text == "=" {
+      i += 3
+    } else if i + 1 < end &&
+      toks[i].kind == "ident" &&
+      toks[i].text == "ignore" &&
+      toks[i + 1].kind == "op" &&
+      toks[i + 1].text == "(" &&
+      toks[i + 1].end == end - 1 {
+      i += 2
+      end -= 1
+      wrapped_ignore = true
+    }
+    if i + 3 >= end {
+      continue
+    }
+    if !(toks[i].kind == "ident" &&
+      toks[i].text == m.view &&
+      toks[i + 1].kind == "op" &&
+      toks[i + 1].text == "." &&
+      toks[i + 2].kind == "ident" &&
+      toks[i + 2].text == "box" &&
+      toks[i + 3].kind == "op" &&
+      toks[i + 3].text == "(" &&
+      toks[i + 3].end >= 0 &&
+      toks[i + 3].end < end) {
+      continue
+    }
+    let box_tok = i + 2
+    let mut j = toks[i + 3].end + 1
+    while j + 2 < end &&
+      toks[j].kind == "op" &&
+      toks[j].text == "." &&
+      toks[j + 1].kind == "ident" &&
+      toks[j + 2].kind == "op" &&
+      toks[j + 2].text == "(" &&
+      toks[j + 2].end >= 0 &&
+      toks[j + 2].end < end {
+      j = toks[j + 2].end + 1
+    }
+    if !wrapped_ignore &&
+      j + 1 < end &&
+      toks[j].kind == "op" &&
+      toks[j].text == "|>" &&
+      toks[j + 1].kind == "ident" &&
+      toks[j + 1].text == "ignore" {
+      j += 2
+      if j + 1 < end && toks[j].kind == "op" && toks[j].text == "(" && toks[j].end == j + 1 {
+        j += 2
+      }
+    }
+    if j == end {
+      out.push(finding("structure-box", f.rel, toks[box_tok].line, f.line_text(box_tok)))
+    }
+  }
+}
+
+///|
 /// A named style's say of a height: (its least said, other than none or 0; its height said)
 priv struct Tall {
   least : Bool
@@ -462,11 +543,15 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
     }
     lint_width_structure(f, given, out)
     lint_reused_untracked_key(f, given, out)
+    lint_scroll_each(f, given, out)
+    lint_bare_on_press(f, out)
+    lint_old_run_ctx(f, out)
     let made = made_by(f)
     if made.is_empty() {
       continue
     }
     lint_pick_loop(f, made, given, out)
+    lint_structure_box(f, made, out)
     lint_each_min_height(f, made, named, memo, out)
     lint_each_lookup(f, made, given, out)
   }
@@ -748,18 +833,23 @@ fn lint_width_structure(f : MbtFile, given : Map[Int, (Call, String?)], out : Ar
 /// `make_reused=fn(v, key) { … }`), the key read untracked (`@signals.untracked(key)`, `untracked(fn() { … key() … })`,
 /// `key.untracked()`) as the block is made: what it reads stays the key it was made for, when the block shows another
 /// one now. A block reads its key through `key()` where it is bound (By, a pick's which); what runs later than it is
-/// made (a press, a handler) reads the key as it is then.
+/// made (a press, a handler) reads the key as it is then. So too a page's (the library's `page_node`), whose
+/// `make_reused=fn(v, kind, key) { … }` is given the block's kind besides (View::reused_kind), its key the last.
 fn lint_reused_untracked_key(f : MbtFile, given : Map[Int, (Call, String?)], out : Array[Finding]) -> Unit {
   let toks = f.toks
   let seen : Map[Int, Bool] = Map([])
   for c in f.calls {
-    if !(c.kind == "method" && c.name == "scrolls_window") || c.is_def || f.in_test(c.at) {
+    let listed = c.kind == "method" && c.name == "scrolls_window"
+    let paged = c.name == "page_node" && (c.kind == "pkg" || c.kind == "bare")
+    if !(listed || paged) || c.is_def || f.in_test(c.at) {
       continue
     }
     let (key, open, close) = match c.args.search_by(fn(a) { a.0 == Some("make_reused") }) {
       Some(i) if c.args[i].1.length() > 0 =>
         match f.lambda_at(c.args[i].1[0]) {
-          Some((ps, b)) if ps.length() >= 2 && ps[1] != "_" => (ps[1], b, toks[b].end)
+          // (the key its last: a list's `fn(v, key)`, a page's `fn(v, kind, key)`)
+          Some((ps, b)) if ps.length() >= 2 && ps[ps.length() - 1] != "_" =>
+            (ps[ps.length() - 1], b, toks[b].end)
           _ => continue
         }
       _ => continue

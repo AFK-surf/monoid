@@ -17,6 +17,11 @@
 // its trigger disabled, its trigger let go. What it waits for is called off by each of these: nothing of a trigger let
 // go is kept by the group or comes due after it (View::owns, View::at_moment's own).
 //
+// Where it comes from. A tip opened at once because the group was warm comes from the trigger whose tip showed last,
+// where that is another (`TooltipGroup::glided_from`): its look may glide the bubble from beside that one to beside this
+// one, as a toolbar's tip goes along from button to button, where a tip opened cold, or the same trigger's again, comes
+// from nowhere and only shows. The group keeps which trigger's tip showed last, let go with that trigger.
+//
 // What it says. `tooltip_bubble` makes the tip's node, read out a `Tooltip` called by its words and taking no press
 // (the pointer passes through it to what it is over: it never takes the hand from its trigger). Where it goes is its
 // look's, beside the trigger by `anchor_place`, and so is whether it is in a layer of its own.
@@ -42,6 +47,11 @@ pub struct TooltipGroup[K] {
   priv warmup_ms : Double
   /// (the moment a tip of the group last closed; none since it was made)
   priv closed_at : Ref[Double?]
+  /// (the trigger whose tip shows now or showed last; none since it was made, or since that trigger was let go)
+  priv last : Ref[@view.NodeId?]
+  /// (where the tip shown now came from, as it opened: the trigger before it and the moment, where it opened warm from
+  /// another's)
+  priv glided : Ref[(@view.NodeId, Double)?]
 }
 
 ///|
@@ -54,7 +64,7 @@ pub fn[K] TooltipGroup::new(
   open_delay_ms? : Double = 400.0,
   warmup_ms? : Double = 300.0,
 ) -> TooltipGroup[K] {
-  { shown, show, open_delay_ms, warmup_ms, closed_at: Ref(None) }
+  { shown, show, open_delay_ms, warmup_ms, closed_at: Ref(None), last: Ref(None), glided: Ref(None) }
 }
 
 ///|
@@ -67,6 +77,32 @@ pub fn[K] TooltipGroup::shown(self : TooltipGroup[K]) -> K? {
 /// Whether the tip of `key` shows now. Followed where a binding reads it.
 pub fn[K : Eq] TooltipGroup::is_open(self : TooltipGroup[K], key : K) -> Bool {
   (self.shown)() == Some(key)
+}
+
+///|
+/// Where the tip shown now came from: the trigger whose tip showed before it and the moment it opened, where it opened
+/// at once as the group was warm (the pointer or the focus gone on to it from that one's, or come to it within
+/// `warmup_ms` of that one's closing) and that trigger is another; none where it opened cold, came back to the same
+/// trigger, or none shows. A look reads it with `shown` as the tip opens: a bubble glided from beside that trigger to
+/// beside this one (its node found by its id), from that moment. Followed as `shown` is, where a binding reads both.
+pub fn[K] TooltipGroup::glided_from(self : TooltipGroup[K]) -> (@view.NodeId, Double)? {
+  match (self.shown)() {
+    Some(_) => self.glided.val
+    None => None
+  }
+}
+
+///|
+/// The tip of `key` (its trigger `node`) shown, opened at `now`: warm (`warm`, as the group was before it) from another
+/// trigger's, it came from that one (`glided_from`); else from nowhere.
+fn[K] TooltipGroup::open(self : TooltipGroup[K], node : @view.View, key : K, now : Double, warm : Bool) -> Unit {
+  let id = node.id()
+  self.glided.val = match self.last.val {
+    Some(from) if warm && from != id => Some((from, now))
+    _ => None
+  }
+  self.last.val = Some(id)
+  (self.show)(Some(key))
 }
 
 ///|
@@ -115,7 +151,8 @@ pub fn[K : Eq] TooltipGroup::trigger(
   let open_now = fn() {
     call_off()
     if !disabled() {
-      (self.show)(Some(key))
+      let now = node.cause_at()
+      self.open(node, key, now, self.warm(now))
     }
   }
   node.reacts(fn() { node.pointed() }, at_start=false, fn(over) {
@@ -130,7 +167,7 @@ pub fn[K : Eq] TooltipGroup::trigger(
         waiting.val = node.at_moment(now + self.open_delay_ms, fn() {
           waiting.val = fn() {  }
           if !disabled() {
-            (self.show)(Some(key))
+            self.open(node, key, now + self.open_delay_ms, false)
           }
         })
       }
@@ -157,6 +194,10 @@ pub fn[K : Eq] TooltipGroup::trigger(
   .owns(fn() {
     call_off()
     self.close(key, node.cause_at())
+    // (a trigger let go is where no tip comes from)
+    if self.last.val == Some(node.id()) {
+      self.last.val = None
+    }
   })
   |> ignore
 }
@@ -177,4 +218,70 @@ pub fn tooltip_bubble(
     look(v)
     v.presses(Is(false)).says(By(fn() { Some(@view.said(Tooltip, label=label())) })) |> ignore
   })
+}
+
+///|
+/// How long a mouse rests on a tooltip's trigger before it shows (ms), and how soon after another tooltip closed one
+/// shows at once: the old controls' (`mbui/kit`'s `tooltip`) defaults, which still.fail's tips go by.
+pub let tooltip_delay_ms : Double = 700.0
+
+///|
+pub let tooltip_skip_ms : Double = 300.0
+
+///|
+/// How long a tooltip a finger held open stays once it is lifted (Android's: 1500 ms).
+pub let tooltip_lifted_ms : Double = 1500.0
+
+///|
+/// A tooltip in an old view (`mbui/kit`'s, by what builds it) or at a node of the window's tree. Both share the window's
+/// one visible slot: the last tooltip to show keeps it, also while leaving.
+#derive(Eq, Debug)
+pub(all) enum TipOwner {
+  Built(Int)
+  Node(Int)
+}
+
+///|
+/// The window's tooltip slot, made anew when a Tester starts (tip_slot_reset).
+priv struct TipSlot {
+  owner : @signals.Signal[TipOwner?]
+  /// (the last identity given a tooltip made as a node)
+  mut next : Int
+}
+
+///|
+fn TipSlot::new() -> TipSlot {
+  { owner: @signals.signal(None, same=fn(a, b) { a == b }), next: 0 }
+}
+
+///|
+let tip_slot : Ref[TipSlot] = Ref(TipSlot::new())
+
+///|
+/// The window's tooltip slot forgotten: its owner none, its identities from the start. Told by what a Tester's new run
+/// resets (`@ui.on_reset`, from the packages over ui that use the slot: mbui/kit's and the look libraries' tips), as
+/// headless knows no ui.
+pub fn tip_slot_reset() -> Unit {
+  tip_slot.val = TipSlot::new()
+}
+
+///|
+/// A fresh identity for a tooltip made with a node. Two tips may name the same anchor.
+pub fn tip_node_owner() -> TipOwner {
+  tip_slot.val.next = tip_slot.val.next + 1
+  Node(tip_slot.val.next)
+}
+
+///|
+/// Give the window's tooltip slot to `owner` as it is newly shown. The views and nodes that read it follow the signal.
+pub fn tip_claim(owner : TipOwner) -> Unit {
+  if tip_slot.val.owner.untracked() != Some(owner) {
+    tip_slot.val.owner.set(Some(owner))
+  }
+}
+
+///|
+/// Whether `owner` holds the window's tooltip slot (followed by a node drawing its tooltip).
+pub fn tip_owns(owner : TipOwner) -> Bool {
+  tip_slot.val.owner.get() == Some(owner)
 }

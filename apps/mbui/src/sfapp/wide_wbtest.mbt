@@ -159,7 +159,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   t.key(@ui.key_escape)
   // (closed: nothing of it read out at once, drawn back over pop_out_ms)
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
 }
 
@@ -369,17 +369,67 @@ test "wide: words dragged in from another app and let go anywhere on the chat go
 }
 
 ///|
-test "wide: where this machine is no station, files from the Finder let go on the chat go into its composer as their paths, a line each, not as files" {
+test "wide: where this machine is no station of the chat's workspace, files from the Finder (or Windows' Explorer, which says no paths) let go on the chat, its field or a new chat go up as files, read, its folders left out; the field's words untouched" {
+  // (each where this machine is: no station; a station of another workspace)
+  for here in [None, Some("ws2/st9")] {
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, mode="chat")
+    @sfbase.machine_here.val = here
+    let said = here.unwrap_or("none")
+    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
+    // (what the draft holds: each its name, the bytes read that go up with it, and whether it is named by a path
+    // instead; the bytes go to the core by call_bytes, which this source does not count)
+    let went = fn() {
+      @sfbase.writings
+      .get(draft_key(r))
+      .map(fn(d) { d.files.get() })
+      .unwrap_or([])
+      .map(fn(f) {
+        let one = Some(f)
+        let bytes = match @sfbase.writing_went_to(text(one, "id")) {
+          Some((_, _, b)) => b
+          None => b""
+        }
+        (text(one, "name"), bytes, field(one, "ref") is None)
+      })
+    }
+    // on a message
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went(), [("报告.pdf", b"%PDF", true)], msg="\{said}: on a message")
+    assert_eq(t.ime().1, "", msg="\{said}: on a message")
+    // on the composer's field itself
+    let (fx, fy) = t.find("发消息").unwrap()
+    t.drop_files(fx, fy, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went().map(fn(f) { f.0 }), ["报告.pdf", "a.txt"], msg="\{said}: on its field")
+    // with no paths (Windows' Explorer): the same
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("b.log", b"log")])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(went().map(fn(f) { f.0 }), ["报告.pdf", "a.txt", "b.log"], msg="\{said}: no paths")
+    assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some(""), msg="\{said}")
+    assert_eq(t.ime().1, "", msg="\{said}")
+  }
+  @sfbase.machine_here.val = None
+}
+
+///|
+test "wide: files from the Finder let go on a new chat's page beside its composer go up as its draft's files, read, where this machine is no station" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
-  let (x, y) = t.find("做完了：").unwrap()
-  t.drop_files(x, y, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
-  t.frame()
-  t.frame()
-  assert_true(t.ime().0)
-  assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图")
-  // (nothing went up: they were not taken as files)
-  assert_eq(named(calls, "composer.add").length(), 0)
+  let t = wide_tester(calls, mode="newchat")
+  @sfbase.machine_here.val = None
+  // (on the page's room, well over its composer: its scene's)
+  guard t.find("做任何事") is Some((fx, fy)) else { fail("no new chat's composer") }
+  t.drop_files(fx, fy - 120.0, [("esp32.log", b"boot"), ("logs/", b"")], paths=["/Users/lin/esp32.log", "/Users/lin/logs"])
+  t.run_for(@ui.move_most_ms)
+  let names = @sfbase.writings
+    .get("new:ws1")
+    .map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") + (if field(Some(f), "ref") is None { "" } else { "/ref" }) }) })
+    .unwrap_or([])
+  assert_eq(names, ["esp32.log"], msg="the field \{Repr(t.ime())}")
+  assert_eq(t.ime().1, "")
 }
 
 ///|
@@ -574,10 +624,10 @@ test "wide: a new chat as the web's: its scene and the composer in the pane's mi
   let station = t.query(Button, label="Willow")
   assert_true(station is Some(_))
   t.click(Button, label="Willow")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is Some(_))
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.query(Button, label="Maple") is None)
 }
 
@@ -655,11 +705,13 @@ test "wide: the machine's own sessions offered under the composer as its station
   assert_true(inks().length() > 0 && inks().iter().all(fn(k) { k == @sf.theme().p.muted }), msg="quiet: \{Repr(inks())}")
   // pointed at: its ground, its words the text's
   t.move_to(ox, oy)
-  t.draw()
+  // (its ground comes in over the hover's way: hover_ground_node's)
+  t.run_for(@sf.dur_ms)
   assert_true(ground(), msg="the hover's ground under the offer")
   assert_true(inks().iter().all(fn(k) { k == @sf.theme().p.text }), msg="lit: \{Repr(inks())}")
-  // left: quiet again
+  // left: quiet again, its ground gone over the same way
   t.leave()
+  t.run_for(@sf.dur_ms)
   assert_false(ground())
 }
 
@@ -727,9 +779,9 @@ test "wide: a new chat's composer stays where it is as another station is picked
   let (bx, by, _, _) = composer_glass(t)
   let pick = fn(from : String, to : String) raise {
     t.click(Button, label=from)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     t.click(Button, label=to)
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
   }
   // Maple: no session of its own; what is wrong for now and what it waits for in its place
   pick("Willow", "Maple")
@@ -866,13 +918,13 @@ test "wide: a new chat becomes its chat as the web's: its scene fading where it 
   let typed = seen_once(t, words)
   assert_true(typed.1 > by && typed.1 < by + bh)
   assert_at((bx, by), { let (x, y, _, _) = composer_glass(t); (x, y) })
-  // half way: the scene where it was as it fades
+  // half way: the scene fading gently upward from where it was (new_chat_node's scene_out, 10 at its end)
   t.run_for(new_leave_ms / 2.0)
   let half = match heading() {
     Some(y) => y
     None => fail("the scene gone at once")
   }
-  assert_true((half - title).abs() < 0.5, msg="the scene stays: \{title} → \{half}")
+  assert_true(half <= title && title - half <= 10.5, msg="the scene fades gently upward (within 10px): \{title} → \{half}")
   // the scene gone at 140 ms
   t.run_for(new_leave_ms / 2.0 + 1.0)
   assert_true(heading() is None)
@@ -1008,7 +1060,14 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   assert_true(app.nav.top() == NewChat)
   let (_, y0, _, h0) = composer_glass(t)
   assert_true((y0 + h0 - (cy + ch)).abs() < 1.0, msg="from the chat's foot: \{Repr((y0, h0))} \{Repr((cy, ch))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  // (the old page's words looked at in its old view; the page made as nodes' in the window's tree)
+  let scene_alpha = fn() {
+    match t.look_of("想让 agent 做什么？") {
+      Some(l) => Some(l.2)
+      None => t.words().iter().find_first(fn(w) { w.0 == "想让 agent 做什么？" }).map(fn(w) { w.5 })
+    }
+  }
+  assert_eq(scene_alpha(), Some(1.0))
   // what it holds there and did not at the chat's foot (the new chat's choices) carried on its ground all the way
   choices_in_ground(t)
   t.run_for(@ui.move_most_ms / 2.0)
@@ -1016,7 +1075,7 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   t.run_for(went + @ui.move_most_ms + 1.0 - t.time())
   let (_, y1, _, h1) = composer_glass(t)
   assert_true(y1 + h1 < cy - 100.0, msg="in the page's middle: \{Repr((y1, h1))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  assert_eq(scene_alpha(), Some(1.0))
   // back to the chat by its row: the composer down to its foot from its place in the page, the rest the chat's at
   // once, the new chat's scene gone in that frame (another chat looked at: nothing of the new chat fades over it, its
   // words over the chat's own as it went till 2026-11-14; the coordinator of the migration's ruling)
@@ -1062,7 +1121,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   t.frame()
   assert_eq(t.clipboard(), "https://example.com/review/42")
   // (its menu, the presenters', gone as it goes)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_true(t.find("在浏览器中打开链接") is None)
   // the words before it with nothing picked: its turn shared alone (a message of the chat's list)
   let (px, py, pw, ph) = words_rect(t, "第二屏的插画")
@@ -1071,7 +1130,7 @@ test "wide: a right click in a chat as the desktop app's: a link's 在浏览器�
   assert_true(t.find("多选") is Some(_))
   assert_true(@sfdesk.context.share is Some(_) && @sfdesk.context.link == "" && @sfdesk.context.words == "")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // words picked with the pointer: 复制 alone, and what is picked copied
   t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
   t.frame()
@@ -1190,7 +1249,7 @@ test "wide: a right click on a message's image: 复制图片, the picture on the
   t.right_click(x, y)
   t.frame()
   // (its menu, the presenters': a small panel at the pointer with a mouse, in)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(@sfpages.offered_image() != "", msg="its picture's source")
   t.add_pixels(@sfpages.offered_image(), 2, 2, FixedArray::make(16, b'\xff'))
   t.tap_text("复制图片")
@@ -1426,12 +1485,12 @@ test "wide: 文件 shows favorites and stations; files can be chosen, opened, an
   assert_eq(more.length(), 1)
   let (mx, my, mw, mh) = more[0].rect
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("把「旧版」加入个人收藏")
   t.frame()
   assert_eq(named(calls, "prefs.set").length(), before + 1)
   t.tap(mx + mw / 2.0, my + mh / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("从个人收藏移除「旧版」") is Some(_))
 }
 
@@ -1702,7 +1761,7 @@ test "wide: 快捷键 changed by pressing new ones (keys.set), and the new keys 
   t.key(@ui.key_escape)
   t.post(@hostapi.system_channel, "{\"menu\":\"update.check\"}")
   t.frame()
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   assert_true(app.nav.top() == Setting(@settings.Route::Shortcuts))
   assert_true(update_dialog_open())
   assert_true(t.find("检查更新失败") is Some(_))
@@ -2645,8 +2704,15 @@ test "wide: a working agent's card whose standing is long (what it waits for) ha
 ///|
 /// The chat of fixture `chat-agent-card` on 大屏 with its agents' cards' latest lines as `latest` says (its lines, the
 /// view's version), and where its latest agent's message's name is (the pointer resting there opens its card).
-fn lines_card(latest : @signals.Signal[(Array[(String, String)], Int)]) -> (@ui.Tester, Double, Double) raise {
+fn lines_card(
+  latest : @signals.Signal[(Array[(String, String)], Int)],
+  nodes? : Bool? = None,
+) -> (@ui.Tester, Double, Double) raise {
   new_run()
+  // (the page's way held where a test says: the old card's lines running on (useLinesMotion) is the old page's)
+  if nodes is Some(on) {
+    @sfbase.hold_chat_page_nodes(Some(on))
+  }
   let base = fixture("chat-agent-card")
   let src : Source = {
     ..base,
@@ -2723,7 +2789,7 @@ test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx 
   let latest : @signals.Signal[(Array[(String, String)], Int)] = @signals.signal(
     ([("k1", "读了 src/ui/list.mbt"), ("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt")], 1),
   )
-  let (t, x, y) = lines_card(latest)
+  let (t, x, y) = lines_card(latest, nodes=Some(false))
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.0 }) }
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
@@ -2793,7 +2859,7 @@ test "wide: 文件's rows as the core says them (driveBrowse, drive.browse): a p
   t.frame()
   assert_true(t.find("重命名") is Some(_), msg="its menu")
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   // (the menu gone: the page's rows to be asked of again)
   assert_true(files_row_chosen(t, "发布清单.md"), msg="chosen by its right click")
   assert_false(files_row_chosen(t, "设计稿"))
@@ -2878,6 +2944,9 @@ test "wide: 文件's tabs as the core keeps them (filesTabs, files.tabs): the ad
   t.frame()
   assert_true(t.query(Button, label="左右分栏") is Some(_), msg="one again")
   // the tab shown closed: the other left alone, no tabs shown
+  let (tx, ty, tw, th) = t.all(Tab)[0].rect
+  t.move_to(tx + tw / 2.0, ty + th / 2.0)
+  t.frame()
   let (x, y, w, h) = t.all(Button, label="关闭标签")[0].rect
   t.tap(x + w / 2.0, y + h / 2.0)
   t.frame()
@@ -3000,7 +3069,7 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   t.key(@ui.key_escape)
   t.frame()
   assert_true(t.query(Menu) is None)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("分享") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar
@@ -3075,4 +3144,27 @@ test "大屏: a settings row pressed, its page opened as one change: the setting
     _ => fail("not 安全 after its row")
   }
   assert_eq(seen.filter(fn(p) { p != "settings" }), [], msg="\{Repr(seen)}")
+}
+
+///|
+test "大屏: right click on a field inside ⌘K switcher opens edit menu above the modal and pastes" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls)
+  t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("签")
+  t.frame()
+  let (fx, fy, _, fh) = t.ime_rect()
+  t.clipboard_gives("签名")
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("全选") is Some(_) && t.find("粘贴") is Some(_), msg="switcher field context menu visible above modal")
+  t.tap_text("全选")
+  t.run_for(@ui.move_most_ms)
+  t.right_click(fx + 1.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("粘贴")
+  t.run_for(@ui.move_most_ms)
+  let (_, words, _, _) = t.ime()
+  assert_eq(words, "签名")
 }

@@ -3,7 +3,8 @@
 // and whether the station may reach the LAN it is on (macOS's Local Network). One look at them (the helper's
 // `status`) is kept for whatever asks; at most FRESH_MS old where it matters, looked at again when the helper says a
 // grant changed or comes back, and in the background once a page reads it SHOWN_MS after the last look, or after the
-// last try where the helper did not answer.
+// last try where the helper did not answer. A refresh that may be fresh (not `force`) waits SHOWN_MS after such a try
+// too: the desktop's screens listed went on starting it every few seconds (2026-11-19).
 //
 // The helper's window asks for a grant on this Mac, once: not again (nor brought forward) while it is up asking for
 // it, nor for AGAIN_MS after it was shown for it; a person's own ask (`again`) puts it up again however lately it was
@@ -97,12 +98,7 @@ pub fn grant_state(s : J, grant : String) -> String {
 ///|
 /// JavaScript's truthiness of a value.
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Num(d)) => d != 0.0 && !d.is_nan()
-    Some(Str(u)) => u.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|
@@ -201,7 +197,14 @@ fn HelperGrants::tell(self : HelperGrants) -> Unit {
 ///|
 /// The grants as macOS has them now (at most FRESH_MS old, unless `force`); the helper started for it.
 pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -> Unit {
-  if !force && (self.now)() - self.checked < FRESH_MS {
+  // (a look under way is waited for; the helper not answering: tried again SHOWN_MS after the last try, else FRESH_MS
+  // after the last look)
+  let (last, within) = if self.unanswered is Some(_) {
+    (self.attempted, SHOWN_MS)
+  } else {
+    (self.checked, FRESH_MS)
+  }
+  if !force && !self.checking.is_going() && (self.now)() - last < within {
     return
   }
   self.checking
@@ -219,10 +222,11 @@ pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -
         async fn() {
           let status = self.helper.request(jo([("op", js("status"))])) catch {
             e => {
-              // (said once until it answers again or says otherwise: grants.ts)
+              // (said once until it answers again or says otherwise, not by the addresses in it: grants.ts)
               let said = message_of(e)
-              if self.unanswered != Some(said) {
-                self.unanswered = Some(said)
+              let key = without_addresses(said)
+              if self.unanswered != Some(key) {
+                self.unanswered = Some(key)
                 self.io.log.warn("helper", "still.fail Helper did not answer", fields=jo([("error", js(said))]))
               }
               return
@@ -452,4 +456,26 @@ async fn HelperGrants::disk(self : HelperGrants, grant : String) -> String? {
     }
   }
   None
+}
+
+///|
+/// What an error says with each address in it (`0x7a68c38ff0`) said alike (grants.ts `withoutAddresses`).
+fn without_addresses(said : String) -> String {
+  let hex = (c : Char) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+  let cs = said.to_array()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < cs.length() {
+    if cs[i] == '0' && i + 2 < cs.length() && cs[i + 1] == 'x' && hex(cs[i + 2]) {
+      out.write_string("0x…")
+      i += 2
+      while i < cs.length() && hex(cs[i]) {
+        i += 1
+      }
+    } else {
+      out.write_char(cs[i])
+      i += 1
+    }
+  }
+  out.to_string()
 }

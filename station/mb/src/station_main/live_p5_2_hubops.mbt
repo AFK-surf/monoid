@@ -22,10 +22,7 @@ fn arg_or_null(args : Array[Json], i : Int) -> Json {
 
 ///|
 fn arg_opt_text(args : Array[Json], i : Int) -> String? {
-  match args.get(i) {
-    Some(String(s)) => Some(s)
-    _ => None
-  }
+  opt_str(args.get(i))
 }
 
 ///|
@@ -54,20 +51,20 @@ fn routes_thrown(e : Error) -> Error {
     @api_routes.Thrown(_, _) | @api_routes.Refused(_, _) => e
     // (regenerate-title.ts `TitleError`: what went wrong is its `problem`, the route's words chosen by it)
     @session_chats.Thrown("TitleError", m) =>
-      @api_routes.Thrown("TitleError", jv_of_json({ "message": Json::string(m), "problem": Json::string(m) }))
+      @api_routes.Thrown("TitleError", to_jv({ "message": Json::string(m), "problem": Json::string(m) }))
     @session_chats.Thrown(kind, m) =>
-      @api_routes.Thrown(if kind == "" { "Error" } else { kind }, jv_of_json({ "message": Json::string(m) }))
+      @api_routes.Thrown(if kind == "" { "Error" } else { kind }, to_jv({ "message": Json::string(m) }))
     @session_storage.Thrown(kind, said) =>
       @api_routes.Thrown(
         if kind == "" { "Error" } else { kind },
-        jv_of_json(
+        to_jv(
           match said {
             Object(_) => said
             _ => { "message": said }
           },
         ),
       )
-    other => @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(said_of(other)) }))
+    other => @api_routes.Thrown("Error", to_jv({ "message": Json::string(said_of(other)) }))
   }
 }
 
@@ -76,7 +73,7 @@ fn routes_thrown(e : Error) -> Error {
 async fn P52::called(self : P52, f : Json, args : Array[Json]) -> Json {
   match f {
     { "$fn": Number(_, ..) as id, .. } =>
-      self.bus.call_peer("self", None, "$admin.called", { "id": id, "args": Json::array(args) }).0
+      self.bus.admin_called(id, args)
     _ => Json::null()
   }
 }
@@ -85,7 +82,7 @@ async fn P52::called(self : P52, f : Json, args : Array[Json]) -> Json {
 /// preset-records.ts `starsOf`: a person's stars as a device or a station says them, checked; a RecordRefusal saying
 /// what is wrong.
 fn stars_of(raw : Json) -> Json raise {
-  let refuse = (m : String) => @api_routes.Thrown("RecordRefusal", jv_of_json({ "message": Json::string(m) }))
+  let refuse = (m : String) => @api_routes.Thrown("RecordRefusal", to_jv({ "message": Json::string(m) }))
   guard raw is Object(m) else { raise refuse("stars: an object of models' stars") }
   if m.length() > 200 {
     raise refuse("stars: 200 models at most")
@@ -205,13 +202,13 @@ fn shown_facts(host : @host.Host, file : String) -> Json {
         return bytes[a:a + n].to_bytes()
       }
       let want = if n > chunk_most { n } else { chunk_most }
-      let got = p51_file_piece(host, file, at, want) catch { _ => b"" }
+      let got = p51_file_piece_now(host, file, at, want) catch { _ => b"" }
       held.val = (at, got)
       got[0:if got.length() < n { got.length() } else { n }].to_bytes()
     },
   }
   match @session_chats.facts_of_src(src) {
-    Some(f) => p52_json_of_jv(f.to_j())
+    Some(f) => of_jv(f.to_j())
     None => Json::null()
   }
 }
@@ -236,7 +233,7 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
         Some(ws) => Json::string(ws)
         None => jopt(first)
       }
-    "list" => Json::array(@session_chats.presets_list(w, jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+    "list" => Json::array(@session_chats.presets_list(w, to_jv(arg_or_null(args, 0))).map(of_jv))
     "isHere" => Json::boolean(@session_chats.presets_is_here(w, arg_text(args, 0)))
     "nameOf" => Json::string(@session_chats.presets_name_of(w, arg_text(args, 0), arg_opt_text(args, 1)))
     "refusal" => {
@@ -248,15 +245,15 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
       let bound = match jfield(o, "copy") {
         Null => {
           guard jtext(o, "preset") is Some(id) else { return Json::null() }
-          @session_chats.presets_get(w, jv_of(ws), id)
+          @session_chats.presets_get(w, to_jv(ws), id)
         }
-        c => jv_of(c)
+        c => to_jv(c)
       }
       if bound is Null {
         return Json::null()
       }
       let here = (self.the_hub().world.station)()
-      let asked = jv_of({ "runtime": jfield(o, "runtime"), "model": jfield(o, "model") })
+      let asked = to_jv({ "runtime": jfield(o, "runtime"), "model": jfield(o, "model") })
       jopt(@session_chats.preset_refusal(self.cwords, bound, here, asked, jtext(o, "lang").unwrap_or(self.lang())))
     }
     "keep" => {
@@ -270,11 +267,11 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
                 String(x) => Json::string(x)
                 _ => jopt(first)
               }
-              p52_json_of_jv(@session_chats.presets_keep_for(w, workspace, jv_of(ws), id))
+              of_jv(@session_chats.presets_keep_for(w, workspace, to_jv(ws), id))
             }
             None => Json::null()
           }
-        copy => p52_json_of_jv(@session_chats.keep_copy(w, workspace, jv_of(copy)))
+        copy => of_jv(@session_chats.keep_copy(w, workspace, to_jv(copy)))
       }
     }
     _ => raise LiveError("the presets have no \{meth}")
@@ -284,7 +281,7 @@ async fn P52::presets_answer(self : P52, meth : String, args : Array[Json]) -> J
 ///|
 /// What the repository index's world asks (hub.ts `repoIndex`'s options): the home walked, its file in the data
 /// directory, which it never looks into.
-fn P52::repo_index_answer(self : P52, meth : String, args : Array[Json]) -> Json raise {
+async fn P52::repo_index_answer(self : P52, meth : String, args : Array[Json]) -> Json raise {
   match meth {
     "file" => Json::string(path([self.data, "repo-index.json"]))
     "now" => Json::number(wall_ms().to_double())
@@ -304,19 +301,17 @@ async fn P52::repo_index_repos(self : P52, walked : Json) -> Json {
   let (repos, due) = self.repo_index.repos(w)
   if due && !self.repo_walking {
     self.repo_walking = true
-    ignore(
-      self.host.rt.fork(name="repositories' index", async fn() {
-        self.repo_index.walk(w) catch {
-          e => live_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
-        }
-        self.repo_walking = false
-        ignore(self.called(walked, [])) catch {
-          _ => ()
-        }
-      }),
-    )
+    fork_bg(self.host, "repositories' index", async fn() {
+      self.repo_index.walk(w) catch {
+        e => slice_log("warn", "presets", "the repositories were not looked for", { "error": jstr(said_of(e)) })
+      }
+      self.repo_walking = false
+      ignore(self.called(walked, [])) catch {
+        _ => ()
+      }
+    })
   }
-  Json::array(repos.map(p52_json_of_jv))
+  Json::array(repos.map(of_jv))
 }
 
 ///|
@@ -326,19 +321,17 @@ fn P52::wall_every(self : P52, ms : Double, f : Json) -> Json {
   let handle = "wall.every.stop:\{self.ids_seq.val}"
   let going = Ref(true)
   self.everies[handle] = going
-  ignore(
-    self.host.rt.fork(name="a route's heartbeat", async fn() {
-      while going.val {
-        @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a heartbeat a route keeps (usage.ts)
-        if !going.val {
-          break
-        }
-        ignore(self.called(f, [])) catch {
-          _ => ()
-        }
+  fork_bg(self.host, "a route's heartbeat", async fn() {
+    while going.val {
+      @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a heartbeat a route keeps (usage.ts)
+      if !going.val {
+        break
       }
-    }),
-  )
+      ignore(self.called(f, [])) catch {
+        _ => ()
+      }
+    }
+  })
   { "$ref": Json::string(handle) }
 }
 
@@ -352,12 +345,13 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
     // ── the store's ──
     match op {
       "store.prepareLatestThreads" | "hub.prepareLatestThreads" =>
-        return (self.bus.reader_ask.val)("$latestThreads", arg_or_null(args, 0), "zh")
+        return self.bus.reader_latest_threads(arg_or_null(args, 0))
       // (replica/module.ts `retired`: a retired workspace's chats said to be out of its sight, idempotent)
       "store.setSessionsWsRetired" => {
         let ws = arg_text(args, 0)
         let home = arg_opt_text(args, 1)
-        return self.store("setSessionsWs", [if home == Some(ws) { Json::null() } else { Json::string(ws) }, Json::string("retired:" + ws)])
+        self.bus.store.set_sessions_ws(if home == Some(ws) { Json::null() } else { Json::string(ws) }, Json::string("retired:" + ws))
+        return Json::null()
       }
       _ => ()
     }
@@ -384,48 +378,97 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
     }
     // ── the log ──
     if op.has_prefix("ops/log.log.") {
-      live_log(op[12:].to_owned(), arg_text(args, 0), arg_text(args, 1), arg_or_null(args, 2))
+      slice_log(op[12:].to_owned(), arg_text(args, 0), arg_text(args, 1), arg_or_null(args, 2))
       return Json::null()
     }
     match op {
       // ── hub.ts's own parts ──
       "hub.config" => self.config
+      "hub.interruptedIn" => hub.interrupted_in(arg_or_null(args, 0))
+      "hub.resumeInterrupted" =>
+        Json::number(hub.resume_interrupted(arg_or_null(args, 0), arg_or_null(args, 1)).to_double())
+      "hub.dismissInterrupted" =>
+        Json::number(hub.dismiss_interrupted(arg_or_null(args, 0), arg_or_null(args, 1)).to_double())
       "hub.reposDir" => Json::string(self.repos_dir())
       "hub.agentHome" => Json::string(self.agent_home())
       "hub.prepareCardPosts" => (self.bus.reader_ask.val)("$cardPosts", arg_or_null(args, 0), "zh")
-      "hub.presets.list" => Json::array(@session_chats.presets_list(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+      // (what the other parts ask of the hub by its fields (`hub.prepareCardPosts != null`): the readers' builders are
+      // this side's; the rest as the conversations' world answers it)
+      "hub.has" if ["prepareCardPosts", "prepareLatestThreads"].contains(arg_text(args, 0)) => Json::boolean(true)
+      // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: who the card is said by)
+      "hub.identity" => of_jv(self.chats_answer("actor.messageIdentity", args.map(to_jv), args))
+      // (`hub.chat(connect).post` as the vault's cards say theirs: the thread's connect, channel, ts and the text)
+      "hub.post" =>
+        Json::string(self.chat_post(arg_text(args, 0), arg_text(args, 1), arg_text(args, 2), arg_text(args, 3), []))
+      // (adb/card.ts's `chat.post` as the phones', devices' and rigs' cards say it: connect, thread, text, files)
+      "chat.post" => {
+        let here = arg_or_null(args, 1)
+        Json::string(
+          self.chat_post(
+            arg_text(args, 0),
+            jtext(here, "channel").unwrap_or(""),
+            jtext(here, "threadTs").unwrap_or(""),
+            arg_text(args, 2),
+            jitems(arg_or_null(args, 3)),
+          ),
+        )
+      }
+      // (a part that queued a decided card's outcome itself, its request written in the same transaction where it shares
+      // the chats' connection (the phones, the rigs: live_dispatch.mbt `dispatch_threads_card`), after it on the vault's)
+      "cardOutcomes.wake" => {
+        match self.card_outcomes {
+          Some(worker) => {
+            worker.wake()
+            self.outcomes_follow()
+          }
+          None => ()
+        }
+        Json::null()
+      }
+      // ── card-place.ts and adb/title.ts, as the rigs ask them (requests.ts `hub`) ──
+      "dep.postCard" =>
+        of_jv(
+          @session_chats.post_card(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), arg_text(args, 2), to_jv(arg_or_null(args, 3)), None, None),
+        )
+      "dep.cardPlace" =>
+        match @session_chats.card_place(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), to_jv(arg_or_null(args, 2))) {
+          Some(p) => of_jv(p)
+          None => undef_json()
+        }
+      "dep.grantChatTitle" => jopt(self.grant_chat_title(arg_or_null(args, 0)))
+      "hub.presets.list" => Json::array(@session_chats.presets_list(w(), to_jv(arg_or_null(args, 0))).map(of_jv))
       "hub.presets.listed" =>
-        Json::array(@session_chats.presets_listed(w(), jv_of(arg_or_null(args, 0))).map(p52_json_of_jv))
+        Json::array(@session_chats.presets_listed(w(), to_jv(arg_or_null(args, 0))).map(of_jv))
       "hub.presets.kept" =>
         Json::array(
-          @session_chats.presets_kept(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1))).map(p52_json_of_jv),
+          @session_chats.presets_kept(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1))).map(of_jv),
         )
       "hub.presets.others" =>
         Json::array(
-          @session_chats.presets_others(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1))).map(p52_json_of_jv),
+          @session_chats.presets_others(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1))).map(of_jv),
         )
       "hub.presets.carry" =>
-        p52_json_of_jv(
+        of_jv(
           @session_chats.presets_carry(
             w(),
-            jv_of(arg_or_null(args, 0)),
-            jv_of(arg_or_null(args, 1)),
-            jitems(arg_or_null(args, 2)).map(jv_of),
+            to_jv(arg_or_null(args, 0)),
+            to_jv(arg_or_null(args, 1)),
+            jitems(arg_or_null(args, 2)).map(to_jv),
           ),
         )
       "hub.presets.add" =>
-        p52_json_of_jv(
-          @session_chats.presets_add(w(), jv_of(arg_or_null(args, 0)), jv_of(arg_or_null(args, 1)), arg_text(args, 2), arg_text(args, 3)),
+        of_jv(
+          @session_chats.presets_add(w(), to_jv(arg_or_null(args, 0)), to_jv(arg_or_null(args, 1)), arg_text(args, 2), arg_text(args, 3)),
         )
       "hub.presets.put" =>
-        p52_json_of_jv(
+        of_jv(
           @session_chats.presets_put(
             w(),
-            jv_of(arg_or_null(args, 0)),
+            to_jv(arg_or_null(args, 0)),
             arg_text(args, 1),
-            jv_of(arg_or_null(args, 2)),
+            to_jv(arg_or_null(args, 2)),
             match args.get(3) {
-              Some(x) if !is_undef_json(x) => Some(jv_of(x))
+              Some(x) if !is_undef_json(x) => Some(to_jv(x))
               _ => None
             },
           ),
@@ -433,10 +476,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.presets.delete" => {
         @session_chats.presets_delete(
           w(),
-          jv_of(arg_or_null(args, 0)),
+          to_jv(arg_or_null(args, 0)),
           arg_text(args, 1),
           match args.get(2) {
-            Some(x) if !is_undef_json(x) => Some(jv_of(x))
+            Some(x) if !is_undef_json(x) => Some(to_jv(x))
             _ => None
           },
         )
@@ -461,7 +504,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.repoIndex.repos" => self.repo_index_repos(arg_or_null(args, 0))
       "hub.accounts.change" | "hub.accounts.modelEfforts" =>
         (self.bus.jobs_ask.val)(op[4:].to_owned(), Json::array(args))
-      "hub.toldBots" => @session_hub.hub_call(hub, "told", args)
+      "hub.toldBots" => {
+        hub.set_told_bots(arg_text(args, 0), jitems(arg_or_null(args, 1)).map(b => as_text(b).unwrap_or("")))
+        Json::null()
+      }
       // (replica/handover.ts's store/handover.ts and read/usage.ts, as a hand-over of chats asks them)
       "fn.handedStations" => Json::array(@store_sessions.handed_stations(self.bus.db))
       "fn.handedWithUsage" =>
@@ -470,10 +516,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
             self.bus.db,
             arg_or_null(args, 0),
             arg_or_null(args, 1),
-            match args.get(2) {
-              Some(Number(n, ..)) => n.to_int()
-              _ => 10
-            },
+            opt_num(args.get(2)).map(n => n.to_int()).unwrap_or(10),
           ),
         )
       "fn.threadRefs" => Json::array(@store_sessions.thread_refs(self.bus.db, arg_or_null(args, 0), jitems(arg_or_null(args, 1))))
@@ -484,28 +527,28 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       // (move/live.ts `clonesElsewhere`: the repositories found on the machine, by their paths)
       "hub.repoClones" => {
         let (repos, _) = self.repo_index.repos(w())
-        Json::array(repos.map(p52_json_of_jv).filter_map(r => match jfield(r, "path") { String(_) as p => Some(p); _ => None }))
+        Json::array(repos.map(of_jv).filter_map(r => match jfield(r, "path") { String(_) as p => Some(p); _ => None }))
       }
       "agents.overview" =>
-        self.bus.call_peer("self", None, "$overview", { "viewer": arg_or_null(args, 0), "lang": arg_or_null(args, 1) }).0
+        self.bus.overview_call(arg_or_null(args, 0), arg_or_null(args, 1))
       // (replica/retire-asks.ts `chatCards`: a card in the session's latest chat, a still.fail one's alone, and whether it
       // still waits there)
       "cards.post" => {
         let session = arg_text(args, 0)
-        let thread = match self.store("latestThreadIfReady", [Json::string(session)]) {
+        let thread = match self.with_threads(t => t.latest_thread_if_ready(Json::string(session))) {
           Object(m) if m.contains("$undef") => {
-            ignore((self.bus.reader_ask.val)("$latestThreads", Json::array([Json::string(session)]), "zh"))
-            self.store("latestThread", [Json::string(session)])
+            ignore(self.bus.reader_latest_threads(Json::array([Json::string(session)])))
+            self.with_threads(t => t.latest_thread(Json::string(session)))
           }
           t => t
         }
         if thread is Null {
-          raise @api_routes.Thrown("Refused", jv_of_json({ "message": "this session has no chat to ask in" }))
+          raise @api_routes.Thrown("Refused", to_jv({ "message": "this session has no chat to ask in" }))
         }
-        if jtext(jfield(thread, "thread"), "surface") != Some("ember") {
+        if jtext(jfield(thread, "thread"), "surface") != Some("chat") {
           raise @api_routes.Thrown(
             "Refused",
-            jv_of_json({
+            to_jv({
               "message": "the confirmations are cards in the still.fail app, which a Slack or Feishu thread does not show: drive the retirement from a still.fail chat of this workspace (chat_create opens one), or a person retires the station from its page in the app",
             }),
           )
@@ -513,24 +556,24 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         let posted = @session_chats.post_card(
           w(),
           session,
-          jv_of(thread),
+          to_jv(thread),
           arg_text(args, 1),
-          jv_of(arg_or_null(args, 2)),
+          to_jv(arg_or_null(args, 2)),
           Some(m => @session_chats.Thrown("Refused", m)),
           None,
         )
-        match p52_json_of_jv(posted) {
+        match of_jv(posted) {
           String(ts) => { "thread": jfield(jfield(thread, "thread"), "id"), "ts": Json::string(ts) }
           _ => Json::null()
         }
       }
       "cards.state" => {
-        let at = @session_chats.card_place(w(), arg_text(args, 0), jv_of(arg_or_null(args, 1)), jv_of(arg_or_null(args, 2))) catch {
+        let at = @session_chats.card_place(w(), arg_text(args, 0), to_jv(arg_or_null(args, 1)), to_jv(arg_or_null(args, 2))) catch {
           _ => return Json::string("none")
         }
         match at {
           Some(p) =>
-            match jfield(p52_json_of_jv(p), "state") {
+            match jfield(of_jv(p), "state") {
               String(_) as s => s
               _ => Json::string("same")
             }
@@ -542,13 +585,13 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         match arg_or_null(args, 0) {
           Object(m) =>
             for connect, session in m {
-              if self.store("binding", [Json::string(connect)]) is Null && !(self.store("getSession", [session]) is Null) {
-                ignore(self.store("setBinding", [Json::string(connect), session]))
+              if self.bus.store.binding(Json::string(connect)) is Null && !(self.bus.store.get_session(as_text(session).unwrap_or("")) is Null) {
+                self.bus.store.set_binding(Json::string(connect), session)
               }
             }
           _ => ()
         }
-        ignore(self.store("setMovedNotes", [arg_or_null(args, 1)]))
+        ignore(self.with_threads(t => t.set_moved_notes(arg_or_null(args, 1))))
         Json::null()
       }
       // ── agents.ts ──
@@ -563,9 +606,9 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
             }
           _ => Json::null()
         }
-      "agents.heldBy" => (self.bus.coord_ask.val)("connects.heldBy", Json::array(args))
+      "agents.heldBy" => self.bus.coord_connects_held_by(args)
       "agents/runtime.runtimeKind" =>
-        match @agent_drivers.runtime_kind(Some(jv_of(arg_or_null(args, 0)))) {
+        match @agent_drivers.runtime_kind(Some(to_jv(arg_or_null(args, 0)))) {
           Some(k) => Json::string(k)
           None => undef_json()
         }
@@ -575,10 +618,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           Some(Number(n, ..)) if n >= 0.0 && n == n && n - n == 0.0 => Json::number(n)
           _ => Json::number(1.0)
         }
-      "core/model-speed.modelSpeed" => jopt(@session_chats.model_speed(Some(jv_of(arg_or_null(args, 0)))))
+      "core/model-speed.modelSpeed" => jopt(@session_chats.model_speed(Some(to_jv(arg_or_null(args, 0)))))
       "core/preset-records.starsOf" => stars_of(arg_or_null(args, 0))
       "core/preset-records.mergeStars" => merge_stars(arg_or_null(args, 0), arg_or_null(args, 1))
-      "core/preset-records.canonical" => Json::string(@session_chats.canonical(jv_of(arg_or_null(args, 0))))
+      "core/preset-records.canonical" => Json::string(@session_chats.canonical(to_jv(arg_or_null(args, 0))))
       // ── the store's rows ──
       "rows.toEntry" => @store_threads.entry_of(arg_or_null(args, 0))
       "rows.cardOfEntry" =>
@@ -607,7 +650,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         }
         let f = arg_or_null(args, 1)
         ignore(
-          self.host.rt.fork(name="a route's later", async fn() {
+          self.host.rt.fork_quiet(name="a route's later", async fn() {
             @effect.sleep(if ms < 1.0 { 1 } else { ms.to_int() }) // timer: a retry after a failure (a route's own)
             ignore(self.called(f, [])) catch {
               _ => ()
@@ -643,22 +686,22 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "sessions/footprint.roomOfSoon" => jopt(self.storage().room_of(arg_text(args, 1)))
       "sessions/image-size.shownFactsSoon" => shown_facts(self.host, arg_text(args, 0))
       "sessions/presets.presetCopyInput" =>
-        p52_json_of_jv(@session_chats.preset_copy_input(jv_of(arg_or_null(args, 0))))
+        of_jv(@session_chats.preset_copy_input(to_jv(arg_or_null(args, 0))))
       "sessions/presets.candidates" => {
         let here = arg_or_null(args, 3)
         Json::array(
           @session_chats.candidates(
             w(),
             arg_text(args, 0),
-            jitems(arg_or_null(args, 1)).map(jv_of),
-            jitems(arg_or_null(args, 2)).map(jv_of),
+            jitems(arg_or_null(args, 1)).map(to_jv),
+            jitems(arg_or_null(args, 2)).map(to_jv),
             async fn(station) { self.called(here, [Json::string(station)]) is True },
-          ).map(p52_json_of_jv),
+          ).map(of_jv),
         )
       }
       "sessions/regenerate-title.regenerateTitle" =>
         Json::string(
-          @session_chats.regenerate_title(w(), jv_of(arg_or_null(args, 0)), jitems(arg_or_null(args, 1)).map(jv_of)),
+          @session_chats.regenerate_title(w(), to_jv(arg_or_null(args, 0)), jitems(arg_or_null(args, 1)).map(to_jv)),
         )
       "sessions/relay.relay" =>
         self.storage().relay(arg_or_null(args, 0), arg_or_null(args, 1), arg_or_null(args, 2), arg_text(args, 3))
@@ -683,17 +726,38 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         )
       "storage.policyView" => {
         // (overview.ts `madeDecisionsView`: whose chats are the viewer's (`mine`), their names, as this viewer sees them)
+        // (the week's checks a reader counted, where the asker gave them: agents.ts `hub.policyChecks`; the viewer made
+        // a JV once, not once per chat asked `policy.mine` of)
         let viewer = arg_or_null(args, 1)
+        let viewer_jv = to_jv(viewer)
+        let checks = match args.get(2) {
+          Some(Object(_) as c) => Some(c)
+          _ => None
+        }
         let seen = @session_storage.Storage::new(
-          @session_storage.Station::new(async fn(name, a) {
-            match self.storage_world(name, a, viewer~) {
-              Some(v) if name.has_prefix("policy.") => v
-              _ => self.storage_call(name, a)
-            }
-          }),
+          @session_storage.Station::new(
+            self.bus.store,
+            self.threads,
+            hub,
+            path([self.data, "archive"]),
+            () => told_threads(self.bus, self.threads),
+            async fn(name, a) {
+              match name {
+                "policy.mine" => {
+                  let session = opt_str(a.get(0)).unwrap_or("")
+                  Json::boolean(@api_routes.sees(viewer_jv, to_jv(jopt(self.ws_of(session)))))
+                }
+                _ =>
+                  match self.storage_world(name, a, viewer~) {
+                    Some(v) if name.has_prefix("policy.") => v
+                    _ => self.storage_call(name, a)
+                  }
+              }
+            },
+          ),
           self.files,
         )
-        seen.policy_view(arg_opt_text(args, 0), viewer, None)
+        seen.policy_view(arg_opt_text(args, 0), viewer, checks)
       }
       "views.titleOf" =>
         Json::string(
@@ -728,18 +792,18 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       }
       "sessions/archive.workspaceFile" =>
         match self.files.workspace_file(arg_text(args, 0), arg_text(args, 1), Ref(0)) {
-          Some(b) => json_of_jv(@api_routes.jbytes(b))
+          Some(b) => of_jv(@api_routes.jbytes(b))
           None => Json::null()
         }
       "sessions/cc.cc" => {
         @session_chats.cc(
           w(),
-          jv_of(arg_or_null(args, 0)),
+          to_jv(arg_or_null(args, 0)),
           arg_text(args, 1),
           arg_text(args, 2),
           arg_text(args, 3),
-          jv_of(arg_or_null(args, 4)),
-          jitems(arg_or_null(args, 5)).map(jv_of),
+          to_jv(arg_or_null(args, 4)),
+          jitems(arg_or_null(args, 5)).map(to_jv),
         )
         Json::null()
       }
@@ -756,7 +820,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           Ok(v) => v
           Err(@session_hub.Refused(m)) if m.has_prefix("no hub call") =>
             // (the hub's methods the conversations' world answers: its readers, its chats' surfaces)
-            p52_json_of_jv(self.chats_answer("hub." + name, args.map(jv_of), args))
+            of_jv(self.chats_answer("hub." + name, args.map(to_jv), args))
           Err(e) => raise e
         }
       }
@@ -770,3 +834,38 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
 ///|
 /// The archive's locks the routes hold (archive.ts `withLock`), by room: what lets each go, in the order taken.
 let archive_locks : Map[String, Array[() -> Unit]] = Map([])
+
+///|
+/// adb/title.ts `grantChatTitle`: a grant named by the chat it was asked in where that chat is still the session's,
+/// else by the session's latest; None where it has none.
+fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
+  let session = jtext(r, "session").unwrap_or("")
+  let chat = jtext(r, "chat").unwrap_or("")
+  let own = match chat.find("/") {
+    Some(i) =>
+      jfield(
+        self.with_threads(t => t.session_thread(jstr(session), jstr(chat[:i].to_owned()), jstr(chat[i + 1:].to_owned()))),
+        "thread",
+      )
+    None => Json::null()
+  }
+  if own is Object(_) {
+    let without = self.title_of(own, None, None)
+    // (a given name and a still.fail chat's name do not depend on the session's most recent chat)
+    let surface = jtext(own, "surface")
+    if @adb_devices.given_title(to_jv(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
+      return Some(without)
+    }
+    let first = as_text(self.bus.store.first_text(jfield(own, "id")))
+    let with_text = self.title_of(own, first, None)
+    if with_text == without {
+      return Some(without)
+    }
+    let latest = jfield(jfield(self.with_threads(t => t.session_chat(jstr(session))), "thread"), "id")
+    return Some(if latest == jfield(own, "id") { with_text } else { without })
+  }
+  match self.with_threads(t => t.session_chat(jstr(session))) {
+    Object(_) as latest => Some(self.title_of(jfield(latest, "thread"), jtext(latest, "firstText"), None))
+    _ => None
+  }
+}

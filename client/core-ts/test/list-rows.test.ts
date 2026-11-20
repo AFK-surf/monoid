@@ -31,7 +31,7 @@ const WINDOW = 30;
 
 /// The rows of every station of the workspace made as a list makes them (#listRow) in each language, and their
 /// digest (conform.ts textKey): another whenever a row is made otherwise, when KEPT.listRow.making is to be raised with it.
-const MADE: Record<number, string> = { 1: "1594267.1cilsvl.1jt1vru", 2: "1601311.26vf3x.ccu5lq", 3: "1601463.h7kg8d.5la8nq" };
+const MADE: Record<number, string> = { 1: "1594267.1cilsvl.1jt1vru", 2: "1601311.26vf3x.ccu5lq", 3: "1601171.1d74hgx.1mv6m0q" };
 
 /// The real-size workspace written to a database as a core holds it, the core then stopped; its host, and when.
 async function written(): Promise<{ host: FakeHost; base: number }> {

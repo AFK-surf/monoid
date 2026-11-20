@@ -3,7 +3,6 @@ package "station/agent_drivers"
 
 import {
   "moonbitlang/core/ref",
-  "station/host",
   "station/jsjson",
 }
 
@@ -98,6 +97,8 @@ pub fn bring_transcript(Machine, String, String, String, String) -> Later[Unit]
 
 pub fn bytes_within(Machine, String, Int32, Int32, chunk? : Int32) -> Later[Array[(Bytes, Int32)]]
 
+pub fn ca_bundles() -> Array[String]
+
 pub fn chars(String, Int32) -> String
 
 pub fn chars_js(String, Int32) -> String
@@ -161,10 +162,6 @@ pub fn gemini_dir(Machine, String) -> String
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
 pub fn go_keyring_value(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(String) -> String
 
 pub fn has_word_ci(String, String) -> Bool
 
@@ -308,7 +305,7 @@ pub fn takes_fast(@jsjson.JValue) -> Bool
 
 pub fn to_base36(Int64) -> String
 
-pub fn tools_lost_in(@jsjson.JValue, Array[Array[Int32]]) -> String?
+pub fn tools_lost_in(@jsjson.JValue, Array[String]) -> String?
 
 pub fn tools_unreachable(String) -> Bool
 
@@ -332,7 +329,7 @@ pub fn version_in(String) -> String?
 
 pub fn wait_gone(Machine, Int32, Int32) -> Later[Unit]
 
-pub fn with_ca_bundle(Machine, Env, String) -> Later[Unit]
+pub fn with_ca_bundle(Machine, Env, Array[String]) -> Later[Unit]
 
 pub fn words_of(Error) -> String
 
@@ -342,6 +339,7 @@ pub(all) suberror DriverError {
   Said(String)
   RenewRefused(String)
 }
+pub impl Show for DriverError
 
 // Types and methods
 pub struct AcpHooks {
@@ -448,9 +446,11 @@ pub struct AgySession {
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
+  mut sign_in_opened_at : Double?
 }
 pub fn AgySession::ending(Self, String, @jsjson.JValue) -> Unit
 pub fn AgySession::kept(Self) -> Array[(String, @jsjson.JValue)]
+pub fn AgySession::lent_expired(Self) -> Bool
 pub fn AgySession::opened(Self, @jsjson.JValue?) -> Unit
 pub fn AgySession::outlived(Self) -> Bool
 pub fn AgySession::retune(Self, @jsjson.JValue) -> Bool
@@ -582,7 +582,7 @@ pub fn CodexDriver::end_idle(Self, Host, String) -> Later[Bool]
 pub fn CodexDriver::evict_idle(Self) -> Later[Int32]
 pub fn CodexDriver::freeze(Self) -> Later[Unit]
 pub fn CodexDriver::hold_left(Self, @jsjson.JValue, RunnerInfo, String) -> Host
-pub fn CodexDriver::host(Self, @jsjson.JValue, cwd? : String) -> Later[Host]
+pub fn CodexDriver::host(Self, @jsjson.JValue, cwd? : String, mcp_url? : String) -> Later[Host]
 pub fn CodexDriver::host_args(Self, @jsjson.JValue) -> Array[String]
 pub fn CodexDriver::host_at(Self, String) -> Host?
 pub fn CodexDriver::host_delete(Self, String) -> Unit
@@ -596,7 +596,7 @@ pub fn CodexDriver::info(Self, String, @jsjson.JValue) -> Unit
 pub fn CodexDriver::installed_version(Self, fresh? : Bool) -> Later[String?]
 pub fn CodexDriver::is_current(Self, Host) -> Bool
 pub fn CodexDriver::keep_draining(Self, Host) -> Unit
-pub fn[T] CodexDriver::lease(Self, @jsjson.JValue, (Host) -> Later[T], cwd? : String) -> Later[T]
+pub fn[T] CodexDriver::lease(Self, @jsjson.JValue, (Host) -> Later[T], cwd? : String, mcp_url? : String) -> Later[T]
 pub fn CodexDriver::left_runners(Self, String) -> Later[Array[RunnerInfo]]
 pub fn CodexDriver::let_go(Self, Host) -> Unit
 pub fn CodexDriver::login_changed(Self, String) -> Later[Unit]
@@ -668,7 +668,7 @@ pub(all) struct CodexWorld {
   agent_env : () -> Array[(String, String)]
   walk_skills : (String) -> Later[Array[String]]
   host_skills : String
-  ca_bundle : String
+  ca_bundles : Array[String]
   fast : ((String) -> Bool?)?
   speed : ((String) -> String?)?
   current_profile : ((String) -> @jsjson.JValue?)?
@@ -738,6 +738,7 @@ pub struct Host {
   mut login_stale : Bool
   mut runtime_stale : Bool
   mut draining : Bool
+  mut tools_failed_url : String?
   mut version : String?
   mut ready : Bool
   mut readying : Later[Unit]?
@@ -794,6 +795,7 @@ pub struct HostedOptions {
   orphans : Bool
   heard : (Heard) -> HeardSaid
   attached : () -> Unit
+  handed : () -> Unit
   exit : (String, String) -> Later[Unit]
 }
 

@@ -86,19 +86,6 @@ fn entity(name : String) -> String? {
 }
 
 ///|
-fn hex_unit(c : Int) -> Int? {
-  if is_digit(c) {
-    Some(c - '0')
-  } else if c >= 'a' && c <= 'f' {
-    Some(c - 'a' + 10)
-  } else if c >= 'A' && c <= 'F' {
-    Some(c - 'A' + 10)
-  } else {
-    None
-  }
-}
-
-///|
 fn write_point(out : StringBuilder, code : Int) -> Unit {
   if code < 0x10000 {
     out.write_char(Int::unsafe_to_char(code))
@@ -129,7 +116,7 @@ pub fn html_text(s : String) -> String {
       if j + 1 < n && lower_unit(s.unsafe_charcode_at(j + 1)) == 'x' {
         let start = j + 2
         let mut k = start
-        while k < n && hex_unit(s.unsafe_charcode_at(k)) is Some(_) {
+        while k < n && @codec.hex_digit(s.unsafe_charcode_at(k)) is Some(_) {
           k += 1
         }
         if k > start && k < n && s.unsafe_charcode_at(k) == ';' {
@@ -171,7 +158,7 @@ pub fn html_text(s : String) -> String {
         let mut code = 0.0
         let digits = if kind == 1 { from(e, 2) } else { from(e, 1) }
         for k in 0..<digits.length() {
-          let d = hex_unit(digits.unsafe_charcode_at(k)).unwrap_or(0)
+          let d = @codec.hex_digit(digits.unsafe_charcode_at(k)).unwrap_or(0)
           code = code * (if kind == 1 { 16.0 } else { 10.0 }) + d.to_double()
         }
         if code > 0.0 && code < 1114112.0 {
@@ -464,7 +451,7 @@ pub fn is_ipv6(s : String) -> Bool {
         return false
       }
       for c in 0..<g.length() {
-        if hex_unit(g.unsafe_charcode_at(c)) is None {
+        if @codec.hex_digit(g.unsafe_charcode_at(c)) is None {
           return false
         }
       }
@@ -514,7 +501,7 @@ pub fn is_public(address : String) -> Bool {
     let high = split(from(v6, 7), ":")[0]
     let mut value = 0
     for i in 0..<high.length() {
-      value = value * 16 + hex_unit(high.unsafe_charcode_at(i)).unwrap_or(0)
+      value = value * 16 + @codec.hex_digit(high.unsafe_charcode_at(i)).unwrap_or(0)
     }
     Some((value >> 8, value & 255))
   } else {
@@ -747,22 +734,20 @@ pub async fn github_api_on(host : @host.Host, path : String) -> Json {
       }
     None => ()
   }
-  let got = @effect.timeout(link_timeout_ms, async fn() {
-    host.shell("fetch", {
-      "url": jstr("https://api.github.com/\{path}"),
-      "method": jstr("GET"),
-      "headers": Json::array([
-        Json::array([jstr("user-agent"), jstr(user_agent)]),
-        Json::array([jstr("accept"), jstr("application/vnd.github+json")]),
-      ]),
-    })
-  })
-  guard got is Some((said, body)) else { raise HostError("The operation was aborted due to timeout") }
-  let status = num(field(said, "status")).unwrap_or(0.0).to_int()
-  if status < 200 || status > 299 {
-    raise HostError("GitHub answered \{status}")
+  let got = host.fetch(
+    "https://api.github.com/\{path}",
+    headers=[("user-agent", user_agent), ("accept", "application/vnd.github+json")],
+    timeout_ms=link_timeout_ms,
+    // (as preview.ts's `fetch`: a renamed repository's 301 followed)
+    redirect="follow",
+  ) catch {
+    @host.FetchTimeout => raise HostError(@host.fetch_timed_out)
+    e => raise e
   }
-  @json.parse(@utf8.decode_lossy(body.unwrap_or(b"")))
+  if got.status < 200 || got.status > 299 {
+    raise HostError("GitHub answered \{got.status}")
+  }
+  @json.parse(got.text())
 }
 
 ///|
@@ -913,94 +898,20 @@ async fn picture(io : LinkIo, href : String) -> String? {
 ///|
 /// Whether a JSON value is truthy as JavaScript has it.
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(Number(d, ..)) => d != 0.0
-    Some(String(s)) => s != ""
-    _ => true
-  }
-}
-
-///|
-fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
-  let y2 = if m <= 2 { y - 1 } else { y }
-  let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400
-  let yoe = y2 - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @jsjson.json_truthy(v)
 }
 
 ///|
 /// `Date.parse` of an ISO 8601 time (as GitHub writes them: `YYYY-MM-DDTHH:MM:SS(.sss)Z` or with an offset; a date
 /// alone is UTC); None where it is not one.
 pub fn iso_time(s : String) -> Double? {
-  let n = s.length()
-  let digits = (at : Int, len : Int) => {
-    if at + len > n {
-      return None
-    }
-    let t = slice(s, at, at + len)
-    if all_digits(t) {
-      Some(digits_number(t).to_int())
-    } else {
-      None
-    }
-  }
-  guard digits(0, 4) is Some(y) && n >= 10 && s.unsafe_charcode_at(4) == '-' else { return None }
-  guard digits(5, 2) is Some(mo) && s.unsafe_charcode_at(7) == '-' else { return None }
-  guard digits(8, 2) is Some(d) else { return None }
-  if mo < 1 || mo > 12 || d < 1 || d > 31 {
+  guard s.length() >= 10 &&
+    s.unsafe_get(4).to_int() == '-' &&
+    s.unsafe_get(7).to_int() == '-' &&
+    (s.length() == 10 || s.unsafe_get(10).to_int() == 'T') else {
     return None
   }
-  let days = days_from_civil(y, mo, d).to_double()
-  if n == 10 {
-    return Some(days * 86400000.0)
-  }
-  guard s.unsafe_charcode_at(10) == 'T' else { return None }
-  guard digits(11, 2) is Some(h) && n > 13 && s.unsafe_charcode_at(13) == ':' else { return None }
-  guard digits(14, 2) is Some(mi) else { return None }
-  let mut i = 16
-  let mut sec = 0
-  let mut ms = 0.0
-  if i < n && s.unsafe_charcode_at(i) == ':' {
-    guard digits(i + 1, 2) is Some(x) else { return None }
-    sec = x
-    i += 3
-    if i < n && s.unsafe_charcode_at(i) == '.' {
-      let start = i + 1
-      i = start
-      while i < n && is_digit(s.unsafe_charcode_at(i)) {
-        i += 1
-      }
-      if i == start {
-        return None
-      }
-      let frac = slice(s, start, if i - start > 3 { start + 3 } else { i })
-      ms = digits_number(frac) * (if frac.length() == 1 { 100.0 } else if frac.length() == 2 { 10.0 } else { 1.0 })
-    }
-  }
-  if h > 24 || mi > 59 || sec > 59 {
-    return None
-  }
-  let mut offset = 0.0
-  if i == n {
-    // (a time without a zone is the machine's: GitHub always says one)
-    offset = 0.0
-  } else if s.unsafe_charcode_at(i) == 'Z' && i + 1 == n {
-    offset = 0.0
-  } else if (s.unsafe_charcode_at(i) == '+' || s.unsafe_charcode_at(i) == '-') && i + 6 == n {
-    guard digits(i + 1, 2) is Some(oh) && s.unsafe_charcode_at(i + 3) == ':' else { return None }
-    guard digits(i + 4, 2) is Some(om) else { return None }
-    let sign = if s.unsafe_charcode_at(i) == '+' { 1.0 } else { -1.0 }
-    offset = sign * (oh * 60 + om).to_double() * 60000.0
-  } else {
-    return None
-  }
-  Some(
-    days * 86400000.0 + (h * 3600 + mi * 60 + sec).to_double() * 1000.0 + ms - offset,
-  )
+  @jsjson.js_parse_iso(s)
 }
 
 ///|

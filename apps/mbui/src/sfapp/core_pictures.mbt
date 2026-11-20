@@ -31,6 +31,14 @@ pub(all) struct CorePictures {
 let face_ahead_px : Double = 128.0
 
 ///|
+/// How many pictures by their address are kept here at most (core_pictures_waited), and of how many bytes: the faces
+/// and icons a run shows many times over.
+let core_pictures_most : Int = 256
+
+///|
+let core_pictures_bytes : Int = 32 * 1024 * 1024
+
+///|
 /// core_pictures', with what a page opening waits for of them (CorePictures): `kept(url, done)` asks the core's
 /// `picture` as the device holds it (`kept: true`: at once, never waiting on the network; no bytes where it has none,
 /// its fetch set off for the asking that follows, which `shown` makes as ever).
@@ -44,8 +52,16 @@ pub fn core_pictures_waited(
   let failed : Map[String, Bool] = Map([])
   // those asked as the device holds them (`kept`): on their way (true), or not on the device (false)
   let held : Map[String, Bool] = Map([])
-  // each address with each page's time on top it was put up in (an address on two pages at once, each its own)
-  let put_up : Map[String, Bool] = Map([])
+  // each address not here (asked, or could not be had) with each page's time on top it was put up in since it was first
+  // asked (an address on two pages at once, each its own): let go of as it comes, what is here asked for no more
+  let put_up : Map[String, Set[Int]] = Map([])
+  // when each one here was last shown (a count of showings), and its bytes: those least lately shown, shown by no node
+  // of the window's tree that reads them, let go of beyond core_pictures_most or core_pictures_bytes, asked of the core
+  // again as they are shown again (which has them on the device: at once)
+  let used : Map[String, Int] = Map([])
+  let bytes_of : Map[String, Int] = Map([])
+  let tick = Ref(0)
+  let total = Ref(0)
   // each address's answers so far, followed by all that read it (a node of the window's tree shown by it, read again as
   // its answer comes, whoever asked: an old view reads it every frame it is built)
   let answers : Map[String, @signals.Signal[Int]] = Map([])
@@ -61,11 +77,59 @@ pub fn core_pictures_waited(
   }
   // (the key an address's image is put up as)
   let key_of = fn(url : String) { "mem:picture/\{@ui.stable_hash(url)}/\{url.length()}" }
+  let touch = fn(url : String) {
+    tick.val += 1
+    used[url] = tick.val
+  }
+  // (the one at `url` here, `n` bytes: the least lately shown let go of beyond what is kept)
+  let came = fn(url : String, n : Int) {
+    put_up.remove(url)
+    total.val += n - bytes_of.get(url).unwrap_or(0)
+    bytes_of[url] = n
+    touch(url)
+    while bytes_of.length() > core_pictures_most || total.val > core_pictures_bytes {
+      let mut oldest = ""
+      let mut when = 0
+      for u, _ in bytes_of {
+        let t = used.get(u).unwrap_or(0)
+        guard u != url && !(answers.get(u) is Some(s) && s.watched()) else { continue }
+        if oldest == "" || t < when {
+          oldest = u
+          when = t
+        }
+      }
+      guard oldest != "" else { break }
+      match keys.get(oldest) {
+        Some(key) if key != "" => @ui.forget_image(key)
+        _ => ()
+      }
+      keys.remove(oldest)
+      held.remove(oldest)
+      answers.remove(oldest)
+      used.remove(oldest)
+      total.val -= bytes_of.get(oldest).unwrap_or(0)
+      bytes_of.remove(oldest)
+    }
+  }
   let shown = fn(url : String, page : Int) -> String {
     answered(url).get() |> ignore
-    let at = "\{page}\u{1}" + url
-    let anew = !put_up.contains(at)
-    put_up[at] = true
+    match keys.get(url) {
+      Some(key) if key != "" => {
+        touch(url)
+        return key
+      }
+      _ => ()
+    }
+    let pages = match put_up.get(url) {
+      Some(p) => p
+      None => {
+        let p : Set[Int] = Set([])
+        put_up[url] = p
+        p
+      }
+    }
+    let anew = !pages.contains(page)
+    pages.add(page)
     match keys.get(url) {
       Some(key) => key
       None => {
@@ -86,6 +150,7 @@ pub fn core_pictures_waited(
               let key = key_of(url)
               @ui.add_image(key, b)
               keys[url] = key
+              came(url, b.length())
             }
             _ => {
               keys.remove(url)
@@ -116,6 +181,7 @@ pub fn core_pictures_waited(
       match (keys.get(url), held.get(url)) {
         // (here: its decode asked for now if nothing drew it yet, as what waits for it is not built where it shows)
         (Some(key), _) if key != "" => {
+          touch(url)
           @ui.image_decode_ahead(key, face_ahead_px)
           @ui.image_decoding(key)
         }
@@ -134,6 +200,7 @@ pub fn core_pictures_waited(
                 if keys.get(url).unwrap_or("") == "" {
                   @ui.add_image(key_of(url), b)
                   keys[url] = key_of(url)
+                  came(url, b.length())
                 }
               }
               _ => held[url] = false

@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #if defined(_WIN32)
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #define getcwd _getcwd
 #else
@@ -145,6 +147,13 @@ moonbit_bytes_t tsys_getcwd(void) {
 }
 
 void tsys_out(moonbit_bytes_t s, int32_t err) {
+#if defined(_WIN32)
+  static int bin_stdout = 0;
+  if (!err && !bin_stdout) {
+    _setmode(_fileno(stdout), _O_BINARY);
+    bin_stdout = 1;
+  }
+#endif
   FILE *f = err ? stderr : stdout;
   fwrite(s, 1, (size_t)Moonbit_array_length(s), f);
   fflush(f);

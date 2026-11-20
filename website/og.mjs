@@ -1,6 +1,7 @@
-// The share cards, assets/og/<code>.png (another site's in og/<site>/): each site's built page (build.mjs --site) at
-// 1200 × 630 in Chrome, its hero alone on the brand's orange, the bar but the wordmark hidden, no buttons. Take them
-// again when the hero changes. Needs playwright-core (the repository's) and a Chrome: CHROME=<its executable>, else Playwright's own.
+// The share cards:
+//   - monoid.build / monoid.zone: assets/og/<code>.png (or og/monoid.zone/<code>.png), 1200 x 630 hero on brand orange
+//   - still.fail / youdid.wtf: assets/og/<site>/og.png, 1200 x 630 classic dark hero
+// Needs playwright-core (the repository's) and a Chrome: CHROME=<its executable>, else Playwright's own.
 //   node website/og.mjs [site…]   (default: every site)
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -30,7 +31,16 @@ body > *:not(.nav):not(main), main > *:not(.hero), footer { display: none !impor
 .hero .lead { font-size: 19px !important; line-height: 1.5 !important; color: #3A2A24 !important; max-width: 28em !important; }
 .hero .lead b { color: #1C1B1A !important; }`;
 
-const TYPES = { ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".js": "text/javascript" };
+const CLASSIC_CARD = `
+html, body, .page { background: #09090B !important; height: 630px !important; overflow: hidden !important; }
+.nav, .eyebrow, .hero-sub, .hero-actions, .stage, .agents-band, .bento-band, .install-band, .footer { display: none !important; }
+.chassis { max-width: none !important; border: 0 !important; }
+.hero { height: 630px !important; padding: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+.hero > .inner { width: 100% !important; padding: 0 !important; }
+.title { font-size: 164px !important; line-height: 0.92 !important; }
+.dot-words { font-size: 17px !important; }`;
+
+const TYPES = { ".html": "text/html", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".woff2": "font/woff2", ".js": "text/javascript" };
 const sites = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(SITES);
 const cfg = loadConfig();
 const browser = await chromium.launch(process.env.CHROME ? { executablePath: process.env.CHROME } : {});
@@ -38,28 +48,39 @@ const out = mkdtempSync(join(tmpdir(), "website-og-"));
 try {
   for (const site of sites) {
     const root = join(out, site);
+    const isClassic = SITES[site].style === "classic";
     execFileSync(process.execPath, [here("build.mjs"), "--site", site, "--out", root], { stdio: "ignore" });
-    // The page with the card's sheet in its head, so the field is drawn in the card's colours from the start.
+    const inject = isClassic ? CLASSIC_CARD : CARD;
     const server = createServer((q, r) => {
       let f = join(root, decodeURIComponent(q.url.split("?")[0]));
       if (existsSync(f) && statSync(f).isDirectory()) f = join(f, "index.html");
       if (!existsSync(f)) { r.writeHead(404); r.end(); return; }
       r.writeHead(200, { "content-type": TYPES[extname(f)] ?? "application/octet-stream" });
-      r.end(f.endsWith(".html") ? readFileSync(f, "utf8").replace("</head>", `<style>${CARD}</style></head>`) : readFileSync(f));
+      r.end(f.endsWith(".html") ? readFileSync(f, "utf8").replace("</head>", `<style>${inject}</style></head>`) : readFileSync(f));
     }).listen(0, "127.0.0.1");
     await new Promise((ok) => server.on("listening", ok));
     const dir = site === TEMPLATE_SITE ? "assets/og" : `assets/og/${site}`;
     mkdirSync(here(dir), { recursive: true });
-    for (const loc of cfg.locales) {
+    if (isClassic) {
       const page = await browser.newPage({ viewport: { width: 1200, height: 630 }, reducedMotion: "reduce" });
-      await page.goto(`http://127.0.0.1:${server.address().port}${loc.prefix}`, { waitUntil: "networkidle" });
+      await page.goto(`http://127.0.0.1:${server.address().port}/?still=1`, { waitUntil: "networkidle" });
       await page.evaluate(() => document.fonts.ready);
-      // (the words' and the field's fade in, 300 ms under reduced motion)
-      await page.waitForFunction(() => document.querySelector(".field[data-drawn]"));
-      await page.waitForTimeout(600);
-      await page.screenshot({ path: here(`${dir}/${loc.code}.png`) });
+      await page.waitForTimeout(200);
+      await page.screenshot({ path: here(`${dir}/og.png`) });
       await page.close();
-      console.log(`${dir}/${loc.code}.png`);
+      console.log(`${dir}/og.png`);
+    } else {
+      for (const loc of cfg.locales) {
+        const page = await browser.newPage({ viewport: { width: 1200, height: 630 }, reducedMotion: "reduce" });
+        await page.goto(`http://127.0.0.1:${server.address().port}${loc.prefix}`, { waitUntil: "networkidle" });
+        await page.evaluate(() => document.fonts.ready);
+        // (the words' and the field's fade in, 300 ms under reduced motion)
+        await page.waitForFunction(() => document.querySelector(".field[data-drawn]"));
+        await page.waitForTimeout(600);
+        await page.screenshot({ path: here(`${dir}/${loc.code}.png`) });
+        await page.close();
+        console.log(`${dir}/${loc.code}.png`);
+      }
     }
     server.close();
   }

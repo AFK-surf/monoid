@@ -39,6 +39,10 @@ pub(all) enum Align {
   FlexEnd
   Stretch
   Baseline
+  // (along a row: each item's first line's middle on one line, the tallest first line's: an icon or a switch on the
+  // first line of words beside it, however many lines those come to; a node's first line is its words' (Node's
+  // first_line_mid), else its first item's, else its own middle. In a column, as FlexStart, as Baseline is)
+  FirstLineCenter
   SpaceBetween
   SpaceAround
   SpaceEvenly
@@ -1184,6 +1188,11 @@ pub(all) struct Node {
   // container, however many it holds). Never false where one is; true where none is any more only lays it out the
   // slower way (each child asked), the same layout.
   mut holds_gone : Bool
+  // Where its first line of words is, down from its top (its border box's), as its measure said it last (Node's
+  // first_line_told; NaN: it said none, holding no words of its own): that line's baseline, and its middle. What a row
+  // aligned by Baseline or FirstLineCenter lines up, read where they are, its words never laid out again to find them.
+  mut first_baseline : Double
+  mut first_line_mid : Double
 }
 
 ///|
@@ -1224,6 +1233,8 @@ pub fn Node::new() -> Node {
     pre_gen: -1,
     pre: no_pre,
     skip_gen: -1,
+    first_baseline: undef,
+    first_line_mid: undef,
   }
 }
 
@@ -1251,6 +1262,32 @@ pub fn Node::laid_out_at(self : Node) -> Int {
 /// How many compute()s there have been.
 pub fn computes() -> Int {
   generation.val
+}
+
+///|
+/// What a slot of a node's children past its end holds once cut (Node::children_cut): none of them. An array cut
+/// shorter keeps what its slots past the end held, counted as held, till they are written again or it goes (native's
+/// counting; moonbitlang/core's Array::truncate, clear, pop and remove), so a node cut from what held it, made
+/// another's since, held that one still: two that so held each other, rings native's counting never frees.
+let children_gone : Node = Node::new()
+
+///|
+/// Its children cut to their first `len`: those past that let go of (Array::release_unused).
+pub fn Node::children_cut(self : Node, len : Int) -> Unit {
+  let kids = self.children
+  if len < kids.length() {
+    kids.truncate(len)
+  }
+  kids.release_unused(placeholder=children_gone)
+}
+
+///|
+/// Its child at `i` taken out, those after it each one earlier, the slot past its end let go of (Node::children_cut).
+pub fn Node::child_taken_out(self : Node, i : Int) -> Unit {
+  let kids = self.children
+  guard i >= 0 && i < kids.length() else { return }
+  kids.remove(i) |> ignore
+  kids.release_unused(placeholder=children_gone)
 }
 
 ///|

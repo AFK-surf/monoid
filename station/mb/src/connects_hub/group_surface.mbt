@@ -27,8 +27,29 @@ let chars_most : Int = 10000
 let files_most : Int = 10
 
 ///|
-/// The largest file an anchor takes (32 MiB): a larger one is refused here before it is read.
-let file_most : Double = 33554432.0
+/// The largest file an anchor takes (512 MiB, its `file_most`): a larger one is refused here before it is read.
+let file_most : Double = 536870912.0
+
+///|
+/// A file larger than this goes a piece of this at a time (`im/2` wave 4): its SHA-256 worked out as it is read, then
+/// put from what the anchor has of it already on, so neither side holds more of it than a piece.
+let piece_most : Double = 1048576.0
+
+///|
+/// The largest file an anchor from before pieces takes, whole in one ask.
+let whole_most : Double = 33554432.0
+
+///|
+/// How much of a file's head is read for a picture's size.
+let head_most : Double = 262144.0
+
+///|
+/// So many answers in a row that take nothing more of a file before it is given up.
+let stalled_most : Int = 3
+
+///|
+/// A topic's title, at most (the anchor's `space_name_most`).
+let title_most : Int = 60
 
 ///|
 /// The most options a decision has, and the longest its label, the line under it, a field's hint and a live state's
@@ -100,6 +121,73 @@ priv struct Topic {
   mut title : String
   by : String
   branched_from : String
+}
+
+///|
+/// What came of a file put a piece at a time, as the anchor answers it (`{have}`; 0 where it says none).
+fn have_of(body : Bytes) -> Double {
+  let j = body_json(body) catch { _ => return 0.0 }
+  match num_of(at(Some(j), "have")) {
+    Some(n) if n >= 0.0 && n == n.floor() && n <= 9007199254740991.0 => n
+    _ => 0.0
+  }
+}
+
+///|
+/// A character the anchor takes in no name (roster.mbt `unseen`): a control or format character, a line or paragraph
+/// separator, half of a pair.
+fn unseen(v : Int) -> Bool {
+  v < 0x20 ||
+  (v >= 0x7F && v <= 0x9F) ||
+  v == 0xAD ||
+  (v >= 0x600 && v <= 0x605) ||
+  v == 0x61C ||
+  v == 0x6DD ||
+  v == 0x70F ||
+  v == 0x180E ||
+  (v >= 0x200B && v <= 0x200F) ||
+  (v >= 0x2028 && v <= 0x202E) ||
+  (v >= 0x2060 && v <= 0x2064) ||
+  (v >= 0x2066 && v <= 0x206F) ||
+  v == 0xFEFF ||
+  (v >= 0xFFF9 && v <= 0xFFFB) ||
+  (v >= 0xD800 && v <= 0xDFFF) ||
+  v == 0xE0001 ||
+  (v >= 0xE0020 && v <= 0xE007F)
+}
+
+///|
+/// A topic's title as the anchor takes one (roster.mbt `name_of`): a control character a space, what else is not seen
+/// left out, trimmed, 60 characters at most; "" where nothing is left.
+fn topic_title(title : String) -> String {
+  let kept : Array[Char] = []
+  for c in title {
+    let v = c.to_int()
+    if v < 0x20 {
+      kept.push(' ')
+    } else if !unseen(v) {
+      kept.push(c)
+    }
+  }
+  let mut a = 0
+  while a < kept.length() && kept[a] == ' ' {
+    a += 1
+  }
+  let mut b = kept.length()
+  while b > a && kept[b - 1] == ' ' {
+    b -= 1
+  }
+  if b - a > title_most {
+    b = a + title_most
+  }
+  while b > a && kept[b - 1] == ' ' {
+    b -= 1
+  }
+  let out = StringBuilder()
+  for i in a..<b {
+    out.write_char(kept[i])
+  }
+  out.to_string()
 }
 
 ///|
@@ -259,6 +347,7 @@ pub struct GroupSurface {
   priv fs : Fs
   priv speech : Speech
   priv signer : Signer
+  priv uuid : () -> String
 }
 
 ///|
@@ -318,6 +407,7 @@ pub fn GroupSurface::new(o : GroupSurfaceOptions) -> GroupSurface raise {
     fs: o.fs,
     speech: o.speech,
     signer: o.signer,
+    uuid: o.uuid,
   }
   base.identify = async fn() { g.let_in() }
   base.address = async fn() { g.server }
@@ -1256,6 +1346,8 @@ fn at_i(v : J?, i : Int) -> J? {
 }
 
 ///|
+/// A file put into a space: whole in one ask where it is one piece at most, else a piece at a time (`piece_most`), from
+/// what the anchor has of it already on (`GET /spaces/<id>/uploads/<sha256>`); nothing of it held but a piece.
 async fn GroupSurface::upload(self : GroupSurface, space : String, file : J) -> J {
   let path = js_text(at(Some(file), "path"))
   let name = js_text(at(Some(file), "name"))
@@ -1263,19 +1355,67 @@ async fn GroupSurface::upload(self : GroupSurface, space : String, file : J) -> 
   if size > file_most {
     raise fail_("\{name} is \{@session_chats.num_text(size)} bytes, more than the anchor takes (\{@session_chats.num_text(file_most)})")
   }
-  let bytes = (self.fs.read_bytes)(path)
-  let shape = image_size(bytes)
-  let query = "name=\{@session_chats.encode_uri_component(name)}&mime=\{@session_chats.encode_uri_component(mime_of(name))}" +
-    (match shape {
-      None => ""
-      Some((w, h)) => "&width=\{@session_chats.num_text(w)}&height=\{@session_chats.num_text(h)}"
-    })
-  let answer = self.link.ask("POST", "/spaces/\{@session_chats.encode_uri_component(space)}/files?\{query}", body=BytesAsked(bytes))
-  let got = if answer.status < 300 { files_of(Some(ja([at(Some(body_json(answer.body)), "file").unwrap_or(Null)]))).get(0) } else { None }
-  guard got is Some(got) else {
-    raise fail_("the anchor did not take \{name} (\{answer.status}: \{@session_chats.slice(text_of(answer.body), 0, b=200)})")
+  let read = async fn(at : Double, n : Double) -> Bytes {
+    let got = (self.fs.read_part)(path, at, n)
+    if got.length().to_double() != n {
+      raise fail_("\{name} changed as it was read")
+    }
+    got
   }
-  got
+  let shape = image_size(read(0.0, if size < head_most { size } else { head_most }))
+  let files = "/spaces/\{@session_chats.encode_uri_component(space)}/files?name=\{@session_chats.encode_uri_component(name)}&mime=\{@session_chats.encode_uri_component(mime_of(name))}"
+  let sides = match shape {
+    None => ""
+    Some((w, h)) => "&width=\{@session_chats.num_text(w)}&height=\{@session_chats.num_text(h)}"
+  }
+  let took = fn(answer : Answered) -> J raise {
+    let got = if answer.status == 200 || answer.status == 201 {
+      files_of(Some(ja([at(Some(body_json(answer.body)), "file").unwrap_or(Null)]))).get(0)
+    } else {
+      None
+    }
+    guard got is Some(got) else {
+      raise fail_("the anchor did not take \{name} (\{answer.status}: \{@session_chats.slice(text_of(answer.body), 0, b=200)})")
+    }
+    got
+  }
+  if size <= piece_most {
+    return took(self.link.ask("POST", files + sides, body=BytesAsked(read(0.0, size))))
+  }
+  let hash = @hash.Sha256::new()
+  for at = 0.0; at < size; at = at + piece_most {
+    hash.update(read(at, if size - at < piece_most { size - at } else { piece_most }))
+  }
+  let sha = hash.hex()
+  let asked = self.link.ask("GET", "/spaces/\{@session_chats.encode_uri_component(space)}/uploads/\{sha}")
+  if asked.status != 200 {
+    // (an anchor from before pieces: what it takes whole, in one ask)
+    if size > whole_most {
+      raise fail_("\{name} is \{@session_chats.num_text(size)} bytes, more than this anchor takes (\{@session_chats.num_text(whole_most)}): it takes larger files once it is updated")
+    }
+    return took(self.link.ask("POST", files + sides, body=BytesAsked((self.fs.read_bytes)(path))))
+  }
+  let mut have = have_of(asked.body)
+  let mut stalled = 0
+  while true {
+    let from = if have < size { have } else { size }
+    let n = if size - from < piece_most { size - from } else { piece_most }
+    let answer = self.link.ask(
+      "POST",
+      files + "&sha256=\{sha}&size=\{@session_chats.num_text(size)}&from=\{@session_chats.num_text(from)}" + sides,
+      body=BytesAsked(read(from, n)),
+    )
+    if answer.status != 202 && answer.status != 409 {
+      return took(answer)
+    }
+    let now = have_of(answer.body)
+    stalled = if now == have { stalled + 1 } else { 0 }
+    if stalled > stalled_most {
+      raise fail_("the anchor took none of \{name} after \{@session_chats.num_text(have)} of its \{@session_chats.num_text(size)} bytes")
+    }
+    have = now
+  }
+  Null
 }
 
 ///|
@@ -1590,12 +1730,12 @@ pub async fn GroupSurface::quoted(self : GroupSurface, thread : J, ts : String) 
 }
 
 ///|
-/// The spaces (not direct ones) it is in.
+/// The spaces (not direct ones) it is in: a chat relayed to one goes on in a topic of its own there (`begin`).
 pub fn GroupSurface::places(self : GroupSurface) -> Array[J] {
   self.space_rows
   .values()
   .filter(s => s.kind == "space")
-  .map(s => jo([("id", js(s.id)), ("name", js(if s.name == "" { s.id } else { s.name })), ("kind", js("group"))]))
+  .map(s => jo([("id", js(s.id)), ("name", js(if s.name == "" { s.id } else { s.name })), ("kind", js("space"))]))
   .collect()
 }
 
@@ -1617,11 +1757,31 @@ pub async fn GroupSurface::people_in(self : GroupSurface, channel : String) -> A
 }
 
 ///|
-/// The space's lobby from now on, begun with `message`.
-pub async fn GroupSurface::begin(self : GroupSurface, channel : String, message : String) -> J {
-  let thread = thread_of(channel, lobby)
-  let ts = self.post(thread, message, [], Null)
-  jo([("thread", thread), ("ts", js(ts))])
+/// A topic's id drawn (16 hex): the last of a UUID's.
+fn GroupSurface::topic_id(self : GroupSurface) -> String {
+  let hex = (self.uuid)().replace_all(old="-", new="").to_lower()
+  @session_chats.slice(hex, hex.length() - 16)
+}
+
+///|
+/// A topic of its own opened in the space (`topic.open`, called `title`), begun with `message`: the conversation from
+/// now on, `<space>/<topic>`. Where the anchor takes no topic of the station's, the space's lobby.
+pub async fn GroupSurface::begin(self : GroupSurface, channel : String, message : String, title : String) -> J {
+  let topic = "t_" + self.topic_id()
+  let called = topic_title(title)
+  match self.say(channel, topic, "topic.open", jo([("topic", js(topic)), ("title", js(if called == "" { "still.fail" } else { called }))])) {
+    RefusedAs(why) => {
+      self.base.log.warn("group", "a topic not opened for a relayed chat: its space's lobby instead", jo([("connect", js(self.connect)), ("space", js(channel)), ("why", js(why))]))
+      let thread = thread_of(channel, lobby)
+      let ts = self.post(thread, message, [], Null)
+      jo([("thread", thread), ("ts", js(ts))])
+    }
+    Took(_, _, _) => {
+      let thread = thread_of(channel, topic)
+      let ts = self.post(thread, message, [], Null)
+      jo([("thread", thread), ("ts", js(ts))])
+    }
+  }
 }
 
 ///|
@@ -1711,7 +1871,7 @@ pub fn GroupSurface::connection(self : GroupSurface) -> Connection {
         "quoted" => self.quoted(args.get(0).unwrap_or(Null), s(args, 1)).unwrap_or(Null)
         "places" => ja(self.places())
         "peopleIn" => ja(self.people_in(s(args, 0)))
-        "begin" => self.begin(s(args, 0), s(args, 1))
+        "begin" => self.begin(s(args, 0), s(args, 1), str_of(args.get(2)).unwrap_or(""))
         "channelName" => self.channel_name(s(args, 0))
         _ =>
           match base.base_call(name, args) {

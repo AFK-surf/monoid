@@ -47,8 +47,15 @@ export type Launch = (app: string, env: Record<string, string>) => Promise<void>
 export const openApp: Launch = (app, env) =>
   new Promise((resolve, reject) => {
     const args = ["-n", "-g", ...Object.entries(env).flatMap(([k, v]) => ["--env", `${k}=${v}`]), app];
-    execFile("open", args, { timeout: START_MS }, (error) => (error ? reject(error) : resolve()));
+    execFile("open", args, { timeout: START_MS }, (error, _stdout, stderr) => (error ? reject(launchFailed(error, stderr)) : resolve()));
   });
+
+/// Why `open` failed, as it said it, without its command line: Node's message carries that whole, the token's
+/// `--env` with it, and the error goes to the station's log (2026-11-18: in every station's log where no one is signed
+/// in to the desktop, `open` refusing every 30 s).
+export function launchFailed(error: { signal?: NodeJS.Signals | string | null }, stderr: string): Error {
+  return new Error(stderr.trim() || (error.signal ? `open was ended (${error.signal})` : "open failed"));
+}
 
 /// The files that say an installed copy is the release's: its code and its signature.
 const CODE = ["Contents/MacOS/stillfail-helper", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"];

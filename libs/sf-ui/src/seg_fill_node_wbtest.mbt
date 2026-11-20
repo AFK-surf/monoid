@@ -330,7 +330,47 @@ test "a narrow page's choice selects the pressed option once and keeps its label
 }
 
 ///|
-test "a held narrow choice draws the Backdrop lens and respects reduced transparency" {
+test "a narrow page's thumb sent to either end stays in the track and slows to rest there, never stopped dead, on the display's frames" {
+  // (judged frame by frame on the display's frames (sizes_across: the thumb's left edge stopped dead at an end, as it
+  // was once held to the end options while a spring that overshot went past them); each press at another point between
+  // two frames, so that a frame falls at every point of its coming to the end; the default run's alone,
+  // @ui.test_at_a_rate)
+  if @ui.test_at_a_rate() {
+    return
+  }
+  let rig = seg_rig(true, 390.0, seg_three)
+  let t = rig.t
+  // (the track's inside, 390 wide: 12 in, 2 into the track, 362 for the options; the thumb, as tall as that, drawn
+  // nowhere else as a plain rectangle)
+  let (inside_l, inside_r) = (12.0 + 2.0, 12.0 + 2.0 + 362.0)
+  let out : Array[String] = []
+  t.each_frame(
+    Some(fn() {
+      for r in t.drawn_rects() {
+        if (r.3 - (segmented_narrow_h - 2.0 * seg_inset)).abs() < 0.5 &&
+          (r.0 < inside_l - 0.5 || r.0 + r.2 > inside_r + 0.5) {
+          out.push("at \{t.time()}: \{r.0} to \{r.0 + r.2}")
+        }
+      }
+    }),
+  )
+  let between = 8
+  for i in 0..<between {
+    for k in [2, 0] {
+      t.advance(t.frame_period() * i.to_double() / between.to_double())
+      guard t.find(seg_three[k]) is Some((x, y)) else { fail("no \{seg_three[k]}") }
+      t.touch(0, x, y)
+      t.touch(2, x, y)
+      t.run_shown(@ui.move_most_ms)
+    }
+  }
+  t.each_frame(None)
+  assert_eq((rig.chosen.val, rig.at.get()), (2 * between, 0))
+  assert_true(out.is_empty(), msg="the thumb out of the track's inside \{inside_l} to \{inside_r}: \{out.join("; ")}")
+}
+
+///|
+test "a held narrow choice draws the liquid glass lens and respects reduced transparency" {
   let rig = seg_rig(true, 390.0, seg_three)
   let t = rig.t
   assert_true(!t.drawn_glass().iter().any(fn(g) { g.4 == 6 }))
@@ -338,7 +378,7 @@ test "a held narrow choice draws the Backdrop lens and respects reduced transpar
   t.run_for(part_whole_ms)
   let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
   assert_eq(lenses.length(), 1)
-  assert_eq(lenses[0][14], -1.0)
+  assert_eq(lenses[0][14], 0.0)
   assert_true(lenses[0][21] > 0.0)
   t.set_reduce_transparency(true)
   t.run_for(part_whole_ms)
@@ -349,7 +389,8 @@ test "a held narrow choice draws the Backdrop lens and respects reduced transpar
 }
 
 ///|
-test "a finger slides the segmented thumb to another option and chooses it only on release" {
+test "a segmented thumb follows the finger and selects on release below the track" {
+  let quick_touch_ms = 80.0
   for scrolled in [false, true] {
     let rig = seg_rig(true, 390.0, seg_three, scrolled~)
     let t = rig.t
@@ -358,16 +399,25 @@ test "a finger slides the segmented thumb to another option and chooses it only 
     let from_x = x + w / 2.0
     let to_x = end + end_w / 2.0
     let at_y = y + h / 2.0
+    let below = y + h + 12.0
+    let lens = fn() { t.drawn_instances().filter(fn(a) { a[5] == 6.0 }) }
     t.touch(0, from_x, at_y)
+    t.run_for(quick_touch_ms)
+    assert_true(lens().is_empty())
     t.run_for(part_whole_ms)
-    t.touch(1, to_x, at_y)
+    let before = lens()[0][0] + lens()[0][2] / 2.0
+    t.touch(1, from_x + w / 4.0, at_y)
+    t.run_for(part_whole_ms)
+    let next = lens()[0][0] + lens()[0][2] / 2.0
+    assert_true(next > before + 2.0 && next < x + w)
+    t.touch(1, to_x, below)
     t.run_for(part_whole_ms)
     assert_eq((rig.chosen.val, rig.at.get()), (0, 0))
-    let lens = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
-    assert_eq(lens.length(), 1)
-    let center = lens[0][0] + lens[0][2] / 2.0
+    let over_end = lens()
+    assert_eq(over_end.length(), 1)
+    let center = over_end[0][0] + over_end[0][2] / 2.0
     assert_true(center > end && center < end + end_w)
-    t.touch(2, to_x, at_y)
+    t.touch(2, to_x, below)
     t.run_for(part_whole_ms)
     assert_eq((rig.chosen.val, rig.at.get()), (1, 2))
     assert_true(t.get(Radio, label=seg_three[2]).check is Some(On))
@@ -451,4 +501,27 @@ test "a narrow page's choice as nodes, chosen by a finger as the old view's: tap
     }
     assert_eq((made_n, made_at), (old_n, old_at), msg="\{what}: as the old one: chosen \{made_n} times, the \{made_at}; the old one \{old_n}, the \{old_at}")
   }
+}
+
+///|
+test "seg_fill_node: liquid glass lens animation during drag causes zero relayout (laid == 0)" {
+  let r = seg_rig(true, 390.0, seg_three)
+  r.t.check_looks(false)
+  let second = 12.0 + 2.0 + 362.0 / 3.0 * 1.5
+  let y = 20.0 + 17.0
+  let lens_mount_ms = dur_ms / 4.0
+  let lens_step_ms = @ui.move_most_ms / 2.0
+  r.t.touch(0, second, y)
+  r.t.touch(1, seg_third_x, y)
+  r.t.run_for(lens_mount_ms)
+  r.t.tree_frames_from_now()
+  r.t.run_for(lens_step_ms)
+  let frames = r.t.tree_frames()
+  assert_true(frames.length() > 0, msg="expected animation frames while seg_fill_node lens scales")
+  assert_true(
+    frames.iter().all(fn(f) { f.laid == 0 }),
+    msg="seg_fill_node lens animation must not trigger relayout: \{Repr(frames.map(fn(f) { f.laid }))}",
+  )
+  r.t.touch(2, seg_third_x, y)
+  r.t.run_for(@ui.move_most_ms * 2.0)
 }

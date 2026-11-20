@@ -241,7 +241,11 @@ typedef struct {
 static char *local_run(local_job *j) {
   GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE);
   if (j->channel) g_subprocess_launcher_setenv(l, "STILLFAIL_CHANNEL", j->channel, TRUE);
-  if (j->move) g_subprocess_launcher_unsetenv(l, "STILLFAIL_DATA");
+  // (this app's own station's data, named for the installer and bin/stillfail: never one a STILLFAIL_DATA the app was
+  // started with names, nor still.fail's where this is another product's app)
+  char *data = local_data();
+  g_subprocess_launcher_setenv(l, "STILLFAIL_DATA", data, TRUE);
+  g_free(data);
   // (the process to stop held before it is signalled, so its end is told however soon it comes: the kernel wakes a
   // pidfd as the process ends; kill only sends the signal)
   int pfd = -1;

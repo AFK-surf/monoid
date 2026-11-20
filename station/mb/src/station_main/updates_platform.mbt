@@ -19,12 +19,38 @@ let command_most_ms : Int = 10 * 60000
 let commands_running : Map[String, Array[Proc]] = Map([])
 
 ///|
+/// Where the runner is looked for (the release, this program, the data directory: `runner_binary`'s), as the updates
+/// were set up (`updates_setup`, its release given by the live station).
+let updates_runner_from : Ref[(String, String, String)] = Ref(("", "", ""))
+
+///|
+/// The runner found for the updates' commands on Windows (none looked for yet: None; looked for: Some of what it found).
+let updates_runner : Ref[Option[String?]] = Ref(None)
+
+///|
+/// windows.ts `grouped`: `stillfail-runner --job -- <program> <args…>`, whose job ends the command and all it started as
+/// the runner is ended (the group a command runs in on Unix), and which runs a `.cmd` shim as cmd would; as it is where
+/// no runner is there.
+fn updates_grouped(program : String, args : Array[String]) -> (String, Array[String]) {
+  let runner = match updates_runner.val {
+    Some(found) => found
+    None => {
+      let (app, argv0, data) = updates_runner_from.val
+      let found = runner_binary(app, argv0, data)
+      updates_runner.val = Some(found)
+      found
+    }
+  }
+  match runner {
+    Some(r) => (r, ["--job", "--", program, ..args])
+    None => (program, args)
+  }
+}
+
+///|
 /// What the updates ask of the machine, by name; None where it is none of this file's.
 async fn updates_platform(host : @host.Host, data : String, name : String, a : Array[Json]) -> Json? {
-  let s = (i : Int) => match a.get(i) {
-    Some(String(t)) => t
-    _ => ""
-  }
+  let s = (i : Int) => opt_str(a.get(i)).unwrap_or("")
   let env_at = (i : Int) => match a.get(i) {
     Some(Object(m)) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
     _ => []
@@ -34,10 +60,7 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
     "cursor.sdkVersionSoon" => {
       let at = if s(0) == "" { data } else { s(0) }
       Some(
-        match @agent_runtimes.cursor_sdk_version(host, at) {
-          Some(v) => Json::string(v)
-          None => Json::null()
-        },
+        jopt(@agent_runtimes.cursor_sdk_version(host, at)),
       )
     }
     // (unix.ts, windows.ts `isLauncher`: the process of that pid is still.fail's launcher, as `ps` or PowerShell names it)
@@ -76,19 +99,27 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
       }
       let op = s(1)
       if is_windows() {
-        let (opened, _) = host.shell("unix.open", { "path": Json::string("\\\\.\\pipe\\stillfail-launcher-\{pid}") })
-        let id = match opened {
-          { "id": Number(n, ..), .. } => n
+        let conn = host.unix_open("\\\\.\\pipe\\stillfail-launcher-\{pid}") catch {
           _ => raise SysError("the launcher's pipe did not open")
         }
         let line = ({ "op": Json::string(op) } : Json).stringify() + "\n"
-        ignore(host.shell("tcp.write", { "id": Json::number(id) }, bytes=@utf8.encode(line)))
-        ignore(host.shell("tcp.end", { "id": Json::number(id) }))
-        ignore(host.shell("tcp.close", { "id": Json::number(id) }))
+        conn.socket.write(@utf8.encode(line)) catch {
+          e => {
+            conn.socket.destroy()
+            raise e
+          }
+        }
+        conn.socket.end_write() catch {
+          e => {
+            conn.socket.destroy()
+            raise e
+          }
+        }
+        conn.socket.destroy()
       } else {
         guard @ops_platform.unix_launcher_signal(op) is Some(signal) else { raise SysError("no such ask of the launcher: \{op}") }
         if !kill(pid, signal) {
-          raise @updates.thrown("Error", "kill ESRCH", more=[("code", of_core(Json::string("ESRCH")))])
+          raise @updates.thrown("Error", "kill ESRCH", more=[("code", to_jv(Json::string("ESRCH")))])
         }
       }
       Some(Json::null())
@@ -183,10 +214,7 @@ async fn updates_platform(host : @host.Host, data : String, name : String, a : A
 fn updates_platform_told(name : String, a : Array[Json]) -> Bool {
   match name {
     "processes.endCommand" => {
-      let program = match a.get(0) {
-        Some(String(t)) => t
-        _ => ""
-      }
+      let program = opt_str(a.get(0)).unwrap_or("")
       let signal = match a.get(1) {
         Some(String(t)) => t
         _ => "SIGTERM"
@@ -217,13 +245,15 @@ async fn command_events(
   env : Array[(String, String)]?,
   cwd : String?,
 ) -> Json {
+  // (Windows: under the runner's job, so the command and all it started end as it is ended, its pipes closed with them)
+  let (run, run_args) = if is_windows() { updates_grouped(program, args) } else { (program, args) }
   let started = try {
     Ok(
       match (env, cwd) {
-        (Some(e), Some(c)) => spawn(host, program, args, env=e, cwd=c, stdout=Piped, stderr=Piped, group=true)
-        (Some(e), None) => spawn(host, program, args, env=e, stdout=Piped, stderr=Piped, group=true)
-        (None, Some(c)) => spawn(host, program, args, cwd=c, stdout=Piped, stderr=Piped, group=true)
-        (None, None) => spawn(host, program, args, stdout=Piped, stderr=Piped, group=true)
+        (Some(e), Some(c)) => spawn(host, run, run_args, env=e, cwd=c, stdout=Piped, stderr=Piped, group=true)
+        (Some(e), None) => spawn(host, run, run_args, env=e, stdout=Piped, stderr=Piped, group=true)
+        (None, Some(c)) => spawn(host, run, run_args, cwd=c, stdout=Piped, stderr=Piped, group=true)
+        (None, None) => spawn(host, run, run_args, stdout=Piped, stderr=Piped, group=true)
       },
     )
   } catch {
@@ -261,10 +291,7 @@ async fn command_events(
     ignore(kill(proc.pid, "SIGKILL", group=true))
     events.push(["close", Json::null()])
   }
-  match running.search_by(p => p.pid == proc.pid) {
-    Some(i) => ignore(running.remove(i))
-    None => ()
-  }
+  if running.search_by(p => p.pid == proc.pid) is Some(i) { ignore(running.remove(i)) }
   if running.is_empty() {
     commands_running.remove(program)
   }
@@ -278,9 +305,9 @@ async fn start_installer(host : @host.Host, script : String, run_dir : String, e
   if is_windows() {
     let ps1 = path([run_dir, "update.ps1"])
     let hidden = path([run_dir, "stillfail-update-w.exe"])
-    let kept = read_text(path([@nodepath.dirname(sep(), run_dir), "windows.json"]))
-    let (task, admin) = @ops_platform.windows_task_of(kept)
-    let task = task + " update"
+    let data_dir = @nodepath.dirname(sep(), run_dir)
+    let kept = read_text(path([data_dir, "windows.json"]))
+    let (task, admin) = @ops_platform.windows_task_of(kept, data_dir~)
     let made = try {
       @drive.rm_force(path([run_dir, "update.err"]))
       // (copied over what the update before left: node's copyFile replaces, the drive's makes a new file only)

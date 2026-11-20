@@ -280,11 +280,6 @@ test "home" {
 }
 
 ///|
-test "settings-run-models" {
-  check("settings-run-models", @ui.move_most_ms)
-}
-
-///|
 test "landing" {
   check("landing", @ui.move_most_ms)
 }
@@ -692,4 +687,9 @@ test "share-in-files" {
 ///|
 test "chat-login" {
   check("chat-login", @ui.move_most_ms)
+}
+
+///|
+test "chat-login-again" {
+  check("chat-login-again", @ui.move_most_ms)
 }

@@ -87,9 +87,12 @@ export const PARAMS: Record<string, string> = {
   "move.back": "from:string module?:string item?:string all?:boolean",
   "move.stop": "",
   "station.restart": "",
+  "station.resumeInterrupted": "keys?:strings",
+  "station.dismissInterrupted": "keys?:strings",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
   "elevation.set": "on:boolean",
+  "screenService.set": "on:boolean",
   "session.warm": "key:string",
   "session.evict": "key:string",
   "session.compact": "key:string",
@@ -138,6 +141,7 @@ export const PARAMS: Record<string, string> = {
   "automaticDecisions.review": "",
   "automaticDecisions.policy": "input:json",
   "archiving.save": "days:number reviewed:boolean slackDays:number",
+  "autoChats.save": "enabled:boolean",
   "connect.create": "input?:json id?:string",
   "connect.put": "id:string input?:json",
   "connect.delete": "id:string",
@@ -231,6 +235,7 @@ export const PARAMS: Record<string, string> = {
   "machineLogin.cancel": "id:string",
   "machineLogin.answer": "id:string text:string",
   "machineLogin.browser": "id:string",
+  "machineLogin.again": "id:string",
   "workspace.create": "name?:string invite_code?:string",
   "workspace.rename": "workspace:string name?:string emoji?:string icon?:string",
   "workspace.setRelays": "workspace:string relays?:strings",
@@ -272,6 +277,8 @@ export const PARAMS: Record<string, string> = {
   "admin.relayTokenRevoke": "id:string",
   "admin.relayPut": "url:string name:string target?:string",
   "admin.relayRemove": "url:string",
+  "admin.createKey": "name:string days?:number",
+  "admin.revokeKey": "id:string",
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
@@ -402,6 +409,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
+    case "station.resumeInterrupted":
+      return op("POST", () => "/sessions/resume-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
+    case "station.dismissInterrupted":
+      return op("POST", () => "/sessions/dismiss-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
     // The station's default for a cold cache and its estimated USD threshold, unless the chat chose (`session.settings`
     // `afresh`); its station's routes/context.ts, set by the workspace's owners and admins.
     case "context.setAfresh":
@@ -414,6 +425,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // Windows there, then the station restarted; set by the workspace's owners and admins.
     case "elevation.set":
       return op("PUT", () => "/elevation", p.pick(["on"]), OVERVIEW);
+    // Whether a Windows station installs the optional LocalSystem screen service (screens/service.ts) so human remote
+    // views can see and click UAC prompts, elevated windows, and the lock screen; set by workspace owners and admins.
+    case "screenService.set":
+      return op("PUT", () => "/screen-service", p.pick(["on"]), OVERVIEW);
     case "session.stop":
       return op("POST", () => `/sessions/${p.at("key")}/stop`, null, process("key"));
     case "session.cancelRetry":
@@ -575,6 +590,8 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("PUT", () => "/automatic-decisions/policy", p.has("input") ? p.v.input : {}, OVERVIEW);
     case "archiving.save":
       return op("PUT", () => "/archiving", p.pick(["days", "slackDays", "reviewed"]), OVERVIEW);
+    case "autoChats.save":
+      return op("PUT", () => "/auto-chats", p.pick(["enabled"]), OVERVIEW);
     case "automaticDecisions.refresh":
       return op("POST", () => "/automatic-decisions/refresh", {}, OVERVIEW);
     case "connect.create":
@@ -825,6 +842,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // What a login's page gave (a code), entered by the person from its card: the station types it into the command.
     case "machineLogin.answer":
       return op("POST", () => `/machine-logins/${p.at("id")}/answer`, p.pick(["text"]), { kind: "machineLogins" });
+    // Started again from its card by the person, once it failed (ran out of time, say): the new login, which its card
+    // shows from then on (the old one's `again`).
+    case "machineLogin.again":
+      return op("POST", () => `/machine-logins/${p.at("id")}/again`, null, { kind: "machineLogins" });
     // Its page opened in the station's own browser, for the person to finish it there: `{screen}`, to open.
     case "machineLogin.browser":
       return op("POST", () => `/machine-logins/${p.at("id")}/browser`, null, NONE);
@@ -933,6 +954,10 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("POST", () => "/v1/admin/relays/put", p.pick(["url", "name", "target"]));
     case "admin.relayRemove":
       return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
+    case "admin.createKey":
+      return op("POST", () => "/v1/admin/keys", p.pick(["name", "days"]));
+    case "admin.revokeKey":
+      return op("POST", () => `/v1/admin/keys/${p.at("id")}/revoke`, null);
     default:
       return null;
   }

@@ -420,10 +420,6 @@ fn pickable(l : FindLine) -> Bool {
 }
 
 ///|
-/// How many lines stay over the one the keys chose as the list scrolls to it.
-let switcher_lead : Int = 3
-
-///|
 /// A line's key: what it is, so the pointer and the list keep it.
 fn finder_key(line : FindLine) -> String {
   match line {
@@ -450,6 +446,29 @@ fn finder_h(l : FindLine, f : @sf.Found, stacked : Bool) -> Double {
     Note(_) | Wait(_, _) | Said(_) => f.quiet_h
     _ => if finder_two(l, stacked) { f.two_h } else { f.row_h }
   }
+}
+
+///|
+/// A line's height at the system's size of words (finder_h's, grown as its words are by `grown`: FoundGrown).
+fn finder_line_h(l : FindLine, f : @sf.Found, grown : FoundGrown, stacked : Bool) -> Double {
+  finder_h(l, f, stacked) +
+  (match l {
+    Head(_) => grown.head
+    _ if finder_two(l, stacked) => grown.two
+    _ => 0.0
+  })
+}
+
+///|
+/// How much a heading and a line of two grow at the system's size of words `scale` (@sf.found_grown).
+priv struct FoundGrown {
+  head : Double
+  two : Double
+}
+
+///|
+fn FoundGrown::at(f : @sf.Found, scale : Double) -> FoundGrown {
+  { head: @sf.found_grown(f, scale, two=false), two: @sf.found_grown(f, scale, two=true) }
 }
 
 ///|
@@ -494,21 +513,88 @@ pub fn finder_keys_node(v : @view.View) -> Unit {
 }
 
 ///|
+/// What the search is to the keys and a screen reader, in node `v` that holds its field (⌘K's search box, the search
+/// page's): the library's search combobox (`@sf.search_combo_node`, mbui's headless combobox in `v` itself), called
+/// `label`, its options the lines to choose (pickable, by their keys: finder_key), the one active the one chosen, read
+/// out selected where the screen has keys (as it is shown so). ↓ and ↑ from the field (the keymap's: @sf's
+/// combobox_bindings) choose the line after or before it, no further than the ends, and bring it into view
+/// (finder_list_node); a line pressed is chosen and opened (`close` first, as finder_go), and Enter opens the one chosen
+/// where it is shown chosen (as finder_enter); Escape stays the panel's or the page's (finder_escape). The combobox, for
+/// the list's lines (finder_list_node).
+pub fn finder_combobox_node(v : @view.View, label : () -> String, close : () -> Unit) -> @sf.SearchCombo {
+  let picked = fn() {
+    let ls = finder.lines.get()
+    finder.picks.get().map(fn(i) { finder_key(ls[i]) })
+  }
+  let active = fn() {
+    match finder.picks.get().get(finder.chosen.get()) {
+      Some(i) => finder.lines.get().get(i).map(finder_key)
+      None => None
+    }
+  }
+  // (the key a press made active, chosen at once after it: opened whether or not the screen shows what is chosen;
+  // whether the keys' last move changed the line chosen, brought into view then)
+  let pressed : Ref[String?] = Ref(None)
+  let changed = Ref(false)
+  @sf.search_combo_node(
+    v,
+    label,
+    picked,
+    active,
+    fn(k) {
+      changed.val = false
+      match k {
+        Some(key) => {
+          pressed.val = k
+          match @signals.untracked(picked).search(key) {
+            Some(j) if j != finder.chosen.untracked() => {
+              finder.chosen.set(j)
+              changed.val = true
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    },
+    fn(key) {
+      let by_press = pressed.val == Some(key)
+      pressed.val = None
+      if by_press || finder.chosen_shown {
+        match finder.lines.untracked().iter().find_first(fn(l) { finder_key(l) == key }) {
+          Some(l) => finder_go(l, close)
+          None => ()
+        }
+      }
+    },
+    // (read out selected where the screen shows it chosen)
+    chosen=fn() { if @sf.theme().chat_list.keys { active() } else { None } },
+    moved=fn(_) {
+      pressed.val = None
+      if changed.val {
+        finder.keyed.set(finder.keyed.untracked() + 1)
+      }
+    },
+  )
+}
+
+///|
 /// The search's list (finder_list's, made once) in node `v`, for the workspace in view (`workspace()`): what the words
 /// in the field find and what of `offered()` can be done by them; with nothing typed the latest chats where
-/// `idle_chats`. `most()`: as tall as its lines up to so much (⌘K's panel), else the room it is given. `close`: what the
-/// frame does as a line opens (⌘K closes; the phone's page stays under the chat). A line chosen by ↑ / ↓
-/// (finder_keys_node, on what holds its field) or by the pointer over it where the screen has keys, shown so, opened by
-/// Enter or a press. `stacked()`: who, where and when said under a line's words (its list narrow: found_stacked). `at`:
+/// `idle_chats`. `most()`: as tall as its lines up to so much (⌘K's panel), else the room it is given. A line chosen by
+/// ↑ / ↓ (finder_combobox_node, on what holds its field) or by the pointer over it where the screen has keys, shown so,
+/// opened by Enter or a press (what the frame does as one opens the combobox's `close`: ⌘K closes; the phone's page
+/// stays under the chat). `stacked()`: who, where and when said under a line's words (its list narrow: found_stacked). `at`:
 /// where its list stands (a panel's, ⌘K's, as a side column's; the phone's search across the whole screen), its lines
 /// in and rounded so. `foot_in`: room after its last line (⌘K's panel). Each line a block of the list by its key, made
-/// only while it shows (View::scrolls_window), what it shows told it by that key (View::keyed_by).
+/// only while it shows (View::scrolls_window), what it shows told it by that key (View::keyed_by). Its list the listbox
+/// of `combo` (finder_combobox_node), its lines to choose its options.
 pub fn finder_list_node(
   v : @view.View,
+  combo : @sf.SearchCombo,
   src : Source,
   workspace : () -> Workspace?,
   offered : () -> Array[Offered],
-  close : () -> Unit,
   stacked : () -> Bool,
   idle_chats? : Bool = false,
   most? : () -> Double? = fn() { None },
@@ -594,6 +680,9 @@ pub fn finder_list_node(
     // (made anew as anything it is made of changes: a command's line holds the function it runs)
     same=fn(a, b) { physical_equal(a, b) },
   )
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  // (the words the lines were last made for: other words, the list from its top)
+  let made_for : Ref[String?] = Ref(None)
   v.reacts(fn() { lines.get() }, fn(ls) {
     let picks : Array[Int] = []
     for i, l in ls {
@@ -601,6 +690,27 @@ pub fn finder_list_node(
         picks.push(i)
       }
     }
+    // The list at its top stays there as the lines change under it with its first line chosen (what can be done by
+    // the words answered after what they found, put over it), and goes back to its top for other words: else it
+    // holds the line it showed at its top where it was, the line chosen, the first, over what shows.
+    let words = query.untracked()
+    let was = finder.lines.untracked()
+    // (where a place asked of it is not yet done, what it has in sight is where it was, not where it goes)
+    let at_top = place.asking() ||
+      (match place.sight_now() {
+        Some(s) => was.get(0).map(finder_key) == Some(s.first) && s.into <= 0.5
+        None => true
+      })
+    let first = if finder.kind.untracked() != "" { 1 } else { 0 }
+    // (the same first line: the list held by it stays at its top as it is, nothing asked of it)
+    let first_moved = was.get(0).map(finder_key) != ls.get(0).map(finder_key)
+    if made_for.val != Some(words) || (first_moved && at_top && finder.chosen.untracked() <= first) {
+      match ls.get(0) {
+        Some(l) => place.bring(finder_key(l))
+        None => ()
+      }
+    }
+    made_for.val = Some(words)
     finder.lines.set(ls)
     finder.picks.set(picks)
     // (the one chosen kept among them)
@@ -646,16 +756,44 @@ pub fn finder_list_node(
       None => false
     }
   })
-  let place : @view.ListPlace[String] = @view.ListPlace::new()
-  // ↑ ↓: the line chosen brought into view, so many lines over it; into one kind or out of it: back to its top
+  // ↑ ↓: the line chosen brought into view only where it is not wholly in it, the list moved no further than that
+  // (its top at the top where it lay over it, with its kind's heading over it where it is the first of its kind; its
+  // foot at the foot, over the room that fades after the last line, where it lay under it); in view, the list stays
   v.reacts(fn() { finder.keyed.get() }, at_start=false, fn(_) {
     let ls = finder.lines.untracked()
     match finder.picks.untracked().get(finder.chosen.untracked()) {
       Some(i) => {
-        let top = if i > switcher_lead { i - switcher_lead } else { 0 }
-        match ls.get(top) {
-          Some(l) => place.bring(finder_key(l))
-          None => ()
+        let f = theme().found
+        let grown = FoundGrown::at(f, v.words_scale())
+        let narrow = @signals.untracked(stacked)
+        let tops : Array[Double] = []
+        let mut y = 0.0
+        for line in ls {
+          tops.push(y)
+          y = y + finder_line_h(line, f, grown, narrow)
+        }
+        let h = fn(j : Int) { finder_line_h(ls[j], f, grown, narrow) }
+        // (from its kind's heading where it is its first line; from the list's top where none is chosen over it)
+        let from = if i > 0 && ls[i - 1] is Head(_) { i - 1 } else { i }
+        let from = if ls[:from].iter().any(pickable) { from } else { 0 }
+        let sight = place.sight_now()
+        let at = sight.bind(fn(s) { ls.search_by(fn(l) { finder_key(l) == s.first }).map(fn(j) { (s, tops[j] + s.into) }) })
+        match at {
+          Some((s, top)) => {
+            let room = s.shows - foot_in
+            if tops[from] < top - 0.5 {
+              place.bring(finder_key(ls[from]))
+            } else if tops[i] + h(i) > top + room + 0.5 {
+              // (the line whose block the list's top then lies in, as far down it as that is)
+              let want = dmax(0.0, tops[i] + h(i) - room)
+              let mut j = 0
+              while j + 1 < ls.length() && tops[j + 1] <= want {
+                j = j + 1
+              }
+              place.bring(finder_key(ls[j]), offset=want - tops[j])
+            }
+          }
+          None => place.bring(finder_key(ls[from]))
         }
       }
       None => ()
@@ -676,19 +814,9 @@ pub fn finder_list_node(
       match most() {
         Some(m) => {
           let f = theme().found
-          let scale = l.words_scale()
-          let two_grown = @sf.found_grown(f, scale, two=true)
-          let head_grown = @sf.found_grown(f, scale, two=false)
+          let grown = FoundGrown::at(f, l.words_scale())
           let narrow = stacked()
-          let est = lines.get().fold(init=foot_in, fn(h, line) {
-            h +
-            finder_h(line, f, narrow) +
-            (match line {
-              Head(_) => head_grown
-              _ if finder_two(line, narrow) => two_grown
-              _ => 0.0
-            })
-          })
+          let est = lines.get().fold(init=foot_in, fn(h, line) { h + finder_line_h(line, f, grown, narrow) })
           Some(dmin(m, est))
         }
         None => None
@@ -699,10 +827,15 @@ pub fn finder_list_node(
     if foot_in > 0.0 {
       l.fades(Is((0.0, 0.0, 0.0, foot_in))) |> ignore
     }
+    combo.list_node(l)
     let lit = l.selected(fn() { chosen_key.get() })
-    l.scrolls_window(
+    // (a line's block taken by the next line of its make to show as it no more does, or as the words typed bring
+    // others, its key that one's: finder_line_shape; the room under its last line made once)
+    l.scrolls_reused(
       @view.Scroll::list(),
       fn() { keys.get() },
+      shape=fn(k) { finder_line_shape(of_key.untracked().get(k)) },
+      reuses=fn(k) { k != finder_foot && of_key.untracked().get(k) is Some(_) },
       est=@signals.untracked(fn() { theme().found.row_h }),
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
@@ -712,11 +845,12 @@ pub fn finder_list_node(
       comes=fn(_) { false },
       goes=fn(_) { false },
       fn(b, k) {
-        if k == finder_foot {
+        // (the room under its last line: never taken, so its key is the one it was made for)
+        if @signals.untracked(k) == finder_foot {
           b.height(Is(Some(foot_in))) |> ignore
           return
         }
-        let held = @signals.computed_by(fn(_) { of_key.get().get(k) }, same=fn(a, b) {
+        let held = @signals.computed_by(fn(_) { of_key.get().get(k()) }, same=fn(a, b) {
           match (a, b) {
             (Some(x), Some(y)) => physical_equal(x.0, y.0) && x.1 == y.1
             (None, None) => true
@@ -724,9 +858,10 @@ pub fn finder_list_node(
           }
         })
         let line = fn() { held.get() }
+        // (what it is made as: its make, which never changes for a block, finder_line_shape's)
         match @signals.untracked(line) {
           Some((first, pick)) if pick >= 0 =>
-            found_line_node(b, first, line, k, close, lit, several, at, stacked)
+            found_line_node(b, combo, first, line, k, lit, several, at, stacked)
           Some((first, _)) => quiet_line_node(b, first, line, at)
           None => ()
         }
@@ -735,6 +870,33 @@ pub fn finder_list_node(
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// Which block of the search's list a line takes as it comes to show (View::scrolls_reused's `shape`): each make its
+/// own (found_line_node's and quiet_line_node's by what the line is; a station's line by whether it has a mark).
+fn finder_line_shape(held : (FindLine, Int)?) -> Int {
+  match held {
+    Some((Head(_), _)) => 0
+    Some((Note(_), _)) => 1
+    Some((Wait(_, false), _)) => 2
+    Some((Wait(_, true), _)) => 3
+    Some((Said(_), _)) => 4
+    Some((Back, _)) => 5
+    Some((More(_), _)) => 6
+    Some((Command(_, _), _)) => 7
+    Some((Chat(_), _)) => 8
+    Some((Message(_), _)) => 9
+    Some((Item(it), _)) =>
+      if it.kind != "station" {
+        10
+      } else if @sf.has_station_mark(it.station_emoji, it.station_icon) {
+        11
+      } else {
+        12
+      }
+    None => 13
+  }
 }
 
 ///|
@@ -815,20 +977,20 @@ fn quiet_line_node(b : @view.View, first : FindLine, line : () -> (FindLine, Int
 }
 
 ///|
-/// A line of what was found (found_line's, as nodes) in block `b`, by key `k`, `first` the line it was made for and
-/// `line()` it as it is now: its mark, then what it is, or the words found in it (they bold, stroked under:
-/// @sf.found_words_node), with who, where and when at its first line's end, or under it where `stacked()`; where it is
-/// under that (its chat; an item's line with the words) where it says one. A chat its agent's maker, a message its
-/// chat's; a station its mark; something else its kind's icon; a command its icon, its keys at its end; 全部结果 and
-/// 查看更多 in the link's ink. Chosen (`lit(k)`, where the screen has keys: the pointer over it chooses it too), on the
-/// words' tint; pressed, rippled, `close` then what it opens (finder_go). `several()`: more than one station, so where
-/// is said.
+/// A line of what was found (found_line's, as nodes) in block `b`, by the key `k()` it shows now, `first` the line it
+/// was made for and `line()` it as it is now: its mark, then what it is, or the words found in it (they bold, stroked
+/// under: @sf.found_words_node), with who, where and when at its first line's end, or under it where `stacked()`; where
+/// it is under that (its chat; an item's line with the words) where it says one. A chat its agent's maker, a message
+/// its chat's; a station its mark; something else its kind's icon; a command its icon, its keys at its end; 全部结果
+/// and 查看更多 in the link's ink. Chosen (`lit(k())`, where the screen has keys: the pointer over it chooses it too),
+/// on the words' tint; an option of `combo`'s: pressed, rippled and opened as finder_combobox_node opens it.
+/// `several()`: more than one station, so where is said.
 fn found_line_node(
   b : @view.View,
+  combo : @sf.SearchCombo,
   first : FindLine,
   line : () -> (FindLine, Int)?,
-  k : String,
-  close : () -> Unit,
+  k : () -> String,
   lit : (String) -> Bool,
   several : @signals.Computed[Bool],
   at : @sf.ListAt,
@@ -893,8 +1055,10 @@ fn found_line_node(
       row.radius(Is(@sf.row_corner)) |> ignore
     }
     // (chosen by the keys: on the words' tint)
-    row.ground(By(fn() { if keys() && lit(k) { @ui.tree_theme().color(Tint) } else { 0L } })) |> ignore
-    @sf.rippled_node(row, fn() { finder_go(@signals.untracked(now), close) }, @sf.row_corner, label)
+    row.ground(By(fn() { if keys() && lit(k()) { @ui.tree_theme().color(Tint) } else { 0L } })) |> ignore
+    // (an option of the search's combobox: pressed, chosen and opened, finder_combobox_node; its key the line's now,
+    // the block taken for another: View::scrolls_reused)
+    @sf.ripple_option_node(row, combo, k, label, @sf.row_corner)
     // (the pointer moving onto it chooses it, as the keys do)
     row.on_pointer_moved(fn() {
       if @signals.untracked(keys) {
@@ -919,8 +1083,8 @@ fn found_line_node(
         },
         in_row=true,
       )
-      let icon = fn(name : String) {
-        @sf.icon_node(m, name, @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted })) |> ignore
+      let icon = fn(name : () -> String) {
+        @sf.icon_node(m, "", @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted }), name_now=name) |> ignore
       }
       // a chat's picture: its first agent's maker's mark, as the line now says it (the agent changed while it shows)
       let picture = fn() {
@@ -943,9 +1107,16 @@ fn found_line_node(
         })
       }
       match first {
-        Back => icon("chevron-left")
-        More(_) => icon("more")
-        Command(_, o) => icon(o.icon)
+        Back => icon(fn() { "chevron-left" })
+        More(_) => icon(fn() { "more" })
+        // (its icon as the line now says it: the block taken for another command)
+        Command(_, o) =>
+          icon(fn() {
+            match now() {
+              Command(_, now) => now.icon
+              _ => o.icon
+            }
+          })
         Chat(_) | Message(_) => picture()
         Item(it) =>
           if it.kind == "station" {
@@ -961,10 +1132,21 @@ fn found_line_node(
                 @sf.theme().p.muted
               }, fn() { 0 })
             } else {
-              icon("server")
+              icon(fn() { "server" })
             }
           } else {
-            icon(if it.kind == "file" && it.dir { "folder" } else { @sf.kind_icon(it.kind) })
+            // (its kind's icon as the line now says it: the block taken for another item)
+            icon(fn() {
+              let it = match now() {
+                Item(i) => i
+                _ => it
+              }
+              if it.kind == "file" && it.dir {
+                "folder"
+              } else {
+                @sf.kind_icon(it.kind)
+              }
+            })
           }
         _ => ()
       }

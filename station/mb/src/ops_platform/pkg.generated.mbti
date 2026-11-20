@@ -4,7 +4,6 @@ package "station/ops_platform"
 import {
   "moonbitlang/core/json",
   "station/host",
-  "station/sql",
 }
 
 // Values
@@ -39,6 +38,8 @@ pub fn background_found(Bool, (String) -> Bool, (String) -> String?) -> Backgrou
 pub fn backgrounded_on(Background, String, Array[String]) -> (String, Array[String])
 
 pub fn branded(String, Product) -> String
+
+pub fn built_at_of(Array[String], String?, String?) -> Double?
 
 pub fn built_key(String?) -> @json.Json
 
@@ -75,6 +76,8 @@ pub fn device_urls(Array[String], String) -> (String?, String?)
 pub fn disk_every(String) -> Double
 
 pub let disk_every_ms : Double
+
+pub fn disk_low(Double) -> Double
 
 pub let disk_low_bytes : Double
 
@@ -122,6 +125,18 @@ pub fn followed_change(String, String?) -> String
 
 pub fn footprint_of_status(String) -> Double?
 
+pub let forewarn_again_ms : Double
+
+pub let forewarn_large_wal_bytes : Double
+
+pub let forewarn_low_disk_bytes : Double
+
+pub let forewarn_low_disk_share : Double
+
+pub let forewarn_many_fds : Int32
+
+pub fn forewarn_mb(Double) -> Double
+
 pub fn forget_marks(Fs, String, Array[String]) -> Unit raise
 
 pub fn format_skill(@json.Json, String, String) -> Result[String, String]
@@ -141,8 +156,6 @@ pub fn guarded_tops(Bool, String, Array[String]) -> Array[String]
 pub fn hard_front_of(Double) -> Double
 
 pub fn hard_rss_of(Double) -> Double
-
-pub async fn harness(@host.Host) -> Unit
 
 pub let health_fresh_ms : Double
 
@@ -464,7 +477,7 @@ pub fn session_usage(Array[@json.Json]) -> @json.Json
 
 pub fn sh_quoted(String) -> String
 
-pub fn sha1_hex(Bytes) -> String
+pub fn sha1_hex(BytesView) -> String
 
 pub fn shell_candidates(Array[(String, String)], Array[String], Bool) -> Array[ShellCandidate]
 
@@ -502,6 +515,8 @@ pub fn start_env(Array[(String, String)], @json.Json, Array[String]) -> Array[(S
 
 pub fn start_time_of_etime(String, Double) -> Double?
 
+pub fn station_built_at(String?) -> Double?
+
 pub let station_log_cap : Double
 
 pub fn station_version(String?) -> String?
@@ -514,12 +529,6 @@ pub fn storage_entry(String) -> StorageEntry?
 
 pub let storage_manifest : Array[StorageEntry]
 
-pub fn store_session(@sql.Db, String) -> @json.Json? raise
-
-pub fn store_thread(@sql.Db, Double) -> @json.Json? raise
-
-pub fn store_thread_sessions(@sql.Db, Double) -> Array[@json.Json] raise
-
 pub fn stores_secret(String) -> Bool
 
 pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
@@ -527,8 +536,6 @@ pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
 pub fn team_in(Array[(String, Team)], String) -> Team?
 
 pub fn text_name(String) -> Bool
-
-pub fn threads_with_cards(@sql.Db, Array[Double]) -> Array[Double] raise
 
 pub let thumbs_cap : Double
 
@@ -664,6 +671,8 @@ pub fn win_command_cmd(String, String?, Bool) -> String
 
 pub fn win_drives((String) -> Bool) -> Array[(String, String)]
 
+pub fn win_find_command(String, Array[(String, String)], String, (Array[String]) -> String, (String) -> Bool) -> String?
+
 pub fn win_group_memory(String, Array[Double]) -> Array[(Double, Double)]
 
 pub fn win_installs() -> @json.Json
@@ -698,7 +707,7 @@ pub fn win_within(String, String) -> Bool
 
 pub fn windows_register_script(String, String, String, String, Bool) -> String
 
-pub fn windows_task_of(String?) -> (String, Bool)
+pub fn windows_task_of(String?, data_dir? : String) -> (String, Bool)
 
 pub fn windows_update_script(String, Array[(String, String)], String) -> String
 
@@ -785,6 +794,27 @@ pub fn FollowedTree::close(Self) -> Unit
 pub fn FollowedTree::new(String, (String) -> Bool, Int32, (String) -> String?) -> Self
 pub fn FollowedTree::scan(Self, Fs) -> Scanned raise
 
+pub struct Forewarn {
+  said : Map[String, Double]
+}
+pub fn Forewarn::look(Self, ForewarnLook, Double) -> Array[ForewarnSaid]
+pub fn Forewarn::new() -> Self
+
+pub(all) struct ForewarnLook {
+  disk_free : Double?
+  disk_total : Double?
+  wal_bytes : Double
+  open_fds : Int32?
+  rss : Double?
+  relay_conflict : Bool
+}
+
+pub(all) struct ForewarnSaid {
+  at : String
+  message : String
+  fields : @json.Json
+}
+
 pub struct Fs {
   host : @host.Host
 }
@@ -826,11 +856,13 @@ pub struct LogExport {
   mut dropped : Int32
   mut closed : Bool
   mut configured : Bool
+  mut described : Array[(String, String)]
 }
 pub fn LogExport::add(Self, LogLine, Bool) -> Unit
 pub fn LogExport::body(Self, Array[LogLine], String, Int32, String, Double) -> String
 pub fn LogExport::close(Self) -> Unit
 pub fn LogExport::configure(Self) -> Unit
+pub fn LogExport::describe(Self, os~ : String, arch~ : String, runtime~ : String, role~ : String) -> Unit
 pub fn LogExport::new(String) -> Self
 pub fn LogExport::send_all(Self, Bool, String?, String, Double, (String) -> Double?) -> Array[String]
 

@@ -20,6 +20,14 @@ pub(all) suberror MoveError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for MoveError with output(self, logger) {
+  match self {
+    Said(m) | AskAgain(m) | Gone(m) | Refused(m) | PeerGone(m) | PeerStopped(m) | Failed(m) => logger.write_string(m)
+  }
+}
+
+///|
 pub fn message_of(e : Error) -> String {
   match e {
     Said(m) | AskAgain(m) | Gone(m) | Refused(m) | PeerGone(m) | PeerStopped(m) | Failed(m) =>

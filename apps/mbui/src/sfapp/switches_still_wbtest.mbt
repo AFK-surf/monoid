@@ -45,9 +45,23 @@ let switches_left_out : Map[String, String] = Map([])
 let switch_heard : Array[Int] = []
 
 ///|
+/// The ids of what the client asked the made-up core (a subscription, a call) since this was last emptied
+/// (switch_heard_of): what a frame running by itself asked, whose first answer is that frame's, not the press's.
+// kept across runs: emptied as each press is measured, read as each frame after it is
+let switch_asked : Array[Int] = []
+
+///|
 /// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id,
 /// but for the answer of a call whose answer nobody reads.
 fn switch_heard_of(m : String) -> Unit {
+  if m.has_prefix("out ") {
+    let j = @json.parse(m.unsafe_substring(start=4, end=m.length())) catch { _ => return }
+    guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
+    if o.contains("subscribe") || o.contains("call") {
+      switch_asked.push(n.to_int())
+    }
+    return
+  }
   guard m.has_prefix("in ") else { return }
   let j = @json.parse(m.unsafe_substring(start=3, end=m.length())) catch { _ => return }
   guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
@@ -318,6 +332,7 @@ fn switch_measure(
   // (what was told since the press, by id: a later telling of one of them is no first answer)
   let told : Map[Int, Bool] = Map([])
   switch_heard.clear()
+  switch_asked.clear()
   t.clock_came(from) |> ignore
   press()
   let changes : Array[SwitchChange] = []
@@ -351,6 +366,14 @@ fn switch_measure(
     let came = t.clock_came(t.time())
     let clock = came || clock_before
     clock_before = came
+    // (what a running frame itself asked the core, as the next episode's stream and subtitles when an ended card's
+    // countdown runs out: its first answer belongs to that clock turn, not to the switch pressed before it)
+    if switch_running(pressed, first_told, later, clock) {
+      for id in switch_asked {
+        told[id] = true
+      }
+    }
+    switch_asked.clear()
     if switch_top() != top {
       break
     }
@@ -504,9 +527,41 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
       if sw.0 == "opener" {
         // (opened, its choices read, shut again; then each: opened again, the choice pressed, measured from there)
         let shut = switch_places(t)
+        let shut_presented = @sf.last_presented()
+        let menus = fn() { t.semantics().filter(fn(n) { !n.hidden && n.role == Menu }).length() }
+        let shut_menus = menus()
         t.tap(px, py)
         t.run_for(@ui.move_most_ms)
         let choices = switch_choices(t)
+        // (one that put up no layer, no menu and no choice opens in its place (a collapsible section: 其他运行中): shut
+        // again by its own press, never by Escape, which closes what it is in (待处理's panel), then measured as a
+        // switch is)
+        if choices.length() == 0 && @sf.last_presented() == shut_presented && menus() <= shut_menus {
+          if switch_node(t, s, sw, nth) is Some((cx, cy)) {
+            t.tap(cx, cy)
+            t.run_for(@ui.move_most_ms)
+          }
+          guard switch_node(t, s, sw, nth) is Some((ox, oy)) else {
+            println("SWITCHES_UNREACHED \{at}")
+            continue
+          }
+          t.ways_set_out() |> ignore
+          let (from, changes) = switch_measure(t, fn() { t.tap(ox, oy) }, Map([(own, true)]), top, ms)
+          switch_leaks(at)
+          if switch_top() != top {
+            println("SWITCHES_LEFT \{at}")
+            again = true
+            break
+          }
+          switch_said(t, at, row, from, changes, found)
+          // (as after any press: a switch there before not pressed and gone now, this screen opened again for the rest)
+          let after = switches_keyed(t).map(fn(k) { k.0 })
+          if now.iter().any(fn(k) { !pressed.contains(k.0) && !after.contains(k.0) }) {
+            again = true
+            break
+          }
+          continue
+        }
         let menu : Map[String, Bool] = Map([(own, true)])
         for k, _ in switch_places(t) {
           if !shut.contains(k) {
@@ -605,11 +660,15 @@ fn switches_against_known(walked : Array[String], found : Map[String, Int]) -> A
 ///|
 /// Each switch of every screen in `part` of `parts` of switches_modes (every `parts`-th from `part`: a test each, so a
 /// screen whose Tester stops on a fault of its own stops that part alone), on each screen size, at each pace, held to switches_known.
+/// Of 320 parts, test `part` walks slot (part % 10) * 32 + part / 10, so the tests scripts/test.sh runs together (its
+/// `:32`, tests 10c to 10c+9) walk slots c, c+32, …, c+288: any 32 screens in a row fall in 32 different runs, and the
+/// slow ones (the share cards', about 55 s each) stay apart wherever new screens move them.
 fn switches_part(part : Int, parts : Int) -> Unit raise {
+  let slot = if parts == 320 { (part % 10) * 32 + part / 10 } else { part }
   let found : Map[String, Int] = Map([])
   let walked = []
   for i, mode in switches_modes {
-    if i % parts != part {
+    if i % parts != slot {
       continue
     }
     for s in switches_screens {

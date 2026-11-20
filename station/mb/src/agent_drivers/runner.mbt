@@ -400,13 +400,7 @@ pub fn runner_ready(out : String, err : String) -> RunnerInfo raise {
 ///|
 /// JavaScript's truth of a value.
 pub fn truthy(v : JValue) -> Bool {
-  match v {
-    Null => false
-    Bool(x) => x
-    Num(x) => x != 0.0 && x == x
-    Str(u) => u.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(Some(v))
 }
 
 ///|

@@ -528,8 +528,12 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
   assert_true(t_wide.find("3 项需处理") is Some(_))
   assert_true(t_wide.find("重新登录") is Some(_))
   assert_true(t_wide.find("更换 key") is Some(_))
+  // (alerts are virtualized one row per block: scroll down so the 3rd row enters the viewport, then return to top)
+  t_wide.wheel(640.0, 400.0, 160.0)
   // (why jiachen@cue.surf is there: its week's allowance mostly unused, gone when the week resets)
   assert_true(t_wide.find("周额度剩 84% 未用 · 14h后重置清零") is Some(_))
+  t_wide.wheel(640.0, 400.0, -160.0)
+  t_wide.run_for(@ui.scrollbar_fade_ms)
   // (Claude's pool going without: how many more of its plan would keep it going, under its charts)
   assert_true(t_wide.find("按当前消耗速度，还需约 ") is Some(_))
   assert_true(t_wide.find("个同档账号才能不断档") is Some(_))
@@ -571,8 +575,22 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
   let ov_radio_0 = t_phone.all(Radio, label="概览")[0].rect
   assert_true(acc_radio_0.0 >= 12.0, msg="place accounts radio inset from left edge: \{acc_radio_0.0}")
   assert_true(ov_radio_0.0 + ov_radio_0.2 <= 390.0 - 12.0, msg="place overview radio inset from right edge: \{ov_radio_0.0 + ov_radio_0.2}")
+  let thumb_x = fn() {
+    t_phone.drawn_rects().iter().find_first(fn(r) {
+      (r.1 - acc_radio_0.1).abs() < 0.5 &&
+      (r.2 - acc_radio_0.2).abs() < 0.5 &&
+      (r.3 - acc_radio_0.3).abs() < 0.5 &&
+      r.4 == @ui.tree_theme().lifted
+    }).map(fn(r) { r.0 })
+  }
+  let start_x = thumb_x().unwrap()
   t_phone.tap_text("概览")
+  assert_true(t_phone.find("额度与恢复") is Some(_))
+  t_phone.run_for(@sf.dur_ms / 4.0)
+  let mid_x = thumb_x().unwrap()
   t_phone.run_for(@ui.move_most_ms)
+  let end_x = thumb_x().unwrap()
+  assert_true(start_x < mid_x && mid_x < end_x, msg="the thumb slides across as the pane changes: \{start_x}, \{mid_x}, \{end_x}")
   assert_true(t_phone.find("额度与恢复") is Some(_), msg="Place(\"profiles\") switches to 概览")
   assert_true(t_phone.find("消耗速度") is Some(_))
   let ov_radio_1 = t_phone.all(Radio, label="概览")[0].rect

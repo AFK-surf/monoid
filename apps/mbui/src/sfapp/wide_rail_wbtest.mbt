@@ -502,7 +502,8 @@ test "wide: with the bell in the rail, the stations' trouble is in 待处理's p
   t.frame()
   assert_true(t.find("忽略") is None)
   t.key(@ui.key_escape)
-  t.frame()
+  // (the panel closed gone its way out)
+  t.run_for(@motion.pop_out_ms)
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.frame()
   assert_true(t.find("Maple 连不上了") is None, msg="looked at")
@@ -573,7 +574,8 @@ test "wide: 待处理's panel lists a chat that waits on the viewer; 忽略 on i
   t.frame()
   let (dx, dy) = t.find("忽略").unwrap()
   t.tap(dx, dy)
-  t.frame()
+  // (its row closing its room as it goes, gone once that is over)
+  t.run_for(@ui.move_most_ms)
   let d = named(calls, "decision.dismiss")
   assert_eq(d.length(), 1)
   assert_eq(field(Some(d[0].params), "thread"), Some(Json::number(12.0)))
@@ -873,7 +875,7 @@ test "wide: a downloading update shows its progress where restart will be offere
   t.run_for(@sf.tip_delay_ms * 2.0)
   assert_true(t.find("正在下载 0.1.9999 · 40% · 22.4 MB") is Some(_), msg="the download's progress in its tip")
   t.click(Button, label="正在下载 0.1.9999")
-  t.run_for(@kit.dialog_ms)
+  t.run_for(@motion.dialog_ms)
   assert_true(t.find("正在下载 0.1.9999 · 40% · 22.4 MB") is Some(_), msg="the download's details")
   // The release notes also contain 关闭; choose the button's exact words, not that substring in the notes.
   let close = t.words().filter(fn(w) { w.0 == "关闭" })
@@ -941,13 +943,26 @@ test "wide: a newer build of the desktop app ready: 重启更新 the update key 
   t.run_for(@ui.move_most_ms)
   let (fx, _, _, _) = t.query(Button, label="重启更新").unwrap().rect
   assert_eq(fx, @sfdesk.update_closed_in)
-  assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_update_in)
+  // (the old page's bar says its start in wide.bar_pl; the chat's bar made as nodes keeps it as it lays out: its
+  // title drawn from there)
+  if @sfbase.chat_page_nodes.untracked() {
+    guard t.rect_of("整理发布清单") is Some((tx, _, _, _)) else { fail("no title") }
+    assert_true(tx >= @sfdesk.bar_update_in, msg="the title from \{tx}")
+  } else {
+    assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_update_in)
+  }
   // shown a while: 更新 back in the sidebar's first row, the bar starting past the sidebar with its own 12
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.peeking.get())
-  assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_in)
+  if @sfbase.chat_page_nodes.untracked() {
+    let (sx, _, sw, _) = t.query(Button, label="筛选会话：全部").unwrap().rect
+    guard t.rect_of("整理发布清单") is Some((tx, _, _, _)) else { fail("no title") }
+    assert_true(tx >= sx + sw + @sfdesk.bar_in, msg="the title from \{tx}, the sidebar's filter to \{sx + sw}")
+  } else {
+    assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_in)
+  }
 }
 
 ///|
@@ -1211,4 +1226,83 @@ fn update_said_now() -> String {
 fn update_tip_now() -> String {
   let stands = @sfbase.update_stands()
   stands.label + (if stands.note == "" { "" } else { " · " + stands.note })
+}
+
+///|
+/// What the stations' sidebar says of Willow's machine: its words left of the page, as they are drawn now.
+fn side_meters_said(t : @ui.Tester) -> Array[String] {
+  t.words().filter(fn(w) { w.1 < 300.0 && w.0.has_suffix("%") }).map(fn(w) { w.0 })
+}
+
+///|
+test "wide: the CPU's dial turned on a station's page turns its CPU in the stations' sidebar too, and back; each sample said the way chosen" {
+  new_run()
+  let base = fixture("home")
+  // (Willow's CPU as its machine is sampled: what is left of it, 72 at first)
+  let cpu_left = @signals.signal(72)
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let t = base.topic(name, params).get().snapshot()
+      guard name == "stations" && t.value is Some(Array(list)) else { return t }
+      let left = cpu_left.get()
+      let sampled = list.map(fn(st) {
+        guard st is Object(s) && text(Some(st), "station") == "ws1/st1" else { return st }
+        let host = match s.get("host") {
+          Some(Object(h)) => Map::from_iter(h.iter())
+          _ => return st
+        }
+        host["meters"] = Json::array(
+          items(Some(Json::object(host)), "meters").map(fn(m) {
+            guard m is Object(o) && text(Some(m), "short") == "CPU" else { return m }
+            let m2 = Map::from_iter(o.iter())
+            m2["left"] = Json::number(left.to_double())
+            m2["big"] = Json::string(left.to_string())
+            m2["remaining"] = Json::string("空闲 \{left}%")
+            Json::object(m2)
+          }),
+        )
+        let s2 = Map::from_iter(s.iter())
+        s2["host"] = Json::object(host)
+        Json::object(s2)
+      })
+      { ..t, value: Some(Json::array(sampled)) }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0)
+  @sfbase.go_place("stations") |> ignore
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("Willow")
+  t.run_for(@ui.move_most_ms)
+  // (none kept: idle, in the sidebar as on the page)
+  assert_true(side_meters_said(t).contains("72%"), msg=side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("28%"), msg=side_meters_said(t).join("|"))
+  // (the dial in its full words or its short ones, as the page's width has it)
+  let dial = fn() {
+    let mut at = None
+    for words in ["CPU 空闲率", "CPU 空闲", "CPU 占用率", "CPU 占用"] {
+      if at is None {
+        at = t.find(words)
+      }
+    }
+    at
+  }
+  guard dial() is Some((x, y)) else { fail("no CPU dial: " + t.words().map(fn(w) { w.0 }).join("|")) }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("CPU 占用率") is Some(_) || t.find("CPU 占用") is Some(_), msg="the page's dial turned")
+  assert_true(side_meters_said(t).contains("28%"), msg="busy in the sidebar: " + side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("72%"), msg="idle no longer: " + side_meters_said(t).join("|"))
+  // (sampled anew while busy: what is used now, 92%)
+  cpu_left.set(8)
+  t.run_for(@ui.move_most_ms)
+  assert_true(side_meters_said(t).contains("92%"), msg="sampled anew, busy: " + side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("8%"), msg="sampled anew, not idle: " + side_meters_said(t).join("|"))
+  cpu_left.set(72)
+  t.run_for(@ui.move_most_ms)
+  guard dial() is Some((x, y)) else { fail("no CPU dial") }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(side_meters_said(t).contains("72%"), msg="back to idle: " + side_meters_said(t).join("|"))
+  assert_eq(t.squeeze_faults(), [])
 }

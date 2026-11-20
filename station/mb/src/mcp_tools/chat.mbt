@@ -13,7 +13,7 @@ pub let not_posted : String = "Not posted:"
 
 ///|
 /// The still.fail surface (store/rows.ts STILLFAIL_SURFACE).
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
 /// sessions/args.ts `jsString`.
@@ -48,18 +48,11 @@ async fn afar(
   }
   // (a chat handed from here to another station is read where it is now: replica/handover.ts)
   let ref = match args.get("chat") {
-    Some(Str(chat)) => {
-      let linked = b.ask("sessions/others.linkedSession", [js(chat)])
-      match linked {
-        Arr(items) =>
-          match items.get(0) {
-            Some(first) if !is_undef(first) && !(first is Null) =>
-              js_string(Some(first))
-            _ => trim_js(chat)
-          }
-        _ => trim_js(chat)
+    Some(Str(chat)) =>
+      match @session_storage.linked_session(chat) {
+        Some((first, _)) => first
+        None => trim_js(chat)
       }
-    }
     _ => ""
   }
   if ref == "" {
@@ -200,6 +193,9 @@ pub fn chat_tools(c : Ctx, hub? : JV = jref("hub")) -> Array[Tool] {
     )),
     Tool::new(c.decl("chat_archive"), (key, args, _) => said_text(
       b.ask("sessions/chat-archive.chatArchive", [hub, js(key), args]),
+    )),
+    Tool::new(c.decl("chat_configure"), (key, args, _) => said_text(
+      b.ask("sessions/chat-configure.chatConfigure", [hub, js(key), args]),
     )),
     Tool::new(c.decl("session_history"), (key, args, _) => {
       match afar(c, hub, key, "session_history", args) {

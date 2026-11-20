@@ -57,11 +57,17 @@ fn keyed_faults(chat : Json, name : String, sending? : Array[@sfbase.LocalSent] 
               _ => false
             }
           }
-          if !(a.gap == b.gap && a.piece == b.piece && a.entry.id() == b.entry.id() && followed(a.entry) == followed(b.entry)) {
-            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, piece \{a.piece == b.piece}, followed \{followed(a.entry)} \{followed(b.entry)}, \{a.entry.id()} \{b.entry.id()})")
+          if !(a.gap == b.gap && a.slices == b.slices && a.entry.id() == b.entry.id() && followed(a.entry) == followed(b.entry)) {
+            faults.push("\{name}: row \{k} otherwise (gap \{a.gap == b.gap}, slices \{a.slices == b.slices}, followed \{followed(a.entry)} \{followed(b.entry)}, \{a.entry.id()} \{b.entry.id()})")
           }
         }
         _ => faults.push("\{name}: row \{k} missing")
+      }
+      // (how many slices each is drawn in, worked out of its JSON alone, as of it read whole)
+      let n = (keyed.slices)(k)
+      let want = made.rows.get(k).map_or(1, fn(r) { r.slices })
+      if n != want {
+        faults.push("\{name}: row \{k} in \{n} slices, \{want} made whole")
       }
     }
   })
@@ -101,7 +107,30 @@ test "a chat's rows by key are its rows made whole" {
   let m3 = m3.copy()
   m3["elsewhere"] = Json::array([Json::object({ "key": Json::string("e1"), "text": Json::string("去了 Slack") })])
   ms[3] = Json::object(m3)
+  // (agents' long answers: one in pieces of its paragraphs, one of a table's rows, its pieces worked out of its JSON
+  // as of it read whole; one a card is drawn in the place of, and a system line, in none)
+  let long_of = fn(i : Int, fields : Map[String, Json]) raise {
+    guard ms[i] is Object(m) else { fail("no message \{i}") }
+    let m = m.copy()
+    m["text"] = Json::string(long)
+    m["md"] = md
+    for k, v in fields {
+      m[k] = v
+    }
+    ms[i] = Json::object(m)
+  }
+  long_of(8, {})
+  let row = fn(n : Int) -> Json { ["tr", [["td", ["格\{n}"]]]] }
+  long_of(6, { "md": [["p", ["表前"]], ["table", Json::array(Array::makei(9, row))]] })
+  long_of(10, { "card": { "type": "vault", "vaultAsk": { "name": "钥匙" } } })
+  long_of(4, { "system": true })
   let base = keyed_with(chat, { "messages": Json::array(ms) })
+  // (those in slices in it, and those not: a key each all the same)
+  let whole = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, @sfbase.chat_view_made(base), @sfbase.entries_of(@sfbase.chat_view_made(base)), [])
+  let slices = fn(k : String) { whole.rows.get(k).map_or(0, fn(r) { r.slices }) }
+  assert_true(slices("m:t9") >= 3 && slices("m:t7") >= 4, msg="\{slices("m:t9")} \{slices("m:t7")}")
+  assert_eq((slices("m:t11"), slices("m:t5"), slices("m:t6")), (1, 1, 1))
+  assert_true(!whole.keys.iter().any(fn(k) { k.contains("#") }), msg="\{Repr(whole.keys)}")
   let faults : Array[String] = []
   faults.append(keyed_faults(base, "plain"))
   faults.append(keyed_faults(keyed_with(base, { "unreadLine": Json::number(6.0) }), "unread line"))

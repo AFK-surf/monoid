@@ -43,6 +43,9 @@ fn pick_menu_of(choices : Array[Choice], search : Bool) -> Bool {
 /// layout's panel while one is open (reader_layout_nodes).
 #callsite(autofill(loc))
 pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
+  // (when the tree moves only for explicit causes, each presented overlay is its own transition boundary so a
+  // dialog/sheet's internal transitions stay within it without turning standalone sf-ui tests static)
+  let isolated = !root.transition_gate()
   // (the tips of what they hold: one layer of them for the window, over all of it, each presented one's lent it;
   // made after them, its keys (Escape shutting a tip) asked before theirs)
   let tips_at : Ref[@view.View?] = Ref(None)
@@ -71,6 +74,9 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       let as_sheet = tree_sheet_of(p, @signals.untracked(fn() { layout(root.window().0) is Small }))
       tree_as_sheet[serial] = as_sheet
       // (the root's node it is in at its place in the window's stack of layers: its serial, as the host's presented are)
+      if isolated {
+        row.transitions_only() |> ignore
+      }
       row.over(Is(true)).stacked(Is(serial)) |> ignore
       // (what opened it, for every kind it is drawn as: the focus given back to that as it goes, where it still takes
       // it, not to what had the focus as it opened: View::opened_by)
@@ -311,7 +317,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
             extras=fn(i) {
               match choices.get(i) {
-                Some(x) => { note: x.note, value: x.value, mark: x.mark }
+                Some(x) => { note: x.note, value: x.value, mark: x.mark, end: None }
                 None => menu_no_extra
               }
             },
@@ -323,12 +329,18 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   )
   tips_at.val = Some(root.box(made_for=loc, fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
   window_tips_at.val = tips_at.val
+  window_root_at.val = Some(root)
 }
 
 ///|
 /// The layer over all of the window the presented's tips are in (presented_nodes'), once there is one.
 // kept across runs: said again as presented_nodes makes its layer
 let window_tips_at : Ref[@view.View?] = Ref(None)
+
+///|
+/// The window's root node (presented_nodes'), once there is one: where lazy overlays for old Ctx views mount.
+// kept across runs: said again as presented_nodes makes its layer, put back by presenters_reset
+let window_root_at : Ref[@view.View?] = Ref(None)
 
 ///|
 /// The layer over all of the window (presented_nodes' tips'): for what floats over a page's rows, beside them, on
@@ -430,6 +442,18 @@ pub fn panel_words_at_node(v : @view.View) -> Double {
 }
 
 ///|
+/// How far in from the column a panel's body is given node `v` its title starts, in points: beside what opened it, as
+/// far as its head puts it (panel_head_box's S2_5); on a sheet, on the words' line; none outside a panel. What its body
+/// lines up under the title by (the board's draft's panel: its words and what it runs on).
+pub fn panel_title_at_node(v : @view.View) -> Double {
+  match v.lent(panel_in_lent) {
+    Some(p) if p.small => @ui.Space::px(S2_5)
+    Some(p) => p.words
+    None => 0.0
+  }
+}
+
+///|
 /// Whether node `v` is made in the body of a small panel beside what opened it (in_small_panel's, where the body is
 /// nodes): its rows at its padding, as a menu's are; not in a sheet, a dialog or outside a panel.
 pub fn in_small_panel_node(v : @view.View) -> Bool {
@@ -441,6 +465,12 @@ pub fn in_small_panel_node(v : @view.View) -> Bool {
 /// scrolls under them, attach's photos): out across the room the panel leaves at its sides; none outside a panel.
 pub fn panel_bleed_node(v : @view.View) -> @ui.Style {
   @ui.style(mx=room(-panel_in_of(v).sides))
+}
+
+///|
+/// How far in from the panel's edges node `v`'s body column sits (panel_bleed_node's width on each side), in points.
+pub fn panel_sides_at_node(v : @view.View) -> Double {
+  panel_in_of(v).sides
 }
 
 ///|

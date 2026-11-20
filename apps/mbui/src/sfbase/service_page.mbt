@@ -55,7 +55,7 @@ pub(all) struct ServicePage {
   /// a sized page on its canvas (mbui's Zoom, free: dragged anywhere, 0.05 to 4 times, fitted 16 in by thousandths;
   /// Preview.kt StageState), moved by a finger on it (the toolbar's 移动), where it was drawn last, the stage's fingers,
   /// when the ground was last tapped
-  view : @kit.Zoom
+  view : @motion.Zoom
   /// moved by a finger on its canvas in place of used, a signal as `viewport` is
   moving : @signals.Signal[Bool]
   mut placed : Placed?
@@ -771,8 +771,8 @@ pub let stage_max_scale : Double = 4.0
 ///|
 /// A sized page's place on its canvas: fitted 16 in, never enlarged, by thousandths; dragged
 /// anywhere; zoomed by hand within `stage_min_scale` … `stage_max_scale`.
-pub fn stage_zoom() -> @kit.Zoom {
-  @kit.Zoom::new(
+pub fn stage_zoom() -> @motion.Zoom {
+  @motion.Zoom::new(
     margin=fn(_) { 16.0 },
     min_scale=fn(_) { stage_min_scale },
     max_scale=fn(_) { stage_max_scale },

@@ -1057,6 +1057,47 @@ fn head_of(text : String) -> (Int, Bool)? {
 }
 
 ///|
+/// Whether a topic's value, or what changed of it, for subscription `id` may be let be unread as it comes where a
+/// whole value of its topic comes after it in the same take (core.mbt's receive_ahead): one held now and not let go
+/// of, past its first answer (a first reads what is kept, ends its wait and is told as an answer, @signals.first_told),
+/// holding a value and no error, no edit's draft waiting on it (topic_said's). All it would do the whole value does
+/// again, all of it in one change: its value, and its keyed lists taken whole (Sub::changed), what read it told once;
+/// only its version goes on by one the less.
+fn Client::voidable(self : Client, id : Int) -> Bool {
+  match self.subs.get(id) {
+    Some(s) => !s.ending && s.version > 0 && s.error is None && s.value is Some(_) && !self.drafts_wait(id)
+    None => false
+  }
+}
+
+///|
+/// Whether a topic's value, or what changed of it, for subscription `id` taken as it comes reads nothing of another
+/// subscription and is taken as it comes all the same (topic_said, Client::later): one voidable, or one let go of
+/// (kept unread). What lies between a message let be (Client::voidable) and the whole value that undoes it is these
+/// alone.
+fn Client::reads_no_other(self : Client, id : Int) -> Bool {
+  match self.subs.get(id) {
+    Some(s) => s.ending || self.voidable(id)
+    None => false
+  }
+}
+
+///|
+/// Whether an edit's draft waits on subscription `id`'s next message (Client::draft_came).
+fn Client::drafts_wait(self : Client, id : Int) -> Bool {
+  self.echo_waits.values().any(fn(w) { w.0 == id })
+}
+
+///|
+/// The record's name of a message for subscription `id` let be unread (Client::voidable): `topic <name> voided`.
+fn Client::voided_name(self : Client, id : Int) -> String {
+  match self.subs.get(id) {
+    Some(s) => "topic " + topic_name(s.topic) + " voided"
+    None => "voided"
+  }
+}
+
+///|
 /// Whether message `text` is a value, or what changed of it, for a subscription let go of (`ending`), taken unread:
 /// told from its head alone, as Client::unheld tells one for an id nothing holds. What it does to that one (its value
 /// the one it holds, what changed applied to it) is done as its value is read (Sub::catch_up: one asked from it reads it,

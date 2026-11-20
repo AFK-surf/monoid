@@ -313,7 +313,14 @@ pub fn LoginManager::new(
     pages: None,
     state_file: _ => None,
   }
-  m.state_file = profile => match m.jobs.get(profile) {
+  m.state_file = profile => m.job_state_file(profile)
+  m
+}
+
+///|
+/// The sign-in browser state file in the home of `profile`'s sign-in under way, where it has one.
+pub fn LoginManager::job_state_file(self : LoginManager, profile : String) -> String? {
+  match self.jobs.get(profile) {
     Some(r) =>
       match r.home {
         Some(h) if h != "" => Some(join([h, login_browser_file]))
@@ -321,7 +328,6 @@ pub fn LoginManager::new(
       }
     None => None
   }
-  m
 }
 
 ///|
@@ -609,6 +615,8 @@ pub async fn LoginManager::start(self : LoginManager, profile : LoginProfile, la
     args = a
   } else if stage is Some(s) {
     env_set(env, "HOME", s)
+    // (Windows: its home is USERPROFILE's, HOME aside)
+    env_set(env, "USERPROFILE", s)
     for p in agy_file_tokens {
       env_set(env, p.0, p.1)
     }

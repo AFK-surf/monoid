@@ -245,8 +245,6 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         station_ask(ws, address),
         ("stationMove", { "station": Json::string(address), "to": Json::string(""), "module": Json::string("") }),
       ])
-    RunSettings(address, key) =>
-      reads_of([("pick", { "station": Json::string(address), "of": Json::string("session:" + key) })])
     Changelog => reads_of([("changelog", { "limit": Json::number(30.0) })])
     Notifications => reads_of([("notices", { "workspace": of })])
     // (what this device keeps and its own settings, the build's own words, the lock every shell reads: nothing of the
@@ -367,7 +365,8 @@ pub fn page_reads(src : Source, ws : String, p : Page, wide : Bool) -> OpenReads
         },
       )
     // (a film played, a station's screen or terminal: over the whole window, each showing its own wait as its stream
-    // comes; their shells' own, as are Home, a chat and an agent's history: chat_opens, home_opens)
-    DrivePlay(_) | Screen(_) | Terminal(_) | Home | Chat(_) | History(_, _, _) => reads_of([])
+    // comes; their shells' own, as are Home, a chat and an agent's history: chat_opens, home_opens; a chat's tab in a
+    // window of its own, what it shows the tab's as it was beside the chat, handed over)
+    DrivePlay(_) | Screen(_) | Terminal(_) | SideTab(_) | Home | Chat(_) | History(_, _, _) => reads_of([])
   }
 }

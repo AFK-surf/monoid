@@ -122,6 +122,7 @@ test "the history's details: its turns' line says its work after it, none withou
   let src = work_source("chat-history-side", on~)
   decide_src.val = Some(src)
   open_fixture_over("chat-history-side", src)
+  @sfdesk.set_history_shut(false)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   t.run_for(@ui.move_most_ms)
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
@@ -146,7 +147,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_eq(word("后台进行中").length(), 0)
   // pressed: all of it beside it
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(word("后台进行中").length() == 1 && word("4").length() >= 1)
   assert_eq(word("vite --config web/vite.demo.config.ts").length(), 1)
   assert_eq(word("4m 12s").length(), 1)
@@ -169,7 +170,7 @@ test "the history's details: its turns' line says its work after it, none withou
   assert_true(word("后台进行中")[0].2 > mark[0].2, msg="under it")
   // Escape: gone
   t.key(@ui.key_escape)
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq(word("后台进行中").length(), 0)
 }
 
@@ -189,7 +190,7 @@ test "on a phone, its details' turns say its work after them, its head as it was
   assert_true((mark[0].2 + mark[0].4 / 2.0 - turns[0].2 - turns[0].4 / 2.0).abs() < 2.0, msg="\{Repr((mark, turns))}")
   assert_eq(word("后台进行中").length(), 0)
   t.tap(mark[0].1 + 4.0, mark[0].2 + mark[0].4 / 2.0)
-  t.run_for(@kit.presence_in_ms * 2.0)
+  t.run_for(@motion.presence_in_ms * 2.0)
   assert_eq(word("后台进行中").length(), 1)
   assert_eq(word("跑检查并提交").length(), 1)
   // from the foot: its lists low in the window
@@ -358,6 +359,9 @@ fn aw_tester(card : AwCard, platform~ : Int, wide~ : Bool, scale? : Double = 1.0
   let src = aw_source(mode, card)
   decide_src.val = Some(src)
   open_fixture_over(mode, src)
+  if wide {
+    @sfdesk.set_history_shut(false)
+  }
   let (w, h) = if wide { (1200.0, 800.0) } else { (390.0, 844.0) }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
   if scale != 1.0 {

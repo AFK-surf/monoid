@@ -151,7 +151,7 @@ pub async fn Connects::reconcile(self : Connects) -> Unit {
   }
   if (self.options.bound)() {
     let ws_of = (c : J) => match at(Some(c), "workspace") {
-      Some(Str(u)) => Some(@jsjson.text(u))
+      Some(Str(u)) => Some(@jsjson.sanitize_str(u))
       _ => None
     }
     let wanted = self.connects().filter(c => match self.options.in_workspace { Some(f) => f(ws_of(c)); None => true })
@@ -219,7 +219,7 @@ pub async fn Connects::refresh_identity(self : Connects, id : String) -> Unit {
 /// A connect's link to its platform as the pages show it (the overview's `connection`), by its id or its entry.
 pub fn Connects::state(self : Connects, c : J) -> J? {
   let found = match c {
-    Str(u) => self.connect(@jsjson.text(u))
+    Str(u) => self.connect(@jsjson.sanitize_str(u))
     other => Some(other)
   }
   found.map(f => self.connections.state(f))

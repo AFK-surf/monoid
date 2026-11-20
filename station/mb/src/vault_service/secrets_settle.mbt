@@ -633,7 +633,7 @@ pub fn Secrets::deny_plain(self : Secrets, ws : String, email : String, d : Json
 
 ///|
 /// POST vault/denials: `deny`, sent by `sub`'s app; why it is refused, or None.
-pub fn Secrets::deny(self : Secrets, lock : Lock, sub : String, deny : Json) -> String? raise {
+pub fn Secrets::deny(self : Secrets, lock : Lock, sub : String, deny : Json, email? : String) -> String? raise {
   let k = match gs(Some(deny), "request") {
     Some(id) => self.kept(lock.ws, id)
     None => None
@@ -646,7 +646,13 @@ pub fn Secrets::deny(self : Secrets, lock : Lock, sub : String, deny : Json) -> 
     Some(key) => @vault_crypto.signer_of(lock.view, key)
     None => None
   }
-  if truthy(get(Some(k.request), "save")) {
+  if truthy(get(Some(k.request), "save")) && lock.open_roster() && lock.devices_for(sub).length() == 0 {
+    // Security mode off and no own lock of theirs heard here: whoever it is kept for turns it down from their app
+    // before they turned their vault on (their credential says who).
+    if email.map(lower) != gs(Some(k.request), "owner") || email is None {
+      return Some("only the person it is kept for decides it")
+    }
+  } else if truthy(get(Some(k.request), "save")) {
     // A secret to keep: its owner's to turn down, from one of their devices.
     if lock.email_of(sub).map(lower) != gs(Some(k.request), "owner") || lock.email_of(sub) is None {
       return Some("only the person it is kept for decides it")

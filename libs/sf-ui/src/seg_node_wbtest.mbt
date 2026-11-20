@@ -271,3 +271,17 @@ test "a choice of a few as nodes short of room with unequal fitted option widths
   t.run_for(@ui.move_most_ms)
   assert_true((thumb_w() - w1).abs() < 0.5)
 }
+
+///|
+test "seg_node: thumb slide animation causes zero relayout (laid == 0)" {
+  let chosen = @signals.signal(0)
+  let said = []
+  let t = seg_tester(chosen, said)
+  t.click(@ui.Role::Radio, label="源码")
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(@ui.move_most_ms)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="seg_node thumb slide relaid out: \{Repr(f)}")
+  }
+}

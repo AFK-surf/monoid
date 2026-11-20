@@ -120,6 +120,8 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the fake host's pointer and controllers of the run before: fake_host.mbt)
+  fake_pointer_reset()
   // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
   windows_reset()
   window_zoom_reset()
@@ -130,12 +132,16 @@ fn reset_globals() -> Unit {
   // A run can end with a frame's resource handover still queued. Finish it before resetting the next run.
   frame_afters_run()
   frame_afters.val = []
+  // (what waited for a frame drawn that never came: none of this run's)
+  drawn_frame_afters.val = []
   the_ctx.val.let_go()
   the_ctx.val = Ctx::new()
   looks_reset()
   pace_none()
   notices_reset()
   hand_reset()
+  frame_end_sets.val = -1
+  frame_quiet.val = false
   corners_hold.val = true
   corners_known_now.val = []
   presses_hold.val = true
@@ -207,6 +213,7 @@ fn reset_globals() -> Unit {
   answers_waiting.clear()
   outside_takers.clear()
   @hostapi.autofill_forget()
+  @hostapi.op_list_cache_reset()
   views_told.clear()
   views_told_changed()
   code_fields.clear()
@@ -217,8 +224,8 @@ fn reset_globals() -> Unit {
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
-  moving_images.clear()
-  pixels_read.clear()
+  moving_reset()
+  pixels_reset()
   open_views.clear()
   stacked_views.clear()
   views_stirred.clear()
@@ -255,6 +262,8 @@ fn reset_globals() -> Unit {
   outside_told.val = @hostapi.set_outside(fn(k, id, st) { on_outside(k, id, st) })
   // (the hand as its fake host says it first: @ui.pointing)
   host_pointing.val = None
+  // (the size of words a test said over its fake host's: set_font_scale)
+  said_font_scale.val = None
   commit_counts[0] = 0
   commit_counts[1] = 0
   commit_counts[2] = 0
@@ -269,6 +278,12 @@ fn reset_globals() -> Unit {
   @view.hold_reset()
   @view.untracked_read_reset()
   tester_fanout_reset()
+  fanout_hold.val = false
+  unseen_press_hold.val = false
+  untracked_read_hold.val = false
+  unnamed_press_hold.val = false
+  scroll_each_hold_limit.val = 0
+  effect_in_view_hold.val = false
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -360,6 +375,7 @@ fn leaked_state() -> Array[String] {
 /// is drawn here: what is set before the Tester is made is the run before's, put back as this one begins.
 /// `keeps_sources`: whether the window's tree keeps where in the source each node was made (Tester::sources_at); off
 /// for a run measured as a device runs it.
+/// `theme`: the theme the window's tree's nodes are drawn in (set_view_app's), told before the first of them is made.
 /// `loc`: where it is made, said where a check of its frames fails (frame_watch.mbt, words_over.mbt).
 #callsite(autofill(loc))
 pub fn Tester::new(
@@ -396,6 +412,218 @@ pub fn Tester::new(
   before? : () -> Unit,
   begun? : () -> Unit,
   keeps_sources? : Bool = true,
+  windows_beside? : Bool = false,
+  theme? : () -> Theme,
+  transitions_only? : Bool = false,
+  loc~ : SourceLoc,
+) -> Tester {
+  let (around, made) : (((Ctx) -> Unit)?, (@view.View) -> Unit) = match tree {
+    Some(make) => {
+      let wrapped = if transitions_only {
+        fn(root : @view.View) {
+          root.transitions_only() |> ignore
+          make(root)
+        }
+      } else {
+        make
+      }
+      (Some(view), wrapped)
+    }
+    None => (None, fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
+  }
+  tester_make(
+    around,
+    made,
+    theme,
+    w~,
+    h~,
+    dark~,
+    window_inset~,
+    env~,
+    app_version~,
+    images~,
+    platform~,
+    keys?,
+    pointing?,
+    native?,
+    keyboard?,
+    seed?,
+    text?,
+    scale~,
+    time~,
+    stable~,
+    finish~,
+    run?,
+    h264~,
+    copy_shown~,
+    live?,
+    corners_held~,
+    presses_held~,
+    window_corner~,
+    window_corners?,
+    words_over_held~,
+    nav_able~,
+    before?,
+    begun?,
+    keeps_sources~,
+    windows_beside~,
+    fanout_limit=0,
+    unseen_press_held=false,
+    untracked_read_held=false,
+    unnamed_press_held=false,
+    scroll_each_limit=0,
+    effect_in_view_held=false,
+    loc~,
+  )
+}
+
+///|
+/// A tester showing the window's tree `tree` alone, made once, no old frame built round it (as run_tree runs it), its
+/// nodes drawn in `theme` (set_tree_theme) from the first of them made: the rest as Tester::new's.
+#callsite(autofill(loc))
+pub fn Tester::tree(
+  tree : (@view.View) -> Unit,
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  dark? : Bool = false,
+  window_inset? : Bool = false,
+  env? : Array[(String, String)] = [],
+  app_version? : Int = 0,
+  images? : Array[(String, Int, Int)] = [],
+  platform? : Int = 0,
+  keys? : Int,
+  pointing? : Pointing,
+  native? : Pointing,
+  keyboard? : Bool,
+  seed? : Int,
+  text? : String,
+  scale? : Double = 2.0,
+  time? : Double = 1000.0,
+  stable? : Bool = false,
+  finish? : Bool = true,
+  run? : String,
+  h264? : Bool = false,
+  copy_shown? : Bool = false,
+  live? : Live,
+  corners_held? : Bool = true,
+  presses_held? : Bool = true,
+  window_corner? : Double = 0.0,
+  window_corners? : FixedArray[Double],
+  words_over_held? : Bool = true,
+  nav_able? : Bool = false,
+  before? : () -> Unit,
+  begun? : () -> Unit,
+  keeps_sources? : Bool = true,
+  windows_beside? : Bool = false,
+  theme? : () -> Theme,
+  transitions_only? : Bool = true,
+  fanout_limit? : Int = 64,
+  unseen_press_held? : Bool = true,
+  untracked_read_held? : Bool = true,
+  unnamed_press_held? : Bool = true,
+  scroll_each_limit? : Int = 50,
+  effect_in_view_held? : Bool = true,
+  loc~ : SourceLoc,
+) -> Tester {
+  let made = if transitions_only {
+    fn(root : @view.View) {
+      root.transitions_only() |> ignore
+      tree(root)
+    }
+  } else {
+    tree
+  }
+  tester_make(
+    None,
+    made,
+    theme,
+    w~,
+    h~,
+    dark~,
+    window_inset~,
+    env~,
+    app_version~,
+    images~,
+    platform~,
+    keys?,
+    pointing?,
+    native?,
+    keyboard?,
+    seed?,
+    text?,
+    scale~,
+    time~,
+    stable~,
+    finish~,
+    run?,
+    h264~,
+    copy_shown~,
+    live?,
+    corners_held~,
+    presses_held~,
+    window_corner~,
+    window_corners?,
+    words_over_held~,
+    nav_able~,
+    before?,
+    begun?,
+    keeps_sources~,
+    windows_beside~,
+    fanout_limit~,
+    unseen_press_held~,
+    untracked_read_held~,
+    unnamed_press_held~,
+    scroll_each_limit~,
+    effect_in_view_held~,
+    loc~,
+  )
+}
+
+///|
+/// The Tester of Tester::new and Tester::tree: the window's tree `tree`, the old frame `around` it where there is one
+/// (set_view_app's), drawn in `theme`.
+fn tester_make(
+  around : ((Ctx) -> Unit)?,
+  tree : (@view.View) -> Unit,
+  theme : (() -> Theme)?,
+  w~ : Double,
+  h~ : Double,
+  dark~ : Bool,
+  window_inset~ : Bool,
+  env~ : Array[(String, String)],
+  app_version~ : Int,
+  images~ : Array[(String, Int, Int)],
+  platform~ : Int,
+  keys? : Int,
+  pointing? : Pointing,
+  native? : Pointing,
+  keyboard? : Bool,
+  seed? : Int,
+  text? : String,
+  scale~ : Double,
+  time~ : Double,
+  stable~ : Bool,
+  finish~ : Bool,
+  run? : String,
+  h264~ : Bool,
+  copy_shown~ : Bool,
+  live? : Live,
+  corners_held~ : Bool,
+  presses_held~ : Bool,
+  window_corner~ : Double,
+  window_corners? : FixedArray[Double],
+  words_over_held~ : Bool,
+  nav_able~ : Bool,
+  before? : () -> Unit,
+  begun? : () -> Unit,
+  keeps_sources~ : Bool,
+  windows_beside~ : Bool,
+  fanout_limit~ : Int,
+  unseen_press_held~ : Bool,
+  untracked_read_held~ : Bool,
+  unnamed_press_held~ : Bool,
+  scroll_each_limit~ : Int,
+  effect_in_view_held~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -406,6 +634,7 @@ pub fn Tester::new(
     late: 0.0,
     late_after: -1.0,
     late_frame: -1,
+    present_ms: 0.0,
     wall: tester_wall - time,
     scale,
     wants: false,
@@ -424,6 +653,8 @@ pub fn Tester::new(
     ime_rect: (0.0, 0.0, 0.0, 0.0),
     clipboard: "",
     badge: 0,
+    auto_launch: false,
+    hotkeys: {},
     app_said: Map([]),
     app_told: [],
     local_fonts: "",
@@ -494,6 +725,10 @@ pub fn Tester::new(
     window_ids: 0,
     window_at: 0,
     window_sizes: {},
+    window_insets: {},
+    window_zooms: {},
+    window_snaps: {},
+    window_acts_by: {},
     window_ids_fronted: [],
     window_ids_closed: [],
     opened: [],
@@ -552,6 +787,8 @@ pub fn Tester::new(
     perf_lines: [],
     perf_opens: false,
     perf_opened: 0,
+    reveals: false,
+    revealed: [],
     perf_bytes: 0.0,
     view_texts: {},
     view_stills: {},
@@ -674,16 +911,32 @@ pub fn Tester::new(
   if begun is Some(set) {
     set()
   }
+  // (windows of the run beside the first, open to it from its first frame, before its tree is made: what reads
+  // whether one opens as it is made, a bar's key to one, reads it so: Tester::set_window_opens, set_windows_in_process)
+  if windows_beside {
+    f.window_opens = true
+    f.windows_in_process = true
+  }
   // (the window a tree made once: `tree`, the view under test the old frame around its old views; else the view its
   // one old view: view_host.mbt)
-  match tree {
-    Some(make) => set_view_app(make, around=view)
-    None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
+  match around {
+    Some(view) => set_view_app(tree, around=view, theme?=theme)
+    None => set_view_app(tree, theme?=theme)
   }
   let between = test_frames_between()
   tester_rested.clear()
+  tester_ways_rested.val = -1.0
   frames_at_one.val = (-1.0, 0)
   let t = { fake: f, w, h, frames: 0, seed, origin: time, period: frame_period_default, times: [], between, on_way: false, shown: false, motion: test_motion_judged(loc.to_string()), host_frames: false, inputs_next: @double.infinity, each: None, before }
+  if fanout_limit > 0 {
+    t.set_fanout_limit(fanout_limit)
+    fanout_hold.val = true
+  }
+  unseen_press_hold.val = unseen_press_held
+  untracked_read_hold.val = untracked_read_held
+  unnamed_press_hold.val = unnamed_press_held
+  scroll_each_hold_limit.val = scroll_each_limit
+  effect_in_view_hold.val = effect_in_view_held
   // a host's run replayed: its first frame where the host drew it (its first DRAWHASH), the display's frames from
   // there; else the display's first frame after `time`
   match run.bind(run_first_frame) {
@@ -1230,6 +1483,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
 /// The first window's frame of frame_shown_at's, with every check the Tester holds it to.
 fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Unit {
   let at = now
+  // (a frame nothing asks for draws what the screen shows before it: tester_unasked.mbt)
+  let unasked = self.unasked_before(now)
   // (what was posted told at its moment, and what the fake host does at its own moments up to this frame's, before the
   // clock comes there: posted_tell, FakeHost::due)
   posted_tell()
@@ -1273,6 +1528,7 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   // Gallery reads complete on the next frame, including frames that reuse the view.
   self.fake.gallery_frame += 1
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
+  self.unasked_after(unasked, at)
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
   // (how many times it laid the window's tree out, and each event since the frame before: tester_passes.mbt)
@@ -1298,6 +1554,12 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   }
   self.hold_seen_whole_now()
   self.hold_corners()
+  self.hold_fanout()
+  self.hold_unseen_press()
+  self.hold_untracked_read()
+  self.hold_unnamed_press()
+  self.hold_scroll_each()
+  self.hold_effect_in_view()
   // (where the focus a key moved along comes to rest, once what moved as it did is at rest: tester_focus_off.mbt)
   self.focus_off_at_rest()
   // (what it drew was placed by the layout it drew by: tester_placed.mbt)
@@ -1926,6 +2188,17 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
     }
     gone
   }
+  let tree_opt = view_tree()
+  let island_of = fn(i : Int) -> @view.NodeId? {
+    let mut p = i
+    while p >= 0 {
+      if old_box_owners.get(p) is Some((_, id)) {
+        return Some(id)
+      }
+      p = c.nodes[p].parent
+    }
+    None
+  }
   for i in 0..<c.count {
     let n = c.nodes[i]
     // (a field's placeholder too, as Android's hint is words of their own)
@@ -1934,6 +2207,26 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
       n.text != "" &&
       !let_go(i) {
       let (x, y) = c.drawn_at(i)
+      let mut wx = x
+      let mut ww = n.fw
+      if !nav_clips_now.is_empty() {
+        match (tree_opt, island_of(i)) {
+          (Some(tree), Some(iid)) =>
+            match nav_clip_for_node(tree, iid) {
+              Some((cut_l, cut_r)) => {
+                let nx0 = dmax(wx, cut_l)
+                let nx1 = dmin(wx + ww, cut_r)
+                if nx1 <= nx0 {
+                  continue
+                }
+                wx = nx0
+                ww = nx1 - nx0
+              }
+              None => ()
+            }
+          _ => ()
+        }
+      }
       let mut alpha = 1.0
       let mut p = i
       while p >= 0 {
@@ -1944,17 +2237,31 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
         }
         p = c.nodes[p].parent
       }
-      out.push(((n.text, x, y, n.fw, n.fh, alpha), n.sem_hid))
+      out.push(((n.text, wx, y, ww, n.fh, alpha), n.sem_hid))
     }
   }
   // (and the words of the window's tree's nodes, where and as faded as they are drawn, as Tester::find finds them)
-  match view_tree() {
+  match tree_opt {
     Some(tree) =>
       for d in tree.drawn() {
         // (a field's placeholder too, its hint: view_words_found)
         let words = view_words_found(d)
         if words != "" && d.bones == 0L {
-          out.push(((words, d.x, d.y, d.w, d.h, d.alpha), !tree.reads_out(d.id)))
+          let mut wx = d.x
+          let mut ww = d.w
+          match nav_clip_for_node(tree, d.id) {
+            Some((cut_l, cut_r)) => {
+              let nx0 = dmax(wx, cut_l)
+              let nx1 = dmin(wx + ww, cut_r)
+              if nx1 <= nx0 {
+                continue
+              }
+              wx = nx0
+              ww = nx1 - nx0
+            }
+            None => ()
+          }
+          out.push(((words, wx, d.y, ww, d.h, d.alpha), !tree.reads_out(d.id)))
         }
       }
     None => ()
@@ -2554,6 +2861,18 @@ pub fn Tester::set_perf_opens(self : Tester, opens : Bool) -> Unit {
 }
 
 ///|
+/// Whether files can be shown in their folders from now on (@hostapi.reveals_files: a desktop's file manager).
+pub fn Tester::set_reveals(self : Tester, reveals : Bool) -> Unit {
+  self.fake.reveals = reveals
+}
+
+///|
+/// The files the app showed in their folders (@hostapi.reveal_file), oldest first.
+pub fn Tester::revealed(self : Tester) -> Array[String] {
+  self.fake.revealed.copy()
+}
+
+///|
 /// How many times the app opened the performance record's folder (@hostapi.perf_open).
 pub fn Tester::perf_opened(self : Tester) -> Int {
   self.fake.perf_opened
@@ -2575,10 +2894,11 @@ pub fn Tester::perf_said(self : Tester) -> (Array[Bool], Array[String]) {
 }
 
 ///|
-/// The system asks for less transparency from now on, or no longer.
+/// The system asks for less transparency from now on, or no longer: the host asks a frame as it changes.
 pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_reduce_transparency")
   self.fake.reduce_transparency = on
+  self.fake.wants = true
 }
 
 ///|
@@ -2590,10 +2910,11 @@ pub fn Tester::set_thermal_throttled(self : Tester, on : Bool) -> Unit {
 }
 
 ///|
-/// The system asks for more contrast from now on, or no longer.
+/// The system asks for more contrast from now on, or no longer: the host asks a frame as it changes.
 pub fn Tester::set_increase_contrast(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_increase_contrast")
   self.fake.increase_contrast = on
+  self.fake.wants = true
 }
 
 ///|
@@ -3488,6 +3809,59 @@ pub fn Tester::right_click(self : Tester, x : Double, y : Double) -> Unit {
 }
 
 ///|
+/// A mouse's button other than the primary (`button` 2 the secondary, 3 the middle) down at (x, y), held: what takes it
+/// whole (View::on_buttons) sees it go down, and moves (Tester::move_to, a drag's) till it goes up (Tester::button_up).
+/// One frame drawn after it.
+pub fn Tester::button_down(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(0, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// A mouse's button other than the primary (Tester::button_down) up at (x, y). One frame drawn after it.
+pub fn Tester::button_up(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(2, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// Whether the window holds the pointer now (@hostapi.set_pointer_lock), and how many times it was told to hold it or
+/// let it go.
+pub fn Tester::pointer_locked(self : Tester) -> (Bool, Int) {
+  match fake_pointer_of(self.fake) {
+    Some(p) => (p.lock, p.locks_told)
+    None => (false, 0)
+  }
+}
+
+///|
+/// The mouse moved by (`dx`, `dy`) while the window holds the pointer, its move coming where the pointer stays (x, y),
+/// as a host gives it (@hostapi.pointer_delta_take answers it). One frame drawn after it.
+pub fn Tester::locked_move(self : Tester, x : Double, y : Double, dx : Double, dy : Double) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) && p.lock {
+    p.delta = (p.delta.0 + dx, p.delta.1 + dy)
+  }
+  self.move_to(x, y)
+}
+
+///|
+/// The pointer let go of by the system (the window gone out of focus, as a host does by itself): nothing told the app.
+pub fn Tester::pointer_lock_lost(self : Tester) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) {
+    p.lock = false
+    p.delta = (0.0, 0.0)
+  }
+}
+
+///|
+/// The game controllers connected from now on, as the host reads them (@hostapi.gamepads).
+pub fn Tester::set_gamepads(self : Tester, pads : Array[@hostapi.Gamepad]) -> Unit {
+  fake_pointer(self.fake).pads = pads
+}
+
+///|
 /// The pointer gone out of the window.
 pub fn Tester::leave(self : Tester) -> Unit {
   on_pointer(7, -1.0, -1.0, 0)
@@ -3497,8 +3871,8 @@ pub fn Tester::leave(self : Tester) -> Unit {
 ///|
 /// A wheel at (x, y) as the host sends it: `phase` 0 a trackpad's (or a host that does not say), 4 a mouse wheel's
 /// notch (eased in over the next frames). One frame drawn, not settled.
-pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int) -> Unit {
-  finger_wheel(x, y, 0.0, dy, phase)
+pub fn Tester::wheel_phase(self : Tester, x : Double, y : Double, dy : Double, phase : Int, dx? : Double = 0.0) -> Unit {
+  finger_wheel(x, y, dx, dy, phase)
   self.drawn_now()
 }
 

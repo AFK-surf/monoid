@@ -8,6 +8,7 @@
 /// changed where the app differs (`{ ..Theme::light(), accent: 0x… }`). By default still.fail's (its web and apps'
 /// tokens: the wide screen's white canvas and still.fail orange, the phone's warm paper); iOS's colours, what mbui had
 /// hard-coded, are Theme::ios_light and Theme::ios_dark.
+#derive(Eq, Debug)
 pub(all) struct Theme {
   /// dark (what draws over it picks its own shades by it)
   dark : Bool
@@ -136,6 +137,7 @@ pub(all) struct Theme {
 ///|
 /// The sizes of words, each with its line's height (size, line): the roles' (TextSize Caption … Display), then the
 /// scale's.
+#derive(Eq, Debug)
 pub(all) struct TextScale {
   caption : (Double, Double)
   meta : (Double, Double)
@@ -189,6 +191,7 @@ pub fn TextScale::tailwind() -> TextScale {
 
 ///|
 /// The heights of lines said on their own (Leading's L3 … L10, and L4_75), in pixels.
+#derive(Eq, Debug)
 pub(all) struct LeadingScale {
   l3 : Double
   l4 : Double
@@ -209,6 +212,7 @@ pub fn LeadingScale::tailwind() -> LeadingScale {
 
 ///|
 /// The corners.
+#derive(Eq, Debug)
 pub(all) struct RadiusScale {
   sm : Double
   base : Double
@@ -288,7 +292,7 @@ pub fn Theme::light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
-    tabular: false,
+    tabular: true,
   }
 }
 
@@ -452,6 +456,7 @@ pub fn Theme::ios_light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
+    // iOS system theme keeps San Francisco's proportional figures unless opted in.
     tabular: false,
   }
 }
@@ -502,7 +507,8 @@ pub fn Ctx::theme(self : Ctx) -> Theme {
 /// The theme from here on (this frame's rest and the next frames'), until set again. With `narrow`, that one in its
 /// place in the frames whose window is narrower than `narrow_below` (a phone's), picked as each frame starts from its
 /// width (Ctx::narrow; style.mbt's `narrow` blocks). The app calls it as it starts and when the person picks light
-/// or dark, not every frame.
+/// or dark, not every frame. It is the old view's (`Ctx`, built each frame): a window's tree made once says its theme
+/// as it is made, followed as it changes (run_tree's and Tester::tree's `theme`, set_tree_theme).
 pub fn Ctx::set_theme(self : Ctx, t : Theme, narrow? : Theme, narrow_below? : Double = 700.0) -> Unit {
   self.theme_wide = t
   self.theme_narrow = narrow
@@ -515,6 +521,12 @@ pub fn Ctx::set_theme(self : Ctx, t : Theme, narrow? : Theme, narrow_below? : Do
 fn Ctx::pick_theme(self : Ctx) -> Unit {
   self.theme = self.theme_for(self.width)
   self.narrow = self.theme_narrow is Some(_) && self.width < self.narrow_below
+  // (what the build goes by of it from here, set as the frame's build begins (frame_build): a theme set as it builds
+  // goes by its own for the rest of the build, its corners and spacing worked out by it in this frame)
+  self.corner_ladder = self.theme.corner_ladder
+  self.corner_fit = self.theme.corner_fit
+  self.lit_apart = self.theme.lit_apart
+  self.lit_reach = self.theme.lit_reach
 }
 
 ///|
@@ -811,6 +823,18 @@ pub fn over(under : Int64, top : Int64) -> Int64 {
     (u + (t - u) * a).round().to_int64() << sh
   }
   ch(24) | ch(16) | ch(8) | 0xFFL
+}
+
+///|
+/// `a` going to `b` as `t` goes from 0 to 1, channel by channel (alpha too).
+pub fn blend(a : Int64, b : Int64, t : Double) -> Int64 {
+  let k = if t < 0.0 { 0.0 } else if t > 1.0 { 1.0 } else { t }
+  let ch = fn(sh : Int) -> Int64 {
+    let x = ((a >> sh) & 0xFFL).to_double()
+    let y = ((b >> sh) & 0xFFL).to_double()
+    (x + (y - x) * k).round().to_int64() << sh
+  }
+  ch(24) | ch(16) | ch(8) | ch(0)
 }
 
 ///|

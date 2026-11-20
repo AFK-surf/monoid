@@ -97,7 +97,7 @@ fn over_toast_foot(foot : Double) -> Double raise {
   sheet_rested(t, "sf-present")
   @sfbase.toast_later("发到了")
   // (come in: where its words are drawn as it rests)
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   match t.rect_of("发到了") {
     Some((_, y, _, h)) => y + h
     None => fail("no toast")

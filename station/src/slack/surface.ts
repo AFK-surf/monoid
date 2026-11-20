@@ -256,6 +256,38 @@ export type SlackSurfaceOptions = {
 /// The most of a question's words its card carries (Slack takes 12,000 characters of Markdown in a message, and long
 /// options are listed with them).
 const QUESTION_CHARS = 8_000;
+/// The most bytes a chat.update's `text` is cut to, though chat.postMessage takes 40,000 and the message's Markdown block
+/// 12,000 characters: a message posted whole is changed with its blocks whole and its `text`, only the notification's
+/// fallback, cut to fit. Slack refuses a `text` over 4,000 UTF-8 bytes (msg_too_long) as it stands after Slack's own
+/// changes to it: `&`, `<` and `>` escaped (`&amp;`, `&lt;`, `&gt;`) and bare links and emails made `<url>` /
+/// `<mailto:…|…>`. Each character is counted as escaped (`slackTextBytes`); the 500 bytes left are for the links.
+const UPDATE_TEXT_BYTES = 3_500;
+/// What `text` is cut to on a second try where Slack still found it too long (a message of nothing but links).
+const UPDATE_TEXT_FALLBACK_BYTES = 200;
+
+/// A code point's bytes in a `text` as Slack measures it: `&`, `<` and `>` as their escapes, the rest as UTF-8.
+function slackTextBytes(cp: number): number {
+  if (cp === 0x26) return 5;
+  if (cp === 0x3c || cp === 0x3e) return 4;
+  return cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+}
+
+/// `said` cut to `maxBytes` as Slack counts them (`slackTextBytes`) at a whole code point, "…" after it where cut (mb
+/// slack `update_text`).
+export function updateText(said: string, maxBytes: number = UPDATE_TEXT_BYTES): string {
+  let total = 0;
+  for (const c of said) total += slackTextBytes(c.codePointAt(0)!);
+  if (total <= maxBytes) return said;
+  let used = 0;
+  let out = "";
+  for (const c of said) {
+    const bytes = slackTextBytes(c.codePointAt(0)!);
+    if (used + bytes > maxBytes - 3) break;
+    used += bytes;
+    out += c;
+  }
+  return `${out}…`;
+}
 /// How long the workspace's people are kept for (peopleIn).
 export const PEOPLE_MS = 10 * 60_000;
 
@@ -558,16 +590,7 @@ export class SlackSurface extends ConnectedSurface {
     if (this.stands.get(key)?.ts === asked) this.stands.delete(key);
     const end = this.ends.get(key);
     if (end?.ts === asked && end.mine !== null) end.mine = { text: asking, blocks: entered };
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", asked],
-        ["text", asking],
-        ["blocks", JSON.stringify(entered)],
-      ],
-      this.botToken,
-    );
+    await this.update(channel, asked, asking, entered);
   }
 
   /// What a pressed card says, to be shown again under its answer: its message's text, and its words (cards.ts `Words`):
@@ -628,16 +651,7 @@ export class SlackSurface extends ConnectedSurface {
     if (this.stands.get(key)?.ts === asked) this.stands.delete(key);
     const end = this.ends.get(key);
     if (end?.ts === asked && end.mine !== null) end.mine = { text: asking, blocks: answered };
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", asked],
-        ["text", asking],
-        ["blocks", JSON.stringify(answered)],
-      ],
-      this.botToken,
-    );
+    await this.update(channel, asked, asking, answered);
   }
 
   /// A question that stopped waiting other than by its button (connects/card-ends.ts), a login's field among them:
@@ -827,16 +841,7 @@ export class SlackSurface extends ConnectedSurface {
     const said: Said = { text: message, blocks: [markdown(message)] };
     const stands = this.stands.get(key);
     const under = stands?.ts === ts && stands.mine !== null ? stands.block : null;
-    await this.client.api(
-      "chat.update",
-      [
-        ["channel", thread.channel],
-        ["ts", ts],
-        ["text", message],
-        ["blocks", JSON.stringify(under !== null ? [...said.blocks, under] : said.blocks)],
-      ],
-      this.botToken,
-    );
+    await this.update(thread.channel, ts, message, under !== null ? [...said.blocks, under] : said.blocks);
     if (stands?.ts === ts && stands.mine !== null) stands.mine = said;
     const end = this.ends.get(key);
     if (end?.ts === ts && end.mine !== null) end.mine = said;
@@ -907,17 +912,28 @@ export class SlackSurface extends ConnectedSurface {
     this.heard(thread.channel, thread.threadTs, ts);
   }
 
-  private update(channel: string, ts: string, said: string, blocks: Json[]) {
-    return this.client.api(
-      "chat.update",
-      [
-        ["channel", channel],
-        ["ts", ts],
-        ["text", said],
-        ["blocks", JSON.stringify(blocks)],
-      ],
-      this.botToken,
-    );
+  /// A message changed in place, its blocks whole; where Slack still finds the cut text too long once its links are
+  /// made, once more with a text cut shorter (mb slack `update`).
+  private async update(channel: string, ts: string, said: string, blocks: Json[]) {
+    const call = (text: string) =>
+      this.client.api(
+        "chat.update",
+        [
+          ["channel", channel],
+          ["ts", ts],
+          ["text", text],
+          ["blocks", JSON.stringify(blocks)],
+        ],
+        this.botToken,
+      );
+    const first = updateText(said);
+    try {
+      return await call(first);
+    } catch (error) {
+      const shorter = updateText(said, UPDATE_TEXT_FALLBACK_BYTES);
+      if (blocks.length === 0 || !(error as Error).message.includes("msg_too_long") || shorter === first) throw error;
+      return await call(shorter);
+    }
   }
 
   /// It works again: where it stood is no longer so.

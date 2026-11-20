@@ -361,3 +361,180 @@ test "大屏: another workspace picked, in an event of the tree's or not, no fra
   assert_eq(picked_back_forward(true), alone)
   assert_eq(alone, (1, ["ws2", "ws1", "ws2"]))
 }
+
+///|
+/// Find the drawn node of the floating back hint badge by its drawn_as name.
+fn back_hint_drawn() -> @view.Drawn? {
+  guard @ui.view_tree() is Some(tree) else { return None }
+  for d in tree.drawn() {
+    if tree.drawn_name(d.id) == "/back-hint/" {
+      return Some(d)
+    }
+  }
+  None
+}
+
+///|
+fn wide_desktop_pair() -> @ui.Tester {
+  new_run()
+  let src = fixture("chat")
+  wide_src.val = Some(src)
+  open_chat(chat_a)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  open_chat(chat_b)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+fn sweep_step(t : @ui.Tester, dx : Double) -> Unit {
+  t.advance(@ui.input_step_ms)
+  t.wheel_with(640.0, 400.0, dx, 0.0, 0)
+  t.draw()
+}
+
+///|
+fn back_hint_audit(t : @ui.Tester) -> Array[String] {
+  // Pre-existing main fault on Large pane_view: the sidebar drag edge (edge_node.mbt:37, asked at pane_view.mbt)
+  // intentionally overlaps the sidebar and page pane by 6px (same exemption as experimental_wbtest.mbt &
+  // station_move_wbtest.mbt).
+  t
+  .audit()
+  .filter(fn(f) { !(f.contains("stillfail/sf/src/edge_node.mbt:") && f.contains("sfdesk/pane_view.mbt:")) })
+}
+
+///|
+test "大屏: swipe-back hint follows across monotonically, retreats on reverse, turns accent at far, and does not eat hits" {
+  let t = wide_desktop_pair()
+  assert_eq(top_session(), "s-c2")
+  assert_true(back_hint_drawn() is None, msg="absent before gesture")
+  // (probe window drag / hit at the badge's future center before it shows)
+  let probe_x = @sf.card_pad + @sf.float_button_side / 2.0
+  let probe_y = 400.0
+  let drag_before = t.drags_window_at(probe_x, probe_y)
+  // (start gesture past wheel_back_slop=10: across = 20, then 40)
+  sweep_step(t, -20.0)
+  let a1 = back_hint_audit(t).join("; ")
+  assert_eq(a1, "", msg="audit at across=20: \{a1}")
+  let d1 = back_hint_drawn().unwrap()
+  let cx1 = d1.x + d1.w / 2.0
+  sweep_step(t, -20.0)
+  let a2 = back_hint_audit(t).join("; ")
+  assert_eq(a2, "", msg="audit at across=40: \{a2}")
+  let d2 = back_hint_drawn().unwrap()
+  let cx2 = d2.x + d2.w / 2.0
+  assert_true(cx2 > cx1, msg="monotonic: \{cx2} > \{cx1}")
+  // (reverse sweep: across drops back from 40 to 25 -> badge retreats)
+  sweep_step(t, 15.0)
+  let a3 = back_hint_audit(t).join("; ")
+  assert_eq(a3, "", msg="audit on reverse: \{a3}")
+  let d_rev = back_hint_drawn().unwrap()
+  let cx_rev = d_rev.x + d_rev.w / 2.0
+  assert_true(cx_rev < cx2, msg="retreats on reverse: \{cx_rev} < \{cx2}")
+  // (advance past back_hint_far at steady speed for > dur_ms so ready_way completes without releasing)
+  for _ in 0..<10 {
+    sweep_step(t, -20.0)
+  }
+  let a4 = back_hint_audit(t).join("; ")
+  assert_eq(a4, "", msg="audit at ready: \{a4}")
+  let d_ready = back_hint_drawn().unwrap()
+  let cx_ready = d_ready.x + d_ready.w / 2.0
+  let max_cx = @sf.card_pad + @sf.corner_inset + @sf.float_button_side / 2.0 + 0.5
+  assert_true(cx_ready > cx2 && cx_ready < max_cx, msg="past far and damped: \{cx_ready}")
+  assert_eq(d_ready.ground, @sf.theme().p.accent, msg="accent fill when ready")
+  // (hit-testing / window drag at badge location unchanged)
+  assert_eq(t.drags_window_at(probe_x, probe_y), drag_before, msg="drags_window_at unchanged under badge")
+  // (let go via stillness: commits back to s-c1, badge fades out and leaves)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1", msg="long swipe commits back")
+  assert_true(back_hint_drawn() is None, msg="absent after fade out")
+  assert_eq(back_hint_audit(t), [], msg="audit after fade out")
+}
+
+///|
+test "大屏: short swipe below back_hint_far cancels without navigating and hides hint after snap-back" {
+  let t = wide_desktop_pair()
+  assert_eq(top_session(), "s-c2")
+  // (across = 35 < back_hint_far = 60)
+  sweep_step(t, -20.0)
+  sweep_step(t, -15.0)
+  assert_true(back_hint_drawn() is Some(_), msg="hint visible during short swipe")
+  assert_eq(back_hint_audit(t), [], msg="audit during short swipe")
+  // (let go via stillness: cancels without navigating, badge snaps back off-edge)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c2", msg="short swipe does not navigate back")
+  assert_true(back_hint_drawn() is None, msg="hint gone after snap back")
+  assert_eq(back_hint_audit(t), [], msg="audit after snap back")
+}
+
+///|
+test "大屏: non-gesture back navigates immediately without showing the swipe hint" {
+  let t = wide_desktop_pair()
+  assert_eq(top_session(), "s-c2")
+  t.back()
+  t.draw()
+  assert_eq(top_session(), "s-c1")
+  assert_true(back_hint_drawn() is None, msg="no hint for non-gesture back")
+}
+
+///|
+test "大屏 (Android platform=2): predictive back does not draw our hint badge and still navigates on commit" {
+  let (t, _, to) = wide_backs(true)
+  to(0.0)
+  open_chat(chat_b)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c2")
+  let at = t.time()
+  t.back_raw(0, 0.0, at)
+  t.back_raw(1, 80.0, at + wide_step_ms)
+  t.draw()
+  assert_true(back_hint_drawn() is None, msg="Android predictive back draws no app hint")
+  t.back_raw(2, 80.0, at + wide_step_ms * 2.0)
+  assert_eq(top_session(), "s-c1", msg="Android predictive back still commits navigation")
+}
+
+///|
+test "大屏: hint plays exit transition after release (fade+shrink on commit, slide back on cancel) before leaving" {
+  // Commit path: ready release stays present on the next frame with 0 < alpha < 1, then leaves after run_for.
+  let t = wide_desktop_pair()
+  t.back_raw(0, 0.0, t.time())
+  t.advance(wide_step_ms)
+  t.back_raw(1, @sfdesk.back_hint_far + 20.0, t.time())
+  t.draw()
+  assert_true(back_hint_drawn() is Some(_), msg="hint drawn before commit release")
+  t.advance(wide_step_ms)
+  t.back_raw(2, @sfdesk.back_hint_far + 20.0, t.time())
+  assert_eq(top_session(), "s-c1", msg="commit navigates back")
+  t.advance(@ui.input_step_ms)
+  t.draw()
+  let mid_commit = match back_hint_drawn() {
+    Some(d) => d
+    None => fail("hint vanished immediately on commit release instead of fading out")
+  }
+  assert_true(mid_commit.alpha > 0.0 && mid_commit.alpha < 1.0, msg="commit exit alpha in (0, 1): \{mid_commit.alpha}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(back_hint_drawn() is None, msg="hint gone after commit leave completes")
+  // Cancel path: short release stays present on the next frame sliding back toward off-edge, then leaves after run_for.
+  let t2 = wide_desktop_pair()
+  t2.back_raw(0, 0.0, t2.time())
+  t2.advance(wide_step_ms)
+  t2.back_raw(1, @sfdesk.back_hint_far / 2.0, t2.time())
+  t2.draw()
+  let before_cancel = back_hint_drawn().unwrap()
+  t2.advance(wide_step_ms)
+  t2.back_raw(3, @sfdesk.back_hint_far / 2.0, t2.time())
+  assert_eq(top_session(), "s-c2", msg="short release does not navigate")
+  t2.advance(@ui.input_step_ms)
+  t2.draw()
+  let mid_cancel = match back_hint_drawn() {
+    Some(d) => d
+    None => fail("hint vanished immediately on cancel release instead of sliding back")
+  }
+  assert_true(
+    mid_cancel.x < before_cancel.x && mid_cancel.x > -@sf.float_button_side,
+    msg="cancel exit x between release (\{before_cancel.x}) and off-edge (\{-@sf.float_button_side}): \{mid_cancel.x}",
+  )
+  t2.run_for(@ui.move_most_ms)
+  assert_true(back_hint_drawn() is None, msg="hint gone after cancel leave completes")
+}

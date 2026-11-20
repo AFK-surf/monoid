@@ -21,7 +21,7 @@ let z_max = 258
 
 ///|
 /// How many earlier places with the same three bytes are tried for a match at each byte.
-let z_chain = 32
+let z_chain = 6
 
 ///|
 /// How many symbols a block holds before it is written.
@@ -309,13 +309,13 @@ fn Deflater::put(self : Deflater, v : Int, n : Int) -> Unit {
 
 ///|
 fn hash3(d : FixedArray[Byte], at : Int) -> Int {
-  ((d[at].to_int() << 10) ^ (d[at + 1].to_int() << 5) ^ d[at + 2].to_int()) & z_mask
+  ((d.unsafe_get(at).to_int() << 10) ^ (d.unsafe_get(at + 1).to_int() << 5) ^ d.unsafe_get(at + 2).to_int()) & z_mask
 }
 
 ///|
 fn Deflater::insert(self : Deflater, h : Int, p : Int) -> Unit {
-  self.prev[p & z_mask] = self.head[h]
-  self.head[h] = p
+  self.prev.unsafe_set(p & z_mask, self.head.unsafe_get(h))
+  self.head.unsafe_set(h, p)
 }
 
 ///|
@@ -342,6 +342,8 @@ fn Deflater::code(self : Deflater, last : Bool) -> Unit {
   let end = self.base + self.len
   let stop = if last { end } else { end - z_max }
   let d = self.data
+  let head = self.head
+  let prev = self.prev
   while self.pos < stop {
     let p = self.pos
     let at = p - self.base
@@ -351,25 +353,25 @@ fn Deflater::code(self : Deflater, last : Bool) -> Unit {
     if left >= z_min {
       let h = hash3(d, at)
       let most = if left < z_max { left } else { z_max }
-      let mut c = self.head[h]
+      let mut c = head.unsafe_get(h)
       let mut tries = z_chain
       while c >= 0 && p - c <= z_window && tries > 0 {
         let ca = c - self.base
         // (one no longer than the best so far passed over by the byte that would make it longer)
-        if d[ca + best] == d[at + best] {
+        if d.unsafe_get(ca + best) == d.unsafe_get(at + best) {
           let mut l = 0
-          while l < most && d[ca + l] == d[at + l] {
+          while l < most && d.unsafe_get(ca + l) == d.unsafe_get(at + l) {
             l = l + 1
           }
           if l > best {
             best = l
             dist = p - c
-            if l >= most {
+            if l >= 32 || l >= most {
               break
             }
           }
         }
-        let before = self.prev[c & z_mask]
+        let before = prev.unsafe_get(c & z_mask)
         if before >= c {
           break
         }
@@ -380,15 +382,17 @@ fn Deflater::code(self : Deflater, last : Bool) -> Unit {
     }
     if best >= z_min {
       self.symbol(best, dist)
-      // the places inside it hashed too, where three bytes are there
-      for q in (p + 1)..<(p + best) {
-        if end - q >= z_min {
-          self.insert(hash3(d, q - self.base), q)
+      // (skip hashing inside long matches to avoid O(N * chain * 258) degeneration on solid UI runs)
+      if best < 16 {
+        for q in (p + 1)..<(p + best) {
+          if end - q >= z_min {
+            self.insert(hash3(d, q - self.base), q)
+          }
         }
       }
       self.pos = p + best
     } else {
-      self.symbol(0, d[at].to_int())
+      self.symbol(0, d.unsafe_get(at).to_int())
       self.pos = p + 1
     }
   }
@@ -397,11 +401,10 @@ fn Deflater::code(self : Deflater, last : Bool) -> Unit {
   let drop = keep - self.base
   if drop > 2 * z_window {
     let a = self.data
-    for i in 0..<(self.len - drop) {
-      a[i] = a[i + drop]
-    }
+    let rem = self.len - drop
+    a.blit_to(a, len=rem, src_offset=drop, dst_offset=0)
     self.base = keep
-    self.len = self.len - drop
+    self.len = rem
   }
 }
 
@@ -605,10 +608,12 @@ struct PngRows {
   w : Int
   h : Int
   mut rows : Int
-  // the row before, and this one, as they are (before they are filtered); each filter's of this one
+  // the row before, and this one, as they are (before they are filtered); Sub, Up, and all-zero Up buffers
   mut prev : FixedArray[Byte]
   mut cur : FixedArray[Byte]
-  tries : FixedArray[FixedArray[Byte]]
+  t_sub : FixedArray[Byte]
+  t_up : FixedArray[Byte]
+  up_zero : FixedArray[Byte]
   z : Deflater
   // the Adler-32 of what is deflated (zlib's check)
   mut a : Int
@@ -619,19 +624,21 @@ struct PngRows {
 /// A PNG of `w` × `h` pixels begun.
 pub fn PngRows::new(w : Int, h : Int) -> PngRows {
   let n = w * 3
+  let t_sub = FixedArray::make(n + 1, b'\x00')
+  t_sub[0] = b'\x01'
+  let t_up = FixedArray::make(n + 1, b'\x00')
+  t_up[0] = b'\x02'
+  let up_zero = FixedArray::make(n + 1, b'\x00')
+  up_zero[0] = b'\x02'
   {
     w,
     h,
     rows: 0,
     prev: FixedArray::make(n, b'\x00'),
     cur: FixedArray::make(n, b'\x00'),
-    tries: [
-      FixedArray::make(n + 1, b'\x00'),
-      FixedArray::make(n + 1, b'\x00'),
-      FixedArray::make(n + 1, b'\x00'),
-      FixedArray::make(n + 1, b'\x00'),
-      FixedArray::make(n + 1, b'\x00'),
-    ],
+    t_sub,
+    t_up,
+    up_zero,
     z: Deflater::new(),
     a: 1,
     b: 0,
@@ -645,91 +652,80 @@ pub fn PngRows::rows(self : PngRows) -> Int {
 }
 
 ///|
-fn paeth(a : Int, b : Int, c : Int) -> Int {
-  let p = a + b - c
-  let pa = if p > a { p - a } else { a - p }
-  let pb = if p > b { p - b } else { b - p }
-  let pc = if p > c { p - c } else { c - p }
-  if pa <= pb && pa <= pc {
-    a
-  } else if pb <= pc {
-    b
-  } else {
-    c
-  }
-}
-
-///|
 /// `count` rows more of `rgba` (as wide as the PNG, 4 bytes a pixel, rows from the top; its alpha left out), as many
 /// as the PNG still has room for.
 pub fn PngRows::add(self : PngRows, rgba : FixedArray[Byte], count : Int) -> Unit {
+  let w = self.w
   for r in 0..<count {
     if self.rows >= self.h {
       return
     }
-    let at = r * self.w * 4
+    let at = r * w * 4
     let cur = self.cur
-    for x in 0..<self.w {
-      cur[3 * x] = rgba[at + 4 * x]
-      cur[3 * x + 1] = rgba[at + 4 * x + 1]
-      cur[3 * x + 2] = rgba[at + 4 * x + 2]
+    let mut dst = 0
+    let mut src = at
+    for _ in 0..<w {
+      cur.unsafe_set(dst, rgba.unsafe_get(src))
+      cur.unsafe_set(dst + 1, rgba.unsafe_get(src + 1))
+      cur.unsafe_set(dst + 2, rgba.unsafe_get(src + 2))
+      dst += 3
+      src += 4
     }
     self.row()
   }
 }
 
 ///|
-/// The row in `cur` filtered by the filter whose bytes sum smallest, deflated after its filter's byte.
+/// The row in `cur` filtered by Sub (1) or Up (2) (identical rows emit all-zero Up directly), deflated after its filter byte.
 fn PngRows::row(self : PngRows) -> Unit {
   let n = self.w * 3
   let cur = self.cur
   let prev = self.prev
-  let t = self.tries
-  let t0 = t[0]
-  let t1 = t[1]
-  let t2 = t[2]
-  let t3 = t[3]
-  let t4 = t[4]
-  t0[0] = b'\x00'
-  t1[0] = b'\x01'
-  t2[0] = b'\x02'
-  t3[0] = b'\x03'
-  t4[0] = b'\x04'
-  // each filter's bytes, and how large they are as signed bytes, summed
-  let mut s0 = 0
-  let mut s1 = 0
-  let mut s2 = 0
-  let mut s3 = 0
-  let mut s4 = 0
-  for i in 0..<n {
-    let x = cur[i].to_int()
-    let a = if i >= 3 { cur[i - 3].to_int() } else { 0 }
-    let b = prev[i].to_int()
-    let c = if i >= 3 { prev[i - 3].to_int() } else { 0 }
-    let v0 = x
-    let v1 = (x - a) & 0xFF
-    let v2 = (x - b) & 0xFF
-    let v3 = (x - (a + b) / 2) & 0xFF
-    let v4 = (x - paeth(a, b, c)) & 0xFF
-    t0[i + 1] = v0.to_byte()
-    t1[i + 1] = v1.to_byte()
-    t2[i + 1] = v2.to_byte()
-    t3[i + 1] = v3.to_byte()
-    t4[i + 1] = v4.to_byte()
-    s0 = s0 + (if v0 < 128 { v0 } else { 256 - v0 })
-    s1 = s1 + (if v1 < 128 { v1 } else { 256 - v1 })
-    s2 = s2 + (if v2 < 128 { v2 } else { 256 - v2 })
-    s3 = s3 + (if v3 < 128 { v3 } else { 256 - v3 })
-    s4 = s4 + (if v4 < 128 { v4 } else { 256 - v4 })
-  }
-  let sums = [s0, s1, s2, s3, s4]
-  let mut best = 0
-  for f in 1..<5 {
-    if sums[f] < sums[best] {
-      best = f
+  if self.rows > 0 {
+    let mut same = true
+    for i in 0..<n {
+      if cur.unsafe_get(i) != prev.unsafe_get(i) {
+        same = false
+        break
+      }
+    }
+    if same {
+      let a = (self.a + 2) % 65521
+      let b = ((self.b.to_int64() + a.to_int64() * (n + 1).to_int64()) % 65521L).to_int()
+      self.a = a
+      self.b = b
+      self.z.add(self.up_zero, 0, n + 1)
+      self.prev = cur
+      self.cur = prev
+      self.rows = self.rows + 1
+      return
     }
   }
-  let out = t[best]
+  let t1 = self.t_sub
+  let out = if self.rows == 0 {
+    for i in 0..<n {
+      let x = cur.unsafe_get(i).to_int()
+      let a = if i >= 3 { cur.unsafe_get(i - 3).to_int() } else { 0 }
+      t1.unsafe_set(i + 1, ((x - a) & 0xFF).to_byte())
+    }
+    t1
+  } else {
+    let t2 = self.t_up
+    let mut s1 = 0
+    let mut s2 = 0
+    for i in 0..<n {
+      let x = cur.unsafe_get(i).to_int()
+      let a = if i >= 3 { cur.unsafe_get(i - 3).to_int() } else { 0 }
+      let b = prev.unsafe_get(i).to_int()
+      let v1 = (x - a) & 0xFF
+      let v2 = (x - b) & 0xFF
+      t1.unsafe_set(i + 1, v1.to_byte())
+      t2.unsafe_set(i + 1, v2.to_byte())
+      s1 = s1 + (if v1 < 128 { v1 } else { 256 - v1 })
+      s2 = s2 + (if v2 < 128 { v2 } else { 256 - v2 })
+    }
+    if s2 < s1 { t2 } else { t1 }
+  }
   // (Adler-32: its sums mod 65521, taken now and then, never past what an Int holds)
   let mut a = self.a
   let mut b = self.b
@@ -737,7 +733,7 @@ fn PngRows::row(self : PngRows) -> Unit {
   while k <= n {
     let end = if n + 1 - k > 3800 { k + 3800 } else { n + 1 }
     for j in k..<end {
-      a = a + out[j].to_int()
+      a = a + out.unsafe_get(j).to_int()
       b = b + a
     }
     a = a % 65521

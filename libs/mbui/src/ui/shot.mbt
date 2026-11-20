@@ -453,20 +453,23 @@ fn shift_inst(a : FixedArray[Double], b : Int, dx : Double, dy : Double) -> Unit
 /// The words node `i` and what it holds show, in the order they are painted (a test's: Tester::shots).
 fn Ctx::shot_words(self : Ctx, i : Int) -> Array[String] {
   let out = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(k) {
-    let n = self.nodes[k]
-    if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
-      out.push(n.text)
-    }
-    let mut c = n.first
-    while c >= 0 {
-      (walk.val)(c)
-      c = self.nodes[c].next
-    }
-  }
-  (walk.val)(i)
+  self.shot_words_into(i, out)
   out
+}
+
+///|
+/// (Ctx::shot_words' walk, a function of its own: a closure in a cell calling itself is a ring native's counting never
+/// frees)
+fn Ctx::shot_words_into(self : Ctx, k : Int, out : Array[String]) -> Unit {
+  let n = self.nodes[k]
+  if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
+    out.push(n.text)
+  }
+  let mut c = n.first
+  while c >= 0 {
+    self.shot_words_into(c, out)
+    c = self.nodes[c].next
+  }
 }
 
 ///|
@@ -600,6 +603,15 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
         None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
+      match tree.cut_across_of(c.id) {
+        Some((from, to)) => {
+          let from = dclamp(from, 0.0, c.w)
+          let to = dclamp(to, 0.0, c.w)
+          push_clip(x + from * s, y, x + dmax(from, to) * s, y + c.h * s)
+          clipping.push(c.id)
+        }
+        None => ()
+      }
     }
     if outer_ring_at >= 0 && outer_ring_at < self.ninst {
       rings.push((c.id, self.shot_ring_take(outer_ring_at)))

@@ -40,11 +40,11 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
     return not_found()
   }
   if self.stat_or_none(path) is Some(st) && st.file {
-    return OnDisk(self.mime(path), path)
+    return OnDisk(mime_of(path), path)
   }
   // Packed with its archived workspace: the route reads it out of the archive, under its lock.
   let room = match self.setup.data {
-    None => Null
+    None => JV::Null
     Some(data) =>
       self.backend.ask("sessions/footprint.roomOfSoon", [
         js(data),
@@ -55,14 +55,35 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
   if !self.exists(join([room, "workspace.tar.zst"])) {
     return not_found()
   }
-  Archived(self.mime(path), room, path, "uploads/\{base}")
+  Archived(mime_of(path), room, path, "uploads/\{base}")
 }
 
 ///|
-async fn Admin::mime(self : Admin, path : String) -> String {
-  jstr(Some(self.backend.ask("read/sessions.mime", [js(path)]))).unwrap_or(
-    "application/octet-stream",
-  )
+/// read/sessions.ts `mime`: a file's type by its extension (none for a name with no dot, or only a leading one).
+fn mime_of(p : String) -> String {
+  let mut name = p
+  if name.rev_find("/") is Some(i) {
+    name = name[i + 1:].to_owned()
+  }
+  if name.rev_find("\\") is Some(i) {
+    name = name[i + 1:].to_owned()
+  }
+  let dot = name.rev_find(".").unwrap_or(-1)
+  if dot <= 0 {
+    return "application/octet-stream"
+  }
+  match name[dot + 1:].to_owned().to_lower() {
+    "png" => "image/png"
+    "jpg" | "jpeg" => "image/jpeg"
+    "gif" => "image/gif"
+    "webp" => "image/webp"
+    "svg" => "image/svg+xml"
+    "pdf" => "application/pdf"
+    "txt" => "text/plain; charset=utf-8"
+    "md" => "text/markdown; charset=utf-8"
+    "json" => "application/json"
+    _ => "application/octet-stream"
+  }
 }
 
 ///|
@@ -153,7 +174,7 @@ async fn Admin::session_file(
   r : Request,
   key : String,
   name : String,
-  thumb : Bool,
+  thumb : String?,
 ) -> Answer {
   match self.uploaded(key, name) {
     Answered(a) => a
@@ -171,9 +192,14 @@ async fn Admin::session_file(
       }
     }
     OnDisk(content_type, file) => {
-      let small = match self.setup.data {
-        Some(data) if thumb => {
-          let made = self.backend.ask("drive/thumbs.thumbnail", [
+      let op = match thumb {
+        Some("1") => Some("drive/thumbs.thumbnail")
+        Some("2") => Some("drive/thumbs.preview")
+        _ => None
+      }
+      let small = match (self.setup.data, op) {
+        (Some(data), Some(op)) => {
+          let made = self.backend.ask(op, [
             js(file),
             js(self.thumbs_dir(data)),
           ])
@@ -273,9 +299,9 @@ async fn Admin::range_answer(
       0.0,
     )
     let want = @cmp.maximum(0.0, @cmp.minimum(length, total - offset))
-    let bytes = bytes_of(
-      self.backend.ask("drive/fs.readAt", [h, jnum(offset), jnum(want)]),
-    ).unwrap_or(b"")
+    let bytes = self.backend
+      .ask_bytes("drive/fs.readAt", [h, jnum(offset), jnum(want)])
+      .unwrap_or(b"")
     answered(
       content_type,
       Whole(bytes),
@@ -375,12 +401,7 @@ async fn Admin::place_of(
 /// ICU's order of two names, as `localeCompare` has it for the names a directory holds: letters by their lower case
 /// first, a lower case before its upper case.
 fn locale_compare(a : String, b : String) -> Int32 {
-  let la = a.to_lower()
-  let lb = b.to_lower()
-  if la != lb {
-    return js_compare(la, lb)
-  }
-  -js_compare(a, b)
+  @jsjson.locale_compare(a, b)
 }
 
 ///|
@@ -558,30 +579,7 @@ async fn Admin::peek(self : Admin, r : Request, key : String) -> Answer {
 ///|
 /// encodeURIComponent.
 pub fn encode_uri_component(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for b in utf8(s) {
-    let c = b.to_int()
-    if (c >= 'a' && c <= 'z') ||
-      (c >= 'A' && c <= 'Z') ||
-      (c >= '0' && c <= '9') ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '!' ||
-      c == '~' ||
-      c == '*' ||
-      c == '\'' ||
-      c == '(' ||
-      c == ')' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|
@@ -596,10 +594,25 @@ async fn Admin::open_file(self : Admin, r : Request, key : String) -> Answer {
   let path = jstr(found.get("path")).unwrap_or("")
   let name = jstr(found.get("name")).unwrap_or("")
   let content_type = jstr(found.get("contentType")).unwrap_or("")
+  let mtime = js_string(found.get("mtime"))
+  let size = js_string(found.get("size"))
   let named = [
     ("stillfail-name", encode_uri_component(name)),
     ("stillfail-path", encode_uri_component(path)),
+    ("stillfail-mtime", mtime),
   ]
+  // (the version the device keeps, not changed since: no bytes, they are its already)
+  if r.param("raw") == Some("1") && r.param("have") == Some(mtime + ":" + size) {
+    let headers : Map[String, String] = {
+      "content-type": content_type,
+      "cache-control": "no-store",
+    }
+    for e in named {
+      headers[e.0] = e.1
+    }
+    headers["stillfail-total"] = size
+    return { status: 304, headers, body: Whole(b"") }
+  }
   if r.param("raw") == Some("1") &&
     (r.param("offset") is Some(_) || r.param("length") is Some(_)) {
     guard range_of(r) is Some((offset, length)) else {
@@ -717,7 +730,7 @@ fn Admin::sessions_routes(self : Admin) -> Array[Route] {
             r,
             key,
             r.param("name").unwrap_or(""),
-            r.param("thumb") == Some("1"),
+            r.param("thumb"),
           )
         Some("parts") => self.session_part(r, key)
         Some("poster") => self.poster_of(r, key)

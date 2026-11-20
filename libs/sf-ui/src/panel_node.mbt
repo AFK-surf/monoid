@@ -39,7 +39,7 @@ fn panel_node(
       // (how far in it is, from the moment it opened; out from the moment it closed)
       let way = @motion.NodeWay::new(0.0)
       let leave_from = Ref(0.0)
-      let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
+      let leave_look = Ref(@motion.pop_in.at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
       let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
@@ -49,11 +49,11 @@ fn panel_node(
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.value_at(layer.cause_at())
             leave_from.val = p
-            leave_look.val = @kit.pop_in.at(p, p)
+            leave_look.val = @motion.pop_in.at(p, p)
           }
-          way.go_ms(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(layer, 0.0, @motion.pop_out_ms, ease=Leave)
         } else {
-          gate.go(layer, fn() { way.go_ms(layer, 1.0, @kit.pop_ms) })
+          gate.go(layer, fn() { way.go_ms(layer, 1.0, @motion.pop_ms) })
         }
       })
       let look = fn() {
@@ -61,11 +61,11 @@ fn panel_node(
         if layer.leaving() && x.fade_out_together {
           // Fade the whole panel from that appearance, retaining the popover's scale and curve.
           let fade = if leave_from.val > 0.0 { dmin(1.0, dmax(0.0, p / leave_from.val)) } else { 0.0 }
-          { ..@kit.pop_out.at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
+          { ..@motion.pop_out.at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
         } else if layer.leaving() {
-          @kit.pop_out.at(p, p)
+          @motion.pop_out.at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          @motion.pop_in.at(p, p)
         }
       }
       let live = fn() { !layer.leaving() }
@@ -73,6 +73,12 @@ fn panel_node(
       submenu_layer_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
+      // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
+      // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
+      // field's focus kept as the layer takes what is under it)
+      if !x.focus {
+        layer.leaves_typing() |> ignore
+      }
       layer
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
@@ -81,11 +87,6 @@ fn panel_node(
       .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
-      // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
-      // (kit's popover with its initial focus prevented, as menu_node's keep_field)
-      if !x.focus {
-        layer.leaves_typing() |> ignore
-      }
       layer
       // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))
@@ -141,11 +142,11 @@ fn panel_node(
         .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
         .radius(Is(r_menu))
         .ground(By(fn() { panel_ground() }))
-        .edge(By(fn() { (1.0, library_theme().p.line) }))
-        .shadow(By(fn() { (16.0, 12.0, library_theme().p.shadow) }))
+        .edge(By(fn() { (1.0, panel_edge()) }))
+        .shadow(By(fn() { float_shadow() }))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label=x.title))))
         // (a press on it its own: not outside it)
@@ -314,7 +315,7 @@ fn panel_node(
       })
       gate.seal(layer)
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

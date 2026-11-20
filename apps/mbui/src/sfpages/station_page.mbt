@@ -123,12 +123,13 @@ fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem
       })),
     )
   }
-  // made one that only runs tasks by its owner, who added it (`mine`: the core says; asked first, with how many
-  // chats it holds go out of sight): its own station asked, so only while it is up; one of another workspace's
-  // stays whole
+  // made one that only runs tasks by who added it or a workspace owner or admin, whose rig it then is (`mine`: the
+  // core says, false for a plain member's view of a station another added; asked first, with how many chats it holds
+  // go out of sight): its own station asked, so only while it is up; one of another workspace's stays whole
   if flag(s, "mine") && flag(s, "online") && !flag(s, "joined") {
     items.push(
-      Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", fn() {
+      // (not again while it is under way: the station and the cloud asked once)
+      Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", disabled=is_doing(core, ["rig.setMode"], [("station", text(s, "id"))]), fn() {
         let chats = number(field(field(s, "overview"), "counts"), "sessions").to_int()
         confirm(
           @sf.t("web-pages.rigs.toTasksAsk", args=[("name", text(s, "name"))]),
@@ -243,10 +244,17 @@ fn station_kind_node(
   // (its accounts it lists that the station has, in its order, those the search's words are in)
   let found = fn() {
     let words = if searched() { query.text().trim().to_owned().to_lower() } else { "" }
-    let profiles = items(field(now(), "overview"), "profiles")
+    // (its accounts by id once, the first of an id as the station lists them, not looked for again for each)
+    let profiles : Map[String, Json] = Map([])
+    for p in items(field(now(), "overview"), "profiles") {
+      let id = text(Some(p), "id")
+      if !profiles.contains(id) {
+        profiles[id] = p
+      }
+    }
     let out : Array[String] = []
     for id in ids() {
-      match profiles.iter().find_first(fn(p) { text(Some(p), "id") == id }) {
+      match profiles.get(id) {
         Some(p) => {
           let hay = (text(Some(p), "name") + "\n" + text(Some(p), "email")).to_lower()
           if words == "" || hay.contains(words) {
@@ -258,10 +266,19 @@ fn station_kind_node(
     }
     out
   }
-  let profile = fn(id : String) {
-    items(field(now(), "overview"), "profiles").iter().find_first(fn(p) { text(Some(p), "id") == id })
-  }
-  let state = fn(id : String) { field(field(now(), "profileStates"), id) }
+  // (each account and how its check stands kept by its id once, so a row is told only as its own changes: View::keyed_by)
+  let profiles_by = v.keyed_by(fn() { items(field(now(), "overview"), "profiles") }, fn(p) { text(Some(p), "id") })
+  let states_by = v.keyed_by(
+    fn() {
+      match field(now(), "profileStates") {
+        Some(Object(m)) => m.to_array()
+        _ => []
+      }
+    },
+    fn(e) { e.0 },
+  )
+  let profile = fn(id : String) { profiles_by.get(id) }
+  let state = fn(id : String) { states_by.get(id).map(fn(e) { e.1 }) }
   let row = fn(b : @view.View, id : String) {
     station_profile_row_node(b, core, address, id, fn() { profile(id) }, fn() { state(id) }, close)
   }
@@ -530,6 +547,10 @@ let st_count : @ui.TextStyle = @ui.text_style(size=Meta, leading=L7, weight=Medi
 let st_memory : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
+// kept across runs: a value (no field of it changes)
+let st_offline_note : @ui.Style = @ui.css("w=Full pb=S4")
+
+///|
 /// A profile's maker's mark, concentric with its row's corner.
 // kept across runs: a value (no field of it changes)
 let st_profile_mark : @ui.Style = @ui.css("w=S9 h=S9 bg=Neutral align=ACenter justify=JCenter").then(
@@ -553,6 +574,51 @@ let st_problem : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 ///|
 // kept across runs: a value (no field of it changes)
 let st_problem_bad : @ui.TextStyle = st_problem.then(@ui.text_style(color=Danger))
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_head : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_summary : @ui.TextStyle = @ui.text_style(size=Body, leading=L6, weight=Medium, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta : @ui.Style = @ui.css("w=Full gap=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_row : @ui.Style = @ui.css("row w=Full gap=S2_5 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_val_box : @ui.Style = @ui.style(w=@sf.grow)
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_val : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
+
+///|
+/// Aligned label column minimum width in diagnostic key-value and route rows (keeps values aligned while leaving
+/// >=168px on 320px 1.3x screens for IPv4:port tokens).
+let st_diag_label_w : Double = 74.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_ways : @ui.Style = @ui.css("w=Full gap=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_dot : @ui.Style = @ui.css("h=S4 align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_name : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// Taking a station out of the workspace, asked first (its ⋯'s 移出, and 移出 workspace once its chats were moved

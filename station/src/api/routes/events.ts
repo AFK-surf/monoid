@@ -39,9 +39,9 @@ export const routes = ({ events, sessionExists, store }: Tools): Route[] => [
       // `login=<id>`, repeated: those logins' terminals as they change; not for a read-only member.
       const logins = readOnly(r.viewer) ? [] : all(r, "login").filter((id) => /^[0-9a-z]{1,40}$/.test(id));
       // `running=1`: every session at work the viewer sees, as it runs, the station's to follow (no `live` named then).
-      // `shared=1`: its sidebar made of the chat list the station makes once for everyone. Every core makes its rows
-      // and a thread's summary itself (`views=1`, `rows=1`, which it still says; older ones are refused, api/oldest.ts).
-      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, param(r, "running") === "1", param(r, "shared") === "1");
+      // Every core makes its rows of the shared chat list and a thread's summary itself (`views=1`, `rows=1`,
+      // `shared=1`, which it still says; older ones are refused, api/oldest.ts).
+      return events.open(r.viewer, r.lang, param(r, "host") === "1", live, logs, param(r, "since") ?? null, param(r, "brief") === "1", logins, param(r, "running") === "1");
     },
   },
 ];

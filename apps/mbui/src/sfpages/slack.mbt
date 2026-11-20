@@ -173,11 +173,11 @@ fn token_fields_node(
   }
   b.box(fn(f) {
     @sf.style_node(f, fn() { sk_fields })
-    @sf.labelled_field_node(f, fn() { "App-Level Token" }, fn(l) {
+    @sf.field_node(f, fn() { "App-Level Token" }, fn(l) {
       @sf.input_node(l, tk.app, placeholder_by=fn() { kept(masked.0, "xapp-…") }, secret=true, label="App-Level Token") |> ignore
     })
     if !install {
-      @sf.labelled_field_node(f, fn() { "Bot Token" }, fn(l) {
+      @sf.field_node(f, fn() { "Bot Token" }, fn(l) {
         @sf.input_node(l, tk.bot, placeholder_by=fn() { kept(masked.1, "xoxb-…") }, secret=true, label="Bot Token") |> ignore
       })
     }

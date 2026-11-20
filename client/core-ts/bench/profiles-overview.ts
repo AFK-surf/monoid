@@ -1,6 +1,6 @@
 // The Profile overview's pools made in the engine the apps run (Hermes, no JIT): `profilesOverview`
 // (views/profiles-overview.ts) of a workspace of 30 subscriptions, each with a week of hours kept (an allowance read each
-// hour, its calls each hour), timed: the first made and then each again. Bundled as the core is and run by Hermes's own
+// hour, its calls each hour), timed: the first made and then each again, made anew (`fresh`: none kept). Bundled as the core is and run by Hermes's own
 // command: apps/mbui/scripts/core.sh profiles-overview.
 import "../src/hosts/hermes-globals.ts";
 import { profilesOverview } from "../src/views/profiles-overview.ts";
@@ -26,7 +26,7 @@ for (let i = 0; i < ACCOUNTS; i++) {
   };
 }
 const pace = { nowAt: NOW, profiles };
-const once = () => profilesOverview(items, () => pace, NOW, 480);
+const once = () => profilesOverview(items, () => pace, NOW, 480, true);
 let t0 = Date.now();
 const made = once();
 const first = Date.now() - t0;

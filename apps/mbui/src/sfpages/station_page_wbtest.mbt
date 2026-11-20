@@ -115,7 +115,7 @@ test "a failed software update shows its reason without a hover" {
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {
-      software_row_node(p, core, "ws1/st1", fn() { Some(update) }, true, fn() { false }, fn() { false }, @sf.TipLayer::new(fn() { None }))
+      software_row_node(p, core, "ws1/st1", fn() { Some(update) }, true, fn() { false }, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
     }, w~, h=300.0, platform~)
     assert_true(t.find(reason) is Some(_), msg="\{w} platform \{platform}")
     assert_true(t.query(Button, label="重试") is Some(_))
@@ -138,7 +138,7 @@ test "a station's update said beside its name keeps clear of the name" {
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {
-      software_row_node(p, core, "ws1/st1", fn() { Some(update) }, true, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
+      software_row_node(p, core, "ws1/st1", fn() { Some(update) }, true, fn() { false }, fn() { true }, fn() { true }, @sf.TipLayer::new(fn() { None }))
     }, w~, h=300.0, platform~)
     // (the phone in the report had its words bigger: the system's setting, 1.3)
     for scale in [1.0, 1.3] {
@@ -187,7 +187,7 @@ test "an incomplete Codex offers its manager an explicit npm repair" {
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {
-      software_row_node(p, core, "ws1/st1", fn() { Some(codex) }, true, fn() { false }, fn() { false }, @sf.TipLayer::new(fn() { None }))
+      software_row_node(p, core, "ws1/st1", fn() { Some(codex) }, true, fn() { false }, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
     }, w~, h=300.0, platform~)
     assert_true(t.query(Button, label="用 npm 修复") is Some(_), msg="\{w} platform \{platform}")
     t.click(Button, label="用 npm 修复")
@@ -247,16 +247,87 @@ test "a new station's backup to restore is a row of its 设置, 恢复到这台 
 }
 
 ///|
-test "an away station's 设置 shows none of what only it can change, a line saying so" {
+test "an away station's 设置 shows read-only snapshot of software, permissions and system settings with no write actions" {
   for (w, platform) in page_cases {
-    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-away", h=2400.0)
+    let calls : Array[String] = []
+    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-away", h=2400.0, over=fn(s) {
+      { ..s, call: fn(name, params, done) {
+        calls.push(name)
+        (s.call)(name, params, done)
+      } }
+    })
     t.run_for(@ui.move_most_ms)
     let at = "\{w} platform \{platform}"
-    assert_true(t.find("station 离线，连接后可查看和修改设置") is Some(_), msg=at)
-    assert_true(t.find("Agent 环境变量") is None, msg="its variables: \{at}")
-    assert_true(t.find("高级网络设置") is None, msg="its network: \{at}")
-    assert_true(t.find("屏幕录制") is None, msg="its grants: \{at}")
-    assert_true(t.find("在浏览器里登录") is None, msg="its login under way: \{at}")
+    assert_true(t.find("离线前快照，连接后可修改") is Some(_), msg=at)
+    assert_true(t.find("软件与更新") is Some(_), msg="software section: \{at}")
+    assert_true(t.find("1970/1/1") is None, msg="no epoch timestamp: \{at}")
+    assert_true(t.find("下载更新包超时，请检查网络连接后重试") is Some(_), msg="failed update reason: \{at}")
+    assert_true(t.query(Button, label="更新") is None, msg="no update button: \{at}")
+    assert_true(t.query(Button, label="安装") is None, msg="no install button: \{at}")
+    assert_true(t.query(Button, label="检查更新") is None, msg="no check button: \{at}")
+    assert_true(t.find("自动更新") is None, msg="no auto update switch: \{at}")
+    assert_true(t.find("屏幕录制") is Some(_), msg="cached grant: \{at}")
+    assert_true(t.find("辅助功能") is Some(_), msg="cached grant 2: \{at}")
+    assert_true(t.query(Button, label="申请") is None, msg="no grant request button: \{at}")
+    assert_true(t.find("Agent 环境变量") is Some(_), msg="cached env row: \{at}")
+    assert_true(t.find("在浏览器里登录") is None, msg="no login card: \{at}")
+    t.tap_text("Agent 环境变量")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("HTTPS_PROXY") is Some(_), msg="read-only env key: \{at}")
+    assert_true(t.find("http://127.0.0.1:7890") is Some(_), msg="read-only env val: \{at}")
+    assert_true(calls.iter().all(fn(c) { c != "agentEnv.form.open" }), msg="no form open call offline: \{at}")
+    assert_eq(t.audit(), [], msg="audit: \{at}")
+    assert_eq(t.squeeze_faults(), [], msg="squeeze: \{at}")
+  }
+}
+
+///|
+test "an away station's 概览 shows diagnostics card with copy and cached resource snapshot across widths, 1.3x scale and English" {
+  for (w, platform) in [(320.0, 2), (390.0, 2), (1280.0, 0)] {
+    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-away", h=2400.0, ready=fn() {
+      @settings.station_parts["ws1/st1"] = "overview"
+    })
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("连接诊断") is Some(_), msg="diag title: \{at}")
+    assert_true(t.find("复制诊断") is Some(_), msg="copy button: \{at}")
+    assert_true(t.find("无法连接：可能已离线，或受中继、防火墙影响") is Some(_), msg="head warning: \{at}")
+    assert_true(t.find("连接超时，未收到 station 响应") is Some(_), msg="diag detail: \{at}")
+    assert_true(t.find("已连续失败 5 次 · 下次重试 15:52:10（每 10 分钟）") is Some(_), msg="diag retry: \{at}")
+    assert_true(t.find("上次在线") is None, msg="no duplicate lastOnline row: \{at}")
+    assert_true(t.find("当前延迟") is None, msg="no offline current latency line: \{at}")
+    assert_true(t.find("局域网直连") is Some(_), msg="diag way 1: \{at}")
+    assert_true(t.find("东京中继") is Some(_), msg="diag way 3: \{at}")
+    assert_true(t.find("离线前快照") is Some(_), msg="resources snapshot note: \{at}")
+    assert_true(t.find("1.9") is Some(_), msg="cached memory dial: \{at}")
+    t.tap_text("复制诊断")
+    t.draw()
+    assert_true(@sfbase.toast_words().contains("已复制诊断信息"), msg="copied toast: \{at}")
+    for scale in [1.0, 1.3] {
+      t.set_font_scale(scale)
+      t.run_for(@ui.move_most_ms)
+      let a = if scale > 1.0 && w < 390.0 {
+        t.audit().filter(fn(f) { !f.contains("quota_node.mbt") })
+      } else {
+        t.audit()
+      }
+      let s = if scale > 1.0 && w < 390.0 {
+        t.squeeze_faults().filter(fn(f) { !f.contains("quota_node.mbt") })
+      } else {
+        t.squeeze_faults()
+      }
+      assert_eq(a, [], msg="audit \{at} scale \{scale}: \{Repr(a)}")
+      assert_eq(s, [], msg="squeeze \{at} scale \{scale}: \{Repr(s)}")
+    }
+    t.set_font_scale(1.0)
+    @sf.set_language(Some("en"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Diagnostics") is Some(_), msg="en diag title: \{at}")
+    let ea = t.audit()
+    let es = t.squeeze_faults()
+    assert_eq(ea, [], msg="en audit \{at}: \{Repr(ea)}")
+    assert_eq(es, [], msg="en squeeze \{at}: \{Repr(es)}")
+    @sf.set_language(None)
   }
 }
 
@@ -346,6 +417,53 @@ test "a Windows station's 设置 switches running as administrator, waiting whil
   // (a change under way: the switch waits, not pressed again)
   t.run_for(@ui.move_most_ms)
   t.click(Switch, label="以管理员身份运行")
+  t.draw()
+  assert_eq(asked.length(), 1, msg="not again while it is under way")
+}
+
+///|
+test "a Windows station's screen service switch shows its line and failure and toggles once while busy" {
+  let asked : Array[Json] = []
+  let t = setting_tester(
+    Station("ws1/st1"),
+    390.0,
+    platform=2,
+    h=2400.0,
+    over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "screenService.set" {
+            asked.push(params)
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    },
+    ready=fn() {
+      @settings.station_parts["ws1/st1"] = "settings"
+      @settings.fixture_screen_service(
+        Some(
+          @settings.obj([
+            ("on", Json::boolean(false)),
+            ("busy", Json::boolean(false)),
+            ("line", Json::string("远程查看屏幕时可显示并点击 UAC 弹窗、管理员窗口和锁屏界面")),
+            ("failed", Json::string("UAC 被拒绝，设置没有改变")),
+            ("canChange", Json::boolean(true)),
+          ]),
+        ),
+      )
+    },
+  )
+  t.run_for(@ui.move_most_ms)
+  scrolled_to(t, 390.0, "远程控制 UAC 与锁屏")
+  assert_true(t.find("UAC 被拒绝，设置没有改变") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
+  t.click(Switch, label="远程控制 UAC 与锁屏")
+  t.draw()
+  assert_eq(asked.length(), 1, msg="switched")
+  assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)))
+  t.run_for(@ui.move_most_ms)
+  t.click(Switch, label="远程控制 UAC 与锁屏")
   t.draw()
   assert_eq(asked.length(), 1, msg="not again while it is under way")
 }
@@ -899,7 +1017,7 @@ test "a station's overview: its browser one row opening it, the agents' pages an
     let core = @sfbase.settings_core(src, rig_workspace)
     let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
     let s = fn() { @settings.station_of(core, here(), "ws1/st1") }
-    let keys = station_overview_keys(core, s())
+    let keys = station_overview_keys(core, here, s())
     assert_true(keys.contains("allScreens"), msg="allScreens key: \{at}")
     let t = station_part_tester(fn(p) {
       p.gap(Is(20.0)) |> ignore
@@ -981,11 +1099,88 @@ test "gone back, updating by itself held till a newer release says so under the 
     }
     let core = @sfbase.settings_core(src, rig_workspace)
     let t = station_part_tester(fn(p) {
-      software_row_node(p, core, "ws1/st1", fn() { Some(held) }, true, fn() { false }, fn() { false }, @sf.TipLayer::new(fn() { None }))
+      software_row_node(p, core, "ws1/st1", fn() { Some(held) }, true, fn() { false }, fn() { false }, fn() { true }, @sf.TipLayer::new(fn() { None }))
     }, w~, h=400.0, platform~)
     let at = "\{w} platform \{platform}"
     assert_true(t.find("自动更新暂停到 0.1.1300 之后的版本") is Some(_), msg=at)
     assert_true(t.find("退回旧版本") is None, msg=at)
+    assert_eq(t.audit(), [], msg=at)
+  }
+}
+
+///|
+/// Where the CPU's dial says its name (in its full words or its short ones), None where neither is drawn.
+fn cpu_dial_at(t : @ui.Tester, full : String, short : String) -> (Double, Double)? {
+  match t.find(full) {
+    Some(at) => Some(at)
+    None => t.find(short)
+  }
+}
+
+///|
+test "the CPU's dial pressed says how much is used, pressed again how much is idle, kept on this device" {
+  for (w, platform) in page_cases {
+    let asked : Array[Json] = []
+    let t = setting_tester(
+      Station("ws1/st1"),
+      w,
+      platform~,
+      h=2400.0,
+      over=fn(s) {
+        {
+          ..s,
+          call: fn(name, params, done) {
+            if name == "prefs.set" && field(Some(params), "cpuDial") is Some(_) {
+              asked.push(params)
+            }
+            (s.call)(name, params, done)
+          },
+        }
+      },
+    )
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} \{platform}"
+    guard cpu_dial_at(t, "CPU 空闲率", "CPU 空闲") is Some((x, y)) else { fail("no CPU dial: \{at}") }
+    assert_true(t.find("72") is Some(_), msg="idle large: \{at}")
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.map(fn(p) { p.stringify() }), ["{\"cpuDial\":\"busy\"}"], msg=at)
+    guard cpu_dial_at(t, "CPU 占用率", "CPU 占用") is Some((x, y)) else { fail("not turned to busy: \{at}") }
+    assert_true(t.find("28") is Some(_), msg="busy large: \{at}")
+    assert_true(t.find("72") is None, msg="idle no longer said: \{at}")
+    assert_eq(t.squeeze_faults(), [], msg=at)
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.length(), 2, msg=at)
+    assert_eq(asked[1].stringify(), "{\"cpuDial\":null}", msg=at)
+    assert_true(cpu_dial_at(t, "CPU 空闲率", "CPU 空闲") is Some(_), msg="back to idle: \{at}")
+    // (the memory's dial says what is left whatever the CPU's says)
+    assert_true(t.find("可用内存") is Some(_), msg=at)
+  }
+}
+
+///|
+test "the stations' list says each machine's CPU the way this device has turned its dial: idle at first, busy as it is kept, idle again" {
+  for (w, platform) in page_cases {
+    let made : Ref[Source?] = Ref(None)
+    let t = setting_tester(Stations, w, platform~, h=1200.0, over=fn(s) {
+      made.val = Some(s)
+      s
+    })
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} \{platform}"
+    let said = fn(words : String) { t.words().iter().any(fn(x) { x.0.contains(words) }) }
+    assert_true(said("空闲 72%") || said("72%"), msg="idle at first: \{at}")
+    let src = made.val.unwrap()
+    (src.call)("prefs.set", { "cpuDial": "busy" }, @sfbase.answer_unread)
+    t.run_for(@ui.move_most_ms)
+    assert_true(said("占用 28%") || said("28%"), msg="busy: \{at} " + t.words().map(fn(x) { x.0 }).join("|"))
+    assert_true(!said("空闲 72%") && !said("72%"), msg="idle no longer: \{at}")
+    // (the memory's says what is left whichever way)
+    assert_true(said("剩 5.8 G") || said("5.8G"), msg="memory: \{at}")
+    (src.call)("prefs.set", { "cpuDial": Json::null() }, @sfbase.answer_unread)
+    t.run_for(@ui.move_most_ms)
+    assert_true(said("空闲 72%") || said("72%"), msg="idle again: \{at}")
     assert_eq(t.audit(), [], msg=at)
   }
 }

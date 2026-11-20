@@ -60,6 +60,27 @@ fn cookie_method(m : String) -> Bool {
 }
 
 ///|
+/// Target sessions' methods that operate a tab (navigation, input, script evaluation, file selection).
+fn acting_method(m : String) -> Bool {
+  match m {
+    "Page.navigate"
+    | "Page.reload"
+    | "Page.navigateToHistoryEntry"
+    | "Page.setDocumentContent"
+    | "Input.dispatchMouseEvent"
+    | "Input.dispatchKeyEvent"
+    | "Input.dispatchTouchEvent"
+    | "Input.insertText"
+    | "Input.imeSetComposition"
+    | "Runtime.callFunctionOn"
+    | "Runtime.evaluate"
+    | "DOM.focus"
+    | "DOM.setFileInputFiles" => true
+    _ => false
+  }
+}
+
+///|
 /// The browser's news of targets the gate reads (with a target's info, or its id).
 fn news_method(m : String) -> Bool {
   match m {
@@ -83,6 +104,8 @@ pub(all) struct GateParts {
   opened : ((String) -> Unit)?
   /// A deliberate action on a tab (not page background traffic).
   used : ((String, String?) -> Unit)?
+  /// An operating command on a tab (`acting_method`, `Target.closeTarget`): returns why it is refused, or None.
+  act : ((String, String) -> String?)?
 }
 
 ///|
@@ -169,7 +192,7 @@ pub fn Gate::new(p : GateParts) -> Gate {
 fn Gate::ours(self : Gate, ctx : J?) -> Bool {
   match ctx {
     Some(Str(u)) => {
-      let c = @jsjson.text(u)
+      let c = @jsjson.sanitize_str(u)
       c == self.p.context || self.contexts.contains(c)
     }
     _ => false
@@ -180,7 +203,7 @@ fn Gate::ours(self : Gate, ctx : J?) -> Bool {
 /// Whether target `id` is the agent's (what its info says of its context, else what is known of it).
 fn Gate::target(self : Gate, id : J?, info? : J?) -> Bool {
   guard id is Some(Str(u)) else { return false }
-  let tid = @jsjson.text(u)
+  let tid = @jsjson.sanitize_str(u)
   if self.mine.contains(tid) {
     return true
   }
@@ -217,19 +240,28 @@ pub fn Gate::from_client(self : Gate, text_ : String) -> Passed {
     }
     return { up: [], down: [gate_error(id, sid, "a message is {id, method, params}")] }
   }
-  let method = @jsjson.text(mu)
+  let method = @jsjson.sanitize_str(mu)
   let params = match at(mv, "params") {
     Some(Obj(_) | Arr(_) as p) => p
     _ => Obj([])
   }
   match at(mv, "sessionId") {
     Some(Str(su)) => {
-      let sid = @jsjson.text(su)
+      let sid = @jsjson.sanitize_str(su)
       if !self.sessions.contains(sid) {
         return {
           up: [],
           down: [gate_error(at(mv, "id"), at(mv, "sessionId"), "No such session of this chat's.")],
         }
+      }
+      match (self.targets.get(sid), self.p.act) {
+        (Some(target), Some(act)) if target != "" && acting_method(method) =>
+          match act(target, method) {
+            Some(refused) =>
+              return { up: [], down: [gate_error(at(mv, "id"), at(mv, "sessionId"), refused)] }
+            None => ()
+          }
+        _ => ()
       }
       match self.targets.get(sid) {
         Some(target) if target != "" && at(mv, "id") is Some(Num(_)) &&
@@ -305,12 +337,22 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
       if !self.target(at(pv, "targetId")) {
         return no("No such target of this chat's.")
       }
+      if method == "Target.closeTarget" {
+        match self.p.act {
+          Some(act) =>
+            match act(js_str(at(pv, "targetId")), method) {
+              Some(refused) => return no(refused)
+              None => ()
+            }
+          None => ()
+        }
+      }
       if method == "Target.attachToTarget" {
         let target_id = js_str(at(pv, "targetId"))
         self.asked[key] = a => {
           match at_path(Some(a), ["result", "sessionId"]) {
             Some(Str(u)) => {
-              let s = @jsjson.text(u)
+              let s = @jsjson.sanitize_str(u)
               self.sessions[s] = ()
               self.targets[s] = target_id
             }
@@ -323,7 +365,7 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
     }
     "own" =>
       match at(pv, "sessionId") {
-        Some(Str(u)) if self.sessions.contains(@jsjson.text(u)) => { up: [stringify(m)], down: [] }
+        Some(Str(u)) if self.sessions.contains(@jsjson.sanitize_str(u)) => { up: [stringify(m)], down: [] }
         _ => no("No such session of this chat's.")
       }
     "context" => {
@@ -334,10 +376,10 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
       if method == "Target.disposeBrowserContext" {
         match given {
           None => return no("This chat's own context is not disposed of from here.")
-          Some(Str(u)) if @jsjson.text(u) == self.p.context =>
+          Some(Str(u)) if @jsjson.sanitize_str(u) == self.p.context =>
             return no("This chat's own context is not disposed of from here.")
           Some(Str(u)) => {
-            let g = @jsjson.text(u)
+            let g = @jsjson.sanitize_str(u)
             match self.contexts.search(g) {
               Some(i) => ignore(self.contexts.remove(i))
               None => ()
@@ -362,7 +404,7 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
         self.asked[key] = a => {
           match at_path(Some(a), ["result", "targetId"]) {
             Some(Str(u)) => {
-              let id = @jsjson.text(u)
+              let id = @jsjson.sanitize_str(u)
               self.mine[id] = ()
               match self.p.opened {
                 Some(f) => f(id)
@@ -381,7 +423,7 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
         self.asked[key] = a => {
           match at_path(Some(a), ["result", "browserContextId"]) {
             Some(Str(u)) => {
-              let c = @jsjson.text(u)
+              let c = @jsjson.sanitize_str(u)
               if !self.contexts.contains(c) {
                 self.contexts.push(c)
               }
@@ -526,7 +568,7 @@ pub fn Gate::from_chrome(self : Gate, text_ : String) -> Passed {
     }
     "Target.targetDestroyed" | "Target.targetCrashed" => {
       let tid = match at(pv, "targetId") {
-        Some(Str(u)) => Some(@jsjson.text(u))
+        Some(Str(u)) => Some(@jsjson.sanitize_str(u))
         _ => None
       }
       match tid {

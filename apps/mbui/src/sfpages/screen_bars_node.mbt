@@ -6,7 +6,7 @@
 // its work in its handler.
 
 ///|
-/// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: round_button_box's), its name `label` read out and its tip;
+/// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: @sf.tool_round_node's), its name `label` read out and its tip;
 /// the ink at 10% under it while `lit` (the keyboard up, 控制, 全屏), the hover's under the hand; pressed, `press`. The
 /// node (what a panel it opens stands beside). In a pane's own bar (ScreenPage's `tab_pads`, 远程's), a bar's key: 32,
 /// its icon 16, its corner the window's where it stands there (sf's bar_keys_link), as a page's bar's keys.
@@ -19,9 +19,7 @@ fn screen_round_node(
   lit? : () -> Bool = fn() { false },
   side? : Double = round_side,
 ) -> @view.View {
-  let me : Ref[@view.View?] = Ref(None)
-  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
-    me.val = Some(v)
+  @sf.action_box_node(parent, label, on=lit, press, fn(v) {
     let pane = pg.tab_pads is Some(_) && side == round_side
     let side = if pane { round_bar_side } else { side }
     v
@@ -43,7 +41,7 @@ fn screen_round_node(
     .lies_along(Is(Middle))
     .ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } }))
     |> ignore
-    @sf.hover_ground_node(v, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pointed() || v.pressed() || v.focus_shown() }))
     @sf.icon_node(v, "", if pane { round_bar_icon } else { round_icon }, By(fn() { @ui.tree_theme().color(Fg) }), name_now=icon)
     |> ignore
     @sf.tip_node(pg.tips, v, label) |> ignore
@@ -139,6 +137,20 @@ fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
       screen_panel_on_now(u, "keys")
     })
     screen_asked(b, pg, ["keys"], fn(_) { keys_open(s, u, Node(b)) })
+  })
+}
+
+///|
+/// 麦克风 as a round button in `parent`, lit while this device's microphone is shared into the screen's virtual one:
+/// there only while something on the screen records it or it is shared (ScreenSess::mic_bar_shown), so a bar says
+/// nothing of it otherwise (控制中心's tile switches it then); pressed, shared or no more.
+fn mic_button_node(parent : @view.View, pg : ScreenPage, along_row? : Bool = false) -> Unit {
+  let s = pg.s
+  parent.show(along_row~, fn() { s.mic_bar_shown() }, fn(k) {
+    screen_round_node(k, pg, fn() { s.mic_icon() }, fn() { s.mic_label() }, fn(_) { s.toggle_mic() }, lit=fn() {
+      s.mic_on.get()
+    })
+    |> ignore
   })
 }
 
@@ -297,6 +309,7 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         })
       }
     })
+    mic_button_node(bar, pg, along_row=true)
     bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
     // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
     // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
@@ -314,8 +327,17 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
-  u.narrow_bar = true
-  p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
+  let narrow = fn() { view_narrow(p, u) }
+  p.reacts(narrow, fn(n) { u.narrow_bar = n })
+  // (a login screen opened until it is gone (`until_gone`) closes its side tab as soon as phase becomes "gone"; keep
+  // its bar in place while the panel slides shut instead of yanking 48px out from over the stage mid-slide)
+  let closing_gone = fn() {
+    match u.at {
+      Some(at) => at.until_gone && s.phase_now() == "gone"
+      None => false
+    }
+  }
+  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
     slot.box(fn(bar) {
       match (pg.own_bar, pg.tab_pads) {
         (Some(own), _) => @sf.style_node(bar, fn() { own })
@@ -340,7 +362,7 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           browser_seen(s)
           m.box(fn(t) {
             @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
-            browser_tools_node(t, pg, narrow=fn() { true })
+            browser_tools_node(t, pg, narrow~)
           })
           |> ignore
         } else {
@@ -357,6 +379,7 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           })
         }
       })
+      mic_button_node(bar, pg, along_row=true)
       // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
       if pg.on_window is Some(handed) {
         let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
@@ -446,6 +469,11 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           let t = @sf.tool_node(k, fn() { { icon: "terminal", label: @sf.t("web-pages.remote.switchSession"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { station_sessions_open(pg, t) }) |> ignore
         })
+        // (麦克风 while something on the screen records it, or this device's is shared: ScreenSess::mic_bar_shown)
+        r.show(along_row=true, fn() { s.mic_bar_shown() }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: s.mic_icon(), label: s.mic_label(), on: s.mic_on.get(), disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { s.toggle_mic() }) |> ignore
+        })
         r.show(at_once=true, fn() { s.open_said() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "sliders", label: @sf.t("web-pages.screen.panel"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { center_open(pg, Node(t), "center") }) |> ignore
@@ -470,7 +498,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 fn net_chip_node(parent : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
-  let b = @headless.button(parent, fn() { @sf.t("web-pages.screen.stats") }, fn(b) { net_panel_open(s, u, Node(b)) }, fn(b, _) {
+  let b = @sf.action_box_node(parent, fn() { @sf.t("web-pages.screen.stats") }, fn(b) { net_panel_open(s, u, Node(b)) }, fn(b) {
     @sf.style_node(b, fn() { net_chip_box }, in_row=true)
     @sf.hover_ground_node(b)
     b.box(fn(t) {
@@ -569,6 +597,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
         keys_button_node(t, pg)
         paste_button_node(t, pg)
         keyboard_button_node(t, pg)
+        mic_button_node(t, pg)
         center_button_node(t, pg)
         full_button_node(t, pg)
       })
@@ -618,6 +647,7 @@ fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool)
     keys_button_node(rail, pg)
     paste_button_node(rail, pg)
     keyboard_button_node(rail, pg)
+    mic_button_node(rail, pg)
     rail.show(at_once=true, fn() { s.open_said() }, fn(k) {
       k.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
       center_button_node(k, pg)
@@ -721,8 +751,11 @@ fn foot_node(f : @view.View, pg : ScreenPage) -> Unit {
           m.row(Is(true)).grow(Is(2.0)).basis(Is(Some(0.0))).gap(Is(@ui.Space::S1.px())) |> ignore
           let left = @sf.t("android-misc.screen.key.mouseLeft")
           let right = @sf.t("android-misc.screen.key.mouseRight")
-          foot_action_node(m, pg, "mouse-left", fn() { left }, fn() { left }, felt=btn_primary, fn(_) { button_clicked(s, u, btn_primary) })
-          |> ignore
+          let took = Ref(false)
+          let l = foot_action_node(m, pg, "mouse-left", fn() { left }, fn() { left }, lit=fn() { u.left_locked.get() }, felt=btn_primary, fn(_) {
+            left_pressed_on(s, u, took)
+          })
+          left_hold_node(l, s, u, took)
           foot_action_node(m, pg, "mouse-right", fn() { right }, fn() { right }, felt=btn_secondary, fn(_) {
             button_clicked(s, u, btn_secondary)
           })
@@ -749,12 +782,10 @@ fn foot_action_node(
   press : (@view.View) -> Unit,
 ) -> @view.View {
   ignore(pg)
-  let me : Ref[@view.View?] = Ref(None)
-  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
-    me.val = Some(v)
+  @sf.action_box_node(parent, label, on=lit, press, fn(v) {
     @sf.style_node(v, fn() { foot_action_box }, in_row=true)
     v.ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } })) |> ignore
-    @sf.hover_ground_node(v, lit=Some(fn() { b.pressed() }))
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() }))
     @sf.icon_node(v, icon, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
     @sf.words_node(v, words, fn() { foot_action_words }) |> ignore
     if felt != 0 {
@@ -824,95 +855,151 @@ fn screen_row_keys() -> Array[RowKey] {
 fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> Unit {
   let s = pg.s
   let u = pg.u
-  let keys = screen_row_keys().filter(fn(k) { k.button == 0 || mouse })
-  let held = fn(k : RowKey) { k.mod_ != 0 && (u.held.held_said() & k.mod_) != 0 }
-  let leaves = fn(k : RowKey) { if held(k) { 0 } else { k.drop } }
-  let on_face = fn(k : RowKey) {
-    let turned = u.keys_turned.get()
-    turned.is_empty() || turned.contains(k.name)
-  }
-  let slots : Map[String, @view.View] = Map([])
-  parent.box(fn(row) {
-    @sf.style_node(row, fn() { keys_row_box }, in_row=true)
-    // (as wide as it is given, what has not the room there left out: View::drops)
-    row.fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    for k in keys {
-      row.show(at_once=true, fn() { on_face(k) }, fn(slot) {
-        slots[k.name] = slot
-        slot.drops(By(fn() { leaves(k) })) |> ignore
-        row_key_node(slot, pg, k, fn() { held(k) })
-      })
-    }
-    // (the ⋯: on the first face there only while a key is out; turned, always, the way on or back)
-    row.box(fn(more) {
-      let turned = fn() { !u.keys_turned.get().is_empty() }
-      more.drops(By(fn() { if turned() { 0 } else { -1 } })) |> ignore
-      @headless.toggle(more, Button, fn() { @sf.t("common.more") }, turned, fn(_) {
-        // (turned to those this face left out as last laid out: from the first face its others, and from them, where
-        // they too have not the room, the rest; none left out, back)
-        u.keys_turned.set(
-          keys
-          .filter(fn(k) {
-            let face = @signals.untracked(fn() { on_face(k) })
-            face && leaves(k) > 0 && slots.get(k.name).map(fn(v) { v.alive() && v.left_out() }).unwrap_or(false)
-          })
-          .map(fn(k) { k.name }),
-        )
-      }, fn(v, _) {
-        @sf.style_node(v, fn() { row_key_box }, in_row=true)
-        v.ground(By(fn() { @ui.tree_theme().color(if turned() { Fg } else { Tint }) })) |> ignore
-        @sf.hover_ground_node(v)
-        @sf.icon_node(v, "more", key_icon, By(fn() { @ui.tree_theme().color(if turned() { Bg } else { Fg }) })) |> ignore
-      })
-      |> ignore
+  let keys = screen_row_keys()
+    .filter(fn(k) { k.button == 0 || mouse })
+    .map(fn(k) -> @sf.KeyPadKey {
+      {
+        cap: k.label,
+        name: k.name,
+        icon: k.icon,
+        drop: k.drop,
+        // (a modifier: solid while held for the next key, which keeps it in the row)
+        // (左键 too: solid while held down from it)
+        held: if k.mod_ != 0 {
+          Some(fn() { (u.held.held_said() & k.mod_) != 0 })
+        } else if k.button == btn_primary {
+          Some(fn() { u.left_locked.get() })
+        } else {
+          None
+        },
+        felt: button_felt(k.button),
+        // pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what
+        // is held
+        press: fn() {
+          if k.mod_ != 0 {
+            u.held.toggle(k.mod_)
+          } else if k.button != 0 {
+            button_clicked(s, u, k.button)
+          } else {
+            let mods = u.held.take()
+            stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
+          }
+        },
+      }
     })
-    |> ignore
-  })
-  |> ignore
-  ignore(s)
+  @sf.key_pad_row_node(parent, keys, u.keys_turned, look=fn() { keys_row_box }) |> ignore
 }
 
 ///|
-/// A key of the keys row in `slot`: its words or its mark, solid while `held` (a modifier held for the next key);
-/// pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what is held.
-fn row_key_node(slot : @view.View, pg : ScreenPage, k : RowKey, held : () -> Bool) -> Unit {
-  let s = pg.s
-  let u = pg.u
-  @headless.toggle(slot, Button, fn() { k.name }, held, fn(_) {
-    if k.mod_ != 0 {
-      u.held.toggle(k.mod_)
-    } else if k.button != 0 {
-      button_clicked(s, u, k.button)
-    } else {
-      let mods = u.held.take()
-      stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
-    }
-  }, fn(v, _) {
-    @sf.style_node(v, fn() { row_key_box }, in_row=true)
-    v.ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Tint }) })) |> ignore
-    @sf.hover_ground_node(v)
-    if k.icon != "" {
-      @sf.icon_node(v, k.icon, key_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
-    } else {
-      @sf.words_node(v, fn() { k.label }, fn() { if held() { row_key_on_words } else { row_key_words } }) |> ignore
-    }
-    if k.button != 0 {
-      button_felt_node(v, k.button)
-    }
-  })
-  |> ignore
+/// How a mouse button `button` is felt as a press goes down on it (button_felt_node's); none for a key.
+fn button_felt(button : Int) -> @ui.Haptic? {
+  if button == 0 {
+    None
+  } else if button == btn_secondary {
+    Some(ContextClick)
+  } else {
+    Some(KeyboardTap)
+  }
 }
 
 ///|
 /// Mouse button `button` clicked where the pointer is (the trackpad's, else the screen's own; the station saying none,
 /// where a finger last pressed on the picture, else the trackpad's), the modifiers the keys row holds round it.
 fn button_clicked(s : ScreenSess, u : ScreenUi, button : Int) -> Unit {
+  if button == btn_primary {
+    left_pressed(s, u)
+    return
+  }
   let mods = u.held.take()
-  let at = match @signals.untracked(fn() { pointer_now(s, u) }) {
+  click(fn(j) { s.input(s.src, j) }, button_at(s, u), button, mods)
+}
+
+///|
+/// Where a mouse button of the foot clicks: where the pointer is (the trackpad's, else the screen's own; the station
+/// saying none, where a finger last pressed on the picture, else the trackpad's).
+fn button_at(s : ScreenSess, u : ScreenUi) -> (Double, Double) {
+  match @signals.untracked(fn() { pointer_now(s, u) }) {
     Some(at) => at
     None => u.tapped_at.unwrap_or(u.pad.at())
   }
-  click(fn(j) { s.input(s.src, j) }, at, button, mods)
+}
+
+///|
+/// 左键 pressed (the keys row's, the foot's or the floating one): held down from it, let go of; else a click where the
+/// pointer is, the modifiers the keys row holds round it (two quick presses a double click there, as a mouse's). The
+/// press of a button that held it (left_hold_node's `took`) comes to nothing more.
+fn left_pressed(s : ScreenSess, u : ScreenUi) -> Unit {
+  if u.left_locked.untracked() {
+    left_let_go(s, u, None)
+    return
+  }
+  let mods = u.held.take()
+  click(fn(j) { s.input(s.src, j) }, button_at(s, u), btn_primary, mods)
+}
+
+///|
+/// 左键's button `v` (the foot's, the floating one) held a press's hold (screen_hold_ms): 左键 held down where the
+/// pointer is, felt so, a finger on the stage then dragging with it (a window moved, words chosen, one hand on the
+/// button and the other on the screen) till the button or a tap on the stage lets it go; `took` set for its press,
+/// whose let go then clicks nothing (left_pressed_on). Held while it is already held: nothing.
+fn left_hold_node(v : @view.View, s : ScreenSess, u : ScreenUi, took : Ref[Bool]) -> Unit {
+  // (the moment the press under way went down; none while none is)
+  let since : @signals.Signal[Double?] = @signals.signal(None)
+  v.reacts(fn() { v.pressed() }, fn(down) {
+    since.set(if down { Some(v.cause_at()) } else { None })
+    if down {
+      took.val = false
+    }
+  }, at_start=false)
+  // (held a hold's length: the moment come as it is drawn, as a finger held on the stage is told its own)
+  v.reacts(fn() {
+    match since.get() {
+      Some(t0) => v.drawn_while(fn(now) { now < t0 + screen_hold_ms }) >= t0 + screen_hold_ms
+      None => false
+    }
+  }, fn(held) {
+    if held && !u.left_locked.untracked() && s.driving() {
+      took.val = true
+      left_hold(s, u)
+    }
+  }, at_start=false)
+}
+
+///|
+/// 左键's button pressed (let go on it): nothing where its press held 左键 down (`took`), else left_pressed.
+fn left_pressed_on(s : ScreenSess, u : ScreenUi, took : Ref[Bool]) -> Unit {
+  if took.val {
+    took.val = false
+  } else {
+    left_pressed(s, u)
+  }
+}
+
+///|
+/// 左键 held down where the pointer is, the modifiers the keys row holds round it till it is let go of.
+fn left_hold(s : ScreenSess, u : ScreenUi) -> Unit {
+  let send = fn(j) { s.input(s.src, j) }
+  let at = button_at(s, u)
+  let mods = u.held.take()
+  u.lock_at = at
+  u.lock_mods = mods
+  mods_round(send, mods, "down")
+  send(pointer_input("down", at, btn_primary))
+  u.left_locked.set(true)
+  @ui.haptic(LongPress)
+}
+
+///|
+/// 左键 held from its button let go of, at `at` (None: where the drag with it has got to, else where it went down), no
+/// button held after it (as a mouse's let go: screen_mouse_drag's), the keys held round it let go of after it; nothing
+/// while it is not held.
+fn left_let_go(s : ScreenSess, u : ScreenUi, at : (Double, Double)?) -> Unit {
+  guard u.left_locked.untracked() else { return }
+  let send = fn(j) { s.input(s.src, j) }
+  u.left_locked.set(false)
+  send(pointer_input("up", at.unwrap_or(u.lock_at), 0))
+  mods_round(send, u.lock_mods, "up")
+  u.lock_mods = 0
 }
 
 ///|
@@ -935,24 +1022,41 @@ fn mouse_float_node(row : @view.View, pg : ScreenPage) -> Unit {
     end.box(fn(cap) {
       @sf.style_node(cap, fn() { mouse_pair_box }, in_row=true)
       u.mouse_pair = Some(cap)
-      for b in [
-        ("mouse-left", "android-misc.screen.key.mouseLeft", btn_primary),
-        ("mouse-right", "android-misc.screen.key.mouseRight", btn_secondary),
-      ] {
-        let button = @headless.button(cap, fn() { @sf.t(b.1) }, fn(_) { button_clicked(s, u, b.2) }, fn(v, _) {
-          @sf.style_node(v, fn() { mouse_button_box }, in_row=true)
-          floats_node(v)
-          @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() }))
-          @sf.icon_node(v, b.0, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
-          button_felt_node(v, b.2)
-        })
-        ignore(button)
-      }
+      mouse_left_round_node(cap, s, u)
+      @sf.tool_round_node(cap, "mouse-right", fn() { @sf.t("android-misc.screen.key.mouseRight") }, fn() {
+        button_clicked(s, u, btn_secondary)
+      }, look=Floating, felt?=button_felt(btn_secondary))
+      |> ignore
       afloat_node(cap, u.mouse_moved)
     })
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// 左键 floating in `cap` (mouse_float_node's): a round tool floating over the picture as 右键 beside it is
+/// (@sf.tool_round_node's Floating look: 44, on the floating ground with its shadow, the ink at 8% pressed, its mark
+/// 20 in the ink); held down from it (left_hold_node), solid as the keys row's held key is (the ink, its mark in the
+/// page's colour, no shadow nor hover over it) and read out pressed.
+fn mouse_left_round_node(cap : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+  let held = fn() { u.left_locked.get() }
+  let took = Ref(false)
+  let label = fn() { @sf.t("android-misc.screen.key.mouseLeft") }
+  let key = @sf.action_box_node(cap, label, on=held, fn(_) { left_pressed_on(s, u, took) }, fn(v) {
+    @sf.style_node(v, fn() { mouse_round }, in_row=true)
+    v
+    .ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Floating }) }))
+    .shadow(By(fn() {
+      let t = @ui.tree_theme()
+      (2.0, 1.0, if held() { 0L } else { t.shadow })
+    }))
+    |> ignore
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() && !held() }))
+    @sf.icon_node(v, "mouse-left", round_icon, By(fn() { @ui.tree_theme().color(if held() { Bg } else { Fg }) })) |> ignore
+    button_felt_node(v, btn_primary)
+  })
+  left_hold_node(key, s, u, took)
 }
 
 ///|
@@ -1039,6 +1143,23 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
   at.box(fn(b) {
     // a capsule round a 32 high button 6 in from its edge: its corner 6 + 16
     @sf.style_node(b, fn() { if in_bar { take_over_bar_row } else { take_over_box } })
+    let shake : Ref[@motion.ShakeWay?] = Ref(None)
+    b.reacts(fn() { u.held_nudge.get() }, at_start=false, fn(_) {
+      @ui.haptic(Reject)
+      if @ui.reduced_motion() {
+        return
+      }
+      let way = match shake.val {
+        Some(w) => w
+        None => {
+          let w = @motion.ShakeWay::new(amplitude=@sf.refused_reach, duration_ms=@sf.refused_ms, cycles=1.5)
+          shake.val = Some(w)
+          w.shakes(b) |> ignore
+          w
+        }
+      }
+      way.shake(at=b.cause_at())
+    })
     if !in_bar {
       floats_node(b)
       @sf.first_line_node(b, Ui, fn(l) { l.box(fn(d) { @sf.style_node(d, fn() { take_over_dot }, in_row=true) }) |> ignore }) |> ignore
@@ -1050,7 +1171,7 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
     }
     // the main solid button, as the web's primary (dark in the light theme, light in the dark one), not the accent
     // (whole, what says who drives cut short beside it)
-    let button = @headless.button(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn(_) { control_chosen(s, u, true) }, fn(v, _) {
+    let button = @sf.action_box_node(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn(_) { control_chosen(s, u, true) }, fn(v) {
       @sf.style_node(v, fn() { take_over_button }, in_row=true)
       v.shrink(Is(0.0)) |> ignore
       @sf.hover_ground_node(v)

@@ -1,5 +1,4 @@
-// What the drivers' own parts hold to by themselves; held to the TypeScript as a whole by
-// station/test/mb-agent-drivers.test.ts.
+// Native MoonBit unit tests for agent_drivers core helpers.
 
 ///|
 test "an ISO time as Date.parse reads it" {
@@ -83,4 +82,65 @@ test "paths in Rust's order, a version read" {
   inspect(user_agent_version(Some(s("stillfail/0.162.1 (Mac OS) x"))), content=(
     #|Some(0.162.1)
   ))
+}
+
+///|
+test "a process taken up after a crash before the door opened knows no address of the station's tools" {
+  inspect(crashed_tools_url(Some(obj([("mcpUrl", s(""))]))), content="None")
+  inspect(crashed_tools_url(Some(obj([]))), content="None")
+  inspect(crashed_tools_url(Some(obj([("mcpUrl", s("http://127.0.0.1:4750/mcp"))]))), content=(
+    #|Some(http://127.0.0.1:4750/mcp)
+  ))
+}
+
+///|
+test "a profile's own proxy leaves this machine out too" {
+  let env = Env::new([("PATH", "/bin")])
+  env.merge([("HTTPS_PROXY", "http://127.0.0.1:7890"), ("NO_PROXY", "corp.example")])
+  let kept = keep_local(env)
+  inspect(kept.get("NO_PROXY"), content=(
+    #|Some(corp.example,localhost,127.0.0.1,::1)
+  ))
+  inspect(kept.get("no_proxy"), content=(
+    #|Some(corp.example,localhost,127.0.0.1,::1)
+  ))
+}
+
+///|
+test "what the station starts never carries the launcher's front, whatever its environment or agentEnv say" {
+  let raw = Env::new([
+    ("PATH", "/bin"),
+    ("STILLFAIL_MESH_FRONT", "/data/run/front.sock"),
+    ("OPENAI_API_KEY", "sk"),
+  ])
+  let env = start_env(raw, ["OPENAI_API_KEY"])
+  assert_true(env.get("STILLFAIL_MESH_FRONT") is None)
+  assert_true(env.get("OPENAI_API_KEY") is None)
+  assert_true(env.get("PATH") == Some("/bin"))
+  assert_true(start_env(raw, []).get("STILLFAIL_MESH_FRONT") is None)
+}
+
+///|
+test "Codex's CA file: the first of the system's there, each looked at only after the one before is not" {
+  let lp = Loop::new()
+  let asked = []
+  let there = (have : Array[String]) => (p : String) => {
+    asked.push(p)
+    Later::ok(lp, have.contains(p))
+  }
+  let got : Ref[String?] = Ref(None)
+  // (a Fedora machine: Debian's file not there, its own is; macOS's never looked at)
+  first_there(lp, there(["/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]), ca_bundles()).map(f => got.val = f)
+  |> ignore
+  lp.run()
+  assert_eq(got.val, Some("/etc/pki/tls/certs/ca-bundle.crt"))
+  assert_eq(asked, ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"])
+  // (a Mac: macOS's, the last)
+  first_there(lp, there(["/etc/ssl/cert.pem"]), ca_bundles()).map(f => got.val = f) |> ignore
+  lp.run()
+  assert_eq(got.val, Some("/etc/ssl/cert.pem"))
+  // (none there: none)
+  first_there(lp, there([]), ca_bundles()).map(f => got.val = f) |> ignore
+  lp.run()
+  assert_eq(got.val, None)
 }

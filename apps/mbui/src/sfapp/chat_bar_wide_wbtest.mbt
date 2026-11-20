@@ -20,9 +20,7 @@ fn wide_bar_at(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made with its inside nodes: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -568,14 +566,16 @@ test "大屏, 中屏: a button of the bar says its keys in its tip after its wor
       assert_true(keys != "", msg="\{win.0}: \{tip.1} has keys")
       guard wide_bar_button(t, label) is Some(b) else { fail("\{win.0}: no \{label}") }
       wide_bar_tip(t, label)
-      // (its words, its keys after them on their line, under the button)
+      // (its words, then its keys each a cap after them, in their order, on their line, under the button)
       let under = fn(w : String) { t.locate(w).filter(fn(p) { p.1 > b.1 + b.3 }) }
-      match (under(label), under(keys)) {
-        ([w, ..], [k, ..]) => {
-          assert_true(k.0 > w.0, msg="\{win.0}: \{label}'s keys after it: \{Repr(w)} \{Repr(k)}")
-          assert_true((k.1 - w.1).abs() < 1.0, msg="\{win.0}: \{label}'s keys on its line: \{Repr(w)} \{Repr(k)}")
+      guard under(label) is [w, ..] else { fail("\{win.0}: \{label}'s tip: \{Repr(under(label))}") }
+      let mut after = w.0
+      for cap in @sf.key_caps(keys) {
+        // (on the words' line, after the key before it)
+        guard under(cap).filter(fn(k) { k.0 > after && (k.1 - w.1).abs() < 2.0 }) is [k, ..] else {
+          fail("\{win.0}: \{label}'s key \{cap} after \{after} on its line \{Repr(w)}: \{Repr(under(cap))}")
         }
-        (ws, ks) => fail("\{win.0}: \{label}'s tip: \{Repr(ws)} \{Repr(ks)}")
+        after = k.0
       }
     }
   }
@@ -863,4 +863,100 @@ test "大屏, 中屏: 归档 on a chat keeping watch, asked, and 归档 in the q
     }
     assert_true(keys.iter().all(fn(k) { k.contains("s-c2") }), msg="\{win.0}: \{Repr(keys)}")
   }
+}
+
+///|
+/// Each frame's left of the bar's button `label` (wide_bar_button's) from the one before `change` is made, through
+/// `ms` of the frames a host draws after it; and what steps more than 8 in a frame among them.
+fn wide_bar_way(t : @ui.Tester, label : String, change : () -> Unit, ms : Double) -> (Array[Double], Array[String]) {
+  let at = fn() {
+    match wide_bar_button(t, label) {
+      Some(r) => r.0
+      None => -1000.0
+    }
+  }
+  let xs = [at()]
+  t.each_frame(Some(fn() { xs.push(at()) }))
+  change()
+  t.run_shown(ms)
+  t.each_frame(None)
+  let steps = []
+  for i in 1..<xs.length() {
+    let d = xs[i] - xs[i - 1]
+    if d > 8.0 || d < -8.0 {
+      steps.push("frame \{i}: \{xs[i - 1]} → \{xs[i]}")
+    }
+  }
+  (xs, steps)
+}
+
+///|
+test "大屏, 中屏: a button of the bar coming or going settles at once outside a transition (and as an answer), and moves those beside it along the row inside a transition" {
+  for win in wide_bar_windows {
+    let calls : Array[Made] = []
+    let jobs_on = @signals.signal(false)
+    let jobs = wide_bar_jobs("")
+    let t = wide_bar_at(
+      calls,
+      w=win.1,
+      over=wide_bar_both(wide_bar_chat_field("archivable", fn(_) { Json::boolean(true) }), fn(n, tp) {
+        if jobs_on.get() {
+          jobs(n, tp)
+        } else {
+          tp
+        }
+      }),
+    )
+    let archive = @sf.t("web-pages.chat.archive")
+    let x0 = match wide_bar_button(t, archive) {
+      Some(r) => r.0
+      None => fail("\{win.0}: no 归档")
+    }
+    // background chatJobs change (outside a transition): settles at once, never sliding unprompted
+    let (plain_in, _) = wide_bar_way(t, archive, fn() { jobs_on.set(true) }, @ui.move_most_ms)
+    let x1 = plain_in[plain_in.length() - 1]
+    assert_true(x0 - x1 >= 20.0, msg="\{win.0}: 归档 made room for the services' button: \{x0} → \{x1}")
+    assert_true(plain_in.length() >= 2, msg=win.0)
+    assert_eq(plain_in[1], x1, msg="\{win.0}: outside a transition, button settles at once: \{Repr(plain_in)}")
+    let (plain_out, _) = wide_bar_way(t, archive, fn() { jobs_on.set(false) }, @ui.move_most_ms)
+    assert_true(plain_out.length() >= 2, msg=win.0)
+    assert_eq(plain_out[1], x0, msg="\{win.0}: outside a transition, leaving button settles at once: \{Repr(plain_out)}")
+    // inside an explicit transition: moves those beside it along the row, never 8 in a frame
+    let (came, came_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    assert_eq(came[came.length() - 1], x1, msg=win.0)
+    assert_true(came.length() > 3, msg="\{win.0}: drawn on its way: \{Repr(came)}")
+    assert_eq(came_steps, [], msg="\{win.0}: its way in: \{Repr(came)}")
+    let (went, went_steps) = wide_bar_way(t, archive, fn() { @view.transition(fn() { jobs_on.set(false) }) }, @ui.move_most_ms)
+    assert_eq(went[went.length() - 1], x0, msg=win.0)
+    assert_eq(went_steps, [], msg="\{win.0}: its way out: \{Repr(went)}")
+    // told as an answer (the topic's first value): at once, no way
+    let (told, _) = wide_bar_way(t, archive, fn() { @view.answering(fn() { jobs_on.set(true) }) }, @ui.move_most_ms)
+    assert_true(told.length() >= 2, msg=win.0)
+    assert_eq(told[1], x1, msg="\{win.0}: an answer's button in its place at once: \{Repr(told)}")
+  }
+}
+
+///|
+test "大屏, the chat's page made as nodes: the side panel's switch pressed, the panel opening beside it, the bar's buttons go its way one way, the switch going along the row with it, none stepping aside first" {
+  let calls : Array[(String, Json)] = []
+  let (t, src) = chat_nodes_calling(1280.0, 800.0, 0, calls)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  let archive = @sf.t("web-pages.chat.archive")
+  guard wide_bar_button(t, archive) is Some(_) else { fail("no 归档") }
+  guard wide_bar_button(t, @sf.t("web-pages.chat.openPanel")) is Some(_) else { fail("no switch of the side panel") }
+  let (xs, _) = wide_bar_way(
+    t,
+    archive,
+    fn() { @sfdesk.side_change(src, r, "open", Some("files")) },
+    @ui.move_most_ms + 200.0,
+  )
+  let back = []
+  for i in 1..<xs.length() {
+    if xs[i] - xs[i - 1] > 0.5 {
+      back.push("frame \{i}: \{xs[i - 1]} → \{xs[i]}")
+    }
+  }
+  assert_true(xs.length() > 3 && xs[xs.length() - 1] < xs[0], msg="归档 gone left with the panel: \{Repr(xs)}")
+  assert_eq(back, [], msg="归档 stepped right on the way: \{Repr(xs)}")
 }

@@ -36,14 +36,13 @@ pub fn breathe_node(
       due.val = v.at_moment(share.end(), fn() { whole.set(true) })
     }
   })
+  let breath = @motion.breathe_alpha(v, period_ms=breath_ms, low=low, resident=false)
   v.alpha(
     By(fn() {
       if failed() || whole.get() {
         1.0
       } else {
-        let f = v.cycle(breath_ms)
-        let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-        1.0 - (1.0 - low) * dmax(0.0, share.shown(v)) * @ui.Ease::InOut.at(way)
+        1.0 - (1.0 - breath()) * dmax(0.0, share.shown(v))
       }
     }),
     loc~,

@@ -79,7 +79,7 @@ fn held_core(
 /// emptied under them).
 fn new_chat_sent(t : @ui.Tester, words : String) -> (Double, Double) raise {
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
   t.type_text(words)
@@ -207,7 +207,7 @@ test "a new chat's first words sent with the keyboard up: no words over others o
     let unread = @signals.signal(true)
     let t = held_core(held, unread)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -307,8 +307,12 @@ test "a new chat's first words sent on a short page: nothing of its scene the fo
     t.tap_text("做任何事")
     t.type_text("把发布说明写一下")
     t.run_for(@ui.move_most_ms)
-    // the foot's top: what is seen under it is the choices' and the composer's alone
-    let top = 470.0 - @motion.measured(t.ctx(), "new/foot").unwrap()
+    // the foot's top: what is seen under it is the choices' and the composer's alone (the old page's as it measured it;
+    // the page made as nodes, its band of glass across the window's foot)
+    let top = match @motion.measured(t.ctx(), "new/foot") {
+      Some(h) => 470.0 - h
+      None => t.drawn_glass().fold(init=470.0, fn(a, g) { if g.2 >= 389.0 && g.1 > 100.0 && g.1 < a { g.1 } else { a } })
+    }
     let under = fn() { t.glyphs_seen().filter(fn(g) { g.3 > top + 1.0 }).length() }
     let before = under()
     tap_send(t)
@@ -335,12 +339,18 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     let title = "想让 agent 做什么？"
     new_chat_sent(t, "把发布说明写一下") |> ignore
     let at = seen_once(t, title)
-    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was, half faded
+    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was (or drifting gently
+    // upward on the node choreography), half faded
     t.run_for(new_leave_ms / 2.0)
     assert_true(app.nav.top() is Chat(_))
     match t.words().filter(fn(w) { w.0 == title }) {
       [w] => {
-        assert_at(at, (w.1, w.2))
+        if @sfbase.chat_page_nodes.get() {
+          assert_true((w.1 - at.0).abs() <= 0.5, msg="x drifted from \{at.0} to \{w.1}")
+          assert_true(w.2 <= at.1 + 0.5 && w.2 >= at.1 - 10.5, msg="y drift out of range: \{at.1} -> \{w.2}")
+        } else {
+          assert_at(at, (w.1, w.2))
+        }
         assert_true(w.5 > 0.05 && w.5 < 0.95, msg="fading: \{w.5}")
       }
       ws => fail("「\{title}」 seen \{ws.length()} times")
@@ -362,7 +372,7 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     assert_true(app.nav.top() is Chat(_))
     t.run_for(new_leave_ms)
     assert_true(t.words().filter(fn(w) { w.0 == title && w.5 > 0.0 }).is_empty())
-  }, old_only="the nodes page drops the new chat's scene as it becomes the chat: its fade would take an old island more (old-island only falls), decided not done (2026-11-16)")
+  })
 }
 
 ///|
@@ -372,7 +382,7 @@ test "a new chat's first words hold its composer as tall as it was while they ar
     let unread = @signals.signal(true)
     let t = held_core(held, unread)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     t.type_text("第一行\n第二行\n第三行")
@@ -601,7 +611,7 @@ test "a new chat while its stations are read: its page as it will be, its first 
     let made = Ref(0)
     let t = reading_core(reading, made)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     // the page's own words and its composer, nothing said of a station not known yet
     assert_true(t.find("想让 agent 做什么？") is Some(_))
@@ -635,13 +645,20 @@ test "a new chat's first words: the room under its rows goes down to where the c
     // (every frame drawn from the press on, as a display draws them: the composer let go of as the words set out, its
     // room under the rows on the list's way with it, not a step)
     // (the chat's list's, the last list drawn, once it is the only one: the new chat's page has a list of its own
-    // before, leaving as the chat comes)
+    // before, leaving as the chat comes; the old view's foot its last row, the page made as nodes' its list's own, held
+    // apart from its rows (View::scrolls_window's `foot`): the room from where they end to the window's foot, a row
+    // that comes making its way into it)
     let foot = fn() {
       let lists = t.list_row_boxes()
       if !(app.nav.top() is Chat(_)) || lists.length() != 1 || lists[0].length() == 0 {
         -1.0
       } else {
-        lists[0][lists[0].length() - 1].3
+        let (_, y, _, h) = lists[0][lists[0].length() - 1]
+        if both_nodes.val {
+          844.0 - (y + h)
+        } else {
+          h
+        }
       }
     }
     let mut was = foot()
@@ -745,7 +762,7 @@ test "a new chat's first words sent with the keyboard up: the chat it becomes wr
     // (the screen's keyboard: a finger the native input)
     let t = held_core(held, unread, finger=true)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -771,4 +788,82 @@ test "a new chat's first words sent with the keyboard up: the chat it becomes wr
     let (active, _, _, _) = t.ime()
     assert_true(active)
   })
+}
+
+///|
+/// The frames a host draws (60 a second, as it draws them: check_looks(false), its rows on the device's pixels) of a new
+/// chat's first words sent on the page made as nodes, opened as fixture mode `mode` on a `w` by `h` window of
+/// `platform` and driven by `script`: at each, its moment and whether the new chat's scene (its title) is seen.
+fn new_scene_frames(
+  mode : String,
+  w : Double,
+  h : Double,
+  platform : Int,
+  script : String,
+) -> Array[(Double, Bool)] raise {
+  new_run()
+  @sfbase.hold_chat_page_nodes(Some(true))
+  let src = fixture_app(mode, chat_nodes=true)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
+  t.check_looks(false)
+  t.set_rows_on_pixels(true)
+  t.set_frame_period(1000.0 / 60.0)
+  let title = @sf.t("android-chat.new.heading")
+  let frames : Array[(Double, Bool)] = []
+  t.drive(script, each=fn(t) {
+    frames.push((t.time(), t.words().iter().any(fn(wd) { wd.0 == title && wd.5 > 0.02 })))
+  })
+  |> ignore
+  assert_true(app.nav.top() is Chat(_), msg="the new chat did not become its chat")
+  frames
+}
+
+///|
+/// Where the frames `frames` (new_scene_frames') draw the new chat's scene, then none of it, then it again: each such
+/// frame's moment.
+fn new_scene_gaps(frames : Array[(Double, Bool)]) -> Array[Double] {
+  let gaps = []
+  for i in 1..<(frames.length() - 1) {
+    if !frames[i].1 && frames[i - 1].1 {
+      let mut back = false
+      for j in (i + 1)..<frames.length() {
+        if frames[j].1 {
+          back = true
+        }
+      }
+      if back {
+        gaps.push(frames[i].0)
+      }
+    }
+  }
+  gaps
+}
+
+///|
+/// The page becomes the chat in the change its first words are sent in, its scene leaving over the chat from then
+/// (new_leave_ms): the scene's old view is the one the page showed, the same node going on to draw it leaving, never let
+/// go there and made again for its way out (an old view hosted in a node draws nothing in the frame it is made: the frame
+/// the words went in was drawn with neither the scene nor a composer, and the scene back the next; 2026-11-17).
+test "a new chat's first words sent on the page made as nodes: its scene drawn in every frame till it has left, 大屏 and 小屏" {
+  if @ui.test_at_a_rate() {
+    return
+  }
+  let wide = new_scene_frames(
+    "chat",
+    1280.0,
+    800.0,
+    0,
+    "timeout 20000\nuntil 新建对话\nwait 600\ntap 新建对话\nwait 900\nuntil 做任何事\nwait 500\ntype 把发布说明写一下\nwait 700\ntap icon:arrow-up\nwait 600\nexit\n",
+  )
+  assert_eq(new_scene_gaps(wide), [])
+  let narrow = new_scene_frames(
+    "newchat",
+    390.0,
+    844.0,
+    2,
+    "timeout 20000\nwait 1200\ntap 做任何事\nwait 500\ntype 把发布说明写一下\nwait 700\ntap icon:arrow-up\nwait 600\nexit\n",
+  )
+  assert_eq(new_scene_gaps(narrow), [])
+  let picture = new_scene_frames("newchat-attach", 390.0, 844.0, 2, "timeout 20000\nwait 1500\ntap icon:arrow-up\nwait 600\nexit\n")
+  assert_eq(new_scene_gaps(picture), [])
 }

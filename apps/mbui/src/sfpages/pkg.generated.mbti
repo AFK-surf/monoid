@@ -33,6 +33,14 @@ pub fn agent_card_node(@view.View, @sfbase.Source, @sfbase.ChatRef, String, @sf.
 
 pub fn agent_mark(@ui.Ctx, String, String, String, side? : Double, said? : String, ground? : Int64, corner? : @ui.Radius, joined? : Bool) -> Unit
 
+pub fn agent_since_node(@view.View, @sfbase.Source, () -> @json.Json?) -> () -> String
+
+pub fn agent_since_words(Double, @json.Json?) -> String
+
+pub fn agent_status_node(@view.View, @sfbase.Source, () -> @json.Json?) -> Unit
+
+pub fn agent_tone_state(String) -> String
+
 pub fn agent_work(@ui.Ctx, @sfbase.Source, @json.Json?) -> Unit
 
 pub fn agent_work_line(@ui.Ctx, @json.Json?, Int32, inset? : Bool) -> Unit
@@ -69,9 +77,13 @@ pub fn changelog_node(@view.View, @settings.Core, on_back~ : () -> Unit, frame~ 
 
 pub fn chat_composer(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, @sfbase.ChatRef, @sfbase.ChatView?, apart? : Bool) -> Unit
 
+pub fn chat_creator_said(@json.Json?) -> String
+
 pub fn chat_extra_items(@sfbase.Source, @sfbase.ChatRef, @json.Json?) -> Array[@sf.MenuItem?]
 
 pub fn chat_find_list(@sfbase.ChatRef) -> FindList
+
+pub fn chat_holds_said(@sfbase.Source, @sfbase.ChatRef, @json.Json?) -> ChatHolds
 
 pub fn chat_key(@sfbase.ChatRef) -> String
 
@@ -91,9 +103,13 @@ pub fn chat_page_body_node(@view.View, @sfbase.Source, @sfbase.ChatRef, tips~ : 
 
 pub fn chat_read_left(@sfbase.Source, @sfbase.ChatRef, @sfbase.ChatView?) -> Bool
 
+pub fn chat_rename_call(@sfbase.Source, String, String, Double?, String) -> Unit
+
 pub fn chat_row(@ui.Ctx, @sfbase.Source, @sfbase.ChatItem, String, on? : Bool, list_ground? : Int64, more? : Bool, lifted? : Double, found? : Bool, opened? : (@sfbase.ChatRef) -> Unit, unghost? : (Bool) -> Unit, at? : @sf.ListAt) -> Int32
 
 pub fn chat_row_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.ChatItem, String, () -> Bool, @sf.ListAt, () -> Int32, list_ground? : () -> Int64, more? : Bool) -> @view.View
+
+pub fn chat_through(@json.Json?) -> ChatThrough?
 
 pub fn chats_lists_node(@view.View, @sfbase.Source, () -> @sfbase.Workspace?, ListsNodeFrame, @sf.TipLayer, () -> Int32) -> Unit
 
@@ -691,13 +707,12 @@ pub fn web_peek_node(@view.View, @sfbase.Source, String, () -> String, () -> Str
 
 pub fn work_mark(@ui.Ctx, @sfbase.Source, String, String, @ui.TextStyle, @ui.TextStyle, lead? : String, smallest? : Bool) -> Unit
 
-pub fn workspace_add_pressed() -> Unit
+pub fn workspace_add_pressed(@sfbase.Source, from~ : @sf.Beside) -> Unit
 
 pub fn workspace_mark(@ui.Ctx, @sfbase.Workspace, Double, Int64, @ui.TextStyle, still? : Bool) -> Unit
 
 pub fn workspace_marked(@sfbase.Workspace) -> Bool
 
-pub fn workspace_menu(@ui.Ctx, @sfbase.Source, (Double, Double, Double, Double)) -> Unit
 
 pub fn workspace_menu_open() -> Bool
 
@@ -710,6 +725,23 @@ pub fn xshare_key(String, String) -> String
 // Errors
 
 // Types and methods
+#derive(Eq)
+pub(all) struct ChatHolds {
+  thread : Double?
+  pulls : Array[@json.Json]
+  said : Int32
+  files : Bool
+  letters : Int32
+}
+pub fn ChatHolds::any(Self) -> Bool
+
+#derive(Eq)
+pub(all) enum ChatThrough {
+  Comma
+  Feishu
+  Slack
+}
+
 pub(all) struct ComposerPlace {
   capsule_in : (Double, Double, Double)
   capsule_pad : Double

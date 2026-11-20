@@ -91,12 +91,15 @@ pub fn preview_target(path : String) -> (Int, String)? {
 }
 
 ///|
-/// What goes back to the client: the service's status, its headers (by lowercase name, repeats kept), and its body a
-/// chunk at a time (None at its end).
+/// What goes back to the client: the service's status, its headers (by lowercase name, repeats kept), its body a
+/// chunk at a time (None at its end), and `close`, which lets the service's connection go (once; again does nothing):
+/// called by whoever stops reading before the end (its client gone), else the connection stays open as long as the
+/// service keeps it.
 pub(all) struct PreviewAnswer {
   status : Int
   headers : Array[(String, String)]
   next : async () -> Bytes?
+  close : async () -> Unit
 }
 
 ///|
@@ -113,6 +116,7 @@ fn plain_answer(status : Int, words : String) -> PreviewAnswer {
         Some(@utf8.encode(words))
       }
     },
+    close: async fn() {  },
   }
 }
 
@@ -120,20 +124,20 @@ fn plain_answer(status : Int, words : String) -> PreviewAnswer {
 /// A TCP connection of the shell's to this machine's `port`, read with what came before kept.
 priv struct Conn {
   host : @host.Host
-  id : Json
+  socket : @net.Socket
   mut carry : Bytes
   mut ended : Bool
+  mut closed : Bool
 }
 
 ///|
 async fn Conn::open(host : @host.Host, port : Int) -> Conn raise {
-  let answer = ask(host, "tcp.open", { "port": jint(port) })
-  { host, id: field_or_null(answer, "id"), carry: b"", ended: false }
+  { host, socket: host.tcp_open(port).socket, carry: b"", ended: false, closed: false }
 }
 
 ///|
 async fn Conn::write(self : Conn, bytes : Bytes) -> Unit raise {
-  ignore(self.host.shell("tcp.write", { "id": self.id }, bytes~))
+  self.socket.write(bytes)
 }
 
 ///|
@@ -142,13 +146,12 @@ async fn Conn::fill(self : Conn) -> Bool raise {
   if self.ended {
     return false
   }
-  let (said, bytes) = self.host.shell("tcp.read", { "id": self.id })
-  match (field(said, "end"), bytes) {
-    (Some(True), _) | (_, None) => {
+  match self.socket.read() {
+    None => {
       self.ended = true
       false
     }
-    (_, Some(b)) => {
+    Some(b) => {
       self.carry = concat(self.carry, b)
       true
     }
@@ -157,7 +160,11 @@ async fn Conn::fill(self : Conn) -> Bool raise {
 
 ///|
 async fn Conn::close(self : Conn) -> Unit {
-  ignore(try_ask(self.host, "tcp.close", { "id": self.id }))
+  if self.closed {
+    return
+  }
+  self.closed = true
+  self.socket.destroy()
 }
 
 ///|
@@ -290,7 +297,7 @@ fn Conn::body(self : Conn, method : String, status : Int, headers : Array[(Strin
         let size_text = trim(split(line, ";")[0])
         let mut size = 0
         for i in 0..<size_text.length() {
-          size = size * 16 + hex_unit(size_text.unsafe_charcode_at(i)).unwrap_or(0)
+          size = size * 16 + @codec.hex_digit(size_text.unsafe_charcode_at(i)).unwrap_or(0)
         }
         if size == 0 {
           done.val = true
@@ -458,7 +465,7 @@ pub async fn proxy_preview(
     }
     back.push((name, value))
   }
-  { status, headers: back, next: conn.body(http_method, status, raw) }
+  { status, headers: back, next: conn.body(http_method, status, raw), close: async fn() { conn.close() } }
 }
 
 // ── a service's WebSocket ──
@@ -554,6 +561,14 @@ pub(all) enum Message {
 /// Why a socket was not opened: the status to answer, and the words.
 pub(all) suberror SocketRefused {
   SocketRefused(Int, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for SocketRefused with output(self, logger) {
+  match self {
+    SocketRefused(_, m) => logger.write_string(m)
+  }
 }
 
 ///|

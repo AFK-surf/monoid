@@ -134,12 +134,12 @@ test "zoomed past the window and closed, a picture and a film fly back with roun
     t.run_for(@ui.move_most_ms)
     let start = zf_closed(t, film, false)
     zf_none(zf_corner_faults(t, v, start, corners, (390.0, 844.0)), "film \{film}, a finger's")
-    // a wide window, a mouse: ⌘ and the wheel
-    let (t, v, corners) = zf_opened(film, 0, 1280.0)
-    t.wheel_with(640.0, 400.0, 0.0, -1100.0, @ui.wheel_mod_cmd)
+    // a desktop's window 小屏 wide (on 中屏 and 大屏 it opens beside the chat), a mouse: ⌘ and the wheel
+    let (t, v, corners) = zf_opened(film, 0, 560.0)
+    t.wheel_with(280.0, 400.0, 0.0, -1100.0, @ui.wheel_mod_cmd)
     t.run_for(@ui.move_most_ms)
     let start = zf_closed(t, film, true)
-    zf_none(zf_corner_faults(t, v, start, corners, (1280.0, 844.0)), "film \{film}, a mouse's")
+    zf_none(zf_corner_faults(t, v, start, corners, (560.0, 844.0)), "film \{film}, a mouse's")
   }
 }
 
@@ -216,8 +216,8 @@ test "an image closed while its zoom is on its way (a double tap's, a fling, bac
   let (t, v, _) = zf_opened(false, 2, 390.0)
   zf_pinch(t, 330.0, 240.0)
   zf_none(zf_stop_faults(t, v, false), "back to fitted")
-  // a wide window: + zooms in, gliding
-  let (t, v, _) = zf_opened(false, 0, 1280.0)
+  // a desktop's window, 小屏 wide: + zooms in, gliding
+  let (t, v, _) = zf_opened(false, 0, 560.0)
   t.key(@ui.key_of_char('='))
   t.advance(@ui.frame_period_default)
   t.draw()

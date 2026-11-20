@@ -15,8 +15,6 @@ pub fn after(@effect.Runtime, Int32, () -> Unit) -> () -> Unit
 
 pub fn asks_zstd(Array[(String, String)]) -> Bool
 
-pub let batch_level : Int32
-
 pub fn closed_with(Connection) -> (String, String)?
 
 pub async fn compressed(Packer, Answer, Array[(String, String)], String) -> Answer
@@ -71,14 +69,17 @@ pub let zstd : String
 pub(all) suberror DoorError {
   DoorError(String)
 }
+pub impl Show for DoorError
 
 pub(all) suberror Ending {
   Ending(String, Int32, String, @json.Json)
 }
+pub impl Show for Ending
 
 pub(all) suberror WireError {
   WireError(String)
 }
+pub impl Show for WireError
 
 // Types and methods
 pub(all) struct Answer {
@@ -177,6 +178,7 @@ pub(all) struct Stream {
   finish : async () -> Unit
   stopped : async () -> Int32?
   reset : async (Int32) -> Unit
+  media_datagrams : (async (Double) -> Bool)?
 }
 
 pub(all) struct Taken {

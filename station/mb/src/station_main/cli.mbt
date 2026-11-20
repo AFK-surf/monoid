@@ -129,35 +129,7 @@ pub fn station_lang(data : String) -> String {
 ///|
 /// An instant as JavaScript's `toISOString` says it (ms since 1970, UTC).
 pub fn iso_time(ms : Double) -> String {
-  let total = ms.floor().to_int64()
-  let millis = ((total % 1000L) + 1000L) % 1000L
-  let secs = (total - millis) / 1000L
-  let mut days = secs / 86400L
-  let mut rem = secs % 86400L
-  if rem < 0L {
-    rem += 86400L
-    days -= 1L
-  }
-  // (days since 1970 to a civil date: Howard Hinnant's)
-  let z = days + 719468L
-  let era = (if z >= 0L { z } else { z - 146096L }) / 146097L
-  let doe = z - era * 146097L
-  let yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L
-  let y = yoe + era * 400L
-  let doy = doe - (365L * yoe + yoe / 4L - yoe / 100L)
-  let mp = (5L * doy + 2L) / 153L
-  let d = doy - (153L * mp + 2L) / 5L + 1L
-  let m = if mp < 10L { mp + 3L } else { mp - 9L }
-  let year = if m <= 2L { y + 1L } else { y }
-  let pad = (v : Int64, n : Int) => {
-    let s = v.to_string()
-    let mut out = s
-    while out.length() < n {
-      out = "0" + out
-    }
-    out
-  }
-  "\{pad(year, 4)}-\{pad(m, 2)}-\{pad(d, 2)}T\{pad(rem / 3600L, 2)}:\{pad(rem % 3600L / 60L, 2)}:\{pad(rem % 60L, 2)}.\{pad(millis, 3)}Z"
+  @time.format_iso_ms(ms.floor().to_int64())
 }
 
 // ── id ──
@@ -247,6 +219,9 @@ priv struct Health {
   updated_at : Double
   front : String
   relay_conflict : Bool
+  /// Its open descriptors and resident memory (none from a release from before it said them).
+  open_fds : Int?
+  rss_bytes : Double?
 }
 
 ///|
@@ -255,7 +230,15 @@ fn health_of(v : Json?) -> Health? {
   guard h.get("pid") is Some(Number(pid, ..)) && pid == pid.floor() else { None }
   guard h.get("updatedAt") is Some(Number(at, ..)) else { None }
   guard h.get("front") is Some(String(front)) && ["ok", "reconnecting", "direct"].contains(front) else { None }
-  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True) })
+  let open_fds = match h.get("openFds") {
+    Some(Number(n, ..)) if n >= 0.0 && n == n.floor() => Some(n.to_int())
+    _ => None
+  }
+  let rss_bytes = match h.get("rssBytes") {
+    Some(Number(n, ..)) if n >= 0.0 => Some(n)
+    _ => None
+  }
+  Some({ pid: pid.to_int(), updated_at: at, front, relay_conflict: h.get("relayConflict") is Some(True), open_fds, rss_bytes })
 }
 
 ///|
@@ -326,10 +309,7 @@ pub fn status_text(host : @host.Host, data : String, now : Double) -> String {
   if @cloud_lock.read_lock(disk, @cloud_lock.Crypto::of_host(host), data, None) is Some(_) {
     out.push(lock_command(host, data, "status", None))
   }
-  let removed_at = match st.get("removed_at") {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
+  let removed_at = opt_num(st.get("removed_at"))
   match removed_at {
     Some(at) => {
       let how = match st.get("removed_code") {
@@ -465,96 +445,31 @@ pub fn answer_heap_request(data : String, what : () -> Json) -> Bool {
 // ── channel and update ──
 
 ///|
-/// The updates' world on this machine with no Node (updates/host_io.mbt's, what it asks of Node answered here).
+/// The updates' world on this machine with no Node (updates/world.mbt's, what it asks of Node answered here).
 pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
-  let world : Ref[@updates.World?] = Ref(None)
   let config_raw = () => read_json(config_path(data)).unwrap_or(Json::object({}))
-  let node = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
-    let core = (i : Int) => if i < a.length() { to_core(a[i]) } else { Json::null() }
-    match name {
-      "cloud.fetch" =>
-        match world.val {
-          Some(w) => w.call("fetch", a)
-          None => of_core(Json::null())
-        }
-      "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "wall.sleep" | "listener.changed" =>
-        if name == "wall.sleep" {
-          match core(0) {
-            Number(ms, ..) => @effect.sleep(ms.to_int())
-            _ => ()
-          }
-          of_core(Json::null())
-        } else {
-          of_core(Json::null())
-        }
-      "ConfigFile.raw" => of_core(config_raw())
-      "ConfigFile.update" | "config.updateSoon" => {
-        let next = core(if name == "ConfigFile.update" { 1 } else { 0 })
-        let text = next.stringify(indent=2) + "\n"
-        ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), config_path(data)), true)))
-        @drive.write_private(config_path(data), text)
-        of_core(Json::null())
-      }
-      "process.kill" =>
-        match core(0) {
-          Number(p, ..) => {
-            let signal = match core(1) {
-              String(s) => s
-              Number(0.0, ..) => "0"
-              _ => "SIGTERM"
-            }
-            if kill(p.to_int(), signal) {
-              of_core(Json::boolean(true))
-            } else {
-              raise coded("ESRCH", "kill ESRCH")
-            }
-          }
-          _ => of_core(Json::boolean(false))
-        }
-      "os.tmpdir" => of_core(Json::string(tmpdir()))
-      _ =>
-        // (the machine's own: updates_platform.mbt)
-        match updates_platform(host, data, name, a.map(to_core)) {
-          Some(v) => of_core(v)
-          None => raise coded("ENOSYS", "the station's program does not do \{name}")
-        }
-    }
+  let config_update = async fn(next : Json) {
+    let text = next.stringify(indent=2) + "\n"
+    ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), config_path(data)), true)))
+    @drive.write_private(config_path(data), text)
   }
   let tell = (name : String, a : Array[@jsjson.JValue]) => match name {
     "console.log" => if a.length() > 0 { out_write(js_text(a[0]) + "\n") }
     "console.error" => if a.length() > 0 { err_write(js_text(a[0]) + "\n") }
-    _ => ignore(updates_platform_told(name, a.map(to_core)))
+    _ => ignore(updates_platform_told(name, a.map(of_jv)))
   }
-  let clock : @updates.Clock = {
-    now: () => wall_ms().to_double(),
-    sleep: async fn(ms) { @effect.sleep(ms.to_int()) },
-  }
-  let w = @updates.host_world(host, node, tell, clock, async fn(_dir, _told) { async fn() {  } })
-  world.val = Some(w)
-  w
-}
-
-///|
-/// A JavaScript value (jsjson's) as JSON.
-fn to_core(v : @jsjson.JValue) -> Json {
-  attempt(() => @json.parse(@jsjson.stringify(v))).unwrap_or(Json::null())
-}
-
-///|
-/// JSON as a JavaScript value (jsjson's).
-fn of_core(j : Json) -> @jsjson.JValue {
-  attempt(() => @jsjson.parse(j.stringify())).unwrap_or(@jsjson.JValue::Null)
+  build_updates_world(host, data, config_raw, config_update, tell~)
 }
 
 ///|
 /// An error as node's with its `code`.
 fn coded(code : String, message : String) -> Error {
-  @updates.thrown("Error", message, more=[("code", of_core(Json::string(code)))])
+  @updates.thrown("Error", message, more=[("code", to_jv(Json::string(code)))])
 }
 
 ///|
 fn js_text(v : @jsjson.JValue) -> String {
-  match to_core(v) {
+  match of_jv(v) {
     String(s) => s
     other => other.stringify()
   }
@@ -562,7 +477,9 @@ fn js_text(v : @jsjson.JValue) -> String {
 
 ///|
 /// The updates' parts set up for this machine: their words and language, its paths and Node (none: this program).
-pub fn updates_setup(data : String, argv0 : String) -> Unit {
+pub fn updates_setup(data : String, argv0 : String, app? : String = "") -> Unit {
+  updates_runner_from.val = (app, argv0, data)
+  updates_runner.val = None
   let (zh, en) = catalogs_json()
   @updates.set_words(zh, en)
   @updates.set_station_lang(station_lang(data))
@@ -673,10 +590,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
   }
   let field = (k : String) => match body {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => s
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let id12 = key.id[:12].to_owned()
@@ -733,10 +647,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
   let relay_url = match field("relay_url") {
     "" =>
       if provider == "comma" && relays.length() > 0 {
-        match relays[0] {
-          String(r) => r
-          _ => ""
-        }
+        as_text(relays[0]).unwrap_or("")
       } else {
         ""
       }
@@ -777,10 +688,7 @@ pub async fn cmd_enroll(host : @host.Host, args : Array[String], data : String, 
       }
       let rf = (k : String) => match r {
         Some(Object(o)) =>
-          match o.get(k) {
-            Some(String(s)) => s
-            _ => ""
-          }
+          opt_str(o.get(k)).unwrap_or("")
         _ => ""
       }
       if rf("owner") == "" {
@@ -863,19 +771,16 @@ async fn redeem(
     if rig {
       fields["rig"] = Json::boolean(true)
     }
-    let asked : Json = {
-      "url": Json::string(origin + at),
-      "method": Json::string("POST"),
-      "headers": Json::array([Json::array([Json::string("content-type"), Json::string("application/json")])]),
-    }
-    let (said, bytes) = host.shell("fetch", asked, bytes=@utf8.encode(Json::object(fields).stringify())) catch {
+    let r = host.fetch(
+      origin + at,
+      method_="POST",
+      headers=[("content-type", "application/json")],
+      body=@utf8.encode(Json::object(fields).stringify()),
+    ) catch {
       e => fail("\{plane_name} did not answer: \{e}")
     }
-    let status = match said {
-      { "status": Number(n, ..), .. } => n.to_int()
-      _ => 0
-    }
-    answered = (status, @utf8.decode_lossy(bytes.unwrap_or(b"")))
+    let status = r.status
+    answered = (status, r.text())
     if prefix == prefixes[prefixes.length() - 1] || status != 401 {
       break
     }
@@ -895,6 +800,14 @@ async fn redeem(
 /// workspace left as it is), as the admin API's route throws it.
 pub(all) suberror JoinRefused {
   JoinRefused(String, String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for JoinRefused with output(self, logger) {
+  match self {
+    JoinRefused(_, m) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -941,10 +854,7 @@ pub async fn join_workspace(
   let body = redeem(host, key, s.text("origin"), token, plane_name, join_path, prefixes, version, locks=true, rig=false)
   let field = (k : String) => match body {
     Object(m) =>
-      match m.get(k) {
-        Some(String(v)) => v
-        _ => ""
-      }
+      opt_str(m.get(k)).unwrap_or("")
     _ => ""
   }
   let ws = field("workspace")

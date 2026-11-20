@@ -8,7 +8,7 @@ import { LATEST_NAMING_ORIGIN, LATEST_NAMING_ORIGIN_POSSIBLE, LATEST_NAMING_ORIG
 import { CcIndexPreparation, ccSessionReady } from "./reference/backfill/cc-thread-index.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
-const session = (s: Store, key: string) => s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
+const session = (s: Store, key: string) => s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key,
   createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
 
 const prepare = (s: Store, key: string) => {
@@ -18,8 +18,8 @@ const prepare = (s: Store, key: string) => {
 };
 
 const ownChats = (s: Store, key: string, count = 9) => {
-  const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('ember','C',?,1)");
-  const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,?,'ember',1)");
+  const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('chat','C',?,1)");
+  const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,?,'chat',1)");
   s.db.exec("BEGIN IMMEDIATE");
   for (let i = 0; i < count; i++) member.run(thread.run(`${key}-own-${i}`).lastInsertRowid, key);
   s.db.exec("COMMIT");
@@ -37,8 +37,8 @@ for (const own of [40, 400, 4000]) for (const external of [0, 1])
     const s = Store.open(":memory:");
     try {
       session(s, "member");
-      const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('ember','C',?,1)");
-      const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,'member','ember',1)");
+      const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('chat','C',?,1)");
+      const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,'member','chat',1)");
       s.db.exec("BEGIN IMMEDIATE");
       for (let i=0; i<own; i++) member.run(thread.run(`own-${i}`).lastInsertRowid);
       s.db.exec("COMMIT");
@@ -116,7 +116,7 @@ for (const count of [8, 9]) test(`latest origin keeps message order with ${count
           } });
         }
         if (sql !== LATEST_NAMING_ORIGIN_PREPARED) return target.prepare(sql);
-        const traced = sql.replace("surface != 'ember' LIMIT", "surface != 'ember' AND visit_small_latest_origin(thread) = thread LIMIT");
+        const traced = sql.replace("surface != 'chat' LIMIT", "surface != 'chat' AND visit_small_latest_origin(thread) = thread LIMIT");
         assert.notEqual(traced, sql);
         const statement = target.prepare(traced);
         return new Proxy(statement, { get(stmt, method) {

@@ -47,7 +47,7 @@ pub(all) struct Sheet {
 
 ///|
 /// How long a sheet's scrim takes to fade in or out (ms).
-pub let sheet_scrim_ms : Double = 300.0
+pub let sheet_scrim_ms : Double = @motion.sheet_scrim_ms
 
 ///|
 /// The scrim's fade: sheet_scrim_ms on CSS's ease.
@@ -430,18 +430,6 @@ pub fn sheet_rest(key : String) -> Double {
 }
 
 ///|
-/// Of `shares`, the one nearest `f`.
-fn nearest_share(shares : Array[Double], f : Double) -> Double {
-  let mut best = shares[0]
-  for x in shares {
-    if (x - f).abs() < (best - f).abs() {
-      best = x
-    }
-  }
-  best
-}
-
-///|
 /// A sheet's grabber: 38 by 5 in the theme's line colour, 12 above it and 8 under.
 pub fn sheet_grabber(c : @ui.Ctx) -> Unit {
   let t = c.theme()
@@ -473,7 +461,7 @@ pub fn sheet_look(c : @ui.Ctx, s : SheetState, body : () -> Unit) -> Unit {
 /// go back never goes on down past `line` before it turns (the coordinator of the migration, 2026-11-10). Its node
 /// sheet's (sf's sheet_node) the same.
 pub fn sheet_drag_closes(down : Double, speed : Double, line : Double) -> Bool {
-  @ui.lands_past(down, speed, line) || speed >= @ui.flung_away
+  @motion.sheet_drag_closes(down, speed, line)
 }
 
 ///|
@@ -484,33 +472,5 @@ pub fn sheet_drag_closes(down : Double, speed : Double, line : Double) -> Bool {
 /// down no further than it was from closing before it turns (the coordinator of the migration, 2026-11-10). Its node
 /// sheet's (sf's sheet_node) the same.
 pub fn sheet_goes_to(shares : Array[Double], at : Double, speed : Double, total : Double, close_below : Double) -> Double? {
-  let f = at / total
-  if speed >= @ui.flung_away {
-    // (the highest under it)
-    let mut below : Double? = None
-    for s in shares {
-      if s < f && (match below { Some(b) => s > b; None => true }) {
-        below = Some(s)
-      }
-    }
-    below
-  } else if speed <= -@ui.flung_away {
-    // (the lowest over it; over the highest, the highest)
-    let mut above : Double? = None
-    let mut most = shares[0]
-    for s in shares {
-      most = if s > most { s } else { most }
-      if s > f && (match above { Some(b) => s < b; None => true }) {
-        above = Some(s)
-      }
-    }
-    Some(above.unwrap_or(most))
-  } else {
-    let lands = @ui.lands_at(at, -speed) / total
-    if lands < close_below {
-      None
-    } else {
-      Some(nearest_share(shares, lands))
-    }
-  }
+  @motion.sheet_goes_to(shares, at, speed, total, close_below)
 }

@@ -113,15 +113,6 @@ fn asker_of(viewer : JV) -> JV {
 }
 
 ///|
-/// The object without the fields that are undefined (as JSON leaves them out).
-pub fn JV::filter_undef(self : JV) -> JV {
-  match self {
-    Obj(f) => Obj(f.filter(p => !is_undef(p.1)))
-    _ => self
-  }
-}
-
-///|
 let people_kinds : Array[String] = ["chat", "message", "job", "file"]
 
 ///|
@@ -214,7 +205,7 @@ fn Admin::search_routes(self : Admin) -> Array[Route] {
 ///|
 /// An array spread into an object (`{...[a, b]}`: its indices as keys).
 fn arr_as_object(a : JV) -> JV {
-  let mut o = Obj([])
+  let mut o = JV::Obj([])
   for i, v in jitems(Some(a)) {
     o = jset(o, i.to_string(), v)
   }

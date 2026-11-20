@@ -91,7 +91,11 @@ pub fn[T : Eq] moves_for(
       None => (spec, true)
     }
     from.val = Some(now)
-    m.set_off(way, carries)
+    // (where only a transition moves it, changed outside one: where it is laid out at once, nothing set out,
+    // @view.transition)
+    if owner.transition_gate() {
+      m.set_off(way, carries)
+    }
   })
   m
 }
@@ -281,8 +285,10 @@ fn held_in(v : @view.View, of : @view.View) -> Bool {
 /// it holds, if it is in one).
 fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
   let at = self.owner.cause_at()
-  let shapes = self.shapes.filter(fn(s) { s.v.alive() && s.v.was_placed() })
-  let parts = self.parts.filter(fn(p) { p.v.alive() })
+  let shapes = self.shapes.filter(fn(s) {
+    s.v.alive() && !s.v.leaving_now() && s.v.was_placed()
+  })
+  let parts = self.parts.filter(fn(p) { p.v.alive() && !p.v.leaving_now() })
   // (where each stood in the window as the change came, and where the change lays it out, as of this moment: laid out
   // once for all of them)
   let shapes_at = shapes.map(fn(s) { (s.v.placed_window_now(), s.v.laid_window_now()) })

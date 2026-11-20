@@ -200,3 +200,165 @@ test "a layer of the tree's opened from an old view's button with the focus, its
     assert_eq((opened, closed, layer_focused(t)), (Some("取消"), want, want), msg="out of use: \{behind}")
   }
 }
+
+///|
+/// A field (the tree's own where `tree_one`, else an old view's editor) in a part in use while `in_use` holds, made
+/// while `mounted` does; while `open`, a modal layer of the tree's beside it holding "取消", giving the focus to it as
+/// it opens. Field node or old view, 200 by 30.
+fn in_use_field_tester(
+  tree_one : Bool,
+  f : Field,
+  in_use : @signals.Signal[Bool],
+  mounted? : @signals.Signal[Bool] = @signals.signal(true),
+  open? : @signals.Signal[Bool] = @signals.signal(false),
+) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(part) {
+      part.width(Is(Some(200.0))).height(Is(Some(30.0))).in_use(By(fn() { in_use.get() })) |> ignore
+      part.show(fn() { mounted.get() }, fn(h) {
+        if tree_one {
+          field(h, f, label="输入", max_lines=1) |> ignore
+        } else {
+          old(h, fn(c) { c.box(w=Px(200.0), h=Px(30.0), fn() { c.editor("e", field=f, max_lines=1, plain=true) |> ignore }) |> ignore })
+          .grow(Is(1.0))
+          |> ignore
+        }
+      })
+    })
+    |> ignore
+    root.show(fn() { open.get() }, fn(l) {
+      l.over(Is(true)).offset(Is((0.0, 100.0))).modal(By(fn() { !l.leaving() })) |> ignore
+      let no = l.box(fn(x) {
+        x
+        .width(Is(Some(80.0)))
+        .height(Is(Some(40.0)))
+        .presses(Is(true))
+        .focusable(Is(true))
+        .says(Is(Some(@view.said(Button, label="取消"))))
+        .on_press(fn() {  })
+        |> ignore
+      })
+      l.focus_opens(no) |> ignore
+    }, leave=layer_focus_leave_ms)
+  })
+  t.draw()
+  t
+}
+
+///|
+test "a field in a part not in use: Field::focus before or after its node is made gives it the focus as the part comes into use" {
+  for tree_one in [false, true] {
+    for before_mount in [true, false] {
+      let in_use = @signals.signal(false)
+      let mounted = @signals.signal(!before_mount)
+      let f = Field::new()
+      let t = in_use_field_tester(tree_one, f, in_use, mounted~)
+      let case = "tree: \{tree_one}, before made: \{before_mount}"
+      f.focus()
+      if before_mount {
+        mounted.set(true)
+        t.draw()
+      }
+      assert_false(f.focused(), msg="\{case}: focused out of use")
+      in_use.set(true)
+      if tree_one {
+        // (at that moment, no frame drawn)
+        assert_true(f.focused(), msg="\{case}: not focused as its part came into use")
+      }
+      t.draw()
+      t.type_text("hi")
+      assert_eq((f.focused(), f.text()), (true, "hi"), msg=case)
+    }
+  }
+}
+
+///|
+test "a field of the tree's in a part not in use: an action setting in_use and calling Field::focus in one event gives it the focus in that event" {
+  let in_use = @signals.signal(false)
+  let f = Field::new()
+  let told_at : Ref[Double] = Ref(-1.0)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.on_action("open.part", fn(_) {
+      in_use.set(true)
+      f.focus()
+      true
+    })
+    |> ignore
+    root.box(fn(part) {
+      part.width(Is(Some(200.0))).height(Is(Some(30.0))).in_use(By(fn() { in_use.get() })) |> ignore
+      let fv = field(part, f, label="输入", max_lines=1)
+      field_focus_told(fv, fn(on) {
+        if on {
+          told_at.val = view_moment()
+        }
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  // (the event a while after the last frame: its moment its own, not a frame's)
+  t.advance(layer_focus_leave_ms)
+  assert_true(view_app.val.unwrap().ask_action("open.part", t.time()))
+  // (in that event, no frame drawn)
+  assert_eq((f.focused(), told_at.val), (true, t.time()))
+}
+
+///|
+test "a field of the tree's asked focus in a part not in use: let_go cancels the ask, and once given it is not given again after going out of use" {
+  // (let go of before its part came into use: not given)
+  let in_use = @signals.signal(false)
+  let f = Field::new()
+  let t = in_use_field_tester(true, f, in_use)
+  f.focus()
+  f.let_go()
+  in_use.set(true)
+  t.draw()
+  assert_false(f.focused(), msg="given after let_go")
+  // (given once: out of use and in again, not given again)
+  let in_use = @signals.signal(false)
+  let f = Field::new()
+  let t = in_use_field_tester(true, f, in_use)
+  f.focus()
+  in_use.set(true)
+  t.draw()
+  assert_true(f.focused(), msg="not given as its part came into use")
+  in_use.set(false)
+  t.draw()
+  assert_false(f.focused(), msg="kept out of use")
+  in_use.set(true)
+  t.draw()
+  assert_false(f.focused(), msg="given again")
+}
+
+///|
+test "a field of the tree's in a part not in use: a modal layer opening and closing elsewhere keeps its prior ask, while asking under an open modal layer is ignored" {
+  // (asked before a modal layer opened and closed elsewhere: given as its part comes into use)
+  let in_use = @signals.signal(false)
+  let open = @signals.signal(false)
+  let f = Field::new()
+  let t = in_use_field_tester(true, f, in_use, open~)
+  f.focus()
+  open.set(true)
+  t.draw()
+  open.set(false)
+  t.draw()
+  assert_false(f.focused(), msg="focused out of use")
+  in_use.set(true)
+  t.draw()
+  assert_true(f.focused(), msg="the ask lost to a modal layer elsewhere")
+  // (asked under an open modal layer: not kept)
+  let in_use = @signals.signal(false)
+  let open = @signals.signal(true)
+  let f = Field::new()
+  let t = in_use_field_tester(true, f, in_use, open~)
+  f.focus()
+  in_use.set(true)
+  open.set(false)
+  t.draw()
+  t.run_for(layer_focus_leave_ms)
+  assert_false(f.focused(), msg="asked under a modal layer, given after")
+}

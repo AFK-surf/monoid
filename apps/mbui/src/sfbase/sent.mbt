@@ -56,6 +56,8 @@ pub fn sent_reset() -> Unit {
   sent_here_made.clear()
   local_sent_n.val = 0
   sent_pictures.clear()
+  sent_pictures_used.clear()
+  sent_pictures_tick.val = 0
   let told = sent_pictures_told.keys().to_array()
   for k in told {
     sent_picture_tell(k)
@@ -63,7 +65,10 @@ pub fn sent_reset() -> Unit {
   sent_pictures_told.clear()
   sent_from_at.clear()
   sent_parts_at.clear()
-  sent_quotes_from_at.clear()
+  sent_words_room_at.clear()
+  sent_quote_ids_at.clear()
+  sent_delay_at.clear()
+  sent_delay_fresh.clear()
 }
 
 ///|
@@ -190,14 +195,20 @@ fn going_up(going : Array[Json]) -> (Array[Json], Array[(String, Int, Int)]) {
 
 ///|
 /// Where what is sent from here stood in the composer as it was sent, in the window: its words (the top left of their
-/// first line), each quote's card (x, y, w, h, in the order the composer held them; None where one was not drawn) and
-/// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key). On a chat's
-/// page made as nodes its row flies from there (mbui's View::flies_in): the composer is an old view hosted in the list's
-/// foot, none of the window's tree to pair with, so where they stood is part of what is sent, never said after it.
+/// first line) and the field's room they were seen within there (x, y, w, h: `words_room`, none where not said), and
+/// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key), and how long
+/// after it is sent all of it sets out (`delay`, ms; 0 at once: a chat just made's first words set out as its scene
+/// says as it leaves whatever this says, fresh's fly_after, sent_delay_take). On a chat's page made as nodes its row flies from there (mbui's
+/// View::flies_in): the composer an old view hosted in the list's foot is none of the window's tree to pair with, so
+/// where they stood is part of what is sent, never said after it. A composer made as nodes says instead the id each of
+/// its quotes' cards is shared by (`quote_ids`, in their order; "" none: mbui's View::shared), the message's card made
+/// with it flying from the composer's as one box, its place never said.
 pub(all) struct SentFrom {
   words : (Double, Double)?
-  quotes : Array[(Double, Double, Double, Double)?]
+  words_room : (Double, Double, Double, Double)?
+  quote_ids : Array[String]
   parts : Array[(String, (Double, Double, Double, Double))]
+  delay : Double
 }
 
 ///|
@@ -230,11 +241,23 @@ pub fn sent_local(
         Some(at) => sent_from_at[key] = at
         None => ()
       }
-      if !f.quotes.is_empty() {
-        sent_quotes_from_at[key] = f.quotes
+      match f.words_room {
+        Some(room) => sent_words_room_at[key] = room
+        None => ()
+      }
+      if f.quote_ids.iter().any(fn(i) { i != "" }) {
+        sent_quote_ids_at[key] = f.quote_ids
       }
       if !f.parts.is_empty() {
         sent_parts_at[key] = Map::from_array(f.parts)
+      }
+      if f.delay > 0.0 {
+        sent_delay_at[key] = f.delay
+      }
+      // (a chat just made, its first words: they set out as its scene says as it leaves, said by became_starts
+      // once they are in its list, in the same press, before their row takes it: fresh's fly_after)
+      if v is None {
+        sent_delay_fresh.add(key)
       }
     }
     None => ()
@@ -253,12 +276,16 @@ pub fn sent_local(
       joined,
       followed: false,
       seq: -1.0,
-      time: None,
+      // (sent now: 刚刚 from the frame it is sent, as the core says of its outbox the moment it has it: its time stands
+      // under it from the first, never 正在发送 for the round trip till the core's row says it: outbox_mine_under)
+      time: Some({ ago: @sf.t("core-logic.format.ago.now"), full: "" }),
       waits: if going.length() > 0 { @sf.t("common.uploading") } else { "" },
       progress: None,
       uploads: cards,
       created_at: now,
       refused: false,
+      held: false,
+      unsure: false,
     },
     // (a chat just made: none)
     before: match v {
@@ -340,8 +367,11 @@ pub fn sent_local_gone(rk : String, key : String) -> Unit {
       sending.remove(i) |> ignore
       // (where it stood, if its row never took it: nothing flies from there now)
       sent_from_at.remove(key)
-      sent_quotes_from_at.remove(key)
+      sent_words_room_at.remove(key)
+      sent_quote_ids_at.remove(key)
       sent_parts_at.remove(key)
+      sent_delay_at.remove(key)
+      sent_delay_fresh.remove(key)
       sending_changed()
     }
     None => ()
@@ -368,7 +398,56 @@ let sent_pictures_told : Map[String, @signals.Signal[Int]] = Map([])
 /// id): what reads it by a node told.
 pub fn sent_picture_kept(key : String, picture : String) -> Unit {
   sent_pictures[key] = picture
+  sent_pictures_tick.val += 1
+  sent_pictures_used[key] = sent_pictures_tick.val
   sent_picture_tell(key)
+  // (beyond sent_pictures_max, the least lately kept let go of: its message drawn by its station's picture of it, as
+  // one sent from elsewhere is; the picture itself too where nothing else is drawn by it)
+  while sent_pictures.length() > sent_pictures_max {
+    let mut oldest = ""
+    let mut when = 0
+    for k, t in sent_pictures_used {
+      if k != key && (oldest == "" || t < when) {
+        oldest = k
+        when = t
+      }
+    }
+    guard oldest != "" else { break }
+    let was = sent_pictures.get(oldest)
+    sent_pictures.remove(oldest)
+    sent_pictures_used.remove(oldest)
+    sent_picture_tell(oldest)
+    match was {
+      Some(p) => sent_picture_let_go(p)
+      None => ()
+    }
+  }
+}
+
+///|
+/// How many pictures of what was sent from here are kept (sent_pictures; each image two: by its upload and by its path
+/// once up): the last few dozen sent, what a chat's latest show.
+let sent_pictures_max : Int = 64
+
+///|
+/// When each of sent_pictures was last kept (a count: sent_pictures_tick's), by its key.
+// kept across runs: let go with sent_pictures (sent_reset)
+let sent_pictures_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back by sent_reset
+let sent_pictures_tick : Ref[Int] = { val: 0 }
+
+///|
+/// A picture picked or pasted here (`mem:writing/`, writing_add's) let go of once nothing is drawn by it: no draft's file
+/// (writing_pictures) and no message sent from here (sent_pictures). Others are the host's (its picture of a file), or a
+/// station's, not this one's to let go of.
+fn sent_picture_let_go(picture : String) -> Unit {
+  guard picture.has_prefix("mem:writing/") else { return }
+  if writing_pictures.values().any(fn(p) { p == picture }) || sent_pictures.values().any(fn(p) { p == picture }) {
+    return
+  }
+  @ui.forget_image(picture)
 }
 
 ///|
@@ -429,27 +508,54 @@ pub fn sent_picture_told(station : String, a : Attachment) -> String? {
 let sent_from_at : Map[String, (Double, Double)] = Map([])
 
 ///|
-/// Where the quotes' cards of what was sent from here stood in the composer as it was sent (each one's place and size
-/// in the window, in the order the composer held them; None where one was not drawn), by the key its row has in its
-/// chat's list, till that row's cards take them to fly from there (sent_quotes_from_take): the composer an old view's,
-/// as sent_from_at says.
-let sent_quotes_from_at : Map[String, Array[(Double, Double, Double, Double)?]] = Map([])
+/// The room of the composer's field the words of what was sent from here were seen within as they were sent (x, y, w, h
+/// in the window: SentFrom's `words_room`), by the key its row has in its chat's list, till that row's bubble takes it
+/// (sent_words_room_take): what of them was scrolled out of it is not seen as they set out.
+let sent_words_room_at : Map[String, (Double, Double, Double, Double)] = Map([])
 
 ///|
-/// Where the quotes' cards of what was sent from here as `key` stood as it was sent (sent_local's `from`), taken:
-/// told once.
-pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Double)?] {
-  let at = sent_quotes_from_at.get(key).unwrap_or([])
-  sent_quotes_from_at.remove(key)
+/// The room of the composer's field the words of what was sent from here as `key` were seen within as they were sent
+/// (sent_local's `from`), taken: told once.
+pub fn sent_words_room_take(key : String) -> (Double, Double, Double, Double)? {
+  let at = sent_words_room_at.get(key)
+  sent_words_room_at.remove(key)
   at
 }
 
 ///|
 /// Whether anything of what was sent from here as `key` (its words, its quotes' cards, its parts) waits for its row to
-/// fly from where it stood (sent_from_take, sent_quotes_from_take, sent_part_take), not taken.
+/// fly from where it stood (sent_from_take, sent_quote_ids_take, sent_part_take), not taken.
 pub fn sent_from_waits(key : String) -> Bool {
-  sent_from_at.contains(key) || sent_quotes_from_at.contains(key) || sent_parts_at.contains(key)
+  sent_from_at.contains(key) ||
+  sent_quote_ids_at.contains(key) ||
+  sent_parts_at.contains(key)
 }
+
+///|
+/// How long after it was sent what was sent from here sets out (SentFrom's `delay`), by the key its row has in its
+/// chat's list, till that row takes it (sent_delay_take).
+let sent_delay_at : Map[String, Double] = Map([])
+
+///|
+/// How long after it was sent what was sent from here as `key` sets out (sent_local's `from`, its `delay`; 0 at once;
+/// a chat's first words as it was made, as its scene says: fresh's fly_after, said by became_starts in their press),
+/// taken: told once, to all of its row that flies.
+pub fn sent_delay_take(key : String) -> Double {
+  let at = if sent_delay_fresh.contains(key) {
+    @signals.untracked(fn() { fresh_fly_after.get() })
+  } else {
+    sent_delay_at.get(key).unwrap_or(0.0)
+  }
+  sent_delay_at.remove(key)
+  sent_delay_fresh.remove(key)
+  at
+}
+
+///|
+/// What was sent from here as a chat's first words as it was made (sent_local with no view), by its row's key, till
+/// that row takes how long after they set out (sent_delay_take: the new chat's, fresh's fly_after).
+// kept across runs: emptied as a run starts and as each row takes it
+let sent_delay_fresh : Set[String] = Set([])
 
 ///|
 /// Where the words of what was sent from here as `key` stood as they were sent (sent_local's `from`), taken: told once.
@@ -478,4 +584,29 @@ pub fn sent_part_take(key : String, part : String) -> (Double, Double, Double, D
     sent_parts_at.remove(key)
   }
   at
+}
+
+///|
+/// Which parts of what was sent from here as `key` fly from where they stood (sent_part_take's, not taken yet), in the
+/// order the composer held them (its files, then its quotes' own pictures): what of it leads its flight, where it has
+/// no words (sfpages' sent_lead).
+pub fn sent_parts_flying(key : String) -> Array[String] {
+  match sent_parts_at.get(key) {
+    Some(m) => m.keys().collect()
+    None => []
+  }
+}
+
+///|
+/// The ids the quotes' cards of what was sent from here were shared by in a composer made as nodes (SentFrom's
+/// `quote_ids`), by the key its row has in its chat's list, till that row's cards take them (sent_quote_ids_take).
+let sent_quote_ids_at : Map[String, Array[String]] = Map([])
+
+///|
+/// The ids the quotes' cards of what was sent from here as `key` were shared by as it was sent (sent_local's `from`),
+/// taken: told once. Its row's cards made with them fly from the composer's (mbui's View::shared).
+pub fn sent_quote_ids_take(key : String) -> Array[String] {
+  let ids = sent_quote_ids_at.get(key).unwrap_or([])
+  sent_quote_ids_at.remove(key)
+  ids
 }

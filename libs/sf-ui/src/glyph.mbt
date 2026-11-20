@@ -269,7 +269,7 @@ pub fn station_glyph_node(
       let counts = g()
       let blinking = if counts.asleep { 0 } else { counts.working }
       if blinking > 0 && !@ui.reduced_motion() {
-        glyph_eye((v.cycle_resident(glyph_blink_period) * glyph_blink_period / @ui.cycle_step_ms).floor() * @ui.cycle_step_ms)
+        glyph_eye((@motion.resident_cycle(v, glyph_blink_period) * glyph_blink_period / @ui.cycle_step_ms).floor() * @ui.cycle_step_ms)
       } else {
         1.0
       }
@@ -285,7 +285,7 @@ pub fn station_glyph_node(
       b
       .over(Is(true))
       .shapes(By(fn() { @ui.vector_shapes({ w: 24.0, h: 24.0, layers: drawn().1 }, size, b.pixel_scale()) }))
-      .alpha(By(fn() { glyph_breath_at(b.cycle_resident(glyph_breath_period)) }))
+      .alpha(By(fn() { glyph_breath_at(@motion.resident_cycle(b, glyph_breath_period)) }))
       |> ignore
     })
   })

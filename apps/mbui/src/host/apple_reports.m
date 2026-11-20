@@ -303,22 +303,25 @@ static BOOL sf_reporting(void) {
   }
 }
 
-/// still.fail's own app (fail.still.iphone, TestFlight's) or another build of it (still.fail preview's, a debug one):
-/// its reports not counted as the released app's, as Android's android-mbui.
-/// On macOS still.fail's own Mac app (fail.still.desktop, its beta fail.still.desktop.beta) is `macos`, any other build
+/// still.fail's own app (fail.still.iphone, TestFlight's; monoid's build.monoid.iphone alike) or another build of it
+/// (still.fail preview's, a debug one): its reports not counted as the released app's, as Android's android-mbui.
+/// On macOS still.fail's own Mac app (fail.still.desktop, its beta fail.still.desktop.beta; monoid's build.monoid.desktop
+/// and build.monoid.desktop.beta alike) is `macos`, any other build
 /// `macos-mbui`; the device's model is the machine's (hw.model, "Mac16,1").
 static NSDictionary *sf_here(void) {
   NSDictionary *info = NSBundle.mainBundle.infoDictionary;
   NSString *version = sf_string(info[@"CFBundleShortVersionString"]) ?: @"", *build = sf_string(info[@"CFBundleVersion"]) ?: @"";
   NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
 #if TARGET_OS_IPHONE
-  BOOL own = [NSBundle.mainBundle.bundleIdentifier isEqual:@"fail.still.iphone"];
+  NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
+  BOOL own = [bid isEqual:@"fail.still.iphone"] || [bid isEqual:@"build.monoid.iphone"];
   const char *model = getenv("MBUI_DEVICE_MODEL");
   NSString *device = model ? @(model) : @"";
   NSString *app = own ? @"ios" : @"ios-mbui", *system = @"iOS", *lib = own ? @"stillfail-ios" : @"stillfail-mbui-ios";
 #else
   NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
-  BOOL own = [bid isEqual:@"fail.still.desktop"] || [bid isEqual:@"fail.still.desktop.beta"];
+  BOOL own = [bid isEqual:@"fail.still.desktop"] || [bid isEqual:@"fail.still.desktop.beta"] ||
+             [bid isEqual:@"build.monoid.desktop"] || [bid isEqual:@"build.monoid.desktop.beta"];
   char model[64] = {0};
   size_t size = sizeof(model) - 1;
   NSString *device = sysctlbyname("hw.model", model, &size, NULL, 0) == 0 ? @(model) : @"";

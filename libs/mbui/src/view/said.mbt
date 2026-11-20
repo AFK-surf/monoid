@@ -252,7 +252,7 @@ pub fn Tree::said_order(self : Tree) -> Array[SaidNode] {
     let mut up = parent
     let mut d = depth
     if n.said is Some(_) || n.hosted {
-      let rect = match self.drawn_of(id) {
+      let rect = match self.drawn_of(id, drawn=!n.hosted) {
         Some(dr) => (dr.x, dr.y, dr.w, dr.h)
         None => (0.0, 0.0, 0.0, 0.0)
       }

@@ -39,7 +39,10 @@ fn Secrets::vault_for(self : Secrets, lock : Lock, sub : String) -> String raise
     let personal = fn(vaults : Array[Json]) -> Json? {
       for vault in vaults {
         let keyed = ga(Some(vault), "keys").unwrap_or([]).any(k => devices.contains(gtext(get(Some(k), "cert"), "device")))
-        if !members_of(vault).contains(sub) || !keyed {
+        if truthy(get(Some(vault), "deleted")) ||
+          gs(Some(vault), "scope") == Some("workspace") ||
+          !members_of(vault).contains(sub) ||
+          !keyed {
           continue
         }
         if first is None {
@@ -103,7 +106,8 @@ pub fn Secrets::status(self : Secrets, session : String, person? : String) -> St
   let (_, lock) = self.place_of(session)
   guard self.person_for(session, person) is Some(email) else { return "none" }
   guard lock is Some(lock) else { return "plain" }
-  guard member_of(lock, email) is Some(sub) else { return "none" }
+  // (no security mode: a member whose own lock this station has not heard yet turns their vault on as they keep it)
+  guard member_of(lock, email) is Some(sub) else { return if lock.open_roster() { "off" } else { "none" } }
   if self.vault_for(lock, sub) != "" {
     "on"
   } else {
@@ -145,15 +149,7 @@ fn shell_quoted(p : String) -> String {
 ///|
 /// `basename(p)`.
 fn basename(p : String) -> String {
-  let mut end = p.length()
-  while end > 1 && p.code_unit_at(end - 1) == '/' {
-    end -= 1
-  }
-  let s = slice(p, 0, b=end)
-  match s.rev_find("/") {
-    Some(i) => slice(s, i + 1)
-    None => s
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|
@@ -275,7 +271,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     None => None
     Some(l) => member_of(l, email)
   }
-  if lock is Some(_) && sub is None {
+  if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
   }
   let lf = [("name", js(name)), ("kind", js(kind)), ("modes", jstrs(modes)), ("hosts", jstrs(hosts))]
@@ -416,7 +412,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     None => None
     Some(l) => member_of(l, email)
   }
-  if lock is Some(_) && sub is None {
+  if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
   }
   let fields = if typed { None } else { Some(fields_of(value)) }
@@ -445,10 +441,15 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     sf.push(("about", js(about)))
   }
   let save = obj(sf)
+  let vault_id = match (lock, sub) {
+    (None, _) => @vault_crypto.plain_id
+    (Some(_), None) => ""
+    (Some(l), Some(u)) => self.vault_for(l, u)
+  }
   let rf = [
     ("id", js(id)),
     ("ws", js(ws)),
-    ("vault", js(match lock { None => @vault_crypto.plain_id; Some(l) => self.vault_for(l, sub.unwrap()) })),
+    ("vault", js(vault_id)),
     ("item", js(item)),
     ("session", js(session)),
     ("chat", js("")),
@@ -471,7 +472,7 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
     rf.push(("runOn", obj([("id", js(p.id)), ("name", js(p.name))])))
   }
   if lock is Some(l) && fields is Some(f) {
-    rf.push(("sealed", jarr(self.certs_of(l, sub.unwrap()).map(c => self.seal_to(c, ws, id, f)))))
+    rf.push(("sealed", jarr(match sub { Some(u) => self.certs_of(l, u).map(c => self.seal_to(c, ws, id, f)); None => [] })))
   }
   let request = obj(rf)
   let during_handover = lock is Some(_) && fields is Some(_) && !self.previous_exited

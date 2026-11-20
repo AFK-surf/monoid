@@ -9,7 +9,7 @@ import { SLACK_WRITES, SPEAKS, SPEAKS_WRITING, isSlackWrite } from "../src/tools
 import { stationTools } from "./station-tools.ts";
 
 /// By these a session says or does something in a chat as itself: a subagent's call is refused.
-const SPEAK = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive"];
+const SPEAK = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure"];
 /// Speaks where its method writes, reads otherwise: a subagent's writes are refused.
 const SPEAKS_IN_WRITES = "slack_api";
 /// These put a card before a person (a request to approve, a sign-in, a login, a retirement's step, a whole station's

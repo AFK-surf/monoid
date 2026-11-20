@@ -15,14 +15,43 @@ impl @hostapi.Host for FakeHost with window_show(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with auto_launch(self) {
+  self.auto_launch
+}
+
+///|
+impl @hostapi.Host for FakeHost with set_auto_launch(self, enabled) {
+  self.auto_launch = enabled
+  true
+}
+
+///|
+impl @hostapi.Host for FakeHost with hotkey_set(self, id, accel) {
+  if id == "" || accel == "" {
+    return false
+  }
+  self.hotkeys[id] = accel
+  true
+}
+
+///|
+impl @hostapi.Host for FakeHost with hotkey_clear(self, id) {
+  self.hotkeys.remove(id)
+}
+
+///|
 /// The person's setting for motion (Tester::set_reduce_motion).
 impl @hostapi.Host for FakeHost with reduce_motion(self) {
   self.reduce_motion
 }
 
 ///|
-/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), or resize the next frame (8).
+/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), resize the next frame (8), or
+/// let files go on the window as a file manager does (13: fake_drop_drive).
 impl @hostapi.Host for FakeHost with drive(self, kind, text) {
+  if kind == 13 {
+    return fake_drop_drive(self, text)
+  }
   if kind == 6 || kind == 7 {
     guard self.find_notice(text) is Some(index) else { return false }
     if kind == 6 {
@@ -39,6 +68,64 @@ impl @hostapi.Host for FakeHost with drive(self, kind, text) {
     return false
   }
   tester_size.val = Some((wh[0], wh[1]))
+  true
+}
+
+///|
+/// A script's `drop X Y PATH|PATH…` (drive.mbt, @hostapi.drive 13): those files let go at (X, Y) of the window with their
+/// paths, as Tester::drop_files lets them go; what they hold is what the script's `picks` said, or, where it said none,
+/// a file each of a few bytes named as its path ends (a folder, ending in "/", empty). False where the step says no
+/// place.
+fn fake_drop_drive(f : FakeHost, text : String) -> Bool {
+  guard text.find(" ") is Some(i) else { return false }
+  let after_x = text[i + 1:].to_owned()
+  let (y_said, rest) = match after_x.find(" ") {
+    Some(k) => (after_x[:k].to_owned(), after_x[k + 1:].to_owned())
+    None => (after_x, "")
+  }
+  let x = number(text[:i].to_owned())
+  let y = number(y_said)
+  let paths = rest.split("|").filter(fn(p) { p != "" }).map(fn(p) { p.to_owned() }).to_array()
+  if f.picks.is_empty() {
+    for p in paths {
+      let dir = p.has_suffix("/")
+      let base = if dir { p[:p.length() - 1].to_owned() } else { p }
+      let name = match base.rev_find("/") {
+        Some(i) => base[i + 1:].to_owned()
+        None => base
+      }
+      let bytes = if dir { b"" } else { b"file" }
+      f.picks.push({ name: if dir { name + "/" } else { name }, bytes, held: 0, size: bytes.length().to_double(), src: "" })
+    }
+  }
+  f.pick_asks.push({ kind: Files, said: false, taken: false })
+  let id = f.pick_asks.length()
+  if !f.picks_by_hand {
+    f.due(f.time, "files dropped", fn() { fake_pick_said(f, id) })
+  }
+  let m : Map[String, Json] = {
+    "type": Json::string("drop"),
+    "x": Json::number(x),
+    "y": Json::number(y),
+    "pick": Json::number(id.to_double()),
+  }
+  if !paths.is_empty() {
+    m["paths"] = Json::array(
+      paths.mapi(fn(i, p) {
+        let size = match f.picks.get(i) {
+          Some(p) => p.size
+          None => 0.0
+        }
+        let o : Map[String, Json] = {
+          "path": Json::string(p),
+          "dir": Json::boolean(p.has_suffix("/")),
+          "size": Json::number(size),
+        }
+        Json::object(o)
+      }),
+    )
+  }
+  fake_post(f, "mbui.drop", Json::object(m).stringify(), None)
   true
 }
 
@@ -448,6 +535,24 @@ impl @hostapi.Host for FakeHost with text_key(self, text, size, weight, style) {
 }
 
 ///|
+/// The keys a Tester's host was asked to draw ahead (@hostapi.glyphs_ahead), in the order asked, where a test keeps
+/// them (Some): it draws none ahead, each drawn as it is asked for, as ever.
+// kept across runs: a test's own, set by it before it looks and put back after
+let fake_ahead : Ref[Array[Int]?] = Ref(None)
+
+///|
+impl @hostapi.Host for FakeHost with glyphs_ahead(self, keys, n) {
+  if fake_ahead.val is Some(asked) {
+    for i in 0..<n {
+      asked.push(keys[i])
+    }
+  }
+  if self.live is Some(l) {
+    l.host.glyphs_ahead(keys, n)
+  }
+}
+
+///|
 impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   if self.live is Some(l) {
     l.host.glyph(key, out)
@@ -613,6 +718,17 @@ impl @hostapi.Host for FakeHost with perf_where(self) {
   } else {
     ""
   }
+}
+
+///|
+impl @hostapi.Host for FakeHost with reveal_file(self, path, go) {
+  if !self.reveals {
+    return false
+  }
+  if go {
+    self.revealed.push(path)
+  }
+  true
 }
 
 ///|
@@ -1316,21 +1432,145 @@ impl @hostapi.Host for FakeHost with mods_held(self) {
 }
 
 ///|
+/// A fake host's pointer held by the window and its game controllers, beside it rather than in it (FakeHost's layout
+/// stays as it was: a field put among others moves the places of those after it in the C of every test program, all
+/// of it compiled again): made as a test first holds the pointer or says controllers, let go as the next run starts.
+priv struct FakePointerAux {
+  fake : FakeHost
+  /// the pointer held by the window (@hostapi.set_pointer_lock), how many times it was told to be, and how far the
+  /// mouse moved while it is, not yet taken (Tester::locked_move)
+  mut lock : Bool
+  mut locks_told : Int
+  mut delta : (Double, Double)
+  /// the game controllers connected, as the test says (Tester::set_gamepads)
+  mut pads : Array[@hostapi.Gamepad]
+}
+
+///|
+// kept across a run's frames: each fake host's entry, let go as the next run starts (reset_globals)
+let fake_pointer_auxs : Array[FakePointerAux] = []
+
+///|
+fn fake_pointer_of(fake : FakeHost) -> FakePointerAux? {
+  for it in fake_pointer_auxs {
+    if physical_equal(it.fake, fake) {
+      return Some(it)
+    }
+  }
+  None
+}
+
+///|
+fn fake_pointer(fake : FakeHost) -> FakePointerAux {
+  match fake_pointer_of(fake) {
+    Some(it) => it
+    None => {
+      let it : FakePointerAux = { fake, lock: false, locks_told: 0, delta: (0.0, 0.0), pads: [] }
+      fake_pointer_auxs.push(it)
+      it
+    }
+  }
+}
+
+///|
+fn fake_pointer_reset() -> Unit {
+  fake_pointer_auxs.clear()
+}
+
+///|
+/// The pointer held or let go of, as told (Tester::pointer_locked); what it moved while held let go of with it.
+impl @hostapi.Host for FakeHost with pointer_lock(self, on) {
+  let p = fake_pointer(self)
+  p.locks_told = p.locks_told + 1
+  p.lock = on
+  p.delta = (0.0, 0.0)
+}
+
+///|
+impl @hostapi.Host for FakeHost with pointer_locked(self) {
+  match fake_pointer_of(self) {
+    Some(p) => p.lock
+    None => false
+  }
+}
+
+///|
+/// How far the mouse moved while the pointer is held (Tester::locked_move), taken.
+impl @hostapi.Host for FakeHost with pointer_delta(self, out) {
+  match fake_pointer_of(self) {
+    Some(p) => {
+      out[0] = p.delta.0
+      out[1] = p.delta.1
+      p.delta = (0.0, 0.0)
+    }
+    None => {
+      out[0] = 0.0
+      out[1] = 0.0
+    }
+  }
+}
+
+///|
+/// The game controllers as the test says (Tester::set_gamepads), their sticks and triggers as they are.
+impl @hostapi.Host for FakeHost with gamepads(self, out) {
+  guard fake_pointer_of(self) is Some(fp) else { return 0 }
+  let mut n = 0
+  for p in fp.pads {
+    if n >= @hostapi.gamepads_most {
+      break
+    }
+    let o = n * @hostapi.gamepad_fields
+    out[o] = p.index.to_double()
+    out[o + 1] = 1.0
+    out[o + 2] = p.buttons.to_double()
+    out[o + 3] = p.lx
+    out[o + 4] = p.ly
+    out[o + 5] = p.rx
+    out[o + 6] = p.ry
+    out[o + 7] = p.lt
+    out[o + 8] = p.rt
+    n += 1
+  }
+  n
+}
+
+///|
 /// The window dragged: counted.
 impl @hostapi.Host for FakeHost with window_drag(self) {
   self.window_drags = self.window_drags + 1
 }
 
 ///|
-/// What the app asked of the window's own buttons, oldest first (Tester's).
+/// What the app asked of the window's own buttons, oldest first (Tester's), the window in place's (window_acts_by;
+/// the first's in window_acts too, as ever). Close (3) in a window beside the first closes it as a host's own close
+/// does: told the app between frames, as the person's (Tester::close_window_beside).
 impl @hostapi.Host for FakeHost with window_act(self, what) {
-  self.window_acts.push(what)
+  let wid = self.window_at
+  if wid == 0 {
+    self.window_acts.push(what)
+  }
+  match self.window_acts_by.get(wid) {
+    Some(acts) => acts.push(what)
+    None => self.window_acts_by[wid] = [what]
+  }
+  if what == 3 && wid > 0 {
+    after_frame(fn() {
+      if !self.window_ids_closed.contains(wid) {
+        self.window_ids_closed.push(wid)
+      }
+      on_outside(outside_window, wid, -1)
+      self.wants = true
+    })
+  }
 }
 
 ///|
-/// Whether the window is maximized (Tester::set_window_zoomed).
+/// Whether the window in place is maximized (Tester::set_window_zoomed, set_window_zoomed_of).
 impl @hostapi.Host for FakeHost with window_zoomed(self) {
-  self.zoomed
+  match self.window_zooms.get(self.window_at) {
+    Some(z) if self.window_at > 0 => z
+    _ => self.zoomed
+  }
 }
 
 ///|
@@ -1342,7 +1582,10 @@ impl @hostapi.Host for FakeHost with window_snap(self, x, y, w, h) {
 ///|
 /// How the pointer stands on the maximize button (Tester::set_window_snap).
 impl @hostapi.Host for FakeHost with window_snap_state(self) {
-  self.snap_state
+  match self.window_snaps.get(self.window_at) {
+    Some(s) if self.window_at > 0 => s
+    _ => self.snap_state
+  }
 }
 
 ///|
@@ -1377,17 +1620,66 @@ impl @hostapi.Host for FakeHost with windows_in_process(self) {
 }
 
 ///|
-/// Another window of the run, its size the one said for it or 480 × 720 (Tester::set_window_beside_size).
+/// The title each window of the run was given (as it was opened, @ui.set_window_title) and the role each beside the
+/// first was opened as, by id (Tester::window_title, window_role): the run's, emptied as a Tester starts anew.
+// kept across runs: a run's start clears it (the init below)
+let fake_window_titles : Map[Int, String] = Map([])
+
+///|
+// kept across runs: a run's start clears it (the init below)
+let fake_window_roles : Map[Int, String] = Map([])
+
+///|
+fn init {
+  on_reset(fn() {
+    fake_window_titles.clear()
+    fake_window_roles.clear()
+  })
+}
+
+///|
+/// Another window of the run, its size the one a test said for it (Tester::set_window_beside_size), else what it was
+/// opened at (a JSON object's positive "w" and "h": @ui.WindowSpec), else 480 × 720; its title and role kept as it says
+/// them, its buttons in its top row as its "inset" says (else the first window's).
 impl @hostapi.Host for FakeHost with window_open_id(self, what) {
-  ignore(what)
   guard self.windows_in_process else { return 0 }
   self.window_ids = self.window_ids + 1
   let wid = self.window_ids
+  let parsed = @json.parse(what) catch { _ => Json::null() }
+  let said : Map[String, Json] = match parsed {
+    Object(m) => m
+    _ => Map([])
+  }
   if !self.window_sizes.contains(wid) {
-    self.window_sizes[wid] = (480.0, 720.0)
+    match (said.get("w"), said.get("h")) {
+      (Some(Number(w, ..)), Some(Number(h, ..))) if w > 0.0 && h > 0.0 => self.window_sizes[wid] = (w, h)
+      _ => self.window_sizes[wid] = (480.0, 720.0)
+    }
+  }
+  match said.get("title") {
+    Some(String(t)) if t != "" => fake_window_titles[wid] = t
+    _ => ()
+  }
+  match said.get("role") {
+    Some(String(r)) if r != "" => fake_window_roles[wid] = r
+    _ => ()
+  }
+  // (its buttons in its top row as its spec says, else as the first window's; one a test said for it before kept)
+  if !self.window_insets.contains(wid) {
+    match said.get("inset") {
+      Some(True) => self.window_insets[wid] = true
+      Some(False) => self.window_insets[wid] = false
+      _ => ()
+    }
   }
   self.wants = true
   wid
+}
+
+///|
+/// A window's title, kept (Tester::window_title): the window drawn or handed input now's where it says none (< 0).
+impl @hostapi.Host for FakeHost with window_set_title(self, wid, title) {
+  fake_window_titles[if wid < 0 { self.window_at } else { wid }] = title
 }
 
 ///|
@@ -1525,7 +1817,10 @@ impl @hostapi.Host for FakeHost with keyboard(self) {
 
 ///|
 impl @hostapi.Host for FakeHost with window_inset(self) {
-  self.inset
+  match self.window_insets.get(self.window_at) {
+    Some(i) if self.window_at > 0 => i
+    _ => self.inset
+  }
 }
 
 ///|
@@ -1534,9 +1829,15 @@ impl @hostapi.Host for FakeHost with full_screen(self) {
 }
 
 ///|
-/// The window made to fill the screen or back: kept (@ui.full_screen).
+/// The window made to fill the screen or back: kept (@ui.full_screen), a frame asked for it as a host's window that
+/// changes so draws one, between frames; in one, that frame draws it (view_told_as_built).
 impl @hostapi.Host for FakeHost with set_full_screen(self, on) {
-  self.full = on
+  if self.full != on {
+    self.full = on
+    if !frame_running.val {
+      self.wants = true
+    }
+  }
 }
 
 ///|
@@ -1637,6 +1938,10 @@ impl @hostapi.Host for FakeHost with present(self, _, _, _, _, _) {
   // (what the window's tree keeps against what working it out whole gives, as it is presented: held at the frame's
   // end, tester.mbt)
   kept_at_present()
+  // (presenting it taking the time said: its clock moved on by it, as a device's GPU may hold a frame)
+  if self.present_ms > 0.0 {
+    self.time = self.time + self.present_ms
+  }
 }
 
 ///|

@@ -322,6 +322,8 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     }
   }
   let lay = rich_lines(r, k.prep, max_w)
+  // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, text.mbt glyphs_ahead)
+  laid_ahead(lay.keys, fn(c) { lay.xs[c] + lay.pre[c] })
   k.lays.insert(0, (max_w, lay))
   if k.lays.length() > rich_lays_most {
     k.lays.pop() |> ignore
@@ -355,7 +357,8 @@ fn rich_kept_of(r : Rich) -> RichKept {
 
 ///|
 /// How narrow paragraph `r` may be laid out wrapped: the widest of what lies between two places its lines may break
-/// (UAX #14, as rich_lines breaks them), the blanks a piece ends in left out: a browser's min-content.
+/// (UAX #14, as rich_lines breaks them), the blanks a piece ends in left out: a browser's min-content. A run on a
+/// ground of its own (a file's chip) is one piece, as rich_lines keeps it whole: an inline block's min-content.
 fn rich_least_w(r : Rich) -> Double {
   let p = rich_kept_of(r).prep
   let n = p.starts.length()
@@ -364,7 +367,7 @@ fn rich_least_w(r : Rich) -> Double {
   // (the piece so far without the blanks it ends in)
   let mut inked = 0.0
   for i in 0..<n {
-    if i > 0 && p.brk[i] != 0 {
+    if i > 0 && p.brk[i] != 0 && !rich_within_ground(r, p, i) {
       widest = dmax(widest, inked)
       w = 0.0
       inked = 0.0
@@ -375,6 +378,15 @@ fn rich_least_w(r : Rich) -> Double {
     }
   }
   dmax(widest, inked)
+}
+
+///|
+/// Whether cluster `i` is within a run drawn on a ground of its own, not at its start: where rich_lines breaks no line
+/// unless the run is wider than a whole one.
+fn rich_within_ground(r : Rich, p : RichPrep, i : Int) -> Bool {
+  let k = p.run_of[i]
+  let run = r.runs[k]
+  i > p.run_c0[k] && p.run_c1[k] - p.run_c0[k] >= 2 && run.ground is Some(_) && r.run_bg(run) != 0L
 }
 
 ///|
@@ -699,7 +711,7 @@ fn rich_prep_one(
     pre,
     keys: s.keys,
     cu: s.cu,
-    brk: s.brk,
+    brk: s.breaks(run.text),
     run_of: Array::make(n, 0),
     len: run.text.length(),
     base_asc,

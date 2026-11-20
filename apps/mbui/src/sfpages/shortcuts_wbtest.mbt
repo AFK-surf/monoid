@@ -175,3 +175,87 @@ test "快捷键, at each width and with either hand: every action's name drawn, 
     }
   }
 }
+
+///|
+test "快捷键, at each width and with either hand: looked for by words, by the keys pressed (按键搜索) till Esc or the key again, a group with none found not shown, nothing found said so" {
+  for case in page_cases {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let t = setting_tester(Shortcuts, w, platform~, h=2400.0)
+    let mod = if @ui.keys_system() == 0 { @ui.mod_cmd } else { @ui.mod_ctrl }
+    let switch_ = @sf.t("web-main.keymap.chat.switch")
+    let history = @sf.t("web-main.keymap.chat.history")
+    assert_true(t.find("搜索快捷键") is Some(_) && t.find(history) is Some(_), msg=at)
+    // by words: its name
+    t.tap_text("搜索快捷键")
+    t.type_text("快速切换")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(switch_) is Some(_), msg=at)
+    assert_true(t.find(history) is None && t.find("发送消息") is None, msg=at)
+    t.type_text("没有这样的快捷键")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("没有匹配的快捷键") is Some(_) && t.find(switch_) is None, msg=at)
+    // by the keys pressed: each press what is looked for, its keys said in the field; nothing else done meanwhile
+    t.click(Button, label="按键搜索")
+    t.draw()
+    assert_eq(keys_recording.get(), keys_searching, msg=at)
+    t.key(@ui.key_of_char('h'), mods=mod | @ui.mod_shift_key)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(binding_label("Shift+Mod+H")) is Some(_), msg=at)
+    assert_true(t.find(history) is Some(_) && t.find(switch_) is None, msg=at)
+    t.key(@ui.key_of_char('k'), mods=mod)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(switch_) is Some(_) && t.find(history) is None, msg=at)
+    // the key again: it stops, what was found stays
+    t.click(Button, label="停止按键搜索")
+    t.draw()
+    assert_eq(keys_recording.get(), "", msg=at)
+    assert_true(t.find(switch_) is Some(_), msg=at)
+    // Esc stops it too
+    t.click(Button, label="按键搜索")
+    t.draw()
+    t.key(@ui.key_escape)
+    assert_eq(keys_recording.get(), "", msg=at)
+    // cleared: every one again
+    t.click(Button, label="清除筛选")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(switch_) is Some(_) && t.find(history) is Some(_) && t.find("发送消息") is Some(_), msg=at)
+    assert_eq(t.squeeze_faults(), [], msg=at)
+  }
+}
+
+///|
+test "快捷键, at each width and with either hand: the field come to while the keys pressed are looked for takes typing again, words apart by spaces each found, Escape empties it" {
+  for case in page_cases {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let t = setting_tester(Shortcuts, w, platform~, h=2400.0)
+    let mod = if @ui.keys_system() == 0 { @ui.mod_cmd } else { @ui.mod_ctrl }
+    let new_chat = @sf.t("web-main.keymap.chat.new")
+    let history = @sf.t("web-main.keymap.chat.history")
+    t.click(Button, label="按键搜索")
+    t.draw()
+    t.key(@ui.key_of_char('h'), mods=mod | @ui.mod_shift_key)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(keys_recording.get(), keys_searching, msg=at)
+    // the field pressed: the keys no longer looked for, its words the person's to change
+    t.click(TextField, label=@sf.t("web-main.shortcuts.searchPressing"))
+    t.draw()
+    assert_eq(keys_recording.get(), "", msg="\{at}: the field come to stops it")
+    t.click(Button, label="清除筛选")
+    t.type_text("新建 对话")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(new_chat) is Some(_) && t.find(history) is None, msg="\{at}: each word found")
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find(new_chat) is Some(_) && t.find(history) is Some(_), msg="\{at}: Escape empties it")
+    // the clear key while the keys are looked for stops it as well
+    t.click(Button, label="按键搜索")
+    t.draw()
+    t.key(@ui.key_of_char('h'), mods=mod | @ui.mod_shift_key)
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="清除筛选")
+    t.draw()
+    assert_eq(keys_recording.get(), "", msg="\{at}: cleared stops it")
+  }
+}

@@ -37,17 +37,15 @@ fn signin_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core
     }
   }
   let title = fn() { @sf.t("android-misc.signin.title", args=[("site", ask().site)]) }
-  v.pick(fn() { signin_over(ask()) }, fn(p, decided) {
-    @sf.style_node(p, fn() { under_post_room })
-    if !decided {
-      // (the card as wide as what it says: lined up at the column's start, not across it)
-      p.lines_up(Is(Some(Start))) |> ignore
-      p.box(fn(r) {
-        @sf.style_node(r, fn() { @sf.ask_card_room.then(ask_card_under_head) })
-        signin_card_node(r, here, core, ask, fn() { m().card })
-      })
-      |> ignore
-    } else {
+  // (ended, the card fades where it stands as its room gives way to how it went, as a rig's: ask_in_place_node; what
+  // it asked held as it was while it was answered, nothing of it answered again once it has ended)
+  ask_in_place_node(
+    v,
+    fn() { signin_over(ask()) },
+    ask,
+    fn(_) { @sf.ask_card_room.then(ask_card_under_head) },
+    fn(r, open_ask) { signin_card_node(r, here, core, open_ask, fn() { m().card }) },
+    fn(p) {
       @settings.ask_outcome_node(
         p,
         fn() { ask().status == "done" },
@@ -57,8 +55,8 @@ fn signin_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core
           card_history_node(from, fn(b) { @sf.ask_words_node(b, title, fn() { ask().reason }) |> ignore })
         }),
       )
-    }
-  })
+    },
+  )
 }
 
 ///|
@@ -229,7 +227,10 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
     })
     f.show(fn() { buttons() != NoButtons }, fn(s) {
       s.width_share(Is(1.0)) |> ignore
-      s.pick(at_once=true, buttons, fn(p, kind) {
+      // (one set of buttons for another as what is answered moves on (1Password's logins to pick from, a code asked,
+      // filling in): the one before fading where it stood as the foot's room makes its way to the one now, as a
+      // card's own parts go (msg_part_leave_ms))
+      s.pick(buttons, leave=msg_part_leave_ms, fn(p, kind) {
         p.width_share(Is(1.0)) |> ignore
         p.box(fn(col) {
           @sf.style_node(col, fn() { signin_foot_room })
@@ -264,7 +265,7 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
             }
             col.box(fn(list) {
               @sf.style_node(list, fn() { signin_typed.then(@sf.over_foot_reach(@sf.button_height())) })
-              list.each(at_once=true, choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
+              list.each(choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
                 let words = fn() {
                   let l = item.get().1
                   if l.username == "" { l.title } else { l.title + " · " + l.username }
@@ -365,10 +366,10 @@ let signin_foot_room : @ui.Style = @ui.css("w=Full gap=S3_5")
 ///|
 /// One of 1Password's logins for the site, as a node of the window's tree (signin_choice's).
 fn signin_choice_node(v : @view.View, words : () -> String, on_press : () -> Unit) -> Unit {
-  @headless.button(v, words, fn(_) { on_press() }, fn(row, b) {
+  @sf.action_box_node(v, words, fn(_) { on_press() }, fn(row) {
     @sf.style_node(row, signin_choice_box)
-    row.focus_ring_theme().ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
-    @sf.hover_ground_node(row, lit=Some(fn() { b.focus_shown() || b.hovered() || b.pressed() }))
+    row.ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
+    @sf.hover_ground_node(row, lit=Some(fn() { row.focus_shown() || row.pointed() || row.pressed() }))
     @sf.words_node(row, words, signin_choice_words) |> ignore
     @sf.icon_node(row, "chevron-right", 16.0, By(fn() { @ui.tree_theme().color(Muted) })).shrink(Is(0.0)) |> ignore
   })

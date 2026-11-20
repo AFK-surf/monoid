@@ -20,7 +20,8 @@
 /// `default_on`: while it is its layer's default, pressed by Enter that nothing with the focus takes (a dialog's primary
 /// button; never one that cannot be undone: @view.View::default_press).
 /// `on_night`: on a stage, on the night whatever the theme (the old button's `on_night`: the primary the white, its words
-/// the night; the others the white at 12%).
+/// the night; the others the white at 12%). Pressed while `disabled` and not `busy`, shaken across where it is drawn
+/// (refused_shake), its press not run.
 /// The node.
 #callsite(autofill(loc))
 pub fn button_node(
@@ -123,6 +124,9 @@ fn button_by(
     v.reacts(marked, fn(on) { if icon == "" { open.go(v, if on { 1.0 } else { 0.0 }, button_reshape) } else { open.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) } })
     v.reacts(done, fn(on) { if on { tick.go_from(v, 0.0, 1.0, button_tick_in) } else { tick.go_ms(v, 0.0, dur_ms) } })
     v.reacts(disabled, fn(off) { seen.go_ms(v, if off { 0.45 } else { 1.0 }, dur_ms) })
+    // (pressed while it cannot be (not at work: a press then is on its way already), shaken where it is drawn: told
+    // from a press that missed it, refused_shake)
+    refused_shake(v, fn() { disabled() && !busy() })
     // (its ground, edge and words' ink as the tone has them, the hand's step as far as it has gone; pressed, that step
     // whole and one more: a solid one a shade darker, a quiet one the hover's ink once more over it)
     let looks_by = fn(h : Double) {
@@ -181,23 +185,40 @@ fn button_by(
     v
     .row(Is(true))
     .height(Is(Some(height)))
-    .padding(Is((padx, 0.0, padx, 0.0)))
     .lines_up(Is(Some(Middle)))
     .radius(Is(height / 2.0))
     .ground(By(fn() { looks().0 }))
     .alpha(By(fn() { seen.shown(v) }))
     |> ignore
+    // (its ends giving way alike where what holds it is narrower than its words and their ends: across, or in a row
+    // that lends it ends_give_lent)
+    let ends_give = across || v.lent(ends_give_lent).unwrap_or(false)
     if across {
       // (as wide as what holds it, whichever way that lays out: its own height kept)
       v.width_share(Is(1.0)) |> ignore
-    } else if v.lent(foot_fills_lent).unwrap_or(false) {
-      // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
-      // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)
-      v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
+    } else if ends_give {
+      // (as wide as its words and their ends, narrower as what is beside it needs: its ends coming down first)
+      v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    } else {
+      v.padding(Is((padx, 0.0, padx, 0.0))) |> ignore
+      if v.lent(foot_fills_lent).unwrap_or(false) {
+        // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
+        // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)
+        v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
+      }
     }
     // (what it holds in its middle, however wide it is laid out (as wide as a column, stretched by what holds it): as
-    // the old one's justify=JCenter)
-    v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+    // the old one's justify=JCenter. Where its ends give way, their room is these two's: as wide as its words and their
+    // ends as it is, each end coming down alike where it is laid out narrower than that (a foot's half, or beside a
+    // button that keeps its own, at a large size of words), its words in its middle still, never pushed past its far
+    // end as its own padding would)
+    let side = fn(s : @view.View) {
+      s.grow(Is(1.0)) |> ignore
+      if ends_give {
+        s.shrink(Is(1.0)).basis(Is(Some(padx))).min_width(Is(Some(0.0))) |> ignore
+      }
+    }
+    v.box(side) |> ignore
     // (the spinner's ink and its ring, and the tick's: the words' where it is solid, the accent's where not)
     let mark_ink = fn() {
       let (_, _, ink) = looks()
@@ -207,10 +228,9 @@ fn button_by(
       let (_, _, ink) = looks()
       if solid { alpha(ink, 0.3) } else { theme().p.line_strong }
     }
-    // (a spinner in `room`, `size` across, as far in as `shown` says: faded and grown from `about`)
+    // (a spinner in `room`, as far in as `shown` says: faded and grown from `about`, gone as the tick comes)
     let spinner_in = fn(room : @view.View, shown : () -> Double, about : @view.Pivot) {
-      spinner_node(room, size=button_icon, ring=ring_ink, arc=mark_ink).alpha(By(fn() { turning.shown(v) * (1.0 - tick.shown(v)) * seen_at(shown()) })).scale(By(fn() { dmax(shown(), 0.0) }), about~)
-      |> ignore
+      spinner_shown_node(room, ring_ink, mark_ink, fn() { turning.shown(v) * (1.0 - tick.shown(v)) }, shown, about) |> ignore
     }
     // (the tick in `room`, drawn by its stroke as far as its way has it)
     let tick_in = fn(room : @view.View) {
@@ -225,10 +245,7 @@ fn button_by(
       // as it is open, the spinner growing from its start as it opens, the tick drawn where it turned; none of it, and
       // nothing turning, at rest)
       v.show(fn() { marked() || open.shown(v) > 0.0 }, fn(room) {
-        room
-        .width(By(fn() { Some((button_icon + gap()) * dmax(open.shown(v), 0.0)) }))
-        .height(Is(Some(button_icon)))
-        |> ignore
+        spin_room_node(room, gap, fn() { open.shown(v) })
         room.show(fn() { busy() || turning.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)) |> ignore
           spinner_in(o, fn() { open.shown(v) }, At(0.0, 0.5))
@@ -276,13 +293,41 @@ fn button_by(
       .ink(By(fn() { looks().2 }))
       |> ignore
     })
-    v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+    v.box(side) |> ignore
     // (its words changed: its ground from the shape it had, its words from where they were, together: reshape and
     // layout by its words)
     let m = @motion.moves_for(v, label, spec=button_reshape)
     m.reshapes(v)
     m.moves_with(words)
   })
+}
+
+///|
+/// Whether what a node is in is a row whose buttons (button_node) give their ends' room alike where it is too narrow for
+/// their words and ends, before any words are cut or pushed past a button's end: lent by viewer_frame_act_node to its
+/// foot's row on a small screen, where 保存到相册 keeps its own beside 取消 and 复制 at a large size of words.
+// kept across runs: what each row lends its buttons, let go with it
+let ends_give_lent : @view.Lent[Bool] = @view.Lent::new()
+
+///|
+/// A spinner's room before a button's words (button_node's, way_in_button_node's): as wide as the spinner and `gap`
+/// after it as far as `open` says it is open, as tall as the spinner.
+fn spin_room_node(room : @view.View, gap : () -> Double, open : () -> Double) -> Unit {
+  room.width(By(fn() { Some((button_icon + gap()) * dmax(open(), 0.0)) })).height(Is(Some(button_icon))) |> ignore
+}
+
+///|
+/// A button's spinner in `room` (button_node's, way_in_button_node's), its ring and arc in those inks: as far in as
+/// `shown` says, faded by it and by how far it turns (`turning`), grown from `about`. The spinner's node.
+fn spinner_shown_node(
+  room : @view.View,
+  ring : () -> Int64,
+  arc : () -> Int64,
+  turning : () -> Double,
+  shown : () -> Double,
+  about : @view.Pivot,
+) -> @view.View {
+  spinner_node(room, size=button_icon, ring~, arc~).alpha(By(fn() { turning() * seen_at(shown()) })).scale(By(fn() { dmax(shown(), 0.0) }), about~)
 }
 
 ///|

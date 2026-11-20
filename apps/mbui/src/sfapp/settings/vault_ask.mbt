@@ -27,6 +27,9 @@ pub(all) struct Asked {
   command : String
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   filename : String
   typed : Bool
@@ -203,10 +206,39 @@ let vault_typed : @sf.LiveMap[String, @ui.Field] = @sf.LiveMap::new()
 let vault_files : @sf.LiveMap[String, (String, String)] = @sf.LiveMap::new()
 
 ///|
+/// The target vault manually picked for each save request: (vault_id, vault_name, is_workspace); put back by `reset`.
+let vault_target_picked : @sf.LiveMap[String, (String, String, Bool)] = @sf.LiveMap::new()
+
+///|
+/// Keyed vaults this device can save a secret into, personal vaults first and workspace vaults after
+/// (empty when plain mode is on, since plain mode has no vaults).
+fn vault_save_targets(core : Core, ws : String) -> Array[(String, String, Bool)] {
+  let v = vaults_of(core, ws)
+  if flag(v, "plain") {
+    return []
+  }
+  let personal : Array[(String, String, Bool)] = []
+  let workspace : Array[(String, String, Bool)] = []
+  for row in items(v, "vaults") {
+    if flag(Some(row), "keyed") {
+      let is_ws = text(Some(row), "scope") == "workspace"
+      let entry = (text(Some(row), "id"), text(Some(row), "name"), is_ws)
+      if is_ws {
+        workspace.push(entry)
+      } else {
+        personal.push(entry)
+      }
+    }
+  }
+  personal + workspace
+}
+
+///|
 fn vault_ask_reset() -> Unit {
   vault_menu.val = ""
   vault_timeout_minutes.clear()
   vault_picked.clear()
+  vault_target_picked.clear()
   vault_pending.clear()
   vault_typed.clear()
   vault_files.clear()
@@ -239,6 +271,8 @@ pub(all) enum Answer {
   /// a secret to keep its station sealed to the person's devices set up then, this one not among them: approved on
   /// one of those (or here once the station has this device's certificate and seals it again)
   NotHere
+  /// this device does not hold a key to this encrypted vault yet: approve on an authorized device or get access in Vault
+  NoKey
   /// decided already, its card not saying so yet
   Decided
   /// another's to answer: whose (the card's 由…决定)
@@ -259,6 +293,7 @@ pub fn card_answer(answer : String, lasts : String, mine : Bool, who? : String? 
     "setUp" => SetUp
     "elsewhere" => Elsewhere
     "notHere" => NotHere
+    "noKey" => NoKey
     _ => Approve(lasts)
   }
 }
@@ -292,10 +327,15 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
   // (one to rename the item is answered as one to keep: written into the vault, by a device set up)
   let save = field(row, "save") is Some(_) || field(row, "describe") is Some(_) || flag(row, "remove")
   let typed = typed_of(field(row, "save"))
-  if save && !flag(view, "plain") && !flag(view, "setUp") {
+  let is_save = field(row, "save") is Some(_)
+  if !is_save && flag(row, "noKey") {
+    Some((NoKey, save, typed))
+  } else if save && !flag(view, "plain") && !flag(view, "setUp") {
     Some((SetUp, save, typed))
   } else if save && flag(row, "notHere") {
     Some((NotHere, save, typed))
+  } else if flag(row, "noKey") {
+    Some((NoKey, save, typed))
   } else {
     Some((Approve(text(row, "lasts")), save, typed))
   }
@@ -316,9 +356,9 @@ pub fn vault_card(
   ended? : (String, String)? = None,
 ) -> Unit {
   @sf.card(c, fill=ask.picks_file(), fn() {
-    vault_asked(c, ask)
+    vault_asked(c, ask, request~)
     answered_in_place(c, "vault/" + request, ended.map(fn(e) { (e.0 == "granted", vault_outcome_words(ask, e.0, e.1)) }), fn() {
-      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp), describe=ask.describe, remove=ask.remove)
+      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp | NoKey), describe=ask.describe, remove=ask.remove, targets=ask.save_targets)
     })
   })
   |> ignore
@@ -337,8 +377,8 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
     ended is None,
     exit=@motion.trans(fade=0.0, spec=@motion.tween(answered_fade_ms, ease=Leave)),
   )
-  c.box(style=answered_whole, fn() {
-    let a = c.box(style=answered_room, answer)
+  c.box(style=@sf.answered_whole, fn() {
+    let a = c.box(style=@sf.answered_room, answer)
     match ended {
       None => ()
       Some((granted, words)) => {
@@ -353,9 +393,9 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
             initial=true,
           )
           c.layer(fn() {
-            let o = c.box(style=answered_over, fn() {
-              c.box(style=if granted { ask_dot_on } else { ask_dot }, fn() {  }) |> ignore
-              c.rich(words, style=ask_ended_words) |> ignore
+            let o = c.box(style=@sf.answered_over, fn() {
+              c.box(style=if granted { @sf.ask_dot_on } else { @sf.ask_dot }, fn() {  }) |> ignore
+              c.rich(words, style=@sf.ask_ended_words) |> ignore
             })
             c.look(o, now.unwrap_or(@ui.look()))
           })
@@ -369,7 +409,7 @@ pub fn answered_in_place(c : @ui.Ctx, key : String, ended : (Bool, Array[@ui.Run
 
 ///|
 /// How long a card's answer takes to fade out once answered where it shows, and how it went to fade in after it.
-pub let answered_fade_ms : Double = 200.0
+pub let answered_fade_ms : Double = @sf.answered_fade_ms
 
 ///|
 /// What is asked as its card alone, with no answer at its foot (AskCard without children: where nothing is answered).
@@ -378,10 +418,28 @@ pub fn vault_ask_words(c : @ui.Ctx, ask : Asked) -> Unit {
 }
 
 ///|
+/// What is said when the person manually chose a shared workspace vault on a save card, or "" otherwise.
+fn vault_save_shared_text(ask : Asked, request : String) -> String {
+  if ask.save_kind != "" && request != "" {
+    match vault_target_picked.get(request) {
+      Some((_, name, true)) =>
+        if name != "" {
+          fill("android-settings.vault.ask.saveSharedNamed", [("name", name)])
+        } else {
+          tr("android-settings.vault.ask.saveShared")
+        }
+      _ => ""
+    }
+  } else {
+    ""
+  }
+}
+
+///|
 /// What is asked (AskCard's what): its title (使用 …, 存入密码 … and the account; the item's name in it heavier than the
 /// words around it, not in quotes), the command, and only what is
 /// out of the ordinary: a command that reads the secret itself, one run on another station.
-fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
+fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false, request? : String = "") -> Unit {
   let t = @sf.theme()
   let save = ask.save_kind != ""
   c.box(style=@sf.ask_what, fn() {
@@ -462,14 +520,17 @@ fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
     if ask.how_text != "" && !ask.describe && !ask.remove && ask.oauth == "" {
       c.text(ask.how_text, style=@sf.ask_note) |> ignore
     }
+    let shared = vault_save_shared_text(ask, request)
     let risky = !ask.writes() && (ask.mode == "env" || ask.mode == "file")
     let elsewhere = ask.station != ""
-    if risky || elsewhere {
+    if shared != "" || risky || elsewhere {
       let runs : Array[@ui.Run] = []
-      if risky {
+      if shared != "" {
+        runs.push(@ui.span(shared, color=t.p.warn_ink))
+      } else if risky {
         runs.push(@ui.span(tr("android-settings.vault.ask.plain"), color=t.p.warn_ink))
       }
-      if risky && elsewhere {
+      if (shared != "" || risky) && elsewhere {
         runs.push(@ui.span(" · "))
       }
       if elsewhere {
@@ -494,22 +555,22 @@ pub fn ask_outcome(c : @ui.Ctx, granted : Bool, words : Array[@ui.Run], inline? 
   // the dot in the middle of the words' first line, not of all of them (on two lines it stays by the first); under the
   // message's picture, as wide as it, laid over the line as the picture is over its head (message.mbt: inline at the
   // head's start, the words past it where the name is; else out in the margin, the words at the row's start)
-  let line = c.sp(c.theme().leading(ask_ended_leading).unwrap_or(c.text_size(ask_ended_size).1))
-  c.box(style=ask_ended, fn() {
-    let base_style = if inline { ask_ended_past } else { ask_ended_at }
-    c.box(style=if history is Some(_) { base_style.then(ask_ended_start) } else { base_style }, fn() {
+  let line = c.sp(c.theme().leading(@sf.ask_ended_leading).unwrap_or(c.text_size(@sf.ask_ended_size).1))
+  c.box(style=@sf.ask_ended, fn() {
+    let base_style = if inline { @sf.ask_ended_past } else { @sf.ask_ended_at }
+    c.box(style=if history is Some(_) { base_style.then(@sf.ask_ended_start) } else { base_style }, fn() {
       match history {
         Some((key, show)) => {
-          let id = @sf.ask_history_trigger(c, key, words, ask_ended_words, line)
+          let id = @sf.ask_history_trigger(c, key, words, @sf.ask_ended_words, line)
           show(id)
         }
-        None => c.rich(words, style=ask_ended_words) |> ignore
+        None => c.rich(words, style=@sf.ask_ended_words) |> ignore
       }
     })
     |> ignore
     c.layer(fn() {
-      c.box(style=(if inline { ask_dot_line } else { ask_dot_line_out }).then(@ui.style(h=Fixed(line))), fn() {
-        c.box(style=if granted { ask_dot_on } else { ask_dot }, fn() {  }) |> ignore
+      c.box(style=(if inline { @sf.ask_dot_line } else { @sf.ask_dot_line_out }).then(@ui.style(h=Fixed(line))), fn() {
+        c.box(style=if granted { @sf.ask_dot_on } else { @sf.ask_dot }, fn() {  }) |> ignore
       })
       |> ignore
     })
@@ -566,7 +627,7 @@ fn ended_name(name : String) -> @ui.Run {
 pub fn vault_actions(c : @ui.Ctx, core : Core, ws : String, request : String, mine : Bool, who? : String? = None) -> Unit {
   let row = items(vaults_of(core, ws), "requests").iter().find_first(fn(r) { text(Some(r), "id") == request })
   match topic_answer(core, ws, request, mine, who) {
-    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"))
+    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"), targets=vault_save_targets(core, ws))
     None => ()
   }
 }
@@ -590,6 +651,7 @@ pub fn vault_foot(
   foot? : Bool = false,
   describe? : Bool = false,
   remove? : Bool = false,
+  targets? : Array[(String, String, Bool)] = [],
 ) -> Unit {
   let note = fn(words : String) { c.text(words, style=@sf.ask_note) |> ignore }
   let lasts = match answer {
@@ -600,6 +662,13 @@ pub fn vault_foot(
     NotHere => {
       note(tr("web-pages.vault.approve.notHere"))
       return
+    }
+    NoKey => {
+      note(tr("web-pages.vault.approve.noKey"))
+      if !foot {
+        return
+      }
+      ""
     }
     Decided => {
       note(tr("android-settings.vault.approve.decided"))
@@ -613,7 +682,7 @@ pub fn vault_foot(
     Approve(l) => l
   }
   let pending = vault_pending.get(request)
-  let timed = !save && timeout_seconds > 0
+  let timed = !save && answer is Approve(_) && timeout_seconds > 0
   let scopes = if save { ["once"] } else if timed { if lasts == "once" { ["once"] } else { ["once", "idle", "fixed"] } } else { vault_scopes_up_to(lasts) }
   let scope = match vault_picked.get(request) {
     Some(s) if scopes.contains(s) => s
@@ -652,6 +721,7 @@ pub fn vault_foot(
           vault_typed.remove(request + "/secret")
           vault_typed.remove(request + "/username")
           vault_files.remove(request)
+          vault_target_picked.remove(request)
         }
       }
     })
@@ -727,9 +797,40 @@ pub fn vault_foot(
   // its buttons, last in the card's foot corners; how long beside them where the line has the room for it, else on a
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are: the foot's flow,
   // its later line over its first (flow_reverse), laid out in the pass that lays out the card, nothing read back.
-  let picks = !save && scopes.length() > 1
+  let save_targets = if save && !remove && !describe && signs_in == "" && answer is Approve(_) {
+    targets
+  } else {
+    []
+  }
+  let can_pick_save_vault = save_targets.length() > 1
+  let chosen_save_target : (String, String, Bool) = if save_targets.is_empty() {
+    ("", "", false)
+  } else {
+    match vault_target_picked.get(request) {
+      Some((id, _, _)) =>
+        match save_targets.iter().find_first(fn(t) { t.0 == id }) {
+          Some(t) => t
+          None => save_targets[0]
+        }
+      None => save_targets[0]
+    }
+  }
+  let picks = (!save && answer is Approve(_) && scopes.length() > 1) || can_pick_save_vault
   let pick = fn() {
-    if picks && timed {
+    if can_pick_save_vault {
+      let entries = save_targets.map(fn(t) { @kit.menu_radio(t.0, t.0 == chosen_save_target.0, label=t.1) })
+      let m = @sf.chooser(c, "vault/" + request + "/vault", chosen_save_target.1, entries, fn() { vault_menu.val == request }, fn(on) { vault_menu_set(request, on) }, disabled=under)
+      match m.chosen {
+        Some(id) => {
+          match save_targets.iter().find_first(fn(t) { t.0 == id }) {
+            Some(t) => vault_target_picked[request] = t
+            None => ()
+          }
+          vault_menu.val = ""
+        }
+        None => ()
+      }
+    } else if picks && timed {
       let words = if scope == "once" { tr("android-settings.vault.scope.once") } else {
         let days = minutes % 1440 == 0
         let hours = minutes % 60 == 0
@@ -754,6 +855,11 @@ pub fn vault_foot(
       if answer is SetUp {
         // kept only in a vault that is on here: the way to turn it on first
         @sf.button(c, tr("android-settings.vault.turnOn"), key="vault/" + request + "/on", tone=Primary, on_press=fn() {
+          (core.push)(Route::Vault)
+        })
+      } else if answer is NoKey {
+        // this device does not hold a key to this vault yet: open Vault to request access or recover
+        @sf.button(c, tr("web-pages.vault.approve.authorize"), key="vault/" + request + "/auth", tone=Primary, on_press=fn() {
           (core.push)(Route::Vault)
         })
       } else {
@@ -786,6 +892,9 @@ pub fn vault_foot(
           }
           if given is Some(g) {
             params.push(("typed", g))
+          }
+          if can_pick_save_vault {
+            params.push(("vault", str(chosen_save_target.0)))
           }
           act(true, "vault.approve", what, obj(params))
         }
@@ -848,74 +957,6 @@ let ask_room : @ui.Style = @ui.css("w=Full")
 /// How long, on a line of its own over the buttons where it has not the room beside them: the foot's lines apart.
 // kept across runs: a value (no field of it changes)
 let ask_over : @ui.Style = @ui.css("row mb=S2")
-
-///|
-/// How it ended: a dot and its words, a little under what is over it.
-// kept across runs: a value (no field of it changes)
-let ask_ended : @ui.Style = @ui.css("w=Full mt=S0_5")
-
-///|
-/// Its words inline: past the message's picture, where its name is (message.mbt msg_head_inline).
-// kept across runs: a value (no field of it changes)
-let ask_ended_past : @ui.Style = @ui.style(w=Full, pl=@sf.message_head_in)
-
-///|
-/// Its words with the picture out in the margin: at the row's start, as the name is.
-// kept across runs: a value (no field of it changes)
-let ask_ended_at : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_start : @ui.Style = @ui.css("align=AStart")
-
-///|
-/// Where the dot stands: as wide as the message's picture (18) and under it, the dot in its middle; as high as a line
-/// of the words, the theme's (ask_outcome).
-// kept across runs: a value (no field of it changes)
-let ask_dot_line : @ui.Style = @ui.css("row w=S4_5 align=ACenter justify=JCenter")
-
-///|
-/// The same out in the margin, where the picture is then (message_avatar_out).
-// kept across runs: a value (no field of it changes)
-let ask_dot_line_out : @ui.Style = ask_dot_line.then(@ui.style(ml=@sf.message_avatar_out))
-
-///|
-/// A card's answer's room at its foot (answered_in_place): the card's width, what is in it as far apart as in the card
-/// (@sf.card's 14).
-// kept across runs: a value (no field of it changes)
-let answered_room : @ui.Style = @ui.css("w=Full gap=S3_5")
-
-///|
-/// What holds a card's answer and how it went over it (answered_in_place): the card's width.
-// kept across runs: a value (no field of it changes)
-let answered_whole : @ui.Style = @ui.css("w=Full")
-
-///|
-/// How it went over a card's answer's room: its dot and its words on a line in the middle of the room's height.
-// kept across runs: a value (no field of it changes)
-let answered_over : @ui.Style = @ui.css("row w=Full h=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_words : @ui.TextStyle = @ui.text_style(size=ask_ended_size, leading=ask_ended_leading, color=Muted)
-
-///|
-/// Its words' size and line (ask_ended_words), the line the dot beside them stands in the middle of.
-// kept across runs: a value (no field of it changes)
-let ask_ended_size : @ui.TextSize = Meta
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_ended_leading : @ui.Leading = L5
-
-///|
-/// Its dot, 6 round: green once granted, else quiet.
-// kept across runs: a value (no field of it changes)
-let ask_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Subtle")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_dot_on : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive")
 
 ///|
 /// The length of use of request `request` chosen in a panel (授权时限, a form: in the window's middle, a sheet with a
@@ -1030,3 +1071,13 @@ fn vault_timeout_open(request : String, minutes : Int, max_minutes : Int, scope 
     },
   )
 }
+
+///|
+/// How it ended, its words inline (past the message's picture) or at the row's start: the library's, by the names the
+/// phone's card's line calls.
+// kept across runs: a value (no field of it changes)
+let ask_ended_past : @ui.Style = @sf.ask_ended_past
+
+///|
+// kept across runs: a value (no field of it changes)
+let ask_ended_at : @ui.Style = @sf.ask_ended_at

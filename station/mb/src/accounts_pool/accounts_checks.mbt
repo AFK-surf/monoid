@@ -89,18 +89,18 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   self.checks[id] = check
   self.hub_cache = None
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileCheck", [js(id), check]))
+    self.b.with_store(s => s.set_profile_check(Json::string(id), jv_to_json(check)))
   })
   let before_models = match jget(before, "models") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let before_fusion = match jget(before, "fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   let check_fusion = match check.get("fusion") {
-    None => Some(Null)
+    None => Some(JV::Null)
     x => x
   }
   if json_text(before_models) != json_text(check.get("models")) ||
@@ -479,8 +479,16 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
         to_number(m.get("checkedAt"))
       None => false
     }
+    // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+    let same = match mine {
+      Some(m) => json_text(got_quota) == stringify(m)
+      None => false
+    }
     match got_quota {
-      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) && !complete_here && !older => {
+      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) &&
+        !complete_here &&
+        !same &&
+        !older => {
         self.quotas[id] = q
         self.keep_quota(id, q)
       }
@@ -707,7 +715,8 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let answer = self.quota_fn(profile)
   let signed_out = answer.get("signedOut") == Some(Bool(true))
   let no_answer = answer.get("unanswered") == Some(Bool(true))
-  let asked = jdel(jdel(answer, "signedOut"), "unanswered")
+  let recheck = answer.get("recheck") == Some(Bool(true))
+  let asked = jdel(jdel(jdel(answer, "signedOut"), "unanswered"), "recheck")
   if self.login_generation.get(id).unwrap_or(0) != generation {
     return self.quotas.get(id)
   }
@@ -765,6 +774,22 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
         _ => ()
       }
     })
+  } else if recheck && jget(self.checks.get(id), "state") == Some(Str("ok")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if profile.runtime == "claude" &&
+    access_kind(profile.raw) == "subscription" &&
+    read.get("state") == Some(Str("ok")) &&
+    (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
+      jget(self.checks.get(id), "state") == Some(Str("login"))) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
   }
   Some(read)
 }
@@ -815,10 +840,10 @@ async fn Accounts::lent_login_version(self : Accounts, home : String) -> String?
   guard try_parse(text) is Some(j) else { return None }
   let tokens = j.get("tokens")
   let pick = (k : String) => match jget(tokens, k) {
-    None => Null
+    None => JV::Null
     Some(v) => v
   }
-  Some(sha256_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
+  Some(@hash.sha256_utf8_hex(stringify(jarr([pick("id_token"), pick("access_token"), pick("account_id")]))))
 }
 
 ///|

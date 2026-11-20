@@ -444,6 +444,8 @@ test "it asks for the view by its name, JPEG only here, as large as its stage; �
   assert_eq(text(Some(asked[0]), "screen"), "browser:tab-1")
   assert_eq(text(Some(asked[0]), "view"), r.sess().view)
   assert_eq(items(Some(asked[0]), "codecs"), [Json::string("jpeg")])
+  // (no H.265 decoded here: nor its 4:4:4)
+  assert_true(field(Some(asked[0]), "chroma444") is None)
   // 自动: the stage it is shown on, in the device's pixels
   let (sw, sh) = r.sess().stage_px
   assert_true(sw > 0 && sh > 0)
@@ -701,25 +703,25 @@ test "only looking, a double tap zooms in where it is and another back to fitted
   r.config()
   r.frame(1000.0)
   let u = r.ui()
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   r.tap_at(0.25, 0.25)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_true(u.zoom.zoomed(r.t.ctx()))
+  assert_true(u.zoom.zoomed_at(r.t.time()))
   assert_eq(r.inputs().length(), 0)
   // the same point of the screen, still under the finger
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   // one tap, then the wait over before the next: no zoom
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.t.run_for(screen_double_tap_ms)
   r.tap_at(0.25, 0.25)
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   screen_done(r.t)
 }
 
@@ -785,7 +787,7 @@ test "全屏 (控制中心's upright): the screen alone, sideways, its tools fol
   assert_true(r.labelled("全屏") is None)
   open_center(r)
   r.t.tap_text("全屏")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   r.t.resize(844.0, 390.0)
   r.t.draw()
   let u = r.ui()
@@ -812,13 +814,13 @@ test "the keyboard up keeps the frame as large, the pointer in sight; down again
   zoom.boxed(800.0, 360.0, at=@ui.current().moment())
   let before = fit_in(800.0, 360.0, 1280.0, 720.0)
   zoom.resize_keeping(800.0, 150.0, Some((0.5, 0.9)), 40.0, when=@ui.current().moment())
-  let (_, sy, sw, sh) = zoom.rect(@ui.current()).unwrap()
+  let (_, sy, sw, sh) = zoom.rect_at(@ui.current().moment()).unwrap()
   assert_true((sw - before.w).abs() < 1.0)
   let y = sy + 0.9 * sh
   assert_true(y >= 0.0 && y <= 150.0)
   zoom.resize_keeping(800.0, 360.0, Some((0.5, 0.9)), 40.0, when=@ui.current().moment())
-  assert_true(!zoom.zoomed(@ui.current()))
-  let (x, y, w, h) = zoom.rect(@ui.current()).unwrap()
+  assert_true(!zoom.zoomed_at(@ui.current().moment()))
+  let (x, y, w, h) = zoom.rect_at(@ui.current().moment()).unwrap()
   assert_true((x - before.x).abs() < 0.001 && (y - before.y).abs() < 0.001)
   assert_true((w - before.w).abs() < 0.001 && (h - before.h).abs() < 0.001)
 }
@@ -1206,6 +1208,70 @@ test "a login field in focus while driving a tab: 用 1Password 填入; its logi
 }
 
 ///|
+test "1Password fill caches non-secret login metadata across fills, passes --vault to item get, and invalidates on get error" {
+  let r = screen_rig()
+  r.live(others=[])
+  let fail_get = Ref(false)
+  @ui.fake_op_runs.clear()
+  @ui.fake_op.val = Some(fn(args) {
+    if args.length() >= 2 && args[0] == "item" && args[1] == "list" {
+      (
+        0,
+        "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"demo-user\",\"vault\":{\"id\":\"v-work\"},\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gl1\",\"title\":\"GitLab\",\"additional_information\":\"gl-user\",\"vault\":{\"id\":\"v-priv\"},\"urls\":[{\"href\":\"https://gitlab.com\"}]}]",
+        "",
+      )
+    } else if args.length() >= 3 && args[0] == "item" && args[1] == "get" {
+      if fail_get.val {
+        (1, "", "item not found")
+      } else {
+        (0, "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"u-\{args[2]}\"},{\"id\":\"password\",\"label\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"pw-\{args[2]}\"}]", "")
+      }
+    } else {
+      (1, "", "unknown command")
+    }
+  })
+  // First fill: runs item list once, then item get with --vault v-work.
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 2)
+  assert_eq(@ui.fake_op_runs[0], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[1], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Second fill for another cached site within TTL: skips item list and goes straight to item get with --vault v-priv.
+  r.state("live", others=[], more={ "login": { "host": "gitlab.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 3)
+  assert_eq(@ui.fake_op_runs[2], ["item", "get", "gl1", "--vault", "v-priv", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Failed item get invalidates the cache so the next fill lists again.
+  fail_get.val = true
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 4)
+  let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  assert_eq(closes.length(), 1)
+  let (cx, cy, cw, ch) = closes[0].rect
+  r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  r.t.draw()
+  fail_get.val = false
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "username" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 6)
+  assert_eq(@ui.fake_op_runs[4], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[5], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  screen_done(r.t)
+  @ui.fake_op.val = None
+}
+
+///|
 test "no 1Password tool but the system's autofill: 用密码管理器填入 asks it for the site; the login picked there filled, for that site only, the page's focus gone or not" {
   let r = screen_rig()
   r.live(others=[])
@@ -1466,9 +1532,9 @@ fn screen_done(t : @ui.Tester) -> Unit {
   // (只看/控制's thumb at rest, gone over where a state turned the view to only looking)
   t.run_for(@ui.cover_slide_ms)
   to_sheet_rest(t)
-  if @kit.toast_rest("toast") > t.time() {
+  if @sf.toast_rest("toast").unwrap_or(-1.0) > t.time() {
     t.run_for(@sf.toast_ms)
-    let rest = @kit.toast_rest("toast")
+    let rest = @sf.toast_rest("toast").unwrap_or(-1.0)
     if rest > t.time() {
       t.run_for(rest - t.time())
     }
@@ -1562,7 +1628,7 @@ test "全屏 and sideways, driving: 左键 and 右键 in a capsule of their own 
   r.t.draw()
   open_center(r)
   r.t.tap_text("全屏")
-  r.t.run_for(@kit.presence_out_ms + @sf.later_ms)
+  r.t.run_for(@motion.presence_out_ms + @sf.later_ms)
   r.t.resize(844.0, 390.0)
   r.t.draw()
   assert_true(r.ui().full.get())
@@ -1628,6 +1694,7 @@ test "自动 asks again as the stage grows a tenth a side, not as it grows less 
 test "a page asking for a passkey while driving a tab: 用通行密钥登录; signed on this device, what it signed sent; a no told the page; none on a host without passkeys" {
   let r = screen_rig()
   r.live(others=[])
+  assert_eq(r.told("screen.view")[0] is { "passkeys": False, .. }, true)
   let ask = fn(rp : String) -> Json {
     {
       "id": "7",
@@ -1855,7 +1922,7 @@ test "zoomed in, driven directly: two fingers moving together pan the picture he
   r.tap_at(0.5, 0.5)
   r.tap_at(0.5, 0.5)
   r.t.run_for(@ui.move_most_ms)
-  assert_true(u.zoom.zoomed(r.t.ctx()))
+  assert_true(u.zoom.zoomed_at(r.t.time()))
   r.state("live", control=true, others=[])
   r.t.run_for(screen_double_tap_ms)
   let two = fn(cx : Double, cy : Double) {
@@ -1881,7 +1948,7 @@ test "zoomed in, driven directly: two fingers moving together pan the picture he
   // fitted again: they scroll the screen
   u.zoom.fit_now(at=r.t.ctx().moment())
   r.t.run_for(@ui.move_most_ms)
-  assert_false(u.zoom.zoomed(r.t.ctx()))
+  assert_false(u.zoom.zoomed_at(r.t.time()))
   let (mx, my) = r.at(0.4, 0.5)
   two(mx, my)
   assert_true(r.inputs()[before:].iter().any(fn(j) { text(Some(j), "t") == "wheel" }))
@@ -1973,5 +2040,344 @@ test "beside its chat on its side with touch (an iPhone Duo's side panel): a bro
   // (→ and ⟳ on its bar: 控制中心 offers them no second time)
   assert_false(r.ui().narrow_bar)
   assert_eq(r.t.audit(), [])
+  screen_done(r.t)
+}
+
+///|
+test "用 1Password 填入: always has a close button, closing dismisses the focused field on its page until focus moves, and filled fields do not prompt" {
+  let r = screen_rig()
+  r.live(others=[])
+  screen_fix_one_password()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  let card_closes = fn() {
+    r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  }
+  let dismiss_card = fn() raise {
+    let cs = card_closes()
+    assert_eq(cs.length(), 1)
+    let (x, y, w, h) = cs[0].rect
+    r.t.tap(x + w / 2.0, y + h / 2.0)
+    r.t.draw()
+  }
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  assert_eq(card_closes().length(), 1)
+  assert_eq(r.t.audit(), [])
+
+  // Closing hides the offer for this field on this page, even across unrelated state updates.
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=["李雷"],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is None)
+
+  // Moving focus to another login field offers again; dismissing it and leaving focus resets dismissal.
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state("live", others=[], more={ "address": "https://account.line.biz/login" })
+  r.t.draw()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/login",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+
+  // Dismissing on one URL re-offers if the tab navigates to another URL.
+  dismiss_card()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "username" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+
+  // A field that already holds a value (filled by an agent or typed) does not prompt.
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "password", "filled": true },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is None)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "address": "https://account.line.biz/reauth",
+      "login": { "host": "account.line.biz", "field": "password" },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用 1Password 填入") is Some(_))
+  screen_done(r.t)
+  @ui.fake_op.val = None
+}
+
+///|
+test "a screen left covered by a background tab opens at once when mounted in another tab" {
+  let r = screen_rig(in_tab=true)
+  let s = r.sess()
+  assert_eq(r.told("screen.view").length(), 1)
+  // Simulate a backgrounded remote workbench tab leaving covered=true on the shared ScreenUi.
+  screen_covered(s.src, "ws-1/st-1", "browser:tab-1", true)
+  r.t.draw()
+  assert_eq(r.cancelled.length(), 1)
+  assert_true(r.ui().covered.get())
+  // Mounting the screen in a tab clears stale covered state and opens screen.view immediately.
+  app.nav.push(Screen({ station: "ws-1/st-1", screen: "browser:tab-2", title: "Other", until_gone: false }))
+  nav_rested(r.t)
+  screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.set(true)
+  app.nav.pop() |> ignore
+  nav_rested(r.t)
+  assert_false(screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.get())
+  assert_eq(r.told("screen.view").length(), 3)
+  screen_done(r.t)
+}
+
+///|
+test "browser tab bar with keyboard and mouse, passkey close button, and blocked agent-operating prompt" {
+  // 1. In a wide window, a chat side-panel browser tab shows ← → ⟳ directly on its bar.
+  let r = screen_rig(w=1100.0, h=760.0, screen="browser:tab-1", in_tab=true)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Welcome"),
+      "address": Json::string("https://accounts.google.com/v3/signin/challenge/pk"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
+    assert_true(r.labelled(tr(label)) is Some(_), msg=label)
+  }
+  assert_false(r.ui().narrow_bar)
+
+  // 2. 用通行密钥登录 always has a close button (×), and pressing it dismisses the card and sends NotAllowedError.
+  screen_fix_passkeys()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "address": Json::string("https://accounts.google.com/v3/signin/challenge/pk"),
+      "passkey": {
+        "id": "pk-1",
+        "host": "accounts.google.com",
+        "rpId": "google.com",
+        "clientData": "{\"type\":\"webauthn.get\"}",
+        "allow": [],
+        "userVerification": "preferred",
+      },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用通行密钥登录") is Some(_))
+  let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  assert_eq(closes.length(), 1)
+  let (cx, cy, cw, ch) = closes[0].rect
+  r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  r.t.draw()
+  assert_true(r.t.find("用通行密钥登录") is None)
+  let cancelled = r.inputs().filter(fn(i) { text(Some(i), "t") == "passkey" && text(Some(i), "error") == "NotAllowedError" })
+  assert_eq(cancelled.length(), 1)
+  assert_eq(text(Some(cancelled[0]), "id"), "pk-1")
+
+  // 3. While an agent operates the browser (watch-only: openUrl omitted, address kept), the browser bar stays visible
+  //    in read-only mode (no height jump), and clicking the picture sends no pointer input and nudges the 接管 capsule.
+  let addr_rect = fn() {
+    r.t.semantics().filter(fn(s) { s.label == tr("web-pages.screen.addressHint") && !s.hidden })[0].rect
+  }
+  let bar_before = addr_rect()
+  r.state(
+    "live",
+    control=false,
+    take_over=true,
+    controllers=["Agent「查询 Google 账号」"],
+    line="只看 · Agent「查询 Google 账号」 正在控制",
+    more={
+      "kind": Json::string("browser"),
+      "address": Json::string("https://accounts.google.com/"),
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("Agent「查询 Google 账号」 正在控制") is Some(_))
+  assert_true(r.labelled(tr("android-misc.screen.takeOver")) is Some(_))
+  let addr_ro = addr_rect()
+  assert_eq(addr_ro.1, bar_before.1)
+  assert_eq(addr_ro.3, bar_before.3)
+  let (rx, ry) = r.labelled(tr("web-pages.screen.reload")).unwrap()
+  r.t.tap(rx, ry)
+  r.t.draw()
+  assert_eq(r.told("screen.reload").length(), 0)
+  assert_eq(r.ui().held_nudge.get(), 0)
+  let before_ptr = pointers_of(r).length()
+  let (px, py) = r.at(0.5, 0.5)
+  r.t.tap(px, py)
+  r.t.run_for(@sf.later_ms + 20.0)
+  assert_eq(pointers_of(r).length(), before_ptr)
+  assert_eq(r.ui().held_nudge.get(), 1)
+  r.t.run_for(@sf.refused_ms)
+  assert_eq(r.t.idle_said(), None)
+  screen_done(r.t)
+}
+
+///|
+/// The screen's virtual microphone as its station says it while this viewer drives it (`mic`): recorded there now or
+/// not, a desktop's.
+fn mic_said(r : ScreenRig, active : Bool, control? : Bool = true) -> Unit {
+  let more : Map[String, Json] = { "kind": Json::string("desktop") }
+  // (the core says none while only looking)
+  if control {
+    more["mic"] = { "available": true, "active": active, "epoch": 1.0 }
+  }
+  r.state("live", control~, others=[], more~)
+  // (the bar's 麦克风 coming or going along its row, to its end)
+  r.t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "麦克风 on the bar only while something on the screen records it or this device's is shared: pressed, shared and told the core; opened again, told again" {
+  // (a browser's: its microphone taken, web/src/mbui/screen-peripherals.ts)
+  let r = screen_rig(platform=4)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  let off = tr("web-pages.screen.micUnmute")
+  let none = fn() { r.labelled(asked) is None && r.labelled(on) is None && r.labelled(off) is None }
+  // a screen with no virtual microphone, and one nobody records: nothing on the bar
+  assert_true(none())
+  mic_said(r, false)
+  assert_true(none())
+  // recorded there: on the bar, not lit, saying so
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  // pressed: shared, lit, told the core
+  r.tap_label(asked)
+  r.t.draw()
+  let s = r.sess()
+  assert_true(s.mic_on.get())
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_eq(r.told("screen.micOn").last().unwrap().stringify(), "{\"view\":\"" + s.view + "\",\"on\":true}")
+  // the recording over: there still while shared, to switch it off
+  mic_said(r, false)
+  assert_eq(pressed_of(r, on), Some(true))
+  // only looking: gone, shared still (the core sends nothing meanwhile)
+  mic_said(r, true, control=false)
+  assert_true(none())
+  mic_said(r, true)
+  assert_eq(pressed_of(r, on), Some(true))
+  // let go of out of sight and opened again: told again once the view says it is there, not before
+  let told = r.told("screen.micOn").length()
+  s.pause(s.src)
+  s.open(s.src)
+  assert_eq(r.told("screen.micOn").length(), told)
+  mic_said(r, true)
+  assert_eq(r.told("screen.micOn").length(), told + 1)
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  // pressed again: no more, told so; the bar saying the app there records it
+  r.tap_label(on)
+  r.t.draw()
+  assert_false(s.mic_on.get())
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":false"))
+  assert_eq(pressed_of(r, asked), Some(false))
+  // its recording over, nothing shared: gone from the bar
+  mic_said(r, false)
+  assert_true(none())
+  screen_done(r.t)
+}
+
+///|
+test "麦克风 in the viewer's bar with keyboard and mouse: there as on the phone's, lit while shared" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.live(others=[])
+  let asked = tr("web-pages.screen.micAsked")
+  let on = tr("web-pages.screen.micMute")
+  assert_true(r.labelled(asked) is None)
+  mic_said(r, true)
+  assert_eq(pressed_of(r, asked), Some(false))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(asked)
+  r.t.draw()
+  assert_eq(pressed_of(r, on), Some(true))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  assert_eq(r.t.audit(), [])
+  screen_done(r.t)
+}
+
+///|
+test "a copy a password manager marked on the screen lands on the device's clipboard as a secret: concealed taken off after a while, transient kept, auto as any words" {
+  let r = screen_rig()
+  driven(r)
+  r.say({ "clipboard": { "type": "text", "text": "hunter2", "privacy": "concealed" } })
+  assert_eq(r.t.clipboard(), "hunter2")
+  assert_eq(r.t.clipboard_secret(), Some(@sf.secret_copied_life))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "")
+  assert_eq(r.t.clipboard_secret(), None)
+  // words an app made up: as any
+  r.say({ "clipboard": { "type": "text", "text": "made up", "privacy": "auto" } })
+  assert_eq(r.t.clipboard(), "made up")
+  assert_eq(r.t.clipboard_secret(), None)
+  // not to be kept: a secret, left there
+  r.say({ "clipboard": { "type": "text", "text": "one-time 123456", "privacy": "transient" } })
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  assert_eq(r.t.clipboard_secret(), Some(0.0))
+  r.t.run_for(@sf.secret_copied_life)
+  assert_eq(r.t.clipboard(), "one-time 123456")
+  screen_done(r.t)
+}
+
+///|
+test "no 麦克风 where this device's microphone is not taken (an Android phone's): neither on the bar nor in 控制中心" {
+  let r = screen_rig()
+  r.live(others=[])
+  mic_said(r, true)
+  assert_false(r.sess().mic_available())
+  assert_true(r.labelled(tr("web-pages.screen.micAsked")) is None)
+  open_center(r)
+  assert_true(r.labelled(tr("web-pages.screen.mic")) is None)
+  shut(r)
   screen_done(r.t)
 }

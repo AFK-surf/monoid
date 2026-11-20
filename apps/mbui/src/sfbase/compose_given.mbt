@@ -45,6 +45,24 @@ pub fn draft_give(key : String, g : Given) -> Unit {
 }
 
 ///|
+/// `gs` given to draft `key` at once (draft_give's, all of them before its composer is told): files let go together
+/// taken in as one drop, as the old composer took them.
+fn draft_give_all(key : String, gs : Array[Given]) -> Unit {
+  if gs.is_empty() {
+    return
+  }
+  match given_waiting.get(key) {
+    Some(list) => list.append(gs)
+    None => given_waiting[key] = gs.copy()
+  }
+  draft_given(key)
+  match given_takers.get(key) {
+    Some(take) => take()
+    None => ()
+  }
+}
+
+///|
 /// All that waits for draft `key`'s composer, handed over in the order it was given, waiting no more; read so (what
 /// builds an old view's composer built again as more comes).
 pub fn draft_taken(key : String) -> Array[Given] {

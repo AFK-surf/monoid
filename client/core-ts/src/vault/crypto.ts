@@ -18,6 +18,8 @@ export type BoxCert = { v: 1; ws: string; device: string; box: string; recovery?
 export type Vault = {
   v: 1; ws: string; id: string; seq: number; owner: string; name: string; members: string[]; epoch: number;
   keys: { cert: BoxCert; wrapped: string }[]; recovery?: string; at: number; sig: Sig;
+  /// Absent or personal: personal vault; `workspace`: shared workspace vault managed by workspace owners/admins.
+  scope?: "workspace";
   /// The longest grant its items are given for, where an item's listing says none (absent: any).
   lasts?: Scope;
   /// Deleted by its owner (`vault.delete`): sealed to no one under a new epoch, its items gone; it stays deleted.
@@ -67,7 +69,7 @@ export type Request = {
 };
 /// `typed`: its secret is what the person types in on its card (nothing sealed: the app writes what was typed); with
 /// `oauth`, the token they sign in to that service for on the card (vault/oauth.ts) instead.
-export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; env?: string; username?: string; public_key?: string; filename?: string; typed?: true; oauth?: string; about?: string };
+export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; env?: string; username?: string; public_key?: string; filename?: string; typed?: true; oauth?: string; about?: string; vaultName?: string; shared?: true };
 export type Timeout = { kind: "idle" | "fixed"; seconds: number };
 export type Grant = { v: 1; ws: string; request: string; vault: string; item: string; mode: Mode; hosts: string[]; scope: Scope; exp: number; timeout?: Timeout; secret: string; at: number; sig: Sig };
 export type Deny = { v: 1; ws: string; request: string; at: number; sig: Sig };

@@ -6,8 +6,8 @@
 // files under them, what it asks under it (message_decision_node).
 // What it quotes ahead of its words (message_quotes_node), each quote's own file in its card and not under its words.
 // Each read through what it is given, as that changes.
-// A Mermaid chart is drawn by `code` (chat_body_node's: viz_mermaid_node). Not here yet: its picture held under the
-// pane's top as a long one scrolls past (c.stick).
+// A Mermaid chart is drawn by `code` (chat_body_node's: viz_mermaid_node). Its picture held under the pane's top as a
+// long one scrolls past where `stick_top` says (message_others_node's).
 // Its coming out of its agent's picture is here (agent_said_node's `out_of`, agent_out_steps: emit.mbt's Fold, Float,
 // Spit and Return, one message of an agent's at a time).
 
@@ -62,19 +62,19 @@ fn agent_said_node(
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   core? : @settings.Core? = None,
-  out_of? : (AgentFace, AgentOutPlan)? = None,
+  out_of? : AgentOutPlan? = None,
   piece? : () -> @sf.MdPiece? = fn() { None },
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
-  pieces_pointed? : () -> Bool = fn() { false },
-  piece_made? : (@view.View) -> Unit = fn(_) {  },
   ask_sought? : () -> Bool = fn() { false },
+  stick_top? : () -> Double,
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
-  // (a piece of a long message after its first (chat_body_pieces): its blocks alone, under where its words are drawn,
-  // its files and what it asks under them where it is its last; its head, picture and what it quotes the first's.
-  // Which it is as it is made; the block taken for another row's piece (View::scrolls_window's `reused`) taken for one
-  // of the same make (chat_body_shape), what it draws of the message read through `piece` as it is now)
+  // (a slice of a long message after its first (chat_body_pieces, View::scrolls_window's `slices`): its blocks alone,
+  // under where its words are drawn, its files and what it asks under them where it is its last; its head, picture and
+  // what it quotes the first's. Which it is as it is made; the block taken for another's slice (View::scrolls_window's
+  // `reused_slice`) taken for one of the same make (chat_body_shape), what it draws of the message read through `piece`
+  // as it is now)
   let piece_by = piece
   let piece = @signals.untracked(piece_by)
   match piece {
@@ -83,13 +83,12 @@ fn agent_said_node(
       let row = message_row_frame_node(v, key, side, top, fn(r) {
         r.box(fn(col) {
           @sf.style_node(col, fn() { msg_main })
-          // (pointed at as its first piece is, that one's ⋯ shown while the pointer is on it (`piece_made`, what the
-          // first's `pieces_pointed` reads); a right click on it offers what one on the first does)
+          // (pointed at as its first slice is, the first's ⋯ shown while the pointer is on any of them (the list's
+          // View::list_item_pointed); a right click on it offers what one on the first does)
           match share {
             Some(s) => {
               if !@sf.more_held() {
                 col.points(Is(true)).as_ground() |> ignore
-                piece_made(col)
               }
               message_menu_node(col, s)
             }
@@ -98,10 +97,10 @@ fn agent_said_node(
           col.box(fn(p) {
             picked_of_by(p, key)
             @sf.style_node(p, fn() { agent_prose_piece })
-            // (a piece of a message coming out of its agent's picture: its words a glyph at a time as the first's,
-            // on the same clock, not there whole while the first's are still coming)
-            let glyphs = out_of.bind(fn(o) { o.1.glyphs.val })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, tracks_of~, files_too=last, share~)
+            // (a slice of a message coming out of its agent's picture: its words revealed as the first's, on the same
+            // clock and across all its slices as one (View::list_item_span), not there whole while the first's come)
+            let reveal = out_of.map(fn(o) { agent_out_reveal(o, @signals.untracked(m)) })
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, reveal~, piece=Some(pc), piece_by~, across_of~, tracks_of~, files_too=last, share~)
           })
           |> ignore
           if last {
@@ -110,9 +109,6 @@ fn agent_said_node(
         })
         |> ignore
       })
-      if out_of is Some((_, plan)) {
-        agent_out_room(row.node, plan)
-      }
       return row
     }
     _ => ()
@@ -121,16 +117,22 @@ fn agent_said_node(
     Some(pc) => pc.last
     None => true
   }
+  // (one said while the chat shows: its words streamed in may cut it into pieces as it is drawn (a table come to more
+  // rows than a piece holds), its first this, under its head; what it draws, its files and what it asks under it then as
+  // its piece is now. One read before, as it was made: chat_body_made_as makes it again as its piece changes)
+  let streamed = @signals.untracked(m).said
+  let piece_now = fn() { if streamed { piece_by() } else { piece } }
+  let last_now = fn() { piece_now().map_or(true, fn(pc) { pc.last }) }
   let row = message_row_frame_node(v, key, side, top, fn(r) {
     // (come by data while its agent was at work: out of that agent's picture on its line (`out_of`), as emit.mbt's, each
     // step from the cause's moment: the line folds into its picture (Fold); its own picture glides there from that one
-    // (Float, a flight: View::flies_in); its head and its words come out of it, the words a glyph at a time (Spit,
-    // emit_out's, sfbase's glyph_in); the line unfolds again (Return))
+    // (Float, a flight: View::flies_in); its head and its words come out of it, its words revealed down what shows of
+    // them (Spit, emit_out's: View::spatial_reveal); the line unfolds again (Return))
     let out = match out_of {
-      Some((face, plan)) => Some(agent_out_steps(r, face, plan, m))
+      Some(plan) => Some(agent_out_steps(plan))
       None => None
     }
-    let out_glyphs = out.map(fn(o) { o.glyphs })
+    let reveal = out_of.map(fn(o) { agent_out_reveal(o, @signals.untracked(m)) })
     let (_, on) = message_others_node(
       r,
       here,
@@ -175,7 +177,19 @@ fn agent_said_node(
         // (what it quotes ahead of its words, as the old body's)
         message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, fn() { message_place(m()) }, said=fn() { m().said })
         // (its words, or the card in their place: one in the other's place as the post says)
-        b.pick(fn() { agent_card_kind(m()) == "" }, fn(p, words) {
+        // (and, of one streamed, which make of piece it is now: none, a block, some rows of a table or items of a list,
+        // the last or not: its words drawn again as that changes, its head as it was, coming out of its picture)
+        b.pick(fn() {
+          (
+            agent_card_kind(m()) == "",
+            if streamed {
+              piece_now().map_or(0, fn(pc) { if pc.rows is Some(_) { 2 } else { 1 } }) * 2 + (if last_now() { 1 } else { 0 })
+            } else {
+              0
+            },
+          )
+        }, fn(p, made) {
+          let words = made.0
           // (what is read in it starts here, its words or the card in their place, under its head line and what it
           // quotes: what a page's list holds what shows by, where it starts (View::read_from))
           p.read_from() |> ignore
@@ -186,48 +200,31 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=last, share~)
+            let piece = @signals.untracked(piece_now)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, reveal~, piece~, piece_by~, across_of~, tracks_of~, files_too=piece.map_or(true, fn(pc) { pc.last }), share~)
           } else {
             message_card_node(p, here, core, m)
           }
         })
-        // (what it asks under it: its last piece's)
-        if last {
+        // (what it asks under it: its last piece's; of one streamed, while it is that)
+        if streamed {
+          agent_asks_node(b, src, here, m, core, sought=ask_sought, only_while=last_now)
+        } else if last {
           agent_asks_node(b, src, here, m, core, sought=ask_sought)
         }
       },
       share~,
-      pointed_also=pieces_pointed,
+      stick_top?,
     )
     menu_on.val = on
   })
-  if out_of is Some((_, plan)) {
-    agent_out_room(row.node, plan)
-  }
   { ..row, menu_on: menu_on.val }
 }
 
 ///|
-/// Row `row` of a message coming out of its agent's picture as `plan` has it: not in the list till its picture sets
-/// out for it (Float), as the old list's (sfbase's emit_held: waiting its turn, it is not in the list yet); from then
-/// laid out where it comes in, its room opening on the list's way (View::resizes) as its agent's line goes for it
-/// (chat_turn_out's `answered`, at the same moment): one swap, the list never pushed up by an answer not out yet and
-/// back down as the line goes.
-fn agent_out_room(row : @view.View, plan : AgentOutPlan) -> Unit {
-  guard plan.float_at > row.cause_at() else { return }
-  let open = @signals.signal(false)
-  row.height(By(fn() { if open.get() { None } else { Some(0.0) } })) |> ignore
-  row.clips(By(fn() { !open.get() })) |> ignore
-  row.at_moment(plan.float_at, fn() {
-    open.set(true)
-    row.resizes() |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// What agent's message `m` asks under it in `b`, where it asks anything: nothing else made, as no gap is wanted for
-/// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`.
+/// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`;
+/// nothing while `only_while` says not (a message streamed in whose piece it is under is no longer its last).
 fn agent_asks_node(
   b : @view.View,
   src : Source,
@@ -235,9 +232,11 @@ fn agent_asks_node(
   m : () -> Message,
   core : @settings.Core?,
   sought? : () -> Bool = fn() { false },
+  only_while? : () -> Bool = fn() { true },
 ) -> Unit {
   b.show(
     fn() {
+      guard only_while() else { return false }
       match decision_asks(m()) {
         Nothing => false
         Login => core is Some(_)
@@ -260,7 +259,8 @@ fn agent_asks_node(
 /// them (their cards); the rest of its files under its words. `code`: what draws a fenced block of a language another
 /// way (none: as code); `screens`: links to a station's screens as cards (none: as links); `shown`: its links told as
 /// they change (what a card over one is drawn by). `piece`: which of its blocks it draws as it is made; `piece_by`, as
-/// it is now (markdown_node's).
+/// it is now (markdown_node's). `reveal`: coming out of its agent's picture, its words revealed from that moment by that
+/// salt (View::spatial_reveal), across all the slices of its message as one (View::list_item_span).
 fn agent_prose_node(
   v : @view.View,
   src : Source,
@@ -272,7 +272,7 @@ fn agent_prose_node(
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
-  glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
+  reveal? : (Double, Int)? = None,
   piece? : @sf.MdPiece? = None,
   piece_by? : () -> @sf.MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
@@ -323,10 +323,11 @@ fn agent_prose_node(
     }
   }
   v.show(fn() { m().text != "" }, fn(w) {
-    // (coming out of its agent's picture: none of it drawn till its words start to come out (emit.mbt's Spit), each glyph
-    // seen as it comes, never its lines laid out unseen over the list before then)
-    match glyphs {
-      Some((since, _)) => w.alpha(By(fn() { if since(w) > 0.0 { 1.0 } else { 0.0 } })) |> ignore
+    // (coming out of its agent's picture: none of what shows of it drawn till its words start to come out (emit.mbt's
+    // Spit), then each thing in it at its turn down what shows, all its slices read as one: the paint's, nothing of its
+    // words made again for it (View::spatial_reveal))
+    match reveal {
+      Some((at, salt)) => w.spatial_reveal(Is(at), salt=Is(salt), span=fn() { w.list_item_span() }) |> ignore
       None => ()
     }
     @sf.markdown_node(
@@ -351,11 +352,14 @@ fn agent_prose_node(
       chat_title=fn(h) { chat_title_of(m())(h) },
       // the files its paths name are its agent's (Chat.tsx ProseWithFiles' PathSession): their chips
       paths=@signals.untracked(m).by.agent != "",
-      glyphs~,
       // (a file it places: its card where it places it; a picture's its box, side by side with others, in a table's cell)
       files=fn(name) {
+        // (what it places as it is now: a file sent from here told its size, its upload taken over by the core's row,
+        // the same nodes reading it; as it was made where it is placed no more)
+        let current = fn(a : Attachment) { fn() { placed(name).unwrap_or(a) } }
         let card = fn(a) {
-          fn(d) { message_files_node(d, src, here.tips, place, fn() { [a] }, fn() { false }, by, at) }
+          let now = current(a)
+          fn(d) { message_files_node(d, src, here.tips, place, fn() { [now()] }, fn() { false }, by, at) }
         }
         // a station's app it links to alone on its line (`sf-app:<id>`, `sf-app:<id>@<rev>`): the app, where it is
         // linked (message_app_node), with 实验性功能's 站点应用 on; off, the link is what it was before apps
@@ -394,7 +398,11 @@ fn agent_prose_node(
               draw: card(a),
               image: image_ratio(a).map(fn(r) {
                 (r, fn(d : @view.View, width : () -> Double) {
-                  message_image_node(d, src, place, fn() { a }, by, at, width, fn() { width() / r })
+                  let now = current(a)
+                  message_image_node(d, src, place, now, by, at, width, fn() {
+                    let (bw, bh, _) = image_box(now(), image_least, min_side=image_min_side)
+                    bh * width() / bw
+                  })
                 })
               }),
             })
@@ -459,10 +467,9 @@ fn message_path_held(src : Source, station : String, agent : String, path : Stri
 
 ///|
 /// What an agent's message coming out of its picture at work does (agent_said_node's `out_of`; emit.mbt's poses, each
-/// from the cause's moment): its glyphs' look as they come (Spit: emit_out's, sfbase's glyph_in, read a line at a time
-/// and along it), its picture's way from that one (Float), its head's coming out beside it (Spit).
+/// from the cause's moment): its picture's way from that one (Float), its head's coming out beside it (Spit); its words
+/// revealed from the plan's Spit (agent_out_reveal).
 priv struct AgentOut {
-  glyphs : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)
   avatar : (@view.View) -> Unit
   head : (@view.View) -> Unit
 }
@@ -474,8 +481,10 @@ priv struct AgentOut {
 /// not going home first), when the picture sets out for it (`float_at`) and how long it takes there (`float_ms`: Float's,
 /// or the drop's), when the message is out (`spit_end`), what its picture flies from (`from`: the line's picture, or
 /// the message before's), its own picture as its row makes it (`av`: what the line's picture flies home from, and
-/// a later one drops on from), and its glyphs' look as they come (`glyphs`, its first piece's: the pieces after it come
-/// on the same clock). Worked out as its key comes (agent_out_plan), the same for its row and for the list's way.
+/// a later one drops on from), and whether it has a picture at work to come out of at all (`has_face`: none, an
+/// agent's answer with no line before it, come at once: its picture there in the frame it comes, its head sliding out
+/// and its words revealed from then). Worked out as its key comes (agent_out_plan), the same for its row, for its
+/// slices and for the list's way.
 priv struct AgentOutPlan {
   came : Double
   folds : Bool
@@ -483,8 +492,11 @@ priv struct AgentOutPlan {
   float_ms : Double
   spit_end : Double
   from : () -> (Double, Double, Double, Double)
+  /// where the line's picture was as the message came into the list (its plan's Float: the list's held keys let it in,
+  /// the line going in that change): what it flies from, whatever becomes of the line after
+  face_at : Ref[(Double, Double, Double, Double)?]
   av : Ref[@view.View?]
-  glyphs : Ref[((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)?]
+  has_face : Bool
 }
 
 ///|
@@ -509,8 +521,9 @@ fn agent_out_plan(face : AgentFace, now : Double) -> AgentOutPlan {
             _ => agent_face_at(face)
           }
         },
+        face_at: Ref(None),
         av: Ref(None),
-        glyphs: Ref(None),
+        has_face: true,
       }
     }
     _ => {
@@ -523,8 +536,9 @@ fn agent_out_plan(face : AgentFace, now : Double) -> AgentOutPlan {
         float_ms,
         spit_end: float_at + float_ms + @sfbase.Pose::Spit.ms(),
         from: fn() { agent_face_at(face) },
+        face_at: Ref(None),
         av: Ref(None),
-        glyphs: Ref(None),
+        has_face: true,
       }
     }
   }
@@ -543,78 +557,75 @@ fn agent_face_at(face : AgentFace) -> (Double, Double, Double, Double) {
 }
 
 ///|
-/// An agent's message `m` in row `r` come out of its agent's picture at work `face` as `plan` says (emit.mbt's poses,
-/// each at its moment): the line folds into its picture (Fold, where it is the first of a run); the message's own
-/// picture flies from that one (or from the message before it, dropping on) to its place as the line's picture is away
-/// (Float, a flight: View::flies_in, from rest to rest); its head slides out beside it and its words come a glyph at a
-/// time (Spit); then, where no later message of the agent's came meanwhile and the line goes on under it (a message
-/// on the way, its turn not ended: `ending` none), the line's picture flies home from it and the line unfolds once it
-/// is there (Return, as long as a Move of its way: the further the longer). A message that ends its turn leaves the
-/// line folded and its picture away: the line is leaving, never seen again under the message for a moment.
-fn agent_out_steps(r : @view.View, face : AgentFace, plan : AgentOutPlan, m : () -> Message) -> AgentOut {
-  let fold_ms = @sfbase.Pose::Fold.ms()
-  let out_at = plan.float_at + plan.float_ms
-  // det-ok(motion-length): emit.mbt's Fold, Float, Spit and Return, a message coming out of its agent's picture
-  if plan.folds {
-    face.fold.go(0.0, @motion.tween(fold_ms, ease=Out), at=plan.came)
-  }
-  r.at_moment(plan.float_at, fn() { face.away.set(true) }) |> ignore
-  r.at_moment(plan.spit_end, fn() {
-    // (its turn ended by it: the line leaving or gone, left as it is, folded and away)
-    guard @signals.untracked(m).ending == "" else { return }
-    // (a later message of the agent's came meanwhile: the picture drops on to it, not home)
-    match face.last.val {
-      Some(l) if physical_equal(l.av, plan.av) =>
-        match plan.av.val {
-          Some(av) if av.alive() => {
-            let from = av.laid_window_now()
-            let home = agent_face_at(face)
-            face.away.set(false)
-            // (its own picture home from where the message's is now, in this change: View::flies_in)
-            match face.pic.val {
-              Some(own) if own.alive() => own.flies_in(agent_home_flight, fn(_) { Some(from) }) |> ignore
-              _ => ()
-            }
-            let back_ms = agent_home_ms(from, home)
-            r.at_moment(plan.spit_end + back_ms, fn() {
-              face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=plan.spit_end + back_ms)
-            })
-            |> ignore
-          }
-          _ => {
-            face.away.set(false)
-            face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=plan.spit_end)
-          }
-        }
-      _ => ()
-    }
-  })
-  |> ignore
-  // (how long since it came out, ms: its words and head by it, nothing before)
-  let since = @motion.Way::new(0.0)
-  r.at_moment(out_at, fn() { since.go(1.0, @motion.tween(@sfbase.emit_out_ms_most, ease=Linear), at=out_at) }) |> ignore
-  let salt = 7
-  let glyphs = (fn(w : @view.View) { since.shown_on(w) * @sfbase.emit_out_ms_most }, fn(ms : Double, g : @view.GlyphAt) {
-    @sfbase.glyph_in(ms, (g.line.to_double() + g.cx / 600.0) * @sfbase.glyph_line_ms, g.index, salt)
-  })
-  // (the pieces after its first read these: agent_said_node's `piece`)
-  plan.glyphs.val = Some(glyphs)
+/// An agent's message come out of its agent's picture at work as `plan` says (emit.mbt's poses), its row made as
+/// it comes into the list, at the plan's Float (held out of it till then: chat_body_node's held keys, where the line
+/// folded into its picture meanwhile, Fold): the message's own picture flies from that one (or from the message before
+/// it, dropping on) to its place as the line's picture is away (Float, a flight: View::flies_in, from rest to rest);
+/// its head slides out beside it and its words are revealed (Spit: agent_out_reveal), each on the plan's clock, as data. Its
+/// going home after is the list's at the plan's end (agent_out_return).
+fn agent_out_steps(plan : AgentOutPlan) -> AgentOut {
+  // (how far its head has slid out, 0 … 1: from where its picture lands (the plan's Spit) over emit_head_ms)
+  let head_out = @motion.Way::new(0.0)
+  // det-ok(motion-length): emit.mbt's Spit, its head sliding out of its picture as its words begin
+  head_out.go(1.0, @motion.tween(@sfbase.emit_head_ms, ease=Linear, delay=plan.float_ms), at=plan.float_at)
   {
-    glyphs,
     avatar: fn(av) {
       plan.av.val = Some(av)
-      if plan.float_at > plan.came {
-        let up = @signals.signal(false, same=fn(a, b) { a == b })
-        av.at_moment(plan.float_at, fn() { up.set(true) }) |> ignore
-        av.alpha(By(fn() { if up.get() { 1.0 } else { 0.0 } })) |> ignore
+      // (from where the line's picture is, or the message's before, over Float's time from the plan's Float on; with no
+      // picture at work to come out of, there at once)
+      // (from within the list to within it: drawn among its rows, under its foot and what flies from that foot)
+      if plan.has_face {
+        av.flies_in(
+          after(@sf.dmax(plan.float_at - av.cause_at(), 0.0), plan.float_ms),
+          fn(_) { Some(plan.face_at.val.unwrap_or_else(plan.from)) },
+          in_list=true,
+        )
+        |> ignore
       }
-      av.flies_in(after(plan.float_at - plan.came, plan.float_ms), fn(_) { Some((plan.from)()) }) |> ignore
     },
     head: fn(h) {
-      h.alpha(By(fn() { @ui.Ease::Out.at(dmin_one(since.shown_on(h) * @sfbase.emit_out_ms_most / @sfbase.emit_head_ms)) }))
-      |> ignore
+      // (fading in as it slides out from emit_out_slide in under its picture (emit_out's): drawn off, not its offset,
+      // which carries it across as the page goes to another width (message_inline_way))
+      let k = fn() { @ui.Ease::Out.at(head_out.shown_on(h)) }
+      h.alpha(By(k)).drawn_off(By(fn() { (-@sfbase.emit_out_slide * (1.0 - k()), 0.0) })) |> ignore
     },
   }
+}
+
+///|
+/// The moment the words of message `m` coming out of its agent's picture as `plan` says begin to come out (its picture
+/// landed: the plan's Spit), and what varies them glyph by glyph (its seq: the same each time), for
+/// View::spatial_reveal: every slice of it on the same clock.
+fn agent_out_reveal(plan : AgentOutPlan, m : Message) -> (Double, Int) {
+  (plan.float_at + plan.float_ms, m.seq.to_int64().to_int())
+}
+
+///|
+/// The plan `plan` of a message out of agent `face`'s picture at its end (its Spit over: emit.mbt's Return), told by the
+/// list at that moment: where no later message of the agent's came meanwhile and the line goes on under it (its turn not
+/// ended by it: `ending` false), the line's picture flies home from the message's and the line unfolds once it is there
+/// (as long as a Move of its way: the further the longer), on that clock from that moment. A message that ends its turn
+/// leaves the line folded and its picture away: the line is leaving, never seen again under the message for a moment.
+fn agent_out_return(face : AgentFace, plan : AgentOutPlan, ending : Bool) -> Unit {
+  guard !ending else { return }
+  // (a later message of the agent's came meanwhile: the picture drops on to it, not home)
+  guard face.last.val is Some(l) && physical_equal(l.av, plan.av) else { return }
+  let back_ms = match plan.av.val {
+    Some(av) if av.alive() => {
+      let from = av.laid_window_now()
+      let home = agent_face_at(face)
+      // (its own picture home from where the message's is now, in this change: View::flies_in)
+      match face.pic.val {
+        Some(own) if own.alive() => own.flies_in(agent_home_flight, fn(_) { Some(from) }, in_list=true) |> ignore
+        _ => ()
+      }
+      agent_home_ms(from, home)
+    }
+    _ => 0.0
+  }
+  face.away.set(false)
+  // det-ok(motion-length): emit.mbt's Return, the line unfolding once its picture is home
+  face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out, delay=back_ms), at=plan.spit_end)
 }
 
 ///|

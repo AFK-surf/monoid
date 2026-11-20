@@ -99,7 +99,7 @@ test("browser core authenticates target across ingress and forwarder and loses d
   const browser=await chromium.launch({headless:true,...(process.env.CHROME_BIN?{executablePath:process.env.CHROME_BIN}:{channel:"chrome"})});after(()=>browser.close());
   const sockets:{url:string;sent:number;received:number}[]=[];
   const page=await browser.newPage();
-  page.on("websocket",(socket:import("playwright-core").WebSocket)=>{
+  page.on("websocket",(socket:{url():string;on(event:"framesent"|"framereceived",f:()=>void):void})=>{
     const url=new URL(socket.url());
     const record={url:url.origin+url.pathname,sent:0,received:0};sockets.push(record);
     socket.on("framesent",()=>record.sent++);socket.on("framereceived",()=>record.received++);

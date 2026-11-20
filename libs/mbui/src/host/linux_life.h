@@ -27,6 +27,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <glib-unix.h>
+#include <errno.h>
 #include <signal.h>
 #include "mini_json.h"  // the menu the app gives (menu_setup)
 
@@ -121,6 +122,7 @@ static double put_away_at = -1;  // boot_ms() as the window was put away (-1: it
 static double asleep_at = -1;    // as the computer went to sleep (-1: awake)
 static int tray_on;              // the desktop shows the app's icon (its watcher took it)
 
+static int first_hidden_bare;  // the first hidden as it closed while another was open, no icon to put it away to
 static void bring_back(void) {
   if (!win_slots[0].win) return;
   if (put_away_at >= 0) {
@@ -137,15 +139,36 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = -1;
   }
+  first_hidden_bare = 0;
+  // (the first's frame, whichever window is in place as it is brought back: a window beside it may ask it)
+  int back = win_active;
+  win_use(0);
   schedule();
+  win_put_back(back);
 }
 
-// the window closed: put away where the program is an app and the desktop shows its icon; else the program ends
-static void wins_close_beside(void);
+// (said further down, with what the windows beside this one are: a run of its own beside it)
+static int window_run(void);
+
+// the window closed: put away where the program is an app and the desktop shows its icon; else the program ends. The
+// windows beside it stay as they are: the first's canvas goes with its window as it is hidden, their context (the
+// run's one, linux_app.c canvas_context) kept by them, and the first's made on it again as it is brought back. With
+// no icon to put it away to (a bare run, or no watcher of icons) it is hidden only while a window beside it is open,
+// the run ending as the last of them closes (linux_app.c win_closed_told), as the Mac's.
 static int put_away(void) {
-  if (!life_app || !tray_on) return 0;
-  // (the windows beside it close with it, as the Mac's: drawn in its canvas's context, which goes as it is hidden)
-  wins_close_beside();
+  if (window_run()) return 0;
+  if (!life_app || !tray_on) {
+    int beside = 0;
+    for (int k = 1; k < MB_WINS; k++)
+      if (win_slots[k].win) beside = 1;
+    if (!beside) return 0;
+    fprintf(stdout, "linux: closed, hidden while a window beside it is open\n");
+    fflush(stdout);
+    first_hidden_bare = 1;
+    gtk_widget_set_visible(win_slots[0].win, FALSE);
+    app_state();
+    return 1;
+  }
   fprintf(stdout, "linux: put away, to its icon\n");
   fflush(stdout);
   gtk_widget_set_visible(win_slots[0].win, FALSE);
@@ -902,6 +925,74 @@ void mb_host_set_badge(int32_t n) {
   }
   g_dbus_connection_emit_signal(bus, NULL, BADGE_PATH, "com.canonical.Unity.LauncherEntry", "Update", badge_state(),
                                 NULL);
+}
+
+// ---- login auto-launch (@hostapi.auto_launch / set_auto_launch) ----
+static int autostart_paths(char *dir_out, size_t dir_cap, char *file_out, size_t file_cap) {
+  const char *xdg = getenv("XDG_CONFIG_HOME");
+  const char *home = getenv("HOME");
+  if (xdg && *xdg) {
+    snprintf(dir_out, dir_cap, "%s/autostart", xdg);
+  } else if (home && *home) {
+    snprintf(dir_out, dir_cap, "%s/.config/autostart", home);
+  } else {
+    return 0;
+  }
+  const char *id = app_id();
+  char fallback[256] = "mbui";
+  if (!id || !*id) {
+    char exe[1024];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+      exe[n] = 0;
+      const char *base = strrchr(exe, '/');
+      g_strlcpy(fallback, base ? base + 1 : exe, sizeof fallback);
+    }
+    id = fallback;
+  }
+  snprintf(file_out, file_cap, "%s/%s.desktop", dir_out, id);
+  return 1;
+}
+
+int32_t mb_host_auto_launch(void) {
+  char dir[1024], file[1280];
+  if (!autostart_paths(dir, sizeof dir, file, sizeof file)) return 0;
+  return access(file, F_OK) == 0 ? 1 : 0;
+}
+
+int32_t mb_host_set_auto_launch(int32_t enabled) {
+  char dir[1024], file[1280];
+  if (!autostart_paths(dir, sizeof dir, file, sizeof file)) return 0;
+  if (!enabled) {
+    return (unlink(file) == 0 || errno == ENOENT) ? 1 : 0;
+  }
+  if (g_mkdir_with_parents(dir, 0700) != 0) return 0;
+  char exe[1024];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (n <= 0) return 0;
+  exe[n] = 0;
+  FILE *f = fopen(file, "w");
+  if (!f) return 0;
+  const char *name = app_name();
+  fprintf(f,
+          "[Desktop Entry]\n"
+          "Type=Application\n"
+          "Name=%s\n"
+          "Exec=\"%s\"\n"
+          "X-GNOME-Autostart-enabled=true\n",
+          name && *name ? name : "App", exe);
+  return fclose(f) == 0 ? 1 : 0;
+}
+
+// ---- global hotkeys (@hostapi.hotkey_set / hotkey_clear): stub on Linux ----
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) {
+  (void)id;
+  (void)accel;
+  return 0;
+}
+
+void mb_host_hotkey_clear(moonbit_string_t id) {
+  (void)id;
 }
 
 // ---- as the window is made ----

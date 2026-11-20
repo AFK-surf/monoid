@@ -91,7 +91,13 @@ pub(all) struct FsFailure {
 ///|
 pub(all) suberror FsError {
   FsError(FsFailure)
-} derive(Show)
+}
+
+///|
+pub impl Show for FsError with output(self, logger) {
+  let FsError(f) = self
+  logger.write_string(f.message)
+}
 
 ///|
 /// A failure with `code` and `message`.
@@ -362,16 +368,21 @@ fn create_excl(path : String, text : String) -> Unit raise FsError {
 }
 
 ///|
-/// ops/files.ts `writePrivateSoon`: written beside (`<path>.<pid>.tmp`, 0600), synced, put in place.
+/// How many names beside a file `tmp_beside` gave in this process.
+let tmp_seq : Ref[Int64] = { val: 0L }
+
+///|
+/// A name beside `path` no other private write of this process takes (`<path>.<pid>.<n>.tmp`, L13).
+fn tmp_beside(path : String) -> String {
+  tmp_seq.val += 1L
+  "\{path}.\{pid()}.\{tmp_seq.val}.tmp"
+}
+
+///|
+/// ops/files.ts `writePrivateSoon`: written beside (`tmp_beside`, 0600), synced, put in place; what was written beside
+/// let go of where that failed.
 pub fn write_private(path : String, text : String) -> Unit raise FsError {
-  let n = write_private_ffi(
-    c_str(path),
-    c_str("\{path}.\{pid()}.tmp"),
-    @utf8.encode(text),
-  )
-  if n != 0 {
-    raise sys_failed(n, "open", path)
-  }
+  write_private_bytes(path, @utf8.encode(text))
 }
 
 ///|
@@ -445,14 +456,7 @@ pub fn random_bytes(n : Int) -> Bytes {
 ///|
 /// Bytes as lowercase hex.
 pub fn hex(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for i = 0; i < b.length(); i = i + 1 {
-    let v = b[i].to_int()
-    out.write_char(digits.get_char(v >> 4).unwrap())
-    out.write_char(digits.get_char(v & 15).unwrap())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|
@@ -468,8 +472,10 @@ pub fn random_uuid() -> String {
 ///|
 /// `write_private` of bytes.
 pub fn write_private_bytes(path : String, data : Bytes) -> Unit raise FsError {
-  let n = write_private_ffi(c_str(path), c_str("\{path}.\{pid()}.tmp"), data)
+  let tmp = tmp_beside(path)
+  let n = write_private_ffi(c_str(path), c_str(tmp), data)
   if n != 0 {
+    rm_force(tmp)
     raise sys_failed(n, "open", path)
   }
 }

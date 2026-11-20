@@ -48,6 +48,10 @@
 // by the GPU (the video processor, or a copy of a BGRA frame) and presented, composed by the system with nothing of the
 // app built or drawn. The remote pointer (@hostapi.stream_pointer) is a surface in a visual over it, placed in the
 // picture's coordinates. A layer that shows the frame as sRGB (stream_layers 2: no Display P3 asked of the station).
+// Its swap chain holds one frame waiting for the screen at most (a frame-latency waitable one, its latency 1: DXGI's
+// three otherwise, two or three refreshes of a remote screen late): a frame shown while that one still waits is put
+// there and presented as it goes (a thread pool wait on its waitable object), the newest by then; the frames between
+// were acknowledged as they came, never presented. Where the system will not make one so, a chain as before.
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
 #endif
@@ -58,6 +62,7 @@
 #include <d3d11_4.h>
 #include <d3d10.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <dcomp.h>
 #include <wincodec.h>
 #include <mfapi.h>
@@ -168,6 +173,8 @@ struct Stream {
   H264 *h264;
   // shown by its layer (attached: its events tell the app between frames); read by the decoder's thread
   volatile LONG layered;
+  // frames of its route decoded and on their way to the window's thread, not shown yet (direct_shown)
+  volatile LONG direct_queued;
   // its frames on the GPU not made BGRA there (vp_failed): its decoder in software from the next key frame
   volatile LONG no_gpu;
   // frames that came by a route: how many and their bytes (under lock); the last of them shown and what the app was
@@ -189,6 +196,15 @@ struct Stream {
   // size), the processor's view of its buffer; the view's rect (device pixels) and the window's scale
   IDCompositionVisual *content, *pic, *ptr;
   IDXGISwapChain1 *chain;
+  // its swap chain's flags (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT where it was made so: ResizeBuffers is
+  // given them again), its waitable object (none: presented as each frame comes) and the thread pool wait on it; whether
+  // this holds the one frame's room it gives (waited), whether the frame shown waits for it, and the chain's number (a
+  // wait's end that comes after its chain is gone is not the next one's)
+  UINT chain_flags;
+  HANDLE chain_waitable;
+  PTP_WAIT chain_wait;
+  int chain_room, chain_owed, chain_armed;
+  LONG chain_gen;
   ID3D11VideoProcessorOutputView *chain_out;
   int chain_w, chain_h, presented_w, presented_h;
   double place_w, place_h, place_scale;
@@ -703,13 +719,16 @@ struct Direct {
 };
 
 // (the window's thread) a frame that came by a route, decoded: shown and acknowledged here while the route still goes
-// to its stream, nothing of the app's run; else kept and said, as the app's are.
+// to its stream, nothing of the app's run; else kept and said, as the app's are. One with a newer behind it on its way
+// here (a burst the window's thread was too busy to take one by one) is acknowledged and taken as the frame shown, not
+// presented: its swap chain's one frame's room left to the newest.
 static void direct_shown(void *arg) {
   Direct *x = (Direct *)arg;
   Stream *s = stream_of(x->sid);
   StreamFrame f = x->f;
   uint64_t route = x->route;
   free(x);
+  LONG behind = s ? InterlockedDecrement(&s->direct_queued) : 0;
   if (!s || s->closed) {
     if (s) frame_free(s, &f);
     else if (f.srv) f.srv->Release(), gpu_drop(&f.gpu);
@@ -734,7 +753,7 @@ static void direct_shown(void *arg) {
   s->cur = f;
   s->drawn = 0;
   s->direct_at = f.ts;
-  layer_present(s);
+  if (behind <= 0) layer_present(s);
   route_acked(route, f.ts);
 }
 
@@ -749,6 +768,7 @@ static void direct_decoded(Stream *s, double ts, int w, int h, ID3D11ShaderResou
   x->f.h = h;
   x->f.srv = srv;
   if (gpu) x->f.gpu = *gpu;
+  InterlockedIncrement(&s->direct_queued);
   mb_app_call(direct_shown, x);
 }
 
@@ -1109,10 +1129,18 @@ static Gpu gpu_copy_off(Stream *s, H264 *d, IMFSample *smp) {
       ReleaseSRWLockExclusive(&fence_lock);
       dctx->Flush();
       if (copied_fence->GetCompletedValue() < v) {
-        static thread_local HANDLE done;
-        if (!done) done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        // (the event a thread of the pool waits on, made once and closed as the thread ends)
+        struct DoneEvent {
+          HANDLE h = NULL;
+          ~DoneEvent() {
+            if (h) CloseHandle(h);
+          }
+        };
+        static thread_local DoneEvent done;
+        if (!done.h) done.h = CreateEventW(NULL, FALSE, FALSE, NULL);
         // (a GPU that never finishes it: the frame let go, after 2 s)
-        if (!done || FAILED(copied_fence->SetEventOnCompletion(v, done)) || WaitForSingleObject(done, 2000) != WAIT_OBJECT_0)
+        if (!done.h || FAILED(copied_fence->SetEventOnCompletion(v, done.h)) ||
+            WaitForSingleObject(done.h, 2000) != WAIT_OBJECT_0)
           gpu_drop(&g);
       }
       g.bt601 = d->bt601;
@@ -1519,13 +1547,78 @@ static void layer_transform(Stream *s) {
   s->pic->SetTransform(m);
 }
 
+// Its swap chain let go, with its waitable object and the wait on it (none of that wait's ends taken after: chain_gen).
+static void chain_drop(Stream *s) {
+  if (s->chain_wait) {
+    SetThreadpoolWait(s->chain_wait, NULL, NULL);
+    WaitForThreadpoolWaitCallbacks(s->chain_wait, TRUE);
+    CloseThreadpoolWait(s->chain_wait);
+  }
+  if (s->chain_waitable) CloseHandle(s->chain_waitable);
+  if (s->chain) s->chain->Release();
+  s->chain_wait = NULL;
+  s->chain_waitable = NULL;
+  s->chain = NULL;
+  s->chain_flags = 0;
+  s->chain_room = s->chain_owed = s->chain_armed = 0;
+  s->chain_gen++;
+}
+
+struct ChainFreed {
+  int sid;
+  LONG gen;
+};
+
+// (the window's thread) room for a frame in stream sid's swap chain again: its frame shown now presented, if one waits
+static void chain_freed(void *arg) {
+  ChainFreed *x = (ChainFreed *)arg;
+  Stream *s = stream_of(x->sid);
+  LONG gen = x->gen;
+  free(x);
+  if (!s || s->closed || !s->chain || gen != s->chain_gen) return;
+  s->chain_armed = 0;
+  s->chain_room = 1;
+  if (s->chain_owed) {
+    s->chain_owed = 0;
+    layer_present(s);
+  }
+}
+
+// (the thread pool) its waitable object signalled, the room taken by this wait (a semaphore's): to the window's thread
+static void CALLBACK chain_waited(PTP_CALLBACK_INSTANCE inst, void *arg, PTP_WAIT wait, TP_WAIT_RESULT result) {
+  (void)inst;
+  (void)wait;
+  if (result != WAIT_OBJECT_0) return;
+  ChainFreed *x = (ChainFreed *)calloc(1, sizeof(ChainFreed));
+  if (!x) return;
+  Stream *s = (Stream *)arg;
+  x->sid = s->id;
+  x->gen = s->chain_gen;
+  mb_app_call(chain_freed, x);
+}
+
+// Whether a frame may be presented on its swap chain now (the window's thread): its one frame's room held, or taken
+// now; else the wait for it started (chain_freed presents the frame shown then).
+static int chain_room(Stream *s) {
+  if (!s->chain_waitable || s->chain_room) return 1;
+  if (s->chain_armed) return 0;
+  if (WaitForSingleObjectEx(s->chain_waitable, 0, FALSE) == WAIT_OBJECT_0) {
+    s->chain_room = 1;
+    return 1;
+  }
+  if (!s->chain_wait) s->chain_wait = CreateThreadpoolWait(chain_waited, s, NULL);
+  if (!s->chain_wait) return 1;
+  s->chain_armed = 1;
+  SetThreadpoolWait(s->chain_wait, s->chain_waitable, NULL);
+  return 0;
+}
+
 // Its swap chain w × h (made, or its buffers made again at a new size): 1 here.
 static int chain_ready(Stream *s, int w, int h) {
   if (s->chain && s->chain_w == w && s->chain_h == h) return 1;
-  if (s->chain && FAILED(s->chain->ResizeBuffers(2, (UINT)w, (UINT)h, DXGI_FORMAT_B8G8R8A8_UNORM, 0))) {
+  if (s->chain && FAILED(s->chain->ResizeBuffers(2, (UINT)w, (UINT)h, DXGI_FORMAT_B8G8R8A8_UNORM, s->chain_flags))) {
     s->pic->SetContent(NULL);
-    s->chain->Release();
-    s->chain = NULL;
+    chain_drop(s);
   }
   if (!s->chain) {
     ID3D11Device *dev = (ID3D11Device *)mb_render_device();
@@ -1543,21 +1636,36 @@ static int chain_ready(Stream *s, int w, int h) {
     // (a frame presented over one not shown yet takes its place: the newest shown, none queued behind)
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    // (one frame waiting for the screen at most, below; a system that will not make it so: as before)
+    sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     HRESULT hr = dev->QueryInterface(IID_PPV_ARGS(&xdev));
     if (SUCCEEDED(hr)) hr = xdev->GetAdapter(&adapter);
     if (SUCCEEDED(hr)) hr = adapter->GetParent(IID_PPV_ARGS(&factory));
-    if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &s->chain);
+    if (SUCCEEDED(hr)) {
+      hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &s->chain);
+      if (FAILED(hr)) {
+        sd.Flags = 0;
+        hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &s->chain);
+      }
+    }
     if (FAILED(hr) && factory) {
       sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
       hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &s->chain);
+    }
+    if (SUCCEEDED(hr)) s->chain_flags = sd.Flags;
+    if (SUCCEEDED(hr) && sd.Flags) {
+      IDXGISwapChain2 *two = NULL;
+      if (SUCCEEDED(s->chain->QueryInterface(IID_PPV_ARGS(&two)))) {
+        if (SUCCEEDED(two->SetMaximumFrameLatency(1))) s->chain_waitable = two->GetFrameLatencyWaitableObject();
+        two->Release();
+      }
     }
     if (SUCCEEDED(hr)) hr = s->pic->SetContent(s->chain);
     if (factory) factory->Release();
     if (adapter) adapter->Release();
     if (xdev) xdev->Release();
     if (FAILED(hr)) {
-      if (s->chain) s->chain->Release();
-      s->chain = NULL;
+      chain_drop(s);
       fprintf(stdout, "win: stream %d: no swap chain for its layer (%08lx)\n", s->id, (unsigned long)hr);
       fflush(stdout);
       return 0;
@@ -1571,12 +1679,17 @@ static int chain_ready(Stream *s, int w, int h) {
   return 1;
 }
 
-// The frame it shows now put on its layer and presented, composed by the system: nothing of the app's drawn.
+// The frame it shows now put on its layer and presented, composed by the system: nothing of the app's drawn. Where its
+// chain has a frame waiting for the screen still, presented as that one goes (chain_room): the frame shown by then.
 static void layer_present(Stream *s) {
   StreamFrame *f = &s->cur;
   if (!s->pic || (!f->gpu.tex && !f->srv)) return;
   int w = f->gpu.tex ? f->gpu.w : f->w, h = f->gpu.tex ? f->gpu.h : f->h;
   if (w <= 0 || h <= 0 || !chain_ready(s, w, h)) return;
+  if (!chain_room(s)) {
+    s->chain_owed = 1;
+    return;
+  }
   ID3D11Texture2D *back = NULL;
   if (FAILED(s->chain->GetBuffer(0, IID_PPV_ARGS(&back)))) return;
   int put = 0;
@@ -1597,6 +1710,9 @@ static void layer_present(Stream *s) {
   back->Release();
   if (!put) return;
   HRESULT hr = s->chain->Present(0, 0);
+  // (the room it held given to the frame presented: the next waits for it to go. Only S_OK queues it: a window
+  // occluded says DXGI_STATUS_OCCLUDED, a success that queues nothing and so frees nothing later)
+  if (hr == S_OK) s->chain_room = 0;
   // (said once a size: what the layer shows, for the log)
   if (s->presented_w != w || s->presented_h != h || FAILED(hr)) {
     s->presented_w = w;
@@ -1657,10 +1773,9 @@ static void layer_drop(Stream *s) {
   }
   if (s->pic) s->pic->Release();
   if (s->ptr) s->ptr->Release();
-  if (s->chain) s->chain->Release();
+  chain_drop(s);
   if (s->ptr_surface) s->ptr_surface->Release();
   s->content = s->pic = s->ptr = NULL;
-  s->chain = NULL;
   s->ptr_surface = NULL;
   s->chain_w = s->chain_h = 0;
   s->presented_w = s->presented_h = 0;
@@ -1913,6 +2028,28 @@ static int sound_ready(void) {
   return 1;
 }
 
+// (under sound_lock) Samples (48 kHz frames) a voice has played that are not heard yet: what lies between a source
+// voice's buffers and the speakers (the engine's quantum, the mastering voice, the device's buffer: XAudio2's
+// CurrentLatencyInSamples, at the mastering voice's rate). SamplesPlayed counts a sample as it leaves the voice, so a
+// picture paced by it alone was that far ahead of its sound (some 35 ms here; a Bluetooth headset's, more).
+static double sound_unheard(void) {
+  if (sound_state <= 0) return 0;
+  XAUDIO2_PERFORMANCE_DATA p = {};
+  sound_engine->GetPerformanceData(&p);
+  XAUDIO2_VOICE_DETAILS d = {};
+  sound_master->GetVoiceDetails(&d);
+  if (!d.InputSampleRate) return 0;
+  return (double)p.CurrentLatencyInSamples * 48000.0 / (double)d.InputSampleRate;
+}
+
+// (under sound_lock) What a voice has played that has been heard: its SamplesPlayed less what has not come out yet.
+static double voice_heard(IXAudio2SourceVoice *v) {
+  XAUDIO2_VOICE_STATE st;
+  v->GetState(&st, 0);
+  double n = (double)st.SamplesPlayed - sound_unheard();
+  return n > 0 ? n : 0;
+}
+
 // the player's clock (win_sound.h): ms, the machine's
 static double sound_now(void) {
   static LARGE_INTEGER freq;
@@ -1952,9 +2089,7 @@ static SoundVoice voice_of(Stream *s) {
 static void sound_stop(Stream *s) {
   if (s->voice) {
     // (what it played counted on by the next: the stream's sound's clock)
-    XAUDIO2_VOICE_STATE st;
-    s->voice->GetState(&st, 0);
-    s->sound_played_before += (double)st.SamplesPlayed;
+    s->sound_played_before += voice_heard(s->voice);
     s->voice->DestroyVoice();
   }
   s->voice = NULL;
@@ -2007,6 +2142,9 @@ void mb_host_stream_close(int32_t id) {
   sound_stop(s);
   // (its sound's clock set back: only here)
   s->sound_played_before = 0;
+  // (its packets' memory: its voice destroyed, which reads it no more, and none made again once it is gone: sound_take)
+  free(s->sound_ring);
+  s->sound_ring = NULL;
   ReleaseSRWLockExclusive(&sound_lock);
   layer_drop(s);
   if (s->ptr_px) free(s->ptr_px);
@@ -2014,14 +2152,20 @@ void mb_host_stream_close(int32_t id) {
   s->ptr_new = 0;
   EnterCriticalSection(&lock);
   s->closed = 1;
+  // (what it says and its work let go of with their arrays: nothing is said or queued of it once closed, say_locked
+  // and queue_bytes, and its work thread takes no more, work)
   for (int i = 0; i < s->nevents; i++) free(s->events[i]);
-  s->nevents = 0;
+  free(s->events);
+  s->events = NULL;
+  s->nevents = s->cap_events = 0;
   StreamFrame *left = s->decoded;
   int nleft = s->ndecoded;
   s->decoded = NULL;
   s->ndecoded = s->cap_decoded = 0;
   for (int i = 0; i < s->njobs; i++) free(s->jobs[i].data);
-  s->njobs = 0;
+  free(s->jobs);
+  s->jobs = NULL;
+  s->njobs = s->cap_jobs = 0;
   Gpu pool[POOL];
   int npool = s->npool;
   memcpy(pool, s->pool, sizeof pool);
@@ -2212,19 +2356,16 @@ void mb_host_stream_audio(int32_t id, moonbit_bytes_t data) {
   sound_take(s, (const uint8_t *)data, len);
 }
 
-// Samples (48 kHz frames) of its sound played since its sound began: its voice's SamplesPlayed, and what the voices
-// before it played (an empty packet lets a voice go, the next made as sound comes again); set back only as the stream
-// closes (0 then), so an app that wants another start keeps its own base. A route's sound counts the same.
+// Samples (48 kHz frames) of its sound heard since its sound began: what its voice has played less what has not come
+// out of the speakers yet (voice_heard), and what the voices before it were heard to play (an empty packet lets a
+// voice go, the next made as sound comes again); set back only as the stream closes (0 then), so an app that wants
+// another start keeps its own base. A route's sound counts the same.
 double mb_host_stream_audio_played(int32_t id) {
   Stream *s = stream_of(id);
   if (!s) return 0;
   AcquireSRWLockShared(&sound_lock);
   double n = s->sound_gone ? 0 : s->sound_played_before;
-  if (!s->sound_gone && s->voice) {
-    XAUDIO2_VOICE_STATE st;
-    s->voice->GetState(&st, 0);
-    n += (double)st.SamplesPlayed;
-  }
+  if (!s->sound_gone && s->voice) n += voice_heard(s->voice);
   ReleaseSRWLockShared(&sound_lock);
   return n;
 }

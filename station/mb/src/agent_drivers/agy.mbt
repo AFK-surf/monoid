@@ -13,7 +13,7 @@ let agy_scrubbed : Array[String] = [
 
 ///|
 /// The thinking levels Antigravity's models append to a family's name (`AGY_LEVELS`).
-let agy_levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+let agy_levels : Array[String] = @agent_runtimes.agy_levels
 
 ///|
 /// The waits before a process that offered no models is opened again (`AGY_CATALOG_RETRY_MS`).
@@ -26,6 +26,14 @@ let agy_lent_renew_ms = 2400000.0
 ///|
 /// What `agy` needs left of a sign-in to start on it (`AGY_LENT_LEAST_MS`).
 let agy_lent_least_ms = 600000.0
+
+///|
+/// Margin before a borrowed sign-in's expiry within which an auth failure is taken as it running out (`AGY_LENT_EXPIRE_MARGIN_MS`).
+let agy_lent_expire_margin_ms = 300000.0
+
+///|
+/// Minimum time a process must have been open on its borrowed sign-in before another mid-turn expiry reopens it (`AGY_LENT_MIN_RUN_MS`).
+let agy_lent_min_run_ms = 300000.0
 
 ///|
 /// Where the station keeps its sessions' transcripts (`SESSIONS`).
@@ -220,125 +228,13 @@ pub fn agy_plan_in(text : String, enterprise? : Bool = false) -> String? {
 /// `Date.parse` of an ISO time (a date, a time to the second with its fraction, `Z` or an offset), none otherwise; a
 /// time with no zone read as UTC.
 pub fn date_parse(text : String) -> Double? {
-  let u = @jsjson.units(text)
-  let at = Ref(0)
-  let digits = (count : Int) => {
-    if at.val + count > u.length() {
-      return None
-    }
-    let mut v = 0
-    for k in 0..<count {
-      let c = u[at.val + k]
-      if c < 0x30 || c > 0x39 {
-        return None
-      }
-      v = v * 10 + (c - 0x30)
-    }
-    at.val += count
-    Some(v)
-  }
-  let sign = if at.val < u.length() && (u[0] == 0x2b || u[0] == 0x2d) {
-    let s = if u[0] == 0x2d { -1 } else { 1 }
-    at.val = 1
-    Some(s)
-  } else {
-    None
-  }
-  let year = match sign {
-    Some(sg) => digits(6).map(y => y * sg)
-    None => digits(4)
-  }
-  guard year is Some(year) else { return None }
-  let peek = (c : Int) => at.val < u.length() && u[at.val] == c
-  let mut month = 1
-  let mut day = 1
-  if peek(0x2d) {
-    at.val += 1
-    guard digits(2) is Some(mo) else { return None }
-    month = mo
-    if peek(0x2d) {
-      at.val += 1
-      guard digits(2) is Some(dd) else { return None }
-      day = dd
-    }
-  }
-  let mut hour = 0
-  let mut minute = 0
-  let mut second = 0
-  let mut millis = 0.0
-  let mut offset = 0
-  if peek(0x54) || peek(0x74) {
-    at.val += 1
-    guard digits(2) is Some(h) else { return None }
-    guard peek(0x3a) else { return None }
-    at.val += 1
-    guard digits(2) is Some(mi) else { return None }
-    hour = h
-    minute = mi
-    if peek(0x3a) {
-      at.val += 1
-      guard digits(2) is Some(se) else { return None }
-      second = se
-      if peek(0x2e) || peek(0x2c) {
-        at.val += 1
-        let start = at.val
-        let mut frac = 0.0
-        let mut scale = 100.0
-        while at.val < u.length() && u[at.val] >= 0x30 && u[at.val] <= 0x39 {
-          if scale >= 1.0 {
-            frac += (u[at.val] - 0x30).to_double() * scale
-          }
-          scale /= 10.0
-          at.val += 1
-        }
-        if at.val == start {
-          return None
-        }
-        millis = frac.floor()
-      }
-    }
-    if peek(0x5a) || peek(0x7a) {
-      at.val += 1
-    } else if peek(0x2b) || peek(0x2d) {
-      let sg = if u[at.val] == 0x2d { -1 } else { 1 }
-      at.val += 1
-      guard digits(2) is Some(oh) else { return None }
-      if peek(0x3a) {
-        at.val += 1
-      }
-      guard digits(2) is Some(om) else { return None }
-      offset = sg * (oh * 60 + om)
-    }
-  } else if peek(0x5a) {
-    at.val += 1
-  }
-  if at.val != u.length() {
-    return None
-  }
-  if month < 1 || month > 12 || day < 1 || day > 31 || hour > 24 || minute > 59 || second > 59 {
-    return None
-  }
-  if hour == 24 && (minute != 0 || second != 0 || millis != 0.0) {
-    return None
-  }
-  let days = days_from_civil(year, month, day)
-  Some(
-    days.to_double() * 86400000.0 +
-    ((hour * 60 + minute - offset) * 60 + second).to_double() * 1000.0 +
-    millis,
-  )
+  @jsjson.js_parse_iso(text)
 }
 
 ///|
 /// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
 pub fn days_from_civil(y0 : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y0 - 1 } else { y0 }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = if m > 2 { m - 3 } else { m + 9 }
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @time.days_from_civil(y0, m, d).to_int()
 }
 
 ///|
@@ -397,20 +293,12 @@ pub fn agy_classify_failure(text : String) -> String {
 ///|
 /// A failure Antigravity CLI tells only in words (`noticeFailure`): the reading's (mb/src/acp `notice_failure`).
 pub fn agy_notice_failure(said : String) -> String? {
-  @acp.notice_failure(@jsjson.units(said))
+  @acp.notice_failure(said)
 }
 
 ///|
 /// A raw ACP `modelId` split into its base model and thinking level (`agyBaseModel`).
-pub fn agy_base_model(id : String) -> (String, String?) {
-  let trimmed = @jscase.trim(id)
-  for l in agy_levels {
-    if trimmed.has_suffix("-\{l}") && trimmed.length() > l.length() + 1 {
-      return (trimmed.substring(end=trimmed.length() - l.length() - 1), Some(l))
-    }
-  }
-  (trimmed, None)
-}
+pub using @agent_runtimes {agy_base_model}
 
 ///|
 /// The tier session/new or session/load said the account is on (`agyTierIn`).
@@ -542,22 +430,21 @@ pub fn agy_models(result : JValue?) -> Array[String] {
 }
 
 ///|
-/// A turn's counts as the prompt's answer says them (`turnUsage`).
+/// A turn's counts as the prompt's answer says them (`turnUsage`). agy says them apart, as its `totalTokens` adds them
+/// up (`inputTokens + outputTokens + cachedReadTokens`): what was read from the cache is not in `inputTokens`, and
+/// `thoughtTokens` is already in `outputTokens`.
 pub fn turn_usage(answer : JValue?) -> JValue? {
   guard get(get(answer, "result"), "usage") is Some(Obj(_) as u) else { return None }
   let num = (k : String) => match get(Some(u), k) {
-    Some(Num(x)) if x - x == 0.0 => x
+    Some(Num(x)) if x - x == 0.0 && x > 0.0 => x
     _ => 0.0
   }
-  let read = num("cachedReadTokens")
-  let written = num("cachedWriteTokens")
-  let input = num("inputTokens") - read - written
   Some(
     obj([
-      ("inputTokens", d(if input > 0.0 { input } else { 0.0 })),
-      ("cacheReadTokens", d(read)),
-      ("cacheWriteTokens", d(written)),
-      ("outputTokens", d(num("outputTokens") + num("thoughtTokens"))),
+      ("inputTokens", d(num("inputTokens"))),
+      ("cacheReadTokens", d(num("cachedReadTokens"))),
+      ("cacheWriteTokens", d(num("cachedWriteTokens"))),
+      ("outputTokens", d(num("outputTokens"))),
     ]),
   )
 }
@@ -602,6 +489,7 @@ pub struct AgySession {
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
+  mut sign_in_opened_at : Double?
 }
 
 ///|
@@ -644,6 +532,8 @@ pub fn AgyDriver::env_for(self : AgyDriver, options : JValue) -> Env {
   let profile = get(o, "profile").unwrap_or(Null)
   let env = start_env(self.world.raw_env, agy_scrubbed)
   env.merge(expand_route((self.profiles.env)(profile, "agy"), str_at(o, "route").unwrap_or("")))
+  // The profile's own proxy too leaves this machine out (`keepLocal`).
+  let env = keep_local(env)
   env.set("ANTIGRAVITY_GEMINI_DIR", gemini_dir(self.m(), profile_home(profile)))
   if self.world.has_keychain {
     env.set("SSH_CLIENT", "127.0.0.1 0 0")
@@ -842,6 +732,10 @@ pub fn last_written(m : Machine, cli : String, id : String) -> Later[Double?] {
 }
 
 ///|
+/// How many conversations this process brought in (`agy_bring_in`): the names it copies beside under.
+let agy_bring_seq : Ref[Int] = { val: 0 }
+
+///|
 /// A conversation brought into a profile's CLI from another home of the station that kept it last (`agyBringIn`): the
 /// name of that home, none where nothing was brought.
 pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
@@ -886,12 +780,16 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
         let conv = m.join([here, "conversations"])
         let db = m.join([conv, "\{id}.db"])
         let from_wal = m.join([cli, "conversations", "\{id}.db-wal"])
+        // (names of its own beside, so that two bringing it at once, or one left by a failed one, are not each other's)
+        agy_bring_seq.val += 1
+        let db_bringing = "\{db}.\{agy_bring_seq.val}.bringing"
+        let wal_bringing = "\{db}-wal.\{agy_bring_seq.val}.bringing"
         m
         .make_dir(conv)
         .bind(_ => m.there(from_wal))
         .bind(has_wal => m
-          .copy(m.join([cli, "conversations", "\{id}.db"]), "\{db}.bringing")
-          .bind(_ => if has_wal { m.copy(from_wal, "\{db}-wal.bringing") } else { done(lp) })
+          .copy(m.join([cli, "conversations", "\{id}.db"]), db_bringing)
+          .bind(_ => if has_wal { m.copy(from_wal, wal_bringing) } else { done(lp) })
           .bind(_ => {
             let parts = [("annotations", "\{id}.pbtxt"), ("brain", id)]
             each_in_turn(lp, parts.length(), k => {
@@ -910,8 +808,8 @@ pub fn agy_bring_in(m : Machine, home : String, id : String) -> Later[String?] {
           })
           .bind(_ => m.remove_tree("\{db}-wal"))
           .bind(_ => m.remove_tree("\{db}-shm"))
-          .bind(_ => m.rename("\{db}.bringing", db))
-          .bind(_ => if has_wal { m.rename("\{db}-wal.bringing", "\{db}-wal") } else { done(lp) })
+          .bind(_ => m.rename(db_bringing, db))
+          .bind(_ => if has_wal { m.rename(wal_bringing, "\{db}-wal") } else { done(lp) })
           .map(_ => {
             m.log(
               "info",
@@ -1152,6 +1050,7 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
     context_used: 0.0,
     context_size: 0.0,
     sign_in_until: None,
+    sign_in_opened_at: None,
   }
   acp.acp = {
     updated: (update, _) => session.updated(update),
@@ -1197,6 +1096,13 @@ pub fn AgySession::kept(self : AgySession) -> Array[(String, JValue)] {
         None => Null
       },
     ),
+    (
+      "signInOpenedAt",
+      match self.sign_in_opened_at {
+        Some(x) => d(x)
+        None => Null
+      },
+    ),
   ]
 }
 
@@ -1217,6 +1123,7 @@ pub fn AgySession::taken(self : AgySession, snapshot : JValue) -> Unit {
     _ => ()
   }
   self.sign_in_until = num_at(sn, "signInUntil")
+  self.sign_in_opened_at = num_at(sn, "signInOpenedAt")
 }
 
 ///|
@@ -1232,8 +1139,20 @@ pub fn AgySession::outlived(self : AgySession) -> Bool {
 /// Its borrowed sign-in has run out under the turn (`signInExpired`).
 pub fn AgySession::sign_in_expired(self : AgySession) -> Bool {
   match self.sign_in_until {
-    Some(until) => until - self.driver.m().now() <= 60000.0
+    Some(until) => until - self.driver.m().now() <= agy_lent_expire_margin_ms
     None => false
+  }
+}
+
+///|
+/// Its known borrowed sign-in ran at least AGY_LENT_MIN_RUN_MS and reached expiry (`lentExpired`).
+pub fn AgySession::lent_expired(self : AgySession) -> Bool {
+  match (self.sign_in_until, self.sign_in_opened_at) {
+    (Some(until), Some(opened_at)) if until > 0.0 => {
+      let now = self.driver.m().now()
+      until - now <= agy_lent_expire_margin_ms && now - opened_at >= agy_lent_min_run_ms
+    }
+    _ => false
   }
 }
 
@@ -1442,6 +1361,7 @@ pub fn AgyDriver::begin_once(
     }
     prepared.bind(_ => self.acp_begin(options, events, probe)).map(session => {
       session.sign_in_until = until
+      session.sign_in_opened_at = if borrowed { Some(m.now()) } else { None }
       session
     })
   })
@@ -1684,7 +1604,7 @@ pub fn AgyDriver::adopt(
           }
       }
       x.acp.replayed(r, str_at(o, "resume"))
-      x.acp.own.tools_url = str_at(o, "mcpUrl")
+      x.acp.own.tools_url = crashed_tools_url(o)
       made.val = Some(x)
       Later::ok(lp, x.acp.own)
     },
@@ -1705,8 +1625,12 @@ pub fn AgyDriver::adopt(
     let session = made.val.unwrap()
     if !self.borrowed(profile) {
       session.sign_in_until = None
+      session.sign_in_opened_at = None
     } else if session.sign_in_until is None {
       session.sign_in_until = Some(0.0)
+      session.sign_in_opened_at = None
+    } else if session.sign_in_opened_at is None && session.sign_in_until is Some(u) && u > 0.0 {
+      session.sign_in_opened_at = Some(u - 3600000.0)
     }
     let checked = if Some(session.acp.own.session_id) != id {
       self

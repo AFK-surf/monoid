@@ -25,6 +25,7 @@ pub fn profiles_list_node(
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
   bar_add? : Bool = true,
   on_show_overview? : () -> Unit = fn() { @settings.profiles_narrow_overview.set(true) },
+  tabs_thumb? : @sf.SegThumb,
 ) -> Unit {
   let tips = match tips {
     Some(t) => t
@@ -52,17 +53,38 @@ pub fn profiles_list_node(
       }
     }
   }, same=jsons_same)
-  let groups = fn() { pl_groups(rows_now.get()) }
-  // the machines' own logins not used yet, a block a station up that offers one
-  let offers_now : @signals.Computed[Array[String]] = @signals.computed(fn(_) {
+  // (its sections' headings and accounts' rows, each a block by its key, kept by key as its rows change: a block reads
+  // its own, told only as that one changes, comes or goes, and none of them works its sections out again: View::keyed_by)
+  let parts : @signals.KeyedList[String, (String, PlPart)] = v.keyed_by(
+    fn() {
+      let out : Array[(String, PlPart)] = []
+      for g in pl_groups(rows_now.get()) {
+        out.push(("g/" + g.0, PlGroup(g.1)))
+        for i, e in g.2 {
+          out.push(("p/" + g.0 + "/" + pl_key(only, e), PlRow(e, @sf.card_piece_of(i, g.2.length()))))
+        }
+      }
+      out
+    },
+    fn(e) { e.0 },
+    same=pl_entry_same,
+  )
+  // the machines' own logins not used yet, a block a station up that offers one: the workspace's by station, each
+  // block reading its own
+  let offers : @signals.KeyedList[String, (Json, Array[Json])] = v.keyed_by(
+    fn() { if only == "" { @settings.profiles_offers(profiles().value) } else { [] } },
+    fn(o) { text(Some(o.0), "station") },
+    same=fn(a, b) { json_same(a.0, b.0) && jsons_same(a.1, b.1) },
+  )
+  let offers_now = fn() -> Array[String] {
     if only == "" {
-      @settings.profiles_offers(profiles().value).map(fn(o) { text(Some(o.0), "station") })
+      offers.keys()
     } else if flag(one(), "online") {
       [only]
     } else {
       []
     }
-  })
+  }
   let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "profiles") {
@@ -118,16 +140,11 @@ pub fn profiles_list_node(
           Some(_) => if rows_now.get().length() == 0 { out.push("empty") }
         }
       }
-      for g in groups() {
-        out.push("g/" + g.0)
-        for e in g.2 {
-          out.push("p/" + g.0 + "/" + pl_key(only, e))
-        }
-      }
+      out.append(parts.keys())
       if only == "" && flag(wait(), "reading") {
         out.push("reading")
       }
-      for s in offers_now.get() {
+      for s in offers_now() {
         out.push("o/" + s)
       }
       out
@@ -197,6 +214,7 @@ pub fn profiles_list_node(
                 on_show_overview()
               }
             },
+            thumb?=tabs_thumb,
           )
         "reading" =>
           @sf.group_node(b, fn(g) {
@@ -215,9 +233,9 @@ pub fn profiles_list_node(
         k if k.has_prefix("g/") => {
           let group = k.exact_view(start=2).to_owned()
           let title = fn() {
-            match groups().iter().find_first(fn(g) { g.0 == group }) {
-              Some(g) => g.1
-              None => ""
+            match parts.get(k) {
+              Some((_, PlGroup(t))) => t
+              _ => ""
             }
           }
           // (a station's: its kind's mark before its title, 6 from it, as its old page had it; the workspace's: its name
@@ -228,26 +246,21 @@ pub fn profiles_list_node(
             @sf.section_heading_node(b, title, lead=fn(l) { vt_group_mark_node(l, group) })
           }
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, groups, tips, k)
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k })
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
             if only != "" {
               one()
             } else {
-              @settings.profiles_offers(profiles().value).iter().find_first(fn(o) { text(Some(o.0), "station") == station }).map(fn(o) {
-                o.0
-              })
+              offers.get(station).map(fn(o) { o.0 })
             }
           }, same=json_opt_same)
           let logins = fn() {
             if only != "" {
               @settings.station_part(core, here(), only, "machineLogins")
             } else {
-              match @settings.profiles_offers(profiles().value).iter().find_first(fn(o) { text(Some(o.0), "station") == station }) {
-                Some(o) => Some(Json::array(o.1))
-                None => None
-              }
+              offers.get(station).map(fn(o) { Json::array(o.1) })
             }
           }
           pl_machine_offers_node(b, core, station, fn() { sv.get() }, logins, fn(_) { (core.push)(NewProfile(station)) }, tips)
@@ -263,7 +276,30 @@ pub fn profiles_list_node(
     tips~,
     // (from a station's page, back to it by its name, as the old page said it)
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
+    // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
+    reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key) },
   )
+}
+
+///|
+/// What a block of the profiles' list is: a section's heading (its title), or an account's row (its JSON and which
+/// piece of its section's card it is).
+#derive(Eq)
+priv enum PlPart {
+  PlGroup(String)
+  PlRow(Json, @sf.CardPiece)
+}
+
+///|
+/// The same block of the profiles' list: its key, and what it is the same (an account's JSON as json_same says).
+fn pl_entry_same(a : (String, PlPart), b : (String, PlPart)) -> Bool {
+  a.0 == b.0 &&
+  (match (a.1, b.1) {
+    (PlGroup(x), PlGroup(y)) => x == y
+    (PlRow(x, px), PlRow(y, py)) => px == py && json_same(x, y)
+    _ => false
+  })
 }
 
 ///|
@@ -291,32 +327,34 @@ fn pl_groups(list : Array[Json]) -> Array[(String, String, Array[Json])] {
 }
 
 ///|
-/// Block `key` of the profiles' list ("p/<group>/<key>"): an account's row, a piece of its section's card, as it is now
-/// (as it was last, while it goes).
+/// Block `key()` of the profiles' list ("p/<group>/<key>"), the key it shows now: an account's row, a piece of its
+/// section's card, as it is now (as it was last, while it goes).
 fn pl_row_block(
   b : @view.View,
   core : Core,
   only : String,
-  groups : () -> Array[(String, String, Array[Json])],
+  parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
-  key : String,
+  key : () -> String,
 ) -> Unit {
   let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
-  let now = fn() {
-    for g in groups() {
-      for i, e in g.2 {
-        if "p/" + g.0 + "/" + pl_key(only, e) == key {
-          last.val = Some((e, @sf.card_piece_of(i, g.2.length())))
-        }
-      }
+  let now = @signals.computed(fn(_) {
+    match parts.get(key()) {
+      Some((_, PlRow(e, piece))) => last.val = Some((e, piece))
+      _ => ()
     }
     last.val
-  }
-  let row_now = @signals.computed(fn(_) { now().map(fn(n) { n.0 }) }, same=json_opt_same)
-  guard @signals.untracked(fn() { row_now.get() }) is Some(_) else { return }
+  }, same=fn(a, b) {
+    match (a, b) {
+      (Some((x, px)), Some((y, py))) => px == py && json_same(x, y)
+      (None, None) => true
+      _ => false
+    }
+  })
+  let row_now = @signals.computed(fn(_) { now.get().map(fn(n) { n.0 }) }, same=json_opt_same)
   b.grow(Is(1.0)) |> ignore
   // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
-  @sf.card_piece_node(b, fn() { now().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
+  @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
     if only == "" {
       pl_account_row_node(card, core, fn() { row_now.get() }, tips)
     } else {
@@ -373,6 +411,16 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
   }
   r.box(fn(d) {
     d.alpha(By(fn() { if usable() { 1.0 } else { pl_away } })) |> ignore
+    // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
+    d.on_menu(fn(m) {
+      let e = @signals.untracked(ev)
+      let name = match text(field(e, "profile"), "name") {
+        "" => text(e, "title")
+        n => n
+      }
+      pl_menu(fn() { (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id"))) }, name, m)
+    })
+    |> ignore
     d.pick(fn() { tone() == 1 }, fn(x, amber) {
       @sf.link_row_node(
         x,
@@ -391,9 +439,7 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
         lacks=amber,
         note_cut=true,
         lead=LeadLine(fn(l) {
-          l.pick(fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, fn(m, of) {
-            @sf.provider_logo_node(m, of.0, of.1, pl_logo, of.2) |> ignore
-          })
+          @sf.provider_mark_node(l, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
         }),
         title_cut=true,
         title_after=fn(a) {
@@ -430,6 +476,9 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
   let id = fn() { text(pv(), "id") }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
+  // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
+  r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
+  |> ignore
   @sf.link_row_node(
     r,
     fn() { text(pv(), "name") },
@@ -478,6 +527,18 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     },
     // (its tail's room only while it holds something: what is under way, or its allowance's chips)
     tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || @sf.has_quota(field(pv(), "quota")) },
+  )
+}
+
+///|
+/// An account's row menu at the pointer's other button's press `m`: its page opened (`open`), its `name` copied.
+fn pl_menu(open : () -> Unit, name : String, m : @view.Menu) -> Unit {
+  @sf.menu(
+    [
+      Some(@sf.menu_item_of(@sf.t("web-pages.rowMenu.open"), open, icon="arrow-up-right")),
+      copy_item("web-pages.rowMenu.copyName", name),
+    ].filter(fn(i) { i is Some(_) }),
+    from=@sf.at_point(m.wx, m.wy),
   )
 }
 
@@ -597,11 +658,7 @@ fn pl_machine_offers_node(
               // (how it is signed in: a dot in its tone, then whose)
               c.box(fn(line) {
                 @sf.style_node(line, fn() { pl_offer_signed })
-                line.box(fn(d) {
-                  @sf.style_node(d, fn() { pl_offer_dot })
-                  d.ground(By(fn() { if blocked() { @sf.theme().p.red } else { @sf.theme().p.online } })) |> ignore
-                })
-                |> ignore
+                @sf.state_dot_node(line, fn() { if blocked() { "error" } else { "online" } }, size=pl_offer_dot)
                 @sf.words_node(line, fn() {
                   let how = @sf.t(if blocked() { "android-settings.quota.blocked" } else { "android-settings.machine.signedIn" })
                   how +
@@ -867,9 +924,8 @@ let pl_offer_under : @ui.Style = @ui.css("w=Full gap=S0_5")
 let pl_offer_signed : @ui.Style = @ui.css("row w=Full gap=S1_25 align=ACenter")
 
 ///|
-/// How a machine's login is signed in, its dot.
-// kept across runs: a value (no field of it changes)
-let pl_offer_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full")
+/// How a machine's login is signed in, its dot across.
+let pl_offer_dot : Double = 6.0
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -928,18 +984,51 @@ pub fn profiles_page_node(
   let scope = { "scope": Json::string(ws) }
   held.prefetch("profiles", scope) |> ignore
   held.prefetch("stations", scope) |> ignore
-  v.pick(fn() { overview.get() }, fn(p, shown) {
+  let tabs_thumb = @sf.SegThumb::new(v, fn() { if overview.get() { 1 } else { 0 } })
+  // (hoisted to the page container so kept panes update the top bar reactively when waking without re-calling bar_actions;
+  // overview.get() short-circuits profilesOverview while on 账号)
+  match bar_actions {
+    Some(f) => {
+      let has_pools = @signals.computed(fn(_) {
+        overview.get() &&
+        !items((core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get().value, "pools").is_empty()
+      })
+      let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
+      let adding = fn(at : @view.View) {
+        match @settings.place_action(core, @signals.untracked(here), "profiles") {
+          Some(run) => run(Node(at))
+          None => ()
+        }
+      }
+      let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+      f(
+        fn(l) {
+          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
+          if bar_add {
+            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+          }
+        },
+        fn(_) { @sf.button_height() },
+      )
+    }
+    None => ()
+  }
+  v.each(fn() { [overview.get()] }, fn(x) { x }, keeps=fn() { [true, false] }, at_once=true, fn(p, shown_sig) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    if shown {
-      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_accounts=fn() {
+    if @signals.untracked(fn() { shown_sig.get() }) {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
         overview.set(false)
       })
       // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
       @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
-      // (概览 once what it shows is answered, the list meanwhile: overview_switch)
-      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_overview=fn() {
-        (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
+      // (概览 once what it shows is answered, the list meanwhile: overview_switch; release the ahead read after the
+      // overview frame draws so both initial build and subsequent wake-ups hand over cleanly without leaking)
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_overview=fn() {
+        (@settings.overview_switch.val)(ws, fn() {
+          overview.set(true)
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read("profiles-list\u{1}" + ws) })
+        })
       })
     }
   })

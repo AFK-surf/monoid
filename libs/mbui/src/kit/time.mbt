@@ -6,6 +6,18 @@
 // drawn: Ctx::look_by, bg_by).
 
 ///|
+/// Whether `id` opens by itself now (KitState's `opens`): kept only while it does, as each read takes none for shut, so
+/// that what opened once, its id made anew with each build of what holds it (a page opened again), is not kept for
+/// ever.
+fn opens_set(id : Int, open : Bool) -> Unit {
+  if open {
+    kit.val.opens[id] = true
+  } else {
+    kit.val.opens.remove(id)
+  }
+}
+
+///|
 /// What the components keep from frame to frame outside the Ctx, made anew when a Tester starts.
 priv struct KitState {
   /// what opens by itself (a tooltip, a hover card), by its id: open last frame
@@ -15,10 +27,6 @@ priv struct KitState {
   /// a tooltip a finger held open on its trigger, until a moment after it is lifted or the next press: whether it has
   /// been lifted
   held_tips : Map[Int, Bool]
-  /// The last tooltip to show, shared by old views and nodes of the window's tree. It keeps the slot while leaving.
-  tip_owner : @signals.Signal[TipOwner?]
-  /// A different identity for each tooltip made as a node, even if several name the same anchor.
-  mut tip_next : Int
   /// Which ways an old view's tooltip was eligible to open, so an already displaced one does not take the slot back.
   tip_ready : Map[Int, TipReady]
   /// where what a popover, a hover card or a tooltip hangs on was drawn, by the panel's id (beside): kept while the
@@ -29,8 +37,6 @@ priv struct KitState {
   toast_dues : Map[String, Double]
   /// a menu's panel's open submenu (its entry's index, menu.mbt), by the panel's id
   subs : Map[Int, Int]
-  /// where each loupe last read (loupe.mbt), by its key: where it goes as it is let go
-  loupes : Map[String, (Double, Double)]
   /// what was typed to find an entry by its first letters, by the panel's id (when: Ctx::mark, by that id)
   typed : Map[Int, String]
   /// where a context menu opened, by its id; which of a menubar's menus is open (-1 none), by its id
@@ -49,14 +55,11 @@ fn KitState::new() -> KitState {
     opens: {},
     shut: {},
     held_tips: {},
-    tip_owner: @signals.signal(None, same=fn(a, b) { a == b }),
-    tip_next: 0,
     tip_ready: {},
     anchors: {},
     toasts: {},
     toast_dues: {},
     subs: {},
-    loupes: {},
     typed: {},
     at: {},
     bars: {},
@@ -95,7 +98,11 @@ fn install() -> Unit {
     return
   }
   installed.val = true
-  @ui.on_reset(fn() { kit.val = KitState::new() })
+  @ui.on_reset(fn() {
+    kit.val = KitState::new()
+    // (the tooltip slot old views share with nodes: headless's, which knows no ui)
+    @headless.tip_slot_reset()
+  })
 }
 
 ///|
@@ -136,10 +143,10 @@ pub fn Presence::leaving(self : Presence) -> Bool {
 
 ///|
 /// How long `presence` takes by default to come in (ms), and to go out: a tween each.
-pub let presence_in_ms : Double = 150.0
+pub let presence_in_ms : Double = @motion.presence_in_ms
 
 ///|
-pub let presence_out_ms : Double = 100.0
+pub let presence_out_ms : Double = @motion.presence_out_ms
 
 ///|
 /// Motion's AnimatePresence for one thing (see the file's head): `shown` comes in by `enter`, goes out by `exit`

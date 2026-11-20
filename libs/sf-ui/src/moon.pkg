@@ -8,6 +8,7 @@ import {
   "mbui/signals",
   "mbui/hostapi",
   "mbui/kit",
+  "mbui/player",
   "mbui/headless",
   "mbui/view",
   "mbui/motion",

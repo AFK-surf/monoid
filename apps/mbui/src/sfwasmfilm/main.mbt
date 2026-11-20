@@ -202,13 +202,25 @@ fn init {
 }
 
 ///|
+/// What a scene draws, by its fixture: the component library's page opened on a part (`stories:<key>`, `stories` its
+/// overview: src/sfstorybook), else the app over its made-up station (src/sffilmscene).
+fn scene_app(arg : (String) -> String) -> ((@ui.Ctx) -> Unit, (@view.View) -> Unit) {
+  let fixture = arg("MBUI_FIXTURE")
+  if fixture == "stories" || fixture.has_prefix("stories:") {
+    let first = if fixture.has_prefix("stories:") { fixture.unsafe_substring(start=8, end=fixture.length()) } else { "" }
+    return (@sfstorybook.stories_view, @sfstorybook.stories_tree(first))
+  }
+  let source = @sffilmscene.source(arg)
+  (fn(c) { @sfapp.view(c, source()) }, fn(root) { @sfapp.app_tree(source())(root) })
+}
+
+///|
 pub fn draw() -> Int {
   // (the app as it runs on a host: what faults shown by its boundary, as there, and said on the log)
   @view.faults_stop.val = false
   @view.fault_told.val = Some(fn(said) { println("fault: " + said) })
-  let source = @sffilmscene.source(scene_arg)
-  let view = fn(c : @ui.Ctx) { @sfapp.view(c, source()) }
-  let t = @ui.Tester::new(view, tree=fn(root : @view.View) { @sfapp.app_tree(source())(root) },
+  let (view, tree) = scene_app(scene_arg)
+  let t = @ui.Tester::new(view, tree~,
     w=option_number(0), h=option_number(1), scale=option_number(2),
     platform=option_number(3).to_int(), dark=option_number(4) == 1.0,
     pointing?=match option(5) { "finger" => Some(@ui.Pointing::Finger); "mouse" => Some(@ui.Pointing::Mouse); _ => None },
@@ -224,6 +236,8 @@ pub fn draw() -> Int {
   current_tester.val = Some(t)
   t.set_frame_period(1000.0 / option_number(6))
   if option_number(10) == 1.0 { t.set_window_inset(true) }
+  // (a desktop's file manager shows a file in its folder, as the Finder, Explorer and a Linux desktop's do: none filmed)
+  if [0, 3, 5].contains(option_number(3).to_int()) { t.set_reveals(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
   // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
@@ -325,8 +339,8 @@ fn main { }
 /// writer (the Node host's). The process ends as the film's run ends it.
 pub fn film() -> Unit {
   @hostapi.set_host(WasmHost::{})
-  let source = @sffilmscene.source(@film.arg)
-  @film.run(fn(c) { @sfapp.view(c, source()) }, tree=fn(root) { @sfapp.app_tree(source())(root) })
+  let (view, tree) = scene_app(@film.arg)
+  @film.run_legacy_ctx(view, tree~)
 }
 
 ///|

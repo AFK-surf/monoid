@@ -35,8 +35,9 @@ let dir = "";
     fsp[x] = (path: unknown, data: unknown, ...rest: unknown[]) => {
       if (on.files && typeof path === "string" && dir !== "" && path.startsWith(dir)) {
         const name = basename(path).replace(/\.[0-9a-f]{8}\.tmp$/, "");
-        // (the chats' sizes, measured in the background a plan read starts (move/sizes.ts): no trip's)
-        if (name === "sizes.log") return was(path, data, ...rest);
+        // (the chats' sizes, measured in the background a plan read starts (move/sizes.ts), and the accounts known,
+        // written behind the `accounts.of` a plan reads (move/station.ts): no trip's)
+        if (name === "sizes.log" || name === "accounts-known.json") return was(path, data, ...rest);
         bytes[name] = (bytes[name] ?? 0) + Buffer.byteLength(typeof data === "string" ? data : String(data ?? ""));
       }
       return was(path, data, ...rest);

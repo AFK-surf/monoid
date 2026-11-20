@@ -7,6 +7,7 @@ import { activity, hint, parsePrompt, parseTasks, presentHistory, type Context }
 import { holdLanguage } from "../src/i18n.ts";
 import { markdown } from "../src/markdown.ts";
 import { heardFiles, readItem } from "../src/elsewhere.ts";
+import { sentHead } from "../src/sent-from.ts";
 
 holdLanguage();
 // deno-lint-ignore no-explicit-any
@@ -127,6 +128,36 @@ test("another_chats_letter_goes_by_that_chats_name_without_its_heading", () => {
     assert.deepEqual([letter.from.name, letter.text], ["废弃 station", "**job** 停了"]);
     assert.deepEqual(letter.md, markdown("**job** 停了"));
   }
+});
+
+test("a_letter_from_a_chat_titled_with_a_mention_goes_by_its_title_without_it", () => {
+  // station messages.ts `chatNamed`: in a Slack thread the title's `&`, `<` and `>` are escaped.
+  const link = "https://app.still.fail/o/w/s/chat%3Ac-src";
+  const head = `来自 <${link}|&lt;@U0CHCD9FPKQ&gt; 你来领导 UIUX &amp; 设计>：`;
+  assert.deepEqual(sentHead(`${head}\n\n同步`), { title: "<@U0CHCD9FPKQ> 你来领导 UIUX & 设计", link, rest: "同步", opened: false });
+  const text = `<message via="slack" thread="C_EXT/1.0" from="<@U0CHCD9FPKQ> 你来领导 UIUX &amp; 设计" bot ts="1.1">\n${head}\n\n同步（cc <@UBOT>）\n</message>`;
+  const h = presentHistory({ timeline: [{ kind: "user", text }], steps: [] }, cx([], [], []));
+  const [letter] = h.items[0].body.content.messages;
+  assert.deepEqual([letter.from.name, letter.text], ["你来领导 UIUX & 设计", "同步（cc @ds-ember）"]);
+  // Only mentions: named as they are.
+  const bare = `<message via="slack" thread="C_EXT/1.0" from="x" bot ts="1.1">\n来自 <${link}|&lt;@UBOT&gt;>：\n\n好\n</message>`;
+  assert.equal(presentHistory({ timeline: [{ kind: "user", text: bare }], steps: [] }, cx([], [], [])).items[0].body.content.messages[0].from.name, "ds-ember");
+});
+
+test("another_chats_letter_given_from_a_slack_thread_is_not_kept_as_said_in_slack", () => {
+  const at = "2026-11-19T10:15:00Z";
+  const link = "https://app.still.fail/o/w/s/chat%3Ac-src";
+  const given = (from: string, bot: boolean, body: string) => `<message via="slack" thread="C_EXT/1795000000.000100" from="${from}"${bot ? " bot" : ""} ts="1795083300.000000">\n${body}\n</message>`;
+  // session_send: never said in Slack.
+  assert.equal(readItem(0, { kind: "user", at, text: given("<@U0CHCD9FPKQ> 你来领导 UIUX", true, `来自 <${link}|&lt;@U0CHCD9FPKQ&gt; 你来领导 UIUX>：\n\n同步一个问题`) }), null);
+  assert.equal(readItem(0, { kind: "user", at, text: given("another agent", true, `From [UIUX](${link}):\n\nsync`) }), null);
+  // chat_create's first message was posted there; and a bot's or a person's own words are as they were.
+  const opened = readItem(0, { kind: "user", at, text: given("x", true, `由 <${link}|标题> 开的 chat：\n\n开场`) }) as J;
+  assert.equal(opened.said.length, 1);
+  const bot = readItem(0, { kind: "user", at, text: given("<@U0CHCD9FPKQ>", true, "收到，我先跟 <@U0CHCD9FPKQ> 确认一下复现用例。") }) as J;
+  assert.deepEqual(bot.said.map((s: J) => [s.user, s.who, s.text]), [["<@U0CHCD9FPKQ>", null, "收到，我先跟 <@U0CHCD9FPKQ> 确认一下复现用例。"]]);
+  const person = readItem(0, { kind: "user", at, text: given("Mia (U9)", false, `来自 <${link}|x>：\n\n转一下`) }) as J;
+  assert.equal(person.said.length, 1, "a person's words are theirs whatever they begin with");
 });
 
 test("an_agents_letter_reads_as_markdown_a_persons_words_as_they_wrote_them", () => {

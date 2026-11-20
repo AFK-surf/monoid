@@ -28,6 +28,22 @@ pub fn Hub::keep_usage(self : Hub, key : String, quiet? : Bool = false) -> Unit 
 }
 
 ///|
+/// module.ts `repriceUsage`: recomputes kept usage summaries that still had unpriced calls once the model catalog loads
+/// or changes.
+pub fn Hub::reprice_usage(self : Hub) -> Unit {
+  let keys = self.store.unpriced_usage_sessions() catch { _ => return }
+  if keys.length() == 0 {
+    return
+  }
+  for key in keys {
+    self.keep_usage(key) catch {
+      _ => ()
+    }
+  }
+  (self.world.tell)("live.usageCounted", Json::null())
+}
+
+///|
 /// module.ts `keepCounted`: what the store told of usage recorded (not of the statistics alone) or a conversation gone
 /// on in another: each session's kept, and the live view told the counter counted.
 pub fn Hub::counted(self : Hub, change : Json) -> Unit {
@@ -139,11 +155,10 @@ pub async fn UsageCounter::start(self : UsageCounter) -> Unit {
   }
   self.started_at = self.hub.now()
   self.state = 2
-  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too)
+  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too;
+  // the counter finds those sessions itself, off this thread)
   let from = self.hub.now() - timed_back_ms
   ignore(self.read(None, time_from=from))
-  let active = self.hub.store.usage_active_sessions(Json::number(from)) catch { _ => [] }
-  ignore(self.read(Some(active.map(js_string)), time_from=from))
   self.due = self.hub.now() + self.safety
   self.waiting()
 }
@@ -295,8 +310,8 @@ pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?, time
 ///|
 /// Runs `f` as work of the hub's own, after what set it going (a fiber of no sleep).
 pub fn Hub::later(self : Hub, f : async () -> Unit) -> Unit {
-  ignore(self)
   pending_work.push(f)
+  self.wake_waiters()
 }
 
 ///|
@@ -657,4 +672,31 @@ pub async fn Hub::retire_usage(self : Hub) -> Unit {
     self.pause(retry)
     retry = if retry * 2.0 < 30_000.0 { retry * 2.0 } else { 30_000.0 }
   }
+}
+
+///|
+/// Start the hub's usage counter (`UsageCounter::new` + `start`).
+pub async fn Hub::usage_start(self : Hub) -> Unit {
+  let c = UsageCounter::new(self)
+  self.counter = Some(c)
+  self.keeps_counted = true
+  c.start()
+}
+
+///|
+/// Stop the hub's usage counter as the station stops or hands over: no read is set going again, and what the store
+/// tells of usage is no longer kept.
+pub fn Hub::usage_stop(self : Hub) -> Unit {
+  if self.counter is Some(c) {
+    c.stop()
+    self.counter = None
+  }
+  self.keeps_counted = false
+}
+
+///|
+/// Start draining moved sessions' chats for usage counting (`UsageDrain::new` + `begin`).
+pub fn Hub::usage_drain(self : Hub) -> Unit {
+  let d = UsageDrain::new(self)
+  d.begin()
 }

@@ -883,6 +883,28 @@ pub fn[X] Runtime::fork(self : Runtime, f : async () -> X, name? : String = "") 
 }
 
 ///|
+/// Starts `f` as a fiber of the root scope whose failure is left for `join` or
+/// `wait` alone, never told to `on_defect`.
+pub fn[X] Runtime::fork_quiet(
+  self : Runtime,
+  f : async () -> X,
+  name? : String = "",
+) -> Fiber[X] {
+  self.root().fork_quiet(f, name~)
+}
+
+///|
+/// Starts `f` as a named background fiber of the root scope (Scope::fork_daemon).
+pub fn Runtime::fork_daemon(
+  self : Runtime,
+  name : String,
+  f : async () -> Unit,
+  on_error~ : (Error) -> Unit,
+) -> Fiber[Unit] {
+  self.root().fork_daemon(name, f, on_error~)
+}
+
+///|
 /// Closes the root scope: everything is interrupted, finalizers run.
 pub fn Runtime::shutdown(self : Runtime) -> Unit {
   self.root().close_now()

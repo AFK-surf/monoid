@@ -18,45 +18,15 @@ pub fn Found::to_j(self : Found) -> J {
 }
 
 ///|
-fn is_hex(c : Int) -> Bool {
-  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
-}
-
-///|
-fn hex_value(c : Int) -> Int {
-  if c >= 48 && c <= 57 {
-    c - 48
-  } else if c >= 65 && c <= 70 {
-    c - 55
-  } else {
-    c - 87
-  }
-}
-
-///|
 /// percent_decode_str(..).decode_utf8_lossy().
 pub fn percent_decode(text : String) -> String {
-  let raw = utf8(text)
-  let out = @buffer.new()
-  let mut i = 0
-  while i < raw.length() {
-    let b = raw[i].to_int()
-    if b == 0x25 && i + 2 < raw.length() && is_hex(raw[i + 1].to_int()) && is_hex(raw[i + 2].to_int()) {
-      out.write_byte((hex_value(raw[i + 1].to_int()) * 16 + hex_value(raw[i + 2].to_int())).to_byte())
-      i += 3
-    } else {
-      out.write_byte(raw[i])
-      i += 1
-    }
-  }
-  let bytes = out.to_bytes()
+  let decoded = @url.percent_decode_lossy(text)
   // TextDecoder takes a leading BOM away.
-  let start = if bytes.length() >= 3 && bytes[0] == b'\xef' && bytes[1] == b'\xbb' && bytes[2] == b'\xbf' {
-    3
+  if decoded.has_prefix("\u{feff}") {
+    decoded.unsafe_substring(start=1, end=decoded.length())
   } else {
-    0
+    decoded
   }
-  @utf8.decode_lossy(bytes[start:], ignore_bom=true)
 }
 
 ///|

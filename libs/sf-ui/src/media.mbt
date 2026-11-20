@@ -68,7 +68,7 @@ let media_head_r : Double = 6.0
 
 ///|
 /// The bar's ground over `canvas` (the picture's glass, solid).
-pub fn media_ground() -> Int64 {
+fn media_ground() -> Int64 {
   let p = theme().p
   over(p.canvas, alpha(p.raised, media_glass_share))
 }

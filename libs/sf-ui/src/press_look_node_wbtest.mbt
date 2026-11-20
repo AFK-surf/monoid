@@ -131,6 +131,10 @@ test "a press's ripple on a node, motion reduced: there at once as the old view'
 }
 
 ///|
+/// Long enough for a press's sink, down or back, to have come to rest on its spring (the old box's and the node's).
+let sink_rest_ms : Double = 600.0
+
+///|
 test "a press on a node standing on its own ground sinks it while held to the old view's box's depth, on the hand's spring from the moment it went down, and back as it is let go; on a faint ground (a marking tool's chosen one) neither sinks" {
   // (the old box, pressed first, is drawn at its depth from the press's first frame on: its sink's motion made at its
   // target as it is first asked for, @motion.animate; the node goes there on lift_spring from the press, sf/motion.mbt)
@@ -155,10 +159,10 @@ test "a press on a node standing on its own ground sinks it while held to the ol
       // (a frame in, and held long enough for the spring to have come to rest)
       t.run_for(t0 + 16.0 - t.time())
       seen.push(size(bx))
-      t.run_for(t0 + 600.0 - t.time())
+      t.run_for(t0 + sink_rest_ms - t.time())
       seen.push(size(bx))
       t.touch(2, px, 26.0)
-      t.run_for(@motion.ripple_tap_ms)
+      t.run_for(sink_rest_ms)
       seen.push(size(bx))
     }
     (seen_old, seen_new)

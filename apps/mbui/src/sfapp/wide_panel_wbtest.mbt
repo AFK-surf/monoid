@@ -19,7 +19,7 @@ test "wide: the chat's \"…\" opens under its button; agent 往来 from it open
   assert_true(t.find("参与") is Some(_), msg="its facts")
   t.tap_text("agent 往来")
   // (the popover goes as a popover does: gone once its going is over; the panel slid in)
-  t.run_for(dmax(@kit.presence_out_ms, @ui.move_most_ms))
+  t.run_for(dmax(@motion.presence_out_ms, @ui.move_most_ms))
   // beside the chat, at its right: the chats written with
   let (x, _) = t.find("接手监督 mbui").unwrap()
   assert_true(x > 800.0, msg="at the pane's right")
@@ -37,7 +37,31 @@ test "wide: the chat's \"…\" opens under its button; agent 往来 from it open
 ///|
 test "wide: an agent's history's head as the web's: its control, 只看收发 leaving its steps out, 详情 folding" {
   new_run()
-  let src = fixture("chat")
+  let base = fixture("chat-detail")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      match (name, got.value) {
+        ("history", Some(Object(h)) as v) => {
+          let marked = items(v, "items").map(fn(it) {
+            match it {
+              Object(o) if text(field(Some(it), "body"), "kind") == "group" => {
+                let o = o.copy()
+                o["work"] = Json::boolean(true)
+                Json::object(o)
+              }
+              other => other
+            }
+          })
+          let h = h.copy()
+          h["items"] = Json::array(marked)
+          { ..got, value: Some(Json::object(h)) }
+        }
+        _ => got
+      }
+    },
+  }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   open_chat(r)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -49,10 +73,14 @@ test "wide: an agent's history's head as the web's: its control, 只看收发 le
   // (where its transcript is: asked once the frame is built, answered at once)
   t.frame()
   t.frame()
-  // 详情 open to begin with: what runs it, its station, where its transcript is
+  // 详情 starts folded on wide screens; clicking 详情 unfolds what runs it, its station, and its transcript
+  assert_true(t.query(Button, label="复制路径") is None)
+  t.click(Button, label="详情")
+  t.run_for(@ui.move_most_ms)
+  t.frame()
   assert_true(t.find("Willow") is Some(_))
   assert_true(t.query(Button, label="复制路径") is Some(_))
-  // (folded on a Move, as what a column lets go)
+  // (folded back on a Move, as what a column lets go)
   t.click(Button, label="详情")
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="复制路径") is None)
@@ -139,7 +167,7 @@ test "wide: Station 文件 from the chat's \"…\" beside it (kept by the core: 
   t.frame()
   t.frame()
   t.tap_text("Station 文件")
-  t.run_for(dmax(@kit.presence_out_ms, @ui.move_most_ms))
+  t.run_for(dmax(@motion.presence_out_ms, @ui.move_most_ms))
   let opened = named(calls, "chat.tabs.open")
   assert_eq(opened.length(), 1)
   assert_eq(text(Some(opened[0].params), "chat"), "ws1/st1:s-c1")
@@ -179,45 +207,49 @@ test "wide: Station 文件 from the chat's \"…\" beside it (kept by the core: 
 
 ///|
 test "wide: a new chat's Station 文件 beside it (NewChat.tsx): kept open, closed and opened by its bar's button; a row's 添加到消息 into its draft" {
-  new_run()
-  let calls : Array[Made] = []
-  let base = fixture("newchat-files")
-  let src : Source = {
-    ..base,
-    call: fn(name, params, done) {
-      calls.push({ name, params, bytes: None, done })
-      (base.call)(name, params, done)
-    },
-  }
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
-  t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() == NewChat)
-  // kept open for the workspace's new chat: its tab, the station's home in it
-  assert_true(t.find("主目录") is Some(_))
-  t.click(Button, label="收起侧栏")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("主目录") is None)
-  let closed = named(calls, "chat.tabs.close")
-  assert_eq(closed.length(), 1)
-  assert_eq(text(Some(closed[0].params), "chat"), "new:ws1")
-  t.click(Button, label="Station 文件")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("主目录") is Some(_))
-  // a file's 添加到消息: into the new chat's draft, named by its path
-  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
-  t.frame()
-  let (x, y) = match t.find("发布清单.md") {
-    Some(at) => at
-    None => fail("no 发布清单.md in the tab")
-  }
-  t.right_click(x, y)
-  t.frame()
-  t.tap_text("添加到消息")
-  t.frame()
-  t.frame()
-  let refs = @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get() }).unwrap_or([])
-  assert_eq(refs.length(), 1)
-  assert_eq(text(field(Some(refs[0]), "ref"), "path"), fix_docs + "/发布清单.md")
+  // (its page made either way: the old view's side_beside, or as nodes with its composer, new_side_node)
+  both_pages(fn() raise {
+    new_run()
+    both_way()
+    let calls : Array[Made] = []
+    let base = fixture("newchat-files")
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push({ name, params, bytes: None, done })
+        (base.call)(name, params, done)
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == NewChat)
+    // kept open for the workspace's new chat: its tab, the station's home in it
+    assert_true(t.find("主目录") is Some(_))
+    t.click(Button, label="收起侧栏")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("主目录") is None)
+    let closed = named(calls, "chat.tabs.close")
+    assert_eq(closed.length(), 1)
+    assert_eq(text(Some(closed[0].params), "chat"), "new:ws1")
+    t.click(Button, label="Station 文件")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("主目录") is Some(_))
+    // a file's 添加到消息: into the new chat's draft, named by its path
+    @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+    t.frame()
+    let (x, y) = match t.find("发布清单.md") {
+      Some(at) => at
+      None => fail("no 发布清单.md in the tab")
+    }
+    t.right_click(x, y)
+    t.frame()
+    t.tap_text("添加到消息")
+    t.frame()
+    t.frame()
+    let refs = @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get() }).unwrap_or([])
+    assert_eq(refs.length(), 1)
+    assert_eq(text(field(Some(refs[0]), "ref"), "path"), fix_docs + "/发布清单.md")
+  })
 }
 
 ///|

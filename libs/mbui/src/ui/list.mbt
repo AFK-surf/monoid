@@ -563,7 +563,10 @@ pub fn Ctx::list(
   // asked, not each build)
   let seen = list_keys_seen.get(id)
   match st.causes {
-    Some(c) => list_keys_seen[id] = c.keys
+    Some(c) => {
+      list_keys_seen[id] = c.keys
+      island_said_list(id)
+    }
     None => ()
   }
   if self.list_grew(id, count) && st.stick_end && st.at_end {
@@ -1666,6 +1669,7 @@ fn Ctx::list_grew(self : Ctx, id : Int, count : Int) -> Bool {
   ignore(self)
   let was = list_counts.get(id)
   list_counts[id] = count
+  island_said_list(id)
   match was {
     Some(n) => count > n && n > 0
     None => false

@@ -63,7 +63,10 @@ fn actual_row_handoff(legacy : Bool, end_early : Bool, intermediate : Bool, dupl
   client.receive_json({ "id": Json::number(original.id.to_double()), "value": value })
   if !quick { t.touch(2, x, y) }
   let (serial, _) = app.nav.top_stay()
-  assert_true(@sfbase.chat_open_is_pending(serial), msg="the row's reader is pending before the page is built")
+  // (the old page takes its reader as it is drawn; the page made as nodes is made in the press itself, taking it there)
+  if !@sfbase.chat_page_nodes.untracked() {
+    assert_true(@sfbase.chat_open_is_pending(serial), msg="the row's reader is pending before the page is built")
+  }
   assert_true(client.peek_topic("chat", params~) is Some(s) && physical_equal(s, original), msg="the prefetch survives the up event before a frame")
   if end_early {
     @ui.run_let_go()

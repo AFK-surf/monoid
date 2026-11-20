@@ -125,7 +125,7 @@ const pointer = (kind: string, x: number, y: number, buttons: number) => ({ t: "
 test("a screenshot: the view's newest frame, its size and its scale to the screen; asked as JPEG within 1280", async () => {
   const { computer, source } = setup();
   const r = await computer.act("s1", { screen: "browser:T1" });
-  assert.deepEqual(source.opened, [{ maxWidth: 1280, maxHeight: 1280, codecs: ["jpeg"] }]);
+  assert.deepEqual(source.opened, [{ maxWidth: 1280, maxHeight: 1280, codecs: ["jpeg"], agent: true }]);
   assert.deepEqual(r.content[1], { type: "image", data: Buffer.from(picture(1)).toString("base64"), mimeType: "image/jpeg" });
   assert.match(text(r), /browser:T1 "Docs": screenshot 640×360 px \(scale 2: 1 screenshot px = 2 screen px\)\. Give x\/y in this screenshot's pixels\./);
   // A newer frame came (the screen changed): the next screenshot is it.

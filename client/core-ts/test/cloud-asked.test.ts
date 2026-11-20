@@ -283,6 +283,8 @@ test("which of an operator's lists a write changes", async () => {
   // (imported here: the rest of the file runs on a core from before this, to see its tests fail there)
   const { ADMIN_LISTS, adminListsForWrite } = await import("../src/sync/cloud.ts");
   assert.deepEqual(adminListsForWrite("/v1/admin/me"), []);
+  assert.deepEqual(adminListsForWrite("/v1/admin/keys"), []);
+  assert.deepEqual(adminListsForWrite("/v1/admin/keys/ak_1/revoke"), []);
   assert.deepEqual(adminListsForWrite("/v1/admin/feedback/F1/status"), ["feedback"]);
   assert.deepEqual(adminListsForWrite("/v1/admin/invite-codes"), ["invite-codes"]);
   assert.deepEqual(adminListsForWrite("/v1/admin/pending/remove"), ["users", "workspaces"]);

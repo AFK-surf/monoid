@@ -12,10 +12,11 @@ if [ "${1:-}" = --product ]; then product="--product $2"; shift 2; fi
 beta=--beta
 if [ "${1:-}" = --stable ]; then beta=""; shift; fi
 cd "$(dirname "$0")/.."
-# An Android package needs the core's packages (installed by its build), not the website's. Its staging job
-# prepares the uploader after building. The station still prepares its own uploader here.
-[ "${1:-}" = android ] || pnpm install --frozen-lockfile --prefer-offline > /dev/null
-{ [ "${1:-}" = android ] && [ -n "${RELEASE_DIR:-}" ]; } || (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+# An Android package needs the core's packages (installed by its build), not the website's; the station's build and
+# bundling need station/'s alone (below), none of the root's. Into RELEASE_DIR (the staging jobs) nothing is uploaded
+# here, so neither prepares the uploader (cloud's wrangler): its staging job puts what it made after.
+[ "${1:-}" = android ] || [ "${1:-}" = station ] || pnpm install --frozen-lockfile --prefer-offline > /dev/null
+{ { [ "${1:-}" = android ] || [ "${1:-}" = station ]; } && [ -n "${RELEASE_DIR:-}" ]; } || (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
 dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/stillfail-release.XXXXXX")
 trap 'rm -rf "$dir"' EXIT
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || unset CLOUDFLARE_API_TOKEN

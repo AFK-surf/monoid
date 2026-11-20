@@ -46,7 +46,7 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
   session("gone", { ws: "w", lastActiveAt: 6000 });
   db.prepare("UPDATE sessions SET archived_at = 7000 WHERE key = 'gone'").run();
   let ts = 0;
-  const say = (t: number, kind: "person" | "agent" | "ember", author: string, text: string, extra: Record<string, unknown> = {}) => {
+  const say = (t: number, kind: "person" | "agent" | "station", author: string, text: string, extra: Record<string, unknown> = {}) => {
     const at = String(++ts);
     store.insertMessage({ ...newMessage(t, at, kind, author, text), at: now - 100_000 + ts * 10, ...extra } as ReturnType<typeof newMessage>);
     return Number(db.prepare("SELECT MAX(n) AS n FROM entries WHERE thread = ?").get(t)!.n);

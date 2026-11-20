@@ -13,7 +13,7 @@ fn profiles_of(r : Map[String, Json]) -> Json {
     match (try { Some(@jsjson.parse(raw)) } catch { _ => None }) {
       Some(Arr(xs)) => {
         let list = xs.filter_map(x => match x {
-          Str(s) if @jsjson.text(s) != "" => Some(Json::string(@jsjson.text(s)))
+          Str(s) if @jsjson.sanitize_str(s) != "" => Some(Json::string(@jsjson.sanitize_str(s)))
           _ => None
         })
         if list.length() > 0 {
@@ -31,8 +31,8 @@ fn profiles_of(r : Map[String, Json]) -> Json {
 }
 
 ///|
-/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`
-/// left out when none.
+/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`, `contextBefore`,
+/// `compactions` left out when none.
 fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   let flag = (k : String) => match field(r, k) {
     Null => Json::null()
@@ -69,6 +69,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   if field(r, "context_before") is (Number(_, ..) as c) {
     v["contextBefore"] = c
   }
+  if field(r, "compactions") is (Number(n, ..) as c) && n > 0.0 {
+    v["compactions"] = c
+  }
   v["running"] = Json::boolean(field(r, "running") == Json::number(1.0))
   v["createdAt"] = field(r, "created_at")
   v["lastActiveAt"] = field(r, "last_active_at")
@@ -79,6 +82,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   // it there, as that station may never tell it (sessions.ts `sessionJson`, rows.ts `toSession`: none where empty).
   if field(r, "came_from") is String(from) && from != "" {
     v["from"] = Json::string(from)
+  }
+  if field(r, "conv") is String(conv) && conv != "" && Json::string(conv) != field(r, "key") {
+    v["conv"] = Json::string(conv)
   }
   v
 }
@@ -155,7 +161,7 @@ fn participants_of(db : @sql.Db, keys : Array[String]) -> Map[String, Array[Json
     }
     for a in db.all(people_at_sql, [field(r, "id")]) {
       let author = js_text(field(a, "author"))
-      let reference = if field(r, "surface") == Json::string("ember") { author } else { "slack:\{js_text(field(r, "connect"))}:\{author}" }
+      let reference = if field(r, "surface") == Json::string("chat") { author } else { "slack:\{js_text(field(r, "connect"))}:\{author}" }
       let at = num(field(a, "at"))
       match refs.get(reference) {
         Some(first) if at >= first => ()

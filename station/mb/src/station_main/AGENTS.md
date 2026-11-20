@@ -17,7 +17,8 @@
 - What can be tested without the shell is in `media/` (the images' codecs, local links): `moon test` links no shell
   (scripts/check.sh's station MoonBit step), and this package, which imports the host package (station/mb/src/host), links only into the
   reader. The rest is held by station/test/mb-station-e2e.test.ts through the program (`--builder
-  harness-station-main`, the commands, `run` under a launcher of the test's), each part to the TypeScript, the
+  harness-station-main` of the tests' program, `stillfail-reader-harness`; the commands and `run` under a launcher of
+  the test's of the reader), each part to the TypeScript, the
   .mjs hooks or the mesh addon it replaces.
 - `words_catalog.mbt` is client/i18n/catalog's station.json, zh and en, as the program carries them: a change to the
   catalog writes it again (the e2e test fails until it is: `STILLFAIL_WRITE_WORDS=1` on that test writes it).
@@ -26,23 +27,41 @@
   its tools and door places the parts', parts.mbt), health.json and the heartbeat, `heap`, a handover (what the parts
   carry) and its taking up. It makes the composition bus once the store opens (`live_bus.mbt`: what services.ts's
   layers give each other) and starts the live slices on it, a file family each (`live_p5_<N>_*.mbt`, each its
-  `start_live_p5_<N>`): P5-1 first, then on a whole station P5-2, P5-3, P5-4 and P5-5 in that order (P5-3 finds the
-  hub's sessions' program there and mounts `#jobs` and `#remote` on it); a station that only runs tasks (`--rig`, or
+  `start_live_p5_<N>`; the JSON readers and makers, the `Json`/`JValue` conversions, the log line and the other small
+  helpers they share are `live_util.mbt`'s, never a slice's prefixed copy; shared cross-slice infrastructure dispatch
+  and async FS/store/clock/process primitives live in `live_dispatch.mbt` — `host_fs_op`/`host_*`, `dispatch_store`,
+  `dispatch_store_threads`, `dispatch_threads_card`, `dispatch_infra`, `build_updates_world`, `fork_bg`, `bus_after`,
+  `bus_pty_terminal` — any new slice adapter must reuse them rather than re-implementing `fs.*`/`store.*`/`config.*`/
+  `cloud.*`/`events.*`/`os.*`/`platform.*`/`crypto.*` dispatch or adding main-thread sync FS calls): P5-1 first, then on a whole station P5-2,
+  P5-3, P5-4 and P5-5 in that order (P5-3 finds the hub's sessions' program there and mounts `#jobs` and `#remote` on
+  it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
-  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file.
+  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
+  what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
+  `register_pids`). What is asked often across slices or by named fields, and every `$…` handler a slice asks of this
+  station's own (`call_peer("self", …)`: `admin_called`, `forwards_call`, …), is a typed method of the bus
+  (live_bus.mbt `hub_notify`, `jobs_stop`, …), its fields named once there. station/test/mb-station-contracts.test.ts holds every `Ref` of the bus
+  given by a slice, every name asked on a `*_ask` to one its slice's dispatcher answers, every method session_hub asks
+  of an actor to one reader/actor_run.mbt answers, and every `parts.carry`, `plane.told` and `events.follow` hook of the
+  TypeScript's given here; station/test/mb-live-hooks-parity.test.ts holds them live.
   A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
     station's chats taken back before the store opens, the control plane and its presence, the readers and their
     builders, the machine and the event streams, the admin API (the platform's calls answered there, another slice's
     asked through the bus), the mesh (the front's endpoint or one bound through the shell, members, peers, the agents'
-    `/peer/` door, the device tools), the forwards of other stations' ports and devices (`$forwards`) and the rigs.
+    `/peer/` door, the device tools), the workspaces' mesh directory, the relays' enrollment door and a device's leaf
+    in its workspace's scope (live_p5_1_scopes.mbt over src/mesh_scopes: mesh/scope-sync.ts, enrollment-door.ts and
+    leaf.ts as the TypeScript has them, where the endpoint is the front's), the forwards of other stations' ports and
+    devices (`$forwards`) and the rigs.
     With `STILLFAIL_LOCAL_ADMIN=1` (a test with no mesh) the admin API is on the agents' door under `/admin-api/`, as
     the station's owner: station/test/mb-live-p5-1.test.ts.
   - P5-2 (`live_p5_2_*.mbt`), the agents' side: the hub, its actors and their drivers in the sessions' program
     (`stillfail-reader --sessions`, with `#live` mounted: live_p5_2_main `mount_live`), the conversations and their
     storage's world (live_p5_2_world.mbt: the live view's locator, the machine's sessions, the peers), the tools of
-    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); the usage
+    `/mcp`, and what the admin API's routes ask by a module's name (live_p5_2_hubops.mbt `hub_bridge`); a session's
+    cold storage, its packing and its room's measure each a process of its own (live_p5_2_cold.mbt: `--builder packed`,
+    `--builder footprint` backgrounded), never on the station's loop; the usage
     counter, its drain and the old statistics' retirement (live_p5_2_usage.mbt), the bug reports' part:
     station/test/mb-live-p5-2.test.ts.
   - P5-3 (`live_p5_3*.mbt`), the jobs and their services, other stations' tasks (`task.*`, `sync.*`, `file.*`,
@@ -53,7 +72,7 @@
     so, one of its own only where there is no hub, a rig's or a test's: never two on one data directory); a sandbox's
     task runs through this program as its bridge's host side (`stillfail-reader <…>/sandbox-bridge.mjs host
     '<json>'`: live_p5_3_sandbox.mbt). With `STILLFAIL_PARTS_DOOR=1` the agents' door answers the parts' routes,
-    `jobs_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
+    `jobs_ask`, `hub_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
   - P5-4 (`live_p5_4_*.mbt`), the vault, the drive and its transfers, the screens with the Helper and its grants, the
     browser, the phones and devices, the terminals and the logins, answered by name on `ui_ask`:
     station/test/mb-live-p5-4.test.ts.
@@ -61,8 +80,18 @@
     chat surfaces told the agents' side, `surfaces`, and called by name, `chat.*`); the copies, their export a
     backgrounded process of its own, and a retirement; the moves; the updates and the `beta` features, on
     `coord_ask`: station/test/mb-live-p5-5.test.ts.
+- `@host.now()` (and the runtime's `now`) is a monotonic clock counting from the machine's start: it times waits and
+  durations only. A time a part keeps or compares as the world's (a record's `at`, an expiry) is `@host.epoch_ms()`
+  (sys.mbt `p5_epoch_ms`: the wall's time once, then the monotonic clock, never going back), and what is shared with
+  other programs (file times) `@host.wall_ms()`; each package's own default clock is one of these, never
+  `@host.now()`. A process's start is `start_time_of` (the system's, ms since the epoch), never `ps`'s words, which
+  are in the machine's own time zone.
 - The shell keeps no watch of a file or a folder: what the TypeScript watched (a transcript, a job's log, a drive's
   folder, run/'s files) is looked at by its size and time every few hundred ms while it is followed, its line saying
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories
   (sys.mbt `resolved_program`, the shell's `proc.run`), so a station whose PATH names none of them still runs `ps`,
   `lsof` or `git`.
+- A decided card's request (a phone's, a rig's) is written by the part's write callback inside
+  `@store_threads.Store::save_card_outcome`'s transaction with the card's close and its queued outcome
+  (live_dispatch.mbt `cardOutcomes.save`), as store.ts `saveCardOutcome` does: such a callback is synchronous
+  (adb_devices `World.write`, rigs_mode `World.callback`), never one that could wait inside the transaction.

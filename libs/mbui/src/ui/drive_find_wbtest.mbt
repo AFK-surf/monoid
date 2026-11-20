@@ -1,10 +1,10 @@
 // What a scripted run's steps find on screen (on_screen: Tester::locate) and press (reachable): an old view's words and
-// the tree's alike, as they are made however faded (made transparent, shown), a row called by its words found once, by
-// its words; going out (drawn only, pressed no more)
-// and let go of, neither.
+// the tree's alike when shown, while a tree node at resting opacity 0 is located but not reachable until shown (or
+// opted in via View::takes_unseen); a row called by its words found once, by its words; going out (drawn only, pressed
+// no more) and let go of, neither.
 
 ///|
-test "locate and reachable: an old view's words and the tree's, made transparent, shown: found and reached; going out, let go of: neither, alike" {
+test "locate and reachable: an old view's words and the tree's, made transparent, shown: located; resting alpha=0 tree node not reachable until shown; going out, let go of: neither" {
   let (open, shown, going) = (@signals.signal(true), @signals.signal(false), @signals.signal(false))
   let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
   set_view_app(fn(root) {
@@ -57,7 +57,7 @@ test "locate and reachable: an old view's words and the tree's, made transparent
   assert_eq(
     (made, seen, once, out, both()),
     (
-      ((true, true), (true, true)),
+      ((true, true), (true, false)),
       ((true, true), (true, true)),
       (1, 1, 1),
       ((false, false), (false, false)),

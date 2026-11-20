@@ -137,7 +137,9 @@ pub fn way_in_button_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let bare = native_input() is Mouse
-  @headless.button(made_for=loc, body, label, fn(_) { press() }, disabled=busy, fn(v, b) {
+  let rippled : Ref[PressLook?] = Ref(None)
+  let hold = ripple_hold(rippled, fn() { !busy() })
+  @headless.button(made_for=loc, body, label, fn(_) { press() }, disabled=busy, hold~, fn(v, b) {
     v.focus_ring_theme() |> ignore
     let theme = fn() { @ui.tree_theme() }
     let lit = fn() { b.hovered() || b.pressed() }
@@ -161,19 +163,20 @@ pub fn way_in_button_node(
     .row(Is(true))
     .width_share(Is(1.0))
     .max_width(Is(Some(if bare { sign_in_desk_w } else { sign_in_touch_w })))
-    .height(Is(Some(sign_in_button_h)))
-    // (a pill: as round as it can be, as the old one's radius=Full)
-    .radius(By(fn() { theme().corner(Full) }))
+    // (50 high at least, taller where its words take two lines: at a large size of words a long label, 「Create my own
+    // workspace instead」 at 1.3, is wider than the pill and goes on to a second line in it, never past its end)
+    .min_height(Is(Some(sign_in_button_h)))
+    .padding(Is((sign_in_button_padx, sign_in_button_pady, sign_in_button_padx, sign_in_button_pady)))
+    // (a pill: as round as one line's height, as the old one's radius=Full and its press's ripple (press_look below);
+    // grown to two lines, its corners keep that round, never rounder than its words' corners leave room for)
+    .radius(Is(sign_in_button_h / 2.0))
     .lines_up(Is(Some(Middle)))
     .ground(By(ground))
     |> ignore
     // (what it holds in its middle: the old one's justify=JCenter)
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     v.show(fn() { busy() || open.shown(v) > 0.0 }, fn(room) {
-      room
-      .width(By(fn() { Some((button_icon + sign_in_spin_gap) * dmax(open.shown(v), 0.0)) }))
-      .height(Is(Some(button_icon)))
-      |> ignore
+      spin_room_node(room, fn() { sign_in_spin_gap }, fn() { open.shown(v) })
       // (in the library's palette's ink and accent, as the old one's spinner is: way_in_button's p.bg, p.text)
       let spun_ink = fn() {
         let p = library_theme().p
@@ -183,58 +186,35 @@ pub fn way_in_button_node(
           p.text
         }
       }
-      let s = spinner_node(
+      spinner_shown_node(
         room,
-        size=button_icon,
-        ring=fn() { alpha(spun_ink(), 0.3) },
-        arc=fn() { if solid { spun_ink() } else { library_theme().p.accent } },
+        fn() { alpha(spun_ink(), 0.3) },
+        fn() { if solid { spun_ink() } else { library_theme().p.accent } },
+        fn() { turning.shown(v) },
+        fn() { open.shown(v) },
+        At(0.0, 0.5),
       )
-      s.alpha(By(fn() { turning.shown(v) * seen_at(open.shown(v)) })).scale(By(fn() { dmax(open.shown(v), 0.0) }), about=At(0.0, 0.5)) |> ignore
+      |> ignore
     })
+    // (giving way in the row where it is wider than the pill's room, its lines in their middle)
     let words = v.box(fn(w) {
-      w.words(By(label), look=way_in_words(Title, 600, Some(Font), false)).ink(By(ink)) |> ignore
+      // (its look as the theme has it as it is made, as button_node's words' is)
+      let look = @signals.untracked(fn() { way_in_words(Title, 600, Some(Font), true) })
+      w
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .words(By(label), look~)
+      .words_centered(Is(true))
+      .ink(By(ink))
+      |> ignore
     })
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     // (a press's ripple from where it went down, the pill sinking under it: SignIn.kt's clip(CircleShape).clickable)
-    let rippled = press_look(v, Is(sign_in_button_h / 2.0), fn() { true })
-    v.gesture(
-      @ui.touch_slop(),
-      press=fn(d) {
-        if !b.disabled() {
-          (rippled.down)(d)
-        }
-      },
-      tap=fn(d) {
-        (rippled.tapped)(d)
-        if v.finger_target(d.wx, d.wy) {
-          b.press()
-        }
-      },
-      drag=fn(d) {
-        // (a mouse's moved on it past the slop: still a press as it is let go on it, as a click is)
-        if d.kind == Up && @ui.pointing() is Mouse && v.finger_target(d.wx, d.wy) {
-          b.press()
-        }
-      },
-    )
-    |> ignore
+    // (handed it by the headless button's hold: ripple_hold)
+    rippled.val = Some(press_look(v, Is(sign_in_button_h / 2.0), fn() { true }))
     // (its words changed, 登录或注册 to 正在登录: gone to their new place, not at once)
     @motion.moves_for(v, label, spec=button_reshape).moves_with(words)
   })
-}
-
-///|
-/// What a way-in page offers last, quietly, in `body` (way_in_link's: 切换账号): a button of words alone, the page's ink,
-/// a ground under the pointer. The node.
-#callsite(autofill(loc))
-pub fn way_in_link_node(
-  body : @view.View,
-  label : () -> String,
-  press : () -> Unit,
-  busy? : () -> Bool = fn() { false },
-  loc~ : SourceLoc,
-) -> @view.View {
-  button_node(loc~, body, label, press, tone=Ghost, busy~)
 }
 
 ///|

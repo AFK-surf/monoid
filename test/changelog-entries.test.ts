@@ -67,7 +67,7 @@ test("the mbui app reaches Android and the desktop; its desktop's own pages and 
   // The desktop's ⌘K (3605d692) and its side panel's tabs (54186c3a), with their tapes, kept answers and the script that
   // makes them: the desktop alone, where they had been on Android's tab.
   const desk = ["apps/mbui/src/sfdesk/switcher.mbt", "apps/mbui/src/sfapp/wide_switcher.mbt", "apps/mbui/src/sfapp/settings/web_vault.mbt"];
-  const nothing = ["apps/mbui/e2e/traces/wide-new-chat.trace", "apps/mbui/src/sfkept/kept.mbt", "apps/mbui/src/sffilm/main.mbt", "apps/mbui/src/sfapp/search_fixture.mbt", "apps/mbui/src/sfapp/wide_panel_wbtest.mbt", "apps/mbui/scripts/motion/wide-switcher.drive", "apps/mbui/detlint.json", "client/core-ts/scripts/kept-answers.ts"];
+  const nothing = ["apps/mbui/e2e/traces/wide-new-chat.trace", "apps/mbui/src/sfkept/kept.mbt", "apps/mbui/src/sffilm/main.mbt", "apps/mbui/src/sfapp/search_fixture.mbt", "apps/mbui/src/sfapp/wide_panel_wbtest.mbt", "apps/mbui/scripts/motion/wide-switcher.drive", "apps/mbui/detlint.json", "apps/mbui/detlint.counts/sfpages.json", "client/core-ts/scripts/kept-answers.ts"];
   assert.deepEqual(partsOf([...desk, ...nothing]), ["desktop"]);
   assert.deepEqual(partsOf(["apps/mbui/src/sfapp/chat.mbt", ...nothing]), ["android", "desktop"]);
   assert.deepEqual(partsOf(["libs/mbui/src/ui/text.mbt"]), ["android", "desktop"]);

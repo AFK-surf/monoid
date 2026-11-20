@@ -22,8 +22,7 @@ export interface FeatureSpec {
 }
 
 export const FEATURES = {
-  chatPage: { stage: "experimental", betaOnly: true },
-  composerNodes: { stage: "experimental", betaOnly: true },
+  chatPage: { stage: "beta" },
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
   /// Station apps (station/src/apps/registry.ts): what the device draws of them (`sf-app:` links, a widget's `"app"`)
@@ -48,9 +47,7 @@ export function isExperimentalFeature(id: string): id is FeatureId {
   return has(FEATURES, id) && FEATURES[id as FeatureId].stage === "experimental";
 }
 
-/// Experimental switches turned on on this device (`prefs.experimental`), ignoring unknown or graduated ids. The
-/// prefs' `chatPage: "nodes"` (外观's 试用新对话页 of 0.1.9524-0.1.9625) reads as `experimental.chatPage` where that is not
-/// set; prefs.ts `set` writes it over as the prefs are next written. Goes 2026-11-24 (7 days after 0.1.9626 shipped).
+/// Experimental switches turned on on this device (`prefs.experimental`), ignoring unknown or graduated ids.
 export function experimentalOf(prefs: unknown, registry: Record<string, FeatureSpec> = FEATURES): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   const raw = isObj(prefs) && isObj(prefs.experimental) ? prefs.experimental : null;
@@ -58,9 +55,6 @@ export function experimentalOf(prefs: unknown, registry: Record<string, FeatureS
     for (const key of Object.keys(raw)) {
       if (has(registry, key) && registry[key]!.stage === "experimental" && raw[key] === true) out[key] = true;
     }
-  }
-  if (has(registry, "chatPage") && registry.chatPage!.stage === "experimental" && (raw === null || !has(raw as never, "chatPage")) && isObj(prefs) && prefs.chatPage === "nodes") {
-    out.chatPage = true;
   }
   return out;
 }

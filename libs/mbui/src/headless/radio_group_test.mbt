@@ -198,3 +198,227 @@ test "a tab list with manual activation: ←/→, Home and End move the focus al
     ("概览", ("t1", "日志"), ("t1", "设置"), ("t3", "设置"), ("t1", "概览"), ["t3", "t1"]),
   )
 }
+
+///|
+/// A tab list of `keys` made by View::each after a button "别处", each tab closing (`on_close`) with a × of the test's
+/// own beside it (no stop of Tab's, pressing it closes the tab through `RadioItem::close`); closing takes the key out
+/// and sets what is chosen to `after(closed, rest)`.
+fn closing_tabs(
+  keys : @signals.Signal[Array[String]],
+  chosen : @signals.Signal[String],
+  after : (String, Array[String]) -> String,
+) -> @ui.Tester raise {
+  window(fn(root) {
+    root.box(fn(e) {
+      e
+      .width(Is(Some(40.0)))
+      .height(Is(Some(30.0)))
+      .presses(Is(true))
+      .focusable(Is(true))
+      .says(Is(Some(@view.said(Button, label="别处"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    @headless.radio_group(root, fn() { "标签页" }, fn() { chosen.get() }, fn(k) { chosen.set(k) }, kind=Tab, fn(g, rg) {
+      g.row(Is(true)) |> ignore
+      g.each(fn() { keys.get() }, fn(k) { k }, fn(slot, k) {
+        let key = k.untracked()
+        slot.row(Is(true)) |> ignore
+        let item : Ref[@headless.RadioItem?] = Ref(None)
+        rg.item(
+          slot,
+          fn() { key },
+          fn() { key },
+          on_close=fn() {
+            let rest = keys.get().filter(fn(x) { x != key })
+            chosen.set(after(key, rest))
+            keys.set(rest)
+          },
+          fn(v, s) {
+            item.val = Some(s)
+            v
+            .width(Is(Some(60.0)))
+            .height(Is(Some(32.0)))
+            .ground(By(fn() { if s.chosen() { c_pressed } else { c_rest } }))
+            |> ignore
+          },
+        )
+        |> ignore
+        slot.box(fn(x) {
+          x
+          .width(Is(Some(20.0)))
+          .height(Is(Some(32.0)))
+          .presses(Is(true))
+          .says(Is(Some(@view.said(Button, label="关闭" + key))))
+          .on_press(fn() { if item.val is Some(s) { s.close() } })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+}
+
+///|
+/// What is chosen after `k` closed: what was, or where it was the closed one, the tab after it, else the one before.
+fn next_in_front(keys : @signals.Signal[Array[String]], chosen : @signals.Signal[String], k : String, rest : Array[String]) -> String {
+  let cur = chosen.get()
+  if cur != k {
+    return cur
+  }
+  let at = keys.get().search(k).unwrap_or(0)
+  match rest.get(at) {
+    Some(n) => n
+    None => rest.last().unwrap_or("")
+  }
+}
+
+///|
+fn focus_label(t : @ui.Tester) -> String {
+  t.focused().map(fn(s) { s.label }).unwrap_or("")
+}
+
+///|
+test "a tab that closes: Delete or Backspace on it closes it, the keyboard handed to the tab then chosen" {
+  let keys = @signals.signal(["一", "二", "三", "四"])
+  let chosen = @signals.signal("二")
+  // (the one in front closed: the next one comes in front, else the one before)
+  let t = closing_tabs(keys, chosen, fn(k, rest) { next_in_front(keys, chosen, k, rest) })
+  t.act(Button, Focus, label="别处")
+  t.tab()
+  let first = focus_label(t)
+  t.key(@ui.key_code_delete)
+  t.frame()
+  let after_delete = (keys.get(), chosen.get(), focus_label(t))
+  t.key(@ui.key_code_backspace)
+  t.frame()
+  let after_backspace = (keys.get(), chosen.get(), focus_label(t))
+  assert_eq(
+    (first, after_delete, after_backspace),
+    ("二", (["一", "三", "四"], "三", "三"), (["一", "四"], "四", "四")),
+  )
+  assert_eq(t.get(Tab, label="四").selected, Some(true))
+}
+
+///|
+test "a tab that closes: its × pressed with the keyboard on it hands the keyboard to the tab then chosen; one closed behind takes nothing" {
+  let keys = @signals.signal(["一", "二", "三"])
+  let chosen = @signals.signal("二")
+  let t = closing_tabs(keys, chosen, fn(k, rest) { next_in_front(keys, chosen, k, rest) })
+  // the keyboard on "二", its × pressed (a screen reader's Activate: the focus not moved by the press): "三" comes in
+  // front with the keyboard on it
+  t.act(Tab, Focus, label="二")
+  t.act(Button, Activate, label="关闭二")
+  t.frame()
+  let after_own = (keys.get(), chosen.get(), focus_label(t))
+  // the keyboard on "别处", the × of "一" behind pressed: it goes, the keyboard stays where it was
+  t.act(Button, Focus, label="别处")
+  t.act(Button, Activate, label="关闭一")
+  t.frame()
+  let after_behind = (keys.get(), chosen.get(), focus_label(t))
+  assert_eq((after_own, after_behind), ((["一", "三"], "三", "三"), (["三"], "三", "别处")))
+}
+
+///|
+test "a tab that closes: what is chosen after it closed no tab's, the keyboard goes to the first enabled tab" {
+  let keys = @signals.signal(["一", "二", "三"])
+  let chosen = @signals.signal("三")
+  let t = closing_tabs(keys, chosen, fn(_, _) { "无" })
+  t.act(Tab, Focus, label="三")
+  t.key(@ui.key_code_delete)
+  t.frame()
+  assert_eq((keys.get(), chosen.get(), focus_label(t)), (["一", "二"], "无", "一"))
+}
+
+///|
+/// How many nodes the window's tree holds, its root among them.
+fn rg_nodes(v : @view.View) -> Int {
+  v.kids().fold(init=1, fn(n, k) { n + rg_nodes(k) })
+}
+
+///|
+/// A radio group of three items made by View::each, each item its slot itself where `in_node`, else a node in it; what
+/// it comes to: Tab's landing, →, a click, Activate and a disabled item passed by, as read out, and how many nodes the
+/// window holds.
+fn rg_each_case(in_node : Bool) -> (Array[String], Int) raise {
+  let chosen = @signals.signal("b")
+  let off_c = @signals.signal(true)
+  let t = window(fn(root) {
+    @headless.radio_group(root, fn() { "大小" }, fn() { chosen.get() }, fn(k) { chosen.set(k) }, fn(g, rg) {
+      g.row(Is(true)) |> ignore
+      g.each(fn() { ["a", "b", "c", "d"] }, fn(k) { k }, fn(slot, k) {
+        let key = k.untracked()
+        rg.item(
+          slot,
+          fn() { key },
+          fn() { "号 \{key}" },
+          in_node~,
+          disabled=fn() { key == "c" && off_c.get() },
+          fn(v, s) {
+            v
+            .width(Is(Some(60.0)))
+            .height(Is(Some(32.0)))
+            .ground(By(fn() { if s.chosen() { c_pressed } else { c_rest } }))
+            |> ignore
+          },
+        )
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  let seen : Array[String] = []
+  let note = fn(what : String) raise {
+    let focus = t.focused().map(fn(s) { s.label }).unwrap_or("")
+    let checks = StringBuilder()
+    for k in ["a", "b", "c", "d"] {
+      let r = t.get(Radio, label="号 \{k}")
+      checks.write_string(
+        match r.check {
+          Some(On) => "on "
+          _ => if r.disabled { "off " } else { "- " }
+        },
+      )
+    }
+    seen.push("\{what}: \{chosen.get()} focus \{focus} \{checks.to_string()}")
+  }
+  t.tab()
+  note("tab")
+  t.key(@ui.key_code_right)
+  note("right")
+  t.key(@ui.key_code_left)
+  note("left")
+  t.click(Radio, label="号 a")
+  note("click")
+  t.act(Radio, Activate, label="号 c")
+  note("activate disabled")
+  off_c.set(false)
+  t.frame()
+  t.act(Radio, Activate, label="号 c")
+  note("activate")
+  let nodes = rg_nodes(@ui.view_tree().unwrap().root())
+  (seen, nodes)
+}
+
+///|
+test "a radio group's items made by View::each in their slots themselves (in_node): the same to the keys, the pointer and a screen reader as an item in a node of its own, one node less each" {
+  let (boxed, boxed_nodes) = rg_each_case(false)
+  let (slots, slot_nodes) = rg_each_case(true)
+  assert_eq(slots, boxed)
+  assert_eq(boxed_nodes - slot_nodes, 4)
+  debug_inspect(
+    slots,
+    content=(
+      #|[
+      #|  "tab: b focus 号 b - on off - ",
+      #|  "right: d focus 号 d - - off on ",
+      #|  "left: b focus 号 b - on off - ",
+      #|  "click: a focus  on - off - ",
+      #|  "activate disabled: a focus  on - off - ",
+      #|  "activate: c focus  - - on - ",
+      #|]
+    ),
+  )
+}

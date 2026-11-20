@@ -6,6 +6,7 @@ import {
   "mbui/kit",
   "mbui/motion",
   "mbui/paint",
+  "mbui/player",
   "mbui/signals",
   "mbui/text",
   "mbui/ui",
@@ -161,6 +162,16 @@ pub fn chat_open_is_pending(Int32) -> Bool
 pub fn chat_opens(ChatRef, (String, Map[String, @json.Json]) -> TopicState) -> Bool
 
 pub fn chat_page_is(Page) -> Bool
+
+pub fn chat_reads_forget_from(Source, ChatRef) -> Unit
+
+pub fn chat_page_left_key(Page) -> (String, String)?
+
+pub fn entries_kept_park_due() -> Unit
+
+pub fn topic_value_held(Source, String, Map[String, @json.Json]) -> @signals.Computed[@json.Json?]
+
+pub fn station_mark_held(Source, String) -> @signals.Computed[Station?]
 
 pub fn chat_page_made(@view.View, Source, Int32, (@ui.Ctx, Source, Page) -> Unit, key? : () -> String, over? : (@view.View, Source, () -> Page?, () -> Int32) -> Unit, stint? : () -> Int32, drawn? : (Int32) -> Bool, body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit, foot? : (@ui.Ctx, Source, ChatRef) -> Unit) -> Source
 
@@ -478,6 +489,8 @@ pub fn emit_out(@ui.Ctx, Int32, Int32, Emits, Double) -> Unit
 
 pub let emit_out_ms : Double
 
+pub let emit_out_slide : Double
+
 pub fn emit_release(Emits) -> Unit
 
 pub fn emit_step(@ui.Ctx, Emits, Turns, () -> Double) -> Unit
@@ -544,11 +557,16 @@ pub fn file_serve(FilePage, @ui.SiteRequest, @ui.SiteReply) -> Unit
 
 pub fn file_type(String) -> String
 
+pub fn film_letterboxed(Attachment) -> Bool
+pub fn first_lone_page() -> Page?
+
 pub fn first_window(Double) -> Int
 
 pub fn file_viewer_reset() -> Unit
 
 pub fn files_into(String, Dragged) -> Unit
+
+pub fn files_into_many(String, Array[Dragged]) -> Unit
 
 pub fn files_tabs(Source, String) -> FilesTabs??
 
@@ -563,6 +581,8 @@ pub fn fill_want(Source, String, String, String, Double, @json.Json) -> Unit
 pub fn filter_of(Source, String) -> String
 
 pub fn finder_by_station() -> Bool
+
+pub fn finder_by_station_in(String) -> Bool
 
 pub fn finder_dragged(Source, Array[@ui.DroppedPath]) -> Array[Dragged]
 
@@ -715,6 +735,10 @@ pub let followed_into : Map[String, String]
 pub fn follows(@ui.ListInfo?) -> Bool?
 
 pub let fresh : FreshChat
+
+pub let fresh_composer_at : @signals.Signal[(Double, Double, Double, Double)?]
+
+pub let fresh_fly_after : @signals.Signal[Double]
 
 pub fn fresh_picked(@json.Json?) -> Unit
 
@@ -1032,7 +1056,7 @@ pub fn marks_start() -> Unit
 
 pub fn marks_undo() -> Unit
 
-pub fn marks_writing_bottom_in(@kit.Zoom, (Double, Double, Double, Double)?) -> Double?
+pub fn marks_writing_bottom_in(@motion.Zoom, (Double, Double, Double, Double)?) -> Double?
 
 pub fn menu_bar(@ui.Ctx, Source) -> Unit
 
@@ -1317,6 +1341,8 @@ pub let picked : @signals.Signal[Picked]
 pub let picked_alpha : Double
 
 pub let picked_none : Picked
+
+pub fn picked_files_into(String, Array[@hostapi.Picked]) -> Unit
 
 pub fn picked_sig(@json.Json?) -> String
 
@@ -1682,7 +1708,7 @@ pub let stage_min_scale : Double
 
 pub let stage_px : Int32
 
-pub fn stage_zoom() -> @kit.Zoom
+pub fn stage_zoom() -> @motion.Zoom
 
 pub fn stamp_of(@json.Json?, String) -> Stamp?
 
@@ -1985,6 +2011,14 @@ pub fn whole_row(Source, ChatItem) -> ChatItem?
 
 pub fn window_front(Page) -> Bool
 
+pub fn window_gives_back(Int) -> Unit
+
+pub fn window_has_tab(String, String, String) -> Bool
+
+pub fn window_title(Page) -> String
+
+pub fn tab_window_front(ChatRef, String) -> String?
+
 pub fn window_opens_for(Page) -> Bool
 
 pub let wheel_rest_ms : Double
@@ -1992,6 +2026,8 @@ pub let wheel_rest_ms : Double
 pub fn window_page(String) -> Page?
 
 pub fn window_text(Page) -> String?
+
+pub let window_tab_left : @ref.Ref[(TabFull) -> Unit]
 
 pub let window_zoom_levels : Array[(String, Double)]
 
@@ -2023,6 +2059,8 @@ pub fn writing_carry(Source, String, String) -> Unit
 
 pub fn writing_comment(Source, Writing, String, String) -> Unit
 
+pub fn writing_committed(Writing) -> Unit
+
 pub fn writing_drop(Source, Writing, String, Array[@json.Json], Bool) -> Unit
 
 pub fn writing_error(Source, Writing, String) -> Unit
@@ -2036,6 +2074,10 @@ pub fn writing_mode(Source, Writing, String, String) -> Unit
 pub fn writing_paste(Source, Writing, String, String) -> Unit
 
 pub fn writing_paste_again(Source, Writing, String) -> Unit
+
+pub fn writing_picture_put(String, String) -> Unit
+
+pub fn writing_picture_told(String) -> String?
 
 pub let writing_pictures : Map[String, String]
 
@@ -2178,7 +2220,7 @@ pub fn ChatImages::coming_let_go(Self, String) -> Unit
 pub fn ChatImages::coming_since(Self, String, Double) -> Double
 pub fn ChatImages::get(Self, String, String, String, ((@json.Json) -> Unit, (Result[(@json.Json, Bytes?), @json.Json]) -> Unit) -> Unit) -> String
 pub fn ChatImages::held(Self, String) -> Bool
-pub fn ChatImages::new() -> Self
+pub fn ChatImages::new(budget? : Int32) -> Self
 pub fn ChatImages::seen(Self, String, Bool) -> Unit
 pub fn ChatImages::unreached(Self, String) -> Bool
 
@@ -2343,6 +2385,7 @@ pub struct Derived[T] {
   // private fields
 }
 pub fn[T] Derived::kept(Self[T], Map[String, @json.Json]) -> T?
+pub fn[T] Derived::forget_from(Self[T], Source, Map[String, @json.Json]) -> Unit
 pub fn[T] Derived::kept_from(Self[T], Source, Map[String, @json.Json]) -> T?
 pub fn[T] Derived::new(String, (@json.Json, T?) -> T) -> Self[T]
 pub fn[T] Derived::read(Self[T], Source, Map[String, @json.Json]) -> (T?, Topic)
@@ -2843,6 +2886,7 @@ pub(all) struct Message {
   notice_failed : Bool
   notice_words : String
   notice_link : Int32
+  notice_profile_action : String
   notice_md : @json.Json?
   notice_retry_session : String
   notice_again_session : String
@@ -2971,6 +3015,7 @@ pub(all) enum Page {
   Place(String)
   Setting(@settings.Route)
   Screen(ScreenAt)
+  SideTab(TabFull)
 }
 
 pub(all) struct PageLink {
@@ -3319,7 +3364,7 @@ pub(all) struct ServicePage {
   mut logged_path : String
   address : @ui.Field
   link : PageLink
-  view : @kit.Zoom
+  view : @motion.Zoom
   moving : @signals.Signal[Bool]
   mut placed : Placed?
   mut hold : StageHold?
@@ -3434,8 +3479,10 @@ pub(all) struct Source {
   reads_ahead : () -> Bool
   asks_outline : () -> Bool
 }
+pub fn Source::draft_picture_told(Self, String, String) -> String
 pub fn Source::lease_topic(Self, String, Map[String, @json.Json]) -> TopicLease
 pub fn Source::owned_by(Self, @view.View) -> Self
+pub fn Source::owned_by_parkable(Self, @view.View) -> (Self, (Bool) -> Unit)
 pub fn Source::prefetch(Self, String, Map[String, @json.Json]) -> Topic
 pub fn Source::topic(Self, String, Map[String, @json.Json]) -> @signals.Computed[TopicState]
 
@@ -3675,8 +3722,8 @@ pub(all) struct Viewer {
   mut awake : Bool
   awake_told : @signals.Signal[Int32]
   mut near_bar : Bool
-  zoom : @kit.Zoom
-  vzoom : @kit.Zoom
+  zoom : @motion.Zoom
+  vzoom : @motion.Zoom
   mut source : Bool
   source_told : @signals.Signal[Int32]
   mut page : @ui.NativeView?
@@ -3702,7 +3749,7 @@ pub(all) struct Viewer {
   mut pinch_y : Double
   mut pinched : Bool
   reads : @signals.Signal[Int32]
-  mut pinned : @kit.MediaStatus?
+  mut pinned : @player.MediaStatus?
   steps : Stepping
   at : String
   mut swiping : Bool
@@ -3725,7 +3772,7 @@ pub(all) struct Viewer {
   mut leaving_grab : Bool
   mut left_at : Double
   grab_told : @signals.Signal[Int32]
-  mut media : @kit.Media?
+  mut media : @player.Media?
   mut copied : Int32
   mut head_w : Double
   serial : Int32
@@ -3746,7 +3793,7 @@ pub fn Viewer::dark(Self) -> Bool
 pub fn Viewer::desk_back(Self, Source) -> String
 pub fn Viewer::download(Self, Source) -> @json.Json?
 pub fn Viewer::draft_key(Self) -> String
-pub fn Viewer::drag_zoomed(Self, @kit.Zoom, @motion.Way, Double, Double, Bool, Bool, Double) -> Unit
+pub fn Viewer::drag_zoomed(Self, @motion.Zoom, @motion.Way, Double, Double, Bool, Bool, Double) -> Unit
 pub fn Viewer::fetch(Self, @ui.Ctx, Source) -> Unit
 pub fn Viewer::finish_marks(Self, @ui.Ctx, Bool) -> Unit
 pub fn Viewer::flight_from(Self, @ui.Ctx) -> Thumb?
@@ -3800,8 +3847,8 @@ pub fn Viewer::told_of(Self) -> Bool
 pub fn Viewer::up_still(Self) -> Bool
 pub fn Viewer::view(Self) -> @ui.NativeView?
 pub fn Viewer::wake(Self) -> Unit
-pub fn Viewer::wheel(Self, @ui.Ctx, Int32, @kit.Zoom) -> Unit
-pub fn Viewer::wheeled(Self, @kit.Zoom, Double, Double, Double, Double, Int32, Double) -> Unit
+pub fn Viewer::wheel(Self, @ui.Ctx, Int32, @motion.Zoom) -> Unit
+pub fn Viewer::wheeled(Self, @motion.Zoom, Double, Double, Double, Double, Int32, Double) -> Unit
 
 #derive(Eq)
 pub(all) struct Viewport {

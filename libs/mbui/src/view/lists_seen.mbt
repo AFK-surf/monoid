@@ -4,11 +4,11 @@
 
 ///|
 /// What a page's list gives a test (Tree::lists_seen): its scroll, how many keys it has, and asked of it, a row brought to
-/// its top by where it is among its keys, and its foot.
+/// its top by where it is among its keys (gliding there where said and near), and its foot.
 priv struct ListAsked {
   scroll : Scroll
   count : () -> Int
-  bring : (Int) -> Unit
+  bring : (Int, Bool) -> Unit
   to_end : () -> Unit
   way_steady : () -> (Double, Bool, Array[(String, NodeId, Bool, Bool)])
 }
@@ -31,6 +31,9 @@ pub(all) struct ListSeen {
   count : Int
   /// how far it is scrolled, as of the logic's moment (Scroll::at)
   at : Double
+  /// how far it is scrolled at its top, as far up as the hand takes it (Scroll::top_now: past what is tucked over it
+  /// once that was taken out of sight; else 0): `at` there, it is at its top
+  top : Double
   /// how far it shows past an end (Scroll::past: from its top positive, from its foot negative)
   past : Double
   /// whether it is on by itself (a fling, what shows past an end going back)
@@ -50,7 +53,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
   let ats = self.lists_asked.keys().to_array()
   ats.sort()
   ats.filter_map(fn(at) {
-    guard self.nodes[at].live && self.lists_asked.get(at) is Some(a) else { return None }
+    guard self.nodes[at].live && self.held_from_root(at) && self.lists_asked.get(at) is Some(a) else { return None }
     let list : NodeId = { at, gen: self.nodes[at].gen }
     guard self.drawn_of(list, drawn=true) is Some(ld) else { return None }
     // (each row's outermost node named for it, drawn within where the list shows)
@@ -69,6 +72,9 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
           return
         }
         p = self.nodes[p].parent
+      }
+      if p != at {
+        return
       }
       match self.drawn_of({ at: k, gen: self.nodes[k].gen }, drawn=true) {
         Some(d) if d.y < ld.y + ld.h && d.y + d.h > ld.y && d.h > 0.0 => found.push((order, d.id, (d.x, d.y, d.w, d.h)))
@@ -99,6 +105,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
       sight: (first, last),
       count: (a.count)(),
       at: s.at(self),
+      top: @signals.untracked(fn() { s.top_now() }),
       past: s.past(self),
       moving: s.glides_till() is Some(_),
       at_foot: @signals.untracked(fn() { s.at_foot_now() }),
@@ -133,10 +140,11 @@ pub fn Tree::list_in_front(self : Tree) -> ListSeen? {
 
 ///|
 /// Page's list `list`'s row `order` (where it is among its keys) brought to its top, as its ListPlace::bring is: done as
-/// the list is next laid out. Nothing where it is no page's list or has no such row.
-pub fn Tree::list_bring(self : Tree, list : NodeId, order : Int) -> Unit {
+/// the list is next laid out, or gliding there from the cause's moment where `glide` and it is near (a place's tab
+/// pressed again where it shows: back to its top). Nothing where it is no page's list or has no such row.
+pub fn Tree::list_bring(self : Tree, list : NodeId, order : Int, glide? : Bool = false) -> Unit {
   match self.lists_asked.get(list.at) {
-    Some(a) if self.alive_id(list) => (a.bring)(order)
+    Some(a) if self.alive_id(list) => (a.bring)(order, glide)
     _ => ()
   }
 }
@@ -221,7 +229,7 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
   let row_ks = self.rows_named.keys().to_array()
   row_ks.sort()
   ats.filter_map(fn(at) {
-    guard at >= 0 && at < self.nodes.length() && self.nodes[at].live && !self.out_at(at) &&
+    guard at >= 0 && at < self.nodes.length() && self.nodes[at].live && self.held_from_root(at) && !self.out_at(at) &&
       self.lists_scrolled.get(at) is Some(s) else {
       return None
     }

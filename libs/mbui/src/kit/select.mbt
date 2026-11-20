@@ -115,7 +115,7 @@ pub fn select(
       None => if o.dismissed is Some(_) { open = false }
     }
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   { value: now, response: r.changed_to(now != value) }
 }
 
@@ -292,7 +292,7 @@ pub fn navigation_menu(
       Some(body) => {
         let k = open
         let o = c.overlay(key + "/content", anchor=tids[k], initial_focus=pick(c.focus_shown(tids[k]), -1, 0), fn() {
-          beside(c, key + "/content", tids[k], Bottom, Start, 6.0, @ui.still_look, Region, items[k].label, look, body)
+          beside(c, key + "/content", tids[k], Bottom, Start, 6.0, None, Region, items[k].label, look, body)
         })
         if o.dismissed is Some(_) {
           open = -1
@@ -302,6 +302,6 @@ pub fn navigation_menu(
     }
   }
   kit.val.bars[id] = open
-  kit.val.opens[cid] = open >= 0 && by_key
+  opens_set(cid, open >= 0 && by_key)
   followed
 }

@@ -13,23 +13,6 @@ fn new_chat() -> Unit {
 }
 
 ///|
-/// What the Small stack gives the page: its bar (新对话 in the middle), the navigation bar's
-/// room under it (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars))).
-fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
-  {
-    core: settings_core(src, w),
-    bar: fn(c) {
-      @sf.nav_bar(c, "new/cancel", tr("common.cancel"), tr("android-chat.new.title"), bg=@sf.theme().p.bg, top=status_top(), on_press=fn() {
-        @sfbase.close_page(NewChat) |> ignore
-      })
-    },
-    foot: nav_foot(),
-    in_place: true,
-    sent: fn(_) {  },
-  }
-}
-
-///|
 /// The new chat's page (NewChatScreen).
 fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   @sfpages.new_chat_page(c, src, w, new_frame(src, w))

@@ -131,3 +131,26 @@ test "a phone's composer opened by a tap keeps its ＋ and send whole on their w
     }
   })
 }
+
+///|
+test "大屏: what the composer's field says while empty changing fades by its paint, the chat's old view built as it swaps alone, not at each frame of the fade" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat")
+  t.set_rows_on_pixels(true)
+  t.run_for(kept_rows_still_ms)
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.query(Button, label="更多").unwrap().rect
+  let t0 = t.time()
+  // (the menu opened takes the keys from the field: what it says while empty fades out, then the other in where it was)
+  t.tap(x + w / 2.0, y + h / 2.0)
+  let built : Array[String] = []
+  for at = 16.0; at <= 2.0 * @sf.hint_back_ms + 160.0; at = at + 16.0 {
+    t.frame_at(t0 + at)
+    let why = t.built_why()
+    if why.contains("composer/said") || why.contains("composer/hint") {
+      built.push("\{at}: \{why}")
+    }
+  }
+  // (the frame after the words it says are swapped, the fade in told there, at most: none of the fade's other frames)
+  assert_true(built.length() <= 1, msg="built by the fade: " + built.join("; "))
+}

@@ -19,8 +19,6 @@ priv struct Step {
 let window_still_known : Array[String] = [
   // (the bar's springs, sfapp/bar.mbt:170)
   "小屏 home upright",
-  // (chat-askfade, motion/layer.mbt:1325)
-  "小屏 chat turned", "小屏 chat upright",
 ]
 
 ///|
@@ -52,7 +50,11 @@ fn still_steps(s : Screen, mode : String) -> Array[Step] {
 fn still_walk(s : Screen, mode : String) -> Array[(String, String)] {
   let t = daily_open(mode, s, 1.0)
   if mode == "chat" {
-    t.tap_text("发消息")
+    // (the composer's field: made as nodes, focused as the chat opens on a wide one, no hint drawn to tap)
+    match composer_field(t) {
+      Some((x, y, w, h)) => t.tap(x + w / 2.0, y + h / 2.0)
+      None => t.tap_text("发消息")
+    }
     t.run_for(@ui.move_most_ms)
   }
   let moved = []

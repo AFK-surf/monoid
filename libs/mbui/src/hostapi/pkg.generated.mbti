@@ -143,6 +143,8 @@ pub fn frame_awaiting(Int32, String) -> Unit
 
 pub fn frame_late() -> Double
 
+pub fn frames_dropped() -> Int32
+
 pub fn frames_paced(Double) -> Unit
 
 pub fn from_base64(String) -> String
@@ -209,11 +211,15 @@ pub fn image_pixels(Int32, FixedArray[Byte]) -> Bool
 
 pub fn ime_action(Int32) -> Unit
 
+pub let ime_action_email : Int32
+
 pub let ime_action_go : Int32
 
 pub let ime_action_none : Int32
 
 pub let ime_action_number : Int32
+
+pub let ime_action_plain : Int32
 
 pub let ime_action_search : Int32
 
@@ -250,6 +256,8 @@ pub fn log(String) -> Unit
 pub fn login_fields(String) -> (String, String)
 
 pub fn login_for_host(String, String) -> Bool
+
+pub fn login_secret(String) -> (String, String, String, Bool)
 
 pub fn logins_for(String, String) -> Array[PasswordLogin]
 
@@ -288,6 +296,12 @@ pub fn notice_settings() -> Bool
 pub fn notice_show(channel~ : String, tag~ : String, title~ : String, body~ : String, opens~ : String) -> Unit
 
 pub fn now() -> Double
+
+pub fn op_list_cache_keep(String) -> Unit
+
+pub fn op_list_cache_reset() -> Unit
+
+pub fn op_list_cached_for(String) -> Array[PasswordLogin]
 
 pub fn op_run(Array[String]) -> OpRun?
 
@@ -595,6 +609,8 @@ pub fn window_open_id(String) -> Int32
 
 pub fn window_opens() -> Bool
 
+pub fn window_set_title(Int32, String) -> Unit
+
 pub fn window_setup(Double, Double, Double, Double, inset? : Bool) -> Unit
 
 pub fn window_show() -> Unit
@@ -810,6 +826,7 @@ pub(all) struct PasswordLogin {
   id : String
   title : String
   username : String
+  vault : String
 }
 
 pub struct Pick {
@@ -960,6 +977,7 @@ pub(open) trait Host {
   fn reduce_transparency(Self) -> Bool = _
   fn increase_contrast(Self) -> Bool = _
   fn gpu_ms(Self) -> Double = _
+  fn frames_dropped(Self) -> Int32 = _
   fn cpu_ms(Self) -> Double = _
   fn env(Self, String) -> String = _
   fn set_app_state(Self, FuncRef[(Int32) -> Unit]) -> Unit = _
@@ -1133,4 +1151,5 @@ pub(open) trait Host {
   fn ncall_result(Self, Int32) -> String = _
   fn ncall_end(Self, Int32) -> Unit = _
   fn words_spaced(Self) -> Int32 = _
+  fn window_set_title(Self, Int32, String) -> Unit = _
 }

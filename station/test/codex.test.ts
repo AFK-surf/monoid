@@ -578,6 +578,48 @@ describe("the Codex driver", { concurrency: true }, () => {
     await session.prompt("mcp");
     await until(ended(1));
     assert.equal(said(events), "connected");
+    // The door's address changed, not the app-server: the same one serves it.
+    assert.equal(starts(p.dump).length, 1);
+  });
+
+  test("an app-server that could not reach the station's tools at an address is replaced for the next thread opened with it", async () => {
+    const d = driver();
+    // Its first app-server reaches no MCP url (its environment went wrong), though the door is open.
+    const base = profile();
+    const p = { ...base, env: { ...(base.env as object), FAKE_MCP_BROKEN_ONCE: "1" } };
+    const first = options(p);
+    const { events, push, until } = listen();
+    const failed = await d.open(first, push);
+    await assert.rejects(failed.prompt("mcp"), /station's tools failed/);
+    await failed.dispose();
+    // Opened again with the same address, as the session does after such a failure: on a new app-server, which reaches it.
+    const session = await d.open(options(p, { key: first.key, resume: failed.id() }), push);
+    assert.equal(session.mcpUrl?.(), first.mcpUrl);
+    await session.prompt("mcp");
+    await until(ended(1));
+    assert.equal(said(events), "connected");
+    assert.equal(starts(p.dump).length, 2, "a second app-server");
+  });
+
+  test("an in-flight request lets go when its runner socket closes with the runner pid still alive", async () => {
+    const d = driver();
+    const p = profile();
+    const info: RunnerInfo = {
+      id: "codex-taken-over",
+      runner: process.pid,
+      pid: process.pid,
+      pgid: process.pid,
+      startedAt: 0,
+      program: "codex",
+      args: [],
+      socket: join(data, "no-such.sock"),
+    };
+    const host = (d as unknown as { holdLeft: (p: Profile, i: RunnerInfo, k: string) => { request: (m: string, x: Json) => Promise<Json>; stopOrphans: () => void } }).holdLeft(p, info, p.id);
+    try {
+      await assert.rejects(host.request("thread/unsubscribe", { threadId: "t" }), /handed over/);
+    } finally {
+      host.stopOrphans();
+    }
   });
 
   test("the app-server exiting fails the thread's turn as exited and closes every thread on it", async () => {
@@ -698,6 +740,60 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2);
     await two.prompt("say:back");
     await b.until(ended(1));
+  });
+
+  test("an app-server this driver ended, its runner slow to go, is not taken up again as left by a station before", async () => {
+    const d = driver({ outputLimit: 1 });
+    const p = profile();
+    const a = listen();
+    const one = await d.open(options(p), a.push);
+    // Its runner still there once it is ended (as under load, past the wait for it to go): ending it is held here.
+    const proc = (one as unknown as { host: { proc: { info: RunnerInfo; kill: (graceMs: number) => Promise<void> } } }).host.proc;
+    const kill = proc.kill.bind(proc);
+    let ended_ = false;
+    proc.kill = async () => {
+      ended_ = true;
+    };
+    await one.prompt("say:x");
+    await a.until(ended(1));
+    await eventually(() => ended_);
+    const b = listen();
+    const two = await d.open(options(p), b.push);
+    assert.notEqual((two as unknown as { host: { proc: { info: RunnerInfo } } }).host.proc.info.runner, proc.info.runner, "not the one ended");
+    assert.equal(starts(p.dump).length, 2);
+    await two.prompt("say:back");
+    await b.until(ended(1));
+    await kill(5000);
+  });
+
+  test("an app-server a thread is being opened on is not ended under it, outgrown as another session opens", async () => {
+    const d = driver();
+    const p = profile();
+    // The first thread's open held where it looks at its station tools (a resumed thread's, its lease still had).
+    const mcp = gates(p.dump, "mcp");
+    const a = listen();
+    const opening = d.open(options(p, { resume: "th-held" }), a.push);
+    // (read as text: the fake may be writing a line of it)
+    await eventually(() => existsSync(`${p.dump}.stdin`) && readFileSync(`${p.dump}.stdin`, "utf8").includes(`"method":"mcpServerStatus/list"`));
+    // Outgrown now: another session opened meanwhile does not end it under the first.
+    (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
+    const two = await d.open(options(p), listen().push);
+    assert.equal(starts(p.dump).length, 1, "the same app-server");
+    await mcp.open("a");
+    // (gone, so that the next app-server's look at its tools is not held too)
+    rmSync(`${p.dump}.mcp.a`);
+    const one = await opening;
+    // Its turn over, idle: replaced, both opened again on a new one with their next turn.
+    await one.prompt("say:x");
+    await a.until(ended(1));
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    await two.dispose();
+    (d as unknown as { options: CodexDriverOptions }).options.outputLimit = undefined;
+    const c = listen();
+    const three = await d.open(options(p), c.push);
+    assert.equal(starts(p.dump).length, 2);
+    await three.prompt("say:y");
+    await c.until(ended(1));
   });
 
   test("a turn asked of an app-server Codex was updated under is refused, so it is opened again on a new one", async () => {

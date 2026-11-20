@@ -24,6 +24,7 @@ import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mes
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { Store } from "../src/store/store.ts";
+import { DatabaseSync } from "node:sqlite";
 
 const binary = mbReaderBinary();
 const launcher = process.env.STILLFAIL_LAUNCHER ?? "";
@@ -54,7 +55,11 @@ const children: ChildProcess[] = [];
 const closers: (() => void)[] = [];
 after(async () => {
   for (const c of closers) c();
-  for (const c of children.filter((c) => c.exitCode === null && c.signalCode === null)) c.kill("SIGKILL");
+  const left = children.filter((c) => c.exitCode === null && c.signalCode === null);
+  for (const c of left) c.kill("SIGKILL");
+  // (a killed child holds its files until it is gone: removing its directory before then finds it not empty)
+  const gone = Promise.all(left.map((c) => (c.exitCode === null && c.signalCode === null ? new Promise<void>((r) => c.once("exit", () => r())) : undefined)));
+  await Promise.race([gone, new Promise<void>((r) => setTimeout(r, 5_000).unref())]);
   // (what a run left: its processes, by what their files say)
   for (const d of dirs) {
     for (const f of ["run/station.json", "run/front.pid"]) {
@@ -74,7 +79,7 @@ after(async () => {
       }
     }
   }
-  if (process.env.STATION_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  if (process.env.STATION_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 /// Looked at until `look` gives something (real processes: every 50 ms), or failing with `what` after `ms`.
@@ -192,6 +197,42 @@ async function slackStandIn() {
   return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`, asked, sockets, acks };
 }
 
+/// Anthropic, of the test's: a Claude subscription's allowance (/api/oauth/usage), asked with the profile's token.
+async function anthropicStandIn() {
+  const asked: { path: string; auth: string }[] = [];
+  const server = httpServer((req, res) => {
+    req.resume();
+    asked.push({ path: req.url ?? "", auth: String(req.headers.authorization ?? "") });
+    if (!(req.url ?? "").startsWith("/api/oauth/usage")) return void res.writeHead(404).end("{}");
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+      five_hour: { utilization: 42, resets_at: "2026-11-18T10:00:00Z" },
+      seven_day: { utilization: 7, resets_at: "2026-11-24T10:00:00Z" },
+    }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  closers.push(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, asked };
+}
+
+/// What a member's `GET /admin/api/events` is told, as text as it comes, till the connection goes.
+async function memberEvents(conn: Connection) {
+  const stream = await conn.openBi();
+  await line(stream, { method: "GET", path: "/admin/api/events", headers: {} });
+  await stream.finish();
+  const told = { text: "" };
+  void (async () => {
+    for (;;) {
+      const piece = await stream.read().catch(() => null);
+      if (piece === null) return;
+      told.text += piece.toString();
+    }
+  })();
+  return told;
+}
+
 /// A fake Claude Code (stream-json in and out, /bin/sh and curl alone): each prompt lists the agents' door's tools,
 /// asks a tool of each slice and posts all_done to the thread it was asked in.
 function fakeClaude(dir: string) {
@@ -219,10 +260,15 @@ while IFS= read -r line; do
   # was asked in before, and starts no job: when that comes is the machine's, so nothing it does depends on it)
   if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/$sid-to"; else to=$(/bin/cat "$FAKE_OUT/$sid-to" 2>/dev/null); fi
   call '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' > "$FAKE_OUT/$sid-list-$n.json"
-  if [ "$n" = 1 ]; then
+  # (no job where the test says so: its end is told the agent as a turn of its own, whenever the machine has it)
+  if [ "$n" = 1 ] && [ -z "$FAKE_NO_JOB" ]; then
     call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"job_start","arguments":{"name":"hello","command":"echo hi"}}}' > "$FAKE_OUT/$sid-job-$n.json"
   fi
   call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"device_list","arguments":{}}}' > "$FAKE_OUT/$sid-devices-$n.json"
+  # (a tool call of the test's, where it gives one: $FAKE_OUT/extra as the turn begins, else $FAKE_EXTRA, a
+  # tools/call's params)
+  extra=$(/bin/cat "$FAKE_OUT/extra" 2>/dev/null); [ -n "$extra" ] || extra="$FAKE_EXTRA"
+  if [ -n "$extra" ]; then call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":'"$extra"'}' > "$FAKE_OUT/$sid-extra-$n.json"; fi
   call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/$sid-post-$n.json"
   say '{"type":"assistant","message":{"id":"m'$n'","role":"assistant","content":[{"type":"text","text":"posted"}]},"session_id":"'"$sid"'"}'
   say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted"}'
@@ -323,17 +369,18 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   const meshPort = await freeUdpPort();
   const plane = await controlPlane([{ id, name: "mac", ips: [`127.0.0.1:${meshPort}`] }]);
   const slack = await slackStandIn();
+  const anthropic = await anthropicStandIn();
   const mcpPort = await freeTcpPort();
   mkdirSync(join(data, "mesh"), { recursive: true });
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
     origin: plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: { keys: [grant.jwk] }, peers: [], revocations: [],
   }));
   mkdirSync(join(data, "homes", "cc"), { recursive: true });
-  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat-test", expiresAt: Date.now() + 86_400_000 } }));
   writeFileSync(join(data, "config.json"), JSON.stringify({
     language: "en",
     http: { port: mcpPort },
-    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", access: { kind: "subscription" } }],
     maxNudges: 1,
     connects: [{ id: "c1", kind: "slack", mode: "multi-session", enabled: true, bind: { runtime: "claude", profile: "cc" }, createdBy: { id: "ada@x.com" }, slack: { appToken: "xapp-1", botToken: "xoxb-1", appId: "A1" } }],
   }));
@@ -342,7 +389,7 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   const env = {
     PATH: bin, HOME: data, TMPDIR: tmpdir(), FAKE_OUT: out,
     STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`,
-    STILLFAIL_SLACK_API: slack.base, STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
+    STILLFAIL_SLACK_API: slack.base, STILLFAIL_ANTHROPIC_API: anthropic.base, STILLFAIL_AGENT_NICE: "0", STILLFAIL_HELD_EVERY_MS: "300",
   };
   const loopPort = await freeTcpPort();
   const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
@@ -379,6 +426,14 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   const conn = await until("connected on the mesh", () => client.connect({ id, ips: [`127.0.0.1:${meshPort}`] }, Buffer.from("stillfail/admin/1")), tail);
   const hello = await member(conn, credential);
   assert.equal(hello.ok, true, JSON.stringify(hello));
+  // its device may enter the workspace's mesh scope as a leaf (leaf.ts): told so, and given the scope's view
+  assert.equal(hello.meshLeaf, true, JSON.stringify(hello));
+  const leaf = await until("the leaf's view of the workspace's scope", async () => {
+    const [st, view] = await memberAsk(conn, "GET", "/admin/api/mesh/leaf");
+    return st === 200 && Array.isArray(view?.stations) && view.stations.includes(id) ? view : null;
+  }, tail);
+  assert.match(leaf.scope, /^[0-9a-f]{64}$/);
+  assert.equal(leaf.transit, false);
   // the overview: the platform's and the rigs' (P5-1), the agents' (P5-2), the accounts' (P5-3), the drive's (P5-4) and the
   // updates', copies' and features' (P5-5)
   const [ovStatus, overview] = await memberAsk(conn, "GET", "/admin/api/overview");
@@ -387,6 +442,14 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
     assert.ok(field in overview, `the overview's ${field}: ${Object.keys(overview).join(",")}`);
   }
   assert.ok(overview.profiles.some((p: any) => p.id === "cc"), JSON.stringify(overview.profiles));
+
+  // ── a Claude subscription's allowance, read of Anthropic with the profile's token (0.1.9984 read it of the console,
+  // with only the console's address given the accounts: none came) ──
+  const [quotaStatus, quota] = await memberAsk(conn, "POST", "/admin/api/profiles/cc/quota", {});
+  assert.equal(quotaStatus, 200, `${JSON.stringify(quota)}; ${JSON.stringify(anthropic.asked)}`);
+  assert.equal(quota.state, "ok", JSON.stringify(quota));
+  assert.deepEqual(quota.windows.map((w: any) => [w.label, w.usedPercent]), [["5 小时", 42], ["每周", 7]], JSON.stringify(quota));
+  assert.ok(anthropic.asked.some((a) => a.auth === "Bearer sk-ant-oat-test"), JSON.stringify(anthropic.asked));
 
   // ── the Slack connect, connected on its socket ──
   await until("the Slack socket open", () => slack.sockets.length >= 1, () => `${JSON.stringify(slack.asked.map((x) => x.m))}; ${tail()}`);
@@ -432,11 +495,15 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
       assert.deepEqual(body, want, path);
     }
   }
+  // (a device follows the station's events: what the agent posts is told it as it is written, with nothing more asked
+  // of the station; 0.1.9984 told it only once a person's next message came)
+  const events = await memberEvents(conn);
   const [sent, sentSaid] = await memberAsk(conn, "POST", `/admin/api/threads/${threadId}/messages`, { text: "hello there" });
   assert.ok(sent >= 200 && sent < 300, JSON.stringify(sentSaid));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
   closers.push(() => store.close());
   await until("its turn ended all_done", () => store.listTurns(key).some((t) => t.summary.ending === "all_done"), () => `${JSON.stringify(store.listTurns(key).map((t) => t.summary))}; ${tail()}`);
+  await until("the agent's post told on the device's events", () => events.text.includes("posted by the fake"), () => `${events.text.slice(-2000)}; ${tail()}`);
   const listFile = readdirSync(out).find((f) => f.endsWith("-list-1.json"));
   assert.ok(listFile !== undefined, readdirSync(out).join(","));
   const tools = JSON.parse(readFileSync(join(out, listFile!), "utf8")).result.tools.map((t: any) => t.name) as string[];
@@ -488,4 +555,180 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   assert.equal(await ended, 0, tail());
   await until("the station's process gone", () => !alive(next.pid), tail);
   if (front > 0) await until("the front gone", () => !alive(front), tail);
+});
+
+/// A station of a release with no Node, on the data directory its key was made in (`keyIn`), enrolled in the test's
+/// workspace `w1` and run under the real launcher, its mesh on `meshPort`.
+async function launchedAt(k: { id: string; data: string }, name: string, app: string, bin: string, plane: { origin: string }, meshPort: number, env: Record<string, string>) {
+  const data = k.data;
+  const grant = new GrantKey();
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: plane.origin, station: k.id, workspace: "w1", workspace_name: "团队", name, relay_url: "", relay_urls: [], grant_keys: { keys: [grant.jwk] }, peers: [], revocations: [],
+  }));
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  const mcpPort = await freeTcpPort();
+  writeFileSync(join(data, "config.json"), JSON.stringify({ language: "en", http: { port: mcpPort }, profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  const loopPort = await freeTcpPort();
+  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { PATH: bin, HOME: data, TMPDIR: tmpdir(), STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`, STILLFAIL_AGENT_NICE: "0", ...env },
+  });
+  children.push(station);
+  let said = "";
+  station.stdout!.on("data", (d) => (said += d));
+  station.stderr!.on("data", (d) => (said += d));
+  const tail = () => said.slice(-4000);
+  await until(`${name} taken over`, () => /Node \d+ has taken over/.test(said), tail);
+  await until(`${name}'s agents' door`, async () => (await ask(mcpPort, "/admin-api/host")).status === 200, tail);
+  await until(`${name} online`, () => readJson(join(data, "run", "presence.json"))?.online === true, tail);
+  return { mcpPort, tail };
+}
+
+/// A station's key made in a data directory of its own, before the plane lists it.
+function keyIn(app: string, bin: string) {
+  const data = fresh("key");
+  const id = spawnSync(join(app, "station", "stillfail-reader"), ["id", "--data", data], { env: { PATH: bin, HOME: data }, encoding: "utf8" }).stdout.trim();
+  assert.match(id, /^[0-9a-f]{64}$/);
+  return { id, data };
+}
+
+test("two stations of a release with no Node: an agent on one asks the other over the mesh, and is answered", { skip, timeout: 300_000 }, async () => {
+  const app = fresh("app");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(binary!, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  copyFileSync(runner, join(app, "station", "stillfail-runner"));
+  chmodSync(join(app, "station", "stillfail-runner"), 0o755);
+  writeFileSync(join(app, "BUILD"), "9700\n");
+  const bin = fresh("bin");
+  fakeClaude(bin);
+  const out = fresh("out");
+  const [portA, portB] = [await freeUdpPort(), await freeUdpPort()];
+  const a = keyIn(app, bin);
+  const b = keyIn(app, bin);
+  // (both on the plane's roster of the workspace, each where its mesh listens)
+  const plane = await controlPlane([{ id: a.id, name: "mac-a", ips: [`127.0.0.1:${portA}`] }, { id: b.id, name: "mac-b", ips: [`127.0.0.1:${portB}`] }]);
+  const there = await launchedAt(b, "mac-b", app, bin, plane, portB, { FAKE_OUT: out });
+  const here = await launchedAt(a, "mac-a", app, bin, plane, portA, { FAKE_OUT: out, FAKE_EXTRA: JSON.stringify({ name: "station_list", arguments: { station: b.id } }) });
+
+  // an agent's turn on A: its station_list of B, which A asks B for over the mesh
+  const made = await ask(here.mcpPort, "/admin-api/sessions", { body: { runtime: "claude", profile: "cc" } });
+  assert.equal(made.status, 200, `${made.body}; ${here.tail()}`);
+  const key: string = made.json.key;
+  const threadId: number = made.json.thread?.id ?? made.json.thread?.thread?.id;
+  const sent = await ask(here.mcpPort, `/admin-api/threads/${threadId}/messages`, { body: { text: "what is mac-b?" } });
+  assert.ok(sent.status >= 200 && sent.status < 300, sent.body);
+  const store = Store.open(join(a.data, "stillfail.db"), join(a.data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  closers.push(() => store.close());
+  await until("its turn ended all_done", () => store.listTurns(key).some((t) => t.summary.ending === "all_done"), () => `${JSON.stringify(store.listTurns(key).map((t) => t.summary))}; ${here.tail()}`);
+  const extra = readdirSync(out).find((f) => f.endsWith("-extra-1.json"));
+  assert.ok(extra !== undefined, readdirSync(out).join(","));
+  const listed = JSON.parse(readFileSync(join(out, extra!), "utf8"));
+  assert.notEqual(listed.result?.isError, true, `${JSON.stringify(listed)}; A: ${here.tail()}; B: ${there.tail()}`);
+  const text = String(listed.result?.content?.[0]?.text ?? "");
+  // B's own description, as B said it: its id and name, not "unanswered", not a refusal
+  assert.ok(text.includes(b.id), `B described: ${text}; A: ${here.tail()}; B: ${there.tail()}`);
+  assert.doesNotMatch(text, /unanswered|Unreached|PeerRefused|PeerError/, text);
+
+  // the workspace's mesh directory brought level between them over the peer bus: each keeps both stations'
+  // announcements of their scoped bindings, signed by each (mesh/scope-sync.ts)
+  const announced = (data: string) => {
+    const db = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+    try {
+      return (db.prepare("SELECT node FROM mesh_announcements ORDER BY node").all() as { node: string }[]).map((r) => r.node);
+    } finally { db.close(); }
+  };
+  const both = [a.id, b.id].sort();
+  await until("A keeps both stations' announcements", () => JSON.stringify(announced(a.data)) === JSON.stringify(both), () => `${announced(a.data)}; A: ${here.tail()}`);
+  await until("B keeps both stations' announcements", () => JSON.stringify(announced(b.data)) === JSON.stringify(both), () => `${announced(b.data)}; B: ${there.tail()}`);
+});
+
+test("a release with no Node: a relay enrolled by an agent's token on the station's door, listed and revoked", { skip, timeout: 300_000 }, async () => {
+  const app = fresh("app");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(binary!, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  copyFileSync(runner, join(app, "station", "stillfail-runner"));
+  chmodSync(join(app, "station", "stillfail-runner"), 0o755);
+  writeFileSync(join(app, "BUILD"), "9700\n");
+  const bin = fresh("bin");
+  fakeClaude(bin);
+  const out = fresh("out");
+  const port = await freeUdpPort();
+  const k = keyIn(app, bin);
+  const plane = await controlPlane([{ id: k.id, name: "mac", ips: [`127.0.0.1:${port}`] }]);
+  const here = await launchedAt(k, "mac", app, bin, plane, port, { FAKE_OUT: out, FAKE_NO_JOB: "1" });
+  const made = await ask(here.mcpPort, "/admin-api/sessions", { body: { runtime: "claude", profile: "cc" } });
+  assert.equal(made.status, 200, `${made.body}; ${here.tail()}`);
+  const key: string = made.json.key;
+  const threadId: number = made.json.thread?.id ?? made.json.thread?.thread?.id;
+  const store = Store.open(join(k.data, "stillfail.db"), join(k.data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  closers.push(() => store.close());
+  // A turn whose agent calls the relays tool as `params` says: what the tool answered.
+  let turns = 0;
+  const relays = async (params: unknown) => {
+    // (what the turn before answered taken away: the fake numbers its turns by its own process)
+    for (const f of readdirSync(out).filter((f) => f.includes("-extra-"))) rmSync(join(out, f));
+    writeFileSync(join(out, "extra"), JSON.stringify({ name: "relays", arguments: params }));
+    turns++;
+    const sent = await ask(here.mcpPort, `/admin-api/threads/${threadId}/messages`, { body: { text: `relays ${turns}` } });
+    assert.ok(sent.status >= 200 && sent.status < 300, sent.body);
+    // (the turn that read this call is the one that answered it: a turn the station began of itself meanwhile, a
+    // nudge's, read no call and is no sign this one ended, so its end is waited for by what it wrote, the call and
+    // then its post)
+    const done = () => {
+      const file = readdirSync(out).find((f) => f.includes("-extra-"));
+      return file !== undefined && existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) ? file : undefined;
+    };
+    await until(`turn ${turns} answered its call`, done, () => `${readdirSync(out).join(",")}; ${here.tail()}`);
+    const file = done();
+    const said = JSON.parse(readFileSync(join(out, file!), "utf8"));
+    assert.notEqual(said.result?.isError, true, `${JSON.stringify(said)}; ${here.tail()}`);
+    return JSON.parse(said.result.content[0].text);
+  };
+
+  // ── a token for a relay, issued by the station an agent asked ──
+  const issued = await relays({ action: "enroll", name: "edge relay" });
+  assert.match(issued.token, /^[A-Za-z0-9_-]{43}$/, JSON.stringify(issued));
+  assert.equal(issued.issuer, k.id);
+  assert.match(issued.scope, /^[0-9a-f]{64}$/);
+
+  // ── the relay, a mesh endpoint of its own, redeems it on the station's enrollment door ──
+  const relay = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  closers.push(() => void relay.close());
+  const enrol = async (request: unknown) => {
+    const conn = await until("the enrollment door", () => relay.connect({ id: k.id, ips: [`127.0.0.1:${port}`] }, Buffer.from("stillfail/mesh-enrollment/1")), here.tail);
+    const stream = await conn.openBi();
+    await line(stream, request);
+    await stream.finish();
+    const said = await new Reader(stream).line();
+    conn.close(0, "");
+    return said;
+  };
+  // (the node is the transport's: one the request names is not taken)
+  const enrolled = await enrol({ op: "enroll", scope: issued.scope, token: issued.token, node: k.id });
+  assert.ok(enrolled.ok, `${JSON.stringify(enrolled)}; ${here.tail()}`);
+  assert.equal(enrolled.ok.record.node, relay.id());
+  assert.equal(enrolled.ok.record.generation, 1);
+  assert.deepEqual(JSON.parse(enrolled.ok.body), enrolled.ok.record);
+  // (its body as signRelayRecord writes it, byte for byte: the TypeScript stations verify it as written)
+  const r = enrolled.ok.record;
+  assert.equal(enrolled.ok.body, JSON.stringify({ scope: r.scope, node: r.node, issuer: r.issuer, generation: r.generation, name: r.name, made_by: r.made_by, revoked: r.revoked }));
+  // a token used once is used up; the registration resumed
+  const again = await enrol({ op: "enroll", scope: issued.scope, token: issued.token });
+  assert.match(String(again.error), /already used/, JSON.stringify(again));
+  assert.deepEqual((await enrol({ op: "resume", scope: issued.scope })).ok, enrolled.ok);
+
+  // ── listed by the relays tool, then revoked, the next generation ──
+  const listed = await relays({ action: "list" });
+  assert.deepEqual(listed.mesh?.map((r: any) => [r.node, r.revoked, r.name]), [[relay.id(), 0, "edge relay"]], JSON.stringify(listed));
+  const revoked = await relays({ action: "revoke", node: relay.id() });
+  assert.equal(typeof revoked.body, "string", JSON.stringify(revoked));
+  assert.equal(JSON.parse(revoked.body).revoked, 1, JSON.stringify(revoked));
+  assert.equal(JSON.parse(revoked.body).generation, 2);
+  const after = await relays({ action: "list" });
+  assert.deepEqual(after.mesh?.map((r: any) => [r.node, r.revoked]), [[relay.id(), 1]], JSON.stringify(after));
+  assert.match(String((await enrol({ op: "resume", scope: issued.scope })).code), /relay_not_registered/);
 });

@@ -172,6 +172,12 @@ priv suberror OpeningTimeout {
 }
 
 ///|
+impl Show for OpeningTimeout with output(self, logger) {
+  let OpeningTimeout(direct) = self
+  logger.write_string(if direct { "opening timed out (direct)" } else { "opening timed out" })
+}
+
+///|
 pub struct Mesh {
   priv shell : @shell.Shell
   priv options : Options

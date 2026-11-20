@@ -8,6 +8,15 @@ runs:
   steps:
     - shell: bash
       run: |
+        if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
+          git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
+          rm -f .git/info/sparse-checkout .git/index
+          git reset --hard HEAD
+        fi
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
@@ -24,10 +33,33 @@ runs:
         echo "STILLFAIL_NATIVE_CACHE=$HOME/stillfail-ci/stillfail-native" >> "$GITHUB_ENV"
         echo "STILLFAIL_NATIVE_CACHE_MAX_BYTES=10737418240" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-        echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
+        export STILLFAIL_DIRECT_DNS=223.5.5.5
+        echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
+        # The station reader's MBC_STORE (station/mb/build.sh): an entry is <store>/<2 of its key>/<key>, said used as
+        # mbc takes or keeps it (mbc.mbt's c_touch); those unused for 3 days go, the store grew without end before
+        # (a write into it failed on Mini1, 44243874638, 2026-11-18).
+        find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mtime +3 -exec rm -rf {} + 2>/dev/null || true
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
         sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
+        upkeep="$HOME/stillfail-ci/.upkeep"
+        if [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
+          mkdir -p "$HOME/stillfail-ci" && touch "$upkeep"
+          if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
+            find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
+            find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          # Each reader's prepared C shared among the runners (station/mb/build.sh), touched on use.
+          if [ -d "$HOME/stillfail-ci/reader-mbc-prepped" ]; then
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 \( -name '*.lock' -o -name '*.tmp.*' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 -type f -name 'prepped-*.c' -mmin +180 -delete 2>/dev/null || true
+          fi
+          for diag in "$HOME"/actions-runner*/_diag; do
+            [ -d "$diag" ] || continue
+            find "$diag" -maxdepth 1 -type f -name 'Worker_*.log' -mtime +1 -delete 2>/dev/null || true
+            find "$diag" -maxdepth 2 -type f -mtime +3 -delete 2>/dev/null || true
+          done
+        fi
         archives="$HOME/stillfail-ci/action-archives"
         if [ -z "$(find "$archives/.filled" -mmin -60 2>/dev/null)" ]; then
           mkdir -p "$archives" && touch "$archives/.filled"

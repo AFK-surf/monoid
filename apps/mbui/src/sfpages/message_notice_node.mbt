@@ -10,9 +10,9 @@
 /// What still.fail said (system_notice's) in its row's room (message_row_frame_node: `key`, its list's Entry::id; `side`,
 /// `top`; `over`), as `m` says it as it changes: its pill across the chat, its words on one line, a failure's in red;
 /// pressed, open (`opened`, by its ts: all its words, what failed said of it with 复制, its time under it) or closed again.
-/// One about a profile, what went wrong leads to the profile's page; one saying the station lacks the chat's runtime
-/// ends in · 安装; a failure the station takes reports of in · 上报 (asked first); one whose agent waits to retry, 取消
-/// after the pill.
+/// One about a profile, what to do of it at its end (· 重新登录, · 设置代理), else what went wrong, leads to the profile's
+/// page; one saying the station lacks the chat's runtime ends in · 安装; a failure the station takes reports of in
+/// · 上报 (asked first); one whose agent waits to retry, 取消 after the pill.
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn notice_said_node(
@@ -46,13 +46,13 @@ fn notice_body_node(
     @sf.style_node(across, fn() { notice_across })
     across.box(fn(beside) {
       @sf.style_node(beside, fn() { notice_with_action })
-      notice_pill_node(beside, src, here, m, open, opened, copied)
+      notice_pill_node(beside, src, here, m, open, opened, copied, across)
     })
     |> ignore
     // (its time under it while it is open: one against nothing said to leave, as a show said so would not (it holds
-    // its place unfaded, then lets it go at once): coming, its place opens and it is seen once that holds it whole;
-    // going, it fades where it is, its place closing after; no words of it cut (msg_part_leave_ms; the coordinator of
-    // the migration, 2026-11-14))
+    // its place unfaded, then lets it go at once): coming, its place opens from the pill's foot as that is drawn on its
+    // way and it is seen once that holds it whole, never cut, never over the pill still opening; going, it fades where
+    // it is, its place closing after (msg_part_leave_ms; the coordinator of the migration, 2026-11-14))
     across.pick(open, leave=msg_part_leave_ms, fn(t, on) { if on { message_time_node(t, here.tips, fn() { m().time }) } })
   })
   |> ignore
@@ -61,14 +61,16 @@ fn notice_body_node(
 ///|
 /// How a notice's words are drawn now (system_notice's): a chat's run changed, open, a line each (`Lines`), else to
 /// another runtime or model each side after its mark (`Sides`), else on one line or what changed (`Short`); about a
-/// profile, its link at its end (`Linked`); else its Markdown, open or on one line (`Md`).
+/// profile, its link at its end (`Linked`); else its Markdown (`Md`). Linked and Md are the same words open or closed,
+/// broken anew (open: all of them; closed: on one line, cut short), one node for both, so that opening never puts one
+/// copy for another (a pick under a page's list draws those smaller and grows them back).
 #derive(Eq)
 priv enum NoticeWords {
   Lines
   Sides
   Short
-  Linked(Bool)
-  Md(Bool)
+  Linked
+  Md
 }
 
 ///|
@@ -83,19 +85,21 @@ fn notice_words_of(m : Message, open : Bool) -> NoticeWords {
       Short
     }
   } else if m.profile != "" && m.notice_link >= 0 && m.notice_link <= m.notice_words.length() {
-    Linked(open)
+    Linked
   } else {
-    Md(open)
+    Md
   }
 }
 
 ///|
 /// What a notice's pill ends in (system_notice's): · 安装 where the station lacks the chat's runtime, else its 取消, 重试
-/// or 重新分配账号 while offered (notice_after), else · 上报 where the failure is reportable, else nothing.
+/// or 重新分配账号 while offered (notice_after), else what to do of the profile it is about (· 重新登录, · 设置代理:
+/// its page), else · 上报 where the failure is reportable, else nothing.
 #derive(Eq)
 priv enum NoticeEnd {
   Install
   Act
+  ProfileAction
   Report
   NoEnd
 }
@@ -111,53 +115,48 @@ fn notice_pill_node(
   open : () -> Bool,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
+  across : @view.View,
 ) -> Unit {
   let failed = fn() { m().notice_failed }
   let ink = fn() -> @ui.Color { if failed() { Danger } else { Fg } }
-  v.box(fn(p) {
-    @sf.style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
-    @sf.presses_node(p, fn() {
+  let end = fn() {
+    let now = m()
+    match now.install {
+      Some(i) if i.action != "" => Install
+      _ =>
+        if notice_after(now) is Some(_) {
+          Act
+        } else if now.profile != "" && now.notice_profile_action != "" {
+          ProfileAction
+        } else if now.reportable {
+          Report
+        } else {
+          NoEnd
+        }
+    }
+  }
+  @sf.notice_pill_node(
+    v,
+    fn() { notice_label(m()) },
+    open,
+    failed,
+    fn() { m().notice_count },
+    // (opened or closed by the person's press: its pill goes from the shape it had to the one it comes to, across and
+    // down, its corners with it, on its list's way, @view.transition)
+    fn() {
       let ts = @signals.untracked(m).ts
-      opened[ts] = !opened.get(ts).unwrap_or(false)
-    })
-    // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
-    // press_stays)
-    p.says(By(fn() { Some(@view.said(Button, label=notice_label(m()), expanded=open())) })) |> ignore
-    p.box(fn(line) {
-      @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
-      line.box(fn(room) {
-        @sf.style_node(room, fn() { notice_words_room }, in_row=true)
-        // (giving way along the line to what it ends in, its words cut short in it: an old view's box's)
-        room.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) })
+      // (its size said to change for the press before anything of it is laid out anew: its words broken anew are no
+      // structure, so without it the list would take where all was drawn only once the words were laid out open, and
+      // the pill would widen at once)
+      @view.transition(fn() {
+        across.resizes() |> ignore
+        opened[ts] = !opened.get(ts).unwrap_or(false)
       })
-      |> ignore
-      // (what follows its words held to the foot of their first line: notice_end_strut)
-      let strut = fn() {
-        match notice_words_of(m(), false) {
-          Md(_) => notice_end_strut(@ui.tree_theme().leading(notice_leading).unwrap_or(0.0), line.words_scale())
-          _ => 0.0
-        }
-      }
-      // (how many it folds, after its words, never cut short with them: system_notice's)
-      line.show(fn() { m().notice_count > 1 }, along_row=true, fn(n) {
-        @sf.style_node(n, fn() { notice_count_room.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
-        @sf.words_node(n, fn() { "×\{m().notice_count}" }, fn() { notice_count_words.then(@ui.text_style(color=ink())) }) |> ignore
-      })
-      let end = fn() {
-        let now = m()
-        match now.install {
-          Some(i) if i.action != "" => Install
-          _ =>
-            if notice_after(now) is Some(_) {
-              Act
-            } else if now.reportable {
-              Report
-            } else {
-              NoEnd
-            }
-        }
-      }
+    },
+    fn(room) { room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, open, how) }) },
+    // (what follows its words held to the foot of their first line where they are Markdown)
+    md_led=fn() { notice_words_of(m(), false) is Md },
+    end=fn(line, strut) {
       line.pick(end, fn(e, which) {
         match which {
           Install => {
@@ -193,15 +192,18 @@ fn notice_pill_node(
               }
             })
           }
+          ProfileAction =>
+            notice_action_node(e, fn() { m().notice_profile_action }, ink, fn() { false }, strut~, fn() {
+              open_page(Setting(@settings.Route::Profile(here.station, @signals.untracked(m).profile)))
+            })
           Report => notice_report_node(e, src, here, m, ink, strut~)
           NoEnd => ()
         }
       })
-    })
-    |> ignore
-    // (what failed said of it, as it said it: open only)
-    p.show(fn() { open() && m().notice_detail != "" }, fn(d) {
-      @sf.style_node(d, fn() { notice_detail_room })
+    },
+    // (what failed said of it, as it said it)
+    detailed=fn() { m().notice_detail != "" },
+    detail=fn(d) {
       d.box(fn(w) {
         w
         .words_runs(By(fn() { [@ui.span(m().notice_detail, mono=true)] }))
@@ -211,8 +213,8 @@ fn notice_pill_node(
       })
       |> ignore
       notice_copy_node(d, m, ink, copied)
-    })
-  })
+    },
+  )
   |> ignore
 }
 
@@ -228,7 +230,14 @@ fn notice_label(m : Message) -> String {
 
 ///|
 /// A notice's words (system_notice's, by NoticeWords) in `v`, in `ink`, at the notice's size and leading.
-fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, ink : () -> @ui.Color, how : NoticeWords) -> Unit {
+fn notice_words_node(
+  v : @view.View,
+  here : MessageNodeHere,
+  m : () -> Message,
+  ink : () -> @ui.Color,
+  open : () -> Bool,
+  how : NoticeWords,
+) -> Unit {
   let style = fn(open : Bool) { (if open { notice_words_open } else { notice_words }).then(@ui.text_style(color=ink())) }
   match how {
     Lines =>
@@ -270,7 +279,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
         |> ignore
       })
       |> ignore
-    Linked(open) => {
+    Linked => {
       let runs = fn() {
         let now = m()
         [
@@ -281,12 +290,12 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
       v.box(fn(w) {
         w
         .words_runs(By(runs))
-        .words_look(By(fn() { @ui.style_words(style(open)) }))
+        .words_look(By(fn() { @ui.style_words(style(open())) }))
         .runs_look(By(fn() {
           { ..@view.runs_plain, link: if m().notice_failed { @sf.theme().p.red } else { @sf.theme().p.text } }
         }))
-        .ink(By(fn() { @ui.style_ink(style(open)) }))
-        .allow_ellipsis(Is(!open))
+        .ink(By(fn() { @ui.style_ink(style(open())) }))
+        .allow_ellipsis(By(fn() { !open() }))
         |> ignore
         @ui.runs_links(w, runs, fn(_) {
           open_page(Setting(@settings.Route::Profile(here.station, @signals.untracked(m).profile)))
@@ -295,7 +304,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
       })
       |> ignore
     }
-    Md(open) => {
+    Md => {
       // (its words as Markdown, as the core read them (a chat it opened: a link to it), of the notice's size open or
       // closed; closed, their first block on one line)
       let th = @ui.tree_theme()
@@ -306,7 +315,7 @@ fn notice_words_node(v : @view.View, here : MessageNodeHere, m : () -> Message, 
         tree=fn() { m().notice_md },
         size=fn() { meta },
         line=fn() { th.leading(notice_leading).unwrap_or(0.0) / meta },
-        one_line=!open,
+        one_line_by=fn() { !open() },
         ink=fn() { if m().notice_failed { @sf.theme().p.red } else { 0L } },
         on_link=fn(h) { open_link(h) },
         chat_title=fn(h) { chat_title_of(m())(h) },
@@ -340,6 +349,9 @@ fn notice_side_node(
     .ink(By(fn() { @ui.style_ink(style()) }))
     .allow_ellipsis(Is(true))
     .cuts(Is(cuts))
+    // (the side that cuts kept whole first: the one beside it given up where both have not the room, as the old
+    // view's notice kept it (message.mbt's `keep`), never this one cut to its least)
+    .fit_whole(Is(cuts))
     |> ignore
   })
   |> ignore
@@ -356,36 +368,7 @@ fn notice_action_node(
   strut? : () -> Double = fn() { 0.0 },
   run : () -> Unit,
 ) -> Unit {
-  v.box(fn(e) {
-    @sf.style_node(e, fn() { notice_end.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
-    e.box(fn(d) {
-      @sf.style_node(d, fn() { notice_dot_room }, in_row=true)
-      @sf.words_node(d, fn() { "·" }, fn() { if ink() == Danger { notice_dot_failed } else { notice_dot } }) |> ignore
-    })
-    |> ignore
-    e.box(fn(b) {
-      @sf.presses_node(b, run, on=fn() { !busy() })
-      b.says(By(fn() { Some(@view.said(Button, label=action())) })) |> ignore
-      let look = fn() {
-        match (ink() == Danger, busy()) {
-          (false, false) => notice_act
-          (false, true) => notice_act_busy
-          (true, false) => notice_act_failed
-          (true, true) => notice_act_failed_busy
-        }
-      }
-      b.box(fn(w) {
-        w
-        .words_runs(By(fn() { [@ui.span(action(), underline=true)] }))
-        .words_look(By(fn() { @ui.style_words(look()) }))
-        .ink(By(fn() { @ui.style_ink(look()) }))
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
+  @sf.notice_end_action_node(v, action, fn() { ink() == Danger }, busy, run, strut~) |> ignore
 }
 
 ///|
@@ -458,17 +441,15 @@ fn notice_copy_node(v : @view.View, m : () -> Message, ink : () -> @ui.Color, co
     }
   })
   v.owns(fn() { (off.val)() }) |> ignore
-  v.box(fn(b) {
+  let words = fn() { @sf.t(if said.get() { "common.copied" } else { "common.copy" }) }
+  @sf.action_box_node(v, words, fn(b) {
+    let now = @signals.untracked(m)
+    @ui.clipboard_set(now.notice_detail)
+    let at = b.cause_at()
+    copied[now.ts] = at
+    said_from(at)
+  }, fn(b) {
     @sf.style_node(b, fn() { notice_copy_room })
-    @sf.presses_node(b, fn() {
-      let now = @signals.untracked(m)
-      @ui.clipboard_set(now.notice_detail)
-      let at = b.cause_at()
-      copied[now.ts] = at
-      said_from(at)
-    })
-    let words = fn() { @sf.t(if said.get() { "common.copied" } else { "common.copy" }) }
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
     let look = fn() { if ink() == Danger { notice_act_failed } else { notice_act } }
     b.box(fn(w) {
       w

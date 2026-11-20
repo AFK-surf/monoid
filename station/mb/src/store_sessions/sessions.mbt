@@ -61,14 +61,6 @@ pub fn Store::session_key_by_token(self : Store, token : String) -> Json raise {
 }
 
 ///|
-pub fn Store::session_by_token(self : Store, token : String) -> Json raise {
-  match self.one("SELECT * FROM sessions WHERE token = ?", [jstr(token)]) {
-    Some(r) => to_session(r)
-    None => Json::null()
-  }
-}
-
-///|
 /// store.ts ARCHIVED_WORKSPACE_BATCH.
 let archived_workspace_batch : Int32 = 64
 
@@ -131,6 +123,35 @@ pub fn Store::next_archived_at(self : Store, after : Json) -> Json raise {
     Some(r) => col(r, "archived_at")
     None => Json::null()
   }
+}
+
+///|
+/// Bounded page of idle unarchived, non-running sessions with `last_active_at <= through`, oldest activity first,
+/// using the `sessions_live` partial index.
+pub fn Store::idle_unarchived_sessions(
+  self : Store,
+  after : Json,
+  through : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  let sql = StringBuilder::new()
+  sql.write_string(
+    "SELECT key, workspace, last_active_at FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND running = 0 AND last_active_at <= ?",
+  )
+  let args : Array[Json] = [through]
+  if !(after is Null) {
+    sql.write_string(" AND last_active_at >= ? AND (last_active_at > ? OR key > ?)")
+    let at = field(after, "lastActiveAt").unwrap_or(Json::null())
+    let k = field(after, "key").unwrap_or(Json::null())
+    args.push(at)
+    args.push(at)
+    args.push(k)
+  }
+  sql.write_string(" ORDER BY last_active_at ASC, key ASC LIMIT ?")
+  args.push(jint(limit.to_int64()))
+  self
+  .all(sql.to_string(), args)
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "lastActiveAt": col(r, "last_active_at") })
 }
 
 ///|
@@ -251,6 +272,21 @@ pub fn Store::sessions_in_use(self : Store) -> Array[Json] raise {
     }
   }
   out
+}
+
+///|
+/// What `sessions_in_use` gives of a session for its directories: its key, workspace (`""` for none) and cwd (its
+/// workspace for none), as `to_session`'s `key`, `workspace` and `cwd` read as strings.
+fn place_of_session(r : Map[String, Json]) -> (String, String, String) {
+  let ws = str_of(col(r, "workspace")).unwrap_or("")
+  (str_of(col(r, "key")).unwrap_or(""), ws, str_of(col(r, "cwd")).unwrap_or(ws))
+}
+
+///|
+/// The sessions of `sessions_in_use`, each its key, workspace and cwd only (no row made whole): what cold storage asks
+/// of each session of an upkeep round.
+pub fn Store::in_use_places(self : Store) -> Array[(String, String, String)] raise {
+  self.all(in_use_places, []).map(place_of_session)
 }
 
 ///|
@@ -449,7 +485,10 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
         ),
         [
           nullish(get("key")),
-          nullish(get("connect")),
+          match nullish(get("connect")) {
+            String("ember" | "stillfail") => Json::string(internal_connect)
+            v => v
+          },
           or_else(nullish(get("scope")), jstr("thread")),
           nullish(get("title")),
           nullish(get("createdBy")),
@@ -606,6 +645,16 @@ pub fn Store::set_session_context_before(
 }
 
 ///|
+/// store.ts `noteCompacted`: its runtime session compacted its context once more.
+pub fn Store::note_compacted(self : Store, key : String) -> Unit raise {
+  self.update_session(
+    key,
+    "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1",
+    [jstr(key)],
+  )
+}
+
+///|
 pub fn Store::set_session_afresh(
   self : Store,
   key : String,
@@ -688,7 +737,7 @@ pub fn Store::set_runtime_session_id(
 ) -> Unit raise {
   self.with_changes(changes => {
     ignore(
-      self.run("UPDATE sessions SET runtime_session_id = ?1 WHERE key = ?2", [
+      self.run("UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2", [
         id,
         jstr(key),
       ]),
@@ -713,15 +762,6 @@ pub fn Store::conversation_since(self : Store, key : String) -> Json raise {
         or_else(col(r, "at"), jnum(0.0))
       }
   }
-}
-
-///|
-pub fn Store::set_transcript_length(
-  self : Store,
-  key : String,
-  n : Json,
-) -> Unit raise {
-  self.set_transcript_lengths([(key, n)])
 }
 
 ///|
@@ -918,8 +958,11 @@ pub fn Store::session_usage(self : Store, key : String) -> Json raise {
 }
 
 ///|
-pub fn Store::session_keys(self : Store) -> Array[Json] raise {
-  self.all("SELECT key FROM sessions", []).map(r => col(r, "key"))
+/// Keys of sessions whose kept usage summary still has calls of an unpriced model, so a catalog update can price them.
+pub fn Store::unpriced_usage_sessions(self : Store) -> Array[String] raise {
+  self
+  .all("SELECT session FROM session_usage WHERE json_extract(usage, '$.unpricedCalls') > 0", [])
+  .map(r => js_string(col(r, "session")))
 }
 
 ///|
@@ -1332,6 +1375,27 @@ pub fn Store::transcript_in_use(
   except : Json,
 ) -> Bool raise {
   self.one(transcript_in_use, [id, runtime, except]) is Some(_)
+}
+
+///|
+pub fn Store::transcript_referenced(
+  self : Store,
+  runtime : Json,
+  id : Json,
+  except : Json,
+) -> Bool raise {
+  self.one(transcript_referenced, [id, runtime, except]) is Some(_)
+}
+
+///|
+pub fn Store::session_paths_page(
+  self : Store,
+  after : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  self
+  .all(session_paths_page, [after, jint(limit.to_int64())])
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "cwd": col(r, "cwd"), "archivedAt": col(r, "archived_at") })
 }
 
 ///|

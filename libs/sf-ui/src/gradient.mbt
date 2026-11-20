@@ -23,11 +23,19 @@ pub fn gradient_key(w : Double, h : Double, angle : Double, from : Int64, to : I
   let pw = gradient_px
   let ph = if w <= 0.0 { 2 } else { dmax_int(2, (h / w * pw.to_double()).round().to_int()) }
   let key = "mem:sf-gradient/\{from}/\{to}/\{angle}/\{pw}x\{ph}"
-  // (made once: its key says it all, the same picture each time it is asked for)
-  if !@ui.has_image(key) {
-    @ui.add_image(key, @pixels.png(pw, ph, gradient_pixels(pw, ph, w, h, angle, from, to)))
-  }
+  // (made once while kept: its key says it all, the same picture each time it is asked for)
+  gradients_made.ask(key, fn() { @ui.add_image(key, @pixels.png(pw, ph, gradient_pixels(pw, ph, w, h, angle, from, to))) })
   key
+}
+
+///|
+/// The gradients' pictures kept (MadeImages): as many as a run shows at once, many times over.
+// kept across runs: let go of as a run begins (on_reset)
+let gradients_made : MadeImages = MadeImages::new(64)
+
+///|
+fn init {
+  @ui.on_reset(fn() { gradients_made.clear() })
 }
 
 ///|

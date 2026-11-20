@@ -149,6 +149,9 @@ test "Home: a row swiped off is archived once it has gone, and leaves no copy of
 test "words sent fly from the field into their bubble" {
   // the fixture's own station takes what is sent: the outbox at once, the message after
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -191,6 +194,9 @@ test "words sent fly from the field into their bubble" {
 ///|
 test "words sent: the composer stays as it was while they are in it, and comes down as they let go of it, not from under them" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -232,6 +238,9 @@ test "words sent: the composer stays as it was while they are in it, and comes d
 ///|
 test "words sent set out from where they were typed and land where their message has them, set alike all the way" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -271,6 +280,9 @@ test "words sent set out from where they were typed and land where their message
 ///|
 test "words sent break their lines in their message where the composer broke them: a paragraph goes a line a piece" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -412,7 +424,7 @@ test "the chat's sheet going down: its own rows take no tap, the scrim none" {
   tap_once_on(t, "固定")
   t.tap_once(195.0, 60.0)
   // sunk: on the sheet's spring, at most the window's height
-  t.run_for(@motion.sheet_spring.duration(844.0, 0.0, 0.0))
+  t.run_for(@motion.carousel_spring.duration(844.0, 0.0, 0.0))
   assert_eq(named(calls, "chat.pin").length(), 0)
   assert_true(!@sf.presenting() && !@sf.presented_drawn())
 }
@@ -454,7 +466,8 @@ test "the bar going down under a page pushed takes no tap: the field tapped wher
   tap_once_on(t, "夜里的构建又失败了")
   // the chat half way in (its composer in the window: a page's Move across the phone), the bar still going down over it
   t.run_for(phone_page_ms / 2.0)
-  assert_true(bar.vis.value > 0.01 && bar.vis.value < 0.5, msg="\{bar.vis.value}")
+  let vis = bar.vis.at(t.time()).0
+  assert_true(vis > 0.01 && vis < 0.5, msg="\{vis}")
   let (x, y, w, h) = t.rect_of("发消息").unwrap()
   assert_true(y + h > 844.0 - 22.0 - 56.0)
   t.tap_once(x + w / 2.0, y + h / 2.0)

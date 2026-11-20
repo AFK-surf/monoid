@@ -64,6 +64,19 @@ pub(all) struct Members {
   /// A core's language by its headers (api/request.ts `langOfCore`), and what it is told to update in it.
   lang_of : (Array[(String, String)]) -> String
   update_words : (String) -> String
+  /// A member's device in its workspace's mesh scope (mesh/leaf.ts), where the station keeps a directory.
+  leaves : LeafDoor?
+}
+
+///|
+/// What a member's connection asks of its workspace's mesh scope (leaf.ts `LeafAttachments`): told each admission
+/// and renewal of the connection (workspace, expiry in unix seconds), the scope's view, followed as it changes, and a
+/// device's binding attached.
+pub(all) struct LeafDoor {
+  authenticated : (@door.Connection, String, Int64) -> Unit
+  view : (String) -> Json raise
+  follow : async (@door.Connection, String, @door.Stream) -> Unit
+  attach : async (@door.Connection, String, Json, String) -> Json
 }
 
 ///|
@@ -209,6 +222,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
         device,
         base,
         field(line, "lock").unwrap_or(Json::null()),
+        role?=if admitted.viewer.role != "" { Some(admitted.viewer.role) } else { None },
       )
       let in_it = in_lock_bringing(k, admitted, named, device, line)
       let in_it = if in_it.viewer.lock_id is None && base is Some(_) {
@@ -248,6 +262,10 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
       Some((name, _)) => name
       None => (k.name)()
     }
+    match m.leaves {
+      Some(l) => (l.authenticated)(conn, current.val.viewer.workspace, current.val.exp)
+      None => ()
+    }
     let line_m : Map[String, Json] = {
       "ok": true,
       "station": Json::string(station),
@@ -261,6 +279,9 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
     }
     if tailnet.length() > 0 {
       line_m["tailnet"] = Json::array(tailnet.map(x => Json::string(x)))
+    }
+    if m.leaves is Some(_) {
+      line_m["meshLeaf"] = true
     }
     let last_ways = Ref("")
     // Who the member is, told what answers a route itself as it is now (None: gone).
@@ -307,7 +328,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
       let left = current.val.exp * 1000L - (k.now_secs)() * 1000L
       let ms = (if left < 0L { 0L } else { left }) + 50L
       let at = if ms > 2147483647L { 2147483647 } else { ms.to_int() }
-      expiry.val = Some(@door.after(rt, at, () => ignore(rt.fork(() => if !gone() { watch_expiry() }))))
+      expiry.val = Some(@door.after(rt, at, () => ignore(rt.fork_daemon("member expiry", on_error=_ => (conn.close)(3, "lock_unconfirmed"), () => if !gone() { watch_expiry() }))))
     }
     let unlisten : Ref[() -> Unit] = Ref(() => ())
     Let({
@@ -324,7 +345,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
         })
         (m.connected)()
         last_ways.val = paths_of(conn)
-        ignore(rt.fork(name="member closed", () => {
+        ignore(rt.fork_daemon("member closed", on_error=_ => (), () => {
           let why = (conn.closed)() catch { _ => return }
           let ways = paths_of(conn)
           let with_ : Map[String, Json] = {
@@ -342,19 +363,23 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
           @door.log("info", "mesh", "a device's connection ended", Json::object(with_))
         }))
         watch_expiry()
-        let on_change = () => ignore(rt.fork(() => ignore(gone())))
+        let on_change = () => ignore(rt.fork_daemon("member gone", on_error=_ => (conn.close)(3, "lock_unconfirmed"), () => ignore(gone())))
         let off_cloud = (k.listen)(on_change)
         let off_persons = (k.persons_listen)(on_change)
         unlisten.val = () => {
           off_cloud()
           off_persons()
         }
-        ignore(rt.fork(() => told(false)))
+        ignore(rt.fork_quiet(name="member told", () => told(false)))
       },
       renew: line => {
         let (a, n) = check(line, _ => ())
         current.val = a
         named.val = n
+        match m.leaves {
+          Some(l) => (l.authenticated)(conn, a.viewer.workspace, a.exp)
+          None => ()
+        }
         watch_expiry()
         told(false)
         { "ok": true, "expires_at": Json::number(current.val.exp.to_double()) }
@@ -378,7 +403,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
           off()
         }
         (unlisten.val)()
-        ignore(rt.fork(() => told(true)))
+        ignore(rt.fork_quiet(name="member told gone", () => told(true)))
       },
     })
   }
@@ -499,6 +524,7 @@ fn tracing(
     finish: async fn() { (stream.finish)() },
     stopped: async fn() -> Int? { (stream.stopped)() },
     reset: async fn(code : Int) { (stream.reset)(code) },
+    media_datagrams: stream.media_datagrams,
   }
   (counted, head, error => end(false, error))
 }
@@ -606,6 +632,42 @@ async fn answer_request(
   let build = saw_build(k, viewer, asking)
   if moved_too_old(k, viewer, build) {
     return answer_json(stream, 426, ({ "error": Json::string((m.update_words)(lang)), "update": true } : Json).stringify())
+  }
+  // (a device's leaf in its workspace's mesh scope: serve.ts's `/admin/api/mesh/leaf`, its events)
+  if path == "/admin/api/mesh/leaf/events" && verb == "GET" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    @door.write_line(stream, { "status": 200, "headers": { "content-type": "application/x-ndjson" } })
+    return (l.follow)(conn, viewer.workspace, stream)
+  }
+  if path == "/admin/api/mesh/leaf" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    let answered = try {
+      if verb == "GET" {
+        Ok((200, (l.view)(viewer.workspace)))
+      } else {
+        let body = reader.rest()
+        if verb != "POST" || body.length() > 16384 {
+          Ok((400, ({ "error": "invalid leaf attachment request" } : Json)))
+        } else {
+          let input = @json.parse(@utf8.decode_lossy(body))
+          match input {
+            Object(o) if o.get("target") is Some(String(target)) =>
+              Ok((200, (l.attach)(conn, viewer.workspace, o.get("descriptor").unwrap_or(Json::null()), target)))
+            _ => Ok((400, ({ "error": "missing leaf target" } : Json)))
+          }
+        }
+      }
+    } catch {
+      e => Err(e)
+    }
+    return match answered {
+      Ok((code, said)) => answer_json(stream, code, said.stringify())
+      Err(e) => answer_json(stream, 403, ({ "error": Json::string("\{e}") } : Json).stringify())
+    }
   }
   if m.streams is Some(parts) && parts(head) is Some(part) {
     return part({ conn, viewer, head, stream, reader })

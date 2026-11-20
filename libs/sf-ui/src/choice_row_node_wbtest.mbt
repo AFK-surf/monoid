@@ -126,10 +126,10 @@ fn choice_rows_same(look : Look, platform : Int, card? : Bool = false) -> Unit r
     t.draw()
     let old_lit = drawn_within(t, o.rect)
     t.move_to(n.rect.0 + 30.0, n.rect.1 + n.rect.3 / 2.0)
-    t.draw()
+    t.run_for(dur_ms)
     assert_eq(old_lit, drawn_within(t, n.rect), msg="\{at}: pointed at")
     t.leave()
-    t.draw()
+    t.run_for(dur_ms)
     // pressed and held (a ripple under a finger), then let go: done once, where it can be
     for side in [(o, "old"), (n, "new")] {
       let (r, name) = side

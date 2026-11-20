@@ -123,3 +123,23 @@ test("a step of the natives action failing is the job's setting up", async () =>
   const r = await run([{ run: { conclusion: "failure" }, jobs: [job(11, "check-core (0)", { took: 30, steps: [...setup, step("Run ./.github/actions/natives", "failure"), step("Core tests", "skipped")] }), gateFailed] }]);
   assert.equal(r.ok, true, r.said);
 });
+
+test("cut at 5 minutes after its checkout's SYN to github.com was lost: let through; with the change's own failure or no network's in its log: not", async () => {
+  const steps = [
+    { name: "Set up job", conclusion: "success", started_at: at(0), completed_at: at(2) },
+    { name: "Run actions/checkout@v5", conclusion: "success", started_at: at(2), completed_at: at(231) },
+    { name: "Station tests", conclusion: "cancelled", started_at: at(245), completed_at: at(306) },
+  ];
+  const jobs = [job(12, "check-station (1)", { took: 309, conclusion: "cancelled", steps }), gateFailed];
+  const syn = "fatal: unable to access 'https://github.com/AFK-surf/monoid/': Failed to connect to github.com port 443 after 135088 ms: Couldn't connect to server\n";
+  const cut = "##[error]The job has exceeded the maximum execution time of 5m0s\n";
+  const ok = await run([{ run: { conclusion: "failure" }, jobs }], { 12: syn + cut });
+  assert.equal(ok.ok, true, ok.said);
+  assert.match(ok.said, /check-station \(1\): let through: setting up took 231 s \(.*Failed to connect to github\.com port 443.*\), leaving 61 s/);
+  for (const also of ["AssertionError: expected 1\n", "exit code 124\n"]) {
+    const r = await run([{ run: { conclusion: "failure" }, jobs }], { 12: syn + also + cut });
+    assert.equal(r.ok, false, also);
+    assert.match(r.said, /check-station \(1\): NOT let through: ran its time out \(309 s\)/);
+  }
+  assert.equal((await run([{ run: { conclusion: "failure" }, jobs }], { 12: cut })).ok, false);
+});

@@ -27,7 +27,7 @@ fn desk_composer_tester(
     },
   }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-  // (made as nodes where both_pages says, 试用新输入框: the chat's composer made as nodes (sfpages' chat_composer_node,
+  // (made as nodes where both_pages says: the chat's composer made as nodes (sfpages' chat_composer_node,
   // `spec_of`'s default: no test here gives another) drawn on its own in the window as the old one is below, over what
   // the presenters show)
   if both_nodes.val {
@@ -256,6 +256,17 @@ fn shown_lines(t : @ui.Tester) -> Int {
 }
 
 ///|
+/// What a row of the `@` menu is to a screen reader as both_pages runs now: the old composer's a button, the one made as
+/// nodes an option of its combobox (@sf.offers_node).
+fn at_row() -> @ui.Role {
+  if both_nodes.val {
+    Option
+  } else {
+    Button
+  }
+}
+
+///|
 /// The composer's field tapped in its middle (the lowest field drawn: the composer's, the old one's or made as nodes).
 fn desk_field_tap(t : @ui.Tester) -> Unit {
   match composer_field(t) {
@@ -297,7 +308,7 @@ test "desk composer: `@` and words offer the chats they find over it (ChatRefMen
     assert_eq(desk_words(src), "看 @[首页的列表改成按天分组] ")
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     assert_true(t.find("引用对话") is None)
     // drawn as the mark: `[@…]`, its brackets clear
@@ -323,7 +334,7 @@ test "desk composer: the `@` menu offers the workspace's other stations' chats t
     assert_true(after_on_its_row(t, "夜里的构建又失败了") == ["Maple", "15 分钟前"], msg=about_its_row(t, "夜里的构建又失败了"))
     assert_true(after_on_its_row(t, "首页的列表改成按天分组") == ["8 分钟前"], msg=about_its_row(t, "首页的列表改成按天分组"))
     // keyboard and mouse's row: a menu's 34 (a finger's 44: chat_refs_wbtest)
-    let (_, _, _, high) = t.get(Button, label="夜里的构建又失败了").rect
+    let (_, _, _, high) = t.get(at_row(), label="夜里的构建又失败了").rect
     assert_true(high >= 34.0 && high < 44.0, msg="\{high}")
   })
 }
@@ -337,9 +348,9 @@ test "desk composer: the pointer moving over the `@` menu's chats chooses them; 
     t.type_text("@的")
     t.frame()
     let b = "首页的列表改成按天分组"
-    let chosen = fn() raise { t.get(Button, label=b).selected }
+    let chosen = fn() raise { t.get(at_row(), label=b).selected }
     // moved onto it: chosen
-    let (x, y, w, h) = t.get(Button, label=b).rect
+    let (x, y, w, h) = t.get(at_row(), label=b).rect
     t.move_to(x + w / 2.0, y + h / 2.0)
     t.frame()
     assert_eq(chosen(), Some(true))
@@ -393,7 +404,7 @@ test "desk composer: Escape closes the `@` menu for that `@`; the words stay, En
     t.frame()
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     assert_true(t.find("引用对话") is None)
     t.enter()
@@ -921,11 +932,11 @@ test "a phone's ＋: the sheet of what can go in (Attach.kt); 照片和视频 as
     let calls : Array[Made] = []
     let (t, _) = desk_composer_tester(calls, pointing=Finger, platform=2)
     t.draw()
-    // (this window's ＋ panel beside it, not a sheet: open at its declared moment, its way in over @kit.pop_ms from the
+    // (this window's ＋ panel beside it, not a sheet: open at its declared moment, its way in over @motion.pop_ms from the
     // press)
     let pressed = t.time()
     t.click(Button, label=@sf.t("web-main.composer.attach"))
-    t.run_for(pressed + @kit.pop_ms - t.time())
+    t.run_for(pressed + @motion.pop_ms - t.time())
     assert_true(t.find("照片") is Some(_))
     assert_true(t.find("Station 文件") is Some(_))
     // (what the system's picker answers, said before it is asked; the tile, not the strip's last, which asks for the

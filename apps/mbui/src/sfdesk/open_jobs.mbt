@@ -210,127 +210,6 @@ fn open_job_where_age(job : Json?) -> String {
 }
 
 ///|
-/// The workspace's long jobs (OpenJobs) in 待处理's panel beside the rail's bell: the viewer's own, each group under its
-/// heading, then the others' folded under 其他运行中 · N; nothing while there are none. A row pressed closes the panel
-/// (`close`).
-fn open_jobs(c : @ui.Ctx, src : Source, w : Workspace, close : () -> Unit) -> Unit {
-  let mine = open_jobs_groups(src, w, "groups")
-  let others = open_jobs_groups(src, w, "otherGroups")
-  if mine.length() == 0 && others.length() == 0 {
-    return
-  }
-  c.box(style=open_jobs_box, fn() {
-    for g in mine {
-      open_jobs_group(c, src, open_jobs_group_key(w.id, "groups", text(Some(g), "key")), g, close)
-    }
-    if others.length() > 0 {
-      let open = open_jobs_others.contains(w.id)
-      let id = c.id("open-jobs/others/" + w.id)
-      c.on_press(id, fn() {
-        if open_jobs_others.contains(w.id) {
-          open_jobs_others.remove(w.id)
-        } else {
-          open_jobs_others[w.id] = true
-        }
-      })
-      let label = open_jobs_others_text(src, w, open_jobs_count(others))
-      let lit = c.lit(id)
-      let b = c.box(style=if lit { open_jobs_fold_lit } else { open_jobs_fold }, id~, fn() {
-        c.text(label, style=open_jobs_fold_words) |> ignore
-        c.box(style=open_jobs_fold_mark, fn() {
-          @sf.icon(c, if open { "chevron-down" } else { "chevron-right" }, size=open_jobs_chevron, color=@sf.theme().p.muted)
-          |> ignore
-        })
-        |> ignore
-      })
-      c.semantics(b, Button, id~, label~)
-      if open {
-        for g in others {
-          open_jobs_group(c, src, open_jobs_group_key(w.id, "otherGroups", text(Some(g), "key")), g, close)
-        }
-      }
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A group of them (open_jobs'), under its heading: three and the rest under 还有 N 个 till that is pressed (`key`).
-fn open_jobs_group(c : @ui.Ctx, src : Source, key : String, g : Json, close : () -> Unit) -> Unit {
-  let gv = Some(g)
-  let list = items(gv, "jobs")
-  let shown = if open_jobs_all.contains(key) || list.length() <= open_jobs_shown + 1 {
-    list
-  } else {
-    list[:open_jobs_shown].to_owned()
-  }
-  @sf.panel_group(c, label=text(gv, "head"), fn() {
-    for j in shown {
-      open_job(c, src, Some(j), close)
-    }
-    if shown.length() < list.length() {
-      let id = c.id("open-jobs/more/" + key)
-      c.on_press(id, fn() {
-        open_jobs_all[key] = true
-      })
-      let label = @sf.t("web-main.jobs.more", args=[("n", (list.length() - shown.length()).to_string())])
-      let b = c.box(style=open_jobs_more, id~, fn() {
-        c.text(label, style=if c.lit(id) { open_jobs_more_lit } else { open_jobs_more_words }) |> ignore
-      })
-      c.semantics(b, Button, id~, label~)
-    }
-  })
-}
-
-///|
-/// A job (openJob): its dot in the icons' 16 column on its name's line, its name over where it is and how long it has
-/// been up, its stop's word at the end of its name's line (always there, on every input; a press of its own in the
-/// row's); pressed, where it leads (open_job_go), the hover grey under the pointer, but where it leads nowhere: then its
-/// stop alone takes a press.
-fn open_job(c : @ui.Ctx, src : Source, job : Json?, close : () -> Unit) -> Unit {
-  let key = open_job_key(job)
-  let row = c.id("open-job/" + key)
-  let leads = !(open_job_goes(job) is Nowhere)
-  if leads {
-    c.on_press(row, fn() { open_job_go(src, job, close) })
-  }
-  let stop = c.id("open-job-stop/" + key)
-  let (call, _, on) = long_stop(text(job, "station"), job)
-  let stopping = core_doing(src, [call], on)
-  let failed = core_failed(src, [call], on)
-  let (_, line) = c.text_size(Ui)
-  let word = open_job_stop_word(job)
-  c.on_press(stop, fn() {
-    if !stopping {
-      open_job_stop_now(src, job)
-    }
-  })
-  let b = c.box(style=if leads && (c.lit(row) || c.lit(stop)) { open_job_row_lit } else { open_job_row }, id=row, fn() {
-    c.box(style=open_job_mark.then(@ui.style(h=Fixed(line))), fn() { job_dot(c, text(job, "tone")) }) |> ignore
-    c.box(style=open_job_text, fn() {
-      // (its name's line: the name and its stop at its end; where it is under them across the whole of it)
-      c.box(style=open_job_line, fn() {
-        c.box(style=open_job_text, fn() { c.text(text(job, "name"), style=open_job_name) |> ignore }) |> ignore
-        let s = c.box(style=open_job_stop.then(@ui.style(h=Fixed(line))), id=stop, fn() {
-          if stopping || failed is Some(_) {
-            @settings.doing_mark(c, stopping, failed)
-          } else {
-            c.text(word, style=if c.lit(stop) { open_job_stop_lit } else { open_job_stop_words }) |> ignore
-          }
-        })
-        c.semantics(s, Button, id=stop, label=open_job_stop_label(job))
-      })
-      |> ignore
-      c.text(open_job_where_age(job), style=open_job_where) |> ignore
-    })
-    |> ignore
-  })
-  if leads {
-    c.semantics(b, Link, id=row, label=text(job, "name"))
-  }
-}
-
-///|
 /// A chat gone to from beside the list (a job's row): its page the one open, the chats' place under it; on the tape
 /// shown in the page (show_page), the chat already open too.
 fn open_chat_ref(r : ChatRef) -> Unit {
@@ -351,7 +230,7 @@ let open_jobs_pop_w : Double = 280.0
 let open_jobs_pop_most : Double = 420.0
 
 ///|
-/// The groups (openJobs), each a small panel's group (@sf.panel_group: its heading's room over it).
+/// The groups (openJobs), each a small panel's group (@sf.panel_group_node: its heading's room over it).
 // kept across runs: a value (no field of it changes)
 let open_jobs_box : @ui.Style = @ui.css("w=Full")
 
@@ -375,14 +254,16 @@ let open_job_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_25 gap=S2_5 rad
 let open_job_row_alone : @ui.Style = @ui.css("row w=Full pl=S1_5 pr=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let open_job_row_lit : @ui.Style = open_job_row.then(@ui.css("bg=Hover"))
-
-///|
 /// The dot, in the 16 column the icons of the rows under it take (openJobMark), across its name's line's middle (the
-/// line's height given where it is made).
+/// line's height given where it is made): in a list of them alone in its middle (open_job_row_alone: where its group's
+/// heading's words start); in 待处理 at its start, where its groups' headings' words start, as 待处理's own rows' dots
+/// (att_mark).
 // kept across runs: a value (no field of it changes)
 let open_job_mark : @ui.Style = @ui.css("w=S4 align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let open_job_mark_start : @ui.Style = @ui.css("w=S4 align=AStart justify=JCenter")
 
 ///|
 /// Its name over where it is (openJobText).
@@ -440,10 +321,6 @@ let open_jobs_fold : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S1 alig
 
 ///|
 // kept across runs: a value (no field of it changes)
-let open_jobs_fold_lit : @ui.Style = open_jobs_fold.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
 let open_jobs_fold_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
@@ -490,10 +367,9 @@ fn open_jobs_node(v : @view.View, src : Source, w : Workspace, close : () -> Uni
   v.show(fn() { others().length() > 0 }, fn(o) {
     let open = fn() { open_jobs_others.contains(w.id) }
     let label = fn() { open_jobs_others_text(src, w, open_jobs_count(others())) }
-    @headless.disclosure(
+    @sf.action_box_node(
       o,
       label,
-      open,
       fn(_) {
         if open_jobs_others.contains(w.id) {
           open_jobs_others.remove(w.id)
@@ -501,7 +377,8 @@ fn open_jobs_node(v : @view.View, src : Source, w : Workspace, close : () -> Uni
           open_jobs_others[w.id] = true
         }
       },
-      fn(k, _) {
+      expanded=open,
+      fn(k) {
         @sf.style_node(k, fn() { open_jobs_fold.then(jobs_pop_round) })
         @sf.hover_ground_node(k)
         @sf.words_node(k, label, fn() { open_jobs_fold_words }) |> ignore
@@ -554,11 +431,11 @@ fn open_jobs_groups_node(
       rows.each(shown, fn(j) { open_job_key(Some(j)) }, fn(row, j) { open_job_node(row, src, fn() { Some(j.get()) }, close, alone) })
       rows.show(fn() { shown().length() < list().length() }, fn(m) {
         let label = fn() { @sf.t("web-main.jobs.more", args=[("n", (list().length() - shown().length()).to_string())]) }
-        @headless.button(m, label, fn(_) {
+        @sf.action_box_node(m, label, fn(_) {
           let k = @signals.untracked(key)
           open_jobs_all[k] = true
           opened.set(opened.untracked() + [k])
-        }, fn(b, _) {
+        }, fn(b) {
           @sf.style_node(b, fn() { open_jobs_more })
           @sf.words_node(b, label, fn() { if @sf.lit_node(b) { open_jobs_more_lit } else { open_jobs_more_words } }) |> ignore
         })
@@ -597,9 +474,9 @@ fn open_job_node(parent : @view.View, src : Source, job : () -> Json?, close : (
       // (its dot and its stop on its name's line, as tall as that line is drawn, never across the middle of its two)
       let name_line = fn() { @sf.node_sp(b, @ui.tree_theme().text_size(Ui).1) }
       b.box(fn(m) {
-        @sf.style_node(m, fn() { open_job_mark }, in_row=true)
+        @sf.style_node(m, fn() { if alone { open_job_mark } else { open_job_mark_start } }, in_row=true)
         m.height(By(fn() { Some(name_line()) })) |> ignore
-        jobs_pop_dot(m, fn() { text(job(), "tone") })
+        @sf.state_dot_node(m, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
       })
       |> ignore
       b.box(fn(words) {
@@ -614,11 +491,11 @@ fn open_job_node(parent : @view.View, src : Source, job : () -> Json?, close : (
           .allow_ellipsis(Is(true))
           |> ignore
           // (its stop at its end, a press of its own in the row's, on that line's middle as the dot is)
-          @headless.button(line, fn() { open_job_stop_label(job()) }, fn(_) {
+          @sf.action_box_node(line, fn() { open_job_stop_label(job()) }, fn(_) {
             if !@signals.untracked(stopping) {
               open_job_stop_now(src, @signals.untracked(job))
             }
-          }, fn(k, _) {
+          }, fn(k) {
             @sf.style_node(k, fn() { open_job_stop }, in_row=true)
             k.height(By(fn() { Some(name_line()) })) |> ignore
             k.pick(fn() { if stopping() || failed() is Some(_) { 1 } else { 0 } }, fn(p, which) {

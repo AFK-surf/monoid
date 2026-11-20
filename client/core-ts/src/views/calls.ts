@@ -9,6 +9,7 @@ import type { Call } from "../core/calls.ts";
 import * as chatTabs from "../chat-tabs.ts";
 import * as decisions from "../decisions.ts";
 import { CoreError, asCoreError } from "../error.ts";
+import * as looks from "../looks.ts";
 import { t } from "../i18n.ts";
 import * as ops from "../ops.ts";
 import * as prefs from "../prefs.ts";
@@ -402,12 +403,17 @@ export class ViewCalls {
     };
     handlers.chatDiscard = (_inner, call) => {
       const c = call as Of<"chatDiscard">;
-      return Effect.sync(() => {
-        const uploads = local.outboxGet(c.station, c.thread, c.id)?.uploads;
+      return Effect.suspend(() => {
+        const entry = local.outboxGet(c.station, c.thread, c.id);
+        // Its POST out and not answered yet: the station may take it, so it is not dropped here.
+        if (entry !== undefined && entry.queued === false && entry.state === "sending") return Effect.fail(CoreError.invalid(t("core-misc.call.discard_sending")));
+        // Out and never answered: the station may have it, so it is only sent again (looks.ts outboxUnsure).
+        if (entry !== undefined && looks.outboxUnsure(entry)) return Effect.fail(CoreError.invalid(t("core-misc.call.discard_unsure")));
+        const uploads = entry?.uploads;
         local.outboxRemove(c.station, c.thread, c.id);
         // its files no longer going up for it, nor kept
         if (uploads?.length) inner.composers.release(uploads);
-        return null;
+        return Effect.succeed(null);
       });
     };
     handlers.chatRetryIn = (_inner, call, progress, at, ctx) => {
@@ -443,8 +449,28 @@ export class ViewCalls {
       return Effect.gen(function* () {
         if (!("station" in c.op.target)) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.station")));
         const station = c.op.target.station;
-        const change = local.changing(station, c.thread, c.session, {}, c.archived);
-        const result = yield* Effect.result(self.#archiveInOrder(station, c.thread, c.session, handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx)));
+        let [thread, session, op] = [c.thread, c.session, c.op];
+        // A chat asked for here (its row's key `new:…`): its station knows it only once it is made, by the session and
+        // thread it gave; before that it is this device's alone, and so is archiving it.
+        if (session.startsWith(PENDING_PREFIX)) {
+          const pending = local.pending(session);
+          if (pending?.made) {
+            [session, thread] = pending.made;
+            op = yield* request("chat.archive", { station, thread, session, archived: c.archived });
+          } else if (pending?.making) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.pending_making")));
+          else if (!c.archived) {
+            // Nothing to restore of one never archived; one given up here is gone, its station never had it.
+            if (pending === undefined) return yield* Effect.fail(CoreError.invalid(t("core-misc.call.pending_gone")));
+            return null;
+          } else {
+            // What did not go (or was dropped already): given up here, with the files its messages carried.
+            const uploads = local.pendingGiveUp(session);
+            if (uploads?.length) inner.composers.release(uploads);
+            return null;
+          }
+        }
+        const change = local.changing(station, thread, session, {}, c.archived);
+        const result = yield* Effect.result(self.#archiveInOrder(station, thread, session, handlers.op!(inner, { kind: "op", op }, progress, at, ctx)));
         local.changed(change, result._tag === "Success", inner.data.rowsRev(station));
         if (!c.archived && result._tag === "Success") inner.stations.checkRestores(station, { change });
         return yield* settle(result);
@@ -535,7 +561,7 @@ export class ViewCalls {
         try: () => {
           const kept = get(get(inner.data.get({ topic: "prefs" }), "chatTabs"), c.chat);
           const [chat, session] = this.#chatOf(c.chat);
-          const next = chatTabs.changed(kept, arr(get(chat, "agents")), get(chat, "noChat") === true, session, { action: c.action, tab: c.tab, auto: c.auto });
+          const next = chatTabs.changed(kept, arr(get(chat, "agents")), get(chat, "noChat") === true, session, { action: c.action, tab: c.tab, auto: c.auto, ...(c.was !== undefined ? { was: c.was } : {}) });
           if (next !== null) prefs.set(inner.data, { chatTabs: { [c.chat]: next } }, false, inner.host.nowMs());
           return null;
         },

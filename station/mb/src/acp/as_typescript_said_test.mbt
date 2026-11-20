@@ -1265,6 +1265,57 @@ let steps_said : Array[(String, String, String, String, String)] = [
   ),
   (
     (
+      #|{"$prompt":{"owner":"prompt:p10c","text":"said an unauthenticated notice after partial text"}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-grok","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":null,"calls":[],"saidLast":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n","children":[],"loading":false,"session":"s-grok"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}}
+    ),
+    (
+      #|[{"type":"answered","id":"prompt:p10c","answer":{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+    ),
+  ),
+  (
+    (
       #|{"$prompt":{"owner":"prompt:p11","text":"said a notice, two lines"}}
     ),
     (
@@ -1277,7 +1328,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1285,7 +1336,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-grok","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\u26a0 Check the quota:\nit is low."}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
     ),
     (
       #|false
@@ -1294,7 +1345,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":null,"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":null,"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1302,7 +1353,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}}
     ),
     (
-      #|[{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+      #|[{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
     ),
     (
       #|false
@@ -1311,7 +1362,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":false,"aborting":false,"owner":null,"steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1328,7 +1379,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1336,7 +1387,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-grok","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cut"}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"cut"}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:10/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:10/text","field":"text","text":"cut"}}]
     ),
     (
       #|false
@@ -1345,7 +1396,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":null,"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["said:10/text"],"said":"said:10/text","n":10,"phase":"responding"},"said":null,"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1353,7 +1404,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-grok","update":{"sessionUpdate":"tool_call","toolCallId":"c10","title":"shell","rawInput":{}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
+      #|[{"type":"live","event":{"kind":"end","id":"said:10/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
     ),
     (
       #|false
@@ -1362,7 +1413,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["call:c10"],"said":null,"n":9,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["call:c10"],"said":null,"n":10,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1379,7 +1430,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1396,7 +1447,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1413,7 +1464,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -1430,7 +1481,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -2693,6 +2744,57 @@ let steps_said : Array[(String, String, String, String, String)] = [
   ),
   (
     (
+      #|{"$prompt":{"owner":"prompt:p10c","text":"said an unauthenticated notice after partial text"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"user","text":"said an unauthenticated notice after partial text"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"},"calls":[],"saidLast":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n","children":[],"loading":false,"session":"s-agy"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}},{"type":"answered","id":"prompt:p10c","answer":{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}},"outcome":{"kind":"failed","reason":"auth","message":"\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials."}},{"type":"kept","line":{"type":"end","status":"error","error":{"message":"\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials."}}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"failed","reason":"auth","message":"\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials."}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+    ),
+  ),
+  (
+    (
       #|{"$prompt":{"owner":"prompt:p11","text":"said a notice, two lines"}}
     ),
     (
@@ -2705,7 +2807,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2713,7 +2815,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\u26a0 Check the quota:\nit is low."}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
     ),
     (
       #|false
@@ -2722,7 +2824,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":[]}
     ),
     (
-      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2730,7 +2832,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
     ),
     (
       #|false
@@ -2739,7 +2841,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2756,7 +2858,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2764,7 +2866,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cut"}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"cut"}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:10/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:10/text","field":"text","text":"cut"}}]
     ),
     (
       #|false
@@ -2773,7 +2875,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":["said:10/text"],"said":"said:10/text","n":10,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2781,7 +2883,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy","update":{"sessionUpdate":"tool_call","toolCallId":"c10","title":"shell","rawInput":{}}}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:10/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
     ),
     (
       #|false
@@ -2790,7 +2892,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c10"],"said":null,"n":9,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":["call:c10"],"said":null,"n":10,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2807,7 +2909,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2824,7 +2926,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2841,7 +2943,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2858,7 +2960,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -4121,6 +4223,57 @@ let steps_said : Array[(String, String, String, String, String)] = [
   ),
   (
     (
+      #|{"$prompt":{"owner":"prompt:p10c","text":"said an unauthenticated notice after partial text"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"user","text":"said an unauthenticated notice after partial text"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-devin","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"},"calls":[],"saidLast":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n","children":[],"loading":false,"session":"s-devin"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}},{"type":"answered","id":"prompt:p10c","answer":{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+    ),
+  ),
+  (
+    (
       #|{"$prompt":{"owner":"prompt:p11","text":"said a notice, two lines"}}
     ),
     (
@@ -4133,7 +4286,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4141,7 +4294,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-devin","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\u26a0 Check the quota:\nit is low."}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
     ),
     (
       #|false
@@ -4150,7 +4303,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":[]}
     ),
     (
-      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4158,7 +4311,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
     ),
     (
       #|false
@@ -4167,7 +4320,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4184,7 +4337,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4192,7 +4345,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-devin","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cut"}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"cut"}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:10/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:10/text","field":"text","text":"cut"}}]
     ),
     (
       #|false
@@ -4201,7 +4354,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":["said:10/text"],"said":"said:10/text","n":10,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4209,7 +4362,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-devin","update":{"sessionUpdate":"tool_call","toolCallId":"c10","title":"shell","rawInput":{}}}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:10/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
     ),
     (
       #|false
@@ -4218,7 +4371,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c10"],"said":null,"n":9,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":["call:c10"],"said":null,"n":10,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4235,7 +4388,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4252,7 +4405,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4269,7 +4422,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -4286,7 +4439,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":[]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-devin"}
     ),
   ),
   (
@@ -5549,6 +5702,57 @@ let steps_said : Array[(String, String, String, String, String)] = [
   ),
   (
     (
+      #|{"$prompt":{"owner":"prompt:p10c","text":"said an unauthenticated notice after partial text"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"user","text":"said an unauthenticated notice after partial text"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-hermes","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:p10c","steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"},"calls":[],"saidLast":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n","children":[],"loading":false,"session":"s-hermes"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"assistant","text":"partial\n\u26a0 UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"}},{"type":"answered","id":"prompt:p10c","answer":{"jsonrpc":"2.0","id":"prompt:p10c","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":["steer:late"]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+    ),
+  ),
+  (
+    (
       #|{"$prompt":{"owner":"prompt:p11","text":"said a notice, two lines"}}
     ),
     (
@@ -5561,7 +5765,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":7,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5569,7 +5773,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-hermes","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\u26a0 Check the quota:\nit is low."}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:8/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:8/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"\u26a0 Check the quota:\nit is low."}}]
     ),
     (
       #|false
@@ -5578,7 +5782,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p11","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["said:8/text"],"said":"said:8/text","n":8,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."},"calls":[],"saidLast":"\u26a0 Check the quota:\nit is low.","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5586,7 +5790,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:8/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"\u26a0 Check the quota:\nit is low."}},{"type":"answered","id":"prompt:p11","answer":{"jsonrpc":"2.0","id":"prompt:p11","result":{"stopReason":"end_turn"}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
     ),
     (
       #|false
@@ -5595,7 +5799,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":false,"aborting":false,"owner":null,"steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5612,7 +5816,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":8,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":9,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5620,7 +5824,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-hermes","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"cut"}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:9/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:9/text","field":"text","text":"cut"}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:10/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:10/text","field":"text","text":"cut"}}]
     ),
     (
       #|false
@@ -5629,7 +5833,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["said:9/text"],"said":"said:9/text","n":9,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":["said:10/text"],"said":"said:10/text","n":10,"phase":"responding"},"said":{"type":"assistant","text":"cut"},"calls":[],"saidLast":"cut","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5637,7 +5841,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-hermes","update":{"sessionUpdate":"tool_call","toolCallId":"c10","title":"shell","rawInput":{}}}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:9/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"cut"}},{"type":"live","event":{"kind":"end","id":"said:10/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:c10","step":"tool","tool":"shell","input":"{}"}}]
     ),
     (
       #|false
@@ -5646,7 +5850,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":["call:c10"],"said":null,"n":9,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":["call:c10"],"said":null,"n":10,"phase":"working"},"said":null,"calls":[["c10",{"name":"shell","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5663,7 +5867,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5680,7 +5884,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5697,7 +5901,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
   (
@@ -5714,7 +5918,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p12","steering":["steer:late"]}
     ),
     (
-      #|{"live":{"open":[],"said":null,"n":9,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
+      #|{"live":{"open":[],"said":null,"n":10,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-hermes"}
     ),
   ),
 ]

@@ -19,7 +19,7 @@ fn jfield(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
 ///|
 fn jstr(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }
@@ -103,7 +103,7 @@ fn with_letter(out : Map[String, Json], v : Json) -> Unit {
 fn author_kind(v : Json) -> Json {
   match v {
     String("agent") => Json::string("agent")
-    String("ember" | "stillfail") => Json::string("ember")
+    String("station" | "ember" | "stillfail") => Json::string("station")
     _ => Json::string("person")
   }
 }
@@ -243,10 +243,7 @@ fn blank(v : Json) -> Bool {
 
 ///|
 fn is_js_space(c : Int) -> Bool {
-  match c {
-    0x09 | 0x0a | 0x0b | 0x0c | 0x0d | 0x20 | 0xa0 | 0x1680 | 0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000 | 0xfeff => true
-    _ => c >= 0x2000 && c <= 0x200a
-  }
+  @jsjson.is_js_space(c)
 }
 
 ///|

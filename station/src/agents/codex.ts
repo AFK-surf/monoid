@@ -9,7 +9,7 @@ import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // - threads need sandbox "danger-full-access" with approvalPolicy "never", or MCP tool calls are refused.
 import { access, mkdir, open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { agentEnv } from "../ops/agent-env.ts";
+import { agentEnv, keepLocal } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { rememberCodexRolloutSoon } from "../read/transcript-soon.ts";
@@ -199,6 +199,9 @@ class Host {
   runtimeStale = false;
   /// Being replaced with turns running on it (`drain`): no new one goes to it, and it ends after its last.
   draining = false;
+  /// The station's tools at this address failed for a thread of its, opened with them (`CodexSession.prompt`): the
+  /// process cannot reach them, so a thread opened again with the same address goes to a new one (`host`).
+  toolsFailedUrl: string | null = null;
   /// The Codex it runs (null: not known). Updated on the disk, the files it starts its helpers from are gone, and every
   /// tool call of its threads fails: it is replaced once no turn runs on it.
   version: string | null = null;
@@ -253,6 +256,7 @@ class Host {
       orphans,
       heard: (heard: Heard) => this.heard(heard),
       attached: () => this.attached(),
+      handed: () => this.freeze(),
       exit: (said: string, stderr: string) => this.onExit(said, stderr),
     };
   }
@@ -297,7 +301,7 @@ class Host {
     await mkdir(profile.home, { recursive: true });
     if (isMachine(profile)) await linkCodexAuthSoon(profile.home, env);
     const until = lent?.borrowed(profile) ? await lent.write(profile) : null;
-    const childEnv: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
+    const childEnv: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) });
     childEnv.CODEX_HOME = profile.home;
     await withCaBundle(childEnv, caBundle);
     const host = new Host(profile.id, hostSignature(profile), 1, false, key);
@@ -452,7 +456,11 @@ class Host {
 
   async ensureReady() {
     while (this.readying) await this.readying;
-    if (this.ready) return;
+    if (this.ready) {
+      // (one taken up that has exited since: refused here, its lease let go, rather than a request of its failing later)
+      if (!this.alive()) throw new Error("codex app-server is not running");
+      return;
+    }
     this.readying = (async () => {
       const answer = await this.request("initialize", { clientInfo: { name: "stillfail", version: "0" }, capabilities: { experimentalApi: true } });
       this.version = userAgentVersion(answer?.userAgent);
@@ -623,6 +631,10 @@ export class CodexDriver implements AgentDriver {
   private stopped = false;
   /// The runners of app-servers being started or taken up in the step of `serial` running: not yet in `hosts`.
   private readonly claimed = new Set<string>();
+  /// The runners of app-servers this driver ended (`end`), by id and runner pid: one still on its way out (its runner
+  /// slow to go under load) is not taken up again as left by a station before (`leftRunners`), which ran a turn on an
+  /// app-server already gone ("codex app-server is not running").
+  private readonly ended = new Set<string>();
   /// Its waits (an idle app-server's end), never closed: a driver shut down (the station out of its workspace) is used
   /// again, and a wait for an app-server no longer in `hosts` does nothing.
   private readonly time: Fibers;
@@ -648,7 +660,7 @@ export class CodexDriver implements AgentDriver {
 
   async updateMatchesStation(profile: Profile): Promise<boolean> {
     if (this.command !== "codex") return false;
-    const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
+    const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) });
     const [agentEnv, stationEnv] = await Promise.all([withShellCommand(this.command, env), withShellCommand(this.command, this.env)]);
     const [agent, station] = await Promise.all([findCommandSoon(this.command, agentEnv), findCommandSoon(this.command, stationEnv)]);
     return agent !== null && station !== null && agent.onPath === station.onPath && agent.real === station.real;
@@ -710,7 +722,9 @@ export class CodexDriver implements AgentDriver {
   /// it: its sessions are opened again on a new one with their next turn.
   private async retireStale(key: string, installed: string | null) {
     const host = this.hosts.get(key);
-    if (!host || !host.alive() || host.turns.size > 0) return;
+    // (one a thread is being opened on is not ended under its caller: replaced once its lease is let go. A turn asked
+    // meanwhile is not waited for: `prompt` looks again after its last await, and opens again elsewhere.)
+    if (!host || !host.alive() || host.turns.size > 0 || host.opening > 0) return;
     if (host.loginStale) {
       log.info("agents::codex", "login changed; restarting its codex app-server", { profile: host.profile, key });
     } else if (this.stale(host)) {
@@ -723,7 +737,13 @@ export class CodexDriver implements AgentDriver {
     // No turn begins on it from here (`prompt` looks again after its last await): one waiting there opens again elsewhere.
     host.draining = true;
     this.hosts.delete(key);
-    await host.proc.kill(5000);
+    await this.end(host);
+  }
+
+  /// Ends an app-server of this driver's: its runner is not taken up again (`ended`).
+  private end(host: Host): Promise<void> {
+    this.ended.add(`${host.proc.info.id}:${host.proc.info.runner}`);
+    return host.proc.kill(5000);
   }
 
   /// Codex installed or updated (from the station's pages): app-servers of the old one are replaced once idle.
@@ -784,7 +804,9 @@ export class CodexDriver implements AgentDriver {
     void (async () => {
       const installed = await this.installedVersion();
       if (!host.loginStale && !this.stale(host) && (await this.outgrown(host)) === null) return;
-      await this.serial(() => this.retireStale(host.key, installed));
+      await this.serial(async () => {
+        if (this.hosts.get(host.key) === host) await this.retireStale(host.key, installed);
+      });
     })().catch((error) => log.warn("agents::codex", "a codex app-server not replaced", { profile: host.profile, error: String(error) }));
   }
 
@@ -802,11 +824,13 @@ export class CodexDriver implements AgentDriver {
       releases.push(host.request("thread/unsubscribe", { threadId: thread }).catch(() => {}));
     }
     await Promise.all(releases);
-    if (host.threads.size > 0 || host.turns.size > 0) return;
+    // (one being opened on is let go of once its lease is: `let`)
+    if (host.threads.size > 0 || host.turns.size > 0 || host.opening > 0) return;
     // Held as this driver's until it and its runner are gone: one let go of first, while it ended, was taken up again
     // as left by a station before (`leftRunners`) by a host asked for meanwhile, and then killed under it.
     await this.serial(async () => {
-      if (host.alive()) await host.proc.kill(5000);
+      if (host.alive()) await this.end(host);
+      else await host.proc.released();
       this.draining.delete(host);
     });
   }
@@ -847,12 +871,16 @@ export class CodexDriver implements AgentDriver {
   /// started while one was being replaced (`<id>.<n>`); none this driver holds.
   private async leftRunners(key: string): Promise<RunnerInfo[]> {
     const base = runnerId("codex", key);
-    const runners = (await liveRunners(this.data, { strict: true })).filter((r) => r.id === base || r.id.startsWith(`${base}.`));
+    const live = await liveRunners(this.data, { strict: true });
+    // (those ended that are gone for good forgotten)
+    const alive = new Set(live.map((r) => `${r.id}:${r.runner}`));
+    for (const one of this.ended) if (!alive.has(one)) this.ended.delete(one);
+    const runners = live.filter((r) => (r.id === base || r.id.startsWith(`${base}.`)) && !this.ended.has(`${r.id}:${r.runner}`));
     const heard = await Promise.all(runners.map(listeningSoon));
     // (who holds which runner looked at after the last await)
     const held = new Set([...this.hosts.values(), ...this.draining].map((h) => h.proc.info.id));
     const left = runners
-      .filter((r, i) => heard[i] && !held.has(r.id))
+      .filter((r, i) => heard[i] && !held.has(r.id) && !this.ended.has(`${r.id}:${r.runner}`))
       .sort((a, b) => a.startedAt - b.startedAt);
     for (const r of left) this.claimed.add(r.id);
     return left;
@@ -899,7 +927,7 @@ export class CodexDriver implements AgentDriver {
     return this.serial(async () => {
       if (this.hosts.get(host.key) === host) this.hosts.delete(host.key);
       host.draining = true;
-      await host.proc.kill(5000);
+      await this.end(host);
     });
   }
 
@@ -956,7 +984,7 @@ export class CodexDriver implements AgentDriver {
         host.forget(thread);
         sink({ kind: "hostExited", reason: why });
       }
-      await host.proc.kill(5000);
+      await this.end(host);
       return true;
     });
   }
@@ -967,8 +995,8 @@ export class CodexDriver implements AgentDriver {
   }
 
   /// `work` on a profile's app-server, which is not idle meanwhile (`opening`): it ends only once idle WARM_MS after.
-  private async lease<T>(profile: Profile, work: (host: Host) => Promise<T>, session?: string, cwd?: string): Promise<T> {
-    const host = await this.host(profile, session, cwd);
+  private async lease<T>(profile: Profile, work: (host: Host) => Promise<T>, session?: string, cwd?: string, mcpUrl?: string): Promise<T> {
+    const host = await this.host(profile, session, cwd, mcpUrl);
     try {
       return await work(host);
     } finally {
@@ -979,39 +1007,62 @@ export class CodexDriver implements AgentDriver {
   /// A lease let go (`lease`).
   private let(host: Host) {
     host.opening--;
+    // Being replaced meanwhile (`host`, `hostIdle`): what `drain` left for this lease let go of now.
+    if (host.draining && host.opening === 0 && this.draining.has(host)) {
+      void this.drain(host).catch((error) => log.warn("agents::codex", "a codex app-server being replaced not let go of", { profile: host.profile, error: String(error) }));
+      return;
+    }
     this.idleLater(host);
   }
 
   /// A profile's app-server, counted as opening on it (`lease`) in the same step that found it: nothing ends it between.
-  private async host(profile: Profile, session?: string, cwd?: string): Promise<Host> {
+  private async host(profile: Profile, session?: string, cwd?: string, mcpUrl?: string): Promise<Host> {
     await this.options.takenUp;
     const installed = await this.installedVersion();
     const key = this.hostKey(profile.id, session);
     const result = await this.serial(async () => {
       await this.retireStale(key, installed);
       let replaced: Host | null = null;
+      let discarded = false;
       const current = this.hosts.get(key);
       // Signed in again or reinstalled with turns running on it (`retireStale` ends an idle one): those finish there,
       // a new caller starts on a new one. Waiting for it to be idle waited on every other chat of the profile: a turn
       // of an hour held each new one back that long, shown as starting (2026-11-15).
-      if (current && current.alive() && (current.loginStale || current.runtimeStale)) {
-        log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
+      // A thread of its could not reach the station's tools at the address this one is opened with: another thread on
+      // the same process failed the same way, each reopening, until the session gave up (0.1.10064, 2026-11-18).
+      const unreachable = Boolean(mcpUrl) && current?.toolsFailedUrl === mcpUrl;
+      if (current && current.alive() && (current.loginStale || current.runtimeStale || unreachable)) {
+        if (unreachable) log.warn("agents::codex", "its codex app-server could not reach the station's tools; new turns go to a new one", { profile: current.profile, key, turns: current.turns.size, url: mcpUrl });
+        else log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
         current.draining = true;
         this.hosts.delete(key);
-        this.draining.add(current);
-        replaced = current;
+        discarded = true;
+        // (one a thread is being opened on is not ended under its caller: let go of once its lease is, `let`)
+        if (current.turns.size === 0 && current.threads.size === 0 && current.opening === 0) {
+          await this.end(current);
+        } else {
+          this.draining.add(current);
+          replaced = current;
+        }
       }
-      const kept = replaced ? undefined : current;
+      const kept = discarded ? undefined : current;
       if (kept && kept.alive()) await this.renewLent(kept, profile);
       if (kept && kept.alive() && kept.signature !== hostSignature(profile)) {
         // The profile (or the station's variables for its agents) changed. Replace the process once no turn runs on it,
         // as when Codex was updated under it: its other threads are closed, to be opened again on the new one with their
         // next turn. Waiting for no thread at all would wait for ever: a session opened meanwhile joins the old one.
-        if (kept.turns.size === 0) {
+        if (kept.turns.size === 0 && kept.opening === 0) {
           log.info("agents::codex", "profile changed; restarting its codex app-server", { profile: profile.id });
           kept.draining = true;
           this.hosts.delete(key);
-          await kept.proc.kill(5000);
+          await this.end(kept);
+        } else if (kept.turns.size === 0) {
+          // Another caller is opening a thread on it: not ended under that one, let go of once its lease is (`let`).
+          log.info("agents::codex", "profile changed; its codex app-server ends once the thread being opened on it is", { profile: profile.id });
+          kept.draining = true;
+          this.hosts.delete(key);
+          this.draining.add(kept);
+          replaced = kept;
         } else {
           log.info("agents::codex", "profile changed; its codex app-server restarts once no turn runs on it", { profile: profile.id });
         }
@@ -1135,14 +1186,14 @@ export class CodexDriver implements AgentDriver {
   async open(options: OpenOptions, events: (event: RuntimeEvent) => void): Promise<AgentSession> {
     // A text-only request uses no tools.
     if (!options.textOnly) {
-      const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "codex"), options.profile.id), CODEX_HOME: options.profile.home };
+      const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "codex"), options.profile.id), CODEX_HOME: options.profile.home });
       const missing = await (this.options.missingHost ?? findMissingCodexHost)(this.command, env);
       if (missing) {
         this.options.incompleteInstallation?.();
         throw new Said(tr(stationLang(), "station.updates.codexMissingHostChat"));
       }
     }
-    return this.lease(options.profile, (host) => this.openOn(host, options, events), options.key, options.cwd);
+    return this.lease(options.profile, (host) => this.openOn(host, options, events), options.key, options.cwd, options.mcpUrl);
   }
 
   /// A session opened on `host`, its profile's app-server.
@@ -1387,7 +1438,7 @@ export class CodexDriver implements AgentDriver {
       this.draining.clear();
       return hosts;
     }).catch(() => [] as Host[]);
-    await Promise.all(hosts.map((h) => h.proc.kill(5000)));
+    await Promise.all(hosts.map((h) => this.end(h)));
     // (used again: its program ends once it has nothing to read, mb-agents.ts `forget`)
     if (!again) await this.agents.close(this);
   }
@@ -1589,7 +1640,12 @@ export class CodexSession implements AgentSession {
     // Its thread could not connect to the station's tools (the door was closed or slow as it was opened, or as it was
     // taken up): its turn would have no chat_post or chat_state, and nothing it called would say so. Opened again,
     // resuming, the thread is loaded with them.
-    if (await stationToolsFailed(this.host, this.threadId)) throw new Error("codex thread's connection to the station's tools failed");
+    if (await stationToolsFailed(this.host, this.threadId)) {
+      // Opened with the address its process failed to reach: the next thread opened with it goes to a new one (`host`).
+      if (this.toolsUrl) this.host.toolsFailedUrl = this.toolsUrl;
+      throw new Error("codex thread's connection to the station's tools failed");
+    }
+    if (this.toolsUrl !== null && this.host.toolsFailedUrl === this.toolsUrl) this.host.toolsFailedUrl = null;
     // Looked at again with nothing awaited before the turn is counted: its app-server being replaced lets go of a
     // thread with no turn in the same step (`drain`), so a turn begins on it before that, or is opened again elsewhere.
     if (this.state.closed) throw new Error("codex session is closed");

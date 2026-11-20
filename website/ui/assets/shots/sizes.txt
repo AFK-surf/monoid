@@ -1,0 +1,10 @@
+lg-hero-dark 1120 690
+lg-hero-light 1120 690
+lg-crop-controls-dark 720 710
+lg-crop-interactive-light 720 710
+lg-crop-dialog-dark 720 345
+lg-crop-center-dark 640 652
+comp-gallery-light 1120 690
+comp-buttons-light 680 576
+comp-controls-light 680 552
+phone-ui-light 390 763

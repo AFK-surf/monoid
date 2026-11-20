@@ -52,10 +52,21 @@ priv struct WritingCached {
   source : Source
   key : String
   value : Writing
+  /// when it was last asked for (writing_cache_tick's count)
+  mut used : Int
 }
 
 ///|
 let writing_cache : Ref[Array[WritingCached]] = Ref([])
+
+///|
+/// How many drafts are kept beyond those in use (writing_cache_trim): one each chat opened in a run, else.
+let writing_cache_max : Int = 32
+
+///|
+/// A count of the drafts asked for (WritingCached's `used`).
+// kept across runs: put back by writings_reset (sfbase's reset)
+let writing_cache_tick : Ref[Int] = { val: 0 }
 
 ///|
 /// Each draft by its key, as the page has it.
@@ -65,6 +76,39 @@ pub let writings : Map[String, Writing] = Map([])
 /// The pictures of the files picked or pasted here, by their id: shown at once from their bytes (until the file leaves
 /// the draft), and the station each went up to with its bytes (one sent to another station goes up again there).
 pub let writing_pictures : Map[String, String] = Map([])
+
+///|
+/// What a node of the window's tree read of writing_pictures (writing_picture_told): told as one is kept or let go.
+// kept across runs: told again by writings_reset as writing_pictures is emptied
+let writing_pictures_told : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+fn writing_pictures_tell() -> Unit {
+  writing_pictures_told.set(writing_pictures_told.untracked() + 1)
+}
+
+///|
+/// The picture of file `id` picked or pasted here (writing_pictures) read by a node of the window's tree: told as it
+/// is kept or let go, where reading the map alone tells nothing.
+pub fn writing_picture_told(id : String) -> String? {
+  writing_pictures_told.get() |> ignore
+  writing_pictures.get(id)
+}
+
+///|
+/// The picture of file `id` picked or pasted here kept (writing_pictures), what reads it by a node told.
+pub fn writing_picture_put(id : String, picture : String) -> Unit {
+  writing_pictures[id] = picture
+  writing_pictures_tell()
+}
+
+///|
+fn writing_picture_drop(id : String) -> Unit {
+  if writing_pictures.contains(id) {
+    writing_pictures.remove(id)
+    writing_pictures_tell()
+  }
+}
 
 ///|
 let writing_went : Map[String, (String, String, Bytes)] = Map([])
@@ -89,7 +133,7 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
       "!" => writing_unseen.remove(id)
       still => {
         writing_unseen.remove(id)
-        writing_pictures[id] = still
+        writing_picture_put(id, still)
         sent_picture_kept("upload\u{1}" + id, still)
         for _, w in writings {
           for f in writing_files(w) {
@@ -113,14 +157,14 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
 /// comes ("" while it does, none to be had: "!").
 pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
   guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {
-    return fn() { writing_pictures.get(id).unwrap_or("") }
+    return fn() { writing_picture_told(id).unwrap_or("") }
   }
   let still = bytes_first_frame_node(v, "draft/" + id, name, bytes)
   v.reacts(still, fn(k) {
     guard k != "" && writing_unseen.contains(id) else { return }
     writing_unseen.remove(id)
     if k != "!" {
-      writing_pictures[id] = k
+      writing_picture_put(id, k)
       sent_picture_kept("upload\u{1}" + id, k)
       for _, w in writings {
         for f in writing_files(w) {
@@ -176,8 +220,10 @@ pub fn writings_reset() -> Unit {
   }
   // Array::clear keeps removed slots alive; drop its backing array when the app releases its drafts.
   writing_cache.val = []
+  writing_cache_tick.val = 0
   writings.clear()
   writing_pictures.clear()
+  writing_pictures_tell()
   writing_went.clear()
   writing_unseen.clear()
   writing_seeds.clear()
@@ -193,8 +239,12 @@ fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Un
 ///|
 /// A draft is shared by its source and key, independent of which page or node reads it.
 fn writing_cached(src : Source, key : String) -> Writing {
+  writing_cache_tick.val += 1
   match writing_cache.val.search_by(fn(w) { physical_equal(w.source, src) && w.key == key }) {
-    Some(i) => writing_cache.val[i].value
+    Some(i) => {
+      writing_cache.val[i].used = writing_cache_tick.val
+      writing_cache.val[i].value
+    }
     None => {
       let state : WritingState = {
         field: @ui.Field::new(),
@@ -246,11 +296,44 @@ fn writing_cached(src : Source, key : String) -> Writing {
         following,
         taken: None,
       }
-      writing_cache.val.push({ source: src, key, value: w })
+      writing_cache.val.push({ source: src, key, value: w, used: writing_cache_tick.val })
       writings[key] = w
+      writing_cache_trim(w)
       w
     }
   }
+}
+
+///|
+/// The drafts kept beyond writing_cache_max let go of, the least lately asked for first, of those nothing holds: none a
+/// field of which is read (its reactions followed), sent and not yet answered (`taken`), with calls to the core under
+/// way, or written in now; `kept` (the one just made) never. What the core keeps of it stays: asked for again, it is
+/// made anew from the core's composer topic.
+fn writing_cache_trim(kept : Writing) -> Unit {
+  @signals.untracked(fn() {
+    while writing_cache.val.length() > writing_cache_max {
+      let mut oldest = -1
+      for i, cached in writing_cache.val {
+        let w = cached.value
+        if physical_equal(w, kept) ||
+          w.following.watched() ||
+          w.taken is Some(_) ||
+          w.pending.untracked() != 0 ||
+          w.field.focused() {
+          continue
+        }
+        if oldest < 0 || cached.used < writing_cache.val[oldest].used {
+          oldest = i
+        }
+      }
+      guard oldest >= 0 else { break }
+      let cached = writing_cache.val.remove(oldest)
+      cached.value.following.dispose()
+      if writings.get(cached.key) is Some(w) && physical_equal(w, cached.value) {
+        writings.remove(cached.key)
+      }
+    }
+  })
 }
 
 ///|
@@ -343,7 +426,8 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
 
 ///|
 /// Has the core do `what` to the draft (`composer.<what>`), what the page shows of it meanwhile done by `show`; `done`
-/// its answer.
+/// its answer. `moves`: what `show` does is a person's act on the draft (a file or a quote put in or taken out), its
+/// change shown on its way where the page moves only for a cause (@view.transition); else at once.
 fn writing_act(
   src : Source,
   w : Writing,
@@ -352,17 +436,26 @@ fn writing_act(
   show? : (Writing) -> Unit = fn(_) {  },
   done? : (Result[Json, Json]) -> Unit = fn(_) {  },
   bytes? : Bytes,
+  moves? : Bool = false,
 ) -> Unit {
   if src.read_only {
     toast_later(read_only_words)
     return
   }
   @signals.start_batch()
-  w.pending.set(w.pending.get() + 1)
-  show(w)
+  // (the act told whole inside its transition: what reads the draft is marked by it there, not first by `pending`)
+  let act = fn() {
+    w.pending.set(w.pending.get() + 1)
+    show(w)
+  }
+  if moves {
+    @view.transition(act)
+  } else {
+    act()
+  }
   @signals.end_batch()
   params["key"] = Json::string(w.key)
-  let answered = fn(r : Result[Json, Json]) {
+  let answered_now = fn(r : Result[Json, Json]) {
     @signals.start_batch()
     match r {
       Ok(a) =>
@@ -375,6 +468,14 @@ fn writing_act(
     w.pending.set(w.pending.get() - 1)
     done(r)
     @signals.end_batch()
+  }
+  // (the answer to a person's act on the draft (`moves`): what it settles of that act is the act's, on its way)
+  let answered = fn(r : Result[Json, Json]) {
+    if moves {
+      @view.transition(fn() { answered_now(r) })
+    } else {
+      answered_now(r)
+    }
   }
   match bytes {
     Some(b) => (src.call_bytes)("composer." + what, Json::object(params), b, answered)
@@ -441,7 +542,7 @@ pub fn writing_add(
       Some(_) => {
         let key = "mem:writing/" + id
         @ui.add_image(key, bytes)
-        writing_pictures[id] = key
+        writing_picture_put(id, key)
         // its message drawn from it, as picked, sent before it is up (it names its upload: sent.mbt)
         sent_picture_kept("upload\u{1}" + id, key)
       }
@@ -450,7 +551,7 @@ pub fn writing_add(
           "" if preview_kind(name).0 == Some(KVideo) => writing_unseen.add(id)
           "" => ()
           picture => {
-            writing_pictures[id] = picture
+            writing_picture_put(id, picture)
             sent_picture_kept("upload\u{1}" + id, picture)
           }
         }
@@ -507,6 +608,7 @@ pub fn writing_add(
       }
     },
     bytes~,
+    moves=true,
   )
 }
 
@@ -526,7 +628,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
   match host_picture(f.name, f.src) {
     "" => ()
     picture => {
-      writing_pictures[id] = picture
+      writing_picture_put(id, picture)
       sent_picture_kept("upload\u{1}" + id, picture)
     }
   }
@@ -553,6 +655,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
     "add",
     { "station": Json::string(station), "files": Json::array([Json::object(one)]) },
     show=fn(w) { w.state.files.set(w.state.files.get() + [Json::object(shown)]) },
+    moves=true,
   )
 }
 
@@ -660,7 +763,7 @@ pub fn writing_drop(src : Source, d : Writing, station : String, dropped : Array
     }
     Json::object(one)
   })
-  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, show=fn(d) {
+  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, moves=true, show=fn(d) {
     d.state.files.set(d.state.files.get() + files)
   })
 }
@@ -674,11 +777,11 @@ pub fn writing_mode(src : Source, w : Writing, id : String, mode : String) -> Un
 ///|
 /// A file out of the draft (`composer.remove`), its picture let go.
 pub fn writing_remove(src : Source, w : Writing, id : String) -> Unit {
-  writing_pictures.remove(id)
+  writing_picture_drop(id)
   writing_went.remove(id)
   writing_unseen.remove(id)
   writing_seeds.remove(id)
-  writing_act(src, w, "remove", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "remove", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.files.set(w.state.files.get().filter(fn(f) { text(Some(f), "id") != id }))
   })
 }
@@ -706,7 +809,24 @@ pub fn writing_quote(src : Source, w : Writing, quote : Json, file? : Json, pict
     }
     None => ()
   }
-  writing_act(src, w, "quote", p, show=fn(w) { if ask { w.state.focus.set(id) } })
+  // (shown at once as the core will have it (composer.ts `quote`, `quoteOf`): the quote, by its id, with what is said
+  // of it)
+  let shown : Map[String, Json] = match quote {
+    Object(m) => m.copy()
+    _ => {}
+  }
+  shown["id"] = Json::string(id)
+  if !shown.contains("comment") {
+    shown["comment"] = Json::string("")
+  }
+  writing_act(src, w, "quote", p, moves=true, show=fn(w) {
+    if !w.state.quotes.get().iter().any(fn(q) { text(Some(q), "id") == id }) {
+      w.state.quotes.set(w.state.quotes.get() + [Json::object(shown)])
+    }
+    if ask {
+      w.state.focus.set(id)
+    }
+  })
   match picture {
     Some((station, name, bytes)) => writing_add(src, w, station, name, bytes, quote=id)
     None => ()
@@ -743,12 +863,12 @@ pub fn writing_unquote(src : Source, w : Writing, id : String) -> Unit {
   match w.state.quotes.get().iter().find_first(fn(q) { text(Some(q), "id") == id }) {
     Some(q) => {
       let own = text(field(Some(q), "own"), "id")
-      writing_pictures.remove(own)
+      writing_picture_drop(own)
       writing_went.remove(own)
     }
     None => ()
   }
-  writing_act(src, w, "unquote", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "unquote", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.quotes.set(w.state.quotes.get().filter(fn(q) { text(Some(q), "id") != id }))
     if w.state.focus.get() == id {
       w.state.focus.set("")
@@ -808,6 +928,36 @@ pub fn writing_take(src : Source, w : Writing, station? : String = "", done : (J
       }
     },
   )
+}
+
+///|
+/// What `take` took of `w` gone for good (the message taken into its chat, or into its outbox, which sends it): the
+/// bytes of its files and quotes' own pictures put up from here let go of, never to be put back. Not before: a message
+/// not taken puts them back (writing_restore, writing_back_or_said). The picture each was drawn as stays for its
+/// message (sent_pictures, which lets it go as it lets go of that: sent_picture_let_go).
+pub fn writing_committed(w : Writing) -> Unit {
+  guard w.taken is Some((_, quotes, files)) else { return }
+  w.taken = None
+  let ids = files.map(fn(f) { text(Some(f), "id") }) +
+    quotes.map(fn(q) { text(field(Some(q), "own"), "id") })
+  for id in ids {
+    guard id != "" else { continue }
+    // (a file of the draft as it is now, taken back in meanwhile, kept: what it shows is its own)
+    let now = w.state.files.untracked() + w.state.quotes.untracked().filter_map(fn(q) { field(Some(q), "own") })
+    if now.iter().any(fn(f) { text(Some(f), "id") == id }) {
+      continue
+    }
+    let picture = writing_pictures.get(id)
+    writing_went.remove(id)
+    writing_stations.remove(id)
+    writing_seeds.remove(id)
+    writing_unseen.remove(id)
+    writing_picture_drop(id)
+    match picture {
+      Some(p) => sent_picture_let_go(p)
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -969,10 +1119,36 @@ pub fn files_into(chat : String, d : Dragged) -> Unit {
 }
 
 ///|
+/// Files `ds` let go on chat `chat` together (files_into's, all at once): taken into its draft as one drop.
+pub fn files_into_many(chat : String, ds : Array[Dragged]) -> Unit {
+  draft_give_all(chat, ds.map(fn(d) { Dropped(d) }))
+}
+
+///|
 /// Whether files from this machine's Finder let go on a chat are taken by where they are (finder_dragged): where this
 /// machine is a station. Elsewhere a field takes them as their paths, words.
 pub fn finder_by_station() -> Bool {
   this_machine() != ""
+}
+
+///|
+/// Whether files from this machine's Finder let go on a chat of workspace `ws` are taken by where they are
+/// (finder_dragged): where this machine is a station of that workspace, which the chat's agent can read them from.
+/// Elsewhere they are read and sent as the chat's files (picked_files_into).
+pub fn finder_by_station_in(ws : String) -> Bool {
+  let here = this_machine()
+  here != "" && ws != "" && workspace_of(here) == ws
+}
+
+///|
+/// Files from outside let go on a chat and read (@ui.files_into, @ui.Ctx::files_into), by the chat's draft's key: put
+/// into its message as files picked are, the folders they were in left out (each named with a "/" at its end, empty);
+/// taken by its composer (compose_given.mbt), which says where it takes no files.
+pub fn picked_files_into(chat : String, files : Array[@hostapi.Picked]) -> Unit {
+  let regular = files.filter(fn(f) { !f.name.has_suffix("/") })
+  if !regular.is_empty() {
+    draft_give(chat, Picked(regular))
+  }
 }
 
 ///|

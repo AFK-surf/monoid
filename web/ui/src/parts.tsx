@@ -7,9 +7,10 @@ import {
   ToggleGroup, Tooltip,
 } from "radix-ui";
 import { createPortal } from "preact/compat";
-import { forwardRef, Fragment, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ComponentType, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "preact/compat";
+import { forwardRef, Fragment, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "preact/compat";
 import { useBackClose } from "./backClose.ts";
-import { Check, ChevronDown, Close, Copy, More } from "./icons.tsx";
+import { Button, ICON, type IconType } from "./button.tsx";
+import { Check, ChevronDown, Close, Copy, More, Search } from "./icons.tsx";
 import { t } from "./i18n.ts";
 import { shortcutKeys, useShortcuts, type Shortcut } from "./shortcuts.ts";
 import { failure, useToast } from "./toast.tsx";
@@ -18,23 +19,9 @@ import * as pageCss from "./styles/page.css.ts";
 import { Spinner } from "./waiting.tsx";
 import * as partsCss from "./parts.css.ts";
 
-export const ICON = { size: 16, strokeWidth: 1.7 } as const;
-
-type IconType = ComponentType<{ size?: number; strokeWidth?: number }>;
-type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-solid";
-const VARIANT: Record<Variant, string> = { primary: controlsCss.btnPrimary, secondary: "", ghost: controlsCss.btnGhost, danger: controlsCss.btnDanger, "danger-solid": controlsCss.btnDangerSolid };
-
-export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; icon?: IconType; busy?: boolean | undefined }>(
-  function Button({ variant = "secondary", icon: Icon, busy, children, className, ...rest }, ref) {
-    return (
-      <button ref={ref} type="button" {...rest} aria-busy={busy || undefined} disabled={rest.disabled || busy}
-        className={`${controlsCss.btn} ${VARIANT[variant]}${className ? ` ${className}` : ""}`}>
-        {busy ? <Spinner /> : Icon && <Icon {...ICON} />}
-        {children}
-      </button>
-    );
-  },
-);
+export { Button, ButtonLink, buttonClass, ICON, type IconType, type Variant } from "./button.tsx";
+export { ErrorLine, FieldStack, RadioChoices, TextArea, TextInput, type Choice } from "./fields.tsx";
+export { StandActions, StandPage, type Illustration } from "./standPage.tsx";
 
 /**
  * An icon-only button; its label shows as a tooltip and names it for screen readers. `busy`: a spinner in its place, not
@@ -138,17 +125,55 @@ export function Switch({ checked, onChange, label, disabled, id, small = false, 
   );
 }
 
-/** A setting row: what it is on the left, its switch on the right. */
-export function SwitchRow({ title, description, checked, onChange, disabled, busy }:
-  { title: ReactNode; description?: ReactNode; checked: boolean; onChange(checked: boolean): void; disabled?: boolean | undefined; busy?: boolean | undefined }) {
+/** A setting row: what it is on the left, its switch on the right. `compact`: a line among a panel's lines (a detail's
+ * rights), on their ground and as tall as one, its description in the meta size. `label`: what the switch is read out as,
+ * where the title is more than its words. */
+export function SwitchRow({ title, description, checked, onChange, disabled, busy, compact = false, label }:
+  { title: ReactNode; description?: ReactNode; checked: boolean; onChange(checked: boolean): void; disabled?: boolean | undefined; busy?: boolean | undefined; compact?: boolean; label?: string }) {
   const id = useId();
+  const toggle = <Switch id={id} checked={checked} onChange={onChange} disabled={disabled ?? false} busy={busy} {...(label ? { label } : {})} />;
   return (
-    <div className={partsCss.switchRow}>
+    <div className={compact ? `${partsCss.switchRow} ${partsCss.switchRowCompact}` : partsCss.switchRow}>
       <Label.Root htmlFor={id} className={partsCss.switchRowText}>
         <span>{title}</span>
         {description && <span className={partsCss.note}>{description}</span>}
       </Label.Root>
-      <Switch id={id} checked={checked} onChange={onChange} disabled={disabled ?? false} busy={busy} />
+      {compact ? <span className={partsCss.switchRowBox}>{toggle}</span> : toggle}
+    </div>
+  );
+}
+
+/** A search field: its glass before the words, `type="search"`, and where `clearable`, a button that clears what is
+ * typed while there is any (the focus put back in the field). `label`: what it is read out as. */
+export function SearchInput({ value, onChange, placeholder, label, clearable = false, className }:
+  { value: string; onChange(value: string): void; placeholder?: string; label: string; clearable?: boolean; className?: string }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <label className={className ? `${partsCss.search} ${className}` : partsCss.search}>
+      <Search {...ICON} />
+      <input ref={input} type="search" className={controlsCss.input} value={value} placeholder={placeholder} aria-label={label}
+        onChange={(e) => onChange(e.currentTarget.value)} />
+      {clearable && value !== "" && (
+        <button type="button" className={partsCss.searchClear} aria-label={t("common.clearSearch")}
+          onClick={() => { onChange(""); input.current?.focus(); }}><Close size={14} strokeWidth={1.7} /></button>
+      )}
+    </label>
+  );
+}
+
+/** One of a FilterPills' choices: its id, its words, how many it holds (none: no count). */
+export type FilterPill<T extends string> = { id: T; label: ReactNode; count?: number | string };
+
+/** A row of pills to narrow a list by one of them (`role="tablist"`, each a `tab` selected while it is `value`): its
+ * words and how many it holds; wrapping where the row is narrow. `label`: what the row is read out as. */
+export function FilterPills<T extends string>({ items, value, onChange, label, className }:
+  { items: readonly FilterPill<T>[]; value: T; onChange(id: T): void; label?: string; className?: string }) {
+  return (
+    <div className={className ? `${partsCss.filterPills} ${className}` : partsCss.filterPills} role="tablist" aria-label={label}>
+      {items.map((f) => (
+        <button key={f.id} type="button" role="tab" aria-selected={value === f.id} className={partsCss.filterPill} data-on={value === f.id || undefined}
+          onClick={() => onChange(f.id)}>{f.label}{f.count !== undefined && <span>{f.count}</span>}</button>
+      ))}
     </div>
   );
 }

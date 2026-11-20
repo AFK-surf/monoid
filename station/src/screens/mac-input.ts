@@ -1,10 +1,12 @@
 // A person's input (source.ts `ScreenInput`, as a page has it) as macOS posts it: which mouse button went down or up
 // and how many clicks it makes, a page's key `code` as the Mac's virtual key, its modifiers as CGEventFlags. What the
 // desktop's helper is given (native/screen: `{op: "mouse" | "scroll" | "key" | "text"}`); it only posts.
-import type { ScreenInput } from "./source.ts";
+import { type ScreenInput, gamepadReleased } from "./source.ts";
 
 export type MacOp =
-  | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number; buttons: number; clicks: number; flags: number }
+  | { op: "mouse"; type: "move" | "down" | "up"; x: number; y: number; button: number; buttons: number; clicks: number; flags: number; dx?: number; dy?: number; relative?: boolean }
+  /// A controller's state (source.ts `Gamepad`): the helper drives the desktop with it (the pointer, the wheel, keys).
+  | { op: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number }
   | { op: "scroll"; x: number; y: number; dx: number; dy: number; flags: number }
   | { op: "key"; keycode: number; down: boolean; flags: number }
   | { op: "text"; text: string };
@@ -60,6 +62,8 @@ export class MacInput {
   #held = new Set<string>();
   #at = { x: 0, y: 0 };
   #press: { at: number; x: number; y: number; button: number; clicks: number } | null = null;
+  /// The controllers it drove, let go of as it ends.
+  #pads = new Set<number>();
 
   #heldFlags(): number {
     let flags = 0;
@@ -79,6 +83,11 @@ export class MacInput {
       this.#held.delete(code);
       ops.push({ op: "key", keycode: KEYCODES[code]!, down: false, flags: this.#heldFlags() });
     }
+    for (const index of this.#pads) {
+      const { t: _, ...pad } = gamepadReleased(index);
+      ops.push({ op: "gamepad", ...pad });
+    }
+    this.#pads.clear();
     return ops;
   }
 
@@ -90,7 +99,7 @@ export class MacInput {
         this.#buttons = e.buttons & 7;
         this.#at = { x: e.x, y: e.y };
         const flags = this.#heldFlags();
-        if (e.kind === "move") return [{ op: "mouse", type: "move", x: e.x, y: e.y, button: 0, buttons: this.#buttons, clicks: 0, flags }];
+        if (e.kind === "move") return [{ op: "mouse", type: "move", x: e.x, y: e.y, button: 0, buttons: this.#buttons, clicks: 0, flags, ...(e.dx !== undefined && e.dy !== undefined ? { dx: e.dx, dy: e.dy, ...(e.relative ? { relative: true } : {}) } : {}) }];
         if (e.kind === "down") {
           const bit = lowestBit(this.#buttons & ~before) || 1;
           const button = BUTTON_OF_BIT[bit] ?? 0;
@@ -99,13 +108,13 @@ export class MacInput {
           const clicks = again ? last.clicks + 1 : 1;
           this.#press = { at: now, x: e.x, y: e.y, button, clicks };
           this.#buttons |= bit;
-          return [{ op: "mouse", type: "down", x: e.x, y: e.y, button, buttons: this.#buttons, clicks, flags }];
+          return [{ op: "mouse", type: "down", x: e.x, y: e.y, button, buttons: this.#buttons, clicks, flags, ...(e.relative ? { relative: true } : {}) }];
         }
         const bit = lowestBit(before & ~this.#buttons) || lowestBit(before) || 1;
         const button = BUTTON_OF_BIT[bit] ?? 0;
         this.#buttons &= ~bit;
         const clicks = this.#press?.button === button ? this.#press.clicks : 1;
-        return [{ op: "mouse", type: "up", x: e.x, y: e.y, button, buttons: this.#buttons, clicks, flags }];
+        return [{ op: "mouse", type: "up", x: e.x, y: e.y, button, buttons: this.#buttons, clicks, flags, ...(e.relative ? { relative: true } : {}) }];
       }
       case "wheel":
         return [{ op: "scroll", x: e.x, y: e.y, dx: e.dx, dy: e.dy, flags: this.#heldFlags() }];
@@ -126,6 +135,12 @@ export class MacInput {
       }
       case "text":
         return e.text === "" ? [] : [{ op: "text", text: e.text }];
+      case "gamepad": {
+        if (e.connected) this.#pads.add(e.index);
+        else this.#pads.delete(e.index);
+        const { t: _, ...pad } = e;
+        return [{ op: "gamepad", ...pad }];
+      }
       case "pose":
       case "device":
       case "button":

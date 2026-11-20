@@ -39,11 +39,11 @@ pub fn hold_button_node(
     confirm()
     match undo {
       Some((_, ms)) => {
-        undoing.set(true)
+        @view.transition(within=v, fn() { undoing.set(true) })
         (undo_due.val)()
         undo_due.val = v.at_moment(v.cause_at() + ms, fn() {
           undo_due.val = fn() {  }
-          undoing.set(false)
+          @view.transition(within=v, fn() { undoing.set(false) })
         })
       }
       None => ()
@@ -65,7 +65,7 @@ pub fn hold_button_node(
           Some((f, _)) => {
             (undo_due.val)()
             undo_due.val = fn() {  }
-            undoing.set(false)
+            @view.transition(within=v, fn() { undoing.set(false) })
             f()
           }
           None => ()

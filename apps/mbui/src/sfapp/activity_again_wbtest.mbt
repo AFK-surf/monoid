@@ -26,7 +26,7 @@ fn activity_opening(t : @ui.Tester, words : String) -> (Double, Double, Double) 
 
 ///|
 test "an agent's line comes in each turn as in its first: its room opening, carrying what is above it up" {
-  let t = linger_core()
+  let t = linger_core(old=true)
   let (from1, mid1, end1) = activity_opening(t, "看一下列表")
   assert_true(mid1 < from1 - 1.0 && mid1 > end1 + 1.0, msg="\{from1} \{mid1} \{end1}")
   // its answer out of its avatar, its turn over, its line gone as the answer came into the list
@@ -44,7 +44,7 @@ test "an agent's line comes in each turn as in its first: its room opening, carr
 
 ///|
 test "a finger holding the list holds nothing back: the agent's line comes in at once (the list's glide alone waits)" {
-  let t = linger_core()
+  let t = linger_core(old=true)
   // the words landed, a finger down on the list, pulled up a little at its end and held there
   t.run_for(flight_carry_ms)
   t.touch(0, 195.0, 400.0)

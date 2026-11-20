@@ -3,10 +3,19 @@
 // leaves an undefined out of JSON.
 
 ///|
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
-let station_author : String = "ember"
+/// rows.ts `ownName`: a surface or connect as it is written now, the station's own chats' names of before its name now.
+fn own_name(name : Json) -> Json {
+  match name {
+    String("ember" | "stillfail") => Json::string(stillfail_surface)
+    v => v
+  }
+}
+
+///|
+let station_author : String = "station"
 
 ///|
 let manual : String = "manual"
@@ -166,7 +175,7 @@ fn json_list(value : Array[@jsjson.JValue], write : (@jsjson.JValue) -> @jsjson.
 /// rows.ts `letterOf`.
 fn letter_of(v : @jsjson.JValue?) -> @jsjson.JValue? {
   let l = match v {
-    Some(Str(s)) => try Some(@jsjson.parse(@jsjson.text(s))) catch { _ => None }
+    Some(Str(s)) => try Some(@jsjson.parse(@jsjson.sanitize_str(s))) catch { _ => None }
     other => other
   }
   guard l is Some((Obj(_) | Arr(_)) as l) else { return None }
@@ -174,7 +183,7 @@ fn letter_of(v : @jsjson.JValue?) -> @jsjson.JValue? {
   guard way is Some("in" | "out") && jget(l, "title") is Some(Str(_) as title) else { return None }
   Some(
     jobj([
-      ("way", Str(@jsjson.units(way.unwrap()))),
+      ("way", Str(way.unwrap())),
       ("title", title),
       ("link", match jget(l, "link") { Some(Str(_) as s) => s; _ => Null }),
     ]),
@@ -184,7 +193,7 @@ fn letter_of(v : @jsjson.JValue?) -> @jsjson.JValue? {
 ///|
 fn letter_of_column(v : Json) -> @jsjson.JValue? {
   match v {
-    String(s) => letter_of(Some(Str(@jsjson.units(s))))
+    String(s) => letter_of(Some(Str(s)))
     _ => None
   }
 }
@@ -206,7 +215,7 @@ fn change_of_column(v : Json) -> @jsjson.JValue? {
 fn author_kind_of(v : Json) -> String {
   match v {
     String("agent") => "agent"
-    String("ember" | "stillfail") => station_author
+    String("station" | "ember" | "stillfail") => station_author
     _ => "person"
   }
 }
@@ -346,7 +355,7 @@ fn card_of(card : Json, options : Json) -> @jsjson.JValue? {
 ///|
 /// rows.ts `optionsCard`.
 fn options_card(options : @jsjson.JValue) -> @jsjson.JValue {
-  jobj([("type", Str(@jsjson.units("options"))), ("options", options)])
+  jobj([("type", Str("options")), ("options", options)])
 }
 
 ///|
@@ -432,7 +441,7 @@ fn parse_profiles(raw : Json, profile : Json, pinned : Bool) -> Json {
     match (try Some(@jsjson.parse(s)) catch { _ => None }) {
       Some(Arr(items)) => {
         let list = items.filter_map(x => match x {
-          Str(u) if !u.is_empty() => Some(jstr(@jsjson.text(u)))
+          Str(u) if !u.is_empty() => Some(jstr(@jsjson.sanitize_str(u)))
           _ => None
         })
         if !list.is_empty() {
@@ -481,6 +490,7 @@ fn session_of(r : Map[String, Json]) -> Json {
   out["afresh"] = flag_or_null(r.get("afresh"))
   out["context"] = if col(r, "context") is Number(_, ..) { col(r, "context") } else { Json::null() }
   out["contextBefore"] = if col(r, "context_before") is Number(_, ..) { col(r, "context_before") } else { Json::null() }
+  if col(r, "compactions") is (Number(n, ..) as c) && n > 0.0 { out["compactions"] = c }
   put_col(out, "runtimeSessionId", r, "runtime_session_id")
   put_col(out, "workspace", r, "workspace")
   out["cwd"] = col(r, "cwd")

@@ -4,7 +4,7 @@
 // wraps, client/core-ts/src/iroh-bindings.ts), loaded from where the page serves it the first time an endpoint is
 // bound, or given (`Shell::start_with`: the module, or what loads it, where a bundle has it already); what is kept
 // is kept in the page's localStorage (none in a worker: `storage.*` fails there, and its program keeps its own);
-// the clock is the page's, the random bytes its crypto's.
+// the clock is the page's, the random bytes its crypto's, HTTP its `fetch`.
 //
 //   op                 on a page
 //   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively); where there is
@@ -16,6 +16,18 @@
 //                      it starts, `{}`; `scan {prefix?, after?, limit?}` the keys from `prefix` past `after`, in
 //                      the order of their UTF-16 code units, `limit` (200 unless said) at most: `{items: [{key,
 //                      hex}], more}`. No other shell has them: the Rust shell keeps what it keeps in `sql.*`
+//   fetch              `fetch(url, {method, headers, body})` of `{url, method?, headers?}` (`method` GET unless said,
+//                      `headers` pairs `[name, value]`, appended in order) and the bytes as its body where any are
+//                      given (none where they are empty on a GET or a HEAD, which a browser refuses one): `{status,
+//                      headers}` (pairs, as the page's `Headers` gives them) and the body's bytes, read whole. No
+//                      `entry` (a host's address given): a page resolves as its browser does
+//   stream.open        as `fetch`, its body left to read: `{status, headers, id}`
+//   stream.read        the body's next bytes (never none: a piece that came empty is read past), or `{end: true}`,
+//                      the handle let go of then (read again, "not a response", where the Rust shell answers the end)
+//   stream.close       the body let go of where it was not read to its end (its reader cancelled); of one let go of
+//                      already, nothing
+//   fetch.cancel       (answered at once) a `fetch` or `stream.open` under way given up: its request aborted, and it
+//                      answered "cancelled" as natively; a body being read after `stream.open` is `stream.close`d
 //   iroh.bind          the module's `bind({secretKey, relayUrls})`, with `relayEntries` where any are said (each
 //                      `{entry, relay}`): through relays alone whatever is asked (a browser has no UDP: `relayOnly`
 //                      is always so), nothing looked up (`lookup` never), and no connection taken (`alpns` is not
@@ -98,7 +110,7 @@ extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int
   #|  const streamsGo = (conn) => {
   #|    for (const [id, h] of handles) if (h.on === conn) handles.delete(id);
   #|  };
-  #|  // by the call of a dial under way: what gives it up
+  #|  // by the call of a dial or a request under way: what gives it up
   #|  const dials = new Map();
   #|  let iroh = null;
   #|  const load = () => (iroh ??= loader().catch((e) => { iroh = null; throw e; }));
@@ -203,6 +215,28 @@ extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int
   #|  const stream = (h) => {
   #|    if (h?.stream === undefined) throw new Error("not a stream");
   #|    return h.stream;
+  #|  };
+  #|  // `a` asked of the page's fetch as call `id`, given up by `fetch.cancel` until `then` is done with its response
+  #|  const request = async (id, a, bytes, then) => {
+  #|    if (typeof a.url !== "string") throw new Error("no url");
+  #|    if (typeof fetch !== "function") throw new Error("no fetch here");
+  #|    const method = typeof a.method === "string" ? a.method : "GET";
+  #|    const headers = new Headers();
+  #|    for (const pair of Array.isArray(a.headers) ? a.headers : []) {
+  #|      if (typeof pair?.[0] === "string" && typeof pair?.[1] === "string") headers.append(pair[0], pair[1]);
+  #|    }
+  #|    const body = bytes !== null && (bytes.length > 0 || (method !== "GET" && method !== "HEAD")) ? bytes : undefined;
+  #|    const abort = new AbortController();
+  #|    let gave = false;
+  #|    dials.set(id, () => { gave = true; abort.abort(); });
+  #|    try {
+  #|      const response = await fetch(a.url, { method, headers, body, signal: abort.signal });
+  #|      return await then(response, { status: response.status, headers: [...response.headers.entries()] });
+  #|    } catch (e) {
+  #|      throw gave ? new Error("cancelled") : e;
+  #|    } finally {
+  #|      dials.delete(id);
+  #|    }
   #|  };
   #|  // what a call is answered later: [its JSON] or [its JSON, its bytes]
   #|  const run = async (id, op, a, bytes) => {
@@ -320,6 +354,32 @@ extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int
   #|        }
   #|        return [{ code }];
   #|      }
+  #|      case "fetch":
+  #|        return request(id, a, bytes, async (response, head) => [head, new Uint8Array(await response.arrayBuffer())]);
+  #|      case "stream.open":
+  #|        return request(id, a, bytes, async (response, head) => {
+  #|          const reader = response.body ? response.body.getReader() : null;
+  #|          return [{ ...head, id: keep({ responseReader: reader, done: reader === null }) }];
+  #|        });
+  #|      case "stream.read": {
+  #|        if (h?.responseReader === undefined) throw new Error("not a response");
+  #|        for (;;) {
+  #|          const came = h.done ? { done: true } : await h.responseReader.read();
+  #|          if (came.done) {
+  #|            h.done = true;
+  #|            handles.delete(a.id);
+  #|            return [{ end: true }];
+  #|          }
+  #|          if (came.value.length > 0) return [{}, came.value];
+  #|        }
+  #|      }
+  #|      case "stream.close":
+  #|        if (h?.responseReader !== undefined) {
+  #|          handles.delete(a.id);
+  #|          if (!h.done) await h.responseReader.cancel().catch(() => {});
+  #|          h.done = true;
+  #|        }
+  #|        return [{}];
   #|      case "istream.reset":
   #|        if (h?.stream !== undefined) {
   #|          handles.delete(a.id);

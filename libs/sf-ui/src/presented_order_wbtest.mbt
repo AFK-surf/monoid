@@ -27,9 +27,9 @@ test "opened, closed and another opened with no frame between: the one closed un
   close_presented()
   confirm("乙", "", "好", fn() {  })
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let shown = (t.find("甲") is None, t.find("乙") is Some(_), presented_open_of(1), presented_open_of(2))
-  t.run_for(@kit.presence_out_ms)
+  t.run_for(@motion.presence_out_ms)
   assert_eq((shown, gone.val), ((true, true, false, true), 1))
 }
 
@@ -42,8 +42,8 @@ test "one said that opens another as it is done: the one said closes, its run on
     confirm("乙", "", "再来", fn() {  })
   })
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap_text("好")
-  t.run_for(@kit.presence_out_ms + @kit.presence_in_ms)
+  t.run_for(@motion.presence_out_ms + @motion.presence_in_ms)
   assert_eq((runs.val, presented_open_of(1), presented_open_of(2), t.find("再来") is Some(_)), (1, false, true, true))
 }

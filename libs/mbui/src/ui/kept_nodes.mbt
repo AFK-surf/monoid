@@ -174,6 +174,9 @@ priv struct NodesRun {
   /// the rows and parts the frames built since a test last took them, as kept_at (not those a build keeping none built:
   /// Tester::rows_built)
   mut built_at : Array[(Int, Int)]
+  /// whether what took them asked for them yet this run (Tester::rows_built): till then none are kept, a device's frames
+  /// asked by none, which would keep each row each frame built for as long as the app runs
+  mut built_asked : Bool
   mut on : Bool
 }
 
@@ -197,6 +200,7 @@ let nodes_run : NodesRun = {
   built_read: 0,
   kept_at: [],
   built_at: [],
+  built_asked: false,
   on: true,
 }
 
@@ -438,6 +442,7 @@ fn rows_nodes_end(c : Ctx) -> Unit {
       Some(rn) => {
         rn.watch.stop()
         row_drawing_forget(rn)
+        row_nodes_unlinked(rn)
         // (its nodes not in the frame's: its own, at the end of the frame's now, each found there by who it is as what
         // it was is built again (a page covered a while, back: Ctx::node_known), so far as there is room, else spares;
         // in it, the frame's, and what it holds of the frame's)
@@ -458,11 +463,38 @@ fn rows_nodes_end(c : Ctx) -> Unit {
 }
 
 ///|
+/// Row or part `rn`, kept no more, let go of what holds it and what it holds (its holder, the parts kept among its
+/// nodes): a part holds its holder (`holder`, read by its watch too) and is held by it (`inner`), a ring native's
+/// counting never frees, which would keep both, their nodes and what their builds said, once neither is kept.
+fn row_nodes_unlinked(rn : RowNodes) -> Unit {
+  rn.holder.val = None
+  rn.inner = []
+  rn.inner_now.clear()
+}
+
+///|
+/// Node `n`, let go of or perhaps so, let go of what holds it and what it holds of others: as a leaf its layout's
+/// measure holds it, and as it held others its layout's children are those it held when it was last laid out
+/// (Ctx::flex_tree), which a node made another's since may hold in turn: rings native's counting never frees. Laid
+/// out again, it is told both again.
+fn Node::unlinked(self : Node) -> Unit {
+  self.fl.measure = None
+  self.fl.children_cut(0)
+}
+
+///|
 /// Put back as a run begins (reset_globals): no row kept, what they read let go.
 fn nodes_forget() -> Unit {
   for _, rn in kept_nodes {
     rn.watch.stop()
     row_drawing_forget(rn)
+    row_nodes_unlinked(rn)
+    for o in rn.store {
+      o.unlinked()
+    }
+  }
+  for o in spare_nodes {
+    o.unlinked()
   }
   kept_nodes.clear()
   spare_nodes.clear()
@@ -476,6 +508,7 @@ fn nodes_forget() -> Unit {
   nodes_run.built_read = 0
   nodes_run.kept_at.clear()
   nodes_run.built_at.clear()
+  nodes_run.built_asked = false
   nodes_run.typed_alone = false
   typed_frame_last.val = -1
   nodes_run.on = true
@@ -888,7 +921,7 @@ fn Ctx::nodes_begin(self : Ctx, rn : RowNodes) -> NodesBegun {
 /// nodes all its own and none of a kind built each frame; a part may hold lists, laid out each frame).
 fn Ctx::nodes_end(self : Ctx, rn : RowNodes, r : Int, b : NodesBegun, part~ : Bool) -> Unit {
   nodes_run.built = nodes_run.built + 1
-  if !nodes_run.whole {
+  if !nodes_run.whole && nodes_run.built_asked {
     nodes_run.built_at.push((rn.list, rn.item))
   }
   if !part && rn.reads_all {
@@ -1340,6 +1373,7 @@ pub fn Tester::rows_built(self : Tester) -> Array[(Int, Int)] {
   ignore(self)
   let out = nodes_run.built_at.copy()
   nodes_run.built_at.clear()
+  nodes_run.built_asked = true
   out
 }
 

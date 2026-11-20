@@ -16,6 +16,7 @@ import { described, letGo } from "../src/tools/screen.ts";
 import { Admin } from "../src/api/admin.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import { Browsers } from "../src/browser/browsers.ts";
+import { BrowserAgentHold } from "../src/browser/agent-hold.ts";
 import { Gate } from "../src/browser/gate.ts";
 import { expired, keptOf, ofSites, siteCookies, stateOf } from "../src/browser/signins.ts";
 import { passkeyOf, sitePasskeys } from "../src/browser/passkeys.ts";
@@ -27,7 +28,8 @@ import { Tabs } from "../src/browser/tabs.ts";
 import { openAgentsDoor } from "../src/tools/http.ts";
 import { McpEndpoint } from "../src/tools/mcp.ts";
 import WebSocket, { WebSocketServer } from "ws";
-import { TabView, hostOf, jpegSize, rpFor, sameClientData, keyCode, keyEvent, toViewport } from "../src/browser/view.ts";
+import vm from "node:vm";
+import { LOGIN_BINDING, LOGIN_HOOK, TabView, hostOf, jpegSize, rpFor, sameClientData, keyCode, keyEvent, toViewport } from "../src/browser/view.ts";
 import { makeScreens } from "../src/screens/source.ts";
 import { browserTools, howTo } from "../src/browser/tool.ts";
 import { asked, parseFill, parsePasskey } from "../src/mesh/screens.ts";
@@ -161,7 +163,7 @@ async function view(viewport = { width: 1000, height: 500 }) {
 
 test("a view casts JPEG within the viewer's size, and acknowledges a frame only once the next is asked for", async () => {
   const { cdp, v, frame, acks } = await view();
-  assert.deepEqual(cdp.of("Page.startScreencast")[0]!.params, { format: "jpeg", quality: 70, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
+  assert.deepEqual(cdp.of("Page.startScreencast")[0]!.params, { format: "jpeg", quality: 82, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
   assert.equal(cdp.of("Page.startScreencast")[0]!.sessionId, "S", "on the view's own session");
 
   // Asked before any frame: given the first when it comes, with its config.
@@ -1033,6 +1035,8 @@ test("a login form filled from a person's app: what the wire takes (a host, an a
 
 test("a passkey sign-in answered from a person's app: what the wire takes (base64url, bounded; or a browser's error); the relying parties a tab's host may name", () => {
   assert.deepEqual(parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", userHandle: "BQ" }), { id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", userHandle: "BQ" });
+  const parsedBig = parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", clientData: "A".repeat(20_000) });
+  assert.equal(parsedBig && "clientData" in parsedBig ? parsedBig.clientData?.length : 0, 20_000, "macOS clientData wrapping a 10 KB Google challenge");
   assert.deepEqual(parsePasskey({ t: "passkey", id: "1", error: "NotAllowedError" }), { id: "1", error: "NotAllowedError" });
   assert.equal(parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AA==", signature: "BwcH" }), null, "base64url only");
   assert.equal(parsePasskey({ t: "passkey", id: "1", credential: "CQk", signature: "BwcH" }), null);
@@ -1419,4 +1423,114 @@ test("user pages as a browser's tabs: a new tab by the app's own id on a blank p
   const stored = JSON.parse(readFileSync(join(dir, "user-tabs.json"), "utf8"));
   assert.deepEqual(stored.tabs.map((t: { id: string; url: string }) => [t.id, t.url]), [["u_0123456789ab", "https://mail.proton.me/u/0/inbox"], ["u_ba9876543210", "about:blank"]]);
   await b.close();
+});
+
+test("LOGIN_HOOK and watchLogin report filled state, update as values change, and re-report on a second view", async () => {
+  const listeners = new Map<string, ((e: any) => void)[]>();
+  const pw = { tagName: "INPUT", type: "password", autocomplete: "current-password", name: "pw", id: "pw", value: "", disabled: false, readOnly: false, form: null };
+  const doc: any = {
+    activeElement: pw,
+    addEventListener: (type: string, fn: (e: any) => void) => {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+  };
+  const said: string[] = [];
+  const win: any = { [LOGIN_BINDING]: (s: string) => said.push(s) };
+  win.window = win;
+  win.top = win;
+  win.document = doc;
+  vm.runInNewContext(LOGIN_HOOK, win);
+  assert.deepEqual(said, ['{"field":"password"}']);
+
+  // Agent or user fills the focused field and fires input: now reported with filled: true.
+  pw.value = "s3cr3t";
+  for (const fn of listeners.get("input") ?? []) fn({});
+  assert.deepEqual(said.at(-1), '{"field":"password","filled":true}');
+
+  // Second view opens on the same document without reload: re-running LOGIN_HOOK invokes __stillfailLoginTell and emits current state.
+  said.length = 0;
+  vm.runInNewContext(LOGIN_HOOK, win);
+  assert.deepEqual(said, ['{"field":"password","filled":true}']);
+
+  // Clearing the field emits unfilled again; leaving focus emits null.
+  pw.value = "";
+  for (const fn of listeners.get("input") ?? []) fn({});
+  assert.deepEqual(said.at(-1), '{"field":"password"}');
+  doc.activeElement = null;
+  for (const fn of listeners.get("focusout") ?? []) fn({ relatedTarget: null });
+  assert.deepEqual(said.at(-1), "null");
+
+  // TabView.watchLogin forwards filled: true when present and omits it when empty.
+  const cdp = new FakeCdp();
+  cdp.answers["Target.getTargetInfo"] = () => ({ targetInfo: { targetId: "T", url: "https://account.line.biz/login" } });
+  const v = new TabView({ cdp, session: "S", targetId: "T", now: () => 0 });
+  const heard: any[] = [];
+  const stop = v.watchLogin((l) => heard.push(l));
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: '{"field":"password"}' }, "S");
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: '{"field":"password","filled":true}' }, "S");
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: "null" }, "S");
+  await turn();
+  assert.deepEqual(heard, [
+    { host: "account.line.biz", field: "password" },
+    { host: "account.line.biz", field: "password", filled: true },
+    null,
+  ]);
+  stop();
+  v.close();
+});
+
+test("an agent operating a browser tab joins ScreenHub, yields passive viewers without locking their device, and is refused once a person takes control", () => {
+  const hub = new ScreenHub();
+  hub.add({ id: "browser:T1", kind: "browser", title: () => "Welcome", size: () => ({ width: 800, height: 600 }), open: async () => { throw new Error("unused"); } });
+  const timers: (() => void)[] = [];
+  const hold = new BrowserAgentHold({
+    hub,
+    name: (s) => `agent: ${s}`,
+    later: (_ms, f) => { timers.push(f); return () => {}; },
+  });
+  const g = new Gate({
+    context: "C1",
+    contextOf: (id) => (id === "T1" ? "C1" : undefined),
+    act: (id, method) => hold.act("查询账号", id, method),
+  });
+  g.fromChrome(JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "ST1", targetInfo: { targetId: "T1", browserContextId: "C1" } } }));
+
+  // Passive person view opens (taken = false).
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  let yieldedBy: string | undefined;
+  let leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: (by) => { yieldedBy = by; } });
+
+  // Agent navigates: Alice's passive view yields to watch-only, and agent shows in controlledBy.
+  const nav = g.fromClient(JSON.stringify({ id: 1, sessionId: "ST1", method: "Page.navigate", params: { url: "https://example.org" } }));
+  assert.equal(nav.up.length, 1);
+  assert.equal(yieldedBy, "agent: 查询账号");
+  assert.deepEqual(hub.people("browser:T1").controlledBy, ["agent: 查询账号"]);
+
+  // Agent turn ends: Alice's device is NOT held by WATCH_HELD_MS, so automatic reopen drives immediately.
+  hold.releaseSession("查询账号");
+  assert.deepEqual(hub.people("browser:T1").controlledBy, []);
+  leaveAlice();
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
+
+  // Now agent acts again, then Alice explicitly clicks [接管] (taken = true).
+  assert.equal(g.fromClient(JSON.stringify({ id: 2, sessionId: "ST1", method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } })).up.length, 1);
+  leaveAlice();
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", true, "Alice"), { control: true, took: [] });
+  leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
+  assert.equal(hub.hasTakenView("browser:T1"), true);
+
+  // Read-only screenshot still passes, while operating commands and closing the tab are refused!
+  assert.equal(g.fromClient(JSON.stringify({ id: 3, sessionId: "ST1", method: "Page.captureScreenshot", params: {} })).up.length, 1);
+  const blockedClick = JSON.parse(g.fromClient(JSON.stringify({ id: 4, sessionId: "ST1", method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } })).down[0]!);
+  assert.match(blockedClick.error.message, /Alice is controlling browser:T1 right now/);
+  const blockedClose = JSON.parse(g.fromClient(JSON.stringify({ id: 5, method: "Target.closeTarget", params: { targetId: "T1" } })).down[0]!);
+  assert.match(blockedClose.error.message, /Alice is controlling browser:T1 right now/);
+  leaveAlice();
+  hold.close();
 });

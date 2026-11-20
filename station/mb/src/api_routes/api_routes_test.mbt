@@ -1,5 +1,5 @@
 // What the routes stand on, as JavaScript has it: the patterns, values, numbers, paths, words and decodings the
-// TypeScript routes used (station/test/mb-api-routes.test.ts holds the routes themselves to them).
+// TypeScript routes used.
 
 ///|
 test "patterns match as JavaScript's" {
@@ -31,11 +31,26 @@ test "patterns match as JavaScript's" {
 }
 
 ///|
+test "single-unit repetitions match long inputs without recursing per character" {
+  let b64 = @api_routes.re("^[A-Za-z0-9+/]*={0,2}$")
+  let sb = StringBuilder::new()
+  for _ in 0..<50000 {
+    sb.write_string("AAAA")
+  }
+  let valid = sb.to_string()
+  assert_true(b64.matches(valid))
+  assert_true(b64.matches(valid + "=="))
+  assert_false(b64.matches(valid + "!"))
+  assert_true(@api_routes.re("^A.*?B$").matches(valid + "B"))
+  assert_true(@api_routes.re("^A.*B$").matches(valid + "B"))
+}
+
+///|
 test "values as JSON.stringify writes them, keys in JavaScript's order" {
   let o = @api_routes.jobj([
     ("b", @api_routes.jint(1)),
     ("2", @api_routes.js("x")),
-    ("a", @api_routes.Null),
+    ("a", @api_routes.JV::Null),
     ("1", @api_routes.jbool(true)),
   ])
   assert_eq(
@@ -54,7 +69,7 @@ test "values as JSON.stringify writes them, keys in JavaScript's order" {
       Some(
         @api_routes.jarr([
           @api_routes.jint(1),
-          @api_routes.Null,
+          @api_routes.JV::Null,
           @api_routes.js("a"),
         ]),
       ),
@@ -161,4 +176,26 @@ test "the routes' own small rules" {
   assert_true(@api_routes.read_only_may("POST", "/changed/chats"))
   assert_eq(@api_routes.lang_of("zh-CN"), "zh")
   assert_eq(@api_routes.lang_of("fr"), "en")
+}
+
+///|
+test "a body stopped before its end aborts its request's signal, a streamed one's own stop set going after" {
+  let order = []
+  let spawned = []
+  let spawn = (f : async () -> Unit) => spawned.push(f)
+  let a = @api_routes.Signal::new()
+  let stop = @api_routes.Body::Stream(async fn() { None }).stop_with(a, spawn)
+  assert_false(a.aborted)
+  stop()
+  assert_true(a.aborted)
+  assert_eq(spawned.length(), 0)
+  let b = @api_routes.Signal::new()
+  let stop = @api_routes.Body::Streamed(async fn() { None }, async fn() { order.push("stopped") }).stop_with(b, spawn)
+  stop()
+  assert_true(b.aborted)
+  assert_eq(spawned.length(), 1)
+  let rt = @effect.Runtime::new()
+  ignore(rt.fork(spawned[0]))
+  rt.advance(1)
+  assert_eq(order, ["stopped"])
 }

@@ -188,16 +188,6 @@ pub fn ControlReader::feed(self : ControlReader, chunk : String) -> Array[Told] 
 }
 
 ///|
-fn told_json(t : Told) -> Json {
-  match t {
-    Op(op) => { "op": js(op) }
-    NoOp => { "noop": true }
-    Carried(c) => { "carried": c }
-    Unreadable(n) => { "unreadable": ji(n) }
-  }
-}
-
-///|
 /// launcher.ts `carried`: what came before anyone took it is given to the taker once it is there.
 pub struct CarriedBox {
   mut came : Json?

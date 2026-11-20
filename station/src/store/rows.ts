@@ -8,11 +8,16 @@ import { LEGACY_SAID_LATEST } from "./legacy-said-build.ts";
 
 export type Json = any;
 
-/// The page's own threads live on this surface (stored under the name of before the rename: the stations' data and
-/// the indexes made of it have it).
-export const STILLFAIL_SURFACE = "ember";
-/// The connect the page's own threads' sessions are in (sessions/internal.ts INTERNAL_CONNECT), stored the same way.
-export const STILLFAIL_CONNECT = "ember";
+/// The page's own threads live on this surface, as the clients have read it since #4101.
+export const STILLFAIL_SURFACE = "chat";
+/// The connect the page's own threads' sessions are in (sessions/internal.ts INTERNAL_CONNECT).
+export const STILLFAIL_CONNECT = "chat";
+/// What stations wrote for both before the rename: a database is written over once as it opens (schema.ts
+/// `renameOwnChats`), and only what comes from elsewhere (a copy, another station's hand-over) is read in these names.
+export const FORMER_OWN_NAMES: readonly string[] = ["ember", "stillfail"];
+/// A surface or connect as it is written now: the station's own chats' names of before are its name now
+/// (STILLFAIL_SURFACE and STILLFAIL_CONNECT are one name), anything else as it is.
+export const ownName = (name: string): string => (FORMER_OWN_NAMES.includes(name) ? STILLFAIL_SURFACE : name);
 /// What a chat handed to another station one at a time (replica/handover.ts) says its workspace is here once it went
 /// (store `handOff`), out of every device's sight here; and what one coming here says until it is shown (`comingWs`).
 export const handedWs = (ws: string) => `handed:${ws}`;
@@ -68,6 +73,8 @@ export const seesMissing = (viewer: InWorkspace, key: string): boolean => {
 export type SessionRow = {
   /// The station it was handed here from (replica/handover.ts; absent: it began here, or came back to where it began).
   from?: string;
+  /// The conversation anchor session key when grouped (`sessions.conv`; absent when NULL).
+  conv?: string;
   key: string; connect: string; scope: SessionScope; title: string | null; createdBy: string | null; runtime: string;
   profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; tui?: boolean;
   /// Whether it goes on afresh once its prompt cache is over, as chosen in its chat (null: as its station is set,
@@ -78,6 +85,9 @@ export type SessionRow = {
   /// The most it ran with while what it holds is over `context`, lowered meanwhile, until compacted (0: the model's
   /// whole window; null: none over).
   contextBefore: number | null;
+  /// Times its runtime session compacted its context (on its own or by hand), counted afresh with each runtime session
+  /// (none: never yet).
+  compactions?: number;
   runtimeSessionId: string | null; workspace: string; cwd: string | null;
   /// Which of the station's workspaces its chat is in: null is its home workspace (sessions
   /// from before, and those made outside any workspace's request). Not the `workspace` above, its directory.
@@ -114,9 +124,9 @@ export type SessionThread = { thread: ThreadRow; connect: string };
 /// nothing there until someone mentions it again. Absent where it is not read (chat lists).
 export type Membership = { thread: number; session: string; connect: string; joinedAt: number; leftAt?: number | null };
 
-/// The station itself as a message's author (its kind and its name): stored, and sent to the clients, as named before
-/// the rename, like STILLFAIL_SURFACE.
-export const STATION_AUTHOR = "ember";
+/// The station itself as a message's author: its kind and its name, stored and sent to the clients (who have read it so
+/// since #4101). An author kind is never a person's name: a person is of kind "person" whatever they are called.
+export const STATION_AUTHOR = "station";
 export type AuthorKind = "person" | "agent" | typeof STATION_AUTHOR;
 export type EntryKind = "message" | "edit";
 
@@ -425,7 +435,8 @@ export function jsonList<T>(value: T[], write: (v: Json) => T): string | null {
 /// AuthorKind::parse.
 export function authorKind(s: string): AuthorKind {
   if (s === "agent") return "agent";
-  if (s === STATION_AUTHOR || s === "stillfail") return STATION_AUTHOR;
+  // ("ember" and "stillfail": the kind stations wrote for the station before, in their databases and archives.)
+  if (s === STATION_AUTHOR || s === "ember" || s === "stillfail") return STATION_AUTHOR;
   return "person";
 }
 
@@ -451,10 +462,12 @@ export function toSession(r: Json): SessionRow {
     ...(typeof r.speed === "string" ? { speed: r.speed as ModelSpeed } : {}),
     fast: r.fast === null || r.fast === undefined ? null : r.fast !== 0,
     afresh: r.afresh === null || r.afresh === undefined ? null : r.afresh !== 0, context: typeof r.context === "number" ? r.context : null, contextBefore: typeof r.context_before === "number" ? r.context_before : null,
+    ...(typeof r.compactions === "number" && r.compactions > 0 ? { compactions: r.compactions } : {}),
     runtimeSessionId: r.runtime_session_id,
     workspace: r.workspace, cwd: r.cwd ?? null, ws: r.ws ?? null, token: r.token, running: r.running === 1, createdAt: r.created_at,
     lastActiveAt: r.last_active_at, archivedAt: r.archived_at, archivedBy: r.archived_by, shownAt: r.shown_at,
     ...(typeof r.came_from === "string" && r.came_from !== "" ? { from: r.came_from } : {}),
+    ...(typeof r.conv === "string" && r.conv !== "" ? { conv: r.conv } : {}),
   };
 }
 

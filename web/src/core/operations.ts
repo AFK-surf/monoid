@@ -18,9 +18,12 @@ export interface OperationParams {
   "move.back": { from: string; module?: string | null | undefined; item?: string | null | undefined; all?: boolean | null | undefined };
   "move.stop": {  };
   "station.restart": {  };
+  "station.resumeInterrupted": { keys?: string[] | null | undefined };
+  "station.dismissInterrupted": { keys?: string[] | null | undefined };
   "context.setAfresh": { afreshWhenCold?: boolean | null | undefined; afreshAbove?: number | null | undefined };
   "diagnostics.setLogs": { logs: boolean };
   "elevation.set": { on: boolean };
+  "screenService.set": { on: boolean };
   "session.warm": { key: string };
   "session.evict": { key: string };
   "session.compact": { key: string };
@@ -69,6 +72,7 @@ export interface OperationParams {
   "automaticDecisions.review": {  };
   "automaticDecisions.policy": { input: unknown };
   "archiving.save": { days: number; reviewed: boolean; slackDays: number };
+  "autoChats.save": { enabled: boolean };
   "connect.create": { input?: unknown; id?: string | null | undefined };
   "connect.put": { id: string; input?: unknown };
   "connect.delete": { id: string };
@@ -162,6 +166,7 @@ export interface OperationParams {
   "machineLogin.cancel": { id: string };
   "machineLogin.answer": { id: string; text: string };
   "machineLogin.browser": { id: string };
+  "machineLogin.again": { id: string };
   "workspace.create": { name?: string | null | undefined; invite_code?: string | null | undefined };
   "workspace.rename": { workspace: string; name?: string | null | undefined; emoji?: string | null | undefined; icon?: string | null | undefined };
   "workspace.setRelays": { workspace: string; relays?: string[] | null | undefined };
@@ -203,6 +208,8 @@ export interface OperationParams {
   "admin.relayTokenRevoke": { id: string };
   "admin.relayPut": { url: string; name: string; target?: string | null | undefined };
   "admin.relayRemove": { url: string };
+  "admin.createKey": { name: string; days?: number | null | undefined };
+  "admin.revokeKey": { id: string };
 }
 
 export const UNTRACKED_OPERATIONS = new Set(["admin.me", "app.deleteDoc", "app.docs", "app.get", "app.list", "app.llm", "app.putDoc", "app.versions", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
@@ -229,9 +236,12 @@ export function bindStationOperations(call: Call) {
     moveBack: <T = unknown>(params: OperationParams["move.back"]) => call("move.back", params) as Promise<T>,
     moveStop: <T = unknown>(params: OperationParams["move.stop"] = {}) => call("move.stop", params) as Promise<T>,
     stationRestart: <T = unknown>(params: OperationParams["station.restart"] = {}) => call("station.restart", params) as Promise<T>,
+    stationResumeInterrupted: <T = unknown>(params: OperationParams["station.resumeInterrupted"] = {}) => call("station.resumeInterrupted", params) as Promise<T>,
+    stationDismissInterrupted: <T = unknown>(params: OperationParams["station.dismissInterrupted"] = {}) => call("station.dismissInterrupted", params) as Promise<T>,
     contextSetAfresh: <T = unknown>(params: OperationParams["context.setAfresh"] = {}) => call("context.setAfresh", params) as Promise<T>,
     diagnosticsSetLogs: <T = unknown>(params: OperationParams["diagnostics.setLogs"]) => call("diagnostics.setLogs", params) as Promise<T>,
     elevationSet: <T = unknown>(params: OperationParams["elevation.set"]) => call("elevation.set", params) as Promise<T>,
+    screenServiceSet: <T = unknown>(params: OperationParams["screenService.set"]) => call("screenService.set", params) as Promise<T>,
     sessionWarm: <T = unknown>(params: OperationParams["session.warm"]) => call("session.warm", params) as Promise<T>,
     sessionEvict: <T = unknown>(params: OperationParams["session.evict"]) => call("session.evict", params) as Promise<T>,
     sessionCompact: <T = unknown>(params: OperationParams["session.compact"]) => call("session.compact", params) as Promise<T>,
@@ -280,6 +290,7 @@ export function bindStationOperations(call: Call) {
     automaticDecisionsReview: <T = unknown>(params: OperationParams["automaticDecisions.review"] = {}) => call("automaticDecisions.review", params) as Promise<T>,
     automaticDecisionsPolicy: <T = unknown>(params: OperationParams["automaticDecisions.policy"]) => call("automaticDecisions.policy", params) as Promise<T>,
     archivingSave: <T = unknown>(params: OperationParams["archiving.save"]) => call("archiving.save", params) as Promise<T>,
+    autoChatsSave: <T = unknown>(params: OperationParams["autoChats.save"]) => call("autoChats.save", params) as Promise<T>,
     connectCreate: <T = unknown>(params: OperationParams["connect.create"] = {}) => call("connect.create", params) as Promise<T>,
     connectPut: <T = unknown>(params: OperationParams["connect.put"]) => call("connect.put", params) as Promise<T>,
     connectDelete: <T = unknown>(params: OperationParams["connect.delete"]) => call("connect.delete", params) as Promise<T>,
@@ -373,6 +384,7 @@ export function bindStationOperations(call: Call) {
     machineLoginCancel: <T = unknown>(params: OperationParams["machineLogin.cancel"]) => call("machineLogin.cancel", params) as Promise<T>,
     machineLoginAnswer: <T = unknown>(params: OperationParams["machineLogin.answer"]) => call("machineLogin.answer", params) as Promise<T>,
     machineLoginBrowser: <T = unknown>(params: OperationParams["machineLogin.browser"]) => call("machineLogin.browser", params) as Promise<T>,
+    machineLoginAgain: <T = unknown>(params: OperationParams["machineLogin.again"]) => call("machineLogin.again", params) as Promise<T>,
   };
 }
 
@@ -419,5 +431,7 @@ export function bindCloudOperations(call: Call) {
     adminRelayTokenRevoke: <T = unknown>(params: OperationParams["admin.relayTokenRevoke"]) => call("admin.relayTokenRevoke", params) as Promise<T>,
     adminRelayPut: <T = unknown>(params: OperationParams["admin.relayPut"]) => call("admin.relayPut", params) as Promise<T>,
     adminRelayRemove: <T = unknown>(params: OperationParams["admin.relayRemove"]) => call("admin.relayRemove", params) as Promise<T>,
+    adminCreateKey: <T = unknown>(params: OperationParams["admin.createKey"]) => call("admin.createKey", params) as Promise<T>,
+    adminRevokeKey: <T = unknown>(params: OperationParams["admin.revokeKey"]) => call("admin.revokeKey", params) as Promise<T>,
   };
 }

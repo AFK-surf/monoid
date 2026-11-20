@@ -71,7 +71,7 @@ fn is_hex(s : String) -> Bool {
 ///|
 fn is_safe_integer(v : J?) -> Double? {
   match v {
-    Some(Num(d)) if d == d.floor() && d.abs() <= 9007199254740991.0 => Some(d)
+    Some(Num(d)) if @jsjson.is_safe_integer(d) => Some(d)
     _ => None
   }
 }
@@ -79,6 +79,14 @@ fn is_safe_integer(v : J?) -> Double? {
 ///|
 pub suberror NotALog {
   NotALog
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for NotALog with output(self, logger) {
+  match self {
+    NotALog => logger.write_string("not an event log")
+  }
 }
 
 ///|

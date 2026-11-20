@@ -11,8 +11,8 @@
 using @jsjson {type JValue as JV}
 
 ///|
-fn ju(s : String) -> Array[Int] {
-  @jsjson.units(s)
+fn ju(s : String) -> String {
+  s
 }
 
 ///|
@@ -67,7 +67,7 @@ fn onum(o : JV, key : String) -> Double {
 ///|
 fn ostr(o : JV, key : String) -> String? {
   match oget(o, key) {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -83,7 +83,7 @@ fn oarr(o : JV, key : String) -> Array[JV] {
 ///|
 fn ostrs(o : JV, key : String) -> Array[String] {
   oarr(o, key).filter_map(v => match v {
-    Str(u) => Some(@jsjson.text(u))
+    Str(u) => Some(@jsjson.sanitize_str(u))
     _ => None
   })
 }
@@ -155,7 +155,7 @@ pub fn free(name : String, dir : Bool, taken : (String) -> Bool) -> String {
 /// transfers.ts `shown`: a transfer as the pages are told it, without its list of what it copies.
 pub fn shown(t : JV) -> JV {
   guard t is Obj(fields) else { return t }
-  let out : Array[(Array[Int], JV)] = []
+  let out : Array[(String, JV)] = []
   for f in fields {
     if f.0 != ju("items") && f.0 != ju("placed") {
       out.push(f)
@@ -594,7 +594,7 @@ async fn Transfers::run(self : Transfers, t : JV) -> Unit noraise {
     }
     if oget(t, "move") is Some(Bool(true)) {
       let placed = match oget(t, "placed") {
-        Some(Obj(f)) => f.map(p => @jsjson.text(p.0))
+        Some(Obj(f)) => f.map(p => @jsjson.sanitize_str(p.0))
         _ => []
       }
       (source.release)(placed)

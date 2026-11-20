@@ -73,6 +73,14 @@ pub(all) suberror FsError {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(_, m) => logger.write_string(m)
+  }
+}
+
+///|
 /// The machine's files, as these parts ask them (node:fs/promises, ops/files.ts).
 pub(all) struct Files {
   /// `readFile(path, "utf8")`; None where it cannot be read.
@@ -108,6 +116,7 @@ pub(all) struct ViewOptions {
   peek : Bool
   /// The viewer's phone: its width, height and scale.
   fit : (Double, Double, Double)?
+  passkeys : Bool?
 }
 
 ///|
@@ -123,6 +132,10 @@ pub fn ViewOptions::of_j(v : J) -> ViewOptions {
     max_height: js_num(at(Some(v), "maxHeight")),
     peek: is_true(at(Some(v), "peek")),
     fit,
+    passkeys: match at(Some(v), "passkeys") {
+      Some(Bool(b)) => Some(b)
+      _ => None
+    },
   }
 }
 
@@ -216,14 +229,6 @@ pub(all) struct ScreenBrowser {
 fn told_changed(screens : Screens?) -> Unit {
   match screens {
     Some({ changed: Some(f), .. }) => f()
-    _ => ()
-  }
-}
-
-///|
-/// What a promise set going and not waited for leaves: its failure, if any, swallowed (`.catch(() => {})`).
-async fn quietly(f : async () -> Unit) -> Unit {
-  f() catch {
     _ => ()
   }
 }

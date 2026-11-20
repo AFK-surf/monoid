@@ -5,7 +5,7 @@
 
 ///|
 /// store/usage.ts `UsageFor`: whom a call's turn worked for, as the database gives it.
-priv struct For {
+pub(all) struct For {
   turn : Json
   person : Json
   thread : Json
@@ -131,80 +131,6 @@ fn Schema::totals_complete(self : Schema, db : @sql.Db, session : String) -> Boo
 // ── JSON as JavaScript keeps it ──
 
 ///|
-fn jkey(k : String) -> Array[Int] {
-  @jsjson.units(k)
-}
-
-///|
-fn same_units(a : Array[Int], b : Array[Int]) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    if a[i] != b[i] {
-      return false
-    }
-  }
-  true
-}
-
-///|
-fn jget(v : @jsjson.JValue?, k : String) -> @jsjson.JValue? {
-  match v {
-    Some(Obj(entries)) => {
-      let key = jkey(k)
-      for e in entries {
-        if same_units(e.0, key) {
-          return Some(e.1)
-        }
-      }
-      None
-    }
-    _ => None
-  }
-}
-
-///|
-/// `obj[k] = v`: in its place where it is, else last.
-fn jset(obj : @jsjson.JValue, k : String, v : @jsjson.JValue) -> Unit {
-  guard obj is Obj(entries) else { return }
-  let key = jkey(k)
-  for i in 0..<entries.length() {
-    if same_units(entries[i].0, key) {
-      entries[i] = (entries[i].0, v)
-      return
-    }
-  }
-  entries.push((key, v))
-}
-
-///|
-/// `delete obj[k]`.
-fn jdel(obj : @jsjson.JValue, k : String) -> Unit {
-  guard obj is Obj(entries) else { return }
-  let key = jkey(k)
-  for i in 0..<entries.length() {
-    if same_units(entries[i].0, key) {
-      ignore(entries.remove(i))
-      return
-    }
-  }
-}
-
-///|
-fn jstr(s : String) -> @jsjson.JValue {
-  Str(jkey(s))
-}
-
-///|
-fn jopt_str(s : String?) -> @jsjson.JValue {
-  match s {
-    Some(v) => jstr(v)
-    None => Null
-  }
-}
-
-///|
 fn jopt_num(d : Double?) -> @jsjson.JValue {
   match d {
     Some(v) => Num(v)
@@ -213,41 +139,12 @@ fn jopt_num(d : Double?) -> @jsjson.JValue {
 }
 
 ///|
-/// A JSON value's number, as JavaScript compares one (none: not a number).
-fn jnum(v : @jsjson.JValue?) -> Double? {
-  match v {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
-}
-
-///|
 /// `a === b` of what JSON holds against a string or null.
 fn jis(v : @jsjson.JValue?, s : String?) -> Bool {
   match (v, s) {
     (Some(Null), None) => true
-    (Some(Str(u)), Some(t)) => same_units(u, jkey(t))
+    (Some(Str(u)), Some(t)) => u == t
     _ => false
-  }
-}
-
-///|
-/// JavaScript's `<` of two strings: by their UTF-16 code units.
-fn units_less(a : Array[Int], b : Array[Int]) -> Bool {
-  let m = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<m {
-    if a[i] != b[i] {
-      return a[i] < b[i]
-    }
-  }
-  a.length() < b.length()
-}
-
-///|
-fn jarray(v : @jsjson.JValue?) -> Array[@jsjson.JValue] {
-  match v {
-    Some(Arr(items)) => items
-    _ => []
   }
 }
 
@@ -255,7 +152,7 @@ fn jarray(v : @jsjson.JValue?) -> Array[@jsjson.JValue] {
 
 ///|
 /// usage-compact.ts `ContextOwner`: the totals row that holds a session's context.
-priv struct Owner {
+pub(all) struct Owner {
   runtime : Json
   model : Json
   fast : Json
@@ -268,21 +165,22 @@ fn same_owner(a : Owner, b : Owner) -> Bool {
 
 ///|
 /// usage-compact.ts `ContextSnapshot`.
-priv struct Snapshot {
+pub(all) struct Snapshot {
   state : @jsjson.JValue
   stored : Bool
   invalid : Bool
+  after : Double?
   owner : Owner?
 }
 
 ///|
 fn fresh_state(uncertain : Bool) -> @jsjson.JValue {
-  Obj([(jkey("calls"), Arr([])), (jkey("turns"), Arr([])), (jkey("uncertain"), Bool(uncertain))])
+  Obj([("calls", Arr([])), ("turns", Arr([])), ("uncertain", Bool(uncertain))])
 }
 
 ///|
 /// usage-compact.ts `contextSnapshot`.
-fn context_snapshot(db : @sql.Db, session : String) -> Snapshot raise {
+pub fn context_snapshot(db : @sql.Db, session : String) -> Snapshot raise {
   let row = one(
     db,
     (
@@ -302,7 +200,7 @@ fn context_snapshot(db : @sql.Db, session : String) -> Snapshot raise {
       match field(r, "state") {
         Null => (fresh_state(invalid), false)
         String(text) => (@jsjson.parse(text), true)
-        other => (@jsjson.parse(other.stringify()), true)
+        other => (@jsjson.JValue::of_json(other), true)
       }
     None => (fresh_state(invalid), false)
   }
@@ -311,13 +209,17 @@ fn context_snapshot(db : @sql.Db, session : String) -> Snapshot raise {
       Some({ runtime: field(r, "runtime"), model: field(r, "model"), fast: field(r, "fast") })
     _ => None
   }
-  { state, stored, invalid, owner }
+  let after = match row {
+    Some(r) => num_of(field(r, "after"))
+    None => None
+  }
+  { state, stored, invalid, after, owner }
 }
 
 ///|
 /// usage-compact.ts `keepRecent`: the context put on the totals row the call changed; the pointer moved only when the
 /// model, runtime or speed changes.
-fn keep_recent(db : @sql.Db, session : String, owner : Owner, state : @jsjson.JValue, previous : Owner?) -> Unit raise {
+pub fn keep_recent(db : @sql.Db, session : String, owner : Owner, state : @jsjson.JValue, previous : Owner?) -> Unit raise {
   let s = Json::string(session)
   let same = match previous {
     Some(p) => same_owner(p, owner)
@@ -361,7 +263,7 @@ fn keep_recent(db : @sql.Db, session : String, owner : Owner, state : @jsjson.JV
 ///|
 /// usage-compact.ts `seedCompactContext`: a saved summary seeds the context while it still represents every call and
 /// the current runtime session; the snapshot it read where it wrote none.
-fn seed_context(db : @sql.Db, session : String) -> Snapshot? raise {
+pub fn seed_context(db : @sql.Db, session : String) -> Snapshot? raise {
   let snapshot = context_snapshot(db, session)
   if snapshot.stored || snapshot.invalid {
     return Some(snapshot)
@@ -389,24 +291,24 @@ fn seed_context(db : @sql.Db, session : String) -> Snapshot? raise {
     Some(r) => num_of(field(r, "n")).unwrap_or(0.0)
     None => 0.0
   }
-  let model = jget(Some(old), "model")
-  let window = jget(Some(old), "contextWindow")
-  guard jnum(jget(Some(old), "modelCalls")) == Some(total) &&
-    jnum(jget(Some(old), "lastCallAt")) is Some(last) &&
+  let model = @jsjson.jval_at(Some(old), "model")
+  let window = @jsjson.jval_at(Some(old), "contextWindow")
+  guard @jsjson.jval_num_of(@jsjson.jval_at(Some(old), "modelCalls")) == Some(total) &&
+    @jsjson.jval_num_of(@jsjson.jval_at(Some(old), "lastCallAt")) is Some(last) &&
     !(last < began) &&
     (model is Some(Null) || model is Some(Str(_))) &&
     (window is Some(Null) || window is Some(Num(_))) else {
     return Some(snapshot)
   }
   let saved : @jsjson.JValue = Obj([
-    (jkey("runtimeSession"), jstr(runtime)),
-    (jkey("model"), model.unwrap()),
-    (jkey("contextWindow"), window.unwrap()),
-    (jkey("lastCallAt"), Num(last)),
+    ("runtimeSession", Str(runtime)),
+    ("model", model.unwrap()),
+    ("contextWindow", window.unwrap()),
+    ("lastCallAt", Num(last)),
   ])
   for name in ["contextTokens", "cacheMs", "rereadCost"] {
-    if jget(Some(old), name) is Some(Num(v)) {
-      jset(saved, name, Num(v))
+    if @jsjson.jval_at(Some(old), name) is Some(Num(v)) {
+      saved.put(name, Num(v))
     }
   }
   let owner = match one(db, "SELECT runtime, model, fast FROM usage_totals WHERE session = ? ORDER BY runtime, model, fast LIMIT 1", [s]) {
@@ -414,10 +316,10 @@ fn seed_context(db : @sql.Db, session : String) -> Snapshot? raise {
     None => return Some(snapshot)
   }
   let state : @jsjson.JValue = Obj([
-    (jkey("calls"), Arr([])),
-    (jkey("turns"), Arr([])),
-    (jkey("uncertain"), Bool(false)),
-    (jkey("saved"), saved),
+    ("calls", Arr([])),
+    ("turns", Arr([])),
+    ("uncertain", Bool(false)),
+    ("saved", saved),
   ])
   keep_recent(db, session, owner, state, snapshot.owner)
   None
@@ -426,20 +328,20 @@ fn seed_context(db : @sql.Db, session : String) -> Snapshot? raise {
 ///|
 /// A recent call's place: by when it was made, then by its id.
 fn call_before(a : @jsjson.JValue, b : @jsjson.JValue) -> Bool {
-  let x = jnum(jget(Some(a), "at")).unwrap_or(0.0)
-  let y = jnum(jget(Some(b), "at")).unwrap_or(0.0)
+  let x = @jsjson.jval_num_of(@jsjson.jval_at(Some(a), "at")).unwrap_or(0.0)
+  let y = @jsjson.jval_num_of(@jsjson.jval_at(Some(b), "at")).unwrap_or(0.0)
   if x != y {
     return x < y
   }
-  match (jget(Some(a), "id"), jget(Some(b), "id")) {
-    (Some(Str(p)), Some(Str(q))) => units_less(p, q)
+  match (@jsjson.jval_at(Some(a), "id"), @jsjson.jval_at(Some(b), "id")) {
+    (Some(Str(p)), Some(Str(q))) => @jsjson.js_less(p, q)
     _ => false
   }
 }
 
 ///|
 /// usage-compact.ts `noteCompactContexts`: the last five contexts and whether the last two turns compacted.
-fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array[(Call, For)], read : Snapshot?) -> Unit raise {
+pub fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array[(Call, For)], read : Snapshot?) -> Unit raise {
   let snapshot = match read {
     Some(s) => s
     None => context_snapshot(db, session)
@@ -449,25 +351,25 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
   let mut target : Call? = None
   for pair in calls {
     let (call, of) = pair
-    let saved = match jget(Some(state), "saved") {
+    let saved = match @jsjson.jval_at(Some(state), "saved") {
       Some(Obj(_) as o) => Some(o)
       _ => None
     }
     if saved is Some(sv) {
-      let last = jnum(jget(Some(sv), "lastCallAt"))
+      let last = @jsjson.jval_num_of(@jsjson.jval_at(Some(sv), "lastCallAt"))
       if last is Some(l) && call.at < l {
-        if jget(Some(sv), "cacheMs") is Some(_) || jget(Some(sv), "rereadCost") is Some(_) {
-          jdel(sv, "cacheMs")
-          jdel(sv, "rereadCost")
+        if @jsjson.jval_at(Some(sv), "cacheMs") is Some(_) || @jsjson.jval_at(Some(sv), "rereadCost") is Some(_) {
+          sv.delete("cacheMs")
+          sv.delete("rereadCost")
           changed = true
         }
         continue
       }
       if last is Some(l) && call.at == l {
-        jdel(state, "saved")
-        jset(state, "calls", Arr([]))
-        jset(state, "turns", Arr([]))
-        jset(state, "uncertain", Bool(true))
+        state.delete("saved")
+        state.put("calls", Arr([]))
+        state.put("turns", Arr([]))
+        state.put("uncertain", Bool(true))
         ignore(
           db.run(
             (
@@ -480,31 +382,31 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
         )
       }
     }
-    let recent = jarray(jget(Some(state), "calls"))
+    let recent = @jsjson.jval_arr(@jsjson.jval_at(Some(state), "calls"))
     let previous = if recent.length() > 0 { Some(recent[recent.length() - 1]) } else { None }
     let turn = text_of(of.turn)
     let next : @jsjson.JValue = Obj([
-      (jkey("id"), jstr(call.id)),
-      (jkey("turn"), jopt_str(turn)),
-      (jkey("profile"), jopt_str(text_of(of.profile))),
-      (jkey("model"), jopt_str(call.model)),
-      (jkey("context"), jopt_num(call.context)),
-      (jkey("window"), jopt_num(call.window)),
-      (jkey("at"), Num(call.at)),
-      (jkey("fast"), Bool(call.fast)),
-      (jkey("cacheWrite"), Num(call.cache_write)),
-      (jkey("cacheWriteLong"), Num(call.cache_write_long)),
+      ("id", Str(call.id)),
+      ("turn", @jsjson.JValue::of_opt_string(turn)),
+      ("profile", @jsjson.JValue::of_opt_string(text_of(of.profile))),
+      ("model", @jsjson.JValue::of_opt_string(call.model)),
+      ("context", jopt_num(call.context)),
+      ("window", jopt_num(call.window)),
+      ("at", Num(call.at)),
+      ("fast", Bool(call.fast)),
+      ("cacheWrite", Num(call.cache_write)),
+      ("cacheWriteLong", Num(call.cache_write_long)),
     ])
     let ordered = match previous {
       None => true
       Some(p) =>
-        match jnum(jget(Some(p), "at")) {
+        match @jsjson.jval_num_of(@jsjson.jval_at(Some(p), "at")) {
           Some(pat) =>
             call.at > pat ||
             (
               call.at == pat &&
-              (match jget(Some(p), "id") {
-                Some(Str(pid)) => units_less(pid, jkey(call.id))
+              (match @jsjson.jval_at(Some(p), "id") {
+                Some(Str(pid)) => @jsjson.js_less(pid, call.id)
                 _ => false
               })
             )
@@ -512,41 +414,41 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
         }
     }
     if !ordered {
-      jset(state, "uncertain", Bool(true))
-      jset(state, "turns", Arr([]))
+      state.put("uncertain", Bool(true))
+      state.put("turns", Arr([]))
     } else {
-      let turns = jarray(jget(Some(state), "turns"))
+      let turns = @jsjson.jval_arr(@jsjson.jval_at(Some(state), "turns"))
       let last_turn = if turns.length() > 0 { Some(turns[turns.length() - 1]) } else { None }
       let differs = match last_turn {
         None => true
-        Some(t) => !jis(jget(Some(t), "id"), turn)
+        Some(t) => !jis(@jsjson.jval_at(Some(t), "id"), turn)
       }
       if differs || turns.length() == 0 {
-        let list = match jget(Some(state), "turns") {
+        let list = match @jsjson.jval_at(Some(state), "turns") {
           Some(Arr(items)) => items
           _ => {
             let items = []
-            jset(state, "turns", Arr(items))
+            state.put("turns", Arr(items))
             items
           }
         }
-        list.push(Obj([(jkey("id"), jopt_str(turn)), (jkey("compacted"), Bool(false))]))
+        list.push(Obj([("id", @jsjson.JValue::of_opt_string(turn)), ("compacted", Bool(false))]))
         if list.length() > 2 {
           ignore(list.remove(0))
-          jset(state, "uncertain", Bool(false))
+          state.put("uncertain", Bool(false))
         }
       }
       match previous {
         Some(p) =>
-          match (jnum(jget(Some(p), "context")), call.context, call.model) {
+          match (@jsjson.jval_num_of(@jsjson.jval_at(Some(p), "context")), call.context, call.model) {
             (Some(pc), Some(cc), Some(model)) =>
               if pc >= compacted_from &&
                 cc * 2.0 < pc &&
-                jis(jget(Some(p), "profile"), text_of(of.profile)) &&
-                jis(jget(Some(p), "model"), Some(model)) {
-                let list = jarray(jget(Some(state), "turns"))
+                jis(@jsjson.jval_at(Some(p), "profile"), text_of(of.profile)) &&
+                jis(@jsjson.jval_at(Some(p), "model"), Some(model)) {
+                let list = @jsjson.jval_arr(@jsjson.jval_at(Some(state), "turns"))
                 if list.length() > 0 {
-                  jset(list[list.length() - 1], "compacted", Bool(true))
+                  list[list.length() - 1].put("compacted", Bool(true))
                 }
               }
             _ => ()
@@ -554,11 +456,11 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
         None => ()
       }
     }
-    let list = match jget(Some(state), "calls") {
+    let list = match @jsjson.jval_at(Some(state), "calls") {
       Some(Arr(items)) => items
       _ => {
         let items = []
-        jset(state, "calls", Arr(items))
+        state.put("calls", Arr(items))
         items
       }
     }
@@ -574,7 +476,7 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
       }
     }
     if list.length() > 5 {
-      jset(state, "calls", Arr(list[list.length() - 5:].to_array()))
+      state.put("calls", Arr(list[list.length() - 5:].to_array()))
     }
     changed = true
     target = Some(call)
@@ -596,13 +498,40 @@ fn note_contexts(db : @sql.Db, session : String, runtime : String, calls : Array
 // ── the calls and positions ──
 
 ///|
-/// store/usage.ts `recordUsage`: a transcript's calls read up to `file.offset`, each with what it was for; a call
+pub let begin_usage_file_sql : String =
+  #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
+  #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
+  #|    ON CONFLICT(path) DO UPDATE SET
+  #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
+  #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
+  #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
+  #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
+  #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
+  #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
+
+///|
+/// store/usage.ts `recordUsage`: a transcript's calls read up to `offset`, each with what it was for; a call
 /// recorded before keeps its row (its output grown). How many were new. In the caller's transaction.
-fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
+pub fn record_calls(
+  db : @sql.Db,
+  compact : Bool,
+  totals_complete : (String) -> Bool raise,
+  path : Json,
+  session_col : Json,
+  session : String?,
+  offset : Json,
+  model : Json,
+  speed : Json,
+  cutoff : Json,
+  anchor : Json,
+  runtime : String,
+  calls : Array[(Call, For)],
+  min_new_at : Double?,
+  on_change : (Double) -> Unit,
+) -> Int raise {
   let mut added = 0
-  let compact = schema.has_compact(db)
   let recent : Array[(Call, For)] = []
-  if w.file.session is Some(session) {
+  if session is Some(session) {
     let mut seeded = false
     let mut snapshot : Snapshot? = None
     let insert = if compact {
@@ -618,14 +547,14 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         #|  gen_output = CASE WHEN MAX(gen_ms, excluded.gen_ms) > 0 THEN MAX(output, excluded.output) ELSE 0 END
       )
     }
-    for pair in w.calls {
+    for pair in calls {
       let (c, of) = pair
       let was = match one(db, "SELECT output, gen_ms FROM usage WHERE id = ?", [Json::string(c.id)]) {
         Some(r) => Some((num_of(field(r, "output")).unwrap_or(0.0), num_of(field(r, "gen_ms")).unwrap_or(0.0)))
         None => None
       }
       // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
-      if was is None && w.min_new_at is Some(min) && c.at < min {
+      if was is None && min_new_at is Some(min) && c.at < min {
         continue
       }
       // The same response can occur in several lines or be replayed after an interrupted read.
@@ -634,7 +563,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
       }
       if compact && !seeded {
         seeded = true
-        if schema.totals_complete(db, session) {
+        if totals_complete(session) {
           snapshot = seed_context(db, session)
         }
       }
@@ -659,7 +588,7 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
             of.thread,
             of.person,
             of.profile,
-            Json::string(w.runtime),
+            Json::string(runtime),
             opt_str(c.model),
             Json::number(if c.subagent { 1.0 } else { 0.0 }),
             Json::number(if c.fast { 1.0 } else { 0.0 }),
@@ -681,12 +610,10 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
           recent.push((c, of))
         }
       }
-      if c.at < w.changed.val {
-        w.changed.val = c.at
-      }
+      on_change(c.at)
     }
     if recent.length() > 0 {
-      note_contexts(db, session, w.runtime, recent, snapshot)
+      note_contexts(db, session, runtime, recent, snapshot)
     }
   }
   ignore(
@@ -701,18 +628,31 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
         #|       OR usage_files.speed IS NOT excluded.speed
         #|       OR (excluded.counter_cutoff IS NOT NULL AND (usage_files.counter_cutoff IS NOT excluded.counter_cutoff OR usage_files.counter_anchor IS NOT excluded.counter_anchor))
       ),
-      [
-        Json::string(w.path),
-        opt_str(w.file.session),
-        Json::number(w.file.offset),
-        opt_str(w.file.model),
-        Json::number(w.cutoff),
-        Json::string(w.anchor),
-        opt_str(w.file.speed),
-      ],
+      [path, session_col, offset, model, cutoff, anchor, speed],
     ),
   )
   added
+}
+
+///|
+fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
+  record_calls(
+    db,
+    schema.has_compact(db),
+    s => schema.totals_complete(db, s),
+    Json::string(w.path),
+    opt_str(w.file.session),
+    w.file.session,
+    Json::number(w.file.offset),
+    opt_str(w.file.model),
+    opt_str(w.file.speed),
+    Json::number(w.cutoff),
+    Json::string(w.anchor),
+    w.runtime,
+    w.calls,
+    w.min_new_at,
+    at => if at < w.changed.val { w.changed.val = at },
+  )
 }
 
 ///|
@@ -771,17 +711,7 @@ fn begin_counter_file(db : @sql.Db, path : String, file : File, cutoff : Double,
   errdefer (db.exec("ROLLBACK") catch { _ => () })
   ignore(
     db.run(
-      (
-        #|INSERT INTO usage_files (path, session, offset, model, counter_cutoff, counter_anchor, speed)
-        #|    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?8)
-        #|    ON CONFLICT(path) DO UPDATE SET
-        #|      session = CASE WHEN ?7 THEN excluded.session ELSE usage_files.session END,
-        #|      offset = CASE WHEN ?7 THEN excluded.offset ELSE usage_files.offset END,
-        #|      model = CASE WHEN ?7 THEN excluded.model ELSE usage_files.model END,
-        #|      speed = CASE WHEN ?7 THEN excluded.speed ELSE usage_files.speed END,
-        #|      counter_cutoff = CASE WHEN ?7 THEN excluded.counter_cutoff ELSE COALESCE(usage_files.counter_cutoff, excluded.counter_cutoff) END,
-        #|      counter_anchor = CASE WHEN ?7 THEN excluded.counter_anchor ELSE COALESCE(usage_files.counter_anchor, excluded.counter_anchor) END
-      ),
+      begin_usage_file_sql,
       [
         Json::string(path),
         opt_str(file.session),

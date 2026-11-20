@@ -61,16 +61,30 @@ fn steps_centred_node(
         // step changes, while it is laid out as it was: steps_reshaping)
         steps_reshaping[keyed.serial] = fn() { d.resizes() |> ignore }
         d.owns(fn() { steps_reshaping.remove(keyed.serial) }) |> ignore
-        // (each page's slide: where it is off to the dialog's side, in its widths (0 in place, -1 off to its start, 1 off
-        // to its end), from where, to where, from when and how long, said as a page is put on or taken off; sheet_node's)
-        let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double)]] = Map([])
-        let way_at = fn(wy : (Double, Double, Double, Double), t : Double) {
-          wy.1 + @ui.move_path(wy.0 - wy.1, 0.0, t - wy.2, wy.3).0
+        // (each page's slide: where it is off to the dialog's side, in its widths (0 in place, -0.28 covered under the
+        // step over it, 1 off to its end), from where, to where, from when, how long and initial velocity
+        // (dialog-widths/ms), said as a page is put on or taken off; sheet_node's)
+        let ways : Map[Int, @signals.Signal[(Double, Double, Double, Double, Double)]] = Map([])
+        let way_state_at = fn(wy : (Double, Double, Double, Double, Double), t : Double) -> (Double, Double) {
+          if wy.3 <= 0.0 {
+            (wy.1, 0.0)
+          } else if wy.4 * (wy.1 - wy.0) < 0.0 {
+            // (turned back mid-slide: slow at one rate first and return, avoiding a sharp brake)
+            let sw = dmax(@signals.untracked(w), 1.0)
+            let (px, pv) = @ui.come_way_by(wy.0 * sw, wy.4 * sw, wy.1 * sw, wy.1 * sw, t - wy.2)
+            (px / sw, pv / sw)
+          } else {
+            let (dx, dv) = @ui.move_path(wy.0 - wy.1, wy.4, t - wy.2, wy.3)
+            (wy.1 + dx, dv)
+          }
+        }
+        let way_at = fn(wy : (Double, Double, Double, Double, Double), t : Double) {
+          way_state_at(wy, t).0
         }
         // (each page off to a side once its slide there is over: laid out nowhere then, kept as it was left)
         let aways : Map[Int, @signals.Signal[Bool]] = Map([])
         let dues : Map[Int, () -> Unit] = Map([])
-        let away_after = fn(n : Int, wy : (Double, Double, Double, Double)) {
+        let away_after = fn(n : Int, wy : (Double, Double, Double, Double, Double)) {
           match dues.get(n) {
             Some(f) => f()
             None => ()
@@ -93,11 +107,19 @@ fn steps_centred_node(
           shown_was.val = ids
           guard ids.length() > 0 && was.length() > 0 && ids[ids.length() - 1] != was[was.length() - 1] else { return }
           let at = d.cause_at()
-          let dur = @ui.move_ms(w())
+          let sw = dmax(@signals.untracked(w), 1.0)
+          let dur = @ui.move_ms(sw)
           let go = fn(n : Int, to : Double) {
             match ways.get(n) {
               Some(wy) => {
-                wy.set((way_at(wy.untracked(), at), to, at, dur))
+                let (pos, vel) = way_state_at(wy.untracked(), at)
+                let v0 = dclamp(vel, -0.02, 0.02)
+                let way_dur = if v0 * (to - pos) < 0.0 {
+                  @ui.come_way_ms(pos * sw, v0 * sw, to * sw)
+                } else {
+                  dur
+                }
+                wy.set((pos, to, at, way_dur, v0))
                 away_after(n, wy.untracked())
               }
               None => ()
@@ -110,20 +132,21 @@ fn steps_centred_node(
                 go(n, 1.0)
               } else {
                 match ways.get(n) {
-                  Some(wy) => wy.set((1.0, 1.0, at, 0.0))
+                  Some(wy) => wy.set((1.0, 1.0, at, 0.0, 0.0))
                   None => ()
                 }
               }
             }
           }
           for i, n in ids {
-            go(n, if i + 1 == ids.length() { 0.0 } else { -1.0 })
+            go(n, if i + 1 == ids.length() { 0.0 } else { -0.28 })
           }
         })
         // (its pages: the one that shows in its column, as tall as it makes the dialog; the rest over it, off to its sides
         // (cut off by it), kept as they were left)
         d.box(fn(stack) {
-          stack.clips(Is(true)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          // (d itself clips and resizes smoothly; clipping on stack would snap its own height on mid-slide interrupt)
+          stack.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           stack.each(
             leave=1.0,
             fn() { pages().map(fn(pg) { StepItem::{ n: pg.0, x: pg.1 } }) },
@@ -136,12 +159,12 @@ fn steps_centred_node(
               let way = @signals.signal(
                 if made_with.val {
                   if k == @signals.untracked(top) {
-                    (0.0, 0.0, 0.0, 0.0)
+                    (0.0, 0.0, 0.0, 0.0, 0.0)
                   } else {
-                    (-1.0, -1.0, 0.0, 0.0)
+                    (-0.28, -0.28, 0.0, 0.0, 0.0)
                   }
                 } else {
-                  (1.0, 0.0, slide.0, slide.1)
+                  (1.0, 0.0, slide.0, slide.1, 0.0)
                 },
                 same=fn(a, b) { a == b },
               )
@@ -159,7 +182,10 @@ fn steps_centred_node(
               |> ignore
               let away = aways[k]
               page
-              .over(By(fn() { !shows() }))
+              // (laid out from the dialog's top while not showing: keeps its own height instead of jumping to the
+              // other step's height when shows() flips mid-slide)
+              .over(By(fn() { !shows() }), from_top=true)
+              .max_height(By(fn() { if !shows() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) } else { None } }))
               .laid_nowhere(By(fn() { away.get() }))
               // (none of it seen while it is away)
               .alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } }))
@@ -176,7 +202,68 @@ fn steps_centred_node(
                 holds_leaving=true,
               )
               |> ignore
-              step_page_node(page, px, k, close, keyed, look, words_in, fn() { back() |> ignore })
+              let under_shown = fn() -> Bool {
+                let mut any = false
+                for id, a in aways {
+                  if id != k && !a.get() {
+                    any = true
+                  }
+                }
+                any
+              }
+              // (opaque backing tracking `d`'s live animated height while sliding over the step beneath;
+              // 0L at rest and on covered steps so `d` draws its own ground with zero overdraw or height snap)
+              page.box(fn(bg) {
+                bg
+                .over(Is(true), from_top=true)
+                .points(Is(false))
+                .height(Is(Some(1.0)))
+                .ground(By(fn() {
+                  let wy = way.get()
+                  let t = bg.drawn_while(fn(at) { wy.3 > 0.0 && at < wy.2 + wy.3 })
+                  let pos = if t == @double.infinity { wy.1 } else { way_at(wy, t) }
+                  if pos > 0.0 || wy.1 > 0.0 || (shows() && under_shown()) { panel_ground() } else { 0L }
+                }))
+                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                |> ignore
+              })
+              |> ignore
+              step_page_node(page, px, k, shows, close, keyed, look, words_in, fn() { back() |> ignore })
+              // (covered history step: continuously dimmed as it recedes under the incoming page; 0 at rest)
+              page.box(fn(dim) {
+                dim
+                .over(Is(true), from_top=true)
+                .points(Is(false))
+                .height(Is(Some(1.0)))
+                .ground(By(fn() {
+                  let wy = way.get()
+                  let t = dim.drawn_while(fn(at) { wy.3 > 0.0 && at < wy.2 + wy.3 })
+                  let pos = if t == @double.infinity { wy.1 } else { way_at(wy, t) }
+                  let cover = dclamp(-pos / 0.28, 0.0, 1.0)
+                  if cover <= 0.0 { 0L } else { alpha(0x000000FFL, 0.08 * cover) }
+                }))
+                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                |> ignore
+              })
+              |> ignore
+              // (incoming/leaving top step: subtle 1px left edge hairline while sliding over the page beneath; 0 at rest)
+              page.box(fn(edge) {
+                edge
+                .over(Is(true), from_top=true)
+                .points(Is(false))
+                .width(Is(Some(1.0)))
+                .height(Is(Some(1.0)))
+                .ground(By(fn() {
+                  let wy = way.get()
+                  let t = edge.drawn_while(fn(at) { wy.3 > 0.0 && at < wy.2 + wy.3 })
+                  let pos = if t == @double.infinity { wy.1 } else { way_at(wy, t) }
+                  let cover = dclamp(pos / 0.28, 0.0, 1.0)
+                  if cover <= 0.0 { 0L } else { alpha(0x000000FFL, 0.08 * cover) }
+                }))
+                .shown_by(d, fn(dh) { { ..@view.ground_as_laid, dh: dmax(0.0, dh - 1.0) } })
+                |> ignore
+              })
+              |> ignore
             },
           )
           made_with.val = false
@@ -219,6 +306,7 @@ fn step_page_node(
   page : @view.View,
   px : PanelOf,
   k : Int,
+  shows : () -> Bool,
   close : () -> Unit,
   keyed : Presented,
   look : () -> @ui.Look,
@@ -271,7 +359,6 @@ fn step_page_node(
   // that goes in no steps does (panel_centred_node's): never laid out past its own box, under its foot or out of the
   // dialog's corners)
   page.box(made_for=loc, fn(b) {
-    b.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
       // (one box out to the dialog's sides, what it holds on its words' line: no box more than it took before it
       // scrolled, each a node of every step's every opening)
@@ -302,6 +389,8 @@ fn step_page_node(
       |> ignore
     })
     |> ignore
+    // (after b.scrolls which unconditionally sets shrink(Is(1.0)): a page not showing gives way in nothing)
+    b.shrink(By(fn() { if shows() { 1.0 } else { 0.0 } })).min_height(Is(Some(0.0))) |> ignore
   })
   |> ignore
   match nodes.foot {

@@ -60,7 +60,7 @@ test("a message said is told with its authors' names from memory: Slack, Feishu 
   const known = new KnownNames(data, () => config.raw());
   const view = Object.assign(makeStore(store.db, data), { names: new Map([["p@x", "Pat"]]) });
   const events = new Events({
-    readers: { read: async () => { throw new Error("nothing read"); } } as any,
+    readers: { read: async (op: string) => { if (op === "sharedOf") return JSON.stringify({ rows: [], scope: null }); throw new Error("nothing read"); } } as any,
     said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view, config.raw(), known), thread, entries)),
     subscribe: (listener) => store.subscribe(listener),
     host: async () => ({ cpu: 1 }),

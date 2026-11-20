@@ -44,7 +44,7 @@ fn scroll_case() -> ScrollCase {
   let pressed = Ref(0)
   let outer = Ref(0.0)
   let rows = @signals.signal(9, same=fn(a, b) { a == b })
-  let scroll = @view.Scroll::new()
+  let scroll = @view.Scroll::plain()
   let focus : Ref[@view.NodeId?] = Ref(None)
   let tree = @view.Tree::new(
     fn(root) {
@@ -266,7 +266,7 @@ test "scrolls: let go flinging, made again holding the same scroll: at rest wher
 
 ///|
 test "scrolls: held in what is drawn twice as big: what it holds drawn moving as far as the finger, past the slop" {
-  let scroll = @view.Scroll::new()
+  let scroll = @view.Scroll::plain()
   let row : Ref[@view.NodeId?] = Ref(None)
   let tree = @view.Tree::new(
     fn(root) {

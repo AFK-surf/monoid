@@ -149,7 +149,7 @@ test "the same moments drawn with no frame between them: the same pictures" {
 }
 
 ///|
-test "on its way it is drawn over the rest of its page, cut by nothing that holds it, and pressed where it is drawn" {
+test "on its way it is drawn in the page that holds both its ends, after the later of them and under the bar the page draws after them, cut by neither, and pressed where it is drawn" {
   let p = scene()
   p.tree.frame(400.0, 800.0, now=0.0) |> ignore
   p.tree.event(1000.0, fn() { p.open.set(true) })
@@ -157,8 +157,9 @@ test "on its way it is drawn over the rest of its page, cut by nothing that hold
   let big = p.big.val.unwrap()
   let detail = p.detail.val.unwrap()
   let bar = p.bar.val.unwrap()
-  // (after the bar, out of the detail that cuts it)
-  assert_true(drawn_index(p.tree, big) > drawn_index(p.tree, bar))
+  // (after the detail, out of it that cuts it, under the bar drawn after it)
+  assert_true(drawn_index(p.tree, big) > drawn_index(p.tree, detail))
+  assert_true(drawn_index(p.tree, big) < drawn_index(p.tree, bar))
   assert_false(p.tree.holds_in_order(detail.id(), big.id()))
   // (pressed where it is drawn, over the list it is drawn on; its old copy takes nothing)
   assert_true(p.tree.press(115.0, 95.0))

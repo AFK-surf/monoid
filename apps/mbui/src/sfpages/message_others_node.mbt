@@ -1,9 +1,8 @@
 // Someone else's message as nodes of the window's tree, made once (message.mbt's others_message, sent_elsewhere, their
 // styles the same): its picture out in the margin before its words (inline: over its head's start), its head (name,
 // where it went, time; where a mouse is what it is used with and it offers itself, its ⋯ at the head's end; right
-// clicked, the same: message_menu_node), what it says under it. Not here yet: its picture held under the
-// pane's top as a long one scrolls past (the old one's c.stick: the list's, to come), coming out of its agent's picture
-// (emit).
+// clicked, the same: message_menu_node), what it says under it; its picture held under the pane's top as a long one
+// scrolls past (the old one's c.stick: View::sticky, where its list says so).
 
 ///|
 /// What a message offers of itself (share_turn_tool's, others_message's `share`): its key (its list's Entry::id, as a
@@ -24,8 +23,10 @@ pub(all) struct MessageShare {
 /// finger has these on the bar over what it holds picked), its ⋯ at the head's end, shown while the pointer is on the
 /// row or its menu is open (its words, its link, its turn shared: @sfbase.message_items, beside the ⋯'s room), and a
 /// right click on the row offers the same to the window's menu (@sfbase.share_offer, at the click's moment); the ⋯
-/// shown as well while `pointed_also` says (the pointer on another piece of the same message). The row's node, and
-/// whether its ⋯'s menu is open (as that changes: presented_from).
+/// shown as well while the pointer is on another slice of the same message (View::list_item_pointed). `stick_top`: its
+/// picture held so far under the top of what scrolls it as a long one scrolls past (View::sticky, the old view's
+/// c.stick), out in the margin only; none, never. The row's node, and whether its ⋯'s menu is open (as that changes:
+/// presented_from).
 fn message_others_node(
   v : @view.View,
   here : MessageNodeHere,
@@ -35,7 +36,7 @@ fn message_others_node(
   route : ((@view.View) -> Unit)?,
   body : (@view.View) -> Unit,
   share? : MessageShare? = None,
-  pointed_also? : () -> Bool = fn() { false },
+  stick_top? : () -> Double,
 ) -> (@view.View, () -> Bool) {
   // (its ⋯ where a mouse is the native input: laid out by it, the head as it is whichever hand is on it now; a right
   // click whichever: message_menu_node)
@@ -58,6 +59,8 @@ fn message_others_node(
       @sf.style_node(col, fn() { if share is Some(_) { msg_main_share } else { msg_main } })
       col.box(fn(head) {
         @sf.style_node(head, fn() { if message_inline(here) { msg_head_inline } else { msg_head } })
+        // (in past its picture as much as it is drawn over its start: message_inline_way)
+        message_inline_way(head, here, msg_space(@sf.message_head_in))
         name(head)
         match route {
           // (at once: the list's width says the arrangement, and what the window or the sidebar does to the width is
@@ -74,20 +77,31 @@ fn message_others_node(
               // (its menu beside its room, which is there whether the ⋯ shows or not: open while it is)
               let open = fn() { @sf.presented_from(Node(room)) }
               menu_on.val = open
+              // (the message's key its ⋯ lit, let go as its menu closes however it closes: an item chosen too (多选,
+              // 复制), which @sf.menu's `gone` is not told of)
+              let lit_for = Ref("")
+              room.reacts(open, fn(on) {
+                if !on && lit_for.val != "" {
+                  if @signals.untracked(fn() { @sfbase.message_more.get() }) == lit_for.val {
+                    @sfbase.message_more.set("")
+                  }
+                  lit_for.val = ""
+                }
+              }, at_start=false)
               // (at once, as the old row's hand_shown: shown by where the hand is, no coming or going of its own, so
               // the ⋯ of a row the pointer left is gone as it leaves, not still there beside the next's)
-              room.show(fn() { @sf.hovered_in_node(row) || pointed_also() || open() }, at_once=true, fn(m) {
+              room.show(fn() { @sf.hovered_item_node(row) || open() }, at_once=true, fn(m) {
                 @sf.icon_button_node(m, "more", fn() { @sf.t("web-main.menu.more") }, fn() {
                   // (the message lit while it shows, by its key: every piece of a long one, as its right click's)
                   let k = @signals.untracked(s.key)
                   @sfbase.message_more.set(k)
+                  lit_for.val = k
                   @sf.menu(
                     @sfbase.message_items(@signals.untracked(s.link), @signals.untracked(s.words), s.go),
                     from=Node(room),
                     along=End,
-                    gone=fn() { if @signals.untracked(fn() { @sfbase.message_more.get() }) == k { @sfbase.message_more.set("") } },
                   )
-                }, size=msg_share_side)
+                }, size=msg_share_side, tips=here.tips)
                 |> ignore
               })
             })
@@ -112,15 +126,79 @@ fn message_others_node(
     })
     |> ignore
     // (over the row, at its start: out in the margin, or over the head's start where inline)
-    // (one node over the row, its room its own: no box of the layer's round it)
+    // (one node over the row, its room its own: no box of the layer's round it; as tall as the picture it holds, not
+    // the row, so that held at a top (View::sticky) it goes no further than the row's foot leaves it)
     row.box(fn(av) {
-      av.over(Is(true)) |> ignore
-      @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      av.over(Is(true), from_top=true) |> ignore
+      match stick_top {
+        // (out in the margin, held under the pane's top as a long one scrolls past, pushed up by its foot: c.stick's;
+        // set with its look, in the one binding)
+        Some(at) =>
+          @sf.style_node_and(
+            av,
+            fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } },
+            fn() { if message_inline(here) { None } else { Some(at()) } },
+            fn(held) { av.sticky(Is(held)) |> ignore },
+          )
+        None => @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      }
+      // (out in the margin as much as it is drawn so: message_inline_way)
+      message_inline_way(av, here, @sf.message_avatar_reach)
       avatar(av)
     })
     |> ignore
   })
   (node, menu_on.val)
+}
+
+///|
+/// How much more inline than it is laid out (-1 … 1) a message in a chat's list of `here` is drawn as node `n` is drawn:
+/// none at rest; on the page's way to another width across chat_narrow_w (a side panel sliding in or out beside it, the
+/// tape's panels moving), its list laid out anew as the way sets off in the arrangement of where it goes (or of the
+/// narrower end), so much of the way to the arrangement at the way's other end as the column says is left of it
+/// (@sfbase.column_laid's `toward`, `toward_by`): its picture and its head going across between out in the margin and
+/// over the head's start as the column goes, never a step of either in the frame it sets off (2026-11-17: ±25 at the
+/// set off and the close of 大屏's side panel).
+fn message_inline_by(here : MessageNodeHere, n : @view.View) -> Double {
+  let c = @sfbase.column_laid(here.station + "\u{1}" + here.session, n)
+  if c.toward_by <= 0.0 {
+    return 0.0
+  }
+  // (the list as wide as it is laid out, at the column's other end as much wider or narrower as that is)
+  let w = (here.width)()
+  let laid = if w <= chat_narrow_w { 1.0 } else { 0.0 }
+  let other = if w + (c.toward - c.laid) <= chat_narrow_w { 1.0 } else { 0.0 }
+  (other - laid) * c.toward_by
+}
+
+///|
+/// Node `n` of a message in a chat's list of `here`, `by` further across where it is laid out inline than where its
+/// picture is out in the margin, drawn that much across for as much more inline as it is drawn than laid out
+/// (message_inline_by): bound once a column has first set off on the page's way (none at rest, as the page's column's
+/// own: chat_page_made's `narrower`), told directly as it does, no binding of each row's following the count
+/// (@sfbase.column_set_off_each).
+fn message_inline_way(n : @view.View, here : MessageNodeHere, by : Double) -> Unit {
+  let bound = Ref(false)
+  let bind = fn() {
+    if !bound.val && n.alive() {
+      bound.val = true
+      n.offset(By(fn() { (by * message_inline_by(here, n), 0.0) })) |> ignore
+    }
+  }
+  if @signals.untracked(fn() { @sfbase.column_set_off_count() > 0 }) {
+    bind()
+  } else {
+    @sfbase.column_set_off_each(n, bind)
+  }
+}
+
+///|
+/// A space said exactly (message_head_in), in points.
+fn msg_space(s : @ui.Space) -> Double {
+  match s {
+    Exact(x) => x
+    _ => 0.0
+  }
 }
 
 ///|

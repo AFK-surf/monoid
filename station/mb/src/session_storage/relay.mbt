@@ -1,5 +1,5 @@
-// A chat relayed to a channel (station/src/sessions/relay.ts): a person picks a Slack channel or a Feishu/Lark group
-// one of the station's connects' bots is in, and the chat's agent goes on there too. The station starts the
+// A chat relayed to a channel (station/src/sessions/relay.ts): a person picks a Slack channel, a Feishu/Lark group or a
+// group connect's space one of the station's connects' bots is in, and the chat's agent goes on there too. The station starts the
 // conversation there itself (who relayed it, from which chat, their note), or joins a Slack thread a person gave the
 // link of, makes it one of the agent's conversations, says so in the chat it came from, and tells the agent. Each
 // connect's chat surface is the station's (`chat.<method>` with its connect's id; `chat.has` whether it offers one);
@@ -13,8 +13,8 @@ priv struct RelayVia {
 }
 
 ///|
-async fn Storage::agent_of(self : Storage, thread : Json) -> String {
-  match sessions_of(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())])).get(0) {
+fn Storage::agent_of(self : Storage, thread : Json) -> String raise {
+  match sessions_of(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null()))).get(0) {
     Some(s) => s
     None => raise failed("this chat has no agent to go on with")
   }
@@ -33,10 +33,10 @@ async fn Storage::chat_call(self : Storage, connect : String, method : String, a
 ///|
 /// The connects of the session's workspace that are on and connected, with the surface each speaks through.
 async fn Storage::connects_for(self : Storage, session : String) -> Array[RelayVia] {
-  let home = items(Some(self.ask("hub.workspaces", []))).get(0).map(w => as_str(Some(w))).unwrap_or(None)
+  let home = self.st.hub.workspaces().get(0)
   let ws = self.ws_of(Some(session))
   let out = []
-  for c in items(get(self.ask("hub.config", []), "connects")) {
+  for c in items(get(self.st.hub.config(), "connects")) {
     let id = str(c, "id").unwrap_or("")
     if !(get(c, "enabled") is Some(True)) {
       continue
@@ -46,13 +46,13 @@ async fn Storage::connects_for(self : Storage, session : String) -> Array[RelayV
       None => ()
     }
     let kind = str(c, "kind").unwrap_or("")
-    if kind == "group" {
+    let has_chat = id == @session_hub.internal_connect || (self.st.hub.world.chat)(id) is Some(_)
+    if !has_chat || !self.chat_has(id, "places") || !self.chat_has(id, "begin") {
       continue
     }
-    if !(self.ask("hub.hasChat", [js(id)]) is True) || !self.chat_has(id, "places") || !self.chat_has(id, "begin") {
-      continue
-    }
-    let shown = if kind == "feishu" {
+    let shown = if kind == "group" {
+      "group"
+    } else if kind == "feishu" {
       if self.chat_has(id, "platform") && self.chat_call(id, "platform", []) == js("lark") { "lark" } else { "feishu" }
     } else {
       "slack"
@@ -89,19 +89,7 @@ async fn Storage::preferred_of(self : Storage, session : String, connects : Arra
 /// String.prototype.localeCompare as ICU's root order has it for what a place is named: letters by their letter
 /// first, a lower one before its upper one, the rest by their code points.
 fn locale_compare(a : String, b : String) -> Int {
-  let c = js_compare(a.to_lower(), b.to_lower())
-  if c != 0 {
-    return if c < 0 { -1 } else { 1 }
-  }
-  // (equal but for case: the lower first)
-  let d = js_compare(b, a)
-  if d < 0 {
-    -1
-  } else if d > 0 {
-    1
-  } else {
-    0
-  }
+  @jsjson.locale_compare(a, b)
 }
 
 ///|
@@ -137,7 +125,7 @@ pub async fn Storage::relay_places(self : Storage, thread : Json) -> Array[Json]
     ]
     try {
       let used : Map[String, Json] = {}
-      for pair in items(Some(self.ask("store.relayedTo", [js(c.id)]))) {
+      for pair in items(Some(self.st.threads.relayed_to(js(c.id)))) {
         if pair is Array([String(p), at]) {
           used[p] = at
         }
@@ -346,14 +334,14 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
   let session = self.agent_of(thread)
   let t = self.target_of(self.connects_for(session), target)
   let c = t.via
-  let surface = self.ask("hub.surface", [js(c.id)])
+  let surface = js(self.st.hub.surface(c.id))
   match t.existing {
     Some(e) => {
-      let known = self.ask("store.threadAt", [surface, get(e, "channel").unwrap_or(Json::null()), get(e, "threadTs").unwrap_or(Json::null())])
+      let known = self.st.threads.thread_at(surface, get(e, "channel").unwrap_or(Json::null()), get(e, "threadTs").unwrap_or(Json::null()))
       let members = if nullish(Some(known)) {
         []
       } else {
-        items(Some(self.ask("store.threadSessions", [get(known, "id").unwrap_or(Json::null())]))).filter(m => str(m, "connect") == Some(c.id))
+        items(Some(self.st.threads.thread_sessions(get(known, "id").unwrap_or(Json::null())))).filter(m => str(m, "connect") == Some(c.id))
       }
       if members.iter().any(m => str(m, "session") == Some(session)) {
         raise failed("this chat's agent is in that thread already")
@@ -366,7 +354,7 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
   }
   let lang = self.ask("fn.stationLang", [])
   let title = as_str(Some(self.ask("fn.titleOf", [thread, Json::null(), Json::null()]))).unwrap_or("")
-  let page = as_str(Some(self.ask("hub.link", [js(session)])))
+  let page = (self.st.hub.world.link)(session)
   let from = match page {
     Some(p) => "[\{title.replace_all(old="[", new="").replace_all(old="]", new="")}](\{p})"
     None => title
@@ -400,17 +388,22 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
   let (begun_thread, begun_ts) = match t.existing {
     Some(e) => (e, self.chat_call(c.id, "post", [e, js(opening), ja([])]))
     None => {
-      let b = self.chat_call(c.id, "begin", [js(t.channel), js(opening)])
+      // (a group space's conversation is a topic of its own, called as the chat is)
+      let b = self.chat_call(c.id, "begin", [js(t.channel), js(opening), js(title)])
       (get(b, "thread").unwrap_or(Json::null()), get(b, "ts").unwrap_or(Json::null()))
     }
   }
   let bchannel = str(begun_thread, "channel").unwrap_or("")
   let bts = str(begun_thread, "threadTs").unwrap_or("")
-  let there = self.ask("store.openThread", [surface, js(bchannel), js(bts), Json::null(), js(by)])
+  let there = self.with_threads(t => t.open_thread(surface, js(bchannel), js(bts), Json::null(), js(by)))
   let there_id = get(there, "id").unwrap_or(Json::null())
-  self.st.tell("store.noteRelayed", [js(c.id), js(t.channel)])
-  self.st.tell("store.joinThread", [there_id, js(session), js(c.id)])
-  self.st.tell("store.insertMessage", [jo([("thread", there_id), ("ts", begun_ts), ("authorKind", js(station_author)), ("author", js(station_author)), ("text", js(opening)), ("attachments", ja([]))])])
+  ignore(self.with_threads(th => th.note_relayed(js(c.id), js(t.channel))))
+  ignore(self.with_threads(th => th.join_thread(there_id, js(session), js(c.id))))
+  ignore(
+    self.with_threads(th => th.insert_message(
+      @jsjson.JValue::of_json(jo([("thread", there_id), ("ts", begun_ts), ("authorKind", js(station_author)), ("author", js(station_author)), ("text", js(opening)), ("attachments", ja([]))])),
+    )),
+  )
   let into = self.chat_has(c.id, "edit")
   if into {
     self.st.tell("hub.setOpening", [there_id, jo([("session", js(session)), ("ts", begun_ts)])])
@@ -425,13 +418,17 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
     Some(l) => "[\{name}](\{l})"
     None => name
   }
-  match items(Some(self.ask("store.threadSessions", [get(thread, "id").unwrap_or(Json::null())]))).iter().find_first(m => str(m, "session") == Some(session)) {
+  match items(Some(self.st.threads.thread_sessions(get(thread, "id").unwrap_or(Json::null())))).iter().find_first(m => str(m, "session") == Some(session)) {
     Some(here) => {
       let text = "↗ " + tr("station.relay.relayed", [("who", js(by)), ("place", js(named))])
       let connect = str(here, "connect").unwrap_or("")
       try {
         let ts = self.ask("hub.chatPost", [js(connect), jo([("channel", get(thread, "channel").unwrap_or(Json::null())), ("threadTs", get(thread, "threadTs").unwrap_or(Json::null()))]), js(mark_notice(text)), ja([])])
-        self.st.tell("store.insertMessage", [jo([("thread", get(thread, "id").unwrap_or(Json::null())), ("ts", ts), ("authorKind", js(station_author)), ("author", js(station_author)), ("text", js(text)), ("attachments", ja([]))])])
+        ignore(
+          self.with_threads(th => th.insert_message(
+            @jsjson.JValue::of_json(jo([("thread", get(thread, "id").unwrap_or(Json::null())), ("ts", ts), ("authorKind", js(station_author)), ("author", js(station_author)), ("text", js(text)), ("attachments", ja([]))])),
+          )),
+        )
       } catch {
         e => self.log("warn", "hub", "a relay was not said in the chat it came from", jo([("thread", get(thread, "id").unwrap_or(Json::null())), ("error", js(message_of(e)))]))
       }
@@ -445,6 +442,7 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
       match str(t.place, "kind") {
         Some("channel") => "a new thread in Slack channel #\{pname}"
         Some("topics") => "a new topic in Feishu topic group \{pname}"
+        Some("space") => "a new topic in the group space \{pname}"
         _ => "Feishu group \{pname}, whose conversation is now yours"
       }
   }
@@ -455,7 +453,7 @@ pub async fn Storage::relay(self : Storage, thread : Json, relayer : Json, targe
     "Post there now with chat_post to=\{to}: what this conversation is about, what is decided and what is open, so the people there can take part without reading it" +
     (if into { " (without files or a card, it is added to the station's first message there, which is what people see without opening the thread: write it to read on from it). " } else { ". " }) +
     "\{if said == "" { "" } else { "Their note: \{quoted(said)}. " }}Keep answering the chat it came from too."
-  self.st.tell("hub.notify", [js(session), js(notice)])
+  ignore(self.st.hub.command(session, "notify", [js(notice)]))
   self.log("info", "hub", "chat relayed", jo([("thread", get(thread, "id").unwrap_or(Json::null())), ("session", js(session)), ("connect", js(c.id)), ("to", js(to))]))
   jo([("thread", there_id), ("to", js(to)), ("place", js(name)), ("link", jopt(link))])
 }

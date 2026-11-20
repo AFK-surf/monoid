@@ -26,8 +26,19 @@ pub fn viz_mermaid_node(
   tips : @sf.TipLayer,
 ) -> Unit {
   let ask = fn() { mermaid_ask(code(), mermaid_filling) }
+  // (the chart it shows, counted while it does: none is let go of while a node shows it, as it would not ask again)
+  let shown_key : Ref[String] = Ref("")
+  v.owns(fn() {
+    mermaid_shown_by(shown_key.val, "")
+    shown_key.val = ""
+    // (let go of now, where more are kept than mermaid keeps)
+    mermaid_trim("")
+  })
+  |> ignore
   // (asked of the core as its code or the theme's colours make another ask: once for all the blocks asking the same)
   v.reacts(fn() { ask().stringify() }, fn(key) {
+    mermaid_shown_by(shown_key.val, key)
+    shown_key.val = key
     if mermaid_charts.get(key) is None {
       mermaid_charts[key] = ChartComing
       mermaid_asked(src, key, @signals.untracked(ask))

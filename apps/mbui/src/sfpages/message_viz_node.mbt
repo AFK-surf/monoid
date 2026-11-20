@@ -20,37 +20,55 @@ fn message_viz_node(
   failed : (@view.View) -> Unit,
 ) -> Unit {
   let load = @sfbase.viz_load_node(parent, src, station, key, a.path, size=a.size)
-  parent.pick(
-    fn() {
-      match load() {
-        None => 0
-        Some(Err(_)) => 1
-        Some(Ok(_)) => 2
-      }
-    },
-    fn(p, k) {
-      match (k, @signals.untracked(load)) {
-        (1, _) => failed(p)
-        (2, Some(Ok((html, state)))) =>
-          if @sfbase.is_mbui_viz(a.name) && @sfbase.viz_mbui_parse(a.name, html) is None {
-            failed(p)
-          } else {
-            viz_shown_node(p, src, tips, station, session, key, ts, a, html, state)
-          }
-        _ =>
-          // its place, breathing as every wait's shapes, till the page comes
-          p.box(fn(w) {
-            @sf.style_node(w, fn() { @sfbase.viz_wait_under })
-            w.box(fn(i) {
-              @sf.style_node(i, fn() { @sfbase.viz_wait })
-              @sf.breathe_node(i)
-            })
-            |> ignore
+  let which = fn() {
+    match load() {
+      None => 0
+      Some(Err(_)) => 1
+      Some(Ok(_)) => 2
+    }
+  }
+  let make_branch = fn(q : @view.View, k : Int) {
+    match (k, @signals.untracked(load)) {
+      (1, _) => failed(q)
+      (2, Some(Ok((html, state)))) =>
+        if @sfbase.is_mbui_viz(a.name) && @sfbase.viz_mbui_parse(a.name, html) is None {
+          failed(q)
+        } else {
+          viz_shown_node(q, src, tips, station, session, key, ts, a, html, state)
+        }
+      _ =>
+        // its place, breathing as every wait's shapes, till the page comes
+        q.box(fn(w) {
+          @sf.style_node(w, fn() { @sfbase.viz_wait_under })
+          w.box(fn(i) {
+            @sf.style_node(i, fn() { @sfbase.viz_wait })
+            @sf.breathe_node(i)
           })
           |> ignore
+        })
+        |> ignore
+    }
+  }
+  if @signals.untracked(load) is Some(_) {
+    parent.pick(which, make_branch)
+  } else if @sfbase.is_mbui_viz(a.name) {
+    parent.pick(which, leave=msg_part_leave_ms, make_branch)
+  } else {
+    // (an HTML page come: drawn over its own breathing place till it has drawn itself and brushed in from under it
+    // (viz_page_node's viz_reveal_node), so the place it waited in is let go at once, never fading over it as well)
+    let page = fn() {
+      match load() {
+        Some(Ok(_)) => true
+        _ => false
       }
-    },
-  )
+    }
+    parent.pick(page, fn(p, shows) {
+      match (shows, @signals.untracked(load)) {
+        (true, Some(Ok((html, state)))) => viz_shown_node(p, src, tips, station, session, key, ts, a, html, state)
+        _ => p.pick(which, leave=msg_part_leave_ms, make_branch)
+      }
+    })
+  }
 }
 
 ///|
@@ -172,7 +190,13 @@ fn viz_page_node(parent : @view.View, place : String, html : String, state : Jso
         |> ignore
         // (as tall as it says by a move, the list's with what is round it: the height it comes to as its page says it
         // is for that word's moment, View::resizes; what was read over it does not step)
-        fr.reacts(fn() { f.said.get() }, fn(_) { fr.resizes() |> ignore }, at_start=false)
+        // (its page telling its height is a live cause of its own: what it moves round it in its list goes its way too,
+        // @view.transition)
+        fr.reacts(
+          fn() { f.said.get() },
+          fn(_) { @view.transition(within=fr.transitions_root(), fn() { fr.resizes() |> ignore }) },
+          at_start=false,
+        )
       }
       // drawn, the first time: brought in, as a message's image is (viz_reveal_node), from that moment, once (however
       // soon its node is let go and made again, as its chat is left and gone back to); what it waited under let go at

@@ -51,10 +51,12 @@ pub fn Options::chosen_model(self : Options) -> String? {
 }
 
 ///|
-/// A runtime's environment: the station's less what it scrubs, the profile's for `runtime` with its route.
+/// A runtime's environment: the station's less what it scrubs, the profile's for `runtime` with its route, this
+/// machine kept out of a proxy either names (`keepLocal`).
 fn runtime_env(base : Fields, scrubbed : Array[String], options : Options, runtime : String) -> Fields {
   let env = clean_env(base, scrubbed)
   spread_env(env, expand_route(profile_env(options.profile, runtime), options.route))
+  keep_local_fields(env)
   env
 }
 
@@ -733,6 +735,31 @@ pub fn devin_config() -> J {
 pub let devin_levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 ///|
+/// `AGY_LEVELS`: the thinking levels Antigravity's models append to a family's name.
+pub let agy_levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+///|
+/// model.ts `splitAgyTier`: an Antigravity tiered id split into its model and level.
+pub fn split_agy_tier(id : String) -> (String, String)? {
+  let trimmed = trim(id)
+  for l in agy_levels {
+    if trimmed.has_suffix("-\{l}") && trimmed.length() > l.length() + 1 {
+      return Some((sub(trimmed, 0, to=trimmed.length() - l.length() - 1), l))
+    }
+  }
+  None
+}
+
+///|
+/// agy.ts `agyBaseModel`: a raw ACP `modelId` split into its base model and thinking level.
+pub fn agy_base_model(id : String) -> (String, String?) {
+  match split_agy_tier(id) {
+    Some((m, l)) => (m, Some(l))
+    None => (trim(id), None)
+  }
+}
+
+///|
 /// `splitDevinFusion`: a Fusion pairing's lead (and its effort) and sidekick.
 pub(all) struct Fusion {
   lead : String
@@ -1236,6 +1263,7 @@ pub async fn hermes_env(host : @host.Host, options : Options, base : Fields, use
     }
   }
   spread_env(env, expand_route(profile_env(options.profile, "hermes"), options.route))
+  keep_local_fields(env)
   let configured = match configured_home(str_of(env.get("HERMES_HOME")), hermes_home(options.home()), user_home) {
     Ok(h) => h
     Err(why) => raise FsError(why)

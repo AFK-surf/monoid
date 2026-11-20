@@ -21,8 +21,9 @@ struct Shaped {
   keys : Array[Int]
   cu : Array[Int]
   // before each cluster: 0 no line break, 1 a break opportunity, 2 a hard
-  // line break (UAX #14)
-  brk : Array[Int]
+  // line break (UAX #14); computed on demand (Shaped::breaks) so single-line
+  // text and multi-run rich paragraphs skip per-run line-break scans
+  mut brk : Array[Int]
   len : Int
   // the text's bidirectional levels, when any is not 0 (None: all left to right)
   bidi : @text.Bidi?
@@ -108,6 +109,7 @@ priv struct TextCache {
   mut started_over : Int
   mut too_much : Bool
   buf : FixedArray[Double]
+  mut part_buf : FixedArray[Double]?
   gbuf : FixedArray[Double]
 }
 
@@ -127,6 +129,7 @@ let text_cache : TextCache = {
   started_over: -1,
   too_much: false,
   buf: FixedArray::make(4 * 8192, 0.0),
+  part_buf: None,
   gbuf: FixedArray::make(8, 0.0),
 }
 
@@ -159,7 +162,15 @@ fn text_arrive() -> Unit {
     // (and the frame drawn whole: its glyphs drawn again where they were, the same numbers, other pixels: hostcall.mbt
     // `presented`)
     presented.forget()
-    if !first {
+    // (and on the first frame too where something was shaped or measured before it, as a run's tree is brought before
+    // its first frame (set_view_app: a column's width measured as it is made): shaped while the generation was not yet
+    // read, its glyphs' keys those of a host that may since have forgotten them (a web page's scale or a face changed
+    // before its first frame, textSweep), each key drawn as another glyph; with nothing shaped before, nothing measured
+    // again)
+    if !first ||
+      text_cache.shaped > 0 ||
+      !text_cache.fonts.is_empty() ||
+      !text_cache.metrics.is_empty() {
       clear_shapes()
       text_cache.fonts.clear()
       text_cache.metrics.clear()
@@ -208,6 +219,13 @@ fn glyphs_forget() -> Unit {
   glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
+  glyphs_laid.clear()
+  if !glyphs_ahead_laid_keys.is_empty() {
+    glyphs_ahead_laid_keys.clear()
+  }
+  if !glyphs_ahead_laid_bases.is_empty() {
+    glyphs_ahead_laid_bases.clear()
+  }
   text_cache.atlas = None
   text_cache.colour_atlas = None
 }
@@ -539,6 +557,7 @@ fn clear_shapes() -> Unit {
   // faces change)
   spaced_said.val = None
   spaced_stops_left.val = None
+  marks_narrow.clear()
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
     // never free a cycle): let go of the layout first
@@ -568,28 +587,60 @@ fn has_digit(text : String) -> Bool {
 /// The host's clusters of `text` (h_shape), shaped as they always were; and where the face drew a mark of ambiguous
 /// width a whole em among Latin letters (a CJK face: 思源黑体's "it’s"), shaped again a piece at a time
 /// (@text.width_runs), the narrow pieces with @hostapi.style_proportional, their clusters put together. A face whose
-/// such marks are narrow already (Inter, Segoe UI, San Francisco, the system's) is asked nothing more.
+/// such marks are narrow already (Inter, Segoe UI, San Francisco, the system's) is asked nothing more, and words
+/// with none of those marks, or only marks the face was seen to draw narrow so (marks_narrow), are not cut at all.
 fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : FixedArray[Double]) -> Int {
   let k = h_shape(text, size, weight, style, out)
+  // (only a mark can be found drawn a whole em below: words with none, or with none this face is not known to draw
+  // narrow, come out as shaped, not cut into pieces and looked through)
+  let face = marks_face(weight, style)
+  let known = marks_narrow.get(face).unwrap_or(0)
+  let mut unknown = false
+  for i in 0..<text.length() {
+    if @text.width_mark(text, i) {
+      let bit = width_mark_bit(text.code_unit_at(i).to_int())
+      if bit == 0 || (known & bit) == 0 {
+        unknown = true
+        break
+      }
+    }
+  }
+  guard unknown else { return k }
   let runs = @text.width_runs(text)
   guard runs.length() > 1 || runs[0].2 else { return k }
   // a quote, a middle dot or an ellipsis in a narrow piece drawn a whole em (@text.width_mark): the face is one that
-  // has its marks narrow only when asked
+  // has its marks narrow only when asked; one drawn well under an em there is so in this face (marks_narrow)
   let mut wide = false
+  let mut seen = known
   let mut r = 0
   for j in 0..<k {
     let st = out[j * 4].to_int()
     while r < runs.length() - 1 && st >= runs[r].1 {
       r = r + 1
     }
-    if runs[r].2 && @text.width_mark(text, st) && out[j * 4 + 2] >= size * 0.95 {
-      wide = true
-      break
+    if runs[r].2 && @text.width_mark(text, st) {
+      if out[j * 4 + 2] >= size * 0.95 {
+        wide = true
+        break
+      }
+      if out[j * 4 + 2] < size * marks_narrow_under {
+        seen = seen | width_mark_bit(text.code_unit_at(st).to_int())
+      }
     }
+  }
+  if seen != known {
+    marks_narrow[face] = seen
   }
   guard wide else { return k }
   let cap = out.length() / 4
-  let part = FixedArray::make(out.length(), 0.0)
+  let part = match text_cache.part_buf {
+    Some(b) if b.length() >= out.length() => b
+    _ => {
+      let b = FixedArray::make(out.length(), 0.0)
+      text_cache.part_buf = Some(b)
+      b
+    }
+  }
   let mut k = 0
   for run in runs {
     let (a, b, narrow) = run
@@ -607,6 +658,40 @@ fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : F
     }
   }
   k
+}
+
+///|
+/// The marks of ambiguous width (@text.width_mark) each face was seen to draw narrow among Latin letters, as it was
+/// asked for (no style_proportional), a bit a mark (width_mark_bit), by the face (marks_face): words whose every such
+/// mark is one of them are not looked through again (shape_widths).
+// kept across runs: forgotten with the shapes (clear_shapes: a Tester's run, the host's faces changed)
+let marks_narrow : Map[Int, Int] = Map([])
+
+///|
+/// How far under an em a mark is drawn to be seen narrow in its face (marks_narrow): well under the whole em
+/// (shape_widths' 0.95) at any size, whatever a size's pixels round its advance to.
+let marks_narrow_under : Double = 0.6
+
+///|
+/// A face as marks_narrow keeps it: its style (what face, slant and features) and its weight.
+fn marks_face(weight : Int, style : Int) -> Int {
+  (style << 12) | (weight & 0xFFF)
+}
+
+///|
+/// The bit of marks_narrow of the code unit `c`, a mark of @text.width_mark; 0 of any other (never known narrow).
+fn width_mark_bit(c : Int) -> Int {
+  match c {
+    0x2018 => 1
+    0x2019 => 2
+    0x201C => 4
+    0x201D => 8
+    0xB7 => 16
+    0x2027 => 32
+    0x2022 => 64
+    0x2026 => 128
+    _ => 0
+  }
 }
 
 ///|
@@ -794,6 +879,73 @@ fn spaced_pair(a : Int, b : Int) -> Bool {
 }
 
 ///|
+/// Whether every UTF-16 unit in `text` is a standalone UAX #29 extended grapheme cluster, non-joining, and left-to-right
+/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, common standalone Latin-1 / general
+/// punctuation & currency symbols, and CJK / kana / Hangul syllables / fullwidth punctuation without combining marks,
+/// surrogates, CR, variation selectors, bidi controls, emoji-candidate symbols, or ZWJ.
+fn unit_clusters(text : String) -> Bool {
+  let n = text.length()
+  for k in 0..<n {
+    let c = text.at(k).to_int()
+    if c >= 0x20 && c <= 0x7E {
+      continue
+    }
+    if c < 0x3000 {
+      if c == 10 ||
+        c == 9 ||
+        c == 0x00A5 ||
+        c == 0x00A7 ||
+        c == 0x00B0 ||
+        c == 0x00B1 ||
+        c == 0x00B7 ||
+        c == 0x00D7 ||
+        c == 0x00F7 ||
+        c == 0x2013 ||
+        c == 0x2014 ||
+        (c >= 0x2018 && c <= 0x201D) ||
+        c == 0x2022 ||
+        c == 0x2026 ||
+        c == 0x2030 ||
+        c == 0x2032 ||
+        c == 0x2033 ||
+        c == 0x20AC ||
+        c == 0x2103 {
+        continue
+      }
+      return false
+    }
+    if c <= 0x3029 ||
+      (c >= 0x3041 && c <= 0x3096) ||
+      (c >= 0x30A1 && c <= 0x30FF) ||
+      (c >= 0x3400 && c <= 0x9FFF) ||
+      (c >= 0xAC00 && c <= 0xD7A3) ||
+      (c >= 0xFF01 && c <= 0xFF60) {
+      continue
+    }
+    return false
+  }
+  true
+}
+
+///|
+/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`.
+fn Shaped::breaks(self : Shaped, text : String) -> Array[Int] {
+  let n = self.starts.length()
+  if self.brk.length() == n {
+    return self.brk
+  }
+  let brk = Array::make(n, 0)
+  if n > 1 {
+    let b = @text.line_breaks(text)
+    for k in 1..<n {
+      brk[k] = b[self.starts[k]]
+    }
+  }
+  self.brk = brk
+  brk
+}
+
+///|
 /// With `spacing` (letter spacing, as Android's: each cluster's advance has it, half before its piece and half
 /// after), shaped with no ligatures (@hostapi.style_no_ligatures): a ligature's letters would not be spaced.
 fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? : Double = 0.0) -> Shaped {
@@ -835,83 +987,94 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           spaced_now() == @hostapi.words_spaced_here,
         )
       }
-      let lb = if m > 1 { Some(@text.line_breaks(text)) } else { None }
       // UAX #29's clusters: a host that cut one in two (a Thai vowel sign some segmenters leave on its own) is
-      // made whole again
-      // (ASCII, the most of what is shaped: every host's clusters are UAX #29's, nothing joins, nothing reads right
-      // to left)
-      let mut ascii = true
-      for k in 0..<text.length() {
-        if text.at(k).to_int() >= 0x80 {
-          ascii = false
-          break
-        }
-      }
-      let gb = if m > 1 && !ascii { Some(@text.graphemes(text)) } else { None }
-      let boundary = FixedArray::make(text.length() + 1, m <= 1 || ascii)
-      match gb {
-        Some(g) =>
-          for b in g {
-            boundary[b] = true
-          }
-        None => ()
-      }
+      // made whole again. Where every unit is a standalone non-joining LTR cluster (ASCII and nearly all CJK:
+      // unit_clusters), skip graphemes, joining, line_breaks and bidi_mixed.
+      let simple = unit_clusters(text)
+      let mut lb : FixedArray[Int]? = None
       let starts = Array(capacity=m)
       let lens = Array(capacity=m)
       let adv = Array(capacity=m)
       let keys = Array(capacity=m)
       let cu = Array(capacity=m)
-      let mut i = 0
-      while i < m {
-        let st = out[i * 4].to_int()
-        // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
-        // where a line may break)
-        let word = !ascii && joining(text, st) && out[i * 4 + 3] != -1.0
-        let mut j = i + 1
-        while j < m {
-          let sj = out[j * 4].to_int()
-          if !boundary[sj] {
-            j = j + 1
-            continue
-          }
-          let opp = match lb {
-            Some(b) => b[sj]
-            None => 0
-          }
-          if !word || opp != 0 || out[j * 4 + 3] == -1.0 || !joining(text, sj) {
-            break
-          }
-          j = j + 1
-        }
-        let k0 = out[i * 4 + 3].to_int()
-        if j - i >= 2 {
-          let end = out[(j - 1) * 4].to_int() + out[(j - 1) * 4 + 1].to_int()
-          let mut a = 0.0
-          let mut drawn = false
-          for k in i..<j {
-            a = a + out[k * 4 + 2]
-            drawn = drawn || out[k * 4 + 3] != -1.0
-          }
-          starts.push(st)
-          lens.push(end - st)
-          adv.push(a)
-          keys.push(
-            if k0 == -2 {
-              -2
-            } else if drawn && !is_nl(text.at(st).to_int()) {
-              h_text_key(text.unsafe_substring(start=st, end~), size, weight, style)
-            } else {
-              k0
-            },
-          )
-        } else {
+      if simple {
+        for i in 0..<m {
+          let st = out[i * 4].to_int()
           starts.push(st)
           lens.push(out[i * 4 + 1].to_int())
           adv.push(out[i * 4 + 2])
-          keys.push(k0)
+          keys.push(out[i * 4 + 3].to_int())
+          cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
         }
-        cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
-        i = j
+      } else {
+        let gb = if m > 1 { Some(@text.graphemes(text)) } else { None }
+        let boundary = FixedArray::make(text.length() + 1, m <= 1)
+        match gb {
+          Some(g) =>
+            for b in g {
+              boundary[b] = true
+            }
+          None => ()
+        }
+        let mut i = 0
+        while i < m {
+          let st = out[i * 4].to_int()
+          // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
+          // where a line may break)
+          let word = joining(text, st) && out[i * 4 + 3] != -1.0
+          let mut j = i + 1
+          while j < m {
+            let sj = out[j * 4].to_int()
+            if !boundary[sj] {
+              j = j + 1
+              continue
+            }
+            if !word {
+              break
+            }
+            let b = match lb {
+              Some(b) => b
+              None => {
+                let b = @text.line_breaks(text)
+                lb = Some(b)
+                b
+              }
+            }
+            if b[sj] != 0 || out[j * 4 + 3] == -1.0 || !joining(text, sj) {
+              break
+            }
+            j = j + 1
+          }
+          let k0 = out[i * 4 + 3].to_int()
+          if j - i >= 2 {
+            let end = out[(j - 1) * 4].to_int() + out[(j - 1) * 4 + 1].to_int()
+            let mut a = 0.0
+            let mut drawn = false
+            for k in i..<j {
+              a = a + out[k * 4 + 2]
+              drawn = drawn || out[k * 4 + 3] != -1.0
+            }
+            starts.push(st)
+            lens.push(end - st)
+            adv.push(a)
+            keys.push(
+              if k0 == -2 {
+                -2
+              } else if drawn && !is_nl(text.at(st).to_int()) {
+                h_text_key(text.unsafe_substring(start=st, end~), size, weight, style)
+              } else {
+                k0
+              },
+            )
+          } else {
+            starts.push(st)
+            lens.push(out[i * 4 + 1].to_int())
+            adv.push(out[i * 4 + 2])
+            keys.push(k0)
+          }
+          cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
+          i = j
+        }
       }
       // ligatures: a cluster the shaper drew as part of the one before it (-2 from the host) has that one's piece
       // drawn over it; the piece, the whole ligature, is the first's, the advance shared out evenly
@@ -954,17 +1117,18 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           }
         }
       }
-      let brk = Array::make(n, 0)
-      if n > 1 {
-        match lb {
-          Some(b) =>
-            for k in 1..<n {
-              brk[k] = b[starts[k]]
-            }
-          None => ()
+      // (line breaks kept where a joining word already computed them; else computed once on demand in Shaped::breaks)
+      let brk = match lb {
+        Some(b) => {
+          let brk = Array::make(n, 0)
+          for k in 1..<n {
+            brk[k] = b[starts[k]]
+          }
+          brk
         }
+        None => []
       }
-      let bd = if ascii { None } else { @text.bidi_mixed(text) }
+      let bd = if simple { None } else { @text.bidi_mixed(text) }
       // L4: a bracket (or another mirrored character) reading right to left is drawn as its mirror image, ")" for
       // "(" (each cluster is drawn on its own, out of the line the shaper would have mirrored it in)
       match bd {
@@ -1166,6 +1330,11 @@ fn bidi_offset_at(
 let glyphs_ahead_most : Int = 4096
 
 ///|
+/// Once this many laid-out glyphs accumulate in `glyphs_laid` during a tree layout, flush them ahead immediately so
+/// background raster threads can work in parallel with the remaining text layout.
+let glyphs_ahead_batch : Int = 48
+
+///|
 /// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase (glyph_sub_at).
 fn glyph_drawn_any_sub(k : Int) -> Bool {
   text_cache.glyphs.contains(k) ||
@@ -1175,24 +1344,117 @@ fn glyph_drawn_any_sub(k : Int) -> Bool {
 }
 
 ///|
-/// The glyphs of what the frame shaped and did not draw (a page pushed, still off the screen; the lines below what a
-/// list shows), handed to the host as the frame's painting is over, to draw them ahead, off the frames' thread: there
-/// when they come into view, a frame or more later, not all drawn in the frame they first show in. What is drawn is the
-/// same; only when the work is done changes (@hostapi.glyphs_ahead).
-fn glyphs_ahead() -> Unit {
-  let fresh = text_cache.fresh
-  if fresh.is_empty() {
+/// The glyphs of words just laid out (layout_text, layout_rich) not drawn yet, each with the quarter-pixel phase it is
+/// drawn at (glyph_sub_at) where what holds the words stands on a whole pixel, its pen `x(c)` points into its line: for
+/// the host to draw first at that phase (glyphs_ahead). Most words stand so (a list's rows, a page's columns); one that
+/// does not (centred, or at a padding of no whole pixels) has its glyphs at another phase, drawn on the frame's thread
+/// as before.
+fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
+  let sc = g().scale
+  let z = words_zoom.val
+  for c in 0..<keys.length() {
+    if glyphs_laid.length() >= glyphs_ahead_most {
+      break
+    }
+    let k = keys[c]
+    if k >= 0 && !glyph_drawn_any_sub(k) {
+      glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
+    }
+  }
+  if glyphs_laid.length() >= glyphs_ahead_batch {
+    glyphs_laid_flush()
+  }
+}
+
+///|
+/// The glyphs of what was laid out since they were last handed to the host, each at its phase (laid_ahead).
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_laid : Array[Int] = []
+
+///|
+/// Exact phased keys already flushed mid-layout by `glyphs_laid_flush` since the last `glyphs_ahead`.
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_ahead_laid_keys : Map[Int, Bool] = Map([])
+
+///|
+/// Base glyph keys already flushed at an exact layout phase by `glyphs_laid_flush` since the last `glyphs_ahead`,
+/// so `glyphs_ahead` does not re-dispatch them at phase 0 from `text_cache.fresh`.
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_ahead_laid_bases : Map[Int, Bool] = Map([])
+
+///|
+/// Flush only `glyphs_laid` to the host mid-layout without touching `text_cache.fresh`, so glyphs shaped for later
+/// nodes are not prematurely dispatched at phase 0 before their own layout computes their exact subpixel phases.
+fn glyphs_laid_flush() -> Unit {
+  let laid = glyphs_laid
+  if laid.is_empty() {
     return
   }
-  let keys = FixedArray::make(fresh.length(), 0)
+  let keys = FixedArray::make(laid.length(), 0)
   let mut n = 0
+  for k in laid {
+    let base = k & 0x03FFFFFF
+    if !glyphs_ahead_laid_keys.contains(k) && !glyph_drawn_any_sub(base) {
+      glyphs_ahead_laid_keys[k] = true
+      glyphs_ahead_laid_bases[base] = true
+      keys[n] = k
+      n = n + 1
+    }
+  }
+  laid.clear()
+  if n > 0 {
+    h_glyphs_ahead(keys, n)
+  }
+}
+
+///|
+/// The glyphs of what the frame shaped and laid out and did not draw yet (a page pushed, still off the screen; the lines
+/// below what a list shows; what the frame is about to paint), handed to the host to draw them ahead, off the frames'
+/// thread: as the window's tree is laid out, as the painting begins and as it is over (app.mbt), so what was laid out is
+/// drawn on the host's other cores while the frame goes on, and the rest is there when it comes into view, a frame or
+/// more later. Each at the phase its line put it at (glyphs_laid: bits 26..27 of its key, glyph_sub_at), the host
+/// drawing that phase first; one shaped and not laid out at phase 0. What is drawn is the same; only when and where the
+/// work is done changes (@hostapi.glyphs_ahead).
+fn glyphs_ahead() -> Unit {
+  let fresh = text_cache.fresh
+  let laid = glyphs_laid
+  if fresh.is_empty() && laid.is_empty() {
+    if !glyphs_ahead_laid_keys.is_empty() {
+      glyphs_ahead_laid_keys.clear()
+    }
+    if !glyphs_ahead_laid_bases.is_empty() {
+      glyphs_ahead_laid_bases.clear()
+    }
+    return
+  }
+  let keys = FixedArray::make(fresh.length() + laid.length(), 0)
+  let mut n = 0
+  // (each key once; a glyph laid out at a phase not asked again at phase 0 for having been shaped)
+  let asked : Map[Int, Bool] = Map([])
+  for k in laid {
+    let base = k & 0x03FFFFFF
+    if !glyphs_ahead_laid_keys.contains(k) && !asked.contains(k) && !glyph_drawn_any_sub(base) {
+      asked[k] = true
+      asked[base | (1 << 30)] = true
+      keys[n] = k
+      n = n + 1
+    }
+  }
   for k in fresh {
-    if !glyph_drawn_any_sub(k) {
+    if !asked.contains(k | (1 << 30)) && !glyphs_ahead_laid_bases.contains(k) && !glyph_drawn_any_sub(k) {
+      asked[k | (1 << 30)] = true
       keys[n] = k
       n = n + 1
     }
   }
   fresh.clear()
+  laid.clear()
+  if !glyphs_ahead_laid_keys.is_empty() {
+    glyphs_ahead_laid_keys.clear()
+  }
+  if !glyphs_ahead_laid_bases.is_empty() {
+    glyphs_ahead_laid_bases.clear()
+  }
   if n > 0 {
     h_glyphs_ahead(keys, n)
   }
@@ -1260,7 +1522,10 @@ fn glyph_sub_dx(sub : Int) -> Double {
 /// moved by whole pixels keeps its phase. (Two numbers of one step, not a pair: what composes every glyph each frame
 /// makes no allocation of it.)
 fn glyph_qf(tx : Double) -> Double {
-  (tx * 4.0 + 0.5).floor()
+  // (1e-9 breaks exact N + 0.5 ties upward so shifting a glyph by whole pixels k / sc at non-dyadic scales like 3.25
+  // never flips its phase across floor() from 1-ULP float rounding: ride_kept_for and view_blocks rely on whole-pixel
+  // shifts keeping every glyph's phase)
+  (tx * 4.0 + 0.5 + 1.0e-9).floor()
 }
 
 ///|
@@ -1490,10 +1755,10 @@ fn one_line(texts : Array[String]) -> Array[String]? {
 }
 
 ///|
-/// Whether cluster i ends a line by itself: a line terminator followed by a
-/// hard break (not CR before LF, when the host makes them two clusters).
+/// Whether cluster i ends a line by itself: a line terminator that is not CR immediately before LF (when the host
+/// emits CR and LF as two clusters).
 fn Shaped::hard_end(self : Shaped, i : Int) -> Bool {
-  is_nl(self.cu[i]) && (i + 1 >= self.starts.length() || self.brk[i + 1] == 2)
+  is_nl(self.cu[i]) && !(self.cu[i] == 13 && i + 1 < self.starts.length() && self.cu[i + 1] == 10)
 }
 
 ///|
@@ -1521,6 +1786,7 @@ fn layout_text(
       _ => ()
     }
   }
+  let brk = if wrap { s.breaks(text) } else { [] }
   let n = s.starts.length()
   let xs = Array::make(n, 0.0)
   let line_of = Array::make(n, 0)
@@ -1562,7 +1828,7 @@ fn layout_text(
       last_break = -1
       continue
     }
-    if i > ls && s.brk[i] != 0 {
+    if wrap && i > ls && brk[i] != 0 {
       last_break = i
     }
     let a = s.adv[i]
@@ -1643,6 +1909,8 @@ fn layout_text(
     line_h,
     lv,
   }
+  // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, glyphs_ahead)
+  laid_ahead(s.keys, fn(c) { xs[c] + s.pad })
   if indent == 0.0 {
     s.lay = Some(tl)
     s.lay_max = max_w

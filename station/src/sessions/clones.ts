@@ -141,6 +141,12 @@ export class Clones {
     return [...(this.#held.get(ws ?? "") ?? [])].reverse().map(shown);
   }
 
+  /// Whether any clone is currently in progress across all workspaces.
+  hasActive(): boolean {
+    for (const all of this.#held.values()) if (all.some((c) => c.state === "cloning")) return true;
+    return false;
+  }
+
   /// `given` cloned into the cache for workspace `ws` by `by`, answered at once: where the cache or the machine has the
   /// repository already, the clone of it under way, or the one started; `changed` told as it goes.
   async start(ws: string | null, given: unknown, by: string, changed: () => void = () => {}): Promise<CloneAnswer> {

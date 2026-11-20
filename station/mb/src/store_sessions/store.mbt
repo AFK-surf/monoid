@@ -11,7 +11,7 @@ pub struct Store {
   /// Now, in ms (store.ts `now`: its Clock's).
   priv clock : () -> Int64
   /// The last migration note there is (agents/migrations.ts `latest`): what a new session begins told.
-  mut latest_note : Int64
+  latest_note : Int64
   priv efforts_index : Bool
   priv mut listeners : Array[(Int32, (Json) -> Unit)]
   priv mut workspace_listeners : Array[(Int32, () -> Unit)]
@@ -75,6 +75,7 @@ pub fn Store::open(
       store.moved_untold[s] = ()
     }
   }
+  @sql.repair_conversations(db)
   store
 }
 
@@ -279,6 +280,14 @@ fn Store::update_session(
 /// What a raised error says (the harness's `error`).
 pub(all) suberror StoreError {
   StoreError(String, Json)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for StoreError with output(self, logger) {
+  match self {
+    StoreError(m, _) => logger.write_string(m)
+  }
 }
 
 ///|

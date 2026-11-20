@@ -20,11 +20,13 @@
 #   stillfail/dist/admin/posthog.json                     (only the PostHog key the station reports errors with, when
 #                                                          $STILLFAIL_POSTHOG names one: scripts/posthog-key.ts; the
 #                                                          station finds its release as dist/admin's parent's parent)
-#   stillfail/VERSION, BUILD                              (the commit; the commits in its history: version 0.1.<BUILD>)
+#   stillfail/VERSION, BUILD, BUILT_AT                    (the commit; commits in its history; commit Unix ms timestamp)
 # On darwin-arm64 the native parts are signed when $STILLFAIL_SIGN_STATION is set (the station release job).
 # Its Node is the station's own: the agents' PATH never has it (a runtime installed with it would land there).
 # On win32-x64 the executables are .exe, and the command is bin/stillfail.cmd (bin/stillfail.ps1 behind it); its
 # installers are bin/install.{zh,en}.ps1.
+# STILLFAIL_STATION_BUILT=1: dist/admin and station/dist were built by the caller already (scripts/release.sh, once for
+# the platforms it bundles side by side), used as they are.
 #   station-bundle.sh DIR [darwin-arm64|linux-x64|linux-arm64|win32-x64]
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,7 +37,7 @@ case "$platform" in
   *) echo "no such platform: $platform" >&2; exit 1 ;;
 esac
 # Written afresh here, so a release never carries what an older build left in dist/admin (its page), nor an old key.
-node "$root/scripts/posthog-key.ts" >&2
+[ "${STILLFAIL_STATION_BUILT:-}" = 1 ] || node "$root/scripts/posthog-key.ts" >&2
 native() { node "$root/scripts/native.ts" file "$1" "$platform"; }
 x=; [ "$platform" = win32-x64 ] && x=.exe
 launcher="$(native launcher)"
@@ -45,10 +47,13 @@ helper=; [ "$platform" = darwin-arm64 ] && helper="$(native helper)"
 # The reader in MoonBit (station/mb).
 reader="$(native reader)"
 screen=; [ "$platform" = win32-x64 ] && screen="$(native screen)"
+screen_linux=; case "$platform" in linux-*) screen_linux="$(native screen-linux)" ;; esac
 tree=; [ "$platform" = win32-x64 ] && tree="$(native agent-desktop)"
 # The build's output is the complete set of station files for this release, not a previous build's leftover workers.
-rm -rf "$root/station/dist"
-(cd "$root/station" && pnpm run build:node >&2)
+if [ "${STILLFAIL_STATION_BUILT:-}" != 1 ]; then
+  rm -rf "$root/station/dist"
+  (cd "$root/station" && pnpm run build:node >&2)
+fi
 app="$out/stillfail"
 rm -rf "$app"
 mkdir -p "$app/bin" "$app/mesh/target/release" "$app/dist" "$app/station"
@@ -67,6 +72,8 @@ cp "$mesh" "$runner" "$app/station/"
 cp "$reader" "$app/station/"
 [ -z "$helper" ] || cp -R "$helper" "$app/station/"
 [ -z "$screen" ] || cp "$screen" "$app/station/"
+[ -z "$screen" ] || [ ! -f "$(dirname "$screen")/stillfail-screen-svc.exe" ] || cp "$(dirname "$screen")/stillfail-screen-svc.exe" "$app/station/"
+[ -z "$screen_linux" ] || cp "$screen_linux" "$app/station/"
 [ -z "$tree" ] || cp "$tree" "$app/station/"
 # macOS asks "find devices on local networks?" (the mesh's mDNS) for the launcher: Node and everything it starts are
 # its. Ad hoc, the grant was its hash's: each new launcher asked again, and every Node it started while unanswered put
@@ -87,7 +94,7 @@ fi
 # Copy all files produced by the station build, including workers in new directories. Naming individual workers here
 # left workspace activity, chat export and sign-in recovery without their programs in released stations.
 cp -R "$root/station/dist/." "$app/station/"
-case "$platform" in linux-*) ;; *) rm -f "$app/station/linux-portal.py" "$app/station/linux-x11.py" ;; esac
+case "$platform" in linux-*) ;; *) rm -f "$app/station/linux-portal.py" "$app/station/linux-x11.py" "$app/station/linux-gamepad.py" ;; esac
 # The bundle is an ES module: said, so Node neither guesses nor takes the type of a package.json above the release
 # (the Electron app had one around the station it carried: every command warned).
 printf '{"type":"module"}\n' > "$app/station/package.json"
@@ -95,3 +102,4 @@ printf '{"type":"module"}\n' > "$app/station/package.json"
 cp "$root/.node-version" "$app/NODE_VERSION"
 git -C "$root" rev-parse HEAD > "$app/VERSION"
 git -C "$root" rev-list --count HEAD > "$app/BUILD"
+printf '%s000\n' "$(git -C "$root" show -s --format=%ct HEAD)" > "$app/BUILT_AT"

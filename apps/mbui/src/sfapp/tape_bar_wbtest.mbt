@@ -211,14 +211,12 @@ test "on the tape a finger's tap on the bar's mark shows what the page is for ti
   t.touch(2, bx, by)
   t.run_for(@ui.move_most_ms)
   assert_true(about_shows(), msg="dragged and back")
-  // let go away from where it went down, no move told: there the page's own view (its room under the bar), whose rule
-  // a tap is (the old views' tapped_anywhere: not dragged, as no move told it): gone, as on main
+  // let go away from where it went down, no move told: the page under the bar is made as nodes (no old view's room
+  // there whose rule a tap is), so a finger let go past the slop from where it went down is no tap: shown still
   t.touch(0, bx, by)
   t.touch(2, bx + 60.0, by)
   t.run_for(@ui.move_most_ms)
-  assert_false(about_shows(), msg="let go away, the page's own view's tap")
-  tap_mark()
-  assert_true(about_shows(), msg="tapped open after")
+  assert_true(about_shows(), msg="let go away past slop, not a tap")
   // a tap on the bar: gone
   t.tap(bx, by)
   t.run_for(@ui.move_most_ms)

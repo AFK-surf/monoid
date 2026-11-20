@@ -119,91 +119,17 @@ test "a grant signed and read back; another key's, an expired one, another works
 }
 
 ///|
-/// What this package's deflate makes (fixed codes' blocks) made whole again, from `start`; None where it is not that.
-fn inflate_fixed(data : Bytes, start? : Int = 0) -> Bytes? {
-  let out = @buffer.new()
-  let made : Array[Byte] = []
-  let mut pos = start * 8
-  let bit = () => {
-    let b = (data[pos >> 3].to_int() >> (pos & 7)) & 1
-    pos += 1
-    b
-  }
-  let bits = (n : Int) => {
-    let mut v = 0
-    for i = 0; i < n; i = i + 1 {
-      v = v | (bit() << i)
-    }
-    v
-  }
-  let code = () => {
-    // fixed codes, most significant bit first
-    let mut c = 0
-    for _i = 0; _i < 7; _i = _i + 1 {
-      c = (c << 1) | bit()
-    }
-    if c <= 23 {
-      return c + 256
-    }
-    c = (c << 1) | bit()
-    if c >= 0x30 && c <= 0xBF {
-      return c - 0x30
-    }
-    if c >= 0xC0 && c <= 0xC7 {
-      return c - 0xC0 + 280
-    }
-    c = (c << 1) | bit()
-    c - 0x190 + 144
-  }
-  while true {
-    if pos >= data.length() * 8 {
-      return None
-    }
-    let last = bit()
-    if bits(2) != 1 {
-      return None
-    }
-    while true {
-      let sym = code()
-      if sym < 256 {
-        made.push(sym.to_byte())
-      } else if sym == 256 {
-        break
-      } else {
-        let i = sym - 257
-        let len = len_base[i] + bits(len_extra[i])
-        let mut d = 0
-        for _k = 0; _k < 5; _k = _k + 1 {
-          d = (d << 1) | bit()
-        }
-        let dist = dist_base[d] + bits(dist_extra[d])
-        for _k = 0; _k < len; _k = _k + 1 {
-          made.push(made[made.length() - dist])
-        }
-      }
-    }
-    if last == 1 {
-      break
-    }
-  }
-  for b in made {
-    out.write_byte(b)
-  }
-  Some(out.to_bytes())
-}
-
-///|
 test "SHA-256 as FIPS 180-4's examples have it" {
   assert_eq(
-    hex(sha256_bytes(b"abc")),
+    hex(@hash.sha256(b"abc")),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
   )
   assert_eq(
-    hex(sha256_bytes(@utf8.encode("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))),
+    hex(@hash.sha256(@utf8.encode("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))),
     "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
   )
   assert_eq(
-    hex(sha256_bytes(b"")),
+    hex(@hash.sha256(b"")),
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   )
 }
@@ -224,9 +150,56 @@ test "CRC-32 rolled on, and deflate inflated again to the same" {
   out.write_bytes(d.finish())
   let packed = out.to_bytes()
   assert_eq(packed.length() < data.length() / 4, true)
-  assert_eq(inflate_fixed(packed), Some(data))
+  assert_eq(@flate.inflate(packed), Some(data))
   let empty = Deflater::new()
-  assert_eq(inflate_fixed(empty.finish()), Some(b""))
+  assert_eq(@flate.inflate(empty.finish()), Some(b""))
+}
+
+///|
+priv struct FakeClock {
+  mut now : Double
+  timers : Array[(Int, Double, () -> Unit)]
+  mut next : Int
+}
+
+///|
+fn FakeClock::clock(self : FakeClock) -> Clock {
+  {
+    now: () => self.now,
+    after: fn(ms, f) {
+      self.next += 1
+      let id = self.next
+      self.timers.push((id, self.now + ms, f))
+      fn() {
+        for i, t in self.timers {
+          if t.0 == id {
+            self.timers.remove(i) |> ignore
+            return
+          }
+        }
+      }
+    },
+  }
+}
+
+///|
+fn FakeClock::advance(self : FakeClock, ms : Double) -> Unit {
+  let until = self.now + ms
+  while true {
+    let mut best = -1
+    for i, t in self.timers {
+      if t.1 <= until && (best < 0 || t.1 < self.timers[best].1) {
+        best = i
+      }
+    }
+    if best < 0 {
+      break
+    }
+    let t = self.timers.remove(best)
+    self.now = t.1
+    (t.2)()
+  }
+  self.now = until
 }
 
 ///|
@@ -331,7 +304,7 @@ test "a folder zipped: what it holds inflated again, links and what is skipped l
     let local = u32(at + 42)
     if u16(at + 10) == 8 {
       let start = local + 30 + u16(local + 26)
-      let back = inflate_fixed(zip, start~)
+      let back = @flate.inflate_at(zip, start).map(r => r.0)
       assert_eq(back.map(b => @utf8.decode_lossy(b)), Some(text.to_string()))
     }
     at = at + 46 + n
@@ -515,4 +488,71 @@ test "Windows' paths: drives and shares, either separator, case aside, as window
   })
   assert_true(path_mode.val is Posix)
   assert_eq(within("/A/b", "/a"), false)
+}
+
+///|
+test "the drive's errors are said as their words" {
+  let said = [
+    (drive_error("not_found", "no such file") : Error).to_string(),
+    (Refused("the grant is gone") : Error).to_string(),
+    (fs_error("ENOENT", "no such file or directory") : Error).to_string(),
+    (TooBig : Error).to_string(),
+  ]
+  assert_eq(said, [
+    "no such file", "the grant is gone", "no such file or directory", "zip archive exceeds size limit",
+  ])
+  for s in said {
+    assert_false(s.contains("station/"))
+    assert_false(s.contains("("))
+  }
+}
+
+///|
+test "a private write: beside its file under a name of its own each time, nothing left beside it, even where it fails" {
+  let dir = scratch("private")
+  let given = []
+  for i in 0..<5 {
+    given.push(tmp_beside(join([dir, "state.json"])))
+    write_private(join([dir, "state.json"]), "write \{i}")
+  }
+  assert_eq(Set::from_array(given).length(), 5)
+  assert_eq(@utf8.decode_lossy(read_all(join([dir, "state.json"]))), "write 4")
+  // (written beside, then not renamed over a folder that holds something: what was written beside is let go of)
+  mkdir(join([dir, "full", "inside"]), true)
+  let failed = try { write_private(join([dir, "full"]), "x"); false } catch { _ => true }
+  assert_true(failed)
+  let failed_bytes = try { write_private_bytes(join([dir, "full"]), b"x"); false } catch { _ => true }
+  assert_true(failed_bytes)
+  let left = names(dir)
+  left.sort()
+  assert_eq(left, ["full", "state.json"])
+  rm_force(dir)
+}
+
+///|
+test "preview delegates to codecs.preview and returns None on missing codecs or error" {
+  let asked : Array[(String, String)] = []
+  let ok_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (image, thumbs) => {
+      asked.push((image, thumbs))
+      Some({ path: join([thumbs, "\{id_of(image)}.p.jpg"]), type_: "image/jpeg" })
+    },
+    thumbhash: (_, _) => None,
+  }
+  let bad_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (_, _) => raise fs_error("EIO", "boom"),
+    thumbhash: (_, _) => None,
+  }
+  assert_true(preview("/a/pic.png", "/data/thumbs", None) is None)
+  match preview("/a/pic.png", "/data/thumbs", Some(ok_codecs)) {
+    Some(t) => {
+      assert_eq(t.path, "/data/thumbs/\{id_of("/a/pic.png")}.p.jpg")
+      assert_eq(t.type_, "image/jpeg")
+    }
+    None => abort("expected preview thumbnail")
+  }
+  assert_eq(asked, [("/a/pic.png", "/data/thumbs")])
+  assert_true(preview("/a/pic.png", "/data/thumbs", Some(bad_codecs)) is None)
 }

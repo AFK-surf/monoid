@@ -13,7 +13,7 @@
 fn non_empty(v : J?) -> J {
   match v {
     Some(Str(u)) =>
-      match @session_chats.trim(@jsjson.text(u)) {
+      match @session_chats.trim(@jsjson.sanitize_str(u)) {
         "" => Null
         t => js(t)
       }
@@ -96,7 +96,7 @@ pub fn group_connects(raw : J) -> Array[J] {
     for r in arr_of(at(g, "relays")).unwrap_or([]) {
       match r {
         Str(u) =>
-          match @session_chats.trim(@jsjson.text(u)) {
+          match @session_chats.trim(@jsjson.sanitize_str(u)) {
             "" => ()
             t => relays.push(js(t))
           }
@@ -106,7 +106,7 @@ pub fn group_connects(raw : J) -> Array[J] {
     jo([
       ("id", js(id)),
       ("enabled", jb(!(at(Some(c), "enabled") is Some(Bool(false))))),
-      ("server", js(match at(g, "server") { Some(Str(u)) => @session_chats.lower(@session_chats.trim(@jsjson.text(u))); _ => "" })),
+      ("server", js(match at(g, "server") { Some(Str(u)) => @session_chats.lower(@session_chats.trim(@jsjson.sanitize_str(u))); _ => "" })),
       ("relays", ja(relays)),
       ("key", js(str_of(at(g, "key")).unwrap_or(""))),
       ("code", non_empty(at(g, "code"))),
@@ -231,7 +231,7 @@ pub async fn make_group(options : GroupOptions) -> GroupParts {
         group = set_field(group, "name", name)
         match at(Some(group), "code") {
           Some(Str(u)) if u.length() > 0 => {
-            group = set_field(group, "bound", js(code_hash(@jsjson.text(u))))
+            group = set_field(group, "bound", js(code_hash(@jsjson.sanitize_str(u))))
             group = without(group, ["code"])
           }
           _ => ()

@@ -40,7 +40,7 @@ test("a chat can be copied to every Slack thread its agents are in, the one said
   const thread = (channel: string, ts: string) => {
     const t = r.store.openThread("slack:T1", channel, ts, null, "ada");
     r.store.joinThread(t.id, key, "cl");
-    r.store.insertMessage({ thread: t.id, ts, authorKind: "ember", author: "ember", text: "here", attachments: [] });
+    r.store.insertMessage({ thread: t.id, ts, authorKind: "station", author: "station", text: "here", attachments: [] });
     return t;
   };
   const first = thread("C1", "1700.000100");
@@ -71,8 +71,8 @@ test("copying a message: each thread picked has the bot say who wrote it on stil
   assert.equal(ccText("Ada Lovelace (ada@x.com)", "can you look at #42?"), said);
   assert.deepEqual(r.chat.posts.map((p) => p[0].channel).sort(), ["C1", "C2"]);
   assert.ok(r.chat.posts.every((p) => p[1] === said));
-  assert.deepEqual(r.said(a.id).map((m) => [m.authorKind, m.text]), [["ember", said]]);
-  assert.deepEqual(r.said(b.id).map((m) => [m.authorKind, m.text]), [["ember", said]]);
+  assert.deepEqual(r.said(a.id).map((m) => [m.authorKind, m.text]), [["station", said]]);
+  assert.deepEqual(r.said(b.id).map((m) => [m.authorKind, m.text]), [["station", said]]);
   await settle();
   assert.equal(r.claude.sessions.length, before, "the agent is not given the copy: it has the message from the chat");
   // One picked, only files: who sent them, and the files.
@@ -108,7 +108,7 @@ test("a copy that did not go is said in the chat", async () => {
   await cc(r.hub, chat.id, "Ada", "ada@x.com", "hi", [], [there.id]);
   assert.deepEqual(r.said(there.id), []);
   const note = r.said(chat.id).at(-1)!;
-  assert.deepEqual([note.authorKind, note.text], ["ember", tr(stationLang(), "station.cc.failed", { place: "Slack", error: "not_in_channel" })]);
+  assert.deepEqual([note.authorKind, note.text], ["station", tr(stationLang(), "station.cc.failed", { place: "Slack", error: "not_in_channel" })]);
   await r.close();
 });
 

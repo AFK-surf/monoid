@@ -313,6 +313,10 @@ pub fn side_bar_tape() -> @ui.Style
 
 pub fn side_beside(@ui.Ctx, String, Bool, Double, () -> Unit, () -> Unit) -> Unit
 
+pub fn tab_window_node(@view.View, @sfbase.Source, @sfbase.TabFull, top~ : () -> Double, on_close~ : () -> Unit) -> Unit
+
+pub fn tab_window_open(@sfbase.Source, @sfbase.ChatRef, String) -> Bool
+
 pub fn side_change(@sfbase.Source, @sfbase.ChatRef, String, String?) -> Unit
 
 pub fn side_changing(String, Array[String], String, Bool) -> Unit

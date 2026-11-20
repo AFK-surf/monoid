@@ -55,7 +55,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "share-files": [7],
   "share-new-chat": [7],
   // 2: unsub {"topic":"status"} | strict sub {"topic":"workspace","workspace":…}
-  "bar-glass": [7],
   "places": [7],
   // 1: - | strict call lock.pair {"workspace":…}
   "lock-wait": [7],
@@ -100,7 +99,7 @@ let strict_diverged_known : Map[String, Array[(Double, String)]] = {
   // it, so nothing was let go. Gone with #5135 (what is read kept by its topic while a page is covered), whose merge
   // takes this out.
   "lock-wait": [
-    (23096.97412109375, "{\"id\":13,\"unsubscribe\":true}"),
+    (23096.97412109375, "{\"id\":14,\"unsubscribe\":true}"),
     (23100.0, "{\"id\":24,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
   ],
 }
@@ -219,15 +218,22 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "chat-audio",
     (
-      "its motion at rest at 3795.85693359375 ms, 966.98583984375 ms after the run's next step (2828.87109375 ms; its timeline 81.203125 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3184.2972278094203 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3184.2972278094203 ms)",
-      "untraced: the bar's springs still moving as the run's next step came (src/sfapp/bar.mbt:170, :300)",
+      "its motion at rest at 3795.85693359375 ms, 966.98583984375 ms after the run's next step (2828.87109375 ms; its timeline 81.203125 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3184.2972278094203 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3080.0790917382365 ms) | the bar's springs (at rest at 3184.2972278094203 ms)",
+      "untraced: the bar's springs still moving as the run's next step came (src/sfapp/bar.mbt:248, bar_node.mbt's said_moving): its notch closing as the chat comes on top, the ball with it, as the capsule gives back the action's room",
     ),
   ),
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:377:7-377:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1042:5-1042:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1042:5-1042:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1141:14-1141:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3290.177388696544 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3185.9185117961974 ms) | the bar's springs (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:472:7-472:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1194:14-1194:124@stillfail (at rest at 2740 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1097:5-1097:68@stillfail (at rest at 3066.6666666666665 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
+    ),
+  ),
+  (
+    "history",
+    (
+      "its motion at rest at 2905.648681640625 ms, 16.43701171875 ms after the run's next step (2889.211669921875 ms; its timeline 46.770751953125 ms later from its first step); said since the last step that acted: ",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): the chat's sheet (ⓘ) at rest 16.4 ms after the run's next step (its first row's chevron), nothing said since the last step that acted (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),
   (
@@ -238,17 +244,17 @@ let strict_known : Map[String, (String, String)] = Map([
     ),
   ),
   (
-    "settings-vault-item",
+    "settings-run-settings",
     (
-      "its motion at rest at 3178.962890625 ms, 84.2900390625 ms after the run's next step (3094.6728515625 ms; its timeline 47.491943359375 ms later from its first step); said since the last step that acted: ",
-      "traced: the stack's slide from 密钥 to 全部密钥 (src/ui/nav.mbt:368), as long as before (2829.9 to 3180.3 ms, the same at main); 密钥 made as nodes (sfpages' vault_node) takes 全部密钥's press between frames, its slide said at once from the press's moment, where the old view's was told as a frame built it and not yet said as the run's next step came: the run took that step before the slide was over",
+      "its motion at rest at 2903.987060546875 ms, 16.14208984375 ms after the run's next step (2887.844970703125 ms; its timeline 91.26513671875 ms later from its first step); said since the last step that acted: ",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): as history's, the chat's sheet (ⓘ) at rest 16.1 ms after the run's next step (its first row's chevron), nothing said since the last step that acted (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),
   (
-    "settings-workspace-people",
+    "sheets-sinking",
     (
-      "its motion at rest at 2817.304931640625 ms, 66.697021484375 ms after the run's next step (2750.60791015625 ms; its timeline 37.575927734375 ms later from its first step); said since the last step that acted: ",
-      "untraced: a motion at rest 66.7 ms after the run's next step, nothing said since the last step that acted (50 ms later since #5953: the add panel's note a line longer, its sheet taller)",
+      "its motion at rest at 3420.119873046875 ms, 16.410888671875 ms after the run's next step (3403.708984375 ms; its timeline 55.970947265625 ms later from its first step); said since the last step that acted: the bar's springs (at rest at 3469.379128703425 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3469.379128703425 ms) | bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3275.2762317156703 ms)",
+      "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): as history's, the chat's sheet (ⓘ) at rest 16.4 ms after the run's next step (its scrim tapped), the bar's springs said before at rest long before it (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),
   (
@@ -302,7 +308,7 @@ let judged_traced_known : Map[String, Array[(String, String)]] = Map([
     "share",
     [
       (
-        "no motion to run to (its end: -1); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 1098.887939453125 ms) (at 1434.887939453125 ms)",
+        "no motion to run to (its end: -1); said since the last step that acted: the bar's springs (at rest at 1098.887939453125 ms) (at 1434.887939453125 ms)",
         // what another app shares is taken by the old view as it builds a frame (src/sfapp/share.mbt:195,
         // share_in_frame: @ui.shared_in read there), its sheet raised by a frame after that, not as the host says it:
         // given at its step, nothing of it moves yet. Goes as the host tells it between frames (MB_OUTSIDE_SHARE).

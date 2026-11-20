@@ -1,161 +1,40 @@
 # The copies of a station's conversations (for agents)
 
-Losing one machine does not lose a workspace's conversations (the user, 2026-11-09). What must survive of a station's
-chats (their threads, entries and letters, their sessions, turns and each viewer's marks, and the files attached to
-them) is copied, a workspace at a time, to the stations that keep it, and a new
-station takes it back in place of a lost one. Transcripts, usage, accounts and working directories are the machine's
-own and are not copied: a chat taken back goes on afresh, as one moved to another account does (a station retired,
-below, sends them along).
+Losing one machine does not lose a workspace's conversations (the user, 2026-11-09). A station's chats (threads, entries, letters, sessions, turns, viewers' marks, attached files) are copied per workspace to keeper stations; a new station takes them back for a lost one. Transcripts, usage, accounts and working directories stay the machine's: a chat taken back goes on afresh, as after an account change.
 
-- One export, off the main thread: the MoonBit program's (`station/mb/src/replica`, started by `runner.ts`
-  `exportThread`); a restore the same (`restore.ts` `takeBackSoon`). There is no export or restore in TypeScript to
-  fall back to: the program writes and reads what the TypeScript of before does, line for line, so either takes up the
-  other's state and copies. That TypeScript is the tests' only (`station/test/reference/replica-export.ts`,
-  `replica-restore.ts` `takeBack`, `replica-format.ts`; `station/test/mb-replica.test.ts` holds them to each other; the
-  tests' own stations run it, `replica-work.ts` `InlineRunner`): `src/replica/` keeps only what the station itself
-  says and reads of a copy (`export.ts` what the export is told, `format.ts` a head and the names). It reads
-  stillfail.db only: immutable batches (`format.ts`), a generation of them per workspace, `head.json` written last.
-  What changed is found by what the tables already give (the rowid of what is only added to, an index, the store's
-  own changes told to it, a digest of what was written in its own `export.db`), never by a trigger or a statement on
-  the main thread's write path (`replica-export-bounded.test.ts` counts them).
-- The stations that keep them keep the batches and files as opaque files (`places.ts`): two other stations of the same
-  workspace (the two whose rendezvous hash with it is highest, `peers.ts keepers`, worked out in each station from its
-  roster). Nothing about it is set by anyone, and the app shows it as one row (the user, 2026-11-10: 「按最简单的交互方式
-  做」; a folder of one's own was taken out). There is no follower database and no merging: only a
-  restorer reads inside a batch (`restore.ts`), into a station with no chats of its own (or one a station was retired
-  into, below), before its store opens.
-- A pass and the exporter's state (`export.db`) are one transaction, committed after the head that names its batches.
-  A batch holds at most BATCH_BYTES; folds and restores go through SQLite on disk and stream files, so their heap
-  does not grow with the copy (`replica-heap-bounded.test.ts` runs them in a 24 MB worker heap).
-- What a place holds is kept (`places.ts Known`) and only the new batch and head are sent; its listing is asked only
-  as the station starts, on hello, after a failure and on handover. While a keeper is not reached the next station in
-  the rendezvous order holds the copy meanwhile (`replica-stations.test.ts` counts the requests).
-- A restore's three steps (rows, files, `formerly`) are each safe to run again; its outcome stays (`restore.ts outcomeFile`)
-  for the settings after the restart. What it brought is let go only once its files are placed (or its rows never went
-  in): rows in and files not, the next start places them. It folds the batches on disk first and puts each row that is left
-  in once, so the store's triggers see each final row once: restored from the batches as written or from the
-  generation folded whole, every table of the database is the same (`replica-export.test.ts`). It is refused early, and again before the restart, on a station that has a chat
-  of its own, but for a retired station's.
-- A workspace's batches hold only its own chats; a station that leaves a workspace deletes what it kept of it. A
-  copy no longer a station's to keep goes only once those that should keep it say they hold as much.
-- A station rolled back (a backup put back) finds a place holding more than it has (`places.ts behind`): it begins a
-  new generation and the place keeps both; nothing is merged or dropped.
-- A station retired from a workspace (`retire.ts`; the user, 2026-11-13: 「搬家主要考虑的场景是要废弃掉一个 station」,
-  「要允许用户选择目标迁移 station」) hands all its chats there to the station a person picked, which may have chats of
-  its own: what is hard to move is left to what already makes it, never rewritten by hand (「避免脚本乱改改错」). The app
-  shows first what it would move (`GET /retire/preview`, found by the same functions the retirement uses). Each
-  session's room whole (an archived one's packed workspace with it; `footprint.ts roomOfSoon`, a session whose directory is
-  not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
-  other's data directory, only under `sessions/` and `transcripts*/`, and what an Antigravity CLI keeps of a
-  conversation in its profile's home (`carry.ts` `cliKept`: `session/load` takes it up from there, not from the
-  station's transcript; the profile it runs on there brings it into its own home from the home that wrote it last, whole, agents/agy.ts
-  `agyBringIn`; a chat moved without it got "trajectory not found", 2026-11-16; a hand-over's prune takes out what of
-  it the second pass no longer names, as its room's, handover.ts `#prune`: a `-wal` left beside a newer database was
-  replayed into it, malformed, 2026-11-16) (`carry.ts`: the MoonBit program's, `--builder
-  replica-carry`, `station/mb/src/replica/carry.mbt`, a process each, a cancel killing it; built for every system a
-  station runs on, so no worker thread to fall back to; the worker's from before is `station/test/carry-reference.ts`,
-  which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git
-  lists them (`rebuildable` stays behind, decided from the listings the walk reads: by its name anywhere, one known by
-  what is in it only outside a checkout and within 3 levels of the room's top, as git ignores it inside one; carry.mbt
-  `rebuilt_by_name`, `rebuilt_of_any_name`, held to the reference's (`station/test/footprint-reference.ts`) by `station/test/mb-replica-carry.test.ts` on the same
-  trees), its own `.git` as files (walked once the room was: a linked worktree of it walked later fetches into it, and
-  its sending was refused as changed, 2026-11-16), a repository in it gone into; a linked worktree is
-  made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
-  and `repair`, the remote fetched there too where the clone lacks its commit or the bundle's prerequisites; one that
-  cannot be keeps its bundle beside it; not begun where that station has no git). A station has
-  a million files: nothing of them is one object on a main thread or in one message (a list a session on disk, an
-  index of the lists, `retire.lacking` a bounded batch of hashes at a time; `replica-retire.test.ts` counts them). Every
-  file is checked by its hash as it is written there, and put in place linked to what was sent, no byte copied
-  (`carry.mbt` `put_file`; one linked already, the same bytes at another path, is copied: two paths never share a
-  file; 2026-11-14, Node's clone copied the bytes on APFS and filled a station's disk). The
-  copy is put in beside the other's chats by the same restore (its `merge`, the reference's `build`: each thread an
-  id there, a platform's thread both followed the one there with its own log, a still.fail chat of the same ts given
-  the next free one, the connects' ids and the sessions' `ws` as there), after which that station is this one too
-  (`formerly`), each moved chat's agent told once (`moved_notes`); what it tells the retired station goes to that one
-  itself (mesh/bus.ts `askItself`, as a request naming it would come back to itself). The chats stop (sessions/hub.ts
-  `quiet`, every chat of the workspace, the home one's too, and their jobs; for good once done, across restarts) only
-  for what changed since the first sending; what their platforms say meanwhile is kept and goes there as each
-  connect moved there (connects/workspace.ts `moveAll`; a Comma connect's, which no station routes to another, is refused unkept, as
-  `Retiring`). Retired from its home workspace, its accounts move there before the connects (share/index.ts
-  `moveProfile`; one that cannot is said, `accountsLeft`); the connects move last, the chats then out of sight here
-  (`retiredWs`); the app then takes the station out. Each side says what it does and where it stands (`retire.begin`,
-  `.take`, `.took`, `.failed`, `.accounts`, `.drop`), no polling; a copy the other could not put in, or whose restore never said how
-  it went after two starts, is tried again only as a person asks; a cancel answers at once, is refused once the other
-  took the chats, and one made while the other is not reached before it was asked to take them is told it once it is
-  up. Build output, and the browser's sign-ins stay behind. The jobs the chats had running are started again on the
-  other once it took them, each once, as after a restart (`#startJobs`; one whose directory was not the station's own
-  is not), their agents told at once; the agent home's own files (memory, presets, people's skills) go along and are
-  merged there, nothing of the other's overwritten (`agent-carry.ts`).
-- A hand-over that fails after the chats stopped (the other could not put them in: its placing or its worktrees
-  failed, a file sent is not there, its disk under `HEADROOM` free as it is asked, or its restore; or it was not
-  reached for a minute after they stopped, `QUIET_UNREACHED_MS`, before it was asked to take them) puts them back to
-  work by itself and rests at `sent`
-  (the lead, 2026-11-14): the other keeps what it was sent and puts in nothing by itself (`retire.drop` `keep`), so
-  the next hand-over sends only what changed. Never once the other said it took them, nor once it was asked to (it may
-  be taking them: as a cancel, they wait for it). Neither station updates itself meanwhile (updates/holds.ts, retire.ts `#holdsNow`; 2026-11-14, a beta's update cut
-  a real one's sending three times): the retired one while it sends, its chats stop and are handed over, until they
-  were taken, it fell back or was called off, the one taking them from the take until it took them or could not, held
-  again as either starts; never while resting (at `sent`, failed, the other's disk full or from before), nor while the
-  other is not reached. A process that stops ends the run under way at once, as a cancel does (`close`).
-- On the station that took them, the moved chats follow the retired station's accounts to the ids they have there
-  (`retire.accounts`, told once the accounts moved: a shared one under the copy it borrowed, one whose id is another's
-  there under the next free one; the keys of the chats taken kept, `tookDir`): their next turn takes up its
-  runtime session, nothing said in the chat. What it tells them that wakes them (their jobs' words, the driver's) waits
-  for that, or `ACCOUNTS_WAIT_MS`; the jobs start at once. The retired station's accounts moving away touch none of the
-  chats it handed over (sessions/hub.ts `handedOver`), and each connect is on the other before what was kept of it goes
-  there. Neither side asks the other of a share once one is the other too (mesh/bus.ts `cameHere`).
-- An agent assists (`station_retire`, `retire-asks.ts`; the user, 2026-11-14: 「人应该只需要在关键节点点卡片来确认就行」):
-  a person confirms its start and its hand-over, each a card counted only as chosen in the app by an owner or admin of
-  the workspace (parts.ts `cardChoice`, checked by the route that closes it, never by the agent); it waits at `sent`
-  for the second. The asking session is told each step (`#toDriver`), on the station the chats went to once its own
-  moved. The panel in the app goes on from `sent` by itself, as before.
-- Starting a retirement is switched off (左子健, 2026-11-14, after its first real use: 「我怀疑这个功能根本不能给用户用」):
-  POST /retire and station_retire's start and hand_over are refused (module.ts `RETIRE_STARTS`), the rest as above; it is
-  switched on again once the fixes have passed a drill.
-- One chat is handed to another station while both are up (`handover.ts`; 左子健, 2026-11-14, superseding the
-  decision of 2026-11-09 that left this out: a whole-station move is every chat handed over, then its connects and
-  logins by their own moves, and the reverse hand-over is the way back). It is the `chats` module of a migration
-  (`station/src/move/`, its AGENTS.md: independent modules, each item moved and moved back on its own, a scheduler that
-  only orders them by their needs). Its state is a file a hand-over on each side (`handover/out/`, `handover/in/`):
-  nothing of it is in the copies' export or the schema but `handed_over` (where each chat went, store `handOff`). The
-  chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry.ts `gatherSoon`'s `keys`) and sent
-  as a retirement's are (`sending.ts`; flushed to the drive once a placing, not a file at a time, `flushOnce`: on macOS not surely all of
-  it, so one still coming as that machine starts again is dropped there, `boot`), its rows sent a page at a time and put in through the other's store, hidden
-  until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
-  was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Each station's
-  log keeps the numbers it has: an arriving entry the same at its number is skipped, one found by ts elsewhere is that
-  one, one not found is numbered on, and nothing already there is renumbered; so where a copy there had entries of its
-  own (the leftover of a retirement taken back, 2026-11-14) each station has every entry once and the two orders differ
-  only in where those sit. Renumbering would rewrite a hidden copy's rows and all that hangs on their numbers for a
-  divergence of one station (the owner's 「避免脚本乱改改错」). A chat of a key live where it would go (in sight there:
-  one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
-  `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
-  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. What its agents spent (`usage`, `usage_files`, `session_usage`) goes with its rows to a station that takes them (`handover.begin` `usage`, `AFTER_SHOWN`), put in once by call id with its threads and accounts mapped there and its kept summary recomputed from all its calls there; chats handed before their calls went with them have theirs sent in pages as that station is heard from (`handover.usage`, `handover.ts` `usageSyncedFile`, following a chat moved on up to two hops). Only once the
-  other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
-  (`handover.drop`: answered once its rows are out and its record says it drops; then, by that station itself after
-  the placing under way (its next process where this one stops first), what it placed and the directories made for
-  it, a linked worktree git made with its registration, branch and ref, the repository staying; what it put aside
-  back; a newer hand-over of the chat drops an older one still coming first, its rows as it begins, its files before
-  the newer places anything (`#serialIn`), so the older's drop, late, takes nothing of it; asked even of a station the
-  turn found gone, owed until answered). No request of a hand-over waits on work that grows with the chat: its placing
-  (with its worktrees) and its pruning are told steps (move/told.ts, move/AGENTS.md), `handover.lacking` hashes
-  `HASH_MOST` bytes at most a request (the rest `unchecked`, asked again). The station it goes to drops it by itself where its own disk fails
-  what it is sent (full, over quota, read-only: refused in numbers, never a stream reset: mesh/peer.ts `Incoming.held`),
-  and where one still coming as it starts, or as its sender is heard from, no longer goes on there (`handover.still`);
-  after, nothing is undone and the rest is told until it is answered. One process of a station acts on its hand-overs
-  at a time: the next one a launcher starts begins, answers and goes on with none until the one before is gone
-  (`previous`, every record then read again), and a move turn waits for that too (move/station.ts `refusal`); a
-  hand-over's end is decided once, gone or failed, whichever process asks first (`decided`, a file linked into place),
-  so `gone` never follows its failure. A chat said gone (`handed_over`) whose latest hand-over failed and was never
-  shown, or is at `gone` and never shown where that station says it does not hold the hand-over (`handover.held`:
-  dropped, or never had; a show only not answered yet is left to its retries), is asked of where it went as the
-  station starts and as that one is heard from: held there in sight, the record is completed; not, it is in sight
-  here again, the record over as a failure (`#mend`; the real run, 2026-11-15, one chat on neither station). Its platform threads are re-pointed where their
-  connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here of it goes on there
-  (`movedTo`). A device naming it here is answered where it went (409 with `moved`, `GET /moved`, `chat-moved`),
-  only once that station showed it (store `goneTo`, then `shownThere`: told at `gone`, a device read it there before it
-  was there to be read and kept 「对话不存在」, the drill of 2026-11-14): until then it is read here as it went, held,
-  and what is taken here meanwhile goes after it (`caught`).
-  Nothing is posted in it; its agent is told once (`moved_notes`).
-- Not here, by the owner's decision (2026-11-09): reading a chat from a copy while its station is away, signed heads, a
-  lock entry for a replacement.
+## The copies
+
+- Export and restore run off the main thread in MoonBit (`station/mb/src/replica`; `runner.ts` `exportThread`, `restore.ts` `takeBackSoon`). No TypeScript fallback: it matches the old TypeScript line for line, kept only in tests (`station/test/reference/replica-export.ts`, `replica-restore.ts` `takeBack`, `replica-format.ts`; `station/test/mb-replica.test.ts` holds them to each other; `replica-work.ts` `InlineRunner`). `src/replica/` keeps only the station's side (`export.ts`, `format.ts`). The export reads stillfail.db only: immutable batches, a generation per workspace, `head.json` last. Changes come from what tables give (append-only rowids, an index, store change notes, digests in `export.db`), never a trigger or statement on the write path (`replica-export-bounded.test.ts`).
+- Keepers hold batches and files opaquely (`places.ts`): the two other workspace stations of highest rendezvous hash (`peers.ts keepers`, from each station's roster). Nothing is set by anyone; the app shows one row (the user, 2026-11-10: 「按最简单的交互方式做」). No follower database or merging: only a restorer reads a batch (`restore.ts`), into a station with no chats of its own, before its store opens.
+- A pass and `export.db` commit together, after the head naming its batches. A batch is at most BATCH_BYTES; folds and restores use SQLite on disk and stream files, so heap stays flat (`replica-heap-bounded.test.ts`: 24 MB heap).
+- A place's holdings are remembered (`places.ts Known`); only new batch and head are sent; its listing is asked only at start, hello, failure, handover. While a keeper is unreached, the next in rendezvous order holds the copy (`replica-stations.test.ts`).
+- A restore's steps (rows, files, `formerly`) each run again safely; its outcome stays (`restore.ts outcomeFile`) past restart. What it brought is let go only once files are placed (or rows never went in); rows in and files not, the next start places them. It folds batches on disk and puts each final row in once, so triggers see it once; batches or the folded generation give the same database (`replica-export.test.ts`). It is refused, early and before restart, on a station with chats of its own (a retired station's aside).
+- Batches hold only their workspace's chats; a station leaving a workspace deletes its copies. A copy no longer kept goes only once new keepers hold as much.
+- A station rolled back finds a place ahead of it (`places.ts behind`): it starts a generation; the place keeps both; nothing merged or dropped.
+
+## Carrying a chat's files (`carry.ts`)
+
+- MoonBit (`--builder replica-carry`, `station/mb/src/replica/carry.mbt`), a process each, killed on cancel, no worker fallback (`station/test/carry-reference.ts`, `station/test/mb-replica-carry.test.ts`). It takes a session's room whole (archived: its packed workspace; `footprint.ts roomOfSoon`; a directory not the station's is counted and left) and its transcripts, by bytes, to the same places under the other's data directory, only under `sessions/` and `transcripts*/`.
+- Antigravity CLI's conversation in its profile home goes too (`cliKept`: `session/load` reads it there); the profile there brings it in whole from the home that wrote it last (agents/agy.ts `agyBringIn`; without: "trajectory not found", 2026-11-16). A hand-over's prune removes what the second pass no longer names (handover.ts `#prune`: a `-wal` left beside a newer database was replayed into it, malformed, 2026-11-16).
+- A checkout's files go as git lists them; `rebuildable` stays: by name anywhere, by contents only outside a checkout within 3 levels of the room top (carry.mbt `rebuilt_by_name`, `rebuilt_of_any_name`, held to `station/test/footprint-reference.ts` by `station/test/mb-replica-carry.test.ts`). Its `.git` goes as files, walked after the room (a linked worktree walked later fetched into it and was refused as changed, 2026-11-16). Linked worktrees are remade by git (remote fetched and pruned, a bundle of unpushed commits, `git worktree add`, `repair`); failing that the bundle sits beside it; none without git there.
+- A station has a million files: none is an object on the main thread or in one message (lists per session on disk, an index, bounded hash batches; `replica-retire.test.ts`). Each file is hash-checked as written and placed by link, no byte copied (`carry.mbt` `put_file`); one already linked elsewhere is copied, so two paths never share a file (2026-11-14: Node's clone copied bytes on APFS and filled a disk).
+
+## Retiring a station (off)
+
+- `retire.ts` handed every chat of a workspace to a station a person picked (the user, 2026-11-13: 「搬家主要考虑的场景是要废弃掉一个 station」, 「要允许用户选择目标迁移 station」; 「避免脚本乱改改错」), on two owner/admin cards (`retire-asks.ts`). Since its first real use it is off (左子健, 2026-11-14: 「我怀疑这个功能根本不能给用户用」): POST /retire and station_retire's start and hand_over are refused (module.ts `RETIRE_STARTS`) until fixes pass a drill. `station_move` (`station/src/move/`) replaces it. Its restore `merge`, `formerly`, `moved_notes`, `agent-carry.ts` serve hand-overs too.
+
+## One chat handed over (`handover.ts`)
+
+- One chat moves while both stations are up (左子健, 2026-11-14, superseding 2026-11-09; a whole station is every chat, then connects and logins; the reverse hand-over is the way back): the `chats` module of `station/src/move/`. State is a file per side (`handover/out/`, `handover/in/`); only `handed_over` is in the schema (store `handOff`).
+- The chat is held alone (sessions/hub.ts `holdChat`), its files gathered (carry.ts `gatherSoon` `keys`) and sent (`sending.ts`; flushed once a placing, `flushOnce`; macOS may lose some, so one still coming as that machine restarts is dropped, `boot`). Rows go in pages through the other's store, hidden until shown (store/handover.ts, `comingWs`); each thread's log continues past what that station has (n kept where it was this chat's, else by ts), so a chat handed back appends.
+- Each station keeps its numbers: an arriving entry equal at its number is skipped, one found by ts is that one, others are numbered on, nothing renumbered (it would rewrite a hidden copy's rows and all hanging on them, 「避免脚本乱改改错」). A copy with entries of its own (a retirement's leftover, 2026-11-14) keeps every entry once, orders differing only there.
+- A chat whose key is live there is never merged into: the plan refuses it (`move.chats.live`), as does `handover.begin` before any write. Undelivered input goes along, marked handed here once shown there (store `deliveredThere`), never given twice. Spend (`usage`, `usage_files`, `session_usage`) goes with its rows (`handover.begin` `usage`, `AFTER_SHOWN`), once per call id, threads and accounts mapped, summary recomputed; earlier chats send theirs in pages when heard (`handover.usage`, `usageSyncedFile`, two hops).
+- It is gone here only once the other counted it; before, a failure undoes it there and it goes on here (`handover.drop`: answered once rows are out; that station then removes what it placed, its directories, a linked worktree with registration, branch, ref (not the repository), and restores what it set aside). A newer hand-over drops an older one still coming first (`#serialIn`); a drop is owed until answered, even to a gone station.
+- No request waits on work growing with the chat: placing (with worktrees) and pruning are told steps (move/told.ts, `station/src/move/AGENTS.md`); `handover.lacking` hashes at most `HASH_MOST` bytes a request (rest `unchecked`). The receiver drops it itself when its disk fails (full, quota, read-only: refused in numbers, never a stream reset, mesh/peer.ts `Incoming.held`), or when one still coming no longer goes on at the sender (`handover.still`); after, nothing is undone.
+- One process acts on hand-overs at a time: a new one waits for the old to go (`previous`), as does a move turn (move/station.ts `refusal`). The end, gone or failed, is decided once (`decided`, a file linked into place).
+- A chat marked `handed_over` whose last hand-over failed unshown, or sits at `gone` unshown where that station denies holding it (`handover.held`; an unanswered show is left to retries), is checked at start and when heard from: shown there, the record completes; else it shows here again, failed (`#mend`; real run 2026-11-15: a chat on neither station).
+- Platform threads are re-pointed to where their connect runs (connects/workspace.ts `route`, `connect.route`); what still comes here goes there (`movedTo`). Devices are redirected (409 `moved`, `GET /moved`, `chat-moved`) only once that station showed it (store `goneTo`, `shownThere`; told at `gone`, a device kept 「对话不存在」, drill 2026-11-14); until then it reads here, held, and what arrives follows (`caught`). Nothing is posted in it; its agent is told once (`moved_notes`).
+
+## Not here
+
+- Owner's decision (2026-11-09): no reading a chat from a copy while its station is away, no signed heads, no lock entry for a replacement.

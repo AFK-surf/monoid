@@ -2,7 +2,8 @@
 // MBUI_FIXTURE: "history" (an agent's steps, a few opened), "history-reading" (the
 // steps not read yet: their bones), "history-failed" (their first read failed: why, over the bones), "history-older"
 // (pages before them, being read), "history-older-failed" (their read failed: why, at its top), "history-details", the chat
-// with a sheet open over it: "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid" (an agent's card that knows
+// with a sheet open over it: "chat-info", "chat-info-bare" (the chat's sheet with nothing in its thread, its station's
+// screen an agent drives and its browser), "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid" (an agent's card that knows
 // no figure of it, as a station from before tells none of an agent at rest), "chat-peek" (its station's card), "chat-jobs",
 // "chat-job"; "chat-letters-many" (their sheet, more chats written with than it holds at its share: its list
 // scrolling in it); "chat-letters-info" (the chat's sheet with its row for what its agents and other chats' wrote each
@@ -31,9 +32,9 @@
 pub fn decide_mode(mode : String) -> Bool {
   [
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
-    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
+    "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-agent-context", "chat-agent-compacted", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
-    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls",
+    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls", "chat-info-bare",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
     "chat-station-tag", "home-attention", "home-syncing", "home-foot", "home-foot-many", "home-shared", "home-shared-bell",
   ].contains(mode)
@@ -364,11 +365,13 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       }
       let base = fixture_chat_topic(f, name, params)
       let base = if f.mode.has_prefix("chat-letters") { base.map(fix_with_letters) } else { base }
-      if session == "s-c1" && f.mode == "chat-agent-unsaid" {
+      if session == "s-c1" && (f.mode == "chat-agent-unsaid" || f.mode.has_prefix("chat-agent-c")) {
         Some(base.map(fn(b) { fix_context_actions(fix_detailed_chat(b)) }))
       } else if session == "s-c1" && (f.mode == "chat-station-tag" || f.mode == "chat-actions") {
         // no agent in it yet: its station's tag in its bar (pressed by the film's step: its card beside it)
         Some(base.map(fn(b) { fix_no_agent(fix_detailed_chat(b)) }))
+      } else if session == "s-c1" && f.mode == "chat-info-bare" {
+        Some(base.map(fn(b) { with_chat_remote(fix_detailed_chat(b), false, f.test_channel) }))
       } else if session == "s-c1" && f.mode == "chat-history-side-working" {
         Some(base.map(fn(b) { with_working(fix_detailed_chat(b)) }))
       } else if session == "s-c1" {
@@ -377,6 +380,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         Some(base)
       }
     }
+    // (nothing said in it besides words, no pull request)
+    "chatThings" if f.mode == "chat-info-bare" => Some(Some({ "counts": {}, "pulls": [] }))
     "chatLetters" =>
       if f.mode == "chat-letters-many" {
         Some(Some(fix_letters_many()))
@@ -415,6 +420,23 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         j => Some(Some(j))
       }
     "history" => Some(Some(fix_history()))
+    // (its context's tile opening what can be done to it, 31% full; compacted 3 times by its runtime session, or never)
+    "agentCard" if f.mode == "chat-agent-context" || f.mode == "chat-agent-compacted" => {
+      let context : Map[String, Json] = { "percent": 31, "text": "62K / 200K", "level": "ok" }
+      if f.mode == "chat-agent-compacted" {
+        context["compacted"] = Json::string("当前会话已压缩 3 次")
+      }
+      Some(
+        Some({
+          "work": "共工作 1 小时 12 分",
+          "cost": "$4.20",
+          "cache": { "percent": 91, "text": "91%", "level": "ok" },
+          "context": Json::object(context),
+          "latest": [{ "key": "k1", "text": "读了 src/ui/list.mbt" }, { "key": "k2", "text": "跑了列表的测试" }],
+          "attention": [],
+        }),
+      )
+    }
     "agentCard" if f.mode == "chat-agent-unsaid" =>
       Some(
         Some({
@@ -823,7 +845,8 @@ pub fn fix_with_letters(v : Json) -> Json {
 ///|
 /// What wants the viewer in 待处理 (home-attention: the core's `workspaceMarks`): a decision waiting in 整理发布清单,
 /// to be let go, a failure in another chat, looked at, and a chat unread.
-pub fn fix_attention_marks() -> Json {
+/// `login`: with another chat's login card waiting for the viewer, first, as the core says it (需要你登录 gh).
+pub fn fix_attention_marks(login? : Bool = false) -> Json {
   let item = fn(kind : String, title : String, what : String, station : String, name : String, thread : Double) {
     let m : Map[String, Json] = {
       "kind": Json::string(kind),
@@ -851,7 +874,17 @@ pub fn fix_attention_marks() -> Json {
         "wait": 1,
         "unread": 1,
         "tone": "alert",
-        "items": [Json::object(wait), Json::object(failed), Json::object(unread)],
+        "items": if login {
+          let ask = item("wait", "部署到测试环境", "需要你登录 gh", "ws1/st1", "Willow", 13.0)
+          ask["session"] = Json::string("s-c2")
+          ask["seq"] = Json::number(4.0)
+          ask["login"] = Json::string("login-9")
+          // (the fixture's now is 0: 12 and a half minutes left of its 15)
+          ask["loginEnds"] = Json::number(750000.0)
+          [Json::object(ask), Json::object(wait), Json::object(failed), Json::object(unread)]
+        } else {
+          [Json::object(wait), Json::object(failed), Json::object(unread)]
+        },
         "others": "done",
       },
     },

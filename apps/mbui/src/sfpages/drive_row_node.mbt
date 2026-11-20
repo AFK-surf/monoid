@@ -117,6 +117,9 @@ pub fn drive_row_node(
     }
   }
   parent.box(fn(room) {
+    // (row-internal badges, progress and marks settle at once, isolated from the folder list's own slot and card-piece
+    // transitions: libs/mbui/src/view/transition.mbt)
+    room.transitions_only() |> ignore
     // (a row's room in the list: its 2 to the next, on a wide page; on a narrow card its rows meet; in a column, no card's,
     // always 2 apart)
     if column {
@@ -207,11 +210,13 @@ pub fn drive_row_node(
           inner.box(fn(d) {
             @sf.style_node(d, fn() { disclosure_box }, in_row=true)
             if dir {
-              d.presses(Is(true)).on_press(on_toggle).says(By(fn() { Some(@view.said(Button, label=@sf.t(if expanded() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", e().name)]), expanded=expanded())) })) |> ignore
-              @sf.icon_node(d, "", disclosure_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
-                if expanded() { "chevron-down" } else { "chevron-right" }
-              })
-              |> ignore
+              @sf.disclosure_key_node(
+                d,
+                fn() { @sf.t(if expanded() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", e().name)]) },
+                expanded,
+                on_toggle,
+                icon_size=disclosure_icon,
+              )
             }
           })
           |> ignore
@@ -262,7 +267,7 @@ pub fn drive_row_node(
           n.show(fn() { (row.renaming)() }, at_once=true, fn(o) {
             o.over(Is(true)) |> ignore
             @sf.style_node(o, fn() { name_field_over }, in_row=false)
-            name_field_node(o, s.b, at.path, e, row)
+            name_field_node(o, s.b, e, row)
           })
         })
         |> ignore
@@ -374,7 +379,13 @@ pub fn drive_row_node(
                 fn(b) { drive_row_menu(key, (row.items)(), Node(b), along=End) },
                 size=if compact { more_compact } else { more_size },
               )
-              more.alpha(By(fn() { if open_now() || @sf.lit_within_node(g) { 1.0 } else { 0.0 } })) |> ignore
+              // (taking no finger while it is clear: a tap where it is not seen is the row's; its focus kept, so the
+              // keyboard still reaches it, shown as it has it)
+              let more_shown = fn() { open_now() || @sf.lit_within_node(g) || more.focus_shown() }
+              more
+              .alpha(By(fn() { if more_shown() { 1.0 } else { 0.0 } }))
+              .takes(fn(w, h, _) { if more_shown() { [(0.0, 0.0, w, h)] } else { [] } })
+              |> ignore
             }
             _ => ()
           }
@@ -401,69 +412,18 @@ fn mark_size(compact : Bool) -> Double {
 }
 
 ///|
-/// A name changed in place (NameField) in `parent`: the name but its extension picked; ⏎ or leaving it keeps it, esc
-/// leaves it as it was.
-fn name_field_node(parent : @view.View, b : Browse, folder : String, e : () -> DvEntry, row : RowOf) -> Unit {
-  ignore(folder)
-  ignore(e)
-  let done = Ref(false)
-  let finish = fn(to : String?) {
-    if !done.val {
-      done.val = true
-      (row.rename)(to)
-    }
-  }
-  let field = b.rename_field()
-  parent.box(fn(box) {
-    @sf.style_node(box, fn() { name_field_box }, in_row=true)
-    // (Escape gives up the new name before the field sees it)
-    box.on_key(fn(k) {
-      if k.code == @ui.key_escape && k.mods == 0 {
-        finish(None)
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-    let typed = @ui.field(
-      box,
-      field,
-      max_lines=1,
-      enter_sends=true,
-      size_by=fn() { @sf.theme().t.ui },
-      colors_by=fn() {
-        let p = @sf.theme().p
-        (p.text, p.muted, p.accent)
-      },
-      submitted=fn(words) { finish(Some(words)) },
-      label=@sf.t("web-pages.drive.rename"),
-    )
-    // (left: kept. Left by a press elsewhere, as the window's presses count it; the focus taken from it by nothing
-    // the hand did since it came (what the presenters give back as the menu that asked for it goes), given it again)
-    let downs = Ref(@signals.untracked(fn() { typed.window_downs() }))
-    typed.reacts(fn() { typed.focused() }, fn(on) {
-      let now = @signals.untracked(fn() { typed.window_downs() })
-      if on {
-        downs.val = now
-      } else if now != downs.val {
-        finish(Some(field.text()))
-      } else if !done.val {
-        @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-      }
-    }, at_start=false)
-    // (the cursor in it as it is made, once what made it is done; and once its room is laid out where the host gives
-    // the focus by where it is)
-    @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-    typed.at_moment(typed.cause_at() + 1.0, fn() { if !done.val { typed.ask_focus() |> ignore } }) |> ignore
-    // (where it cannot have it yet, under what is still going over it (the menu that asked for it, as it closes), as
-    // soon as it takes input)
-    typed.reacts(fn() { typed.takes_input() }, fn(takes) {
-      if takes && !done.val && !@signals.untracked(fn() { typed.focused() }) {
-        typed.ask_focus() |> ignore
-      }
-    })
-  })
+/// A name changed in place (NameField) in `parent`: the library's name changed in place (@sf.inline_rename_node), the
+/// name but its extension picked (browse_rename_start picks it); ⏎ or leaving it keeps it, esc leaves it as it was.
+fn name_field_node(parent : @view.View, b : Browse, e : () -> DvEntry, row : RowOf) -> Unit {
+  @sf.inline_rename_node(
+    parent,
+    b.rename_field(),
+    @signals.untracked(e).name,
+    @sf.t("web-pages.drive.rename"),
+    fn(words) { (row.rename)(Some(words)) },
+    fn() { (row.rename)(None) },
+    frame=fn(box) { @sf.style_node(box, fn() { name_field_box }, in_row=true) },
+  )
   |> ignore
 }
 
@@ -510,29 +470,44 @@ let read_whole : Double = 0.995
 
 ///|
 /// How far a file of the drive has come while it is downloaded (FillChip's `progress`), in `parent`: a rounded box, its
-/// ground filled in the accent from the left as it comes (going to each new share over 500 ms: @motion.Eased), n% on
-/// it, the fill drawn narrowed from its left to its share (a square-cornered rect cut to the capsule by its track).
+/// ground filled in the accent from the left as it comes (going to each new share over 200 ms Out: @motion.NodeWay), n% on
+/// it, the fill painted directly via ground_drawn with zero flex relayout (cut to the capsule by its track).
 fn download_chip_node(parent : @view.View, percent : () -> Int) -> Unit {
   let p = fn() {
     let p = percent()
     if p < 0 { 0 } else if p > 100 { 100 } else { p }
   }
-  let fill = @motion.Eased::new(@signals.untracked(p).to_double())
+  let fill = @motion.NodeWay::new(@signals.untracked(p).to_double())
   parent.box(fn(chip) {
     @sf.style_node(chip, fn() { chip_box })
-    chip.reacts(p, fn(now) { fill.go(chip, now.to_double(), chip_fill_ms) }, at_start=false)
+    chip.reacts(p, fn(now) { fill.go_ms(chip, now.to_double(), chip_fill_ms) }, at_start=false)
     chip.box(fn(track) {
       track.over(Is(true)) |> ignore
       @sf.style_node(track, fn() { chip_track })
-      track.box(fn(done) {
-        // (its share of the track as it is drawn, from its left: progress_node's part's; the accent at 20%)
-        done
-        .height(Is(None))
-        .grow(Is(0.0))
-        .ground(By(fn() { @sf.alpha(@sf.theme().p.accent, 0.2) }))
-        .width_share(By(fn() { dmax(0.0, fill.shown(done)) / chip_whole }))
+      track.by_room(fn(inner, room) {
+        inner.over(Is(true)) |> ignore
+        inner.box(fn(done) {
+          // (its share of the track painted directly via ground_drawn, zero relayout: the accent at 20%)
+          done
+          .over(Is(true))
+          .width(Is(Some(0.0)))
+          .height(Is(None))
+          .grow(Is(0.0))
+          .ground(By(fn() { @sf.alpha(@sf.theme().p.accent, 0.2) }))
+          .ground_drawn(By(fn() {
+            {
+              dx: 0.0,
+              dy: 0.0,
+              dw: room.width() * @sf.dclamp(fill.shown(done), 0.0, chip_whole) / chip_whole,
+              dh: 0.0,
+              corners: None,
+            }
+          }))
+          |> ignore
+        })
         |> ignore
       })
+      .over(Is(true))
       |> ignore
     })
     |> ignore
@@ -546,9 +521,8 @@ fn download_chip_node(parent : @view.View, percent : () -> Int) -> Unit {
 }
 
 ///|
-/// The chip's fill going to its new share (500 ms, easing out), the whole of it.
-///|
-let chip_fill_ms : Double = 500.0
+/// The chip's fill going to its new share (200 ms Out, matching progress_node), the whole of it.
+let chip_fill_ms : Double = 200.0
 
 ///|
 let chip_whole : Double = 100.0
@@ -575,13 +549,11 @@ let chip_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, c
 /// marked, its chevron down or up.
 pub fn list_head_node(parent : @view.View, a : () -> Arrangement, on_sort : (String) -> Unit) -> Unit {
   let head = fn(row : @view.View, by : String, words : String, style : @ui.Style, drop : Int) {
-    row.box(fn(h) {
+    @sf.action_box_node(row, fn() { words }, on=fn() { a().by == by }, fn(_) { on_sort(by) }, fn(h) {
       @sf.style_node(h, fn() { style.then(@ui.style(min_h=Fixed(@ui.room_least()))) }, in_row=true)
       if drop > 0 {
         h.drops(Is(drop)) |> ignore
       }
-      @sf.presses_node(h, fn() { on_sort(by) })
-      h.says(By(fn() { Some(@view.said(Button, label=words, pressed=a().by == by)) })) |> ignore
       @sf.words_node(h, fn() { words }, fn() { if a().by == by || @sf.lit_node(h) { head_words_on } else { head_words } }) |> ignore
       h.show(fn() { a().by == by }, at_once=true, fn(c) {
         @sf.icon_node(c, "", head_chevron, By(fn() { @sf.theme().p.text }), name_now=fn() {

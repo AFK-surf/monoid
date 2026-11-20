@@ -177,7 +177,7 @@ fn peek_mark_node(p : @view.View, st : PeekTopics, stint : () -> Int, ink : () -
 /// core here, while it shows (peek_figures' station_net: only while the station is up).
 fn peek_figures_by(p : @view.View, core : Core, st : PeekTopics) -> Unit {
   let net = (core.topic)("stationNet", { "station": str(text((st.s)(), "station")) })
-  peek_figures_node(p, st.s, fn() { station_net_of(net.get().value) })
+  peek_figures_node(p, core, st.s, fn() { station_net_of(net.get().value) })
 }
 
 ///|

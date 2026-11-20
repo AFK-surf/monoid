@@ -314,7 +314,7 @@ fn refused(lang : String, k : String, args? : Array[(String, J)] = []) -> Error 
 /// `String(error)`.
 fn error_text(e : Error) -> String {
   let name = match field_of(e, "name") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ =>
       match kind_of(e) {
         "TypeError" | "RangeError" | "SyntaxError" => kind_of(e)
@@ -380,6 +380,8 @@ pub struct Updates {
   priv items : Map[String, Item]
   priv mut checked_at : Double?
   priv mut checking : Shared?
+  /// updates.ts `again`: the reading asked for while one went on, after it.
+  priv mut again : Shared?
   priv mut codex_recovery : Shared?
   priv mut codex_update_serial : Int
   priv listeners : Array[(Int, () -> Unit)]
@@ -392,6 +394,9 @@ pub struct Updates {
   priv mut last_check : Double?
   mut running : () -> Double
   mut runtime_changed : (String, Bool, Bool) -> Unit
+  /// updates.ts `launcherInstaller` (launcher.ts `runInstaller`): what starts the installer where this process could
+  /// not, the launcher; none where it offers none.
+  mut launcher_installer : ((String, Env) -> Unit)?
   priv fibers : Fibers
   priv mut closed : Bool
   priv mut started : Bool
@@ -404,6 +409,41 @@ pub struct Updates {
   priv mut follows : Int
   /// The runtimes whose versions are read (none on a rig).
   kinds : Array[String]
+}
+
+///|
+/// updates.ts `canonicalNow`: `realpathSync(p)`, none where it throws.
+async fn realpath_now(w : World, p : String) -> String? {
+  w.realpath_or_null(p, sync=true)
+}
+
+///|
+/// updates.ts `stationNote`: why the station cannot be updated from here (none where it can).
+fn station_note(app : String, real : String?, installed : String?, origin : String?) -> Words? {
+  let note : Words? = if real is Some(r) && installed == Some(r) {
+    None
+  } else if includes(app, ".app/Contents") {
+    Some(Key("station.updates.withDesktop", None))
+  } else {
+    Some(Key("station.updates.notInstaller", None))
+  }
+  if note is None && origin is None {
+    Some(Key("station.updates.notJoined", None))
+  } else {
+    note
+  }
+}
+
+///|
+/// updates.ts `FIRST_RETRY_MS`: how long the first reading waits to be tried again after it failed.
+let first_retry_ms : Double = 60000.0
+
+///|
+fn origin_given(origin : () -> String?) -> String? {
+  match origin() {
+    Some(o) if o != "" => Some(o)
+    _ => None
+  }
 }
 
 ///|
@@ -424,6 +464,17 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
   for k in kinds {
     items[k] = empty()
   }
+  // The station itself is there from the start: what it runs and whether it is updated from here are its own, read now.
+  let station = empty()
+  station.installed = true
+  station.version = station_version(w, o.app)
+  station.note = station_note(
+    o.app,
+    realpath_now(w, o.app),
+    realpath_now(w, pjoin([o.data, "app"])),
+    origin_given(o.origin),
+  )
+  items["station"] = station
   {
     w,
     app: o.app,
@@ -447,6 +498,7 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     items,
     checked_at: None,
     checking: None,
+    again: None,
     codex_recovery: None,
     codex_update_serial: 0,
     listeners: [],
@@ -458,6 +510,7 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     last_check: None,
     running: o.running,
     runtime_changed: (_, _, _) => (),
+    launcher_installer: None,
     fibers: Fibers::new(w, "updates"),
     closed: false,
     started: false,
@@ -498,6 +551,12 @@ pub fn Updates::count_running(self : Updates, f : () -> Double) -> Unit {
 /// What to do when a runtime was installed or updated from here.
 pub fn Updates::on_runtime_changed(self : Updates, f : (String, Bool, Bool) -> Unit) -> Unit {
   self.runtime_changed = f
+}
+
+///|
+/// updates.ts `launcherInstaller`: the launcher's start of the installer, where it offers one (`--launcher-installer`).
+pub fn Updates::on_launcher_installer(self : Updates, f : (String, Env) -> Unit) -> Unit {
+  self.launcher_installer = Some(f)
 }
 
 ///|
@@ -544,7 +603,7 @@ pub fn Updates::auto(self : Updates) -> Bool {
 /// itself is off until a newer one than it is out, then on again (resume_auto). Only while it is off.
 pub fn Updates::auto_after(self : Updates) -> String? {
   match get(Some(self.config.raw), "autoUpdateAfter") {
-    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.text(u))) is Some(_) => Some(@jsjson.text(u))
+    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.sanitize_str(u))) is Some(_) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -670,10 +729,16 @@ fn Updates::schedule(self : Updates) -> Unit {
     Some(t) => t.interrupt()
     None => ()
   }
+  // Not read yet (the first reading failed): tried again within a minute, not hours later.
+  let every = if self.checked_at is None && first_retry_ms < self.timing.every {
+    first_retry_ms
+  } else {
+    self.timing.every
+  }
   let due = match self.last_check {
     None => 0.0
     Some(l) => {
-      let d = l + self.timing.every - self.fibers.now()
+      let d = l + every - self.fibers.now()
       if d > 0.0 {
         d
       } else {
@@ -694,19 +759,23 @@ async fn Updates::look(self : Updates) -> Unit {
   self.tick = None
   (try {
     let every = self.timing.every
-    // A reading under way (asked from a page) is waited for. The first reads the station's release too; those after,
-    // the runtimes'.
+    // A reading under way (asked from a page) is waited for. Until the station's release was read (the first reading,
+    // or one that failed), it is read too; those after, the runtimes'.
     match (self.checking, self.last_check) {
       (Some(c), _) => c.wait()
       (None, None) => self.check()
+      (None, Some(_)) if self.item("station").channel is None => self.check()
       (None, Some(l)) => if self.fibers.now() - l >= every { self.check(station=false) }
     }
     self.auto_update("a newer release read")
   } catch {
     e => {
-      // Not read: tried again when the next reading is due, not at once.
+      // Not read: tried again when the next reading is due (within a minute while none was), not at once.
       self.last_check = Some(self.fibers.now())
       self.w.warn("updates", "the updates not looked at", fields=jo([("error", js(message_of(e)))]))
+      // Always: `tick` may still name the fiber this look runs in (updates.ts `look`).
+      self.schedule()
+      return
     }
   })
   if self.tick is None {
@@ -787,11 +856,41 @@ pub fn Updates::get(self : Updates, lang : String) -> Array[J] {
 }
 
 ///|
-/// Reads every version and what is out, now (once at a time: asked while a reading goes on, it is that reading); a
-/// newer release of the station's channel is installed when it updates itself.
+/// Reads every version and what is out, now (once at a time); a newer release of the station's channel is installed
+/// when it updates itself.
 pub async fn Updates::check(self : Updates, station? : Bool = true) -> Unit {
-  if self.checking is Some(_) {
-    return
+  // Asked while a reading goes on: the runtimes' alone is that reading; with the station's, one more after it, every
+  // such ask meanwhile the same one (updates.ts `check`).
+  match self.checking {
+    Some(c) => {
+      if !station {
+        return
+      }
+      match self.again {
+        Some(a) => a.wait()
+        None => {
+          let a = Shared::new()
+          self.again = Some(a)
+          c.wait() catch {
+            _ => ()
+          }
+          self.again = None
+          let r : Result[Unit, Error] = try {
+            self.check()
+            Ok(())
+          } catch {
+            e => Err(e)
+          }
+          a.settle(r)
+          match r {
+            Ok(_) => ()
+            Err(e) => raise e
+          }
+        }
+      }
+      return
+    }
+    None => ()
   }
   self.w.now("shellPath.forgetShellPaths", [])
   let shared = Shared::new()
@@ -812,45 +911,30 @@ pub async fn Updates::check(self : Updates, station? : Bool = true) -> Unit {
 
 ///|
 async fn Updates::read(self : Updates, with_station : Bool) -> Unit {
-  let held = self.item("station")
+  // The station's release is taken as soon as it is read, and updated to where it updates itself: a runtime whose
+  // version is slow to come (a command that hangs) holds back neither it nor the pages.
   let reads : Array[async () -> Item] = [
-    if with_station {
-      let channel = self.channel()
-      async fn() { self.read_station(channel) }
-    } else {
-      fn() { held }
+    async fn() {
+      if with_station {
+        let mut station = self.read_station(self.channel())
+        // Put on another channel while it was read: read from that one.
+        while station.channel != Some(self.channel()) {
+          station = self.read_station(self.channel())
+        }
+        self.apply_read("station", station)
+        self.changed()
+        self.resume_auto()
+        self.auto_update("a newer release out")
+      }
+      empty()
     },
   ]
   for k in self.kinds {
-    reads.push(async fn() { self.read_runtime(k) })
+    reads.push(async fn() { self.safe_read_runtime(k) })
   }
   let got = @effect.all(reads)
-  let mut station = got[0]
-  // Put on another channel while it was read: read from that one.
-  while station.channel != Some(self.channel()) {
-    station = self.read_station(self.channel())
-  }
-  let all = [("station", station)]
   for i, k in self.kinds {
-    all.push((k, got[i + 1]))
-  }
-  for p in all {
-    let (kind, read) = p
-    let item = self.item(kind)
-    // One that is updating keeps what it was until it is done; but one not yet read is read.
-    if item.updating is None {
-      let next = read.copy()
-      next.failed = item.failed
-      next.done = item.done
-      self.items[kind] = next
-    } else if !item.installed {
-      let next = read.copy()
-      next.updating = item.updating
-      next.progress = item.progress
-      next.step = item.step
-      next.percent = item.percent
-      self.items[kind] = next
-    }
+    self.apply_read(k, got[i + 1])
   }
   self.checked_at = Some(self.fibers.now())
   self.last_check = Some(self.fibers.now())
@@ -861,24 +945,54 @@ async fn Updates::read(self : Updates, with_station : Bool) -> Unit {
 }
 
 ///|
+/// updates.ts `applyRead`: one that is updating keeps what it was until it is done; but one not yet read is read.
+fn Updates::apply_read(self : Updates, kind : String, read : Item) -> Unit {
+  let item = self.item(kind)
+  if item.updating is None {
+    let next = read.copy()
+    next.failed = item.failed
+    next.done = item.done
+    self.items[kind] = next
+  } else if !item.installed {
+    let next = read.copy()
+    next.updating = item.updating
+    next.progress = item.progress
+    next.step = item.step
+    next.percent = item.percent
+    self.items[kind] = next
+  }
+}
+
+///|
+/// updates.ts `safeReadRuntime`: where it fails, what it was before; one runtime that cannot be read does not end the
+/// reading.
+async fn Updates::safe_read_runtime(self : Updates, kind : String) -> Item {
+  self.read_runtime(kind) catch {
+    e => {
+      if e is @effect.Interrupt {
+        raise e
+      }
+      self.w.warn(
+        "updates",
+        "the runtime's version not read",
+        fields=jo([("runtime", js(kind)), ("error", js(message_of(e)))]),
+      )
+      self.item(kind).copy()
+    }
+  }
+}
+
+///|
 async fn Updates::read_station(self : Updates, channel : String) -> Item {
   let w = self.w
   let version = station_version_soon(w, self.app)
   let app = w.realpath_or_null(self.app)
-  let mut note : Words? = if app is Some(a) && w.realpath_or_null(pjoin([self.data, "app"])) == Some(a) {
-    None
-  } else if includes(self.app, ".app/Contents") {
-    Some(Key("station.updates.withDesktop", None))
-  } else {
-    Some(Key("station.updates.notInstaller", None))
+  let origin = origin_given(self.origin)
+  let installed = match app {
+    Some(_) => w.realpath_or_null(pjoin([self.data, "app"]))
+    None => None
   }
-  let origin = match (self.origin)() {
-    Some(o) if o != "" => Some(o)
-    _ => None
-  }
-  if note is None && origin is None {
-    note = Some(Key("station.updates.notJoined", None))
-  }
+  let note = station_note(self.app, app, installed, origin)
   let mut latest : String? = None
   let mut earlier : Array[J] = []
   match origin {
@@ -1321,8 +1435,9 @@ fn Updates::retry_station(self : Updates, version : String) -> Unit {
     done
   }
   // timer: retry after a failed update, then back off if the release cannot be read or its installer started.
+  // (`run` keeps whatever the loop throws in its fiber, and the part's close interrupts it)
   ignore(
-    self.fibers.fork(async fn() {
+    self.fibers.run(async fn() {
       self.fibers.sleep(station_retry_ms)
       let mut n = 0
       while !attempt() {
@@ -1868,7 +1983,7 @@ async fn Updates::place_node(self : Updates, kind : String, node : OwnNode) -> U
     return
   }
   let home = own_node_home(self.data)
-  w.mkdir(home, opts=jo([("recursive", jb(true))]))
+  w.mkdir(home)
   let dist = bget("dist")
   let archive = bget("archive")
   let file = pjoin([home, archive])
@@ -1941,7 +2056,7 @@ async fn Updates::fetch_codex(self : Updates, npm : String, env : Env) -> String
     let v = get(Some(self.fetch_json("\{self.registry}/\{pkg}/latest")), "version")
     let u = get(get(Some(self.fetch_json("\{self.registry}/\{pkg}/\{js_string_opt(v)}-\{p}")), "dist"), "tarball")
     match (v, u) {
-      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.text(v), @jsjson.text(u)))
+      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.sanitize_str(v), @jsjson.sanitize_str(u)))
       _ => None
     }
   } catch {
@@ -2143,7 +2258,7 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
   }
   {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
   }
   // Off the station's thread so cleanup does not delay its other work at every update.
   ignore(
@@ -2200,7 +2315,7 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
   }
   let plan = {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
     ignore(
       @effect.all([
         async fn() { w.rm(pjoin([run_dir, "update.exit"])) },
@@ -2360,8 +2475,18 @@ async fn Updates::start_planned(self : Updates, plan : Plan, handed : Array[(Str
         fields=jo([("error", js(message_of(e)))]),
       )
   }
-  let ok = !self.closed &&
+  let mut ok = !self.closed &&
     w.call("platform.startInstaller", [js(plan.script), js(run_dir), env_j(env), js(self.app)]) is Bool(true)
+  if !ok && !self.closed && self.launcher_installer is Some(f) {
+    // Not started here: the launcher starts it (its exit and log in run/ as one started here), followed as one.
+    w.warn(
+      "updates",
+      "the station's installer not started here; the launcher starts it",
+      fields=jo([("to", get(Some(plan.release), "version").unwrap_or(Null))]),
+    )
+    f(plan.script, env)
+    ok = true
+  }
   let archive = env_get(handed, "STILLFAIL_ARCHIVE")
   if !ok {
     w.rm_quiet(started_file)
@@ -2609,7 +2734,7 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
   let look_soon = () => if !over.val && soon.val is None {
     soon.val = Some(self.fibers.after(50.0, async fn() { look() }))
   }
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))])) catch {
+  w.mkdir(run_dir) catch {
     _ => ()
   }
   if over.val {

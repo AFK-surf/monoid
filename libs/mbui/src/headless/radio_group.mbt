@@ -10,6 +10,11 @@
 // visible focus there. Pressing an item (by the
 // pointer, by Space or Enter while it has focus, or by a screen reader's Activate) chooses it when it is not chosen
 // already, and does nothing when it already is or while disabled.
+//
+// A tab that closes (`RadioGroup::item`'s `on_close`, a `Tab` list's alone): Delete or Backspace while it has the focus
+// closes it, as what its look adds to close it does (`RadioItem::close`); one the keyboard was on hands the keyboard
+// to the enabled tab then chosen (`chosen()` as its caller says after `on_close`, its node once made), or to the first
+// enabled tab where what is chosen is no tab's. One closed behind, the keyboard elsewhere, takes nothing.
 
 ///|
 /// What the group and its items are to a screen reader: a `Radio` group (`RadioGroup` of `Radio` items) or a `Tab`
@@ -48,6 +53,8 @@ pub struct RadioGroup[K] {
   priv items : Array[GroupEntry[K]]
   priv building : Ref[Bool]
   priv stops : Array[(@view.View, () -> Unit)]
+  // (the tab closed while the keyboard was on it and its key, the keyboard waiting to be handed on)
+  priv refocus : Ref[(@view.View, K)?]
 }
 
 ///|
@@ -62,6 +69,14 @@ pub struct RadioItem {
   priv node : @view.View
   priv now : () -> Bool
   priv off : () -> Bool
+  priv close_ : () -> Unit
+}
+
+///|
+/// Closes this tab, for what a look adds to close it (its ×): the item's `on_close`, the keyboard handed on to the tab
+/// then chosen where it was on this one. Nothing where the item has no `on_close` or does not close now.
+pub fn RadioItem::close(self : RadioItem) -> Unit {
+  (self.close_)()
 }
 
 ///|
@@ -121,6 +136,13 @@ let group_key_home : Int = 8
 let group_key_end : Int = 9
 
 ///|
+/// The key codes that close a tab that closes (`ui`'s `key_code_backspace`, `key_code_delete`).
+let group_key_backspace : Int = 1
+
+///|
+let group_key_delete : Int = 2
+
+///|
 /// A radio group or tab list in `parent`, called `label` (what a screen reader says), `chosen` saying which key `K` is
 /// chosen now and `choose` told the key chosen by a press or an arrow key; `kind` whether it is a `Radio` group or a
 /// `Tab` list; `axis` which arrow keys step along it; `disabled` while the whole group takes no press and no focus;
@@ -149,8 +171,13 @@ pub fn[K : Eq] radio_group(
     let items : Array[GroupEntry[K]] = []
     let building = Ref(true)
     let stops : Array[(@view.View, () -> Unit)] = []
-    let rg : RadioGroup[K] = { kind, selected, now: chosen, choose, off: disabled, items, building, stops }
+    let refocus : Ref[(@view.View, K)?] = Ref(None)
+    let rg : RadioGroup[K] = { kind, selected, now: chosen, choose, off: disabled, items, building, stops, refocus }
     look(v, rg)
+    // (the keyboard handed on as the tab chosen after a close comes: its node made by then)
+    if kind is Tab {
+      v.reacts(chosen, fn(_) { rg.hand_on() }, at_start=false) |> ignore
+    }
     building.val = false
     for s in stops {
       if s.0.alive() {
@@ -226,12 +253,35 @@ pub fn[K : Eq] radio_group(
 }
 
 ///|
+/// The keyboard handed on after the tab it was on closed (`RadioGroup::refocus`): to the enabled item chosen now, the
+/// closed one aside; where what is chosen is another key that no enabled item has, to the first enabled one. While the
+/// closed one's key is still the one chosen (its caller has not said what comes in front yet), it waits.
+fn[K : Eq] RadioGroup::hand_on(self : RadioGroup[K]) -> Unit {
+  guard self.refocus.val is Some((gone, gone_key)) else { return }
+  let cur = @signals.untracked(self.now)
+  let live = self.items.filter(fn(e) { e.node.alive() && e.node.id() != gone.id() && !@signals.untracked(e.off) })
+  let to = match live.iter().find_first(fn(e) { @signals.untracked(e.key) == cur }) {
+    Some(e) => Some(e)
+    None => if cur != gone_key { live.get(0) } else { None }
+  }
+  if to is Some(e) {
+    self.refocus.val = None
+    e.node.ask_focus(visible=true) |> ignore
+  }
+}
+
+///|
 /// An item of `self` in `parent` (which may be the group's node or a slot/container inside it), identified by `key`
 /// and read out as `label`. `look` is given the item's node and its `RadioItem` state. `disabled` disables this item
 /// alone; `space_only` limits keyboard activation on the focused item to Space (leaving Enter to a surrounding form);
 /// `slop` attaches a pointer gesture of that touch slop whose tap or release on the item presses it (for sliding-thumb
-/// strips where a finger moved off and back onto an item still chooses it on release). With `slide`, a horizontal drag
-/// previews the enabled item under the pointer and presses it on release. The item's node.
+/// strips where a finger moved off and back onto an item still chooses it on release). For `slide`, give a hold time
+/// and a function that previews the option at a touch point and returns its key. A horizontal drag keeps sending points
+/// after it leaves the group. On release, the group presses the final item and sends None to clear the preview.
+/// `on_close` (a `Tab` list's item alone): the tab closes, `closes` saying while it may; Delete or Backspace on it
+/// closes it, as `RadioItem::close` does, the keyboard handed on to the tab then chosen where it was on this one.
+/// `in_node`: the item is `parent` itself (the slot a structure made for it: a row of `View::each`), said to be what it
+/// is and no node more, as `radio_group`'s and a menu's items are. Its node.
 #callsite(autofill(loc))
 pub fn[K : Eq] RadioGroup::item(
   self : RadioGroup[K],
@@ -242,11 +292,14 @@ pub fn[K : Eq] RadioGroup::item(
   disabled? : () -> Bool = fn() { false },
   space_only? : Bool = false,
   slop? : Double,
-  slide? : (K?) -> Unit,
+  slide? : (Double, (@view.Drag?) -> K?),
+  on_close? : () -> Unit,
+  closes? : () -> Bool = fn() { true },
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
+  let setup = fn(v : @view.View) {
     let off = fn() { (self.off)() || disabled() }
     let able = fn() { !off() }
     let on = fn() { (self.now)() == key() }
@@ -256,7 +309,32 @@ pub fn[K : Eq] RadioGroup::item(
       self.stops.retain(fn(s) { s.0.id() != v.id() })
     })
     |> ignore
-    look(v, { node: v, now: on, off })
+    let close = match on_close {
+      Some(f) if self.kind is Tab =>
+        fn() {
+          if !off() && closes() {
+            // (the keyboard handed on only where it was on this tab)
+            if v.focused() {
+              self.refocus.val = Some((v, key()))
+            }
+            f()
+            self.hand_on()
+          }
+        }
+      _ => fn() {  }
+    }
+    look(v, { node: v, now: on, off, close_: close })
+    if on_close is Some(_) && self.kind is Tab {
+      v.on_key(fn(e) {
+        if e.mods == 0 && (e.code == group_key_delete || e.code == group_key_backspace) && v.focused() && !off() && closes() {
+          close()
+          true
+        } else {
+          false
+        }
+      })
+      |> ignore
+    }
     if slop is Some(s) {
       let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
       match slide {
@@ -267,44 +345,42 @@ pub fn[K : Eq] RadioGroup::item(
             drag=fn(d) { if d.kind == Up && on_it(d) { v.press() |> ignore } },
           )
           |> ignore
-        Some(preview) => {
-          let horizontal = Ref(false)
+        Some((hold_ms, preview)) => {
+          let horizontal : Ref[Bool?] = Ref(None)
           let across = fn(d : @view.Drag) { (d.x - d.ox).abs() > (d.y - d.oy).abs() }
-          let item_at = fn(d : @view.Drag) {
-            guard v.finger_target_id(d.wx, d.wy) is Some(target) else { return None }
-            self.items.iter().find_first(fn(item) { item.node.id() == target && !(item.off)() })
-          }
           let tap = fn(d : @view.Drag) {
-            preview(None)
             if on_it(d) {
               v.press() |> ignore
             }
+            preview(None) |> ignore
           }
           v.gesture(
             s,
-            press=fn(_) {
-              horizontal.val = false
-              preview(Some(key()))
-            },
+            press=fn(_) { horizontal.val = None },
             tap~,
+            hold=(hold_ms, fn(d) { preview(Some(d)) |> ignore }),
+            hold_yields=true,
             drag=fn(d) {
               match d.kind {
                 Down | Moved => {
                   if d.kind == Down {
-                    horizontal.val = across(d)
+                    horizontal.val = Some(across(d))
                   }
-                  if horizontal.val {
-                    preview(item_at(d).map(fn(item) { (item.key)() }))
-                  }
+                  preview(if horizontal.val == Some(true) { Some(d) } else { None }) |> ignore
                 }
-                Up if horizontal.val || across(d) => {
-                  preview(None)
-                  if item_at(d) is Some(item) {
-                    item.node.press() |> ignore
+                Up if horizontal.val.unwrap_or(across(d)) => {
+                  match preview(Some(d)) {
+                    Some(k) =>
+                      match self.items.iter().find_first(fn(item) { item.node.alive() && !(item.off)() && (item.key)() == k }) {
+                        Some(item) => item.node.press() |> ignore
+                        None => ()
+                      }
+                    None => if on_it(d) { v.press() |> ignore }
                   }
+                  preview(None) |> ignore
                 }
                 Up => tap(d)
-                Off => preview(None)
+                Off => preview(None) |> ignore
               }
             },
           )
@@ -376,5 +452,15 @@ pub fn[K : Eq] RadioGroup::item(
         }
       }
     }
-  })
+    // (the tab chosen after a close made only now: the keyboard handed on to it)
+    if self.refocus.val is Some(_) && !self.building.val {
+      self.hand_on()
+    }
+  }
+  if in_node {
+    setup(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), setup)
+  }
 }

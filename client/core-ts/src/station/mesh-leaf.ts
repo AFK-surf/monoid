@@ -30,13 +30,14 @@ export class LeafLinks {
     const state=this.#held.get(endpoint)?.get(address.slice(0,at));
     if(!state?.config || state.link.closed()!==null || address.slice(at+1)===state.link.conn.remoteId())return undefined;
     const target=address.slice(at+1);
-    if(!state.config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target)){
-      // Only an explicitly admitted station without the new descriptor uses
-      // legacy dialing. This says nothing about a descriptor-bearing peer's
-      // authorization, and signing or policy failures are never downgraded.
-      if(state.config.stations?.includes(target))return undefined;
-      return yield* Effect.fail(error("leaf target is not in the admitted station roster"));
-    }
+    // A target without a descriptor here is dialled as before, not through this
+    // station: an older station, one enrolled but not yet in the lock, one not
+    // protected, or one this station has not yet heard of from the cloud. This
+    // station grants no access and may not refuse a device's dial to another
+    // (the lock guards against stations): the TLS endpoint key and the core's
+    // own lock rules authenticate the target. A descriptor-bearing peer always
+    // attaches, and a signing or policy failure there is never downgraded.
+    if(!state.config.peers.some(p=>hex(new Uint8Array(p.binding.endpoint))===target))return undefined;
     return yield* state.lock.withPermits(1)(this.#attach(state,target));
   });
   #attach(state:State,target:string):Effect.Effect<string|undefined,CoreError>{

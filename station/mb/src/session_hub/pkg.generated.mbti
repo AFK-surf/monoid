@@ -5,7 +5,6 @@ import {
   "mbui/effect",
   "moonbitlang/core/json",
   "moonbitlang/core/set",
-  "station/host",
   "station/jsjson",
   "station/store_sessions",
   "station/store_threads",
@@ -21,6 +20,8 @@ pub fn agent_name(String?, String) -> String
 pub fn agy_base_model(String) -> (String, String?)
 
 pub fn allowed_in(@json.Json, String?, String?) -> Bool
+
+pub let archive_upkeep_every_ms : Double
 
 pub fn ask_which(Array[@json.Json], String) -> String
 
@@ -114,11 +115,17 @@ pub fn first_line(String) -> String
 
 pub fn handed_ws(String) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let held_after_ms : Double
 
 pub let holds_known : Array[String]
+
+pub async fn hub_call(Hub, String, Array[@json.Json]) -> @json.Json
+
+pub let idle_rebuild_low_ms : Double
+
+pub let idle_rebuild_max_per_round : Int32
+
+pub let idle_rebuild_ms : Double
 
 pub fn index_of(String, String, from? : Int32) -> Int32
 
@@ -205,6 +212,10 @@ pub fn options_arg(@json.Json?) -> Array[@json.Json]? raise Refused
 pub fn options_card(Array[@json.Json]) -> @json.Json
 
 pub fn options_said(@json.Json) -> String
+
+pub let pack_backfill_check_max_per_round : Int32
+
+pub let pack_backfill_max_per_round : Int32
 
 pub fn parse_declared(String, Double) -> @json.Json?
 
@@ -300,13 +311,13 @@ pub let sweep_ms : Double
 
 pub fn take(String, Int32) -> String
 
-pub fn test_random_hex(Int32, Int32) -> String
-
 pub fn text_or_null(@json.Json, String) -> String?
 
 pub fn thread_command(String) -> String?
 
 pub fn timed(String, Double) -> String
+
+pub let timed_back_ms : Double
 
 pub fn told_afresh(String, Array[String]) -> String
 
@@ -341,6 +352,7 @@ pub(all) suberror Refused {
   Refused(String)
 }
 pub fn Refused::message(Self) -> String
+pub impl Show for Refused
 
 // Types and methods
 pub struct AgentsSide {
@@ -357,8 +369,8 @@ pub async fn AgentsSide::start(Self, Place) -> Unit
 pub struct Hub {
   world : World
   store : @store_sessions.Store
-  mut threads : @store_threads.Store
-  mut words : Words
+  threads : @store_threads.Store
+  words : Words
   actors : Map[String, String]
   holds_now : Array[String]
   adopted : @set.Set[String]
@@ -382,6 +394,9 @@ pub struct Hub {
   awaiting_workspace_activity : @set.Set[String]
   mut counter : UsageCounter?
   mut keeps_counted : Bool
+  mut pack_cursor : @json.Json
+  mut last_archive_upkeep_at : Double
+  idle_measured : Map[String, Double]
 }
 pub async fn Hub::accept(Self, String, @json.Json) -> Unit
 pub fn Hub::act(Self, String, String, args? : Array[@json.Json]) -> Unit
@@ -401,8 +416,8 @@ pub async fn Hub::bind_single(Self, String, String?, String?, String?) -> String
 pub fn Hub::busy(Self, String) -> Bool
 pub fn Hub::cancel(Self, Int32) -> Unit
 pub fn Hub::changed(Self, String, restart? : Bool) -> Unit
-pub fn Hub::chat_held(Self, String) -> String?
 pub fn Hub::chat_key(Self, String) -> String
+pub async fn Hub::clean_idle_rebuildable(Self, Double, idle_ms? : Double, limit? : Int32) -> Int32
 pub fn Hub::client_key(Self, String) -> String?
 pub fn Hub::client_keys(Self) -> Array[(String, String)]
 pub async fn Hub::command(Self, String, String, Array[@json.Json]) -> @json.Json
@@ -416,6 +431,7 @@ pub async fn Hub::create_session(Self, String, @json.Json, String, @json.Json?, 
 pub async fn Hub::delete_session(Self, String) -> Unit
 pub fn Hub::deliver(Self, @json.Json, @json.Json, Array[String], String, retry_pending? : Bool, workspace? : String?) -> Unit raise
 pub fn Hub::deliver_letter(Self, @json.Json, @json.Json, Array[String]) -> Unit raise
+pub async fn[T] Hub::drive(Self, @effect.Runtime, @effect.Deferred[T], (async () -> Unit) -> Unit) -> Unit
 pub fn Hub::drop_actor(Self, String) -> Bool
 pub async fn Hub::end_orphan(Self, @json.Json, Double) -> Bool
 pub fn Hub::every_changed(Self) -> Unit
@@ -427,7 +443,7 @@ pub fn Hub::flush_threads(Self) -> Unit
 pub fn Hub::follow_accounts(Self, Array[String], Map[String, String]) -> Int32 raise
 pub fn Hub::get_session(Self, String) -> @json.Json?
 pub fn Hub::goes_afresh(Self, String, Double) -> Bool raise
-pub async fn Hub::hand_over(Self, limit_ms? : Double) -> @json.Json
+pub async fn Hub::hand_over(Self, limit_ms? : Double, partial? : Bool) -> @json.Json
 pub fn Hub::handed_over(Self, String) -> Bool
 pub fn Hub::has_pending(Self, String) -> Bool
 pub fn Hub::held(Self, String) -> Bool
@@ -449,6 +465,7 @@ pub fn Hub::new_chat_key(Self) -> String
 pub async fn Hub::new_session(Self, @json.Json, lang? : String) -> (String, @json.Json)
 pub fn Hub::new_single_session_key(Self, String) -> String
 pub fn Hub::new_token(Self) -> String
+pub fn Hub::next_due(Self) -> Double?
 pub fn Hub::next_ts(Self) -> String
 pub fn Hub::note_length(Self, String, @json.Json) -> Unit
 pub fn Hub::now(Self) -> Double
@@ -457,6 +474,7 @@ pub async fn[T] Hub::one_single(Self, String, async () -> T) -> T
 pub fn Hub::online(Self, @json.Json) -> Bool
 pub fn Hub::open_chat(Self, String, String, String?) -> @json.Json raise
 pub async fn Hub::owns_runner(Self, String) -> Bool
+pub async fn Hub::pack_unfinished_archived(Self, Double, limit? : Int32, check_limit? : Int32) -> Int32
 pub fn Hub::process_state(Self, String) -> String
 pub fn Hub::processes(Self) -> Array[(String, String)]
 pub async fn Hub::profile_gone(Self, String) -> Unit
@@ -468,9 +486,12 @@ pub async fn Hub::receive(Self, String, @json.Json) -> Unit
 pub fn Hub::recover(Self) -> Unit raise
 pub fn Hub::release(Self, String) -> Unit raise Refused
 pub fn Hub::release_chat(Self, String) -> Bool raise Refused
-pub async fn Hub::relieve_archived(Self) -> Unit
+pub async fn Hub::relieve_archived(Self, full? : Bool) -> Unit
+pub async fn Hub::relieve_idle_rebuildable(Self, Double, idle_ms? : Double, full? : Bool) -> Int32
+pub fn Hub::reprice_usage(Self) -> Unit
 pub async fn Hub::retire_after_previous(Self) -> Bool
 pub async fn Hub::retire_usage(Self) -> Unit
+pub async fn Hub::run_archive_upkeep_if_due(Self, Double, every_ms? : Double) -> Bool
 pub fn Hub::run_due(Self, Double) -> Unit
 pub fn Hub::running(Self) -> Int32
 pub fn Hub::running_sessions(Self) -> Array[@json.Json]
@@ -478,6 +499,7 @@ pub fn Hub::runtime_updated(Self, String) -> Unit
 pub fn Hub::say(Self, @json.Json, String, String, attachments? : Array[@json.Json], quotes? : Array[@json.Json], client? : String) -> @json.Json raise
 pub fn Hub::session_ws(Self, String) -> String??
 pub fn Hub::sessions_with_pending(Self) -> Array[String]
+pub fn Hub::set_told_bots(Self, String, Array[String]) -> Unit
 pub async fn Hub::settle(Self) -> Unit
 pub fn Hub::shared(Self, @json.Json, @json.Json, String, String) -> Unit raise
 pub fn Hub::shutdown(Self) -> Unit
@@ -493,30 +515,14 @@ pub fn Hub::told_long_chat(Self, String) -> String? raise
 pub async fn Hub::told_resume_lost(Self, String) -> String
 pub fn Hub::tools_at(Self, String) -> Unit
 pub async fn Hub::unquiet(Self, String) -> Unit
+pub fn Hub::usage_drain(Self) -> Unit
 pub fn Hub::usage_now(Self, String) -> @json.Json? raise
+pub async fn Hub::usage_start(Self) -> Unit
+pub fn Hub::usage_stop(Self) -> Unit
 pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
 pub fn Hub::workspaces(Self) -> Array[String]
 pub fn Hub::ws_of(Self, String?) -> String?
-
-pub struct HubHarness {
-  host : @host.Host
-  mut words : Words
-  mut hub : Hub?
-  mut now : Double
-  mut config : @json.Json
-  mut workspaces : Array[String]
-  mut station : String?
-  mut links : Bool
-  chats : Map[String, @json.Json]
-  states : Map[String, @json.Json]
-  asked : Map[Int32, @effect.Deferred[@json.Json]]
-  mut asks : Int32
-  mut random : Int32
-  mut move_on : Bool?
-  mut live : LiveShell?
-}
-pub fn HubHarness::new(@host.Host) -> Self
-pub fn HubHarness::op(Self, @json.Json) -> @json.Json?
+pub fn Hub::ws_of_arg(Self, @json.Json) -> String?
 
 pub struct LiveShell {
   hub : Hub
@@ -549,7 +555,7 @@ pub async fn LiveShell::turn_ended(Self, String) -> Unit
 pub fn LiveShell::unsubscribe(Self, String, Int32) -> Unit
 pub fn LiveShell::usage_counted(Self) -> Unit
 
-pub struct Place {
+pub(all) struct Place {
   bound : Bool
   joined : Array[String]
   home : String?
@@ -616,7 +622,7 @@ pub struct UsageCounter {
   mut timer : Int32?
 }
 pub fn UsageCounter::new(Hub, settle? : Double, safety? : Double) -> Self
-pub async fn UsageCounter::read(Self, Array[String]?) -> Double
+pub async fn UsageCounter::read(Self, Array[String]?, time_from? : Double) -> Double
 pub fn UsageCounter::reading_all(Self) -> Bool
 pub fn UsageCounter::soon(Self, String) -> Unit
 pub async fn UsageCounter::start(Self) -> Unit
@@ -644,7 +650,7 @@ pub struct Words {
 pub fn Words::new(zh? : Map[String, @json.Json], en? : Map[String, @json.Json], lang? : String) -> Self
 pub fn Words::tr(Self, String, args? : Array[(String, @json.Json)], lang? : String) -> String
 
-pub struct World {
+pub(all) struct World {
   tell : (String, @json.Json) -> Unit
   ask : async (String, @json.Json) -> @json.Json
   now : () -> Double

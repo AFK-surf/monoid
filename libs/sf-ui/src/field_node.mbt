@@ -1,6 +1,6 @@
 // The library's lines to type in as nodes of the window's tree (input's and textarea's, their made-once form): ui's
 // field (the tree's editor: its words, the input method, what is picked, undo, the focus, Enter) in a frame of the
-// library's look, the frame's line the field's hover grey while the field is pointed at or written in, faded while
+// library's look, the frame's hairline the border's while the field is pointed at or written in, faded while
 // it is disabled. What it holds is the Field it is given (what reads it follows its words, what writes it is shown);
 // what changes it (Enter, a key, its words) told by callbacks at that input's moment; let go with its node.
 
@@ -29,7 +29,7 @@ pub fn input_node(
 
 ///|
 /// A line to type in in `parent` (input's look: a capsule as tall as the theme's controls, `small` as high as a small
-/// panel's rows with a mouse (`high` where it stands among keys of another height), its ends round; 16 in, the strong grey's line, on the surface, its words the
+/// panel's rows with a mouse (`high` where it stands among keys of another height), its ends round; 16 in, a hairline of the line, on the surface, its words the
 /// body's), editing `field`: `placeholder` while empty (`shorter` ways of saying it where it has less room), as
 /// dots where `secret`; Enter gives its words to `submitted`, once, at that key's moment (none: Enter presses the default
 /// of the layer it is in, as a dialog's field does, @view.View::default_press); `leaves`: the keys it leaves
@@ -37,7 +37,7 @@ pub fn input_node(
 /// as the app puts words in it; `placeholder_by`: its placeholder as it is now, followed (in place of
 /// `placeholder`); `label`: what a screen reader calls it, where no placeholder does (it shows none). While
 /// `disabled()`, faded, taking no press nor the focus (losing it then). `solid`: on a card's ground (input's
-/// `solid`, field_solid): on the canvas's ground, its line the canvas's too, the field's hover grey while it is pointed
+/// `solid`, field_solid): on the canvas's ground, its line the canvas's too, the border's while it is pointed
 /// at or written in. `end`: what stands in the capsule after what is typed (a search's count), made in a box at its
 /// end; `lead`: what stands in it before what is typed (a search's mark), made in a box at its start. `card_words`:
 /// in a card's foot corners (over its buttons there), its words where the card's begin (button_node's,
@@ -115,7 +115,7 @@ pub fn input_bar_node(
 
 ///|
 /// Lines to type in in `parent` (textarea's look: a one-line field grown taller, round as its ends are, or `corner`
-/// round where said; 16 in and 8 under its top, the strong grey's line, on the surface; its words 14 on lines 1.6 of
+/// round where said; 16 in and 8 under its top, a hairline of the line, on the surface; its words 14 on lines 1.6 of
 /// them), editing `field`: at least `rows` lines high, growing to `most`, its words scrolling in it past them;
 /// `placeholder` while empty (`placeholder_by`: as it is now, followed; `label`: as input_node's); Enter a new line;
 /// `edited`: as input_node's.
@@ -166,7 +166,7 @@ pub fn textarea_node(
 
 ///|
 /// A line to type in's frame in `parent` (a row where `row`, else a column): on the surface, a line round it, the
-/// field's hover grey where what `body` makes in it (its field, the node it gives back) is written in, or pointed at
+/// border's hairline where what `body` makes in it (its field, the node it gives back) is written in, or pointed at
 /// (a mouse's pointer on it or its field, nothing over it there; a finger pressing its field: Ctx::lit's); faded to
 /// O55 (input_box's `disabled`) over dur_ms while `disabled()`, its field then taking no press nor the focus. `solid`:
 /// on the canvas's ground, its line the canvas's but where it is pointed at or written in (field_solid). The field's
@@ -204,7 +204,7 @@ fn field_frame(
         Finger => v.pressed()
       })
     }
-    f.edge(By(fn() { (1.0, @ui.tree_theme().color(if hot() { FieldHover } else if solid { Bg } else { Border })) }))
+    f.edge(By(fn() { control_edge(hot=hot(), solid~) }))
     |> ignore
     // (disabled: no press nor the focus its field's, said over what the field says of itself)
     v.presses(By(live)).focusable(By(live), keys=0) |> ignore
@@ -225,8 +225,9 @@ let field_disabled_alpha : Double = 0.55
 ///|
 /// A field (field's, as nodes) in `parent`: its `label` (13, 500) over what `body` makes in it (the input), 6 apart,
 /// what `aside` makes at its head's end where it is given; under it what is wrong (`error`, 12 red) or else a `hint`
-/// (12, muted), as each says it now (labelled_field_node's); on a wide page not in a panel as wide as what is typed in it
-/// needs (field_box_wide), else as wide as where it is.
+/// (12, muted), as each says it now; on a wide page not in a panel as wide as what is typed in it
+/// needs (field_box_wide), else as wide as where it is. Its label pressed (or what of it takes no press of its own), the
+/// keyboard's focus to what is typed in under it (field_focus_first), as an HTML label's.
 #callsite(autofill(loc))
 pub fn field_node(
   parent : @view.View,
@@ -241,7 +242,7 @@ pub fn field_node(
     // (in a panel's body: lent where it is, panel_in_lent)
     let wide_page = look_node(f) is Wide && f.lent(panel_in_lent) is None
     style_node(f, fn() { if wide_page { field_box_wide } else { field_box } })
-    f.box(fn(top) {
+    let head = f.box(fn(top) {
       style_node(top, fn() { field_top })
       words_node(top, label, fn() { field_label }) |> ignore
       // (at the row's end, what is left of it before it: field_top's JBetween)
@@ -255,10 +256,33 @@ pub fn field_node(
         None => ()
       }
     })
-    |> ignore
     body(f)
+    // (its label pressed, or anywhere of it that takes no press of its own (round what is typed in, its hint), as an
+    // HTML label for its input: the focus to the first of what `body` made that takes it, never what stands at its
+    // head's end; a finger moving on from there the column's it scrolls in, as any press's)
+    f.gesture(@ui.touch_slop(), tap=fn(_) { field_focus_first(f, head) }) |> ignore
     f.show(fn() { error() != "" }, fn(w) { words_node(w, error, fn() { field_error }) |> ignore })
     f.show(fn() { error() == "" && hint() != "" }, fn(w) { words_node(w, hint, fn() { field_hint }) |> ignore })
   })
   |> ignore
+}
+
+///|
+/// The keyboard's focus given to the first in field `f` (field_node's box) that takes it, in the tree's order, but what
+/// is in its head `head` (its label and what stands at its end): what is typed in, as a label's press gives its input.
+/// Nothing where none of it takes the focus now (disabled).
+fn field_focus_first(f : @view.View, head : @view.View) -> Unit {
+  let tree = f.tree
+  for at in tree.focus_order() {
+    if at.hosted || !tree.holds(f.id(), at.id) || tree.holds(head.id(), at.id) {
+      continue
+    }
+    match tree.view_of(at.id) {
+      Some(to) => {
+        to.ask_focus() |> ignore
+        return
+      }
+      None => ()
+    }
+  }
 }

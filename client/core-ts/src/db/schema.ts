@@ -125,6 +125,9 @@ export function ensureSaid(sql: Sql): void {
       );
       -- A message's edits, by the message (for when the entry its words came from goes).
       CREATE INDEX IF NOT EXISTS entry_edit ON entry (station, thread, json_extract(json, '$.target')) WHERE json_extract(json, '$.kind') = 'edit';
+      -- What people said in a chat, by number (account.ts peopleEntries: a chat's outline reads those alone, not its
+      -- agents' replies).
+      CREATE INDEX IF NOT EXISTS entry_person ON entry (station, thread, n) WHERE json_extract(json, '$.kind') = 'message' AND json_extract(json, '$.authorKind') = 'person';
       CREATE TRIGGER IF NOT EXISTS said_put AFTER INSERT ON entry WHEN ${SAYS("new")}
       BEGIN
         INSERT INTO said (station, thread, seq, n, at, text) VALUES (new.station, new.thread, ${SEQ("new")}, new.n, ${AT("new")}, ${TEXT("new")})
@@ -178,6 +181,7 @@ export function ensureSaid(sql: Sql): void {
 /// json_each has a hidden column `json` of its own.
 export const overviewPartOf = (j: string) => `json_object(
   'running', ${j} -> '$.counts.running',
+  'interrupted', ${j} -> '$.interrupted',
   'slackUsers', CASE WHEN json_type(${j}, '$.slackUsers') = 'array'
     THEN json((SELECT json_group_array(u.value ORDER BY u.key) FROM json_each(${j}, '$.slackUsers') AS u WHERE u.type = 'text'))
     ELSE json_array() END,
@@ -201,7 +205,7 @@ export const overviewPartOf = (j: string) => `json_object(
 /// station for 0.8-1.1 KB (the real-size workspace), and the list's first answer later by as much.
 export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive') AND o.type <> 'null')))
+      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive', 'autoChats') AND o.type <> 'null')))
     END`;
 
 /// What a chat's page reads of its station's overview, the JSON `j` (views.ts #chatOverview: its agents' connects,
@@ -255,7 +259,7 @@ export const overviewProfiledOf = (j: string) => `CASE WHEN json_type(${j}) = 'o
 /// the overview, every station's whole for a few fields, as the sidebar's offer stands on every screen.
 export const overviewSoftwareOf = (j: string) => `(SELECT json_object('version', u.value -> '$.version', 'latest', u.value -> '$.latest',
       'newer', u.value -> '$.newer', 'channel', u.value -> '$.channel', 'auto', u.value -> '$.auto', 'updatable', u.value -> '$.updatable', 'state', u.value -> '$.state',
-      'percent', u.value -> '$.percent', 'progress', u.value -> '$.progress', 'message', u.value -> '$.message')
+      'percent', u.value -> '$.percent', 'progress', u.value -> '$.progress', 'message', u.value -> '$.message', 'builtAt', ${j} -> '$.builtAt')
     FROM json_each(CASE json_type(${j}, '$.updates') WHEN 'array' THEN ${j} ELSE '{"updates":[]}' END, '$.updates') AS u
     WHERE u.type = 'object' AND json_type(u.value, '$.id') = 'text' AND json_extract(u.value, '$.id') = 'station' LIMIT 1)`;
 
@@ -471,10 +475,21 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // (`chat_listed` from before `led` was among its columns: made again with it)
     const listedWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_listed'");
     if (listedWas.length > 0 && !/\bled\b/.test(String(listedWas[0]![0]))) sql.exec("DROP INDEX chat_listed");
+    // (`chat_recent`, the window's walk, as the first schema made it: of every row, archived too, and no column the
+    // window filters by, so each row it walked past (another station's, one an agent leads, not the viewer's) read the
+    // table's page, its JSON inline, 168 ms of a list made on a phone, 2026-11-18. Made again partial and covering)
+    const recentWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'");
+    if (recentWas.length > 0 && !/WHERE archived = 0/.test(String(recentWas[0]![0]))) sql.exec("DROP INDEX chat_recent");
+    // (`chat_archive`, the archive's walk, as it was made before: of its order alone, so each archived row it walked
+    // (another station's, one read apart, a tie of its order) read the table's page, its JSON inline: 248 ms of the
+    // archive's place on a phone, 2026-11-19. Made again partial and covering)
+    const archiveWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_archive'");
+    if (archiveWas.length > 0 && !/\bstation\b/.test(String(archiveWas[0]![0]))) sql.exec("DROP INDEX chat_archive");
     sql.exec(`
+      CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_made ON chat (made);
       CREATE INDEX IF NOT EXISTS chat_archived_at ON chat (station, archived, archived_mark, archived_at DESC, thread, session) WHERE archived_mark = 1;
-      CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, coalesce(archived_at, 0) DESC) WHERE archived_mark = 1;
+      CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, archived_mark, coalesce(archived_at, 0) DESC, station, ord, id, thread, session) WHERE archived = 1 AND archived_mark = 1;
       CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, led, watched, last_active, thread, session, id) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);
       DROP INDEX IF EXISTS chat_marked;
@@ -667,6 +682,21 @@ export function ensureSlackSaid(sql: Sql): boolean {
   const added = had && !sql.all("PRAGMA table_info(slack_said)").some((c) => c[1] === "refused");
   if (added) sql.exec("ALTER TABLE slack_said ADD COLUMN refused INTEGER NOT NULL DEFAULT 0");
   return !had || added;
+}
+
+/// The Slack people a station's agents heard from (`slack_said`'s rows heard with a name), one row a person by their
+/// Slack id (a bot's mention, `<@U…>`, its id out of it): when they were first heard, and their name as last heard and
+/// when. Kept as `slack_said` is written (account.ts `#heardWho`), so naming them reads these rows, never what was said
+/// (every message a station's agents ever heard, read whole as each chat was shown). Made where missing at every open;
+/// answers whether it was made now (to be filled from `slack_said`). The index finds a person's rows in `slack_said`
+/// again as some of them go.
+export function ensureSlackWho(sql: Sql): boolean {
+  const had = sql.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slack_who'").length > 0;
+  sql.exec(`CREATE TABLE IF NOT EXISTS slack_who (
+    station TEXT NOT NULL, user TEXT NOT NULL, first INTEGER NOT NULL, who TEXT NOT NULL, at INTEGER NOT NULL,
+    PRIMARY KEY (station, user)
+  ) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS slack_said_user ON slack_said (station, user)`);
+  return !had;
 }
 
 /// The full-text index an earlier core kept of `said` (`said_index`, FTS5) taken away: a row's words went from it only

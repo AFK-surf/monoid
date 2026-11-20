@@ -257,6 +257,8 @@ struct EditorState {
   /// its look, as the last frame said it: the words', the placeholder's, the caret's and the selection's colours
   mut color : Int64
   mut ph_color : Int64
+  /// how far the placeholder shows, worked out as it is painted (Ctx::placeholder_by; None: as `ph_color` says)
+  mut ph_alpha_by : (() -> Double)?
   mut caret_color : Int64
   mut sel_color : Int64
   /// what it holds is a secret (a key, a token, a password): drawn as dots, never copied or cut out of it
@@ -699,6 +701,10 @@ pub struct Ctx {
   dismissals : Map[Int, Dismiss]
   layer_return : Map[Int, Int]
   editor_layer : Map[Int, Int]
+  /// the old view (its node of the window's tree) each stop built in one, in no layer of its own, was last built in
+  /// (Ctx::focusable): what the focus on it is kept by while that old view is not built (laid out nowhere, put by), as
+  /// what the frames before built is let go of (Ctx::old_focus_island)
+  focus_island : Map[Int, @view.NodeId]
   mut focus_returned : Bool
   mut press_down : (Double, Double)?
   // (the window's tree took that press: none of the old frame's targets did, whatever its targets lie under it)
@@ -945,6 +951,7 @@ fn Ctx::new() -> Ctx {
     dismissals: Map([]),
     layer_return: Map([]),
     editor_layer: Map([]),
+    focus_island: Map([]),
     focus_returned: false,
     press_down: None,
     press_down_tree: false,
@@ -979,6 +986,9 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.layer_hook = None
   self.back_held = None
   // (not its corner_ladder: its theme's own, Ctx::set_theme)
+  for n in self.nodes {
+    n.unlinked()
+  }
   self.nodes.clear()
   self.nodes.shrink_to_fit()
   self.id_stack.clear()
@@ -1039,6 +1049,9 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.press_chain.clear()
   self.press_chain.shrink_to_fit()
   self.lists.clear()
+  for id, st in self.editors {
+    editor_gone(st, id)
+  }
   self.editors.clear()
   self.springs.clear()
   self.movers.clear()
@@ -1115,6 +1128,7 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.dismissals.clear()
   self.layer_return.clear()
   self.editor_layer.clear()
+  self.focus_island.clear()
   self.focus_returned = false
   self.segs_cut(0)
   self.segs.shrink_to_fit()
@@ -1373,6 +1387,13 @@ fn Ctx::node_known(self : Ctx, i : Int, kind : Int, key : Int) -> Unit {
       Some(o) if physical_equal(o, n) => known_nodes.remove(n.ident)
       _ => ()
     }
+  }
+  // (the one known as who this is till now, not among the frame's: known by none from here on, so let go of, and so of
+  // what its layout holds, Node::unlinked; held by a row or part kept as its nodes, it is laid out anew as it is built)
+  match known_nodes.get(ident) {
+    Some(o) if !physical_equal(o, n) &&
+      !(o.slot >= 0 && o.slot < self.nodes.length() && physical_equal(self.nodes[o.slot], o)) => o.unlinked()
+    _ => ()
   }
   known_nodes.set(ident, n)
   n.ident = ident

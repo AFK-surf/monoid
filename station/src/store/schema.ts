@@ -7,7 +7,8 @@ import { hasLegacyAgent, installLegacyAgent } from "./legacy-agent-build.ts";
 import { hasLegacyLoginCards, installLegacyLoginCards } from "./legacy-login-cards.ts";
 import { hasLegacyEdits, hasOldEditIndex, installLegacyEdits, legacyEditLatest, legacyEditsUseOldIndex, usesLegacyEdits } from "./legacy-edits-build.ts";
 import { repairWidgetSourceBeforeAdd, widgetSourceBeforeAddNeedsRepair } from "./widget-sources.ts";
-import { COMPACTED_FROM, STILLFAIL_SURFACE } from "./rows.ts";
+import { COMPACTED_FROM, FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "./rows.ts";
+import { CC_SESSION_ORDER } from "./cc-thread-index.ts";
 import { systemCardSql } from "./card-kinds.ts";
 import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   afresh INTEGER,
   context INTEGER,
   context_before INTEGER,
+  compactions INTEGER,
   runtime_session_id TEXT,
   workspace TEXT NOT NULL,
   token TEXT NOT NULL UNIQUE,
@@ -72,7 +74,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   archived_by TEXT,
   shown_at INTEGER,
   cwd TEXT,
-  original_runtime TEXT
+  original_runtime TEXT,
+  conv TEXT
 );
 -- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
 CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
@@ -471,6 +474,14 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- A person's drafts of 待派发 in a workspace, as their devices carry them (sessions/board-drafts.ts; the drafts as JSON
+-- by id, the KeptDraft of the core's board-drafts.ts): one row a person (their sub) a workspace, read by its key.
+CREATE TABLE IF NOT EXISTS board_drafts (
+  ws TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  drafts TEXT NOT NULL,
+  PRIMARY KEY (ws, sub)
+);
 -- The chats handed from here to another station while both are up (replica/handover.ts): where each went, the
 -- workspace it was of here (null: the home one), its chat's thread here and there. Its rows here stay (a hand-back
 -- goes on from them); a device, a link or a letter naming it is told where it is.
@@ -574,7 +585,7 @@ export function hasRuntimeOrderIndex(db: DatabaseSync): boolean {
 /// add_archive_columns: columns archiving came with, added to a database made before them. When they come, each
 /// session's first chat on the page is taken as its own, and chats of sessions archived then as archived with them.
 export function addArchiveColumns(db: DatabaseSync): void {
-  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
+  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"], ["compactions", "INTEGER"]]) {
     if (!has(db, "sessions", column!)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${kind}`);
   }
   // Came with waiting's limit, after the turns table.
@@ -1292,6 +1303,12 @@ export function addPendingCards(db: DatabaseSync): void {
   }
 }
 
+/// A person's message in a chat of the station's own answers the card it waits on (renamed with them: `renameOwnChats`).
+const PENDING_CARDS_ANSWERED = `CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;`;
+
 /// The system cards each chat waits on (store/card-kinds.ts: a login, a vault's secret, a phone, a rig, a sign-in),
 /// several at once, kept apart from PENDING_CARDS, which from here on keeps the conversational card each chat waits on:
 /// a system card is let go only as it is closed (its outcome, its withdrawal), a conversational one as a person's
@@ -1324,10 +1341,7 @@ WHEN NEW.kind = 'message' AND (NEW.card IS NOT NULL OR NEW.options IS NOT NULL) 
   INSERT INTO pending_cards VALUES (NEW.thread, NEW.n) ON CONFLICT (thread) DO UPDATE SET n = excluded.n WHERE excluded.n > pending_cards.n;
 END;
 DROP TRIGGER IF EXISTS pending_cards_answered;
-CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
-WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
-  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
-END;
+${PENDING_CARDS_ANSWERED}
 CREATE TRIGGER pending_cards_delivered AFTER INSERT ON deliveries
 WHEN EXISTS (SELECT 1 FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message' AND e.author_kind = 'person') BEGIN
   DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
@@ -1463,3 +1477,38 @@ export function addWorkspaceColumns(db: DatabaseSync): void {
   db.exec("DROP INDEX IF EXISTS sessions_by_ws");
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)");
 }
+
+/// Conversation anchor column (`sessions.conv`) and its lookup indexes.
+export function addConvColumn(db: DatabaseSync): void {
+  if (!has(db, "sessions", "conv")) db.exec("ALTER TABLE sessions ADD COLUMN conv TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key);
+    CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL;
+    CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;`);
+}
+
+/// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote
+/// before the rename (FORMER_OWN_NAMES) written over once, here, as the database opens, and what was made of it then
+/// made again. The tables' triggers carry it into what is kept of them; nothing else reads the names of before.
+export function renameOwnChats(db: DatabaseSync, has: (table: string) => boolean): void {
+  const former = FORMER_OWN_NAMES.map((n) => `'${n}'`).join(",");
+  const made = (name: string) => (db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(name) as { sql: string } | undefined)?.sql ?? null;
+  const stale = (sql: string | null) => sql !== null && FORMER_OWN_NAMES.some((n) => sql.includes(`'${n}'`));
+  const surfaces = db.prepare(`SELECT 1 FROM threads WHERE surface IN (${former}) LIMIT 1`).get() !== undefined;
+  const tables = CONNECT_TABLES.filter(has);
+  const connects = tables.filter((t) => db.prepare(`SELECT 1 FROM ${t} WHERE connect IN (${former}) LIMIT 1`).get() !== undefined);
+  if (!surfaces && connects.length === 0 && !stale(made("cc_session_order")) && !stale(made("pending_cards_answered"))) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (stale(made("cc_session_order"))) db.exec(`DROP INDEX cc_session_order; ${CC_SESSION_ORDER}`);
+    if (stale(made("pending_cards_answered"))) db.exec(`DROP TRIGGER pending_cards_answered; ${PENDING_CARDS_ANSWERED}`);
+    db.exec(`UPDATE OR IGNORE threads SET surface = '${STILLFAIL_SURFACE}' WHERE surface IN (${former})`);
+    for (const t of tables) db.exec(`UPDATE OR IGNORE ${t} SET connect = '${STILLFAIL_CONNECT}' WHERE connect IN (${former})`);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/// The tables that name a session's connect as they are written (what is made of them follows by their triggers).
+const CONNECT_TABLES = ["sessions", "thread_sessions", "bindings", "connect_threads", "relayed_to", "slack_stops"];

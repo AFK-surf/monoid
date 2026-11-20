@@ -7,17 +7,19 @@
 // takes it up and serves on; a drain answers idle once no turn runs; nothing of the runners or programs is left.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createSocket } from "node:dgram";
 import { type Server, createServer } from "node:net";
 import { request } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
+import { exif, film, jpeg } from "../../client/core-ts/test/media-bytes.ts";
 
 const binary = mbReaderBinary();
 const runner = process.env.STILLFAIL_RUNNER ?? "";
@@ -127,6 +129,8 @@ n=0
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
   n=$((n+1))
+  # (each prompt it was given, as it came: what a test reads of what woke it)
+  printf '%s\\n' "$line" >> "$FAKE_OUT/prompts"
   # (its init as Claude Code says it: once a turn is given it, never before its first message, which the station reads
   # as a turn begun: said at its start, it was read before the station's first prompt on a busy machine, and that prompt
   # was refused as a turn already running, 1 run in 16 or so)
@@ -135,6 +139,18 @@ while IFS= read -r line; do
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
   if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/to"; else to=$(/bin/cat "$FAKE_OUT/to" 2>/dev/null); fi
+  # (asked to hold across a station handover: signals running, waits for the test's go file, then posts all_done and
+  # chat_state through the shared MCP door before ending its turn)
+  case "$line" in *HOLD-HANDOVER*)
+    : > "$FAKE_OUT/mid-running"
+    while [ ! -f "$FAKE_OUT/mid-go" ]; do /bin/sleep 0.05; done
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted across handover","kind":"all_done","done":"finished across handover"}}}' > "$FAKE_OUT/mid-post-$n.json"
+    /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+      -d '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"chat_state","arguments":{"kind":"all_done","done":"finished across handover"}}}' > "$FAKE_OUT/mid-state-$n.json"
+    say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted across handover"}'
+    continue ;;
+  esac
   # (asked to ask: a card posted with no state, then need_human said with no about, which the card is; told to wait for
   # a write lock first, it says it is about to and waits for the test's word)
   case "$line" in *ASK-CARD*)
@@ -195,11 +211,12 @@ done
 
 type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; err: () => string };
 
-/// The launcher's two listening sockets, the agents' door's and the loopback's: kept across a handover, as the
-/// launcher keeps them (native/launcher), so a runtime taken up reaches the door where it was told it is.
-const listener = () => new Promise<Server>((resolve) => {
+/// The launcher's two listening sockets, the agents' door's and the loopback's; `port` listens again where an ended
+/// station's door was, as the launcher keeps it (native/launcher), so a runtime taken up reaches the door it was told.
+const listener = (port = 0) => new Promise<Server>((resolve, reject) => {
   const s = createServer();
-  s.listen(0, "127.0.0.1", () => resolve(s));
+  s.once("error", reject);
+  s.listen(port, "127.0.0.1", () => resolve(s));
 });
 const ports: Server[] = [];
 after(() => {
@@ -217,7 +234,8 @@ async function launch(data: string, app: string, path: string, out: string, sock
     env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "1", ...more },
   });
   children.push(child);
-  // (the launcher's copies let go: the station alone accepts on them)
+  // (the launcher's copies let go: the station alone accepts on them; one kept here would race it for a connection
+  // and, with no handler, leave that connection hanging)
   mcp.close();
   loop.close();
   const said: any[] = [];
@@ -270,6 +288,35 @@ async function until<T>(what: string, look: () => T | null | undefined | false |
   }
 }
 
+/// A PNG of `width` by `height` grey pixels, whole: what the station decodes for its ThumbHash.
+function png(width: number, height: number): Uint8Array {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, body: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(body.length);
+    const typed = Buffer.concat([Buffer.from(type, "ascii"), body]);
+    const tail = Buffer.alloc(4);
+    tail.writeUInt32BE(crc(typed));
+    return Buffer.concat([head, typed, tail]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.alloc((width * 3 + 1) * height, 128);
+  for (let y = 0; y < height; y++) rows[y * (width * 3 + 1)] = 0;
+  return new Uint8Array(Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]));
+}
+
 /// A session of the station's own chat, its thread, as the store keeps them (lifecycle.ts `newSession`'s rows).
 function session(store: Store, data: string, key: string, runtime: string, token: string, ts: string, ws?: string, tui?: boolean) {
   const workspace = join(data, "sessions", "chat", key.slice(5), "workspace");
@@ -314,7 +361,6 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   session(store, data, "chat:c-away", "claude", "t3", "1790000000.000004", "w-left");
   const t4 = session(store, data, "chat:c-dsh", "dsh", "t4", "1790000000.000005");
   const t5 = session(store, data, "chat:c-tui", "claude", "t5", "1790000000.000006", undefined, true);
-  void t0;
 
   // A session's own token: the endpoint's methods, its tools as Claude Code takes them (the turn's two loaded).
   const init = await mcp(door.port, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }, "t0");
@@ -402,6 +448,24 @@ test("the agents' side: a turn under the runner posts through /mcp; agy's tools 
   assert.equal(JSON.parse(tuiArgv[tuiArgv.indexOf("--mcp-config") + 1]!).mcpServers.stillfail.type, "stdio");
   assert.match(readFileSync(join(out, "tui-prompt-1"), "utf8"), /^<station_message>\n[\s\S]*tui, answer[\s\S]*\n<\/station_message>$/);
   assert.ok(Array.isArray(JSON.parse(readFileSync(join(out, "tui-tools.json"), "utf8").split("\n")[0]!).result.tools), "its tools listed through the bridge");
+
+  // Files a session posts (chat_post files): a film keeps its size as shown (its turn applied), its length and frames,
+  // read of its head (image-size.ts `shownFactsSoon`); a picture its size and the ThumbHash `keep` made of it.
+  const t0Workspace = join(data, "sessions", "chat", "c-from", "workspace");
+  writeFileSync(join(t0Workspace, "recording.mp4"), film(1140, 2616, { at: "end", turn: 90, ms: 61_000, frames: 1830 }));
+  writeFileSync(join(t0Workspace, "photo.jpg"), jpeg(4032, 3024, exif(6, true)));
+  writeFileSync(join(t0Workspace, "dot.png"), png(40, 20));
+  const withFiles = (await mcp(door.port, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "chat_post", arguments: { to: "CHAT/1790000000.000001", text: "with files", files: ["recording.mp4", "photo.jpg", "dot.png"].map((f) => join(t0Workspace, f)) } } }, "t0")).json.result;
+  assert.notEqual(withFiles.isError, true, `${JSON.stringify(withFiles)}\n${a.err()}`);
+  const withFilesRow = store.messagesBefore(t0.id, null, 20).find((m) => m.text === "with files")!;
+  const facts = (name: string) => {
+    const f = withFilesRow.attachments.find((x) => x.name === name) as any;
+    return { width: f.width, height: f.height, duration: f.duration, frames: f.frames };
+  };
+  assert.deepEqual(facts("recording.mp4"), { width: 2616, height: 1140, duration: 61_000, frames: 1830 });
+  assert.deepEqual(facts("photo.jpg"), { width: 3024, height: 4032, duration: undefined, frames: undefined });
+  const dot = withFilesRow.attachments.find((x) => x.name === "dot.png") as any;
+  assert.deepEqual([dot.width, dot.height, typeof dot.thumbhash, (dot.thumbhash ?? "").length > 0], [40, 20, "string", true]);
 
   // A chat this session leads (chat_create for: me): its agent's turn ends all_done, and the one that opened it is told
   // so, a turn of its own (opened.ts `settled`, through the hub's `settled`).
@@ -546,16 +610,23 @@ test("the conversations' own parts: a title asked of a runtime session of their 
 
     // The same while another connection holds the write lock: the record is busy (StateWriteBusy, thrown back as it
     // was through the sessions' program) and tried again until the lock is let go.
-    const other = new DatabaseSync(join(data, "stillfail.db"), { timeout: 0 });
-    const busy = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD ASK-BUSY please" });
-    assert.equal(busy.error, false, busy.text);
-    await until("the fake about to say its state", () => existsSync(join(out, "stating")), () => a.err());
-    other.exec("BEGIN IMMEDIATE");
-    writeFileSync(join(out, "state-go"), "");
-    // (held a while as it is asked: what it says once let go is what is asserted, whenever it asked)
-    await new Promise((r) => setTimeout(r, 300));
-    other.exec("ROLLBACK");
-    other.close();
+    // (BEGIN IMMEDIATE waits out a write of the station's own in progress, as its connections do: with no busy timeout
+    // it failed "database is locked" whenever one was, main d4d8cdd53, 44500681208)
+    const other = new DatabaseSync(join(data, "stillfail.db"), { timeout: 5000 });
+    try {
+      const busy = await tool(door, "t0", "session_send", { to: "chat:c-to", text: "ASK-CARD ASK-BUSY please" });
+      assert.equal(busy.error, false, busy.text);
+      await until("the fake about to say its state", () => existsSync(join(out, "stating")), () => a.err());
+      other.exec("BEGIN IMMEDIATE");
+      writeFileSync(join(out, "state-go"), "");
+      // (held a while as it is asked: what it says once let go is what is asserted, whenever it asked)
+      await new Promise((r) => setTimeout(r, 300));
+    } finally {
+      try {
+        other.exec("ROLLBACK");
+      } catch {}
+      other.close();
+    }
     await until("its need_human recorded after the lock", () => existsSync(join(out, "ask-3.json")) && asking() === 2, () => a.err());
     assert.notEqual(JSON.parse(readFileSync(join(out, "ask-3.json"), "utf8")).result.isError, true, readFileSync(join(out, "ask-3.json"), "utf8"));
     assert.equal(aboutOf("chat:c-to").about_n, cardN(), "about the newer card");
@@ -564,6 +635,196 @@ test("the conversations' own parts: a title asked of a runtime session of their 
   }
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
+});
+
+test("an archived session put in cold storage off the station's thread, and its workspace back whole once unarchived", { skip }, async () => {
+  const data = fresh("c");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-cold", "claude", "t0", "1790000000.000001");
+    const room = join(data, "sessions", "chat", "c-cold");
+    const workspace = join(room, "workspace");
+    writeFileSync(join(workspace, "keep.txt"), "kept\n");
+    mkdirSync(join(workspace, "node_modules", "x"), { recursive: true });
+    writeFileSync(join(workspace, "node_modules", "x", "index.js"), "module.exports = 1;\n");
+    // Its transcript, packed in place, and the Rust station's copy of it in the store's archive (`store.archiveDir`),
+    // let go once the transcript is packed (cold.mbt `pack_history`).
+    const runtimeId = "0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8";
+    store.setRuntimeSessionId("chat:c-cold", runtimeId);
+    // (where Claude keeps it: its project named after the workspace as the system resolves it)
+    const project = join(data, "homes", "cc", "projects", realpathSync(workspace).replace(/[^a-zA-Z0-9]/g, "-"));
+    const transcript = join(project, `${runtimeId}.jsonl`);
+    mkdirSync(project, { recursive: true });
+    writeFileSync(transcript, `${JSON.stringify({ type: "user", sessionId: runtimeId, message: { role: "user", content: "hi" } })}\n`);
+    const legacy = join(data, "archive", "transcripts", "chat:c-cold.jsonl.zst");
+    mkdirSync(join(data, "archive", "transcripts"), { recursive: true });
+    writeFileSync(legacy, "the Rust station's copy");
+
+    // Archived: its room marked cold, what can be made again removed, the workspace packed (cold.ts `pack`, by the
+    // packing and measuring programs of their own: `--builder packed`, `--builder footprint`).
+    const archived = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "POST", {});
+    assert.equal(archived.status, 200, `${JSON.stringify(archived.json)}\n${a.err()}`);
+    await until(
+      "the room put in cold storage",
+      () => {
+        if (!existsSync(join(room, "cold")) || !existsSync(join(room, "workspace.tar.zst")) || existsSync(join(room, "workspace.retiring"))) return false;
+        try {
+          return readdirSync(workspace).length === 0;
+        } catch {
+          return false;
+        }
+      },
+      () => a.err(),
+    );
+    assert.equal(existsSync(join(workspace, "keep.txt")), false, "the workspace is in its archive");
+    assert.equal(existsSync(join(workspace, "node_modules")), false);
+    await until("its transcript packed and the old copy let go", () => existsSync(`${transcript}.zst`) && !existsSync(transcript) && !existsSync(legacy), () => a.err());
+    assert.doesNotMatch(a.err(), /no such store method/);
+
+    // Unarchived: the workspace written back from its archive (cold.ts `restore`), what was rebuildable not in it.
+    const back = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-cold")}/archive`, "DELETE");
+    assert.equal(back.status, 200, `${JSON.stringify(back.json)}\n${a.err()}`);
+    await until(
+      "the workspace restored",
+      () => existsSync(join(workspace, "keep.txt")) && !existsSync(join(room, "workspace.tar.zst")) && !existsSync(join(room, "cold")),
+      () => a.err(),
+    );
+    assert.equal(readFileSync(join(workspace, "keep.txt"), "utf8"), "kept\n");
+    assert.equal(existsSync(join(workspace, "node_modules")), false);
+    assert.doesNotMatch(a.err(), /an archived session's files not put away/);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("an archived session's transcripts packed in cold storage and the Rust station's copy of them let go (store.archiveDir answered)", { skip }, async () => {
+  const data = fresh("c");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-old", "claude", "t0", "1790000000.000002");
+    const workspace = join(data, "sessions", "chat", "c-old", "workspace");
+    // its runtime session's transcript where the station keeps Claude's (transcript.ts `placedIn`), and the copy the
+    // Rust station's archiving left (`archive/transcripts/<key>.jsonl.zst`)
+    store.ranIn("chat:c-old", "rt-1", "cc");
+    const transcript = join(data, "transcripts", "claude", workspace.replace(/[^A-Za-z0-9]/g, "-"), "rt-1.jsonl");
+    mkdirSync(dirname(transcript), { recursive: true });
+    writeFileSync(transcript, '{"type":"user"}\n'.repeat(50));
+    const legacy = join(data, "archive", "transcripts", "chat:c-old.jsonl.zst");
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(legacy, "legacy copy");
+
+    const archived = await ask(door, `/admin-api/sessions/${encodeURIComponent("chat:c-old")}/archive`, "POST", {});
+    assert.equal(archived.status, 200, `${JSON.stringify(archived.json)}\n${a.err()}`);
+    await until("the transcript packed and the old copy let go", () => !existsSync(legacy) && !existsSync(transcript) && existsSync(`${transcript}.zst`), () => a.err());
+    assert.doesNotMatch(a.err(), /no such store method/);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("hub.wsOf as the parts ask it (hub.ts `wsOf(row | key | null)`): a session's row by its own workspace, a key by its row's, else the home one", { skip }, async () => {
+  const data = fresh("w");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out, undefined, { STILLFAIL_PARTS_DOOR: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  let row: any;
+  try {
+    session(store, data, "chat:c-w2", "claude", "t0", "1790000000.000003", "w2");
+    row = store.getSession("chat:c-w2");
+  } finally {
+    store.close();
+  }
+  const wsOf = async (arg: unknown) => {
+    const r = await ask(door, "/parts/hub/hub.wsOf", "POST", [arg]);
+    assert.equal(r.status, 200, `${JSON.stringify(r.json)}\n${a.err()}`);
+    return r.json;
+  };
+  // (handover.ts `check` gives the row it read from its page: another workspace's, not the home one)
+  assert.equal(await wsOf(row), "w2");
+  assert.equal(await wsOf("chat:c-w2"), "w2");
+  assert.equal(await wsOf({ ...row, ws: null }), "w1");
+  assert.equal(await wsOf(null), "w1");
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("the relays tool with no mesh up: the mesh's relays listed as none, enrolling and revoking one refused", { skip }, async () => {
+  const data = fresh("r");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  // The mesh's address held by the test: its endpoint never binds, so the relays tool's asks reach the control plane's
+  // own answers (live_p5_1_plane.mbt), never the mesh directory's (live_p5_1_scopes.mbt), whenever they are asked.
+  const held = createSocket("udp4");
+  await new Promise<void>((resolve) => held.bind(0, "127.0.0.1", () => resolve()));
+  try {
+    const a = await launch(data, app, bin, out, undefined, { STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${held.address().port}` });
+    await a.next("ready", (m) => m.ready === true);
+    const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+    await until("the mesh failed to bind", () => /mesh stopped; trying again/.test(a.err()), () => a.err());
+    const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+    try {
+      session(store, data, "chat:c-relays", "claude", "t0", "1790000000.000001");
+      const listed = await tool(door, "t0", "relays", { action: "list" });
+      assert.equal(listed.error, false, `${listed.text}\n${a.err()}`);
+      assert.deepEqual(JSON.parse(listed.text).mesh, []);
+      const enrolled = await tool(door, "t0", "relays", { action: "enroll", name: "r1" });
+      assert.equal(enrolled.error, true);
+      assert.match(enrolled.text, /native mesh relay enrollment is not available on this station/);
+      const revoked = await tool(door, "t0", "relays", { action: "revoke", node: "a".repeat(64) });
+      assert.equal(revoked.error, true);
+      assert.match(revoked.text, /native mesh relay control is not available on this station/);
+      assert.doesNotMatch(a.err(), /no such control plane call/);
+    } finally {
+      store.close();
+    }
+    a.tell({ op: "stop" });
+    assert.equal(await a.ended, 0, a.err());
+  } finally {
+    held.close();
+  }
 });
 
 /// The program's id of a data directory (`stillfail-reader id`): its key made there.
@@ -645,6 +906,118 @@ test("sessions across stations over the mesh: a message to another station's cha
   }
   for (const l of launched) l.tell({ op: "stop" });
   for (const l of launched) assert.equal(await l.ended, 0, l.err());
+});
+
+test("handover of an in-flight turn: the new station takes up sessions before opening /mcp so chat_state is recorded and the runner survives", { skip }, async () => {
+  const data = fresh("h");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+    maxNudges: 1,
+  }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out);
+  await a.next("ready", (m) => m.ready === true);
+  const door = await a.next("the agents' door", (m) => m.serving === "mcp");
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-from", "claude", "t0", "1790000000.000001");
+    const tMid = session(store, data, "chat:c-mid", "claude", "t1", "1790000000.000002");
+
+    // Start a turn that stays in-flight across the station handover.
+    const sent = await tool(door.port, "t0", "session_send", { to: "chat:c-mid", text: "HOLD-HANDOVER please" });
+    assert.equal(sent.error, false, `${sent.text}\n${a.err()}`);
+    await until("in-flight turn running", () => existsSync(join(out, "mid-running")) && store.getSession("chat:c-mid")?.running === true, () => a.err());
+    const runnerInfos = require_json(join(data, "run", "runners"));
+    assert.ok(runnerInfos.length >= 1, "runner info present for in-flight turn");
+    const runnerPid = runnerInfos[0]!.runner;
+
+    // Hand over from `a` first: its end frees the door's port (the runner holds none of its fds, all close-on-exec).
+    a.tell({ op: "handover" });
+    const carry = await a.next("carry", (m) => m.carry !== undefined);
+    assert.equal(await a.ended, 0, a.err());
+    // The in-flight runner must survive `a`'s handover and exit (never killed by hub_shutdown).
+    assert.doesNotThrow(() => process.kill(runnerPid, 0), "in-flight runner survived handover");
+
+    // Launch the next station on the same door's port, then release the in-flight agent: its POST to /mcp sits in
+    // `b`'s kernel accept queue and is served only after `Hub::take_up()` opens the door.
+    const b = await launch(data, app, bin, out, [await listener(door.port), await listener()]);
+    writeFileSync(join(out, "mid-go"), "");
+    await b.next("ready", (m) => m.ready === true);
+    b.tell({ op: "carried", carried: carry.carry });
+    await b.next("b's door", (m) => m.serving === "mcp");
+
+    await until("in-flight turn finished across handover", () => store.lastTurn("chat:c-mid")?.endedAt != null, () => b.err());
+    const turns = store.listTurns("chat:c-mid");
+    assert.equal(turns.length, 1, `not nudged: ${JSON.stringify(turns.map((t) => t.summary))}\n${b.err()}`);
+    assert.deepEqual(
+      [turns[0]!.summary.outcome, turns[0]!.summary.ending, turns[0]!.summary.need],
+      ["completed", "all_done", "finished across handover"],
+      b.err(),
+    );
+    const posted = JSON.parse(readFileSync(join(out, "mid-post-1.json"), "utf8"));
+    assert.notEqual(posted.result.isError, true, JSON.stringify(posted));
+    const stated = JSON.parse(readFileSync(join(out, "mid-state-1.json"), "utf8"));
+    assert.notEqual(stated.result.isError, true, JSON.stringify(stated));
+    assert.deepEqual(
+      store.messagesBefore(tMid.id, null, 20).filter((m) => m.authorKind === "agent").map((m) => m.text),
+      ["posted across handover"],
+    );
+    // Verify in `b`'s trace that drivers.adopt (inside Hub::take_up) ran before agents.openDoor.
+    const bTrace = b.err();
+    const adoptAt = bTrace.indexOf("p52 hub ask drivers.adopt");
+    const openDoorAt = bTrace.indexOf("p52 hub ask agents.openDoor");
+    assert.ok(adoptAt >= 0 && openDoorAt > adoptAt, `expected drivers.adopt before agents.openDoor:\n${bTrace}`);
+
+    b.tell({ op: "stop" });
+    assert.equal(await b.ended, 0, b.err());
+  } finally {
+    store.close();
+  }
+});
+
+test("a cold session woken by its job's stillfail-job notify: the hub makes its actor before telling it (hub.ts `notify`)", { skip }, async () => {
+  const data = fresh("n");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }], maxNudges: 1 }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out);
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    // A session no message ever reached since this process started: no actor of it in the sessions' program.
+    session(store, data, "chat:c-cold", "claude", "t-cold", "1790000000.000007");
+    assert.equal(store.listTurns("chat:c-cold").length, 0);
+    // Its job says a word on the way (`stillfail-job notify`, the agents' door's /jobs/notify, the hub's `notify`):
+    // the session is woken by it, a turn whose prompt carries the word. (`stillfail-job` posts with curl, which
+    // the station's PATH here does not name: it names only the fakes' directory.)
+    const started = await tool(door, "t-cold", "job_start", { name: "waker", command: "PATH=/usr/bin:/bin:$PATH stillfail-job notify COLD-WAKE-WORD" });
+    assert.equal(started.error, false, `${started.text}\n${a.err()}`);
+    const job = JSON.parse(started.text);
+    await until("the job's word kept", () => store.jobNotices(job.id, 5).some((n) => n.text === "COLD-WAKE-WORD"), () => a.err());
+    await until("the cold session's turn ended", () => store.listTurns("chat:c-cold").some((t) => t.summary.endedAt != null), () => `${JSON.stringify(store.listTurns("chat:c-cold").map((t) => t.summary))}\n${a.err()}`);
+    const prompts = readFileSync(join(out, "prompts"), "utf8");
+    assert.match(prompts, /COLD-WAKE-WORD/, prompts);
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
 });
 
 /// The runners' info files there.

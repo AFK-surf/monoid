@@ -77,7 +77,6 @@ pub fn card_answer(String, String, Bool, who? : String?) -> Answer
 
 pub fn confirm(String, String, String, () -> Unit, danger? : Bool) -> Unit
 
-pub fn confirm_borrow(Core, String, String, @json.Json?) -> Unit
 
 pub fn confirm_claude_auth(Bool, () -> Unit) -> Unit
 
@@ -121,6 +120,8 @@ pub fn fixture_draft_changed() -> Unit
 pub fn fixture_draft_followed() -> Unit
 
 pub fn fixture_elevation(@json.Json?) -> Unit
+
+pub fn fixture_screen_service(@json.Json?) -> Unit
 
 pub fn fixture_followed() -> Unit
 
@@ -599,7 +600,6 @@ pub(all) enum Route {
   Archiving
   StationArchiving(String)
   UsagePrices(Int32)
-  RunSettings(String, String)
 }
 
 pub(all) struct Typed {

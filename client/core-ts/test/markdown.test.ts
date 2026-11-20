@@ -208,9 +208,11 @@ test("markdown_kept_on_the_device_is_read_as_this_reading_reads_it_or_its_readin
     "前面**“强调。”**后面，*斜体。*继续，~~删除。~~继续。",
     "[对话](https://still.fail/o/ws1/st1/c-1) https://still.fail/w/ws1/s/st1/screen/desktop [https://github.com/a/b/pull/1](https://github.com/a/b/pull/1)",
     "See `C:\\work\\report.md:12` and `D:/work/notes.txt#L3`.",
+    "| 类型 | 文件 |\n|---|---|\n| `\"whole\" | \"tasks\"` ``a || b`` `\\|x\\|` | `libs/a/b.ts:3` `b.ts` |",
+    "- 目标：\\[J=\\sum_t r_t + \\alpha\\,\\mathcal{H}\\]，数组 a\\[0\\] 和引用 \\[1\\]",
   ];
   const digest = createHash("sha256").update(JSON.stringify(texts.map(parse))).digest("hex").slice(0, 16);
-  assert.equal(`${MD_READING}:${digest}`, "11:7ca7b9ea011ca1c4", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
+  assert.equal(`${MD_READING}:${digest}`, "13:f2a19cb857d4f0d1", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
 });
 
 test("a_link_or_picture_alone_on_its_line_is_a_paragraph_of_its_own_with_no_blank_line_round_it", () => {
@@ -271,6 +273,53 @@ test("a_table_splits_its_cells_at_bars_outside_formulas", () => {
   assert.deepEqual(read("| a | b |\n|---|---|\n| \\(x | y |"), [
     ["table", [["tr", [["th", ["a"]], ["th", ["b"]]]], ["tr", [["td", ["(x"]], ["td", ["y"]]]]], { align: [null, null], md: "| a | b |\n| --- | --- |\n| \\(x | y |", csv: "a,b\n(x,y" }],
   ]);
+});
+
+test("a_table_splits_its_cells_at_bars_outside_code", () => {
+  // as agents write them: a union type, a logical or, a command's pipe, a tool's actions
+  const text = '| 类型 | 条件 | 命令 | 动作 |\n|---|---|---|---|\n| `"whole" | "tasks"` | ``a || b`` | `curl -s x | sh` | `list|add|remove` |';
+  const [[, rows, attrs]] = read(text) as [[string, [string, [string, unknown[]][]][], { md: string; csv: string }]];
+  assert.deepEqual(rows[1], ["tr", [
+    ["td", [["code", { content: '"whole" | "tasks"' }]]],
+    ["td", [["code", { content: "a || b" }]]],
+    ["td", [["code", { content: "curl -s x | sh" }]]],
+    ["td", [["code", { content: "list|add|remove" }]]],
+  ]]);
+  // to copy: as Markdown each bar escaped, as GitHub reads it back; as CSV the code's words as they are
+  assert.equal(attrs.md.split("\n")[2], '| `"whole" \\| "tasks"` | ``a \\|\\| b`` | `curl -s x \\| sh` | `list\\|add\\|remove` |');
+  assert.equal(attrs.csv.split("\n")[1], '"""whole"" | ""tasks""",a || b,curl -s x | sh,list|add|remove');
+});
+
+test("a_table_reads_an_escaped_bar_in_code_as_a_bar_and_finds_each_cells_words_in_its_own_cell", () => {
+  // `\|` in code is GFM's escape: a bar, no backslash left
+  const text = "| 键 | 组件 |\n|---|---|\n| `\\|win, cx\\|` | `App` |";
+  assert.deepEqual((read(text) as [[string, [string, unknown[]][]]])[0][1][1], ["tr", [["td", [["code", { content: "|win, cx|" }]]], ["td", [["code", { content: "App" }]]]]]);
+  const cellOf = (tree: unknown, r: number, k: number) => (tree as [[string, [string, [string, [[string, Record<string, unknown>]]][]][]]])[0][1][r][1][k][1][0][1];
+  const second = text.lastIndexOf("App");
+  assert.deepEqual(cellOf(parse(text), 1, 1).content, [second, second + 3]);
+  // a path's file name in the cell after it is that cell's, not the path's end
+  const paths = "| 文件 | 名 |\n|---|---|\n| `client/core-ts/src/mdRead.ts:195` | `mdRead.ts` |";
+  const name = paths.lastIndexOf("mdRead.ts");
+  const code = cellOf(parse(paths), 1, 1);
+  assert.deepEqual(code.content, [name, name + "mdRead.ts".length]);
+  assert.deepEqual(code.path, [name, name + "mdRead.ts".length]);
+  const path = cellOf(parse(paths), 1, 0);
+  assert.deepEqual([path.path, path.line], [[paths.indexOf("client/"), paths.indexOf(":195")], 195]);
+  // two codes in one cell, the first's words not the text's: the second found after it
+  const two = "| a |\n|---|\n| `\\|x\\|` and `y` |";
+  const cell = (parse(two) as [[string, [string, [string, unknown[]][]][]]])[0][1][1][1][0][1];
+  assert.deepEqual(cell[2], ["code", { content: [two.lastIndexOf("y"), two.lastIndexOf("y") + 1] }]);
+});
+
+test("a_table_splits_at_a_bar_after_code_left_open_and_keeps_formulas_and_code_in_one_row", () => {
+  assert.deepEqual(read("| a | b |\n|---|---|\n| `a | b |"), [
+    ["table", [["tr", [["th", ["a"]], ["th", ["b"]]]], ["tr", [["td", ["`a"]], ["td", ["b"]]]]], { align: [null, null], md: "| a | b |\n| --- | --- |\n| `a | b |", csv: "a,b\n`a,b" }],
+  ]);
+  const [[, rows]] = read("| 式 | 码 |\n|---|---|\n| \\( |x| \\le 1 \\) | `a | b` |") as [[string, [string, unknown[]][]]];
+  assert.deepEqual(rows[1], ["tr", [["td", [["code", { content: " |x| \\le 1 ", math: true }]]], ["td", [["code", { content: "a | b" }]]]]]);
+  // in a quote, its lines' marks before the row
+  const [[, [[, quoted]]]] = read("> | a | b |\n> |---|---|\n> | `x | y` | z |") as [[string, [[string, [string, unknown[]][]]]]];
+  assert.deepEqual(quoted[1], ["tr", [["td", [["code", { content: "x | y" }]]], ["td", ["z"]]]]);
 });
 
 test("markdown_words_without_marks", () => {
@@ -377,6 +426,18 @@ test("bracket math respects code, escaped delimiters, TeX escapes and missing cl
   assert.deepEqual(read("\\[\nx"), [["p", ["[\nx"]]]);
   assert.deepEqual(read(String.raw`\(x\]`), [["p", ["(x]"]]]);
   assert.deepEqual(read("\\(x\\) 与 \\(y\\)"), [["p", [["code", { content: "x", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+});
+
+test("bracket math written mid-line is a formula where it holds TeX, else escaped brackets", () => {
+  // an agent's display formula after words on its line: TeX's own escapes (`\\,`, `\\Big[`) stay the formula's
+  const tex = String.raw`J(\pi)=\mathbb{E}\Big[\sum_t r_t + \alpha\,\mathcal{H}(\pi(\cdot|s_t))\Big]`;
+  assert.deepEqual(read(`- 目标：\\[${tex}\\]`), [["list", [["li", ["目标：", ["code", { content: tex, math: true }]]]]]]);
+  assert.deepEqual(read(String.raw`其中 \[x^2\] 与 \(y\)`), [["p", ["其中 ", ["code", { content: "x^2", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+  assert.deepEqual(withoutDrawing(parse(String.raw`a \[x_1\]`)), [["p", [[0, 2], ["code", { content: [4, 7], math: true }]]]]);
+  assert.ok((parse(String.raw`a \[x_1\]`)[0] as any)[1][1][1].drawing, "drawn");
+  // Markdown's escaped brackets, and an open one, stay words
+  for (const [text, words] of [[String.raw`数组 a\[0\] 和 \[1\]`, "数组 a[0] 和 [1]"], [String.raw`见 \[x^2`, "见 [x^2"]])
+    assert.deepEqual(read(text), [["p", [words]]]);
 });
 
 test("unclosed display math cannot consume text outside its quote or list", () => {

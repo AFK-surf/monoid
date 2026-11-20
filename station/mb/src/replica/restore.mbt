@@ -6,6 +6,14 @@
 priv suberror NotEmpty
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+impl Show for NotEmpty with output(self, logger) {
+  match self {
+    NotEmpty => logger.write_string(not_empty_words)
+  }
+}
+
+///|
 priv suberror FilesPending {
   FilesPending(Int, String)
 }
@@ -27,12 +35,12 @@ fn as_head(v : JValue) -> JValue? {
   guard v is Obj(_) else { return None }
   guard get(v, "v") is Some(Num(ver)) && ver <= version.to_double() else { return None }
   guard get(v, "origin") is Some(Str(_)) && get(v, "workspace") is Some(Str(_)) else { return None }
-  guard get(v, "gen") is Some(Str(g)) && gen_ok(@jsjson.text(g)) else { return None }
+  guard get(v, "gen") is Some(Str(g)) && gen_ok(@jsjson.sanitize_str(g)) else { return None }
   guard get(v, "to") is Some(Num(to)) && to == @math.floor(to) && to.abs() <= 9007199254740991.0 else { return None }
-  guard get(v, "batches") is Some(Arr(bs)) && bs.iter().all(b => b is Str(u) && batch_span(@jsjson.text(u)) is Some(_)) else {
+  guard get(v, "batches") is Some(Arr(bs)) && bs.iter().all(b => b is Str(u) && batch_span(@jsjson.sanitize_str(u)) is Some(_)) else {
     return None
   }
-  guard get(v, "files") is Some(Obj(fs)) && fs.iter().all(e => hash_ok(@jsjson.text(e.0))) else { return None }
+  guard get(v, "files") is Some(Obj(fs)) && fs.iter().all(e => hash_ok(@jsjson.sanitize_str(e.0))) else { return None }
   guard get(v, "runs") is Some(Arr(_)) else { return None }
   Some(v)
 }
@@ -100,7 +108,7 @@ fn shaped(files : Files, table : String, row : JValue, from : String, to : Strin
     match (try { Some(@jsjson.parse(a)) } catch { _ => None }) {
       Some(Arr(list)) => {
         let moved_list = list.map(x => match get(x, "path") {
-          Some(Str(p)) => set(x, "path", str(moved(files, @jsjson.text(p), from, to)))
+          Some(Str(p)) => set(x, "path", str(moved(files, @jsjson.sanitize_str(p), from, to)))
           _ => x
         })
         out = set(out, "attachments", str(stringify(Arr(moved_list))))
@@ -176,6 +184,13 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
                   return
                 }
                 let mut row = shaped(files, table, get(rec, "row").unwrap_or(Obj([])), head_dir, data_dir)
+                // (the station's own chats, as a copy from before the rename names them)
+                if table == "threads" && text_of(get(row, "surface")) is Some(s) && former_own_names.contains(s) {
+                  row = set(row, "surface", str(stillfail_surface))
+                }
+                if (table == "sessions" || table == "thread_sessions") && text_of(get(row, "connect")) is Some(c) && former_own_names.contains(c) {
+                  row = set(row, "connect", str(stillfail_connect))
+                }
                 if (table == "sessions" || table == "thread_sessions") && text_of(get(row, "connect")) is Some(c) && get(connects, c) is Some(Str(there)) {
                   row = set(row, "connect", Str(there))
                 }
@@ -257,7 +272,16 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
           }
           folded.close()
           files.remove(work)
-          let counted : Array[(Array[Int], JValue)] = []
+          if merging {
+            let settled : Array[Double] = []
+            for _, tid in ids {
+              if !settled.contains(tid) {
+                settled.push(tid)
+                ignore(@sql.settle_conversation_in_tx(d, Json::number(tid), Json::number(now)))
+              }
+            }
+          }
+          let counted : Array[(String, JValue)] = []
           for table in restore_order {
             if has(table) {
               let n = if merging {
@@ -268,7 +292,7 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
                   _ => 0.0
                 }
               }
-              counted.push((@jsjson.units(table), Num(n)))
+              counted.push((table, Num(n)))
             }
           }
           rows = Obj(counted)
@@ -355,6 +379,16 @@ fn words(e : Error) -> String {
 }
 
 ///|
+/// `text` written to `path` whole: beside it under a name no other write of this process takes (`@host.unique_tmp`, L13),
+/// renamed over it; what was written beside let go of where that fails.
+fn write_beside(files : Files, path : String, text : String) -> Unit raise {
+  let tmp = @host.unique_tmp(path)
+  errdefer (files.remove(tmp) catch { _ => () })
+  ignore(files.write(tmp, text))
+  files.rename(tmp, path)
+}
+
+///|
 /// That this station took `origin`'s place (`addFormerly`).
 fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
   let file = files.join([data, "replica", "formerly.json"])
@@ -362,10 +396,9 @@ fn add_formerly(files : Files, data : String, origin : String) -> Unit raise {
     Some(Arr(items)) => items
     _ => []
   }
-  let list = if list.iter().any(x => x is Str(u) && @jsjson.text(u) == origin) { list } else { list + [str(origin)] }
+  let list = if list.iter().any(x => x is Str(u) && @jsjson.sanitize_str(u) == origin) { list } else { list + [str(origin)] }
   files.mkdir(files.dirname(file))
-  ignore(files.write("\{file}.tmp", stringify(Arr(list))))
-  files.rename("\{file}.tmp", file)
+  write_beside(files, file, stringify(Arr(list)))
 }
 
 ///|
@@ -382,17 +415,17 @@ pub fn take_back(host : @host.Host, sep : String, data : String, db : String, no
   let origin = text_of(get(ready, "origin")).unwrap_or("")
   let field = (k : String) => get(ready, k).unwrap_or(Null)
   let mut outcome : JValue = Obj([
-    (@jsjson.units("origin"), field("origin")),
-    (@jsjson.units("name"), field("name")),
-    (@jsjson.units("from"), field("from")),
-    (@jsjson.units("at"), Num(now)),
-    (@jsjson.units("rows"), Obj([])),
-    (@jsjson.units("files"), Num(0.0)),
-    (@jsjson.units("missing"), Num(0.0)),
-    (@jsjson.units("error"), Null),
-    (@jsjson.units("reason"), Null),
-    (@jsjson.units("pending"), Bool(false)),
-    (@jsjson.units("left"), Num(0.0)),
+    ("origin", field("origin")),
+    ("name", field("name")),
+    ("from", field("from")),
+    ("at", Num(now)),
+    ("rows", Obj([])),
+    ("files", Num(0.0)),
+    ("missing", Num(0.0)),
+    ("error", Null),
+    ("reason", Null),
+    ("pending", Bool(false)),
+    ("left", Num(0.0)),
   ])
   let gen = text_of(get(ready, "gen")).unwrap_or("")
   let attempt = () => {
@@ -428,8 +461,7 @@ pub fn take_back(host : @host.Host, sep : String, data : String, db : String, no
   }
   let out = files.join([data, "replica", "restored.json"])
   files.mkdir(files.dirname(out))
-  ignore(files.write("\{out}.tmp", stringify(outcome)))
-  files.rename("\{out}.tmp", out)
+  write_beside(files, out, stringify(outcome))
   if !(get(outcome, "pending") is Some(Bool(true))) {
     files.remove(restore, recursive=true)
   }

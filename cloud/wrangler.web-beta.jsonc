@@ -12,5 +12,5 @@
   "preview_urls": false,
   "routes": [{ "pattern": "app.youdid.wtf", "custom_domain": true }],
   "assets": { "directory": "../dist/cloud-web", "binding": "ASSETS", "not_found_handling": "single-page-application", "run_worker_first": true },
-  "vars": { "PUBLIC_ORIGIN": "https://app.still.fail", "BETA_ORIGIN": "https://app.youdid.wtf" },
+  "vars": { "PUBLIC_ORIGIN": "https://app.still.fail", "BETA_ORIGIN": "https://app.youdid.wtf", "CONNECT_CONSOLES": "https://console.monoid.computer" },
 }

@@ -314,7 +314,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     }
   }
   let profiles = match raw.get("profiles") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(p) => p
   }
   guard profiles is Arr(profile_list) else {
@@ -435,7 +435,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
   }
   unique_ids("profile", profile_ids)
   let connects = match raw.get("connects") {
-    None | Some(Null) => Arr([])
+    None | Some(Null) => JV::Arr([])
     Some(c) => c
   }
   guard connects is Arr(connect_list) else {
@@ -495,10 +495,11 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     let runtime = js_string(bind.get("runtime"))
     match bind.get("effort") {
       Some(Str(effort)) if effort != "" => {
-        let legacy = fallback_efforts(runtime)
-        if runtime != "codex" && !legacy.contains(effort) {
+        let allowed = if runtime == "agy" { agy_levels } else { fallback_efforts(runtime) }
+        if runtime != "codex" && !allowed.contains(effort) {
+          let hint = if allowed.length() > 0 { "; use \{allowed.join(", ")}" } else { "" }
           raise check_fail(
-            "connect \{id}: \{runtime} has no effort \{effort}; use \{legacy.join(", ")}",
+            "connect \{id}: \{runtime} has no effort \{effort}\{hint}",
           )
         }
       }

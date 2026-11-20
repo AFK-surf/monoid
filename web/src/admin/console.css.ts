@@ -32,24 +32,12 @@ export const toolbar = style({
   "@media": { [NARROW]: { flexWrap: "wrap", rowGap: "8px" } },
 });
 export const search = style({
-  position: "relative", flex: "1", minWidth: "0", display: "flex",
+  flex: "1",
   "@media": { [NARROW]: { flexBasis: "100%" } },
 });
-globalStyle(`${search} > svg`, { position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: vars.subtle, pointerEvents: "none" });
-globalStyle(`${search} > input`, { paddingLeft: "36px", borderColor: "transparent", background: vars.neutralBg, textOverflow: "ellipsis" });
 export const sort = style({ flex: "none", display: "flex", alignItems: "center", gap: "6px", fontSize: vars.textUi });
 export const sortBy = style({ whiteSpace: "nowrap" });
-export const filters = style({ display: "flex", gap: "4px", flexWrap: "wrap", margin: "12px 0 16px" });
-export const filter = style({
-  height: "28px", padding: "0 10px", border: "0", borderRadius: "999px", background: "none", color: vars.muted,
-  fontSize: vars.textUi, display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer",
-  transition: `background ${vars.dur} ${vars.easeOut}`,
-  selectors: {
-    "&:hover": { background: vars.hover },
-    "&[data-on]": { background: vars.selected, color: vars.text },
-  },
-});
-globalStyle(`${filter} > span`, { fontSize: vars.textMeta, color: vars.subtle, fontVariantNumeric: "tabular-nums" });
+export const filters = style({ margin: "12px 0 16px" });
 
 export const list = style({ display: "grid", gap: "2px" });
 export const empty = style({ margin: "24px 12px", fontSize: vars.textUi, color: vars.muted });
@@ -77,6 +65,15 @@ export const rowTime = style({
 });
 export const rowLine2 = style({ fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 export const code = style({ fontSize: vars.textBody, letterSpacing: ".04em" });
+export const keyPrefix = style({
+  flex: "none", padding: "1px 6px", borderRadius: vars.rOption, background: vars.sidebar, fontSize: vars.textMeta, color: vars.muted,
+});
+export const vaultTip = style({
+  display: "grid", gap: "4px", padding: "10px 12px", borderRadius: vars.rOption, background: vars.sidebar,
+  fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, cornerShape: vars.cornerShape,
+});
+globalStyle(`${vaultTip} > b`, { fontSize: vars.textUi, fontWeight: "600", color: vars.text });
+globalStyle(`${vaultTip} > ul`, { margin: "2px 0 0", paddingLeft: "18px", display: "grid", gap: "2px" });
 export const wsMark = style({
   flex: "none", width: "28px", height: "28px", display: "grid", placeItems: "center", borderRadius: "9px", background: vars.paper,
   fontSize: vars.textUi, fontWeight: "600", cornerShape: vars.cornerShape,

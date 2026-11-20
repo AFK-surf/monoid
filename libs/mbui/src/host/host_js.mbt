@@ -143,7 +143,7 @@ extern "js" fn js_system_dark() -> Bool =
   #|() => typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches
 
 extern "js" fn js_env(name : String) -> String =
-  #|(n) => (typeof location !== "undefined" && new URLSearchParams(location.search).get(n)) || ""
+  #|(n) => (globalThis.__mbhost && globalThis.__mbhost.env) ? globalThis.__mbhost.env(n) : ((typeof location !== "undefined" && new URLSearchParams(location.search).get(n)) || "")
 
 ///|
 fn set_window_zoom(_zoom : Double) -> Unit {
@@ -498,8 +498,19 @@ fn gpu_ms() -> Double {
 }
 
 ///|
+/// How many frames the app made were never drawn (none here: the page draws each frame as it is made).
+fn frames_dropped() -> Int {
+  0
+}
+
+///|
 /// A browser says not how much of a CPU its page has had (@hostapi.cpu_ms).
 fn cpu_ms() -> Double {
+  -1.0
+}
+
+///|
+fn thread_cpu_ms() -> Double {
   -1.0
 }
 
@@ -531,6 +542,14 @@ fn perf_open(go : Bool) -> Bool {
 }
 
 ///|
+/// A file of the device shown in its folder: a page reaches none.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ignore(path)
+  ignore(go)
+  false
+}
+
+///|
 fn perf_size() -> Double {
   0.0
 }
@@ -541,7 +560,8 @@ fn perf_read() -> Bytes {
 }
 
 ///|
-/// The page's query parameter `name` ("" when there is none).
+/// The page's query parameter `name` ("" when there is none): the web host's (`env`, host.js), which keeps what the
+/// address had as it loaded though the page took it off since.
 fn env(name : String) -> String {
   js_env(name)
 }
@@ -651,7 +671,12 @@ fn update_fetch(url : String, sha256 : String, size : Double, name : String, now
 ///|
 fn update_apply(said : String) -> Unit {
   ignore(said)
+  js_reload()
 }
+
+///|
+extern "js" fn js_reload() -> Unit =
+  #|() => { if (globalThis.location && typeof globalThis.location.reload === "function") globalThis.location.reload() }
 
 ///|
 fn update_state() -> String {
@@ -1331,9 +1356,11 @@ fn window_snap_state() -> Int {
 }
 
 ///|
-/// A window of the app's own (see host_native.mbt): a browser's page opens none.
+/// A window of the app's own (see host_native.mbt): a browser's page opens one beside it, a popup of its origin, in
+/// this run (web/host.js H.windows: windows), where the browser lets it open popups and the run is not one to a
+/// declared moment; never as another run (window_open).
 fn window_opens() -> Bool {
-  false
+  js_windows(0, 0, "") != 0
 }
 
 ///|
@@ -1349,13 +1376,15 @@ fn window_front(what : String) -> Bool {
 }
 
 ///|
-/// The windows of this run (see host_native.mbt): a browser's page has its one.
+/// The windows of this run (see host_native.mbt): the page's, and the popups it opened beside it (web/host.js
+/// H.windows: 0 whether it opens them, 1 open one, 2 to the front, 3 close, 4 the window handled now, 5 its title).
 fn windows(op : Int, wid : Int, what : String) -> Int {
-  ignore(op)
-  ignore(wid)
-  ignore(what)
-  0
+  js_windows(op, wid, what)
 }
+
+///|
+extern "js" fn js_windows(op : Int, wid : Int, what : String) -> Int =
+  #|(op, wid, what) => { const h = globalThis.__mbhost; return h && h.windows ? (h.windows(op, wid, what) | 0) : 0 }
 
 ///|
 /// The pointer's shape (see host_native.mbt): the canvas's CSS cursor.
@@ -1400,6 +1429,7 @@ fn set_site_name(name : String) -> Unit {
 fn app_said(name : String) -> String {
   match name {
     "mbui.page.location" => js_history_location()
+    "mbui.page.loaded_title" => js_loaded_title()
     _ => js_app_said(name)
   }
 }
@@ -1430,6 +1460,29 @@ fn mods_held() -> Int {
 }
 
 ///|
+/// The pointer held by the window: a browser's is the page's own (web/src/mbui/screen-peripherals.ts, Pointer Lock),
+/// nothing here.
+fn pointer_lock(_on : Bool) -> Unit {
+  ()
+}
+
+///|
+fn pointer_locked() -> Bool {
+  false
+}
+
+///|
+fn pointer_delta(_out : FixedArray[Double]) -> Unit {
+  ()
+}
+
+///|
+/// A browser's game controllers are the page's own (web/src/mbui/screen-peripherals.ts): none read here.
+fn gamepads(_out : FixedArray[Double]) -> Int {
+  0
+}
+
+///|
 extern "js" fn js_set_page_title(title : String) -> Unit =
   #|(t) => { const H = globalThis.__mbhost; if (H && H.setPageTitle) H.setPageTitle(t) }
 
@@ -1441,6 +1494,10 @@ extern "js" fn js_set_theme_color(color : String) -> Unit =
 /// `{"face", "step", "families"}` (@webpage.set_cjk_face) handed to the page's host: the face's CJK companion.
 extern "js" fn js_set_cjk_face(said : String) -> Unit =
   #|(s) => { const H = globalThis.__mbhost; if (!H || !H.setCjkFace) return; const o = JSON.parse(s); H.setCjkFace(o.face, o.step, o.families) }
+
+///|
+extern "js" fn js_loaded_title() -> String =
+  #|() => { const H = globalThis.__mbhost; return H && H.loadedTitle ? H.loadedTitle() : '' }
 
 ///|
 extern "js" fn js_history_location() -> String =
@@ -1549,3 +1606,39 @@ fn post_next() -> (String, String, Bytes)? {
 /// part of its canvas again.
 extern "js" fn rn_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit =
   #|(x, y, w, h) => { if (globalThis.__mbhost.renderDirty) globalThis.__mbhost.renderDirty(x, y, w, h) }
+
+///|
+extern "js" fn js_auto_launch() -> Bool =
+  #|() => (globalThis.__mbhost && globalThis.__mbhost.autoLaunch) ? !!globalThis.__mbhost.autoLaunch() : false
+
+///|
+extern "js" fn js_set_auto_launch(enabled : Bool) -> Bool =
+  #|(e) => (globalThis.__mbhost && globalThis.__mbhost.setAutoLaunch) ? !!globalThis.__mbhost.setAutoLaunch(e) : false
+
+///|
+extern "js" fn js_hotkey_set(id : String, accel : String) -> Bool =
+  #|(id, accel) => (globalThis.__mbhost && globalThis.__mbhost.hotkeySet) ? !!globalThis.__mbhost.hotkeySet(id, accel) : false
+
+///|
+extern "js" fn js_hotkey_clear(id : String) -> Unit =
+  #|(id) => { if (globalThis.__mbhost && globalThis.__mbhost.hotkeyClear) globalThis.__mbhost.hotkeyClear(id) }
+
+///|
+fn auto_launch() -> Bool {
+  js_auto_launch()
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  js_set_auto_launch(enabled)
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  js_hotkey_set(id, accel)
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  js_hotkey_clear(id)
+}

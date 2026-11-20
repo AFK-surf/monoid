@@ -20,7 +20,7 @@ import { Store, newMessage } from "../src/store/store.ts";
 import { digest } from "./reference/digest.ts";
 import { answersSince, openStore } from "./reference/store.ts";
 import { chatMarks, chatRows, chats } from "./reference/views.ts";
-import { marksOf, rowsMade } from "../../client/core-ts/src/station/rows-made.ts";
+import { OwnHeld, marksOf, rowsShared } from "../../client/core-ts/src/station/rows-made.ts";
 import { worded } from "../../client/core-ts/src/chat-row.ts";
 import { isDeepStrictEqual } from "node:util";
 import { FakeDriver, settle } from "./hub-fakes.ts";
@@ -64,6 +64,8 @@ function rig(withAgents = true) {
     const a = await admin.handle(r);
     return [a.status, JSON.parse(String(a.body))] as const;
   };
+  // (an answer as it is: its headers and its bytes)
+  const answer = async (method: string, path: string, query: [string, string][] = []) => admin.handle({ method, path, query, headers: {}, body: Buffer.alloc(0), viewer, lang: "en" });
   const close = async () => {
     await hub.shutdown();
     await jobs.shutdown();
@@ -71,7 +73,7 @@ function rig(withAgents = true) {
     store.close();
     rmSync(data, { recursive: true, force: true });
   };
-  return { data, store, hub, jobs, readers, claude, codex, ask, close };
+  return { data, store, hub, jobs, readers, claude, codex, ask, answer, close };
 }
 
 test("a new chat: its session and its thread, refused without a runtime or with an unknown profile", async () => {
@@ -166,11 +168,12 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(await r.ask("POST", "/threads", { session: "nope" }), [404, { error: "unknown session nope" }]);
     const [status, chat] = await r.ask("POST", "/threads", { session: a.key, title: "  side  " });
     assert.equal(status, 200);
-    assert.equal(chat.title, "side");
-    assert.equal(chat.home, undefined, "a chat of its own");
-    assert.deepEqual(await r.ask("POST", `/threads/${chat.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
+    assert.equal(chat.id, a.thread.id, "POST /threads is idempotent and returns existing home chat");
+    const extra = r.store.openThreadOf("chat", "CHAT", "side-1", "side", "ada@example.com", null);
+    r.store.joinThread(extra.id, a.key, "chat");
+    assert.deepEqual(await r.ask("POST", `/threads/${extra.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
     assert.deepEqual(await r.ask("POST", "/threads/999/sessions", { session: b.key }), [404, { error: "unknown thread 999" }]);
-    const [joined, view] = await r.ask("POST", `/threads/${chat.id}/sessions`, { session: b.key });
+    const [joined, view] = await r.ask("POST", `/threads/${extra.id}/sessions`, { session: b.key });
     assert.equal(joined, 200);
     assert.deepEqual(view.sessions.map((m: any) => m.session), [a.key, b.key]);
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
@@ -180,7 +183,7 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(JSON.parse(await r.readers.read("recentChatList", { ws: null, home: null, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.recentChatList(null, null, 2))));
     assert.deepEqual(JSON.parse(await r.readers.read("searchChatList", { ws: null, home: null, limit: 2, query: "side" }, "en")), JSON.parse(JSON.stringify(r.store.searchChatList(null, null, 2, "side"))));
     // The archive review's messages, as the readers read them: what the store has.
-    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: chat.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(chat.id, null, 2))));
+    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: extra.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(extra.id, null, 2))));
   } finally {
     await r.close();
   }
@@ -478,7 +481,8 @@ test("archiving a session and a chat, and deleting a session", async () => {
     assert.equal((await r.ask("DELETE", `/sessions/${made.key}/archive`))[1].archivedAt, null);
     assert.deepEqual(await r.ask("POST", "/sessions/nope/archive"), [404, { error: "unknown session nope" }]);
 
-    const [, own] = await r.ask("POST", "/threads", { session: made.key });
+    const own = r.store.openThreadOf("chat", "CHAT", "own-1", null, "ada@example.com", null);
+    r.store.joinThread(own.id, made.key, "chat");
     const [hidden, view] = await r.ask("POST", `/threads/${own.id}/archive`);
     assert.equal(hidden, 200);
     assert.equal(typeof view.hiddenAt, "number");
@@ -505,7 +509,7 @@ test("cancel retry addresses the notice and leaves a different retry alone", asy
   try {
     const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const thread = made.thread.id;
-    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "ember", "ember", "⚠️ capacity"));
+    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "station", "station", "⚠️ capacity"));
     r.store.startTurn("retry", made.key, "input");
     r.store.setAbout("retry", [thread, seq, "2.0"]);
     r.store.endTurn("retry", "failed", "overloaded: at capacity", "waiting", 30);
@@ -525,7 +529,7 @@ test("retry takes up again the failed turn its notice is about, and only that no
   try {
     const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const thread = made.thread.id;
-    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "ember", "ember", "⚠️ 与模型服务的连接中断，回复即可重试"));
+    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "station", "station", "⚠️ 与模型服务的连接中断，回复即可重试"));
     r.store.startTurn("lost", made.key, "input");
     r.store.setAbout("lost", [thread, seq, "2.0"]);
     r.store.endTurn("lost", "failed", "network: fetch failed", null, null);
@@ -753,6 +757,19 @@ test("a file a message names by its path: its peek and the file whole, only with
     const [, whole] = await r.ask("GET", `/sessions/${key}/open`, undefined, [["path", "src/a.ts"]]);
     assert.equal(Buffer.from(whole.bytes, "base64").toString("utf8").split("\n").length, 40);
     assert.equal(whole.name, "a.ts");
+    // Its version said beside its bytes; asked again with that version, nothing but that it is the same (whole or a
+    // part); changed since, read as before.
+    const raw = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"]]);
+    const mtime = raw.headers["stillfail-mtime"]!;
+    const size = Buffer.from(whole.bytes, "base64").length;
+    assert.equal(raw.status, 200);
+    assert.ok(Number(mtime) > 0, mtime);
+    for (const more of [[], [["offset", "0"], ["length", "4"]]] as [string, string][][]) {
+      const same = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"], ["have", `${mtime}:${size}`], ...more]);
+      assert.deepEqual([same.status, (same.body as Buffer).length, same.headers["stillfail-total"], same.headers["stillfail-mtime"]], [304, 0, String(size), mtime]);
+    }
+    const changed = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"], ["have", `${mtime}:${size - 1}`]]);
+    assert.deepEqual([changed.status, (changed.body as Buffer).length], [200, size]);
   } finally {
     await r.close();
   }
@@ -1091,9 +1108,9 @@ test("a job's chat named from the sidebar's items as they are, none of their mes
   } finally { await r.close(); }
 });
 
-test("a device makes the sidebar from the summaries and marks as the station makes it", async () => {
+test("a device makes the sidebar from the shared list and marks as the station makes it", async () => {
   // The station made every row again for every viewer at every change, 3 to 10 s each on a station (2026-11-03): a device
-  // makes it from what it holds (client/core-ts/src/station/rows-made.ts), by the same rules.
+  // makes it from the shared list and viewer marks (client/core-ts/src/station/rows-made.ts), by the same rules.
   const r = rig();
   try {
     const made: any[] = [];
@@ -1110,21 +1127,23 @@ test("a device makes the sidebar from the summaries and marks as the station mak
     r.store.insertMessage(newMessage(slack.id, "9.1", "person", "U1", "从 Slack 来的"));
     r.store.suggestArchive(made[2].key, made[2].thread.id, r.store.lastEntry(made[2].thread.id));
     const station = (await r.ask("GET", "/chats"))[1];
-    const sessions = (await r.ask("GET", "/sessions"))[1];
-    const threads = (await r.ask("GET", "/threads"))[1];
+    const shared = (await r.ask("GET", "/chats", undefined, [["shared", "1"]]))[1];
     const [status, answer] = await r.ask("GET", "/chats", undefined, [["marks", "1"]]);
     assert.equal(status, 200);
     const marks = marksOf(answer);
     assert.ok(marks !== null, JSON.stringify(answer));
     const words = { untitled: tr("en", "station.chat.untitled"), directMessage: tr("en", "station.chat.directMessage"), quotedOnly: tr("en", "station.chat.quotedOnly") };
-    const device = rowsMade(sessions, threads, marks!, viewer.email, words);
+    const device = rowsShared(shared, new OwnHeld(marks!, viewer.email), viewer.email, words);
     const byId = (rows: any[]) => Object.fromEntries(rows.map((row) => [String(row.id), row]));
     // (the station's rows leave their words to the client, which says them as it takes them: core-ts data.ts `inWords`)
     assert.deepEqual(byId(device), byId(station.map((row: any) => worded(row, words))));
     assert.ok(station.some((row: any) => row.card) && station.some((row: any) => row.pinned !== null) && station.length >= 3, "the cases looked at");
     // Of some chats alone: what they are now, the rest as held.
     const [, some] = await r.ask("GET", "/chats", undefined, [["marks", "1"], ["thread", String(made[0].thread.id)], ["session", made[0].key]]);
-    assert.deepEqual(Object.keys(marksOf(some)!.card), [String(made[0].thread.id)]);
+    assert.deepEqual(Object.keys(some.card), [String(made[0].thread.id)]);
+    const [, pinnedSome] = await r.ask("GET", "/chats", undefined, [["marks", "1"], ["thread", String(made[2].thread.id)], ["session", made[2].key]]);
+    assert.deepEqual(Object.keys(marksOf(pinnedSome)!.pins), [made[2].key]);
+    assert.deepEqual(marksOf(pinnedSome)!.kept, [made[2].thread.id]);
   } finally {
     await r.close();
   }

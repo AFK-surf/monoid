@@ -98,7 +98,6 @@ using @sfbase {
   flight_landing_words,
   flight_pieces_in,
   flight_placed,
-  flight_settled_of,
   flight_takes,
   go_to_words,
   go_tos,
@@ -167,6 +166,7 @@ using @sfbase {
 using @settings {
   join_dialog,
   binding_of,
+  binding_label,
   policy_forms,
   profile_forms,
   connects_mine,
@@ -209,6 +209,7 @@ using @settings {
   join,
   key_actions,
   keys_recording,
+  keys_searching,
   notify_switched,
   obj,
   pref,

@@ -12,6 +12,8 @@
 //                 made; the end once FAKE_DUMP.<name>.b is (what the test lets happen when, not a time)
 // What the station hands it around a message (a hub's prompt) leaves these to be found anywhere in it: slow:, gate:.
 // thread/unsubscribe is answered once FAKE_DUMP.unsub.a (a fifo) is written, when there is one.
+// FAKE_MCP_BROKEN_ONCE=1: the first of these processes (the one that makes FAKE_DUMP.mcp-broken) reaches no MCP url,
+// as one whose environment or connections went wrong; the next ones reach them as said above.
 // FAKE_DUMP: its argv and env are appended there as a JSON line, and every line of stdin to FAKE_DUMP.stdin. The
 // version it says it is (`--version`, its userAgent) is FAKE_DUMP.version's when there is one, else 0.
 import fs from "node:fs";
@@ -25,6 +27,17 @@ if (process.argv[2] === "--version") {
   process.exit(0);
 }
 if (dump) fs.appendFileSync(dump, JSON.stringify({ argv: process.argv.slice(2), env: process.env, pid: process.pid }) + "\n");
+
+/// This process reaches no MCP url (FAKE_MCP_BROKEN_ONCE).
+const mcpBroken = (() => {
+  if (process.env.FAKE_MCP_BROKEN_ONCE !== "1" || !dump || !process.argv.includes("app-server")) return false;
+  try {
+    fs.closeSync(fs.openSync(`${dump}.mcp-broken`, "wx"));
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 /// The one wait every thread/unsubscribe has while FAKE_DUMP.unsub.a is held (written once, all go on).
 let unsubHeld = null;
@@ -61,7 +74,7 @@ function thread(id) {
 function load(id, config) {
   const t = thread(id);
   const url = config?.["mcp_servers.stillfail.url"];
-  t.mcp ??= process.env.FAKE_MCP_UNAVOIDABLE === "1" ? "connected" : config?.mcp_servers?.configured?.enabled === false ? "disabled" : process.env.FAKE_MCP_CONFIGURED === "1" || process.env.FAKE_MCP_PROJECT === "1" ? "connected" : typeof url === "string" ? (url.includes(":1/") ? "failed" : "connected") : null;
+  t.mcp ??= process.env.FAKE_MCP_UNAVOIDABLE === "1" ? "connected" : config?.mcp_servers?.configured?.enabled === false ? "disabled" : process.env.FAKE_MCP_CONFIGURED === "1" || process.env.FAKE_MCP_PROJECT === "1" ? "connected" : typeof url === "string" ? (mcpBroken || url.includes(":1/") ? "failed" : "connected") : null;
 }
 
 /// A reply of `texts`, `gap` ms apart; `before(i)`, if given, waited for before the i-th (and before its end, at i =

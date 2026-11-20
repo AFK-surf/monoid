@@ -45,6 +45,67 @@ let post_files : Int = 20
 let tasks_version : Int = 2
 
 ///|
+/// Maximum number of workspace stations reported in capabilities.stillfail_workspace.
+let max_workspace_stations : Int = 100
+
+///|
+/// Builds the capabilities.stillfail_workspace payload from a workspace membership and this station's id.
+pub fn workspace_meta_of(m : J, self_id : String, fallback_host : String) -> J {
+  let mp = Some(m)
+  let self_name = match prop(mp, "name") {
+    Some(Str(u)) if u != "" => u
+    _ => fallback_host
+  }
+  let seen : Map[String, Int] = {}
+  let mut stations : Array[(String, String)] = []
+  match prop(mp, "peers") {
+    Some(Arr(peers)) =>
+      for p in peers {
+        let pp = Some(p)
+        guard prop(pp, "id") is Some(Str(id)) && id != "" else { continue }
+        if seen.contains(id) {
+          continue
+        }
+        let name = match prop(pp, "name") {
+          Some(Str(n)) if n != "" => n
+          _ => id
+        }
+        seen[id] = stations.length()
+        stations.push((id, name))
+      }
+    _ => ()
+  }
+  if self_id != "" {
+    match seen.get(self_id) {
+      Some(idx) => stations[idx] = (self_id, self_name)
+      None => stations.push((self_id, self_name))
+    }
+  }
+  if stations.length() > max_workspace_stations {
+    stations = stations[:max_workspace_stations].to_owned()
+    if self_id != "" && !stations.iter().any(s => s.0 == self_id) {
+      stations[max_workspace_stations - 1] = (self_id, self_name)
+    }
+  }
+  let emoji = match prop(mp, "workspace_emoji") {
+    Some(Str(e)) if e != "" => Some(jstr(e))
+    _ => None
+  }
+  let icon = match prop(mp, "workspace_icon") {
+    Some(Str(ic)) if ic != "" => Some(jstr(ic))
+    _ => None
+  }
+  jo([
+    ("id", Some(jstr(str_of(prop(mp, "workspace")).unwrap_or("")))),
+    ("name", Some(jstr(str_of(prop(mp, "workspace_name")).unwrap_or("")))),
+    ("station", Some(jstr(self_name))),
+    ("emoji", emoji),
+    ("icon", icon),
+    ("stations", Some(Arr(stations.map(s => jobj([("id", jstr(s.0)), ("name", jstr(s.1))]))))),
+  ])
+}
+
+///|
 /// A Message's ts in its thread here: its seq at Comma, so what is given again is one message.
 pub fn seq_ts(seq : Double) -> String {
   "\{num_text(seq)}.000000"
@@ -56,7 +117,7 @@ fn text(v : J?, key : String) -> String {
   match v {
     Some(Obj(_) | Arr(_)) =>
       match prop(v, key) {
-        Some(Str(u)) => js_trim(utext(u))
+        Some(Str(u)) => js_trim(u)
         _ => ""
       }
     _ => ""
@@ -81,7 +142,7 @@ pub fn question_of(card : J?, prompt : String) -> J? {
   }
   guard prop(card, "options") is Some(Arr(all)) else { return None }
   let options = all.filter(o => match prop(Some(o), "label") {
-    Some(Str(u)) => js_trim(utext(u)) != ""
+    Some(Str(u)) => js_trim(u) != ""
     _ => false
   })
   if options.length() < 2 || options.length() > 6 {
@@ -109,7 +170,7 @@ pub fn question_of(card : J?, prompt : String) -> J? {
               (
                 "description",
                 match prop(oo, "detail") {
-                  Some(Str(u)) if js_trim(utext(u)) != "" => Some(jstr(first_points(js_trim(utext(u)), 300)))
+                  Some(Str(u)) if js_trim(u) != "" => Some(jstr(first_points(js_trim(u), 300)))
                   _ => None
                 },
               ),
@@ -127,65 +188,14 @@ pub fn question_of(card : J?, prompt : String) -> J? {
 ///|
 /// Bytes as base64 (`Buffer.toString("base64")`).
 pub fn base64(b : Bytes) -> String {
-  let a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at(v & 63).unsafe_to_char())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_string("==")
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(a.unsafe_charcode_at((v >> 18) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 12) & 63).unsafe_to_char())
-    out.write_char(a.unsafe_charcode_at((v >> 6) & 63).unsafe_to_char())
-    out.write_char('=')
-  }
-  out.to_string()
+  @codec.base64_encode(b)
 }
 
 ///|
 /// Base64 as node reads it (`Buffer.from(s, "base64")`): the URL-safe alphabet too, what is in neither skipped, up to
 /// the first `=`.
 pub fn unbase64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
-  for i in 0..<s.length() {
-    let c = s.unsafe_charcode_at(i)
-    let v = if c >= 'A' && c <= 'Z' {
-      c - 'A'
-    } else if c >= 'a' && c <= 'z' {
-      c - 'a' + 26
-    } else if c >= '0' && c <= '9' {
-      c - '0' + 52
-    } else if c == '+' || c == '-' {
-      62
-    } else if c == '/' || c == '_' {
-      63
-    } else if c == '=' {
-      break
-    } else {
-      continue
-    }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 255).to_byte())
-    }
-  }
-  out.to_bytes()
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -269,6 +279,8 @@ pub(all) struct SurfaceOptions {
   name : String
   /// The still.fail workspace the connect is of; None before the station is in one.
   workspace : String?
+  /// The still.fail email of the person who owns this Comma connect, when known.
+  owner_email : String?
   tasks : CommaTasks
   store : SurfaceStore
   /// The models its sessions can run (`{runtime, model}`).
@@ -282,6 +294,10 @@ pub(all) struct SurfaceOptions {
   previous_exited : async () -> Unit
   /// The home workspace for this surface has not changed since it was created.
   in_scope : () -> Bool
+  /// Metadata of this connect's still.fail workspace, reported in capabilities.stillfail_workspace.
+  workspace_meta : (() -> J?)?
+  /// Subscribes to workspace metadata changes so an open socket pushes updated metadata frames.
+  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
 }
 
 ///|
@@ -300,6 +316,7 @@ pub struct CommaSurface {
   priv token : String
   priv name : String
   priv of_workspace : String?
+  priv owner_email : String?
   priv tasks : CommaTasks
   priv store : SurfaceStore
   priv models : () -> Array[J]
@@ -308,12 +325,16 @@ pub struct CommaSurface {
   priv chats : CommaChats?
   priv previous_exited : async () -> Unit
   priv in_scope : () -> Bool
+  priv workspace_meta : (() -> J?)?
+  priv on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
   priv io : Io
   priv runtime : @effect.Runtime
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
   instance : String
   /// The socket now, once Comma said it is connected; and the requests to Comma waiting for their answer.
   priv mut socket_ : Socket?
+  priv mut stop_workspace_meta : (() -> Unit)?
+  priv mut last_metadata_json : String?
   priv waiting : Map[String, @effect.Deferred[J]]
   /// The people of the Tasks, as Comma said with their Messages.
   priv people : Map[String, J]
@@ -321,6 +342,8 @@ pub struct CommaSurface {
   priv posting : Map[String, (String, Array[Attachment])]
   /// The files of the Messages being heard, by the id they are named by here, until they are fetched.
   priv shared : Map[String, Shared]
+  /// Per-connect handler supplied by `connects_hub` (overrides `store.handler` when set).
+  priv mut handler : (async (J) -> Unit)?
 }
 
 ///|
@@ -331,6 +354,17 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     token: options.token,
     name: options.name,
     of_workspace: options.workspace,
+    owner_email: match options.owner_email {
+      Some(u) => {
+        let email = @jscase.lower(js_trim(u))
+        if email_like(email) && email.length() <= max_text {
+          Some(email)
+        } else {
+          None
+        }
+      }
+      None => None
+    },
     tasks: options.tasks,
     store: options.store,
     models: options.models,
@@ -339,15 +373,26 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     chats: options.chats,
     previous_exited: options.previous_exited,
     in_scope: options.in_scope,
+    workspace_meta: options.workspace_meta,
+    on_workspace_meta_change: options.on_workspace_meta_change,
     io,
     runtime,
     instance: (io.uuid)(),
     socket_: None,
+    stop_workspace_meta: None,
+    last_metadata_json: None,
     waiting: {},
     people: {},
     posting: {},
     shared: {},
+    handler: None,
   }
+}
+
+///|
+/// Sets the per-connect inbound message handler (e.g. from `connects_hub` / `WorkspaceConnects`).
+pub fn CommaSurface::set_handler(self : CommaSurface, handler : async (J) -> Unit) -> Unit {
+  self.handler = Some(handler)
 }
 
 // ── the connection ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -409,21 +454,19 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
         ("device", prop(f, "device_id")),
         ("run", prop(f, "connector_run_id")),
       ])
-      self.send(
-        jobj([
-          ("type", jstr("metadata")),
-          ("capabilities", self.capabilities()),
-          ("skills", Arr([])),
-          (
-            "system_info",
-            jobj([("os", jstr(self.io.platform)), ("arch", jstr(self.io.arch)), ("hostname", jstr(self.name))]),
-          ),
-        ]),
-      )
+      self.connect_metadata()
       self.hello()
       if self.stats is Some(_) && (self.in_scope)() {
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "stats.index", StatsWire) }))
-        ignore(self.runtime.fork(async fn() { self.send_index(socket, "task.index", TaskWire) }))
+        ignore(
+          self.runtime.fork_daemon("comma stats index", on_error=e => self.io.warn("the statistics index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "stats.index", StatsWire)
+          }),
+        )
+        ignore(
+          self.runtime.fork_daemon("comma task index", on_error=e => self.io.warn("the task index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
+            self.send_index(socket, "task.index", TaskWire)
+          }),
+        )
       }
     }
     Some("heartbeat") => self.send(jobj([("type", jstr("heartbeat"))]))
@@ -438,7 +481,7 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
           w.fail(
             fail_(
               match prop(f, "error") {
-                Some(Str(u)) => utext(u)
+                Some(Str(u)) => u
                 _ => "Comma refused it"
               },
             ),
@@ -462,7 +505,7 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
       }
       let params = or_null(nullish(prop(f, "params"), Some(Obj([]))))
       ignore(
-        self.runtime.fork(async fn() {
+        self.runtime.fork_daemon("comma request", on_error=e => refuse(e), async fn() {
           let result = try {
             Ok(self.handle(method, params))
           } catch {
@@ -495,6 +538,14 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
 /// The socket ended: what waited for Comma's answer is told it will not come.
 pub fn CommaSurface::closed(self : CommaSurface) -> Unit {
   self.socket_ = None
+  match self.stop_workspace_meta {
+    Some(stop) => {
+      stop()
+      self.stop_workspace_meta = None
+    }
+    None => ()
+  }
+  self.last_metadata_json = None
   let ids = []
   for id, _ in self.waiting {
     ids.push(id)
@@ -508,6 +559,42 @@ pub fn CommaSurface::closed(self : CommaSurface) -> Unit {
       None => ()
     }
   }
+}
+
+///|
+fn CommaSurface::connect_metadata(self : CommaSurface) -> Unit {
+  self.send_metadata(true)
+  if self.stop_workspace_meta is None {
+    match self.on_workspace_meta_change {
+      Some(listen) =>
+        self.stop_workspace_meta = Some(
+          listen(() => if self.socket_ is Some(_) && (self.in_scope)() { self.send_metadata(false) }),
+        )
+      None => ()
+    }
+  }
+}
+
+///|
+fn CommaSurface::send_metadata(self : CommaSurface, force : Bool) -> Unit {
+  if self.socket_ is None {
+    return
+  }
+  let frame = jobj([
+    ("type", jstr("metadata")),
+    ("capabilities", self.capabilities()),
+    ("skills", Arr([])),
+    (
+      "system_info",
+      jobj([("os", jstr(self.io.platform)), ("arch", jstr(self.io.arch)), ("hostname", jstr(self.name))]),
+    ),
+  ])
+  let json = stringify(frame)
+  if !force && self.last_metadata_json == Some(json) {
+    return
+  }
+  self.last_metadata_json = Some(json)
+  self.send(frame)
 }
 
 ///|
@@ -555,7 +642,7 @@ async fn CommaSurface::ask(self : CommaSurface, method : String, params : J, ms?
 ///|
 /// What the computer says it can do: take Tasks, on these models.
 fn CommaSurface::capabilities(self : CommaSurface) -> J {
-  let models : Array[(Array[Int], J)] = []
+  let models : Array[(String, J)] = []
   for m in (self.models)() {
     let runtime = js_text(or_null(prop(Some(m), "runtime")))
     let known = match entry_at(models, runtime) {
@@ -575,6 +662,14 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
       Some(v) => if !known.iter().any(k => stringify(k) == stringify(v)) { known.push(v) }
     }
   }
+  let meta : J? = if (self.in_scope)() {
+    match self.workspace_meta {
+      Some(f) => f()
+      None => None
+    }
+  } else {
+    None
+  }
   jo([
     ("scope", Some(jstr(""))),
     ("persistent_processes", Some(Bool(false))),
@@ -586,6 +681,8 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
     ("task_models", Some(Obj(models))),
     ("stats_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
     ("task_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
+    ("stillfail_owner_email", self.owner_email.map(jstr)),
+    ("stillfail_workspace", meta),
   ])
 }
 
@@ -606,7 +703,7 @@ fn CommaSurface::hello(self : CommaSurface) -> Unit {
   }
   match asked {
     Err(e) => fail(e)
-    Ok(answer) => ignore(self.runtime.fork(async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
+    Ok(answer) => ignore(self.runtime.fork_daemon("comma answer", on_error=e => fail(e), async fn() { ignore(answer.wait()) catch { e => fail(e) } }))
   }
 }
 
@@ -965,7 +1062,7 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
     for f in arr_of(prop(mm, "files")).unwrap_or([]) {
       let ff = Some(f)
       let name = match prop(ff, "name") {
-        Some(Str(u)) if u.length() > 0 => utext(u)
+        Some(Str(u)) if u.length() > 0 => u
         _ => continue
       }
       guard count(prop(ff, "index")) is Some(index) && count(prop(ff, "size")) is Some(size) else { continue }
@@ -978,24 +1075,26 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
     }
     let user = self.learn(prop(mm, "author"))
     let model = if first { Some(self.choice(t.start)) } else { None }
-    (self.store.handler)(
-      jobj([
-        ("type", jstr("message")),
-        (
-          "message",
-          jo([
-            ("channel", Some(jstr(task_channel))),
-            ("threadTs", Some(jstr(t.thread_ts))),
-            ("ts", Some(jstr(seq_ts(seq)))),
-            ("user", Some(jstr(user))),
-            ("text", Some(jstr(said))),
-            ("addressed", Some(Bool(true))),
-            ("files", Some(Arr(files))),
-            ("model", model.bind(x => x)),
-          ]),
-        ),
-      ]),
-    )
+    let event = jobj([
+      ("type", jstr("message")),
+      (
+        "message",
+        jo([
+          ("channel", Some(jstr(task_channel))),
+          ("threadTs", Some(jstr(t.thread_ts))),
+          ("ts", Some(jstr(seq_ts(seq)))),
+          ("user", Some(jstr(user))),
+          ("text", Some(jstr(said))),
+          ("addressed", Some(Bool(true))),
+          ("files", Some(Arr(files))),
+          ("model", model.bind(x => x)),
+        ]),
+      ),
+    ])
+    match self.handler {
+      Some(h) => h(event)
+      None => (self.store.handler)(event)
+    }
     first = false
     for f in files {
       self.shared.remove(str_of(prop(Some(f), "id")).unwrap_or(""))
@@ -1011,12 +1110,12 @@ async fn CommaSurface::learn(self : CommaSurface, author : J?) -> String {
   let kind = prop(author, "kind")
   let person_kind = str_of(kind) == Some("person")
   let id = match prop(author, "id") {
-    Some(Str(u)) if u.length() > 0 => utext(u)
+    Some(Str(u)) if u.length() > 0 => u
     _ => "comma"
   }
   let user = if person_kind { id } else { "agent:\{id}" }
   let name = match prop(author, "name") {
-    Some(Str(u)) if u.length() > 0 => utext(u)
+    Some(Str(u)) if u.length() > 0 => u
     _ => if person_kind { self.io.tr(self.lang, "station.comma.member") } else { "Comma" }
   }
   let person = jobj([
@@ -1179,7 +1278,7 @@ pub fn CommaSurface::stands_at(self : CommaSurface, channel : String, thread_ts 
     _ => self.io.tr(self.lang, if kind == "done" { "station.comma.done" } else { "station.comma.need" })
   }
   ignore(
-    self.runtime.fork(async fn() {
+    self.runtime.fork_daemon("comma turn state", on_error=_ => (), async fn() {
       ignore(
         self.say(channel, thread_ts, said, [], None, Some(if kind == "done" { "all_done" } else { "need_help" })),
       ) catch {
@@ -1214,11 +1313,11 @@ pub async fn CommaSurface::download(self : CommaSurface, file_id : String, file_
     )
     let a = Some(answer)
     match prop(a, "missing") {
-      Some(Str(u)) => raise fail_(utext(u))
+      Some(Str(u)) => raise fail_(u)
       _ => ()
     }
     let data = match prop(a, "data") {
-      Some(Str(u)) => Some(unbase64(utext(u)))
+      Some(Str(u)) => Some(unbase64(u))
       _ => None
     }
     match data {
@@ -1292,25 +1391,4 @@ pub fn CommaSurface::name(self : CommaSurface) -> String {
 /// The workspace the connect is of.
 pub fn CommaSurface::of_workspace(self : CommaSurface) -> String? {
   self.of_workspace
-}
-
-///|
-/// Whether what it was made for holds still (its config, its workspace).
-pub fn CommaSurface::in_scope_now(self : CommaSurface) -> Bool {
-  (self.in_scope)()
-}
-
-///|
-/// The indexes it would send now; None where it sends none.
-pub fn CommaSurface::indexes_now(self : CommaSurface) -> CommaIndexes? raise {
-  match self.stats {
-    Some(f) => Some(f())
-    None => None
-  }
-}
-
-///|
-/// The chats its Router reads and writes in; None where it does neither.
-pub fn CommaSurface::chats_now(self : CommaSurface) -> CommaChats? {
-  self.chats
 }

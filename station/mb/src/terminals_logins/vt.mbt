@@ -435,7 +435,7 @@ priv enum State {
   DcsIgnore
   DcsIntermediate
   DcsPassthrough
-} derive(Eq)
+}
 
 ///|
 priv enum Action {

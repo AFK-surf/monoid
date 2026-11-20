@@ -40,7 +40,7 @@ priv struct Roots {
 ///|
 fn str_of(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    Some(Str(s)) => Some(s)
     _ => None
   }
 }
@@ -159,7 +159,7 @@ fn claude_said(r : @jsjson.JValue) -> Array[(Bool, String)] {
   let person = kind == "user"
   let content = jget(jget(Some(r), "message"), "content")
   let texts = match content {
-    Some(Str(s)) => [@jsjson.raw_text(s)]
+    Some(Str(s)) => [s]
     Some(Arr(parts)) => parts.filter_map(b => if is_text(jget(Some(b), "type"), "text") { str_of(jget(Some(b), "text")) } else { None })
     _ => []
   }
@@ -239,26 +239,8 @@ fn said_in(runtime : String, events : Bool, r : @jsjson.JValue) -> Array[(Bool, 
 ///|
 /// UTF-8 of a string as Buffer.from writes it (a lone surrogate as U+FFFD).
 fn utf8_of(s : String) -> Array[Int] {
-  let out = []
-  for c in points(s) {
-    let c = if c >= 0xd800 && c <= 0xdfff { 0xfffd } else { c }
-    if c < 0x80 {
-      out.push(c)
-    } else if c < 0x800 {
-      out.push(0xc0 | (c >> 6))
-      out.push(0x80 | (c & 0x3f))
-    } else if c < 0x10000 {
-      out.push(0xe0 | (c >> 12))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    } else {
-      out.push(0xf0 | (c >> 18))
-      out.push(0x80 | ((c >> 12) & 0x3f))
-      out.push(0x80 | ((c >> 6) & 0x3f))
-      out.push(0x80 | (c & 0x3f))
-    }
-  }
-  out
+  let b = @jsjson.utf8(s)
+  Array::makei(b.length(), i => b[i].to_int())
 }
 
 ///|
@@ -287,7 +269,7 @@ fn iso_num(b : Array[Int], from : Int, len : Int) -> Int64? {
 
 ///|
 /// transcript.ts `parseIso`: milliseconds of an ISO time (YYYY-MM-DDTHH:MM:SS[.fff]), read by position.
-fn parse_iso(at : String) -> Double? {
+pub fn parse_iso(at : String) -> Double? {
   let b = utf8_of(at)
   guard iso_num(b, 0, 4) is Some(y) &&
     iso_num(b, 5, 2) is Some(mo) &&
@@ -313,12 +295,7 @@ fn parse_iso(at : String) -> Double? {
       digits += 1
     }
   }
-  let (yy, mm) = if mo <= 2L { (y - 1L, mo + 9L) } else { (y, mo - 3L) }
-  let era = if yy >= 0L { yy / 400L } else { -((-yy + 399L) / 400L) }
-  let yoe = yy - era * 400L
-  let doy = (153L * mm + 2L) / 5L + d - 1L
-  let doe = yoe * 365L + yoe / 4L - yoe / 100L + doy
-  let days = era * 146097L + doe - 719468L
+  let days = @time.days_from_civil(y.to_int(), mo.to_int(), d.to_int())
   Some(((days * 86400L + h * 3600L + mi * 60L + s) * 1000L + ms).to_double())
 }
 
@@ -371,33 +348,13 @@ fn extension(name : String) -> String? {
 ///|
 /// path.basename of a path joined here.
 fn base_name(sep : String, path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == '/' || (sep == "\\" && c == '\\') {
-      cut = i
-    }
-  }
-  path.view(start_offset=cut + 1).to_owned()
+  @nodepath.basename(sep, path)
 }
 
 ///|
 /// path.dirname of a path joined here.
 fn dir_name(sep : String, path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == '/' || (sep == "\\" && c == '\\') {
-      cut = i
-    }
-  }
-  if cut < 0 {
-    "."
-  } else if cut == 0 {
-    path.view(end_offset=1).to_owned()
-  } else {
-    path.view(end_offset=cut).to_owned()
-  }
+  @nodepath.dirname(sep, path)
 }
 
 ///|

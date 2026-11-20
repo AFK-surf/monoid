@@ -240,7 +240,7 @@ export class Accounts {
   /// Which Codex account each Codex subscription profile is signed in to, as its auth.json last said (read off the
   /// thread: `codexAccountRead`), and the reads under way.
   private readonly codexAccounts = new Map<string, { home: string; account: string | null }>();
-  private readonly codexAccountReads = new Map<string, Promise<void>>();
+  private readonly codexAccountReads = new Map<string, { home: string; read: Promise<void> }>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
   /// calls; seconds on a machine short of memory). Read again off the thread as it is made, at most every
@@ -282,7 +282,7 @@ export class Accounts {
     this.machine =
       deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
     this.checkFn =
-      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env) => this.machineToken(env), urls: this.urls, lang }));
+      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
     this.quotaFn =
       deps.quota !== undefined
         ? deps.quota
@@ -447,15 +447,15 @@ export class Accounts {
   /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
   private codexAccountRead(profile: Profile, again = false): Promise<void> {
     const under = this.codexAccountReads.get(profile.id);
-    if (under && !again) return under;
-    const read: Promise<void> = (under ?? Promise.resolve())
+    if (under && !again && under.home === profile.home) return under.read;
+    const read: Promise<void> = (under?.read ?? Promise.resolve())
       .catch(() => {})
       .then(() => codexAccountIdentity(profile.home))
       .then((account) => void this.codexAccounts.set(profile.id, { home: profile.home, account }))
       .finally(() => {
-        if (this.codexAccountReads.get(profile.id) === read) this.codexAccountReads.delete(profile.id);
+        if (this.codexAccountReads.get(profile.id)?.read === read) this.codexAccountReads.delete(profile.id);
       });
-    this.codexAccountReads.set(profile.id, read);
+    this.codexAccountReads.set(profile.id, { home: profile.home, read });
     return read;
   }
 
@@ -1386,7 +1386,9 @@ export class Accounts {
       const completeHere = this.missingBorrowedResetDetails(profile, got.quota) && mine !== undefined &&
         !this.missingBorrowedResetDetails(profile, mine) && mine.resetCount === got.quota.resetCount &&
         mine.checkedAt <= now && now - mine.checkedAt < QUOTA_EVERY_MS;
-      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
+      // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+      const same = mine !== undefined && JSON.stringify(got.quota) === JSON.stringify(mine);
+      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !same && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
         this.quotas.set(profile.id, got.quota as ProfileQuota);
         this.#keepQuota(profile.id, got.quota);
       }
@@ -1518,7 +1520,7 @@ export class Accounts {
       return this.quotas.get(id) ?? null;
     }
     if (!this.quotaFn) return this.quotas.get(id) ?? null;
-    const { signedOut, unanswered, ...asked } = await this.quotaFn(profile);
+    const { signedOut, unanswered, recheck, ...asked } = await this.quotaFn(profile);
     if ((this.loginGeneration.get(id) ?? 0) !== generation) return this.quotas.get(id) ?? null;
     // No answer (the provider not reached, or in trouble itself) says nothing of the allowance: the one read before
     // stands, with when it was read, till an answer comes or it is too old to show. One such miss took every Claude
@@ -1551,7 +1553,18 @@ export class Accounts {
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
       if (refused) this.codexLogin(id, true);
       else if (read.state === "ok") this.codexLogin(id, false);
-    } else if (signedOut && this.checks.get(id)?.state !== "login") this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (signedOut && this.checks.get(id)?.state !== "login") {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (recheck && this.checks.get(id)?.state === "ok") {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (
+      profile.runtime === "claude" &&
+      accessKind(profile) === "subscription" &&
+      read.state === "ok" &&
+      (this.checks.get(id)?.state === "failed" || this.checks.get(id)?.state === "login")
+    ) {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    }
     return read;
   }
 
@@ -1703,6 +1716,17 @@ export class Accounts {
     });
   }
 
+  /// PUT /auto-chats (a workspace manager's): whether this station accepts automatically assigned new chats and presets
+  /// (`acceptAutoChats` in config.json; opt-in, defaults to false).
+  async putAutoChats(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
+    if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.autoChats.managersOnly"));
+    if (typeof input.enabled !== "boolean") throw new Refusal(400, tr(lang, "station.autoChats.badSettings"));
+    const enabled = input.enabled;
+    await this.save(viewer, "auto chats", (raw) => {
+      raw.acceptAutoChats = enabled;
+    });
+  }
+
   /// POST /automatic-decisions/review: the done chats no decision has answered, reviewed now in the background; how many.
   async reviewUndecided(viewer: Viewer, lang: Lang = stationLang()): Promise<number> {
     if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.decisions.managersOnlyReview"));
@@ -1813,16 +1837,21 @@ export class Accounts {
     if (changed !== null) this.deps.reviewUndecided?.();
   }
 
-  /// The overview's `profiles`: all of them, to the members of every workspace the station is in alike
-  ///; `workspaces` says which joined ones' chats run on each.
+  /// The overview's `profiles`: the station's own to the members of every workspace it is in alike (`serves` says
+  /// whether the viewer's may run on each, so a manager can still turn a withheld one on), and a copy of another
+  /// station's only to the workspaces that station lends it in: its account is not theirs to see elsewhere.
+  /// `workspaces` says which joined ones' chats run on each. With no viewer, all of them.
   profilesView(viewer?: Viewer): Json[] {
     const raw = this.deps.config.raw();
     const config = hubConfig(raw, this.deps.data, this.found);
     const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
     const home = this.deps.workspaces?.()[0] ?? null;
     const others = this.joined();
-    this.readHomesSoon(config.profiles);
-    const views = config.profiles.map((p) => {
+    const visible = viewer === undefined
+      ? config.profiles
+      : config.profiles.filter((p) => !borrowed(p) || allowedIn(p, joined, home ?? viewer.workspace));
+    this.readHomesSoon(visible);
+    const views = visible.map((p) => {
       const says = this.homeSays(p);
       const kind = accessKind(p);
       const a: Json = isObject(p.access) ? p.access : {};

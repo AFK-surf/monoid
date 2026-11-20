@@ -643,13 +643,15 @@ let step_run_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, w=Full, l
 let step_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full, leading=L5)
 
 ///|
-/// The machine joined, in node `v`: on green's ground at 0.12, round 12, 12 and 10 in, its check (16) and 「name」已加入 in
-/// green beside it, 8 apart.
+/// The machine joined, in node `v`: on green's ground at 0.12, round 12, 12 and 10 in, its check (16, on the first line)
+/// and 「name」已加入 in green beside it, 8 apart.
 fn joined_line_node(v : @view.View, name : () -> String) -> Unit {
   v.box(fn(r) {
     @sf.style_node(r, fn() { joined_line })
     r.ground(By(fn() { @sf.alpha(@sf.theme().p.green, 0.12) })).radius(Is(12.0)) |> ignore
-    @sf.icon_node(r, "check", 16.0, By(fn() { @sf.theme().p.green })) |> ignore
+    // (on its words' first line, however many they come to: @sf.first_line_node)
+    @sf.first_line_node(r, Ui, fn(l) { @sf.icon_node(l, "check", 16.0, By(fn() { @sf.theme().p.green })) |> ignore }, leading=L6)
+    |> ignore
     r.box(fn(w) {
       w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       w
@@ -665,7 +667,7 @@ fn joined_line_node(v : @view.View, name : () -> String) -> Unit {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let joined_line : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S2 align=ACenter")
+let joined_line : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S2 align=AStart")
 
 ///|
 /// 「name」已加入: the interface's size, 20 a line (its ink the palette's green).

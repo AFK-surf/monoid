@@ -57,7 +57,7 @@ pub fn agent_badge(c : @ui.Ctx, badge : String, side : Double, ground : Int64) -
       let at = side - d + agent_spokes_past * k
       c.layer(fn() {
         c.box(style=@ui.style(w=Fixed(d), h=Fixed(d)), tx=at, ty=at, fn() {
-          @sf.spokes(c, d, @sf.mark_yellow) |> ignore
+          @sf.spokes(c, d, @sf.mark_yellow()) |> ignore
         })
         |> ignore
       })

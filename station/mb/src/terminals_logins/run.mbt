@@ -388,19 +388,12 @@ pub async fn LoginRun::start(self : LoginRun) -> Unit {
 
 ///|
 fn basename(path : String) -> String {
-  match path.rev_find("/") {
-    Some(i) => path.unsafe_substring(start=i + 1, end=path.length())
-    None => path
-  }
+  @nodepath.basename("/", path)
 }
 
 ///|
 fn dirname(path : String) -> String {
-  match path.rev_find("/") {
-    Some(0) => "/"
-    Some(i) => path.unsafe_substring(start=0, end=i)
-    None => "."
-  }
+  @nodepath.dirname("/", path)
 }
 
 ///|

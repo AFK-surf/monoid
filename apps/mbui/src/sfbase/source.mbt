@@ -556,6 +556,23 @@ fn topic_key(name : String, params : Map[String, Json]) -> String {
 let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 
 ///|
+/// Source `src` let go (its owner's view gone): the topics it follows let go of with it, whatever still watches them, so
+/// none of them holds on to what it reads through (the source it was made of); what that one reads let go of by its own
+/// last watcher as ever, never released here.
+fn followed_forget_source(src : Source) -> Unit {
+  let gone = followed_topics.val.filter(fn(t) { physical_equal(t.source, src) && !t.independent })
+  if gone.is_empty() {
+    return
+  }
+  // (taken out first: what letting each go tells finds none of them)
+  followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && !t.independent) })
+  for t in gone {
+    topic_readers_drop(src, t.key)
+    t.holder.dispose()
+  }
+}
+
+///|
 /// Whether a reader holds topic `name` with `params` now (a page's, a graph's: followed and watched). It asks nothing
 /// of the core and acquires nothing.
 fn topic_held(name : String, params : Map[String, Json]) -> Bool {
@@ -699,6 +716,7 @@ pub fn declared_unread() -> Array[String] {
 /// would (declared_let_go), not left followed by nothing into the next run (where it was taken as asked already, its
 /// subscription never sent again: a replay's pace pass after one ended before the reader came).
 fn declared_reset() -> Unit {
+  shelf_workspace.val = None
   declared_let_go()
   page_declared_let_go()
 }
@@ -747,11 +765,16 @@ fn followed_topic(
           @ui.after_frame(fn() {
             match followed_topics.val.search_by(fn(t) { physical_equal(t.token, token) }) {
               Some(i) if !followed_topics.val[i].holder.watched() => {
+                let holder = followed_topics.val[i].holder
                 // A removed Array slot keeps its old value alive; replace the array before releasing.
                 followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
                 if !independent {
                   topic_readers_drop(src, key)
                 }
+                // (its holder let go of what it read before the subscription is released, as let_go_unread's: an untracked
+                // read of it since it lost its last reader (existing_followed_topic, read_held_found) linked it to the
+                // subscription again, which the client would then never end)
+                holder.dispose()
                 (src.release)(name, params)
               }
               _ => ()

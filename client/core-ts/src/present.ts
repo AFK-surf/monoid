@@ -13,6 +13,7 @@ import * as jobsMod from "./jobs.ts";
 import { permissionsShown } from "./permissions.ts";
 import { copiesShown } from "./copies.ts";
 import { elevationShown } from "./elevation.ts";
+import { screenServiceShown } from "./screen-service.ts";
 import * as model from "./shapes/model.ts";
 import * as providers from "./shapes/providers.ts";
 import { arr as arrU, equal, get as getU, isObject, shaped, str, u64 } from "./util.ts";
@@ -30,7 +31,7 @@ const arr = (v: unknown): J[] | undefined => arrU(v);
 const get = (v: unknown, k: string | number): J => getU(v, k);
 
 /// The time a value is put together for: now, and the viewer's offset from UTC.
-export type Clock = { now: number; offsetMin: number };
+export type Clock = { now: number; offsetMin: number; reached?: (at: number, later?: boolean) => boolean };
 
 /// The clock moved on to `c` (a value is put together for it): what reads a grain that changed is made again.
 export function clockAt(c: Clock): void {
@@ -117,7 +118,7 @@ export function stamp(ms: number, c: Clock): Record<string, unknown> {
 }
 
 /// Times kept in seconds (still.fail cloud's) and in milliseconds (the station's).
-const SECONDS = new Set(["created_at", "expires_at", "used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
+const SECONDS = new Set(["created_at", "expires_at", "used_at", "last_used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
 const MILLIS = new Set(["createdAt", "lastActiveAt", "lastUsedAt", "checkedAt", "resetsAt"]);
 /// The fields `times` says in words (`time`), each a moment.
 export const TIME_KEYS: readonly string[] = [...SECONDS, ...MILLIS];
@@ -615,8 +616,10 @@ export function mentions(text: string, named: [string, string][], members: J[]):
     while (len < tail.length && /[A-Z0-9]/.test(tail[len])) len++;
     if (len > 0 && tail[len] === ">") {
       const id = tail.slice(0, len);
-      const name = named.find(([b]) => b === id)?.[1] ?? memberName(members, id) ?? id;
-      out += `@${name}`;
+      // (a bot named nothing yet, as a connect not named, goes by a name heard of it, else as a member; one named with
+      // its `@` is not given another)
+      const name = named.find(([b, n]) => b === id && n !== "")?.[1] ?? memberName(members, id) ?? id;
+      out += name.startsWith("@") ? name : `@${name}`;
       rest = tail.slice(len + 1);
     } else {
       out += "<@";
@@ -1424,7 +1427,7 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     case "drive":
       return drive.shown(value, c);
     case "prefs":
-      return prefsMod.shown(value);
+      return prefsMod.shown(value, c);
   }
   if (!ticks(topic)) return value;
   const v = value as J;
@@ -1498,6 +1501,10 @@ function overview(value: J, c: Clock, station: string | null): J {
   const elevation = elevationShown(v.elevation);
   if (elevation === undefined) delete v.elevation;
   else v.elevation = elevation;
+  // A Windows station's optional LocalSystem screen service, in words (screen-service.ts); none said, none shown.
+  const screenService = screenServiceShown(v.screenService);
+  if (screenService === undefined) delete v.screenService;
+  else v.screenService = screenService;
   // Where its chats are copied (copies.ts); none said, none shown.
   const copies = copiesShown(v.copies, c);
   if (copies === undefined) delete v.copies;

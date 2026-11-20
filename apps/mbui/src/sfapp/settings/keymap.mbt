@@ -149,6 +149,41 @@ pub fn binding_of(code : Int, mods : Int) -> String? {
 }
 
 ///|
+/// What keys_recording says while the 快捷键 page looks for shortcuts by the keys pressed (按键搜索): no action's name,
+/// so no row records, and the window's keys stand aside as they do while one does (keymap_of, window_zoom's).
+pub let keys_searching : String = " search"
+
+///|
+/// A binding (Shift+Mod+H) as a key cap shows it, as the core's keymap.ts label does: ⌘⇧H on a Mac, Ctrl+Shift+H
+/// elsewhere.
+pub fn binding_label(binding : String) -> String {
+  let parts = binding.split("+").map(fn(p) { p.to_owned() }).collect()
+  let key = parts.last().unwrap_or("")
+  let mods = parts[:parts.length() - 1].to_owned()
+  let shown = match key {
+    "Up" => "↑"
+    "Down" => "↓"
+    "Left" => "←"
+    "Right" => "→"
+    "Escape" => "Esc"
+    "Enter" => "↩"
+    "Plus" => "+"
+    "Space" => @sf.t("web-main.keymap.space")
+    k => k
+  }
+  if @ui.keys_system() == 0 {
+    let marks = [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Mod", "⌘")]
+    marks.iter().filter(fn(m) { mods.contains(m.0) }).map(fn(m) { m.1 }).collect().join("") + shown
+  } else {
+    let said : Array[String] = ["Mod", "Ctrl", "Alt", "Shift"]
+      .filter(fn(m) { mods.contains(m) })
+      .map(fn(m) { if m == "Mod" { "Ctrl" } else { m } })
+    said.push(shown)
+    said.join("+")
+  }
+}
+
+///|
 /// The window's keymap (mbui's view keymap.mbt) as the core's prefs say it: each action's keys here, where it works by
 /// its group (anywhere; `Chat` in a chat; `Files` in a folder of the files) and with the cursor in a field by its
 /// `typing` (always; never: `!Field`; with the field empty: `!Field || FieldEmpty`); then the app's own, never changed
@@ -186,6 +221,9 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
   bindings.push({ keys: [stroke(@ui.key_code_enter, @ui.mod_shift_key)], action: "find.prev", when: In("Find") })
   // (what a field offers as it is typed in, where it is open: sf's offers_node.mbt)
   bindings.append(@sf.offers_bindings())
+  // (↓ ↑ Enter Escape in a combobox, with the cursor in its field too: a long pick's search, 前往文件夹; mbui's
+  // @headless.combobox_keys, sf's combobox_bindings)
+  bindings.append(@sf.combobox_bindings())
   // (↓ ↑ in the search's list, with the cursor in its field: ⌘K's and the search's page's, sfpages' switcher.mbt)
   bindings.append(@sf.finder_bindings())
   // (Escape where a search is up, with the cursor in a field too, or a picture's old viewer, not in a field: sfpages'
@@ -299,9 +337,6 @@ fn files_bindings() -> Array[@view.Binding] {
     b(@ui.key_of_char('['), mod_key() | shift, "files.tab_back", files),
     b(@ui.key_of_char('d'), @ui.mod_cmd | @ui.mod_alt, "files.split", files),
     b(@ui.key_of_char('g'), @ui.mod_cmd | shift, "files.go_to", files),
-    // (↓ ↑ in 前往文件夹, with the cursor in its field: what is chosen under it, sfdesk's files_go.mbt)
-    b(@ui.key_code_down, 0, "files.go_to.down", In("GoTo")),
-    b(@ui.key_code_up, 0, "files.go_to.up", In("GoTo")),
   ]
 }
 
@@ -321,6 +356,14 @@ fn remote_bindings() -> Array[@view.Binding] {
     b(@ui.key_of_char(']'), mod_key(), "farview.forward", farview),
     b(@ui.key_of_char('t'), mod_key(), "farview.tab_new", farview),
     b(@ui.key_of_char('w'), mod_key(), "farview.tab_close", farview),
+    // (words found on the page, and the page shown bigger or smaller: its own zoom, before the window's, window_zoom's)
+    b(@ui.key_of_char('f'), mod_key(), "farview.find", farview),
+    b(@ui.key_of_char('g'), mod_key(), "farview.find_next", farview),
+    b(@ui.key_of_char('g'), mod_key() | shift, "farview.find_prev", farview),
+    b(@ui.key_of_char('='), mod_key(), "farview.zoom.in", farview),
+    b(1043, mod_key(), "farview.zoom.in", farview),
+    b(@ui.key_of_char('-'), mod_key(), "farview.zoom.out", farview),
+    b(@ui.key_of_char('0'), mod_key(), "farview.zoom.reset", farview),
     b(@ui.key_of_char('t'), mod_key(), "remote.tab_new", remote),
     b(@ui.key_of_char('w'), mod_key(), "remote.tab_close", remote),
     b(@ui.key_tab, @ui.mod_ctrl, "remote.tab_next", remote),

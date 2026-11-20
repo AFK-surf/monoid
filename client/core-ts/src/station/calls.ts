@@ -9,7 +9,7 @@ import * as format from "../format.ts";
 import { t } from "../i18n.ts";
 import { base64, fromBase64 } from "../util.ts";
 import { Beside } from "../protocol.ts";
-import { chatKeptId, keptId, sentKeptId } from "../drive-kept.ts";
+import { PREVIEW_SMALL, chatKeptId, keptId, openKeptId, previewKeptId, sentKeptId } from "../drive-kept.ts";
 import { folderOf } from "../ops.ts";
 import * as looks from "../looks.ts";
 import { buildFusion } from "../present.ts";
@@ -275,10 +275,10 @@ export function install(): void {
     const heard: Progress = (v, b) => {
       if (c.progress) asked(v, b);
     };
-    return once(inner, JSON.stringify([c.station, c.key, c.name, c.thumb, c.keep]), heard, (progress) => {
-      const read = Effect.flatMap(parse(c.station), (addr) =>
+    return once(inner, JSON.stringify([c.station, c.key, c.name, c.thumb, c.keep, c.preview ?? false]), heard, (progress) => {
+      const readAs = (thumb: boolean | "preview") => Effect.flatMap(parse(c.station), (addr) =>
         Effect.map(
-          wholeFile(inner, addr, c.key, c.name, c.thumb, progress, ctx),
+          wholeFile(inner, addr, c.key, c.name, thumb, progress, ctx),
           ({ value, bytes }) => {
             const { type } = value as { type: string };
             if (c.thumb) inner.data.keepFile(c.station, c.key, c.name, "thumb", type, base64(bytes));
@@ -286,8 +286,10 @@ export function install(): void {
           },
         ),
       );
+      const read = readAs(c.thumb);
       const station = () => {
         if (c.keep === null) return Effect.map(read, ([type, bytes]) => new Beside({ type }, bytes));
+        if (c.preview && c.keep > PREVIEW_SMALL) return preview(c.keep);
         // With `keep`: what is kept of it answered whole without asking the station; else read a part at a time as its
         // parts are (`station.file.part` with `keep`), each kept with its chat as it comes (drive-kept.ts `chat`), one
         // stopped short too: let go of (a preview closed), what came is not read again, and the rest is brought all the
@@ -331,6 +333,34 @@ export function install(): void {
           return new Beside({ type }, joined(pieces));
         });
       };
+      // `preview`: what the whole-window viewer shows before the image itself (thumb=2), answered `{ type, preview: true }`;
+      // the image itself where it is kept whole, or where the station answered with it (one from before, or one that
+      // made no preview: its bytes are the image's size), kept then as it is read whole. A preview is kept among the
+      // files (drive-kept.ts `previewKeptId`), let go of as they are, the least lately read first.
+      const preview = (size: number) => {
+        const id = chatKeptId(c.station, c.key, c.name);
+        const pid = previewKeptId(c.station, c.key, c.name);
+        return Effect.gen(function* () {
+          const whole = yield* inner.driveKept.read(id, 0, size, 0, size);
+          if (whole !== null) {
+            progress({ loaded: size, total: size });
+            return new Beside({ type: whole.type }, whole.bytes);
+          }
+          const held = yield* inner.driveKept.held(pid);
+          if (held !== null) {
+            progress({ loaded: held.size, total: held.size });
+            return new Beside({ type: held.type, preview: true }, held.bytes);
+          }
+          const [type, bytes] = yield* readAs("preview");
+          // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+          if (bytes.length === size) {
+            inner.runner.fork(inner.driveKept.keep(id, "chat", 0, size, type, 0, bytes.slice()));
+            return new Beside({ type }, bytes);
+          }
+          inner.runner.fork(inner.driveKept.keep(pid, "file", 0, bytes.length, type, 0, bytes.slice()));
+          return new Beside({ type, preview: true }, bytes);
+        });
+      };
       // One sent up from here is answered as it went, for its thumbnail too (drive-kept.ts `sent`): not read back from the
       // station it went to.
       return Effect.flatMap(inner.driveKept.held(sentKeptId(c.station, c.name)), (sent) => {
@@ -354,6 +384,7 @@ export function install(): void {
   };
   const chatPart = (inner: Inner, c: Extract<Call, { kind: "stationFilePart" }>, progress: Progress, ctx: SpanContext) => {
     const quiet = c.quiet === true;
+    const noHedge = c.noHedge === true;
     const [heard, sink] = partProgress(c, progress);
     // What is kept here of it, answered as the station would.
     const here = (got: { type: string; bytes: Uint8Array }, total: number) => {
@@ -364,7 +395,7 @@ export function install(): void {
     const station = () => {
       if (c.keep === null) {
         return Effect.map(
-          Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet)),
+          Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.filePart(addr, c.key, c.name, c.offset, c.length, ctx, heard, sink, undefined, quiet, noHedge, c.lane)),
           (got) => partAnswer(c, { type: got.type, total: got.total }, got.bytes),
         );
       }
@@ -385,7 +416,7 @@ export function install(): void {
           sink,
           (at, length, before, take, said) =>
             Effect.flatMap(parse(c.station), (addr) =>
-              inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet),
+              inner.stations.requests.filePart(addr, c.key, c.name, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, noHedge, c.lane),
             ),
           (head, at, bytes) => ((!size || head.total === size) && at + bytes.length <= head.total ? inner.driveKept.keep(id, "chat", 0, head.total, head.type, at, bytes) : Effect.void),
           (head) => head.total === size,
@@ -431,11 +462,43 @@ export function install(): void {
       catch: asCoreError,
     });
   };
+  // A file a message names: kept on this device as it is read (drive-kept.ts `openKeptId`), by the version the station
+  // says, and asked again by that version each time (it may have changed since): not changed, what is kept is answered
+  // (`same`), with none of its bytes from the station; the station not reached, what is kept all the same (`stale`).
+  // With `kept`, what is kept alone, no station asked; with `played`, kept as a video's or song's parts are. What is
+  // kept is answered by the path as named (the station's own name for it is not kept).
   handlers.fileOpen = (inner, call, _p, _a, ctx) => {
     const c = call as Extract<Call, { kind: "fileOpen" }>;
-    return Effect.flatMap(parse(c.station), (addr) =>
-      Effect.map(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx), (got) => new Beside({ name: got.name, path: got.path, type: got.type, size: got.size }, got.bytes)),
-    );
+    const id = openKeptId(c.station, c.key, c.path);
+    const named = c.path.split(/[\\/]/).filter((s) => s !== "").pop() ?? c.path;
+    return Effect.gen(function* () {
+      const addr = yield* parse(c.station);
+      const version = yield* inner.driveKept.version(id);
+      const at = c.range?.offset ?? 0;
+      const kept = version === null ? null : yield* inner.driveKept.read(id, version.mtime, version.size, at, c.range?.length ?? version.size);
+      const fromKept = (more: Record<string, boolean>) => new Beside({ name: named, path: c.path, type: kept!.type, size: version!.size, ...more }, kept!.bytes);
+      if (c.kept) {
+        if (kept === null) return yield* Effect.fail(new CoreError("not_kept", t("station.core.fileUnreadable")));
+        // (a video or song played from what is kept: asked again by its version as its start is read, so what was kept
+        // of it goes once it changed, its new start kept in its place)
+        if (c.played && at === 0) {
+          inner.runner.fork(Effect.ignore(Effect.flatMap(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, `${version!.mtime}:${version!.size}`), (said) =>
+            said.same || said.mtime === null || said.bytes.length === 0 ? Effect.void : inner.driveKept.keep(id, "played", said.mtime, said.size, said.type, 0, said.bytes.slice()))));
+        }
+        return fromKept({});
+      }
+      const have = kept === null ? undefined : `${version!.mtime}:${version!.size}`;
+      const got = yield* Effect.result(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, have));
+      if (got._tag === "Failure") {
+        if (kept !== null && (got.failure.code === "offline" || got.failure.code === "timeout" || got.failure.code === "mesh")) return fromKept({ stale: true });
+        return yield* Effect.fail(got.failure);
+      }
+      const said = got.success;
+      if (said.same && kept !== null) return fromKept({ same: true });
+      // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+      if (said.mtime !== null && !said.same && said.bytes.length > 0) inner.runner.fork(inner.driveKept.keep(id, c.played ? "played" : "file", said.mtime, said.size, said.type, at, said.bytes.slice()));
+      return new Beside({ name: said.name, path: said.path, type: said.type, size: said.size }, said.bytes);
+    });
   };
   // With `keep`: what is kept of the file as its folder said it is answered as the station would (a stream's bytes in
   // one piece), not asked of it again, and only what is not kept from the part's offset on asked of the station; what
@@ -449,11 +512,12 @@ export function install(): void {
   };
   const drivePart = (inner: Inner, c: Extract<Call, { kind: "driveRead" }>, progress: Progress, ctx: SpanContext) => {
     const quiet = c.quiet === true;
+    const noHedge = c.noHedge === true;
     const [heard, sink] = partProgress(c, progress);
     const id = keptId(c.station, c.root, c.path);
     if (c.keep === null || c.mtime === null || c.size === null) {
       return Effect.map(
-        Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet)),
+        Effect.flatMap(parse(c.station), (addr) => inner.stations.requests.driveRead(addr, c.root, c.path, c.offset, c.length, ctx, heard, sink, undefined, quiet, undefined, noHedge, c.lane)),
         (got) => partAnswer(c, { type: got.type, total: got.total, mtime: got.mtime }, got.bytes),
       );
     }
@@ -469,7 +533,7 @@ export function install(): void {
         sink,
         (at, length, before, take, said) =>
           Effect.flatMap(parse(c.station), (addr) =>
-            inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size]),
+            inner.stations.requests.driveRead(addr, c.root, c.path, at, length, ctx, heard && ((loaded) => heard(before + loaded)), take, said, quiet, [mtime, size], noHedge, c.lane),
           ),
         // (kept as the folder said it is; the station's says it changed: what was kept of it goes)
         (head, at, bytes) => (head.total === size && head.mtime === mtime ? inner.driveKept.keep(id, keep, mtime, size, head.type, at, bytes) : inner.driveKept.forget(id)),

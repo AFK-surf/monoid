@@ -213,7 +213,7 @@ class DecisionChanged extends Error {}
 class DecisionCardMoved extends Error {}
 
 /// An item an agent may ask for: of a vault (its id) or of the plain library (`plain`), whose owner (email) decides.
-export type Listed = { vault: string; item: string; owner: string | null; listing: Listing };
+export type Listed = { vault: string; vaultName?: string; scope?: "workspace" | "personal"; item: string; owner: string | null; listing: Listing };
 
 /// A use of a secret, as the pages list them: a request decided, in the chat that asked.
 export type Use = { item: string; at: number; session: string; chatTitle: string | null; mode: Mode; command: string | null; hosts: string[]; denied: boolean };
@@ -441,7 +441,7 @@ export class Secrets {
       const now = attempt === 0 && firstNow !== undefined ? firstNow : Math.floor(this.#d.now() / 1000);
       const { request, grant, uses, until } = attempt === 0 && first !== undefined ? first : JSON.parse(row.body) as SavedGrant;
       let checked: { body: string | null; owner: string; limit: { lasts: Scope; at: number } | null | undefined } | undefined;
-      if ((until ?? grant.exp) > now && !ended(request.session) && this.#d.lock(row.ws) === null) {
+      if ((until ?? grant.exp) > now && !ended(request.session) && this.#plainHeld(row.ws)) {
         const snapshot = this.#d.plain.itemSnapshot(row.ws, request.item);
         const item = snapshot?.value ?? null;
         const l = item?.listing;
@@ -463,7 +463,7 @@ export class Secrets {
           if (current === undefined) return true;
           if (current.body !== row.body || current.item_body !== checked.body
             || (limit !== undefined && (current.lasts !== (limit?.lasts ?? null) || current.at !== (limit?.at ?? null)))
-            || (until ?? grant.exp) <= Math.floor(this.#d.now() / 1000) || ended(request.session) || this.#d.lock(row.ws) !== null) {
+            || (until ?? grant.exp) <= Math.floor(this.#d.now() / 1000) || ended(request.session) || !this.#plainHeld(row.ws)) {
             row = { ...row, body: current.body };
             continue;
           }
@@ -807,8 +807,9 @@ export class Secrets {
   }
 
   #vaultListings(lock: LockState, vault: Vault, items: Item[]): Listed[] {
+    const scope = vault.scope === "workspace" ? "workspace" : "personal";
     return items.flatMap((item) => !item.deleted && item.listing !== undefined && item.epoch === vault.epoch
-      ? [{ vault: vault.id, item: item.id, owner: lock.members.get(vault.owner)?.email ?? null, listing: item.listing }] : []);
+      ? [{ vault: vault.id, vaultName: vault.name, scope, item: item.id, owner: lock.members.get(vault.owner)?.email ?? null, listing: item.listing }] : []);
   }
 
   #listingsAt(ws: string, lock: LockState | null, email: string): Listed[] {
@@ -1082,12 +1083,23 @@ export class Secrets {
   /// secret_use: a request for `itemName` (its id or listed name) from `session`, its card posted; decided, the session
   /// is told (#settle).
   async ask(session: string, a: { item: string; mode?: string; reason: string; command?: string; hosts?: string[]; station?: string; timeout?: { kind: "idle" | "fixed"; seconds: number }; person?: string }): Promise<string> {
-    const { ws } = this.#placeOf(session);
+    const { ws, lock } = this.#placeOf(session);
     const runOn = a.station ? this.#peer(a.station) : null;
     const wanted = a.item.trim().toLowerCase();
     const found = this.#findListing(session, wanted, a.person);
-    // Named, the card is theirs to decide (a member of the vault it is in); else the vault's owner's.
-    const decider = a.person?.trim() ? this.#personFor(session, a.person) : found?.owner ?? null;
+    // Named, the card is theirs to decide (a member of the vault it is in); else the chat starter if they are a member
+    // of that vault (e.g. a shared workspace vault), falling back to the vault's owner.
+    let decider: string | null;
+    if (a.person?.trim()) {
+      decider = this.#personFor(session, a.person);
+    } else {
+      const starter = this.#personFor(session, undefined);
+      const starterSub = starter !== null && lock !== null ? this.#memberOf(lock, starter) : null;
+      const vault = found !== undefined && found.vault !== PLAIN ? this.#d.vaults.vault(ws, found.vault) : null;
+      decider = starter !== null && starterSub !== null && vault !== null && vault.members.includes(starterSub)
+        ? starter
+        : found?.owner ?? null;
+    }
     if (found === undefined) throw new Refused(`No secret named ${JSON.stringify(a.item)} may be asked for here: secret_list lists those that may.`);
     const { listing } = found;
     const plain = found.vault === PLAIN;
@@ -1498,6 +1510,13 @@ export class Secrets {
 
   // ── secrets agents ask to keep (secret_save agent 存入) ──
 
+  /// Whether a plain library's grant given before still holds in `ws`: no security mode there (its vault's lock, if
+  /// any, its members' own: cloud/vault-lock.ts). Nothing new is kept in or given of the plain library then.
+  #plainHeld(ws: string): boolean {
+    const l = this.#d.lock(ws);
+    return l === null || l.genesis === "";
+  }
+
   /// The person a session works for, as the lock has them (their sub), where security mode is on.
   #memberOf(lock: LockState, email: string): string | null {
     return memberWithEmail(lock, email)?.sub ?? null;
@@ -1525,7 +1544,7 @@ export class Secrets {
       let first: Vault | undefined;
       const personal = (vaults: Vault[]) => {
         for (const vault of vaults) {
-          if (!vault.members.includes(sub) || !vault.keys.some((k) => devices.has(k.cert.device))) continue;
+          if (vault.deleted || vault.scope === "workspace" || !vault.members.includes(sub) || !vault.keys.some((k) => devices.has(k.cert.device))) continue;
           first ??= vault;
           if (vault.owner === sub) return vault;
         }
@@ -1543,16 +1562,18 @@ export class Secrets {
     return { device: cert.device, box: cert.box, secret: seal(cert.box, Buffer.from(JSON.stringify(fields)), saveContext(ws, request)) };
   }
 
-  /// Whether the person a session works for can keep a secret: `plain` (no security mode: the plain library here),
-  /// `on` (a vault of theirs, keyed to a device of theirs set up), `off` (security mode on, their vault not turned on:
-  /// a secret to keep waits on its card until they turn it on there), `none` (no one to keep it for).
+  /// Whether the person a session works for can keep a secret: `plain` (no workspace here: the plain library),
+  /// `on` (a vault of theirs, keyed to a device of theirs set up), `off` (their vault not turned on: a secret to keep
+  /// waits on its card until they turn it on there; security mode off, whoever is not known here yet too), `none` (no
+  /// one to keep it for: in security mode, someone it does not name).
   status(session: string, person?: string): "plain" | "on" | "off" | "none" {
     const { lock } = this.#placeOf(session);
     const email = this.#personFor(session, person);
     if (email === null) return "none";
     if (lock === null) return "plain";
     const sub = this.#memberOf(lock, email);
-    if (sub === null) return "none";
+    // (no security mode: a member whose own lock this station has not heard yet turns their vault on as they keep it)
+    if (sub === null) return lock.genesis === "" ? "off" : "none";
     return this.#vaultFor(lock, sub) !== "" ? "on" : "off";
   }
 
@@ -1611,7 +1632,8 @@ export class Secrets {
     if (modes.includes("ssh") !== (kind === "ssh_key")) throw new Refused("an SSH key is given by ssh (or env), and only an SSH key is");
     if (kind === "file" && (modes.length !== 1 || modes[0] !== "file")) throw new Refused("a file is given as a file (modes: [\"file\"])");
     let sub = lock === null ? null : this.#memberOf(lock, email);
-    if (lock !== null && sub === null) throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
+    // (security mode off: one whose own lock is not heard here yet is sealed to as they turn their vault on, `boxed`)
+    if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
     const listing: Listing = { name, kind, modes, hosts, ...(a.env ? { env: a.env } : {}), ...(about ? { about } : {}) };
     const now = this.#d.now();
     const item = `i_${ulid(now)}`;
@@ -1658,7 +1680,7 @@ export class Secrets {
     }
     lock = currentLock();
     sub = lock === null ? null : this.#memberOf(lock, email);
-    if (lock !== null && sub === null) throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
+    if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
     const fields = typed ? null : fieldsOf(value);
     const requestedAt = this.#d.now();
     const id = `r_${ulid(requestedAt)}`;
@@ -1667,11 +1689,11 @@ export class Secrets {
       ...(typed ? { typed: true as const } : {}), ...(a.oauth !== undefined ? { oauth: a.oauth } : {}), ...(about ? { about } : {}),
     };
     const request: Request = {
-      id, ws, vault: lock === null ? PLAIN : this.#vaultFor(lock, sub!), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
+      id, ws, vault: lock === null ? PLAIN : sub === null ? "" : this.#vaultFor(lock, sub), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
       ...(command !== undefined ? { command } : {}), ...(hosts.length ? { hosts } : {}),
       // A vault's: a box for the grant to this chat that comes with keeping it (the app seals the secret to it too).
       box: lock === null ? "" : this.keeper.open(id), at: Math.floor(requestedAt / 1000), status: "pending", owner: email, save, ...(from ? { runOn: from } : {}),
-      ...(lock !== null && fields !== null ? { sealed: this.#certsOf(lock, sub!).map((c) => this.#sealTo(c, ws, id, fields)) } : {}),
+      ...(lock !== null && fields !== null ? { sealed: sub === null ? [] : this.#certsOf(lock, sub).map((c) => this.#sealTo(c, ws, id, fields)) } : {}),
     };
     const duringHandover = lock !== null && fields !== null && !this.#previousExited;
     if (fields !== null) {
@@ -2193,13 +2215,17 @@ export class Secrets {
   }
 
   /// POST vault/denials: `deny`, sent by `sub`'s app; why it is refused, or null.
-  deny(lock: LockState, sub: string, deny: Deny): string | null {
+  deny(lock: LockState, sub: string, deny: Deny, email?: string): string | null {
     const d = deny as any;
     const k = typeof d?.request === "string" ? this.#kept(lock.ws, d.request) : null;
     if (k === null) return "no such request";
     if (d.v !== 1 || d.ws !== lock.ws) return "a refusal is {v: 1, ws, request, at, sig} of this workspace";
     const by = typeof d.sig?.key === "string" ? signerOf(lock, d.sig.key) : null;
-    if (k.request.save) {
+    if (k.request.save && lock.genesis === "" && devicesFor(lock, sub).length === 0) {
+      // Security mode off and no own lock of theirs heard here: whoever it is kept for turns it down from their app
+      // before they turned their vault on (their credential says who; it keeps nothing, so asks for no lock of theirs).
+      if (email === undefined || email.toLowerCase() !== k.request.owner) return "only the person it is kept for decides it";
+    } else if (k.request.save) {
       // A secret to keep: its owner's to turn down, from one of their devices.
       if (lock.members.get(sub)?.email.toLowerCase() !== k.request.owner) return "only the person it is kept for decides it";
       if (by === null || by.sub !== sub) return "a refusal is signed by one of their devices in the lock";

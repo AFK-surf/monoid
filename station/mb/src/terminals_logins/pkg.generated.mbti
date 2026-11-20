@@ -3,7 +3,6 @@ package "station/terminals_logins"
 
 import {
   "mbui/effect",
-  "station/host",
   "station/jsjson",
   "station/ops_platform",
 }
@@ -63,8 +62,6 @@ pub fn from_base64(String) -> Bytes
 
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn is_terminal_runner(String) -> Bool
 
 pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
@@ -105,7 +102,7 @@ pub fn num(@jsjson.JValue?) -> Double?
 
 pub fn osc_cwd(String) -> (String?, String)
 
-pub fn parse(String) -> @jsjson.JValue raise
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub fn past_screen(Out, Double) -> Bytes?
 
@@ -157,18 +154,22 @@ pub fn utf8_text(Bytes) -> String
 pub(all) suberror BusRefused {
   BusRefused(String)
 }
+pub impl Show for BusRefused
 
 pub suberror Refused {
   Refused(Int32, String)
 }
+pub impl Show for Refused
 
 pub(all) suberror SendFailed {
   SendFailed(String, String)
 }
+pub impl Show for SendFailed
 
 pub suberror TerminalRefused {
   TerminalRefused(Int32, String)
 }
+pub impl Show for TerminalRefused
 
 // Types and methods
 pub(all) struct Acting {

@@ -26,9 +26,10 @@ priv enum RevealPhase {
 /// (else there whole at once). `start_crop`: covering it from its start (its top, or its left), not its middle (a tall one
 /// at the chat's least width, a wide strip at its least height: an old view's FitCoverFrom(0, 0), View::image_covers_at;
 /// bound, as its data says it).
-/// `flies`: made in a change in which it is sent, the picture flies from where it stood then (its way, where it stood in
-/// the window, how late its rise is: View::flies_in), drawn on the way as it is at rest, covering the box the way has,
-/// rounded `corner` (its frame's: what cuts it at rest cuts it nowhere on the way).
+/// `flies`: made in a change in which it is sent, the picture flies from where it stood then, as its caller says of its
+/// box (View::flies_in: its way, where from, how late its rise is, how far it goes and what leads it, with what else
+/// of the same send flies), drawn on the way as it is at rest, covering the box the way has, rounded `corner` (its
+/// frame's: what cuts it at rest cuts it nowhere on the way).
 /// `decoded_for`: the longer side it is decoded for (the largest it is drawn at, bound), so a size that changes asks no
 /// other decode; none: as it is laid out. The node.
 #callsite(autofill(loc))
@@ -43,7 +44,7 @@ pub fn image_reveal_node(
   held? : () -> Bool = fn() { false },
   comes? : () -> Bool = fn() { true },
   start_crop? : () -> Bool = fn() { false },
-  flies? : (@view.Flight, (Double, Double, Double, Double), Double)? = None,
+  flies? : ((@view.View) -> Unit)? = None,
   corner? : Double = 0.0,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -104,7 +105,7 @@ pub fn image_reveal_node(
     // (flying in as a whole, what it waits on as it is decoded and the picture once it is: the box itself from the
     // first frame, never a frame with nothing on the way while it decodes)
     match flies {
-      Some((flight, from, late)) => b.radius(Is(corner)).flies_in(flight, fn(_) { Some(from) }, up_late=late) |> ignore
+      Some(fly) => fly(b.radius(Is(corner)))
       None => ()
     }
     // given a picture (as it is made, or another as its block shows another key): decoded already, or the device's,
@@ -167,12 +168,14 @@ pub fn image_reveal_node(
             1.0 - dmin(1.0, dmax(0.0, (p() * reveal_ms - reveal_wait_after_ms) / reveal_wait_out_ms))
           }
           let top = fn() { -band() + (h() + band()) * e() }
-          for k in 0..<reveal_steps {
+          // (its reveal_steps strips, made once with the layer: none comes or goes after)
+          o.each(fn() { Array::makei(reveal_steps, fn(k) { k }) }, fn(k) { k }, at_once=true, fn(s, k) {
+            let k = k.untracked()
             let y0 = fn() { top() + k.to_double() * step() }
-            reveal_wait_node(o, likeness, w, h, y0, fn() { y0() + step() }, fn() {
+            reveal_wait_strip(s, likeness, w, h, y0, fn() { y0() + step() }, fn() {
               (k.to_double() + 0.5) / reveal_steps.to_double() * waited()
             })
-          }
+          })
           reveal_wait_node(o, likeness, w, h, fn() { top() + band() }, h, waited)
         }
         There => ()
@@ -217,31 +220,44 @@ fn reveal_wait_node(
   alpha : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(s) {
-    let px_of = fn(y : Double) { (y * s.pixel_scale()).round() / s.pixel_scale() }
-    let top = fn() { px_of(dmax(0.0, y0())) }
-    let foot = fn() { px_of(dmin(h(), y1())) }
-    s
-    .over(Is(true))
+  parent.box(made_for=loc, fn(s) { reveal_wait_strip(s, likeness, w, h, y0, y1, alpha, loc~) }) |> ignore
+}
+
+///|
+/// reveal_wait_node's strip in node `s` itself (one of an each's rows, or the box reveal_wait_node makes).
+#callsite(autofill(loc))
+fn reveal_wait_strip(
+  s : @view.View,
+  likeness : () -> String,
+  w : () -> Double,
+  h : () -> Double,
+  y0 : () -> Double,
+  y1 : () -> Double,
+  alpha : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  let px_of = fn(y : Double) { (y * s.pixel_scale()).round() / s.pixel_scale() }
+  let top = fn() { px_of(dmax(0.0, y0())) }
+  let foot = fn() { px_of(dmin(h(), y1())) }
+  s
+  .over(Is(true))
+  .width(By(fn() { Some(w()) }))
+  .height(By(fn() { Some(dmax(0.0, foot() - top())) }))
+  .offset(By(fn() { (0.0, top()) }))
+  .clips(Is(true))
+  .alpha(By(fn() { if foot() <= top() { 0.0 } else { alpha() } }))
+  |> ignore
+  // (its likeness laid from the picture's top: moved up as far as the strip is down)
+  s.box(made_for=loc, fn(l) {
+    l
     .width(By(fn() { Some(w()) }))
-    .height(By(fn() { Some(dmax(0.0, foot() - top())) }))
-    .offset(By(fn() { (0.0, top()) }))
-    .clips(Is(true))
-    .alpha(By(fn() { if foot() <= top() { 0.0 } else { alpha() } }))
+    .height(By(fn() { Some(h()) }))
+    .offset(By(fn() { (0.0, -top()) }))
+    // (each strip of it the one decode, not one for each size they are drawn at: reveal_likeness_px)
+    .image(By(fn() { if likeness() == "" { None } else { Some((likeness(), "", reveal_likeness_px)) } }))
+    .image_fades(Is(false))
     |> ignore
-    // (its likeness laid from the picture's top: moved up as far as the strip is down)
-    s.box(fn(l) {
-      l
-      .width(By(fn() { Some(w()) }))
-      .height(By(fn() { Some(h()) }))
-      .offset(By(fn() { (0.0, -top()) }))
-      // (each strip of it the one decode, not one for each size they are drawn at: reveal_likeness_px)
-      .image(By(fn() { if likeness() == "" { None } else { Some((likeness(), "", reveal_likeness_px)) } }))
-      .image_fades(Is(false))
-      |> ignore
-      style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
-    })
-    |> ignore
+    style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
   })
   |> ignore
 }
@@ -255,10 +271,10 @@ fn reveal_px(w : Double, h : Double, scale : Double) -> Double {
 ///|
 /// How long a picture takes to come in once decoded, how blurred it starts, how much larger, when what it waited on
 /// starts fading and for how long, and in how many steps its edge is drawn (sfpages' image_reveal's).
-pub let reveal_ms : Double = 1100.0
+pub let reveal_ms : Double = 420.0
 
 ///|
-let reveal_blur : Double = 14.0
+let reveal_blur : Double = 8.0
 
 ///|
 let reveal_blur_least : Double = 0.25
@@ -267,13 +283,13 @@ let reveal_blur_least : Double = 0.25
 let reveal_grow : Double = 0.04
 
 ///|
-let reveal_wait_after_ms : Double = 800.0
+let reveal_wait_after_ms : Double = 260.0
 
 ///|
-let reveal_wait_out_ms : Double = 300.0
+let reveal_wait_out_ms : Double = 160.0
 
 ///|
-let reveal_steps : Int = 16
+let reveal_steps : Int = 6
 
 ///|
 let reveal_px_most : Double = 8192.0

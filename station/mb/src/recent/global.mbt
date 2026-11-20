@@ -4,7 +4,7 @@
 /// At most `limit` old or changed chats accounted, with the cursor; old and changed work alternate while both exist,
 /// so new messages cannot postpone old chats. Whether all is accounted then.
 fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
-  write(db, () => {
+  db.write(() => {
     let meta = one(
       db,
       "SELECT CAST(cursor AS TEXT) AS cursor, CAST(through AS TEXT) AS through, complete, prefer_dirty FROM recent_chat_meta WHERE id = 1",
@@ -15,11 +15,11 @@ fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
       "SELECT CAST(thread AS TEXT) AS tid FROM recent_chat_dirty ORDER BY thread LIMIT ?",
       [lim],
     )
-    let complete = int(meta, "complete") == 1
+    let complete = @sql.row_int(meta, "complete") == 1
     let use_dirty = pending.length() > 0 &&
-      (complete || int(meta, "prefer_dirty") == 1)
-    let cursor = get(meta, "cursor")
-    let through = get(meta, "through")
+      (complete || @sql.row_int(meta, "prefer_dirty") == 1)
+    let cursor = @sql.row_val(meta, "cursor")
+    let through = @sql.row_val(meta, "through")
     let old = if !use_dirty && !complete && !(through is Null) {
       if cursor is Null {
         db.all(
@@ -38,7 +38,7 @@ fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
     let chats = if use_dirty { pending } else { old }
     let mut delta = 0
     for row in chats {
-      let thread = get(row, "tid")
+      let thread = @sql.row_val(row, "tid")
       let had = exists(
         db,
         "SELECT 1 FROM recent_chat_rows WHERE thread = CAST(? AS INTEGER)",
@@ -81,7 +81,7 @@ fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
       )
     } else {
       let reached = match chats.last() {
-        Some(r) => get(r, "tid")
+        Some(r) => @sql.row_val(r, "tid")
         None => cursor
       }
       ignore(
@@ -95,7 +95,7 @@ fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
         ),
       )
     }
-    int(
+    @sql.row_int(
       one(db, "SELECT complete FROM recent_chat_meta WHERE id = 1", []),
       "complete",
     ) ==
@@ -109,7 +109,7 @@ fn global_step(db : @sql.Db, limit : Int) -> Bool raise {
 fn global_ready(db : @sql.Db) -> Bool raise {
   snapshot(db, "recent_chat_page", () => {
     installed(db, "global") &&
-    int(
+    @sql.row_int(
       one(db, "SELECT complete FROM recent_chat_meta WHERE id = 1", []),
       "complete",
     ) ==

@@ -9,17 +9,17 @@
 // Operations (`op`, its JSON → its answer):
 //   fetch {url, method, headers} + body → {status, headers} + body
 //   stream.open {url, method, headers} + body → {status, headers, id}; stream.read {id} → bytes, or {end}; stream.close {id}
-//   ws.open {url, protocols, binary?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
-//   asked: else such a frame is let go), or {end}; ws.send {id, text} or {id} and its bytes; ws.close {id}
+//   ws.open {url, protocols, binary?, control?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
+//   asked: else such a frame is let go), {ping} or {pong} (only where `control` was asked), or {end}; ws.send {id, text} or {id} and its bytes; ws.ping {id}; ws.close {id}
 //   storage.get {key} → bytes or {none}; storage.set {key} + value; storage.delete {key}
 //   kept.read {at, start, end} → bytes or {none} — a file the app saved where the person keeps files, read back
 //     (`at` as the system named it: a path; on Android a content address), answered by the app (Apple: apple_core.mm;
 //     Android: CoreHost; Windows: win_core.c)
 //   kept.stage {name, offset} + bytes → {path, size} — a file a station sends this phone, written where its adb shell
 //     reads (Android: CoreHost); offset -1 only asks
-//   secure.get {key, user, reason?} → bytes or {none}; secure.set {key, user} + value; secure.delete {key};
-//     secure.ask {reason} — answered by the app (Kotlin: the Keystore, and the prompt when `user` or asked), not the
-//     shell ("设备上的钥匙")
+//   secure.get {key, user, reason?} → bytes or {none}; secure.getMany {keys, user, reason?} → {sizes} + bytes;
+//     secure.set {key, user} + value; secure.delete {key}; secure.ask {reason} — answered by the app (Kotlin: the
+//     Keystore, and the prompt when `user` or asked), not the shell ("设备上的钥匙")
 //   db.read {table, from, to} → {keys, sizes} + the values one after another (the former records store, read once)
 //   tcp.open {port} → {id}; tcp.read {id} → bytes or {end}; tcp.write {id} + bytes; tcp.end {id}; tcp.close {id}
 //   adb.pair {port, code}; adb.hold {port} (fails `unpaired` while adbd does not take the key); adb.state {} → {port};
@@ -363,6 +363,22 @@ export class BridgeHost implements Host {
   secureGet(key: string, opts: { user: boolean; reason?: string }): Effect.Effect<Uint8Array | null, HostError> {
     return Effect.map(this.#bridge.call("secure.get", { key, user: opts.user, reason: opts.reason ?? "" }), (a) => ((a.json as J)?.none === true ? null : (a.bytes ?? new Uint8Array(0))));
   }
+  secureGetMany(keys: readonly string[], opts: { user: boolean; reason?: string }): Effect.Effect<(Uint8Array | null)[], HostError> {
+    if (keys.length === 0) return Effect.succeed([]);
+    return Effect.catch(
+      Effect.map(this.#bridge.call("secure.getMany", { keys: [...keys], user: opts.user, reason: opts.reason ?? "" }), (a) => {
+        const sizes = ((a.json as J)?.sizes ?? []) as number[];
+        const bytes = a.bytes ?? new Uint8Array(0);
+        let at = 0;
+        return keys.map((_, i) => {
+          const n = sizes[i];
+          if (typeof n !== "number" || n < 0) return null;
+          return bytes.slice(at, (at += n));
+        });
+      }),
+      (e) => (e.message === "unsupported" ? Effect.forEach(keys, (k) => this.secureGet(k, opts)) : Effect.fail(e)),
+    );
+  }
   secureSet(key: string, value: Uint8Array, opts: { user: boolean }): Effect.Effect<void, HostError> {
     return Effect.asVoid(this.#bridge.call("secure.set", { key, user: opts.user }, value));
   }
@@ -482,7 +498,9 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     finish: () => Effect.asVoid(bridge.call("istream.finish", { id })),
     stopped: () => Effect.map(bridge.call("istream.stopped", { id }), (a) => (typeof (a.json as J)?.code === "number" ? (a.json as J).code : null)),
     reset: (code) => void Effect.runFork(Effect.ignore(bridge.call("istream.reset", { id, code }))),
-    tap: (call, prefix) => Effect.map(bridge.call("istream.tap", { id, call }, prefix), (a) => (a.json as J)?.tapped === true),
+    tap: (call, prefix, cursor) =>
+      Effect.map(bridge.call("istream.tap", { id, call, ...(cursor ? { cursor: true } : {}) }, prefix), (a) => ((a.json as J)?.tapped !== true ? false : (a.json as J)?.cursor === true ? ("cursor" as const) : true)),
+    receiveMediaDatagrams: (token) => Effect.map(bridge.call("istream.receiveMediaDatagrams", { id, token }), (a) => a.json === true),
   });
   const connection = (id: number, endpointId: number): IrohConnection => ({
     remoteId: () => String(bridge.sync("conn.remoteId", { id })),
@@ -524,10 +542,34 @@ export function bridgeIroh(bridge: Bridge): Iroh {
         return false;
       }
     },
+    // (a shell from before says no such op: none)
+    mediaDatagrams: () => {
+      try {
+        return bridge.sync("istream.datagrams", {}) === true;
+      } catch {
+        return false;
+      }
+    },
     close: () => Effect.ignore(bridge.call("iroh.close", { id }), { log: "Unhandled", message: "endpoint closed" }),
   });
   return {
-    bind: (o) => Effect.map(bridge.call("iroh.bind", { relayUrls: o.relayUrls, ...(o.relayEntries ? { relayEntries: o.relayEntries } : {}), lookup: o.lookup, relayOnly: o.relayOnly, alpns: (o.alpns ?? []).map(hex) }, o.secretKey), (a) => endpoint(handle(a))),
+    bind: (o) =>
+      Effect.map(
+        bridge.call(
+          "iroh.bind",
+          {
+            relayUrls: o.relayUrls,
+            ...(o.relayEntries ? { relayEntries: o.relayEntries } : {}),
+            ...(o.relayAllowlist !== undefined ? { relayAllowlist: o.relayAllowlist } : {}),
+            ...(o.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
+            lookup: o.lookup,
+            relayOnly: o.relayOnly,
+            alpns: (o.alpns ?? []).map(hex),
+          },
+          o.secretKey,
+        ),
+        (a) => endpoint(handle(a)),
+      ),
   };
 }
 

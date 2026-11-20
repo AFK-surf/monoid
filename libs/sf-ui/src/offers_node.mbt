@@ -3,7 +3,8 @@
 // beside the field (under it, lined up with its start, as wide as it is laid out: View::beside's `Anchor`), grown out
 // of that side as it comes and shrunk back into it as it goes (pop_in, pop_out); a head (what it offers, and the words
 // typed) where one is said, then a row for each of what it offers, the one chosen on the hover's ground, what they say
-// the caller's; scrolling past offers_most, or past what the window leaves it.
+// the caller's; scrolling past offers_most, or past what the window leaves it. What it offers is a combobox's list
+// (@headless.combobox: a Listbox of Options, the one chosen selected, a press on one taking it), its field the caller's.
 //
 // The focus stays in the field the whole time, and what is typed is the field's: ↓ and ↑ choose (round), Enter and
 // Tab take the one chosen, each as the window's keymap binds it where it is open (`Offers`: offers_bindings, actions
@@ -71,6 +72,108 @@ let offers_row : @ui.Style = @ui.style(
 ///|
 // kept across runs: a value (no field of it changes)
 let offers_row_on : @ui.Style = offers_row.then(@ui.css("bg=Hover"))
+
+///|
+/// The keys of a combobox whose field keeps the keyboard (mbui's @headless.combobox_keys: ↓ ↑ Enter Escape where one is,
+/// its key context `Combobox`; Home and End where no field has the focus), the window's keymap's, never changed
+/// (combo_node, pick_node).
+pub fn combobox_bindings() -> Array[@view.Binding] {
+  @headless.combobox_keys
+}
+
+///|
+/// A field with a list under it to choose by, in `parent` (a combobox, @headless.combobox), called `label`: `field`
+/// makes what is over the list in the node it is given (its field, which keeps the keyboard: ↓ ↑ and Enter from it the
+/// window's keymap's, combobox_bindings; what it says of where it goes); the list, while it holds any, of `keys()` in
+/// order, each called `name(key)` and drawn by `row(r, key, on)` in a row of its own (`on()`: the one chosen), looked
+/// as `list` says; `foot` what is under it. `at`: the place of the one chosen, the first as what is offered changes
+/// (its caller's to put back), moved by ↓ and ↑ (round) and the pointer moving onto a row, brought into sight as the keys
+/// move it. `take(i, pressed)` as Enter or a press takes the one at `i`: `pressed`, a press on its row (it made the one
+/// chosen and taken in one go); not, Enter on the one chosen. Escape is what holds it's. Its node.
+#callsite(autofill(loc))
+pub fn combo_node(
+  parent : @view.View,
+  label : () -> String,
+  keys : () -> Array[String],
+  at : @signals.Signal[Int],
+  take : (Int, Bool) -> Unit,
+  field : (@view.View) -> Unit,
+  name : (String) -> String,
+  row : (@view.View, String, () -> Bool) -> Unit,
+  list? : (@view.View) -> Unit = fn(_) {  },
+  foot? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> @view.View {
+  // (moved by ↓ or ↑: the one chosen then brought into sight; the key made the one chosen in the handler still running,
+  // let go once it is over: a press makes its row the one chosen and takes it in one handler, the keys never)
+  let keyed : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+  let picked : Ref[String?] = Ref(None)
+  let at_of = fn(k : String) { keys().search(k).unwrap_or(-1) }
+  let now = fn() { keys().get(at.get()) }
+  @headless.combobox(
+    parent,
+    label,
+    keys,
+    now,
+    fn(k) {
+      match k {
+        Some(k) => {
+          let i = @signals.untracked(fn() { at_of(k) })
+          if i >= 0 {
+            picked.val = Some(k)
+            at.set(i)
+            keyed.set(keyed.untracked() + 1)
+          }
+        }
+        None => ()
+      }
+    },
+    fn(k) {
+      let i = @signals.untracked(fn() { at_of(k) })
+      let by = picked.val == Some(k)
+      picked.val = None
+      if i >= 0 {
+        take(i, by)
+      }
+    },
+    chosen=now,
+    made_for=loc,
+    fn(cv, cb) {
+      cv.reacts(fn() { keyed.get() }, at_start=false, fn(_) { picked.val = None })
+      field(cv)
+      cv.show(fn() { !keys().is_empty() }, fn(l) {
+        list(l)
+        cb.listbox(l, in_node=true, fn(_) {  }) |> ignore
+        // (the one chosen, by member: a change tells the two rows it concerns)
+        let on_is = l.selected(now)
+        l.each(keys, fn(k) { k }, fn(cell, k) {
+          let key = k.untracked()
+          let on = fn() { on_is(key) }
+          cb.option(cell, fn() { key }, fn() { name(key) }, fn(r, _) {
+            // (the pointer moving onto it: the one chosen)
+            r
+            .on_pointer_moved(fn() {
+              let i = @signals.untracked(fn() { at_of(key) })
+              if i >= 0 && at.untracked() != i {
+                at.set(i)
+              }
+            })
+            |> ignore
+            // (chosen by ↓ or ↑: in sight where it scrolls)
+            r.reacts(fn() { keyed.get() }, at_start=false, fn(_) {
+              if @signals.untracked(on) {
+                r.tree.show_in_sight(r.id())
+              }
+            })
+            row(r, key, on)
+          })
+          |> ignore
+        })
+      })
+      foot(cv)
+    },
+  )
+}
 
 ///|
 /// The keys of what a field offers, the keymap's own, never changed: where it is open (`Offers`, the field's focus in
@@ -156,9 +259,14 @@ pub fn offers_node(
     None => around.tree.root()
   }
   layer.box(made_for=loc, fn(o) {
-    // (let go as what holds the field is, out of sight as that leaves)
+    // (let go as what holds the field is, out of sight as that leaves; open/close and live candidate filtering stay
+    // scoped within this overlay node alone, @view.transition)
     o.lives_with(around).over(Is(true)) |> ignore
-    o.show(open, leave=@kit.pop_out_ms, fn(shown) {
+    let shown_open = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
+    let shown_keys = @signals.signal(@signals.untracked(keys), same=fn(a, b) { a == b })
+    o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
+    o.reacts(keys, fn(ks) { @view.transition(within=o, fn() { shown_keys.set(ks) }) }, at_start=false)
+    o.show(fn() { shown_open.get() }, leave=@motion.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
@@ -167,18 +275,18 @@ pub fn offers_node(
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go_ms(shown, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=Leave)
         } else {
           live.val = true
-          way.go_ms(shown, 1.0, @kit.pop_ms)
+          way.go_ms(shown, 1.0, @motion.pop_ms)
         }
       })
       let look = fn() {
         let p = way.shown(shown)
         if shown.leaving() {
-          @kit.pop_out.at(p, p)
+          @motion.pop_out.at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          @motion.pop_in.at(p, p)
         }
       }
       let panel : Ref[@view.View?] = Ref(None)
@@ -212,7 +320,7 @@ pub fn offers_node(
         .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label~))))
         // (a press on it its own, not outside it: on what of it takes none, nothing)
@@ -221,8 +329,14 @@ pub fn offers_node(
         style_node(p, fn() { offers_box })
         p.box(fn(body) {
           // (all it holds as far in as its look says, past the panel's own glass and shadow: Look's `words`)
-          body.alpha(By(fn() { look().words })).max_height(Is(Some(offers_most - 2.0 * panel_pad))) |> ignore
-          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+          body
+          .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
+          .alpha(By(fn() { look().words }))
+          .max_height(Is(Some(offers_most - 2.0 * panel_pad)))
+          |> ignore
+          // (a finger scrolling them keeps the keyboard of the field `around` holds: View::scrolls' `for_in`)
+          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in=around.id(), fn(b) {
+            b.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
             b.show(fn() { head().0 != "" }, at_once=true, fn(h) {
               style_node(h, fn() { offers_head })
               words_node(h, fn() { head().0 }, fn() { offers_head_words }) |> ignore
@@ -234,50 +348,69 @@ pub fn offers_node(
               Some(say) => b.show(fn() { keys().is_empty() }, at_once=true, say)
               None => ()
             }
-            b.each(fn() { keys() }, fn(k) { k }, fn(cell, k) {
-              let key = k.untracked()
-              let at = fn() {
-                match keys().search(key) {
-                  Some(i) => i
-                  None => -1
-                }
-              }
-              let on = fn() { current.get() == at() }
-              @headless.choice(
-                cell,
-                Button,
-                fn() { name(key) },
-                on,
-                focusable=false,
-                fn(_) {
-                  let i = @signals.untracked(at)
-                  if live.val && i >= 0 {
-                    current.set(i)
-                    take(i)
-                  }
-                },
-                fn(r, _) {
-                  style_node(r, fn() { (if on() { offers_row_on } else { offers_row }).then(pick_high()) }, in_row=false)
-                  // (the pointer moving onto it: the one chosen)
-                  r
-                  .on_pointer_moved(fn() {
-                    let i = @signals.untracked(at)
+            // (what it offers a combobox's options (@headless.combobox), its field the caller's: ↓ ↑ Enter Tab and Escape
+            // come to `around` as above, the field's keys; what a screen reader is told of it, and a press, the
+            // combobox's)
+            let at_of = fn(k : String) { keys().search(k).unwrap_or(-1) }
+            let now = fn() { keys().get(current.get()) }
+            @headless.combobox(
+              b,
+              fn() { label },
+              keys,
+              now,
+              fn(k) {
+                match k {
+                  Some(k) => {
+                    let i = @signals.untracked(fn() { at_of(k) })
                     if i >= 0 && current.untracked() != i {
                       current.set(i)
                     }
+                  }
+                  None => ()
+                }
+              },
+              fn(k) {
+                let i = @signals.untracked(fn() { at_of(k) })
+                if live.val && i >= 0 {
+                  current.set(i)
+                  take(i)
+                }
+              },
+              chosen=now,
+              open~,
+              fn(cv, cb) {
+                cb.listbox(cv, fn(l) {
+                  // (the one chosen, by member: a change tells the two rows it concerns)
+                  let on_is = l.selected(now)
+                  l.each(fn() { shown_keys.get() }, fn(k) { k }, fn(cell, k) {
+                    let key = k.untracked()
+                    let on = fn() { on_is(key) }
+                    cb.option(cell, fn() { key }, fn() { name(key) }, fn(r, _) {
+                      style_node(r, fn() { (if on() { offers_row_on } else { offers_row }).then(pick_high()) }, in_row=false)
+                      // (the pointer moving onto it: the one chosen)
+                      r
+                      .on_pointer_moved(fn() {
+                        let i = @signals.untracked(fn() { at_of(key) })
+                        if i >= 0 && current.untracked() != i {
+                          current.set(i)
+                        }
+                      })
+                      |> ignore
+                      // (chosen by ↓ or ↑: in sight where it scrolls)
+                      r.reacts(fn() { keyed.get() }, at_start=false, fn(_) {
+                        if @signals.untracked(on) {
+                          r.tree.show_in_sight(r.id())
+                        }
+                      })
+                      row(r, key, on)
+                    })
+                    |> ignore
                   })
-                  |> ignore
-                  // (chosen by ↓ or ↑: in sight where it scrolls)
-                  r.reacts(fn() { keyed.get() }, at_start=false, fn(_) {
-                    if @signals.untracked(on) {
-                      r.tree.show_in_sight(r.id())
-                    }
-                  })
-                  row(r, key, on)
-                },
-              )
-              |> ignore
-            })
+                })
+                |> ignore
+              },
+            )
+            |> ignore
           })
           |> ignore
         })

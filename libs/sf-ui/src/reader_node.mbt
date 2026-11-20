@@ -11,8 +11,10 @@
 // right under the bar, 320 wide, the text kept clear of it (the layout's the window's tree's own: reader_layout_nodes).
 // On 小屏 its own bars that a tap on the text brings (and takes away), coming in 140 ms and going in 240, a step up or
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
-// In a tab beside a chat (`beside`) no bar of its own (the tab's tools open its panels: reader_panel_toggle), the column
-// from the tab's top, the panel over the text where the tab has not room for both.
+// In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open its panels (reader_panel_toggle), while
+// scroll-to-bottom floats at the tab's bottom-right (reader_beside_chrome, matching a chat's float); the column starts
+// at the tab's top (wider in PanelTab: panel_column_ems), and an open panel sits over the text where the tab has not
+// room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
 // reader.* (reader_bindings), at their key's moment; none of a tab's (the window's keys are the chat's).
@@ -20,8 +22,9 @@
 ///|
 /// A text read (Reader) as nodes in `parent` (all of its room): `file` (read as `key`, Markdown or not) on its paper,
 /// back to `back_label` (`on_back`); while it comes, how far it has; failed, why; empty, so said. On 小屏 a phone's bars
-/// that a tap brings, else a desktop's bar and its panels docked at its right; `beside`: in a tab beside a chat
-/// (reader_node's head), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
+/// that a tap brings, else a desktop's bar and its panels docked at its right; `host`: OwnPage for a page of its own,
+/// Tab for a tab over the whole window or in a window of its own, PanelTab for a tab in the chat's panel (wider column:
+/// panel_column_ems), `width()` its width (its panel beside the text where it has room for both). `move_beside`: while
 /// its first says so, a
 /// desktop's bar's 移到侧边 (its file to a tab beside the page), where offered.
 #callsite(autofill(loc))
@@ -32,11 +35,13 @@ pub fn reader_node(
   markdown~ : Bool,
   back_label~ : () -> String,
   on_back~ : () -> Unit,
-  beside? : Bool = false,
+  host? : ReaderHost = OwnPage,
   width? : () -> Double,
   move_beside? : (() -> Bool, () -> Unit)? = None,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let beside = host != OwnPage
+  let ems = if host == PanelTab { panel_column_ems } else { desk_column_ems }
   let r = reading_for(key)
   reader_load(r, file, markdown)
   // (gone back: its layout's panel, the window's tree's, closed with it)
@@ -97,7 +102,7 @@ pub fn reader_node(
           ReaderEmpty => reader_note_node(p, fn() { t("web-pages.drive.reader.empty") }, paper)
           ReaderReads =>
             match r.book.untracked() {
-              Some(book) => reader_column_node(p, r, book, beside, wide, small, paper)
+              Some(book) => reader_column_node(p, r, book, beside, ems, wide, small, paper)
               None => ()
             }
         }
@@ -273,7 +278,7 @@ fn reader_toggle_panel(r : Reading, panel : ReaderPanel) -> Unit {
 ///|
 /// A phone's bars shown or taken away: a tap on the text (a press, never a drag), at its moment.
 fn reader_tapped(r : Reading) -> Unit {
-  r.chrome.set(!r.chrome.untracked())
+  @view.transition(fn() { r.chrome.set(!r.chrome.untracked()) })
 }
 
 ///|
@@ -350,6 +355,7 @@ fn reader_column_node(
   r : Reading,
   book : Book,
   beside : Bool,
+  ems : Double,
   wide : () -> Bool,
   small : () -> Bool,
   paper : () -> ReaderPaper,
@@ -381,6 +387,16 @@ fn reader_column_node(
   // shown waiting for it); a desktop's bar gone as it is read on down, back as it is read back up, near its top)
   let keeps : Ref[() -> Unit] = Ref(fn() {  })
   r.list.on_sight(fn(s) {
+    if r.sight_from == @double.infinity {
+      r.sight_from = parent.cause_at()
+    }
+    r.long.set(s.from_top + s.from_foot > s.shows)
+    let away_now = s.from_foot > reader_end_away
+    if parent.cause_at() > r.sight_from {
+      @view.transition(fn() { r.away.set(away_now) })
+    } else {
+      r.away.set(away_now)
+    }
     let (first, within) = reader_held_place(r, s.first, s.into, if s.tall > 0.0 { dmin(1.0, dmax(0.0, s.into / s.tall)) } else { 0.0 })
     let (chunk, was) = r.place.untracked()
     if first != chunk || (within - was).abs() > 0.002 {
@@ -421,7 +437,7 @@ fn reader_column_node(
       l.scrolls_window(
         @view.Scroll::list(),
         fn() { keys },
-        fn(row, k) { reader_chunk_node(row, r, book, k, wide, small, style, paper) },
+        fn(row, k) { reader_chunk_node(row, r, book, k, ems, wide, small, style, paper) },
         est=reader_est_chars,
         slop=@ui.touch_slop(),
         bar=@ui.tree_scroll_bar(),
@@ -442,7 +458,7 @@ fn reader_column_node(
           if book.truncated {
             f.box(fn(cut) {
               style_node(cut, fn() { reader_cut_row })
-              reader_sides(cut, r, wide, style, fn(m) {
+              reader_sides(cut, r, ems, wide, style, fn(m) {
                 words_node(m, fn() { t("web-pages.drive.reader.cut", args=[("size", file_size(reader_most.to_double()))]) }, fn() {
                   reader_cut_words.then(@ui.text_style(color=Data(paper().muted)))
                 })
@@ -470,6 +486,7 @@ fn reader_column_node(
 fn reader_sides(
   row : @view.View,
   r : Reading,
+  ems : Double,
   wide : () -> Bool,
   style : () -> ReaderStyle,
   middle : (@view.View) -> Unit,
@@ -484,7 +501,7 @@ fn reader_sides(
     .shrink(Is(1.0))
     .max_width(By(fn() {
       let s = style()
-      Some(desk_column_ems * s.size.to_double() + 2.0 * s.margin.to_double())
+      Some(ems * s.size.to_double() + 2.0 * s.margin.to_double())
     }))
     .padding(By(fn() {
       let margin = style().margin.to_double()
@@ -524,6 +541,7 @@ fn reader_chunk_node(
   r : Reading,
   book : Book,
   k : Int,
+  ems : Double,
   wide : () -> Bool,
   small : () -> Bool,
   style : () -> ReaderStyle,
@@ -541,7 +559,7 @@ fn reader_chunk_node(
       None
     }
   })
-  reader_sides(row, r, wide, style, fn(m) {
+  reader_sides(row, r, ems, wide, style, fn(m) {
     let words = if book.markdown {
       markdown_node(
         m,
@@ -805,39 +823,48 @@ fn reader_found_node(parent : @view.View, r : Reading, paper : () -> ReaderPaper
       reader_jump(r, all[h].chunk, all[h].start, lead=true)
     }
   }
-  parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { desk_found_box })
-    b
-    .glass(By(fn() { Some(narrow_glass(paper())) }))
-    .presses(Is(true))
-    .on_press(fn() {  })
-    .as_ground()
-    |> ignore
-    words_node(
-      b,
-      fn() {
-        t("web-pages.drive.reader.foundAt", args=[
-          ("query", r.searched.get()),
-          ("at", "\{r.hit.get() + 1}"),
-          ("n", "\{r.matches.get().length()}"),
-        ])
-      },
-      fn() { desk_found_words.then(@ui.text_style(color=Data(paper().ink))) },
-    )
-    |> ignore
-    let ink = fn() { paper().ink }
-    chip_node(b, fn() { "" }, fn() { step(-1) }, icon="chevron-left", ink~, said=fn() { t("android-misc.drive.reader.prevHit") }, disabled=fn() {
-      r.hit.get() <= 0
-    })
-    |> ignore
-    chip_node(b, fn() { "" }, fn() { step(1) }, icon="chevron-right", ink~, said=fn() { t("android-misc.drive.reader.nextHit") }, disabled=fn() {
-      r.hit.get() >= r.matches.get().length() - 1
-    })
-    |> ignore
-    chip_node(b, fn() { "" }, fn() { r.hit.set(-1) }, icon="close", ink~, said=fn() { t("common.close") }) |> ignore
-  })
+  // (the library's find in a page, without a field: what was looked for and where among it, its keys in the paper's
+  // ink)
+  page_find_node(
+    loc~,
+    parent,
+    fn() {
+      t("web-pages.drive.reader.foundAt", args=[
+        ("query", r.searched.get()),
+        ("at", "\{r.hit.get() + 1}"),
+        ("n", "\{r.matches.get().length()}"),
+      ])
+    },
+    step,
+    fn(d) { if d < 0 { r.hit.get() > 0 } else { r.hit.get() < r.matches.get().length() - 1 } },
+    fn() { r.hit.set(-1) },
+    frame=fn(b) {
+      // (a capsule now its keys are round: they stand in its ends concentric with them, 5 in)
+      style_node(b, fn() { desk_found_box.then(desk_found_round) })
+      b
+      .glass(By(fn() { Some(narrow_glass(paper())) }))
+      .presses(Is(true))
+      .on_press(fn() {  })
+      .as_ground()
+      |> ignore
+    },
+    said_look=fn() { desk_found_words.then(@ui.text_style(color=Data(paper().ink))) },
+    ink=fn() { paper().ink },
+    prev_label=fn() { t("android-misc.drive.reader.prevHit") },
+    next_label=fn() { t("android-misc.drive.reader.nextHit") },
+    close_label=fn() { t("common.close") },
+    key_side=desk_found_key,
+  )
   |> ignore
 }
+
+///|
+/// Its keys as tall as its chips were (30), and its round as a capsule's, 5 round them in its 40.
+let desk_found_key : Double = 30.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let desk_found_round : @ui.Style = @ui.css("radius=Full")
 
 ///|
 /// The contents' or the search's panel docked at the right of `parent` (a column), from where it is to its foot: the
@@ -1138,17 +1165,23 @@ fn reader_find_node(col : @view.View, r : Reading, paper : () -> ReaderPaper, do
 }
 
 ///|
-/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: what was found, 10 under the
-/// tab's top over the text's middle; the hairline; the contents' or the search's panel at its right from its top, over
-/// the text where the tab is narrower than beside_both_least (as wide as the tab, 320 at most). No bar (the tab's tools
-/// are its) and no keys: the window's are the chat's.
+/// What floats over the paper in a tab beside a chat (reader_node's `beside`) in `parent`: the hairline; the
+/// scroll-to-bottom round button (shown when taller than two screens and further than reader_end_away from its end) at
+/// the tab's bottom-right (under the panel when narrow so an open panel covers it, shifted left of the docked panel
+/// when wide); the contents' or search's panel at its right from its top (as wide as the tab, 320 at most); what was
+/// found, 10 under the tab's top over the text's middle; and the tips layer over all of it. The tab's tools open the
+/// panels; no keys (the window's are the chat's).
+#callsite(autofill(loc))
 fn reader_beside_chrome(
   parent : @view.View,
   r : Reading,
   paper : () -> ReaderPaper,
   wide : () -> Bool,
   tab : () -> Double,
+  loc~ : SourceLoc,
 ) -> Unit {
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = TipLayer::new(fn() { tips_at.val })
   let share = fn() {
     match r.book.get() {
       Some(b) => reader_fraction(b, r.place.get())
@@ -1156,6 +1189,35 @@ fn reader_beside_chrome(
     }
   }
   reader_hairline(parent, paper, share, fn(_) { 1.0 })
+  // (floating scroll-to-bottom key at bottom-right; no ground on the over box so wheel and text selection pass
+  // straight through to the column underneath)
+  parent.box(made_for=loc, fn(o) {
+    let reach = float_button_reach
+    o
+    .over(Is(true))
+    .lies_along(Is(End))
+    .lines_up(Is(Some(End)))
+    .padding(By(fn() {
+      (0.0, 0.0, reader_panel_room(r, wide) + beside_float_in - reach, beside_float_lift - reach)
+    }))
+    |> ignore
+    o.show(fn() { r.long.get() && r.away.get() }, at_once=true, leave=beside_float_ms, fn(stand) {
+      let settled = stand.cause_at() <= r.sight_from || @view.answering_now()
+      stand.alpha(
+        By(@motion.presence_in(stand, @motion.tween(beside_float_ms, ease=Out), from=if settled { 1.0 } else { 0.0 })),
+      )
+      |> ignore
+      float_button_node(
+        stand,
+        "arrow-down",
+        fn() { t("web-pages.drive.reader.toEnd") },
+        fn() { reader_to_end(r) },
+        tips~,
+      )
+      |> ignore
+    })
+  })
+  |> ignore
   parent.show(fn() { r.panel.get() == Contents || r.panel.get() == Find }, fn(o) {
     o.over(Is(true)) |> ignore
     reader_panel_docked(o, r, paper, Some(tab))
@@ -1165,6 +1227,7 @@ fn reader_beside_chrome(
     o.box(fn(top) { top.height(Is(Some(desk_found_gap))) |> ignore }) |> ignore
     reader_found_row(o, r, paper, wide)
   })
+  tips_at.val = Some(parent.box(made_for=loc, fn(l) { l.over(Is(true)) |> ignore }))
 }
 
 // ── a phone's ───────────────────────────────────────────────────────────

@@ -9,12 +9,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Server } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { deflateSync } from "node:zlib";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
@@ -22,12 +23,16 @@ import enStation from "../../client/i18n/catalog/en/station.json" with { type: "
 import { enroll as tsEnroll, id as tsId, joinWorkspace, lockCommand, status as tsStatus } from "../src/cli.ts";
 import { loadKey } from "../src/cloud/key.ts";
 import { loadMesh } from "../src/mesh/native.ts";
+import { launcherEventOf, reportLauncherEvents } from "../src/ops/launcher-events.ts";
 import { answer as loopbackAnswer } from "../src/ops/loopback.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
+/// (the tests' program, its harness: the station's own commands are the reader's)
+const harnessProgram = mbHarnessBinary();
+const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : harnessProgram === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : process.platform === "win32" ? "the launcher's descriptors are Unix's" : false;
 
 const dirs: string[] = [];
 // (short: a Unix socket's path is at most 104 bytes on macOS)
@@ -74,7 +79,7 @@ function logged(f: () => void): string {
 let harnessProc: { send: (op: string, a?: Record<string, unknown>) => Promise<any> } | null = null;
 function harness() {
   if (harnessProc !== null) return harnessProc;
-  const child = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
+  const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
   children.push(child);
   let seq = 0;
   const waiting = new Map<number, (v: any) => void>();
@@ -499,6 +504,36 @@ function png(w: number, h: number, clear = false): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level: 0 })), chunk("IEND", Buffer.alloc(0))]);
 }
 
+test("what the launcher kept of its recoveries, said as launcher-events.ts says it: once, its own fields, at its level", { skip }, async () => {
+  const lines = [
+    JSON.stringify({ at: 1795091426000, kind: "node_hung_killed", level: "error", pid: 4242, version: "0.1.1000", uptimeMs: 3600000, heartbeatTimeoutMs: 90000, healthAgeMs: 92000, rssBytes: 734003200, openFds: 812, heldMaxMs: 1200, front: "ok", presenceOnline: true, relayConflict: false }),
+    JSON.stringify({ at: 2, kind: "node_crashed", pid: 7, how: "was ended by signal 9", taken: true, failures: 0, home: "/Users/someone", nested: { a: 1 } }),
+    JSON.stringify({ at: 3, kind: "front_gone", level: "error", retries: 2 }),
+    JSON.stringify({ at: 4, kind: "retiring_killed", level: "info", pid: 9, version: "0.1.9", exitTimeoutMs: 30000 }),
+    JSON.stringify({ at: 5, kind: "handoff_failed", reason: "the new station exited with 1 before it was ready" }),
+    "{\"at\":1,\"kind\":\"node_cra",
+    "",
+    "[1,2]",
+    "null",
+    "{\"at\":6}",
+    "{\"at\":7,\"kind\":\"\"}",
+  ];
+  for (const line of lines) assert.deepEqual(await ok("launcherEventLine", { line }), launcherEventOf(line), line);
+  const mb = fresh("data");
+  const ts = fresh("data");
+  for (const data of [mb, ts]) {
+    mkdirSync(join(data, "run"));
+    writeFileSync(join(data, "run", "launcher-events.jsonl"), lines.join("\n") + "\n");
+  }
+  const said: { level: string; message: string; fields: Record<string, unknown> }[] = [];
+  const n = await reportLauncherEvents(ts, (level, message, fields) => void said.push({ level, message, fields }));
+  assert.equal(n, 5);
+  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n, said });
+  assert.deepEqual(readdirSync(join(mb, "run")), [], "the file taken and removed");
+  assert.deepEqual(await ok("launcherEvents", { data: mb }), { n: 0, said: [] }, "said once");
+  assert.deepEqual(await ok("launcherEvents", { data: join(mb, "none") }), { n: 0, said: [] }, "no run/ at all");
+});
+
 test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) makes them: the same choices and sizes", { skip }, async () => {
   const dir = fresh("thumbs");
   const files: [string, Buffer][] = [["photo.png", png(1600, 900)], ["clear.png", png(1000, 800, true)], ["small.png", png(10, 10)], ["moving.gif", png(400, 400)], ["broken.jpg", Buffer.alloc(40_000, 0x11)], ["tall.png", png(300, 2000)]];
@@ -517,6 +552,32 @@ test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) make
     // kept: asked again, the same
     assert.deepEqual(await ok("thumbnail", { image, dir: join(dir, "mb") }), mb);
   }
+  // preview: <= 300 KiB returns null; large PNG makes <id>.p.jpg and hits cache; pre-existing <id>.p.webp hits cache
+  const smallPreview = join(dir, "small-preview.png");
+  writeFileSync(smallPreview, png(200, 200));
+  assert.ok(readFileSync(smallPreview).length <= 300 * 1024);
+  assert.equal(await ok("preview", { image: smallPreview, dir: join(dir, "mb-preview") }), null);
+
+  const bigPreview = join(dir, "big-preview.png");
+  writeFileSync(bigPreview, png(2400, 1400));
+  assert.ok(readFileSync(bigPreview).length > 300 * 1024);
+  const previewDir = join(dir, "mb-preview");
+  const bigId = createHash("sha256").update(bigPreview).digest("hex").slice(0, 32);
+  const prev1 = await ok("preview", { image: bigPreview, dir: previewDir });
+  assert.ok(prev1 !== null);
+  assert.equal(prev1.type, "image/jpeg");
+  assert.equal(prev1.path, join(previewDir, `${bigId}.p.jpg`));
+  assert.ok(readFileSync(prev1.path).length * 2 < readFileSync(bigPreview).length);
+  const [pw, ph] = size(readFileSync(prev1.path));
+  assert.ok(pw <= 2048 && ph <= 2048);
+  assert.deepEqual(await ok("preview", { image: bigPreview, dir: previewDir }), prev1);
+
+  const webpCached = join(dir, "webp-cached.png");
+  writeFileSync(webpCached, png(2400, 1400));
+  const webpId = createHash("sha256").update(webpCached).digest("hex").slice(0, 32);
+  const webpPath = join(previewDir, `${webpId}.p.webp`);
+  writeFileSync(webpPath, Buffer.from("RIFF0000WEBP"));
+  assert.deepEqual(await ok("preview", { image: webpCached, dir: previewDir }), { path: webpPath, type: "image/webp" });
   for (const [name] of files) {
     const image = join(dir, name);
     const ts = await loadMesh().thumbhash(image, null);
@@ -592,19 +653,31 @@ test("children started, followed to their end, given input and signals; a lock o
   const missing = await harness().send("spawn", { program: "/no/such/program", args: [] });
   assert.match(missing.error, /^ENOENT/);
   // a group of its own, ended with its children
-  const sleeper = await ok("spawn", { program: "/bin/sh", args: ["-c", "sleep 30 & sleep 30; wait"], env: { PATH: "/bin:/usr/bin" }, group: true, detach: true });
-  assert.equal(await ok("pidAlive", { pid: sleeper.pid }), true);
-  assert.equal(await ok("kill", { pid: sleeper.pid, signal: "SIGTERM", group: true }), true);
-  for (let i = 0; i < 100 && (await ok("pidAlive", { pid: sleeper.pid })); i++) await new Promise((r) => setTimeout(r, 20));
-  // (a zombie until it is waited for: the program's thread waits for it)
-  // (its children, orphaned as it ended, reaped by the system a moment after)
-  for (let i = 0; i < 100 && spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim() !== ""; i++) await new Promise((r) => setTimeout(r, 20));
-  assert.equal(spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim(), "", "nothing of its group left");
+  const sleeper = await ok("spawn", { program: "/bin/sh", args: ["-c", "sleep 30 & sleep 30 & wait"], env: { PATH: "/bin:/usr/bin" }, group: true, detach: true });
+  const group = () => spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim().split("\n").filter((p) => p !== "");
+  try {
+    assert.equal(await ok("pidAlive", { pid: sleeper.pid }), true);
+    // (both children in its group before the group is signalled: a child the shell forks as the signal walks the group
+    // is not in it yet, takes no signal pending on the shell, and is left sleeping in the group once the shell ends)
+    for (let i = 0; i < 100 && group().length < 3; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(group().length, 3, "the shell and both its children in its group");
+    assert.equal(await ok("kill", { pid: sleeper.pid, signal: "SIGTERM", group: true }), true);
+    for (let i = 0; i < 100 && (await ok("pidAlive", { pid: sleeper.pid })); i++) await new Promise((r) => setTimeout(r, 20));
+    // (a zombie until it is waited for: the program's thread waits for it)
+    // (its children, orphaned as it ended, reaped by the system a moment after)
+    for (let i = 0; i < 100 && group().length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(group(), [], "nothing of its group left");
+  } finally {
+    // (what a failed assertion leaves of the group, not left sleeping past the test)
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {}
+  }
   assert.equal(await ok("parentPid"), process.pid);
   // the lock: taken, then a second process waits for it until it is let go
   const lock = join(dir, "pack.lock");
   const held = await ok("fileLock", { path: lock });
-  const other = spawn(binary!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
+  const other = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
   children.push(other);
   const lines = createInterface({ input: other.stdout! });
   const got: string[] = [];
@@ -620,9 +693,34 @@ test("children started, followed to their end, given input and signals; a lock o
   assert.equal((readFileSync(lock).length), 0, "never written");
 });
 
+test("stdin writes are non-blocking, drain multi-chunk input, and kill stalled children past STILLFAIL_STDIN_MOST", { skip }, async () => {
+  const r = await ok("stdinBackpressure");
+  assert.equal(r.catOk, true, "multi-chunk write to cat drains cleanly and closes with EOF");
+  assert.equal(r.rejected, true, "writing past STILLFAIL_STDIN_MOST returns false");
+  assert.ok(r.writeMs < 2_000, `writes must not block the event loop (took ${r.writeMs}ms)`);
+  assert.ok(r.totalMs < 5_000, `stalled child must be killed promptly (took ${r.totalMs}ms)`);
+  assert.equal(r.stalledCode, null);
+  assert.equal(r.stalledSignal, "SIGKILL");
+  assert.equal(r.stalledAlive, false, "no orphan process left alive");
+  assert.equal(r.quickCode, 0);
+  assert.equal(r.quickSignal, null);
+  assert.equal(r.lateWrite, false, "exited child without end_input cleans up stdin handle");
+});
+
+test("flooding child stdout stays backpressured and respects @effect.timeout", { skip }, async () => {
+  const r = await ok("stdoutBackpressure");
+  assert.equal(r.timedOut, true, `expected timeout, got ${JSON.stringify(r)}`);
+  assert.equal(r.truncated, true, `expected truncated output, got ${JSON.stringify(r)}`);
+  assert.equal(r.keptBytes, 1048576, `expected 1 MiB kept, got ${JSON.stringify(r)}`);
+  assert.ok(r.elapsedMs >= 1200 && r.elapsedMs < 5000, `expected timeout near 1500ms, took ${r.elapsedMs}ms`);
+  assert.ok(r.rssBefore > 0, `expected rssBefore > 0, got ${r.rssBefore}`);
+  assert.ok(r.rssPeak - r.rssBefore < 128 * 1024 * 1024, `RSS grew too much: before=${r.rssBefore} peak=${r.rssPeak} after=${r.rssAfter}`);
+  assert.equal(r.alive, false, "child process group must be killed and reaped");
+});
+
 // ── run, under a launcher of the test's ──
 
-type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null> };
+type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void>; stderr: () => string };
 
 /// The program's `run` with the launcher's descriptors (ops/launcher.ts): its two listeners bound here and handed down
 /// (closed here once it has them), its control channel the fourth's pipe.
@@ -648,7 +746,22 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
     for (const w of waiters.splice(0)) w();
   });
   let err = "";
-  child.stderr!.on("data", (d) => (err += d));
+  const errWaiters: (() => void)[] = [];
+  child.stderr!.on("data", (d) => {
+    err += d;
+    for (const w of errWaiters.splice(0)) w();
+  });
+  const heard = (what: string, text: string) =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`never heard: ${what}; stderr ${err}`)), 15_000);
+      const look = () => {
+        if (err.includes(text)) {
+          clearTimeout(timer);
+          resolve();
+        } else errWaiters.push(look);
+      };
+      look();
+    });
   const next = (what: string, ok: (m: any) => boolean) =>
     new Promise<any>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`never said: ${what}; said ${JSON.stringify(said)}; stderr ${err}`)), 15_000);
@@ -662,7 +775,7 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
       look();
     });
   const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended };
+  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended, heard, stderr: () => err };
 }
 
 function get(port: number | { socket: string }, path: string, body?: string, token?: string): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
@@ -694,6 +807,9 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const health = JSON.parse(readFileSync(join(data, "run", "health.json"), "utf8"));
   assert.equal(health.pid, a.child.pid);
   assert.ok(Math.abs(health.updatedAt - Date.now()) < 5_000);
+  // its descriptors and resident memory, from the system's own counters
+  assert.ok(Number.isInteger(health.openFds) && health.openFds > 0, `openFds ${health.openFds}`);
+  assert.ok(Number.isInteger(health.rssBytes) && health.rssBytes > 0, `rssBytes ${health.rssBytes}`);
   // the loopback port
   assert.equal((await get(admin.port, "/healthz")).status, 200);
   const unjoined = await get(admin.port, "/admin");
@@ -712,7 +828,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   const init = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), "t1")).body);
   assert.equal(init.result.serverInfo.name, "still.fail");
   const tools = JSON.parse((await get(mcp.port, "/mcp", JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }), "t1")).body).result.tools.map((t: { name: string }) => t.name);
-  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api", "station_retire"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const core of ["chat_post", "chat_state", "chat_history", "chat_list", "chat_read", "session_send", "chat_create", "chat_archive", "chat_configure", "job_start", "job_list", "job_log", "job_stop", "station_list", "station_task", "station_file", "search", "skill_read", "workspace_limit", "secret_list", "feishu_api", "slack_api"]) assert.ok(tools.includes(core), `${core} listed: ${tools.join(",")}`);
+  for (const hidden of ["station_retire", "adb_devices", "phone_use", "secret_reask"]) assert.ok(!tools.includes(hidden), `${hidden} hidden: ${tools.join(",")}`);
   const running = store.runningSessions();
   const status = JSON.parse((await get({ socket: join(data, "run", "status.sock") }, "/v1/status")).body);
   assert.equal(status.version, "0.1.9400");
@@ -742,7 +859,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
   a.tell({ op: "handover" });
   const carry = await a.next("carry", (m) => m.carry !== undefined);
-  assert.deepEqual(Object.keys(carry.carry), ["vault"], "what its parts carry, by part (the vault's grants and boxes waiting)");
+  assert.deepEqual(Object.keys(carry.carry).sort(), ["live.plans", "live.tails", "vault"], "what its parts carry, by part (where the live view read each checklist and transcript to; the vault's grants and boxes waiting)");
+  assert.ok(Array.isArray(carry.carry["live.plans"]) && Array.isArray(carry.carry["live.tails"]), JSON.stringify(carry.carry));
   assert.equal(typeof carry.carry.vault, "object");
   assert.notEqual(carry.carry.vault, null);
   assert.equal(await a.ended, 0);
@@ -762,6 +880,80 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(await b.ended, 0);
   for (const p of [a.child.pid!, b.child.pid!]) assert.throws(() => process.kill(p, 0), "no process left");
   assert.equal(existsSync(join(data, "run", "hub.json")), false);
+});
+
+test("run: a stop lets go of run/hub.json only once its sessions are let go, so a station started meanwhile waits for it", { skip: skip || (process.platform === "win32" ? "its children held by SIGSTOP" : false) }, async () => {
+  const data = fresh("held");
+  const app = fresh("app");
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  await a.next("mcp", (m) => m.serving === "mcp");
+  assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, a.child.pid);
+  // its winding down held: its processes (the sessions' program, the readers) stopped, so letting go of them waits
+  // (one that ended since `ps` looked, a short command of its own, is left out); `copies.start()` spawns
+  // `--builder replica-export` only after `door_ready`, and it is the one `wait_live_p5_5_closed()` awaits on stop: wait for it
+  let rows: string[][] = [];
+  for (let i = 0; i < 250; i++) {
+    rows = spawnSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter((r) => r[1] === String(a.child.pid));
+    if (rows.some((r) => r.includes("replica-export"))) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(rows.some((r) => r.includes("replica-export")), `its processes (waiting for replica-export): ${JSON.stringify(rows)}`);
+  const kids = rows.map((r) => Number(r[0])).filter((k) => {
+    try {
+      process.kill(k, "SIGSTOP");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  assert.ok(kids.length > 0, `its processes: ${JSON.stringify(rows)}`);
+  a.tell({ op: "stop" });
+  await a.heard("stopping", "stopping");
+  // still winding down: its sessions' file still names it (the next station's `held_by_hub`)
+  assert.equal(a.child.exitCode, null, "still there");
+  assert.equal(existsSync(join(data, "run", "hub.json")) && JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, a.child.pid, "its sessions' file kept while it winds down");
+  // a station started now waits for it instead of taking the sessions (and the runners) up beside it
+  const b = await launch(data, app);
+  await b.next("ready", (m) => m.ready === true);
+  await b.next("taking, while the one before winds down", (m) => m.taking === true);
+  assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
+  for (const k of kids) {
+    try {
+      process.kill(k, "SIGCONT");
+    } catch {}
+  }
+  assert.equal(await a.ended, 0);
+  await b.next("serving the agents' door once the one before is gone", (m) => m.serving === "mcp");
+  assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, b.child.pid);
+  b.tell({ op: "stop" });
+  assert.equal(await b.ended, 0);
+  assert.equal(existsSync(join(data, "run", "hub.json")), false, "let go of as it ends");
+});
+
+test("run: a database already at this version opens while another process holds its write lock", { skip }, async () => {
+  const data = fresh("locked");
+  const app = fresh("app");
+  // the database as a station that ran here left it (every part's tables made)
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  await a.next("mcp", (m) => m.serving === "mcp");
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
+  // a process of the station before (a backfill, one held by SIGSTOP) mid-write: the next station opens it all the same
+  const holder = new DatabaseSync(join(data, "stillfail.db"));
+  holder.exec("BEGIN IMMEDIATE");
+  let b: Launched;
+  try {
+    b = await launch(data, app);
+    await b.next("ready", (m) => m.ready === true);
+    assert.equal(b.stderr().includes("database is locked"), false, b.stderr());
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+  }
+  b.tell({ op: "stop" });
+  assert.equal(await b.ended, 0);
 });
 
 test("run on its own: SIGTERM stops it; a launcher gone stops it", { skip }, async () => {

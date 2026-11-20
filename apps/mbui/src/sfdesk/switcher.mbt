@@ -65,7 +65,7 @@ pub fn switcher_open_with(words : String) -> Unit {
 ///|
 /// How ⌘K's panel comes (140 ms on the ease-out), grown out of 97% and faded in, its ground first.
 // kept across runs: a value (no field of it changes)
-let switcher_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, oy=0.0, spec=@motion.tween(@kit.pop_ms, ease=Out), ground_first=true)
+let switcher_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, oy=0.0, spec=@motion.tween(@motion.pop_ms, ease=Out), ground_first=true)
 
 ///|
 /// How its scrim comes: over 120 ms (tip_in's).
@@ -94,7 +94,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
     back_within=fn() { false },
     top_share=switcher_top_share,
     come=switcher_in,
-    come_ms=@kit.pop_ms,
+    come_ms=@motion.pop_ms,
     ground_ms=switcher_ground_ms,
     go_ms=0.0,
     fn(across, layer, look) {
@@ -117,9 +117,12 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
         // (what it holds as far in as its look says, past its own ground, edge and shadow: Look's `words`, its ground
         // first)
         let words_in = fn() { look().words }
+        // (the search's combobox: its field's box, its list's lines the options: finder_combobox_node)
+        let combo : Ref[@sf.SearchCombo?] = Ref(None)
         p.box(fn(b) {
           @sf.style_node(b, fn() { switcher_search_box })
           b.alpha(By(words_in)) |> ignore
+          combo.val = Some(@sfpages.finder_combobox_node(b, fn() { @sf.t("web-main.switcher.search") }, close))
           let f = @ui.field(
             b,
             @sfpages.finder_field(),
@@ -149,6 +152,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
           l.alpha(By(words_in)) |> ignore
           @sfpages.finder_list_node(
             l,
+            combo.val.unwrap(),
             src,
             workspace,
             fn() {
@@ -157,7 +161,6 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
                 None => []
               }
             },
-            close,
             fn() { @sfpages.found_stacked(room() - 2.0 * switcher_edge) },
             idle_chats=true,
             most=fn() {

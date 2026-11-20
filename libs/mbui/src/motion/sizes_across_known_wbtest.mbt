@@ -6,7 +6,6 @@
 ///|
 fn init {
   @ui.sizes_across_known([
-    ("src/motion/beside_moves_wbtest.mbt", 1),
     ("src/motion/moves_for_wbtest.mbt", 1),
   ])
 }

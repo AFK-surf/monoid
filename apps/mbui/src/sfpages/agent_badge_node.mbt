@@ -50,7 +50,7 @@ pub fn agent_badge_in(
       let d = 10.0 * k
       let at = side - d + 2.0 * k
       r.over(Is(true)).width(Is(Some(d))).height(Is(Some(d))).offset(Is((at, at))) |> ignore
-      @sf.spokes_node(r, d, fn() { @sf.mark_yellow }) |> ignore
+      @sf.spokes_node(r, d, @sf.mark_yellow) |> ignore
     }
     // (none: over it, of no size, nothing drawn)
     _ => r.over(Is(true)).width(Is(Some(0.0))).height(Is(Some(0.0))) |> ignore
@@ -82,7 +82,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
             let ink = match now {
               "block" => theme.color(@sf.mark_blue)
               "failed" => theme.color(@sf.mark_red)
-              _ => @sf.mark_yellow
+              _ => @sf.mark_yellow()
             }
             (now, @sf.theme().p.bg, ink)
           },

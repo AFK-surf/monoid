@@ -219,7 +219,7 @@ pub fn toggle_group(
           // (read as it is built: the lens's shadow grows with it from none, which no look draws)
           let held = match glass {
             Some(_) =>
-              @motion.animate(c, "\u{2}held/" + key, if fingered >= 0 { 1.0 } else { 0.0 }, spec=@motion.lift_spring)
+              @motion.animate(c, "\u{2}held/" + key, if fingered >= 0 { 1.0 } else { 0.0 }, spec=@motion.tactile_bounce)
             None => 0.0
           }
           let chosen = items.search_by(fn(it) { now.contains(it.value) })
@@ -278,11 +278,11 @@ fn group_pressed(was : Array[String], v : String, multiple : Bool) -> Array[Stri
 }
 
 ///|
-/// A sliding group's lens's shadow, held all the way: its blur and how far down.
-let lens_shadow : Double = 6.0
+/// A sliding group's lens's shadow, held all the way: its blur and how far down (a loupe's too).
+pub let lens_shadow : Double = 6.0
 
 ///|
-let lens_shadow_y : Double = 2.0
+pub let lens_shadow_y : Double = 2.0
 
 ///|
 /// A sliding group's default thumb (still.fail's segmented choice): `w` by `h`, lifted out of the track (the theme's

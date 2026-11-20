@@ -163,12 +163,126 @@ fn oriented(img : Image, o : Int) -> Image {
 }
 
 ///|
+/// Maximum decoded pixel count (64M pixels = 256 MiB RGBA) to prevent OOM and 32-bit Int overflow.
+let max_decode_pixels : Int64 = 67108864L
+
+///|
+/// Structural and CRC validation of a PNG stream before handing it to `@pixels.decode_png`.
+fn valid_png(b : Bytes) -> Bool {
+  if b.length() < 33 || b[0] != b'\x89' || b[1] != b'P' || b[2] != b'N' || b[3] != b'G' || b[4] != b'\x0D' || b[5] != b'\x0A' || b[6] != b'\x1A' || b[7] != b'\x0A' {
+    return false
+  }
+  let mut i = 8
+  let mut seen_ihdr = false
+  let mut seen_idat = false
+  let mut seen_iend = false
+  while i + 12 <= b.length() {
+    let len = be32(b, i)
+    if len < 0 || len > b.length() - i - 12 {
+      return false
+    }
+    let data = i + 8
+    let crc_expected = be32(b, data + len)
+    let crc_actual = @zip.crc32(b[i + 4:data + len].to_owned()).reinterpret_as_int()
+    if crc_actual != crc_expected {
+      return false
+    }
+    if starts(b, i + 4, "IHDR") {
+      if seen_ihdr || i != 8 || len != 13 {
+        return false
+      }
+      let w = be32(b, data)
+      let h = be32(b, data + 4)
+      let depth = b[data + 8].to_int()
+      let ctype = b[data + 9].to_int()
+      let comp = b[data + 10].to_int()
+      let filt = b[data + 11].to_int()
+      let interlace = b[data + 12].to_int()
+      if w <= 0 || h <= 0 || w > 16384 || h > 16384 || w.to_int64() * h.to_int64() > max_decode_pixels {
+        return false
+      }
+      let depth_ok = match ctype {
+        0 => depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16
+        2 | 4 | 6 => depth == 8 || depth == 16
+        3 => depth == 1 || depth == 2 || depth == 4 || depth == 8
+        _ => false
+      }
+      if !depth_ok || comp != 0 || filt != 0 || (interlace != 0 && interlace != 1) {
+        return false
+      }
+      seen_ihdr = true
+    } else if starts(b, i + 4, "IDAT") {
+      seen_idat = true
+    } else if starts(b, i + 4, "IEND") {
+      if len != 0 {
+        return false
+      }
+      seen_iend = true
+      break
+    }
+    i = data + len + 4
+  }
+  seen_ihdr && seen_idat && seen_iend
+}
+
+///|
+/// Structural and dimension validation of a JPEG stream before handing it to `@pixels.decode_jpeg`.
+fn valid_jpeg(b : Bytes) -> Bool {
+  if b.length() < 4 || b[0] != b'\xFF' || b[1] != b'\xD8' {
+    return false
+  }
+  let mut i = 2
+  let mut seen_sof = false
+  while i + 2 <= b.length() {
+    if b[i] != b'\xFF' {
+      return false
+    }
+    while i < b.length() && b[i] == b'\xFF' {
+      i += 1
+    }
+    if i >= b.length() {
+      return false
+    }
+    let m = b[i].to_int()
+    i += 1
+    if m == 0xD9 {
+      break
+    }
+    if m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01 {
+      continue
+    }
+    if i + 2 > b.length() {
+      return false
+    }
+    let len = be16(b, i)
+    if len < 2 || i + len > b.length() {
+      return false
+    }
+    if m == 0xC0 || m == 0xC1 || m == 0xC2 {
+      if len < 8 {
+        return false
+      }
+      let h = be16(b, i + 3)
+      let w = be16(b, i + 5)
+      if w <= 0 || h <= 0 || w > 16384 || h > 16384 || w.to_int64() * h.to_int64() > max_decode_pixels {
+        return false
+      }
+      seen_sof = true
+    } else if m == 0xDA {
+      break
+    }
+    i += len
+  }
+  seen_sof
+}
+
+///|
 /// The image as it is seen (turned as its camera says), None where it is not one of PNG, JPEG or WebP this reads.
 pub fn decode_image(b : Bytes) -> Image? {
   let decoded = if starts(b, 0, "\u{89}PNG") {
-    @pixels.decode_png(b)
+    if valid_png(b) { @pixels.decode_png(b) } else { None }
   } else if b.length() > 2 && b[0] == b'\xFF' && b[1] == b'\xD8' {
-    @pixels.decode_jpeg(b)
+    if valid_jpeg(b) { @pixels.decode_jpeg(b) } else { None }
   } else if starts(b, 0, "RIFF") && starts(b, 8, "WEBP") {
     @pixels.decode_webp(b)
   } else {
@@ -583,163 +697,6 @@ pub fn rgba_to_thumb_hash(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
 // ── PNG, compressed ──
 
 ///|
-priv struct Bits {
-  out : @buffer.Buffer
-  mut acc : Int
-  mut n : Int
-}
-
-///|
-fn Bits::put(self : Bits, value : Int, count : Int) -> Unit {
-  self.acc = self.acc | (value << self.n)
-  self.n += count
-  while self.n >= 8 {
-    self.out.write_byte((self.acc & 255).to_byte())
-    self.acc = self.acc >> 8
-    self.n -= 8
-  }
-}
-
-///|
-/// A Huffman code (written from its top bit) put as deflate's bits are (from the lowest).
-fn Bits::code(self : Bits, code : Int, len : Int) -> Unit {
-  let mut rev = 0
-  for i = 0; i < len; i = i + 1 {
-    rev = (rev << 1) | ((code >> i) & 1)
-  }
-  self.put(rev, len)
-}
-
-///|
-fn Bits::flush(self : Bits) -> Unit {
-  if self.n > 0 {
-    self.out.write_byte((self.acc & 255).to_byte())
-    self.acc = 0
-    self.n = 0
-  }
-}
-
-///|
-fn Bits::literal(self : Bits, lit : Int) -> Unit {
-  if lit < 144 {
-    self.code(0x30 + lit, 8)
-  } else if lit < 256 {
-    self.code(0x190 + (lit - 144), 9)
-  } else if lit < 280 {
-    self.code(lit - 256, 7)
-  } else {
-    self.code(0xC0 + (lit - 280), 8)
-  }
-}
-
-///|
-let len_base : Array[Int] = [
-  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258,
-]
-
-///|
-let len_extra : Array[Int] = [
-  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
-]
-
-///|
-let dist_base : Array[Int] = [
-  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193,
-  12289, 16385, 24577,
-]
-
-///|
-let dist_extra : Array[Int] = [
-  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
-]
-
-///|
-fn Bits::length_distance(self : Bits, len : Int, dist : Int) -> Unit {
-  let mut li = len_base.length() - 1
-  while len_base[li] > len {
-    li -= 1
-  }
-  self.literal(257 + li)
-  self.put(len - len_base[li], len_extra[li])
-  let mut di = dist_base.length() - 1
-  while dist_base[di] > dist {
-    di -= 1
-  }
-  self.code(di, 5)
-  self.put(dist - dist_base[di], dist_extra[di])
-}
-
-///|
-/// `data` as zlib's stream: one deflate block of fixed codes, its repeats found by a hash of three bytes.
-fn zlib(data : FixedArray[Byte]) -> Bytes {
-  let bits : Bits = { out: @buffer.Buffer(), acc: 0, n: 0 }
-  bits.out.write_byte(b'\x78')
-  bits.out.write_byte(b'\x01')
-  bits.put(1, 1) // the last block
-  bits.put(1, 2) // fixed codes
-  let n = data.length()
-  let hash_size = 1 << 15
-  let head = FixedArray::make(hash_size, -1)
-  let prev = FixedArray::make(if n > 0 { n } else { 1 }, -1)
-  let window = 32768
-  let hash_at = (i : Int) => ((data[i].to_int() << 10) ^ (data[i + 1].to_int() << 5) ^ data[i + 2].to_int()) & (hash_size - 1)
-  let insert = (i : Int) => if i + 2 < n {
-    let hv = hash_at(i)
-    prev[i] = head[hv]
-    head[hv] = i
-  }
-  let mut i = 0
-  while i < n {
-    let mut best_len = 0
-    let mut best_dist = 0
-    if i + 2 < n {
-      let mut cand = head[hash_at(i)]
-      let mut chain = 0
-      while cand >= 0 && i - cand <= window && chain < 64 {
-        let mut l = 0
-        while l < 258 && i + l < n && data[cand + l] == data[i + l] {
-          l += 1
-        }
-        if l > best_len {
-          best_len = l
-          best_dist = i - cand
-          if l == 258 {
-            break
-          }
-        }
-        cand = prev[cand]
-        chain += 1
-      }
-    }
-    if best_len >= 3 {
-      bits.length_distance(best_len, best_dist)
-      for k = 0; k < best_len; k = k + 1 {
-        insert(i + k)
-      }
-      i += best_len
-    } else {
-      bits.literal(data[i].to_int())
-      insert(i)
-      i += 1
-    }
-  }
-  bits.literal(256)
-  bits.flush()
-  let mut s1 = 1
-  let mut s2 = 0
-  for k = 0; k < n; k = k + 1 {
-    s1 = (s1 + data[k].to_int()) % 65521
-    s2 = (s2 + s1) % 65521
-  }
-  let adler = (s2 << 16) | s1
-  bits.out.write_byte(((adler >> 24) & 255).to_byte())
-  bits.out.write_byte(((adler >> 16) & 255).to_byte())
-  bits.out.write_byte(((adler >> 8) & 255).to_byte())
-  bits.out.write_byte((adler & 255).to_byte())
-  bits.out.to_bytes()
-}
-
-///|
 fn paeth(a : Int, b : Int, c : Int) -> Int {
   let p = a + b - c
   let pa = (p - a).abs()
@@ -835,17 +792,23 @@ fn png_compressed(img : Image) -> Bytes {
     ihdr.write_byte(b.to_byte())
   }
   chunk("IHDR", ihdr.to_bytes())
-  chunk("IDAT", zlib(filtered))
+  chunk("IDAT", @flate.zlib_compress(Bytes::from_array(filtered)))
   chunk("IEND", b"")
   out.to_bytes()
 }
 
 ///|
-/// What a thumbnail is made of an image as it is seen: its type ("image/png" or "image/jpeg"), extension and bytes;
-/// None where it would be no smaller than the image's `len`.
-pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
-  let small = if img.w > thumb_max_w || img.h > thumb_max_h {
-    let (nw, nh) = fit_within(img.w, img.h, thumb_max_w, thumb_max_h)
+/// What a smaller copy is made of an image as it is seen: fitted within `max_w`×`max_h` (never enlarged), PNG where
+/// any pixel has alpha < 255 and JPEG quality 88 otherwise; None where `bytes.length() * ratio >= len`.
+fn made_sized(
+  img : Image,
+  len : Double,
+  max_w : Int,
+  max_h : Int,
+  ratio : Double,
+) -> (String, String, Bytes)? {
+  let small = if img.w > max_w || img.h > max_h {
+    let (nw, nh) = fit_within(img.w, img.h, max_w, max_h)
     resize(img, nw, nh)
   } else {
     img
@@ -862,10 +825,24 @@ pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
   } else {
     ("jpg", "image/jpeg", @pixels.jpeg(small.w, small.h, small.px, quality=88))
   }
-  if bytes.length().to_double() >= len {
+  if bytes.length().to_double() * ratio >= len {
     return None
   }
   Some((ext, kind, bytes))
+}
+
+///|
+/// What a thumbnail is made of an image as it is seen: its type ("image/png" or "image/jpeg"), extension and bytes;
+/// None where it would be no smaller than the image's `len`.
+pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
+  made_sized(img, len, thumb_max_w, thumb_max_h, 1.0)
+}
+
+///|
+/// What the whole-window viewer shows before the image itself (thumbs.rs `PREVIEW`): at most 2048 across either way,
+/// kept only when strictly smaller than half the image's `len`.
+pub fn made_preview(img : Image, len : Double) -> (String, String, Bytes)? {
+  made_sized(img, len, preview_max, preview_max, 2.0)
 }
 
 ///|
@@ -878,3 +855,11 @@ pub fn hash_of(img : Image) -> String {
 ///|
 /// An image this small (or smaller) is shown itself.
 pub let small_len : Double = 24576.0
+
+///|
+/// The largest a whole-window preview is made across either way (thumbs.rs `PREVIEW_MAX`).
+pub let preview_max : Int = 2048
+
+///|
+/// An image this small (300 KiB or smaller) is shown itself in the whole-window viewer (thumbs.rs `PREVIEW_SMALL`).
+pub let preview_small_len : Double = 307200.0

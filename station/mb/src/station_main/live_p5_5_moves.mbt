@@ -35,7 +35,7 @@ async fn P55::carry_ask(self : P55, ask : Json) -> @jsjson.JValue {
             Some(a) => a
             None =>
               match said.get("error") {
-                Some(Str(e)) => raise BusError(@jsjson.text(e))
+                Some(Str(e)) => raise BusError(@jsjson.sanitize_str(e))
                 _ => raise BusError("the gathering's program said nothing it was asked")
               }
           }
@@ -48,7 +48,7 @@ async fn P55::carry_ask(self : P55, ask : Json) -> @jsjson.JValue {
 ///|
 /// The carry's work as processes of the program (replica/carry.ts `gatherSoon`, `placeSoon`, `previewSoon`).
 fn P55::carry_work(self : P55) -> @replica_coord.Work {
-  let opt = (s : String?) => p55_jopt(s)
+  let opt = (s : String?) => jopt(s)
   {
     gather: async fn(data, db, ws, home, scratch, agent, keys) {
       self.carry_ask({
@@ -91,7 +91,7 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
       let (said, bytes) = host.shell("fs.bytes", { "path": Json::string(p), "from": Json::number(from.to_double()), "length": Json::number(len.to_double()) })
       match (said, bytes) {
         (_, Some(b)) => Some(b)
-        (String(h), None) => Some(hex_bytes(h))
+        (String(h), None) => Some(unhex_lenient(h))
         _ => Some(b"")
       }
     }
@@ -106,14 +106,52 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
 }
 
 ///|
+/// A failure of a request to another station as the moves tell it apart (move/station.ts `#asked`, by class): the
+/// other's refusal (mesh/bus.ts `Refused`), its connection gone (mesh/peer.ts `PeerGone`) or its process stopping or
+/// handing over (`PeerStopped`); any other as it is.
+fn move_error_of(e : Error) -> Error {
+  match e {
+    @gate.PeerGone(m, true) => @move_coord.PeerStopped(m)
+    @gate.PeerGone(m, false) => @move_coord.PeerGone(m)
+    @gate.PeerRefused(m) => @move_coord.Refused(m)
+    e => e
+  }
+}
+
+///|
+/// A move's failure as replica_coord's `Handover` tells it apart (by its class's name, `kind_of`), with its words.
+fn handover_error_of(e : Error) -> Error {
+  match e {
+    @move_coord.Said(m)
+    | @move_coord.AskAgain(m)
+    | @move_coord.Gone(m)
+    | @move_coord.Refused(m)
+    | @move_coord.PeerGone(m)
+    | @move_coord.PeerStopped(m)
+    | @move_coord.Failed(m) => @replica_coord.Thrown(@move_coord.kind_of(e), to_jv({ "message": Json::string(m) }))
+    e => e
+  }
+}
+
+///|
+/// What replica_coord's `Handover` fails with, as the moves tell it apart (move_coord's `MoveError`, by its class's
+/// name): a hand-over's `Said`, `Gone` or `Refused` reaches people in its own words, as move/module.ts `sayOf` says them.
+async fn[T] handed(f : async () -> T) -> T {
+  f() catch {
+    @replica_coord.Thrown(kind, _) as e => raise @move_coord.error_of(kind, @replica_coord.message_of(e))
+    e => raise e
+  }
+}
+
+///|
 /// The hand-over of one chat (replica_coord's `Handover`) as a move's `chats` module takes it (move_coord's
 /// `HandoverPort`), made of what the move hands it (`HandoverHooks`).
 async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @move_coord.HandoverPort {
   let bus = self.bus
   let data = bus.data
-  let s = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let s = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let strs = (v : @jsjson.JValue?) => match v {
-    Some(Arr(xs)) => xs.filter_map(x => match x { Str(u) => Some(@jsjson.text(u)); _ => None })
+    Some(Arr(xs)) => xs.filter_map(x => match x { Str(u) => Some(@jsjson.sanitize_str(u)); _ => None })
     _ => []
   }
   // (what it asks of the station by name: the hub's and the store's on the bus, the move's own by its hooks)
@@ -131,17 +169,17 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
       "accounts.of" => (hooks.account_of)(s(a, 0)).unwrap_or(Null)
       "accounts.here" =>
         match (hooks.account_here)(a.get(0).unwrap_or(Null)) {
-          Some(x) => of_core(Json::string(x))
+          Some(x) => to_jv(Json::string(x))
           None => Null
         }
       "accounts.present" => Bool((hooks.account_present)(s(a, 0)))
       "arrivedStopped" => {
-        let w = to_core(a.get(1).unwrap_or(Null))
-        (hooks.arrived_stopped)(strs(a.get(0)), ({ module: p55_jtext(w, "module"), id: p55_jtext(w, "id"), label: p55_jstr(w, "label"), at: p55_jstr(w, "at") } : @move_coord.Waits), s(a, 2))
+        let w = of_jv(a.get(1).unwrap_or(Null))
+        (hooks.arrived_stopped)(strs(a.get(0)), ({ module: jtext_or_empty(w, "module"), id: jtext_or_empty(w, "id"), label: jtext(w, "label"), at: jtext(w, "at") } : @move_coord.Waits), s(a, 2))
         Null
       }
       "shown" => {
-        (hooks.shown)(strs(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None })
+        (hooks.shown)(strs(a.get(0)), match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None })
         Null
       }
       "went" => {
@@ -149,12 +187,32 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
         Null
       }
       "bindingsOf" => (hooks.bindings_of)(strs(a.get(0)))
-      _ if name.has_prefix("connects.") => of_core(self.coord_connects(name, a.map(to_core)))
-      // (store.*, hub.*, fn.*, keptSends, keepSends: the hub's and its store's)
-      _ => of_core(self.hub(name, a.map(to_core)))
+      _ if name.has_prefix("connects.") => to_jv(self.coord_connects(name, a.map(of_jv)))
+      // What the admin API kept of the messages written under a key (P5-1's, `$admin.keptSends`, `$admin.keepSends`)
+      "keptSends" =>
+        to_jv(self.bus.admin_kept_sends(of_jv(a.get(0).unwrap_or(Null))))
+      "keepSends" => {
+        self.bus.admin_keep_sends(of_jv(a.get(0).unwrap_or(Null)))
+        Null
+      }
+      // (store.*, hub.*, fn.*: the hub's and its store's)
+      _ => to_jv(self.hub(name, a.map(of_jv)))
     }
   }
-  let w = self.replica_world(answer, (name, _a) => if name == "changed" { (hooks.changed)() })
+  let world = self.replica_world(answer, (name, _a) => if name == "changed" { (hooks.changed)() })
+  // (move/station.ts hands its `Handover` the move's own `ask`: in a turn a station found gone by a hand-over's request
+  // is asked nothing more, and one found gone before fails the hand-over's next request at once in its words)
+  let w = {
+    ..world,
+    ask_peer: async fn(station, request, body, itself) {
+      if itself {
+        return (world.ask_peer)(station, request, body, itself)
+      }
+      let bytes = body.map(b => @move_coord.Bytes_::Came(b.reader(world.fs)))
+      let value = (hooks.ask.ask)(station, request, bytes) catch { e => raise handover_error_of(e) }
+      { value, body: None }
+    },
+  }
   let told = hooks.told
   let previous : @replica_coord.Later[Unit] = @replica_coord.Later::new()
   bus.host.rt.fork(async fn() {
@@ -172,7 +230,7 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     room: async fn() { room_of(data) },
     has_git: async fn() { has_git(bus.host) },
     flush: None,
-    boot: () => wall_ms().to_double() - (match p55_jfield(machine(), "uptime") { Number(u, ..) => u * 1000.0; _ => 0.0 }),
+    boot: () => wall_ms().to_double() - (match jfield(machine(), "uptime") { Number(u, ..) => u * 1000.0; _ => 0.0 }),
     git: Some(async fn(dir, args) { git_run(bus.host, dir, args) }),
     lack_most: @replica_coord.lack_most,
     hash_most: @replica_coord.hash_most,
@@ -180,9 +238,11 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     pack_bytes: None,
     work: self.carry_work(),
     told: {
-      asked: async fn(to, key, make, progress) { told.asked(to, key, () => (make(), None), progress?) },
+      asked: async fn(to, key, make, progress) {
+        told.asked(to, key, () => (make(), None), progress?) catch { e => raise handover_error_of(e) }
+      },
       run: async fn(peer, key, work, measure) {
-        told.run(peer, key, async fn(_p) { Some(work()) }, measure?)
+        told.run(peer, key, async fn(_p) { Some(work()) }, measure?) catch { e => raise handover_error_of(e) }
       },
       let_go: (to, key, words) => told.let_go(to, key, @move_coord.error_of("Said", words)),
       settle: async fn() { told.settle() },
@@ -193,79 +253,89 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     previous_pid: bus.previous_pid.map(p => p.to_double()),
   })
   {
-    together: async fn(k, _page) { h.together(k) },
-    chat_of: async fn(k) { h.chat_of(k) },
-    accounts_of: async fn(keys, _page) { h.accounts_of(keys).map(p => (p.0, match p.1 { Null => None; x => Some(x) })) },
-    past_left: async fn(accounts, keys, _page) { h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys) },
-    check: async fn(k, to, planning, _page) { h.check(k, to, planning~) },
-    coming_in: async fn(ws) { h.coming_in(ws) },
-    abandon: () => h.abandon(),
-    hand_over: async fn(k, to, wait, progress, stopped_for) { h.hand_over(k, to, wait~, progress~, stopped_for=stopped_for.map(x => x.to_j())) },
-    arrived: async fn(k, ms) { h.arrived(k, within_ms=Some(ms.to_double())) },
-    out_of: async fn(k) { h.out_of(k) },
-    coming_from: async fn(k) { h.coming_from(k) },
-    waits_for_turn: async fn(o) {
-      h.waits_for_turn(match o { Obj(_) => match to_core(o) { x => p55_jtext(x, "id") }; Str(u) => @jsjson.text(u); _ => "" })
+    together: async fn(k, page) { handed(() => h.together(k, reads=self.reads_of(page))) },
+    chat_of: async fn(k) { handed(() => h.chat_of(k)) },
+    accounts_of: async fn(keys, page) {
+      handed(() => h.accounts_of(keys, reads=self.reads_of(page))).map(p => (p.0, match p.1 { Null => None; x => Some(x) }))
     },
-    start: async fn() { h.start() },
-    close: async fn() { h.close() },
-    settle: async fn() { h.settle() },
-    loaded_within: async fn() { h.loaded_within() },
+    past_left: async fn(accounts, keys, page) {
+      handed(() => h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys, reads=self.reads_of(page)))
+    },
+    check: async fn(k, to, planning, page) { handed(() => h.check(k, to, planning~, reads=self.reads_of(page))) },
+    coming_in: async fn(ws) { handed(() => h.coming_in(ws)) },
+    abandon: () => h.abandon(),
+    hand_over: async fn(k, to, wait, progress, stopped_for) {
+      handed(() => h.hand_over(k, to, wait~, progress~, stopped_for=stopped_for.map(x => x.to_j())))
+    },
+    arrived: async fn(k, ms) { handed(() => h.arrived(k, within_ms=Some(ms.to_double()))) },
+    out_of: async fn(k) { handed(() => h.out_of(k)) },
+    coming_from: async fn(k) { handed(() => h.coming_from(k)) },
+    waits_for_turn: async fn(o) {
+      handed(() => h.waits_for_turn(match o { Obj(_) => match of_jv(o) { x => jtext_or_empty(x, "id") }; Str(u) => @jsjson.sanitize_str(u); _ => "" }))
+    },
+    start: async fn() { handed(() => h.start()) },
+    close: async fn() { handed(() => h.close()) },
+    settle: async fn() { handed(() => h.settle()) },
+    loaded_within: async fn() { handed(() => h.loaded_within()) },
     answer: async fn(peer, request, ws, bytes) {
       let body : @replica_coord.Body? = match bytes {
         None => None
         Some(FileBytes(p, from, len)) => Some(File(p, from.to_double(), len.to_double()))
         Some(Came(next)) => Some(Stream(next))
       }
-      h.answer(hooks.admits, peer, request, body, ws)
+      handed(() => h.answer(hooks.admits, peer, request, body, ws))
     },
     reached: peer => h.reached(peer),
   }
 }
 
 ///|
-/// A page of a workspace's chats here, by key (store.ts `sessionPageOfWs`): those after `after`, at most `limit`.
-fn P55::sessions_page(self : P55, keys : Array[String]) -> @move_coord.Page {
-  let rows = (try { Ok(self.bus.store.sessions_of(keys)) } catch { e => Err(e) }).unwrap_or([])
-  let store = self.bus.store
-  {
-    keys,
-    rows: rows.map(of_core),
+/// A page of sessions as the moves read it (move/live.ts gives store.ts's SessionPage as it is): its rows, and its
+/// reads (each session's row, its home chat's sessions, the accounts it ran on: one statement for the page) kept by
+/// the page's `handle` for the plan's checks of it (P55::reads_of), the latest 256 pages' alone.
+fn P55::wrap_session_page(self : P55, sp : @store_sessions.SessionPage) -> @move_coord.Page {
+  let reads : @replica_coord.SessionReads = {
     session: async fn(k) {
-      match (try { Ok(store.get_session(k)) } catch { e => Err(e) }) {
+      match (try { Ok(sp.session(k)) } catch { e => Err(e) }) {
         Ok(Null) | Err(_) => None
-        Ok(r) => Some(of_core(r))
+        Ok(r) => Some(to_jv(r))
       }
     },
-    handle: Null,
+    home_members: async fn(k) { (try { Ok(sp.home_members(k)) } catch { _ => Ok(None) }).unwrap_or(None) },
+    ran_on: async fn(k) { (try { Ok(sp.ran_on(k)) } catch { _ => Ok([]) }).unwrap_or([]) },
+  }
+  self.next_page += 1
+  let id = self.next_page
+  self.pages[id] = reads
+  self.pages.remove(id - 256)
+  let rows = (try { Ok(sp.rows()) } catch { _ => Ok([]) }).unwrap_or([]).map(to_jv)
+  { keys: sp.keys, rows, session: reads.session, handle: @jsjson.JValue::Num(id.to_double()) }
+}
+
+///|
+/// The reads of a page the moves made (`handle`), while it is kept: None, each session read alone.
+fn P55::reads_of(self : P55, page : @move_coord.Page?) -> @replica_coord.SessionReads? {
+  match page {
+    Some({ handle: Num(n), .. }) => self.pages.get(n.to_int())
+    _ => None
   }
 }
 
 ///|
-fn P55::sessions_in(self : P55, ws : String, after : String, limit : Int) -> @move_coord.Page {
-  let home = self.home() == Some(ws)
-  let rows = (try {
-    Ok(
-      self.bus.db.all(
-        if home {
-          "SELECT key FROM sessions WHERE (ws = ? OR ws IS NULL) AND key > ? ORDER BY key LIMIT ?"
-        } else {
-          "SELECT key FROM sessions WHERE ws = ? AND key > ? ORDER BY key LIMIT ?"
-        },
-        [Json::string(ws), Json::string(after), Json::number(limit.to_double())],
-      ),
-    )
-  } catch {
-    e => Err(e)
-  }).unwrap_or([])
-  self.sessions_page(rows.filter_map(r => match r.get("key") { Some(String(k)) => Some(k); _ => None }))
+/// A page of sessions `keys` (store.ts `sessionPage`).
+fn P55::sessions_page(self : P55, keys : Array[String]) -> @move_coord.Page {
+  self.wrap_session_page(self.bus.store.session_page(keys, None))
 }
 
 ///|
-fn jv_text(v : @jsjson.JValue?) -> String? {
-  match v {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
+/// A page of a workspace's chats here, by key (store.ts `sessionPageOfWs`, as move/live.ts asks it): those after
+/// `after`, at most `limit`, the home workspace's with those of no workspace, and those handed over from it.
+fn P55::sessions_in(self : P55, ws : String, after : String, limit : Int) -> @move_coord.Page {
+  let home = self.home()
+  let ws_arg = if home == Some(ws) { Json::null() } else { Json::string(ws) }
+  match (try { Ok(self.bus.store.session_page_of_ws(ws_arg, jopt(home), Json::string(after), limit)) } catch { e => Err(e) }) {
+    Ok(sp) => self.wrap_session_page(sp)
+    Err(_) => { keys: [], rows: [], session: async fn(_) { None }, handle: Null }
   }
 }
 
@@ -275,7 +345,7 @@ async fn P55::start_moves(self : P55) -> Unit {
   let data = bus.data
   let host = bus.host
   let replica_fs = @replica_coord.Fs::new(host, sep=sep())
-  let say = @move_coord.Say::of((lang, key, args) => tr(lang, key, args~), (bus.lang.val)(), log=(level, part, fields) => slice_log(level, "move", part, to_core(fields)))
+  let say = @move_coord.Say::of((lang, key, args) => tr(lang, key, args~), (bus.lang.val)(), log=(level, part, fields) => slice_log(level, "move", part, of_jv(fields)))
   let roster = (ws : String) => self.roster(ws).map(r => r.map(m => ({ id: m.0, name: m.1, tasks: m.2 } : @move_coord.RosterEntry)))
   // (a burst of changes, a file's progress among them, told once: what the app's page reads again, GET /move)
   let telling = Ref(false)
@@ -290,34 +360,40 @@ async fn P55::start_moves(self : P55) -> Unit {
     |> ignore
   }
   let ask_peer = async fn(station : String, request : @jsjson.JValue, body : @move_coord.Bytes_?) -> @jsjson.JValue {
-    let r = to_core(request)
-    let (value, _) = bus.call_peer(station, p55_jstr(r, "workspace"), p55_jtext(r, "method"), r, bytes?=moved_bytes(host, body))
-    of_core(value)
+    let r = of_jv(request)
+    let (value, _) = bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r, bytes?=moved_bytes(host, body)) catch {
+      e => raise move_error_of(e)
+    }
+    to_jv(value)
   }
   let hub_bool = async fn(name : String, args : Array[Json]) -> Bool { self.hub(name, args) is True }
-  let items_of = (v : Json) => core_items(v).map(of_core)
+  let items_of = (v : Json) => jitems(v).map(to_jv)
+  let opt_of = (v : Json) => match v {
+    Null => None
+    v => Some(to_jv(v))
+  }
   let moves = @move_coord.Moves::new({
     data,
     here: () => Some(bus.key.id),
     home: () => self.home(),
     roster,
     ask: { ask: ask_peer },
-    clock: @move_coord.host_clock(host),
+    clock: { ..@move_coord.host_clock(host), now: () => p5_epoch_ms() },
     disk: @move_coord.host_disk(host),
     fs: @move_coord.host_fs(host),
     say,
     random: @move_coord.host_random(host),
     store: {
-      subscribe: Some(f => ignore(bus.subscribe_store(change => match p55_jstr(change, "key") { Some(k) => f(k); None => () }))),
-      handed_to: async fn(k) { match self.hub("store.handedTo", [Json::string(k)]) { Null => None; v => Some(of_core(v)) } },
+      subscribe: Some(f => ignore(bus.subscribe_store(change => match jtext(change, "key") { Some(k) => f(k); None => () }))),
+      handed_to: async fn(k) { match self.hub("store.handedTo", [Json::string(k)]) { Null => None; v => Some(to_jv(v)) } },
       get_session: async fn(k) {
         match (try { Ok(bus.store.get_session(k)) } catch { e => Err(e) }) {
           Ok(Null) | Err(_) => None
-          Ok(r) => Some(of_core(r))
+          Ok(r) => Some(to_jv(r))
         }
       },
       jobs_mark_of: async fn(keys) {
-        core_items(self.jobs("store.jobsMarkOf", [Json::array(keys.map(Json::string(_)))])).filter_map(p => match p {
+        jitems(self.jobs("store.jobsMarkOf", [Json::array(keys.map(Json::string(_)))])).filter_map(p => match p {
           Array([String(a), String(b), ..]) => Some((a, b))
           _ => None
         })
@@ -366,27 +442,27 @@ async fn P55::start_moves(self : P55) -> Unit {
     connects: Some({
       kind_of: async fn(id) {
         match self.coord_connects("connects.kindOf", [Json::string(id)]) {
-          Object(_) as k => Some((p55_jtext(k, "kind"), p55_jtext(k, "mode")))
+          Object(_) as k => Some((jtext_or_empty(k, "kind"), jtext_or_empty(k, "mode")))
           _ => None
         }
       },
       own_in: async fn(ws) {
-        core_items(self.coord_connects("connects.ownKinds", [Json::string(ws)])).map(c => ({
-          id: p55_jtext(c, "id"),
-          name: p55_jtext(c, "name"),
-          kind: p55_jtext(c, "kind"),
-          mode: p55_jtext(c, "mode"),
+        jitems(self.coord_connects("connects.ownKinds", [Json::string(ws)])).map(c => ({
+          id: jtext_or_empty(c, "id"),
+          name: jtext_or_empty(c, "name"),
+          kind: jtext_or_empty(c, "kind"),
+          mode: jtext_or_empty(c, "mode"),
         } : @move_coord.OwnConnect))
       },
       moved_away: Some(async fn(ws) {
-        core_items(self.coord_connects("connects.movedAway", [Json::string(ws)])).map(c => ({
-          id: p55_jtext(c, "id"),
-          name: p55_jtext(c, "name"),
-          kind: p55_jtext(c, "kind"),
-          mode: p55_jtext(c, "mode"),
+        jitems(self.coord_connects("connects.movedAway", [Json::string(ws)])).map(c => ({
+          id: jtext_or_empty(c, "id"),
+          name: jtext_or_empty(c, "name"),
+          kind: jtext_or_empty(c, "kind"),
+          mode: jtext_or_empty(c, "mode"),
         } : @move_coord.OwnConnect))
       }),
-      runs_on: async fn(id) { p55_jstr({ "s": self.coord_connects("connects.runsOn", [Json::string(id)]) }, "s") },
+      runs_on: async fn(id) { jtext({ "s": self.coord_connects("connects.runsOn", [Json::string(id)]) }, "s") },
       move: async fn(id, to, awaiting) {
         ignore(self.coord_connects("connects.move", [Json::string(id), Json::string(to), Json::array(awaiting.map(Json::string(_)))]))
       },
@@ -394,27 +470,24 @@ async fn P55::start_moves(self : P55) -> Unit {
     }),
     jobs: {
       up: async fn(keys, ws) {
-        items_of(self.jobs("jobs.upAsMoves", [match keys { Some(k) => Json::array(k.map(Json::string(_))); None => Json::null() }, p55_jopt(ws)]))
+        items_of(self.jobs("jobs.upAsMoves", [match keys { Some(k) => Json::array(k.map(Json::string(_))); None => Json::null() }, jopt(ws)]))
       },
       stop: async fn(id, why) { ignore(self.jobs("jobs.stop", [Json::string(id), Json::string(why)])) },
-      start: async fn(j) { ignore(self.jobs("jobs.startMoved", [to_core(j)])) },
+      start: async fn(j) { ignore(self.jobs("jobs.startMoved", [of_jv(j)])) },
       stop_named: async fn(session, name) { ignore(self.jobs("jobs.stopNamed", [Json::string(session), Json::string(name)])) },
     },
-    profiles: async fn() { core_items(p55_jfield((bus.config_raw.val)(), "profiles")).map(of_core) },
-    move_profile: async fn(id, to) { of_core(self.jobs("sharing.moveProfile", [p55_jopt(id), Json::string(to)])) },
+    profiles: async fn() { jitems(jfield((bus.config_raw.val)(), "profiles")).map(to_jv) },
+    move_profile: async fn(id, to) { to_jv(self.jobs("sharing.moveProfile", [jopt(id), Json::string(to)])) },
     share_moves: Some({
       move: async fn(id, to, made) {
         let v = self.jobs("sharing.moveProfile", [Json::string(id), Json::string(to)])
-        match p55_jstr(v, "share") {
-          Some(share) => made(share)
-          None => ()
-        }
-        of_core(v)
+        if jtext(v, "share") is Some(share) { made(share) }
+        to_jv(v)
       },
       unshare: async fn(share, stations) { self.jobs("sharing.unshareMoved", [Json::string(share), Json::array(stations.map(Json::string(_)))]) is True },
       lend: Some(async fn(id, to) {
         let v = self.jobs("sharing.lendTo", [Json::string(id), Json::string(to)])
-        (p55_jtext(v, "share"), jtrue(v, "made"), jtrue(v, "widened"))
+        (jtext_or_empty(v, "share"), jtrue(v, "made"), jtrue(v, "widened"))
       }),
       unlend: Some(async fn(share, to, made, widened) {
         ignore(self.jobs("sharing.unlend", [Json::string(share), Json::string(to), Json::boolean(made), Json::boolean(widened)]))
@@ -424,21 +497,51 @@ async fn P55::start_moves(self : P55) -> Unit {
     }),
     sessions_in: async fn(ws, after, limit) { self.sessions_in(ws, after, limit) },
     repos_dir: path([data, "repos"]),
-    remove: Some(async fn(p) { ignore(host.shell("fs.rm", { "path": Json::string(p), "recursive": Json::boolean(true) })) }),
+    remove: Some(async fn(p) { move_remove(host, p) }),
     room: Some(async fn() {
       let (free, total) = room_of(data)
-      of_core({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
+      to_jv({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
     }),
     git: Some(async fn(dir, args) { git_run(host, dir, args) }),
     changed: Some(changed),
     config: Some({
-      raw: async fn() { of_core((bus.config_raw.val)()) },
+      raw: async fn() { to_jv((bus.config_raw.val)()) },
       update_soon: async fn(next) {
-        let n = to_core(next)
+        let n = of_jv(next)
         ignore((bus.config_update.val)(_ => n))
       },
     }),
-    vault: None,
+    // (move/live.ts `vault`: an owner's plain items and the vaults they own, the store's rows as they are, the vault's
+    // part (P5-4) asked for them)
+    vault: Some({
+      owners: async fn(ws) { core_strs(self.ui("vault.moveOwners", [Json::string(ws)])) },
+      grant_owners: async fn(keys) {
+        let out : Map[String, Array[String]] = {}
+        match self.ui("vault.moveGrantOwners", [Json::array(keys.map(Json::string(_)))]) {
+          Object(m) => for k, v in m { out[k] = core_strs(v) }
+          _ => ()
+        }
+        out
+      },
+      stores: {
+        plain_items: async fn(ws, owner) { items_of(self.ui("secrets.plain.items", [Json::string(ws), Json::string(owner)])) },
+        plain_item: async fn(ws, id) { opt_of(self.ui("secrets.plain.item", [Json::string(ws), Json::string(id)])) },
+        plain_put: async fn(row) { ignore(self.ui("secrets.plain.put", [of_jv(row)])) },
+        plain_forget: async fn(ws, id) { ignore(self.ui("secrets.plain.forget", [Json::string(ws), Json::string(id)])) },
+        vaults: async fn(ws) { items_of(self.ui("vaults.vaults", [Json::string(ws)])) },
+        vault: async fn(ws, id) { opt_of(self.ui("vaults.vault", [Json::string(ws), Json::string(id)])) },
+        items: async fn(ws, vault) { items_of(self.ui("vaults.items", [Json::string(ws), Json::string(vault)])) },
+        item: async fn(ws, vault, id) {
+          opt_of(self.ui("vaults.item", [Json::string(ws), Json::string(vault), Json::string(id)]))
+        },
+        put_vault: async fn(row) { ignore(self.ui("vaults.putVault", [of_jv(row)])) },
+        put_item: async fn(row) { ignore(self.ui("vaults.putItem", [of_jv(row)])) },
+        forget_item: async fn(ws, vault, id) {
+          ignore(self.ui("vaults.forgetItem", [Json::string(ws), Json::string(vault), Json::string(id)]))
+        },
+        forget_vault: async fn(ws, id) { ignore(self.ui("vaults.forgetVault", [Json::string(ws), Json::string(id)])) },
+      },
+    }),
     // (a beta feature of the station's: features.ts stationMoveOn)
     move_on: Some(() => self.move_on()),
     plan_page: None,
@@ -450,10 +553,10 @@ async fn P55::start_moves(self : P55) -> Unit {
       floor_of: total => @replica_coord.floor_of(total),
       room_here: async fn() {
         let (free, total) = room_of(data)
-        of_core({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
+        to_jv({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
       },
       sizes: async fn(keys, sizing) {
-        match self.carry_ask({ "op": "sizes", "dataDir": Json::string(data), "db": Json::string(path([data, "stillfail.db"])), "keys": Json::array(keys.map(Json::string(_))), "sizing": to_core(sizing), "own": Json::array(@replica_coord.own_skills().map(Json::string(_))) }) {
+        match self.carry_ask({ "op": "sizes", "dataDir": Json::string(data), "db": Json::string(path([data, "stillfail.db"])), "keys": Json::array(keys.map(Json::string(_))), "sizing": of_jv(sizing), "own": Json::array(@replica_coord.own_skills().map(Json::string(_))) }) {
           Arr(xs) => xs.map(@move_coord.Sized::of)
           _ => []
         }
@@ -477,10 +580,10 @@ async fn P55::start_moves(self : P55) -> Unit {
       }
       None => None
     }
-    (to_core(answers(from, of_core(with_method(params, meth)), ws, body)), None)
+    (of_jv(answers(from, to_jv(with_method(params, meth)), ws, body)), None)
   }
   // station_move's asks (tools/move.ts `MoveAsks`: mcp_tools'), all of a station confirmed on a card in the asking chat
-  let asks = @mcp_tools.MoveAsks::new(self.move_tool_ctx(), data, { ask: true, set_wait: true, refusal: true, room: true, told: true })
+  let asks = @mcp_tools.MoveAsks::new(self.move_tool_ctx(), data, { ask: true, set_wait: true, refusal: true, room: true, told: true, soon: true })
   bus.on_peer_prefix("handover.", peer_answer)
   bus.on_peer_prefix("move.", async fn(from, ws, meth, params, bytes) {
     if meth == "move.tool" {
@@ -488,6 +591,17 @@ async fn P55::start_moves(self : P55) -> Unit {
       return (move_asked(moves, asks, from, ws, params), None)
     }
     peer_answer(from, ws, meth, params, bytes)
+  })
+  // (a station heard from again: what is owed to it of a hand-over is told now, move/live.ts `bus.heard`)
+  bus.on_peer_heard(peer => {
+    (moves.handover.reached)(peer)
+    moves.heard(peer)
+  })
+  // (a login home again, by any route: the share a trip made for it undone, move/live.ts `sharing.onHosted`)
+  self.op("move.shareCameHome", async fn(arg) {
+    let a = core_strs(arg)
+    moves.share_came_home(a.get(0).unwrap_or(""), a.get(1).unwrap_or(""))
+    Json::null()
   })
   // (the logins changed: what is stopped here for one looked at again)
   ignore((bus.config_listen.val)(_raw => moves.logins_changed()))
@@ -504,7 +618,7 @@ async fn P55::start_moves(self : P55) -> Unit {
       None => None
     },
     here: () => Some(bus.key.id),
-    rig: () => p55_jfield((bus.cloud_state.val)().unwrap_or(Json::null()), "rig") != Json::null(),
+    rig: () => jfield((bus.cloud_state.val)().unwrap_or(Json::null()), "rig") != Json::null(),
     name: Some((ws, id) => match self.roster(ws) {
       Some(r) =>
         match r.search_by(x => x.0 == id) {
@@ -521,9 +635,9 @@ async fn P55::start_moves(self : P55) -> Unit {
   bus.parts.overview("move", async fn(_viewer, _lang) { { "offered": Json::boolean(self.move_on()) } })
   // (the card's choice, in the app: an owner or admin of the chat's workspace confirms it or declines)
   bus.parts.card_choice("move", {
-    may: (viewer, card, at) => asks.may(jv_of_json(viewer), jv_of_json(card), jv_of_json(at)),
-    chosen: (viewer, card, option, at) => ignore(host.rt.fork(name="move card chosen", async fn() {
-      asks.chosen(jv_of_json(viewer), jv_of_json(card), option, jv_of_json(at)) catch {
+    may: (viewer, card, at) => asks.may(to_jv(viewer), to_jv(card), to_jv(at)),
+    chosen: (viewer, card, option, at) => ignore(host.rt.fork_quiet(name="move card chosen", async fn() {
+      asks.chosen(to_jv(viewer), to_jv(card), option, to_jv(at)) catch {
         e => self.warn("move", "the card's choice was not taken", e)
       }
     })),
@@ -533,11 +647,11 @@ async fn P55::start_moves(self : P55) -> Unit {
     [
       {
         name: "station_move",
-        declared: json_of_jv(asks.c.decl("station_move")),
+        declared: of_jv(asks.c.decl("station_move")),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, jv_of_json(args)) })))
+            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, to_jv(args)) })))
           })
         },
       },
@@ -587,6 +701,13 @@ fn handover_waiting(made : @effect.Deferred[@move_coord.HandoverPort]) -> @move_
 }
 
 ///|
+/// A folder a move made let go with all it holds, nothing there no failure (move/repos.ts `rm(d, { recursive: true,
+/// force: true })`); any other failure raised, as rm's.
+async fn move_remove(host : @host.Host, p : String) -> Unit {
+  ignore(host.shell("fs.remove", { "path": Json::string(p), "recursive": Json::boolean(true) }))
+}
+
+///|
 /// A move's routes (routes.ts) as the admin API's: each matched by its own test of the path.
 fn move_part_routes(routes : Array[@move_coord.MoveRoute]) -> Array[PartRoute] {
   let meths : Array[String] = []
@@ -596,11 +717,11 @@ fn move_part_routes(routes : Array[@move_coord.MoveRoute]) -> Array[PartRoute] {
     }
   }
   meths.map(m => p55_route(m, "^/move(/.*)?$", async fn(req) {
-    let p = p55_jtext(req, "path")
-    let viewer = p55_jfield(req, "viewer")
+    let p = jtext_or_empty(req, "path")
+    let viewer = jfield(req, "viewer")
     for r in routes {
       if r.method_ == m && (r.matches)(p) {
-        let query = match p55_jfield(req, "query") {
+        let query = match jfield(req, "query") {
           Object(q) => q.to_array().filter_map(kv => match kv.1 { String(v) => Some((kv.0, v)); _ => None })
           _ => []
         }
@@ -608,13 +729,13 @@ fn move_part_routes(routes : Array[@move_coord.MoveRoute]) -> Array[PartRoute] {
           method_: m,
           path: p,
           query,
-          body: match p55_jfield(req, "body") { Null => ""; b => b.stringify() },
-          email: p55_jtext(viewer, "email"),
-          role: p55_jtext(viewer, "role"),
-          workspace: p55_jstr(viewer, "workspace"),
+          body: match jfield(req, "body") { Null => ""; b => b.stringify() },
+          email: jtext_or_empty(viewer, "email"),
+          role: jtext_or_empty(viewer, "role"),
+          workspace: jtext(viewer, "workspace"),
           lang: lang_in(req),
         })
-        return answered(status, to_core(body))
+        return answered(status, of_jv(body))
       }
     }
     refused(404, "not found")
@@ -630,11 +751,11 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
   }
   let s = (a : Array[Json], i : Int) => match a.get(i) { Some(String(x)) => x; _ => "" }
   let sel = (v : Json) => ({
-    module: p55_jstr(v, "module"),
-    item: p55_jstr(v, "item"),
+    module: jtext(v, "module"),
+    item: jtext(v, "item"),
     all: jtrue(v, "all"),
     with_needs: jtrue(v, "withNeeds"),
-    follow: match p55_jfield(v, "follow") { Array(_) as f => Some(core_strs(f)); _ => None },
+    follow: match jfield(v, "follow") { Array(_) as f => Some(core_strs(f)); _ => None },
     arrive_stopped: jtrue(v, "arriveStopped"),
   } : @move_coord.Selection)
   self.op("move.here", async fn(_arg) { Json::string(self.bus.key.id) })
@@ -642,7 +763,7 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
     let session = s(args_of(arg), 0)
     match (try { Ok(self.bus.store.session_ws(session)) } catch { e => Err(e) }) {
       Ok(String(w)) => Json::string(w)
-      Ok(Null) => p55_jopt(self.home())
+      Ok(Null) => jopt(self.home())
       _ => Json::null()
     }
   })
@@ -654,43 +775,48 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
   })
   self.op("move.refusal", async fn(arg) {
     let a = args_of(arg)
-    p55_jopt(moves.refusal(s(a, 0), s(a, 1)))
+    jopt(moves.refusal(s(a, 0), s(a, 1)))
+  })
+  // (what a move made here let go as it goes back: repos.ts's `remove`, a folder and all it holds)
+  self.op("move.remove", async fn(arg) {
+    move_remove(self.bus.host, s(args_of(arg), 0))
+    Json::null()
   })
   self.op("move.room", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.room(s(a, 0), s(a, 1), core_strs(a.get(2).unwrap_or(Json::null()))))
+    of_jv(moves.room(s(a, 0), s(a, 1), core_strs(a.get(2).unwrap_or(Json::null()))))
   })
   self.op("move.scheduler.plan", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.scheduler.plan(s(a, 0), s(a, 1)))
+    of_jv(moves.scheduler.plan(s(a, 0), s(a, 1)))
   })
   self.op("move.scheduler.planShown", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.scheduler.plan_shown(s(a, 0), s(a, 1)))
+    of_jv(moves.scheduler.plan_shown(s(a, 0), s(a, 1)))
   })
   self.op("move.scheduler.move", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.scheduler.move(s(a, 0), s(a, 1), sel(a.get(2).unwrap_or(Json::null())), by?=match a.get(3) { Some(String(b)) => Some(b); _ => None }))
+    of_jv(moves.scheduler.move(s(a, 0), s(a, 1), sel(a.get(2).unwrap_or(Json::null())), by?=match a.get(3) { Some(String(b)) => Some(b); _ => None }))
   })
   self.op("move.scheduler.back", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.scheduler.back(s(a, 0), s(a, 1), sel(a.get(2).unwrap_or(Json::null())), by?=match a.get(3) { Some(String(b)) => Some(b); _ => None }))
+    of_jv(moves.scheduler.back(s(a, 0), s(a, 1), sel(a.get(2).unwrap_or(Json::null())), by?=match a.get(3) { Some(String(b)) => Some(b); _ => None }))
   })
   self.op("move.scheduler.stopTurn", async fn(arg) {
     Json::boolean(moves.scheduler.stop_turn(match args_of(arg).get(0) { Some(String(x)) => Some(x); _ => None }))
   })
   // (scheduler.ts `stopped()`: each item stopped here and what it waits for)
   self.op("move.scheduler.stopped", async fn(_arg) {
-    Json::array(moves.scheduler.stopped_list().map(p => to_core(@move_coord.jo([("item", p.0.to_j()), ("waitsFor", p.1.to_j())]))))
+    Json::array(moves.scheduler.stopped_list().map(p => of_jv(@move_coord.jo([("item", p.0.to_j()), ("waitsFor", p.1.to_j())]))))
   })
   self.op("move.ask", async fn(arg) {
     let a = args_of(arg)
-    to_core(moves.ask(s(a, 0), of_core(a.get(1).unwrap_or(Json::null())), None))
+    of_jv(moves.ask(s(a, 0), to_jv(a.get(1).unwrap_or(Json::null())), None))
   })
   self.op("move.told.asked", async fn(arg) {
     let a = args_of(arg)
-    let request = of_core(a.get(2).unwrap_or(Json::null()))
-    to_core(moves.told.asked(s(a, 0), s(a, 1), () => (request, None)))
+    let request = to_jv(a.get(2).unwrap_or(Json::null()))
+    of_jv(moves.told.asked(s(a, 0), s(a, 1), () => (request, None)))
   })
   self.op("move.setWait", async fn(arg) {
     moves.set_wait(args_of(arg).get(0) is Some(True))
@@ -714,53 +840,49 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
 /// answers them on coord_ask), its file of asks (`fs.*`) and a temporary name's bytes (`crypto.randomBytes`).
 fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
   let (zh, en) = catalogs_json()
-  let words = @api_routes.Words::new(jv_of_json(zh), jv_of_json(en))
-  let s = (args : Array[@api_routes.JV], i : Int) => match args.get(i) { Some(Str(x)) => x; _ => "" }
+  let words = @api_routes.Words::new(to_jv(zh), to_jv(en))
   let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
     match op {
-      "fs.readFileSync" =>
-        match read_text(s(args, 0)) {
-          Some(t) => Str(t)
-          None => raise BusError("ENOENT: no such file, open '\{s(args, 0)}'")
-        }
-      "fs.mkdir" => {
-        @drive.mkdir(s(args, 0), true)
-        Null
-      }
-      "fs.writeFile" => {
-        @drive.write_private(s(args, 0), s(args, 1))
-        Null
-      }
-      "fs.rename" => {
-        @drive.rename(s(args, 0), s(args, 1))
-        Null
-      }
+      "fs.readFileSync" | "fs.mkdir" | "fs.rename" =>
+        to_jv(
+          host_fs_op(self.bus.host, op[3:].to_owned(), args.map(of_jv)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
+      "fs.writeFile" =>
+        to_jv(
+          host_fs_op(self.bus.host, "writePrivate", args.map(of_jv)) catch {
+            DispatchFsError(_, m) => raise BusError(m)
+            e => raise e
+          },
+        )
       "crypto.randomBytes" =>
         @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
       _ =>
         match self.ops.get(op) {
-          Some(f) => jv_of_json(f(Json::array(args.map(json_of_jv))))
+          Some(f) => to_jv(f(Json::array(args.map(of_jv))))
           None => raise BusError("no move part \{op}")
         }
     }
   })
-  @mcp_tools.Ctx::new(backend, words, { runtime_kinds: [], station_lang: (self.bus.lang.val)(), os: p54_os(), arch: arch() })
+  @mcp_tools.Ctx::new(backend, words, { runtime_kinds: [], station_lang: (self.bus.lang.val)(), os: platform_os(), arch: arch() })
 }
 
 ///|
 /// station_move asked by another station (tools/move.ts `MoveAsks.answer`): a move or a move back as a told step where
 /// it asks so (`told`, its key), the step's end told to it; else answered with its outcome as before.
 async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer : String, ws : String, request : Json) -> Json {
-  let args = match p55_jfield(request, "args") {
-    Object(_) as a => jv_of_json(a)
+  let args = match jfield(request, "args") {
+    Object(_) as a => to_jv(a)
     _ => @api_routes.JV::Obj([])
   }
-  match p55_jfield(request, "told") {
+  match jfield(request, "told") {
     String(key) if key.length() <= 300 =>
-      to_core(moves.told.run(peer, key, async fn(_progress) {
-        Some(of_core(json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))))
+      of_jv(moves.told.run(peer, key, async fn(_progress) {
+        Some(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
       }))
-    _ => json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
+    _ => of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
   }
 }
 
@@ -771,16 +893,4 @@ async fn move_tool_said(f : async () -> @api_routes.JV) -> @api_routes.JV {
     @mcp_tools.Refusal(m) | @mcp_tools.Failed(m) => raise BusError(m)
     e => raise e
   }
-}
-
-///|
-fn hex_bytes(h : String) -> Bytes {
-  let out = @buffer.Buffer()
-  let v = (c : Int) => if c >= 48 && c <= 57 { c - 48 } else if c >= 97 && c <= 102 { c - 87 } else if c >= 65 && c <= 70 { c - 55 } else { 0 }
-  let mut i = 0
-  while i + 1 < h.length() {
-    out.write_byte((v(h.unsafe_charcode_at(i)) * 16 + v(h.unsafe_charcode_at(i + 1))).to_byte())
-    i += 2
-  }
-  out.to_bytes()
 }

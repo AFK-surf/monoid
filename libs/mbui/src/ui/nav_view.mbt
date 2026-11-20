@@ -20,6 +20,7 @@ priv struct NavHosted {
   now : () -> Double
   room : () -> (Double, Double)
   went : () -> Unit
+  swap_went : () -> Unit
   /// whether what the old frame's focus names (an old widget's, a node's: Ctx::focus) is in the stack (Nav::focus_follows)
   holds : (Int) -> Bool
   /// whether what it names may take the focus still (a node of the tree's not let go of; an old widget's, built as its
@@ -45,15 +46,23 @@ fn[P] Nav::p_at(self : Nav[P], now : Double) -> Double {
 }
 
 ///|
-/// The page `serial` (on the stack, leaving it, or on its shelf: Nav::replace_kept).
+/// The page `serial` (on the stack, leaving it, on its shelf: Nav::replace_kept, or on its kept left: Nav::try_park_left).
 fn[P] Nav::entry(self : Nav[P], serial : Int) -> NavPage[P]? {
   match self.leaving {
     Some(e) if e.serial == serial => return Some(e)
     _ => ()
   }
+  match self.swap_out {
+    Some(e) if e.serial == serial => return Some(e)
+    _ => ()
+  }
   match self.pages.iter().find_first(fn(e) { e.serial == serial }) {
     Some(e) => Some(e)
-    None => self.shelf.iter().find_first(fn(e) { e.serial == serial })
+    None =>
+      match self.shelf.iter().find_first(fn(e) { e.serial == serial }) {
+        Some(e) => Some(e)
+        None => self.kept_left.iter().find_first(fn(x) { x.2.serial == serial }).map(fn(x) { x.2 })
+      }
   }
 }
 
@@ -74,7 +83,9 @@ pub fn[P] Nav::shows(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
   self.shown.get() |> ignore
   let (top, beside) = self.top_beside()
-  top.serial == serial || (beside is Some(b) && b.serial == serial)
+  top.serial == serial ||
+  (beside is Some(b) && b.serial == serial) ||
+  (self.swap_out is Some(s) && s.serial == serial)
 }
 
 ///|
@@ -91,35 +102,35 @@ pub fn[P] Nav::root_shows(self : Nav[P]) -> Bool {
 ///|
 /// Whether page `serial` takes presses: not as it goes back off the stack, nor under a page coming in over it, nor on
 /// the shelf (read: told as that changes).
-fn[P] Nav::takes(self : Nav[P], serial : Int) -> Bool {
+pub fn[P] Nav::takes(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
   self.shown.get() |> ignore
   let n = self.pages.length()
   let leaving = self.leaving is Some(l) && l.serial == serial
-  let top = !leaving && self.pages[n - 1].serial == serial
-  let shelved = self.shelf.iter().any(fn(e) { e.serial == serial })
-  !(leaving || shelved || (self.mode == 1 && !top))
+  let swapping_out = self.swap_out is Some(s) && s.serial == serial
+  let top = !leaving && !swapping_out && self.pages[n - 1].serial == serial
+  let shelved = self.shelf.iter().any(fn(e) { e.serial == serial }) ||
+    self.kept_left.iter().any(fn(x) { x.2.serial == serial })
+  !(leaving || swapping_out || shelved || (self.mode == 1 && !top))
 }
 
 ///|
 /// How far page `serial` is drawn off its place at `now`, as the stack moves (the top off to its side, the one beside
-/// it edge to edge with it; one that rose up and down over the one under it, which stays): read as
-/// it is drawn (told as the stack changes; with the clock while it slides, the finger while it is held by one), in its
-/// own widths and heights: as big as the frame drawing it lays it out (View::shift).
-fn[P] Nav::shift_of(self : Nav[P], serial : Int, now : () -> Double) -> (Double, Double) {
+/// it edge to edge with it, or scaled by `under_parallax`; one that rose up and down over the one under it, which
+/// stays): read as it is drawn (told as the stack changes; with the clock while it slides, the finger while it is held
+/// by one), in its own widths and heights: as big as the frame drawing it lays it out (View::shift).
+fn[P] Nav::shift_of(
+  self : Nav[P],
+  serial : Int,
+  now : () -> Double,
+  under_parallax? : Double = 1.0,
+) -> (Double, Double) {
   self.said.get() |> ignore
   self.shown.get() |> ignore
   if self.mode == 0 {
     return (0.0, 0.0)
   }
-  let p = if self.mode == 3 {
-    self.finger.get() |> ignore
-    self.p
-  } else if self.t0 >= 0.0 {
-    self.p_at(now())
-  } else {
-    self.p
-  }
+  let p = self.live_p(now)
   let (top, beside) = self.top_beside()
   let rising = top.rise
   let way = if (self.from_left)(top.page, top.under) { -1.0 } else { 1.0 }
@@ -130,7 +141,7 @@ fn[P] Nav::shift_of(self : Nav[P], serial : Int, now : () -> Double) -> (Double,
       (way * p, 0.0)
     }
   } else if beside is Some(b) && b.serial == serial && !rising {
-    (way * (p - 1.0), 0.0)
+    (way * (p - 1.0) * under_parallax, 0.0)
   } else {
     (0.0, 0.0)
   }
@@ -182,7 +193,10 @@ fn nav_views_framed(c : Ctx) -> Unit {
 /// there again: Ctx::page_stint's) and its entry's number (what the frame keeps of the page by, as long as the entry
 /// is: nav_flat_view's `head`, `gone`); none, its old view. `keeps_made`: a root page made as nodes that another takes
 /// the place of (Nav::replace_kept) put on the shelf, its nodes put by at rest (View::each's `keeps`) and taken in again
-/// as it is put back; the shelf emptied, each on it left for good, as this node is let go.
+/// as it is put back; the shelf emptied, each on it left for good, as this node is let go. `keeps_left`: a page over the
+/// root made as nodes that leaves the stack (popped, put in place of) kept by the key and kind it says (none: let go as
+/// ever), its nodes put by at rest, and taken in again as a page of that key and kind is put on (Nav::take_kept_left),
+/// nav_kept_left_most at most; each let go for good as this node is.
 pub fn[P] nav_view(
   v : @view.View,
   nav : Nav[P],
@@ -195,10 +209,22 @@ pub fn[P] nav_view(
   page_for? : (@view.View, Int) -> (@view.View) -> (Ctx, P) -> Unit,
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
   keeps_made? : Bool = false,
+  keeps_left? : (P) -> (String, String)?,
+  transition? : NavTransition = NavTransition::flat(),
+  tab_moves_slot? : Bool = true,
 ) -> @view.View {
   v.box(fn(s) {
     s.grow(Is(1.0)) |> ignore
     nav.floor = 0
+    if keeps_left is Some(_) {
+      nav.keeps_left = keeps_left
+      // (its kept left this node's: let go with it, what it put by let go by the each below, each left for good)
+      s.owns(fn() {
+        nav.keeps_left = None
+        nav.kept_left.clear()
+      })
+      |> ignore
+    }
     if keeps_made {
       nav.shelves = Some(fn(p) { made(p) is Some(_) })
       // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
@@ -231,10 +257,19 @@ pub fn[P] nav_view(
       fn() {
         nav.said.get() |> ignore
         nav.shown.get() |> ignore
-        let all = nav.pages.map(fn(e) { e.serial })
-        match nav.leaving {
+        let all : Array[Int] = []
+        match nav.swap_out {
           Some(e) => all.push(e.serial)
           None => ()
+        }
+        for e in nav.pages {
+          if nav.shows(e.serial) || made(e.page) is None {
+            all.push(e.serial)
+          }
+        }
+        match nav.leaving {
+          Some(e) if nav.shows(e.serial) || made(e.page) is None => all.push(e.serial)
+          _ => ()
         }
         all
       },
@@ -244,14 +279,47 @@ pub fn[P] nav_view(
         let entry = nav.entry(k)
         pv
           .over(Is(true))
-          .shift(By(fn() { nav.shift_of(k, fn() { pv.drawn_at() }) }), ends=fn() { nav.shift_ends_of(k) })
+          .shift(
+            By(fn() { nav.shift_of(k, fn() { pv.drawn_at() }, under_parallax=transition.under_parallax) }),
+            ends=fn() { nav.shift_ends_of(k) },
+          )
           // (going back off the stack, or covered as a page comes in over it: drawn only, from that moment)
           .presses(By(fn() { nav.takes(k) }))
           |> ignore
+        if transition.rise_under_scale != 1.0 {
+          pv
+            .scale(
+              By(fn() { nav.rise_scale_of(k, fn() { nav.slide_moment(pv) }, transition.rise_under_scale) }),
+              about=At(0.5, 0.5),
+            )
+            |> ignore
+        }
+        if tab_moves_slot && transition.tab_ms > 0.0 && transition.tab_slide != 0.0 {
+          pv
+            .offset(
+              By(fn() {
+                let (dx, _) = nav.tab_body_motion(k, fn() { nav.tab_moment(pv) }, slide=transition.tab_slide)
+                (dx, 0.0)
+              }),
+            )
+            .alpha(By(fn() { nav.tab_body_motion(k, fn() { nav.tab_moment(pv) }, slide=transition.tab_slide).1 }))
+            .carries_until(fn() { nav.tab_ends_at() })
+            |> ignore
+        }
         // (let go as it leaves the stack: what it made forgotten, the app told; let go with the stack's node, kept)
+        let pv_id = pv.id()
+        if transition.under_dim > 0.0 || transition.rise_dim > 0.0 || transition.edge_shadow {
+          nav_veils[pv_id] = fn(x, y, w, h, now) { nav.veil_of(k, transition, x, y, w, h, now) }
+        }
+        if transition.under_parallax < 1.0 {
+          nav_clips[pv_id] = fn(x, w, now) { nav.clip_of(k, transition, x, w, now) }
+        }
         pv.owns(fn() {
+          nav_veils.remove(pv_id)
+          nav_clips.remove(pv_id)
           let here = nav.pages.iter().any(fn(e) { e.serial == k }) ||
-            (nav.leaving is Some(e) && e.serial == k)
+            (nav.leaving is Some(e) && e.serial == k) ||
+            (nav.swap_out is Some(e) && e.serial == k)
           if !here {
             match nav.gone.search_by(fn(e) { e.serial == k }) {
               Some(i) => nav.gone.remove(i) |> ignore
@@ -291,16 +359,13 @@ pub fn[P] nav_view(
                   fn() {
                     if nav.shows(k) {
                       shown.val = true
+                      e.shown_once = true
                     }
                     shown.val
                   },
                   fn(m) {
-                    // (laid out nowhere while it does not show, but on the shelf: there it is held by no node, put
-                    // by as it was laid out, and taken back so, laid out again nowhere and then whole for nothing)
-                    m
-                    .grow(Is(1.0))
-                    .laid_nowhere(By(fn() { !nav.shows(k) && !nav.shelf.iter().any(fn(e) { e.serial == k }) }))
-                    |> ignore
+                    // (covered made pages are parked at rest via EachKept rather than laid_nowhere, keeping their layout cache)
+                    m.grow(Is(1.0)) |> ignore
                     nav.made(m, k, e, f, bg, edge)
                   },
                 )
@@ -326,15 +391,32 @@ pub fn[P] nav_view(
           },
         )
       },
-      // (those on the shelf kept, put by at rest: Nav::replace_kept)
-      keeps?=if keeps_made {
-        Some(fn() {
-          nav.said.get() |> ignore
-          nav.shelf.map(fn(e) { e.serial })
-        })
-      } else {
-        None
+      // (covered made pages on the stack, those on the shelf (Nav::replace_kept), and those on the kept left
+      // (Nav::try_park_left): put by at rest so layout cache is kept and bindings rest while not shown)
+      keeps=fn() {
+        nav.said.get() |> ignore
+        nav.shown.get() |> ignore
+        let kept : Array[Int] = []
+        for e in nav.pages {
+          if !nav.shows(e.serial) && made(e.page) is Some(_) && !kept.contains(e.serial) {
+            kept.push(e.serial)
+          }
+        }
+        if keeps_made {
+          for e in nav.shelf {
+            if !kept.contains(e.serial) {
+              kept.push(e.serial)
+            }
+          }
+        }
+        for x in nav.kept_left {
+          if !kept.contains(x.2.serial) {
+            kept.push(x.2.serial)
+          }
+        }
+        kept
       },
+      keeps_holds=fn(k) { nav.pages.iter().any(fn(e) { e.serial == k }) },
     )
   })
 }
@@ -358,6 +440,7 @@ fn[P] Nav::held_by(
   let nav : Nav[P] = self
   // (what is due of it on the tree's timeline: its slide's end, or the end of its wait)
   let due : Ref[() -> Unit] = Ref(fn() {  })
+  let swap_due : Ref[() -> Unit] = Ref(fn() {  })
   // a slide set out (at its start, said once): over at its end, the page that went let go
   let sets_out = fn() {
     (due.val)()
@@ -367,6 +450,18 @@ fn[P] Nav::held_by(
         nav.settle()
       }
     })
+  }
+  let swap_sets_out = fn() {
+    (swap_due.val)()
+    swap_due.val = fn() {  }
+    if nav.swap_out is Some(_) && nav.swap_t0 >= 0.0 && nav.swap_dur > 0.0 {
+      let t0 = nav.swap_t0
+      swap_due.val = s.at_moment(nav.swap_t0 + nav.swap_dur, fn() {
+        if nav.swap_t0 == t0 && nav.swap_out is Some(_) {
+          nav.settle_swap()
+        }
+      })
+    }
   }
   // the page waited for goes now (it has what it shows, or its wait is over): its slide from now
   let goes = fn() {
@@ -381,6 +476,7 @@ fn[P] Nav::held_by(
   let hosted : NavHosted = {
     now: fn() { s.logic_at() },
     room,
+    swap_went: swap_sets_out,
     holds: fn(id) {
       match (view_app.val, focus_node_of(id)) {
         (Some(t), Some(n)) => t.holds(s.id(), n)
@@ -455,9 +551,17 @@ fn[P] Nav::held_by(
       )
     None => ()
   }
+  if nav.swap_out is Some(_) {
+    if nav.swap_t0 < 0.0 {
+      nav.swap_t0 = s.logic_at()
+    }
+    swap_sets_out()
+  }
   s.owns(fn() {
     (due.val)()
     due.val = fn() {  }
+    (swap_due.val)()
+    swap_due.val = fn() {  }
     // (held by another node since, made before this one was let go: that one's still)
     match nav.hosted {
       Some(h) if physical_equal(h, hosted) => nav.hosted = None
@@ -570,7 +674,8 @@ pub fn[P] Nav::page_island(
       nav.said.get() |> ignore
       nav.shown.get() |> ignore
       match nav.flat_entry(serial) {
-        Some(e) => {
+        // (none built of one put by on the kept left: at rest, it reads nothing)
+        Some(e) if !nav.is_kept_left(serial) => {
           let (owner, stint) = (c.owner, c.stint)
           c.owner = e.serial
           c.stint = e.stint
@@ -578,7 +683,7 @@ pub fn[P] Nav::page_island(
           c.owner = owner
           c.stint = stint
         }
-        None => ()
+        _ => ()
       }
     },
     // (as the page is built: what it asks of where it stands, Nav::under, its own)
@@ -623,8 +728,14 @@ fn[P] Nav::made(
   // (cut to its room, its ground and all it holds, as the old view of a page is by the island it is built in)
   .clips(Is(true))
   |> ignore
-  // (its ground, under all it holds)
-  m.box(fn(g) { g.over(Is(true)).ground(By(bg)) |> ignore }) |> ignore
+  // (its ground, under all it holds; transparent while another root fades out beneath it in replace_tab)
+  m.box(fn(g) {
+    g
+    .over(Is(true))
+    .ground(By(fn() { if nav.is_swapping_in(serial) { 0L } else { bg() } }))
+    |> ignore
+  })
+  |> ignore
   // (what it is: as it was put on, then what it becomes in place, Nav::become)
   let page = fn() {
     nav.said.get() |> ignore

@@ -18,6 +18,7 @@ pub fn reply_head(String) -> Head
 pub(all) suberror TooLong {
   TooLong(most~ : Int32)
 }
+pub impl Show for TooLong
 
 // Types and methods
 pub struct Carry {

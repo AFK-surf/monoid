@@ -131,9 +131,10 @@ fn tree_source_said(id : @view.NodeId, paren? : Bool = false) -> String {
 }
 
 ///|
-/// Every rule the screen as it is now is held to, at once: a press's room (the old view's and the window's tree's),
+/// Every rule the screen as it is now is held to, at once: the screen at rest what a frame drawn again draws
+/// (Tester::unasked_faults), a press's room (the old view's and the window's tree's),
 /// what is squeezed, the spacing, the corners, what is pressed side by side one height, a mark on the first line beside
-/// several, where lines under a marked line start, the contrast, words a box with its height said does not hold (each
+/// several, where lines under a marked line start, the contrast, what takes a press where nothing of it is seen, words a box with its height said does not hold (each
 /// check's own lines, its rule first, what it names said with where the source made it). For the agent that changed a screen to run after the change, in the place of
 /// judging a picture by eye: none, and the screen keeps them all. Contrast draws a frame of its own and then the
 /// screen back, both at the last frame's moment (Tester::contrast_faults): what is read right after it (the words, the
@@ -142,6 +143,9 @@ pub fn Tester::audit(self : Tester) -> Array[String] {
   // (a key's focus left unjudged as the frames stopped short of where its ways end: printed only, for now,
   // tester_focus_off.mbt)
   self.focus_off_left() |> ignore
+  // (first: the screen at rest as the last frame left it, before contrast's frames draw it again: tester_unasked.mbt)
+  let unasked = self.unasked_faults()
+  unasked +
   self.room_faults() +
   self.tree_room_faults() +
   self.squeeze_faults() +
@@ -151,5 +155,6 @@ pub fn Tester::audit(self : Tester) -> Array[String] {
   self.first_line_faults() +
   self.line_start_faults() +
   self.contrast_faults() +
+  self.unseen_press_faults() +
   self.fixed_outgrown()
 }

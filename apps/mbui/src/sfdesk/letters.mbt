@@ -246,15 +246,25 @@ fn letters_list_node(
       jump: None,
       picture: None,
     }
-    b.scrolls_window(
+    // (a chat's row taken by the next chat to show as it no more does, its key that one's; the head, a letter (made
+    // with what it says once) and the spinner made each for its key)
+    b.scrolls_reused(
       @view.Scroll::list(),
       keys,
-      fn(row, k) {
-        match k {
-          LettersChat(ck) => {
+      reuses=fn(k) { k is LettersChat(_) },
+      fn(row, key_now) {
+        // (its make, which never changes for a block: a chat's row alone is taken for another key, `reuses`')
+        match @signals.untracked(key_now) {
+          LettersChat(_) => {
+            let ck = fn() {
+              match key_now() {
+                LettersChat(ck) => ck
+                _ => ""
+              }
+            }
             // (the list's sides: 8 (lettersList's); 6 over its first, 2 apart)
             @sf.style_node(row, fn() { letters_row_room })
-            letters_chat_node(row, fn() { chat_of(ck) }, fn() { letters_opened.set(key, ck) })
+            letters_chat_node(row, fn() { chat_of(ck()) }, fn() { letters_opened.set(key, ck()) })
           }
           LettersHead => letters_head_node(row, fn() { chat_of(at) }, tips, fn() { letters_opened.remove(key) })
           LettersOne(i) =>
@@ -293,11 +303,9 @@ fn letters_list_node(
 /// panel's body, its words on its words' line, its ground a panel's row's (panel_row_in_node: round where it stands in
 /// from the panel's sides, square across a sheet).
 fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit, panel? : Bool = false) -> Unit {
-  row.box(fn(b) {
+  @sf.action_box_node(row, fn() { text(chat(), "title") }, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { if panel { letters_row_panel.then(@sf.panel_row_in_node(b)) } else { letters_row } })
     @sf.hover_ground_node(b)
-    b.says(By(fn() { Some(@view.said(Button, label=text(chat(), "title"))) })) |> ignore
-    @sf.presses_node(b, press)
     b.box(fn(h) {
       @sf.style_node(h, fn() { letters_row_head })
       h.box(fn(g) {

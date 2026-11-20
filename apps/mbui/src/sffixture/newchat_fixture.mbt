@@ -10,6 +10,7 @@
 /// What is picked for a new chat in the made-up workspace, and in the model control's panel.
 pub(all) struct NewFix {
   mut station : String
+  mut auto_station : Bool
   mut model : String
   mut runtime : String
   mut effort : String
@@ -73,6 +74,7 @@ pub(all) struct NewFix {
 ///|
 pub let new_fix : NewFix = {
   station: "st1",
+  auto_station: false,
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
@@ -222,6 +224,129 @@ pub fn fix_other_rename(id : String, name : String) -> Unit {
 }
 
 ///|
+/// A model-only (or model + instructions) fixture preset for realistic multi-preset scenes.
+fn fix_preset_model(
+  id : String,
+  name : String,
+  model_id : String,
+  runtime : String,
+  effort : String,
+  instructions : String,
+) -> Json {
+  {
+    "id": Json::string(id),
+    "name": Json::string(name),
+    "dirs": Json::array([]),
+    "instructions": Json::string(instructions),
+    "model": {
+      "model": Json::string(model_id),
+      "runtime": Json::string(runtime),
+      "effort": Json::string(effort),
+    },
+    "createdBy": "me@example.com",
+    "createdAt": 1793500000000.0,
+    "updatedAt": 1793500000000.0,
+  }
+}
+
+///|
+/// Eight realistic presets for `newchat-preset-many` (tests search bar, scrolling, icons, summaries).
+pub fn fix_preset_many() -> Array[Json] {
+  [
+    fix_preset_model("p-arch", "架构师", "gemini-4-neon", "agy", "high", "负责整体架构设计与代码评审。"),
+    fix_preset_model("p-micro", "微操", "claude-opus-5-5", "claude", "medium", "按任务书精准执行。"),
+    fix_preset_design(),
+    fix_preset_model("p-neon", "Neon", "gemini-4-neon", "agy", "high", ""),
+    fix_preset_model("p-astra", "Astra", "gpt-6-astra", "codex", "high", ""),
+    fix_preset_model("p-sol", "Sol", "gpt-6.1-sol", "codex", "high", ""),
+    fix_preset_model("p-fable", "Fable", "claude-fable", "claude", "high", ""),
+    fix_preset_model("p-argon", "Argon", "gemini-4-argon", "agy", "high", ""),
+  ]
+}
+
+///|
+fn fix_model_display(id : String) -> (String, String) {
+  match id {
+    "gemini-4-neon" => ("Neon", "google")
+    "gemini-4-argon" => ("Argon", "google")
+    "claude-fable" => ("Fable", "anthropic")
+    "claude-opus-5-5" => ("Opus 5.5", "anthropic")
+    "gpt-6-astra" => ("GPT-6 Astra", "openai")
+    "gpt-6.1-sol" => ("GPT-6.1 Sol", "openai")
+    _ => (id, "")
+  }
+}
+
+///|
+fn fix_dir_base(path : String) -> String {
+  match path.rev_find("/") {
+    Some(i) if i + 1 < path.length() => path.unsafe_substring(start=i + 1, end=path.length())
+    _ => path
+  }
+}
+
+///|
+/// Populate `summary`, `maker`, `runtime`, `dirName`, `dirRepo` on a fixture preset list row.
+fn fix_preset_row_meta(p : Json, out : Map[String, Json]) -> Json {
+  let one = Some(p)
+  let parts : Array[String] = []
+  let pm = field(one, "model")
+  let mid = text(pm, "model")
+  if mid != "" {
+    let (mname, maker_id) = fix_model_display(mid)
+    let mparts : Array[String] = [mname]
+    let eff = text(pm, "effort")
+    if eff != "" {
+      mparts.push(@sf.t("web-main.model.effortLevel." + eff))
+    }
+    let spd = text(pm, "speed")
+    if spd == "ultrafast" {
+      mparts.push("Ultrafast")
+    } else if spd == "fast" {
+      mparts.push("Fast")
+    }
+    parts.push(mparts.join(" "))
+    if maker_id != "" {
+      out["maker"] = { "id": Json::string(maker_id), "name": Json::string(maker_id) }
+    }
+    let rt = text(pm, "runtime")
+    if rt != "" {
+      out["runtime"] = Json::string(rt)
+    }
+  }
+  let dirs = items(one, "dirs")
+  if dirs.length() > 0 {
+    let shown : Array[String] = []
+    for i = 0; i < dirs.length() && i < 2; i = i + 1 {
+      let b = fix_dir_base(text(Some(dirs[i]), "path"))
+      if b != "" {
+        shown.push(b)
+      }
+    }
+    if shown.length() > 0 {
+      let joined = shown.join(", ")
+      parts.push(if dirs.length() > 2 { joined + " +" + (dirs.length() - 2).to_string() } else { joined })
+    }
+    let first_name = fix_dir_base(text(Some(dirs[0]), "path"))
+    if first_name != "" {
+      out["dirName"] = Json::string(first_name)
+    }
+    let first_repo = text(Some(dirs[0]), "repo")
+    if first_repo != "" {
+      out["dirRepo"] = Json::string(first_repo)
+    }
+  }
+  if text(one, "instructions").trim().to_owned() != "" {
+    parts.push(@sf.t("web-main.preset.hasInstructions"))
+  }
+  let summary = parts.join(" · ")
+  if summary != "" {
+    out["summary"] = Json::string(summary)
+  }
+  Json::object(out)
+}
+
+///|
 /// The `otherPresets` topic: the other members' presets as a list shows them, and whether more may come.
 pub fn fix_other_presets() -> Json {
   {
@@ -229,13 +354,13 @@ pub fn fix_other_presets() -> Json {
     "presets": Json::array(
       new_fix.others.map(fn(p) {
         let one = Some(p)
-        {
+        fix_preset_row_meta(p, {
           "id": Json::string(text(one, "id")),
           "name": Json::string(text(one, "name")),
           "whose": Json::string(text(one, "whose")),
           "station": Json::string(text(one, "station")),
           "stationName": Json::string(text(one, "stationName")),
-        }
+        })
       }),
     ),
   }
@@ -263,7 +388,7 @@ pub fn fix_preset_one(id : String) -> Json? {
   let one = Some(p)
   let home = if mine { "ws1/st1" } else { text(one, "station") }
   let name_of = fn(address : String) { text(Some(fix_station(address.unsafe_substring(start=4, end=address.length()))), "name") }
-  Some({
+  let out : Map[String, Json] = {
     "id": Json::string(id),
     "name": Json::string(text(one, "name")),
     "dirs": Json::array(
@@ -278,11 +403,29 @@ pub fn fix_preset_one(id : String) -> Json? {
       }),
     ),
     "instructions": Json::string(text(one, "instructions")),
+    "autoStation": Json::boolean(flag(one, "autoStation")),
+    "station": Json::string(text(one, "station")),
+    "stations": Json::array(items(one, "stations")),
     "mine": Json::boolean(mine),
     "whose": Json::string(if mine { "我" } else { text(one, "whose") }),
     "home": Json::string(home),
     "homeName": Json::string(name_of(home)),
-  })
+  }
+  match field(one, "model") {
+    Some(Object(_) as m) => out["model"] = m
+    _ => ()
+  }
+  let meta : Map[String, Json] = Map([])
+  fix_preset_row_meta(p, meta) |> ignore
+  match meta.get("summary") {
+    Some(s) => out["summary"] = s
+    None => ()
+  }
+  match meta.get("maker") {
+    Some(m) => out["maker"] = m
+    None => ()
+  }
+  Some(Json::object(out))
 }
 
 ///|
@@ -387,6 +530,7 @@ pub fn fix_station(id : String) -> Json {
         "icon": "glyph:laptop",
         "summary": "空闲 · Apple M4 · 16 GB · macOS 26",
         "online": true,
+        "acceptAutoChats": true,
         "host": {
           "meters": [
             fix_meter("CPU", 91, "ok", "91", "%"),
@@ -404,6 +548,7 @@ pub fn fix_station(id : String) -> Json {
         "icon": if new_fix.unmarked { "" } else { "glyph:desktop" },
         "summary": "2 个 agent 正在运行 · Apple M1 Pro · 32 GB · macOS 26",
         "online": true,
+        "acceptAutoChats": true,
         "host": {
           "meters": [
             fix_meter("CPU", 72, "ok", "72", "%"),
@@ -1039,6 +1184,8 @@ fn fix_new_chat_of(f : Fixture) -> Json {
       Json::null()
     },
     "presetStations": Json::boolean(n.preset != "" && n.bound),
+    "autoStation": Json::boolean(n.auto_station),
+    "autoPoolCount": Json::number(2.0),
     "any": true,
     "station": lend(fix_station(n.station)),
     "model": fix_model(n.model),
@@ -1048,18 +1195,35 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     "preset": Json::string(n.preset),
     "presets": Json::array(
       n.presets.map(fn(p) {
-        {
+        fix_preset_row_meta(p, {
           "id": field(Some(p), "id").unwrap_or(Json::string("")),
           "name": field(Some(p), "name").unwrap_or(Json::string("")),
           "station": Json::string(text(Some(fix_station(n.station)), "station")),
           "stationName": Json::string(text(Some(fix_station(n.station)), "name")),
-        }
+        })
       }),
     ),
     "presetMarks": if n.preset == "" {
       Json::array([])
     } else {
-      [{ "name": "still.fail", "repo": "github.com/AFK-surf/still.fail", "icon": Json::string(fix_sf_icon) }, { "name": "still.fail 设计稿", "repo": "" }]
+      match (n.presets + n.others).iter().find_first(fn(p) { text(Some(p), "id") == n.preset }) {
+        Some(p) =>
+          Json::array(
+            items(Some(p), "dirs").map(fn(d) {
+              let name = fix_dir_base(text(Some(d), "path"))
+              let repo = text(Some(d), "repo")
+              let m : Map[String, Json] = {
+                "name": Json::string(name),
+                "repo": Json::string(repo),
+              }
+              if name == "still.fail" {
+                m["icon"] = Json::string(fix_sf_icon)
+              }
+              Json::object(m)
+            }),
+          )
+        None => Json::array([])
+      }
     },
     // (someone else's picked: its own station, as it was made on, and its name)
     "presetStation": Json::string(
@@ -1145,7 +1309,14 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
   }
   match name {
     "newChat.pick" => {
-      take("station", fn(s) { n.station = s })
+      if flag(p, "autoStation") {
+        n.auto_station = true
+      } else {
+        take("station", fn(s) {
+          n.auto_station = false
+          n.station = s
+        })
+      }
       take("model", fn(s) {
         n.model = s
         n.d_model = s

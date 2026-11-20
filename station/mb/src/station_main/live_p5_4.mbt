@@ -5,14 +5,15 @@
 
 ///|
 /// The parts made, in their order, `ui_ask` answering what each answers. On a station that only runs tasks (`rig`)
-/// only the devices it reaches for the stations (rig/main.ts gives a rig no vault, browser, drive, terminals or logins).
+/// only the devices it reaches for the stations and the commands they run with a secret (rig/main.ts gives a rig no
+/// vault, browser, drive, terminals or logins).
 pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
   let host = bus.host
-  let cloud : P54Cloud = { locks: Map([]), memberships: [] }
+  let cloud = P54Cloud::new()
   p54_cloud_refresh(bus, cloud) catch {
     _ => ()
   }
-  ignore((bus.cloud_listen.val)(_ => ignore(host.rt.fork(name="p5-4 cloud", async fn() {
+  ignore((bus.cloud_listen.val)(_ => ignore(host.rt.fork_quiet(name="p5-4 cloud", async fn() {
     p54_cloud_refresh(bus, cloud) catch {
       _ => ()
     }
@@ -30,10 +31,38 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
       Ok(d) => asks.push(async fn(op, a) { p54_devices_ask(d, op, a) })
       Err(e) => err_write("station: the devices are not made (\{e})\n")
     }
+    // (rig/main.ts: no vault, but what another station runs here with a secret one of its chats holds)
+    p54_rig_incoming(bus, cloud, threads)
     p54_ui_ask_chain(bus, asks)
     return
   }
   asks.push(async fn(op, a) { screens.ask(op, a) })
+  bus.ui_screen_view.val = Some(async fn(stream, carry, head, viewer) {
+    p54_screen_view_stream(screens, stream, carry, head, viewer)
+    true
+  })
+  bus.ui_helper_search.val = match screens.files {
+    Some(files) =>
+      Some(async fn(tops, query, most, protect) {
+        let granted = tops.filter(top => files.known(top) is Some((_, "granted")))
+        if granted.is_empty() {
+          return []
+        }
+        let lists = @effect.all(
+          granted.map(top => async fn() {
+            files.search(top, query, most, protect) catch { _ => [] }
+          }),
+        )
+        let out : Array[String] = []
+        for xs in lists {
+          for p in xs {
+            out.push(p)
+          }
+        }
+        out
+      })
+    None => None
+  }
   p54_screen_tools(bus, screens) catch {
     e => err_write("station: the screen tools are not made (\{e})\n")
   }
@@ -47,7 +76,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
       None
     }
   }
-  let browser = match (try { Ok(p54_browser_start(bus, screens, vault)) } catch { e => Err(e) }) {
+  let browser = match (try { Ok(p54_browser_start(bus, threads, screens, vault)) } catch { e => Err(e) }) {
     Ok(b) => {
       asks.push(async fn(op, a) { p54_browser_ask(b, op, a) })
       Some(b)
@@ -75,7 +104,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
         available: () => station.available(),
         open_tab: async fn(key, _options) { station.open_user_tab(key) },
         has_tab: id => station.has_tab(id),
-        close_tab: id => ignore(bus.host.rt.fork(name="login page", async fn() { station.close_tab(id) catch { _ => () } })),
+        close_tab: id => ignore(bus.host.rt.fork_quiet(name="login page", async fn() { station.close_tab(id) catch { _ => () } })),
         tab_url: Some(id => station.tab_url(id)),
       },
       changed => ignore(screens.hub.on_change(changed)),
@@ -87,7 +116,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
     Err(e) => err_write("station: the logins are not made (\{e})\n")
   }
   p54_ui_ask_chain(bus, asks)
-  p54_test_door(bus)
+  p54_test_door(bus, screens)
 }
 
 ///|
@@ -96,10 +125,7 @@ fn p54_ui_ask_chain(bus : LiveBus, asks : Array[async (String, Json) -> Json?]) 
   let before = bus.ui_ask.val
   bus.ui_ask.val = async fn(op, a) {
     for ask in asks {
-      match ask(op, a) {
-        Some(answer) => return answer
-        None => ()
-      }
+      if ask(op, a) is Some(answer) { return answer }
     }
     before(op, a)
   }
@@ -109,12 +135,12 @@ fn p54_ui_ask_chain(bus : LiveBus, asks : Array[async (String, Json) -> Json?]) 
 /// A test's way to what the parts answer by name (`STILLFAIL_TEST_UI_ASK`, its bearer): POST /ui-ask/ `{op, args}` on
 /// the agents' door, answered `{answer}` or `{error, kind}`; and `p54.routes`, the parts' routes of the admin API.
 /// Nothing is put there without that variable, which only station/test/mb-live-p5-4.test.ts gives.
-fn p54_test_door(bus : LiveBus) -> Unit {
+fn p54_test_door(bus : LiveBus, screens : P54Screens) -> Unit {
   guard env_get("STILLFAIL_TEST_UI_ASK") is Some(token) && token != "" else { return }
   // (the admin API's callbacks, P5-1's, stood in for where none is: the uploads' place a staged file is given)
   if !bus.peer_handlers.contains("$admin.called") {
     bus.on_peer("$admin.called", async fn(_, _, params, _) {
-      let name = p54_str(p54_get(Some(params), "args").bind(x => match x { Array(a) => a.get(0); _ => None })).unwrap_or("file")
+      let name = opt_str(opt_field(Some(params), "args").bind(x => match x { Array(a) => a.get(0); _ => None })).unwrap_or("file")
       let dir = path([bus.data, "uploads", "staged"])
       @drive.mkdir(dir, true)
       ({ "safe": Json::string(name), "path": Json::string(path([dir, name])) }, None)
@@ -127,15 +153,106 @@ fn p54_test_door(bus : LiveBus) -> Unit {
         return Some(plain(401, ""))
       }
       let asked = (try { Ok(@json.parse(@utf8.decode_lossy(r.body))) } catch { e => Err(e) }).unwrap_or(Json::null())
-      let op = p54_text(Some(asked), "op").unwrap_or("")
-      let args = p54_get(Some(asked), "args").unwrap_or(Json::array([]))
+      let op = jtext(asked, "op").unwrap_or("")
+      let args = opt_field(Some(asked), "args").unwrap_or(Json::array([]))
+      if op == "p54.oauthHostLock" {
+        let io = @accounts_oauth.host_io(bus.host)
+        let lock_dir = path([bus.data, "oauth-host-lock-test"])
+        (io.rm)(lock_dir, true) catch { _ => () }
+        (io.mkdir)(lock_dir, false)
+        let eexist = (try {
+          (io.mkdir)(lock_dir, false)
+          ""
+        } catch {
+          @accounts_oauth.FsError(code, _) => code
+          e => "\{e}"
+        })
+        let held = (io.hold)(lock_dir)
+        let target = 1_700_000_555_000L
+        (held.utimes)(target)
+        let st = (io.stat)(lock_dir)
+        (io.rmdir)(lock_dir)
+        let after_rm = (try {
+          (held.utimes)(target + 5_000L)
+          ""
+        } catch {
+          @accounts_oauth.FsError(code, _) => code
+          e => "\{e}"
+        })
+        return Some(json_reply(200, {
+          "answer": {
+            "eexist": Json::string(eexist),
+            "mtimeMs": Json::number(st.mtime_ms),
+            "afterRemove": Json::string(after_rm),
+          },
+        }))
+      }
+      if op == "p54.memberScreensDatagrams" {
+        guard p51_live.val is Some(p51) else {
+          return Some(json_reply(500, { "error": "no p51" }))
+        }
+        let tokens : Array[Double] = []
+        let written : Array[String] = []
+        let remove = screens.hub.add(
+          @screens.ScreenSource::bare(
+            "dgram-test",
+            @screens.DesktopKind,
+            () => "Test Screen",
+            () => (1280.0, 720.0),
+            async fn(_opts) {
+              @screens.ScreenView::bare(
+                async fn() { None },
+                () => (),
+                async fn(_) { () },
+                () => (),
+              )
+            },
+          ),
+        )
+        let stream : @door.Stream = {
+          read: async fn() -> Bytes? { None },
+          write: async fn(b) { written.push(@utf8.decode_lossy(b[:])) },
+          finish: async fn() { () },
+          stopped: async fn() -> Int? { None },
+          reset: async fn(_) { () },
+          media_datagrams: Some(async fn(tok) {
+            tokens.push(tok)
+            true
+          }),
+        }
+        let viewer : @gate.Viewer = {
+          sub: "u1",
+          email: "a@example.com",
+          name: "A",
+          role: "member",
+          workspace: "ws1",
+          device: "d1",
+          lock_device: None,
+          home: Some(true),
+          lock_id: None,
+        }
+        let head : Json = {
+          "method": "POST",
+          "path": "/admin/api/screens/dgram-test/view",
+          "headers": { "stillfail-lang": "en" },
+          "screen": { "codecs": ["h264"], "datagrams": 42 },
+        }
+        (p51.member_screens())(stream, b"", head, viewer, () => true)
+        remove()
+        return Some(json_reply(200, {
+          "answer": {
+            "tokens": Json::array(tokens.map(t => Json::number(t))),
+            "firstLine": Json::string(if written.length() > 0 { written[0] } else { "" }),
+          },
+        }))
+      }
       if op == "p54.route" {
         // (a part's route of the admin API as the admin API answers it: its method, path, viewer and body)
-        let meth = p54_arg_text(args, 0)
-        let at = p54_arg_text(args, 1)
+        let meth = call_arg_text(args, 0)
+        let at = call_arg_text(args, 1)
         for rt in bus.parts.all_routes(Json::null()) {
           if rt.meth == meth && (try { Ok(@api_routes.re(rt.path).matches(at)) } catch { e => Err(e) }) is Ok(true) {
-            let answered = (rt.answer)({ "path": Json::string(at), "viewer": p54_arg(args, 2).unwrap_or(Json::null()), "body": Json::string(p54_arg_text(args, 3)) })
+            let answered = (rt.answer)({ "path": Json::string(at), "viewer": call_arg(args, 2).unwrap_or(Json::null()), "body": Json::string(call_arg_text(args, 3)) })
             return Some(json_reply(200, { "answer": answered }))
           }
         }

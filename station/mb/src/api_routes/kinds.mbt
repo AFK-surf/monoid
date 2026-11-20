@@ -16,7 +16,7 @@ const DEFAULT_APP_NAME : String = "still.fail"
 /// A Slack connect's part of its config entry (`slack`): its tokens as given (blank ones stay as they were), its app,
 /// and who it is in Slack.
 pub fn slack_entry(given : JV, had : JV) -> JV {
-  let old = if had is Null { Obj([]) } else { had }
+  let old = if had is Null { JV::Obj([]) } else { had }
   let token = (key : String) => {
     match connect_field(Some(given), key).1 {
       Some(t) => Some(t)
@@ -38,7 +38,7 @@ pub fn slack_entry(given : JV, had : JV) -> JV {
       })
     _ => false
   }
-  let mut team = Null
+  let mut team = JV::Null
   let mut bot_name : String? = None
   let mut bot_image : String? = None
   if team_ok {
@@ -64,7 +64,7 @@ pub fn slack_entry(given : JV, had : JV) -> JV {
   if app_token is None && bot_token is None && app_id is None && team is Null {
     return Null
   }
-  let mut s = Obj([])
+  let mut s = JV::Obj([])
   match app_token {
     Some(t) => s = jset(s, "appToken", js(t))
     None => ()
@@ -94,25 +94,13 @@ pub fn slack_entry(given : JV, had : JV) -> JV {
 ///|
 /// admin/slack.rs `url_encode`: everything but A-Z a-z 0-9 - _ . ~ as %XX.
 fn url_encode(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for b in utf8(s) {
-    let c = b.to_int()
-    if (c >= 'A' && c <= 'Z') ||
-      (c >= 'a' && c <= 'z') ||
-      (c >= '0' && c <= '9') ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '~' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
+  @url.percent_encode(s, c => (c >= 'A' && c <= 'Z') ||
+    (c >= 'a' && c <= 'z') ||
+    (c >= '0' && c <= '9') ||
+    c == '-' ||
+    c == '_' ||
+    c == '.' ||
+    c == '~')
 }
 
 ///|
@@ -135,7 +123,7 @@ fn groups_of(v : JV?) -> JV? {
 /// A form's edits as serde reads them (`SlackAppEdit`): None when a field has the wrong kind.
 fn edit_of(v : JV?) -> JV? {
   guard v is Some(Obj(_) as o) else { return None }
-  let mut edit = Obj([])
+  let mut edit = JV::Obj([])
   for
     key in [
       "name", "displayName", "description", "longDescription", "backgroundColor",
@@ -515,9 +503,9 @@ fn Admin::slack_routes(self : Admin) -> Array[Route] {
     }
     edit = jset(edit, "name", js(name))
     let place = self.backend.ask("agents.place", [])
-    let place = if nullish(place) { Null } else { place }
+    let place = if nullish(place) { JV::Null } else { place }
     let redirect = if place is Null {
-      Null
+      JV::Null
     } else {
       js("\{js_string(place.get("origin"))}/slack/installed")
     }
@@ -669,7 +657,7 @@ fn Admin::slack_routes(self : Admin) -> Array[Route] {
     if app is Null {
       raise Refused(400, self.tr(lang, "station.slackApp.none"))
     }
-    let mut edit = Obj([])
+    let mut edit = JV::Obj([])
     for
       key in [
         "name", "displayName", "description", "longDescription", "backgroundColor",

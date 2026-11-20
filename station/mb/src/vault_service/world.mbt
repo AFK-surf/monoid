@@ -61,6 +61,14 @@ pub(all) struct SessionRow {
 pub suberror WriteBusy
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WriteBusy with output(self, logger) {
+  match self {
+    WriteBusy => logger.write_string("the store's writer is busy: the message is tried again after a pause")
+  }
+}
+
+///|
 /// The station's store as the vault and its sign-ins read and write it (secrets.ts `hub.store`, signin.ts's).
 pub(all) struct Store {
   get_session : (String) -> SessionRow?
@@ -93,7 +101,7 @@ pub(all) struct Hub {
   /// A notice given a session (`hub.notify`): raises where the session is gone.
   notify : (String, String) -> Unit raise
   /// The identity a session's actor says its messages with (`actors.get(session)?.messageIdentity()`).
-  identity : (String) -> Json?
+  identity : async (String) -> Json?
 }
 
 ///|
@@ -101,6 +109,9 @@ pub(all) struct Hub {
 pub struct Lock {
   json : Json
   ws : String
+  /// Its genesis's hash: "" for a vault's lock made of its members' own locks, the workspace not in security mode
+  /// (cloud/vault-lock.ts).
+  genesis : String
   view : @vault.LockView
   /// Its members in their order: sub, email.
   members : Array[(String, String)]
@@ -126,10 +137,18 @@ pub fn Lock::of_json(j : Json) -> Lock {
   {
     json: j,
     ws: gtext(Some(j), "ws"),
+    genesis: gtext(Some(j), "genesis"),
     view: @vault_crypto.lock_view(j),
     members,
     devices,
   }
+}
+
+///|
+/// Whether it is a vault's lock made of its members' own locks (`genesis` ""): no security mode, anyone of the
+/// workspace a member.
+pub fn Lock::open_roster(self : Lock) -> Bool {
+  self.genesis == ""
 }
 
 ///|

@@ -89,12 +89,20 @@ test "styles: how many values of each kind the app's screens use" {
   // Fewer once the settings' last old page (已归档) went to nodes and the old pages' parts with it (settings parts.mbt's
   // nav bar, section heads, empty and waiting rows): text 35 to 32, space 23 to 21, radius 23 to 22.
   // The glass controls share a neutral track colour, one for each theme.
+  // One fewer once 设置 › 安全 was made of the library's rows (its own Web/Mobile rows' sizes gone): text 32 to 31.
+  // Fewer once 小屏's bottom bar is made as nodes and its old view gone (its slots and offsets said by the tree, not as an
+  // old box's padding and gap): space 21 to 19.
+  // One more once chatPage is on by default on beta: 大屏's new chat page is made by new_chat_node, whose column keeps
+  // new_column_in (32) from the pane's sides as its padding (the old new_chat took twice that off its width, so it was
+  // never counted): space 19 to 20, no new spacing token.
+  // Fewer once 小屏's bar is a glass capsule beside a glass circle (no notch, its disc and its ball's own colours gone):
+  // radius 22 to 20, color 83 to 81.
   inspect(counts.to_string(), content=(
-    #|text 32
+    #|text 31
     #|weight 4
-    #|space 21
-    #|radius 22
-    #|color 83
+    #|space 20
+    #|radius 20
+    #|color 81
     #|
 
 

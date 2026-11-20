@@ -202,6 +202,24 @@ pub(all) struct ListNote {
 
 ///|
 /// A workspace's chats as Home lists them (ChatsView).
+///|
+#derive(Eq)
+pub(all) struct InterruptedChat {
+  key : String
+  thread : Int?
+  title : String
+}
+
+///|
+#derive(Eq)
+pub(all) struct InterruptedStation {
+  station : String
+  station_name : String
+  count : Int
+  chats : Array[InterruptedChat]
+}
+
+///|
 pub(all) struct ChatsView {
   stations : Int
   days : Array[ChatDay]
@@ -211,6 +229,8 @@ pub(all) struct ChatsView {
   /// while what changed since the app was last with the stations is still coming: what the mark at the list's top
   /// says (正在同步, 正在同步 · 还剩 12 个对话)
   syncing : String?
+  /// stations with turns cut off by a non-update restart awaiting manual resume or dismissal
+  interrupted : Array[InterruptedStation]
 }
 
 ///|
@@ -397,6 +417,27 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
     },
     note,
     syncing: opt_text(s, "syncing"),
+    interrupted: items(s, "interrupted").filter_map(fn(x) {
+      let v = Some(x)
+      let station = text(v, "station")
+      let count = number(v, "count").to_int()
+      if station == "" || count <= 0 {
+        return None
+      }
+      let chats : Array[InterruptedChat] = items(v, "chats").filter_map(fn(c) {
+        let cv = Some(c)
+        let key = text(cv, "key")
+        if key == "" {
+          return None
+        }
+        let thread = match field(cv, "thread") {
+          Some(Number(n, ..)) => Some(n.to_int())
+          _ => None
+        }
+        Some({ key, thread, title: text(cv, "title") })
+      })
+      Some({ station, station_name: text(v, "stationName"), count, chats })
+    }),
   }
 }
 
@@ -497,14 +538,17 @@ pub fn first_line(words : String) -> String {
 
 ///|
 /// The station this machine is, as its host says (its station's cloud.json),
-/// read once it is one; "" where it is none, asked again (one 添加这台 Mac adds, known without the app opened again).
+/// read once it is one; "" where it is none (or one uninstalled, taken out of its workspace, or one that only runs
+/// tasks), asked again (one 添加这台 Mac adds, known without the app opened again).
 pub fn this_machine() -> String {
   match machine_here.val {
     Some(h) => h
     None => {
       let v = @json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() }
       let ws = field(Some(v), "workspace")
-      let h = if text(ws, "id") != "" && text(ws, "station") != "" {
+      // (not one taken away from here, its data kept, nor one that only runs tasks: the settings' local_station_id)
+      let gone = flag(Some(v), "uninstalled") || flag(ws, "removed") || flag(ws, "rig")
+      let h = if !gone && text(ws, "id") != "" && text(ws, "station") != "" {
         text(ws, "id") + "/" + text(ws, "station")
       } else {
         ""

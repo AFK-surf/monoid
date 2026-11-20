@@ -22,6 +22,7 @@ import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
 import { terminalCard, terminalsView } from "../terminals.ts";
+import { isStationAuthor } from "../titles.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import * as logins from "./machine-logins.ts";
@@ -34,6 +35,28 @@ import { freeText, moveShown, moveWhy } from "../move.ts";
 export const WINDOW = 3 * PAGE;
 /// How many entries a message found is to have on either side of it in the window, for the window to be left as it is.
 const AROUND = 10;
+
+/// What a chat's message takes at least on its page, in rows of the least a message takes (a folded notice's 38 pt, what
+/// the page's `chat.window` rows are counted in): never more than it takes at the chat's widest (760 pt, about 100
+/// characters a line). A notice is folded to its one line; a message's text, each line of it past its first and each
+/// 100 characters a line wraps at, takes a line of words (about 22 pt, 0.55 of a row: blank lines and paragraphs' room
+/// not counted, below what they take); its files at least two rows; six rows at most, as one message alone never
+/// holds a screen open past what shows.
+export function entryMinRows(e: Record<string, unknown>): number {
+  if (isObject(e.notice) || isStationAuthor(typeof e.authorKind === "string" ? e.authorKind : "")) return 1;
+  const text = typeof e.text === "string" ? e.text : "";
+  let lines = 0;
+  for (const line of text.split("\n")) {
+    const length = line.trim().length;
+    if (length > 0) lines += 1 + Math.floor(length / 100);
+  }
+  const extra = Math.floor(Math.max(0, lines - 1) * 0.55);
+  const files = Array.isArray(e.attachments) && e.attachments.length > 0 ? 2 : 0;
+  return Math.min(1 + extra + files, 6);
+}
+
+/// The fewest messages a chat opens on by what they take (`#firstShown` weighed): a screen of them however long.
+const FIRST_SHOWN_FEWEST = 6;
 /// How often a station's connection is sampled while its card shows it, and how many samples are kept.
 export const NET_EVERY_MS = 2_000;
 const NET_KEPT = 30;
@@ -74,6 +97,8 @@ export class StationTopics implements Owner {
   readonly #olders = new Map<string, { reading: boolean; failed: string | null; misses: number }>();
   /// Each open `letters` topic: how far its chat went when all of it was last asked for.
   readonly #wholes = new Map<string, number>();
+  /// What each topic shown makes urgent in the sync now (`#urgent`), as it was last said to the scheduler.
+  readonly #raised = new Map<string, string>();
   /// Where chats were left (`chat.place`), as told this run or read from the database.
   readonly #places = new Map<string, LeftAt | null>();
   /// The chats whose place cores before kept in the host's storage was looked for this run.
@@ -116,33 +141,53 @@ export class StationTopics implements Owner {
     };
   }
 
-  /// What a topic shown makes urgent in the sync.
-  #urgent(topic: Topic): string | null {
-    const station = topic.station as string;
+  /// What a topic shown makes urgent in the sync (the scheduler's keys' prefixes): a chat's messages, its summary and
+  /// its agents' sessions; an agent's session; its history and session; the jobs a job's card shows; the logins a
+  /// login's card does.
+  #urgent(topic: Topic, station: string): string[] {
     switch (topic.topic) {
       case "thread":
-        return `${station} entries/${topic.thread}`;
+        return [`${station} entries/${topic.thread}`, `${station} thread/${topic.thread}`, ...membersOf(this.summary(station, topic.thread as number)).map((k) => `${station} session/${k}`)];
       case "session":
-        return `${station} session/${topic.key}`;
+        return [`${station} session/${topic.key}`];
       case "live":
-        return `${station} transcript/${topic.key}`;
+        return [`${station} transcript/${topic.key}`, `${station} session/${topic.key}`];
+      case "job":
+        return [`${station} jobs`];
+      case "machineLogin":
+        return [`${station} machineLogins`];
       default:
-        return null;
+        return [];
     }
   }
 
+  /// What a topic shown makes urgent said to the scheduler, where it changed (a chat's summary come after it opened,
+  /// naming its agents): ahead of what is kept current around it, and in the room a station's lane keeps for the urgent
+  /// (scheduler.ts URGENT_ROOM), so a slow read of a list never holds it up.
+  #raise(topic: Topic, station: string): void {
+    const key = topicKey(topic);
+    const urgent = this.#urgent(topic, station);
+    const said = urgent.join("\n");
+    if (urgent.length === 0 || this.#raised.get(key) === said) return;
+    this.#raised.set(key, said);
+    this.#core.scheduler.prioritize(key, urgent, Priority.focused);
+  }
+
+  /// The station a topic of a station's is of: a job's names it as the others do, though no list of the station's is it.
+  #stationOf(topic: Topic): string | null {
+    return topicStation(topic) ?? (topic.topic === "job" && typeof topic.station === "string" ? topic.station : null);
+  }
+
   start(topic: Topic): void {
-    const station = topicStation(topic);
+    const station = this.#stationOf(topic);
     if (station === null) return;
     try {
       StationAddr.parse(station);
     } catch {
       return;
     }
-    // What a UI has open (a chat's messages, its agent, a history): ahead of what is kept current around it, and in the
-    // room a station's lane keeps for the urgent (scheduler.ts URGENT_ROOM), so a slow read of a list never holds it up.
-    const urgent = this.#urgent(topic);
-    if (urgent) this.#core.scheduler.prioritize(topicKey(topic), urgent, Priority.focused);
+    // What a UI has open (a chat's messages, its agent, a history, a job's or a login's card): urgent (#raise).
+    this.#raise(topic, station);
     if (topic.topic === "thread") {
       const id = topic.thread as number;
       // Opened: the most recently used, kept while shown. Let go for room before, or a chat no list has (opened from an
@@ -212,10 +257,15 @@ export class StationTopics implements Owner {
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
   }
 
+  idle(topic: Topic): void {
+    if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
+  }
+
   stop(topic: Topic): void {
-    const station = topicStation(topic);
+    const station = this.#stationOf(topic);
     if (station === null) return;
     const key = topicKey(topic);
+    this.#raised.delete(key);
     if (topic.topic === "thread") this.#core.data.opened("entry", station, String(topic.thread), false);
     this.#wholes.delete(key);
     if (topic.topic === "live") this.#core.data.opened("transcript", station, topic.key as string, false);
@@ -717,7 +767,7 @@ export class StationTopics implements Owner {
     // ends short of the latest: the window ends there (the chat goes on after it).
     const last = isDown && span.max < latest ? span.max : null;
     const rows = this.#core.views.chatFirstRows(station, id);
-    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows).first, last, at: null, atOffset: null, caught: span.max }, bring: null };
+    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows, true).first, last, at: null, atOffset: null, caught: span.max }, bring: null };
     const pageFrom = span.max >= latestFrom ? latestFrom : Math.max(1, span.max - PAGE + 1);
     const page = data.logRange("entry", station, String(id), pageFrom, span.max);
     let first = span.max;
@@ -731,6 +781,8 @@ export class StationTopics implements Owner {
     const data = this.#core.data;
     const tk = topicKey(topic);
     const summary = this.summary(station, id);
+    // (its summary come after it opened: its agents' sessions urgent too)
+    if (summary !== null && this.#raised.has(tk)) this.#raise(topic, station);
     const span = data.logSpan("entry", station, String(id));
     const latest = this.#latest(station, id);
     let window = this.#windows.get(tk);
@@ -849,11 +901,14 @@ export class StationTopics implements Owner {
   /// messages, not what agents wrote each other nor edits: #shownTo's), as far back as it runs unbroken; `done` once it
   /// holds them, or reaches the chat's first entry or WINDOW entries (else what is held ran out before them). Read back
   /// from `last` a step at a time, `rows` entries a step, a further one only while fewer were found: a chat of
-  /// messages is read for as many entries as it shows.
-  #firstShown(station: string, id: number, last: number, rows: number): { first: number; done: boolean } {
+  /// messages is read for as many entries as it shows. `weighed` (a chat opening at its end): done too once what they
+  /// take at least fills the rows (`entryMinRows`), FIRST_SHOWN_FEWEST of them at least: a chat of long replies opens
+  /// on the screen of them it shows, not on as many replies as short notices would fill it with.
+  #firstShown(station: string, id: number, last: number, rows: number, weighed = false): { first: number; done: boolean } {
     const keys = new Set(members(this.summary(station, id)));
     let first = last + 1;
     let shown = 0;
+    let weight = 0;
     let n = last;
     while (n >= 1 && last - n < WINDOW) {
       const from = Math.max(1, n - rows + 1);
@@ -862,7 +917,10 @@ export class StationTopics implements Owner {
         if (!held.has(n)) return { first, done: false };
         first = n;
         const e = held.get(n);
-        if (isObject(e) && e.kind === "message" && !isLetter(e, keys) && ++shown >= rows) return { first, done: true };
+        if (!isObject(e) || e.kind !== "message" || isLetter(e, keys)) continue;
+        shown++;
+        weight += weighed ? entryMinRows(e) : 1;
+        if (shown >= rows || (weighed && shown >= Math.min(FIRST_SHOWN_FEWEST, rows) && weight >= rows)) return { first, done: true };
       }
     }
     return { first, done: true };
@@ -1007,8 +1065,10 @@ export class StationTopics implements Owner {
   }
 
   /// What of a chat is not on the device read onto it (`chat.bring`), while its station answers; how much of it is then.
+  /// A person waits on it (a search in the chat): the station's background waits meanwhile, and what is idle there gives
+  /// way (scheduler.ts `foregroundBegin`), its reads quiet all the same.
   bring(station: string, id: number): Effect.Effect<{ held: number; of: number; whole: boolean }, CoreError> {
-    return Effect.gen({ self: this }, function* () {
+    const reading = Effect.gen({ self: this }, function* () {
       const channel = entriesOf(station, id);
       if (this.#sync.link(station) && this.#sync.reachable(station)) {
         for (let read = this.#sync.channels.next(channel); read !== null; read = this.#sync.channels.next(channel)) {
@@ -1018,6 +1078,11 @@ export class StationTopics implements Owner {
       }
       return this.held(station, id);
     });
+    return Effect.acquireUseRelease(
+      Effect.sync(() => this.#core.scheduler.foregroundBegin(station)),
+      () => reading,
+      (end) => Effect.sync(end),
+    );
   }
 
   /// The messages of a chat that have every word of `query`, oldest first, with their words and how many times the

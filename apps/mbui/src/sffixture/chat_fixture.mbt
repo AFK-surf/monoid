@@ -510,6 +510,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_file_links(rich_chat(f.older))
           } else if f.mode == "chat-table-images" {
             with_table_images(rich_chat(f.older))
+          } else if f.mode == "chat-table-cells" {
+            with_table_cells(rich_chat(f.older))
+          } else if f.mode == "chat-table-long" {
+            with_message(rich_chat(f.older), table_long_answer, md=Some(table_long_md()))
           } else if f.mode == "chat-screens" || f.mode == "chat-screens-pc" {
             // (its tree with it, as a station sends it: what the chat opens on reads its links' cards of it)
             with_message(rich_chat(f.older), screens_answer, md=@sf.kept_md(screens_answer))
@@ -517,6 +521,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
             with_flag(rich_chat(f.older), "archived")
+          } else if f.mode == "chat-held" {
+            // its station not reached: what is sent is held till it is (looks.ts offlineNote)
+            match with_flag(rich_chat(f.older), "offline") {
+              Object(m) => {
+                let o = m.copy()
+                o["offlineNote"] = Json::string("暂时连不上「Willow」：当前显示的是之前读取的内容，发出的消息会在连上后送达")
+                Json::object(o)
+              }
+              v => v
+            }
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
           } else if f.mode == "chat-actions-run" {
@@ -749,7 +763,11 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     // what apps/android's MbuiCompareTest pictures beside it)
     // chat-login-station: the same, where the station's own browser can open it too
     // login-link: a loopback login opened from its Slack link (/w/<ws>/s/<station>/login/<id>) in a standalone sheet
-    "machineLogins" if f.mode == "chat-login" || f.mode == "chat-login-station" || f.mode == "login-link" =>
+    // chat-login-again: its login out of time, offered again from its card (重新发起)
+    "machineLogins" if f.mode == "chat-login" ||
+      f.mode == "chat-login-station" ||
+      f.mode == "login-link" ||
+      f.mode == "chat-login-again" =>
       Some({ "canLogin": true, "canRelay": true })
     "machineLogin" if f.mode == "login-link" =>
       Some({
@@ -764,6 +782,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         "browserText": "在 Willow 的浏览器中打开",
         "statusText": "在浏览器里完成登录",
       })
+    "machineLogin" if f.mode == "chat-login-again" =>
+      Some({
+        "id": "login-1",
+        "title": "在 Willow 上登录 gh",
+        "state": "failed",
+        "active": false,
+        "canAgain": true,
+        "statusText": "超时了，没等到浏览器回来",
+        "endedText": "在 Willow 上登录 gh 超时了",
+      })
     "machineLogin" if f.mode == "chat-login" || f.mode == "chat-login-station" => {
       let l : Map[String, Json] = {
         "id": "login-1",
@@ -774,6 +802,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
         "domain": "github.com",
         "active": true,
         "statusText": "在浏览器里完成登录",
+        // (the fixture's now is 0: 12 and a half minutes left of its 15)
+        "expiresAt": 750000.0,
       }
       if f.mode == "chat-login-station" {
         l["browser"] = Json::boolean(true)
@@ -1044,7 +1074,13 @@ pub let fix_sent_for : Ref[Double] = Ref(-1.0)
 pub let fix_core_for : Ref[Double] = Ref(0.0)
 
 ///|
-/// The pace a fixture's program was given (MBUI_FIX_PACE's "DELIVER,ANSWER,END" ms: fix_pace; MBUI_FIX_CORE's ms:
+/// How long the made-up station takes to give a file a message names (`file.open`) as it is now; 0, at once. What the
+/// device kept of one read before is given at once whatever this is (`kept`: fixture_fetch).
+// kept across runs: put back as a fixture is made (made.mbt)
+pub let fix_station_for : Ref[Double] = Ref(0.0)
+
+///|
+/// The pace a fixture's program was given (MBUI_FIX_PACE's "DELIVER,ANSWER,END[,FILE]" ms: fix_pace, fix_station_for; MBUI_FIX_CORE's ms:
 /// fix_core_for), set once its fixture is made; what is not said, or not numbers, left as the fixture has it. Read by
 /// the fixture's programs alone (sffix, sfbench, a film's scene), never by the app; a run given one says so in what
 /// it puts out (sfbench's APPBENCH, a film's record).
@@ -1056,11 +1092,15 @@ pub fn fix_pace_said(pace : String, core : String) -> Unit {
     }
   }
   let parts = pace.split(",").collect()
-  if parts.length() == 3 {
+  if parts.length() == 3 || parts.length() == 4 {
     match (ms(parts[0]), ms(parts[1]), ms(parts[2])) {
       (Some(d), Some(a), Some(e)) => fix_pace.val = (d, a, e)
       _ => ()
     }
+  }
+  // (a fourth: how long the station takes to give a file a message names, fix_station_for)
+  if parts.length() == 4 && ms(parts[3]) is Some(f) {
+    fix_station_for.val = f
   }
   if ms(core) is Some(c) {
     fix_core_for.val = c
@@ -1195,6 +1235,11 @@ pub fn with_sent(base : Json, session : String) -> Json {
 ///|
 /// An entry of the outbox (Outgoing).
 pub fn outgoing_json(id : String, params : Json, state : String, error : String) -> Json {
+  outgoing_json_made(id, params, state, error, true)
+}
+
+///|
+fn outgoing_json_made(id : String, params : Json, state : String, error : String, with_time : Bool) -> Json {
   let p = Some(params)
   let o : Map[String, Json] = {
     "id": Json::string(id),
@@ -1203,6 +1248,10 @@ pub fn outgoing_json(id : String, params : Json, state : String, error : String)
     "quotes": Json::array(items(p, "quotes")),
     "createdAt": 0,
     "state": Json::string(state),
+  }
+  if with_time {
+    // (its time, as the core says it of `createdAt` from the moment it has it, sent or not: present.ts times)
+    o["time"] = ago("刚刚", "10/19 09:12:00")
   }
   // its words in runs, as its message will draw them (views.ts drawn: personWords)
   match @sf.kept_words(text(p, "text")) {
@@ -1260,8 +1309,6 @@ pub fn fix_deliver(session : String, id : String) -> Unit {
           Object(m) => {
             let m = m.copy()
             m["seq"] = Json::number((100 + fix_serial.val + 1).to_double())
-            // (its time under it, as the core says an outgoing one's: Outgoing.time)
-            m["time"] = ago("刚刚", "10/19 09:12:00")
             fc.outbox[i] = Json::object(m)
           }
           j => fc.outbox[i] = j
@@ -1517,7 +1564,16 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     "chat.around" => {
       let ts = text(p, "ts")
       if ts == "" {
-        return Some(Ok({ "seq": Json::number(number(p, "seq")) }))
+        // (a message older than those held: the pages before it held as the core would read them in)
+        let target = number(p, "seq")
+        if target < 0.0 {
+          let need = ((-target).to_int() + 99) / 100
+          if need > f.older {
+            f.older = need
+            f.changed()
+          }
+        }
+        return Some(Ok({ "seq": Json::number(target) }))
       }
       let all = items(Some(rich_chat(f.older)), "messages")
       Some(
@@ -1699,10 +1755,10 @@ pub fn seeded_draft(mode : String, key : String) -> Json {
 pub fn seeded_outbox(mode : String) -> Array[Json] {
   let words : Json = { "text": "好，就按这个改，顺便把深色模式的截图也换掉" }
   match mode {
-    "chat-sending" => [outgoing_json("o-seed", words, "sending", "")]
+    "chat-sending" => [outgoing_json_made("o-seed", words, "sending", "", false)]
     // a picture sent while it went up, among its files from here (views.ts goingUp), how far it is said under it
     "chat-uploading" =>
-      match outgoing_json("o-seed", { "text": "第二屏的截图，帮我看看", "attachments": [going_up_picture] }, "sending", "") {
+      match outgoing_json_made("o-seed", { "text": "第二屏的截图，帮我看看", "attachments": [going_up_picture] }, "sending", "", false) {
         Object(m) => {
           @sfbase.sent_picture_kept("upload\u{1}up-seed", fixture_file("compare.png"))
           let o = m.copy()
@@ -1712,11 +1768,32 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         }
         o => [o]
       }
-    "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    "chat-failed" => [outgoing_json_made("o-seed", words, "failed", "Willow 没有回应", false)]
+    // chat-unsure: did not go after it went out with no answer, so it may be the station's already: 重试, no 删除
+    "chat-unsure" =>
+      match outgoing_json_made("o-seed", words, "failed", "连接断开", false) {
+        Object(m) => {
+          let o = m.copy()
+          o["unsure"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
+    // chat-held: sent while its station is not reached, held till it is (looks.ts outboxHeld), 编辑 and 删除 beside it
+    "chat-held" =>
+      match outgoing_json_made("o-seed", words, "sending", "", false) {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("连上后发出")
+          o["held"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     // chat-refused: refused as it is (a file the station cannot have), its words and a quote with it, 编辑 under it
     "chat-refused" => {
       let quote : Json = { "author": "Claude", "text": "高度先按 90 估，量过一次就记住。", "ts": "ts8", "role": "agent", "comment": "这个值得再确认" }
-      match outgoing_json("o-seed", { "text": "好，就按这个改，顺便把深色模式的截图也换掉", "quotes": [quote] }, "failed", "a.jpg 的上传源已丢失") {
+      match outgoing_json_made("o-seed", { "text": "好，就按这个改，顺便把深色模式的截图也换掉", "quotes": [quote] }, "failed", "a.jpg 的上传源已丢失", false) {
         Object(m) => {
           let o = m.copy()
           o["final"] = Json::boolean(true)
@@ -1728,7 +1805,7 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
     // chat-uploading-files: files other than pictures going up before it goes, no words with them, each one's card
     // saying how much of it the station has (views.ts uploads)
     "chat-uploading-files" =>
-      match outgoing_json("o-seed", { "text": "" }, "sending", "") {
+      match outgoing_json_made("o-seed", { "text": "" }, "sending", "", false) {
         Object(m) => {
           let o = m.copy()
           o["waits"] = Json::string("正在上传 2 个文件")
@@ -1752,7 +1829,8 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
 // card answered) and chat-answering (an option under way) open the first row's chat so (scripts/shots.sh cards);
 // chat-vault, with an agent asking to keep a password at its end, decided here as the core decides it; chat-vault-typed,
 // asking the person to type a token in instead; chat-vault-oauth, to sign in to Slack for one; chat-vault-file, to pick a
-// file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one
+// file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one; chat-vault-off, to keep a password
+// while the person's vault is not turned on
 // and say what it is.
 
 ///|
@@ -1786,7 +1864,7 @@ pub let fix_vault : Ref[String] = Ref("")
 ///|
 /// chat-vault's last post: an agent asking to keep a password (`typed`: a token the person types in; `file`: a file
 /// they pick), or `use_secret` for an already answered request to use a token; its card as the core says it.
-pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false) -> Json {
+pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false, off? : Bool = false, no_key? : Bool = false) -> Json {
   let ask : Map[String, Json] = if remove {
     { "name": "办公室 Mac 主机管理员登录", "reason": "这个密码在 Office-Host-2 上登不上，能用的那个已经另存了，留着会让别的 agent 拿它去试", "mode": "env", "hosts": [], "remove": true, "answer": "approve" }
   } else if describe {
@@ -1814,6 +1892,13 @@ pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false
   } else {
     { "name": "测试服务登录", "reason": "把测试服务密码安全保存，方便以后登录", "mode": "env", "save": { "kind": "login", "username": "demo-user" }, "answer": "approve" }
   }
+  // (chat-vault-off: the person's vault not turned on yet, the workspace in no safe mode or not: 开启 first, on the card)
+  if off {
+    ask["answer"] = "setUp"
+  }
+  if no_key {
+    ask["answer"] = "noKey"
+  }
   if timed {
     ask["timeoutKind"] = "idle"
     ask["timeoutSeconds"] = 129600
@@ -1834,6 +1919,10 @@ pub let fix_phone : Ref[String] = Ref("")
 ///|
 /// The length chat-phone's request was last allowed for (`adb.decide`'s scope): "" none yet.
 pub let fix_phone_scope : Ref[String] = Ref("")
+
+///|
+/// chat-phone-multi's 发送批准请求 pressed (`adb.personalJoin`): its trusted device shows the code to type.
+pub let fix_phone_join : Ref[Bool] = Ref(false)
 
 ///|
 /// Granted, how its station's adb holds the phone, as the station says it on the card ("": not said).
@@ -1990,7 +2079,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   let notice_many = f.mode == "chat-notice-many"
   // (chat-file-alone: its last message a file of its agent's, no words with it)
   let file_alone = f.mode == "chat-file-alone"
-  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-off" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
   // (chat-rig: an agent's request for the viewer's rig, waiting; -other: someone else's rig; -web: on a web page;
@@ -2000,7 +2089,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
     fix_rig.val = f.mode.unsafe_substring(start="chat-rig-".length(), end=f.mode.length())
   }
   let stepped = f.mode.has_prefix("chat-phone-step-")
-  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
+  let phone = f.mode == "chat-phone" || f.mode == "chat-phone-outside" || f.mode == "chat-phone-multi" || f.mode == "chat-phone-none" || f.mode == "chat-phone-granted" || f.mode == "chat-phone-lacks" || f.mode == "chat-phone-off" || linked || stepped
   // (chat-phone-granted: its request approved already; chat-phone-lacks: waiting, on a phone without Developer options;
   // chat-phone-linked-<link>[-desk]: approved, its station holding the phone as <link> says, on the phone or (-desk)
   // on a computer; chat-phone-step-<what>: approved, on a phone that lacks <what> first, its station holding it as
@@ -2081,7 +2170,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       }
       // chat-vault's request to keep a password, last
       if vault {
-        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth"))
+        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth", off=f.mode == "chat-vault-off", no_key=f.mode == "chat-vault-no-key"))
       }
       // chat-phone's request for the person's phone, last
       if phone {
@@ -2213,6 +2302,12 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
     "adb.decide" if text(p, "request") == "p-1" => {
       fix_phone_scope.val = text(p, "scope")
       fix_phone.val = if text(p, "scope") != "" { "granted" } else { "denied" }
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
+    // chat-phone-multi's device asking to be approved on its account's lock: a trusted device of theirs shows the code
+    "adb.personalJoin" if f.mode == "chat-phone-multi" => {
+      fix_phone_join.val = true
       f.changed()
       Some(Ok(Json::object({})))
     }
@@ -2634,6 +2729,79 @@ pub let table_images_md : Json = [
     },
   ],
 ]
+
+///|
+/// MBUI_FIXTURE=chat-table-cells: a last message whose table holds what agents put in cells (files' paths, a bare link to
+/// a chat, a formula, code with bars in it), its Markdown tree with it (table_cells_md) and the chat it links to titled.
+pub fn with_table_cells(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), table_cells_answer, "1 分钟前", {
+          "md": table_cells_md,
+          "chats": [{ "href": "https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b", "title": "新架构 chat 表格问题" }],
+          "ending": "all_done",
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+pub let table_cells_answer : String = "表格渲染修复核对：\n\n| 场景 | 文件 | 引用 | 说明 |\n|---|---|---|---|\n| 联合类型 | `client/core-ts/src/mdRead.ts:195` | https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b | `\"whole\" | \"tasks\"` 不再拆格 |\n| 逻辑或与管道 | `libs/sf-ui/src/table_node.mbt:152` | 绝对值 \\(|x| \\le 1\\) | ``a || b`` 和 `curl -s x | sh` |"
+
+///|
+/// table_cells_answer's tree as the core reads it: its words by where they are in it.
+pub let table_cells_md : Json = [["p", [[0, 9]]], ["table", [["tr", [["th", [[13, 15]]], ["th", [[18, 20]]], ["th", [[23, 25]]], ["th", [[28, 30]]]]], ["tr", [["td", [[53, 57]]], ["td", [["code", { "content": [61, 93], "path": [61, 89], "line": 195 }]]], ["td", [["a", [[97, 255]], { "href": "https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b", "bare": true, "to": { "chat": true } }]]], ["td", [["code", { "content": [259, 276] }], [277, 282]]]]], ["tr", [["td", [[287, 293]]], ["td", [["code", { "content": [297, 330], "path": [297, 326], "line": 152 }]]], ["td", [[334, 338], ["code", { "content": [340, 349], "math": true, "drawing": { "font": "tex-4.1.3", "width": 2961.6, "height": 999.5, "baseline": 750, "draw": [["5e0f2c33", 1, -1, 0, 750.5], ["53e30bf3", 1, -1, 278, 750], ["5e0f2c33", 1, -1, 850, 750], ["8cdc6915", 1, -1, 1405.8, 750], ["ef45c95b", 1, -1, 2461.6, 750]], "rects": [], "text": [] } }]]], ["td", [["code", { "content": [356, 362] }], [364, 367], ["code", { "content": [368, 382] }]]]]]], { "align": [Json::null(), Json::null(), Json::null(), Json::null()], "md": "| 场景 | 文件 | 引用 | 说明 |\n| --- | --- | --- | --- |\n| 联合类型 | `client/core-ts/src/mdRead.ts:195` | https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b | `\"whole\" \\| \"tasks\"` 不再拆格 |\n| 逻辑或与管道 | `libs/sf-ui/src/table_node.mbt:152` | 绝对值 \\(\\|x\\| \\le 1\\) | ``a \\|\\| b`` 和 `curl -s x \\| sh` |", "csv": "场景,文件,引用,说明\n联合类型,client/core-ts/src/mdRead.ts:195,https://app.still.fail/o/01M3HNG540559HJG7H4RCWW0TE/021f71b0713034920b2879b925aaaf3f6e177668046da38347495a3fe573904b/chat%3Ac-d7ecd00060fb77645242d89fc573424b,\"\"\"whole\"\" | \"\"tasks\"\" 不再拆格\"\n逻辑或与管道,libs/sf-ui/src/table_node.mbt:152,绝对值 |x| \\le 1,a || b 和 curl -s x | sh" }]]
+
+///|
+/// MBUI_FIXTURE=chat-table-long: a last message of a table of 10 rows under its head and 9 columns, wider than a pane:
+/// a block of the chat's list a few rows a piece (sf's markdown_pieces), scrolled across as one.
+fn table_long_cell(r : Int, c : Int) -> String {
+  match c {
+    0 => "第 \{r} 行"
+    1 => "构建 #48\{r}"
+    2 => if r % 2 == 0 { "通过" } else { "失败后重试通过" }
+    3 => "libs/sf-ui/src/table_node.mbt:\{100 + r}"
+    4 => "上午 10:\{10 + r}"
+    5 => "\{r * 3} 分 \{r} 秒"
+    6 => "构建机 tokyo-mac-studio-\{r % 2}"
+    7 => "重试 \{r % 3} 次，日志已归档到 artifacts"
+    _ => "左滑看到最后一列，这一格写得长一些（第 \{r} 行）"
+  }
+}
+
+///|
+let table_long_head : Array[String] = ["行", "构建", "结果", "文件", "时间", "耗时", "机器", "备注", "说明"]
+
+///|
+pub let table_long_answer : String = {
+  let line = fn(cells : Array[String]) { "| " + cells.join(" | ") + " |" }
+  let rows = [line(table_long_head), "|" + "---|".repeat(table_long_head.length())]
+  for r in 1..=10 {
+    rows.push(line(Array::makei(table_long_head.length(), fn(c) { table_long_cell(r, c) })))
+  }
+  rows.join("\n")
+}
+
+///|
+/// table_long_answer's tree as the core reads it, its words as they are (no runs of the text).
+pub fn table_long_md() -> Json {
+  let cell = fn(tag : String, words : String) { Json::array([Json::string(tag), Json::array([Json::string(words)])]) }
+  let rows = [Json::array([Json::string("tr"), Json::array(table_long_head.map(fn(h) { cell("th", h) }))])]
+  for r in 1..=10 {
+    rows.push(Json::array([Json::string("tr"), Json::array(Array::makei(table_long_head.length(), fn(c) { cell("td", table_long_cell(r, c)) }))]))
+  }
+  Json::array([Json::array([Json::string("table"), Json::array(rows), Json::object({ "md": Json::string(table_long_answer), "csv": Json::string("") })])])
+}
 
 ///|
 /// MBUI_FIXTURE=chat-viz's visualization: a fragment, as the viz skill has agents write them.
@@ -3566,7 +3734,8 @@ pub fn fixture_station_overview() -> Json {
 }
 
 ///|
-/// The places the made-up station's one bot is in (`chat.relayPlaces`): one relayed to before, a private one.
+/// The places the made-up station's bots are in (`chat.relayPlaces`): its Slack bot's, one relayed to before and a
+/// private one; its group connect's space (a new topic there).
 pub fn fix_relay_places() -> Json {
   {
     "connects": [
@@ -3579,6 +3748,14 @@ pub fn fix_relay_places() -> Json {
           { "id": "C1", "name": "dev", "kind": "channel", "used": 20 },
           { "id": "C2", "name": "ops", "kind": "channel", "private": true },
         ],
+      },
+      {
+        "id": "group-1",
+        "kind": "group",
+        "name": "星火助手",
+        "team": null,
+        "teamId": "anchor-1",
+        "places": [{ "id": "s_team", "name": "研发群", "kind": "space" }],
       },
     ],
   }

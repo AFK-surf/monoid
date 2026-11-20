@@ -30,6 +30,10 @@ let failed_code : Int = 2
 let slow_ms : Int64 = 10000L
 
 ///|
+/// A copy's batch (`replica.put`) carries many bytes: said only past a minute.
+let slow_put_ms : Int64 = 60000L
+
+///|
 /// What a rig tells the stations of its workspace besides a task's change.
 pub let rig_tells : Array[String] = ["rig.hello", "rig.changed", "vault.used", "vault.done"]
 
@@ -265,9 +269,22 @@ async fn workspace_for(k : Keeper, target : String, workspace : String?, outside
 }
 
 ///|
+/// The relay `conn`'s chosen path goes through now (relays.ts `goesThrough`'s `paths().find(selected).relay`), None
+/// where it goes direct or says no paths.
+pub fn chosen_relay(conn : @door.Connection) -> String? {
+  guard conn.paths is Some(paths) else { return None }
+  match paths().iter().find_first(p => p.selected) {
+    Some(p) => p.relay
+    None => None
+  }
+}
+
+///|
 /// Where the stations are dialed (relays.ts `stationAddr`, peer-relays.ts): a connection to `target` asked in a
 /// workspace, offering `stillfail/station/2` then `/1`, given up once `given_up` is done; `hold` sets its relays turned
-/// off before it is dialed (None: the endpoint holds none, a kept connection through one is closed by `goes_off`).
+/// off before it is dialed; `goes_off` says a kept connection goes through one, to be closed (and dialed anew), where
+/// the endpoint does not hold them (None, or false while it does: peer.ts `holds()`, which an endpoint from before,
+/// with no such operation, turns false only once it is asked).
 pub(all) struct Dialing {
   connect : async (String, String?, @effect.Deferred[Unit]) -> @door.Connection
   hold : (async (String) -> Unit)?
@@ -345,11 +362,7 @@ pub fn peer_call(
 ) -> StationCall {
   let connections : Map[String, @door.Connection] = Map([])
   let asked_in : Map[String, String?] = Map([])
-  let holds = dialing.hold is Some(_)
   let sweep = () => {
-    if holds {
-      return
-    }
     guard dialing.goes_off is Some(goes) else { return }
     for target, conn in connections.copy() {
       if (conn.is_closed)() || !goes(conn, target, asked_in.get(target).unwrap_or(None)) {
@@ -416,7 +429,7 @@ pub fn peer_call(
     match connections.get(target) {
       Some(open) if !(open.is_closed)() => {
         let off = match dialing.goes_off {
-          Some(goes) if !holds => goes(open, target, ws)
+          Some(goes) => goes(open, target, ws)
           _ => false
         }
         if !off {
@@ -436,7 +449,13 @@ pub fn peer_call(
       None => {
         let d : Dial = { made: @effect.Deferred::new(), waiters: 0, settled: false, abandoned: false, given_up: @effect.Deferred::new() }
         dials[target] = d
-        ignore(rt.fork(name="peer dial", () => {
+        ignore(rt.fork_daemon("peer dial", on_error=e => {
+          d.settled = true
+          if dials.get(target) is Some(x) && physical_equal(x, d) {
+            dials.remove(target)
+          }
+          ignore(d.made.fail(NoLink("peer unavailable: \{words_of(e)}")))
+        }, () => {
           let made = try {
             if dialing.hold is Some(h) {
               h(target)
@@ -593,7 +612,7 @@ pub fn peer_call(
         Some(b) => {
           within(idle_wait, () => (stream.write)(head), late)
           let answered : @effect.Deferred[Json?] = @effect.Deferred::new()
-          ignore(rt.fork(name="peer answer", () => {
+          ignore(rt.fork_daemon("peer answer", on_error=e => ignore(answered.fail(e)), () => {
             let a = try { Ok(reader.line()) } catch { e => Err(e) }
             match a {
               Ok(v) => ignore(answered.succeed(v))
@@ -602,7 +621,10 @@ pub fn peer_call(
           }))
           let sent = Ref(false)
           let source_failed : Ref[Error?] = Ref(None)
-          let sending = rt.fork(name="peer bytes", () => {
+          // What the sending fails with stays in it (said by `failed` above, and by the answer's stream it reset):
+          // once the answer came first nothing waits on it, and an error left in it was the runtime's defect (`the
+          // other station took nothing for 30 s`, a broken pipe).
+          let sending = rt.fork(name="peer bytes", () => try {
             send_bytes(stream, b, Some((source, e) => {
               if source {
                 source_failed.val = Some(e)
@@ -614,11 +636,13 @@ pub fn peer_call(
               })
             }), idle_ms=idle_wait)
             sent.val = true
+          } catch {
+            _ => ()
           })
           ignore(@effect.race_first(() => { ignore(sending.wait()) }, () => { ignore(answered.wait()) catch { _ => () } }))
           let a = within(answer_wait, () => watched(target, conn, before, () => answered.wait()), late)
           if !sent.val {
-            ignore(rt.fork(() => (stream.reset)(stopped_code) catch { _ => () }))
+            ignore(rt.fork_quiet(name="peer reset", () => (stream.reset)(stopped_code) catch { _ => () }))
           }
           if a is None && source_failed.val is Some(e) {
             raise e
@@ -662,7 +686,7 @@ pub fn peer_call(
           raise PeerGone(peer_stopped_words, true)
         }
         if !final_ && failed is Some(f) {
-          ignore(rt.fork(() => let_go(target, f)))
+          ignore(rt.fork_quiet(name="peer let go", () => let_go(target, f)))
         }
         if failed is None && dial_ref.val is Some(d) && dials.get(target) is Some(x) && physical_equal(x, d) {
           dials.remove(target)
@@ -674,7 +698,7 @@ pub fn peer_call(
   let arrived = (conn : @door.Connection) => {
     let target = (conn.remote_id)()
     if dialing.hold is Some(h) {
-      ignore(rt.fork(() => h(target) catch {
+      ignore(rt.fork_daemon("peer relay policy", on_error=_ => (conn.close)(0, "relay policy unavailable"), () => h(target) catch {
         e => {
           @door.log("warn", "mesh", "incoming station relay policy failed", { "peer": Json::string(short(target)), "error": Json::string(words_of(e)) })
           (conn.close)(0, "relay policy unavailable")
@@ -682,7 +706,7 @@ pub fn peer_call(
       }))
     }
     guard connections.get(target) is Some(kept) && !physical_equal(kept, conn) && !(kept.is_closed)() else { return }
-    ignore(rt.fork(() => if !there(kept) { drop(target, kept) }))
+    ignore(rt.fork_quiet(name="peer kept", () => if !there(kept) { drop(target, kept) }))
   }
   { call: ask, arrived, close: stop_sweeping }
 }
@@ -712,12 +736,14 @@ pub async fn serve_peer(k : Keeper, conn : @door.Connection, remote : PeerBus) -
     e => if (k.peers_current)() { raise e }
   }
   let answering = Ref(0)
-  let next : Ref[@effect.Fiber[@door.Stream?]?] = Ref(None)
+  // (an accept's failure, the connection lost, kept in its fiber's value and raised here: a fiber that fails is the
+  // runtime's defect, told before the join takes it)
+  let next : Ref[@effect.Fiber[Result[@door.Stream?, Error]]?] = Ref(None)
   while true {
     let waiting = match next.val {
       Some(f) => f
       None => {
-        let f = rt.fork(name="peer accept", () => (conn.accept_bi)())
+        let f = rt.fork(name="peer accept", () => try { Ok((conn.accept_bi)()) } catch { e => Err(e) })
         next.val = Some(f)
         f
       }
@@ -730,11 +756,18 @@ pub async fn serve_peer(k : Keeper, conn : @door.Connection, remote : PeerBus) -
         }
         raise Refused("peer idle")
       }
-      Some(stream) => {
+      Some(accepted) => {
         next.val = None
+        let stream = match accepted {
+          Ok(stream) => stream
+          Err(e) => raise e
+        }
         guard stream is Some(stream) else { return }
         answering.val += 1
-        ignore(rt.fork(name="peer stream", () => {
+        ignore(rt.fork_daemon("peer stream", on_error=e => {
+          @door.log("info", "mesh", "a station's stream was not answered", { "peer": Json::string(short(peer)), "error": Json::string(words_of(e)) })
+          ignore(rt.fork_quiet(name="peer stream reset", () => (stream.reset)(0) catch { _ => () }))
+        }, () => {
           defer { answering.val -= 1 }
           answer_peer_stream(k, conn, remote, peer, stream, rig, inside)
         }))
@@ -838,19 +871,26 @@ async fn answer_peer_stream(
     }
   }
   let ms = @effect.now() - begun
-  if ms >= slow_ms {
-    let s = (k : String) => match field(asked.val, k) {
-      Some(String(v)) => v
-      Some(Null) | None => ""
-      Some(v) => v.stringify()
+  let s = (k : String) => match field(asked.val, k) {
+    Some(String(v)) => v
+    Some(Null) | None => ""
+    Some(v) => v.stringify()
+  }
+  let method = s("method")
+  if ms >= (if method == "replica.put" { slow_put_ms } else { slow_ms }) {
+    // (an empty field left out; its error says whether it was slow to arrive or to be answered)
+    let with_ : Map[String, Json] = { "peer": Json::string(short(peer)) }
+    for k in ["method", "session", "key"] {
+      let v = s(k)
+      if v != "" {
+        with_[k] = Json::string(v)
+      }
     }
-    @door.log("warn", "mesh", "peer request answered slowly", {
-      "peer": Json::string(short(peer)),
-      "method": Json::string(s("method")),
-      "session": Json::string(s("session")),
-      "key": Json::string(s("key")),
-      "ms": Json::number(ms.to_double()),
-    })
+    with_["ms"] = Json::number(ms.to_double())
+    if answer is { "error": e, .. } {
+      with_["error"] = e
+    }
+    @door.log("warn", "mesh", "peer request answered slowly", Json::object(with_))
   }
   let mut answer = answer
   if outgoing.val is Some(o) && o.check is Some(check) {

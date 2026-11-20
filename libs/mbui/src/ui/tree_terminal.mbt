@@ -836,10 +836,16 @@ fn Ctx::paint_tree_terminal(
     let age = view_moment() - tt.sb_changed_at
     let thumb_alpha = if !at_bottom {
       0.52
-    } else if age >= 0.0 && age < 900.0 {
+    } else if age >= 0.0 && age < 600.0 {
+      // (shown as it is till its fade sets out: a frame asked for then, none before)
+      self.wake_at_time(tt.sb_changed_at + 600.0, later=true)
+      0.42
+    } else if age >= 600.0 && age < 900.0 {
+      // (fading by the clock: a frame each frame till it is gone, and one at its end)
       frame_clock.val.get() |> ignore
-      let fade = ((900.0 - age) / 300.0).clamp(min=0.0, max=1.0)
-      0.42 * fade
+      self.motion_read = true
+      self.wake_at_time(tt.sb_changed_at + 900.0, later=true)
+      0.42 * ((900.0 - age) / 300.0).clamp(min=0.0, max=1.0)
     } else {
       0.0
     }
@@ -889,8 +895,8 @@ pub fn terminal_grid(
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
     let id = b.id()
-    tree_terminals_rev.val = tree_terminals_rev.val + 1
-    tree_terminals[id] = {
+    // (said in the window its tree is drawn in, whichever window is in place as it is made: in_tree_window)
+    let entry = {
       term,
       rev,
       size,
@@ -920,7 +926,11 @@ pub fn terminal_grid(
       sb_changed_at: -1.0e9,
       rows: [],
     }
-    b.grow(Is(1.0)).min_height(Is(Some(0.0))).owns(fn() { tree_terminal_gone(id) }) |> ignore
+    in_tree_window(b.tree, fn() {
+      tree_terminals_rev.val = tree_terminals_rev.val + 1
+      tree_terminals[id] = entry
+    })
+    b.grow(Is(1.0)).min_height(Is(Some(0.0))).owns(fn() { in_tree_window(b.tree, fn() { tree_terminal_gone(id) }) }) |> ignore
   })
 }
 

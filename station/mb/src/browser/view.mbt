@@ -10,11 +10,7 @@
 ///|
 /// `Math.round(x)`.
 fn js_round(x : Double) -> Double {
-  if x.is_nan() || x.is_inf() {
-    x
-  } else {
-    (x + 0.5).floor()
-  }
+  @jsjson.js_round(x)
 }
 
 ///|
@@ -39,8 +35,8 @@ pub fn viewport_of(m : J?) -> (Double, Double)? {
 }
 
 ///|
-/// JPEG quality of the cast frames.
-let quality : Int = 70
+/// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
+let quality : Int = 82
 
 ///|
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`).
@@ -509,6 +505,7 @@ pub struct TabView {
   priv mut unlisten : () -> Unit
   priv mut peek : Bool
   priv mut fitted : Bool
+  priv mut device_passkeys : Bool
   priv mut heard_ids : Int
 }
 
@@ -534,6 +531,7 @@ pub fn TabView::new(p : ViewParts) -> TabView {
     unlisten: () => (),
     peek: false,
     fitted: false,
+    device_passkeys: true,
     heard_ids: 0,
   }
   v.unlisten = (p.cdp.on)(e => v.heard(e))
@@ -559,6 +557,7 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
     None => ()
   }
   self.peek = options.peek
+  self.device_passkeys = options.passkeys != Some(false)
   let cdp = self.p.cdp
   let session = self.p.session
   ignore(cdp.send("Page.enable", Obj([]), Some(session)))
@@ -841,7 +840,7 @@ fn TabView::watch_binding(
 ///|
 pub fn TabView::watch_clipboard(self : TabView, heard : (Clip) -> Unit) -> () -> Unit {
   self.watch_binding(copy_binding, copy_hook(), params => match at(Some(params), "payload") {
-    Some(Str(u)) if u.length() > 0 => heard({ type_: "text", text: @jsjson.text(u) })
+    Some(Str(u)) if u.length() > 0 => heard({ type_: "text", text: @jsjson.sanitize_str(u) })
     _ => ()
   })
 }
@@ -862,10 +861,15 @@ pub fn TabView::watch_login(self : TabView, heard : (J) -> Unit) -> () -> Unit {
       heard(Null)
       return
     }
+    let filled = is_true(at(said, "filled"))
     (self.p.clock.spawn)(async fn() {
       let host = self.host(target_id)
       if on.val {
-        heard(if host == "" { Null } else { jo([("host", js(host)), ("field", js(f))]) })
+        let fields : Array[(String, J)] = [("host", js(host)), ("field", js(f))]
+        if filled {
+          fields.push(("filled", jb(true)))
+        }
+        heard(if host == "" { Null } else { jo(fields) })
       }
     })
   })
@@ -908,13 +912,13 @@ pub async fn TabView::fill(self : TabView, f : J) -> Unit {
 }
 
 ///|
-/// Whether `v` is base64url a device's answer may hold (`/^[A-Za-z0-9_-]+$/`, at most 1366).
-fn b64_ok(v : J?) -> Bool {
+/// Whether `v` is base64url (`/^[A-Za-z0-9_-]+$/`, at most `most`).
+fn b64_ok(v : J?, most? : Int = 1366) -> Bool {
   match v {
     Some(Str(u)) => {
-      let s = @jsjson.text(u)
+      let s = @jsjson.sanitize_str(u)
       s != "" &&
-      s.length() <= 1366 &&
+      s.length() <= most &&
       s.iter().all(c => is_ascii_alpha(c) || is_ascii_digit(c) || c == '_' || c == '-')
     }
     _ => false
@@ -933,7 +937,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
   // Each viewer owns its binding as well as its subscription: page requests go to just that viewer, and an old
   // session removes only its own name on cleanup.
   let binding = passkey_binding_of(owner)
-  let hook = passkey_hook(owner)
+  let hook = passkey_hook(owner, device=self.device_passkeys)
   self.passkey_owner = owner
   let on = Ref(true)
   self.heard_ids += 1
@@ -970,7 +974,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
       let said = parse_obj(js_str(at(Some(params), "payload")))
       guard text(at(said, "owner")) == owner && at(said, "owner") is Some(Str(_)) else { return }
       guard at(said, "id") is Some(Str(iu)) && iu.length() > 0 && iu.length() <= 32 else { return }
-      let id = @jsjson.text(iu)
+      let id = @jsjson.sanitize_str(iu)
       if is_true(at(said, "gone")) {
         pending.remove(id)
         match self.asked {
@@ -982,20 +986,40 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
         }
         return
       }
+      if at(said, "uvpa") is Some(Str(uu)) && uu.length() <= 253 {
+        let raw = lower(@jsjson.sanitize_str(uu))
+        let h = if raw.has_suffix(".") { slice(raw, 0, b=raw.length() - 1) } else { raw }
+        let mut available = false
+        match self.p.own_passkey {
+          Some(f) if h != "" => {
+            let parts = h.split(".").map(p => p.to_owned()).collect()
+            for i in 0..<parts.length() {
+              let rp = parts[i:].to_owned().join(".")
+              if (i == 0 || rp.contains(".")) && f(rp) {
+                available = true
+                break
+              }
+            }
+          }
+          _ => ()
+        }
+        self.answer_now([("id", js(id)), ("available", jb(available))])
+        return
+      }
       let allow = match at(said, "allow") {
         Some(Arr(xs)) => xs.iter().take(64).collect()
         _ => []
       }
       guard at(said, "rpId") is Some(Str(ru)) &&
-        b64_ok(at(said, "challenge")) &&
+        b64_ok(at(said, "challenge"), most=32768) &&
         allow.iter().all(a => b64_ok(Some(a))) else {
         return
       }
-      let rp_id = @jsjson.text(ru)
+      let rp_id = @jsjson.sanitize_str(ru)
       let challenge = text(at(said, "challenge"))
       let user_verification = match at(said, "userVerification") {
         Some(Str(u)) =>
-          match @jsjson.text(u) {
+          match @jsjson.sanitize_str(u) {
             "required" | "preferred" | "discouraged" as v => v
             _ => "preferred"
           }
@@ -1033,6 +1057,11 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
             return
           }
           _ => ()
+        }
+        // A viewer without host passkeys never invokes headful Chrome's OS WebAuthn dialog (hidden outside screencast).
+        if !self.device_passkeys {
+          self.answer_now([("id", js(id)), ("error", js("NotAllowedError"))])
+          return
         }
         let client_data = stringify(
           jo([

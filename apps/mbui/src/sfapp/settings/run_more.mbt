@@ -1,21 +1,5 @@
-// How a chat's agent runs, changed on a page of its own, the machine's own sessions to
-// go on with (openMachineSessions, lookAtMachineSession), and adding people to the
-// workspace with the workspace's mark.
-
-///|
-/// How an agent runs, made up, for what is shown while it is read (run_view in its bones).
-fn run_sample() -> Json {
-  let w = fn(n : Int) { Json::string(@sf.sample_words(n)) }
-  {
-    "was": [w(6), w(2), w(5)],
-    "becomes": [w(6), w(2), w(5)],
-    "modelText": w(7),
-    "efforts": [w(1), w(1), w(1)],
-    "accountText": w(6),
-    "accountNote": w(14),
-    "saveText": w(4),
-  }
-}
+// The machine's own sessions to go on with (openMachineSessions, lookAtMachineSession),
+// and adding people to the workspace with the workspace's mark.
 
 // ---------------------------------------------------------------------------
 // The machine's own sessions
@@ -65,6 +49,46 @@ pub fn machine_sessions_offer(c : @ui.Ctx, core : Core, station : String, name :
     @sf.press_ripple(c, id, @sf.small_corner)
   })
   c.semantics(b, Button, id~, label=words)
+}
+
+///|
+/// The offer (machine_sessions_offer's) as nodes in `parent`, of the station `station()` names (`name()` its name, ""
+/// this machine): the sessions its machine kept asked once a station, as it is first made for it; shown once it has
+/// any, its mark and words quiet till the hand is on it; pressed, their list (open_machine_sessions).
+#callsite(autofill(loc))
+pub fn machine_sessions_offer_node(
+  parent : @view.View,
+  core : Core,
+  station : () -> String,
+  name : () -> String,
+  loc~ : SourceLoc,
+) -> Unit {
+  // (asked once a station, as the page is first made on it: as the answer comes, it shows)
+  parent.reacts(station, fn(st) {
+    guard st != "" && !machine_sessions_asked.contains(st) else { return }
+    machine_sessions_asked[st] = true
+    (core.call)("machineSessions.list", obj([("station", str(st))]), fn(r) {
+      match r {
+        Ok(v) => machine_sessions.set(st, items(Some(v), "sessions"))
+        Err(_) => ()
+      }
+    })
+  })
+  let words = fn() {
+    fill("android-chat.new.machine.offer", [("station", if name() == "" { tr("android-chat.new.machine.here") } else { name() })])
+  }
+  parent.show(fn() { machine_sessions.get(station()).unwrap_or([]).length() > 0 }, fn(o) {
+    @sf.ripple_button_node(loc~, o, words, fn() { open_machine_sessions(core, station(), name()) }, fn(b, state) {
+      let lit = fn() { state.hovered() || state.pressed() || state.focus_shown() }
+      @sf.style_node(b, fn() { machine_offer_box })
+      @sf.hover_ground_node(b, lit=Some(lit))
+      @sf.icon_node(b, "monitor", machine_offer_mark, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
+      |> ignore
+      @sf.words_node(b, words, fn() { if lit() { machine_offer_words_lit } else { machine_offer_words } }) |> ignore
+      Is(@sf.small_corner)
+    })
+    |> ignore
+  })
 }
 
 ///|
@@ -1037,18 +1061,4 @@ let add_people_label : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold
 /// What came of adding: the UI's size, 20 a line.
 // kept across runs: a value (no field of it changes)
 let add_people_said : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, w=Full, leading=L6)
-
-///|
-/// The pickers opened (their `pick.set {open}` sent once a page), and which list a run page shows ("" its first view).
-// kept across runs: said as a run's page opens; the settings' reset empties it
-let run_opened : Map[String, Bool] = Map([])
-
-///|
-// kept across runs: said by a run's page; the settings' reset empties it
-let run_list : @sf.LiveMap[String, String] = @sf.LiveMap::new()
-
-///|
-/// A property's label in what a run was and becomes (meta, muted, on one line).
-// kept across runs: a value (no field of it changes)
-let run_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 

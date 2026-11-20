@@ -3,7 +3,15 @@
 
 ///|
 /// rows.ts STILLFAIL_SURFACE.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
+
+///|
+/// rows.ts STILLFAIL_CONNECT.
+let internal_connect : String = "chat"
+
+///|
+/// rows.ts FORMER_OWN_NAMES.
+let former_own_names : Array[String] = ["ember", "stillfail"]
 
 ///|
 /// rows.ts MANUAL.
@@ -103,6 +111,9 @@ fn to_session(r : Map[String, Json]) -> Json {
     col(r, "context_before")
   } else {
     Json::null()
+  }
+  if col(r, "compactions") is (Number(n, ..) as c) && n > 0.0 {
+    o["compactions"] = c
   }
   o["runtimeSessionId"] = col(r, "runtime_session_id")
   o["workspace"] = col(r, "workspace")

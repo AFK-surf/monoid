@@ -116,6 +116,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
   // (the devices it dials, the core's rows; typing, those showing the code alone)
   let dialled = fn() { items(pair(), "approvers") }
   let showing = fn() { dialled().filter(fn(d) { flag(Some(d), "showing") }) }
+  let this_code = fn() { text(pair(), "thisDeviceCode") }
   // (what is typed, kept while the page shows: emptied as a code is refused or a new one asked for)
   let typed = @ui.Field::new()
   col.pick(shows, fn(v, shown) {
@@ -123,6 +124,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
     match shown {
       Typing => {
         lock_note_node(v, fn() { @sf.t("web-pages.security.pairEnter") }, in_card~)
+        v.show(fn() { this_code() != "" }, fn(c) { lock_this_code_node(c, this_code, in_card~) })
         @ui.code_field_node(
           v,
           typed,
@@ -149,7 +151,20 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
           },
         )
         |> ignore
-        v.show(checking, fn(n) { lock_note_node(n, fn() { @sf.t("web-pages.security.pairChecking") }, turning=true, in_card~) })
+        // (the trusted device asking its person there: where to look, as the core says it; till then 正在验证)
+        v.show(checking, fn(n) {
+          lock_note_node(
+            n,
+            fn() {
+              match text(pair(), "checkingText") {
+                "" => @sf.t("web-pages.security.pairChecking")
+                words => words
+              }
+            },
+            turning=true,
+            in_card~,
+          )
+        })
         v.show(fn() { !checking() }, fn(n) {
           lock_steps_node(n, in_card)
           // (what the core says of it, the device showing the code maybe gone; a core of before says nothing)
@@ -177,6 +192,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
       }
       Finding => {
         lock_note_node(v, fn() { @sf.t("web-pages.security.pairFinding") }, turning=true, in_card~)
+        v.show(fn() { this_code() != "" }, fn(c) { lock_this_code_node(c, this_code, in_card~) })
         // asked again while it looks: the person opened a trusted device and nothing came up (2026-11-06 the user:
         // 「直接加个没收到重新申请的按钮」)
         v.show(fn() { !asking() }, fn(n) {
@@ -266,25 +282,69 @@ let lock_steps : @ui.Style = @ui.css("w=Full gap=S3_5 align=ACenter")
 let lock_steps_carded : @ui.Style = @ui.css("w=Full gap=S2 align=AStart")
 
 ///|
+/// This device's verification code shown under the pairing instruction so the user can match it on their trusted device.
+fn lock_this_code_node(parent : @view.View, code : () -> String, in_card? : Bool = false) -> Unit {
+  parent.box(fn(box) {
+    @sf.style_node(box, fn() { lock_this_code_box })
+    box
+    .words_runs(
+      By(fn() {
+        [
+          @ui.span(@sf.t("web-pages.security.thisDeviceCodeLabel"), color=@sf.theme().p.muted),
+          @ui.span(code(), mono=true, bold=true, color=@sf.theme().p.text),
+        ]
+      }),
+      look=@ui.style_words(@sf.meta.then(@sf.full_words)),
+    )
+    .words_centered(Is(!in_card))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let lock_this_code_box : @ui.Style = @ui.css("w=Full")
+
+///|
 /// What is so (lock_note's): `words()`, a turning ring before it where `turning`; each line in the middle but
 /// `in_card`.
 fn lock_note_node(parent : @view.View, words : () -> String, turning? : Bool = false, in_card? : Bool = false) -> Unit {
   parent.box(fn(row) {
-    @sf.style_node(row, fn() { lock_note })
+    @sf.style_node(row, fn() { if turning { lock_note_turning } else { lock_note } })
     if turning {
-      @sf.spinner_node(row, size=lock_spin) |> ignore
+      // (the ring on the words' first line, in the middle of it, never on the middle of words of two lines; a line
+      // after it starts where the first's words do: the row as wide as its words, in the middle of the steps)
+      row.box(fn(g) {
+        g
+        .width(Is(Some(lock_spin)))
+        .height(By(fn() { Some(@sf.node_sp(g, @ui.tree_theme().text_size(Meta).1)) }))
+        .shrink(Is(0.0))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        |> ignore
+        @sf.spinner_node(g, size=lock_spin) |> ignore
+      })
+      |> ignore
+      row.box(fn(w) {
+        w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        @sf.words_node(w, words, fn() { lock_note_words }).words_centered(Is(false)) |> ignore
+      })
+      |> ignore
+    } else {
+      // (each line in the middle: lock_note_words' center; on a card from where its words start)
+      @sf.words_node(row, words, fn() { lock_note_words }).words_centered(Is(!in_card)) |> ignore
     }
-    // (each line in the middle: lock_note_words' center; on a card from where its words start)
-    @sf.words_node(row, words, fn() { lock_note_words }).words_centered(Is(!in_card)) |> ignore
   })
   |> ignore
 }
 
 ///|
 /// The trusted devices a step is about (`list()`, the core's LockApprover rows) on a quiet card under its action;
-/// nothing where the list is empty. A device to a row: its mark (a phone, a computer) and which machine (the user,
-/// #4213, 2026-11-10: fewer words, and under the buttons, which matter more and are never pushed out by it). `in_card`
-/// (设置 › 安全's): its rows alone, from where the card's words start.
+/// nothing where the list is empty. A device to a row (@sf.icon_point_row_node's Listed): its mark (a phone, a
+/// computer) on the first line of which machine (the user, #4213, 2026-11-10: fewer words, and under the buttons, which
+/// matter more and are never pushed out by it). `in_card` (设置 › 安全's): its rows alone, from where the card's words
+/// start.
 fn lock_devices_node(parent : @view.View, list : () -> Array[Json], in_card : Bool) -> Unit {
   parent.show(fn() { list().length() > 0 }, fn(room) {
     @sf.style_node(room, fn() { if in_card { lock_devices_carded } else { lock_devices } })
@@ -295,14 +355,8 @@ fn lock_devices_node(parent : @view.View, list : () -> Array[Json], in_card : Bo
       card.each(fn() { indexed(list()) }, fn(e) { e.0 }, fn(row, e) {
         let d = fn() { Some(e.get().1) }
         let kind = fn() { lock_device_icon(d()) }
-        @sf.style_node(row, fn() { lock_device })
-        @sf.icon_node(row, @signals.untracked(kind), lock_device_glyph, By(fn() { @sf.theme().p.muted }), name_now=kind) |> ignore
-        row.box(fn(name) {
-          // (as wide as its words, giving way where the card has not the room: they go on in another line)
-          name.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          @sf.words_node(name, fn() { text(d(), "nameText") }, fn() { lock_device_name }) |> ignore
-        })
-        |> ignore
+        // (its mark on its name's first line: a long name goes on in another line under it)
+        @sf.icon_point_row_node(row, @signals.untracked(kind), fn() { text(d(), "nameText") }, icon_now=kind, look=@sf.PointLook::Listed)
       })
     })
     |> ignore
@@ -342,6 +396,11 @@ fn lock_actions_node(
 /// What is so (waitingNote: a turning ring 8 before it, muted, the meta's size); why it failed (waitingFailed: red).
 // kept across runs: a value (no field of it changes)
 let lock_note : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+
+///|
+/// With its turning ring: lock_note's, the ring on the first line (lock_note_node).
+// kept across runs: a value (no field of it changes)
+let lock_note_turning : @ui.Style = @ui.css("row gap=S2 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let lock_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
@@ -361,15 +420,6 @@ let lock_devices : @ui.Style = @ui.css("w=Full align=ACenter")
 let lock_devices_card : @ui.Style = @ui.css("px=S4 py=S3 gap=S3 radius=Xl bg=Tint").then(@ui.style(max_w=Fixed(lock_devices_most)))
 ///|
 let lock_devices_most : Double = 412.0
-///|
-/// A device's row: its mark, 12, which machine it is, from the card's start.
-// kept across runs: a value (no field of it changes)
-let lock_device : @ui.Style = @ui.css("row gap=S3 align=ACenter")
-///|
-// kept across runs: a value (no field of it changes)
-let lock_device_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, w=Full)
-///|
-let lock_device_glyph : Double = 18.0
 ///|
 /// A device's mark by what the core says it is (LockApprover `kind`): a phone, else a computer.
 fn lock_device_icon(d : Json?) -> String {

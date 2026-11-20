@@ -103,7 +103,9 @@ pub(open) trait Host {
   increase_contrast(Self) -> Bool = _
   thermal_throttled(Self) -> Bool = _
   gpu_ms(Self) -> Double = _
+  frames_dropped(Self) -> Int = _
   cpu_ms(Self) -> Double = _
+  thread_cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
   set_app_state(Self, FuncRef[(Int) -> Unit]) -> Unit = _
   system_dark(Self) -> Bool = _
@@ -124,6 +126,7 @@ pub(open) trait Host {
   perf_size(Self) -> Double = _
   perf_read(Self) -> Bytes = _
   perf_open(Self, Bool) -> Bool = _
+  reveal_file(Self, String, Bool) -> Bool = _
   shared_in(Self) -> String = _
   shared_in_file(Self, Int) -> Bytes = _
   app_version(Self) -> Int = _
@@ -283,6 +286,15 @@ pub(open) trait Host {
   // (a method is added last: one put before others moves their places in the table every call goes through, and the C
   // of each program calling them, all of it, is compiled again)
   words_spaced(Self) -> Int = _
+  window_set_title(Self, Int, String) -> Unit = _
+  auto_launch(Self) -> Bool = _
+  set_auto_launch(Self, Bool) -> Bool = _
+  hotkey_set(Self, String, String) -> Bool = _
+  hotkey_clear(Self, String) -> Unit = _
+  pointer_lock(Self, Bool) -> Unit = _
+  pointer_locked(Self) -> Bool = _
+  pointer_delta(Self, FixedArray[Double]) -> Unit = _
+  gamepads(Self, FixedArray[Double]) -> Int = _
 }
 
 ///|
@@ -411,6 +423,11 @@ impl Host with window_current(_) {
 }
 
 ///|
+impl Host with window_set_title(_, _, _) {
+  ()
+}
+
+///|
 impl Host with set_cursor(_, _) {
   ()
 }
@@ -442,6 +459,26 @@ impl Host with set_site_name(_, _) {
 
 ///|
 impl Host with mods_held(_) {
+  0
+}
+
+///|
+impl Host with pointer_lock(_, _) {
+  ()
+}
+
+///|
+impl Host with pointer_locked(_) {
+  false
+}
+
+///|
+impl Host with pointer_delta(_, _) {
+  ()
+}
+
+///|
+impl Host with gamepads(_, _) {
   0
 }
 
@@ -770,7 +807,17 @@ impl Host with gpu_ms(_) {
 }
 
 ///|
+impl Host with frames_dropped(_) {
+  0
+}
+
+///|
 impl Host with cpu_ms(_) {
+  -1.0
+}
+
+///|
+impl Host with thread_cpu_ms(_) {
   -1.0
 }
 
@@ -866,6 +913,11 @@ impl Host with perf_size(_) {
 
 ///|
 impl Host with perf_open(_, _) {
+  false
+}
+
+///|
+impl Host with reveal_file(_, _, _) {
   false
 }
 
@@ -1782,6 +1834,13 @@ pub fn window_current() -> Int {
 }
 
 ///|
+/// The title the system shows for window `wid` of this run (0 the first; its title bar, the Dock's and the switcher's
+/// list), from now on. Nothing where the host has no title of a window.
+pub fn window_set_title(wid : Int, title : String) -> Unit {
+  current.val.window_set_title(wid, title)
+}
+
+///|
 /// The pointer's shape from now on: 0 the arrow, 1 a hand, 2 the text's I-beam, 3 resizing sideways, 4 up and down,
 /// 5 an open hand, 6 a closed hand, 7 a crosshair, 8 what cannot be done, 9 resizing from a top left or bottom right
 /// corner, 10 from a top right or bottom left one. Nothing where there is no pointer.
@@ -2377,10 +2436,25 @@ pub fn gpu_ms() -> Double {
 }
 
 ///|
+/// How many frames the app made were never drawn, each's place taken by a newer one while it waited for a drawing
+/// thread slower than the app's (Android's GL thread: FrameMail), since the run began (0: none, or a host that draws
+/// each frame on the app's own thread).
+pub fn frames_dropped() -> Int {
+  current.val.frames_dropped()
+}
+
+///|
 /// The CPU's time the whole process has had since it started, every thread's (the app's and what runs beside it: a
 /// core's, the system's for it), in ms (-1: not known on this host): a probe's (MBUI_PROBE) share of a CPU.
 pub fn cpu_ms() -> Double {
   current.val.cpu_ms()
+}
+
+///|
+/// The calling thread's CPU time in ms (-1: unsupported or fake clock): used by the journal to separate OS preemption
+/// from real CPU work.
+pub fn thread_cpu_ms() -> Double {
+  current.val.thread_cpu_ms()
 }
 
 ///|
@@ -2585,6 +2659,20 @@ pub fn perf_opens() -> Bool {
 /// cannot be (perf_opens). Asked off the thread that draws: nothing waits for the file manager.
 pub fn perf_open() -> Bool {
   current.val.perf_open(true)
+}
+
+///|
+/// Whether the device can show a file of its own where it is, in the system's file manager (reveal_file): macOS's
+/// Finder, Windows' Explorer, a Linux desktop's file manager; not a phone's nor the web's.
+pub fn reveals_files() -> Bool {
+  current.val.reveal_file("", false)
+}
+
+///|
+/// The file at `path` (on this device) shown chosen in its folder in the system's file manager (在访达中显示); false
+/// where it cannot be (reveals_files) or is not there.
+pub fn reveal_file(path : String) -> Bool {
+  path != "" && current.val.reveal_file(path, true)
 }
 
 ///|
@@ -3603,3 +3691,48 @@ fn st_av1_here() -> Int { current.val.st_av1_here() }
 
 ///|
 fn st_av1(id : Int, av1c : Bytes, w : Int, h : Int) -> Unit { current.val.st_av1(id, av1c, w, h) }
+
+///|
+impl Host with auto_launch(_) {
+  false
+}
+
+///|
+impl Host with set_auto_launch(_, _) {
+  false
+}
+
+///|
+impl Host with hotkey_set(_, _, _) {
+  false
+}
+
+///|
+impl Host with hotkey_clear(_, _) {
+  ()
+}
+
+///|
+/// Whether the app is registered to start automatically at user login.
+pub fn auto_launch() -> Bool {
+  current.val.auto_launch()
+}
+
+///|
+/// Enable or disable starting the app automatically at user login. Returns true on success.
+pub fn set_auto_launch(enabled : Bool) -> Bool {
+  current.val.set_auto_launch(enabled)
+}
+
+///|
+/// Register a desktop global hotkey (`accel`, e.g. "CmdOrCtrl+Shift+Space") under `id`.
+/// Triggered hotkeys arrive as host posts on channel `"mbui.hotkey"` with `{"id":"<id>"}`.
+pub fn hotkey_set(id : String, accel : String) -> Bool {
+  current.val.hotkey_set(id, accel)
+}
+
+///|
+/// Unregister a previously registered global hotkey by `id`.
+pub fn hotkey_clear(id : String) -> Unit {
+  current.val.hotkey_clear(id)
+}

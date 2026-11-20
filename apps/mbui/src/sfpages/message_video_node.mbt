@@ -26,6 +26,8 @@ fn message_video_node(
   h : () -> Double,
   corner? : Double = @sf.message_file_corner,
   flies_from? : (Double, Double, Double, Double)? = None,
+  fly? : SentFly = sent_fly_alone,
+  part? : String = "",
 ) -> Unit {
   let station = fn() { (place.station)() }
   let owner = fn() { owner_of(place.here(), a()) }
@@ -38,22 +40,24 @@ fn message_video_node(
   // (its capsule seen once it is here, where it flies here from the composer's tile: none of it on the way, coming in
   // over dur_ms from its landing, as the old page's video_item's marks; at once otherwise)
   let marks = @motion.Way::new(1.0)
-  // (on its way from the composer's tile till it lands: its still covering the box the way has)
-  let flying = @signals.signal(flies_from is Some(_))
-  parent.box(fn(f) {
+  let pressed = fn() {
+    if !going_up() {
+      open_file(place.here(), a(), at=at())
+    }
+  }
+  @sf.action_box_node(parent, fn() { @sf.t("web-main.file.play", args=[("name", a().name)]) }, fn(_) { pressed() }, fn(f) {
     @sf.style_node(f, fn() { video_frame.then(@ui.style(w=Fixed(w()), h=Fixed(h()))).then(frame_corner_node(corner)) })
     // (sent from here a moment ago: from where its tile stood in the composer, its still in its frame all the way, as a
-    // picture's flies: message_files_node's `from`, View::flies_in)
+    // picture's flies: message_files_node's `from`, View::flies_in, with the rest of what was sent (`fly`, its part `part`); its capsule coming
+    // in from the moment it lands, as its flight says (View::flying_now: as long as it goes))
     match flies_from {
       Some(from) => {
-        f.radius(Is(corner)).flies_in(sent_part_flight, fn(_) { Some(from) }, up_late=sent_up_late) |> ignore
+        fly.flies_in(f.radius(Is(corner)), part, fn(_) { Some(from) })
         marks.put(0.0)
-        marks.go(1.0, @motion.tween(@sf.dur_ms, ease=Out), at=f.cause_at() + @sfbase.flight_desk_ms)
-        f.at_moment(f.cause_at() + @sfbase.flight_desk_ms, fn() { flying.set(false) }) |> ignore
+        f.reacts(fn() { f.flying_now() }, fn(on) { if !on { marks.go(1.0, @motion.tween(@sf.dur_ms, ease=Out), at=f.cause_at()) } }, at_start=false)
       }
       None => ()
     }
-    f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.file.play", args=[("name", a().name)]))) })) |> ignore
     // (its name, which nothing over its picture says, whole by it while what it shows shows cut short: video_item's tip)
     @sf.tip_node(tips, f, fn() { a().name }, repeats=true) |> ignore
     // its still: what the viewer left, one sent from here, its station's (going up: the picture this device has)
@@ -93,41 +97,38 @@ fn message_video_node(
           items.push(x)
         }
       }
-      // (being downloaded to be saved, or going up: nothing to load or stop here)
-      if !going_up() && !flag(download_of(src, here.station, owner, name), "active") {
-        match keeping_of(src, here.station, owner, name) {
-          Some(_) as brought => {
-            let id = text(brought, "id")
-            items.push(Some(@sf.menu_item_of(@sf.t("web-main.file.stopLoading"), fn() { keeping_stop(src, id) }, icon="stop")))
-          }
-          None => {
-            let (station, size) = (here.station, a.size)
-            let from : Map[String, Json] = { "session": Json::string(here.session), "file": attachment_json(a, a.owner) }
-            match here.view.thread {
-              Some(n) => from["thread"] = Json::number(n)
-              None => ()
+      with_reveal(src, here, a, owner, fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        // (being downloaded to be saved, or going up: nothing to load or stop here)
+        if !going_up() && !flag(download_of(src, here.station, owner, name), "active") {
+          match keeping_of(src, here.station, owner, name) {
+            Some(_) as brought => {
+              let id = text(brought, "id")
+              items.push(Some(@sf.menu_item_of(@sf.t("web-main.file.stopLoading"), fn() { keeping_stop(src, id) }, icon="stop")))
             }
-            items.push(
-              Some(
-                @sf.menu_item_of(@sf.t("web-main.file.load"), fn() { fill_want(src, station, owner, name, size, Json::object(from)) }, icon="download"),
-              ),
-            )
+            None => {
+              let (station, size) = (here.station, a.size)
+              let from : Map[String, Json] = { "session": Json::string(here.session), "file": attachment_json(a, a.owner) }
+              match here.view.thread {
+                Some(n) => from["thread"] = Json::number(n)
+                None => ()
+              }
+              items.push(
+                Some(
+                  @sf.menu_item_of(@sf.t("web-main.file.load"), fn() { fill_want(src, station, owner, name, size, Json::object(from)) }, icon="download"),
+                ),
+              )
+            }
           }
         }
-      }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
-      held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+        held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      })
     }
-    @sf.menu_presses_node(
-      f,
-      fn() {
-        if !going_up() {
-          open_file(place.here(), a(), at=at())
-        }
-      },
-      open_menu,
-    )
+    @sf.menu_presses_node(f, pressed, open_menu)
     @sf.lift_node(
       f,
       fn() { false },
@@ -153,8 +154,6 @@ fn message_video_node(
     // at their rounded edge): the black round a letterboxed one (contained in its own proportions, in the middle) and
     // all of it while it is decoded
     let share = fn() { picture_share(a(), video_least) }
-    // (decoded for its box at its largest, as its data says it: a width given changing asks no other decode)
-    let (nw, nh, _) = @signals.untracked(fn() { image_box(a(), video_least) })
     f.box(fn(s) {
       s
       .width(By(fn() { Some(w()) }))
@@ -164,7 +163,9 @@ fn message_video_node(
         if k == "" || k == "!" {
           None
         } else {
-          // (decoded as large as it is drawn, reveal_px's: asked so by what draws it, as it comes to it)
+          // (decoded for its box at its largest, as its data says it now (one sent from here its size once the core's
+          // row takes it over): a width given changing asks no other decode; as large as it is drawn, reveal_px's)
+          let (nw, nh, _) = image_box(a(), video_least)
           let px = dmin(dmax(nw, nh) * s.pixel_scale(), image_px_most)
           Some((k, "", px.to_int()))
         }
@@ -179,11 +180,12 @@ fn message_video_node(
         }
       }))
       .image_covers(By(fn() { !letterbox() }))
-      // (a letterboxed one's own proportions in the middle, the black round it, else all of its box; on its way from a
-      // tile (flies_in) one not letterboxed covering the box the way has, never its box at rest scaled in it with the
-      // black under it)
+      // (a letterboxed one's own proportions in the middle, the black round it, else all of its box, covering it
+      // (image_covers: a still of other proportions than its box, one whose size was not sent in the unknown box, cut
+      // to its middle, never stretched to it); on its way from a tile (flies_in) one not letterboxed covering the box
+      // the way has, never its box at rest scaled in it with the black under it)
       .image_in(By(fn() {
-        guard letterbox() || !flying.get() else { return None }
+        guard letterbox() || !(flies_from is Some(_) && f.flying_now()) else { return None }
         let (w, h) = (w(), h())
         let (sw, sh) = share()
         let (pw, ph) = (w * sw, h * sh)

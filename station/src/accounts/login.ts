@@ -301,6 +301,8 @@ export class LoginManager {
       [command, args] = terminal;
     } else if (stage !== null) {
       env.HOME = stage;
+      // (Windows: its home is USERPROFILE's, HOME aside)
+      env.USERPROFILE = stage;
       // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
       // what it is, which `agyAnswer` answers).
       Object.assign(env, AGY_FILE_TOKENS);
@@ -369,12 +371,25 @@ export class LoginManager {
     }
     // The browser stand-ins must stay ahead of any Node bin added for the login command.
     if (foundEnv !== env) env = platform.prependPath(foundEnv, noBrowser) as Record<string, string>;
-    const r = await platform.runnableSoon(command, args, env);
-    if (this.jobs.get(id) !== running) {
-      await dropStage();
-      return { ...job, state: "cancelled" };
+    let child: ChildProcess;
+    try {
+      const r = await platform.runnableSoon(command, args, env);
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+      child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
+    } catch (e) {
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+      void dropStage();
+      running.exited = true;
+      const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+      this.finish(id, "failed", error);
+      return { ...job, state: "failed", error };
     }
-    const child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
     running.child = child;
     running.exited = false;
     // Its HOME goes with it, whatever its end (what it signed in is copied out before it is stopped).

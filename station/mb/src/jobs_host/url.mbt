@@ -111,36 +111,5 @@ pub fn resolve_url(reference : String, base : @cloud_net.Url) -> @cloud_net.Url?
 ///|
 /// `encodeURIComponent`.
 pub fn encode_uri_component(s : String) -> String {
-  encode_pairs(s)
-}
-
-///|
-fn encode_pairs(s : String) -> String {
-  let keep = (c : Int) => is_alpha_unit(c) ||
-    is_digit(c) ||
-    c == '-' ||
-    c == '_' ||
-    c == '.' ||
-    c == '!' ||
-    c == '~' ||
-    c == '*' ||
-    c == '\'' ||
-    c == '(' ||
-    c == ')'
-  let out = StringBuilder::new()
-  let hexd = "0123456789ABCDEF"
-  for ch in s {
-    let c = ch.to_int()
-    if c < 0x80 && keep(c) {
-      out.write_char(ch)
-    } else {
-      for b in @utf8.encode(String::from_array([ch])) {
-        let v = b.to_int()
-        out.write_char('%')
-        out.write_char(hexd.unsafe_get(v >> 4).unsafe_to_char())
-        out.write_char(hexd.unsafe_get(v & 15).unsafe_to_char())
-      }
-    }
-  }
-  out.to_string()
+  @url.encode_uri_component(s)
 }

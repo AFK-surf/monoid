@@ -203,17 +203,3 @@ let panel_screen_pages : Map[String, @sfbase.ScreenAt] = Map([])
 
 ///|
 let panel_terminal_pages : Map[String, @sfbase.TerminalAt] = Map([])
-
-///|
-fn station_tab_pane(_c : @ui.Ctx, _src : Source, _r : ChatRef, tab : String, own_bar? : @ui.Style? = None) -> Bool {
-  guard station_tab(tab) is Some((kind, _, _)) else { return false }
-  match kind {
-    // (a station's screen: made once as nodes in the panel, panel_node's side_screen_node, its own bar the panel's
-    // where it is alone there)
-    "screen" => ignore(own_bar)
-    // (a station's 文件, its page and the settings' 共享调试, made once as nodes in the panel: panel_node's
-    // side_files_node, side_station_node, side_adb_node)
-    _ => ()
-  }
-  true
-}

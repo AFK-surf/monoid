@@ -163,8 +163,9 @@ const REFUSED = ["request not allowed", "unsupported_country", "unsupported coun
 /// What a 403 is answered with when the provider's CDN firewall blocks the address it comes from (its IP's reputation:
 /// a datacenter's, a shared proxy's, whatever region): its page (Cloudflare's, HTML where an API answer was due).
 const BLOCK_PAGE = ["<html", "<!doctype html", "attention required", "just a moment", "cloudflare"];
-/// What they say when it is a limit: of rate, quota or usage.
-const LIMIT = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests"];
+/// What they say when it is a limit: of rate, quota or usage, or an API key's prepaid credits run out (Anthropic's
+/// "Credit balance is too low"): another account may well have room, so it is moved off as from a spent one.
+const LIMIT = ["rate limit", "rate_limit", "quota", "usage limit", "limit reached", "resource_exhausted", "too many requests", "credit balance"];
 /// What they say when it is the provider: the model has no room for anyone just now (whatever account asks).
 export const OVERLOADED = ["overloaded", "at capacity"];
 /// What they say when the conversation no longer fits the model.

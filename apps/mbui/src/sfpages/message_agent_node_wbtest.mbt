@@ -294,3 +294,112 @@ test "an agent's message with a card in its words' place draws none of its words
   assert_true(t.find("要一个 vault 里的东西") is None)
 }
 
+
+///|
+/// A plan of a message held out of a chat's list (chat_body_node's held keys), its moments said; what it flies from and
+/// its pictures none.
+fn ag_held_plan() -> AgentOutPlan {
+  { came: 0.0, folds: true, float_at: 170.0, float_ms: 440.0, spit_end: 990.0, from: fn() { (0.0, 0.0, 0.0, 0.0) }, face_at: Ref(None), av: Ref(None), has_face: true }
+}
+
+///|
+test "a chat's list's held keys: an answer held out (its slices with it), the line it ends kept under the row it stood under, or at the end where that is gone; nothing held, the keys as given" {
+  let ks = ["m:1", "m:2", "m:3", "act:a"]
+  let held : Map[String, AgentOutPlan] = Map([])
+  let lingering : Map[String, (ChatBodyRow, String?)] = Map([])
+  assert_true(physical_equal(chat_keys_held(ks, held, lingering), ks), msg="nothing held: the keys as given")
+  held["m:3"] = ag_held_plan()
+  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
+  // (its turn said over: the line gone from the core's rows, kept under the row it stood under)
+  let row : ChatBodyRow = { entry: Entry::Newer, gap: NoGap, slices: 1 }
+  lingering["act:a"] = (row, chat_key_before(ks, "act:a", fn(k) { held.contains(k) }))
+  assert_eq(lingering.get("act:a").map(fn(l) { l.1 }), Some(Some("m:2")))
+  assert_eq(chat_keys_held(["m:1", "m:2", "m:3", "o:x"], held, lingering), ["m:1", "m:2", "act:a", "o:x"])
+  assert_eq(chat_keys_held(["m:1", "m:3"], held, { "act:a": (row, Some("gone")) }), ["m:1", "act:a"])
+  // (still in the core's rows: as they have it)
+  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
+}
+
+///|
+/// An agent's message placing its picture shot.png (ag_tree's "placed" but of a picture), `w` × `h` as its data says.
+fn ag_placed_picture(w : Double, h : Double) -> Message {
+  let s = fn(x : String) { Json::string(x) }
+  let p = fn(xs : Array[Json]) { Json::array([s("p"), Json::array(xs)]) }
+  let a = Json::array([s("a"), Json::array([s("shot.png")]), Json::object({ "href": s("shot.png"), "bare": Json::boolean(false) })])
+  @sfbase.message_of({
+    "seq": 9,
+    "thread": 7,
+    "ts": "ts9",
+    "authorKind": "agent",
+    "author": "codex",
+    "text": "截图：",
+    "md": Json::array([p([s("截图：")]), p([a])]),
+    "by": { "name": "Codex", "agent": "s-c1", "maker": { "id": "openai" }, "runtime": "codex" },
+    "placed": ["shot.png"],
+    "attachments": [
+      {
+        "name": "shot.png",
+        "path": "/w/uploads/shot.png",
+        "size": 12345.0,
+        "owner": "s-c1",
+        "width": Json::number(w),
+        "height": Json::number(h),
+      },
+    ],
+    "createdAt": 9,
+    "time": @sffixture.ago("1 分钟前", "2026-11-11 21:07"),
+  })
+}
+
+///|
+test "a picture an agent places in its words: told another size, its box follows it, not the size it was made with" {
+  let m = @signals.signal(ag_placed_picture(800.0, 600.0))
+  // (its station's picture of it, a PNG's head: what its size is read from; handed over each time it is asked for, as
+  // the fixture's are: what holds it is emptied as a Tester starts)
+  let src : Source = {
+    ..files_src(),
+    file: fn(_, _, _) {
+      match cmp_here_bytes(800, 600) {
+        Ok((_, Some(b))) => @ui.add_image("mem:ag/shot", b)
+        _ => ()
+      }
+      "mem:ag/shot"
+    },
+  }
+  let t = ag_new_row(720.0, fn() { m.get() }, src~, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  let before = t.drawn_images()
+  assert_true(before.length() > 0, msg="\{Repr(before)}")
+  assert_true((before[0][3] / before[0][2] - 600.0 / 800.0).abs() < 0.02, msg="\{Repr(before)}")
+  // (the same file told taller than wide: its box as its data says it now)
+  m.set(ag_placed_picture(600.0, 800.0))
+  t.run_for(@ui.move_most_ms)
+  let after = t.drawn_images()
+  assert_true(after.length() > 0, msg="\{Repr(after)}")
+  let (bw, bh, _) = image_box(attachment_of({ "name": "shot.png", "path": "/w/uploads/shot.png", "width": 600.0, "height": 800.0 }), image_least, min_side=image_min_side)
+  assert_true((after[0][3] - after[0][2] * bh / bw).abs() < 0.5, msg="\{Repr(after)}")
+}
+
+///|
+test "a chat's agents' messages coming out one at a time: another agent's after the last is out, folding its line as that one is; the same agent's as it plans it; none before it, at once" {
+  let q = @motion.SerialQueue::new()
+  // (none out: from now)
+  assert_eq(q.next_at("a", 100.0, lead=@sfbase.Pose::Fold.ms()), 100.0)
+  q.commit("a", 990.0)
+  // (another agent's come at 200 while a's is out till 990: its line folds from 990 less a fold, out at 990)
+  let lead = @sfbase.Pose::Fold.ms()
+  assert_eq(q.next_at("b", 200.0, lead~), 990.0 - lead)
+  // (a's own: as its own plan has it, dropping on from its last)
+  assert_eq(q.next_at("a", 200.0, lead~), 200.0)
+  // (after it is out: from then)
+  assert_eq(q.next_at("b", 1200.0, lead~), 1200.0)
+}
+
+///|
+test "an agent's message with no line of its at work before it: its picture there as it comes, its head sliding out and its words revealed from then, nothing folding or flying" {
+  let p = agent_out_plan_faceless(500.0)
+  assert_eq((p.folds, p.has_face, p.float_at, p.float_ms), (false, false, 500.0, 0.0))
+  assert_eq(p.spit_end, 500.0 + @sfbase.Pose::Spit.ms())
+  // (its words revealed from that moment, varied by its seq)
+  assert_eq(agent_out_reveal(p, { ..ag_msg("links"), seq: 42.0 }), (500.0, 42))
+}

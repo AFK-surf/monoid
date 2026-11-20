@@ -66,7 +66,25 @@ pub fn hover_ground_node(
   let src = by.unwrap_or(target)
   let lit_fn = lit.unwrap_or(fn() { lit_node(src) })
   let active = fn() { on() && (lit_fn() || extra()) }
-  target.ground_over(By(fn() { if active() { color() } else { 0L } })) |> ignore
+  let fade = @motion.hover_fade(target, active, duration_ms=dur_ms, instant_off=fn() { @ui.pointing() is Finger })
+  target.ground_over(By(fn() {
+    // (read as it was before the fade, untracked: View::ground_over still learns it follows the hand and the focus,
+    // its corners' and focus's checks, with no further subscription)
+    @signals.untracked(active) |> ignore
+    let p = fade()
+    if p <= 0.0 {
+      0L
+    } else {
+      let c = color()
+      if p >= 1.0 || c == 0L {
+        c
+      } else {
+        let a = ((c & 0xFFL).to_double() * p).round().to_int64()
+        (c & 0xFFFFFF00L) | a
+      }
+    }
+  }))
+  |> ignore
 }
 
 ///|
@@ -174,6 +192,77 @@ pub fn rippled_node(
   loc~ : SourceLoc,
 ) -> Unit {
   pressed_node(loc~, v, press, Is(corner), Button, label)
+}
+
+///|
+/// A search whose list is a page's list of its own (⌘K's, the search page's): mbui's headless combobox
+/// (`@headless.combobox`) in the node that holds its field, its options made by `ripple_option_node` in that list's
+/// rows, its list by `SearchCombo::list_node`.
+pub struct SearchCombo {
+  priv cb : @headless.Combobox[String]
+}
+
+///|
+/// Node `v` (what holds a search's field) the combobox of that search (`@headless.combobox` in `v` itself), called
+/// `label`: `keys` its options shown now, in order, `active` the one the keys are on (the caller's) and `activate` told
+/// one to move them to, by the keys or a press; `choose` told the one chosen (a press on one, just made active; Enter on
+/// the active one where the keymap gives Enter to it: `combobox_bindings`); `chosen` the one read out selected; `moved`
+/// told the one the keys made active (what the list brings into sight). ↓ and ↑ go no further than the ends. Its
+/// combobox.
+#callsite(autofill(loc))
+pub fn search_combo_node(
+  v : @view.View,
+  label : () -> String,
+  keys : () -> Array[String],
+  active : () -> String?,
+  activate : (String?) -> Unit,
+  choose : (String) -> Unit,
+  chosen? : () -> String? = fn() { None },
+  moved? : (String) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> SearchCombo {
+  let made : Ref[@headless.Combobox[String]?] = Ref(None)
+  @headless.combobox(
+    v,
+    label,
+    keys,
+    active,
+    activate,
+    choose,
+    fn(_, cb) { made.val = Some(cb) },
+    chosen~,
+    wraps=false,
+    moved~,
+    in_node=true,
+    made_for=loc,
+  )
+  |> ignore
+  { cb: made.val.unwrap() }
+}
+
+///|
+/// Node `l` (the search's list, what scrolls its lines) the combobox's listbox, called as the combobox is.
+pub fn SearchCombo::list_node(self : SearchCombo, l : @view.View) -> Unit {
+  self.cb.listbox(l, fn(_) {  }, in_node=true) |> ignore
+}
+
+///|
+/// Node `v` an option of search `combo` (`@headless.Combobox::option` in its node, read out an option called
+/// `label()`, selected as the combobox says; taking no focus), its key `key()`: rippling round its `corner` as a finger
+/// or the pointer presses it, as rippled_node's, that press the option's (made active and chosen).
+#callsite(autofill(loc))
+pub fn ripple_option_node(
+  v : @view.View,
+  combo : SearchCombo,
+  key : () -> String,
+  label : () -> String,
+  corner : Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  combo.cb.option(v, key, label, in_node=true, made_for=loc, fn(o, opt) {
+    rippled_look(loc~, o, Is(corner), fn() { opt.press() })
+  })
+  |> ignore
 }
 
 ///|
@@ -286,6 +375,8 @@ pub fn page_node(
   near_foot? : (Double, () -> Bool, () -> Unit),
   small? : () -> String = fn() { "" },
   back_as? : () -> String = fn() { "" },
+  reused? : (String) -> Int?,
+  make_reused? : (@view.View, Int, () -> String) -> Unit,
 ) -> Unit {
   // (what it says of itself to the frame's bar that names it, as that changes, whole: the frame's own to keep)
   match said {
@@ -318,7 +409,7 @@ pub fn page_node(
     None => TipLayer::new(fn() { tips_at.val })
   }
   v.pick(look, fn(p, l) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false }) |> ignore
+    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false, card: false }) |> ignore
     // (where its list is scrolled to, kept by whoever holds the page where it says (a part of a page a page each,
     // each as it was left), else the page's own; the same through its arrangements)
     let scroll = match scroll {
@@ -326,8 +417,10 @@ pub fn page_node(
       None => own_scroll
     }
     match l {
-      Narrow => narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, near_foot, small)
-      Wide => wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, near_foot)
+      Narrow =>
+        narrow_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, head, near_foot, small, reused, make_reused)
+      Wide =>
+        wide_page_node(p, title, blocks, block, on_back, frame, lead, actions, scroll, about, tips, head, near_foot, reused, make_reused)
     }
   })
   // (its own layer only where it has what is for by a mark to say: nothing over a page that has none)
@@ -341,11 +434,14 @@ pub fn page_node(
 
 ///|
 /// Where a part of a page made once is (page_node's, lent to all of it): how the page is laid out, whether it is in a
-/// section of a wide page (wide_alone's), and whether on a list's card (its rows a wide list's: wide_in_list's).
+/// section of a wide page (wide_alone's), whether on a list's card (its rows a wide list's: wide_in_list's), and
+/// whether on a card of words (a wide group's card, page_card_node's: its rows its padding in, a control at their end
+/// held out of its corner where that is rounder).
 priv struct PartAt {
   look : Look
   section : Bool
   list : Bool
+  card : Bool
 }
 
 ///|
@@ -368,14 +464,14 @@ fn in_pane_node(v : @view.View) -> Bool {
 ///|
 /// Where node `v` of a page made once is (page_node's: lent it); narrow, in nothing, outside one.
 fn part_of(v : @view.View) -> PartAt {
-  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false })
+  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false, card: false })
 }
 
 ///|
 /// What is made in node `v` laid out as a page laid out `look` lays out its parts (what a frame puts by a page made once,
 /// as its page is: a bar's actions), in no section or list of it.
 pub fn look_lent(v : @view.View, look : Look) -> Unit {
-  v.lends(part_at, { look, section: false, list: false }) |> ignore
+  v.lends(part_at, { look, section: false, list: false, card: false }) |> ignore
 }
 
 ///|
@@ -446,6 +542,8 @@ fn narrow_page_node(
   head : ((@view.View) -> Unit)?,
   near_foot : (Double, () -> Bool, () -> Unit)?,
   small : () -> String,
+  reused : ((String) -> Int?)?,
+  make_reused : ((@view.View, Int, () -> String) -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
   // (a head of its own under back: back's line its first, what the page does at that line's end, own_head's)
@@ -507,6 +605,32 @@ fn narrow_page_node(
       goes=fn(k) { !other.val && k is Block(_) },
       near_foot?,
       place~,
+      // (a block of a kind `reused` gives put by as it no more shows and taken by the next of its kind, made in the
+      // page's room as `block` makes one (below), its kind and its key as it is now given `make_reused`)
+      reused?=reused.map(fn(r) {
+        fn(item) {
+          match item {
+            Block(k) => r(k)
+            _ => None
+          }
+        }
+      }),
+      make_reused?=make_reused.map(fn(m) {
+        fn(s, item) {
+          with_look(Narrow, fn() {
+            let kind = s.reused_kind().unwrap_or(0)
+            s.grow(Is(1.0)) |> ignore
+            page_block(s, fn(room) {
+              m(room, kind, fn() {
+                match item() {
+                  Block(k) => k
+                  _ => ""
+                }
+              })
+            })
+          })
+        }
+      }),
       fn(s, item) {
       with_look(Narrow, fn() {
         match item {
@@ -803,16 +927,28 @@ let heading_lead_gap : Double = 6.0
 /// its middle, so a control there makes the line no taller than its words do.
 #callsite(autofill(loc))
 pub fn line_end_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  line_end_while_node(loc~, parent, fn() { true }, make)
+}
+
+///|
+/// line_end_node's, as high as its line only while `on` says so (a switch row's note under its title: the switch on
+/// the title's first line); else as high as what it holds, so a row of one line is as tall as its control, lined up
+/// in its middle as it was.
+#callsite(autofill(loc))
+fn line_end_while_node(parent : @view.View, on : () -> Bool, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(l) {
     l
     .row(Is(true))
     .gap(Is(12.0))
     .lines_up(Is(Some(Middle)))
     .height(By(fn() {
+      guard on() else { return None }
       let th = @ui.tree_theme()
-      let line = match look_node(l) {
-        Narrow => th.text_size(Body).1
-        Wide => th.leading(L6).unwrap_or(th.text_size(Ui).1)
+      // (a title's line: the body's narrow or on touch, where a wide row's title is the body's too; else the list's)
+      let line = if theme().touch || look_node(l) is Narrow {
+        th.text_size(Body).1
+      } else {
+        th.leading(L6).unwrap_or(th.text_size(Ui).1)
       }
       Some(node_sp(l, line))
     }))
@@ -847,7 +983,8 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
   if parent.lent(panel_in_lent) is Some(p) && !p.small {
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
-      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide }) |> ignore
+      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
+      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
       rows(k)
     })
     |> ignore
@@ -869,6 +1006,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
+      corner_card_node(card, fn() { corner }, inset=fn() { pad })
       rows(card)
     })
     |> ignore
@@ -891,7 +1029,7 @@ pub(all) enum RowLead {
 
 ///|
 /// What a row says after its title of whose or what it is (a tag: link_row_node's `title_after`), `words` as it says
-/// it now: the meta's size, subtle, on one line (memoryTag).
+/// it now: the meta's size, subtle, on one line, on no ground (memoryTag): its words alone, nothing round them.
 #callsite(autofill(loc))
 pub fn row_tag_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
   words_node(loc~, parent, words, fn() { row_tag }) |> ignore
@@ -903,7 +1041,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 
 ///|
 /// A row on a group's card that goes somewhere (link_row's, narrow, in a card): `lead` before its title (`strong`
-/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, a red dot before it
+/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, in amber where
+/// `value_warn`: soon not as it should be, a web page's days left; a red dot before it
 /// where `value_dot`) and a chevron (none where not `chevron`; an arrow out where it goes `out` of the app); `note` under
 /// its title, a line of its own as wide as its words, its end then on its first line, its lead across that line's
 /// middle; `below` under that while `below_open` says it is any of the way open (a room opening on it, its row growing
@@ -938,6 +1077,7 @@ pub fn link_row_node(
   press : () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -970,6 +1110,7 @@ pub fn link_row_node(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -979,6 +1120,7 @@ pub fn link_row_node(
     fn(_) { press },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1011,6 +1153,7 @@ pub fn link_row_node(
     chevron_room~,
     lines_from_lead~,
     title_masked?,
+    busy?,
   )
 }
 
@@ -1026,6 +1169,7 @@ pub fn link_row_opens_node(
   opens : (@view.View) -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1065,6 +1209,7 @@ pub fn link_row_opens_node(
     fn(row) { fn() { opens(row) } },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1107,6 +1252,7 @@ fn link_row_made(
   pressed_by : (@view.View) -> () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1139,8 +1285,15 @@ fn link_row_made(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (`busy`: a spinner after what it says where nothing else is there, pressed none, lit none)
+  let off = busy.unwrap_or(fn() { false })
+  let (tail, tail_shown) = match (busy, tail) {
+    (Some(b), None) => (Some(fn(s : @view.View) { spinner_node(s, size=link_row_spin) |> ignore }), b)
+    _ => (tail, tail_shown)
+  }
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
   let acts = acts || adds
   let lead = if adds { LeadIcon("plus") } else { lead }
@@ -1163,7 +1316,10 @@ fn link_row_made(
   }
   let ends = goes && (out || (chevron && !acts && control is None))
   // (what it says, its note: in the link's ink, in amber, where it says so)
-  let value_look = fn(base : @ui.TextStyle) { if value_lit { base.then(lit_words) } else { base } }
+  let value_look = fn(base : @ui.TextStyle) {
+    let lit = if value_lit { base.then(lit_words) } else { base }
+    if value_warn() { lit.then(lacking) } else { lit }
+  }
   let note_look = fn(base : @ui.TextStyle) { if lacks { base.then(lacking) } else { base } }
   if look_node(parent) is Wide {
     // (its note as a wide page says it, where it says it otherwise: `wide_note`)
@@ -1180,7 +1336,7 @@ fn link_row_made(
       parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead,
       face || by_side, by_side,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?, busy=off,
     )
     return
   }
@@ -1215,8 +1371,14 @@ fn link_row_made(
     .lines_up(By(fn() { Some(if under() && !(lead is LeadTile(_)) && !face { Start } else { Middle }) }))
     |> ignore
     if goes {
-      hover_ground_node(r)
-      pressed_node(r, pressed_by(r), Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      hover_ground_node(r, on=fn() { !off() })
+      // (busy: pressed none)
+      let pressed = pressed_by(r)
+      pressed_node(r, fn() { if !off() { pressed() } }, Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      // (bound only where it can be busy: every other row's press as pressed_node's, nothing more bound)
+      if busy is Some(_) {
+        r.presses(By(fn() { !off() })).focusable(By(fn() { !off() })) |> ignore
+      }
       row_folds_said(r, title, folds)
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as that line at least, across its
@@ -1321,7 +1483,7 @@ fn link_row_made(
             |> ignore
             tv.show(fn() { value() != "" }, fn(said) {
               said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-              said.show(value_dot, fn(d) { status_dot_node(d) })
+              said.show(value_dot, fn(d) { state_dot_node(d, fn() { "error" }, in_node=true) })
               if value_cut || value_wraps {
                 said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               }
@@ -1661,20 +1823,8 @@ pub fn row_lead_mark_node(parent : @view.View, name : String, color? : () -> Int
 }
 
 ///|
-/// A red dot (status_dot's "error", as a node): something there is not right though nothing is wrong to say.
-pub fn status_dot_node(d : @view.View) -> Unit {
-  d
-  .width(Is(Some(status_dot_side)))
-  .height(Is(Some(status_dot_side)))
-  // (round as a pill is said to be, Full: as round as it can be)
-  .radius(Is(1.0e6))
-  .ground(By(fn() { theme().p.red }))
-  |> ignore
-}
-
-///|
-/// status_dot_box's side (dot_size).
-let status_dot_side : Double = 7.0
+/// A busy link row's spinner (link_row_node's `busy`): 14.
+let link_row_spin : Double = 14.0
 
 ///|
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`
@@ -1750,7 +1900,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
+          @ui.blend(track_glass_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1777,7 +1927,7 @@ pub fn switch_node(
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
               @motion.velocity_capsule(thumb_w(), d(), speed * travel() * calm, 0.0)
             }))
-            .alpha(By(fn() { if lens() > 0.0 { 0.0 } else { 1.0 } }))
+            .alpha(By(fn() { 1.0 - dclamp(lens(), 0.0, 1.0) }))
             |> ignore
           })
           |> ignore
@@ -1786,20 +1936,26 @@ pub fn switch_node(
         track.show(fn() { lens() > 0.0 }, fn(o) {
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(l) {
-            let lens_wh = fn() {
-              (thumb_w() * scale_x.shown(l), d() * scale_y.shown(l))
-            }
             l
-            .width(By(fn() { Some(lens_wh().0) }))
-            .height(By(fn() { Some(lens_wh().1) }))
-            .radius(By(fn() { lens_wh().1 / 2.0 }))
-            .glass(By(fn() { Some(backdrop_toggle(lens())) }))
+            .width(By(fn() { Some(thumb_w()) }))
+            .height(By(fn() { Some(d()) }))
+            .radius(By(fn() { d() / 2.0 }))
+            .glass(By(fn() { Some(glass_toggle_lens(lens())) }))
+            .alpha(By(fn() { dclamp(lens(), 0.0, 1.0) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
-            .offset(By(fn() {
-              let (lw, lh) = lens_wh()
-              let (_, h) = size()
-              let mid = switch_in + thumb_w() / 2.0 + travel() * k()
-              (mid - lw / 2.0, (h - lh) / 2.0)
+            .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            .ground_drawn(By(fn() {
+              let w = thumb_w()
+              let h = d()
+              let lw = w * scale_x.shown(l)
+              let lh = h * scale_y.shown(l)
+              {
+                dx: (w - lw) / 2.0,
+                dy: (h - lh) / 2.0,
+                dw: lw - w,
+                dh: lh - h,
+                corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+              }
             }))
             |> ignore
           })
@@ -1834,7 +1990,8 @@ let switch_disabled_alpha : Double = 0.5
 
 ///|
 /// A row on a group's card that turns something on or off (switch_row's; narrow, in a card: its title, `note` quieter
-/// under it, its switch at its end across their middle; wide: wide_control_row_node's); the switch alone answers. `on`,
+/// under it, its switch at its end on the title's line where there is a note, else in the row's middle; wide:
+/// wide_control_row_node's, the same); the switch alone answers. `on`,
 /// `turn`: switch_node's. `in_words`: on a page's card of words (page_card_node), where narrow it is a row of its words
 /// (16 between them and the switch), not a group's row. `busy`: what it set is on its way (switch_row's: a spinner
 /// before its switch, not turned again meanwhile).
@@ -1855,38 +2012,61 @@ pub fn switch_row_node(
     r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
     switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
   }
+  // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
+  // row's middle as it was)
+  let noted = fn() { note() != "" }
   if look_node(parent) is Wide {
     // (among a card's words, its title as strong as a setting's: switch_row's wide)
     if in_words {
-      wide_control_row_node(parent, title, note, lead, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }))
+      wide_control_row_node(
+        parent,
+        title,
+        note,
+        lead,
+        control,
+        looks=(fn() { setting_title() }, fn() { theme().rows.note }),
+        first_line=true,
+        first_line_while=noted,
+      )
     } else {
-      wide_control_row_node(parent, title, note, lead, control)
+      wide_control_row_node(parent, title, note, lead, control, first_line=true, first_line_while=noted)
     }
     return
   }
   // (narrow, among a card's words: a row of words with its switch, no row's ground or room of its own, switch_row's
   // in_words)
   if in_words {
-    wide_control_row_node(parent, title, note, lead, control, looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }))
+    wide_control_row_node(
+      parent,
+      title,
+      note,
+      lead,
+      control,
+      looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }),
+      first_line=true,
+      first_line_while=noted,
+    )
     return
   }
   parent.box(made_for=loc, fn(r) {
     r
     .row(Is(true))
     .gap(Is(12.0))
-    .padding(Is((text_in, text_in, text_in, text_in)))
+    // (at its end as far in as holds a switch on its title's line out of the row's and the card's corners, every
+    // switch of a card at one edge)
+    .padding(Is((text_in, text_in, dmax(text_in, group_corner - list_pad), text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .min_height(By(fn() { Some(theme().items.least) }))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
     |> ignore
     r.box(fn(words) {
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+      words.show(noted, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
     })
     |> ignore
-    control(r)
+    line_end_while_node(r, noted, control)
   })
   |> ignore
 }
@@ -1926,7 +2106,7 @@ pub fn block_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : Sourc
   let narrow = look_node(parent) is Narrow
   let listed = !narrow && part_of(parent).list
   let room = if narrow { (text_in, text_in, text_in, text_in) } else if listed {
-    (text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)
+    (text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)
   } else {
     (0.0, 0.0, 0.0, 0.0)
   }
@@ -2001,16 +2181,7 @@ pub fn page_note_node(
 /// for is said (pg_lead_box: 12 in, 10 under, the secondary's words); wide, as it is, the UI's muted (up_said's).
 #callsite(autofill(loc))
 pub fn page_none_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
-  parent.box(made_for=loc, fn(n) {
-    match look_node(n) {
-      Narrow => {
-        n.padding(Is((pg_lead_x, 0.0, pg_lead_x, pg_lead_foot))) |> ignore
-        words_node(n, words, fn() { pg_lead }) |> ignore
-      }
-      Wide => words_node(n, words, fn() { desk_muted }) |> ignore
-    }
-  })
-  |> ignore
+  none_said_node(loc~, parent, words, fn() { pg_lead }, pg_lead_x, pg_lead_foot)
 }
 
 ///|
@@ -2035,6 +2206,7 @@ pub fn page_choice_node(
   chosen : () -> Int,
   choose : (Int) -> Unit,
   item_w? : Double = 0.0,
+  thumb? : SegThumb,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -2062,7 +2234,7 @@ pub fn page_choice_node(
   parent.box(fn(b) {
     b.padding(Is((0.0, 0.0, 0.0, pg_choice_foot))) |> ignore
     // (a narrow page's: Seg filling the page's room, as segmented's on a narrow page; `item_w` a wide page's alone)
-    seg_fill_node(b, labels, chosen, choose) |> ignore
+    seg_fill_node(b, labels, chosen, choose, thumb?) |> ignore
   })
   |> ignore
 }
@@ -2129,6 +2301,7 @@ pub fn page_card_node(
   layered? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
+  let at = part_of(parent)
   let card = fn(v : @view.View) {
     v.box(fn(k) {
       k
@@ -2136,12 +2309,12 @@ pub fn page_card_node(
       .gap(Is(page_card_gap))
       .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
+      .lends(part_at, { ..at, list: false, card: true })
       |> ignore
       body(k)
     })
     |> ignore
   }
-  let at = part_of(parent)
   if layered || (at.look is Wide && at.section) {
     card(parent)
   } else {
@@ -2258,7 +2431,7 @@ pub fn round_key_node(
   }
   match opener {
     Some(o) =>
-      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { press() }, fn(k, d) {
+      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { @view.transition(press) }, fn(k, d) {
         look(k, fn() { d.press() })
       })
       |> ignore
@@ -2284,7 +2457,8 @@ pub fn disc_key_node(
   inside : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  parent.box(made_for=loc, fn(k) {
+  // (the headless button's, its ripple round_key_node's: rippled_look)
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(k, b) {
     k
     .width(Is(Some(side)))
     .height(Is(Some(side)))
@@ -2293,7 +2467,7 @@ pub fn disc_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    pressed_node(k, press, Is(side / 2.0), Button, label)
+    rippled_look(loc~, k, Is(side / 2.0), fn() { b.press() })
     inside(k)
   })
   |> ignore
@@ -2409,6 +2583,55 @@ pub fn first_line_node(
 }
 
 ///|
+/// How far down from the top of a row aligned at `Start` a line of `own` (`own_leading`, `own_weight`) sits to share
+/// the first-line baseline of `primary` (`leading`, `weight`) in `v`'s tree (followed across theme, words_scale and
+/// `set_web_lines` / `words_redone`).
+pub fn baseline_drop(
+  v : @view.View,
+  primary : @ui.TextSize,
+  own : @ui.TextSize,
+  leading? : @ui.Leading,
+  own_leading? : @ui.Leading,
+  weight? : Int = 400,
+  own_weight? : Int = 400,
+) -> Double {
+  v.words_redone() |> ignore
+  let th = @ui.tree_theme()
+  let (p_sz, p_ln0) = th.text_size(primary)
+  let p_ln = match leading {
+    Some(l) => th.leading(l).unwrap_or(p_ln0)
+    None => p_ln0
+  }
+  let (o_sz, o_ln0) = th.text_size(own)
+  let o_ln = match own_leading {
+    Some(l) => th.leading(l).unwrap_or(o_ln0)
+    None => o_ln0
+  }
+  let p_base = @ui.line_baseline(node_sp(v, p_ln), size=node_sp(v, p_sz), weight~)
+  let o_base = @ui.line_baseline(node_sp(v, o_ln), size=node_sp(v, o_sz), weight=own_weight)
+  dmax(0.0, p_base - o_base)
+}
+
+///|
+/// Node `v` (in a row with `lines_up(Is(Some(Start)))` / `align=AStart`) dropped by `baseline_drop` so its first line
+/// of `own` shares the baseline of `primary`'s first line, even when `primary` wraps to multiple lines.
+#callsite(autofill(loc))
+pub fn on_baseline(
+  v : @view.View,
+  primary : @ui.TextSize,
+  own : @ui.TextSize,
+  leading? : @ui.Leading,
+  own_leading? : @ui.Leading,
+  weight? : Int = 400,
+  own_weight? : Int = 400,
+  loc~ : SourceLoc,
+) -> @view.View {
+  v.margin(loc~, By(fn() {
+    (0.0, baseline_drop(v, primary, own, leading?, own_leading?, weight~, own_weight~), 0.0, 0.0)
+  }))
+}
+
+///|
 /// A list's keys `now` as read, `was` the ones read last kept anew, `other` whether they are another set in place of
 /// the one before (some of these new and some of those gone in one change: another part or tab of the page, what it
 /// shows as it is answered in place of what it showed waiting or empty, another folder): there at once, not each block
@@ -2436,4 +2659,58 @@ pub fn[K : Hash + Eq] pg_blocks_read(was : Ref[Set[K]], other : Ref[Bool], now :
   }
   was.val = seen
   now
+}
+
+///|
+/// A column of rows inside a list card (`group_node`), spaced as the card's rows are on either screen (`desk_list_gap`
+/// wide, none narrow).
+#callsite(autofill(loc))
+pub fn list_rows_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(r) {
+    if wide {
+      r.gap(Is(desk_list_gap)) |> ignore
+    }
+    make(r)
+  })
+  |> ignore
+}
+
+///|
+/// The leading face of a list card's row that holds its own gesture or trailing control beside it (`bars.mbt`):
+/// `mark` (20 wide, 24 high) before `title`, laid out with the room and words of the card's other rows on either
+/// screen (`link_row_node` narrow, `wide_link_row_node` wide); `make` given the face node itself.
+#callsite(autofill(loc))
+pub fn list_row_face_node(
+  parent : @view.View,
+  mark : (@view.View) -> Unit,
+  title : () -> String,
+  make? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  let over = if wide { wide_row_over } else { text_in }
+  parent.box(made_for=loc, fn(face) {
+    face
+    .row(Is(true))
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .padding(Is((text_in, over, 12.0, over)))
+    .gap(Is(12.0))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
+    make(face)
+    face.box(fn(m) {
+      m.width(Is(Some(20.0))).height(Is(Some(24.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      mark(m)
+    })
+    |> ignore
+    face.box(fn(w) {
+      w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      words_node(w, title, fn() { if wide { desk_list_title } else { pg_row_title } }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }

@@ -367,3 +367,47 @@ test "中屏: a chat opened from the side panel or the sidebar, the page asked o
   assert_eq(over_brought(true), (panel, panel, panel, page))
   assert_eq(over_brought(false), (side, side, side, page))
 }
+
+///|
+test "中屏: push_over 压入子页与返回期间底层页 0.28x 视差、压暗连续且无跳变收尾" {
+  new_run()
+  let src = over_source(@signals.signal(true))
+  let (t, tree, t0) = over_tape(src)
+  let base_x0 = over_x(t, "整理发布清单")
+  let page_w = @sfdesk.tape_along_at(t.time()).1
+  assert_true(base_x0 > 0.0 && page_w > 300.0, msg="rest base_x0=\{base_x0}, page_w=\{page_w}")
+  let dur = @ui.move_ms(page_w)
+  t.advance(t0 - t.time())
+  tree.event(t0, fn() { @sfbase.open_page_over(Chat(over_chat)) })
+  t.frame_at(t0 + dur * 0.4)
+  let top_x = over_x(t, over_chat.title)
+  let under_x = over_x(t, "整理发布清单")
+  assert_true(top_x > base_x0 && top_x < base_x0 + page_w, msg="mid push top_x=\{top_x}, base_x0=\{base_x0}")
+  assert_true(under_x < base_x0, msg="under page should parallax left: base_x0=\{base_x0}, under_x=\{under_x}")
+  let moved_top = base_x0 + page_w - top_x
+  let ratio = (base_x0 - under_x) / moved_top
+  assert_true(ratio > 0.2 && ratio < 0.36, msg="parallax ratio=\{ratio}, moved_top=\{moved_top}, under_dx=\{base_x0 - under_x}")
+  // (black scrim over covered page during slide)
+  let scrims_push = t
+    .drawn_rects()
+    .filter(fn(r) { r.2 >= page_w * 0.8 && r.3 >= 700.0 && (r.4 >> 8) == 0L && (r.4 & 0xFFL) > 0L })
+  assert_true(!scrims_push.is_empty(), msg="expected black scrim during tape push_over")
+  t.run_for(@ui.move_most_ms)
+  let settled_top = over_x(t, over_chat.title)
+  // (pushed-over chat's top bar has a leading back button before its title, so settled_top is ~40pt right of base_x0)
+  assert_true(settled_top >= base_x0 && settled_top <= base_x0 + 60.0, msg="settled top=\{settled_top}, base=\{base_x0}")
+  let scrims_rest = t
+    .drawn_rects()
+    .filter(fn(r) { r.2 >= page_w * 0.8 && r.3 >= 700.0 && (r.4 >> 8) == 0L && (r.4 & 0xFFL) > 0L })
+  assert_eq(scrims_rest.length(), 0)
+  // (pop back: under page returns smoothly to base_x0)
+  let t1 = t.time() + between_frames_ms
+  t.advance(t1 - t.time())
+  t.back_raw(2, 0.0, t1)
+  t.frame_at(t1 + dur * 0.4)
+  let pop_under_x = over_x(t, "整理发布清单")
+  assert_true(pop_under_x < base_x0 && pop_under_x > base_x0 - page_w * 0.35, msg="pop mid under_x=\{pop_under_x}, base_x0=\{base_x0}")
+  t.run_for(@ui.move_most_ms)
+  assert_true((over_x(t, "整理发布清单") - base_x0).abs() < 1.0, msg="back settled cleanly")
+  assert_eq(over_x(t, over_chat.title), -1.0)
+}

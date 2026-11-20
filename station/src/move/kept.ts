@@ -2,12 +2,28 @@
 // durable): a set of item ids in one JSON file, read once before the station serves, written whole as it changes.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { renameRetrying } from "../ops/files.ts";
+
+/// Replace the file atomically, allowing a short wait for Windows file locks to clear.
+export async function replaceFile(path: string, text: string, opts?: { rename?: (from: string, to: string) => Promise<void>; wait?: (ms: number) => Promise<void> }): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmp, text);
+    await renameRetrying(tmp, path, opts);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 export class KeptSet {
   readonly #path: string;
   #ids: Set<string>;
+  #dirty = false;
+  #saving: Promise<void> | null = null;
 
   constructor(path: string) {
     this.#path = path;
@@ -40,11 +56,20 @@ export class KeptSet {
     await this.#save();
   }
 
-  async #save(): Promise<void> {
-    await mkdir(dirname(this.#path), { recursive: true });
-    const tmp = `${this.#path}.${randomBytes(4).toString("hex")}.tmp`;
-    await writeFile(tmp, JSON.stringify([...this.#ids]));
-    await rename(tmp, this.#path);
+  #save(): Promise<void> {
+    this.#dirty = true;
+    return (this.#saving ??= Promise.resolve().then(() => this.#flush()));
+  }
+
+  async #flush(): Promise<void> {
+    try {
+      while (this.#dirty) {
+        this.#dirty = false;
+        await replaceFile(this.#path, JSON.stringify([...this.#ids]));
+      }
+    } finally {
+      this.#saving = null;
+    }
   }
 }
 
@@ -53,6 +78,8 @@ export class KeptSet {
 export class KeptMap<T> {
   readonly #path: string;
   #map: Map<string, T>;
+  #dirty = false;
+  #saving: Promise<void> | null = null;
 
   constructor(path: string) {
     this.#path = path;
@@ -81,11 +108,20 @@ export class KeptMap<T> {
     await this.#save();
   }
 
-  async #save(): Promise<void> {
-    await mkdir(dirname(this.#path), { recursive: true });
-    const tmp = `${this.#path}.${randomBytes(4).toString("hex")}.tmp`;
-    await writeFile(tmp, JSON.stringify(Object.fromEntries(this.#map)));
-    await rename(tmp, this.#path);
+  #save(): Promise<void> {
+    this.#dirty = true;
+    return (this.#saving ??= Promise.resolve().then(() => this.#flush()));
+  }
+
+  async #flush(): Promise<void> {
+    try {
+      while (this.#dirty) {
+        this.#dirty = false;
+        await replaceFile(this.#path, JSON.stringify(Object.fromEntries(this.#map)));
+      }
+    } finally {
+      this.#saving = null;
+    }
   }
 }
 
@@ -198,10 +234,7 @@ export class KeptLog<T> {
   }
 
   async #rewrite(): Promise<void> {
-    await mkdir(dirname(this.#path), { recursive: true });
-    const tmp = `${this.#path}.${randomBytes(4).toString("hex")}.tmp`;
-    await writeFile(tmp, [...this.#map].map(([k, v]) => `${JSON.stringify({ k, v })}\n`).join(""));
-    await rename(tmp, this.#path);
+    await replaceFile(this.#path, [...this.#map].map(([k, v]) => `${JSON.stringify({ k, v })}\n`).join(""));
   }
 }
 

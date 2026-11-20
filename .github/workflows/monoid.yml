@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       parts:
-        description: "deploy.py's parts (relay api web web-beta admin preview share)"
+        description: "deploy.py's parts (relay api web web-beta admin preview share kit ui)"
         required: true
         default: "relay api web web-beta admin preview share"
 permissions:
@@ -31,6 +31,8 @@ jobs:
         uses: ./.github/actions/mbui-moonbit
       - if: contains(inputs.parts, 'web')
         run: bash apps/mbui/scripts/web-app.sh
+      - if: contains(inputs.parts, 'ui') && !contains(inputs.parts, 'web')
+        uses: ./.github/actions/mbui-moonbit
       - name: Deploy ${{ inputs.parts }} to monoid
         env:
           STILLFAIL_CLOUD: monoid

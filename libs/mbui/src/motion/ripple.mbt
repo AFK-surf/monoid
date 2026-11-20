@@ -37,12 +37,12 @@ priv struct Ripple {
 let ripples : Map[Int, Array[Ripple]] = Map([])
 
 ///|
-/// How long a ripple takes to its middle as the finger goes down (RippleAnimationSession ENTER_ANIM_DURATION).
-pub let ripple_enter_ms : Double = 450.0
+/// How long a ripple takes to its middle as the finger goes down.
+pub let ripple_enter_ms : Double = 200.0
 
 ///|
-/// How long it takes from there to gone once the finger lifts (RippleAnimationSession EXIT_ANIM_DURATION).
-pub let ripple_exit_ms : Double = 375.0
+/// How long it takes from there to gone once the finger lifts.
+pub let ripple_exit_ms : Double = 150.0
 
 ///|
 /// How long a tap's ripple lasts, shown whole: its way in, then out.
@@ -124,7 +124,7 @@ let press_sink_most : Double = 0.04
 ///|
 /// The way down and back up: a spring with a little give.
 // kept across runs: a value (no field of it changes)
-let sink_spring : Spec = lift_spring
+let sink_spring : Spec = tactile_bounce
 
 ///|
 /// The share of `p` between `a` and `b` (RippleShader subProgress).
@@ -191,7 +191,7 @@ pub fn ripple(
     let out_at = if r.lifted_at > r.at + ripple_enter_ms { r.lifted_at } else { r.at + ripple_enter_ms }
     if r.lifted && !r.leaving && c.moment() >= out_at {
       r.leaving = true
-      r.progress.animate(c, 1.0, tween(ripple_exit_ms, ease=Linear), start_at=out_at)
+      r.progress.animate(c, 1.0, tween(ripple_exit_ms, ease=Leave), start_at=out_at)
     } else if r.lifted && !r.leaving {
       // (what holds it built again at that moment, as it changes then: kept_part.mbt)
       c.shows_until(out_at)

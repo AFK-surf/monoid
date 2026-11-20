@@ -219,10 +219,10 @@ fn wide_reset() -> Unit {
   wide.bar_mr = 0.0
   wide.landed.set("")
   wide.rail_menu.set(None)
-  rail_menu_drawn.val = None
+  rail_menus_reset()
+  attention_shown.val = 0
   wide.rail_drag.set(None)
   attention_from.val = None
-  workspace_add_from.val = None
   transfers_from.val = None
   wide.editing.set(false)
   wide.attention_open.set(false)
@@ -356,7 +356,9 @@ pub let side_max : Double = 480.0
 pub let closed_bar_in : Double = @sf.window_in
 
 ///|
-let closed_bar_top : Double = 44.0
+/// How tall the window's top row is in the wide frame where the window's buttons are in it (title_row's; sfapp's
+/// tape_shell.mbt wide_top_node).
+pub let closed_bar_top : Double = 44.0
 
 ///|
 /// In a window with its buttons in the app's top row (macOS's: no title bar of the system's), a row `h` high at the top
@@ -496,6 +498,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> 
       .row(Is(true))
       |> ignore
       dock_round_node(g, at)
+      // its top row the window's title bar across all of it, under the rail's and the sidebar's own (between them too:
+      // the sidebar reaching into the rail, side_into_rail); not in the closed bar (what is pressed there its places')
+      g.box(fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(row) {
+          row
+          .width(By(fn() { Some(at().block.2) }))
+          .height(Is(Some(closed_bar_top)))
+          .laid_nowhere(By(fn() { !@ui.window_inset_now() || at().bar }))
+          .moves_window(By(fn() { @ui.window_inset_now() && !at().bar }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
       // (whether the pointer is on it, for the closed bar's peek: block_pointed)
       dock_made.val = Some(g)
       g.owns(fn() {
@@ -934,12 +951,6 @@ fn tape_words(p : TapePane) -> String {
 }
 
 ///|
-/// The page's panel on the tape: the page's ground, its corners the tape's (tape_pane_corners), a line round it,
-/// what goes past its edges cut.
-// kept across runs: a value (no field of it changes)
-let page_apart : @ui.Style = @ui.css("bg=Bg border=B1 border_color=Line clip")
-
-///|
 /// The pane: its page laid out as wide as the column leaves, what goes past the window cut.
 // kept across runs: a value (no field of it changes)
 let frame_main : @ui.Style = @ui.css("h=Full clip")
@@ -1134,7 +1145,7 @@ fn main_page(
 ) -> Unit {
   match page {
     // (its bar the page node's: chat_bar_wide_node)
-    Chat(r) => chat_page(c, src, w, r)
+    Chat(r) => chat_page(c, src, w, r, tape=wide.tape.get())
     // an agent's history, asked as a page (a link's `?history=…&entry=…`), and a visualization: never on top here,
     // their chat put in their place with them beside it as they come on top (service_tab.mbt beside_follow)
     History(_, _, _) | PreviewFile(_, _, _, _) => ()
@@ -1151,10 +1162,12 @@ fn main_page(
     // 文件 and a station's drive: made once as nodes (pane_made, tape_made: sfpages' files_page_node.mbt)
     Files | Drive(_) => ()
     // a new chat (newchat.mbt)
-    NewChat => new_chat_page(c, src, w)
+    NewChat => new_chat_page(c, src, w, tape=wide.tape.get())
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
     // the pane
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
+    // a chat's tab in a window of its own: that window's alone (sfapp's lone_tree), never on this stack
+    SideTab(_) => ()
     // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
     Archived => ()
   }
@@ -1316,7 +1329,7 @@ fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b 
   if over && !wide.peeking.get() && (on_rail || (px >= 0.0 && px < bar_x + rail_closed_w)) {
     wide.peeking.set(true)
   }
-  if @kit.after(c, "side/peek-away", wide.peeking.get() && !over && !held, peek_leave_ms) {
+  if c.held("side/peek-away", wide.peeking.get() && !over && !held, peek_leave_ms) {
     wide.peeking.set(false)
   }
 }

@@ -1,5 +1,4 @@
-// The pure parts, as the TypeScript (station/src/updates) says them: test/mb-updates.test.ts holds the rest to it
-// through the program, these the values it gave (node, the same inputs).
+// Pure unit tests for updates (version comparison, channel offers, platform checks, holds, delta, etc.).
 
 ///|
 test "versions compared number by number, a longer one newer" {

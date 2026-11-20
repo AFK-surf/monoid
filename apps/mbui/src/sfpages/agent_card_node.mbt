@@ -70,10 +70,8 @@ pub fn agent_card_node(
         @sf.style_node(l, fn() { agent_card_lines })
         l.each(fn() { items(card(), "latest") }, fn(line) { text(Some(line), "key") }, fn(row, line) {
           let k = text(Some(line.untracked()), "key")
-          row.box(fn(n) {
+          @sf.action_box_node(row, fn() { text(Some(line.get()), "text") }, fn(_) { history(line_entry(k)) }, fn(n) {
             @sf.style_node(n, fn() { agent_card_line_box })
-            @sf.presses_node(n, fn() { history(line_entry(k)) })
-            n.says(By(fn() { Some(@view.said(Button, label=text(Some(line.get()), "text"))) })) |> ignore
             @sf.words_node(n, fn() { text(Some(line.get()), "text") }, fn() {
               if flag(Some(line.get()), "now") || @sf.lit_node(n) {
                 agent_card_now
@@ -89,16 +87,17 @@ pub fn agent_card_node(
       |> ignore
     })
     // what it has going in the background and its checklist, in a line: to its execution history
-    b.show(fn() { text(card(), "workLine") != "" }, fn(x) {
-      @sf.style_node(x, fn() { work_line_inset })
-      @sf.presses_node(x, fn() { history(None) })
-      x.says(By(fn() { Some(@view.said(Button, label=text(card(), "workLine"))) })) |> ignore
-      @sf.words_node(x, fn() { text(card(), "workLine") }, fn() {
-        if @sf.lit_node(x) {
-          work_line_hot
-        } else {
-          work_line_words
-        }
+    b.show(fn() { text(card(), "workLine") != "" }, fn(w) {
+      @sf.action_box_node(w, fn() { text(card(), "workLine") }, fn(_) { history(None) }, fn(x) {
+        @sf.style_node(x, fn() { work_line_inset })
+        @sf.words_node(x, fn() { text(card(), "workLine") }, fn() {
+          if @sf.lit_node(x) {
+            work_line_hot
+          } else {
+            work_line_words
+          }
+        })
+        |> ignore
       })
       |> ignore
     })
@@ -245,7 +244,8 @@ let agent_card_head_round : @ui.Style = @ui.style(radius=@sf.row_radius)
 
 ///|
 /// Its mark (agent_mark's, 28): its model's maker on a tile of the neutral ground, round as a block within its head's
-/// corner (InnerOr: the ladder's small block's), its badge at its corner ringed in the panel's ground.
+/// corner (InnerOr: the ladder's small block's), its badge at its corner ringed in the panel's ground (agent_badge_node's,
+/// as a chat's bar and its info draw it).
 fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Unit {
   let side = agent_card_mark
   p.box(fn(t) {
@@ -264,7 +264,7 @@ fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Uni
     // (over the tile, as large as it: the badge at its corner)
     t.pick(fn() { text(a(), "badge") }, fn(b, badge) {
       b.over(Is(true)).width(Is(Some(side))).height(Is(Some(side))) |> ignore
-      agent_badge_ground_node(b, badge, side, fn() { @sf.panel_ground() })
+      agent_badge_node(b, badge, side, ground=fn() { @sf.panel_ground() })
     })
   })
   |> ignore
@@ -274,47 +274,6 @@ fn agent_card_mark_node(p : @view.View, a : () -> Json?, s : () -> Json?) -> Uni
 /// Its mark's tile: 28 across, round as the ladder's small block.
 // kept across runs: a value (no field of it changes)
 let agent_card_mark_tile : @ui.Style = @ui.style(w=Fixed(agent_card_mark), h=Fixed(agent_card_mark), radius=@sf.small_radius)
-
-///|
-/// The badge at the corner of an agent's mark `side` across (agent_badge's, as nodes) in `v`, ringed in `ground`: a dot
-/// blue waiting on a person, red failed; yellow spokes at work; none else.
-fn agent_badge_ground_node(v : @view.View, badge : String, side : Double, ground : () -> Int64) -> Unit {
-  let k = dmin(side / agent_badge_full, 1.0)
-  match badge {
-    "block" | "failed" => {
-      let d = agent_badge_d * k
-      let at = side - d + agent_badge_past * k
-      let ring = agent_badge_ring * k
-      v.box(fn(r) {
-        r
-        .over(Is(true))
-        .width(Is(Some(d)))
-        .height(Is(Some(d)))
-        .offset(Is((at, at)))
-        .radius(Is(d / 2.0))
-        .padding(Is((ring, ring, ring, ring)))
-        .ground(By(ground))
-        |> ignore
-        r.box(fn(dot) {
-          let ink = if badge == "block" { @sf.mark_blue } else { @sf.mark_red }
-          dot.grow(Is(1.0)).radius(Is(d / 2.0)).ground(By(fn() { @ui.tree_theme().color(ink) })) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    }
-    "run" => {
-      let d = agent_spokes * k
-      let at = side - d + agent_spokes_past * k
-      v.box(fn(r) {
-        r.over(Is(true)).width(Is(Some(d))).height(Is(Some(d))).offset(Is((at, at))) |> ignore
-        @sf.spokes_node(r, d, fn() { @sf.mark_yellow }) |> ignore
-      })
-      |> ignore
-    }
-    _ => ()
-  }
-}
 
 ///|
 /// Where it stands in `p` (agent_card's): a dot in its tone, its words and for how long (agent_waited's, each whole
@@ -446,9 +405,7 @@ pub fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, D
 fn agent_card_stop_node(p : @view.View, src : Source, station : String, key : String, tips : @sf.TipLayer) -> Unit {
   let skey = "stop/" + station + "/" + key
   let label = fn() { @sf.t("web-pages.chat.stopTurn") }
-  p.box(fn(b) {
-    @sf.style_node(b, fn() { agent_card_stop_box }, in_row=true)
-    @sf.presses_node(b, fn() {
+  @sf.action_box_node(p, label, fn(_) {
       if !doing(skey) {
         act(
           src,
@@ -459,8 +416,8 @@ fn agent_card_stop_node(p : @view.View, src : Source, station : String, key : St
           done=@sf.t("web-pages.chat.stopAsked"),
         )
       }
-    })
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
+    }, fn(b) {
+    @sf.style_node(b, fn() { agent_card_stop_box }, in_row=true)
     @sf.tip_node(tips, b, label) |> ignore
     b.pick(fn() { doing(skey) }, fn(i, busy) {
       if busy {
@@ -482,10 +439,8 @@ fn agent_card_link_node(
   hot : () -> @ui.TextStyle,
   press : () -> Unit,
 ) -> Unit {
-  p.box(fn(b) {
+  @sf.action_box_node(p, words, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { agent_card_link_box })
-    @sf.presses_node(b, press)
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
     @sf.words_node(b, words, fn() { if @sf.lit_node(b) { hot() } else { style() } }) |> ignore
   })
   |> ignore

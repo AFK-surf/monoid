@@ -58,6 +58,15 @@ fn write_file(path : Bytes, data : Bytes) -> Bool {
 }
 
 ///|
+extern "C" fn c_last_error() -> Bytes = "mbc_last_error"
+
+///|
+/// Why the last write_file or c_rename that failed did, as the system says it (strerror): said with `cannot write`
+fn write_error() -> String {
+  str(c_last_error())
+}
+
+///|
 fn list_dir(path : Bytes) -> Array[Bytes] {
   let all = c_list_dir(path)
   let out = []

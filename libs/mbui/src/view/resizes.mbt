@@ -42,6 +42,16 @@ pub fn View::resizes(
   // View::comes itself)
   guard self.comes(self, from, 1.0, spec?, foot~) else { return self }
   let at = st.come_at
+  // (in a page's list's foot on no way said: what a flight that carries a key in at this moment rises by, if one does
+  // (Tree::feet_carried); those of another moment forgotten as one is said)
+  if foot && spec is None && tree.list_of(self.at) != self.at {
+    let resized = tree.motion_aux().feet_resized
+    let gone = resized.iter().filter(fn(e) { e.1 != at }).map(fn(e) { e.0 }).to_array()
+    for g in gone {
+      resized.remove(g)
+    }
+    resized[self.at] = at
+  }
   // (once the change is told whole and laid out (View::comes' wait, which measures it, and its column's group then):
   // come out as tall as it was, from rest, nothing of it goes)
   @signals.after_flush(fn() {
@@ -94,6 +104,61 @@ pub fn View::shown_by(self : View, of : View, f : (Double) -> GroundShape) -> Vi
   |> ignore
   tree.place_marked_at(me)
   self
+}
+
+///|
+/// What draws this node's ground (View::shown_by) worked out of where the boxes node `of` lays out are drawn (past any
+/// slot: a page's list's blocks, its spacers), drawn again as any of them is placed or drawn off anew (moved by its
+/// layout, by a way it is drawn off on: a list's `flips`), so what it draws goes with them in every frame they go,
+/// never where they were last told to rest. Till this node goes.
+pub fn View::ground_by_placed(self : View, of : View) -> View {
+  guard self.live() is Some(_) && of.live() is Some(_) else { return self }
+  let tree = self.tree
+  let me = self.at
+  let them = of.at
+  let fs = match tree.placed_followers.get(them) {
+    Some(fs) => fs
+    None => {
+      let fs = []
+      tree.placed_followers[them] = fs
+      fs
+    }
+  }
+  fs.push(me)
+  self.owns(fn() {
+    match tree.placed_followers.get(them) {
+      Some(fs) => {
+        let left = fs.filter(fn(f) { f != me })
+        if left.is_empty() {
+          tree.placed_followers.remove(them)
+        } else {
+          fs.clear()
+          fs.append(left)
+        }
+      }
+      None => ()
+    }
+  })
+  |> ignore
+  self
+}
+
+///|
+/// Node `at` placed: what draws its ground by where the boxes beside it are drawn (View::ground_by_placed, of the box
+/// that lays it out, past any slot) drawn again, its ground alone, no place of it moved (as Tree::flip_in_by's ground).
+fn Tree::placed_told(self : Tree, at : Int) -> Unit {
+  let mut h = self.nodes[at].parent
+  while h >= 0 && self.nodes[h].slot {
+    h = self.nodes[h].parent
+  }
+  guard h >= 0 && self.placed_followers.get(h) is Some(fs) else { return }
+  for f in fs {
+    if f != at && self.nodes[f].live {
+      self.places_rev = self.places_rev + 1
+      self.touched(f, words=false)
+      self.composed.push({ at: f, gen: self.nodes[f].gen })
+    }
+  }
 }
 
 ///|

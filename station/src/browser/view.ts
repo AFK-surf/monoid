@@ -10,8 +10,9 @@
 // Pull-driven: Chrome casts a frame only once those before it are acknowledged (it keeps at most two out), and a frame
 // is acknowledged only when the one after it is asked for (`next`), so a slow viewer slows the casting rather than
 // having frames pile up. Of two waiting, the newer is given and the older let go.
-import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX } from "../screens/source.ts";
+import { type Clip, type Frame, type FrameConfig, type LoginField, type LoginFill, type PasskeyAnswer, type PasskeyAsk, type ScreenInput, type ScreenMic, type ScreenVideo, type ScreenView, type ViewOptions, CLIP_TEXT_MAX, gamepadReleased } from "../screens/source.ts";
 import type { Cdp, CdpEvent } from "./cdp.ts";
+import { type BrowserMicController, attachBrowserMic } from "./mic.ts";
 import { randomUUID } from "node:crypto";
 import { sizeOf } from "../sessions/image-size.ts";
 
@@ -23,8 +24,8 @@ export function viewportOf(m: any): { width: number; height: number } | null {
   return width > 0 && height > 0 ? { width, height } : null;
 }
 
-/// JPEG quality of the cast frames.
-const QUALITY = 70;
+/// JPEG quality of the cast frames: 82, as at 70 small text's edges rang (their colours bled round the strokes).
+const QUALITY = 82;
 /// The most pixels a CSS pixel is drawn with for a phone it is laid out for (`fit`): sharp on any phone, and frames a
 /// third the size of a 3× phone's own.
 const FIT_SCALE_MOST = 2;
@@ -108,6 +109,43 @@ export function keyEvent(e: Extract<ScreenInput, { t: "key" }>): Record<string, 
 
 /// The binding a tab's copies call while a person driving it watches its clipboard.
 export const COPY_BINDING = "__stillfailCopied";
+
+/// What a tab's pages are given as the person's game controllers (`{t: "gamepad"}`): navigator.getGamepads as the W3C
+/// Standard Gamepad says one (an Xbox 360 controller's 17 buttons and 4 axes, mapping "standard"), with its
+/// gamepadconnected and gamepaddisconnected events, so a cloud game, a WebGL or HTML5 game takes it as one plugged in.
+/// Put in once a view first drives a controller (every page after it too); `window.__stillfailPad(state)` says a state.
+export const GAMEPAD_HOOK = `(() => {
+  if (typeof window.__stillfailPad === "function") return;
+  const pads = [null, null, null, null];
+  const made = (s, at) => {
+    const buttons = [];
+    for (let i = 0; i < 17; i++) {
+      const bit = (s.buttons & (1 << i)) !== 0;
+      const value = i === 6 ? Math.max(s.lt, bit ? 1 : 0) : i === 7 ? Math.max(s.rt, bit ? 1 : 0) : bit ? 1 : 0;
+      buttons.push(Object.freeze({ pressed: bit || value > 0.5, touched: bit || value > 0, value }));
+    }
+    return Object.freeze({ id: "Xbox 360 Controller (Standard Gamepad)", index: s.index, connected: true, mapping: "standard", timestamp: at, axes: Object.freeze([s.lx, s.ly, s.rx, s.ry]), buttons: Object.freeze(buttons), vibrationActuator: null, hapticActuators: Object.freeze([]) });
+  };
+  const told = (type, pad) => {
+    const e = new Event(type);
+    Object.defineProperty(e, "gamepad", { value: pad });
+    window.dispatchEvent(e);
+  };
+  Object.defineProperty(Navigator.prototype, "getGamepads", { configurable: true, value: function getGamepads() { return pads.slice(); } });
+  Object.defineProperty(window, "__stillfailPad", { value: (s) => {
+    const i = s && s.index;
+    if (!(i >= 0 && i < 4)) return;
+    const was = pads[i];
+    if (s.connected === false) {
+      if (was === null) return;
+      pads[i] = null;
+      told("gamepaddisconnected", Object.freeze({ ...was, connected: false }));
+      return;
+    }
+    pads[i] = made(s, performance.now());
+    if (was === null) told("gamepadconnected", pads[i]);
+  } });
+})();`;
 /// What hears a page's copies, run in it (and in each document it opens while watched): a copy's or a cut's text, as
 /// the page set it (read as the event reaches the window) or as it was selected (a field's selection, else the
 /// page's), and what it writes with navigator.clipboard.writeText. Once a page; it says nothing once the binding went.
@@ -149,11 +187,16 @@ export const COPY_HOOK = `(() => {
 export const LOGIN_BINDING = "__stillfailLogin";
 /// What tells of the login field in focus, run in a page's top document (and each one it opens while watched): a
 /// password field, or one an account goes in (marked so, or a text field of a form with a password field, or named
-/// so), said as `{"field": …}` as the focus comes to one and `null` as it leaves; only when it changed. What it says is
-/// only a hint: the site is the station's to say (the tab's address), and the page may call the binding as it likes.
+/// so), said as `{"field": …, "filled": true}` (or without `filled` while empty) as the focus comes to one or its value
+/// changes and `null` as it leaves; only when it changed. What it says is only a hint: the site is the station's to say
+/// (the tab's address), and the page may call the binding as it likes.
 export const LOGIN_HOOK = `(() => {
-  if (window !== window.top || window.__stillfailLoginHook) return;
-  window.__stillfailLoginHook = true;
+  if (window !== window.top) return;
+  if (typeof window.__stillfailLoginTell === "function") {
+    window.__stillfailLoginTell();
+    return;
+  }
+  const deep = (root) => { let el = root.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; return el; };
   const kind = (el) => {
     if (!el || el.tagName !== "INPUT" || el.disabled || el.readOnly) return null;
     const type = (el.type || "text").toLowerCase();
@@ -164,18 +207,25 @@ export const LOGIN_HOOK = `(() => {
     if (el.form && el.form.querySelector("input[type=password]")) return "username";
     return /user|email|login|account|identifier/i.test((el.name || "") + " " + (el.id || "")) ? "username" : null;
   };
-  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : document.activeElement);
+  const focused = (e) => (e && e.composedPath ? e.composedPath()[0] : deep(document));
   let said = "";
-  const say = (field) => {
-    const now = field ? JSON.stringify({ field }) : "null";
+  const say = (el) => {
+    const field = kind(el);
+    const now = field ? JSON.stringify(el.value ? { field, filled: true } : { field }) : "null";
     if (now === said) return;
     said = now;
     try { if (typeof window.${LOGIN_BINDING} === "function") window.${LOGIN_BINDING}(now); } catch {}
   };
-  document.addEventListener("focusin", (e) => say(kind(focused(e))), true);
+  window.__stillfailLoginTell = () => {
+    said = "";
+    say(deep(document));
+  };
+  document.addEventListener("focusin", (e) => say(focused(e)), true);
   // (where the focus goes: none, or one a focusin then says itself)
-  document.addEventListener("focusout", (e) => say(kind(e.relatedTarget)), true);
-  say(kind(document.activeElement));
+  document.addEventListener("focusout", (e) => say(e.relatedTarget), true);
+  document.addEventListener("input", () => say(deep(document)), true);
+  document.addEventListener("change", () => say(deep(document)), true);
+  say(deep(document));
 })()`;
 
 /// Fills the login form the focus is in (or the page's first, where the focus is in none): its account field and its
@@ -213,40 +263,56 @@ const passkeyBinding = (owner: string): string => `${PASSKEY_BINDING}_${owner.re
 /// up (its signal), and answered by the station with `__stillfailPasskeyReply(owner, id, answer)`: a credential made as the
 /// browser makes it, or the error the browser would give. The platform is said to have an authenticator, so that sites
 /// offer passkeys. Anything else (a password asked, a passkey made) goes to the browser as before.
-export const passkeyHook = (owner: string): string => `(() => {
+export const passkeyHook = (owner: string, device = true): string => `(() => {
   if (window !== window.top || !navigator.credentials) return;
   const owner = ${JSON.stringify(owner)};
-  if (window.__stillfailPasskeyWatch) return window.__stillfailPasskeyWatch(owner, true);
+  const device = ${device ? "true" : "false"};
+  if (window.__stillfailPasskeyWatch) return window.__stillfailPasskeyWatch(owner, true, device);
   // A page kept across a station update may still have the old, unowned hook. Its get falls through while off.
   if (window.__stillfailPasskeyOff) window.__stillfailPasskeyOff(true);
-  const owners = new Set();
+  const owners = new Map();
   let active = null;
+  let activeDevice = false;
   const creds = navigator.credentials;
   const get = creds.get.bind(creds);
   const bytes = (v) => v instanceof ArrayBuffer ? new Uint8Array(v) : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null;
   const b64 = (v) => { const u = bytes(v); if (!u) return null; let s = ""; for (const b of u) s += String.fromCharCode(b); return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, ""); };
   const buf = (s) => { const t = atob(s.replace(/-/g, "+").replace(/_/g, "/")); const u = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u.buffer; };
   const waiting = new Map();
+  const uvpaWaiting = new Map();
   let next = 0;
   const said = (v) => { try { window[${JSON.stringify(PASSKEY_BINDING)} + "_" + active.replaceAll("-", "")](JSON.stringify({ ...v, owner: active })); return true; } catch { return false; } };
   // New and old screen streams overlap on a resize. Only the active owner answers; an old stream ending cannot
-  // switch off its replacement or reject a request it handed over. Pending requests follow the active stream.
-  Object.defineProperty(window, "__stillfailPasskeyWatch", { value: (id, on) => {
-    if (on ? owners.has(id) : !owners.has(id)) return;
-    if (on) owners.add(id); else owners.delete(id);
-    const nextOwner = [...owners].at(-1) || null;
-    if (nextOwner === active) return;
-    for (const id of waiting.keys()) said({ id, gone: true });
+  // switch off its replacement or reject a request it handed over. Pending requests follow an active stream whose
+  // device signs passkeys, and settle as NotAllowedError when none does.
+  Object.defineProperty(window, "__stillfailPasskeyWatch", { value: (id, on, dev = true) => {
+    const useDevice = Boolean(dev);
+    if (on ? owners.has(id) && owners.get(id) === useDevice : !owners.has(id)) return;
+    if (on) owners.set(id, useDevice); else owners.delete(id);
+    const last = [...owners.entries()].at(-1);
+    const nextOwner = last ? last[0] : null;
+    const nextDevice = last ? last[1] : false;
+    if (nextOwner === active && nextDevice === activeDevice) return;
+    if (active !== null && activeDevice) { for (const wid of waiting.keys()) said({ id: wid, gone: true }); }
     active = nextOwner;
-    if (active !== null) { for (const w of waiting.values()) said(w.ask); }
+    activeDevice = nextDevice;
+    if (active !== null && activeDevice) { for (const w of waiting.values()) said(w.ask); }
     else {
       for (const w of waiting.values()) w.no(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError"));
       waiting.clear();
     }
+    if (active === null || activeDevice) {
+      for (const u of uvpaWaiting.values()) u.res(Boolean(activeDevice));
+      uvpaWaiting.clear();
+    } else {
+      for (const [uid, u] of uvpaWaiting) { if (!said({ id: uid, uvpa: u.host })) { uvpaWaiting.delete(uid); u.res(false); } }
+    }
   } });
-  window.__stillfailPasskeyWatch(owner, true);
+  window.__stillfailPasskeyWatch(owner, true, device);
   Object.defineProperty(window, "__stillfailPasskeyReply", { value: (owner, id, a) => {
     if (owner !== active) return;
+    const u = uvpaWaiting.get(id);
+    if (u) { uvpaWaiting.delete(id); return u.res(a.available === true); }
     const w = waiting.get(id);
     if (!w) return;
     waiting.delete(id);
@@ -263,10 +329,11 @@ export const passkeyHook = (owner: string): string => `(() => {
   } });
   creds.get = function (options) {
     const pk = options && options.publicKey;
-    if (active === null || !pk || !bytes(pk.challenge)) return get(options);
+    const ch = pk && b64(pk.challenge);
+    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
     const id = String(++next);
     const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
-    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: b64(pk.challenge), allow, userVerification: pk.userVerification || "preferred" };
+    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
     return new Promise((yes, no) => {
       const signal = options.signal;
       if (signal && signal.aborted) return no(signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
@@ -280,10 +347,20 @@ export const passkeyHook = (owner: string): string => `(() => {
     });
   };
   // (a page left takes what it asked with it)
-  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); });
+  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); uvpaWaiting.clear(); });
   if (window.PublicKeyCredential) {
-    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);
-    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(true);
+    const uvpa = typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function" ? PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.bind(PublicKeyCredential) : () => Promise.resolve(false);
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => {
+      if (active === null) return uvpa();
+      if (activeDevice) return Promise.resolve(true);
+      const id = "u" + (++next);
+      const host = String(location.hostname || "");
+      return new Promise((res) => {
+        uvpaWaiting.set(id, { host, res });
+        if (!said({ id, uvpa: host })) { uvpaWaiting.delete(id); res(false); }
+      });
+    };
+    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   }
 })()`;
 
@@ -355,11 +432,19 @@ export class TabView implements ScreenView {
   #viewport = { width: 0, height: 0 };
   #buttons = 0;
   #click = { count: 0, at: -Infinity, x: 0, y: 0, button: "none" };
+  /// The controllers' hook put in its pages (GAMEPAD_HOOK), once a controller first came.
+  #padHook: Promise<void> | null = null;
+  /// The slots its pages were told a controller is in: let go of as the view ends (the tab stays open).
+  readonly #padSlots = new Set<number>();
   #unlisten: () => void;
   /// A preview's (ViewOptions.peek): the tab is not brought forward for it, so what is behind another casts nothing.
   #peek = false;
   /// Laid out for the viewer's phone (ViewOptions.fit) until it ends.
   #fitted = false;
+  /// Whether the driving viewer's host signs arbitrary-site passkeys (`ViewOptions.passkeys !== false`).
+  #devicePasskeys = true;
+  /// The tab's virtual microphone (mic.ts) while its driver watches it.
+  #mic: BrowserMicController | null = null;
 
   /// Chrome's own screencast, a JPEG a picture.
   video(): ScreenVideo {
@@ -378,6 +463,7 @@ export class TabView implements ScreenView {
   async start(options: ViewOptions, viewport?: { width: number; height: number }) {
     if (viewport) this.#viewport = viewport;
     this.#peek = options.peek === true;
+    this.#devicePasskeys = options.passkeys !== false;
     const { cdp, session } = this.#p;
     await cdp.send("Page.enable", {}, session);
     const fit = options.fit && !this.#peek ? options.fit : undefined;
@@ -460,6 +546,18 @@ export class TabView implements ScreenView {
       case "text":
         if (event.text !== "") await cdp.send("Input.insertText", { text: event.text }, session);
         return;
+      case "gamepad": {
+        this.#padHook ??= (async () => {
+          await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: GAMEPAD_HOOK }, session);
+          await cdp.send("Runtime.evaluate", { expression: GAMEPAD_HOOK }, session);
+        })();
+        await this.#padHook;
+        if (event.connected) this.#padSlots.add(event.index);
+        else this.#padSlots.delete(event.index);
+        const { t: _, ...state } = event;
+        await cdp.send("Runtime.evaluate", { expression: `window.__stillfailPad && window.__stillfailPad(${JSON.stringify(state)})` }, session);
+        return;
+      }
     }
   }
 
@@ -514,7 +612,8 @@ export class TabView implements ScreenView {
       } catch {}
       const field = said?.field === "username" || said?.field === "password" ? (said.field as LoginField["field"]) : null;
       if (field === null) return heard(null);
-      void this.#host(targetId).then((host) => on && heard(host === "" ? null : { host, field }));
+      const filled = said?.filled === true;
+      void this.#host(targetId).then((host) => on && heard(host === "" ? null : { host, field, ...(filled ? { filled: true } : {}) }));
     });
     const undo = () => {
       if (this.#ended) return;
@@ -559,7 +658,7 @@ export class TabView implements ScreenView {
     // Each viewer owns its binding as well as its subscription: page requests go to just that viewer, and an old
     // session removes only its own name on cleanup.
     const binding = passkeyBinding(owner);
-    const hook = passkeyHook(owner);
+    const hook = passkeyHook(owner, this.#devicePasskeys);
     this.#passkeyOwner = owner;
     let on = true;
     let script: string | null = null;
@@ -581,9 +680,25 @@ export class TabView implements ScreenView {
         }
         return;
       }
-      const b64 = (v: unknown): v is string => typeof v === "string" && v !== "" && v.length <= 1366 && /^[A-Za-z0-9_-]+$/.test(v);
+      if (typeof said.uvpa === "string" && said.uvpa.length <= 253) {
+        const h = said.uvpa.toLowerCase().replace(/\.$/, "");
+        let available = false;
+        if (this.#p.ownPasskey && h !== "") {
+          const parts = h.split(".");
+          for (let i = 0; i < parts.length; i++) {
+            const rp = parts.slice(i).join(".");
+            if ((i === 0 || rp.includes(".")) && this.#p.ownPasskey(rp)) {
+              available = true;
+              break;
+            }
+          }
+        }
+        void this.#answer({ id, available });
+        return;
+      }
+      const b64 = (v: unknown, most: number): v is string => typeof v === "string" && v !== "" && v.length <= most && /^[A-Za-z0-9_-]+$/.test(v);
       const allow: unknown[] = Array.isArray(said.allow) ? said.allow.slice(0, 64) : [];
-      if (typeof said.rpId !== "string" || !b64(said.challenge) || !allow.every(b64)) return;
+      if (typeof said.rpId !== "string" || !b64(said.challenge, 32768) || !allow.every((a) => b64(a, 1366))) return;
       const userVerification = ["required", "preferred", "discouraged"].includes(said.userVerification) ? said.userVerification : "preferred";
       const request = {};
       pending.set(id, request);
@@ -604,6 +719,11 @@ export class TabView implements ScreenView {
         // A passkey of the vault's in the tab's context: its own authenticator signs it, no device asked.
         if (this.#p.ownPasskey?.(said.rpId) === true) {
           void this.#answer({ id, browser: true });
+          return;
+        }
+        // A viewer without host passkeys never invokes headful Chrome's OS WebAuthn dialog (hidden outside screencast).
+        if (!this.#devicePasskeys) {
+          void this.#answer({ id, error: "NotAllowedError" });
           return;
         }
         const clientData = JSON.stringify({ type: "webauthn.get", challenge: said.challenge, origin, crossOrigin: false });
@@ -679,12 +799,43 @@ export class TabView implements ScreenView {
     return hostOf(await this.#url(targetId));
   }
 
+  /// The tab's virtual microphone: always there to feed, recorded only while its page records it.
+  watchMic(heard: (mic: ScreenMic) => void): () => void {
+    this.#micOff();
+    if (this.#ended) return () => {};
+    const mic = attachBrowserMic(this.#p.cdp, this.#p.session, { onDemand: (d) => heard({ available: true, active: d.active, epoch: d.epoch >>> 0 }) });
+    this.#mic = mic;
+    heard({ available: true, active: false, epoch: 0 });
+    return () => {
+      if (this.#mic === mic) this.#micOff();
+    };
+  }
+
+  feedMic(pcm16le: Uint8Array, epoch: number) {
+    const mic = this.#mic;
+    if (mic !== null && mic.demand.active && mic.demand.epoch >>> 0 === epoch) mic.feedPcm16(pcm16le);
+  }
+
+  #micOff() {
+    const mic = this.#mic;
+    this.#mic = null;
+    mic?.close();
+  }
+
   close() {
     if (this.#ended) return;
     const { cdp, session } = this.#p;
+    // (its page's virtual tracks ended and its hook taken out, before its session goes)
+    this.#micOff();
     void cdp.send("Page.stopScreencast", {}, session).catch(() => {});
     // As it was laid out before (its session going takes it away too; said, for a Chrome that would keep it).
     if (this.#fitted) void cdp.send("Emulation.clearDeviceMetricsOverride", {}, session).catch(() => {});
+    // Its controllers let go of in its pages, before its session goes (else navigator.getGamepads keeps them).
+    for (const index of this.#padSlots) {
+      const { t: _, ...state } = gamepadReleased(index);
+      void cdp.send("Runtime.evaluate", { expression: `window.__stillfailPad && window.__stillfailPad(${JSON.stringify(state)})` }, session).catch(() => {});
+    }
+    this.#padSlots.clear();
     void cdp.send("Target.detachFromTarget", { sessionId: session }).catch(() => {}).finally(() => cdp.close());
     this.#end();
   }
@@ -749,6 +900,7 @@ export class TabView implements ScreenView {
   #end() {
     if (this.#ended) return;
     this.#ended = true;
+    this.#micOff();
     this.#unlisten();
     const w = this.#waiter;
     this.#waiter = null;

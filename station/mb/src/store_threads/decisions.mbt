@@ -119,15 +119,6 @@ fn Store::decision_session_lookup(self : Store, verify_native? : Bool = false) -
 }
 
 ///|
-pub fn Store::decision_sessions_ready(self : Store) -> Json raise {
-  let current = self.decision_session_lookup(verify_native=true)
-  if current != "pending" {
-    self.use_decision_session(current)
-  }
-  jbool(current != "pending")
-}
-
-///|
 /// A message matching "no such index|table: [main.]NAME" at its end, NAME one of `names`.
 fn missing_object(message : String, kinds : Array[String], names : Array[String]) -> Bool {
   for kind in kinds {
@@ -300,7 +291,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
         if self.legacy_decision_time {
           legacy_latest_decisions_scoped_fallback_sql
         } else {
-          latest_decisions_scoped_fallback_sql
+          @readops.latest_decisions_scoped_fallback
         },
         [since, workspace, jint(1)],
       )
@@ -311,7 +302,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
         } else if self.legacy_decision_time {
           legacy_latest_decisions_scoped_sql
         } else {
-          latest_decisions_scoped_sql
+          @readops.latest_decisions_scoped
         },
         [since, workspace, jint(0)],
       )
@@ -335,7 +326,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
       let fallback = () => if !given {
         self.all(latest_decisions_sql, [since])
       } else {
-        self.all(latest_decisions_scoped_fallback_sql, [since, workspace, home_flag])
+        self.all(@readops.latest_decisions_scoped_fallback, [since, workspace, home_flag])
       }
       if not_home &&
         (

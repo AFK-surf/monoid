@@ -10,8 +10,11 @@
 let codex_scrubbed : Array[String] = ["OPENAI_API_KEY", "CODEX_HOME"]
 
 ///|
-/// The CA file Codex is pointed at.
-let ca_bundle = "/etc/ssl/cert.pem"
+/// The CA files Codex may be pointed at, the first there taken: Debian's, Ubuntu's and Alpine's, then Fedora's and
+/// RHEL's, then macOS's and the BSDs' (the TypeScript's one, which a Linux machine often lacks).
+pub fn ca_bundles() -> Array[String] {
+  ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]
+}
 
 ///|
 /// What the station before ran on a host handed over, in its `turn_from` while its sessions are taken up.
@@ -54,15 +57,7 @@ let lent_renew_ms = 21600000.0
 ///|
 /// JavaScript's `a < b` of two strings: by their code units.
 pub fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_less(a, b)
 }
 
 ///|
@@ -187,7 +182,7 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
       continue
     }
     let id = match get(Some(m), "id") {
-      Some(Str(u)) => Some(@jsjson.text(u))
+      Some(Str(u)) => Some(@jsjson.sanitize_str(u))
       None => str_at(Some(m), "model")
       _ => None
     }
@@ -267,7 +262,8 @@ pub(all) struct CodexWorld {
   /// where the user's own skills are walked for their SKILL.md files (`hostSkillsOff`'s walk)
   walk_skills : (String) -> Later[Array[String]]
   host_skills : String
-  ca_bundle : String
+  /// the CA files Codex may be pointed at, in order (`ca_bundles`)
+  ca_bundles : Array[String]
   /// a session's own Fast, its speed ("ultrafast", "fast", "standard"), a profile as the config says it now
   fast : ((String) -> Bool?)?
   speed : ((String) -> String?)?
@@ -311,6 +307,8 @@ pub struct Host {
   mut login_stale : Bool
   mut runtime_stale : Bool
   mut draining : Bool
+  /// the station's tools at this address failed for a thread of its, opened with them (`toolsFailedUrl`)
+  mut tools_failed_url : String?
   mut version : String?
   mut ready : Bool
   mut readying : Later[Unit]?
@@ -351,6 +349,7 @@ pub fn Host::new(
     login_stale: false,
     runtime_stale: false,
     draining: false,
+    tools_failed_url: None,
     version: None,
     ready,
     readying: None,
@@ -422,6 +421,7 @@ pub fn Host::hosted_options(self : Host, label : String, orphans? : Bool = false
     orphans,
     heard: h => Took(self.heard(h)),
     attached: () => self.attached(),
+    handed: () => self.freeze(),
     exit: (said, stderr) => {
       self.on_exit(said, stderr)
       done(self.lp)
@@ -928,11 +928,12 @@ pub fn CodexDriver::info(self : CodexDriver, what : String, fields : JValue) -> 
 }
 
 ///|
-/// A profile's environment as its app-server is started with (`{...cleanEnv(SCRUBBED), ...expandRoute(...)}`).
+/// A profile's environment as its app-server is started with (`keepLocal({...cleanEnv(SCRUBBED), ...expandRoute(...)})`).
 pub fn CodexDriver::child_env(self : CodexDriver, profile : JValue) -> Env {
   let env = start_env(self.world.raw_env, codex_scrubbed)
   env.merge(expand_route((self.profiles.env)(profile, "codex"), profile_id(profile)))
-  env
+  // The profile's own proxy too leaves this machine out (`keepLocal`).
+  keep_local(env)
 }
 
 ///|
@@ -960,12 +961,22 @@ pub fn CodexDriver::host_args(self : CodexDriver, profile : JValue) -> Array[Str
 }
 
 ///|
-/// Points Codex at a CA file where none of its own is set and the file is there (`withCaBundle`).
-pub fn with_ca_bundle(m : Machine, env : Env, bundle : String) -> Later[Unit] {
+/// Points Codex at a CA file where none of its own is set: the first of `bundles` there (`withCaBundle`).
+pub fn with_ca_bundle(m : Machine, env : Env, bundles : Array[String]) -> Later[Unit] {
   if ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"].iter().any(k => env.has(k)) {
     return done(m.lp)
   }
-  m.there(bundle).map(yes => if yes { env.set("SSL_CERT_FILE", bundle) })
+  first_there(m.lp, m.there, bundles).map(found => if found is Some(bundle) { env.set("SSL_CERT_FILE", bundle) })
+}
+
+///|
+/// The first of `paths` there, each looked at only once the one before is not.
+fn first_there(lp : Loop, there : (String) -> Later[Bool], paths : Array[String]) -> Later[String?] {
+  fn from(i : Int) -> Later[String?] {
+    guard i < paths.length() else { return Later::ok(lp, None) }
+    there(paths[i]).bind(yes => if yes { Later::ok(lp, Some(paths[i])) } else { from(i + 1) })
+  }
+  from(0)
 }
 
 ///|
@@ -998,7 +1009,7 @@ pub fn CodexDriver::start_host(
   .bind(until => {
     let env = self.child_env(profile)
     env.set("CODEX_HOME", home)
-    with_ca_bundle(self.m, env, self.world.ca_bundle).bind(_ => {
+    with_ca_bundle(self.m, env, self.world.ca_bundles).bind(_ => {
       let host = Host::new(self.m, profile_id(profile), self.host_signature(profile), 1.0, false, key)
       host.lent_until = until
       (self.procs.start)(
@@ -1384,7 +1395,7 @@ pub fn CodexDriver::drain(self : CodexDriver, host : Host) -> Later[Unit] {
       return done(lp)
     }
     self.serial(() => {
-      let killed = if host.alive() { (host.p().kill)(5000.0) } else { done(lp) }
+      let killed = if host.alive() { (host.p().kill)(5000.0) } else { (host.p().released)() }
       killed.map(_ => self.draining_delete(host))
     })
   })
@@ -1710,9 +1721,10 @@ pub fn[T] CodexDriver::lease(
   profile : JValue,
   work : (Host) -> Later[T],
   cwd? : String,
+  mcp_url? : String,
 ) -> Later[T] {
   self
-  .host(profile, cwd?=cwd)
+  .host(profile, cwd?=cwd, mcp_url?=mcp_url)
   .bind(host => work(host).always(() => self.let_go(host)))
 }
 
@@ -1724,7 +1736,12 @@ pub fn CodexDriver::let_go(self : CodexDriver, host : Host) -> Unit {
 
 ///|
 /// A profile's app-server, counted as opening on it (`host`).
-pub fn CodexDriver::host(self : CodexDriver, profile : JValue, cwd? : String) -> Later[Host] {
+pub fn CodexDriver::host(
+  self : CodexDriver,
+  profile : JValue,
+  cwd? : String,
+  mcp_url? : String,
+) -> Later[Host] {
   let lp = self.lp()
   let taken_up = match self.world.taken_up {
     Some(t) => t
@@ -1738,32 +1755,57 @@ pub fn CodexDriver::host(self : CodexDriver, profile : JValue, cwd? : String) ->
       .retire_stale(key, installed)
       .bind(_ => {
         let mut replaced : Host? = None
+        let mut discarded = false
+        let mut retiring : Later[Unit] = done(lp)
         let current = self.host_at(key)
+        // a thread of its could not reach the station's tools at the address this one is opened with (`host`)
+        let unreachable = match (current, mcp_url) {
+          (Some(c), Some(u)) => u != "" && c.tools_failed_url == Some(u)
+          _ => false
+        }
         match current {
-          Some(c) if c.alive() && (c.login_stale || c.runtime_stale) => {
-            self.info(
-              "login changed or codex reinstalled; new turns go to a new app-server, its own end there",
-              obj([
-                ("profile", s(c.profile)),
-                ("key", s(key)),
-                ("turns", n(c.turns.length())),
-                ("login", b(c.login_stale)),
-              ]),
-            )
+          Some(c) if c.alive() &&
+            (c.login_stale || c.runtime_stale || unreachable) => {
+            if unreachable {
+              self.warn(
+                "its codex app-server could not reach the station's tools; new turns go to a new one",
+                obj([
+                  ("profile", s(c.profile)),
+                  ("key", s(key)),
+                  ("turns", n(c.turns.length())),
+                  ("url", s(mcp_url.unwrap_or(""))),
+                ]),
+              )
+            } else {
+              self.info(
+                "login changed or codex reinstalled; new turns go to a new app-server, its own end there",
+                obj([
+                  ("profile", s(c.profile)),
+                  ("key", s(key)),
+                  ("turns", n(c.turns.length())),
+                  ("login", b(c.login_stale)),
+                ]),
+              )
+            }
             c.draining = true
             self.host_delete(key)
-            self.draining_add(c)
-            replaced = Some(c)
+            discarded = true
+            if c.turns.length() == 0 && c.threads.length() == 0 {
+              retiring = (c.p().kill)(5000.0)
+            } else {
+              self.draining_add(c)
+              replaced = Some(c)
+            }
           }
           _ => ()
         }
         let replaced = replaced
-        let kept = if replaced is Some(_) { None } else { current }
-        let renewing = match kept {
+        let kept = if discarded { None } else { current }
+        retiring
+        .bind(_ => match kept {
           Some(k) if k.alive() => self.renew_lent(k, profile)
           _ => done(lp)
-        }
-        renewing
+        })
         .bind(_ => match kept {
           Some(k) if k.alive() && k.signature != self.host_signature(profile) =>
             if k.turns.length() == 0 {
@@ -1857,7 +1899,7 @@ pub fn lent_expiry(m : Machine, home : String) -> Later[Double] {
     let token = match parse_json(text) {
       Some(j) =>
         match get(get(Some(j), "tokens"), "access_token") {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           Some(other) => js_string_of(other)
           None => "undefined"
         }
@@ -1881,7 +1923,7 @@ pub fn js_string_of(v : JValue) -> String {
     Null => "null"
     Bool(x) => x.to_string()
     Num(_) => @jsjson.stringify(v)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(_) => "[array]"
     Obj(_) => "[object Object]"
   }
@@ -2250,7 +2292,12 @@ pub fn CodexDriver::open(self : CodexDriver, options : JValue, events : (JValue)
       done(lp)
     })
   }
-  check.bind(_ => self.lease(profile, host => self.open_on(host, options, events), cwd=str_at(o, "cwd").unwrap_or("")))
+  check.bind(_ => self.lease(
+    profile,
+    host => self.open_on(host, options, events),
+    cwd=str_at(o, "cwd").unwrap_or(""),
+    mcp_url=str_at(o, "mcpUrl").unwrap_or(""),
+  ))
 }
 
 ///|
@@ -2926,7 +2973,15 @@ pub fn CodexSession::prompt(self : CodexSession, text : String) -> Later[Unit] {
   .bind(_ => station_tools_failed(self.host, self.thread_id))
   .bind(failed => {
     if failed {
+      // opened with the address its process failed to reach: the next thread opened with it goes to a new one
+      match self.tools_url {
+        Some(u) if u != "" => self.host.tools_failed_url = Some(u)
+        _ => ()
+      }
       raise Failed("codex thread's connection to the station's tools failed")
+    }
+    if self.tools_url is Some(_) && self.host.tools_failed_url == self.tools_url {
+      self.host.tools_failed_url = None
     }
     if self.closed {
       raise Failed("codex session is closed")
@@ -3157,7 +3212,7 @@ pub fn remember_rollout(
   path : JValue,
 ) -> Later[String?] {
   guard path is Str(u) else { return Later::ok(m.lp, None) }
-  let p = @jsjson.text(u)
+  let p = @jsjson.sanitize_str(u)
   if !p.has_prefix("/") || id.contains("/") || id.contains("\\") || id.contains("\u{0}") {
     return Later::ok(m.lp, None)
   }

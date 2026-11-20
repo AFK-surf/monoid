@@ -25,7 +25,7 @@ function page() {
   const bindings = new Map<string, Set<(payload: string) => void>>();
   const scripts = new Map<string, string>();
   let next = 0;
-  function viewer() {
+  function viewer(opts: { passkeys?: boolean; ownPasskey?: (rpId: string) => boolean } = {}) {
     const session = `session-${++next}`;
     const listeners = new Set<(e: CdpEvent) => void>();
     const ownBindings = new Map<string, (payload: string) => void>();
@@ -33,7 +33,7 @@ function page() {
       send(method, params: any = {}, sid) {
         const promise = Promise.resolve().then(() => {
           assert.equal(sid, method === "Target.getTargetInfo" ? undefined : session);
-          if (method === "Runtime.enable") {
+          if (method === "Runtime.enable" || method === "Page.enable" || method === "Page.startScreencast") {
             return {};
           } else if (method === "Runtime.addBinding") {
             const heard = (payload: string) => { for (const f of listeners) f({ sessionId: session, method: "Runtime.bindingCalled", params: { name: params.name, payload } }); };
@@ -66,7 +66,8 @@ function page() {
       closed: new Promise(() => {}),
       close() {},
     };
-    const view = new TabView({ cdp, session, targetId: "tab", now: () => 0 });
+    const view = new TabView({ cdp, session, targetId: "tab", now: () => 0, ownPasskey: opts.ownPasskey });
+    if (opts.passkeys !== undefined) void view.start({ maxWidth: 1280, maxHeight: 720, codecs: ["jpeg"], passkeys: opts.passkeys }, { width: 1280, height: 720 });
     const heard: (PasskeyAsk | null)[] = [];
     const stop = view.watchPasskey(a => heard.push(a));
     return { view, heard, stop };
@@ -179,4 +180,76 @@ test("a page kept across an update replaces the legacy unowned hook without invo
   await p.settle();
   assert.equal(p.run("nativeCalls"), 1);
   assert.equal(p.run("legacyCalls"), 0);
+});
+
+test("silent conditional mediation is not intercepted, while large Google-sized challenges reach the viewer", async () => {
+  const p = page();
+  const v = p.viewer();
+  await p.settle();
+  assert.equal(await p.run("PublicKeyCredential.isConditionalMediationAvailable()"), false);
+  p.run(`navigator.credentials.get({ mediation: "conditional", publicKey: { rpId: "example.org", challenge: new Uint8Array([1, 2, 3]) } })`);
+  await p.settle();
+  assert.equal(v.heard.length, 0, "silent conditional autofill calls fall through without popping a card");
+  assert.equal(p.run("nativeCalls"), 1);
+  // Google's /v3/signin/challenge/pk sends a ~10 KB (~13,664 base64url chars) challenge.
+  p.run(`window.bigResult = "pending";
+    navigator.credentials.get({ publicKey: { rpId: "example.org", challenge: new Uint8Array(10248).fill(7) } })
+      .then(x => window.bigResult = x.id, e => window.bigResult = e.name);`);
+  await p.settle();
+  const ask = v.heard.at(-1)!;
+  assert.ok(ask && ask.clientData.length > 13_600);
+  await v.view.passkey({ id: ask.id, credential: "Y3JlZA", authenticatorData: "YQ", signature: "c2ln" });
+  await p.settle();
+  assert.equal(p.run("bigResult"), "Y3JlZA");
+  v.stop();
+  await p.settle();
+});
+
+test("a viewer without host passkeys never hangs credentials.get, settles pending device asks, and reports platform availability from vault passkeys alone", async () => {
+  const p = page();
+  p.run(`window.location = { hostname: "login.example.org" };
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);`);
+  // 1. Start with a passkey-capable viewer that leaves an assertion pending, then switch to a viewer without host passkeys.
+  const desktop = p.viewer({ passkeys: true });
+  await p.settle();
+  assert.equal(await p.run("PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()"), true);
+  p.run("ask()");
+  await p.settle();
+  assert.equal(desktop.heard.length, 1);
+  assert.equal(p.run("result"), "pending");
+
+  const phoneNoPasskey = p.viewer({ passkeys: false });
+  await p.settle();
+  assert.equal(desktop.heard.at(-1), null);
+  assert.equal(phoneNoPasskey.heard.length, 0, "viewer without host passkeys is never asked");
+  assert.equal(p.run("result"), "NotAllowedError", "pending request from earlier viewer settles instead of hanging");
+
+  // 2. Without a vault passkey for the site, platform availability is false (even if Chrome's empty virtual authenticator says true)
+  // and credentials.get rejects with NotAllowedError without invoking headful Chrome's OS WebAuthn dialog (nativeCalls === 0).
+  p.run(`PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(v => window.uvpa = v)`);
+  await p.settle();
+  assert.equal(p.run("uvpa"), false);
+  p.run("ask()");
+  await p.settle();
+  assert.equal(p.run("result"), "NotAllowedError");
+  assert.equal(p.run("nativeCalls"), 0, "must never trigger headful Chrome's hidden OS WebAuthn dialog");
+  assert.equal(phoneNoPasskey.heard.length, 0);
+
+  phoneNoPasskey.stop();
+  desktop.stop();
+  await p.settle();
+
+  // 3. With a vault passkey on the parent domain (example.org for login.example.org), platform availability is true
+  // and credentials.get delegates to Chrome's virtual authenticator (`{ browser: true }`).
+  const withVault = p.viewer({ passkeys: false, ownPasskey: (rp) => rp === "example.org" });
+  await p.settle();
+  p.run(`window.uvpa = "pending"; PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(v => window.uvpa = v)`);
+  await p.settle();
+  assert.equal(p.run("uvpa"), true);
+  p.run("ask()");
+  await p.settle();
+  assert.equal(p.run("result"), "native");
+  assert.equal(p.run("nativeCalls"), 1);
+  withVault.stop();
+  await p.settle();
 });

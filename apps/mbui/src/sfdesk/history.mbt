@@ -12,16 +12,22 @@
 priv struct HistoryOwn {
   shut : @signals.Signal[Bool]
   transcripts : Map[String, @signals.Signal[String?]]
-  opening : Map[String, @sfbase.PressWait]
+  opening : Map[String, (String, @sfbase.PressWait)]
 }
 
 ///|
 // kept across runs: put back as a run begins (history_reset)
-let history_own : HistoryOwn = { shut: @signals.signal(false, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+let history_own : HistoryOwn = { shut: @signals.signal(true, same=fn(a, b) { a == b }), transcripts: {}, opening: {} }
+
+///|
+/// Sets whether the wide history's details start folded (used by fixtures and tests inspecting unfolded details).
+pub fn set_history_shut(shut : Bool) -> Unit {
+  history_own.shut.set(shut)
+}
 
 ///|
 fn history_reset() -> Unit {
-  history_own.shut.set(false)
+  history_own.shut.set(true)
   history_own.transcripts.clear()
   history_own.opening.clear()
 }
@@ -36,9 +42,11 @@ let history_top_box : @ui.Style = @ui.css("w=Full bg=Bg")
 /// agent now: how it runs in one control and what needs seeing to beside it, 只看收发 and 详情 at its end; unfolded, its
 /// details under it, a line under them. What is said over what is pointed at, in `tips`.
 fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, tips : @sf.TipLayer) -> Unit {
-  let src = src.owned_by(v)
+  let (src, v_park) = src.owned_by_parkable(v)
+  v.on_rest(fn() { v_park(true) }, wake=fn() { v_park(false) }) |> ignore
   let station = r.station
-  let a = fn() { agent_json(src.topic("chat", chat_params(r)).get().value, key) }
+  let chat_held = @sfbase.topic_value_held(src, "chat", chat_params(r))
+  let a = fn() { agent_json(chat_held.get(), key) }
   v.box(fn(top) {
     @sf.style_node(top, fn() { history_top_box })
     top.shrink(Is(0.0)) |> ignore
@@ -58,12 +66,7 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
         // as 只看收发 and 详情 are, faded while asked; gone as it rests (2026-11-14: 「右侧需要有一个停止按钮」; not the
         // panel's bar, which is the panel's own, nor the card's round stop, which did not match these chips: 左子健,
         // 2026-11-17)
-        let working = fn() {
-          match text(a(), "status") {
-            "running" | "queued" => true
-            _ => false
-          }
-        }
+        let working = fn() { @sfpages.history_working(a()) }
         let stop_key = "stop/" + station + "/" + key
         k.show(at_once=true, working, fn(e) {
           let stop = @sf.press_chip_node(
@@ -120,6 +123,9 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
                 return
               }
               pressed.set(true)
+              if !src.read_only && (src.switches_ahead)() {
+                wh_transcript(src, station, key) |> ignore
+              }
               waiting.val = Some(
                 @sfpages.history_details_open(
                   src,
@@ -163,18 +169,11 @@ fn wh_summary_node(v : @view.View, a : () -> Json?, tips : @sf.TipLayer) -> Unit
 }
 
 ///|
-/// What 详情 reads as it is first drawn (all but the chat's agent, the head's), each as it is read by: its card, its
-/// station's machine, its figures (the quiet line's where the card has none), the stations' rows its station is named
-/// and marked from, what the core has under way. What its chip pressed asks first. (Where its runtime keeps the
-/// transcript is a call, asked once a run as the details are first made: wh_transcript_node.)
+/// What 详情 reads as it is first drawn (sfpages' history_details_asks: its figures the quiet line's where the card has
+/// none; what the core has under way, its context line's). What its chip pressed asks first. (Where its runtime keeps
+/// the transcript is a call, asked once a run as the details are first made: wh_transcript_node.)
 fn wh_details_asks(station : String, key : String) -> Array[(String, Map[String, Json])] {
-  [
-    @sfpages.agent_card_ask(station, key),
-    @sfpages.history_host_ask(station),
-    @sfpages.history_ask(station, key),
-    @sfbase.station_rows_ask(scope_of(station)),
-    @sfbase.doing_ask(),
-  ]
+  @sfpages.history_details_asks(station, key, doing=true)
 }
 
 ///|
@@ -195,14 +194,15 @@ fn wh_details_node(
   let (card_topic, card_params) = @sfpages.agent_card_ask(station, key)
   // (what 详情 pressed asked, handed to them till they have read it: sfbase's shown_read)
   let at = @sfpages.history_details_at(station, key)
+  let card_held = @sfbase.topic_value_held(src, card_topic, card_params)
   let card = fn() {
-    let c = src.topic(card_topic, card_params).get().value
+    let c = card_held.get()
     @sfbase.shown_read(at)
     c
   }
   let (host_topic, host_params) = @sfpages.history_host_ask(station)
-  let host_held = @sfbase.hold(src, @sfbase.history_scope(station, key), host_topic, host_params)
-  let host = fn() { host_held.get().value }
+  let host_held = @sfbase.topic_value_held(src, host_topic, host_params)
+  let host = fn() { host_held.get() }
   let compacts = fn() { flag(s(), "canCompact") }
   let clears = fn() { flag(s(), "canClear") }
   // (what is under way and what failed a moment ago, as the core's `doing` says: useContextActions)
@@ -289,9 +289,8 @@ fn wh_details_node(
       )
     })
     // the station it runs on, what runs low on it at its end
-    let look = fn() {
-      @sfbase.station_marks(src, scope_of(station)).iter().find_first(fn(x) { x.address == station })
-    }
+    let look_held = @sfbase.station_mark_held(src, station)
+  let look = fn() { look_held.get() }
     wh_line_node(
       d,
       fn(m) {
@@ -331,7 +330,12 @@ fn wh_details_node(
         |> ignore
       },
       fn(e) {
-        let low = fn() { items(host(), "meters").filter(fn(m) { text(Some(m), "level") != "ok" }) }
+        // (as this device says a CPU: idle or busy, @settings.meters_said)
+        let low = fn() {
+          @settings.meters_said(items(host(), "meters"), @settings.cpu_busy_of(src.topic("prefs", {}).get().value)).filter(fn(m) {
+            text(Some(m), "level") != "ok"
+          })
+        }
         e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sf.meter_chips_node(x, low, tips~) })
       },
     )
@@ -387,27 +391,29 @@ fn wh_evict_node(v : @view.View, src : Source, station : String, key : String, t
 }
 
 ///|
-/// Agent `key`'s history opened in chat `r`'s side panel (its mark pressed: side_toggle): where its runtime keeps the
-/// transcript asked of `src` now (wh_transcript, the one thing its first screen asks by a call, not a topic), the chat
-/// as it is meanwhile; once it is answered (at once where it is already, a path or none), `open` puts it in front,
-/// whole: its line is there from its first frame or never, nothing pushed down under the head after it opened (the
-/// coordinator of the migration, 2026-11-14: over a core 120 or 400 ms late the line came in 28 under the head ~270 ms
-/// after the panel opened). Given up (press_wait: the page left, the workspace switched, something else put up; or its
-/// mark pressed again meanwhile, which then does nothing more). Made in the press's handler; a replay of a run from
-/// before asks nothing ahead (opened at once, the line coming as it did).
+/// Agent `key`'s history opened in chat `r`'s side panel (its mark or activity row pressed: side_toggle): asks `src`
+/// for the runtime transcript path (wh_transcript) and waits at most `@sf.open_hold_ms` before calling `open`, so a
+/// fast answer avoids a post-open row shift while a slow or offline station never blocks opening. Pressing the same
+/// agent again while waiting opens it immediately instead of cancelling; pressing another agent cancels the first wait
+/// and opens the new one. A replay of an older run skips the wait.
 fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit) -> Unit {
   let chat = chat_key(r)
   match history_own.opening.get(chat) {
-    Some(w) => {
+    Some((was_key, w)) => {
       history_own.opening.remove(chat)
       if w.waiting() {
+        if was_key == key {
+          w.end()
+          open()
+          return
+        }
         w.give_up()
-        return
       }
     }
     None => ()
   }
-  if src.read_only || !(src.switches_ahead)() {
+  // When details are folded (the default), the transcript line is not on screen, so open immediately.
+  if history_own.shut.untracked() || src.read_only || !(src.switches_ahead)() {
     open()
     return
   }
@@ -419,9 +425,10 @@ fn history_side_open(src : Source, r : ChatRef, key : String, open : () -> Unit)
       open()
     },
     let_go=fn() { history_own.opening.remove(chat) },
+    most=@sf.open_hold_ms,
   )
   if w.waiting() {
-    history_own.opening[chat] = w
+    history_own.opening[chat] = (key, w)
   }
 }
 
@@ -436,11 +443,13 @@ fn wh_transcript(src : Source, station : String, key : String) -> @signals.Signa
       let p : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
       history_own.transcripts[me] = p
       (src.call)("session.transcript", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
-        match res {
-          Ok(j) => p.set(Some(text(Some(j), "path")))
-          // not written yet, or a station from before it: nothing said
-          Err(_) => p.set(Some(""))
-        }
+        @view.answering(fn() {
+          match res {
+            Ok(j) => p.set(Some(text(Some(j), "path")))
+            // not written yet, or a station from before it: nothing said
+            Err(_) => p.set(Some(""))
+          }
+        })
       })
       p
     }
@@ -537,12 +546,9 @@ fn wh_line_node(
 let wh_mark_side : Double = 16.0
 
 ///|
-/// A station's workspace, from its address (ws/station).
+/// A station's workspace, from its address (ws/station: sfpages' history_station_scope).
 fn scope_of(station : String) -> String {
-  match station.find("/") {
-    Some(i) => station.exact_view(end=i).to_owned()
-    None => station
-  }
+  @sfpages.history_station_scope(station)
 }
 
 ///|

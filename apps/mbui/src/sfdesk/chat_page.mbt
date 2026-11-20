@@ -33,6 +33,8 @@ fn chat_page_reset() -> Unit {
   chat_pops.jobs = 0
   chat_jobs_wait.val = None
   side_front_wait.val = None
+  side_under_chat.val = ""
+  side_unseen.set("")
 }
 
 ///|
@@ -114,8 +116,9 @@ pub fn chat_find_open(r : ChatRef) -> Unit {
 }
 
 ///|
-/// The chat `r` in the pane; its bar the page node's (chat_bar_wide_node), its room alone here.
-fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
+/// The chat `r` in the pane; its bar the page node's (chat_bar_wide_node), its room alone here. `tape`: the frame lays
+/// it out on the tape (the new chat it became leaving over it as there: new_chat_after).
+fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tape? : Bool = false) -> Unit {
   let chat = src.topic("chat", chat_params(r)).get().value
   let view = view_of_chat(src, r).0
   let key = chat_key(r)
@@ -165,7 +168,7 @@ fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
   })
   |> ignore
   // the new chat it became leaving over it, or one left for it fading over it (newchat.mbt)
-  new_chat_after(c, src, w, r)
+  new_chat_after(c, src, w, r, tape~)
 }
 
 ///|
@@ -504,7 +507,7 @@ fn bar_popovers(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatV
   }
   // (its ⋯ in the system's bars: from the mark where it was chosen, rail_native.mbt; its button the bar node's, beside
   // it where it is: chat_bar_by)
-  let (info_at, info_side, info_along) = bar_anchor(c.id("chat-info"), Bottom, End)
+  let (info_at, info_side, info_along) = bar_anchor(Bottom, End)
   // (closed by what was pressed in it; dismissed by the hand, Escape or a press outside it and its button, at that
   // moment)
   c.with_dismissed(fn(_) { chat_own.info_open.set(false) }, fn() {
@@ -527,7 +530,7 @@ fn bar_popovers(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatV
 /// The chat's services' popover (JobsPanel), by its button.
 fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
   // (its button in the system's bars: from the mark where it was chosen, rail_native.mbt)
-  let (at, side, along) = bar_anchor(c.id("chat-jobs"), Bottom, End)
+  let (at, side, along) = bar_anchor(Bottom, End)
   @sf.popover_from(
     c,
     "chat-jobs-pop",
@@ -552,13 +555,14 @@ fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
-/// What a popover of the bar opens beside (`at`: bar_anchor's, the system's bars' mark where they have it, else `own`,
-/// the page's own button's id): its button in the bar's node (`node`, while it is made), where that is as it is drawn
-/// (@sf.popover_from); else what bar_anchor says.
-fn chat_bar_by(at : Int, own : Int, node : @view.View?) -> @sf.Beside {
-  match node {
-    Some(v) if at == own && v.alive() => Node(v)
-    _ => Of(at)
+/// What a popover of the bar opens beside (`at`: bar_anchor's, the system's bars' mark where they have it, else the
+/// page's own button, `own` its id): its button in the bar's node (`node`, while it is made), where that is as it is
+/// drawn (@sf.popover_from); else its id.
+fn chat_bar_by(at : @view.View?, own : Int, node : @view.View?) -> @sf.Beside {
+  match (at, node) {
+    (Some(m), _) => Node(m)
+    (None, Some(v)) if v.alive() => Node(v)
+    _ => Of(own)
   }
 }
 
@@ -1172,7 +1176,7 @@ let jobs_alarm_restart : @ui.Style = @ui.css("w=S2_5 h=S2_5 radius=Full bg=Warn 
 /// 28 high and 6 apart, as far from the next as the rows under them are (32 and 2: pengxiao, 2026-10-25, the panel's
 /// rows unevenly apart).
 // kept across runs: a value (no field of it changes)
-let info_facts : @ui.Style = @ui.css("w=Full px=S2_5 gap=S1_5")
+let info_facts : @ui.Style = @ui.css("w=Full px=S4 gap=S1_5")
 
 ///|
 let info_fact_h : Double = 28.0
@@ -1213,7 +1217,7 @@ let info_inline : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 ///|
 /// Its agents (detailsList): 8 under the facts, each its mark and label over its line, 2 apart.
 // kept across runs: a value (no field of it changes)
-let info_agents : @ui.Style = @ui.css("w=Full px=S2_5 pt=S2 gap=S1_5")
+let info_agents : @ui.Style = @ui.css("w=Full px=S4 pt=S2 gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

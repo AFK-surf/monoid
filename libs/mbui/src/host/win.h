@@ -54,6 +54,8 @@ int mb_render_init(void *hwnd);
 int mb_render_open(int wid, void *hwnd);
 void mb_render_use(int wid);
 void mb_render_forget(int wid);
+// what drawing holds beyond its frames given back (a window minimized or hidden), made again as it draws
+void mb_render_trim(void);
 // the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
 // presented, not after each window's: two windows drawing on did not halve their rate
 void mb_render_pace(void);

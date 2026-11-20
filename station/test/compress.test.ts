@@ -29,13 +29,55 @@ test("a whole JSON answer is compressed for a client that asks so, and only then
   assert.equal(await compressed(small, asks, "/threads/1"), small);
 });
 
-test("several reads in one are compressed harder: nobody waits on them", async () => {
-  const pages = Array.from({ length: 40 }, (_, p) => ({ status: 200, body: { last: 50, entries: Array.from({ length: 50 }, (_, i) => ({ n: i + 1, thread: p, kind: "message", authorKind: i % 2 ? "agent" : "person", author: i % 2 ? "chat:c-00be6a2584" : "a@x.com", text: `第 ${p}.${i} 条：${"部署 station 之后看日志 ".repeat(1 + ((p * 7 + i) % 5))}${(p * 131 + i * 17) % 997}`, attachments: [], quotes: [], at: 1791478600000 + p * 1000 + i })) } }));
+const pages = Array.from({ length: 40 }, (_, p) => ({ status: 200, body: { last: 50, entries: Array.from({ length: 50 }, (_, i) => ({ n: i + 1, thread: p, kind: "message", authorKind: i % 2 ? "agent" : "person", author: i % 2 ? "chat:c-00be6a2584" : "a@x.com", text: `第 ${p}.${i} 条：${"部署 station 之后看日志 ".repeat(1 + ((p * 7 + i) % 5))}${(p * 131 + i * 17) % 997}`, attachments: [], quotes: [], at: 1791478600000 + p * 1000 + i })) } }));
+
+test("several reads in one are compressed whole at the fast level, as any answer", async () => {
   const answer = json({ answers: pages });
   const batch = await compressed(answer, asks, "/batch");
   const one = await compressed(answer, asks, "/threads/1/entries");
   assert.deepEqual(JSON.parse(zstdDecompressSync(batch.body as Buffer).toString()), { answers: pages });
-  assert.ok((batch.body as Buffer).length < (one.body as Buffer).length, `${(batch.body as Buffer).length} < ${(one.body as Buffer).length}`);
+  assert.deepEqual(batch.body, one.body);
+  assert.ok((batch.body as Buffer).length < (answer.body as Buffer).length / 5);
+});
+
+test("a batch's answers a line at a time are compressed line by line, each whole as it arrives, and let go of at once", async () => {
+  // (admin.ts `batchLines`: one page read, one line given; the next page not read yet)
+  const lines = pages.map((p) => `${JSON.stringify(p)}\n`);
+  let at = 0;
+  let let_go = false;
+  const source: AsyncIterableIterator<Buffer> = {
+    [Symbol.asyncIterator]: () => source,
+    next: async () => (at < lines.length ? { done: false, value: Buffer.from(lines[at++]!) } : new Promise(() => {})),
+    return: async () => {
+      let_go = true;
+      return { done: true, value: undefined };
+    },
+  };
+  const sent = await compressed({ status: 200, headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" }, body: source }, asks, "/batch");
+  assert.equal(sent.headers["content-encoding"], ZSTD);
+  const it = (sent.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  const read = createZstdDecompress();
+  // (as bytes: a page's Chinese is split across the pieces it is decompressed in)
+  const got: Buffer[] = [];
+  read.on("data", (part: Buffer) => got.push(part));
+  let sentBytes = 0;
+  let raw = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const next = await it.next();
+    assert.equal(next.done, false);
+    sentBytes += next.value.length;
+    raw += Buffer.byteLength(lines[i]!);
+    await new Promise((resolve) => read.write(next.value, resolve));
+    // Each line reads whole as it comes, none waiting for the next page.
+    const text = Buffer.concat(got).toString();
+    assert.equal(text, lines.slice(0, i + 1).join(""));
+    assert.deepEqual(JSON.parse(text.trimEnd().split("\n").at(-1)!), pages[i]);
+  }
+  // (each page against the pages before it)
+  assert.ok(sentBytes < raw / 5, `${sentBytes} < ${raw} / 5`);
+  read.close();
+  await it.return?.();
+  assert.equal(let_go, true);
 });
 
 test("an event stream is compressed event by event, each whole as it arrives, and let go of at once", async () => {

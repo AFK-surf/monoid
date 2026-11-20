@@ -35,7 +35,7 @@ pub fn ModelChoice::of_j(v : J?) -> ModelChoice? {
       Some({
         runtime: r,
         model: match at(v, "model") {
-          Some(Str(u)) => Some(@jsjson.text(u))
+          Some(Str(u)) => Some(@jsjson.sanitize_str(u))
           _ => None
         },
       })
@@ -67,8 +67,8 @@ pub fn model_value(choice : ModelChoice) -> String {
 /// An option's value as a model (None: not one): `String(value)` read as JSON.
 pub fn model_of(value : J?) -> ModelChoice? {
   match (try Ok(parse(js_str(value))) catch { e => Err(e) }) {
-    Ok(Arr([Str(r), Null])) if r.length() > 0 => Some({ runtime: @jsjson.text(r), model: None })
-    Ok(Arr([Str(r), Str(m)])) if r.length() > 0 => Some({ runtime: @jsjson.text(r), model: Some(@jsjson.text(m)) })
+    Ok(Arr([Str(r), Null])) if r.length() > 0 => Some({ runtime: @jsjson.sanitize_str(r), model: None })
+    Ok(Arr([Str(r), Str(m)])) if r.length() > 0 => Some({ runtime: @jsjson.sanitize_str(r), model: Some(@jsjson.sanitize_str(m)) })
     _ => None
   }
 }

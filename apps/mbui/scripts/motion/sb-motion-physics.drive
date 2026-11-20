@@ -1,0 +1,19 @@
+wait 200
+tap 模拟左拉过界
+wait 300
+tap 松手回弹
+wait 500
+tap 左锚点
+wait 450
+tap 右锚点
+wait 450
+tap 中锚点
+wait 450
+wheelat 320 中锚点
+wait 200
+tap 轻拉回弹
+wait 450
+tap 快甩关闭
+wait 450
+tap 恢复卡片
+wait 500

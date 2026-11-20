@@ -284,7 +284,13 @@ class Portal:
     def input(self, event):
         if (event.get("t") == "pointer" and event.get("kind") == "move" and self.inputs
                 and self.inputs[-1].get("t") == "pointer" and self.inputs[-1].get("kind") == "move"
-                and self.inputs[-1].get("buttons") == event.get("buttons")):
+                and self.inputs[-1].get("buttons") == event.get("buttons")
+                and self.inputs[-1].get("relative") is event.get("relative")):
+            if event.get("relative") is True:
+                # (relative moves add up: none of them is lost)
+                last = self.inputs[-1]
+                event = dict(event, dx=float(last.get("dx", 0)) + float(event.get("dx", 0)),
+                             dy=float(last.get("dy", 0)) + float(event.get("dy", 0)))
             self.inputs[-1] = event
         else:
             self.inputs.append(event)
@@ -467,7 +473,12 @@ class Portal:
         if not self.started or not self.logical:
             return
         kind = event.get("t")
-        if kind in ("pointer", "wheel"):
+        if kind == "pointer" and event.get("relative") is True:
+            # Only as far as it moved, wherever the pointer is (an app holding it, a controller's stick).
+            dx, dy = float(event.get("dx", 0)), float(event.get("dy", 0))
+            if dx or dy:
+                self.notify("NotifyPointerMotion", "(oa{sv}dd)", [dx, dy])
+        elif kind in ("pointer", "wheel") and float(event.get("x", 0)) >= 0:
             x = min(1.0, max(0.0, float(event.get("x", 0)))) * self.logical[0]
             y = min(1.0, max(0.0, float(event.get("y", 0)))) * self.logical[1]
             self.notify("NotifyPointerMotionAbsolute", "(oa{sv}udd)", [self.stream, x, y])

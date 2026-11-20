@@ -5,7 +5,8 @@
 ///|
 test "a link in a message left still with a mouse: the hand over it, its right click the link's menu alone" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
+  // (the old page's rows kept as built, what stable keeps)
+  let t = wide_tester(calls, mode="chat", before=fn(_) { @sfbase.hold_chat_page_nodes(Some(false)) })
   t.check_looks(false)
   t.drawn_again(true)
   let link = "example.com/bench/list"
@@ -42,7 +43,7 @@ test "a link in a message left still with a mouse: the hand over it, its right c
 /// it as it was built: ` marks `) at each of eight moments, built as a host builds, the rows kept (`again`) or built
 /// every frame; and how many rows were kept in all.
 fn kept_link_hits(mode : String, again : Bool, w : Double, h : Double) -> (Array[Array[String]], Int) {
-  let t = kept_rows_open(mode, w, h)
+  let t = kept_rows_open(mode, w, h, old=true)
   t.check_looks(false)
   t.set_rows_on_pixels(true)
   t.drawn_again(again)
@@ -102,7 +103,7 @@ test "a link in a message left still on a phone, held by a finger: its menu, no 
   t.release(x + w / 2.0, y + h / 2.0)
   assert_eq(t.opened().length(), 0)
   // (its menu, the presenters': a sheet with a finger, in)
-  t.run_for(@kit.sheet_rest("sf-present") - t.time())
+  t.run_for(@sf.presented_rest() - t.time())
   let came = t.words().map(fn(w) { w.0 })
   assert_true(came.contains("打开链接") && came.contains("复制链接"), msg="\{Repr(came)}")
   assert_eq(t.haptics(), [@ui.Haptic::LongPress])

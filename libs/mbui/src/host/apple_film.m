@@ -14,6 +14,9 @@
 #include "moonbit.h"
 
 void mb_render_init_offscreen(double w, double h, double scale);
+void mb_render_set_size(double w, double h, double scale);
+void mb_text_set_scale(double scale);
+void mb_host_render_dirty(double x, double y, double w, double h);
 uint8_t *mb_render_read(const double *inst, int32_t count, double r, double g, double b, int *w, int *h);
 int mb_render_snapshot(const char *path);
 int mb_render_snapshot_transparent(const char *path);
@@ -267,6 +270,12 @@ int32_t mbf_snapshot(moonbit_string_t path) {
 int32_t mbf_snapshot_transparent(moonbit_string_t path) {
   @autoreleasepool { return snapshot_to(path, 1); }
 }
+
+// (film here: what it asks of the renderer through calls of its own, which src/host/film_none.c answers elsewhere)
+int32_t mbf_supported(void) { return 1; }
+void mbf_set_view(double w, double h, double scale) { mb_render_set_size(w, h, scale); }
+void mbf_text_scale(double scale) { mb_text_set_scale(scale); }
+void mbf_dirty(double x, double y, double w, double h) { mb_host_render_dirty(x, y, w, h); }
 
 // The machine's clock (ms, monotonic): what a bench over a Tester times the frame's work by (src/film's bench; the
 // run's own clock is the Tester's).

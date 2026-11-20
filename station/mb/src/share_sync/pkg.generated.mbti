@@ -27,8 +27,6 @@ pub fn decode_uri_component(String) -> String raise
 
 pub fn error_words(Error) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn iso_string(Double) -> String
 
 pub fn js_stringify(@json.Json) -> String

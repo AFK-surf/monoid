@@ -229,7 +229,8 @@ test "下方栏, at each width on either screen: its bars a card each, the one i
     // a place's "−" takes it off its bar
     assert_true(t.query(Button, label="从此栏移除Station") is Some(_), msg=at)
     t.click(Button, label="从此栏移除Station")
-    t.frame()
+    // (its row leaves the list card as a row goes: gone once that is done)
+    t.run_for(@ui.move_most_ms)
     assert_true(t.query(Button, label="从此栏移除Station") is None, msg=at)
   }
 }

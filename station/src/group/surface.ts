@@ -18,9 +18,9 @@
 // the stream's live state (`POST /spaces/<id>/live`, gone once it ends), whose Stop (`stop` on the stream) stops the
 // turn; and a secret a member hands it end to end (`im-secret/1` to this device, or the anchor's `secret` in passing)
 // reaches the session as a file of its uploads, never in a message's words, a log or what the station keeps.
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
-import type { KeyObject } from "node:crypto";
+import { type KeyObject, createHash, randomBytes } from "node:crypto";
 import { type Clock, Effect } from "effect";
 import type { CardEnd } from "../connects/card-ends.ts";
 import type { BotIdentity } from "../connects/connections.ts";
@@ -54,8 +54,19 @@ type Topic = { title: string; by: string; branchedFrom: string };
 const CHARS_MOST = 10_000;
 /// The most files one message carries (the anchor's `files_most`).
 const FILES_MOST = 10;
-/// The largest file an anchor takes (32 MiB): a larger one is refused here before it is read.
-const FILE_MOST = 32 * 1024 * 1024;
+/// The largest file an anchor takes (512 MiB, its `file_most`): a larger one is refused here before it is read.
+export const FILE_MOST = 512 * 1024 * 1024;
+/// A file larger than this goes a piece of this at a time (`im/2` wave 4): its SHA-256 worked out as it is read, then
+/// put from what the anchor has of it already on, so neither side holds more of it than a piece.
+export const PIECE = 1024 * 1024;
+/// The largest file an anchor from before pieces takes, whole in one ask.
+const WHOLE_MOST = 32 * 1024 * 1024;
+/// How much of a file's head is read for a picture's size.
+const HEAD = 256 * 1024;
+/// So many answers in a row that take nothing more of a file before it is given up.
+const STALLED_MOST = 3;
+/// A topic's title, at most (the anchor's `space_name_most`).
+const TITLE_MOST = 60;
 /// The most options a decision has, and the longest its label, the line under it, a field's hint and a live state's
 /// words are (the anchor's `options_most`, `option_most`; its live state's 200).
 const OPTIONS_MOST = 8;
@@ -130,6 +141,37 @@ export const streamKey = (space: string, topic: string) => (topic === LOBBY || t
 const filesOf = (v: unknown): FileRef[] =>
   (Array.isArray(v) ? v : []).filter((f) => typeof f?.sha256 === "string" && /^[0-9a-f]{64}$/.test(f.sha256)).map((f) => ({ sha256: f.sha256, name: typeof f.name === "string" ? f.name : "", mime: typeof f.mime === "string" ? f.mime : "", size: typeof f.size === "number" ? f.size : 0, ...(f.width > 0 && f.height > 0 ? { width: f.width, height: f.height } : {}) }));
 const text = (v: unknown) => (typeof v === "string" ? v : "");
+/// What came of a file put a piece at a time, as the anchor answers it (`{have}`; 0 where it says none).
+const haveOf = (body: Buffer): number => {
+  try {
+    const have = JSON.parse(body.toString())?.have;
+    return typeof have === "number" && Number.isSafeInteger(have) && have >= 0 ? have : 0;
+  } catch {
+    return 0;
+  }
+};
+/// A character the anchor takes in no name (roster.mbt `unseen`): a control or format character, a line or paragraph
+/// separator, half of a pair.
+const unseen = (v: number) =>
+  v < 0x20 || (v >= 0x7f && v <= 0x9f) || v === 0xad || (v >= 0x600 && v <= 0x605) || v === 0x61c || v === 0x6dd || v === 0x70f || v === 0x180e ||
+  (v >= 0x200b && v <= 0x200f) || (v >= 0x2028 && v <= 0x202e) || (v >= 0x2060 && v <= 0x2064) || (v >= 0x2066 && v <= 0x206f) || v === 0xfeff ||
+  (v >= 0xfff9 && v <= 0xfffb) || (v >= 0xd800 && v <= 0xdfff) || v === 0xe0001 || (v >= 0xe0020 && v <= 0xe007f);
+/// A topic's title as the anchor takes one (roster.mbt `name_of`): a control character a space, what else is not seen
+/// left out, trimmed, 60 characters at most; "" where nothing is left.
+export function topicTitle(title: string): string {
+  const kept = Array.from(title).flatMap((c) => {
+    const v = c.codePointAt(0)!;
+    return v < 0x20 ? [" "] : unseen(v) ? [] : [c];
+  });
+  const trim = (cs: string[]) => {
+    let a = 0;
+    let b = cs.length;
+    while (a < b && cs[a] === " ") a++;
+    while (b > a && cs[b - 1] === " ") b--;
+    return cs.slice(a, b);
+  };
+  return trim(trim(kept).slice(0, TITLE_MOST)).join("");
+}
 
 /// What the agent does, as the stream's live state: said to the anchor as it changes (and again while it stands, so
 /// the anchor keeps it), taken back ("done") as the turn ends.
@@ -181,6 +223,8 @@ export type GroupSurfaceOptions = {
   staleMs?: number;
   backoffMs?: number;
   onHeard?: () => void;
+  /// 16 hex: a topic's id drawn (tests: one of theirs).
+  topicId?: () => string;
 };
 
 export class GroupSurface extends ConnectedSurface {
@@ -195,6 +239,7 @@ export class GroupSurface extends ConnectedSurface {
   private readonly linkStaleMs: number;
   private readonly heardHook: () => void;
   private readonly clockOf: Clock.Clock | undefined;
+  private readonly topicId: () => string;
   private readonly key: KeyObject;
   /// This device (the key's public half).
   readonly deviceId: string;
@@ -250,6 +295,7 @@ export class GroupSurface extends ConnectedSurface {
     this.linkStaleMs = options.staleMs ?? STALE_MS;
     this.heardHook = options.onHeard ?? (() => {});
     this.clockOf = options.clock;
+    this.topicId = options.topicId ?? (() => randomBytes(8).toString("hex"));
     this.key = signingKey(options.key);
     this.deviceId = deviceOfKey(this.key);
     this.link = new GroupLink({ endpoints: options.endpoints, secretKey: Buffer.from(options.key, "hex"), server: options.server, relays: options.relays, ...(options.ips ? { ips: options.ips } : {}) });
@@ -764,16 +810,55 @@ export class GroupSurface extends ConnectedSurface {
     return turn;
   }
 
+  /// A file put into a space: whole in one ask where it is one piece at most, else a piece at a time (`PIECE`), from
+  /// what the anchor has of it already on (`GET /spaces/<id>/uploads/<sha256>`); nothing of it held but a piece.
   private async upload(space: string, file: Attachment): Promise<FileRef> {
     const size = (await stat(file.path)).size;
     if (size > FILE_MOST) throw new Error(`${file.name} is ${size} bytes, more than the anchor takes (${FILE_MOST})`);
-    const bytes = await readFile(file.path);
-    const shape = imageSize(bytes);
-    const query = `name=${encodeURIComponent(file.name)}&mime=${encodeURIComponent(mimeOf(file.name))}${shape === null ? "" : `&width=${shape.width}&height=${shape.height}`}`;
-    const answer = await this.link.ask("POST", `/spaces/${encodeURIComponent(space)}/files?${query}`, bytes);
-    const got = answer.status < 300 ? filesOf([JSON.parse(answer.body.toString())?.file])[0] : undefined;
-    if (got === undefined) throw new Error(`the anchor did not take ${file.name} (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
-    return got;
+    const handle = await open(file.path, "r");
+    try {
+      const piece = Buffer.alloc(Math.min(Math.max(size, 1), PIECE));
+      const read = async (at: number, n: number): Promise<Buffer> => {
+        let got = 0;
+        while (got < n) {
+          const { bytesRead } = await handle.read(piece, got, n - got, at + got);
+          if (bytesRead === 0) break;
+          got += bytesRead;
+        }
+        if (got !== n) throw new Error(`${file.name} changed as it was read`);
+        return piece.subarray(0, n);
+      };
+      const shape = imageSize(Buffer.from(await read(0, Math.min(size, HEAD, piece.length))));
+      const files = `/spaces/${encodeURIComponent(space)}/files?name=${encodeURIComponent(file.name)}&mime=${encodeURIComponent(mimeOf(file.name))}`;
+      const sides = shape === null ? "" : `&width=${shape.width}&height=${shape.height}`;
+      const took = (answer: { status: number; body: Buffer }): FileRef => {
+        const got = answer.status === 200 || answer.status === 201 ? filesOf([JSON.parse(answer.body.toString())?.file])[0] : undefined;
+        if (got === undefined) throw new Error(`the anchor did not take ${file.name} (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
+        return got;
+      };
+      if (size <= PIECE) return took(await this.link.ask("POST", `${files}${sides}`, Buffer.from(await read(0, size))));
+      const hash = createHash("sha256");
+      for (let at = 0; at < size; at += PIECE) hash.update(await read(at, Math.min(PIECE, size - at)));
+      const sha = hash.digest("hex");
+      const asked = await this.link.ask("GET", `/spaces/${encodeURIComponent(space)}/uploads/${sha}`);
+      if (asked.status !== 200) {
+        // (an anchor from before pieces: what it takes whole, in one ask)
+        if (size > WHOLE_MOST) throw new Error(`${file.name} is ${size} bytes, more than this anchor takes (${WHOLE_MOST}): it takes larger files once it is updated`);
+        return took(await this.link.ask("POST", `${files}${sides}`, await readFile(file.path)));
+      }
+      let have = haveOf(asked.body);
+      for (let stalled = 0; ; ) {
+        const at = Math.min(have, size);
+        const answer = await this.link.ask("POST", `${files}&sha256=${sha}&size=${size}&from=${at}${sides}`, Buffer.from(await read(at, Math.min(PIECE, size - at))));
+        if (answer.status !== 202 && answer.status !== 409) return took(answer);
+        const now = haveOf(answer.body);
+        stalled = now === have ? stalled + 1 : 0;
+        if (stalled > STALLED_MOST) throw new Error(`the anchor took none of ${file.name} after ${have} of its ${size} bytes`);
+        have = now;
+      }
+    } finally {
+      await handle.close();
+    }
   }
 
   /// The agent's words and its files, as one message where they fit, a card as a decision (its words where the anchor
@@ -923,9 +1008,9 @@ export class GroupSurface extends ConnectedSurface {
     }
   }
 
-  /// The spaces (not direct ones) it is in.
+  /// The spaces (not direct ones) it is in: a chat relayed to one goes on in a topic of its own there (`begin`).
   async places(): Promise<Place[]> {
-    return [...this.spaceRows.values()].filter((s) => s.kind === "space").map((s) => ({ id: s.id, name: s.name || s.id, kind: "group" as const }));
+    return [...this.spaceRows.values()].filter((s) => s.kind === "space").map((s) => ({ id: s.id, name: s.name || s.id, kind: "space" as const }));
   }
 
   async peopleIn(channel: string): Promise<Member[]> {
@@ -933,9 +1018,17 @@ export class GroupSurface extends ConnectedSurface {
     return (this.spaceRows.get(channel)?.members ?? []).filter((m) => m !== this.botUserId()).map((m) => ({ id: m, name: this.members.get(m) ?? m }));
   }
 
-  /// The space's lobby from now on, begun with `message`.
-  async begin(channel: string, message: string): Promise<{ thread: ThreadRef; ts: string }> {
-    const thread = threadOf(channel, LOBBY);
+  /// A topic of its own opened in the space (`topic.open`, called `title`), begun with `message`: the conversation from
+  /// now on, `<space>/<topic>`. Where the anchor takes no topic of the station's, the space's lobby.
+  async begin(channel: string, message: string, title = ""): Promise<{ thread: ThreadRef; ts: string }> {
+    const topic = `t_${this.topicId()}`;
+    const opened = await this.say(channel, topic, "topic.open", { topic, title: topicTitle(title) || "still.fail" });
+    if ("refused" in opened) {
+      log.warn("group", "a topic not opened for a relayed chat: its space's lobby instead", { connect: this.connect, space: channel, why: opened.refused });
+      const lobby = threadOf(channel, LOBBY);
+      return { thread: lobby, ts: await this.post(lobby, message, []) };
+    }
+    const thread = threadOf(channel, topic);
     return { thread, ts: await this.post(thread, message, []) };
   }
 

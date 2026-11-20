@@ -273,7 +273,7 @@ fn page_sizes(v : @view.View, key : String, close : () -> Unit) -> Unit {
         }
         room.show(tools_shown, fn(tools) {
           @sf.style_node(tools, fn() { sizes_tools })
-          @sf.panel_switch_noted_node(
+          @sf.panel_switch_row_node(
             tools,
             fn() { svc("android-chat.preview.move") },
             fn() { x.moving.get() },
@@ -296,6 +296,8 @@ fn page_sizes(v : @view.View, key : String, close : () -> Unit) -> Unit {
           tools.show(
             fit_shown,
             fn(b) {
+              // (in by a row's padding: the switch over it lays out its own, panel_switch_row_node)
+              @sf.style_node(b, fn() { sizes_fit })
               @sf.button_node(
                 b,
                 fn() { svc("android-chat.preview.fitView") },
@@ -379,7 +381,12 @@ let size_name_on : @ui.TextStyle = @ui.text_style(weight=Medium, wrap=false)
 ///|
 /// Moving and fitting under 自定义, 12 under it, 8 apart.
 // kept across runs: a value (no field of it changes)
-let sizes_tools : @ui.Style = @ui.css("w=Full pt=S3 px=S2_5 gap=S2")
+let sizes_tools : @ui.Style = @ui.css("w=Full pt=S3 gap=S2")
+
+///|
+/// Fitting under moving: a row's padding in.
+// kept across runs: a value (no field of it changes)
+let sizes_fit : @ui.Style = @ui.css("w=Full px=S2_5")
 
 ///|
 /// The turn key's icon.
@@ -525,21 +532,20 @@ fn custom_turn_node(parent : @view.View, p : ServicePage, key : String) -> Unit 
     }
   }
   let label = fn() { @sf.t("web-main.viewport.turn") }
-  parent.box(fn(k) {
+  let turn = fn(k : @view.View) {
+    match p.viewport.get() {
+      Some({ width, height: Some(h) }) => {
+        let size : Viewport = { width: h, height: Some(width) }
+        p.view.fit_now(at=k.cause_at())
+        p.viewport.set(Some(size))
+        keep_size(key, Some(size))
+      }
+      _ => ()
+    }
+  }
+  @sf.action_box_node(parent, label, turn, disabled=fn() { !turnable() }, fn(k) {
     @sf.style_node(k, fn() { custom_turn })
     k.alpha(By(fn() { if turnable() { 1.0 } else { @ui.Opacity::O35.value() } })) |> ignore
-    @sf.presses_node(k, on=turnable, fn() {
-      match p.viewport.get() {
-        Some({ width, height: Some(h) }) => {
-          let size : Viewport = { width: h, height: Some(width) }
-          p.view.fit_now(at=k.cause_at())
-          p.viewport.set(Some(size))
-          keep_size(key, Some(size))
-        }
-        _ => ()
-      }
-    })
-    k.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
     @sf.icon_node(k, "landscape", custom_turn_icon, By(fn() { @sf.theme().p.text })) |> ignore
     @sf.panel_tip_node(k, label)
   })

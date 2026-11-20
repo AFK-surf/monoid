@@ -135,7 +135,8 @@ export function relayLoadView(url: string, received: Sample[], now: number): Rel
     const [a, b] = [samples[i - 1]!, samples[i]!];
     if (b.at < midnight) continue;
     // The first sample of the day counts from the last one before it.
-    today.bytes += grew(a.load.sent, b.load.sent) + grew(a.load.recv, b.load.recv);
+    // Bytes sent alone, as the budget counts them (relayCounters).
+    today.bytes += grew(a.load.sent, b.load.sent);
     today.frames += grew(a.load.frames, b.load.frames);
   }
   const fresh = last !== undefined && last.at >= now - NOW;

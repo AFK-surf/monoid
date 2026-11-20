@@ -14,10 +14,9 @@
 //            its radius, its fillets'; scene.mbt)
 //   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
 //            lights it (Glass::spot, from its rect's top left: glass_spot's
-//            packing; 0 none; -1 and -2 are Backdrop’s default and ambient rim)
-//            15 opacity · 21 how far the bezel bends what is under it
-//            (px) · 22 the colours' split (0-1) · 23 the smooth-min radius
-//            two shapes of one group merge within
+//            packing; 0 none) · 15 opacity · 21 how far the bezel bends what
+//            is under it (px) · 22 the colours' split · 23 the smooth-min
+//            radius two shapes of one group merge within
 //   20 the capture it shares: -1, -2, … (negative, so a run of glass is a run
 //      of its own for the renderers' image runs): glass one after another
 //      with nothing drawn between, the same blur and kind, not over each
@@ -41,6 +40,9 @@ priv struct GlassPaint {
   mut run : Int
   // the last capture of frosted glass (0 none): what glass `shares_capture` takes
   mut frost_run : Int
+  // the last capture of unmerged liquid glass (merge <= 0, 0 none): what `shares_capture` takes (same blur)
+  mut liquid_run : Int
+  mut liquid_blur : Double
   mut run_start : Int
   mut run_len : Int
   mut solid : Bool
@@ -56,6 +58,8 @@ priv struct GlassPaint {
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,
+  liquid_run: 0,
+  liquid_blur: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -67,13 +71,23 @@ let glass_paint : GlassPaint = {
 }
 
 ///|
+/// Glass made solid or glass by the app (set_glass_solid: 1 solid, 0 glass, -1 as the system says), followed: what read
+/// it (a node's View::glass_solid, the paint) told as it changes, in the frame it changes, not as the next one paints.
+/// The window's, as glass_paint's `forced` is (window_kept.mbt).
+// kept across runs: put back by each Tester (reset_glass)
+let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same=fn(a, b) { a == b }))
+
+///|
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.liquid_run = 0
+  glass_paint.liquid_blur = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.solid = false
   glass_paint.forced = -1
+  @signals.untracked(fn() { glass_forced_said.val.set(-1) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
 }
@@ -82,19 +96,22 @@ fn reset_glass() -> Unit {
 /// Glass as glass, or solid from now on (None: as the system says, which is
 /// what MBUI_GLASS=solid or the system's reduce transparency make solid).
 pub fn set_glass_solid(solid : Bool?) -> Unit {
-  glass_paint.forced = match solid {
+  let f = match solid {
     None => -1
     Some(true) => 1
     Some(false) => 0
   }
+  glass_paint.forced = f
+  glass_forced_said.val.set(f)
 }
 
 ///|
-/// Whether glass is drawn solid in this frame.
+/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else as the system says.
 pub fn Ctx::glass_solid(self : Ctx) -> Bool {
   ignore(self)
-  if glass_paint.forced >= 0 {
-    glass_paint.forced == 1
+  let f = glass_forced_said.val.get()
+  if f >= 0 {
+    f == 1
   } else {
     glass_solid_said.now()
   }
@@ -106,6 +123,8 @@ pub fn Ctx::glass_solid(self : Ctx) -> Bool {
 fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.liquid_run = 0
+  glass_paint.liquid_blur = 0.0
   glass_paint.run_start = -1
   glass_paint.run_len = 0
   glass_paint.in_group = 0
@@ -114,21 +133,22 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
 }
 
 ///|
-fn rects_meet(a : Int, b : Int, inst : FixedArray[Double]) -> Bool {
+fn rects_meet_by(a : Int, b : Int, inst : FixedArray[Double], pad : Double) -> Bool {
   let pa = a * inst_size
   let pb = b * inst_size
-  inst[pa] < inst[pb] + inst[pb + 2] &&
-  inst[pb] < inst[pa] + inst[pa + 2] &&
-  inst[pa + 1] < inst[pb + 1] + inst[pb + 3] &&
-  inst[pb + 1] < inst[pa + 1] + inst[pa + 3]
+  inst[pa] - pad < inst[pb] + inst[pb + 2] + pad &&
+  inst[pb] - pad < inst[pa] + inst[pa + 2] + pad &&
+  inst[pa + 1] - pad < inst[pb + 1] + inst[pb + 3] + pad &&
+  inst[pb + 1] - pad < inst[pa + 1] + inst[pa + 3] + pad
 }
 
 ///|
 /// The glass instance of node `n` (its frame), at `alpha`.
 fn Ctx::emit_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
   self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha)
-  // (frosted: its corners each its own; liquid merges shapes of one corner each, the renderers' groups: its roundest)
-  if !gl.liquid {
+  // (frosted: its corners each its own; merged liquid merges shapes of one corner each, the renderers' groups: its
+  // roundest; unmerged liquid (merge <= 0), never merged, its corners each its own)
+  if !gl.liquid || gl.merge <= 0.0 {
     self.corners_last(n)
   }
   self.glass_capture(self.ninst - 1, gl.liquid, gl.shares_capture)
@@ -161,7 +181,7 @@ fn Ctx::glass_inst(
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.backdrop_highlight > 0 { -gl.backdrop_highlight.to_double() } else if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
+    if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size
@@ -204,24 +224,33 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   let a = self.inst
   let kind = a[b + 5]
   let blur = a[b + 7]
+  let is_single_liquid = liquid && a[b + 23] <= 0.0
   if shares && !liquid && glass_paint.frost_run != 0 {
     // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
     a[b + 20] = -glass_paint.frost_run.to_double()
     return
   }
+  if shares && is_single_liquid && blur >= 0.0 && glass_paint.liquid_run != 0 && glass_paint.liquid_blur == blur {
+    a[b + 20] = -glass_paint.liquid_run.to_double()
+    return
+  }
   // one capture with the glass just before it: right after it, as it is,
-  // the same blur, not over it, and (liquid) a group of fewer than 8; glass
+  // the same blur, not over it, and (merged liquid) a group of fewer than 8; glass
   // contained (blur below 0) a capture of its own box alone
   let prev = glass_paint.run_start + glass_paint.run_len
+  let prev_is_single = liquid && k > 0 && a[(k - 1) * inst_size + 23] <= 0.0
   let mut same = glass_paint.run != 0 &&
     prev == k &&
     blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
     a[(k - 1) * inst_size + 7] == blur &&
-    (!liquid || (glass_paint.run_len < 8 && a[b + 14] >= 0.0 && a[(k - 1) * inst_size + 14] >= 0.0))
-  if same && !liquid {
+    (!liquid ||
+      (is_single_liquid && prev_is_single) ||
+      (!is_single_liquid && !prev_is_single && glass_paint.run_len < 8))
+  if same && (!liquid || is_single_liquid) {
+    let pad = if is_single_liquid { 2.0 } else { 0.0 }
     for j in glass_paint.run_start..<k {
-      if rects_meet(j, k, a) {
+      if rects_meet_by(j, k, a, pad) {
         same = false
         break
       }
@@ -235,6 +264,9 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.run_len = 1
     if !liquid {
       glass_paint.frost_run = glass_paint.run
+    } else if is_single_liquid && blur >= 0.0 {
+      glass_paint.liquid_run = glass_paint.run
+      glass_paint.liquid_blur = blur
     }
   }
   a[b + 20] = -glass_paint.run.to_double()

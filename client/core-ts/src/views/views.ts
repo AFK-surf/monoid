@@ -39,21 +39,26 @@ import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
 import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
 import { stationFeature } from "../features.ts";
-import { markdown, type MdStore } from "../markdown.ts";
-import { heardFiles } from "../elsewhere.ts";
+import { markdown, markdownHere, mdKey, type MdStore } from "../markdown.ts";
+import { heardFiles, type Said } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
 import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, thingsOf, wordsOf } from "../things.ts";
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import * as logins from "../station/machine-logins.ts";
+import { StationAddr } from "../station/addr.ts";
+import type { LinkDiag } from "../station/link.ts";
+import { relayHost, type PeerDiag } from "../mesh.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
-import { lineForViewer, stageFields } from "../chat-stage.ts";
+import { lineForViewer, noTurnBegun, stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
 import { agentRates } from "./agent-rates.ts";
 import { fleetView } from "./fleet.ts";
 import { stationUpdates } from "./station-updates.ts";
+import { STALE_BUILD_MS } from "../station/oldest.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
@@ -98,7 +103,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -113,7 +118,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; acceptAutoChats: Derived<boolean>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -227,6 +232,8 @@ function foundOn(chats: J, found: J): J {
 type RowsChanged = { whole: boolean; gone: J[]; come: J[] };
 /// How many rows going and coming a list's days take one by one (`#daysOf`); more, they are made again whole.
 const ROWS_PUT_ALONE = 32;
+/// How many messages' links to chats are kept found (views.ts `#chatsLinked`): more than a chat's page shows.
+const LINKS_KEPT = 512;
 
 /// A station's rows as its records `listed` make them (`make`), from what `was` (its records then) made: the same
 /// records in the same order taken as they were, walking both, a record put in or taken out stepped over (a chat moved
@@ -454,8 +461,17 @@ function madeDay(d: J, n: number): J {
   const rows = items.slice(0, n).map(madeRow);
   const day = n === items.length && rows.every((r, i) => r === items[i]) ? d : { ...d, items: rows };
   madeDays.set(d, { n, day });
+  // (a day made is itself made, each of its `n` rows: asked again, it is taken as it is)
+  if (day !== d) madeDays.set(day, { n, day });
   return day;
 }
+
+/// What a chat list is made of that no station's link says (Views #chatsMade): its stations, its days, how many more it
+/// has and how many in all, which stations' rows run and how many rows do, the stations not read yet, and each station's
+/// rows read (`ok`) or failed; or, its stations not known, what the workspace says (`value`).
+type ChatsMade = { value: Value | undefined } | { stations: StationInfo[]; me: J; days: J[]; more: number; total: number; running: Set<string>; runningRows: number; unread: string[]; reads: Map<string, "ok" | { err: J }> };
+/// How many lists' #chatsMade are kept (those shown, a rail's count, a search's whole list, and the last ones left).
+const CHATS_MADE_KEPT = 8;
 
 /// A chat list's key among the windows (Views `chatsWindow`): its topic's params, said or left to their defaults.
 /// Which chats a list is of: those shown (`visible`), those hidden, both (`all`), or both and those an agent leads too
@@ -661,8 +677,24 @@ export function blockedUnder(messages: J[]): J[] {
   return messages.flatMap((m, i) => (gone.has(i) ? [] : blocked.has(i) ? [{ ...m, blocked: blocked.get(i) }] : [m]));
 }
 
+/// Another chat's title as a letter or a message its agent sent names it: without the mentions its first words began
+/// with (as chatTitle has it), else those mentions named.
+export function cleanLetterTitle(raw: string, bots: [string, string][], members_: J[]): string {
+  const bare = withoutMentions(raw).replace(/\s+/g, " ").trim();
+  return bare !== "" ? bare : present.mentions(raw, bots, members_).replace(/^@/, "");
+}
+
+/// Who said a Slack message an agent was given: their name, else their Slack id (a bot's mention, `<@U…>`, named as
+/// its bot without the `@`), else Slack.
+export function elsewhereSenderName(s: Said, bots: [string, string][], members_: J[]): string {
+  if (s.who) return present.mentions(s.who, bots, members_);
+  if (s.user) return /^<@[A-Z0-9]+>$/.test(s.user) ? present.mentions(s.user, bots, members_).replace(/^@/, "") : present.mentions(s.user, bots, members_);
+  return "Slack";
+}
+
 /// A message as a chat shows it: whether it is the viewer's, still.fail's own notice, who said it, mentions named.
-export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: string[], members_: J[], bots: [string, string][], creator: J): J {
+/// (`profileName`: the name of the profile a notice is about, where it is known: said in its words)
+export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: string[], members_: J[], bots: [string, string][], creator: J, profileName: string | null = null): J {
   const m: J = { ...message };
   const card = decisions.ofMessage(message);
   if (card !== null) m.card = decisions.labelAssignee(card, viewer, members_, creator);
@@ -678,7 +710,8 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
     const model = str(get(identity, "model"));
     const sent = agent === undefined ? sentFrom(str(m.text) ?? "") : null;
     if (sent !== null) {
-      const [title, link, rest] = sent;
+      const [raw, link, rest] = sent;
+      const title = cleanLetterTitle(raw, bots, members_);
       m.text = rest;
       m.by = { name: title, from: link, maker: model !== null ? present.maker(model) : null };
     } else {
@@ -695,7 +728,7 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
     }
   } else if (isStationAuthor(kind)) {
     m.by = { name: brandName() };
-    m.notice = noticeOf(str(m.text) ?? "", str(m.profile) !== null);
+    m.notice = noticeOf(str(m.text) ?? "", str(m.profile) !== null, profileName);
     // Its run changed: what changed as the viewer reads it, in place of the station's words.
     const change = runChangeOf(m.change);
     if (change !== null) m.notice = { ...m.notice, ...change };
@@ -715,7 +748,7 @@ export function shownMessage(message: J, agents: J[], viewer: J, slackUsers: str
 import * as brand from "../brand.ts";
 import { noticeOf } from "../notice.ts";
 import { runChangeOf } from "../run-change.ts";
-import { isOwnSurface, isStationAuthor } from "../titles.ts";
+import { isOwnSurface, isStationAuthor, withoutMentions } from "../titles.ts";
 export { noticeOf };
 const brandName = () => brand.name();
 
@@ -864,8 +897,13 @@ export type ViewsEnv = {
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
   resume?: (topic: Topic) => void;
+  /// A topic a view watches became idle (its owner may cancel in-flight work without discarding cached state).
+  idle?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
+  /// A login of a station's as its station last told it (station/machine-logins.ts): the program it is to (gh, gcloud)
+  /// and, under way, when it runs out of time; null where it has not been told. What 待处理 says of a login's card.
+  loginOf?: (station: string, id: string) => { name: string; ends: number | null } | null;
   /// How agents' requests about vault items are answered on this device, from the vault as the core holds it
   /// (views/vault.ts askAnswers): each `{answer, lasts?}`, in the order asked.
   vaultAnswers?: (workspace: string, asks: VaultAskOf[]) => J[];
@@ -875,6 +913,12 @@ export type ViewsEnv = {
   /// Whether a station's topic with no value yet waits on the station for what it shows (station/topics.ts `waits`);
   /// none does where not given.
   waits?: (topic: Topic) => boolean;
+  /// Local reconnect diagnostics of a station's link (`station/link.ts` `Link.diag`).
+  linkDiag?: (station: string) => LinkDiag | null;
+  /// Local mesh dial diagnostics of a station (`mesh.ts` `Mesh.diag`).
+  peerDiag?: (station: string) => PeerDiag | null;
+  /// Whether still.fail cloud is currently unreachable (`status.cloudDown`).
+  cloudDown?: () => boolean;
 };
 
 /// An agent's request about a vault item a card names (`card.vault`), and whether it is one to keep a secret.
@@ -897,7 +941,22 @@ export function envOf(core: Inner): ViewsEnv {
     store: core.store,
     data: core.data,
     waits: (topic) => core.stationTopics.waits(topic),
+    linkDiag: (station) => core.stations.link(station)?.diag ?? null,
+    peerDiag: (station) => {
+      try {
+        return core.stations.wire.diag?.(StationAddr.parse(station)) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    cloudDown: () => core.status.cloudDown(),
     held: (station, thread) => core.stationTopics.held(station, thread),
+    loginOf: (station, id) => {
+      const l = logins.held(core.stations.link(station)).logins.find((x) => x.id === id);
+      if (!l || typeof l.name !== "string" || l.name === "") return null;
+      const active = l.endedAt === undefined || l.endedAt === null;
+      return { name: l.name, ends: active && typeof l.expiresAt === "number" && l.expiresAt > 0 ? l.expiresAt : null };
+    },
     emailOf: (workspace) => {
       const sub = owner(workspace);
       return sub === null ? null : (core.accounts.list().find((a) => a.sub === sub)?.email ?? null);
@@ -909,6 +968,7 @@ export function envOf(core: Inner): ViewsEnv {
     subOf: owner,
     places: () => xshare.places(core),
     resume: (topic) => core.router.resume(topic),
+    idle: (topic) => core.router.idle(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
     guard: (workspace) => stationsGuard(core, workspace),
@@ -1012,6 +1072,8 @@ export class Views implements Owner {
   readonly #shownMade = new WeakMap<object, { by: unknown; waiting: boolean; out: J }>();
   /// Each list's rows as its stations' records made them last time, by the list (`#chats`).
   readonly #chatsKept = new Map<string, Map<string, { listed: J[]; made: (J | null)[]; sig: string; failedKey: string }>>();
+  /// Each list's rows and days as #chatsMade makes them, by the list and its window: a computed that reads no link.
+  readonly #chatsMadeKept = new Map<string, Derived<ChatsMade>>();
   /// Each list's days as they were last made, from which rows (`#daysOf`).
   readonly #daysKept = new Map<string, { rows: J[]; days: J[]; today: number; offset: number }>();
   /// A row's local day by its time (`#days`), while the zone's offset now is `#daysZone`.
@@ -1140,6 +1202,15 @@ export class Views implements Owner {
     for (const key of live?.watches.keys() ?? []) {
       const topic = JSON.parse(key) as Topic;
       if (topic.topic === "stationSearch") this.#core.resume?.(topic);
+    }
+  }
+
+  idle(view: Topic): void {
+    if (view.topic !== "search" && view.topic !== "archive") return;
+    const live = this.#views.get(topicKey(view));
+    for (const key of live?.watches.keys() ?? []) {
+      const topic = JSON.parse(key) as Topic;
+      if (topic.topic === "stationSearch" && !this.searchShownNow(topic)) this.#core.idle?.(topic);
     }
   }
 
@@ -1432,6 +1503,8 @@ export class Views implements Owner {
         ];
       case "stationNet":
         return [{ topic: "net", station }];
+      case "stationDiag":
+        return [{ topic: "link", station }, { topic: "net", station }, { topic: "workspace", workspace: ofAddress(station) }];
       case "history":
         return [
           { topic: "live", station, key: view.key },
@@ -1457,7 +1530,19 @@ export class Views implements Owner {
           // said there, is read from its history, `#sentElsewhere`; so its history is held as one shown is, its latest
           // page first: left to the sync's sweep of every agent's, on a station of many it came long after the page
           // opened, the page empty meanwhile)
-          if (session !== null) topics.push({ topic: "session", station, key: session }, { topic: "live", station, key: session });
+          if (session !== null) {
+            const data = this.#core.data;
+            const anchor = data.conversationOf(station, session);
+            const row = data.chatForSession(station, session) ?? (anchor !== session ? data.chatNamed(station, anchor)?.row : undefined);
+            const keys: string[] = [];
+            const add = (k: unknown) => {
+              if (typeof k === "string" && k !== "" && !keys.includes(k)) keys.push(k);
+            };
+            for (const a of arr(get(row, "agents"))) add(get(a, "key"));
+            add(anchor);
+            add(session);
+            for (const key of keys) topics.push({ topic: "session", station, key }, { topic: "live", station, key });
+          }
           topics.push(
             { topic: "threads", station },
             { topic: "chatRows", station },
@@ -1556,6 +1641,11 @@ export class Views implements Owner {
   /// offline to connecting made both workspaces' marks again, 4-7 ms in Hermes on a Mac Studio at a workspace of real
   /// size (2026-11-11).
   readonly #stationsNamed = new Map<string, Derived<{ address: string; name: string }[]>>();
+  /// A login of a station's, as its station last told it (null: not told): its program, when it runs out of time.
+  loginOf(station: string, id: string): { name: string; ends: number | null } | null {
+    return this.#core.loginOf?.(station, id) ?? null;
+  }
+
   stationsNamed(scope: string): { address: string; name: string }[] {
     let kept = this.#stationsNamed.get(scope);
     if (kept === undefined) {
@@ -1622,7 +1712,7 @@ export class Views implements Owner {
     for (const e of entries) {
       if (!mayLink(e)) continue;
       const text = str(get(e, "text")) ?? "";
-      for (const linked of chatsLinked(text, station)) {
+      for (const linked of this.#chatsLinked(text, station)) {
         const c = { ...linked, station: this.stationNow(linked.station) };
         if (out.includes(c.station)) continue;
         if (c.station === station || (this.stations(ofAddress(c.station)) ?? []).some((s) => s.address === c.station && s.online)) out.push(c.station);
@@ -1635,16 +1725,36 @@ export class Views implements Owner {
   /// its title as its row says it, and whether it is archived (archivedRows), said so. One no list has is left out.
   /// Each its row alone, read where it is kept: a station's whole lists, its archive's thousands of rows, read for a
   /// link were most of what opening a chat that has one took (0.65-0.83 s on a phone, 2026-10-31).
-  #linkedChats(station: string, text: string): J[] {
+  /// Each its row's columns alone (data.ts chatLinked): no record read, parsed nor frozen for a link. `now`: the stations
+  /// links name now (stationNow), found once for the chat being drawn.
+  #linkedChats(station: string, text: string, now?: Map<string, string>): J[] {
     if (!text.includes("/chats/") && !text.includes("/o/")) return [];
-    return chatsLinked(text, station).flatMap((linked) => {
-      const c = { ...linked, station: this.stationNow(linked.station) };
-      const found = this.#core.data.chatNamed(c.station, c.id);
-      if (found === undefined || (found.archived && !isObject(get(found.row, "archived")))) return [];
-      const row = found.row as J;
-      const thread = u64(get(row, "thread"));
-      return [{ href: c.href, title: str(get(row, "title")) || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
+    return this.#chatsLinked(text, station).flatMap((linked) => {
+      let at = now?.get(linked.station);
+      if (at === undefined) {
+        at = this.stationNow(linked.station);
+        now?.set(linked.station, at);
+      }
+      const c = { ...linked, station: at };
+      const found = this.#core.data.chatLinked(c.station, c.id);
+      if (found === undefined || (found.archived && !found.archivedMark)) return [];
+      const thread = u64(found.thread ?? null);
+      return [{ href: c.href, title: found.title || t("core-views.new_chat"), ...(thread !== null ? { thread } : {}), ...(found.archived ? { archived: true, note: t("core-views.search.archived") } : {}) }];
     });
+  }
+
+  /// The links to chats `text`, said in a chat on `station`, has (chatsLinked), found once while it is among the last
+  /// `LINKS_KEPT` looked through: a chat's messages are looked through again each time it is made, and finding them
+  /// is most of what that takes.
+  readonly #linksFound = new Map<string, ReturnType<typeof chatsLinked>>();
+  #chatsLinked(text: string, station: string): ReturnType<typeof chatsLinked> {
+    const key = `${station}\u0001${text}`;
+    const was = this.#linksFound.get(key);
+    if (was !== undefined) return was;
+    const found = sharedValue(chatsLinked(text, station));
+    if (this.#linksFound.size >= LINKS_KEPT) this.#linksFound.delete(this.#linksFound.keys().next().value!);
+    this.#linksFound.set(key, found);
+    return found;
   }
 
   /// Who is looking: the account that reaches the workspace.
@@ -1696,9 +1806,20 @@ export class Views implements Owner {
 
   /// The chat an agent's item has: the still.fail chat bound to it, as the station's items say, or its threads do.
   boundThread(station: string, key: string): number | null {
-    const fromRows = u64(get(this.#core.data.chatOfSession(station, key), "thread"));
+    const data = this.#core.data;
+    const fromRows = u64(get(data.chatForSession(station, key), "thread"));
     if (fromRows !== null) return fromRows;
-    return this.#core.data.threadOf(station, key);
+    const anchor = data.conversationOf(station, key);
+    if (anchor !== key) {
+      const fromNamed = u64(get(data.chatNamed(station, anchor)?.row, "thread"));
+      if (fromNamed !== null) return fromNamed;
+      const anchorThread = data.threadOf(station, anchor);
+      if (anchorThread !== null) return anchorThread;
+      const own = arr(get(this.ok({ topic: "session", station, key: anchor }), "threads")).find((t) => isOwnSurface(str(get(t, "surface")) ?? ""));
+      const fromDetail = u64(get(own, "id"));
+      if (fromDetail !== null) return fromDetail;
+    }
+    return data.threadOf(station, key);
   }
 
   /// A thread among the station's (null when it lists none such, or its threads were never read).
@@ -1744,7 +1865,7 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chat(station, by.session);
+    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chatForSession(station, by.session);
     return raw === undefined ? null : this.local.asChanging(station, raw);
   }
 
@@ -1785,7 +1906,7 @@ export class Views implements Owner {
     v.tabs = chatTabs.tabsOf(kept, arr(v.agents), v.noChat === true, session);
     const dismissed = get(get(prefs, "stationUpdatesDismissed"), station);
     v.stationUpdate = looks.stationUpdate(overview, v, typeof dismissed === "string" ? dismissed : null, this.#noticeOpen(station), manager, this.stationName(station));
-    if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(v.outbox, v.stationUpdate);
+    if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(looks.outboxShown(v.outbox), v.stationUpdate);
     // The screens of the machine it runs on, a press away from its bar: its own display first (screens.ts screensView),
     // each marked while an agent drives it; and whether a browser tab or terminal may be opened there (`canBrowser`, `canTerminal`).
     const screensHeld = this.ok({ topic: "screens", station });
@@ -1817,8 +1938,8 @@ export class Views implements Owner {
     switch (view.topic) {
       case "chats": {
         const chats = this.#chats(view.scope as string, view.mine === true, view.watching === true, view.hidden === true ? "hidden" : "visible", this.chatsWindow(view));
-        if (chats === undefined || !("ok" in chats)) return chats;
-        return { ok: firstRows(chats.ok, this.chatsWindow(view)) };
+        // (its days are the window's first rows made already, #chatsOf: `firstRows` of them again would give them as they are)
+        return chats;
       }
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
@@ -1932,7 +2053,10 @@ export class Views implements Owner {
           const thread = out !== undefined && "ok" in out ? u64(get(get(out.ok, "thread"), "id")) : null;
           const of = thread !== null ? `t:${thread}` : typeof view.thread === "number" ? `t:${view.thread}` : `s:${String(view.session ?? "")}`;
           const held = (session: string, name: string) => this.#core.data.hasKeptFile(station, session, name, "thumb") || this.#core.data.hasKeptFile(station, session, name, "poster");
-          const shown = timed("chat.draw", () => drawn(out, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, of), (text) => timed("chat.links", () => this.#linkedChats(station, text)), held));
+          // (the station each link names now, found once for all of its messages' links: each a walk of its workspace's
+          // stations)
+          const now = new Map<string, string>();
+          const shown = timed("chat.draw", () => drawn(out, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, of), (text) => timed("chat.links", () => this.#linkedChats(station, text, now)), held));
           return timed("chat.vault", () => this.#vaultCards(view, shown));
         };
         if (typeof view.thread === "number") return draw(this.#chat(station, view.thread));
@@ -1960,6 +2084,8 @@ export class Views implements Owner {
         const net = this.ok({ topic: "net", station: view.station as string });
         return { ok: net === undefined ? null : present.net(net, (h) => this.relayName(h)) };
       }
+      case "stationDiag":
+        return { ok: this.#stationDiag(view.station as string) };
       case "agentCard": {
         const agent = this.agent(view.station as string, view.key as string);
         if (agent === null) return undefined;
@@ -2070,9 +2196,22 @@ export class Views implements Owner {
         const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
         const manages = role === "owner" || role === "admin";
         const data = this.#core.data;
-        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either)
+        // (a version let be on a chat's notice of it, 不再提醒此版本, is not offered here either unless stale > 7d)
         const dismissed = this.prefsPart(updatesDismissedIn);
-        return { ok: stationUpdates(manages ? stations.map((s) => ({ station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software: data.overviewSoftware(s.address), dismissed: str(get(dismissed, s.address)) })) : []) };
+        const now = untracked(() => this.#core.host.nowMs());
+        const list = manages
+          ? stations.map((s) => {
+              const software = data.overviewSoftware(s.address);
+              if (isObject(software) && get(software, "updatable") === true) {
+                const builtAt = get(software, "builtAt");
+                if (typeof builtAt === "number" && Number.isFinite(builtAt) && builtAt > 0) {
+                  this.#moments.reached(builtAt + STALE_BUILD_MS, true);
+                }
+              }
+              return { station: s.address, name: s.name, online: s.online && !down(this.link(s.address)), software, dismissed: str(get(dismissed, s.address)) };
+            })
+          : [];
+        return { ok: stationUpdates(list, now) };
       }
       case "railCard": {
         const scope = view.scope as string;
@@ -2182,11 +2321,15 @@ export class Views implements Owner {
   #archivedDays(stations: string[], from: number, offset: number): Map<string, number[]> {
     const out = new Map<string, number[]>();
     if (stations.length === 0) return out;
-    const rows = this.#core.data.chatCounted(CHAT_READS.archivedCount, { stations, threads: [], sessions: [], from, offset: offset * 60_000, day: DAY_MS });
-    for (const [station, day, n] of rows) {
-      if (day === null || typeof day !== "number") continue;
-      const at = day * DAY_MS - offset * 60_000 + DAY_MS / 2;
-      out.set(String(station), [...(out.get(String(station)) ?? []), ...Array.from({ length: Number(n) }, () => at)]);
+    // (each station's counted and kept by itself: a chat archived on one counts no other again)
+    for (const station of stations) {
+      const days: number[] = [];
+      for (const [, day, n] of this.#core.data.chatCounted(CHAT_READS.archivedCount, { station, threads: [], sessions: [], from, offset: offset * 60_000, day: DAY_MS })) {
+        if (day === null || typeof day !== "number") continue;
+        const at = day * DAY_MS - offset * 60_000 + DAY_MS / 2;
+        for (let i = 0; i < Number(n); i++) days.push(at);
+      }
+      if (days.length > 0) out.set(station, days);
     }
     return out;
   }
@@ -2201,6 +2344,11 @@ export class Views implements Owner {
   /// Has what is being computed made again in `ms` (clock.ts `reached`).
   #againIn(ms: number): void {
     if (Number.isFinite(ms)) this.#moments.reached(untracked(() => this.#core.host.nowMs()) + Math.ceil(ms));
+  }
+
+  /// Re-checks waiting deadline moments against the wall clock (e.g. after wake/reconnect).
+  checkMoments(): void {
+    this.#moments.check();
   }
 
   // ── the chat list ──
@@ -2223,21 +2371,131 @@ export class Views implements Owner {
   /// overlaid), how many it shows and which stations' rows run counted by SQLite (`counts`); a row kept beside its record
   /// taken from the cache where held, its text read only where not. Else the stations' rows whole (#chatsWhole).
   /// With it, how many of its rows run (their `state`: `running`), counted of a windowed list.
+  /// Its rows and days are made apart from what its stations' links say (#chatsMade, a computed kept by the list and its
+  /// window), so that a link's state, its catching up (each batch of it on its way back, 14 in a minute, each making a
+  /// phone's list again whole: 1,170 ms, 2026-11-18) or its speed makes again only what is said of the stations here.
   #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): { value: Value | undefined; running: number } {
-    const stations = this.#stationsOr(scope);
-    if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined, running: 0 };
-    let runningRows = 0;
+    // (and by the local day and the zone's offset: its days are made again as either is another, #daysOf, whatever made
+    // the list again then, the clock's turn at midnight, a zone changed)
+    const host = this.#core.host;
+    const nowMs = host.nowMs();
+    const offset = host.utcOffsetMin(nowMs);
+    const key = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}\u0001${first}\u0001${Math.floor((nowMs + offset * 60_000) / DAY_MS)}\u0001${offset}`;
+    let kept = this.#chatsMadeKept.get(key);
+    if (kept === undefined) kept = computed(() => this.#chatsMade(scope, mine, watching, visibility, first, windowed));
+    this.#chatsMadeKept.delete(key);
+    this.#chatsMadeKept.set(key, kept);
+    // (a few lists': those shown, and the last ones left)
+    for (const k of this.#chatsMadeKept.keys()) if (this.#chatsMadeKept.size > CHATS_MADE_KEPT) this.#chatsMadeKept.delete(k);
+    const made = kept.get();
+    if ("value" in made) return { value: made.value, running: 0 };
+    const { stations, me, days, more, total, running, runningRows, unread, reads } = made;
     const data = this.#core.data;
-    const me = this.me(scope);
-    const workspace = this.ok({ topic: "workspace", workspace: scope });
-    const members_ = arr(get(workspace, "members"));
-    const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
     const states: J[] = [];
     // Each station in trouble: its state, its line, the words said once when every one says the same (the device's
     // network; this app or page too old for them), and its address.
     const troubles: [string, string, string | null, string][] = [];
     // The stations find this core too old (link.ts TooOld `app`): a web page is reloaded, an app updated.
     const appOld = this.#core.host.appKeys === true ? t("core-views.station.appOld") : t("core-views.station.pageOld");
+    let loading = false;
+    // Catching up on what changed while away (station/sync.ts `#catching`): whether a station has yet to say what, and
+    // how many chats are left to bring the latest of.
+    let checking = false;
+    let behind = 0;
+    for (const s of stations) {
+      const read = reads.get(s.address);
+      const part = data.overviewPart(s.address);
+      let state: string;
+      let message: J = null;
+      if (!s.online) state = "offline";
+      else {
+        const link = this.link(s.address);
+        const linkState = str(link.state) ?? "connecting";
+        if (read !== undefined && read !== "ok") [state, message] = ["error", read.err];
+        else if (read === "ok") {
+          if (linkState === "error") [state, message] = ["error", link.message];
+          else if (linkState === "reconnecting") [state, message] = ["connecting", link.message];
+          else state = "online";
+        } else {
+          loading = true;
+          if (linkState === "error") [state, message] = ["error", link.message];
+          else state = "connecting";
+        }
+      }
+      if (s.online) {
+        const link = this.link(s.address);
+        const catching = typeof link.catching === "number" ? (link.catching as number) : null;
+        if (link.state === "connecting" && link.retrying !== true) checking = true;
+        else if (link.state === "online" && catching !== null) {
+          if (catching < 0) checking = true;
+          else behind += catching;
+        }
+      }
+      if (state === "offline") troubles.push(["offline", downWords(this.link(s.address), s.name), get(this.link(s.address), "cause") === "network" ? t("core-views.station.network") : null, s.address]);
+      else if (state === "error") {
+        // Answered that one side is too old (link.ts TooOld): what to update, not 无法连接.
+        const old = get(this.link(s.address), "old");
+        if (old === "app") troubles.push(["error", appOld, appOld, s.address]);
+        else if (old === "station") troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
+        else troubles.push(["error", t("core-views.station.unreachable", { name: s.name }), null, s.address]);
+      } else if (state === "connecting" && read === "ok") troubles.push(["reconnecting", t("core-views.station.reconnecting", { name: s.name }), null, s.address]);
+      else if (state === "online" && get(this.link(s.address), "hostUnreadable") === true) troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
+      const cause = state === "offline" ? get(this.link(s.address), "cause") : undefined;
+      // Refused for a security mode: why.
+      if (cause === "lock") message = get(this.link(s.address), "message") ?? null;
+      const now = looks.doing(state, cause, part === undefined ? undefined : { counts: { running: get(part, "running") } });
+      states.push({ station: s.address, id: s.id, name: s.name, state, message, ...(typeof cause === "string" ? { cause } : {}), ...now, ...rowWords(s, this.link(s.address)) });
+    }
+    let trouble: J = null;
+    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, station: troubles[0][3] };
+    else if (troubles.length > 1) {
+      const worst = ["error", "offline", "reconnecting", "incompatible"].find((w) => troubles.some(([s]) => s === w)) ?? "offline";
+      // Every one down as the device's network is, or finding this app too old: that, once, and not as so many stations
+      // amiss.
+      const once = troubles[0][2];
+      const same = once !== null && troubles.every(([, , w]) => w === once);
+      trouble = { text: same ? once : t("core-views.station.troubles", { n: troubles.length }), state: worst, retry: false };
+    }
+    const glyph = windowed ? looks.glyphOf(states, stations.map((s) => s.address).filter((a) => running.has(a))) : looks.glyph(states, days);
+    const note = looks.listNote(states, windowed ? total > 0 : days.length > 0, loading, unread);
+    const ws = this.ok({ topic: "workspace", workspace: scope });
+    const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
+    // (one station still to say: how many are left is not known yet)
+    const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
+    const interrupted: J[] = [];
+    for (const s of stations) {
+      if (!s.online) continue;
+      const raw = get(this.#core.data.overviewPart(s.address), "interrupted");
+      const count = u64(get(raw, "count")) ?? 0;
+      if (count <= 0) continue;
+      const chats = arr(get(raw, "items")).flatMap((item) => {
+        const key = str(get(item, "key"));
+        if (!key) return [];
+        const thread = u64(get(item, "thread"));
+        const title = str(get(item, "title")) ?? "";
+        return [{ key, ...(thread !== null ? { thread } : {}), title }];
+      });
+      interrupted.push({ station: s.address, stationName: s.name, count, chats });
+    }
+    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}), ...(interrupted.length > 0 ? { interrupted } : {}) } }, running: runningRows };
+  }
+
+  /// What #chatsOf makes of a list that no station's link says: its stations, its days (its first `first` rows where
+  /// `windowed`) and how many more it has, how many it has and which stations' rows run, and whether each station's
+  /// rows were read (`reads`: read, its error, or not yet). Read in a computed (#chatsMadeKept), it reads no link: what
+  /// the stations' links say is said of it by #chatsOf alone.
+  #chatsMade(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): ChatsMade {
+    const stations = this.#stationsOr(scope);
+    if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined };
+    let runningRows = 0;
+    const data = this.#core.data;
+    const me = this.me(scope);
+    const workspace = this.ok({ topic: "workspace", workspace: scope });
+    const members_ = arr(get(workspace, "members"));
+    // (written out once for every station's rows' signature: `sig` below)
+    let membersJson: string | null = null;
+    const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
+    const reads = new Map<string, "ok" | { err: J }>();
     const rows: J[] = [];
     // The rows each station's records made last time (`keptBetween`), and which of them changed since.
     const listKey = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}`;
@@ -2246,12 +2504,7 @@ export class Views implements Owner {
     let whole = false;
     const gone: J[] = [];
     const come: J[] = [];
-    let loading = false;
     const unread: string[] = [];
-    // Catching up on what changed while away (station/sync.ts `#catching`): whether a station has yet to say what, and
-    // how many chats are left to bring the latest of.
-    let checking = false;
-    let behind = 0;
     // The first screen first: while the stations' rows are not loaded, and they are more than the list shows first
     // (its window, and one more to know it has more), those are read by one query, and the rest are loaded after, a
     // station at a time.
@@ -2288,6 +2541,8 @@ export class Views implements Owner {
         ? (data.listed(s.address, "chats") ? ({ ok: win.items.get(s.address) ?? [] } as Value) : this.listKnown(s.address, "chats"))
         : head !== null && data.listed(s.address, "chats") ? ({ ok: head.get(s.address) ?? [] } as Value) : this.value({ topic: "chatRows", station: s.address }); // whole-lists: #chatsWhole
       if (!(read && "ok" in read)) unread.push(s.address);
+      if (read && "ok" in read) reads.set(s.address, "ok");
+      else if (read && "err" in read) reads.set(s.address, { err: read.err.message });
       // What the list reads of its station's overview, kept beside it (account.ts overviewPart): not the whole of it,
       // the largest record there is (3.25 ms of the list's 21.8 ms in Hermes, five stations read and parsed, 2026-11-11),
       // and the list made again only as this changes, not with each quota, usage or job of the overview.
@@ -2295,15 +2550,21 @@ export class Views implements Owner {
       if (read && "ok" in read) {
         const slackUsers = arr(get(part, "slackUsers")).filter((u): u is string => typeof u === "string");
         this.local.settle(s.address, data.rowsRev(s.address));
-        const listed = arr(read.ok);
+        // (the window's rows as they were, the same rows: the list it made them into last time, so that they are taken
+        // as they were by one comparison, `was.listed === listed` below)
+        const was = keptLists.get(s.address);
+        const read_ = arr(read.ok);
+        const listed = was !== undefined && was.listed !== read_ && was.listed.length === read_.length && read_.every((r, i) => r === was.listed[i]) ? was.listed : read_;
         const asked = [...this.local.pendingRows(s.address), ...this.local.restoringRows(s.address).filter((row) => {
           const thread = get(row, "thread");
           const session = get(row, "session");
-          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatOfSession(s.address, String(session ?? ""))) === undefined;
+          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatForSession(s.address, String(session ?? ""))) === undefined;
         })];
         // What failed to go in the station's chats, once for the list (looked up for each row, 1400 of them, on every
         // change of one: 2026-11-08).
         const failed = this.local.failedOutboxes(s.address);
+        // (and the chats made here whose first words are on their way: #unsentRow)
+        const going = this.local.goingFirsts(s.address);
         // What a row is made with besides its record: a row whose record and these are as they were is the one made
         // before (rule 7: the list redoes only the rows that changed). Not its station's link: what that makes of a row
         // goes once for the station (`stations`, stationOn), not on each of its rows. Nor what only its whole row
@@ -2313,7 +2574,8 @@ export class Views implements Owner {
         // (the members: those of them it names, its own, `rowSig`; all of them for the list's kept rows, `sig`, which
         // each row then looks at again)
         const base = JSON.stringify([s.address, s.name, mark, me, slackUsers, watching, hint]);
-        const sig = JSON.stringify([base, members_]);
+        // (as JSON.stringify([base, members_]) writes it, the members written out once for all the stations)
+        const sig = `[${JSON.stringify(base)},${(membersJson ??= JSON.stringify(members_))}]`;
         // (the base as it is and the members after a character JSON never leaves unescaped, U+0001: one signature for one
         // pair, as JSON.stringify([base, members]) was, without writing the base out again escaped for each row)
         const rowSig = (shown: J) => `${base}\u0001${JSON.stringify(present.rowMembers(shown, members_))}`;
@@ -2338,7 +2600,7 @@ export class Views implements Owner {
           }
           Object.freeze(standIn);
           let shownRow: J;
-          unmade.set(standIn, () => (shownRow ??= this.#unsentRow(s.address, whole, failed)));
+          unmade.set(standIn, () => (shownRow ??= this.#unsentRow(s.address, whole, failed, whole, going)));
           return standIn;
         };
         // (the key its rows are kept by beside their records: none for a list of the watched, whose rows are made)
@@ -2370,7 +2632,7 @@ export class Views implements Owner {
             this.#rowsMade.set(shown, { sig: k.sig, list: sig, row: k.row });
             return true;
           };
-          if (kept !== undefined && holds(kept)) return kept.row === null ? null : this.#unsentRow(s.address, kept.row, failed);
+          if (kept !== undefined && holds(kept)) return kept.row === null ? null : this.#unsentRow(s.address, kept.row, failed, shown, going);
           const row = (): J => {
             // (kept beside its record under the key in force, where it was read or kept this run; else made, and kept)
             const keeps = key !== null && shown === raw && this.#keepable(s.address, raw);
@@ -2391,7 +2653,7 @@ export class Views implements Owner {
           };
           if (!keepable || get(shown, "pending") === true) {
             const made = row();
-            return made === null ? null : this.#unsentRow(s.address, made, failed);
+            return made === null ? null : this.#unsentRow(s.address, made, failed, shown, going);
           }
           // Kept, its row is made as something shows it (`unmade`): until then a stand-in, the list not showing it
           // decided as its row would (#chatRow: watching, one nobody watches).
@@ -2407,7 +2669,7 @@ export class Views implements Owner {
           unmade.set(standIn, () => {
             if (shownRow === undefined) {
               const again = this.#rowsMade.get(shown);
-              shownRow = this.#unsentRow(s.address, again !== undefined && holds(again) && again.row !== null ? again.row : row(), failed);
+              shownRow = this.#unsentRow(s.address, again !== undefined && holds(again) && again.row !== null ? again.row : row(), failed, shown, going);
             }
             return shownRow;
           });
@@ -2417,9 +2679,8 @@ export class Views implements Owner {
         // asked for, archived or changed from here; its failed messages and what rows are made with as they were): then
         // only the records between the same ones at both ends are made again, so a chat that changed costs its row
         // (each change of one made all of a station's 1400 again, 2026-11-08).
-        const failedKey = JSON.stringify([...failed].map(([thread, m]) => [thread, get(m, "id"), get(m, "text")]));
+        const failedKey = JSON.stringify([[...failed].map(([thread, m]) => [thread, get(m, "id"), get(m, "text")]), [...going]]);
         const quiet = head === null && asked.length === 0 && this.local.rowsQuiet(s.address);
-        const was = keptLists.get(s.address);
         let made: (J | null)[];
         if (quiet && was !== undefined && was.sig === sig && was.failedKey === failedKey) {
           if (was.listed === listed) made = was.made;
@@ -2462,46 +2723,6 @@ export class Views implements Owner {
           });
         }
       }
-      let state: string;
-      let message: J = null;
-      if (!s.online) state = "offline";
-      else {
-        const link = this.link(s.address);
-        const linkState = str(link.state) ?? "connecting";
-        if (read && "err" in read) [state, message] = ["error", read.err.message];
-        else if (read && "ok" in read) {
-          if (linkState === "error") [state, message] = ["error", link.message];
-          else if (linkState === "reconnecting") [state, message] = ["connecting", link.message];
-          else state = "online";
-        } else {
-          loading = true;
-          if (linkState === "error") [state, message] = ["error", link.message];
-          else state = "connecting";
-        }
-      }
-      if (s.online) {
-        const link = this.link(s.address);
-        const catching = typeof link.catching === "number" ? (link.catching as number) : null;
-        if (link.state === "connecting" && link.retrying !== true) checking = true;
-        else if (link.state === "online" && catching !== null) {
-          if (catching < 0) checking = true;
-          else behind += catching;
-        }
-      }
-      if (state === "offline") troubles.push(["offline", downWords(this.link(s.address), s.name), get(this.link(s.address), "cause") === "network" ? t("core-views.station.network") : null, s.address]);
-      else if (state === "error") {
-        // Answered that one side is too old (link.ts TooOld): what to update, not 无法连接.
-        const old = get(this.link(s.address), "old");
-        if (old === "app") troubles.push(["error", appOld, appOld, s.address]);
-        else if (old === "station") troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
-        else troubles.push(["error", t("core-views.station.unreachable", { name: s.name }), null, s.address]);
-      } else if (state === "connecting" && read && "ok" in read) troubles.push(["reconnecting", t("core-views.station.reconnecting", { name: s.name }), null, s.address]);
-      else if (state === "online" && get(this.link(s.address), "hostUnreadable") === true) troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
-      const cause = state === "offline" ? get(this.link(s.address), "cause") : undefined;
-      // Refused for a security mode: why.
-      if (cause === "lock") message = get(this.link(s.address), "message") ?? null;
-      const now = looks.doing(state, cause, part === undefined ? undefined : { counts: { running: get(part, "running") } });
-      states.push({ station: s.address, id: s.id, name: s.name, state, message, ...(typeof cause === "string" ? { cause } : {}), ...now, ...rowWords(s, this.link(s.address)) });
     }
     let days = this.#daysOf(listKey, rows, { whole, gone, come });
     // (the window's first rows of what it read, in the list's order; how many more it has, of the counts)
@@ -2512,23 +2733,7 @@ export class Views implements Owner {
       const shown = days.reduce((n, d) => n + arr(get(d, "items")).length, 0);
       more = total - shown;
     }
-    let trouble: J = null;
-    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, station: troubles[0][3] };
-    else if (troubles.length > 1) {
-      const worst = ["error", "offline", "reconnecting", "incompatible"].find((w) => troubles.some(([s]) => s === w)) ?? "offline";
-      // Every one down as the device's network is, or finding this app too old: that, once, and not as so many stations
-      // amiss.
-      const once = troubles[0][2];
-      const same = once !== null && troubles.every(([, , w]) => w === once);
-      trouble = { text: same ? once : t("core-views.station.troubles", { n: troubles.length }), state: worst, retry: false };
-    }
-    const glyph = win !== null ? looks.glyphOf(states, stations.map((s) => s.address).filter((a) => running.has(a))) : looks.glyph(states, days);
-    const note = looks.listNote(states, win !== null ? total > 0 : days.length > 0, loading, unread);
-    const ws = this.ok({ topic: "workspace", workspace: scope });
-    const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
-    // (one station still to say: how many are left is not known yet)
-    const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
-    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}) } }, running: runningRows };
+    return { stations, me, days, more, total, running, runningRows, unread, reads };
   }
 
   /// What a chat list's window reads of `stations` (#chatsOf `windowed`): of each, its first rows in the list's order
@@ -2552,19 +2757,27 @@ export class Views implements Owner {
     if (addresses.length === 0) return { items, apart, counts };
     // (each station's in its own order, as its rows were listed whole: by their place, then their ids)
     const placed = new Map<string, { item: J; ord: number; id: string }[]>();
-    const put = (station: string, item: J, ord: SqlValue, id: string) => placed.set(station, [...(placed.get(station) ?? []), { item, ord: typeof ord === "number" ? ord : 0, id }]);
+    const put = (station: string, item: J, ord: SqlValue, id: string) => {
+      let list = placed.get(station);
+      if (list === undefined) placed.set(station, (list = []));
+      list.push({ item, ord: typeof ord === "number" ? ord : 0, id });
+    };
     // (the rows kept beside their records read of them alone, from the cache where held; the records of the rest. A
     // record held already is taken as it is, kept beside it or not: what the list made of it before is taken again)
     // (the stations' rows in the list's order, across their databases: each read its own first. The window's answer is
     // of their keys and columns alone, read again only as a write changes what of a row it reads (chat-reads.ts `by`):
     // each row's record or kept row is taken by its own key, so a chat that changes and moves nothing is told by its key)
     const found = data.chatFound(CHAT_READS.window, p, () => false);
-    const at = (f: ChatFound) => [typeof f.cols[0] === "number" ? 0 : 1, -(typeof f.cols[0] === "number" ? f.cols[0] : 0), -(typeof f.cols[1] === "number" ? f.cols[1] : 0), addresses.indexOf(f.station)];
+    const place = new Map(addresses.map((a, i) => [a, i]));
     const shown = [...found].sort((a, b) => {
-      const x = at(a);
-      const y = at(b);
-      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
-      return 0;
+      const pa = typeof a.cols[0] === "number";
+      const pb = typeof b.cols[0] === "number";
+      if (pa !== pb) return pa ? -1 : 1;
+      if (pa && a.cols[0] !== b.cols[0]) return (b.cols[0] as number) - (a.cols[0] as number);
+      const la = typeof a.cols[1] === "number" ? a.cols[1] : 0;
+      const lb = typeof b.cols[1] === "number" ? b.cols[1] : 0;
+      if (la !== lb) return lb - la;
+      return (place.get(a.station) ?? -1) - (place.get(b.station) ?? -1);
     }).slice(0, first);
     for (const f of shown) f.record = data.heldChat(f.station, f.id);
     const notHeld = shown.filter((f) => f.record === undefined);
@@ -2587,7 +2800,11 @@ export class Views implements Owner {
       list.sort((a, b) => a.ord - b.ord || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       items.set(station, list.map((x) => x.item));
     }
-    for (const r of data.chatCounted(CHAT_READS.counts, p)) counts.set(String(r[0]), { n: Number(r[1]), runs: r[2] === 1, running: Number(r[3] ?? 0) });
+    // (each station's counted alone, kept by itself: one station's chat starting its work reads that station's again)
+    for (const station of addresses) {
+      const r = data.chatCounted(CHAT_READS.counts, { station, mine, hidden: p.hidden, watching, threads, sessions })[0];
+      if (r !== undefined) counts.set(station, { n: Number(r[0] ?? 0), runs: r[1] === 1, running: Number(r[2] ?? 0) });
+    }
     return { items, apart, counts };
   }
 
@@ -2946,11 +3163,11 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw: J = data.chatOfSession(station, session) ?? data.chat(station, session)
+    const raw: J = data.chatForSession(station, session)
       ?? this.local.pendingRows(station).find((r) => get(r, "session") === session || get(r, "clientKey") === session);
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
-    return { ok: row === null ? null : this.#unsentRow(station, row) };
+    return { ok: row === null ? null : this.#unsentRow(station, row, undefined, raw) };
   }
 
   /// A record's row whole (#wholeRow), made with what the list's are (#chats) and what only it reads besides: the menu's
@@ -3042,14 +3259,11 @@ export class Views implements Owner {
       const title = str(get(row, "title")) || str(get(o, "title")) || t("core-views.new_chat");
       const out: J = { station: at, session, title };
       if (isObject(row)) {
-        const agents = arr(row.agents);
-        const mark = present.rowState(agents);
-        if (mark !== null) out.mark = mark;
-        const shown = decisions.presentRow({ ...structuredClone(row), agents: agents.map((a: J) => present.session(a)) });
-        const line = present.rowStateLine(shown);
-        if (line !== null) {
-          out.stateText = line[0];
-          if (line[3] !== null) out.stateLead = line[3].kind;
+        const state = this.#openedState(row);
+        if (state.mark !== null) out.mark = state.mark;
+        if (state.text !== null) {
+          out.stateText = state.text;
+          if (state.lead !== null) out.stateLead = state.lead;
         }
       }
       if (found?.archived === true) {
@@ -3058,6 +3272,24 @@ export class Views implements Owner {
       }
       return [out];
     });
+  }
+
+  /// Where a chat a chat's agent opened stands (#opened): its mark and its row's second line, made of its record alone
+  /// (and the words of the language they are said in), so kept by the record, the same object while it does not change.
+  /// A chat that leads many is made again on each change while its reply streams: each of them was copied whole and
+  /// presented again every time.
+  readonly #openedStates = new WeakMap<object, { lang: string; mark: string | null; text: string | null; lead: string | null }>();
+  #openedState(row: J): { mark: string | null; text: string | null; lead: string | null } {
+    const said = lang();
+    const was = this.#openedStates.get(row);
+    if (was !== undefined && was.lang === said) return was;
+    const agents = arr(row.agents);
+    // (presentRow and the presenting of each agent copy what they change: the record is read, never written)
+    const shown = decisions.presentRow({ ...row, agents: agents.map((a: J) => present.session(a)) });
+    const line = present.rowStateLine(shown);
+    const made = { lang: said, mark: present.rowState(agents), text: line === null ? null : line[0], lead: line === null || line[3] === null ? null : line[3].kind };
+    this.#openedStates.set(row, made);
+    return made;
   }
 
   /// The chat an agent opened a row's chat from (its station's `opener`), as its list has it: on its station (the row's
@@ -3079,12 +3311,25 @@ export class Views implements Owner {
 
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
   /// in red), before
-  /// anything its agents do (the message waits in the chat to be sent again or dropped).
-  #unsentRow(station: string, row: J, failed?: Map<number, J>): J {
+  /// anything its agents do (the message waits in the chat to be sent again or dropped). Else, a chat made here (the
+  /// board's draft started, a new chat's page) whose first words are still on their way (`going`, local.ts
+  /// goingFirsts) while its station lists it with its agent seated and no turn begun (`record`'s agents): at work
+  /// (进行中), not ended (待收口) till its turn runs. Only those: a chat seated and asked nothing that was not made here
+  /// (a connect's, waiting for a person's first message) stays as its record says.
+  #unsentRow(station: string, row: J, failed?: Map<number, J>, record?: J, going?: ReadonlySet<number>): J {
     const thread = typeof row.thread === "number" ? row.thread : null;
     const key = row.pending === true && typeof row.clientKey === "string" ? row.clientKey : null;
     const unsent = failed !== undefined && thread !== null && key === null ? failed.get(thread) : this.local.unsent(station, thread, key);
-    if (unsent === undefined) return row;
+    if (unsent === undefined) {
+      if (row.stage !== undefined || thread === null || key !== null || record === undefined) return row;
+      if (!(going ?? this.local.goingFirsts(station)).has(thread) || !noTurnBegun(record)) return row;
+      const { archiveRead: _archiveRead, ...rest } = row;
+      const atWork: J = { ...rest, stage: "run" };
+      deepFreeze(atWork);
+      const pinned = pinnedAt.get(row);
+      if (pinned !== undefined) pinnedAt.set(atWork, pinned);
+      return atWork;
+    }
     const text = format.cleanText(format.plainText(str(unsent.text) ?? ""));
     const { stateAbout: _stateAbout, stateLead: _stateLead, stateLeadText: _stateLeadText, stateRest: _stateRest, ...rest } = row;
     // (it needs the viewer: chat-stage.ts needsViewer)
@@ -3319,20 +3564,16 @@ export class Views implements Owner {
     return { ok: found ?? null };
   }
 
-  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory.ts
-  /// `setStationMode`; the user, 2026-11-10): those they added, and those no member of the workspace added (its adder
-  /// left, or the operator enrolled it) where they own the workspace.
+  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory/stations.ts
+  /// `setStationMode`): workspace owners and admins may convert any whole station, and a member may convert one they added.
   #mayChangeMode(scope: string): (id: string) => boolean {
     const ws = this.ok({ topic: "workspace", workspace: scope });
     const sub = this.#core.subOf?.(scope) ?? null;
     if (sub === null || !isObject(ws)) return () => false;
-    const owner = get(ws, "role") === "owner";
-    const members = new Set(arr(get(ws, "members")).map((m) => str(get(m, "sub"))));
+    const role = get(ws, "role");
+    if (role === "owner" || role === "admin") return () => true;
     const by = new Map(arr(get(ws, "stations")).map((s) => [str(get(s, "id")), str(get(s, "enrolled_by"))] as const));
-    return (id) => {
-      const adder = by.get(id) ?? null;
-      return adder === sub || (owner && (adder === null || !members.has(adder)));
-    };
+    return (id) => by.get(id) === sub;
   }
 
   /// A scope's stations, made in one place for the three ways they are asked: `row`, each as a list shows it
@@ -3404,7 +3645,7 @@ export class Views implements Owner {
         online: s.online,
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
-        problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable),
+        problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable, typeof cause === "string" ? cause : null),
         // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
         // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
         ...(unprotected && can && s.online ? { protect: true } : {}),
@@ -3417,6 +3658,7 @@ export class Views implements Owner {
         way: way === undefined ? null : present.way(way, (h) => this.relayName(h)),
         ...(s.joined ? { joined: true, home: this.#core.homeName?.(scope, s.id) ?? null } : {}),
         mine: mine(s.id),
+        ...((row ? !parts.unreadable.get() && parts.acceptAutoChats.get() : get(get(overview, "autoChats"), "enabled") === true) ? { acceptAutoChats: true } : {}),
       };
       if (row) return item;
       const serving = overview !== undefined ? servingIn(overview, scope, s.joined === true) : overview;
@@ -3433,6 +3675,34 @@ export class Views implements Owner {
     });
     this.#againIn(silentNext);
     return { ok: items };
+  }
+
+  /// Local connection diagnostics for one station (`stationDiag`).
+  #stationDiag(station: string): J {
+    const ws = ofAddress(station);
+    const id = station.includes("/") ? station.slice(station.indexOf("/") + 1) : station;
+    const workspace = this.ok({ topic: "workspace", workspace: ws });
+    const st = arr(get(workspace, "stations")).find((x) => str(get(x, "id")) === id);
+    const link = this.link(station);
+    const net = this.ok({ topic: "net", station });
+    const linkDiag = this.#core.linkDiag?.(station) ?? null;
+    const peerDiag = this.#core.peerDiag?.(station) ?? null;
+    const cloudDown = linkDiag?.cloudDown ?? this.#core.cloudDown?.() ?? false;
+    const c = this.#clock();
+    return stationDiagView({
+      station,
+      id,
+      name: str(get(st, "name")) ?? id,
+      version: str(get(st, "version")),
+      lastSeenSec: typeof get(st, "lastSeen") === "number" ? (get(st, "lastSeen") as number) : null,
+      link,
+      linkDiag,
+      peerDiag,
+      net: net === undefined ? null : present.net(net, (h) => this.relayName(h)),
+      cloudDown,
+      clock: c,
+      relayName: (h) => this.relayName(h),
+    });
   }
 
   /// A station's decorated overview, what of it the workspace's profiles read decorated (`profile`: its kept part,
@@ -3490,6 +3760,7 @@ export class Views implements Owner {
         const o = this.#core.data.overviewRow(station);
         return isObject(o) ? asShaped("OverviewRow", rowOf(o)) : undefined;
       }),
+      acceptAutoChats: computed(() => get(get(this.#core.data.overviewRow(station), "autoChats"), "enabled") === true),
       hostRow: computed(() => {
         const h = kept!.host.get();
         return h === null ? null : asShaped("HostRow", { identity: h.identity, os: h.os, meters: h.meters });
@@ -3634,19 +3905,21 @@ export class Views implements Owner {
     // (2026-11-09).
     const summary = (listed ? data.listedThread(station, id) : undefined) ?? (isObject(page.thread) ? page.thread : undefined);
     if (summary === undefined) return undefined;
-    const thread: J = structuredClone(summary);
+    // (a copy of its top alone: what is put in it here is `people` and `creator`, made anew; the rest is shared as read)
+    const thread: J = { ...(summary as Record<string, unknown>) };
     const agents = timed("chat.agents", () => this.#agentsOf(station, thread));
     // What two chats' agents wrote each other is not said in it: it has a page of its own (`chatLetters`).
     const keys = new Set(members(thread));
     const all: J[] = merge(arr(page.entries));
     const said = all.filter((m) => !isLetter(m, keys));
     const letters = Math.max(u64(get(thread, "letters")) ?? 0, all.length - said.length);
-    const { scope, viewer, members_, bots } = this.#peopleOf(station, agents);
+    const whom = this.#peopleOf(station, agents);
+    const { scope, viewer, members_, bots } = whom;
     const waiting = agents.reduce((max, a) => Math.max(max, u64(get(a.session, "pending")) ?? 0), 0);
     const peopleSeqs = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [m.seq as number] : []));
     const waits = peopleSeqs.slice(Math.max(peopleSeqs.length - waiting, 0));
     const written = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [[m.seq as number, str(m.text) ?? ""] as [number, string]] : []));
-    let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits));
+    let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits, whom));
     // The station binds a capacity retry, and a failed turn, to the notice that announced it. Only that notice offers
     // cancelling the retry, or trying again, and only while that agent still stands there: an old notice must never
     // stop or start later work in the same chat.
@@ -3657,16 +3930,17 @@ export class Views implements Owner {
       const key = str(get(session, "key"));
       const detail = str(get(turn, "detail")) ?? "";
       const outcome = get(turn, "outcome");
-      if (key === undefined || (outcome !== "failed" && outcome !== "completed") || get(about, "thread") !== id) continue;
+      if (key === undefined || (outcome !== "failed" && outcome !== "completed" && outcome !== "aborted") || get(about, "thread") !== id) continue;
       // Waiting to retry at capacity: 取消; else one that failed for the provider or the connection, or one the station
-      // stopped asking for a state (回复即可继续), and is still where the session stands (nothing ran or was sent
-      // since): 重试, as a reply would (station actor.ts `retryable`).
+      // stopped asking for a state (回复即可继续), or one cut off by a non-update station restart, and is still where the
+      // session stands (nothing ran or was sent since): 重试, as a reply would (station actor.ts `retryable`).
       const status = present.sessionStatus(session);
       const mark = outcome === "failed" && detail.startsWith("overloaded:") && present.waiting(session) !== null ? "retrySession"
         : outcome === "failed" && status === "failed" && AGAIN.some((reason) => detail.startsWith(`${reason}:`)) ? "againSession"
         // Its allowance asked again showed a limit its words did not name: 重新分配账号 (actor.ts `LIMIT_SHOWN`).
         : outcome === "failed" && status === "failed" && detail.startsWith("limit:") ? "reassignSession"
-        : outcome === "completed" && status === "unexpected" ? "againSession" : null;
+        : outcome === "completed" && status === "unexpected" ? "againSession"
+        : outcome === "aborted" && status === "aborted" && detail === "other: cut off by restart" ? "againSession" : null;
       if (mark === null) continue;
       const at = messages.findIndex((m) => m.system === true && m.seq === get(about, "seq") && m.ts === get(about, "ts"));
       const notice = messages[at];
@@ -3890,8 +4164,8 @@ export class Views implements Owner {
   /// viewer's those with seqs in `waits` still waiting for its agents; a notice that a runtime is not installed with
   /// installing it, as the station's updates have it now (or under the viewer's message that waits for it); a failure
   /// notice one to report where the station takes bug reports.
-  #shown(station: string, thread: J, agents: J[], said: J[], waits: number[]): J[] {
-    const { scope, viewer, slackUsers, members_, bots } = this.#peopleOf(station, agents);
+  #shown(station: string, thread: J, agents: J[], said: J[], waits: number[], people = this.#peopleOf(station, agents)): J[] {
+    const { scope, viewer, slackUsers, members_, bots } = people;
     const updates = arr(get(this.#chatOverview(station), "updates"));
     const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
     const manages = role === "owner" || role === "admin";
@@ -3900,13 +4174,16 @@ export class Views implements Owner {
     // this is as it was, a message made before is the one shown, so a new message costs that message.
     // (of its agents, what shownMessage reads of them: who each is, not what each did since)
     const who = agents.map((a) => [get(a.session, "key"), get(a.session, "runtime"), get(a.session, "agentText"), get(a.session, "maker")]);
-    const by = this.#steady(`shown\u0001${station}\u0001${String(thread.id)}`, [who, viewer, slackUsers, members_, bots, thread.creator, updates, manages, reports]);
+    // (the names of the profiles its notices are about, each read alone (data.ts overviewProfile), as they say them)
+    const named = this.#profileNames(station, said);
+    const by = this.#steady(`shown\u0001${station}\u0001${String(thread.id)}`, [who, viewer, slackUsers, members_, bots, thread.creator, updates, manages, reports, named]);
     const messages = said.map((raw) => {
       const waiting = u64(raw.seq) !== null && waits.includes(raw.seq as number);
       const was = this.#shownMade.get(raw);
       if (was !== undefined && was.by === by && was.waiting === waiting) return was.out;
       work.messages++;
-      const m = shownMessage(raw, agents, viewer, slackUsers, members_, bots, thread.creator);
+      const profile = str(raw.profile);
+      const m = shownMessage(raw, agents, viewer, slackUsers, members_, bots, thread.creator, profile !== null ? (named[profile] ?? null) : null);
       const out: J = { ...m, waiting };
       const install = m.system === true && typeof m.runtime === "string" ? present.installView(m.runtime, updates, manages) : null;
       if (install !== null) out.install = install;
@@ -3915,6 +4192,21 @@ export class Views implements Owner {
       return out;
     });
     return blockedUnder(messages);
+  }
+
+  /// The names of the station's profiles still.fail's notices among `said` are about (their `profile`), by id: each
+  /// profile read alone (data.ts overviewProfile), never the whole overview; one not known, or unnamed, left out.
+  #profileNames(station: string, said: J[]): Record<string, string> {
+    const out: Record<string, string> = {};
+    const asked = new Set<string>();
+    for (const m of said) {
+      const id = str(m.profile);
+      if (id === null || id === "" || asked.has(id) || !isStationAuthor(m.authorKind)) continue;
+      asked.add(id);
+      const name = str(get(this.#core.data.overviewProfile(station, id), "name"));
+      if (name !== null && name !== "") out[id] = name;
+    }
+    return out;
   }
 
   /// `value` as it was for `key` the last time, when it is equal to it: what is made of it can be kept by its identity.
@@ -4022,17 +4314,16 @@ export class Views implements Owner {
     const thread = view.thread as J;
     const keys = new Set(members(thread));
     const agents = arr(view.agents);
-    const scope = ofAddress(station);
-    const viewer = this.me(scope);
-    const members_ = arr(get(this.ok({ topic: "workspace", workspace: scope }), "members"));
+    const { viewer, members_, bots } = this.#peopleOf(station, agents);
     // Those kept as entries before letters had their own log, and those of it (`letters`), in the order written.
     const written = [...merge(arr(get(held.ok, "entries"))).filter((m) => isLetter(m, keys)), ...merge(arr(get(held.ok, "letters")))];
     const at = (m: J) => u64(m.createdAt) ?? 0;
     written.sort((a, b) => at(a) - at(b));
     const letters = written.flatMap((m) => {
       if (!isLetter(m, keys)) return [];
-      const l = letterWay(m);
-      const shown: J = { ...shownMessage({ ...m, text: letterWords(str(m.text) ?? "") }, agents, viewer, [], members_, [], thread.creator), waiting: false };
+      const way = letterWay(m);
+      const l = { ...way, title: cleanLetterTitle(way.title, bots, members_) };
+      const shown: J = { ...shownMessage({ ...m, text: letterWords(str(m.text) ?? "") }, agents, viewer, [], members_, bots, thread.creator), waiting: false };
       // Coming in: by the agent of the chat it came from, named by that chat.
       if (l.way === "in") shown.by = { name: t("core-views.letters.their", { chat: l.title }), from: l.link, maker: get(shown.by, "maker") ?? null };
       return [{ message: shown, ...l }];
@@ -4137,12 +4428,8 @@ export class Views implements Owner {
       return merge([entry, ...(edits.get(seq) ?? []).map(read)])[0] ?? null;
     };
     if (kept === undefined || since.put === null) {
-      const held = data.logRange("entry", station, String(id), 1, of);
-      const edits = new Map<number, number[]>();
-      for (const [n, e] of held) {
-        const target = get(e, "kind") === "edit" ? get(e, "target") : undefined;
-        if (typeof target === "number") edits.set(target, [...(edits.get(target) ?? []), n]);
-      }
+      // (their messages and the edits of those alone, found by their indexes: not the agents' replies, most of a chat)
+      const { held, edits } = data.peopleEntries(station, id, of);
       const people = merge([...held.keys()].sort((a, b) => a - b).map((n) => held.get(n))).filter((m) => m.authorKind === "person");
       kept = { rev: since.rev, changed: (kept?.changed ?? 0) + 1, messages: new Map(people.map((m) => [m.seq as number, m])), order: people.map((m) => m.seq as number), edits };
     } else if (since.rev !== kept.rev) {
@@ -4335,6 +4622,12 @@ export class Views implements Owner {
       const agent = { name: str(get(a.session, "agentText")) ?? "agent", agent: key, maker: get(a.session, "maker") ?? null, runtime: get(a.session, "runtime") ?? null };
       const pictures = slackPictures(a.session, threads, connects);
       for (const s of said) {
+        // Another chat's agent's letter kept by a core before they were left out (elsewhere.ts `readItem`): never said
+        // in Slack.
+        if (!s.out && s.who === null) {
+          const sent = sentHead(s.text);
+          if (sent !== null && !sent.opened) continue;
+        }
         // What the tool refused on its way to a thread its session is not in went nowhere (a chat_post to a mistyped
         // address, `CHT/…` for `CHAT/…`): it is not shown as sent to Slack.
         if (s.out && s.refused && !threads.some((th) => `${str(get(th, "channel"))}/${str(get(th, "threadTs"))}` === s.to)) continue;
@@ -4358,7 +4651,7 @@ export class Views implements Owner {
         }
         // (a bot is said as its mention, `<@U…>`)
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));
-        const by = s.out ? structuredClone(agent) : { name: s.who || s.user || "Slack", ...(picture !== undefined ? { picture } : {}) };
+        const by = s.out ? structuredClone(agent) : { name: elsewhereSenderName(s, people.bots, people.members), ...(picture !== undefined ? { picture } : {}) };
         // A person's files are listed after their words, as the agent was given them: drawn as files, kept in the
         // workspace that holds them (`keeper`).
         const words = s.out ? { text: s.text, files: [] } : heardFiles(s.text);
@@ -4481,7 +4774,7 @@ export class Views implements Owner {
 
   /// An agent as its sidebar row lists it, with the connect its row came from.
   #rowAgent(station: string, key: string): J {
-    const row: J = this.#core.data.chatOfSession(station, key);
+    const row: J = this.#core.data.chatForSession(station, key);
     const agent = arr(get(row, "agents")).find((a) => get(a, "key") === key);
     if (agent === undefined) return null;
     const out = structuredClone(agent);
@@ -4522,8 +4815,9 @@ export class Views implements Owner {
 
   /// The page of an item whose agent has no chat yet.
   #unchatted(station: string, key: string): Value | undefined {
-    const agent = this.agent(station, key);
-    if (agent === null) {
+    const data = this.#core.data;
+    const anchor = data.conversationOf(station, key);
+    if (anchor === key && this.agent(station, key) === null) {
       const detail = this.value({ topic: "session", station, key });
       if (detail === undefined) return undefined;
       // (the station has no such session: the chat is not there, said so, whatever the station's words for it)
@@ -4532,25 +4826,54 @@ export class Views implements Owner {
     }
     const found = this.#row(station, { session: key });
     if (found === undefined && this.listKnown(station, "chats") === undefined) return undefined;
-    const row = found ?? undefined;
+    const archivedFound = found === null ? data.chatNamed(station, anchor) : undefined;
+    const row = found ?? archivedFound?.row;
+    const agentKeys: string[] = [];
+    const addKey = (k: unknown) => {
+      if (typeof k === "string" && k !== "" && !agentKeys.includes(k)) agentKeys.push(k);
+    };
+    for (const a of arr(get(row, "agents"))) addKey(get(a, "key"));
+    addKey(anchor);
+    addKey(key);
+    if (anchor !== key && this.agent(station, anchor) === null) {
+      const anchorDetail = this.value({ topic: "session", station, key: anchor });
+      if (anchorDetail === undefined) return undefined;
+    }
+    const agents: J[] = [];
+    for (const k of agentKeys) {
+      const a = this.agent(station, k);
+      if (a !== null) agents.push(a);
+    }
+    if (agents.length === 0) {
+      const detail = this.value({ topic: "session", station, key });
+      if (detail === undefined) return undefined;
+      const none = new CoreError("http_404", t("core-views.error.no_chat"), 404);
+      return { err: "err" in detail && detail.err.status !== 404 ? detail.err : none };
+    }
     if (row === undefined) {
       const threads = this.value({ topic: "threads", station });
       if (threads === undefined) return undefined;
       if ("err" in threads) return threads;
     }
-    const archived = this.local.archivedChanging(station, null, key) ?? (get(agent.session, "archivedAt") !== undefined && get(agent.session, "archivedAt") !== null);
-    // An agent that has only been in Slack: what was said there is all it has to show.
+    const archived = this.local.archivedChanging(station, null, anchor)
+      ?? (anchor !== key ? this.local.archivedChanging(station, null, key) : null)
+      ?? (archivedFound?.archived === true || agents.some((a) => get(a.session, "archivedAt") !== undefined && get(a.session, "archivedAt") !== null));
+    // An agent (or merged conversation) that has only been in Slack: what was said there is all it has to show.
     const members_ = arr(get(this.ok({ topic: "workspace", workspace: ofAddress(station) }), "members"));
-    const bot = agent.connect !== undefined ? present.botOf(agent.connect) : null;
-    const elsewhere = this.#sentElsewhere(station, null, [agent], [], false, false, { members: members_, bots: (bot === null ? [] : [bot]).concat(this.#core.data.slackNames(station)) });
-    // No chat at all, as its detail says: none here, none in Slack (a Slack thread has no chat here either), not archived.
-    const detail = this.value({ topic: "session", station, key });
-    const noChat = !archived && detail !== undefined && "ok" in detail && arr(get(detail.ok, "threads")).length === 0;
+    const bots = agents.flatMap((a) => {
+      const bot = a.connect !== undefined ? present.botOf(a.connect) : null;
+      return bot === null ? [] : [bot];
+    }).concat(this.#core.data.slackNames(station));
+    const elsewhere = this.#sentElsewhere(station, null, agents, [], false, false, { members: members_, bots });
+    // No chat at all, as their details say: none here, none in Slack (a Slack thread has no chat here either), not archived.
+    const details = agentKeys.map((k) => this.value({ topic: "session", station, key: k }));
+    const noChat = !archived && details.length > 0 && details.every((d) => d !== undefined && "ok" in d && arr(get(d.ok, "threads")).length === 0);
     // Where the Slack or Feishu thread it came from is (the row's origin), as a chat's page says its own.
     const origin = get(row, "origin");
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
-    const surface = isObject(origin) && isObject(agent.connect) ? `${strOf(agent.connect, "kind")}:${strOf(agent.connect, "id")}` : "";
-    const where = isObject(origin) ? this.#whereIn(station, [agent], surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
+    const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
+    const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
+    const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
     return {
       ok: {
         me: this.me(ofAddress(station)),
@@ -4561,7 +4884,7 @@ export class Views implements Owner {
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],
         archived,
-        agents: [agent],
+        agents,
         messages: [],
         elsewhere,
         more: false,
@@ -4670,8 +4993,20 @@ function mayLink(m: J): boolean {
   return may;
 }
 
-/// A message as drawn (`drawn`), by the message shown: what it was drawn with, and how.
-const drawnMade = new WeakMap<object, { parts: unknown[]; out: J }>();
+/// A message as drawn (`drawn`), by the message shown: what it was drawn with (its files as drawn and what each was drawn
+/// with, `drawn` fileParts; the chats it links to; who it is by, and whether that is one of the chat's agents; its words
+/// as read), and how.
+const drawnMade = new WeakMap<object, { files: J; fileParts: unknown[] | null; chats: J[]; by: J; byHere: boolean; tree: unknown; out: J }>();
+/// A message that links to no chat (never drawn: `chats` goes out only where it has some).
+const NO_CHATS: J[] = Object.freeze([]) as unknown as J[];
+
+/// Whether a message's files are drawn with what they were (`drawn` fileParts): each of the same, by reference.
+function sameParts(a: unknown[] | null, b: unknown[] | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) => string | undefined, md?: MdStore, linked?: (text: string) => J[], held?: (session: string, name: string) => boolean): V {
   if (out === undefined || !("ok" in out) || !isObject(out.ok)) return out;
@@ -4686,36 +5021,74 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
     const by = typeof path === "string" ? agents.find((a) => path.startsWith(`${str(get(a.session, "workspace")) ?? "\0"}/`)) : undefined;
     return str(get(by?.session, "key")) ?? author ?? str(get(agents[0]?.session, "key"));
   };
-  const own = (files: unknown, author: string | null = null): J => {
-    if (!Array.isArray(files)) return files;
-    return files.map((f) => {
-      if (!isObject(f)) return f;
+  // What each of a message's files is drawn with, three a file: whose workspace keeps it, its upload here and whether its
+  // picture is kept (null: not a list of files).
+  const fileParts = (files: unknown, author: string | null): unknown[] | null => {
+    if (!Array.isArray(files)) return null;
+    const parts: unknown[] = [];
+    for (const f of files) {
+      if (!isObject(f)) {
+        parts.push(null, undefined, false);
+        continue;
+      }
       const key = owner(get(f, "path"), author);
       // One sent from here before it was up: its picture is still here, under its upload's id.
       const upload = uploadOf(get(f, "path"));
       const path = str(get(f, "path")) ?? "";
       const kept = key !== null && held !== undefined && path !== "" && held(key, path.slice(path.lastIndexOf("/") + 1));
+      parts.push(key, upload, kept);
+    }
+    return parts;
+  };
+  const ownOf = (files: unknown, parts: unknown[] | null): J => {
+    if (parts === null || !Array.isArray(files)) return files;
+    return files.map((f, i) => {
+      if (!isObject(f)) return f;
+      const key = parts[i * 3] as string | null;
+      const upload = parts[i * 3 + 1] as string | undefined;
+      const kept = parts[i * 3 + 2] === true;
       return key !== null || upload !== undefined ? { ...f, ...(key !== null ? { owner: key } : {}), ...(upload !== undefined ? { upload } : {}), ...(kept ? { held: true } : {}) } : f;
     });
   };
+  const own = (files: unknown, author: string | null = null): J => ownOf(files, fileParts(files, author));
   const here = (by: J): J => {
     const agent = str(get(by, "agent"));
     return agent !== null && keys.has(agent) ? { ...by, here: true } : by;
   };
+  // The words read as Markdown that are not read here this run: their trees read of the device at once, in one
+  // statement (data.ts `mdStore`), not one a message as each is drawn; each text's key worked out once.
+  const mdWords = (m: J): string | null => (isObject(m.notice) ? (str(m.notice.words) ?? "") : m.authorKind === "person" ? null : (str(m.text) ?? ""));
+  const keyed = new Map<string, string>();
+  if (md?.preload !== undefined) {
+    for (const m of arr(view.messages)) {
+      const text = isObject(m) ? mdWords(m) : null;
+      if (text !== null && !keyed.has(text) && !markdownHere(text)) keyed.set(text, mdKey(text));
+    }
+    if (keyed.size > 0) md.preload([...keyed.values()]);
+  }
   const messages: J[] = arr(view.messages).map((m) => {
     if (!isObject(m)) return m;
-    const files = own(m.attachments, m.authorKind === "agent" ? str(m.author) : null);
+    // Drawn before (`was`, by the message, the same object while it does not change): what it is drawn with that is as
+    // it was is what it was drawn with then, not made again, so that it is known the same by its reference (a file's
+    // copy, its links, who it is by): one change of a chat made every message's anew and walked them all to find them
+    // equal (13-22 ms of a chat drawn, its Markdown read already, 2026-11-18).
+    const was = drawnMade.get(m);
+    const parts = fileParts(m.attachments, m.authorKind === "agent" ? str(m.author) : null);
+    const files = was !== undefined && sameParts(was.fileParts, parts) ? was.files : ownOf(m.attachments, parts);
     // The chats it links to, each with its title (one linked bare reads as it) and whether it is archived.
-    const chats = linked !== undefined && mayLink(m) ? linked(str(m.text) ?? "") : [];
-    const by = here(m.by);
+    const linking = linked !== undefined && mayLink(m) ? linked(str(m.text) ?? "") : NO_CHATS;
+    const chats = was !== undefined && (linking.length === 0 ? was.chats.length === 0 : equal(was.chats, linking)) ? was.chats : linking;
+    const agent = str(get(m.by, "agent"));
+    const byHere = agent !== null && keys.has(agent);
+    const by = was !== undefined && was.byHere === byHere ? was.by : byHere ? { ...(m.by as J), here: true } : m.by;
     // A person's words are drawn as they wrote them and place nothing: their files are all below them. An agent's are
     // Markdown, read here (once: markdown.ts keeps it by the words; read again as its reader changes); still.fail's
     // notice's are too, as its pill says them (noticeOf: a chat it opened is a link to it).
-    const tree = isObject(m.notice) ? markdown(str(m.notice.words) ?? "", md) : m.authorKind === "person" ? null : markdown(str(m.text) ?? "", md);
+    const words = mdWords(m);
+    const tree = words === null ? null : markdown(words, md, keyed.get(words));
     // Drawn as before while what it is drawn with is (its files, its links, who it is by, its words as read): the
     // same object.
-    const was = drawnMade.get(m);
-    if (was !== undefined && equal(was.parts, [files, chats, by, tree])) return was.out;
+    if (was !== undefined && ((was.files === files && was.chats === chats && was.by === by && was.tree === tree) || equal([was.files, was.chats, was.by, was.tree], [files, chats, by, tree]))) return was.out;
     const out: J = { ...m, by, attachments: files };
     if (chats.length > 0) out.chats = chats;
     if (isObject(m.notice)) out.notice = { ...m.notice, md: tree };
@@ -4727,7 +5100,7 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
         if (placed.size > 0) out.placed = [...placed.keys()];
       }
     }
-    drawnMade.set(m, { parts: [files, chats, by, tree], out: sharedValue(out) });
+    drawnMade.set(m, { files, fileParts: parts, chats, by, byHere, tree, out: sharedValue(out) });
     return out;
   });
   view.messages = messages;
@@ -4830,14 +5203,148 @@ export function stationState(online: boolean, saysWhy: boolean, summary: string,
 /// What may be wrong with a station, each in words, worst first: silent though up, down for
 /// a security mode (why), away (red once it has been online, else amber: never connected). Up and saying what this core
 /// cannot read comes first: it explains the rest.
-export function stationProblems(online: boolean, silent: boolean, blocked: string | null, seen: boolean, updating = false, unreadable = false): { key: string; level: string; text: string }[] {
+export function stationProblems(online: boolean, silent: boolean, blocked: string | null, seen: boolean, updating = false, unreadable = false, cause: string | null = null): { key: string; level: string; text: string }[] {
   if (online && unreadable) return [{ key: "incompatible", level: "amber", text: t("core-views.station.incompatible", { name: brand.name() }) }];
   if (online && silent) return [{ key: "silent", level: "amber", text: t("core-views.station.silent", { name: brand.name() }) }];
   if (!online && blocked !== null) return [{ key: "blocked", level: "red", text: blocked }];
   // Gone for its update: back by itself once it is done.
   if (!online && updating) return [{ key: "updating", level: "amber", text: t("core-views.station.updating_back") }];
-  if (!online) return [{ key: "away", level: seen ? "red" : "amber", text: seen ? t("core-views.station.away", { name: brand.name() }) : t("core-views.station.never_connected", { name: brand.name() }) }];
+  if (!online) {
+    if (cause === "network") return [{ key: "away", level: "red", text: t("core-views.station.away_network", { name: brand.name() }) }];
+    if (cause === "unreached") return [{ key: "away", level: "red", text: t("core-views.station.away_unreached", { name: brand.name() }) }];
+    return [{ key: "away", level: seen ? "red" : "amber", text: seen ? t("core-views.station.away", { name: brand.name() }) : t("core-views.station.never_connected", { name: brand.name() }) }];
+  }
   return [];
+}
+
+function clockSeconds(ms: number, offsetMin: number): string {
+  const [, , , , h, m] = format.local(ms, offsetMin);
+  const s = ((Math.floor(ms / 1000) % 60) + 60) % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(h)}:${two(m)}:${two(s)}`;
+}
+
+/// Builds a bounded `StationDiag` value from local link, mesh, cached net and workspace info.
+export function stationDiagView(input: {
+  station: string;
+  id: string;
+  name: string;
+  version: string | null;
+  lastSeenSec: number | null;
+  link: J;
+  linkDiag: LinkDiag | null;
+  peerDiag: PeerDiag | null;
+  net: J | null;
+  cloudDown: boolean;
+  clock: present.Clock;
+  relayName: (host: string) => string | null;
+}): J {
+  const { id, name, version, lastSeenSec, link, linkDiag, peerDiag, net, cloudDown, clock, relayName } = input;
+  const linkState = str(get(link, "state")) ?? "connecting";
+  const linkCause = str(get(link, "cause"));
+  const isDown = down(link);
+  let cause: string;
+  if (isDown) {
+    if (linkCause === "network" || linkCause === "unreached" || linkCause === "station" || linkCause === "lock" || linkCause === "updating") cause = linkCause;
+    else cause = cloudDown ? "network" : "station";
+  } else if (linkState === "error") {
+    cause = "error";
+  } else {
+    cause = "silent";
+  }
+  const summary = t(`core-views.station.diag.summary.${cause}`, { name: brand.name() });
+  const msg = str(get(link, "message"));
+  const detail = msg !== null && msg !== "" ? msg : (linkDiag?.lastEnd ?? null);
+  const lastOnlineMs = lastSeenSec !== null ? lastSeenSec * 1000 : (linkDiag?.downAt ?? null);
+  const lastOnlineText =
+    lastOnlineMs !== null
+      ? t("core-views.station.diag.last_online", {
+          ago: format.relativeTime(lastOnlineMs, clock.now, clock.offsetMin),
+          clock: format.clock(lastOnlineMs, clock.offsetMin),
+        })
+      : null;
+  const cloudStatus = cloudDown ? t("core-views.station.diag.cloud_down") : t("core-views.station.diag.cloud_ok");
+  let retryText: string | null = null;
+  if (linkDiag !== null && linkDiag.misses > 0) {
+    if (linkDiag.retryAt !== null) {
+      const time = clockSeconds(linkDiag.retryAt, clock.offsetMin);
+      retryText = linkDiag.slowBackoff
+        ? t("core-views.station.diag.retry_slow", { n: linkDiag.misses, time })
+        : t("core-views.station.diag.retry_at", { n: linkDiag.misses, time });
+    } else {
+      retryText = t("core-views.station.diag.retry_misses", { n: linkDiag.misses });
+    }
+  }
+  const lastNetPath = str(get(net, "path"));
+  const lastNetRtt = str(get(get(net, "rtt"), "text"));
+  const lastNetText = lastNetPath !== null && lastNetPath !== "" ? (lastNetRtt !== null && lastNetRtt !== "" ? `${lastNetPath} · ${lastNetRtt}` : lastNetPath) : null;
+  const seenAddr = new Set<string>();
+  const addresses: string[] = [];
+  for (const a of [...(peerDiag?.lan ?? []), ...(peerDiag?.tailnet ?? [])]) {
+    if (typeof a === "string" && a !== "" && !seenAddr.has(a)) {
+      seenAddr.add(a);
+      addresses.push(a);
+      if (addresses.length >= 8) break;
+    }
+  }
+  const wayName = (via: string): string => {
+    if (via === "main") return t("core-views.station.diag.way.main");
+    if (via === "main+addresses") return t("core-views.station.diag.way.main_addresses");
+    if (via === "lan") return t("core-views.station.diag.way.lan");
+    if (via === "tailnet") return t("core-views.station.diag.way.tailnet");
+    if (via === "fenced") return t("core-views.station.diag.way.fenced");
+    if (via.startsWith("relay:")) {
+      const host = via.slice(6);
+      return relayName(host) ?? host;
+    }
+    return via;
+  };
+  const ways: { name: string; status: string; resultText: string }[] = [];
+  if (peerDiag !== null && peerDiag.attempts.length > 0) {
+    for (const a of peerDiag.attempts.slice(0, 12)) {
+      const status = a.outcome === "ok" ? "ok" : a.outcome === "no_answer" ? "timeout" : a.outcome === "refused" ? "refused" : a.outcome === "interrupted" ? "down" : "error";
+      const stage = t(`core-views.station.diag.stage.${a.stage}`);
+      const ms = format.duration(a.totalMs);
+      const base = t(`core-views.station.diag.outcome.${a.outcome}`, { stage, ms });
+      const resultText = a.error && (a.outcome === "error" || a.outcome === "refused") ? `${base} · ${a.error}` : base;
+      ways.push({ name: wayName(a.via), status, resultText });
+    }
+  } else if (peerDiag !== null && peerDiag.relays.length > 0) {
+    for (const r of peerDiag.relays.slice(0, 12)) {
+      const host = relayHost(r.url);
+      ways.push({
+        name: relayName(host) ?? host,
+        status: r.connected ? "ok" : "down",
+        resultText: r.connected ? t("core-views.station.diag.relay_up") : t("core-views.station.diag.relay_down"),
+      });
+    }
+  }
+  const lines: string[] = [
+    `Station: ${name} (${id})${version ? ` v${version}` : ""}`,
+    `Cause: ${cause} — ${summary}`,
+    `Cloud: ${cloudStatus}`,
+  ];
+  if (lastOnlineText !== null) lines.push(`Last online: ${lastOnlineText}`);
+  if (lastNetText !== null) lines.push(`Last route: ${lastNetText}`);
+  if (addresses.length > 0) lines.push(`Addresses: ${addresses.join(", ")}`);
+  if (retryText !== null) lines.push(`Retry: ${retryText}`);
+  if (detail !== null) lines.push(`Detail: ${detail}`);
+  if (ways.length > 0) {
+    lines.push("Routes:");
+    for (const w of ways) lines.push(`  - [${w.status}] ${w.name}: ${w.resultText}`);
+  }
+  return {
+    cause,
+    summary,
+    detail,
+    lastOnlineText,
+    cloudStatus,
+    retryText,
+    lastNetText,
+    addresses,
+    ways,
+    copyText: lines.join("\n"),
+  };
 }
 
 

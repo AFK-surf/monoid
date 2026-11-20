@@ -8,7 +8,7 @@ import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSyn
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ANY_NAME_DEPTH, rebuildableByName, rebuiltByName, rebuiltOfAnyName, roomOf } from "./footprint-reference.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../src/sessions/agent-home.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../src/sessions/agent-home.ts";
 import { runtimeKind } from "../src/agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "./reference/transcript-paths.ts";
 import { carriedTo, moved } from "../src/replica/restore.ts";
@@ -541,7 +541,7 @@ export function homeFiles(agent: string): string[] {
   file(join(agent, "MEMORY.md"));
   file(join(agent, "presets.json"));
   const skills = join(agent, "skills");
-  const own = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL]);
+  const own = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS]);
   const walk = (dir: string) => {
     let names: string[] = [];
     try {

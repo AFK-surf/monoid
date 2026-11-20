@@ -1,7 +1,6 @@
 // What is worked out here without the shell: the codecs as Node's, the rules of a scope, hosts and values, the plain
 // library's checks, a schema read as schema-install.ts reads it, and the keeper's grants held, used, renewed, run out
-// and handed over on a clock of the test's. (What needs the shell, the seal and the signatures, the station's
-// test/mb-vault-crypto.test.ts holds to the TypeScript through the program.)
+// and handed over on a clock of the test's.
 
 ///|
 test "hex, base64 and JSON as Node writes and reads them" {
@@ -151,4 +150,11 @@ test "a plain library's grant: held, used once, run out, handed over" {
   inspect(k.has_grant("r2"), content="false")
   k.end("s1")
   inspect(k.holds("s1"), content="false")
+}
+
+///|
+test "a snapshot as the routes read it: its value and its body by name, null where none is held" {
+  let v : Json = { "id": "v1", "seq": 0 }
+  inspect(stringify(snapshot_json(Some((v, "b1")))), content="{\"value\":{\"id\":\"v1\",\"seq\":0},\"body\":\"b1\"}")
+  inspect(stringify(snapshot_json(None)), content="null")
 }

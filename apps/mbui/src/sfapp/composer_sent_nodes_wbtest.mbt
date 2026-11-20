@@ -144,8 +144,7 @@ fn sent_nodes_held(at : String, seen : Array[(Double, Double, Double, Double)], 
 /// and a line typed in it, at rest.
 fn sent_nodes_chat(scale : Double) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -202,13 +201,12 @@ test "a new chat on a page made as nodes, 小屏, a finger's: its first three li
       (sent_nodes_box(c).1, sent_nodes_room(c, sent_nodes_draft))
     }
     let t = tester("home")
-    @sfbase.chat_page_nodes.set(true)
-    @sfbase.composer_nodes.set(true)
+    @sfbase.hold_chat_page_nodes(Some(true))
     t.set_font_scale(scale)
     t.set_rows_on_pixels(true)
     t.draw()
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     t.type_text("第一行\n第二行\n第三行")
@@ -237,8 +235,7 @@ test "a new chat on a page made as nodes, 小屏, a finger's: its first three li
 /// keyboard), its rows on the host's pixels, its composer pressed and `lines` lines typed in it, at rest.
 fn back_round_chat(w : Double, h : Double, platform : Int, lines : Int) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

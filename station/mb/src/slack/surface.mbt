@@ -3,9 +3,8 @@
 // its agents say and ask. One SlackSurface per connected connect.
 //
 // The socket kept up: connected again whenever it closes (Slack rotates them) or fails (after a wait that doubles up to
-// a minute), pinged, and taken for dead once it said nothing for a while, where its socket can be pinged (`WsConn`'s
-// `ping`: the shell's `ws.*` answers Slack's pings itself and says nothing of pongs, so a socket of the shell is held
-// only to opening in time).
+// a minute), pinged, and taken for dead once it said nothing (not even a pong) for a while (`WsConn`'s `ping` and
+// `WsFrame::Ping`/`Pong`).
 
 ///|
 /// How long who is in a channel is kept for (`people_in`).
@@ -23,15 +22,78 @@ let max_backoff_ms : Int = 60000
 let question_chars : Int = 8000
 
 ///|
+/// The most bytes a chat.update's `text` is cut to, though chat.postMessage takes 40,000 and the message's Markdown block
+/// 12,000 characters: a message posted whole is changed with its blocks whole and its `text`, only the notification's
+/// fallback, cut to fit. Slack refuses a `text` over 4,000 UTF-8 bytes (msg_too_long) as it stands after Slack's own
+/// changes to it: `&`, `<` and `>` escaped (`&amp;`, `&lt;`, `&gt;`) and bare links and emails made `<url>` /
+/// `<mailto:…|…>`. Each character is counted as escaped (`slack_text_bytes`); the 500 bytes left are for the links.
+let update_text_bytes : Int = 3500
+
+///|
+/// What `text` is cut to on a second try where Slack still found it too long (a message of nothing but links).
+let update_text_fallback_bytes : Int = 200
+
+///|
+/// A code point's bytes in a `text` as Slack measures it: `&`, `<` and `>` as their escapes, the rest as UTF-8.
+fn slack_text_bytes(cp : Int) -> Int {
+  if cp == 0x26 {
+    5
+  } else if cp == 0x3c || cp == 0x3e {
+    4
+  } else if cp <= 0x7f {
+    1
+  } else if cp <= 0x7ff {
+    2
+  } else if cp <= 0xffff {
+    3
+  } else {
+    4
+  }
+}
+
+///|
+/// `said` cut to `max_bytes` as Slack counts them (`slack_text_bytes`) at a whole code point, "…" after it where cut
+/// (slack/surface.ts `updateText`).
+fn update_text(said : String, max_bytes? : Int = update_text_bytes) -> String {
+  let mut total = 0
+  for c in said {
+    total += slack_text_bytes(c.to_int())
+  }
+  if total <= max_bytes {
+    return said
+  }
+  let out = StringBuilder::new()
+  let mut used = 0
+  for c in said {
+    let bytes = slack_text_bytes(c.to_int())
+    if used + bytes > max_bytes - 3 {
+      break
+    }
+    used += bytes
+    out.write_char(c)
+  }
+  out.write_string("…")
+  out.to_string()
+}
+
+///|
 /// What a chat's events are given to (sessions/chat.ts `Handler`): a message, an edit, a stop or a login's code, as
 /// `{type, …}`; what it raises is said as the event not taken.
 pub type Handler = async (J) -> Unit
 
 ///|
-/// A socket the surface reads: its next text (None once it closed), what it sends, its close, and its ping where it has
-/// one (a pong or any frame counts as heard: `heard`).
+/// A frame read from a Slack socket: text payload or WebSocket Ping/Pong control frame.
+pub(all) enum WsFrame {
+  Text(String)
+  Ping
+  Pong
+}
+
+///|
+/// A socket the surface reads: its next frame (None once it closed), what it sends, its close, and its ping where it has
+/// one (a pong, ping, or any text frame counts as heard: `heard`).
 pub struct WsConn {
-  next : async () -> String?
+  next : async () -> WsFrame?
   send : (String) -> Unit
   close : () -> Unit
   ping : (() -> Unit)?
@@ -44,9 +106,25 @@ pub(all) suberror WsRefused {
 }
 
 ///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for WsRefused with output(self, logger) {
+  match self {
+    WsRefused(status, m) => logger.write_string(trim("slack refused the connection: HTTP \{status} \{m}"))
+  }
+}
+
+///|
 /// No answer at all (no way there, or none in time): what is asked again (ops/unanswered.ts).
 pub(all) suberror Unanswered {
   Unanswered(String)
+}
+
+///|
+/// Its words where it is said (`to_string`, a notice, a log): not its type's name (`station/<package>.<Type>`).
+pub impl Show for Unanswered with output(self, logger) {
+  match self {
+    Unanswered(m) => logger.write_string(m)
+  }
 }
 
 ///|
@@ -513,7 +591,11 @@ async fn SlackSurface::run_socket(self : SlackSurface, url : String, handler : H
           self.set_status(false, self.last_error)
           return
         }
-        Some(data) => {
+        Some(Ping) | Some(Pong) => {
+          heard.val = self.now()
+          (self.o.on_heard)()
+        }
+        Some(Text(data)) => {
           heard.val = self.now()
           (self.o.on_heard)()
           if self.message(conn, data, handler) {
@@ -1363,45 +1445,7 @@ fn search_param(u : @cloud_net.Url, name : String) -> String? {
 ///|
 /// What application/x-www-form-urlencoded says: + a space, %XX its byte, the bytes UTF-8.
 fn form_decode(s : String) -> String {
-  let bytes = @buffer.new()
-  let n = s.length()
-  let hexv = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    Some(c - '0'.to_int())
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    Some(c - 'a'.to_int() + 10)
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    Some(c - 'A'.to_int() + 10)
-  } else {
-    None
-  }
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c == '+'.to_int() {
-      bytes.write_byte(b' ')
-      i += 1
-      continue
-    }
-    if c == '%'.to_int() && i + 2 < n + 0 && i + 2 <= n - 1 {
-      match (hexv(s.unsafe_charcode_at(i + 1)), hexv(s.unsafe_charcode_at(i + 2))) {
-        (Some(a), Some(b)) => {
-          bytes.write_byte((a * 16 + b).to_byte())
-          i += 3
-          continue
-        }
-        _ => ()
-      }
-    }
-    // (one code point as UTF-8)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      bytes.write_bytes(@utf8.encode(s.unsafe_substring(start=i, end=i + 2)))
-      i += 2
-    } else {
-      bytes.write_bytes(@utf8.encode(s.unsafe_substring(start=i, end=i + 1)))
-      i += 1
-    }
-  }
-  @utf8.decode_lossy(bytes.to_bytes())
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|
@@ -1505,13 +1549,7 @@ pub async fn SlackSurface::edit(self : SlackSurface, channel : String, thread_ts
     Some(b) => said.blocks + [b]
     None => said.blocks
   }
-  ignore(
-    self.client.api(
-      "chat.update",
-      [("channel", channel), ("ts", ts), ("text", message), ("blocks", stringify(ja(blocks)))],
-      self.bot_token,
-    ),
-  )
+  self.update(channel, ts, message, blocks)
   match self.stands.get(key) {
     Some((t, Some(_), block)) if t == ts => self.stands[key] = (t, Some(said), block)
     _ => ()
@@ -1617,14 +1655,28 @@ async fn SlackSurface::say_stands(self : SlackSurface, channel : String, thread_
 }
 
 ///|
+/// A message changed in place, its blocks whole; where Slack still finds the cut text too long once its links are made,
+/// once more with a text cut shorter (slack/surface.ts `update`).
 async fn SlackSurface::update(self : SlackSurface, channel : String, ts : String, said : String, blocks : Array[J]) -> Unit {
-  ignore(
-    self.client.api(
-      "chat.update",
-      [("channel", channel), ("ts", ts), ("text", said), ("blocks", stringify(ja(blocks)))],
-      self.bot_token,
-    ),
-  )
+  let call = async fn(text : String) {
+    ignore(
+      self.client.api(
+        "chat.update",
+        [("channel", channel), ("ts", ts), ("text", text), ("blocks", stringify(ja(blocks)))],
+        self.bot_token,
+      ),
+    )
+  }
+  let first = update_text(said)
+  call(first) catch {
+    e => {
+      let shorter = update_text(said, max_bytes=update_text_fallback_bytes)
+      if blocks.length() == 0 || !message_of(e).contains("msg_too_long") || shorter == first {
+        raise e
+      }
+      call(shorter)
+    }
+  }
 }
 
 ///|
@@ -1863,7 +1915,7 @@ pub async fn SlackSurface::history(self : SlackSurface, channel : String, thread
         u => u
       }
       let user = match by {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         _ => "unknown"
       }
       let from_bot = !nullish(at(mm, "bot_id")) || user == bot
@@ -1905,7 +1957,7 @@ pub async fn SlackSurface::api(self : SlackSurface, meth : String, params : J) -
     Obj(fs) =>
       fs.filter_map(f => match f.1 {
         Null => None
-        v => Some((@jsjson.text(f.0), field(v)))
+        v => Some((@jsjson.sanitize_str(f.0), field(v)))
       })
     _ => []
   }

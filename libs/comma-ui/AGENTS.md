@@ -1,7 +1,7 @@
 # Comma's parts in mbui (for agents)
 
-A component library of its own beside mbui (`libs/mbui`), which it alone imports: Comma's design system (AFK-surf/Cue
-`clients/packages/ui`, Figma `VnkgBb2xCr5bRp4KHrLrqs`) drawn by mbui. mbui is the framework and holds no look; a
+A component library of its own beside mbui (`libs/mbui`), which it alone imports: Comma's design system (`clients/packages/ui` of the
+AFK-surf/Cue repository, not a path of this one; Figma `VnkgBb2xCr5bRp4KHrLrqs`) drawn by mbui. mbui is the framework and holds no look; a
 library like this one holds the looks; an app uses a library (the user, 2026-11-13: mbui 和组件库应该分开). It started as
 a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先在 monoid 做样板).
 
@@ -19,8 +19,13 @@ a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先�
   what closes a floating part from outside it) over `@headless.button`; the checkbox and the toggle over
   `@headless.toggle`; the collapse over `@headless.disclosure`; a lone radio over `@headless.choice`; the radio group,
   the button group (react-aria's ToggleButtonGroup choosing one) and the status indicator over `@headless.radio_group`;
-  the slider over `@headless.slider`. A menu's rows and the dropdown's trigger have none yet and press by
-  `src/cm/presses.mbt`; they move over once mbui has a menu and a select. How a look moves (`src/cm/eased.mbt`) is
+  the slider over `@headless.slider`; a menu's rows (the menu's and the dropdown's list's) over `@headless.menu`, the
+  dropdown's trigger over `@headless.disclosure`. Where what floats goes beside what opened it is the framework's
+  (`View::beside`, which flips and keeps it in the window as it lays out), not `@headless.anchor_place`'s numbers: those
+  are for a look that places what it draws itself, and reading the anchor's laid-out box back to feed them is what
+  mbui's layout forbids (`layout-told`). `src/cm/presses.mbt` keeps only what a look reads of the hand (`lit`,
+  `ring_node`). Toasts are `@headless.toaster` with Comma's card (its time stopped while the pointer is over one or the
+  focus is on its ✕, `ToastItem::holds_focus`; swiped away to the right; read out a status in a region). How a look moves (`src/cm/eased.mbt`) is
   still.fail's `EdgeWay` (`libs/sf-ui/src`), copied: it belongs in mbui, shared by both libraries.
 - What floats (tooltip, menu, dropdown, popup, dialog, toast) is drawn in the layer `layer_node` makes in the window's root: mbui's `View::over_all` puts a node over all else only among what the root holds; made elsewhere it is drawn under the page.
 - mbui's rules hold here as in an app (`libs/mbui/AGENTS.md`): tests declare their moments, warnings are errors or off

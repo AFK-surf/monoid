@@ -147,40 +147,80 @@ pub fn Button::press(self : Button) -> Unit {
 /// A button in `parent`, called `label` (what a screen reader says, as it changes; its look draws it or not), `press`
 /// done as it is pressed, given the button's node (where what it opens goes beside); `disabled` while it cannot be
 /// pressed; `default_on` while it is its layer's default, pressed by Enter that nothing with the focus takes (a
-/// dialog's primary button; never one that cannot be undone: View::default_press). `look` is run once as it is made,
+/// dialog's primary button; never one that cannot be undone: View::default_press); `focusable` false where another
+/// control keeps the keyboard while it is pressed (a key of a keyboard's bar over a terminal: pressed, the keyboard's
+/// focus stays where it is, Tab passing it by, as a choice's can be). `value` and `range`: what it says besides its
+/// name, as they change (how far what it stands for came: a page's resources loading, its words and where it is
+/// between its least and its most; None of `range`, no number). `look` is run once as it is made,
 /// given its node and what it reads of it: all that is drawn of it, and how
 /// it is laid out. Its node is made at `loc`, the line that says it; where that is a library's part with a look (a
 /// part of a part), `made_for` is where that part was asked for, its own `loc~` handed on, so what is found in the
-/// button is traced to the look's line and to the line that asked for it (source.mbt). The node.
+/// button is traced to the look's line and to the line that asked for it (source.mbt). `label_is`: its name never
+/// changes (`label` is it), so where nothing else it says can change (no `disabled`, `value` nor `range`) what it says,
+/// that it takes a press and the focus are said once (`Is`), no binding of its own made for them. `in_node`: the button
+/// is `parent` itself, no box of its own (a row a structure made: a list's, a pick's). The node.
 #callsite(autofill(loc))
 pub fn button(
   parent : @view.View,
   label : () -> String,
   press : (@view.View) -> Unit,
   look : (@view.View, Button) -> Unit,
-  disabled? : () -> Bool = fn() { false },
+  disabled? : () -> Bool,
   default_on? : () -> Bool,
   hold? : Hold,
+  focusable? : Bool = true,
+  value? : () -> String,
+  range? : () -> (Double, Double, Double)?,
+  label_is? : String,
+  in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
-  parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
-    let able = fn() { !disabled() }
-    look(v, { node: v, off: disabled })
+  let off = disabled.unwrap_or(fn() { false })
+  let made = fn(v : @view.View) {
+    look(v, { node: v, off })
     if hold is Some(h) {
       attach_hold(v, h)
     }
     // (its own words of the node, said after its look: what the look said of these four as it ran does not stand;
     // headless.mbt says what that does and does not hold. The keyboard's focus while it can be pressed, Enter and Space
     // pressing it)
-    v
-    .presses(By(able))
-    .focusable(By(able))
-    .says(By(fn() { Some(@view.said(Button, label=label())) }))
+    match (label_is, disabled, value, range) {
+      // (a name said once and nothing that disables it: all of it said once)
+      (Some(name), None, None, None) => {
+        v.presses(Is(true)).says(Is(Some(@view.said(Button, label=name)))) |> ignore
+        if focusable {
+          v.focusable(Is(true)) |> ignore
+        }
+      }
+      _ => {
+        let able = fn() { !off() }
+        v
+        .presses(By(able))
+        .says(By(fn() {
+          let words = match value {
+            Some(f) => f()
+            None => ""
+          }
+          match range {
+            Some(r) =>
+              match r() {
+                Some(at) => Some(@view.said(Button, label=label(), value=words, range=at))
+                None => Some(@view.said(Button, label=label(), value=words))
+              }
+            None => Some(@view.said(Button, label=label(), value=words))
+          }
+        }))
+        |> ignore
+        if focusable {
+          v.focusable(By(able)) |> ignore
+        }
+      }
+    }
     // (the tree's to run, however the press came (View::on_press: outside any tracking, as one change); never while
     // disabled: a press on its way as that changed, the tree not yet told)
-    .on_press(fn() {
-      if !disabled() {
+    v.on_press(fn() {
+      if !off() {
         press(v)
       }
     })
@@ -190,5 +230,11 @@ pub fn button(
     if default_on is Some(f) {
       v.default_press(By(f)) |> ignore
     }
-  })
+  }
+  if in_node {
+    made(parent)
+    parent
+  } else {
+    parent.box(loc~, made_for=made_for.unwrap_or(loc), made)
+  }
 }

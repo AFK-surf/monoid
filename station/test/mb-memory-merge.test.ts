@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Rec } from "../src/share/memory.ts";
 import { memoryPath, SKIPPED } from "../src/share/memory.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../src/sessions/agent-home.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../src/sessions/agent-home.ts";
 import { IDLE_MS, MemoryProgram, MemoryProgramStopped } from "../src/share/memory-mb.ts";
 import { binary, decideMb, fresh, mb, memoryProgram, skip } from "./memory-program.ts";
 import { alike, conflictPath, decide, isText, matches, merge3, readMemory, stationTag, unionLines } from "./reference/memory-merge.ts";
@@ -315,7 +315,7 @@ test("the files read: the same, in the same order, held back alike, those change
   const want = await readMemory(dir);
   const scan = async (kept: Record<string, string>) => {
     const blobs = fresh("memory-blobs-");
-    const got = await memoryProgram().ask("scan", { dir, blobs, kept, builtin: [...BUILTIN_SKILLS, FEEDBACK_SKILL], skipped: [...SKIPPED], fileMost: 512 * 1024, skillMost: 4 * 1024 * 1024, skillFiles: 200 });
+    const got = await memoryProgram().ask("scan", { dir, blobs, kept, builtin: [...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS], skipped: [...SKIPPED], fileMost: 512 * 1024, skillMost: 4 * 1024 * 1024, skillFiles: 200 });
     return { got, blobs };
   };
   const { got, blobs } = await scan({});

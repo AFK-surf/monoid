@@ -53,7 +53,7 @@ pub fn error_text(error : JValue?) -> String {
       }
   }
   let data = match get(error, "data") {
-    Some(Str(u)) => ": \{@jsjson.text(u)}"
+    Some(Str(u)) => ": \{@jsjson.sanitize_str(u)}"
     Some(d) =>
       match str_at(Some(d), "message") {
         Some(m) => ": \{m}"
@@ -321,7 +321,7 @@ pub fn AcpSession::heard(self : AcpSession, line : String) -> Unit {
       match id {
         Some(i) => {
           let name = match m {
-            Str(u) => @jsjson.text(u)
+            Str(u) => @jsjson.sanitize_str(u)
             other => js_string_of(other)
           }
           (self.own.p().write)(
@@ -360,7 +360,7 @@ pub fn AcpSession::took(self : AcpSession, e : JValue) -> Bool {
     }
     Some("answered") => {
       let id = match get(Some(e), "id") {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         Some(other) => js_string_of(other)
         None => "undefined"
       }
@@ -506,7 +506,7 @@ pub fn AcpSession::handed(self : AcpSession, snapshot : JValue) -> Unit {
   ])
   self.own.tools_url = str_at(sn, "tools")
   match get(sn, "model") {
-    Some(Str(u)) => self.model = Some(@jsjson.text(u))
+    Some(Str(u)) => self.model = Some(@jsjson.sanitize_str(u))
     _ => ()
   }
   self.is_open = true

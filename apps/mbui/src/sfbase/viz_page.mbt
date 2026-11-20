@@ -94,6 +94,24 @@ pub(all) struct VizHears {
 }
 
 ///|
+/// Small back-and-forth height reports on an inline page (viz_said): once a page reverses direction
+/// `viz_osc_limit` times within 64 px (a ResizeObserver / sub-pixel feedback loop), hold it at the
+/// tallest height seen until a larger genuine resize arrives.
+priv struct VizOsc {
+  mut dir : Int
+  mut flips : Int
+  mut hi : Int
+  mut held : Bool
+}
+
+///|
+// kept across runs: cleared on viz_close and viz_pages_reset
+let viz_osc : Map[Int, VizOsc] = Map([])
+
+///|
+let viz_osc_limit : Int = 6
+
+///|
 /// What a page's view says, read (it says what it likes: a field that is not what it should be is let go).
 pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
   let m = match (try Some(@json.parse(words)) catch { _ => None }) {
@@ -106,9 +124,53 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
         match m.get("height") {
           Some(Number(h, ..)) if h == h && h < 1.0e9 && h > 0.0 => {
             let tall = h.ceil().to_int()
+            if f.shown && tall == f.said_height {
+              return
+            }
             // held, it stays so until its content is shorter than where it was held
             if f.grown > viz_runaway && tall >= f.said_height {
               return
+            }
+            let id = f.view.id()
+            match viz_osc.get(id) {
+              Some(o) if o.held =>
+                if (tall - o.hi).abs() <= 64 {
+                  return
+                } else {
+                  viz_osc.remove(id)
+                }
+              _ => ()
+            }
+            if f.said_height > 0 {
+              let delta = tall - f.said_height
+              if delta.abs() <= 64 {
+                let step_dir = if delta > 0 { 1 } else { -1 }
+                let o = match viz_osc.get(id) {
+                  Some(o) => o
+                  None => {
+                    let o : VizOsc = { dir: 0, flips: 0, hi: f.said_height, held: false }
+                    viz_osc[id] = o
+                    o
+                  }
+                }
+                if tall > o.hi {
+                  o.hi = tall
+                }
+                if o.dir != 0 && o.dir != step_dir {
+                  o.flips += 1
+                }
+                o.dir = step_dir
+                if o.flips >= viz_osc_limit {
+                  o.held = true
+                  f.said_height = o.hi
+                  f.height = o.hi
+                  f.shown = true
+                  f.said.set(o.hi)
+                  return
+                }
+              } else {
+                viz_osc.remove(id)
+              }
             }
             f.grown = if f.said_height > 0 && tall > f.said_height && tall - f.said_height <= 64 {
               f.grown + 1
@@ -119,8 +181,12 @@ pub fn viz_said(f : VizFrame, hears : VizHears, words : String) -> Unit {
               return
             }
             f.said_height = tall
-            // only a height it did not creep to is kept: one kept mid-run would start the next load's run further on
-            if f.grown == 0 {
+            // only a height it did not creep or oscillate to is kept: one kept mid-run would start the next load's run further on
+            let oscillating = match viz_osc.get(id) {
+              Some(o) => o.flips > 0
+              None => false
+            }
+            if f.grown == 0 && !oscillating {
               viz_heights[f.html] = tall
             }
             f.height = tall
@@ -435,7 +501,7 @@ fn viz_reveal(c : @ui.Ctx, f : VizFrame, w : Double, h : Double, waited : (Doubl
 /// brushed off from its top, an edge half its height deep going down it (the ease out) in viz_reveal_steps steps, and
 /// fading out from 800 ms (300 ms). Each strip on the screen's pixels, one meeting the next with no seam; each worked out
 /// of the frame's height as it is drawn (View::moved_by), nothing laid out again for it.
-pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit {
+pub fn viz_reveal_node(parent : @view.View, page : Bool, _from : Double) -> Unit {
   // (cut to the frame, its corners the placeholder's where it is a fragment's)
   parent
   .over(Is(true))
@@ -444,45 +510,17 @@ pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit 
   .clips(Is(true))
   .radius(By(fn() { if page { 0.0 } else { @ui.tree_theme().corner(Xl) } }))
   |> ignore
-  let way = @motion.Eased::new(0.0)
-  way.go(parent, 1.0, viz_reveal_ms, ease=Linear)
-  // (how far in at `t`, eased out: viz_reveal's `e`)
-  let e_at = fn(t : Double) { @ui.Out.at(dmin(1.0, dmax(0.0, (t - from) / viz_reveal_ms))) }
-  let ends = fn(_w : Double, _h : Double) { from + viz_reveal_ms }
-  // (how much of what it waited under is still there as it is drawn)
-  let gone = fn(n : @view.View) {
-    let p = way.shown(n)
-    1.0 - dmin(1.0, dmax(0.0, (p * viz_reveal_ms - viz_reveal_wait_after_ms) / viz_reveal_wait_out_ms))
-  }
-  let steps = viz_reveal_steps.to_double()
-  // strip `k` of the edge (`k` = steps: all of it under the edge), a share of the frame's height (`share`: the frame
-  // `share`'s inverse times as tall as it), at `alpha` of what is left: what it waited under (a whole page's paper, a
-  // fragment's line grey), its top worked out of the frame's height as it is drawn
-  let strip = fn(k : Int, share : Double, alpha : Double) {
-    parent.box(fn(s) {
-      s.over(Is(true)).fills_across(Is(true)).height_share(Is(share)) |> ignore
-      s
-      .ground(By(fn() {
-        @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
-      }))
-      .alpha(By(fn() { alpha * gone(s) }))
-      // (its top, from the frame's: the edge's top, k steps down it, on the screen's pixels)
-      .moved_by(
-        fn(_w, h, t) {
-          let frame = h / share
-          let y = frame * (-0.5 + 1.5 * e_at(t)) + k.to_double() * frame * 0.5 / steps
-          (0.0, (y * s.pixel_scale()).round() / s.pixel_scale())
-        },
-        ends,
-      )
-      |> ignore
-    })
-    |> ignore
-  }
-  for k in 0..<viz_reveal_steps {
-    strip(k, 0.5 / steps, (k.to_double() + 0.5) / steps)
-  }
-  strip(viz_reveal_steps, 1.0, 1.0)
+  @motion.curtain_reveal(
+    parent,
+    fn() { true },
+    fn() {
+      @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
+    },
+    duration_ms=viz_reveal_ms,
+    wait_after_ms=viz_reveal_wait_after_ms,
+    wait_out_ms=viz_reveal_wait_out_ms,
+    steps=viz_reveal_steps,
+  )
 }
 
 ///|
@@ -536,9 +574,14 @@ pub fn viz_close(prefix : String) -> Unit {
   let gone = []
   for k, f in viz_frames {
     if k.has_prefix(prefix) {
+      viz_osc.remove(f.view.id())
       f.view.close()
       match viz_extra_frames.get(k) {
-        Some(extras) => for extra in extras { extra.view.close() }
+        Some(extras) =>
+          for extra in extras {
+            viz_osc.remove(extra.view.id())
+            extra.view.close()
+          }
         None => ()
       }
       gone.push(k)
@@ -746,8 +789,8 @@ pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 ///|
 /// Visualization `name` (at `path`, sent by session `key` of chat `session` on `station`) opened as a press asks: where
 /// the shell has a side panel for the page in view, a tab there (a page's: PreviewFile; a `.mbui` / `.wasm` mini-program
-/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default the command key held:
-/// full_held); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
+/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default unless the command key is
+/// held: full_asked); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
 /// by a link in a sentence, its wait said under the words).
 pub fn viz_open(
   name : String,
@@ -758,7 +801,7 @@ pub fn viz_open(
   linked? : Bool = false,
   full? : Bool,
 ) -> Unit {
-  let full = full.unwrap_or(full_held())
+  let full = full.unwrap_or(full_asked())
   if is_mbui_viz(name) || is_mbui_viz(path) {
     let a : Attachment = {
       name: if name != "" { name } else { base_name(path) },
@@ -1044,8 +1087,13 @@ pub fn viz_pages_reset() -> Unit {
   viz_extra_frames.clear()
   viz_left_chats.clear()
   viz_heights.clear()
+  viz_osc.clear()
   viz_mbui_states_clear()
   viz_app_loads_clear()
   viz_full.set(None)
   mermaid_charts.clear()
+  mermaid_used.clear()
+  mermaid_shown.clear()
+  mermaid_tick.val = 0
+  mermaid_bytes.val = 0
 }

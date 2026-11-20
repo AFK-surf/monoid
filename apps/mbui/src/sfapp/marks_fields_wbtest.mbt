@@ -10,7 +10,7 @@ fn words_begun() -> (@ui.Tester, Double, Double) raise {
   marks_start()
   t.draw()
   let v = viewer.get().unwrap()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
   marking.tool = Words
   t.touch(0, px, py)

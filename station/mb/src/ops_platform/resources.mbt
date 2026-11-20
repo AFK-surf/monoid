@@ -3,7 +3,8 @@
 // linux.ts's readings of /proc).
 
 ///|
-let app_id : String = "fail.still.desktop"
+/// module.ts `APP_IDS`: each product's desktop app's bundle ids begin so.
+let app_ids : Array[String] = [stillfail_product.reverse + ".desktop", monoid_product.reverse + ".desktop"]
 
 ///|
 /// module.ts `appBundles`: whether a command runs from a bundle of the desktop app's, each bundle's Info.plist read once
@@ -37,7 +38,7 @@ pub fn AppBundles::is_app(self : AppBundles, command : String, read : (String) -
     None => {
       self.known[bundle] = false
       match read(bundle + "/Contents/Info.plist") {
-        Some(plist) => self.known[bundle] = has(plist, app_id)
+        Some(plist) => self.known[bundle] = app_ids.iter().any(id => has(plist, id))
         None => ()
       }
       false

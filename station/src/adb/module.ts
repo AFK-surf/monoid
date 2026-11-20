@@ -99,6 +99,9 @@ export const AdbLive = Layer.effectDiscard(
         const held = r.status === "granted" ? [...(shares?.byKey.values() ?? [])].find((s) => s.owner.email.toLowerCase() === r.owner) : undefined;
         if (held !== undefined) grants.linked(r.owner, held.state);
       },
+      toldRevoke: (signed, owner, request, workspace) => {
+        events.tell("adb-revoke", signed, `adb-revoke\0${owner}\0${request}`, { workspace, email: owner });
+      },
     });
     grantsOf = grants;
     sessionOf = (id) => grants.get(id)?.session ?? null;
@@ -139,11 +142,18 @@ export const AdbLive = Layer.effectDiscard(
         const email = viewer.email.toLowerCase();
         // (`lasts`, and the `lasts` op answered with it: for cores from before, whose 默认最长授权 capped a card's
         // lengths; nothing caps them now. Goes 7 days after this ships.)
-        if (ask.op === "grants") return reply(200, { grants: grants.ofOwner(email, viewer.workspace), lasts: "chat", signs: true });
+        // (`revokes`: what their devices signed to take grants back, each phone checking it, whichever station's grant)
+        if (ask.op === "grants") return reply(200, { grants: grants.ofOwner(email, viewer.workspace), revokes: grants.revokesOfOwner(email), lasts: "chat", signs: true });
         if (ask.op === "lasts") return reply(200, { lasts: "chat" });
+        // A taking back of a grant another station holds, brought here by the owner's device to be told to their phones
+        // (the grant's own station may never say it ended).
+        if (ask.op === "revoke" && ask.relay === true) {
+          const why = grants.keepRevoke(email, ask.signed, viewer.workspace);
+          return why === null ? reply(200, { ok: true }) : reply(422, { message: why });
+        }
         const id = typeof ask.request === "string" ? ask.request : "";
         const scope = isScope(ask.scope) ? (ask.scope as Scope) : null;
-        const why = ask.op === "sign" ? grants.sign(email, id, ask.signed, viewer.workspace) : ask.op === "decide" ? grants.decide(email, id, scope, viewer.workspace, ask.signed) : grants.revoke(email, id, viewer.workspace);
+        const why = ask.op === "sign" ? grants.sign(email, id, ask.signed, viewer.workspace) : ask.op === "decide" ? grants.decide(email, id, scope, viewer.workspace, ask.signed) : grants.revoke(email, id, viewer.workspace, ask.signed);
         const request = grants.get(id);
         return why === null ? reply(200, { request: request === null ? null : grants.shown(request) }) : reply(422, { message: why });
       }

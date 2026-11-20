@@ -5,7 +5,7 @@
 // something else. What comes on it and what is read as it opens is the sync's (sync.ts), told here as `Told`: a stream
 // opens either afresh (nothing says what the device missed: the station is read again) or going on from where the
 // device was in the station's log of events (cursor.ts: what changed meanwhile is told first).
-import { type Marks, type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
+import { type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
 import { record, said, stationTag } from "../record.ts";
 import { Deferred, Effect, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
@@ -129,6 +129,19 @@ function covers(open: EventsFor, wants: EventsFor): boolean {
 /// does (and the read after it, as a channel has more to bring).
 export type HistoryRead = { path: string; cost: number; apply: (answer: { status: number; body: unknown }) => HistoryRead | null };
 
+/// Local link diagnostics recorded as `#follow` connects, disconnects and backs off (`Link.diag`).
+export type LinkDiag = {
+  misses: number;
+  slowBackoff: boolean;
+  retryAt: number | null;
+  retryWaitMs: number | null;
+  lastEnd: string | null;
+  lastEndAt: number | null;
+  lastErrorCode: string | null;
+  downAt: number | null;
+  cloudDown: boolean;
+};
+
 /// One station's link and what is held of it beyond the records.
 export class Link {
   readonly address: string;
@@ -136,6 +149,8 @@ export class Link {
   readonly scoped: Scoped;
   /// How the link is: connecting (with `last`, as it was last time), online, reconnecting, offline, error.
   state: Record<string, unknown> = { state: "connecting" };
+  /// Latest local diagnostics of this link's reconnect loop.
+  diag: LinkDiag | null = null;
   /// Numbers the streams opened; only the newest reports.
   generation = 0;
   /// The stream open now (or opening), and what it was opened for; the one it replaces, until it is open.
@@ -172,17 +187,13 @@ export class Link {
   /// Since the usage held was read: when the earliest call the station recorded since was made, as it said (what is
   /// read again of it, from that day on); null where it said a change without when (all of it), none where it said none.
   usageFrom: number | null | undefined = undefined;
-  /// What the station keeps beside the summaries that the sidebar is made of here (rows-made.ts): null while it is not
-  /// read.
-  marks: Marks | null = null;
-  /// Whether its sidebar is made of the chat list the station makes once for everyone (`shared`, chat-row.ts), as its
-  /// stream said; and that list as read and told since, by row id (null till read).
-  shared = false;
+  /// The chat list the station makes once for everyone (`GET /chats?shared=1`, chat-row.ts), by row id (null till read).
   sharedRows: Map<string, Record<string, any>> | null = null;
   /// What its sidebar's rows were last made of (rows-made.ts RowsMemo), so a remake makes again only those that changed.
   readonly rows: RowsMemo = rowsMemo();
   /// Of that list, which row is each thread's, kept as its rows are read and told; and the viewer's own of the marks
-  /// kept beside them (rows-made.ts OwnHeld): so that a row is made by its key, and nothing else is looked at.
+  /// kept beside them (rows-made.ts OwnHeld, null till read): so that a row is made by its key, and nothing else is
+  /// looked at.
   readonly sharedThreads = new Map<number, string>();
   own: OwnHeld | null = null;
   /// The rows of that list to make again (sync.ts #remake): by their ids, their threads', or all of them (`whole`),
@@ -530,6 +541,22 @@ export class Links {
     return `/events?${query.join("&")}`;
   }
 
+  #setDiag(link: Link, patch: Partial<LinkDiag>, notify = true): void {
+    const prev: LinkDiag = link.diag ?? {
+      misses: 0,
+      slowBackoff: false,
+      retryAt: null,
+      retryWaitMs: null,
+      lastEnd: null,
+      lastEndAt: null,
+      lastErrorCode: null,
+      downAt: link.down,
+      cloudDown: this.#core.status.cloudDown(),
+    };
+    link.diag = { ...prev, ...patch };
+    if (notify) this.#told.changed(link.address, "link");
+  }
+
   /// Holds the station's stream open; its events keep the records current. Each open reads the station again.
   #follow(link: Link, wants: EventsFor, generation: number, handover = false): Effect.Effect<void, never> {
     const core = this.#core;
@@ -595,6 +622,7 @@ export class Links {
               misses++;
               const state = reached && misses < MISSES ? "reconnecting" : "offline";
               const message = t("station.core.streamIdle");
+              self.#setDiag(link, { misses, lastEnd: message, lastEndAt: core.host.nowMs(), lastErrorCode: "timeout", downAt: link.down, cloudDown: core.status.cloudDown() }, false);
               self.setLink(address, state === "offline" ? { state, message, cause: self.#cause(address) } : { state, message });
               return { failed: `open failed: ${t("station.core.streamIdle")}` } as const;
             }
@@ -623,6 +651,7 @@ export class Links {
               const state = lock ? "offline" : error.status !== undefined ? "error" : reached && misses < MISSES ? "reconnecting" : "offline";
               const old: TooOld | null = state === "error" && error.status === 426 ? (error.code === "station_too_old" ? "station" : "app") : null;
               record(core.host, "link miss", () => `${stationTag(address)} misses=${misses}/${LONG_MISSES} cloud=${core.status.cloudDown() ? "down" : "up"} -> ${state}: ${said(error.message)}`);
+              self.#setDiag(link, { misses, lastEnd: error.message, lastEndAt: core.host.nowMs(), lastErrorCode: error.code, downAt: link.down, cloudDown: core.status.cloudDown() }, false);
               self.setLink(address, state === "offline" ? { state, message: error.message, cause: lock ? "lock" : self.#cause(address) } : { state, message: error.message, ...(old !== null ? { old } : {}) });
               return { failed: `open failed: ${error.message}` } as const;
             }
@@ -632,6 +661,7 @@ export class Links {
             link.heard = core.host.nowMs();
             // Live events are not in the event log. Even a resumed stream gives a new snapshot of running sessions.
             self.#told.ratesOpened(address, replyHeader(opened.success, LIVE_RATES) === "1");
+            self.#setDiag(link, { misses: 0, slowBackoff: false, retryAt: null, retryWaitMs: null, downAt: null, cloudDown: core.status.cloudDown() }, false);
             self.setLink(address, { state: "online" });
             // Told what came after the last event heard (RESUMED): nothing is read again. Otherwise (the first stream,
             // one that could not be resumed, a station from before) what the station holds is read now, in the trace of
@@ -741,7 +771,9 @@ export class Links {
             // its requests moved between the LAN and a relay (2026-10-18). One that ended at once waits its RECONNECT_MS, and
             // so do brief ones in a row (STREAM_HELD_MS).
             const standing = why !== GONE && why !== NETWORK && (self.#requests.wire.standing?.(link.addr) ?? false);
-            if (!standing) self.setLink(address, { state: "reconnecting", message: why === "ended" ? t("station.core.disconnected") : why });
+            const endMessage = why === "ended" ? t("station.core.disconnected") : why;
+            self.#setDiag(link, { lastEnd: endMessage, lastEndAt: core.host.nowMs(), downAt: link.down, cloudDown: core.status.cloudDown() }, standing);
+            if (!standing) self.setLink(address, { state: "reconnecting", message: endMessage });
             // Ended by the station for its lock after it stood (this device or its member taken out): the next try is
             // refused, and its refusal is what shows the waiting page (views/lock.ts `refused`, from the entries it
             // tells), so it is made at once, not RECONNECT_MS later (2026-11-11: up to 2.3 s of 正在重连 first).
@@ -782,9 +814,11 @@ export class Links {
         const pinged = change ? Effect.flatMap(change(link.addr, true), () => change(link.addr, false)) : Effect.never;
         const back = costly > 1 ? Effect.never : Effect.raceFirst(Deferred.await(self.#backOf(address)), Effect.asVoid(pinged));
         const waitFrom = core.host.nowMs();
+        self.#setDiag(link, { misses, slowBackoff: offline, retryAt: waitFrom + wait, retryWaitMs: wait, downAt: link.down, cloudDown: core.status.cloudDown() }, true);
         record(core.host, "link wait", () => `${stationTag(address)} ${Math.round(wait / 1000)}s (${offline ? (misses >= LONG_MISSES ? "tried seldom: LONG_MISSES" : "tried seldom: the cloud says offline") : answered ? "answered" : held > backoff(misses) ? "brief streams" : "backoff"}) misses=${misses} why=${said(previous?.why ?? "")}`);
         const woken = yield* Effect.raceFirst(Effect.sleep(wait).pipe(Effect.as(null)), Effect.raceFirst(core.wakes.next.pipe(Effect.as("wake" as const)), back.pipe(Effect.as("back" as const))));
         record(core.host, "link woke", () => `${stationTag(address)} by ${woken === null ? "its time" : woken === "wake" ? "a wake (UI back, network, retry)" : "the cloud or its pings (back)"} after ${Math.round((core.host.nowMs() - waitFrom) / 1000)}s`);
+        self.#setDiag(link, { retryAt: null, retryWaitMs: null, cloudDown: core.status.cloudDown() }, woken === null);
         if (woken === "wake") brief = costly = 0;
         if (woken !== null) self.#retrying(address);
       }

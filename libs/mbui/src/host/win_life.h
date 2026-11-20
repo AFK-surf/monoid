@@ -30,6 +30,8 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 #include "mini_json.h"  // the menu the app gives (menu_setup)
+#include "hotkey_parse.h"
+#include "win_stack.h"
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -253,7 +255,10 @@ static int state_told = -1;
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 static void tell_state(void) {
   if (!state_cb || !hwnd) return;
-  int shown = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+  // (shown: any window of the run's, the first put away and another open among them)
+  int shown = 0;
+  for (int k = 0; k < MB_WINS && !shown; k++)
+    if (win_slots[k].h && IsWindowVisible(win_slots[k].h) && !IsIconic(win_slots[k].h)) shown = 1;
   // (in front: any window of the run's, a window beside the first among them)
   int front = shown && win_of(GetForegroundWindow()) >= 0;
   // (| 4: the app goes on with its window not shown, as what comes from outside asks: win_app.c draw_frame)
@@ -297,11 +302,61 @@ void mb_host_set_dark(int32_t dark) {
   title_dark();
 }
 
+// ---- where its window was left ----
+
+// An app's window opens where it was last left, its size and place and whether it was maximized (the Mac's frame
+// autosave, the Windows way): its placement kept in HKCU\Software\<the app's id> as the person leaves it (a move or
+// a resize let go, the window put away, the app quitting) and put back before it is first shown, unless no screen
+// shows it now. A run that stands for no one looking at it (scripted, driven, recorded, a bench's, one taking pictures
+// or told its size) and a window of its own (MBUI_WINDOW) keep the size they are given.
+static int place_kept(void) {
+  return *app_id() && !window_run() && !script && !shot_dir && !getenv("MBUI_WIN") && !getenv("MBUI_DRIVE") &&
+         !getenv("MBUI_DRIVE_B64") && !getenv("MBUI_BENCH") && !getenv("MBUI_RECORD");
+}
+
+static void place_key(WCHAR *out, size_t cap) {
+  _snwprintf(out, cap, L"Software\\%ls", app_id());
+  out[cap - 1] = 0;
+}
+
+static void place_keep(void) {
+  if (!hwnd || !place_kept()) return;
+  WINDOWPLACEMENT p = {sizeof p};
+  if (!GetWindowPlacement(hwnd, &p)) return;
+  WCHAR key[256];
+  place_key(key, 256);
+  RegSetKeyValueW(HKEY_CURRENT_USER, key, L"WindowPlacement", REG_BINARY, &p, sizeof p);
+}
+
+// The kept placement put on the window, still hidden: how to show it (SW_SHOW where none was kept).
+static int place_put_back(void) {
+  if (!hwnd || !place_kept()) return SW_SHOW;
+  WINDOWPLACEMENT p;
+  DWORD n = sizeof p;
+  WCHAR key[256];
+  place_key(key, 256);
+  if (RegGetValueW(HKEY_CURRENT_USER, key, L"WindowPlacement", RRF_RT_REG_BINARY, NULL, &p, &n) != ERROR_SUCCESS ||
+      n != sizeof p || p.length != sizeof p)
+    return SW_SHOW;
+  RECT *r = &p.rcNormalPosition;
+  if (r->right - r->left < 100 || r->bottom - r->top < 100 || !MonitorFromRect(r, MONITOR_DEFAULTTONULL))
+    return SW_SHOW;
+  // (left minimized: opened as it was before, maximized where it was)
+  int max = p.showCmd == SW_SHOWMAXIMIZED || (p.showCmd == SW_SHOWMINIMIZED && (p.flags & WPF_RESTORETOMAXIMIZED));
+  p.showCmd = SW_HIDE;
+  p.flags = 0;
+  SetWindowPlacement(hwnd, &p);
+  // (again: the first may have moved it onto a screen of another scale, whose WM_DPICHANGED sized it by that scale)
+  SetWindowPlacement(hwnd, &p);
+  return max ? SW_SHOWMAXIMIZED : SW_SHOW;
+}
+
 // ---- put away, brought back ----
 
 static ULONGLONG put_away_at;  // GetTickCount64's as the window was closed (0: it is out)
 static ULONGLONG asleep_at;    // as the PC went to sleep (0: awake)
 
+static int first_hidden_bare;  // a bare run's first hidden as it closed while another was open (put_away)
 static void bring_back(void) {
   if (!hwnd) return;
   if (put_away_at || IsIconic(hwnd)) {
@@ -314,19 +369,34 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = 0;
   }
-  ws->want_frame = 1;
+  first_hidden_bare = 0;
+  // (the first's frame, whichever window is in place as it is brought back: a window beside it may ask it)
+  win_slots[0].want_frame = 1;
   tell_state();
 }
 
 static int tray_on;
 
 // the window closed: put away where the program is an app (to its icon in the notification area; minimized where it
-// has none there, as Explorer is not running), else the program ends
-static void wins_close_beside(void);
+// has none there, as Explorer is not running), else the program ends. The windows beside it stay as they are: the
+// first only hidden, its window kept (what is posted to it, the run's thread's messages, still comes), all of them
+// going only as the program ends. A bare run's (not an app) hidden while a window beside it is open, the run ending as
+// the last of them closes (win_app.c win_closed), as the Mac's.
 static int put_away(void) {
-  if (!*app_id() || window_run()) return 0;
-  // (the windows beside it close with it, as the Mac's)
-  wins_close_beside();
+  if (window_run()) return 0;
+  if (!*app_id()) {
+    int beside = 0;
+    for (int k = 1; k < MB_WINS; k++)
+      if (win_slots[k].h) beside = 1;
+    if (!beside) return 0;
+    fprintf(stdout, "win: closed, hidden while a window beside it is open\n");
+    fflush(stdout);
+    first_hidden_bare = 1;
+    ShowWindow(hwnd, SW_HIDE);
+    tell_state();
+    return 1;
+  }
+  place_keep();
   if (!tray_on) {
     fprintf(stdout, "win: put away, minimized (no notification area)\n");
     fflush(stdout);
@@ -405,26 +475,52 @@ static void life_perf_written(void) {
 
 // Each few seconds, whatever the window's thread is doing (the writer's thread): a line for the record of what the
 // process takes; and, record or none, the window no longer answering and answering again (the system's own test: its
-// messages unread for 5 s), so that a freeze has left its time in the log without anyone having caught it live.
+// messages unread for 5 s), with the UI thread's call stacks sampled when it hangs so a freeze leaves its frames in
+// the log without anyone having caught it live.
 static void life_logs_tick(void) {
   static double cpu_was = -1;
   static ULONGLONG at_was, hung_at;
+  static int hung_ticks;
   double cpu = mb_host_cpu_ms();
   ULONGLONG at = GetTickCount64();
   double share = cpu_was >= 0 && at > at_was ? (cpu - cpu_was) * 100.0 / (double)(at - at_was) : 0;
   cpu_was = cpu;
   at_was = at;
-  int hung = hwnd && IsHungAppWindow(hwnd);
+  HWND h = hwnd;
+  int hung = h && IsHungAppWindow(h);
   char line[160];
   int n = 0;
   if (hung && !hung_at) {
     hung_at = at;
+    hung_ticks = 1;
     n = snprintf(line, sizeof line, "win: the window is not answering: cpu=%.0f%% mem=%.0fMB", share, mb_host_mem_bytes() / 1048576.0);
+  } else if (hung && hung_at) {
+    hung_ticks++;
   } else if (!hung && hung_at) {
     n = snprintf(line, sizeof line, "win: the window answers again, %.0f s on", (double)(at - hung_at) / 1000.0);
     hung_at = 0;
+    hung_ticks = 0;
   }
   if (n > 0) logs_line(LOGS_LOG, line, (size_t)n);
+  if (hung && (hung_ticks == 1 || hung_ticks == 2)) {
+    DWORD tid = GetWindowThreadProcessId(h, NULL);
+    if (tid) {
+      char stack_line[2048];
+      if (hung_ticks == 1) {
+        int hn = win_stack_header(tid, stack_line, sizeof stack_line);
+        if (hn > 0) logs_line(LOGS_LOG, stack_line, (size_t)hn);
+        win_stack_refresh();
+        for (int s = 1; s <= 3; s++) {
+          if (s > 1) Sleep(50);
+          int sn = win_stack_sample(tid, s, stack_line, sizeof stack_line);
+          if (sn > 0) logs_line(LOGS_LOG, stack_line, (size_t)sn);
+        }
+      } else {
+        int sn = win_stack_sample(tid, 4, stack_line, sizeof stack_line);
+        if (sn > 0) logs_line(LOGS_LOG, stack_line, (size_t)sn);
+      }
+    }
+  }
   if (logs_perf_on) {
     n = snprintf(line, sizeof line, "win: cpu=%.0f%% mem=%.0fMB hung=%d", share, mb_host_mem_bytes() / 1048576.0, hung);
     logs_line(LOGS_PERF, line, (size_t)n);
@@ -673,6 +769,7 @@ static void tray_gone(void) {
 
 // the app quits: its icon taken from the notification area first (else it lingers there until pointed at)
 static void quit(void) {
+  place_keep();
   tray_gone();
   exit(0);
 }
@@ -819,6 +916,181 @@ static void network_look(void) {
   }
 }
 
+// ---- login auto-launch (@hostapi.auto_launch / set_auto_launch) ----
+static void auto_launch_value_name(WCHAR *out, size_t cap) {
+  const WCHAR *id = app_id();
+  if (id && *id) {
+    lstrcpynW(out, id, (int)cap);
+    return;
+  }
+  WCHAR exe[MAX_PATH];
+  DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) {
+    lstrcpynW(out, L"mbui", (int)cap);
+    return;
+  }
+  const WCHAR *base = wcsrchr(exe, L'\\');
+  base = base ? base + 1 : exe;
+  lstrcpynW(out, base, (int)cap);
+}
+
+int32_t mb_host_auto_launch(void) {
+  WCHAR name[256];
+  auto_launch_value_name(name, 256);
+  HKEY key = NULL;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &key) !=
+      ERROR_SUCCESS) {
+    return 0;
+  }
+  WCHAR val[MAX_PATH + 32];
+  DWORD type = 0, sz = sizeof val;
+  LSTATUS st = RegQueryValueExW(key, name, NULL, &type, (LPBYTE)val, &sz);
+  RegCloseKey(key);
+  return (st == ERROR_SUCCESS && (type == REG_SZ || type == REG_EXPAND_SZ) && sz >= sizeof(WCHAR) && val[0] != 0) ? 1
+                                                                                                                  : 0;
+}
+
+int32_t mb_host_set_auto_launch(int32_t enabled) {
+  WCHAR name[256];
+  auto_launch_value_name(name, 256);
+  HKEY key = NULL;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, NULL, 0,
+                      KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) {
+    return 0;
+  }
+  LSTATUS st;
+  if (enabled) {
+    WCHAR exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+      RegCloseKey(key);
+      return 0;
+    }
+    WCHAR cmd[MAX_PATH + 8];
+    _snwprintf(cmd, MAX_PATH + 8, L"\"%ls\"", exe);
+    cmd[MAX_PATH + 7] = 0;
+    st = RegSetValueExW(key, name, 0, REG_SZ, (const BYTE *)cmd, (DWORD)((wcslen(cmd) + 1) * sizeof(WCHAR)));
+  } else {
+    st = RegDeleteValueW(key, name);
+    if (st == ERROR_FILE_NOT_FOUND) st = ERROR_SUCCESS;
+  }
+  RegCloseKey(key);
+  return st == ERROR_SUCCESS ? 1 : 0;
+}
+
+// ---- global hotkeys (@hostapi.hotkey_set / hotkey_clear) ----
+#define MB_WIN_HOTKEY_MAX 64
+typedef struct {
+  int used;
+  int num_id;
+  char *id;
+} mb_win_hotkey;
+
+static mb_win_hotkey win_hotkeys[MB_WIN_HOTKEY_MAX];
+static int win_hotkey_next_id = 0x4D00;
+
+static void hotkeys_clear_all(void) {
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used) {
+      if (hwnd) UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+    }
+  }
+}
+
+static void hotkey_fired(int num_id) {
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].num_id == num_id && win_hotkeys[i].id) {
+      WCHAR w[256];
+      int n = MultiByteToWideChar(CP_UTF8, 0, win_hotkeys[i].id, -1, w, 256);
+      if (n <= 1) return;
+      char b[600];
+      size_t o = (size_t)snprintf(b, sizeof b, "{\"id\":\"");
+      o = json_put(b, o, sizeof b - 3, w, n - 1);
+      o += (size_t)snprintf(b + o, sizeof b - o, "\"}");
+      mb_post("mbui.hotkey", b, o, NULL, 0);
+      return;
+    }
+  }
+}
+
+static char *mb_win_utf8_from_mbt(moonbit_string_t s) {
+  int n = Moonbit_array_length(s);
+  int u = WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)s, n, NULL, 0, NULL, NULL);
+  char *out = (char *)malloc((size_t)u + 1);
+  if (!out) return NULL;
+  if (u > 0) WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)s, n, out, u, NULL, NULL);
+  out[u] = 0;
+  return out;
+}
+
+int32_t mb_host_hotkey_set(moonbit_string_t id_s, moonbit_string_t accel_s) {
+  if (!hwnd) return 0;
+  char *id_c = mb_win_utf8_from_mbt(id_s);
+  char *accel_c = mb_win_utf8_from_mbt(accel_s);
+  if (!id_c || !accel_c || !*id_c || !*accel_c) {
+    free(id_c);
+    free(accel_c);
+    return 0;
+  }
+  mb_hotkey_spec spec;
+  int ok = mb_hotkey_parse(accel_c, 0, &spec);
+  free(accel_c);
+  if (!ok) {
+    free(id_c);
+    return 0;
+  }
+  int vk = mb_hotkey_win_vk(spec.key);
+  UINT mods = (UINT)mb_hotkey_win_mods(spec.mods);
+  if (vk < 0 || mods == 0) {
+    free(id_c);
+    return 0;
+  }
+  int slot = -1;
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].id && strcmp(win_hotkeys[i].id, id_c) == 0) {
+      UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+      slot = i;
+      break;
+    }
+    if (!win_hotkeys[i].used && slot < 0) slot = i;
+  }
+  if (slot < 0) {
+    free(id_c);
+    return 0;
+  }
+  int num_id = win_hotkey_next_id++;
+  if (win_hotkey_next_id >= 0xBFFF) win_hotkey_next_id = 0x4D00;
+  if (!RegisterHotKey(hwnd, num_id, mods, (UINT)vk)) {
+    free(id_c);
+    return 0;
+  }
+  win_hotkeys[slot].used = 1;
+  win_hotkeys[slot].num_id = num_id;
+  win_hotkeys[slot].id = id_c;
+  return 1;
+}
+
+void mb_host_hotkey_clear(moonbit_string_t id_s) {
+  char *id_c = mb_win_utf8_from_mbt(id_s);
+  if (!id_c || !*id_c) {
+    free(id_c);
+    return;
+  }
+  for (int i = 0; i < MB_WIN_HOTKEY_MAX; i++) {
+    if (win_hotkeys[i].used && win_hotkeys[i].id && strcmp(win_hotkeys[i].id, id_c) == 0) {
+      if (hwnd) UnregisterHotKey(hwnd, win_hotkeys[i].num_id);
+      free(win_hotkeys[i].id);
+      memset(&win_hotkeys[i], 0, sizeof win_hotkeys[i]);
+      break;
+    }
+  }
+  free(id_c);
+}
+
 // ---- as the window is made, and what it is told ----
 
 // once the window is there: its icon in the notification area, the one started again told it may hand over, the
@@ -829,6 +1101,7 @@ static void life_start(const WCHAR *title) {
   taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
   tray_put();
   atexit(tray_gone);
+  atexit(hotkeys_clear_all);
   if (window_up) SetEvent(window_up);
   HANDLE watch = NULL;
   network_look();
@@ -856,6 +1129,10 @@ static int life_message(UINT msg, WPARAM wp, LPARAM lp, LRESULT *r) {
       return 1;
     case WM_MB_TRAY:
       tray_said(wp, lp);
+      *r = 0;
+      return 1;
+    case WM_HOTKEY:
+      hotkey_fired((int)wp);
       *r = 0;
       return 1;
     case WM_MB_NETWORK:

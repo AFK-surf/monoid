@@ -19,19 +19,15 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// Experimental switches on this device (实验性功能: `chatPage`, `composerNodes`, `farviewNative`, `board`), told their signals as the
-/// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
-/// active board state and returns Home to the ordinary chat list.
+/// The device's own features as the core says them (the prefs' `features`: the test channel's `chatPage`, 实验性功能's
+/// `farviewNative` and `board`), told their signals as they change and as the app's tree is made, before any page of
+/// nodes; turning `board` off puts away any active board state and returns Home to the ordinary chat list. The chat's
+/// page as a test or a scene holds it (hold_chat_page_nodes), whatever the prefs say.
 pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chat_page = @settings.feature_from(prefs, "chatPage")
+  let chat_page = chat_page_held.val.unwrap_or(@settings.feature_from(prefs, "chatPage"))
   if chat_page != chat_page_told.val {
     chat_page_told.val = chat_page
     chat_page_nodes.set(chat_page)
-  }
-  let composed = @settings.feature_from(prefs, "composerNodes")
-  if composed != composer_told.val {
-    composer_told.val = composed
-    composer_nodes.set(composed)
   }
   let fv = @settings.feature_from(prefs, "farviewNative")
   if fv != farview_told.val {
@@ -51,11 +47,28 @@ pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// The experimental switches last told from `prefs`: none on as a run begins.
+/// The features last told from `prefs`: none on as a run begins.
 let chat_page_told : Ref[Bool] = Ref(false)
 
 ///|
-let composer_told : Ref[Bool] = Ref(false)
+/// The way a test or a scene (MBUI_CHAT_PAGE) holds the chat's page made (chat_page_nodes), over what the prefs say:
+/// none as a run begins (app_frame_reset).
+let chat_page_held : Ref[Bool?] = Ref(None)
+
+///|
+/// The chat's page made one way whatever the prefs say (`Some(true)`: as nodes, `Some(false)`: its old view), from now
+/// on in this run, a page made next made so; `None` lets the prefs say again as they are next told. For tests and
+/// scenes that hold one way: the test channel's app has it as nodes, stable's as its old view.
+pub fn hold_chat_page_nodes(v : Bool?) -> Unit {
+  chat_page_held.val = v
+  match v {
+    Some(on) => {
+      chat_page_told.val = on
+      chat_page_nodes.set(on)
+    }
+    None => ()
+  }
+}
 
 ///|
 let farview_told : Ref[Bool] = Ref(false)
@@ -108,12 +121,14 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
   })
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
-  // the chat page as chosen here (the prefs' `chatPage`: 试用新对话页)
+  // the chat page as the channel has it (the prefs' `features.chatPage`), the experimental switches as chosen here
   chat_page_from_prefs(prefs)
   let dark = @settings.dark(prefs, system_dark)
   @sf.set_dark(Some(dark))
-  // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange
-  @sf.set_accent(@settings.pref_from(prefs, "accent"))
+  // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange; one
+  // shown a moment over it while 外观's dot is pointed at (accent_preview) kept till it ends
+  accent_set_here.val = @settings.pref_from(prefs, "accent")
+  @sf.set_accent(accent_shown.val.unwrap_or(accent_set_here.val))
   // (the host told once the prefs are read: not the system's first, then the one chosen)
   if prefs is Some(_) && told_dark.val != Some(dark) {
     told_dark.val = Some(dark)
@@ -121,6 +136,38 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
     @hostapi.log(if dark { "theme: dark" } else { "theme: light" })
   }
   dark
+}
+
+///|
+/// The accent the prefs say (appearance_from_prefs), and one shown a moment over it (外观's dot pointed at, unchosen:
+/// accent_preview): None, none.
+// kept across runs: put back by accent_preview_reset (reset)
+let accent_set_here : Ref[String] = Ref("")
+
+///|
+// kept across runs: put back by accent_preview_reset (reset)
+let accent_shown : Ref[String?] = Ref(None)
+
+///|
+/// The window shown a moment in the colour theme `key` (its dot pointed at in 外观), over the one set, till
+/// accent_preview_end; or, None, back to the one set.
+pub fn accent_preview(key : String?) -> Unit {
+  accent_shown.val = key
+  @sf.set_accent(key.unwrap_or(accent_set_here.val))
+}
+
+///|
+/// A colour theme chosen while one was shown a moment: shown as chosen at once, what the prefs say then taking over.
+pub fn accent_chosen(key : String) -> Unit {
+  accent_shown.val = None
+  @sf.set_accent(key)
+}
+
+///|
+/// As at the start (the app's reset): nothing shown over the accent set.
+pub fn accent_preview_reset() -> Unit {
+  accent_set_here.val = ""
+  accent_shown.val = None
 }
 
 ///|
@@ -363,7 +410,7 @@ fn app_frame_reset() -> Unit {
   told_bars.val = None
   told_dark.val = None
   chat_page_told.val = false
-  composer_told.val = false
+  chat_page_held.val = None
   farview_told.val = false
   board_told.val = false
   attention.told = false

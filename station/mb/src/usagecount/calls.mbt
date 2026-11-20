@@ -113,20 +113,7 @@ pub fn js_number(d : Double) -> String {
 ///|
 /// JValue (JSON.parse's reading) as Json: a lone surrogate as U+FFFD, as Node binds it.
 fn of_jvalue(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(d) => Json::number(d)
-    Str(units) => Json::string(@jsjson.text(units))
-    Arr(items) => Json::array(items.map(of_jvalue))
-    Obj(entries) => {
-      let m : Map[String, Json] = Map([])
-      for e in entries {
-        m[@jsjson.text(e.0)] = of_jvalue(e.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|
@@ -145,63 +132,9 @@ fn parse_line(line : String) -> Json? {
 }
 
 ///|
-fn iso_num(b : Bytes, from : Int, len : Int) -> Int64? {
-  if from + len > b.length() || len == 0 {
-    return None
-  }
-  let mut i = from
-  let mut sign = 1L
-  if b[i] == '+' || b[i] == '-' {
-    sign = if b[i] == '-' { -1L } else { 1L }
-    i += 1
-  }
-  if i >= from + len {
-    return None
-  }
-  let mut v = 0L
-  while i < from + len {
-    guard b[i] >= '0' && b[i] <= '9' else { return None }
-    v = v * 10L + (b[i] - '0').to_int64()
-    i += 1
-  }
-  Some(sign * v)
-}
-
-///|
 /// transcript.ts `parseIso`: milliseconds of an ISO time (YYYY-MM-DDTHH:MM:SS[.fff]), read by position.
 pub fn parse_iso(at : String) -> Double? {
-  let b = @utf8.encode(at)
-  guard iso_num(b, 0, 4) is Some(y) &&
-    iso_num(b, 5, 2) is Some(mo) &&
-    iso_num(b, 8, 2) is Some(d) &&
-    iso_num(b, 11, 2) is Some(h) &&
-    iso_num(b, 14, 2) is Some(mi) &&
-    iso_num(b, 17, 2) is Some(s) else {
-    return None
-  }
-  let mut ms = 0L
-  if b.length() > 19 && b[19] == '.' {
-    let mut digits = 0
-    let mut i = 20
-    while i < b.length() && b[i] >= '0' && b[i] <= '9' {
-      if digits < 3 {
-        ms = ms * 10L + (b[i] - '0').to_int64()
-        digits += 1
-      }
-      i += 1
-    }
-    while digits < 3 {
-      ms = ms * 10L
-      digits += 1
-    }
-  }
-  let (yy, mm) = if mo <= 2L { (y - 1L, mo + 9L) } else { (y, mo - 3L) }
-  let era = if yy >= 0L { yy / 400L } else { -((-yy + 399L) / 400L) }
-  let yoe = yy - era * 400L
-  let doy = (153L * mm + 2L) / 5L + d - 1L
-  let doe = yoe * 365L + yoe / 4L - yoe / 100L + doy
-  let days = era * 146097L + doe - 719468L
-  Some(((days * 86400L + h * 3600L + mi * 60L + s) * 1000L + ms).to_double())
+  @readops.parse_iso(at)
 }
 
 ///|

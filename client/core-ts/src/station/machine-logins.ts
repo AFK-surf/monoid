@@ -34,6 +34,9 @@ export const AFTER_MS = 10_000;
 /// At most this long, whatever happens.
 export const RELAY_MOST_MS = 15 * 60_000;
 
+/// A login that ended without logging in is offered again from its card for this long after (its chat's card, not one
+/// of days ago: those stay a quiet line).
+export const AGAIN_MS = 6 * 60 * 60_000;
 /// `supported`: null until read; false for a station from before (404).
 export type Held = { supported: boolean | null; logins: J[] };
 
@@ -171,6 +174,8 @@ export function loginShown(l: J, station: string, stationName: string, now: numb
     startedAt: typeof l.startedAt === "number" ? l.startedAt : 0,
     expiresAt: typeof l.expiresAt === "number" ? l.expiresAt : 0,
     ...(typeof l.endedAt === "number" ? { endedAt: l.endedAt } : {}),
+    // Started again from its card (its card shows that one from then on); else, ended without logging in, it may be.
+    ...(str(l.again) !== null ? { again: l.again } : !active && state === "failed" && typeof l.endedAt === "number" && now - l.endedAt < AGAIN_MS ? { canAgain: true } : {}),
   };
 }
 

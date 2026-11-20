@@ -185,7 +185,7 @@ test("background work is wrapped so its CPU and disk yield: taskpolicy, ionice a
 });
 
 test("only the builders nobody waits on run as background work, not those answering requests or the readers", () => {
-  for (const kind of ["replica-export", "footprint", "session-backfill", "post-blocks", "session-counts", "usage-retire", "signin-save"]) {
+  for (const kind of ["replica-export", "footprint", "session-backfill", "post-blocks", "session-counts", "usage-counter", "usage-retire", "signin-save"]) {
     assert.equal(backgroundByDefault(["--builder", kind, "--db", "x"]), true, kind);
   }
   for (const kind of ["search", "vault-uses", "usage-check", "live-locator", "outflow-chats", "session-list", "card-posts", "cc-index", "replica-restore", "mesh"]) {

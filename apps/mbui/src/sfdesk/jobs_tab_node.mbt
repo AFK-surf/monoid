@@ -81,41 +81,54 @@ fn jobs_tab_node(
       tab.box(fn(room) {
         @sf.style_node(room, fn() { jobs_tab_list_room })
         room.height(By(fn() { Some(tall()) })).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        room.scrolls_window(
+        // (a row's block taken by the next of its kind (a group's head, a service, a job) to show as it no more does,
+        // its key that one's)
+        room.scrolls_reused(
           @view.Scroll::list(),
           keys,
+          shape=jobs_tab_row_shape,
           fn(row, k) {
             // (its sides the list's, 8 in (jobs_tab_list); 4 under what is over it in its group, its head 6 under the
             // group over it (jobs_group, jobs_group_after))
-            let over = match k {
-              JobsHead(false) => fn() { if of_kind(true).length() > 0 { jobs_group_gap } else { 0.0 } }
-              JobsHead(true) => fn() { 0.0 }
-              _ => fn() { jobs_row_gap }
+            let over = fn() {
+              match k() {
+                JobsHead(false) => if of_kind(true).length() > 0 { jobs_group_gap } else { 0.0 }
+                JobsHead(true) => 0.0
+                _ => jobs_row_gap
+              }
             }
             @sf.style_node(row, fn() { jobs_tab_row_room.then(@ui.style(pt=@sf.room_of(over()))) })
-            match k {
-              JobsHead(services) =>
+            let id = fn() {
+              match k() {
+                JobsService(id) | JobsJob(id) => id
+                JobsHead(_) => ""
+              }
+            }
+            let job = fn() { job_of(id()) }
+            // (its kind, which never changes for a block: jobs_tab_row_shape's)
+            match @signals.untracked(k) {
+              JobsHead(_) =>
                 row.box(fn(h) {
                   @sf.style_node(h, fn() { jobs_head_box })
-                  @sf.words_node(h, fn() { @sf.t(if services { "web-main.jobs.services" } else { "web-main.jobs.jobs" }) }, fn() {
+                  @sf.words_node(h, fn() { @sf.t(if k() is JobsHead(true) { "web-main.jobs.services" } else { "web-main.jobs.jobs" }) }, fn() {
                     jobs_head_words
                   })
                   |> ignore
                 })
                 |> ignore
-              JobsService(id) => {
-                let job = fn() { job_of(id) }
+              JobsService(_) => {
                 // (one up or restarting opens its tab; else it does nothing)
                 let opens = fn() { text(job(), "tone") == "up" || text(job(), "tone") == "restart" }
-                jobs_tab_row(row, job, fn() { if opens() { "arrow-right" } else { "" } }, fn() { false }, opens, fn() {
+                jobs_tab_row(row, job, fn() { if opens() { "arrow-right" } else { "" } }, opens, fn() {
                   // (its tab opens on the job as this row has it: job_now)
+                  let id = id()
                   job_handed(station, id, job())
                   service(id)
                 })
               }
-              JobsJob(id) =>
-                jobs_tab_row(row, fn() { job_of(id) }, fn() { "" }, fn() { picked.get() == id }, fn() { true }, fn() {
-                  jobs_own.picked.set(id)
+              JobsJob(_) =>
+                jobs_tab_row(row, job, fn() { "" }, selected=fn() { picked.get() == id() }, fn() { true }, fn() {
+                  jobs_own.picked.set(id())
                 })
             }
           },
@@ -143,30 +156,41 @@ fn jobs_tab_node(
 }
 
 ///|
+/// Which block of the 任务 tab's list a row takes as it comes to show (View::scrolls_reused's `shape`): a group's head,
+/// a service, a job, each its own make.
+fn jobs_tab_row_shape(k : JobsTabRow) -> Int {
+  match k {
+    JobsHead(_) => 0
+    JobsService(_) => 1
+    JobsJob(_) => 2
+  }
+}
+
+///|
 /// A job's row in the 任务 tab (job_row's, not inset) in `row`: its dot, its name, what it is up to, `end`'s icon at its
-/// end where it says one; picked while `selected` (the picked ground); while `press` says so, the pointer's ground on it
-/// and `on_press` as it is pressed, else nothing to the hand (a service that opens nothing).
+/// end where it says one; a job one of those to pick between (`selected`: read out selected, on the picked ground while
+/// it says so), a service a button; while `press` says so, the pointer's ground on it and `on_press` as it is pressed,
+/// else nothing to the hand (a service that opens nothing, disabled).
 fn jobs_tab_row(
   row : @view.View,
   job : () -> Json?,
   end : () -> String,
-  selected : () -> Bool,
+  selected? : () -> Bool,
   press : () -> Bool,
   on_press : () -> Unit,
 ) -> Unit {
-  row.box(fn(b) {
+  @sf.action_box_node(row, fn() { text(job(), "name") }, fn(_) { on_press() }, selected?, disabled=fn() { !press() }, fn(b) {
     @sf.style_node(b, fn() { if press() { job_row_style } else { job_row_static } })
-    b
-    .ground(By(fn() { if selected() { @ui.tree_theme().color(Selected) } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=text(job(), "name"), selected=selected())) }))
-    |> ignore
+    match selected {
+      Some(picked) => b.ground(By(fn() { if picked() { @ui.tree_theme().color(Selected) } else { 0L } })) |> ignore
+      None => ()
+    }
     @sf.hover_ground_node(b, on=press)
-    @sf.presses_node(b, on_press, on=press)
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
       on.box(fn(d) {
         @sf.style_node(d, fn() { job_dot_room }, in_row=true)
-        jobs_pop_dot(d, fn() { text(job(), "tone") })
+        @sf.state_dot_node(d, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
       })
       |> ignore
       on.box(fn(w) {
@@ -208,7 +232,10 @@ fn job_detail_node(
     card.height(Is(None)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     card.box(fn(h) {
       @sf.style_node(h, fn() { job_detail_head })
-      h.box(fn(d) { jobs_pop_dot(d, fn() { text(job(), "tone") }) }) |> ignore
+      h.box(fn(d) {
+        @sf.state_dot_node(d, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
+      })
+      |> ignore
       @sf.words_node(h, fn() { text(job(), "name") }, fn() { job_detail_name }).allow_ellipsis(Is(true)) |> ignore
       @sf.words_node(h, fn() { text(job(), "detail") }, fn() { job_detail_state }).allow_ellipsis(Is(true)) |> ignore
       h.box(fn(g) { @sf.style_node(g, fn() { job_detail_grow }, in_row=true) }) |> ignore
@@ -233,15 +260,13 @@ fn job_detail_node(
       h.show(running, fn(s) {
         s.shrink(Is(0.0)) |> ignore
         let doing = fn() { job_stopping(src, station, job()) }
-        s.box(fn(b) {
+        @sf.action_box_node(s, fn() { @sf.t("web-main.jobs.stop") }, fn(_) {
+          if !@signals.untracked(doing).0 {
+            job_stop(src, station, @signals.untracked(job))
+          }
+        }, fn(b) {
           @sf.style_node(b, fn() { job_detail_stop }, in_row=true)
           @sf.hover_ground_node(b)
-          b.says(Is(Some(@view.said(Button, label=@sf.t("web-main.jobs.stop"))))) |> ignore
-          @sf.presses_node(b, fn() {
-            if !@signals.untracked(doing).0 {
-              job_stop(src, station, @signals.untracked(job))
-            }
-          })
           @sf.tip_node(tips, b, fn() { @sf.t("web-main.jobs.stop") }) |> ignore
           b.pick(fn() { doing().0 || doing().1 is Some(_) }, fn(k, busy) {
             if busy {
@@ -278,7 +303,7 @@ fn job_detail_node(
         p.box(fn(n) {
           @sf.style_node(n, fn() { job_detail_notices })
           n.height(Is(None)).grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-          job_notices_node(n, job)
+          @sfpages.job_notices_list_node(n, job)
         })
         |> ignore
         p.box(fn(l) {
@@ -290,55 +315,6 @@ fn job_detail_node(
       }
     })
   })
-  |> ignore
-}
-
-///|
-/// What a job said, newest first, each with the time of day in the row's words (job_notices' `clock`), in `v`: a list
-/// of its own, a notice a block; none said, how a job says something.
-fn job_notices_node(v : @view.View, job : () -> Json?) -> Unit {
-  let notices = fn() { items(job(), "notices") }
-  v.scrolls_window(
-    @view.Scroll::list(),
-    fn() {
-      let n = notices().length()
-      if n == 0 {
-        [-1]
-      } else {
-        Array::makei(n, fn(i) { i })
-      }
-    },
-    fn(row, i) {
-      if i < 0 {
-        row
-        .words_runs(Is([
-          @ui.span(@sf.t("web-main.jobs.noNotices.before")),
-          @ui.span("stillfail-job notify", mono=true),
-          @ui.span(@sf.t("web-main.jobs.noNotices.after")),
-        ]))
-        .words_look(By(fn() { @ui.style_words(job_quiet_words) }))
-        .ink(By(fn() { @ui.style_ink(job_quiet_words) }))
-        |> ignore
-        return
-      }
-      let nv = fn() { notices().get(i) }
-      @sf.style_node(row, fn() { if i > 0 { job_notice_after } else { job_notice } })
-      row.box(fn(a) {
-        @sf.style_node(a, fn() { job_notice_clock }, in_row=true)
-        a.shrink(Is(0.0)) |> ignore
-        @sf.words_node(a, fn() { text(nv(), "clock") }, fn() { job_notice_time_ui }) |> ignore
-      })
-      |> ignore
-      @sf.words_node(row, fn() { text(nv(), "text") }, fn() { job_notice_words_ui })
-      .grow(Is(1.0))
-      .basis(Is(Some(0.0)))
-      .min_width(Is(Some(0.0)))
-      |> ignore
-    },
-    est=job_notice_est,
-    slop=@ui.touch_slop(),
-    bar=@ui.tree_scroll_bar(),
-  )
   |> ignore
 }
 
@@ -372,17 +348,19 @@ fn job_output_node(v : @view.View, src : Source, station : String, id : String) 
         }
       },
       fn(p, what) {
-        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(Is((0.0, 0.0, @ui.Space::px(S2), 0.0))) |> ignore
         match what {
           0 => @sf.wait_line_node(p, fn() { "" }) |> ignore
           1 => @sf.words_node(p, fn() { @sf.t("web-main.jobs.noOutput") }, fn() { job_output_none }) |> ignore
           _ =>
-            p.scrolls_window(
+            // (a line's block taken by the next line to show as it no more does, its number that one's: hundreds of
+            // lines scrolled through a screen's few blocks)
+            p.scrolls_reused(
               @view.Scroll::list(),
               fn() { lines.get().map_or([], fn(l) { l.lines.map(fn(x) { x.n }) }) },
               fn(row, n) {
-                // (its own line's runs, read again only as that line changes)
-                let runs = @signals.computed(fn(_) { lines.get().bind(fn(l) { l.at(n) }).map_or([], fn(l) { l.runs }) }, same=fn(
+                // (its own line's runs, read again only as that line changes or the block is taken for another)
+                let runs = @signals.computed(fn(_) { lines.get().bind(fn(l) { l.at(n()) }).map_or([], fn(l) { l.runs }) }, same=fn(
                   a,
                   b,
                 ) {
@@ -428,15 +406,6 @@ let jobs_row_gap : Double = 4.0
 
 ///|
 let jobs_group_gap : Double = 6.0
-
-///|
-/// What a job said after its newest, 12 under the one over it (job_notices_clock's gap); how tall each is taken to be
-/// till it is laid out.
-// kept across runs: a value (no field of it changes)
-let job_notice_after : @ui.Style = job_notice.then(@ui.css("pt=S3"))
-
-///|
-let job_notice_est : Double = 32.0
 
 ///|
 /// The stop's mark while it is asked or failed (doing_mark's, not inline: 14).

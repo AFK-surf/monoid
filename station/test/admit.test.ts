@@ -11,7 +11,7 @@ import { TestClock } from "effect/testing";
 import type { Pressure } from "../src/jobs/admit.ts";
 import { LOOK_MS } from "./reference/admit.ts";
 import { Jobs, type Machine, STOP_LOOK_MS } from "../src/jobs/jobs.ts";
-import { signalGroup } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { Store } from "../src/store/store.ts";
 import { WINDOWS } from "../src/platform/index.ts";
 
@@ -22,8 +22,8 @@ const all: Jobs[] = [];
 const scopes: Scope.Closeable[] = [];
 after(async () => {
   for (const j of all) {
-    for (const job of j.store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
     await j.shutdown().catch(() => undefined);
+    await killGroups(j.store.listJobs(null).map((job) => job.pgid));
   }
   for (const scope of scopes) await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => undefined);
   for (const d of dirs) rmSync(d, { recursive: true, force: true });

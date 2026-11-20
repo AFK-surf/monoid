@@ -85,14 +85,14 @@ pub fn Preparation::step(
     db, "SELECT scan_done, scan_session, complete FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
     w,
   )
-  let scanned = int(scope, "scan_done") == 1 &&
-    get(scope, "scan_session") is Null
+  let scanned = @sql.row_int(scope, "scan_done") == 1 &&
+    @sql.row_val(scope, "scan_session") is Null
   let any = (sql : String) => exists(db, sql, [])
   let scoped = (sql : String) => exists(db, sql, w)
   let lanes : Array[Lane] = [
     { pending: () => !scanned, step: () => scan_workspace(db, ws, limit), },
     {
-      pending: () => scanned && int(scope, "complete") != 1,
+      pending: () => scanned && @sql.row_int(scope, "complete") != 1,
       step: () => {
         ignore(
           db.run(

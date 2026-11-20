@@ -1,7 +1,7 @@
 // A file opened beside a chat: a tab of the wide frame's side panel (`view:[…]`, the core's chat-tabs.ts isView), the
 // same viewer as over the whole window (viewer.mbt) made for the tab (Viewer's `beside`), one a tab, kept by the chat's
 // tabs' key and the tab while the tab is open, let go as it is closed. What it shows is the whole window's: a picture
-// fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @kit.Zoom); a PDF, a page,
+// fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @motion.Zoom); a PDF, a page,
 // a table, code, words read in the reader, as the whole window's stage shows them (viewer_stage_node, by the tab's width);
 // a film or a song in the one player embedded in the stage as part of the pane (@sf.player_view's `embedded`: on the
 // pane's own ground, its picture or a song's cover fitted in the room over its controls as a tab's picture is, the
@@ -9,11 +9,15 @@
 // the whole window's, which stays the cinema);
 // told of, coming, failed, as the whole window's stage says them (viewer_tree.mbt). Over it a row of tools as tall as a
 // service's bar: the file's name and what it is, 预览 / 源码 where the whole window's bar has them, the reader's 目录, 搜索
-// and 排版, 下载, 全屏 (the tab over the whole window: tab_full.mbt; none there once it is). Nothing of the whole
-// window's viewer is the tab's: no marking, no stepping to the pictures beside it, no flight from a thumbnail, no keys
-// of the window's.
+// and 排版, 下载, 全屏 (the tab over the whole window: tab_full.mbt; none there once it is). A picture is marked here as
+// over the whole window (标注图片 in its tools' row: marking's tools under the picture, its actions in that row in place
+// of its keys, the marks drawn over the picture; its marked copy put in the chat's draft, the tab staying), and steps
+// to the pictures beside it in its chat or its folder (the ways at its sides while the pointer is over it, ← and →
+// there or over the whole window): the tab put in the place of its own (Shell's `beside_for`), the same tab no more.
+// Nothing else of the whole window's viewer is the tab's: no flight from a thumbnail, no swipe, no keys of the
+// window's.
 //
-// How a file comes here: open_preview puts it beside by default (beside_first), or as asked (a menu's 在侧边打开; the
+// How a file comes here: open_preview puts any beside by default, or as asked (a menu's 在侧边打开; the
 // whole window's 移到侧边; over the whole window as its tab, the command key held), said to the shell (Shell's
 // `beside`), which puts it where the layout has a side panel for the page in view, and says whether it did. A film or a song asked so plays at once (the whole window's from
 // where it was); a tab only shown again (the app begun, the chat opened, the tab or the panel back) plays from its play
@@ -31,11 +35,11 @@ pub fn opens_beside(path : String, name : String) -> Bool {
 }
 
 ///|
-/// Whether file `a` opens beside the page by default where there is a side panel for it (open_preview's): any but a
-/// picture, a film or a song, which open over the whole window in the viewer of its own (its flight, marking, the
-/// pictures beside it).
-pub fn beside_first(a : Attachment) -> Bool {
-  !(preview_kind(a.name).0 is Some(KImage | KVideo | KAudio))
+/// Whether file `a`, asked over the whole window (open_preview's `full`: pressed, the command key not held), opens in the
+/// whole window's viewer of its own, not as its tab over the whole window: a picture, a film or a song, which fly from
+/// their thumbnail there and back into it as they close.
+pub fn opens_in_viewer(a : Attachment) -> Bool {
+  preview_kind(a.name).0 is Some(KImage | KVideo | KAudio)
 }
 
 ///|
@@ -175,7 +179,16 @@ priv struct TabViewer {
   mut drawn : Int
   mut closing : Bool
   mut goes_on : Bool
+  /// the pictures beside its own, read ahead (Viewer::near's, the tab's own)
+  near : Map[String, Viewer]
 }
+
+///|
+/// The tabs closed (or stepped from) while a node drew them, by tab_viewer_id, till opened again (tab_viewer_kept): no
+/// viewer made for one anew as what drew it goes (the panel showing it a moment longer, till the core says it closed:
+/// a picture stepped over the whole window).
+// kept across runs: put back by tab_viewers_reset
+let tab_gone : Map[String, Bool] = Map([])
 
 ///|
 /// The viewers of the files open beside chats, by the chat's tabs' key and the tab (tab_viewer_id).
@@ -198,7 +211,7 @@ let tab_facts : Map[String, (Double, Double, Double, Int)] = Map([])
 ///|
 /// File `a` opened beside a chat as tab `tab`: what is known of it kept for its viewer (tab_facts).
 fn tab_facts_said(tab : String, a : Attachment) -> Unit {
-  // (a film's or a song's: a picture is fitted by what its bytes decode to, as over the whole window)
+  // (a film's or a song's: a picture's size is said with what it steps through, tab_steps_said)
   if a.duration > 0.0 || a.frames > 0 {
     tab_facts[tab] = (a.width, a.height, a.duration, a.frames)
   }
@@ -211,6 +224,7 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
   let id = tab_viewer_id(chat, tab)
   match tab_viewers.get(id) {
     Some(t) => Some(t.viewer)
+    None if tab_gone.contains(id) => None
     None =>
       match view_tab_file(tab) {
         Some(f) if opens_beside(f.file.path, f.file.name) => {
@@ -221,7 +235,7 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
           let station = if f.station != "" { f.station } else { chat_station }
           // (moved here from the whole window (移到侧边): what it stepped through and how big its picture is, as it
           // showed them, so the tab comes in saying what the window said; else stepping through its chat's pictures)
-          let (steps, file) = match tab_moved.get(tab) {
+          let (steps, file, at) = match tab_moved.get(tab) {
             Some(m) => {
               tab_moved.remove(tab)
               // (what the window read held till the tab, made in this frame, has read it: let go at its end)
@@ -229,17 +243,17 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
                 Some(l) => @ui.after_frame(fn() { l.release() })
                 None => ()
               }
-              (m.steps, { ..f.file, width: m.width, height: m.height })
+              (m.steps, { ..f.file, width: m.width, height: m.height }, m.at)
             }
-            None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file)
+            None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file, "")
           }
           // (a film's or a song's as it was known as it was opened beside: tab_facts)
           let file = match tab_facts.get(tab) {
             Some((width, height, duration, frames)) => { ..file, width, height, duration, frames }
             None => file
           }
-          let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, beside=true)
-          tab_viewers[id] = { viewer: v, drawn: 0, closing: false, goes_on: false }
+          let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, at~, beside=true)
+          tab_viewers[id] = { viewer: v, drawn: 0, closing: false, goes_on: false, near: Map([]) }
           Some(v)
         }
         _ => None
@@ -269,6 +283,7 @@ pub fn tab_viewer_held(chat : String, tab : String) -> Bool {
 /// had as it slides out).
 pub fn tab_viewer_let_go(chat : String, tab : String) -> Unit {
   let id = tab_viewer_id(chat, tab)
+  tab_gone[id] = true
   match tab_viewers.get(id) {
     Some(t) if t.drawn <= 0 => {
       t.viewer.let_go()
@@ -282,6 +297,7 @@ pub fn tab_viewer_let_go(chat : String, tab : String) -> Unit {
 ///|
 /// Tab `tab` of chat `chat` opened again before what drew it went: its viewer kept.
 pub fn tab_viewer_kept(chat : String, tab : String) -> Unit {
+  tab_gone.remove(tab_viewer_id(chat, tab))
   match tab_viewers.get(tab_viewer_id(chat, tab)) {
     Some(t) => t.closing = false
     None => ()
@@ -293,6 +309,7 @@ pub fn tab_viewer_kept(chat : String, tab : String) -> Unit {
 fn tab_viewers_reset() -> Unit {
   tab_viewers.each(fn(_, t) { t.viewer.let_go() })
   tab_viewers.clear()
+  tab_gone.clear()
   tab_asked.clear()
   tab_moved.each(fn(_, m) { m.release() })
   tab_moved.clear()
@@ -317,6 +334,39 @@ priv struct TabMoved {
   height : Double
   /// where its picture is among its chat's, as the window read it (imageNear), held for the tab till it reads it
   near : TopicLease?
+  /// which of its message's pictures it is (Viewer's `at`), "" none said
+  at : String
+}
+
+///|
+/// File tab `tab` about to be put beside the page, what it steps through (`steps`), its picture's size (0: not known),
+/// where it is among its chat's as read (`near`) and which of its message's it is (`at`) kept for its viewer as it is
+/// made (tab_moved): none where its viewer is made already (it is kept as it is), nothing to keep where it steps through
+/// nothing and nothing is known of it. Whether it was kept (tab_moved_dropped, its tab not put there).
+fn tab_steps_said(tab : String, steps : Stepping, width : Double, height : Double, near : TopicLease?, at : String) -> Bool {
+  if tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) || (steps is NoSteps && width <= 0.0 && at == "" && near is None) {
+    match near {
+      Some(l) => l.release()
+      None => ()
+    }
+    return false
+  }
+  match tab_moved.get(tab) {
+    Some(was) => was.release()
+    None => ()
+  }
+  tab_moved[tab] = { steps, width, height, near, at }
+  true
+}
+
+///|
+/// What was kept for tab `tab`'s viewer (tab_steps_said) let go: its tab not put beside the page.
+fn tab_moved_dropped(tab : String) -> Unit {
+  match tab_moved.get(tab) {
+    Some(m) => m.release()
+    None => ()
+  }
+  tab_moved.remove(tab)
 }
 
 ///|
@@ -358,7 +408,7 @@ fn beside_open(
   let at : PlayAsked = { at, plays, how }
   // (said before the shell is asked: its tab's node may be made as the shell puts it there)
   tab_asked[tab] = at
-  let put = match (shell.val.beside)(tab) {
+  let (put, new) = match (shell.val.beside)(tab, full) {
     Some(put) => put
     None => {
       tab_asked.remove(tab)
@@ -375,10 +425,11 @@ fn beside_open(
       t.viewer.play_asked(at)
     }
   })
-  // (over the whole window as its tab, asked so: the chat in view's, where the shell put it)
+  // (over the whole window as its tab, asked so: the chat in view's, where the shell put it; put there new, only to go
+  // there: lone, tab_full.mbt)
   if full {
     match app.nav.top() {
-      Chat(r) => tab_full_open(r, put)
+      Chat(r) => tab_full_open(r, put, lone=new)
       _ => ()
     }
   }
@@ -417,7 +468,7 @@ fn Viewer::play_asked(self : Viewer, asked : PlayAsked) -> Unit {
 
 ///|
 /// Player `m` at the speed and as loud as `how` says (its speed, how loud, its sound off or not).
-fn media_as(m : @kit.Media, how : (Double, Double, Bool)) -> Unit {
+fn media_as(m : @player.Media, how : (Double, Double, Bool)) -> Unit {
   let (speed, volume, muted) = how
   m.set_speed(speed)
   m.set_volume(volume)
@@ -471,27 +522,17 @@ pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
   }
   let tab = self.view_tab()
   // (none where its tab is open already: its viewer is kept as it is)
-  if !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
-    let near = if self.shown_kind() == Some(KImage) {
-      image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
-    } else {
-      None
-    }
-    match tab_moved.get(tab) {
-      Some(was) => was.release()
-      None => ()
-    }
-    tab_moved[tab] = { steps: self.steps, width, height, near }
+  let near = if self.shown_kind() == Some(KImage) && !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
+    image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
+  } else {
+    None
   }
+  let said = tab_steps_said(tab, self.steps, width, height, near, self.at)
   tab_facts_said(tab, self.file)
   if beside_open(tab, at, plays~, how~) {
     close_now()
-  } else {
-    match tab_moved.get(tab) {
-      Some(m) => m.release()
-      None => ()
-    }
-    tab_moved.remove(tab)
+  } else if said {
+    tab_moved_dropped(tab)
   }
 }
 
@@ -538,6 +579,10 @@ pub fn viewer_tab_node(
         t.drawn -= 1
         if t.drawn <= 0 && !t.goes_on {
           vw.pause_player()
+          // (marking it left: its tools and its marks gone with it)
+          if marks_tab.val is Some(m) && physical_equal(m, vw) {
+            marks_leave()
+          }
         }
         if t.drawn <= 0 && t.closing {
           t.viewer.let_go()
@@ -551,15 +596,60 @@ pub fn viewer_tab_node(
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed, 下载 asked)
   // (its film's or song's player made as it is asked for: what plays it there from then)
   let media_made = @signals.signal(false)
-  q.reacts(fn() { (vw.sniffed.get(), vw.bytes.get() is Some(_), vw.error.get() is Some(_), vw.fetching.get(), vw.asked_told.get()) }, fn(_) {
-    vw.fetch(src)
-    media_made.set(vw.media is Some(_))
-  })
+  q.reacts(
+    fn() {
+      (
+        vw.sniffed.get(),
+        vw.bytes.get() is Some(_),
+        vw.error.get() is Some(_),
+        vw.fetching.get(),
+        vw.asked_told.get(),
+        vw.whole_due(),
+      )
+    },
+    fn(_) {
+      vw.fetch(src)
+      media_made.set(vw.media is Some(_))
+    },
+  )
+  // release the preview image once the whole image is decoded so host memory stays bounded
+  q.reacts(
+    fn() {
+      vw.bytes.get() |> ignore
+      vw.preview_image != "" &&
+      vw.image != "" &&
+      vw.image != vw.preview_image &&
+      @ui.image_any_ready(vw.image)
+    },
+    fn(ready) {
+      if ready {
+        vw.drop_preview_image()
+      }
+    },
+  )
+  // what marking made of its picture, taken as the host says it is drawn (MarkedImage::ready): kept, or into the chat's
+  // draft, once (Viewer::marks_frame), while it is this tab's marking
+  q.reacts(
+    fn() {
+      marks_said()
+      match marking.job {
+        Some(j) => Some((j.id(), j.ready()))
+        None => None
+      }
+    },
+    fn(job) {
+      if job is Some((_, true)) && vw.marks_here() {
+        vw.marks_came(fn(name, mime, png) { keep_bytes_now(name, mime, png) }, fn() {  })
+      }
+    },
+  )
+  // (what marking stamps what it makes by: this source's clock)
+  src_now.val = src.now
   // 下载 asked: a chat's file's download said to the core at that change; what was asked before it was here saved, or
   // installed, as its whole comes; each once
-  q.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_)) }, fn(_) {
+  q.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
     download_told(src, vw)
-    if vw.bytes.untracked() is Some(_) {
+    if vw.whole_here() is Some(_) {
       if vw.save_after {
         vw.save_after = false
         vw.save_now()
@@ -569,6 +659,8 @@ pub fn viewer_tab_node(
         vw.ask_install()
       }
       vw.share_came()
+      vw.copy_came()
+      vw.marks_finish_came()
     }
   })
   let tips_at : Ref[@view.View?] = Ref(None)
@@ -593,13 +685,13 @@ pub fn viewer_tab_node(
       })
     }
     let picture = fn() { vw.markable() }
-    s.show(picture, fn(p) { tab_picture_node(p, src, vw) })
+    s.show(picture, fn(p) { tab_picture_node(p, src, vw, chat, tab) })
     let stage = fn() { vw.outer_stage() }
     let mbui = fn() { !played && !picture() && stage() == Hosted && viewer_mbui_rendered(vw) }
     s.show(mbui, fn(m) { viewer_mbui_node(m, src, vw) })
     // (what its stage's nodes show of it, its words picked as a page's are: viewer_stage_node)
     s.show(fn() { !played && !picture() && stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
-      viewer_stage_node(h, src, vw, width)
+      viewer_stage_node(h, src, vw, width, panel=tools)
     })
     s.show(fn() { !played && !picture() && stage() != Hosted }, fn(note) {
       viewer_note_node(note, src, vw, stage, bars=false)
@@ -619,13 +711,15 @@ pub fn viewer_tab_node(
 ///|
 /// The tools over a file's tab in `row` (as tall as a service's bar, PreviewBar's): its name and the line about it (its
 /// size, its kind), cut short where the tab is narrow; then 预览 / 源码 (a table's, a page's, once read: as the whole
-/// window's bar has them), the reader's 目录, 搜索 and 排版 (Markdown and words read in it: its panels opened from here,
-/// the layout's in the tab's stage, viewer_tab_node's), 下载 (a ring while the core downloads it), 全屏 (`full`, where it
-/// is given). Each done at its press's moment; their tips in `tips`.
+/// window's bar has them), the reader's 目录, 搜索, 排版 (Markdown and words read in it: its panels opened from here,
+/// the layout's in the tab's stage, viewer_tab_node's; scroll-to-bottom floats at the stage's bottom-right), 标注图片
+/// and 复制 (pictures), 下载 (a ring while the core downloads it), 全屏 (`full`, where it is given). Each done at its
+/// press's moment; their tips in `tips`. The keys stand by the name's line, not the middle of the name and the line
+/// under it (the user, 2026-11-14: 「不应该一个图标或者一行内容跟多行做垂直居中对齐」).
 fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Unit)?, tips : @sf.TipLayer) -> Unit {
   row
   .row(Is(true))
-  .lines_up(Is(Some(Middle)))
+  .lines_up(Is(Some(Start)))
   .gap(Is(@ui.Space::px(S2)))
   .min_height(Is(Some(@ui.room_least())))
   .padding(Is((@ui.Space::px(S3), @ui.Space::px(S1_5), @ui.Space::px(S2), @ui.Space::px(S1_5))))
@@ -636,13 +730,27 @@ fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Uni
   let corner : @view.Live[Double] = Is(@sf.tool_side / 2.0)
   // its name and the line about it, giving way to the tools
   row.box(fn(f) {
-    f.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+    f
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .clips(Is(true))
+    // (its name's line across the keys' middle: as far down as half of what they stand taller than it)
+    .padding(By(fn() {
+      f.words_redone() |> ignore
+      let th = @ui.tree_theme()
+      let line = @sf.node_sp(f, th.leading(L5).unwrap_or(th.text_size(Ui).1))
+      (0.0, @sf.dmax(0.0, (@sf.tool_side - line) / 2.0), 0.0, 0.0)
+    }))
+    |> ignore
     f.box(fn(n) {
       n
       .words(By(fn() { vw.file.name }))
       .words_look(By(fn() { tab_words(Ui, L5, 600) }))
       .ink(By(fn() { ink().ink }))
       .says(By(fn() { Some(@view.said(Text, label=vw.file.name)) }))
+      // (cut short where the tab is narrow, its tools' room theirs: marking's actions wider than its keys)
+      .cuts(Is(true))
       |> ignore
     })
     |> ignore
@@ -652,6 +760,7 @@ fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Uni
       .words_look(By(fn() { tab_words(Caption, L4, 400) }))
       .ink(By(fn() { ink().muted }))
       .says(By(fn() { Some(@view.said(Text, label=vf_meta(vw, src))) }))
+      .cuts(Is(true))
       |> ignore
     })
   })
@@ -661,8 +770,8 @@ fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Uni
 
 ///|
 /// A file tab's keys in row `r` (tab_tools_node's, and the bar's over the whole window: viewer_tab_bar_tools): 预览 /
-/// 源码, the reader's panels, 下载 and 全屏 (`full`, where it is given), in `ink`, each `corner` round, their tips in
-/// `tips`.
+/// 源码, the reader's 目录, 搜索, 排版 panels (scroll-to-bottom floats at the stage's bottom-right), 下载 and 全屏
+/// (`full`, where it is given), in `ink`, each `corner` round, their tips in `tips`.
 fn tab_keys_node(
   r : @view.View,
   src : Source,
@@ -671,88 +780,236 @@ fn tab_keys_node(
   corner : @view.Live[Double],
   full : (() -> Unit)?,
   tips : @sf.TipLayer,
+  gives? : Bool = false,
 ) -> Unit {
-  r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
+  // (`gives`: its keys made in the row of the bar over the whole window or of a window of its own, which leaves out
+  // what has not the room (sf's viewer_bar_node: View::fits), each the `k`-th to leave into its ⋯ at its end, there only
+  // while something did (View::drops); else a row of its own, kept whole)
+  if !gives {
+    r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
+  }
+  let slots : Array[(Ref[@view.View?], () -> Bool, () -> @sf.MenuItem?)] = []
+  // each of its keys there while `!vw.marks_here() && there()` says so, the `k`-th to leave where it gives
+  // (tab_keys_drop_*), what it is in its ⋯ once it left
+  let slot = fn(k : Int, there : () -> Bool, menu : () -> @sf.MenuItem?, make : (@view.View) -> Unit) {
+    let held : Ref[@view.View?] = Ref(None)
+    let shown = fn() { !vw.marks_here() && there() }
+    r.show(shown, fn(x) {
+      held.val = Some(x)
+      if gives {
+        x.drops(Is(k)) |> ignore
+      }
+      make(x)
+    })
+    slots.push((held, shown, menu))
+  }
+  // (marking it: marking's actions in their place, Viewer::marks_here)
+  r.show(fn() { vw.marks_here() }, fn(k) { marks_actions_node_of(k, vw, ink, tips) })
+  // (loading or upgrading an image: progress in the bar)
+  if gives {
+    r.show(fn() { !vw.marks_here() && vw.image_loading() }, fn(x) {
+      @sf.viewer_coming_node(x, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
+    })
+  } else {
+    r.show(fn() { !vw.marks_here() && vw.image_loading() }, fn(x) {
+      @sf.viewer_coming_node(x, fn() { vw.got.get() }, fn() { vw.file.size }, ink, lead=false, track=@sf.vfr_head_coming_track)
+      |> ignore
+    })
+  }
   // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
   // Viewer::set_source)
-  r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
-    x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    @sf.seg_node(
-      x,
-      fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
-      fn() {
-        vw.source_told.get() |> ignore
-        if vw.source {
-          1
-        } else {
-          0
-        }
+  let sourced = fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }
+  slot(
+    tab_keys_drop_source,
+    sourced,
+    fn() {
+      let now = vw.source
+      Some(
+        @sf.menu_item_of(
+          @sf.t(if now { "web-main.preview.rendered" } else { "web-main.preview.source" }),
+          fn() { vw.set_source(!now) },
+        ),
+      )
+    },
+    fn(x) {
+      x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      @sf.seg_node(
+        x,
+        fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
+        fn() {
+          vw.source_told.get() |> ignore
+          if vw.source {
+            1
+          } else {
+            0
+          }
+        },
+        fn(k) { vw.set_source(k == 1) },
+        item_w=vf_tabs_item,
+      )
+      |> ignore
+    },
+  )
+  // the reader's panels, opened from here (the layout's in the tab's stage; scroll-to-bottom floats at bottom-right)
+  let panels = [
+    (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents"), tab_keys_drop_contents),
+    (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find"), tab_keys_drop_find),
+    (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout"), tab_keys_drop_layout),
+  ]
+  for p in panels {
+    let (panel, icon, label, k) = p
+    slot(
+      k,
+      fn() { vf_reads(vw) },
+      fn() { Some(@sf.menu_item_of(label, fn() { @sf.reader_panel_toggle(vw.read_key(), panel) }, icon~)) },
+      fn(x) {
+        @sf.tool_node(
+          x,
+          fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
+          ink,
+          corner,
+          fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
+          tip=tips,
+        )
+        |> ignore
       },
-      fn(k) { vw.set_source(k == 1) },
-      item_w=vf_tabs_item,
     )
-    |> ignore
-  })
-  // the reader's panels, opened from here (the layout's in the tab's stage)
-  r.show(fn() { vf_reads(vw) }, fn(x) {
-    x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
-    let panels = [
-      (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents")),
-      (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find")),
-      (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout")),
-    ]
-    for p in panels {
-      let (panel, icon, label) = p
+  }
+  // 标注图片: once its whole picture is here, a picture it shows (as the whole window's bar has it: image_tools)
+  slot(
+    tab_keys_drop_mark,
+    fn() { (gives || !vw.upgrading()) && vw.bytes.get() is Some(_) && vw.markable() },
+    fn() { Some(@sf.menu_item_of(@sf.t("web-main.annotate.image"), fn() { vw.marks_start_here() }, icon="edit")) },
+    fn(x) {
       @sf.tool_node(
         x,
-        fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
+        fn() { { icon: "edit", label: @sf.t("web-main.annotate.image"), on: false, disabled: false } },
         ink,
         corner,
-        fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
+        fn() { vw.marks_start_here() },
         tip=tips,
       )
       |> ignore
-    }
-  })
+    },
+  )
+  // 复制: the whole picture on the clipboard, a check a moment after (as the whole window's bar has it: image_tools)
+  let copy_image = fn() { vw.ask_copy() }
+  slot(
+    tab_keys_drop_copy,
+    fn() { (gives || !vw.upgrading()) && vw.bytes.get() is Some(_) && vw.shown_kind() == Some(KImage) },
+    fn() { Some(@sf.menu_item_of(@sf.t("common.copy"), fn() { copy_image() |> ignore }, icon="copy")) },
+    fn(x) { @sf.copy_tool_node(x, ink, corner, copy_image, tip=tips) |> ignore },
+  )
   // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
   let dl = fn() { vw.download(src) }
-  r.show(fn() { !vw.coming() && !downloading(dl()) }, fn(x) {
-    @sf.tool_node(
-      x,
-      fn() {
-        // (a film or a song played as it comes: read whole as it is asked)
-        let saving = vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
-        { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
-      },
-      ink,
-      corner,
-      fn() { vw.save_now() },
-      tip=tips,
-    )
+  let saving = fn() {
+    // (a film or a song played as it comes: read whole as it is asked)
+    vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
+  }
+  slot(
+    tab_keys_drop_download,
+    fn() { (gives || !vw.upgrading()) && !vw.coming() },
+    fn() {
+      Some(
+        @sf.menu_item_of(
+          @sf.t("web-main.preview.download"),
+          fn() { vw.save_now() },
+          icon="download",
+          disabled=!@signals.untracked(saving),
+        ),
+      )
+    },
+    fn(x) {
+      @sf.tool_node(
+        x,
+        fn() { { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving() } },
+        ink,
+        corner,
+        fn() { vw.save_now() },
+        tip=tips,
+        progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
+      )
+      |> ignore
+    },
+  )
+  // what left it, in its ⋯ at its end (there only while something did)
+  if gives {
+    r.box(fn(x) {
+      x.drops(Is(-1)) |> ignore
+      let at : Ref[@view.View?] = Ref(None)
+      at.val = Some(
+        @sf.tool_node(
+          x,
+          fn() { { icon: "more", label: @sf.t("web-main.menu.more"), on: false, disabled: false } },
+          ink,
+          corner,
+          fn() {
+            let gone : Array[@sf.MenuItem?] = []
+            for s in slots {
+              let (held, there, item) = s
+              match held.val {
+                Some(v) if @signals.untracked(there) && @signals.untracked(fn() { v.left_out() }) =>
+                  match item() {
+                    Some(m) => gone.push(Some(m))
+                    None => ()
+                  }
+                _ => ()
+              }
+            }
+            match at.val {
+              Some(n) => @sf.menu(gone, from=Node(n))
+              None => ()
+            }
+          },
+          tip=tips,
+        ),
+      )
+    })
     |> ignore
-  })
-  r.show(fn() { !vw.coming() && downloading(dl()) }, fn(x) {
-    @sf.tool_ring_node(x, fn() { number(dl(), "progress") }, fn() { @sf.t("web-main.preview.download") }, ink, corner)
-    |> ignore
-  })
+  }
   // 全屏: the tab over the whole window (tab_full.mbt)
   match full {
     Some(f) =>
-      @sf.tool_node(
-        r,
-        fn() { { icon: "expand", label: @sf.t("web-main.preview.fullWindow"), on: false, disabled: false } },
-        ink,
-        corner,
-        f,
-        tip=tips,
-      )
-      |> ignore
+      r.show(fn() { !vw.marks_here() }, fn(x) {
+        @sf.tool_node(
+          x,
+          fn() { { icon: "expand", label: @sf.t("web-main.preview.fullWindow"), on: false, disabled: false } },
+          ink,
+          corner,
+          f,
+          tip=tips,
+        )
+        |> ignore
+      })
     None => ()
   }
 }
 
 ///|
-/// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @kit.Zoom's),
+/// Which of a file's keys in the bar of a window of its own leaves it first where it has not the room (View::drops: 1
+/// first): 预览 / 源码 (the widest), then the reader's 排版, 搜索, 目录, then 标注图片, 复制, then 下载.
+let tab_keys_drop_source : Int = 1
+
+///|
+let tab_keys_drop_layout : Int = 2
+
+///|
+let tab_keys_drop_find : Int = 3
+
+///|
+let tab_keys_drop_contents : Int = 4
+
+///|
+let tab_keys_drop_mark : Int = 5
+
+///|
+let tab_keys_drop_copy : Int = 6
+
+///|
+let tab_keys_drop_download : Int = 7
+
+///|
+/// How far a tab's picture is fitted clear of its stage's edges (the whole window's on a stage under 640, @motion.Zoom's),
 /// and its room to be taken by the hand in from them.
 let tab_picture_margin : Double = 12.0
 
@@ -777,7 +1034,9 @@ pub fn viewer_tab_bar_tools(
   tips : @sf.TipLayer,
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
-  row.box(fn(r) { tab_keys_node(r, src, vw, fn() { @sf.page_viewer_ink() }, corner, None, tips) }) |> ignore
+  // (made in the bar's own row: short of room, a window of its own at its least, its keys leaving it into its ⋯,
+  // tab_keys_node's `gives`)
+  tab_keys_node(row, src, vw, fn() { @sf.page_viewer_ink() }, corner, None, tips, gives=true)
 }
 
 ///|
@@ -834,22 +1093,37 @@ fn tab_player_node(h : @view.View, src : Source, vw : Viewer) -> Unit {
 }
 
 ///|
-/// A tab's picture in `s` (its stage, all of it): fitted as the whole window's is (tab_picture_margin clear of the
-/// stage's edges, never larger than its own size: its zoom's, new_viewer), laid out so in the stage less that margin
-/// and drawn as its zoom has it as the frame is drawn, grown about its middle and moved as far from it as the zoom
-/// says; the wheel zooms it (with ⌘ or ⌃, a trackpad's pinch) or pans it zoomed, two fingers pinch it, one pans it
-/// zoomed, a double press zooms in and back, each at its event's moment, the zoom told the stage's size and the
-/// picture's then. What takes the hand is the stage less the margin, clear of what lies at its edges (the side panel's
-/// edge). While it comes with nothing to stand in for it, how much has; not read, or no picture in it, why.
-fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
+/// A tab's picture in `s` (its stage, all of it; tab `tab` of the chat whose tabs are kept by `chat`): fitted as the
+/// whole window's is (tab_picture_margin clear of the stage's edges, never larger than its own size: its zoom's,
+/// new_viewer), laid out so in the stage less that margin and drawn as its zoom has it as the frame is drawn, grown about
+/// its middle and moved as far from it as the zoom says; the wheel zooms it (with ⌘ or ⌃, a trackpad's pinch) or pans it
+/// zoomed, two fingers pinch it, one pans it zoomed, a double press zooms in and back, each at its event's moment, the
+/// zoom told the stage's size as it is laid out and the picture's as it comes. What takes the hand is the stage less the
+/// margin, clear of what lies at its edges (the side panel's edge). While it comes with nothing to stand in for it, how
+/// much has; not read, or no picture in it, why. The pointer's secondary button on it, its menu (复制图片). Marked
+/// (Viewer::marks_here): one finger draws what marking's tool draws, the marks drawn over it, marking's tools under it (tab_marks_foot_node). The ways to the pictures beside it at
+/// its sides while the pointer is over it (a finger's: while it is not marked), ← and → there or over the whole window,
+/// Escape leaving what marking has open (marks_back): each a step of the tab (tab_step).
+fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, tab : String) -> Unit {
   s.over(Is(true)) |> ignore
   let z = vw.zoom
   let m = tab_picture_margin
-  // (the zoom's terms are the stage's: what the hand's room says, the margin round it put back)
-  let tell = fn(w : Double, h : Double, at : Double) {
-    z.boxed(w + 2.0 * m, h + 2.0 * m, at~)
+  let marked = fn() { vw.marks_here() }
+  // (over the whole window as its tab: its keys whatever the pointer is over)
+  let over_all = fn() {
+    match tab_full.get() {
+      Some(f) => f.tab == tab && f.chat.station + ":" + f.chat.session == chat
+      None => false
+    }
+  }
+  // (the stage's own terms: the zoom's, the margin round the hand's room put back)
+  let tell_natural = fn(at : Double) {
     let (nw, nh) = vw.natural_size(src)
     z.natural(nw, nh, at~)
+  }
+  let tell = fn(w : Double, h : Double, at : Double) {
+    z.boxed(w + 2.0 * m, h + 2.0 * m, at~)
+    tell_natural(at)
   }
   // how much larger than fitted it is drawn, and how far its middle is from the stage's, as node `n` is drawn: where
   // the zoom has it (as each frame draws it while it glides or flings, else as it was told)
@@ -862,9 +1136,11 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
       _ => (1.0, 0.0, 0.0)
     }
   }
-  // two fingers' last middle and how far apart they were (0: one finger), one finger's last place
+  // two fingers' last middle and how far apart they were (0: one finger), one finger's last place, whether two were on
+  // it since the first went down (a mark being drawn called off then)
   let fingers : Map[Int, (Double, Double)] = Map([])
   let pinch : Ref[(Double, Double, Double)] = Ref((0.0, 0.0, 0.0))
+  let pinched : Ref[Bool] = Ref(false)
   let last : Ref[(Double, Double)] = Ref((0.0, 0.0))
   let moved : Ref[Double] = Ref(0.0)
   let apart = fn() {
@@ -877,138 +1153,318 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
       ((ax + bx) / 2.0, (ay + by) / 2.0, ((ax - bx) * (ax - bx) + (ay - by) * (ay - by)).sqrt())
     }
   }
-  s.box(fn(room) {
-    room.over(Is(true)).padding(Is((m, m, m, m))) |> ignore
-    room.box(fn(area) {
-      area
-      .grow(Is(1.0))
-      .basis(Is(Some(0.0)))
-      .min_height(Is(Some(0.0)))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      .says(By(fn() { Some(@view.said(Image, label=vw.file.name)) }))
-      .on_drag(
-        fn(d) {
-          tell(d.w, d.h, d.at)
-          // (the stage's own terms for a point of the window's, as it is drawn then)
-          let (ox, oy) = (d.x - d.wx + m, d.y - d.wy + m)
-          match d.kind {
-            Down => {
-              fingers[d.finger] = (d.wx, d.wy)
-              if fingers.length() == 1 {
-                z.stop_fling(at=d.at) |> ignore
-                last.val = (d.wx, d.wy)
-                moved.val = 0.0
-              } else {
-                pinch.val = apart()
-              }
-            }
-            Moved => {
-              fingers[d.finger] = (d.wx, d.wy)
-              if fingers.length() >= 2 {
-                let (cx, cy, dist) = apart()
-                let (px, py, was) = pinch.val
-                if was > 0.0 && dist > 0.0 {
-                  z.transform(cx + ox, cy + oy, dist / was, cx - px, cy - py, at=d.at)
-                }
-                pinch.val = (cx, cy, dist)
-              } else {
-                let (lx, ly) = last.val
-                moved.val = moved.val + (d.wx - lx).abs() + (d.wy - ly).abs()
-                if z.zoomed_at(d.at) {
-                  z.pan(d.wx - lx, d.wy - ly, at=d.at)
-                }
-                last.val = (d.wx, d.wy)
-              }
-            }
-            Up | Off => {
-              let alone = fingers.length() == 1
-              fingers.remove(d.finger)
-              if fingers.length() == 1 {
-                // (one of two let go: the one left followed from where it is next)
-                pinch.val = (0.0, 0.0, 0.0)
-                last.val = fingers.values().to_array()[0]
-              }
-              // a press let go where it went down, the second of two: in to 2.5 times fitted round it, or back
-              if d.kind == Up && alone && moved.val <= tap_slop && area.twice(d) {
-                z.double_tap(d.x + m, d.y + m, at=d.at)
-              }
-            }
+  // (a finger on it while marked: what marking's tool does there, `phase` 0 down, 1 moved, 2 let go; at the stage's
+  // point, where the picture is then)
+  let marks_at = fn(phase : Int, x : Double, y : Double, at : Double) {
+    match vw.marks_rect(at) {
+      Some(r) => marks_finger(phase, x, y, r, z.nw)
+      None => ()
+    }
+  }
+  // zoomed in past fitted (or gliding there): the image itself asked for in place of its preview (Viewer::whole_due);
+  // once asked, wanted till it comes, zoomed out again or not
+  s.reacts(
+    fn() {
+      vw.zoom.told()
+      let z = vw.zoom
+      z.nw > 0.0 && (if z.gliding { z.g_to[0] } else { z.scale }) > z.fit() * 1.01
+    },
+    fn(zoomed) { if zoomed { vw.zoomed_in.set(true) } },
+  )
+  s
+  .on_key(fn(k) {
+    if marked() {
+      if k.code == @ui.key_escape && k.mods == 0 {
+        marks_back()
+        return true
+      }
+      return false
+    }
+    if (k.code == @ui.key_code_left || k.code == @ui.key_code_right) &&
+      k.mods == 0 &&
+      (s.pointer_within() || over_all()) {
+      tab_step(src, vw, chat, tab, if k.code == @ui.key_code_left { -1 } else { 1 })
+      return true
+    }
+    false
+  })
+  |> ignore
+  s.box(fn(stage) {
+    stage.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    // (the zoom told the stage's size as it is laid out, the picture's as it comes: what marks are drawn by from the
+    // first, before a finger has been on it)
+    stage.box(fn(o) {
+      o.over(Is(true)) |> ignore
+      o
+      .by_room(fn(held, room) {
+        held.reacts(fn() { (room.width(), room.height(), vw.natural_size(src)) }, fn(told) {
+          match told {
+            (w, Some(h), _) if w > 2.0 * m && h > 2.0 * m => tell(w - 2.0 * m, h - 2.0 * m, held.cause_at())
+            _ => ()
           }
-        },
-        fingers=2,
-        whole=true,
-      )
-      .on_wheel(fn(w) {
-        tell(w.w, w.h, w.at)
-        vw.wheeled(z, w.x + m, w.y + m, w.dx, w.dy, w.mods, w.at)
+        })
       })
+      .grow(Is(1.0))
       |> ignore
-      // fitted: as wide as it is at most and no wider than its room, as tall for as wide, no taller than its room, in
-      // its middle (contained in that box: as large as the zoom's fitted scale has it)
-      area.box(fn(p) {
-        p
-        .width(By(fn() {
-          let (nw, _) = vw.natural_size(src)
-          if nw > 0.0 {
-            Some(nw)
-          } else {
-            None
-          }
-        }))
-        .max_width(Is(None), within=true)
-        .aspect(By(fn() {
-          let (nw, nh) = vw.natural_size(src)
-          if nw > 0.0 && nh > 0.0 {
-            nw / nh
-          } else {
-            0.0
-          }
-        }))
-        .shrink(Is(1.0))
+    })
+    |> ignore
+    stage.box(fn(room) {
+      room.over(Is(true)).padding(Is((m, m, m, m))) |> ignore
+      room.box(fn(area) {
+        area
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
         .min_height(Is(Some(0.0)))
-        .image(By(fn() { if vw.picture_failed() { None } else { vw.picture_shown(src) } }))
-        .image_contains(Is(true))
-        .scale(By(fn() { placed(p).0 }))
-        .offset(By(fn() {
-          let (_, x, y) = placed(p)
-          (x, y)
-        }))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        .says(By(fn() { Some(@view.said(Image, label=vw.file.name)) }))
+        .on_drag(
+          fn(d) {
+            tell(d.w, d.h, d.at)
+            // (the stage's own terms for a point of the window's, as it is drawn then)
+            let (ox, oy) = (d.x - d.wx + m, d.y - d.wy + m)
+            let (sx, sy) = (d.x + m, d.y + m)
+            match d.kind {
+              Down => {
+                fingers[d.finger] = (d.wx, d.wy)
+                if fingers.length() == 1 {
+                  z.stop_fling(at=d.at) |> ignore
+                  last.val = (d.wx, d.wy)
+                  moved.val = 0.0
+                  pinched.val = false
+                  if marked() {
+                    marks_at(0, sx, sy, d.at)
+                  }
+                } else {
+                  // (a second finger: a pinch; a mark being drawn or moved, called off)
+                  marks_finger_off()
+                  pinched.val = true
+                  pinch.val = apart()
+                }
+              }
+              Moved => {
+                fingers[d.finger] = (d.wx, d.wy)
+                if fingers.length() >= 2 {
+                  let (cx, cy, dist) = apart()
+                  let (px, py, was) = pinch.val
+                  if was > 0.0 && dist > 0.0 {
+                    z.transform(cx + ox, cy + oy, dist / was, cx - px, cy - py, at=d.at)
+                  }
+                  pinch.val = (cx, cy, dist)
+                } else if marked() && !pinched.val {
+                  marks_at(1, sx, sy, d.at)
+                } else {
+                  let (lx, ly) = last.val
+                  moved.val = moved.val + (d.wx - lx).abs() + (d.wy - ly).abs()
+                  if z.zoomed_at(d.at) {
+                    z.pan(d.wx - lx, d.wy - ly, at=d.at)
+                  }
+                  last.val = (d.wx, d.wy)
+                }
+              }
+              Up | Off => {
+                let alone = fingers.length() == 1
+                fingers.remove(d.finger)
+                if fingers.length() == 1 {
+                  // (one of two let go: the one left followed from where it is next)
+                  pinch.val = (0.0, 0.0, 0.0)
+                  last.val = fingers.values().to_array()[0]
+                }
+                if alone && marked() && !pinched.val {
+                  // (let go: what it drew or moved put down; called off: dropped, or put back)
+                  if d.kind == Up {
+                    marks_at(2, sx, sy, d.at)
+                  } else {
+                    marks_finger_off()
+                  }
+                } else if d.kind == Up && alone && !marked() && moved.val <= tap_slop && area.twice(d) {
+                  // a press let go where it went down, the second of two: in to 2.5 times fitted round it, or back
+                  z.double_tap(sx, sy, at=d.at)
+                }
+              }
+            }
+          },
+          fingers=2,
+          whole=true,
+        )
+        .on_wheel(fn(w) {
+          tell(w.w, w.h, w.at)
+          vw.wheeled(z, w.x + m, w.y + m, w.dx, w.dy, w.mods, w.at)
+        })
+        // (the pointer's secondary button on the picture, not marked: its menu, as over the whole window, Viewer::menu_on)
+        .on_menu(fn(e) {
+          if marked() {
+            return
+          }
+          match (z.rect_at(e.at), vw.bytes.get()) {
+            (Some((rx, ry, rw, rh)), Some(_)) if e.x + m >= rx && e.x + m < rx + rw && e.y + m >= ry && e.y + m < ry + rh =>
+              vw.picture_menu_at(e.wx, e.wy)
+            _ => ()
+          }
+        })
+        |> ignore
+        // fitted: as wide as it is at most and no wider than its room, as tall for as wide, no taller than its room, in
+        // its middle (contained in that box: as large as the zoom's fitted scale has it)
+        area.box(fn(p) {
+          p
+          .width(By(fn() {
+            let (nw, _) = vw.natural_size(src)
+            if nw > 0.0 {
+              Some(nw)
+            } else {
+              None
+            }
+          }))
+          .max_width(Is(None), within=true)
+          .aspect(By(fn() {
+            let (nw, nh) = vw.natural_size(src)
+            if nw > 0.0 && nh > 0.0 {
+              nw / nh
+            } else {
+              0.0
+            }
+          }))
+          .shrink(Is(1.0))
+          .min_height(Is(Some(0.0)))
+          .image(By(fn() { if vw.picture_failed() { None } else { vw.picture_shown(src) } }))
+          .image_contains(Is(true))
+          .scale(By(fn() { placed(p).0 }))
+          .offset(By(fn() {
+            let (_, x, y) = placed(p)
+            (x, y)
+          }))
+          |> ignore
+        })
         |> ignore
       })
       |> ignore
     })
     |> ignore
-  })
-  |> ignore
-  // (coming with nothing to stand in for it: how much has; its read failed, or no picture in it: why)
-  s.show(fn() { vw.coming() && vw.stand_in(src) == "" }, fn(f) {
-    f.over(Is(true)).lines_up(Is(Some(Middle))).padding(Is((24.0, 24.0, 24.0, 24.0))) |> ignore
-    f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-    f.box(fn(c) { viewer_coming_node(c, vw) }) |> ignore
-    f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-  })
-  s.show(fn() { vw.picture_failed() || vw.error.get() is Some(_) }, fn(f) {
-    f.over(Is(true)).padding(Is((24.0, 24.0, 24.0, 24.0))).lines_up(Is(Some(Middle))) |> ignore
-    f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-    f.box(fn(w) {
-      w
-      .words(By(fn() {
-        match vw.error.get() {
-          Some(e) => pv_fill("android-chat.file.loadFailed", [("error", e)])
-          None => pv("android-chat.file.image.failed")
-        }
-      }))
-      .words_look(By(fn() {
-        let size = @sf.theme().t.body
-        { size, weight: 400, line: @ui.tree_theme().text_line * size, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
-      }))
-      .ink(By(fn() { @sf.theme().p.muted }))
+    // (marked, once where it is is known: the marks drawn and the numbered marks' pins over it, over them the words
+    // being written, a field of the tree's: as the whole window's canvas has them)
+    stage.show(fn() { marked() && vw.marks_shown() }, fn(h) {
+      h.over(Is(true)) |> ignore
+      h.box(fn(x) { marks_shapes_node(x, vw) }) |> ignore
+      h.box(fn(p) { marks_pins_node(p, vw) }) |> ignore
+    })
+    stage.show(fn() { marked() && vw.marks_shown() && marking.writing is Some(_) }, fn(h) { marks_writing_node(h, vw) })
+    // the ways to the pictures beside it (its chat's, its folder's), there while the pointer is over it (a finger's
+    // always), none while it is marked; pressed, a step of the tab at that moment
+    let tips_at : Ref[@view.View?] = Ref(None)
+    let tips = @sf.TipLayer::new(fn() { tips_at.val })
+    stage.box(fn(h) {
+      h.over(Is(true)) |> ignore
+      @sf.viewer_steps_node(
+        h,
+        fn() { !marked() && vw.near_ids(src).0 is Some(_) },
+        fn() { !marked() && vw.near_ids(src).1 is Some(_) },
+        fn() { !@sf.pointer_rests() || stage.pointer_within() },
+        fn(_) { 1.0 },
+        fn() {
+          z.told()
+          z.bw <= @sf.viewer_small_w
+        },
+        fn(dir) { tab_step(src, vw, chat, tab, dir) },
+        tips,
+      )
       |> ignore
     })
     |> ignore
-    f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    // (its read failed, or no picture in it: why)
+    stage.show(fn() { vw.picture_failed() || vw.error.get() is Some(_) }, fn(f) {
+      f.over(Is(true)).padding(Is((24.0, 24.0, 24.0, 24.0))).lines_up(Is(Some(Middle))) |> ignore
+      f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+      f.box(fn(w) {
+        w
+        .words(By(fn() {
+          match vw.error.get() {
+            Some(e) => pv_fill("android-chat.file.loadFailed", [("error", e)])
+            None => pv("android-chat.file.image.failed")
+          }
+        }))
+        .words_look(By(fn() {
+          let size = @sf.theme().t.body
+          { size, weight: 400, line: @ui.tree_theme().text_line * size, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        }))
+        .ink(By(fn() { @sf.theme().p.muted }))
+        |> ignore
+      })
+      |> ignore
+      f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    })
+    tips_at.val = Some(stage.box(fn(l) { l.over(Is(true)) |> ignore }))
   })
+  |> ignore
+  // marking's tools under it while it is marked, the stage giving them their room
+  s.show(marked, fn(f) { tab_marks_foot_node(f) })
+  // (what is beside it read ahead once its own has come (or failed), the tab's own: as what is beside it is said)
+  match tab_viewers.get(tab_viewer_id(chat, tab)) {
+    Some(t) =>
+      s.reacts(fn() { (vw.near_ids(src), vw.bytes.get() is Some(_), vw.error.get() is Some(_)) }, fn(_) {
+        let (before, after) = vw.near(src, kept=t.near)
+        vw.read_near(src, before, after, kept=t.near)
+      })
+    None => ()
+  }
+}
+
+///|
+/// Marking's tools under a tab's picture, in `f` (tab_picture_node's), one column in its middle: the notes' cards while
+/// no note is written, the note being written in the tools' place, else the tools (the colours' row over them while
+/// asked for): marking's foot over the whole window (marks_foot_node), laid under the picture, 8 under them.
+fn tab_marks_foot_node(f : @view.View) -> Unit {
+  f.shrink(Is(0.0)).padding(Is((12.0, 8.0, 12.0, 0.0))) |> ignore
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  f.show(
+    at_once=true,
+    fn() {
+      marks_said()
+      marking.note < 0 && mark_notes().length() > 0
+    },
+    fn(r) { note_cards_node(r) },
+  )
+  f.show(
+    at_once=true,
+    fn() {
+      marks_said()
+      marks_note_shown() is Some(_)
+    },
+    fn(n) { note_box_node(n) },
+  )
+  f.show(
+    at_once=true,
+    fn() {
+      marks_said()
+      marking.note < 0
+    },
+    fn(t) { marks_tools_node(t, tips) },
+  )
+  tips_at.val = Some(f.box(fn(l) { l.over(Is(true)) |> ignore }))
+}
+
+///|
+/// Tab `tab` of the chat whose tabs are kept by `chat`, viewer `vw`'s, stepped to the picture before (`dir` -1) or after
+/// (1) its own in its chat or its folder (Viewer::near, the tab's own): that one's tab put in its place (Shell's
+/// `beside_for`), what it steps through, its size and which of its message's it is said to its viewer as it is made
+/// (tab_steps_said); none there, or marked, nothing.
+fn tab_step(src : Source, vw : Viewer, chat : String, tab : String, dir : Int) -> Unit {
+  if vw.marks_here() {
+    return
+  }
+  let kept = match tab_viewers.get(tab_viewer_id(chat, tab)) {
+    Some(t) => t.near
+    None => Map([])
+  }
+  let (before, after) = vw.near(src, kept~)
+  guard (if dir < 0 { before } else { after }) is Some(n) else { return }
+  let next = view_tab_key(n.station, n.key, n.file, n.drive, n.named)
+  // (its picture's size as its message says it: laid out at it from the first frame, decoded once at it)
+  let said = tab_steps_said(next, vw.steps, n.file.width, n.file.height, None, n.at)
+  match (shell.val.beside_for)(next, tab) {
+    Some(_) => ()
+    None => if said { tab_moved_dropped(next) }
+  }
 }
 
 ///|

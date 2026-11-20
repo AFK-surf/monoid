@@ -25,13 +25,6 @@ fn Store::has_chat_share_index(self : Store) -> Bool raise {
 }
 
 ///|
-/// chat-share-index.ts `refreshChatShareIndex`: the index installed on another connection, its absence asked again.
-pub fn Store::refresh_chat_share_index(self : Store) -> Bool raise {
-  self.share_index = None
-  self.has_chat_share_index()
-}
-
-///|
 /// chat-share-index.ts `shareValues`.
 fn share_values(row : Map[String, Json]) -> Array[Json]? {
   guard col(row, "shared") is String(s) && s.length() <= share_chars_limit else {

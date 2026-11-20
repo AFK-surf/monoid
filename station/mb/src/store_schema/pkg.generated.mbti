@@ -17,8 +17,6 @@ pub let decision_time_index : String
 
 pub fn first_delivery(String) -> String
 
-pub async fn harness(@host.Host, String) -> Unit
-
 pub fn has_card_outbox(@sql.Db) -> Bool raise
 
 pub fn has_compact_usage(@sql.Db) -> Bool raise
@@ -63,6 +61,8 @@ pub fn open(@sql.Db, @host.Host, String, Int64, archive? : String) -> Unit raise
 
 pub fn repair_merged_edit_lookup(@sql.Db) -> Unit raise
 
+pub fn repair_widget_source_before_add(@sql.Db) -> Unit raise
+
 pub let schema : String
 
 pub let schema_version : Int32
@@ -89,6 +89,7 @@ pub fn widget_source_before_add_needs_repair(@sql.Db) -> Bool raise
 pub(all) suberror Refused {
   Refused(String)
 }
+pub impl Show for Refused
 
 // Types and methods
 

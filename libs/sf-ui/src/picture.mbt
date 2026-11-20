@@ -38,7 +38,7 @@ pub fn vector(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double) -> Int 
 /// The picture `name` drawn `px` pixels wide (as tall as it is for that), in its own colours or all in `tint`: its
 /// width, height and pixels (RGBA, straight, rows from the top), to make another picture with; None when there is no
 /// such picture.
-pub fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
+fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
   match drawables.get(name) {
     Some(d) => {
       let ph = (px.to_double() * d.h / d.w).round().to_int()
@@ -189,14 +189,21 @@ pub fn data_image(url : String) -> String {
     Some(i) => {
       // (named as the stations' were before: what is drawn is said by its key)
       let key = "mem:sf/station/\{url.length()}/\{@ui.stable_hash(url)}"
-      if !made.contains(key) {
-        made[key] = true
-        @ui.add_image(key, @codec.from_base64(url.exact_view(start=i + 7).to_owned()))
-      }
+      data_images_made.ask(key, fn() { @ui.add_image(key, @codec.from_base64(url.exact_view(start=i + 7).to_owned())) })
       key
     }
     None => ""
   }
+}
+
+///|
+/// The pictures given inline kept (MadeImages): every station's icon and every link's card's of a run many times over.
+// kept across runs: let go of as a run begins (on_reset)
+let data_images_made : MadeImages = MadeImages::new(128)
+
+///|
+fn init {
+  @ui.on_reset(fn() { data_images_made.clear() })
 }
 
 ///|

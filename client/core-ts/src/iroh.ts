@@ -50,7 +50,14 @@ export interface IrohStream {
   /// read past its reply): its picture's and sound's frames said to the app itself as the progress of its call `call`
   /// (as screens.ts would say them), `read` answering only the rest (a config too, and the first video frame's head
   /// after each). False where the host does not (then nothing changed). Hosts whose shell says to the app (Apple's).
-  tap?(call: number, prefix: Uint8Array): Effect.Effect<boolean, HostError>;
+  /// `cursor`: the page takes the pointer alone, each `cursor` frame said to it by the host as well, only the newest
+  /// kept for `read`, given before whatever it gives next: "cursor" where the host does that, true where it does not
+  /// (a shell from before: every `cursor` frame still read).
+  tap?(call: number, prefix: Uint8Array, cursor?: boolean): Effect.Effect<boolean | "cursor", HostError>;
+  /// Before its head is written: what comes on its connection as datagrams under `token` (a screen's video and audio
+  /// frames, client/shell screen_dgram.rs) made whole and given among what `read` gives (or what `tap` says), as if it
+  /// came on the stream. False where another stream of the connection takes that token.
+  receiveMediaDatagrams?(token: number): Effect.Effect<boolean, HostError>;
 }
 
 export interface IrohConnection {
@@ -99,6 +106,8 @@ export interface IrohEndpoint {
   /// Whether its streams' `tap` decodes a view's Opus sound into the PCM the app plays now (the shell's, asked as each
   /// view opens: client/shell ScreenTap, `tap.opus`), so the view may ask the station for Opus.
   opus?(): boolean;
+  /// Whether its streams take frames as datagrams (`IrohStream.receiveMediaDatagrams`).
+  mediaDatagrams?(): boolean;
   close(): Effect.Effect<void>;
 }
 
@@ -109,6 +118,13 @@ export type BindOptions = {
   relayUrls: string[];
   /// Alternative entrances to the same relay, not additional independent relays.
   relayEntries?: { entry: string; relay: string }[];
+  /// When `lookup` is `false`, immutable iroh `relay_allowlist` ceiling (`[]` permits only IP and custom transports).
+  /// When `lookup` is `true`, filters relay URLs returned by DHT and mDNS lookups and grows with `setRelayEntries`.
+  /// Omitted: unrestricted.
+  relayAllowlist?: string[];
+  /// When true with `relayAllowlist`, also admit iroh's built-in default relays for emergency fallback when all
+  /// configured relays are down.
+  allowPublicRelays?: boolean;
   /// Look stations up on the LAN and in the DHT (a client's: not announced itself).
   lookup: boolean;
   /// Relays alone, no IP transports (what measures a relay's way must not go direct).

@@ -16,6 +16,20 @@ const flag = args.indexOf("--entry");
 const entry = flag >= 0 ? resolve(args.splice(flag, 2)[1] ?? "") : fileURLToPath(new URL("../src/hosts/hermes.ts", import.meta.url));
 const [out, hbc] = args;
 if (!out) throw new Error("usage: hermes-bundle.ts [--entry <file>] <out.js> [<out.hbc>]");
+const root = fileURLToPath(new URL("../../../", import.meta.url));
+function builtAtDefine(): string {
+  const explicit = process.env.MBUI_BUILT_AT?.trim() ?? "";
+  if (explicit !== "") {
+    if (!/^\d+$/.test(explicit)) throw new Error(`MBUI_BUILT_AT (${explicit}) is no integer ms`);
+    return explicit;
+  }
+  const buildNum = Number(process.env.MBUI_BUILD?.trim() ?? "");
+  if (Number.isInteger(buildNum) && buildNum >= 1000) {
+    const ct = execFileSync("git", ["-C", root, "show", "-s", "--format=%ct", "HEAD"], { encoding: "utf8" }).trim();
+    if (/^\d+$/.test(ct)) return `${ct}000`;
+  }
+  return "0";
+}
 const built = await build({
   entryPoints: [entry],
   bundle: true,
@@ -27,6 +41,7 @@ const built = await build({
   target: "es2020",
   // Hermes 0.81 has no async functions: as generators (mermaid's, mermaid.ts's)
   supported: { "async-await": false, "async-generator": false },
+  define: { __STILLFAIL_BUILT_AT__: builtAtDefine() },
   // STILLFAIL_CORE_NAMES keeps the core's own names.
   minifyWhitespace: true,
   minifySyntax: true,
@@ -39,7 +54,6 @@ const built = await build({
 // What the app does not carry (scripts/not-carried.txt: a change to only that reaches no app) must not be
 // in it: a file that is would go unchecked. (Said of still.fail's app; another app's entry is checked the same.)
 // (paths, not URLs' pathnames: on Windows those are /D:/…; and the patterns' slashes, whatever the system's)
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 const notCarried = readFileSync(resolve(root, "client/core-ts/scripts/not-carried.txt"), "utf8").split(/\r?\n/).filter((line) => line && !line.startsWith("#")).map((line) => new RegExp(line));
 const carried = Object.keys(built.metafile.inputs).map((input) => relative(root, resolve(input)).split(sep).join("/"));
 const wrong = carried.filter((path) => notCarried.some((re) => re.test(path)));

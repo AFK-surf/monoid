@@ -14,7 +14,7 @@ fn P52::locator(self : P52) -> LiveLocator {
         self.host,
         self.bus.argv0,
         self.data,
-        key => self.store("getSession", [Json::string(key)]) catch { _ => Json::null() },
+        key => self.bus.store.get_session(key) catch { _ => Json::null() },
         () => self.profiles().filter_map(p => match (jtext(p, "id"), jtext(p, "home")) {
           (Some(id), Some(home)) => Some((id, home))
           _ => None
@@ -92,10 +92,7 @@ let transcript_watch_ms : Int = 200
 /// live.ts `#arm`: the transcript written to now (its file, or its `.zst` while packed) watched, each change said to
 /// the program (`soon`). The shell keeps no watch of a file: its size and time looked at every TRANSCRIPT_WATCH_MS.
 fn P52::arm(self : P52, key : String, file : String) -> Unit {
-  match transcript_watches.get(key) {
-    Some(going) => going.val = false
-    None => ()
-  }
+  if transcript_watches.get(key) is Some(going) { going.val = false }
   let going = Ref(true)
   transcript_watches[key] = going
   let host = self.host
@@ -106,25 +103,23 @@ fn P52::arm(self : P52, key : String, file : String) -> Unit {
       Err(_) => ""
     }
   }
-  ignore(
-    host.rt.fork(name="a transcript watched", async fn() {
-      let mut before = stamp()
-      while going.val && !self.closed {
-        @effect.sleep(transcript_watch_ms) // timer: an outside system that offers no push (a runtime's transcript; the shell keeps no watch)
-        if !going.val {
-          break
-        }
-        let now = stamp()
-        if now != before {
-          before = now
-          match self.actors_program {
-            Some(p) => ignore(p.post({ "call": ji(0), "actor": jstr("#live"), "method": jstr("soon"), "args": Json::array([jstr(key)]) }))
-            None => ()
-          }
+  fork_bg(host, "a transcript watched", async fn() {
+    let mut before = stamp()
+    while going.val && !self.closed {
+      @effect.sleep(transcript_watch_ms) // timer: an outside system that offers no push (a runtime's transcript; the shell keeps no watch)
+      if !going.val {
+        break
+      }
+      let now = stamp()
+      if now != before {
+        before = now
+        match self.actors_program {
+          Some(p) => ignore(p.post({ "call": ji(0), "actor": jstr("#live"), "method": jstr("soon"), "args": Json::array([jstr(key)]) }))
+          None => ()
         }
       }
-    }),
-  )
+    }
+  })
 }
 
 ///|
@@ -224,6 +219,91 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
       let at = self.locator().locate(jtext(args, "key").unwrap_or("")) catch { _ => Json::null() }
       Json::array(jitems(jfield(at, "paths")).filter_map(p => match jfield(p, "path") { String(_) as s => Some(s); _ => None }))
     }
+    // (lifecycle.ts `deleteSession`: exclusive transcript files under `<data>`, raw and `.zst`, non-symlink)
+    "transcripts.exclusive" => {
+      let key = jtext(args, "key").unwrap_or("")
+      let allowed : Array[(String, String)] = jitems(jfield(args, "sources")).filter_map(s =>
+        match (jtext(s, "runtime"), jtext(s, "id")) {
+          (Some(rt), Some(id)) => Some((rt, id))
+          _ => None
+        },
+      )
+      if allowed.length() == 0 {
+        return Json::array([])
+      }
+      let storage = self.storage()
+      let sfs = storage.fs
+      guard sfs.realpath(self.data) is Some(root) else { return Json::array([]) }
+      let at = self.locator().locate(key) catch { _ => Json::null() }
+      let rt0 = jtext(at, "runtime").unwrap_or("")
+      let logical : Array[String] = []
+      let claude_dirs : Array[String] = []
+      for each in jitems(jfield(at, "paths")) {
+        let (p, rt) = match each {
+          String(s) => (s, rt0)
+          e => (jtext(e, "path").unwrap_or(""), jtext(e, "runtime").unwrap_or(rt0))
+        }
+        if p == "" {
+          continue
+        }
+        let base = sfs.basename(p)
+        let logical_base = if base.has_suffix(".zst") { base[:base.length() - 4].to_owned() } else { base }
+        let matches = allowed.iter().any(pair => {
+          if pair.0 != rt {
+            return false
+          }
+          let id = pair.1
+          if rt == "claude" {
+            logical_base == id + ".jsonl"
+          } else if rt == "codex" {
+            logical_base == id + ".jsonl" || logical_base.has_suffix("-" + id + ".jsonl")
+          } else {
+            logical_base == id + ".jsonl"
+          }
+        })
+        if !matches {
+          continue
+        }
+        guard sfs.realpath(sfs.dirname(p)) is Some(parent) else { continue }
+        if !p53_within(root, parent) {
+          continue
+        }
+        let main_path = sfs.join([parent, logical_base])
+        if !logical.contains(main_path) {
+          logical.push(main_path)
+        }
+        if rt == "claude" {
+          let stem = if logical_base.has_suffix(".jsonl") { logical_base[:logical_base.length() - 6].to_owned() } else { logical_base }
+          let sub_dir = sfs.join([parent, stem])
+          sfs.jsonl_files(sub_dir, logical) catch { _ => () }
+          if !claude_dirs.contains(sub_dir) {
+            claude_dirs.push(sub_dir)
+          }
+        }
+      }
+      let out : Array[Json] = []
+      for f in logical {
+        for cand in [f, f + ".zst"] {
+          if sfs.lkind(cand) != Some("file") {
+            continue
+          }
+          match sfs.realpath(cand) {
+            Some(rc) if p53_within(root, rc) => out.push(Json::string(cand))
+            _ => ()
+          }
+        }
+      }
+      for dir in claude_dirs {
+        if sfs.lkind(dir) != Some("dir") {
+          continue
+        }
+        match sfs.realpath(dir) {
+          Some(rd) if rd != root && p53_within(root, rd) => out.push(Json::string(dir))
+          _ => ()
+        }
+      }
+      Json::array(out)
+    }
     "marks.forget" => {
       let paths = jitems(args).filter_map(p => match p { String(s) => Some(s); _ => None })
       @ops_platform.forget_marks(fs, @ops_platform.transcript_marks_dir(self.data), paths) catch {
@@ -240,37 +320,27 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
 /// parts by their TypeScript names. None where it is the conversations' world's to answer.
 async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewer? : Json) -> Json? {
   let a = (i : Int) => args.get(i).unwrap_or(Json::null())
-  let s = (i : Int) => match a(i) {
-    String(x) => x
-    _ => ""
-  }
-  let opt = (i : Int) => match a(i) {
-    String(x) => Some(x)
-    _ => None
-  }
+  let s = (i : Int) => as_text(a(i)).unwrap_or("")
+  let opt = (i : Int) => as_text(a(i))
   let reader = self.bus.reader_ask.val
-  let hub = self.the_hub()
   let answered = match name {
-    "hub.config" => self.config
-    "hub.has" => Json::boolean(["locateAsync", "recentChatList", "searchChatList", "threadList"].contains(s(0)))
+    "hub.has" => Json::boolean(["recentChatList", "searchChatList", "threadList"].contains(s(0)))
     "hub.hasPeers" => Json::boolean(self.bound())
-    "hub.hasChat" => Json::boolean(s(0) == @session_hub.internal_connect || (hub.world.chat)(s(0)) is Some(_))
     "hub.chatPost" =>
       Json::string(
         self.chat_post(s(0), jtext(a(1), "channel").unwrap_or(""), jtext(a(1), "threadTs").unwrap_or(""), s(2), jitems(a(3))),
       )
-    "hub.link" => jopt(self.page_of(s(0)))
-    "hub.now" => Json::number(hub.now())
-    "hub.pid" => Json::number(@drive.pid().to_double())
     "hub.outsideChats" => (self.bus.jobs_ask.val)("xshare.borrowed", Json::array([a(0)]))
     "hub.recentChatList" => reader("recentChatList", { "ws": a(0), "home": a(1), "limit": a(2) }, "zh")
-    "hub.searchChatList" => reader("searchChatList", { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }, "zh")
+    "hub.searchChatList" => {
+      let req : Map[String, Json] = { "ws": a(0), "home": a(1), "limit": a(2), "query": a(3) }
+      match a(4) {
+        Object(f) => for k, v in f { req[k] = v }
+        _ => ()
+      }
+      reader("searchChatList", Json::object(req), "zh")
+    }
     "hub.threadList" => reader("threadList", Json::object({}), "zh")
-    "hub.workspaces" => Json::array(self.workspaces().map(Json::string))
-    "hub.wsOf" => jopt(hub.ws_of(opt(0)))
-    "hub.surface" => Json::string(hub.surface(s(0)))
-    "hub.processState" => Json::string(hub.process_state(s(0)))
-    "hub.inWorkspace" => @session_hub.hub_call(hub, "inWorkspace", args)
     "live.locate" => self.locator().locate(s(0))
     "live.page" => self.live_ask("live.page", Json::array([a(0), a(1), a(2), Json::boolean(false)]))
     "peers.call" => {
@@ -283,14 +353,8 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       match request.get("$file") {
         Some(f) => {
           request.remove("$file")
-          let from = match jfield(f, "offset") {
-            Number(n, ..) => n
-            _ => 0.0
-          }
-          let end = match jfield(f, "end") {
-            Number(n, ..) => n
-            _ => 0.0
-          }
+          let from = as_num(jfield(f, "offset")).unwrap_or(0.0)
+          let end = as_num(jfield(f, "end")).unwrap_or(0.0)
           let piece = p51_file_piece(self.host, jtext(f, "path").unwrap_or(""), from, (end - from).to_int())
           request["$bytes"] = Json::string(@base64.encode(piece))
         }
@@ -316,22 +380,18 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       Json::string(self.words.tr(s(1), args=vars, lang=s(0)))
     }
     "fn.titleOf" => Json::string(self.title_of(a(0), opt(1), opt(2)))
-    "fn.threadsToldOf" => {
-      let recent = (jitems(jfield(a(1), "threads")), jfield(a(1), "more") is True)
-      Json::array(hub.threads_told_of(s(0), recent~).map(Json::string))
-    }
     "fn.threadHistory" => {
       let seen : Array[@jsjson.JValue]? = if a(5) is True { Some([]) } else { None }
-      let text = @session_chats.thread_history(self.chats_world(), s(0), jv_of(a(1)), s(2), s(3), jv_of(a(4)), seen)
+      let text = @session_chats.thread_history(self.chats_world(), s(0), to_jv(a(1)), s(2), s(3), to_jv(a(4)), seen)
       match seen {
-        Some(got) => { "text": Json::string(text), "seen": Json::array(got.map(p52_json_of_jv)) }
+        Some(got) => { "text": Json::string(text), "seen": Json::array(got.map(of_jv)) }
         // (session_storage reads `text` of it either way: a bare string read as "", every chat_read empty)
         None => { "text": Json::string(text) }
       }
     }
     "policy.mine" =>
       match viewer {
-        Some(v) => Json::boolean(@api_routes.sees(jv_of_json(v), jv_of_json(jopt(self.ws_of(s(0))))))
+        Some(v) => Json::boolean(@api_routes.sees(to_jv(v), to_jv(jopt(self.ws_of(s(0))))))
         None => Json::boolean(true)
       }
     "policy.title" => Json::string(self.chat_title_of(s(0)))
@@ -345,14 +405,7 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     "clones.indexRepos" => self.repo_index_repos(Json::null())
     "clones.run" => self.clone_run(s(0), jitems(a(1)).filter_map(x => match x { String(t) => Some(t); _ => None }), a(2))
     "clones.kill" => {
-      match clones_running.get(s(0)) {
-        Some(pid) => ignore(kill(pid, "SIGKILL"))
-        None => ()
-      }
-      Json::null()
-    }
-    "clones.changed" => {
-      self.bus.notify_store({ "type": jstr("clones") })
+      if clones_running.get(s(0)) is Some(pid) { ignore(kill(pid, "SIGKILL")) }
       Json::null()
     }
     _ =>
@@ -416,7 +469,7 @@ async fn P52::clone_run(self : P52, id : String, args : Array[String], env : Jso
 /// read/views.ts `titleOf`: what a thread is called, by the one rule the core names it by too.
 fn P52::title_of(self : P52, thread : Json, first : String?, channel : String?) -> String {
   @adb_devices.chat_title(
-    jv_of(thread),
+    to_jv(thread),
     first,
     channel,
     self.words.tr("station.chat.untitled"),
@@ -428,19 +481,16 @@ fn P52::title_of(self : P52, thread : Json, first : String?, channel : String?) 
 /// overview.ts `chatTitleOf`: what a session's chat is called in the chat list; its title, else its key, where it has
 /// none.
 fn P52::chat_title_of(self : P52, session : String) -> String {
-  let chat = self.store("sessionChat", [Json::string(session)]) catch { _ => Json::null() }
+  let chat = self.with_threads(t => t.session_chat(Json::string(session))) catch { _ => Json::null() }
   match chat {
     Object(_) =>
       self.title_of(
         jfield(chat, "thread"),
-        match jfield(chat, "firstText") {
-          String(t) => Some(t)
-          _ => None
-        },
+        as_text(jfield(chat, "firstText")),
         None,
       )
     _ =>
-      match (self.store("getSession", [Json::string(session)]) catch { _ => Json::null() }) {
+      match (self.bus.store.get_session(session) catch { _ => Json::null() }) {
         Object(_) as row => jtext(row, "title").unwrap_or(session)
         _ => session
       }
@@ -457,8 +507,8 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
     Object(m) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
     _ => []
   }
-  let answer = (@accounts_oauth.host_io(self.host).fetch)({
-    url: jtext(Json::object({ "u": args.get(0).unwrap_or(Json::null()) }), "u").unwrap_or(""),
+  let answer = (p5_oauth_io(self.host).fetch)({
+    url: opt_str(args.get(0)).unwrap_or(""),
     method_: jtext(init, "method").unwrap_or("GET"),
     headers,
     body: jtext(init, "body"),
@@ -479,27 +529,25 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
 /// agents.ts `hub.onClose`, as the parts it names are here: each on the bus but the screens' hands, this side's own.
 fn P52::on_closed(self : P52, key : String) -> Unit {
   let bus = self.bus
-  ignore(
-    self.host.rt.fork(name="a session closed", async fn() {
-      ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
+  fork_bg(self.host, "a session closed", async fn() {
+    ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
+      _ => ()
+    }
+    let gone = (self.bus.store.get_session(key) catch { _ => Json::null() }) is Null
+    if gone {
+      ignore((bus.jobs_ask.val)("workspaceWatch.forget", Json::array([Json::string(key)]))) catch {
         _ => ()
       }
-      let gone = (self.store("getSession", [Json::string(key)]) catch { _ => Json::null() }) is Null
-      if gone {
-        ignore((bus.jobs_ask.val)("workspaceWatch.forget", Json::array([Json::string(key)]))) catch {
-          _ => ()
-        }
-      }
-      match self.computer {
-        Some(c) => c.close_session(key) catch { _ => () }
-        None => ()
-      }
-      ignore(bus.call_peer("self", None, "$forwards", { "op": "forwards.closeSession", "args": [Json::string(key)] })) catch {
-        _ => ()
-      }
-      bus.parts.end_session(key)
-    }),
-  )
+    }
+    match self.computer {
+      Some(c) => c.close_session(key) catch { _ => () }
+      None => ()
+    }
+    ignore(bus.forwards_call("forwards.closeSession", [Json::string(key)])) catch {
+      _ => ()
+    }
+    bus.parts.end_session(key)
+  })
 }
 
 ///|
@@ -510,7 +558,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
   let bus = self.bus
   let part = @mcp_tools.feedback_live(self.tool_ctx(), env_get("HOME").unwrap_or(homedir())) catch {
     e => {
-      live_log("warn", "feedback", "the bug reports' part was not made", { "error": jstr(said_of(e)) })
+      slice_log("warn", "feedback", "the bug reports' part was not made", { "error": jstr(said_of(e)) })
       None
     }
   }
@@ -521,14 +569,11 @@ async fn P52::start_feedback(self : P52) -> Unit {
       meth: rr.verb,
       path: rr.pattern,
       answer: async fn(asked : Json) -> Json {
-        let params = jitems(jfield(asked, "params")).map(p => match p {
-          String(s) => Some(s)
-          _ => None
-        })
+        let params = jitems(jfield(asked, "params")).map(p => as_text(p))
         let ask : @mcp_tools.ReportAsk = {
           body: @utf8.encode(jtext(asked, "rawBody").unwrap_or("")),
           lang: jtext(asked, "lang").unwrap_or(self.lang()),
-          viewer: jv_of_json(jfield(asked, "viewer")),
+          viewer: to_jv(jfield(asked, "viewer")),
         }
         let answer = (rr.handle)(ask, params)
         let body = match answer.body {
@@ -547,24 +592,13 @@ async fn P52::start_feedback(self : P52) -> Unit {
   bus.parts.overview("feedback", async fn(_viewer, _lang) { Json::boolean((part.overview)()) }) catch {
     _ => ()
   }
-  let tell = () => ignore(self.host.rt.fork(name="fixed bug reports", async fn() { (part.telling_fixed)() }))
+  let tell = () => fork_bg(self.host, "fixed bug reports", async fn() { (part.telling_fixed)() })
   ignore(
-    self.host.rt.fork(name="fixed bug reports, later", async fn() {
+    self.host.rt.fork_daemon("fixed bug reports, later", on_error=e => @host.note("fixed bug reports, later failed: \{e}"), async fn() {
       @effect.sleep(part.told_after_ms) // timer: a deadline (what came out while the station was not running, a while after it starts)
       tell()
     }),
   )
-  // (the plane's `release`: what of it the cloud state says, as the updates read it)
-  let last = Ref((bus.cloud_state.val)().map(s => jfield(s, "release")).unwrap_or(Json::null()))
-  ignore(
-    (bus.cloud_listen.val)(s => {
-      let now = s.map(x => jfield(x, "release")).unwrap_or(Json::null())
-      if now != last.val {
-        last.val = now
-        if !(now is Null) {
-          tell()
-        }
-      }
-    }),
-  )
+  // (the plane's `release`, told by its presence socket: feedback/module.ts `plane.told("release", tellingFixed)`)
+  bus.on_release(tell)
 }

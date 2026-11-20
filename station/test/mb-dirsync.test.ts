@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { describe, test } from "node:test";
@@ -297,6 +297,73 @@ describe("the program's directory sync, as the TypeScript's", { concurrency: tru
     symlinkSync("b", join(dir, "l"));
     p.release();
     assert.match((await started) ?? "", /l changed while syncing; start again/);
+  });
+
+  test("a link synced, then pointed elsewhere, made a file, removed: the mirror follows, the link itself replaced or let go", async () => {
+    const p = await pair();
+    const dir = join(tempdir(), "relinked");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "a"), "a\n");
+    writeFileSync(join(dir, "b"), "b\n");
+    symlinkSync("a", join(dir, "l"));
+    await p.run("k1", dir, "true");
+    const mirror = p.mirror("relinked");
+    assert.equal(readlinkSync(join(mirror, "l")), "a");
+    // pointed elsewhere
+    rmSync(join(dir, "l"));
+    symlinkSync("b", join(dir, "l"));
+    await p.run("k2", dir, "true");
+    assert.equal(readlinkSync(join(mirror, "l")), "b");
+    assert.equal(readFileSync(join(mirror, "a"), "utf8"), "a\n", "what the link named before is untouched");
+    // made a file
+    rmSync(join(dir, "l"));
+    writeFileSync(join(dir, "l"), "now a file\n");
+    symlinkSync("a", join(dir, "l2"));
+    await p.run("k3", dir, "true");
+    assert.ok(!lstatSync(join(mirror, "l")).isSymbolicLink());
+    assert.equal(readFileSync(join(mirror, "l"), "utf8"), "now a file\n");
+    assert.equal(readFileSync(join(mirror, "a"), "utf8"), "a\n");
+    assert.equal(readlinkSync(join(mirror, "l2")), "a");
+    // removed: gone from the disk too, what it named kept
+    rmSync(join(dir, "l2"));
+    const removed = await p.run("k4", dir, "true");
+    assert.equal(removed.sync.removed, 1);
+    assert.ok(!existsSync(join(mirror, "l2")) && lstatSync(join(mirror, "l2"), { throwIfNoEntry: false }) === undefined);
+    assert.equal(readFileSync(join(mirror, "a"), "utf8"), "a\n");
+  });
+
+  test("a link to a folder in the mirror is never written or removed through", async () => {
+    const p = await pair();
+    const dir = join(tempdir(), "escaping");
+    mkdirSync(join(dir, "escape"), { recursive: true });
+    writeFileSync(join(dir, "escape", "pwn.txt"), "one\n");
+    writeFileSync(join(dir, "fresh.txt"), "fresh\n");
+    await p.run("k1", dir, "true");
+    // a task made the synced folder a link leading out
+    const outside = tempdir();
+    writeFileSync(join(outside, "pwn.txt"), "outside\n");
+    const mirror = p.mirror("escaping");
+    rmSync(join(mirror, "escape"), { recursive: true });
+    symlinkSync(outside, join(mirror, "escape"));
+    // a new file under it: refused
+    writeFileSync(join(dir, "escape", "new.txt"), "new\n");
+    await p.use("station_task", { key: "k2", action: "prepare", command: "true", dir });
+    const added = await p.use("station_task", { key: "k2", action: "start" }).then(() => null, (e: Error) => e.message);
+    assert.match(added ?? "", /sync conflict at escape\/new\.txt: an existing remote path would be overwritten/);
+    assert.ok(!existsSync(join(outside, "new.txt")));
+    // the synced file changed: a conflict (what is there is not what was synced), not written through
+    rmSync(join(dir, "escape", "new.txt"));
+    writeFileSync(join(dir, "escape", "pwn.txt"), "two\n");
+    await p.use("station_task", { key: "k3", action: "prepare", command: "true", dir });
+    const changed = await p.use("station_task", { key: "k3", action: "start" }).then(() => null, (e: Error) => e.message);
+    assert.match(changed ?? "", /sync conflict at escape\/pwn\.txt/);
+    assert.equal(readFileSync(join(outside, "pwn.txt"), "utf8"), "outside\n");
+    // the synced file removed: a conflict too, nothing removed through the link
+    rmSync(join(dir, "escape"), { recursive: true });
+    await p.use("station_task", { key: "k4", action: "prepare", command: "true", dir });
+    const removed = await p.use("station_task", { key: "k4", action: "start" }).then(() => null, (e: Error) => e.message);
+    assert.match(removed ?? "", /sync conflict at escape\/pwn\.txt: the remote file changed before removal/);
+    assert.equal(readFileSync(join(outside, "pwn.txt"), "utf8"), "outside\n");
   });
 
   test("a submodule's URL relative to its superproject's, as Git takes it", () => {

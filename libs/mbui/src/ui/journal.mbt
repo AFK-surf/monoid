@@ -151,7 +151,9 @@ pub(all) struct Hang {
 /// out for it (`still`, `still_laid`, `moved`, `moved_laid`, each frame in one). Frames whose interval the journal
 /// lost the beginning of are in none. `by_page`: of the frames presented, stalls, late frames and blocking, those
 /// counted while each name the app said it showed was (journal_shows; "" before it said one), in the order the names
-/// were said: they add up to the four counts above.
+/// were said: they add up to the four counts above. `gpu`: what the drawing side did with the frames meanwhile
+/// (frame_watch.mbt's GpuFrames: their GPU time past each budget, those never drawn), which the app's own work does not
+/// show.
 #derive(Eq, Debug)
 pub(all) struct HangSummary {
   shown_ms : Double
@@ -165,6 +167,7 @@ pub(all) struct HangSummary {
   moved : Array[Int]
   moved_laid : Array[Int]
   by_page : Array[(String, Int, Int, Int, Int)]
+  gpu : GpuFrames
 }
 
 ///|
@@ -425,6 +428,7 @@ fn journal_reset() -> Unit {
   shown_said.val = ""
   arranged_said.val = ("", 0.0, 0.0)
   shown_counts.fill(0)
+  gpu_frames_reset()
   journal_listens()
 }
 
@@ -474,15 +478,17 @@ fn journal_flush_small() -> Unit {
 
 ///|
 /// A piece of work done from `start` to `end`: kept, or folded where it is short and of a kind that comes often (an
-/// event, what follows a frame).
-fn journal_work(what : Done, start : Double, end : Double) -> Unit {
+/// event, what follows a frame). When `wall >= 4.0ms` and `cpu_ms >= 0.0`, attaches `("cpu", round_tenth(cpu_ms))`
+/// to `Worked.notes` (bypassing `journal_floor_ms` so OS preemption like wall=53.7ms, cpu=0.3ms is preserved).
+fn journal_work(what : Done, start : Double, end : Double, cpu_ms? : Double = -1.0) -> Unit {
   if journal_counts[5] < 0.0 {
     journal_counts[5] = start
   }
-  journal_counts[4] += end - start
+  let wall_ms = end - start
+  journal_counts[4] += wall_ms
   // (what it went on, the longest first)
   // (a part 1 ms in all at least: its pieces summed by where it was made, each as short as work_part tells)
-  let notes = if journal_notes.is_empty() {
+  let notes : Array[(String, Double)] = if journal_notes.is_empty() {
     []
   } else {
     let all = journal_notes.to_array().filter(fn(n) { n.1 >= journal_floor_ms })
@@ -494,6 +500,9 @@ fn journal_work(what : Done, start : Double, end : Double) -> Unit {
       all
     }
   }
+  if wall_ms >= 4.0 && cpu_ms >= 0.0 {
+    notes.push(("cpu", journal_ms(cpu_ms)))
+  }
   let foldable = match what {
     Event(_) | FrameEnd => true
     _ => false
@@ -503,7 +512,7 @@ fn journal_work(what : Done, start : Double, end : Double) -> Unit {
       journal_small[2] = start
     }
     journal_small[0] += 1.0
-    journal_small[1] += end - start
+    journal_small[1] += wall_ms
     journal_small[3] = end
     return
   }
@@ -522,14 +531,24 @@ fn journal_wants() -> Unit {
 }
 
 ///|
+fn journal_cpu_delta(c0 : Double, c1 : Double) -> Double {
+  if c0 >= 0.0 && c1 >= c0 {
+    c1 - c0
+  } else {
+    -1.0
+  }
+}
+
+///|
 /// An event from outside, the outermost, handled from `start` to now: kept, and where it left no frame asked for, the
 /// interval closed (idle; hidden where it hid the app).
-fn journal_event(what : String, start : Double) -> Unit {
+fn journal_event(what : String, start : Double, c0? : Double = -1.0) -> Unit {
   let end = work_now()
+  let c1 = work_thread_cpu()
   if what == "touch-move" {
     journal_moved.val = true
   }
-  journal_work(Event(what), start, end)
+  journal_work(Event(what), start, end, cpu_ms=journal_cpu_delta(c0, c1))
   if journal_hidden.val {
     journal_hidden.val = false
     journal_dirty_at.val = -1.0
@@ -543,7 +562,16 @@ fn journal_event(what : String, start : Double) -> Unit {
 ///|
 /// A frame's work from `tw` (its tree brought) and its own from `t0`, presented from `t3` to `t4`: kept, and the
 /// interval closed by it.
-fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) -> Unit {
+fn journal_frame(
+  c : Ctx,
+  tw : Double,
+  t0 : Double,
+  t3 : Double,
+  t4 : Double,
+  cw? : Double = -1.0,
+  c3? : Double = -1.0,
+  c4? : Double = -1.0,
+) -> Unit {
   let why = if t3 - tw < probe_slow_ms {
     ""
   } else if built_why.val != "" {
@@ -597,8 +625,9 @@ fn journal_frame(c : Ctx, tw : Double, t0 : Double, t3 : Double, t4 : Double) ->
     }),
     tw,
     t3,
+    cpu_ms=journal_cpu_delta(cw, c3),
   )
-  journal_work(Present, t3, t4)
+  journal_work(Present, t3, t4, cpu_ms=journal_cpu_delta(c3, c4))
   journal_counts[0] += 1.0
   shown_counts[shown_slot.val * 4] += 1
   journal_seal(Presented, t4)
@@ -634,9 +663,10 @@ fn journal_since(now : Int, was : Int) -> Int {
 ///|
 /// The frame presented at `t4` ended now: what it did after kept; a frame asked for as it ran waited on from its
 /// presenting, else the thread idle.
-fn journal_frame_ended(t4 : Double) -> Unit {
+fn journal_frame_ended(t4 : Double, c4? : Double = -1.0) -> Unit {
   let end = work_now()
-  journal_work(FrameEnd, t4, end)
+  let cend = work_thread_cpu()
+  journal_work(FrameEnd, t4, end, cpu_ms=journal_cpu_delta(c4, cend))
   if journal_asked.val {
     journal_asked.val = false
     if journal_dirty_at.val < 0.0 {
@@ -797,6 +827,7 @@ fn journal_said_shown(at : Double) -> Unit {
     moved: bands(2),
     moved_laid: bands(3),
     by_page: shown_by_page(),
+    gpu: gpu_frames_take(),
   }
   journal_counts.fill(0.0)
   journal_counts[5] = -1.0
@@ -924,9 +955,17 @@ pub fn Hang::json(self : Hang) -> Json {
       "ms": Json::number(journal_ms(w.ms())),
     }
     if w.notes.length() > 0 {
-      o["parts"] = Json::array(
-        w.notes.map(fn(n) { Json::object({ "part": Json::string(n.0), "ms": Json::number(journal_ms(n.1)) }) }),
-      )
+      let parts : Array[Json] = []
+      for n in w.notes {
+        if n.0 == "cpu" {
+          o["cpu"] = Json::number(journal_ms(n.1))
+        } else {
+          parts.push(Json::object({ "part": Json::string(n.0), "ms": Json::number(journal_ms(n.1)) }))
+        }
+      }
+      if parts.length() > 0 {
+        o["parts"] = Json::array(parts)
+      }
     }
     if w.what is Frame(f) {
       o["tree_ms"] = Json::number(journal_ms(f.tree))
@@ -981,13 +1020,14 @@ pub fn Hang::json(self : Hang) -> Json {
 
 ///|
 /// The summary as JSON (reports.mbt's): its counts by what was shown as `by_page`, each name's [frames, stalls, late
-/// frames, blocking] (none said yet: under "").
+/// frames, blocking] (none said yet: under ""); what the drawing side did as `gpu`, where its host said any (a GPU
+/// time known, a frame never drawn).
 pub fn HangSummary::json(self : HangSummary) -> Json {
   let by_page : Map[String, Json] = Map([])
   for p in self.by_page {
     by_page[p.0] = journal_counts_json([p.1, p.2, p.3, p.4])
   }
-  {
+  let o : Map[String, Json] = {
     "shown_ms": Json::number(journal_ms(self.shown_ms)),
     "work_ms": Json::number(journal_ms(self.work_ms)),
     "frames": Json::number(self.frames.to_double()),
@@ -1003,6 +1043,18 @@ pub fn HangSummary::json(self : HangSummary) -> Json {
     },
     "by_page": Json::object(by_page),
   }
+  let g = self.gpu
+  if g.timed > 0 || g.dropped > 0 {
+    o["gpu"] = {
+      "frames": Json::number(g.timed.to_double()),
+      "over_8ms": Json::number(g.over_120.to_double()),
+      "over_16ms": Json::number(g.over_60.to_double()),
+      "over_24ms": Json::number(g.over_hang.to_double()),
+      "worst_ms": Json::number(journal_ms(g.worst_ms)),
+      "dropped": Json::number(g.dropped.to_double()),
+    }
+  }
+  Json::object(o)
 }
 
 ///|

@@ -134,7 +134,7 @@ pub fn press_feel(
       f.told = None
     } else {
       f.told = None
-      f.press.go_by(v, 0.0, lift_spring)
+      f.press.go_by(v, 0.0, tactile_bounce)
     }
   })
   v.owns(fn() {

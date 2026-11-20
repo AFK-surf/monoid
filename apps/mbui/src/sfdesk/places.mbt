@@ -42,8 +42,9 @@ let place_across : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 /// The page picked in a place (the stations' or the profiles' list) of the workspace `w`; none: the first.
 fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? {
   match place_pick.get(place_key(w.id, place)) {
-    // (a station or profile gone from the list: the first, not its page waiting for it)
-    Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None =>
+    // (a station or profile gone from the list: the first, not its page waiting for it; one just made a rig stays, its
+    // workspace listing it so before the rigs' topic first answers)
+    Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None && !workspace_lists_rig(src, w, a) =>
       place_route_first(src, w, place)
     Some(Profiles("")) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
@@ -59,6 +60,14 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
     Some(r) => Some(r)
     None => place_route_first(src, w, place)
   }
+}
+
+///|
+/// Whether the workspace's view lists `address` among its rigs (a station made one a moment ago, before the rigs'
+/// topic, which the station page reads, first answers).
+fn workspace_lists_rig(src : Source, w : Workspace, address : String) -> Bool {
+  let v = src.topic("workspace", { "workspace": Json::string(w.id) }).get().value
+  items(v, "rigs").iter().any(fn(r) { w.id + "/" + text(Some(r), "id") == address })
 }
 
 ///|

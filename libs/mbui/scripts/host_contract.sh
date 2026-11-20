@@ -747,9 +747,10 @@ INSTALL
       play_mac_format WebM test/host/playcheck.webm MBUI_PLAYCHECK_WEBM
     fi
     if [ "$H" = android ]; then
-      # (sent behind as it plays, at a tenth of its speed, by the home intent (a key would be dropped before the window
-      # has input focus), and brought back: paused as the app went, not played on
-      # behind to its end; the app's log and the system's events from its start, as scripts/android-keyboard.sh's)
+      # (sent behind as it plays, at a fiftieth of its speed, by the home intent (a key would be dropped before the window
+      # has input focus; no launcher's animation to wait through before the activity stops), and brought back: paused
+      # as the app went, not played on behind to its end; the app's log and the system's events from its start, as
+      # scripts/android-keyboard.sh's)
       $ADB shell am force-stop dev.mbui.demo
       $ADB logcat -b all -c
       $ADB logcat -b main,system,crash,events -v brief > $O/play-behind.log 2>&1 &
@@ -759,7 +760,7 @@ INSTALL
       EMU_PORT=${SERIAL#emulator-} APP=kitdemo BENCH=-1 ENV="$(echo "MBUI_PLAYCHECK_BEHIND=1 $vars" | tr ' ' ';')" \
         bash scripts/android.sh run
       scripts/chk logwait --log $O/play-behind.log --line "PLAYCHECK playing|$END" --deadline 60 >/dev/null
-      $ADB shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
+      $ADB shell am start -W --activity-no-animation -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null
       scripts/chk logwait --log $O/play-behind.log --line "wm_on_stop_called.*dev\.mbui\.MainActivity|$END" --deadline 60 >/dev/null
       $ADB shell am start -n dev.mbui.demo/dev.mbui.MainActivity >/dev/null
       l=$(scripts/chk logwait --log $O/play-behind.log --line "PLAYCHECK (paused|ended)|$END" --deadline 60)

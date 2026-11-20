@@ -33,6 +33,8 @@ pub fn preview_files() -> Array[(Attachment, () -> Bytes)] {
     (at("memory-schemes.mbui", 2400.0, 0.0, 0.0), fn() { @utf8.encode(fixture_viz_memory_mbui) }),
     (at("list.ts", 600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_code) }),
     (at("说明.md", 500.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md) }),
+    (at("长说明.md", 4200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md_long) }),
+    (at("宽表格说明.md", 1600.0, 0.0, 0.0), fn() { @utf8.encode(fixture_md_wide) }),
     (at("数据.csv", 200.0, 0.0, 0.0), fn() { @utf8.encode(fixture_csv) }),
     (at("备份.bin", 4096.0, 0.0, 0.0), fn() { Bytes::makei(4096, fn(i) { (i % 7).to_byte() }) }),
     (at("测试版.apk", 8192.0, 0.0, 0.0), fn() { Bytes::makei(8192, fn(i) { (i % 5).to_byte() }) }),
@@ -135,7 +137,7 @@ pub fn fixture_preview(mode : String) -> Unit {
 ///|
 /// How the made-up song stands: paused at 0:31 of 1:35, the same on every run.
 // kept across runs: a value (no field of it changes)
-let fixture_song_stands : @kit.MediaStatus = {
+let fixture_song_stands : @player.MediaStatus = {
   state: 1,
   duration: 95000.0,
   position: 31000.0,
@@ -162,7 +164,25 @@ pub fn fixture_fetch(
   fix_fetches.push((name, params))
   let p = Some(params)
   if name == "file.open" {
-    fixture_named(text(p, "path"), p, done)
+    let path = text(p, "path")
+    // (what the device kept of one read before, given at once; one never read, none)
+    if field(p, "kept") is Some(True) {
+      if fix_named_kept.contains(path) {
+        fixture_named(path, p, done)
+      } else {
+        done(Err({ "code": "not_kept", "message": "这份假数据没有留下 " + path }))
+      }
+      return
+    }
+    if fix_station_for.val <= 0.0 {
+      fix_named_kept[path] = true
+      fixture_named(path, p, done)
+      return
+    }
+    fix_later(fix_station_for.val, fn() {
+      fix_named_kept[path] = true
+      fixture_named(path, p, done)
+    })
     return
   }
   let file = text(p, "name")
@@ -195,6 +215,11 @@ pub fn fixture_fetch(
     _ => done(Err({ "code": "unknown_call", "message": "这份假数据没有 " + name }))
   }
 }
+
+///|
+/// The files a message names that the made-up device kept, read once (`file.open` with `kept`).
+// kept across runs: put back as a fixture is made (made.mbt)
+pub let fix_named_kept : Map[String, Bool] = Map([])
 
 ///|
 /// A file a message names by its path (`file.open`), as the made-up station reads it: the rich chat's place.mbt, and
@@ -406,6 +431,96 @@ pub let fixture_md : String =
   #|> 第二屏的插画再小一点。
   #|
   #|`scripts/shots.sh` 会把新截图和旧的比一遍。
+
+///|
+/// A long Markdown document (more than two screens tall on 1280x800) for beside-chat reader tests and stills.
+pub let fixture_md_long : String =
+  #|# 发布前长说明
+  #|
+  #|这份长文档记录每次正式发版前的完整核对项，包含客户端构建、签名校验、离屏画面对比与回滚预案。
+  #|
+  #|## 第一节：版本号与更新说明
+  #|
+  #|先核对所有平台的版本号是否与主分支最新提交一致，再整理面向用户的中文更新说明。每一条变更都必须对应真实落地的功能或修复，不能遗漏关键平台标注。
+  #|
+  #|- 核对 `Changelog:` 行是否准确描述用户可见改动
+  #|- 核对 `Changelog-parts:` 覆盖 web、android、desktop
+  #|- 确认测试版号与实际跑完的流水线一致
+  #|
+  #|## 第二节：多端构建与签名
+  #|
+  #|各个平台的安装包都需要在构建机上完成签名和公证，确保安装过程不弹出异常拦截提示。打包产物上传后要检查校验和与下载链接。
+  #|
+  #|- macOS 应用完成公证并验证首次启动无拦截
+  #|- Windows 安装包完成代码签名与自动更新验证
+  #|- Android 正式包使用发布密钥签名并核对版本码
+  #|
+  #|## 第三节：离屏画面与交互核对
+  #|
+  #|所有涉及界面改动的分支在合并前都需要通过离屏渲染生成同尺寸、同数据的前后对比图，覆盖浅色与深色主题、常规字号与大字号，以及关键交互的完整过渡。
+  #|
+  #|- 检查大屏与小屏下的工具排对齐与圆角阶梯
+  #|- 检查长文档滚动与悬浮提示是否被裁切
+  #|- 检查暗色主题下文字与图标的对比度
+  #|
+  #|## 第四节：列表虚拟化与帧率检查
+  #|
+  #|列表视图需要在 60、120、24 和 7 帧每秒以及单步跳转下保持完全一致的停靠位置与可见项统计，不得引入帧率相关漂移。
+  #|
+  #|- 确认多帧率单测全部通过且无额外告警
+  #|- 确认快速滚动与跳转文末后位置准确落定
+  #|- 确认静置后阅读位置按预期写回本地记录
+  #|
+  #|## 第五节：网络与离线恢复
+  #|
+  #|在弱网或断网重连场景下，客户端应保留已打开的侧边文件标签页，并在连接恢复后自动同步最新状态，不丢失当前阅读进度。
+  #|
+  #|- 断网后重新打开已缓存文档仍可正常阅读
+  #|- 重连后不会触发重复拉取或界面闪烁
+  #|- 关闭标签页时释放阅读器状态与订阅
+  #|
+  #|## 第六节：兼容性与迁移
+  #|
+  #|新版本客户端需要与旧版本 station 共存，任何协议字段新增都必须保持向后兼容，数据库迁移只向前演进不破坏旧数据。
+  #|
+  #|- 核对最低兼容版本号与接口降级路径
+  #|- 确认旧缓存文件可平滑升级无需手动清理
+  #|- 确认升级后已有草稿与偏好设置完好保留
+  #|
+  #|## 第七节：回归验证清单
+  #|
+  #|在最终发布前逐项执行关键路径回归，确保没有遗留的审计告警或未收录的纯调用答案。
+  #|
+  #|- 对话旁打开短文档与长文档的工具排表现符合预期
+  #|- 独立窗口缩到最小尺寸时按钮按次序收入更多菜单
+  #|- 所有单元测试与静态检查零报错通过
+  #|
+  #|## 第八节：发版后巡检与回滚
+  #|
+  #|新版本发布后持续观察崩溃率、卡顿指标与用户反馈，若发现阻断性问题立即按既定流程回退至上一个稳定版本并通知相关成员。
+  #|
+  #|文档末尾：所有检查项已核对完毕。
+
+///|
+/// A Markdown document with long paragraphs and a 5-column table for beside-chat panel width tests and stills.
+pub let fixture_md_wide : String =
+  #|# 跨端发布核对表
+  #|
+  #|对话旁侧栏本身已经受到面板宽度的自然约束，当用户把侧栏拉宽以便同时对照多列表格与较长的技术说明段落时，如果正文列仍然按整窗阅读器的三十四字宽上限收紧，两侧就会留下大片空白，表格列也会被过早挤压换行。放宽侧栏面板内的正文宽度上限到四十八字宽后，长段文字和五列表格都能更舒展地展开，而切到全屏或独立窗口时依然保持三十四字宽的舒适行长。
+  #|
+  #|## 平台构建与签名状态
+  #|
+  #|| 平台 | 构建目标 | 签名状态 | 帧率门禁 | 备注 |
+  #|| --- | --- | --- | --- | --- |
+  #|| macOS | arm64 / universal | 已公证 | 60 / 120 / 24 / 7 | 侧栏与独立窗口均通过 |
+  #|| Windows | x64 / arm64 | 代码签名 | 60 / 120 / 24 / 7 | 标题栏按钮对齐无告警 |
+  #|| Android | arm64-v8a | 发布密钥 | 60 / 120 / 24 / 7 | 非 debuggable 包 |
+  #|| iOS | arm64 | TestFlight | 60 / 120 / 24 / 7 | 竖横屏安全区正常 |
+  #|| Web | wasm-gc | CDN 校验 | 60 / 120 / 24 / 7 | 与客户端共用一套渲染 |
+  #|
+  #|## 布局与阅读体验说明
+  #|
+  #|在默认窗口尺寸下如果侧栏宽度低于八百一十二像素，正文区会贴合面板减去左右边距后的全部可用宽度；一旦用户将窗口放大或拖动分割线把侧栏拉宽至一千像素附近，正文区会平滑扩展至七百六十八像素上限，不再受制于五百四十四像素的整窗窄列限制。
 
 ///|
 pub let fixture_csv : String =

@@ -77,12 +77,12 @@ pub fn roving_hover_node(
       if finger() {
         // (a finger's: there at once, from nowhere)
         by_finger.val = true
-        part.came(at, @motion.cover_spring, takes=false) |> ignore
+        part.came(at, @motion.snappy_damped, takes=false) |> ignore
         seen.put(1.0)
         return
       }
       by_finger.val = false
-      match part.came(at, @motion.cover_spring) {
+      match part.came(at, @motion.snappy_damped) {
         // (from where the one before is drawn, as fast as it goes there, as much of it seen)
         Some(s) => {
           seen.put(s)

@@ -20,8 +20,9 @@ fn message_decision(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
       }
       // (on the chat's station, or another of its workspace: the card's)
       let station = @sfbase.card_login_station(here.station, card.station)
-      let l = login_of(core, station, card.login)
-      let active = flag(l, "active")
+      let l = login_followed(core, station, card.login)
+      // (its card stands under way, and ended where it may be started again)
+      let active = login_carded(l)
       let was = login_card_last(station, card.login, l)
       let key = "login/" + here.station + "/" + m.ts
       c.box(style=decision_box, fn() {
@@ -258,6 +259,9 @@ fn vault_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
     command: ask.command,
     how_text: ask.how_text,
     save_kind: ask.save_kind,
+    save_vault_name: ask.save_vault_name,
+    save_shared: ask.save_shared,
+    save_targets: ask.save_targets,
     username: ask.username,
     filename: ask.filename,
     typed: ask.typed,
@@ -340,7 +344,7 @@ fn phone_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
   let decided = ask.status != ""
   let asking = fn() {
     c.box(style=@sf.ask_card_room.then(ask_card_under_head), fn() {
-      @settings.phone_card(c, here.core, here.station, ask.request, ask.reason, mine_to(here, card.assignee), lasts=ask.lasts, who=card.assignee_text, ended=if decided { Some((ask.status, ask.scope, ask.why)) } else { None }, how=fn() { open_page(Setting(@settings.Route::AdbShare(""))) })
+      @settings.phone_card(c, here.core, here.station, ask.request, ask.reason, mine_to(here, card.assignee), lasts=ask.lasts, who=card.assignee_text, ended=if decided { Some((ask.status, ask.scope, ask.why)) } else { None }, how=fn() { open_page(Setting(@settings.Route::AdbShare(here.station))) })
     })
     |> ignore
   }
@@ -439,7 +443,7 @@ fn rig_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask :
         device=ask.device_name,
         who=card.assignee_text,
         ended=if decided { Some((ask.status == "granted", words())) } else { None },
-        lock=fn() { open_page(Setting(@settings.Route::AdbShare(""))) },
+        lock=fn() { open_page(Setting(@settings.Route::AdbShare(here.station))) },
       )
     })
     |> ignore
@@ -629,16 +633,20 @@ fn ask_dismiss(
     fn() {
       // (let go or answered: faded out where it is as its room closes)
       let look = @motion.presence(c, "dismiss-live/" + k, live, enter=@motion.trans(fade=0.0, spec=archive_tween))
-      let b = c.box(style=dismiss_room, id=if live { id } else { 0 }, fn() {
-        c.rich([@ui.span(@sf.t("web-main.chat.asks.dismiss"), underline=hot)], style=if hot {
-          dismiss_words_hot
-        } else {
-          dismiss_words
+      // (as wide as its words at the start, as the page made as nodes has it: not across the column)
+      c.box(style=decision_rooms, fn() {
+        let b = c.box(style=dismiss_room, id=if live { id } else { 0 }, fn() {
+          c.rich([@ui.span(@sf.t("web-main.chat.asks.dismiss"), underline=hot)], style=if hot {
+            dismiss_words_hot
+          } else {
+            dismiss_words
+          })
+          |> ignore
         })
-        |> ignore
+        c.look(b, look.unwrap_or(@ui.look(alpha=0.0)))
+        @motion.leaving(c, b, live)
       })
-      c.look(b, look.unwrap_or(@ui.look(alpha=0.0)))
-      @motion.leaving(c, b, live)
+      |> ignore
     },
   )
 }

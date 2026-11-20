@@ -28,6 +28,7 @@ import * as present from "../src/present.ts";
 import { PUSH_KEY } from "../src/attention.ts";
 import { dbName, SOON_MS } from "../src/data.ts";
 import { PENDING_PREFIX } from "../src/views/local.ts";
+import { t } from "../src/i18n.ts";
 import { encode } from "../src/ops.ts";
 import { EXPORT_MS } from "../src/trace.ts";
 import { takeAll } from "./adb-personal-stub.ts";
@@ -849,6 +850,7 @@ test("sending_to_an_archived_session_without_a_thread_restores_it_after_making_i
     "GET /sessions": [archived],
     "GET /sessions/k1": { session: archived, threads: [], turns: [], jobs: [] },
     "GET /threads": [],
+    "GET /chats?shared=1": [],
     "GET /chats": [],
   });
   const steps: string[] = [];
@@ -1197,6 +1199,34 @@ test("a_new_chat_is_made_under_the_key_its_page_had_before_it_was_made_and_its_p
   // none given: one made by the core, as before
   const own = await ask(host, core, ui, 5, "newChat.create", { station: "ws/st" });
   assert.ok(String(own.key).startsWith("new:") && own.key !== next);
+  core.close();
+});
+
+// A board draft's model is its own control's (`board:<id>`): as a new chat there runs till picked for it, then kept for
+// it alone, the chat made of it with it, and let go of with it.
+test("a_board_drafts_model_is_picked_for_it_alone_and_its_chat_is_made_with_it", async () => {
+  const { host, core } = await choosing();
+  const ui = core.connect();
+  const board = "board:new:board-1-1";
+  subscribe(core, ui, 1, { topic: "pick", station: "ws/st", of: "new" });
+  subscribe(core, ui, 2, { topic: "pick", station: "ws/st", of: board });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "new", model: "claude-sonnet-5", runtime: "claude" });
+  apply(host, values);
+  assert.equal(v(values, 2).value.model, "claude-sonnet-5", "as a new chat there runs, till picked for it");
+  await ask(host, core, ui, 4, "pick.save", { station: "ws/st", of: board, model: "gpt-6-astra", runtime: "codex", effort: "medium" });
+  apply(host, values);
+  assert.deepEqual([v(values, 2).value.model, v(values, 2).value.runtime, v(values, 2).value.effort], ["gpt-6-astra", "codex", "medium"]);
+  assert.equal(v(values, 1).value.model, "claude-sonnet-5", "the new chat's own pick is not changed by the draft's");
+  const made = await ask(host, core, ui, 5, "newChat.create", { station: "ws/st", key: "new:board-1-1", of: board });
+  assert.deepEqual([made.model, made.runtime, made.effort], ["gpt-6-astra", "codex", "medium"]);
+  apply(host, values);
+  assert.equal(v(values, 2).value.model, "claude-sonnet-5", "its chat made, what was picked for it let go of");
+  const plain = await ask(host, core, ui, 6, "newChat.create", { station: "ws/st" });
+  assert.equal(plain.model, "claude-sonnet-5");
+  await assert.rejects(ask(host, core, ui, 7, "newChat.create", { station: "ws/st", of: "session:k1" }));
   core.close();
 });
 
@@ -1916,9 +1946,8 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
 // menu, reached from its opener's info and found by a search (the user, 2026-11-17). One opened for its person is
 // theirs and listed as any other.
 test("a_chat_an_agent_leads_is_in_no_list_but_a_search_and_one_it_opened_for_its_person_is_listed", async () => {
-  const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
-  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
-  answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
+  const row = (id: string, title: string, at: number, opener?: J) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null, ...(opener ? { opener } : {}) });
+  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3, { session: "lead", title: "部署", led: true }), row("theirs", "部署 给你的", 2, { session: "lead", title: "部署", led: false })]) };
   const { host, core } = await started(answers);
   const ui = core.connect();
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
@@ -2437,7 +2466,12 @@ test("a_chat_made_here_is_a_new_chat_all_along_until_it_is_named", async () => {
   // in it) what the station called a chat with nothing said in it, then by the words again as the station had them:
   // the bar's title went and came. It is a new chat, as its station calls it, until people or its agent name it.
   const made = { ...threadView(7, 0), createdBy: "a@x.com" };
-  const { host, core } = await started({ ...base(), "GET /threads": [made], "GET /chats": [{ id: "7", thread: 7, session: "k1", title: "新对话", agents: [], lastActiveAt: 1 }], "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] } });
+  const { host, core } = await started({
+    ...base(),
+    "GET /threads": [made],
+    "GET /chats?shared=1": chatsOf([{ id: "k1", thread: 7, session: "k1", title: null, agents: [], lastActiveAt: 1 }])["GET /chats?shared=1"],
+    "GET /threads/7/entries?limit=50": { first: 1, last: 0, entries: [] },
+  });
   stationReplies(host, (req) => {
     const path = req.url.replace("https://stillfail.test/admin/api", "");
     if (req.method === "POST" && path === "/sessions") return { key: "k1", thread: made };
@@ -2471,19 +2505,17 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   const made = { ...threadView(9, 0), createdBy: "a@x.com", sessions: [{ thread: 9, session: "chat:c-1", connect: "ember", joinedAt: 1 }] };
   const atRest = session("chat:c-1");
   const working = { ...atRest, process: "running", running: true, turns: 1, lastTurn: { id: "t1", kind: "input", startedAt: 5, endedAt: null } };
-  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null });
-  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [] };
-  const answers: J = { ...base(), "GET /chats": [row("7", "k1", 7, [])], "GET /chats?marks=1": marks };
+  const row = (id: string, session: string, thread: number, agents: J[]) => ({ id, session, thread, title: "新对话", agents, last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null, ws: null, mineOf: [{ id: "a@x.com", email: "a@x.com", via: "cloud" }], said: null, pinned: null });
+  const marks = { card: {}, need: {}, answered: {}, suggested: [], verdicts: {}, reviews: false, kept: [], hidden: [], pins: {}, openers: {}, opened: {}, shares: {}, clientKeys: {}, teams: {}, selves: [], dismissed: [], reads: {} };
+  const answers: J = { ...base(), "GET /chats?shared=1": [row("k1", "k1", 7, [])], "GET /chats?marks=1": marks };
   const s = await started(answers);
   const { host, core } = s;
-  // A station that keeps the marks: the sidebar made here of the summaries held.
-  s.push("made", { rows: true, marks: true });
   await host.settle();
   // The station as it is at each moment: what a read is answered with is what it had as it was asked.
   const now = (agent: J) => {
     answers["GET /sessions"] = [session("k1"), agent];
     answers["GET /sessions/chat%3Ac-1"] = { session: agent, threads: [], turns: agent.lastTurn ? [agent.lastTurn] : [], jobs: [] };
-    answers["GET /chats"] = [row("7", "k1", 7, []), row("9", "chat:c-1", 9, [agent])];
+    answers["GET /chats?shared=1"] = [row("k1", "k1", 7, []), row("chat:c-1", "chat:c-1", 9, [agent])];
   };
   answers["GET /threads/9"] = { ...made, last: 1 };
   stationReplies(host, (req) => {
@@ -2497,7 +2529,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
   await host.settle();
   // A slow link: the lists, asked as the chat is made, come long after.
-  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/changed/chats")];
+  const release = [host.hold("/admin/api/changed/sessions"), host.hold("/admin/api/chats?shared=1")];
   now(atRest);
   const key = String((await ask(host, core, ui, 2, "chat.create", { station: "ws/st", runtime: "claude", model: "opus" })).key);
   call(core, ui, 3, "chat.send", { station: "ws/st", session: key, text: "修一下登录" });
@@ -2506,6 +2538,7 @@ test("a_new_chats_lists_read_before_its_agent_began_and_come_after_it_was_told_a
   // Its agent begins: the station tells it, and has it so from now.
   now(working);
   s.push("session", working);
+  s.push("chat-shared", row("chat:c-1", "chat:c-1", 9, [working]));
   await host.settle();
   subscribe(core, ui, 4, { topic: "chat", station: "ws/st", thread: 9 });
   await host.settle();
@@ -2586,6 +2619,65 @@ test("a_chat_being_archived_leaves_the_list_at_once_and_comes_back_if_it_could_n
   await host.settle();
   assert.ok("ok" in answersOf(host, values).get(3)!);
   assert.ok(archived);
+  core.close();
+});
+
+test("a_new_chat_whose_first_message_did_not_go_is_archived_here_and_one_being_made_is_refused_till_it_is", async () => {
+  let up = false;
+  const { host, core } = await started();
+  stationReplies(host, (req) => {
+    const path = req.url.replace("https://stillfail.test/admin/api", "");
+    if (req.method === "POST" && path === "/sessions") {
+      if (!up) return undefined;
+      return { key: "chat:c-1", thread: { ...threadView(9, 0), createdBy: "a@x.com", sessions: [{ thread: 9, session: "chat:c-1", connect: "ember", joinedAt: 1 }] } };
+    }
+    if (req.method === "POST" && path === "/threads/9/messages") return { n: 1 };
+    return undefined;
+  });
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
+  await host.settle();
+  answersOf(host, values);
+  const rows = () => v(values, 1).days.flatMap((d: J) => d.items).filter((i: J) => i.pending === true).map((i: J) => i.id);
+  // Its station could not make it (404 here): its row says what did not go.
+  const key = String((await ask(host, core, ui, 2, "chat.create", { station: "ws/st", runtime: "claude", model: "opus" })).key);
+  call(core, ui, 3, "chat.send", { station: "ws/st", session: key, text: "试一下" });
+  await host.settle();
+  await host.settle();
+  answersOf(host, values);
+  assert.deepEqual(rows(), [key]);
+  // (said unsent: what has the app offer its menu, its 归档)
+  assert.equal(v(values, 1).days.flatMap((d: J) => d.items).find((i: J) => i.id === key)?.unsent, true);
+  // Archived from its row: gone here, and its station, which never had it, is asked nothing.
+  const before = host.requests.length;
+  call(core, ui, 4, "chat.archive", { station: "ws/st", session: key, archived: true });
+  await host.settle();
+  const answers = answersOf(host, values);
+  assert.ok("ok" in answers.get(4)!, JSON.stringify(answers.get(4)));
+  assert.deepEqual(rows(), []);
+  assert.deepEqual(host.requests.slice(before).filter((r) => r.url.includes("/archive")).map((r) => r.url), []);
+  // An undo cannot bring back what its station never had: it says so, and what to do.
+  call(core, ui, 5, "chat.archive", { station: "ws/st", session: key, archived: false });
+  await host.settle();
+  assert.equal((answersOf(host, values).get(5) as { err: string }).err, t("core-misc.call.pending_gone"));
+  // One being made (its station not answered yet) is not archived from under it: the person is told to wait.
+  up = true;
+  const release = host.hold("/admin/api/sessions");
+  const making = String((await ask(host, core, ui, 6, "chat.create", { station: "ws/st", runtime: "claude", model: "opus" })).key);
+  call(core, ui, 7, "chat.send", { station: "ws/st", session: making, text: "试一下" });
+  await host.settle();
+  call(core, ui, 8, "chat.archive", { station: "ws/st", session: making, archived: true });
+  await host.settle();
+  assert.equal((answersOf(host, values).get(8) as { err: string }).err, t("core-misc.call.pending_making"));
+  release();
+  await host.settle();
+  // Once made, it is archived by what its station made of it (its thread; the session's route after, as this station
+  // answers 404 to that).
+  const at = host.requests.length;
+  call(core, ui, 9, "chat.archive", { station: "ws/st", session: making, archived: true });
+  await host.settle();
+  assert.deepEqual(host.requests.slice(at).filter((r) => r.url.includes("/archive")).map((r) => `${r.method} ${r.url.replace("https://stillfail.test/admin/api", "")}`), ["POST /threads/9/archive", "POST /sessions/chat%3Ac-1/archive"]);
   core.close();
 });
 
@@ -2720,7 +2812,7 @@ test("undo holds the row while a station's shared-list events catch up", async (
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [rows[0]], scope: ["k1"] };
@@ -2771,7 +2863,7 @@ test("a restored chat removed again before it is listed does not remain in the l
     named: { thread: { surface: "ember", title: id }, firstText: null, channelName: null }, mineOf: [], said: null,
   });
   const rows = [shared("k1", 7, 8), shared("k2", 8, 7)];
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": rows });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2809,7 +2901,7 @@ test("a late removal from the original archive does not end a completed undo", a
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -2843,7 +2935,7 @@ test("a rearchive coalesced before the shared list can tell it settles the resto
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2879,7 +2971,7 @@ test("an unrelated row cannot settle an undo before a delayed archive removal", 
   });
   const row = shared("k1", 7);
   const other = shared("k2", 8);
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row, other] });
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
     if (req.url.includes("/chats?shared=1&session=k1")) return { rows: [row], scope: ["k1"] };
@@ -2912,7 +3004,7 @@ test("a newer tell wins over a restore read already on its way", async () => {
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };
@@ -2946,7 +3038,7 @@ test("a failed restore reconciliation is retried after the station answers with 
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core, push } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   let fail = false;
   stationReplies(host, (req) => {
@@ -2984,7 +3076,7 @@ test("a confirmed restore is reconciled after restart when it was archived elsew
     id: "k1", session: "k1", thread: 7, agents: [{ key: "k1", runtime: "claude" }], lastActiveAt: 8, ws: null,
     named: { thread: { surface: "ember", title: "k1" }, firstText: null, channelName: null }, mineOf: [], said: null,
   };
-  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] }, 0, undefined, (s) => { s.gate.shared = true; });
+  const { host, core } = await started({ ...base(), "GET /chats?shared=1": [row] });
   let visible = true;
   stationReplies(host, (req) => {
     if (req.url.endsWith("/threads/7/archive")) return { ok: true };

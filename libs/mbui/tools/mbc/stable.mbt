@@ -471,11 +471,20 @@ fn split_stable(
     let fk = cat([pk[k], b"\x1f", file_key[k]])
     file_sizes[fk] = file_sizes.get_or_default(fk, 0) + fclen[k]
   }
-  // each function's unit: unit: [(its name as renamed, its index in rest)] (renamed in its unit's job, below)
+  // each function's unit: unit: [(its name as renamed, its index in rest)] (renamed in its unit's job, below).
+  // A test's function (its #line's file a *_test.mbt or *_wbtest.mbt) in test.<unit>, the unit it would have been in
+  // otherwise: the same pieces by the same sizes, so a unit of tests alone is the C it was, under its new name, and a
+  // piece of a program's own code is no longer compiled again for a test of its piece changed (sfapp's 526 test files,
+  // 92% of its source, beside its 43). mbc compiles these at MBC_TEST_OPT (is_test_unit); a program built for people
+  // has none
   let units : Map[Bytes, Array[(Bytes, Int)]] = Map([])
   for k, f in rest {
     let p = pk[k]
     let new = names.get_or_default(f.name, f.name)
+    let in_test = match ffile[k] {
+      Some(file) => ends(file, b"_test.mbt") || ends(file, b"_wbtest.mbt")
+      None => false
+    }
     let unit = if sizes[p] < target / 2 {
       cat([b"s", utf8((crc32(p) % nsmall.reinterpret_as_uint()).to_string())])
     } else {
@@ -502,6 +511,7 @@ fn split_stable(
         base
       }
     }
+    let unit = if in_test { cat([b"test.", unit]) } else { unit }
     match units.get(unit) {
       Some(u) => u.push((new, k))
       None => units[unit] = [(new, k)]

@@ -10,7 +10,7 @@
 // picture, and is on the page's own colours. Embedded in a page (player_node's `embedded`: a file's tab beside a
 // chat) it is part of the page, not a cinema in it: no ground of its own, its picture fitted in a room over its
 // controls, which are always there, in the page's colours and on its ground; only what lies over the picture keeps the
-// colours over a picture. How it plays is mbui's player's (@kit.Media: the system's player in a native view, its bytes
+// colours over a picture. How it plays is mbui's player's (@player.Media: the system's player in a native view, its bytes
 // asked a part at a time of the file's `stream`).
 //
 // On a desktop's layout (player_node's desk_player_node): the bar every file opened has along the top
@@ -72,15 +72,15 @@ pub let player_speeds : Array[Double] = [0.1, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0]
 ///|
 /// A player for a page (`key` keeps its widgets apart from another's), its waits said once they have waited later_ms;
 /// its controls there till a tap (a click) on its picture hides them, never going of themselves (the user, 2026-10-28).
-pub fn new_media(key : String) -> @kit.Media {
-  @kit.Media::new(key~, speeds=player_speeds, wait_ms=later_ms, rest_ms=0.0)
+pub fn new_media(key : String) -> @player.Media {
+  @player.Media::new(key~, speeds=player_speeds, wait_ms=later_ms)
 }
 
 ///|
 /// A file played, kept while its page is open: its player, whether it was opened, the subtitle asked for (its name),
 /// the places kept (each next one player_keep_ms after it).
 pub(all) struct Playing {
-  media : @kit.Media
+  media : @player.Media
   /// the file as last given (where it is is kept with it)
   mut file : ViewerFile?
   opened : @signals.Signal[Bool]
@@ -232,7 +232,7 @@ priv struct PlayerView {
   mut listing : Bool
   mut rates : Bool
   mut fulled : Bool
-  zoom : @kit.Zoom
+  zoom : @motion.Zoom
   mut grab_at : Int
   mut ended_off : String
   mut file : String
@@ -274,17 +274,15 @@ pub fn player_fills_native(width : Double) -> Bool {
 /// 全屏 among the actions in the system's bars for film `p` played `width` wide: its words, whether it is on, what it
 /// does. Laid out Small, turned sideways as a phone's player's 全屏 turns it; wider, the window filled, the bars put
 /// away (native_full).
-pub fn player_full_act(p : @kit.Media, width : Double) -> (String, Bool, () -> Unit) {
+pub fn player_full_act(p : @player.Media, width : Double) -> (String, Bool, () -> Unit) {
   if layout(width) is Small {
     let on = p.is_sideways()
     (t(if on { "android-misc.drive.player.unfull" } else { "android-misc.drive.player.full" }), on, fn() {
       p.toggle_sideways()
-      p.wake()
     })
   } else {
     (t("android-misc.drive.player.full"), false, fn() {
       native_full.set(true)
-      p.wake()
     })
   }
 }
@@ -351,7 +349,7 @@ fn view_for(key : String, margin? : Double = 0.0) -> PlayerView {
         fulled: false,
         // (a film edge to edge in its stage, enlarged as players do: no margin round it, but where a page holds it, as far
         // in as the page's pictures are: player_node's `margin`)
-        zoom: @kit.Zoom::new(margin=fn(_) { margin }, enlarge=true),
+        zoom: @motion.Zoom::new(margin=fn(_) { margin }, enlarge=true),
         grab_at: 0,
         ended_off: "",
         file: "",
@@ -402,7 +400,7 @@ priv struct Frames {
 
 ///|
 /// The frames of what `p` plays, at `pos` (ms).
-fn frames_of(p : @kit.Media, s : @kit.MediaStatus, pos : Double) -> Frames {
+fn frames_of(p : @player.Media, s : @player.MediaStatus, pos : Double) -> Frames {
   let dur = s.duration
   let (starts, read) = match p.native() {
     Some(n) =>
@@ -432,7 +430,7 @@ fn frames_of(p : @kit.Media, s : @kit.MediaStatus, pos : Double) -> Frames {
 /// A film's own facts as its bar says them (the web player's bar): its size in pixels, how long, its rate. What its
 /// message says, there from the first frame (FileFacts: the station read them from its header), else what the host
 /// has read of it (its head, and its end where its header is kept there).
-fn film_facts(said : FileFacts, s : @kit.MediaStatus, fr : Frames) -> String {
+fn film_facts(said : FileFacts, s : @player.MediaStatus, fr : Frames) -> String {
   let (w, h) = if said.width > 0.0 && said.height > 0.0 { (said.width, said.height) } else { (s.width, s.height) }
   guard w > 0.0 && h > 0.0 else { "" }
   let dur = if said.duration > 0.0 { said.duration } else { s.duration }
@@ -486,7 +484,7 @@ fn Frames::snap(self : Frames, ms : Double) -> Double {
 /// What is said of where it is: while it plays (and of a song, and of a film not ready) the time of how long; paused
 /// or moved through by a finger, the time to the millisecond, and with the file's frames read which frame of how many at what rate (not
 /// guessed: without them a step is a 60th of a second, which says nothing of the file).
-fn where_runs(p : @kit.Media, fr : Frames, s : @kit.MediaStatus, playing : Bool, picture : Bool, ink : MediaInk) -> Array[@ui.Run] {
+fn where_runs(p : @player.Media, fr : Frames, s : @player.MediaStatus, playing : Bool, picture : Bool, ink : MediaInk) -> Array[@ui.Run] {
   let at = p.scrubbing().unwrap_or(s.position)
   let long = if s.duration > 0.0 { clock(s.duration) } else { "--:--" }
   match fr.starts {
@@ -515,7 +513,8 @@ fn where_runs(p : @kit.Media, fr : Frames, s : @kit.MediaStatus, playing : Bool,
 /// How far in from the stage's top and foot a film's picture is fitted (`top`, `foot`): laid out wider than Small,
 /// clear of the bar along the top and of the controls over the foot (and of the system's bars where they are over the
 /// window), so neither ever hides an edge of it (a screen's recording looked at closely, its time dragged along); it
-/// stays where it is as they come and go. Laid out Small (a phone's) edge to edge, its controls over it. `embedded`: in
+/// stays where it is as they come and go. Laid out Small (a phone's) or beside the system's bars (an iPhone Duo's:
+/// its bar's actions in them, none of its own over the film) edge to edge, its controls over it. `embedded`: in
 /// a stage of a page's own (a tab beside a chat), no bar over it and nothing of the window's bars: the room over its
 /// controls, a phone's (phone_embedded_foot) or a desktop's, which stand as far up from the stage's foot as a panel's
 /// corner is round.
@@ -523,21 +522,28 @@ pub fn player_room(width : Double, embedded? : Bool = false) -> (Double, Double)
   if layout(width) is Small {
     return (0.0, if embedded { phone_embedded_foot() } else { 0.0 })
   }
+  if embedded {
+    return (0.0, desk_controls_foot(width, true))
+  }
+  // (beside the system's bars, an iPhone Duo's: its bar's actions in them, none of its own over the film; its
+  // controls over it as a phone's are)
+  if native_on() {
+    return (0.0, 0.0)
+  }
+  let top = (viewer_host().room)().0
+  (viewer_bar_h + top, desk_controls_foot(width, false))
+}
+
+///|
+/// How far up from the stage's foot a desktop's controls reach (`embedded`: in a tab's stage, clear of its corner;
+/// else media_bar_in over the window's foot bar).
+fn desk_controls_foot(width : Double, embedded : Bool) -> Double {
   let said = if desk_narrow(width) { desk_time_over - media_bar_top + desk_time_h } else { 0.0 }
   if embedded {
-    return (0.0, media_bar_h() + said + pane_corner)
-  }
-  let (top, foot) = (viewer_host().room)()
-  // (beside the system's bars, an iPhone Duo's: its bar's actions in them, none of its own over the film; filling the
-  // window, nothing of them either)
-  let top = if native_on() && native_full.get() {
-    0.0
-  } else if native_on() {
-    top
+    media_bar_h() + said + pane_corner
   } else {
-    viewer_bar_h + top
+    media_bar_h() + said + media_bar_in + (viewer_host().room)().1
   }
-  (top, media_bar_h() + said + media_bar_in + foot)
 }
 
 ///|
@@ -566,7 +572,7 @@ fn player_format(mime : String) -> String? {
 
 ///|
 /// What a double tap did, said a moment: 快退 15 秒, 快进 15 秒, 已暂停, 继续播放.
-fn phone_note_words(note : @kit.MediaNote) -> String {
+fn phone_note_words(note : @player.MediaNote) -> String {
   match note {
     Back(ms) => t("android-misc.drive.player.back", args=[("n", (ms / 1000.0).to_int().to_string())])
     Ahead(ms) => t("android-misc.drive.player.ahead", args=[("n", (ms / 1000.0).to_int().to_string())])
@@ -737,10 +743,10 @@ let desk_volume_steps : Double = 20.0
 let desk_volume_w : Double = 72.0
 
 ///|
-/// A cue over a desktop's controls: as far off the foot as they reach (player_room), and 16 more (with keyboard and
-/// mouse on a wide page, the 112 it stood at before).
+/// A cue over a desktop's controls: as far off the foot as they reach (desk_controls_foot), and 16 more (with keyboard
+/// and mouse on a wide page, the 112 it stood at before).
 fn desk_cue_over(width : Double, embedded : Bool) -> Double {
-  player_room(width, embedded~).1 + desk_cue_apart
+  desk_controls_foot(width, embedded) + desk_cue_apart
 }
 
 ///|

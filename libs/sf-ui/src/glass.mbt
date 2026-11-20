@@ -29,151 +29,147 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 }
 
 ///|
-/// The bottom bar's glass (`raised` 72% over a 20px blur), its rim lit: a hairline
-/// inside its edge, light along its top and left, less along its foot and right (white at 0.35 / 0.8 / 0.45; in the
-/// dark 0.14 / 0.3 / 0.16).
-pub fn glass_bottom_bar() -> @ui.Glass {
+/// The bottom bar's glass: iOS 27 regular liquid glass calibrated for 56pt controls (flutter_liquid_glass
+/// ios27Light / ios27Dark: uniform 2.1pt Gaussian blur across center and rim, quarter-circle bevel refraction,
+/// adaptive color transfer, inner bevel shadow, glint, and 0.75pt external contour); where glass is drawn solid,
+/// its opaque ground.
+pub fn glass_tab_bar(spot? : (Double, Double)? = None) -> @ui.Glass {
   let t = theme()
-  let ground = alpha(t.p.raised, 0.72)
-  let (e, l, b) = if t.dark { (0.14, 0.3, 0.16) } else { (0.35, 0.8, 0.45) }
-  @ui.Glass::frosted(
-    blur=20.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=e,
-    rim_lit=l,
-    rim_back=b,
+  // Neutral light/dark sentinel selects Apple iOS 27 ios27Light / ios27Dark color transfer model in kind == 6.
+  let tint = if t.dark { 0x202020FFL } else { 0xFDFCFD67L }
+  let solid = if t.dark { 0x1E1F24FFL } else { 0xFAFAFAFFL }
+  @ui.Glass::liquid(
+    blur=2.1,
+    tint~,
+    solid~,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=28.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot~,
   )
 }
 
 ///|
-/// The bar's ball over the place in view: the bar's glass with white over it (42%; 12% in the dark), a 24px
-/// blur, its rim brighter (0.5 / 0.95 / 0.55; dark 0.22 / 0.45 / 0.25).
-pub fn glass_bar_ball() -> @ui.Glass {
-  let t = theme()
-  let ground = over(
-    alpha(t.p.raised, 0.72),
-    alpha(0xFFFFFFFFL, if t.dark { 0.12 } else { 0.42 }),
-  )
-  let (e, l, b) = if t.dark { (0.22, 0.45, 0.25) } else { (0.5, 0.95, 0.55) }
-  @ui.Glass::frosted(
-    blur=24.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=e,
-    rim_lit=l,
-    rim_back=b,
-  )
+/// The bottom bar's shadow (kept for compatibility; prefer `tab_bar_shadow()` for light/dark separation).
+pub let tab_bar_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
+
+///|
+/// The bottom bar's shadow by theme: softer on light grounds, deeper on dark grounds so the capsule floats cleanly.
+pub fn tab_bar_shadow() -> Raised {
+  if theme().dark {
+    { sigma: 12.0, dy: 5.0, color: 0x00000052L }
+  } else {
+    { sigma: 10.0, dy: 4.0, color: 0x00000018L }
+  }
 }
 
 ///|
-/// The bar's ball held (the lens over the places, iOS 26's tab bar's): liquid glass, nearly clear, its rim bending
-/// the places under it; a touch of the page's paper so it reads as glass in both themes.
-pub fn glass_lens() -> @ui.Glass {
+/// The pill under the place shown inside glass: black at 7.1% on light grounds, white at 12% in the dark.
+pub fn glass_selection() -> Int64 {
+  if theme().dark {
+    0xFFFFFF1FL
+  } else {
+    0x00000012L
+  }
+}
+
+///|
+/// The bar's ball held (the lens over the places, iOS 27 clear loupe): clear liquid glass, its rim bending the places
+/// under it with subtle chromatic dispersion.
+fn glass_lens() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=0.0,
-    tint=alpha(t.p.raised, if t.dark { 0.04 } else { 0.08 }),
+    tint=0xFFFFFF00L,
     solid=over(t.p.bg, alpha(t.p.raised, 0.72)),
+    saturation=1.0,
+    rim=0.6,
     bezel=16.0,
     refraction=12.0,
-    chroma=0.08,
+    chroma=-0.06,
+    merge=0.0,
     adaptive=false,
   )
 }
 
 ///|
-/// A control's knob held (a switch's, a segmented choice's thumb: iOS 26's): the bar's lens, its rim narrower and
-/// bending less, as small as it is.
+/// A control's knob held (a switch's, a segmented choice's thumb): the bar's clear lens, its rim narrower and bending
+/// less, as small as it is.
 pub fn glass_knob() -> @ui.Glass {
   { ..glass_lens(), bezel: 7.0, refraction: 5.0 }
 }
 
 ///|
-/// AndroidLiquidGlass’s LiquidToggle material. The white surface recedes through its press spring.
-fn backdrop_toggle(press : Double) -> @ui.Glass {
+/// Clear lifted liquid glass lens while a tab bar / segmented control thumb is held (iOS 27 clear loupe).
+pub fn glass_tab_lens(press : Double) -> @ui.Glass {
   let p = dclamp(press, 0.0, 1.0)
-  @ui.Glass::backdrop_lens(height=5.0 * p, amount=10.0 * p, blur=8.0 * (1.0 - p),
-    tint=alpha(0xFFFFFFFFL, 1.0 - p), solid=0xFFFFFFFFL, highlight=p, ambient=true, dispersion=true)
-}
-
-///|
-/// AndroidLiquidGlass’s LiquidSlider material (used by the model effort slider).
-fn backdrop_slider(press : Double) -> @ui.Glass {
-  let p = dclamp(press, 0.0, 1.0)
-  @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=8.0 * (1.0 - p),
-    tint=alpha(0xFFFFFFFFL, 1.0 - p), solid=theme().p.raised, highlight=p, ambient=true, dispersion=true)
-}
-
-///|
-/// AndroidLiquidGlass’s LiquidBottomTabs selection lens, its InnerShadow 8 at its fullest (its Shadow is its box's:
-/// tab_lens_raised). Without the two it hardly showed on the bar's white, nothing under it to bend.
-pub fn backdrop_tab(press : Double) -> @ui.Glass {
-  let p = dclamp(press, 0.0, 1.0)
-  let idle = if theme().dark { 0xFFFFFFFFL } else { 0x000000FFL }
-  let tint = over(alpha(idle, 0.1 * (1.0 - p)), alpha(0x000000FFL, 0.03 * p))
-  @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=0.0,
-    tint~, solid=theme().p.raised, highlight=p, dispersion=true, inner_shadow=8.0 * p)
-}
-
-///|
-/// The shadow under the bottom bar's lens (LiquidBottomTabs' Shadow: Backdrop's own, a blur of radius 24, a
-/// deviation of 12, 4 down, black at 10%): the lens's look fades it in with the lens as it is pressed.
-pub let tab_lens_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
-
-///|
-fn backdrop_track_ink() -> Int64 {
-  if theme().dark { 0x7878805CL } else { 0x78787833L }
-}
-
-///|
-/// The page's primary action in the bar's notch (a "+"): the accent at 86% over a 20px blur, its rim
-/// 0.4 / 0.75 / 0.4.
-pub fn glass_action() -> @ui.Glass {
-  let t = theme()
-  let ground = alpha(t.p.accent, 0.86)
-  @ui.Glass::frosted(
-    blur=20.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=0.4,
-    rim_lit=0.75,
-    rim_back=0.4,
+  @ui.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=theme().p.raised,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=16.0 * p,
+    refraction=24.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
   )
 }
 
 ///|
-/// How far a sheet reaches on under the window's foot (sheet_look: its foot's corners out of sight).
-let sheet_under : Double = pane_corner
+/// Clear lifted liquid glass thumb while a toggle is held.
+fn glass_toggle_lens(press : Double) -> @ui.Glass {
+  let p = dclamp(press, 0.0, 1.0)
+  @ui.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=0xFFFFFFFFL,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=8.0 * p,
+    refraction=12.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
+  )
+}
 
 ///|
-/// still.fail's sheet as mbui's sheet draws it (@kit.sheet's look): the sheet's glass over the page, the
-/// scrim's black as far as it shows (`s.t`) under it, its top corners a panel's (pane_corner: it holds cards, the
-/// user 2026-11-03: 卡片里不能放卡片，面板里可以放卡片; sheet_under more of it under the window's foot), a shadow; `ground` (not 0) a solid ground in the glass's place. What it holds starts with its grabber.
-pub fn sheet_look(ground? : Int64 = 0L) -> (@ui.Ctx, @kit.SheetState, () -> Unit) -> Unit {
-  fn(c, s, body) {
-    let t = theme()
-    // (the sheet: the surface of the look it comes in by: Ctx::surface)
-    let sheet = c.box(
-      w=Fill(1.0),
-      h=Px(s.h + sheet_under),
-      radius=pane_corner,
-      bg=ground,
-      glass?=if ground != 0L {
-        None
-      } else {
-        Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * s.t)), alpha(t.p.card, 0.8)) })
-      },
-      shadow=sheet_raised.sigma,
-      shadow_y=sheet_raised.dy,
-      shadow_color=sheet_raised.color,
-      clip=true,
-      pb=sheet_under,
-      body,
-    )
-    c.surface(sheet)
-  }
+/// Clear lifted liquid glass thumb while a slider is held.
+fn glass_slider_lens(press : Double) -> @ui.Glass {
+  let p = dclamp(press, 0.0, 1.0)
+  @ui.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
+    solid=theme().p.raised,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=10.0 * p,
+    refraction=14.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
+  )
 }
+
+///|
+/// The shadow under the bottom bar's lens (blur sigma 12, 4 down, black at 10%): the lens's look fades it in with
+/// the lens as it is pressed.
+pub let tab_lens_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
+
+///|
+fn track_glass_ink() -> Int64 {
+  if theme().dark { 0x7878805CL } else { 0x78787833L }
+}
+
+///|
+/// How far a sheet reaches on under the window's foot (sheet_node's: its foot's corners out of sight).
+let sheet_under : Double = pane_corner
 
 ///|
 /// The scrim under a sheet at its fullest: black at 28%.

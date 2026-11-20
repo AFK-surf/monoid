@@ -58,7 +58,7 @@ pub fn head_end(c : @ui.Ctx, actions : () -> Unit) -> Unit {
 
 ///|
 /// Whether what is drawn now is at a head's end (head_end).
-pub fn at_head_end() -> Bool {
+fn at_head_end() -> Bool {
   head_ends.val > 0
 }
 
@@ -1565,7 +1565,8 @@ pub fn figures(c : @ui.Ctx, figures : Array[(String, String, String)]) -> Unit {
 
 ///|
 /// A dial's figure (Dial): what is left large (`number` and its `unit`), `fill` of its ten cells lit (0–100) in its
-/// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under.
+/// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under. `turns`: pressed, it
+/// says itself the other way (a CPU's idle and busy: dials_node's `press`).
 #derive(Eq)
 pub(all) struct Dial {
   number : String
@@ -1577,6 +1578,7 @@ pub(all) struct Dial {
   // what `label` and `note` say where their line has not the room ("": nothing shorter)
   label_short : String
   note_short : String
+  turns : Bool
 }
 
 ///|
@@ -2116,21 +2118,6 @@ let desk_back_lit : @ui.TextStyle = desk_back_words.then(@ui.text_style(color=Fg
 pub let desk_lane : @ui.Style = @ui.css("w=Full px=S6 align=ACenter")
 
 ///|
-/// The same in a panel of its own (the tape's: in_pane): none in from the panel's sides, its blocks' own 16 there the
-/// cards' panel_card_in (the user, 2026-11-03: 面板里可以放卡片), the column in the middle where it is wider.
-pub fn desk_lane_now() -> @ui.Style {
-  if in_pane() {
-    desk_lane_pane
-  } else {
-    desk_lane
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let desk_lane_pane : @ui.Style = @ui.css("w=Full align=ACenter")
-
-///|
 // kept across runs: a value (no field of it changes)
 pub let desk_lane_column : @ui.Style = @ui.style(w=Full, max_w=Fixed(desk_lane_most))
 
@@ -2571,7 +2558,9 @@ fn wide_in_list() -> @ui.Style {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let wide_in_list_bare : @ui.Style = @ui.css("w=Full py=S2_5 justify=JCenter").then(@ui.style(px=list_words_room))
+let wide_in_list_bare : @ui.Style = @ui.css("w=Full py=S2_5 justify=JCenter").then(
+  @ui.style(pl=list_words_room, pr=room(card_control_end)),
+)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2613,7 +2602,7 @@ let head_name_press : @ui.Style = @ui.css("w=Full pressed{opacity=O60}")
 
 ///|
 /// How tall a row's lead stands at least where lines are under its first (row_lead's): its first line, as drawn.
-pub fn row_lead_line(c : @ui.Ctx, at? : Look) -> Double {
+fn row_lead_line(c : @ui.Ctx, at? : Look) -> Double {
   c.sp(match at.unwrap_or(look()) {
     Narrow => c.text_size(Body).1
     Wide => c.theme().leading(L6).unwrap_or(c.text_size(Ui).1)

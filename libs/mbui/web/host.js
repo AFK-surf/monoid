@@ -11,17 +11,46 @@
   const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
+  // (H.loadedTitle's: read as this host loads, before H.run gives the page its run's title)
+  const loadedTitle = typeof document !== 'undefined' ? String(document.title || '').trim() : '';
+  // The page's query parameter `n` for the program (host_js.mbt's env): the address as it is now, else as it was when
+  // this host loaded, so what the page's own start took off the address with history.replaceState before the program's
+  // first frame read it (a drive's script, a sign-in's answer) is still given; "" when neither has it.
+  H.env = (n) => {
+    const cur = typeof location !== 'undefined' && location.search ? new URLSearchParams(location.search).get(n) : null;
+    return cur ?? params.get(n) ?? '';
+  };
   let cb = null;
   let modifiersSaid = 0;
-  let canvas, gl, prog, post, vao, instBuf, atlasTex, ta;
-  const U = {}, PU = {};
+  const MB_KINDS = 12;
+  const GLASS_SLOTS = 8;
+  function makeGlassSlots() {
+    return Array.from({ length: GLASS_SLOTS }, () => ({
+      bt: null, bfb: null, bw: 0, bh: 0, bf: 0,
+      under: null, underN: 0, whole: 0, picked: 0, grab: null, key: null, valid: false, used: 0,
+    }));
+  }
+  let canvas, gl, vs, prog, progs = new Array(MB_KINDS + 1).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
+  let U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
+  let rectLeft = 0, rectTop = 0, rectValid = false;
+  // the document and window of the window drawn or handled now (winUse: the page's own, but while a window opened beside
+  // it is in place)
+  let doc = typeof document !== 'undefined' ? document : null, hostWin = window;
+  // The windows of the run (H.windows, ---- windows ---- below): 0 the page, 1..15 windows opened beside it; winActive
+  // the one whose frame or input is handled now; winsOpen how many beside the page are open.
+  const MB_WINS = 16;
+  const wins = new Array(MB_WINS).fill(null);
+  let winActive = 0, winsOpen = 0;
   let sizeDirty = true, sizeObserver = null;
   // the numbers of an instance (src/ui/scene.mbt)
   const INST = 60;
   let f32 = new Float32Array(INST * 4096);
-  let pending = false;
+  let pending = false, pendingRaf = 0;
   window.__logs = [];
+  // (what H.log keeps: all of it where a test drives the page, which reads it whole and by its lines' places; else the
+  // last LOGS_MOST lines, a page left open logging on for days not growing without end)
+  const LOGS_MOST = typeof navigator !== 'undefined' && navigator.webdriver ? Infinity : 2000;
 
   // ---- frames ----
   // A picture at a declared moment (?shot_at=MS, scripts/web-shot.mjs): the run's frames are on a clock of their own,
@@ -35,14 +64,24 @@
   const shotParam = params.get('shot_at');
   const shotAt = shotParam === null ? -1 : /^[0-9]+(\.[0-9]+)?$/.test(shotParam) ? Number(shotParam) : -2;
   let clock = 0;
-  let frames = 0, inFrame = false;
-  function tick() {
+  let frames = 0, inFrame = false, lastRafTs = -1;
+  function tick(rafTs) {
     pending = false;
+    pendingRaf = 0;
+    if (typeof rafTs === 'number' && rafTs >= 0) {
+      if (lastRafTs >= 0) {
+        const dt = rafTs - lastRafTs;
+        if (dt >= 3 && dt <= 25) displayFrame = displayFrame * 0.8 + dt * 0.2;
+      }
+      lastRafTs = rafTs;
+    } else {
+      lastRafTs = -1;
+    }
     resize();
     inFrame = true;
     const t = shotAt >= 0 ? clock : performance.now();
     // (what it waits for said again by the frame, if it still does: H.wakeAfter, from its time)
-    wakeFor = -1;
+    wakes0.at = -1;
     buildingFor = t;
     // the soft keyboard over the canvas's foot: the app laid out above it, the canvas keeping its size (as the phones'
     // apps keep their drawables', ios_app.m's drawFor)
@@ -68,45 +107,69 @@
   }
   // (no frame before the host knows what it decodes: H.run)
   let known = false;
+  // (and one of each window open beside the page, at that window's own display frame: tickSlot)
   H.requestFrame = () => {
-    if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
+    if (!cb || !known || window.__done !== undefined || window.__shot !== undefined) return;
+    if (!pending) {
       pending = true;
-      requestAnimationFrame(tick);
+      pendingRaf = requestAnimationFrame(tick);
     }
+    if (winsOpen) slotFrames();
   };
+  // The frame a touch asked for, drawn while the browser still handles that touch rather than at the display's next:
+  // iOS brings its soft keyboard up for a field focused (setIme's focus) only while a person's gesture is handled, and
+  // a requestAnimationFrame later is out of it, so a field tapped took the focus with no keyboard, which came up only on
+  // a second tap (its pointerdown's focus, setupInput). The display's frame asked for is called off: drawn once.
+  function frameInGesture() {
+    if (!pending || !pendingRaf || shotAt >= 0 || winActive !== 0) return;
+    cancelAnimationFrame(pendingRaf);
+    tick();
+  }
   // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
-  // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
-  // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
-  H.framesPaced = (_hz) => H.requestFrame();
+  // spinner): on high-refresh displays where 1000/hz exceeds 1.5 display frames, pace via H.wakeAfter instead of
+  // waking every rAF.
+  H.framesPaced = (hz) => {
+    if (shotAt >= 0 || !(hz > 0) || 1000 / hz <= displayFrame * 1.5) H.requestFrame();
+    else H.wakeAfter(Math.max(1, 1000 / hz - 0.5 * displayFrame));
+  };
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
   // late by as much as that falls, a resident cycle's steps unevenly apart), the timer two frames before it.
-  let wakeFor = -1, buildingFor = -1;
+  // Each window waits for its own (the page's wakes0, one beside it its slot's wake: the window H.wakeAfter is said in),
+  // drawn at its own display's frame.
+  const wakes0 = { at: -1 };
+  let buildingFor = -1;
   // the display's frame (ms), as two of its frames come apart while a wait is due (60 a second until one has)
   let displayFrame = 1000 / 60, lastDue = -1;
   H.wakeAfter = (ms) => {
     if (shotAt >= 0) return;
+    const wid = winActive, slot = wid === 0 ? null : wins[wid];
+    const wake = slot ? slot.wake : wakes0;
+    const raf = slot ? (f) => { if (!slot.closed) slot.win.requestAnimationFrame(f); } : requestAnimationFrame;
     const at = (buildingFor >= 0 ? buildingFor : performance.now()) + ms;
-    if (wakeFor >= 0 && wakeFor <= at) return;
-    wakeFor = at;
+    if (wake.at >= 0 && wake.at <= at) return;
+    wake.at = at;
     const due = (ts) => {
       if (lastDue >= 0 && ts - lastDue > 0 && ts - lastDue < 100) displayFrame = ts - lastDue;
       lastDue = ts;
-      if (wakeFor !== at) return;
+      if (wake.at !== at) return;
       if (performance.now() < at - 0.5) {
-        requestAnimationFrame(due);
+        raf(due);
         return;
       }
-      wakeFor = -1;
+      wake.at = -1;
       lastDue = -1;
-      if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
+      if (!cb || !known || window.__done !== undefined || window.__shot !== undefined) return;
+      if (slot) {
+        if (!slot.closed && !slot.pending) tickSlot(slot);
+      } else if (!pending) {
         pending = true;
         tick();
       }
     };
     const lead = Math.max(0, at - performance.now() - 2 * displayFrame);
-    setTimeout(() => requestAnimationFrame(due), lead);
+    setTimeout(() => raf(due), lead);
   };
   H.now = () => (shotAt >= 0 ? clock : performance.now());
   H.ownClock = () => shotAt >= 0;
@@ -325,6 +388,10 @@
   };
   H.postJson = () => (postCur ? postCur[1] : '');
   H.postBytes = () => (postCur ? postCur[2] : new Uint8Array(0));
+  H.autoLaunch = () => false;
+  H.setAutoLaunch = () => false;
+  H.hotkeySet = () => false;
+  H.hotkeyClear = () => {};
 
   // ---- what the app awaits of the host (effect.mb's outside: src/ui/hostcall.mbt) ----
   // The app is told (outside(kind, id, state)) as the work it asked for is done: kind 1 an image decoded (id: the
@@ -350,7 +417,12 @@
     queueMicrotask(() => outside(kind, id, state));
   }
   function resize() {
-    const scale = window.devicePixelRatio || 1;
+    resizeOnly();
+    // (what text keeps forgotten between frames, never in one: textSweep)
+    textSweep();
+  }
+  function resizeOnly() {
+    const scale = hostWin.devicePixelRatio || 1;
     if (scale !== dpr) {
       dpr = scale;
       // Glyph pictures in the atlas were rasterized at the old scale. The UI keeps their boxes and atlas places until
@@ -363,6 +435,9 @@
     if (!sizeDirty && sizeObserver) return;
     sizeDirty = false;
     const rect = canvas.getBoundingClientRect();
+    rectLeft = rect.left;
+    rectTop = rect.top;
+    rectValid = true;
     cssW = rect.width;
     cssH = rect.height;
     const w = Math.round(cssW * dpr), h = Math.round(cssH * dpr);
@@ -371,7 +446,7 @@
       canvas.height = h;
     }
     // (the system's bars as the page's size changes: a phone turned, a window moved)
-    if (barsSetUp) barsNow();
+    if (barsSetUp && winActive === 0) barsNow();
   }
 
   // ---- WebGL2 renderer ----
@@ -403,9 +478,10 @@
     int vid = gl_VertexID;
     vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);
     int kind = int(a_p.y + 0.5);
-    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);
+    bool merged_liquid = kind == 6 && a_pad.w > 0.0;
+    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : (kind == 6 && a_pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);
     vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);
-    if (kind == 6) pos = mix(u_gb.xy, u_gb.zw, corner);
+    if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);
     // the pieces of shapes (kind 12): nothing drawn
     if (kind == 12) pos = vec2(0.0);
     // turned (scene.mbt 32-35): drawn turned about its point, everything of how in its own place (v_pos), its clip there
@@ -729,9 +805,6 @@
   uniform highp sampler2D u_bd;
   uniform vec4 u_map;
   uniform vec4 u_uvc;
-  // where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's rTex)
-  uniform vec4 u_rmap;
-  uniform vec4 u_ruvc;
   // a liquid group's bounds (as the vertex shader has them)
   uniform vec4 u_gb;
   uniform vec4 u_shape[8];
@@ -768,22 +841,13 @@
     }
     return d;
   }
-  // sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by
-  float sd_group_soft(vec2 p, float k) {
-    float d = 1e9;
-    for (int i = 0; i < 8; i++) {
-      if (i >= u_n) break;
-      vec2 hs = u_shape[i].zw * 0.5;
-      d = smin_k(d, sd_rr(p, u_shape[i], vec4(min(u_rad[i / 4][i % 4] * 1.45, min(hs.x, hs.y)))), k);
-    }
-    return d;
+  // Integral of linear ramp from 0 to w (contourOffset = 0, width w in device px)
+  float mb_contour_int(float t, float w) {
+    float u = clamp(t, 0.0, w);
+    return u - u * u / (2.0 * w);
   }
   vec3 backdrop(vec2 p) {
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
-  }
-  // what is under liquid glass at p, not blurred
-  vec3 sharp(vec2 p) {
-    return texture(u_img, clamp(p * u_rmap.xy + u_rmap.zw, u_ruvc.xy, u_ruvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
@@ -794,9 +858,15 @@
   }
   // what it shows at p, as if uncut
   void shade(vec2 p) {
-    int kind = int(v_p.y + 0.5);
+    #ifndef ONE_KIND
+    #define ONE_KIND -1
+    #endif
+    int kind = ONE_KIND >= 0 ? ONE_KIND : int(v_p.y + 0.5);
+    #if ONE_KIND < 0
     if (kind == 9) { vec2 hh = v_rect.zw * 0.5; float rr = min(mb_corner_of(p - v_rect.xy - hh, v_rr), min(hh.x, hh.y)); vec2 q = abs(p - v_rect.xy - hh) - hh + rr; if (length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr > 0.0) discard; o = vec4(0.0); return; }
+    #endif
     vec4 col = v_color;
+    #if ONE_KIND < 0 || ONE_KIND == 11
     if (kind == 11) {
       // a band of a shape (src/ui/shape.mbt): c2.y of its pieces from c2.x; p.x half its stroke's width (0: a fill,
       // c2.z 1 by the even-odd rule)
@@ -814,6 +884,8 @@
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 10
     if (kind == 10) {
       // a piece of a line (scene.mbt): from c2.xy to c2.zw (shares of its rect), p.x half its width, its ends round
       vec2 a = v_rect.xy + v_c2.xy * v_rect.zw, ab = v_rect.xy + v_c2.zw * v_rect.zw - a;
@@ -822,6 +894,8 @@
       o = vec4(col.rgb, 1.0) * col.a * clamp(0.5 - d * u_scale, 0.0, 1.0);
       return;
     }
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 1 || ONE_KIND == 3
     if (kind == 1 || kind == 3 || kind == 7) {
       // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample
       // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the
@@ -834,6 +908,7 @@
       vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;
       vec2 uv = clamp(v_c2.xy + tex, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
       vec4 t = texture(u_atlas, uv);
+      #if ONE_KIND < 0
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
         vec2 c = v_pad.yz; float r = v_pad.w * 0.5;
@@ -843,179 +918,168 @@
         o = vec4(ink, 1.0) * (t.a * col.a);
         return;
       }
+      #endif
       o = kind == 1 ? vec4(col.rgb, 1.0) * (t.a * col.a) : t * col.a;
       return;
     }
+    #endif
+    #if ONE_KIND < 0
     if (kind == 6) {
-      // Copyright 2025 Kyant. Adapted from AndroidLiquidGlass Shaders.kt at eb4a0ea2, Apache-2.0.
-      if (v_c2.z < 0.0) {
-        vec2 halfSize = v_rect.zw * 0.5;
-        vec2 centeredCoord = p - v_rect.xy - halfSize;
-        float radius = min(v_p.x, min(halfSize.x, halfSize.y));
-        vec2 cornerCoord = abs(centeredCoord) - (halfSize - radius);
-        float sd = length(max(cornerCoord, 0.0)) - radius + min(max(cornerCoord.x, cornerCoord.y), 0.0);
-        float a = clamp(0.5 - sd * u_scale, 0.0, 1.0);
-        if (a <= 0.0) discard;
-        float gradRadius = min(radius * 1.5, min(halfSize.x, halfSize.y));
-        vec2 q = abs(centeredCoord) - (halfSize - gradRadius);
-        vec2 outside = max(q, 0.0);
-        float outsideLength = length(outside);
-        float gradX = step(q.y, q.x);
-        vec2 grad = sign(centeredCoord) * (outsideLength > 0.0 ? outside / outsideLength : vec2(gradX, 1.0 - gradX));
-        vec3 c;
-        if (v_c2.y <= 0.0 || -sd >= v_c2.y) {
-          c = backdrop(p);
-        } else {
-          float x = 1.0 - max(-sd, 0.0) / v_c2.y;
-          float d = -(1.0 - sqrt(1.0 - x * x)) * v_pad.y;
-          vec2 refractedCoord = p + d * grad;
-          if (v_pad.z == 0.0) {
-            c = backdrop(refractedCoord);
-          } else {
-            float dispersionIntensity = v_pad.z * clamp(centeredCoord.x * centeredCoord.y / (halfSize.x * halfSize.y), -1.0, 1.0);
-            vec2 dispersedCoord = d * grad * dispersionIntensity;
-            vec3 red = backdrop(refractedCoord + dispersedCoord);
-            vec3 orange = backdrop(refractedCoord + dispersedCoord * (2.0 / 3.0));
-            vec3 yellow = backdrop(refractedCoord + dispersedCoord * (1.0 / 3.0));
-            vec3 green = backdrop(refractedCoord);
-            vec3 cyan = backdrop(refractedCoord - dispersedCoord * (1.0 / 3.0));
-            vec3 blue = backdrop(refractedCoord - dispersedCoord * (2.0 / 3.0));
-            vec3 purple = backdrop(refractedCoord - dispersedCoord);
-            c = vec3((red.r + orange.r + yellow.r) / 3.5 + purple.r / 7.0,
-                   orange.g / 7.0 + (yellow.g + green.g + cyan.g) / 3.5,
-                   (cyan.b + blue.b + purple.b) / 3.0);
+      // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
+      // liquid_glass_final_render_core.glsl, Apache-2.0.
+      float k = v_pad.w;
+      vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
+      float d;
+      float halfMinor = 1e9;
+      if (k <= 0.0) {
+        d = sd_rr(p, v_rect, s_rr);
+        halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      } else {
+        d = sd_group(p, k);
+        float best_d = 1e9;
+        for (int i = 0; i < 8; i++) {
+          if (i >= u_n) break;
+          float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
+          if (di < best_d) {
+            best_d = di;
+            halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;
           }
         }
-        c = mix(c, col.rgb, col.a);
-        // InnerShadow (Kyant's): the shape's outside blurred into it by pad.w (its radius: a deviation of half of it), a
-        // sixth of it lower, black at 15% times the highlight's strength (c2.x, the press); none where pad.w is 0
-        if (v_pad.w > 0.0) {
-          vec2 sc = abs(centeredCoord - vec2(0.0, v_pad.w / 6.0)) - (halfSize - radius);
-          float ssd = length(max(sc, 0.0)) - radius + min(max(sc.x, sc.y), 0.0);
-          float inner = 0.5 * (1.0 + mb_erf(ssd * 0.70710678 / (v_pad.w * 0.5)));
-          c = mix(c, vec3(0.0, 0.0, 0.0), 0.15 * v_c2.x * inner);
-        }
-        bool ambient = v_c2.z == -2.0;
-        float w = ambient ? 0.5 / 1.5 : 0.5;
-        // HighlightModifier uses a clipped stroke, with its width ceiled in device pixels.
-        float stroke = ceil(w * u_scale) / u_scale;
-        float blur = w * 0.5;
-        float mask = 0.5 * (mb_erf((stroke - sd) * 0.70710678 / blur) - mb_erf((-stroke - sd) * 0.70710678 / blur));
-        float normal = dot(grad, vec2(0.70710678, 0.70710678));
-        float h = v_c2.x * abs(normal) * mask;
-        if (ambient) c = mix(c, vec3(step(0.0, normal), step(0.0, normal), step(0.0, normal)), h);
-        else c = clamp(c + h, 0.0, 1.0);
-        o = vec4(c, 1.0) * (a * v_c2.w); return;
       }
-      // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
-      // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
-      // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through
-      // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its
-      // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on
-      // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a
-      // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the
-      // frame drawn whole, to the byte.
-      float k = v_pad.w;
-      // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45
-      // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight
-      // side bends what is under it as a lens does, not as a prism)
-      float d = sd_group(p, k);
-      float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
-      if (a <= 0.0) discard;
-      float e = 0.75;
-      vec2 grad = vec2(sd_group_soft(p + vec2(e, 0.0), k) - sd_group_soft(p - vec2(e, 0.0), k),
-                   sd_group_soft(p + vec2(0.0, e), k) - sd_group_soft(p - vec2(0.0, e), k));
-      vec2 n_edge = grad / max(length(grad), 1e-4);
-      vec2 gc = 0.5 * (u_gb.xy + u_gb.zw);
-      vec2 gh = max(0.5 * (u_gb.zw - u_gb.xy), vec2(1.0, 1.0));
-      vec2 dome = clamp((p - gc) / gh, vec2(-1.0, -1.0), vec2(1.0, 1.0));
-      vec2 n2 = normalize(n_edge + 0.14 * dome);
-      float bezel = max(v_c2.y, 1.0);
-      // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
-      float r = clamp(1.0 + d / bezel, 0.0, 1.0);
-      float r2 = r * r;
-      float r4 = r2 * r2;
-      float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
-      float inv_n = 1.0 / sqrt(slope * slope + 1.0);
-      vec2 Nxy = n2 * (slope * inv_n);
-      float Nz = inv_n;
-      // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)
-      float eta = 0.6578947;
-      float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);
-      float kt = eta * Nz - sqrt(k_ior);
-      vec2 Txy = Nxy * kt;
-      float Tz = -eta + kt * Nz;
-      // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)
-      vec2 off = Txy * (1.15 * v_pad.y / max(-Tz, 1e-4));
-      // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)
-      float ch = min(v_pad.z * (0.72 + 0.56 * abs(n2.x * n2.y)), v_pad.z);
-      vec2 disp = off * ch;
-      // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:
-      // a spectrum, not three images; the flat blurred, three)
-      vec3 s0 = sharp(p + off + disp);
-      vec3 s1 = sharp(p + off + disp * 0.6666667);
-      vec3 s2 = sharp(p + off + disp * 0.3333333);
-      vec3 s3 = sharp(p + off);
-      vec3 s4 = sharp(p + off - disp * 0.3333333);
-      vec3 s5 = sharp(p + off - disp * 0.6666667);
-      vec3 s6 = sharp(p + off - disp);
-      vec3 cs = vec3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,
-                     (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,
-                     (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);
-      vec3 cf = vec3(backdrop(p + off + disp * 0.5).r, backdrop(p + off).g, backdrop(p + off - disp * 0.5).b);
-      float lens = r2 * smoothstep(0.16, 0.88, r);
-      vec3 c = mix(cf, cs, lens * 0.86);
-      // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'
-      // colour; from at most off * (1 + 0.85 * ch), inside what is kept)
-      vec3 bleed = backdrop(p + off * (1.0 + ch * 0.85));
-      vec3 bleed_sat = max(mix(vec3(luma(bleed)), bleed, v_p.z * 1.35), 0.0);
-      c = mix(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);
-      c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
-      // (its tint whole on the flat, where words lie, and less through the lip)
-      float tint_a = col.a * (1.0 - 0.56 * lens);
-      c = c * (1.0 - tint_a) + col.rgb * tint_a;
-      // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,
-      // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)
+      halfMinor = max(halfMinor, 1.0);
+      float sd_px = -d * u_scale;
+      float materialAlpha = clamp(sd_px + 0.5, 0.0, 1.0);
+      float edgeW = 0.75 * u_scale;
+      float outward = -sd_px;
+      float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)
+                    - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
+      if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
+      float e = 0.5;
+      vec2 grad = k <= 0.0
+        ? vec2(
+            sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
+            sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
+          ) / (2.0 * e)
+        : vec2(
+            sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
+            sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
+          ) / (2.0 * e);
+      float gradLen = length(grad);
+      vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
+      float shortening = sqrt(clamp(gradLen, 0.0, 1.0));
+      bool is_clear = (v_p.w <= 0.1 && col.a < 0.12);
+      bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);
+      float inward = max(-d, 0.0);
+      float rawBevel = max(v_c2.y, 0.0);
+      float rawAmount = max(v_pad.y, 0.0);
+      float bevel;
+      float amount;
+      if (!is_clear) {
+        // refractionFitsShape = true (iOS 27 regular)
+        bevel = min(rawBevel, 0.5 * halfMinor);
+        amount = min(rawAmount, halfMinor);
+      } else {
+        // refractionFitsShape = false (iOS 27 clear)
+        float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
+        bevel = rawBevel * lensScale;
+        amount = rawAmount * lensScale;
+      }
+      vec2 disp = vec2(0.0, 0.0);
+      if (inward < bevel && bevel > 0.001 && amount > 0.0) {
+        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
+        float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
+        disp = surfaceNormal * (-mag);
+      }
+      vec3 refractColor;
+      if (abs(v_pad.z) * amount * u_scale <= 0.25) {
+        refractColor = backdrop(p + disp);
+      } else {
+        float ds = v_pad.z * 0.5;
+        refractColor = vec3(
+          backdrop(p + disp * (1.0 + ds)).r,
+          backdrop(p + disp).g,
+          backdrop(p + disp * (1.0 - ds)).b
+        );
+      }
+      vec3 emission;
+      float transmittance;
+      float lift;
+      float chromaGain;
+      float contourStr;
+      float contourDirAmt;
+      float bevelShadowStr;
+      float glintLum;
+      float glintFaceGain;
+      float glintVib;
+      if (is_clear) {
+        emission = vec3(0.126, 0.126, 0.126);
+        transmittance = 0.954; lift = 0.0; chromaGain = 1.057;
+        contourStr = 0.36; contourDirAmt = 1.0; bevelShadowStr = 0.0;
+        glintLum = 2.34; glintFaceGain = 3.58; glintVib = 0.78;
+      } else if (is_dark) {
+        emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);
+        transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;
+        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
+        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+      } else {
+        emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * 0.4032;
+        transmittance = 0.5994; lift = 0.216; chromaGain = 1.169;
+        contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
+        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+      }
+      float Y = luma(refractColor);
+      float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
+      vec3 transmittedColor = vec3(transLum * transmittance) + (refractColor - vec3(Y)) * (chromaGain * v_p.z);
+      vec3 baseColor = clamp(emission + transmittedColor, 0.0, 1.0);
+      // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
+      float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
+      if (colChroma > 0.08 && col.a > 0.001) {
+        baseColor = mix(baseColor, col.rgb, col.a * 0.5);
+      }
       float spot = 0.0;
       if (v_c2.z > 0.5) {
         float q = v_c2.z - 1.0;
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
-        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
-        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
+        float gr = max(min(v_rect.z, v_rect.w) * 1.5, 64.0);
+        spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));
+        baseColor = clamp(baseColor + vec3(0.08 * spot), 0.0, 1.0);
       }
-      float ndl = dot(n2, vec2(-0.6, -0.8));
-      float rim = v_c2.x;
-      // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
-      float body_ring = r2 * (1.0 - 0.35 * r);
-      c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
-      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
-      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
-      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
-      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
-      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
-      // where white on white would not show; less towards the rim, where the ridge lights)
-      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
-      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
-      float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
-      spec_band *= spec_band;
-      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
-      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
-      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
-                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
-      // pointer lights the edge
-      float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
-      edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
-      c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
-      c += mb_dither(p * u_scale) / 255.0;
-      o = vec4(c, 1.0) * (a * v_c2.w);
+      float tangency = abs(surfaceNormal.x);
+      vec3 result = baseColor;
+      // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)
+      if (bevelShadowStr >= 0.001 && inward < 23.0) {
+        float lightFacing = -surfaceNormal.y;
+        float shadowShift = 6.0 * lightFacing;
+        float penumbra = 2.0 * shadowShift;
+        float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;
+        float bevelFalloff = 1.0 - smoothstep(0.0, 16.0, inward - shadowShift);
+        float wrappedFacing = smoothstep(0.0, 1.0, lightFacing * 0.5 + 0.5);
+        float bevelDir = mix(1.0, wrappedFacing, 0.5);
+        float bevelShadow = clamp(bevelLeading * bevelFalloff * bevelDir * bevelShadowStr, 0.0, 1.0);
+        result = max(result - transmittedColor * bevelShadow, vec3(0.0));
+      }
+      // (b) Glint (1.2pt ramp + 0.21 * 4.8pt bleed, both top & bottom walls, recolors face)
+      if (v_c2.x > 0.01 && inward < 4.8) {
+        float glintProfile = clamp(1.0 - inward / 1.2, 0.0, 1.0)
+                           + 0.21 * clamp(1.0 - inward / 4.8, 0.0, 1.0);
+        float lobe = max(1.0 - tangency, 0.0);
+        float glint = clamp(v_c2.x * 0.252 * lobe * glintProfile + spot * 0.08 * glintProfile, 0.0, 1.0);
+        float resLum = luma(result);
+        vec3 glintTarget = vec3(glintLum) + result * glintFaceGain + (result - vec3(resLum)) * glintVib;
+        result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);
+      }
+      result = clamp(result + mb_dither(p * u_scale) / 255.0, 0.0, 1.0);
+      // (c) External 0.75pt dark contour (concentrated perpendicular to light axis where glint fades)
+      float contourDir = mix(1.0, tangency, contourDirAmt);
+      float extA = ext_cov * contourStr * contourDir * v_c2.w;
+      float visA = materialAlpha * v_c2.w;
+      o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));
       return;
     }
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 0 || ONE_KIND == 2 || ONE_KIND == 4
     vec2 hs = v_rect.zw * 0.5;
     vec2 c = v_rect.xy + hs;
     // worked out as near the curve as its cover, its edge or its blur reaches
@@ -1023,7 +1087,10 @@
     // (its corner by p: v_rr, each its own)
     float rad = mb_corner_of(p - c, v_rr);
     float d = mb_sd_box(p - c, hs, rad, band);
+    #if ONE_KIND < 0 || ONE_KIND == 0
     if (kind == 0 || kind == 5) d = notch_cut(d, p, v_rect, v_pad);
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 4
     if (kind == 4) {
       vec2 uv = v_c2.xy + clamp((p - v_rect.xy) / v_rect.zw, 0.0, 1.0) * v_c2.zw;
       vec4 pic = texture(u_img, clamp(uv, 0.0, 1.0));
@@ -1045,6 +1112,8 @@
       o = pic * (col.a * edge);
       return;
     }
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 2
     if (kind == 2) {
       // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)
       float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
@@ -1057,7 +1126,10 @@
       o = vec4(col.rgb, 1.0) * col.a * a;
       return;
     }
+    #endif
+    #if ONE_KIND < 0 || ONE_KIND == 0
     float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
+    #if ONE_KIND < 0
     if (kind == 5) {
       // frosted: the blurred copy, saturated, the tint over it; the rim (a hairline inside the edge, the top left lit,
       // the foot and right less), 0.5 wide
@@ -1077,6 +1149,7 @@
       o = vec4(g3, 1.0) * (a * v_c2.w);
       return;
     }
+    #endif
     vec4 fill = vec4(col.rgb, 1.0) * col.a;
     if (v_p.z > 0.0) {
       float inner = clamp(0.5 - (d + v_p.z) * u_scale, 0.0, 1.0);
@@ -1084,6 +1157,8 @@
       fill = mix(bc, fill, inner);
     }
     o = fill * a;
+    #endif
+    #endif
   }
   // cut to its clip: a rect's, hard; a rounded one's, covered as edges are
   void main() {
@@ -1105,6 +1180,13 @@
     shade(p);
     o *= cover;
   }`;
+  // the flat pipeline: a ground's colour where it is covered whole, cut by straight clips alone (bands.h mb_pieces)
+  const FS_FLAT = `#version 300 es
+  precision highp float;
+  precision highp int;
+  flat in vec4 v_color;
+  out vec4 o;
+  void main() { o = vec4(v_color.rgb, 1.0) * v_color.a; }`;
   // glass's passes over its copy of what is under it
   const PVS = `#version 300 es
   void main() {
@@ -1166,23 +1248,82 @@
     return s;
   }
 
+  const hasOwnProg = (kind) => (kind >= 0 && kind <= 4) || kind === 10 || kind === 11;
+
+  function makeProg(vsShader, kind) {
+    const src = `#version 300 es\n#define ONE_KIND ${kind}\n` + FS.slice('#version 300 es\n'.length);
+    const fs = compile(gl.FRAGMENT_SHADER, src);
+    const p = gl.createProgram();
+    gl.attachShader(p, vsShader);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    gl.deleteShader(fs);
+    const u = {};
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) {
+      u[n] = gl.getUniformLocation(p, n);
+    }
+    gl.useProgram(p);
+    gl.uniform1i(u.u_atlas, 0);
+    gl.uniform1i(u.u_img, 1);
+    gl.uniform1i(u.u_bd, 2);
+    gl.uniform1i(u.u_segs, 3);
+    return { p, u, gen: 0 };
+  }
+
+  function getProg(kind) {
+    const idx = kind >= 0 && hasOwnProg(kind) ? kind : MB_KINDS;
+    let k = progs[idx];
+    if (!k) k = progs[idx] = makeProg(vs, idx === MB_KINDS ? -1 : idx);
+    return k;
+  }
+
+  function useProg(kind) {
+    const k = getProg(kind);
+    progNow = k.p;
+    gl.useProgram(k.p);
+    if (k.gen === progGen) return;
+    k.gen = progGen;
+    const u = k.u;
+    // The framebuffer's rounded size may not be exactly cssW*dpr. Mapping to cssW would stretch its pixels by that
+    // remainder, sampling glyphs between atlas texels. A point must cover exactly dpr pixels, including at 125% zoom.
+    gl.uniform2f(u.u_vp, canvas.width / dpr, canvas.height / dpr);
+    gl.uniform1f(u.u_scale, dpr);
+    gl.uniform4fv(u.u_map, gmap);
+    gl.uniform4fv(u.u_uvc, guvc);
+    gl.uniform4fv(u.u_gb, ggb);
+    gl.uniform4fv(u.u_shape, gshape);
+    gl.uniform4fv(u.u_rad, grad);
+    gl.uniform1i(u.u_n, gn);
+  }
+
   function setupGL() {
-    // with alpha: native views (below) show through the holes the app paints (kind 9); every frame is opaque elsewhere
+    // with alpha: native views (below) show through the holes the app paints (kind 9), and default-FB glass blits to RGBA8
     gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false, alpha: true });
     cv = null;
     cvOk = false;
-    prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    vs = compile(gl.VERTEX_SHADER, VS);
+    progs = new Array(MB_KINDS + 1).fill(null);
+    progs[MB_KINDS] = makeProg(vs, -1);
+    prog = progs[MB_KINDS].p;
+    U = progs[MB_KINDS].u;
+    const fsFlat = compile(gl.FRAGMENT_SHADER, FS_FLAT);
+    progFlat = gl.createProgram();
+    gl.attachShader(progFlat, vs);
+    gl.attachShader(progFlat, fsFlat);
+    gl.linkProgram(progFlat);
+    if (!gl.getProgramParameter(progFlat, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progFlat));
+    gl.deleteShader(fsFlat);
+    ufVp = gl.getUniformLocation(progFlat, 'u_vp');
+    progGen++;
+    progNow = null;
     post = gl.createProgram();
     gl.attachShader(post, compile(gl.VERTEX_SHADER, PVS));
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_rmap', 'u_ruvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
     for (const n of ['u_src', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
+    glassLost();
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     instBuf = gl.createBuffer();
@@ -1208,15 +1349,13 @@
 
   // ---- glass (src/ui/glass.mbt) ----
   // When the instances reach a run of glass (slot 20 negative: the capture it shares), what is drawn so far under it
-  // (its rects with room for the blur round them) is copied out of the canvas, halved down to where the blur is a
+  // (its rects with room for the blur round them) is copied out of the target, halved down to where the blur is a
   // few texels wide (dual Kawase's downsample, at most 1/8), blurred there by a Gaussian of what deviation is left,
-  // and drawn through. Level j is 1/2^j of the canvas, tmp a Gaussian's first half. Level 0, the copy, has 8 bits a
-  // channel as the canvas has; what the passes write keeps 10 (RGB10_A2, in as many bytes): at 8 each pass rounds the
-  // frost's slow slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels,
-  // too narrow to halve, is written back into the copy: it leaves no slope that wide).
-  let lv = null, lvW = 0, lvH = 0, bdTex = null, rTex = null;
+  // and kept in an LRU slot (GLASS_SLOTS) so frames with unchanged content under the glass reuse the blur with zero passes.
+  let lv = null, lvW = 0, lvH = 0, bdTex = null;
+  let glassSlots = makeGlassSlots(), glassSlotsClock = 0;
+  let underNow = new Float32Array(INST * 256), underNowN = 0, underWhole = 0, underPicked = 0;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
-  const rmap = new Float32Array(4), ruvc = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(8);
   let gn = 0;
   function levelTex(format, w, h) {
@@ -1230,12 +1369,55 @@
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
-    return { t, fb, w: Math.max(1, w), h: Math.max(1, h) };
+    return { t, fb, w: Math.max(1, w), h: Math.max(1, h), format };
   }
+  const GLASS_IDLE = 180;
+  let glassIdle = 0, glassDrawn = false;
+  function glassForget() {
+    for (let i = 0; i < GLASS_SLOTS; i++) glassSlots[i].valid = false;
+  }
+  function glassLost() {
+    lv = null; lvW = 0; lvH = 0; bdTex = null;
+    for (let i = 0; i < GLASS_SLOTS; i++) {
+      const s = glassSlots[i];
+      s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false;
+    }
+  }
+  function glassFree() {
+    if (lv && gl) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
+    if (gl) {
+      for (let i = 0; i < GLASS_SLOTS; i++) {
+        const s = glassSlots[i];
+        if (s.bt) { gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt); }
+        s.under = null; s.underN = 0;
+      }
+    }
+    glassLost();
+  }
+  function glassIdleTick() {
+    if (glassDrawn) glassIdle = 0;
+    else if (glassIdle < GLASS_IDLE && ++glassIdle === GLASS_IDLE && (lv || glassSlots.some((s) => s.bt))) glassFree();
+    glassDrawn = false;
+  }
+  // every open window's glass and partial-redraw canvas given back (the page hidden), the one in place as it was after
+  function trimRender() {
+    for (let i = 0; i < MB_WINS; i++) {
+      const s = wins[i];
+      if (!s || (i !== 0 && s.closed)) continue;
+      inWin(i, () => {
+        glassFree();
+        glassIdle = 0;
+        if (cv && gl) { gl.deleteTexture(cv.t); gl.deleteFramebuffer(cv.fb); }
+        cv = null; cvOk = false;
+      });
+    }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) trimRender(); });
   function ensureLevels(w, h) {
     if (lv && lvW >= w && lvH >= h) return;
     if (lv) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
     lvW = Math.max(w, lvW); lvH = Math.max(h, lvH);
+    glassForget();
     lv = [];
     for (let j = 0; j < 4; j++) lv.push(levelTex(j === 0 ? gl.RGBA8 : gl.RGB10_A2, (lvW + (1 << j) - 1) >> j, (lvH + (1 << j) - 1) >> j));
     lv.push(levelTex(gl.RGB10_A2, lvW, lvH));
@@ -1252,11 +1434,9 @@
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
   // ---- partial redraw ----
-  // A frame is drawn into a canvas of its own (cv, a framebuffer), kept across frames, and copied onto the page's
-  // canvas (whose drawing buffer is gone once shown); where the app says only some parts differ from the frame before
-  // (H.renderDirty, @hostapi.render_dirty), only those parts of it are drawn again, each cut to it (the scissor, `cut`:
-  // x, y from the foot, w, h; while cutOn), the frame's ground over it first (the instance after the frame's), then
-  // every instance. `target`: the framebuffer drawn into now.
+  // Whole-screen frames draw straight into the default framebuffer (null) without allocating or blitting cv.
+  // Once the app reports partial dirty rects (H.renderDirty), we allocate cv, draw a baseline if !cvOk, and
+  // scissor-redraw only dirty rects into cv before blitting to null (matching gles_render.h:1526-1542).
   let cv = null, cvOk = false, target = null;
   let dirty = [], dirtyWhole = false, dirtyTold = false, missing = false, drewMissing = false, cutOn = false;
   const cut = [0, 0, 0, 0];
@@ -1299,57 +1479,64 @@
     cv = { t, fb, w: W, h: Hh };
   }
 
-  // what the run [start, end) of glass sees, frosted glass of the same capture further on (glass.mbt
-  // shares_capture) too; false when none of it shows
-  function capture(start, end, count) {
+  function grabOf(start, end, count) {
     const a = start * INST;
     // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
     const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
-    const margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + f32[a + 23] : 0) + 2;
+    const mergedLiquid = kind === 6 && f32[a + 23] > 0;
+    const unmergedLiquid = kind === 6 && !mergedLiquid;
+    let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-    gn = 0;
+    let mN = 0;
+    const mShape = new Float32Array(32), mRad = new Float32Array(8);
     for (let i = start; i < end; i++) {
       const b = i * INST;
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
       let bx1 = Math.min(f32[b] + f32[b + 2], f32[b + 18]), by1 = Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]);
       if (kind === 6) {
-        const m = f32[a + 23];
+        const m = Math.max(unmergedLiquid ? f32[b + 23] : f32[a + 23], 0);
         bx0 = f32[b] - m; by0 = f32[b + 1] - m; bx1 = f32[b] + f32[b + 2] + m; by1 = f32[b + 1] + f32[b + 3] + m;
-        if (gn < 8) {
-          for (let k = 0; k < 4; k++) gshape[gn * 4 + k] = f32[b + k];
-          grad[gn] = f32[b + 4];
-          gn++;
+        if (mergedLiquid && mN < 8) {
+          for (let k = 0; k < 4; k++) mShape[mN * 4 + k] = f32[b + k];
+          mRad[mN] = f32[b + 4];
+          mN++;
+        }
+        if (unmergedLiquid && f32[a + 7] >= 0) {
+          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          if (bm > margin) margin = bm;
         }
       }
       x0 = Math.min(x0, bx0); y0 = Math.min(y0, by0); x1 = Math.max(x1, bx1); y1 = Math.max(y1, by1);
     }
-    for (let i = end; kind === 5 && i < count; i++) {
+    for (let i = end; (kind === 5 || unmergedLiquid) && i < count; i++) {
       const b = i * INST;
       if (f32[b + 20] !== f32[a + 20]) continue;
-      x0 = Math.min(x0, Math.max(f32[b], f32[b + 16])); y0 = Math.min(y0, Math.max(f32[b + 1], f32[b + 17]));
-      x1 = Math.max(x1, Math.min(f32[b] + f32[b + 2], f32[b + 18])); y1 = Math.max(y1, Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]));
+      if (unmergedLiquid) {
+        const m = Math.max(f32[b + 23], 0);
+        x0 = Math.min(x0, f32[b] - m); y0 = Math.min(y0, f32[b + 1] - m);
+        x1 = Math.max(x1, f32[b] + f32[b + 2] + m); y1 = Math.max(y1, f32[b + 1] + f32[b + 3] + m);
+        if (f32[a + 7] >= 0) {
+          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          if (bm > margin) margin = bm;
+        }
+      } else {
+        x0 = Math.min(x0, Math.max(f32[b], f32[b + 16])); y0 = Math.min(y0, Math.max(f32[b + 1], f32[b + 17]));
+        x1 = Math.max(x1, Math.min(f32[b] + f32[b + 2], f32[b + 18])); y1 = Math.max(y1, Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]));
+      }
     }
-    ggb[0] = x0 - 2; ggb[1] = y0 - 2; ggb[2] = x1 + 2; ggb[3] = y1 + 2;
     const W = canvas.width, Hh = canvas.height, sc = dpr;
     // in the canvas's pixels, from its foot (GL's way up)
     const px0 = Math.max(0, Math.floor((x0 - margin) * sc)), px1 = Math.min(W, Math.ceil((x1 + margin) * sc));
     const pb0 = Math.max(0, Hh - Math.ceil((y1 + margin) * sc)), pb1 = Math.min(Hh, Hh - Math.floor((y0 - margin) * sc));
-    if (px1 <= px0 || pb1 <= pb0 || x1 <= x0 || y1 <= y0) return false;
+    if (px1 <= px0 || pb1 <= pb0 || x1 <= x0 || y1 <= y0) return null;
     // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
-    if (cutOn && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return false;
+    if (cutOn && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return null;
     const w = px1 - px0, h = pb1 - pb0;
-    ensureLevels(W, Hh);
-    gl.disable(gl.BLEND);
-    // (the copy and the passes whole, not cut to the part: a blit is cut by the scissor too)
-    gl.disable(gl.SCISSOR_TEST);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
-    gl.blitFramebuffer(px0, pb0, px1, pb1, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-    gl.useProgram(post);
     const contained = f32[a + 7] < 0 && (f32[a + 4] > 0 ||
-      [24, 25, 26, 27, 44, 45, 46, 47].some(i => f32[a + i] > 0));
+      [24, 25, 26, 27, 44, 45, 46, 47].some((i) => f32[a + i] > 0));
+    let edge = null;
     if (contained) {
-      const edge = new Float32Array(36);
+      edge = new Float32Array(36);
       edge.set([px0 / sc, (Hh - pb0) / sc, 1 / sc, -1 / sc], 0);
       edge.set([f32[a], f32[a + 1], f32[a] + f32[a + 2], f32[a + 1] + f32[a + 3]], 4);
       for (let i = 0; i < 4; i++) {
@@ -1357,43 +1544,212 @@
         edge[16 + i] = f32[a + 24 + i]; edge[20 + i] = f32[a + 28 + i];
         edge[24 + i] = f32[a + 40 + i]; edge[28 + i] = f32[a + 44 + i]; edge[32 + i] = f32[a + 48 + i];
       }
-      gl.uniform4fv(PU.u_c, edge);
-      postPass(lv[0], w, h, lv[4], w, h, 3, 0, 0, 0);
     }
     const sp = blur * sc;
     let k = 0;
     while (k < 3 && sp / (1 << (k + 1)) >= 2) k++;
-    const lw = [w], lh = [h];
-    for (let j = 1; j <= k; j++) {
-      lw[j] = (lw[j - 1] + 1) >> 1;
-      lh[j] = (lh[j - 1] + 1) >> 1;
-      postPass(j === 1 && contained ? lv[4] : lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0);
-    }
-    // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
     const sk = sp / (1 << k);
     const pre = k > 0 ? 0.75 * (1 - Math.pow(0.25, k)) / 3 + 1 / 6 : 0;
     const sg = Math.sqrt(Math.max(sk * sk - pre, 0));
-    if (sg > 0.3) {
-      const from = contained && k === 0 ? lv[4] : lv[k], tmp = contained && k === 0 ? lv[0] : lv[4];
-      postPass(from, lw[k], lh[k], tmp, lw[k], lh[k], 2, sg, 1, 0);
-      postPass(tmp, lw[k], lh[k], from, lw[k], lh[k], 2, sg, 0, 1);
+    return {
+      px0, pb0, w, h, top: Hh, k, contained, n: mN, sg,
+      gb: [x0 - 2, y0 - 2, x1 + 2, y1 + 2],
+      shape: mShape, rad: mRad, edge,
+    };
+  }
+
+  function grabLevels(m) {
+    const lw = [m.w], lh = [m.h];
+    for (let j = 1; j <= 3; j++) {
+      lw[j] = (lw[j - 1] + 1) >> 1;
+      lh[j] = (lh[j - 1] + 1) >> 1;
     }
-    const L = contained && k === 0 ? lv[4] : lv[k], d = 1 << k;
-    bdTex = L.t;
-    gmap[0] = sc / d / L.w; gmap[1] = -sc / d / L.h;
-    gmap[2] = -px0 / d / L.w; gmap[3] = (Hh - pb0) / d / L.h;
-    guvc[0] = 0.5 / L.w; guvc[1] = 0.5 / L.h; guvc[2] = (lw[k] - 0.5) / L.w; guvc[3] = (lh[k] - 0.5) / L.h;
-    // the sharp one liquid glass sees through its lip, of the levels its blur left as they were copied: the half once
-    // halved twice or more, the copy once halved (not contained: contained, its copy is the edge's pass's), else L
-    const rk = k >= 2 ? 1 : k === 1 && !contained ? 0 : k;
-    const R = k >= 2 ? lv[1] : k === 1 && !contained ? lv[0] : L, rd = 1 << rk;
-    rTex = R.t;
-    rmap[0] = sc / rd / R.w; rmap[1] = -sc / rd / R.h;
-    rmap[2] = -px0 / rd / R.w; rmap[3] = (Hh - pb0) / rd / R.h;
-    ruvc[0] = 0.5 / R.w; ruvc[1] = 0.5 / R.h; ruvc[2] = (lw[rk] - 0.5) / R.w; ruvc[3] = (lh[rk] - 0.5) / R.h;
+    return [lw, lh];
+  }
+
+  function grabBlurred(m) {
+    return m.contained && m.k === 0 ? lv[4] : lv[m.k];
+  }
+
+  function showBlur(m, bt, bw, bh) {
+    const [lw, lh] = grabLevels(m);
+    const k = m.k, d = 1 << k, sc = dpr;
+    for (let i = 0; i < 4; i++) ggb[i] = m.gb[i];
+    gshape.set(m.shape);
+    grad.set(m.rad);
+    gn = m.n;
+    bdTex = bt;
+    gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
+    gmap[2] = -m.px0 / d / bw; gmap[3] = (m.top - m.pb0) / d / bh;
+    guvc[0] = 0.5 / bw; guvc[1] = 0.5 / bh; guvc[2] = (lw[k] - 0.5) / bw; guvc[3] = (lh[k] - 0.5) / bh;
+  }
+
+  function blurGlass(m) {
+    const w = m.w, h = m.h, k = m.k, contained = m.contained;
+    ensureLevels(w, h);
+    gl.disable(gl.BLEND);
+    // (the copy and the passes whole, not cut to the part: a blit is cut by the scissor too)
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
+    gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.useProgram(post);
+    if (contained) {
+      gl.uniform4fv(PU.u_c, m.edge);
+      postPass(lv[0], w, h, lv[4], w, h, 3, 0, 0, 0);
+    }
+    const [lw, lh] = grabLevels(m);
+    for (let j = 1; j <= k; j++) {
+      postPass(j === 1 && contained ? lv[4] : lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0);
+    }
+    if (m.sg > 0.3) {
+      const from = grabBlurred(m), tmp = contained && k === 0 ? lv[0] : lv[4];
+      postPass(from, lw[k], lh[k], tmp, lw[k], lh[k], 2, m.sg, 1, 0);
+      postPass(tmp, lw[k], lh[k], from, lw[k], lh[k], 2, m.sg, 0, 1);
+    }
+  }
+
+  function reaches(i, run, g) {
+    const b = i * INST;
+    if (f32[b + 32] !== 0) return true;
+    const kind = Math.round(f32[b + 5]);
+    let e = kind === 2 ? Math.abs(f32[b + 7]) * 3 + 2 : 1;
+    if (kind === 6) e = Math.max(f32[b + 23], f32[run * INST + 23], 0) + 2;
+    e += 1;
+    const x0 = Math.min(f32[b], f32[b] + f32[b + 2]) - e;
+    const x1 = Math.max(f32[b], f32[b] + f32[b + 2]) + e;
+    const y0 = Math.min(f32[b + 1], f32[b + 1] + f32[b + 3]) - e;
+    const y1 = Math.max(f32[b + 1], f32[b + 1] + f32[b + 3]) + e;
+    return x1 > g[0] && x0 < g[2] && y1 > g[1] && y0 < g[3];
+  }
+
+  function unstableUnder(i) {
+    const tid = f32[i * INST + 20] | 0;
+    if (tid > STREAM_TEX) return true;
+    if (tid > 0 && Math.round(f32[i * INST + 5]) !== 9) {
+      const im = images.get(tid);
+      if (!im || !im.tex) return true;
+    }
+    return false;
+  }
+
+  function underTake(start, count, pieces, m) {
+    const sc = dpr;
+    const g = [m.px0 / sc - 1, (m.top - (m.pb0 + m.h)) / sc - 1, (m.px0 + m.w) / sc + 1, (m.top - m.pb0) / sc + 1];
+    let whole = 0, run = 0;
+    for (let i = 0; i < start; i++) {
+      const tid = f32[i * INST + 20];
+      if (i > 0 && tid !== f32[(i - 1) * INST + 20]) run = i;
+      const sees = tid < 0 || Math.round(f32[i * INST + 5]) === 7;
+      if (sees && reaches(i, run, g)) whole = i + 1;
+    }
+    const maxNeed = (start + (count - pieces)) * INST;
+    if (underNow.length < maxNeed) underNow = new Float32Array(Math.max(maxNeed, underNow.length * 2));
+    for (let i = 0; i < whole; i++) if (unstableUnder(i)) return false;
+    let off = whole * INST;
+    if (off > 0) underNow.set(f32.subarray(0, off), 0);
+    let picked = 0;
+    for (let i = whole; i < start; i++) {
+      if (!reaches(i, i, g)) continue;
+      if (unstableUnder(i)) return false;
+      underNow.set(f32.subarray(i * INST, (i + 1) * INST), off);
+      off += INST;
+      picked++;
+    }
+    const pLen = (count - pieces) * INST;
+    if (pLen > 0) {
+      underNow.set(f32.subarray(pieces * INST, count * INST), off);
+      off += pLen;
+    }
+    underNowN = off;
+    underWhole = whole;
+    underPicked = picked;
     return true;
   }
-  // the main program's state, after the passes
+
+  function grabSame(a, b) {
+    if (a.px0 !== b.px0 || a.pb0 !== b.pb0 || a.w !== b.w || a.h !== b.h || a.top !== b.top ||
+        a.k !== b.k || a.contained !== b.contained || a.n !== b.n || a.sg !== b.sg) return false;
+    for (let i = 0; i < 4; i++) if (a.gb[i] !== b.gb[i]) return false;
+    for (let i = 0; i < a.n * 4; i++) if (a.shape[i] !== b.shape[i]) return false;
+    for (let i = 0; i < a.n; i++) if (a.rad[i] !== b.rad[i]) return false;
+    if (a.contained) {
+      for (let i = 0; i < 36; i++) if (a.edge[i] !== b.edge[i]) return false;
+    }
+    return true;
+  }
+
+  function slotSame(m, key) {
+    for (let i = 0; i < GLASS_SLOTS; i++) {
+      const s = glassSlots[i];
+      if (!s.valid || s.underN !== underNowN || s.whole !== underWhole || s.picked !== underPicked) continue;
+      let eq = true;
+      for (let j = 0; j < 6; j++) if (s.key[j] !== key[j]) { eq = false; break; }
+      if (!eq || !grabSame(s.grab, m)) continue;
+      for (let j = 0; j < underNowN; j++) if (s.under[j] !== underNow[j]) { eq = false; break; }
+      if (eq) return s;
+    }
+    return null;
+  }
+
+  function slotCopy(s, L, w, h) {
+    if (!s.bt || s.bw !== L.w || s.bh !== L.h || s.bf !== L.format) {
+      if (s.bt) { gl.deleteFramebuffer(s.bfb); gl.deleteTexture(s.bt); }
+      const made = levelTex(L.format, L.w, L.h);
+      s.bt = made.t; s.bfb = made.fb; s.bw = made.w; s.bh = made.h; s.bf = L.format;
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, L.fb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.bfb);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  }
+
+  function slotFill(m) {
+    let s = glassSlots[0];
+    for (let i = 0; i < GLASS_SLOTS; i++) {
+      if (!glassSlots[i].valid) { s = glassSlots[i]; break; }
+      if (glassSlots[i].used < s.used) s = glassSlots[i];
+    }
+    s.valid = false;
+    const [lw, lh] = grabLevels(m);
+    slotCopy(s, grabBlurred(m), lw[m.k], lh[m.k]);
+    return s;
+  }
+
+  function slotShow(m, s) {
+    s.used = ++glassSlotsClock;
+    showBlur(m, s.bt, s.bw, s.bh);
+  }
+
+  function slotKeep(s, m, key) {
+    if (!s.under || s.under.length < underNowN) s.under = new Float32Array(Math.max(underNowN, INST));
+    if (underNowN > 0) s.under.set(underNow.subarray(0, underNowN), 0);
+    s.underN = underNowN;
+    s.whole = underWhole;
+    s.picked = underPicked;
+    s.grab = m;
+    s.key = key;
+    s.valid = true;
+  }
+
+  // what the run [start, end) of glass sees, frosted glass of the same capture further on (glass.mbt
+  // shares_capture) too; false when none of it shows. Leaves mainState in place when true.
+  function capture(start, end, count, pieces, r, g, b) {
+    const m = grabOf(start, end, count);
+    if (!m) return false;
+    const key = [canvas.width, canvas.height, dpr, r, g, b];
+    const known = underTake(start, count, pieces, m);
+    let s = known ? slotSame(m, key) : null;
+    if (!s) {
+      blurGlass(m);
+      s = slotFill(m);
+      const canKeep = !cutOn || (m.px0 >= cut[0] && m.px0 + m.w <= cut[0] + cut[2] && m.pb0 >= cut[1] && m.pb0 + m.h <= cut[1] + cut[3]);
+      if (known && !drewMissing && canKeep) slotKeep(s, m, key);
+    }
+    slotShow(m, s);
+    mainState();
+    return true;
+  }
+  // the main programs' state, after the passes
   function mainState() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, target);
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -1404,31 +1760,16 @@
       gl.disable(gl.SCISSOR_TEST);
     }
     gl.enable(gl.BLEND);
-    gl.useProgram(prog);
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
-    // The framebuffer's rounded size may not be exactly cssW*dpr. Mapping to cssW would stretch its pixels by that
-    // remainder, sampling glyphs between atlas texels. A point must cover exactly dpr pixels, including at 125% zoom.
-    gl.uniform2f(U.u_vp, canvas.width / dpr, canvas.height / dpr);
-    gl.uniform1f(U.u_scale, dpr);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-    gl.uniform1i(U.u_atlas, 0);
-    gl.uniform1i(U.u_img, 1);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
-    gl.uniform1i(U.u_bd, 2);
-    gl.uniform4fv(U.u_map, gmap);
-    gl.uniform4fv(U.u_uvc, guvc);
-    gl.uniform4fv(U.u_rmap, rmap);
-    gl.uniform4fv(U.u_ruvc, ruvc);
-    gl.uniform4fv(U.u_gb, ggb);
-    gl.uniform4fv(U.u_shape, gshape);
-    gl.uniform4fv(U.u_rad, grad);
-    gl.uniform1i(U.u_n, gn);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, segsTex || atlasTex);
-    gl.uniform1i(U.u_segs, 3);
+    progGen++;
+    useProg(-1);
   }
 
   // The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the
@@ -1471,23 +1812,346 @@
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SEGS_ROW, rows, gl.RGBA, gl.FLOAT, data);
   }
 
-  // A frame presented: into cv, only the parts that differ where it holds the frame before, then onto the canvas.
+  // ---- banded scissor strips (src/host/bands.h) ----
+  const MB_BAND_COST = 4096, MB_PIECE_COST = 16384, MB_BAND_MARGIN = 2, MB_BAND_ROWS = 8, MB_STRIPS = 140;
+  const bandOut = new Int32Array(MB_STRIPS * 5);
+  const bandTry = new Int32Array(MB_STRIPS * 5);
+  const bandHole = { x0: 0, y0: 0, x1: 0, y1: 0, r0: 0, r1: 0, r2: 0, r3: 0 };
+  const bandWhole = { x0: 0, y0: 0, x1: 0, y1: 0 };
+  const bandR = new Float32Array(4);
+  const bandSpan = [0, 0];
+  const bandPiecesX0 = new Int32Array(11), bandPiecesY0 = new Int32Array(11);
+  const bandPiecesX1 = new Int32Array(11), bandPiecesY1 = new Int32Array(11);
+
+  function mbRoundSpan(s, y, t, outIdx) {
+    const x0 = s.x0 + t, y0 = s.y0 + t, x1 = s.x1 - t, y1 = s.y1 - t;
+    if (y < y0 || y > y1 || x1 <= x0) return false;
+    const top = y < (s.y0 + s.y1) * 0.5;
+    const left = top ? s.r0 : s.r3, right = top ? s.r1 : s.r2;
+    const dy = top ? y - y0 : y1 - y;
+    let inL = 0, inR = 0;
+    const rhoL = left - t;
+    if (rhoL > 0 && dy < rhoL) {
+      const d = rhoL - dy;
+      inL = rhoL - Math.sqrt(Math.max(rhoL * rhoL - d * d, 0));
+    }
+    const rhoR = right - t;
+    if (rhoR > 0 && dy < rhoR) {
+      const d = rhoR - dy;
+      inR = rhoR - Math.sqrt(Math.max(rhoR * rhoR - d * d, 0));
+    }
+    const l = x0 + inL, r = x1 - inR;
+    bandSpan[outIdx] = l;
+    bandSpan[outIdx + 1] = r;
+    return l < r;
+  }
+
+  function mbRoundNarrowest(s, y0, y1, t) {
+    const a = mbRoundSpan(s, y0, t, 0);
+    const l0 = bandSpan[0], r0 = bandSpan[1];
+    const b = mbRoundSpan(s, y1, t, 0);
+    const l1 = bandSpan[0], r1 = bandSpan[1];
+    const l = Math.max(l0, l1), r = Math.min(r0, r1);
+    bandSpan[0] = l;
+    bandSpan[1] = r;
+    return a && b && l < r;
+  }
+
+  function mbInside(a, up, inset, scale, o) {
+    const hw = f32[a + 2] * 0.5, hh = f32[a + 3] * 0.5;
+    const room = Math.min(hw, hh);
+    if (room <= inset) return false;
+    for (let i = 0; i < 4; i++) {
+      const rr = Math.min(f32[a + 36 + i], room);
+      if (rr <= 0) { bandR[i] = 0; continue; }
+      if (room - rr < 0.25 * rr) return false;
+      bandR[i] = Math.min(rr * 1.25, room) * scale;
+    }
+    const t = inset * scale;
+    o.x0 = f32[a] * scale + t;
+    o.y0 = (f32[a + 1] - up) * scale + t;
+    o.x1 = (f32[a] + f32[a + 2]) * scale - t;
+    o.y1 = (f32[a + 1] - up + f32[a + 3]) * scale - t;
+    o.r0 = Math.max(bandR[0] - t, 0);
+    o.r1 = Math.max(bandR[1] - t, 0);
+    o.r2 = Math.max(bandR[2] - t, 0);
+    o.r3 = Math.max(bandR[3] - t, 0);
+    return o.x0 < o.x1 && o.y0 < o.y1;
+  }
+
+  function mbCutAlike(a, b) {
+    for (let k = 16; k < 60; k++) {
+      if ((k >= 20 && k < 24) || (k >= 36 && k < 40)) continue;
+      if (f32[a + k] !== f32[b + k]) return false;
+    }
+    return true;
+  }
+
+  function mbWhole(a, kind, scale, toX0, toY0, toX1, toY1) {
+    const grow = kind === 2 ? f32[a + 7] * 3 + 2 : 1;
+    let x0 = Math.floor((f32[a] - grow) * scale);
+    let y0 = Math.floor((f32[a + 1] - grow) * scale);
+    let x1 = Math.ceil((f32[a] + f32[a + 2] + grow) * scale);
+    let y1 = Math.ceil((f32[a + 1] + f32[a + 3] + grow) * scale);
+    if (f32[a + 35] < 0.5) {
+      x0 = Math.max(x0, Math.floor(Math.max(f32[a + 16] * scale, -1e8)));
+      y0 = Math.max(y0, Math.floor(Math.max(f32[a + 17] * scale, -1e8)));
+      x1 = Math.min(x1, Math.ceil(Math.min(f32[a + 18] * scale, 1e8)));
+      y1 = Math.min(y1, Math.ceil(Math.min(f32[a + 19] * scale, 1e8)));
+    }
+    bandWhole.x0 = Math.max(x0, toX0);
+    bandWhole.y0 = Math.max(y0, toY0);
+    bandWhole.x1 = Math.min(x1, toX1);
+    bandWhole.y1 = Math.min(y1, toY1);
+  }
+
+  function mbPieces(a, scale, toX0, toY0, toX1, toY1, out) {
+    for (let k = 0; k < 4; k++) if (f32[a + 24 + k] > 0 || f32[a + 44 + k] > 0) return -1;
+    if (f32[a + 53] > 0 || f32[a + 55] > 0 || f32[a + 57] > 0 || f32[a + 59] > 0 || f32[a + 35] > 0.5) return -1;
+    mbWhole(a, 0, scale, toX0, toY0, toX1, toY1);
+    const hw = f32[a + 2] * 0.5, hh = f32[a + 3] * 0.5, room = Math.min(hw, hh);
+    for (let i = 0; i < 4; i++) {
+      const rr = Math.min(f32[a + 36 + i], room);
+      if (rr <= 0) { bandR[i] = 0; continue; }
+      if (room - rr < 0.25 * rr) return -1;
+      bandR[i] = Math.min(rr * 1.25, room) * scale;
+    }
+    const m = MB_BAND_MARGIN;
+    const x0 = f32[a] * scale, y0 = f32[a + 1] * scale, x1 = (f32[a] + f32[a + 2]) * scale, y1 = (f32[a + 1] + f32[a + 3]) * scale;
+    const inX0 = Math.max(Math.ceil(f32[a + 16] * scale) + 1, toX0);
+    const inY0 = Math.max(Math.ceil(f32[a + 17] * scale) + 1, toY0);
+    const inX1 = Math.min(Math.floor(f32[a + 18] * scale) - 1, toX1);
+    const inY1 = Math.min(Math.floor(f32[a + 19] * scale) - 1, toY1);
+    const c0 = bandWhole.x0, c5 = bandWhole.x1, r0 = bandWhole.y0, r5 = bandWhole.y1;
+    let c1 = Math.ceil(x0 + m), c4 = Math.floor(x1 - m), r1 = Math.ceil(y0 + m), r4 = Math.floor(y1 - m);
+    if (c1 < inX0) c1 = inX0;
+    if (c4 > inX1) c4 = inX1;
+    if (r1 < inY0) r1 = inY0;
+    if (r4 > inY1) r4 = inY1;
+    if (c1 < c0 || r1 < r0 || c4 > c5 || r4 > r5 || c1 >= c4 || r1 >= r4) return -1;
+    let c2 = Math.ceil(x0 + Math.max(bandR[0], bandR[3])), c3 = Math.floor(x1 - Math.max(bandR[1], bandR[2]));
+    let r2 = Math.ceil(y0 + Math.max(bandR[0], bandR[1])), r3 = Math.floor(y1 - Math.max(bandR[3], bandR[2]));
+    if (c2 < c1) c2 = c1;
+    if (c3 > c4) c3 = c4;
+    if (r2 < r1) r2 = r1;
+    if (r3 > r4) r3 = r4;
+    if (c2 > c3) { const mid = ((c2 + c3) / 2) | 0; c2 = c3 = mid < c1 ? c1 : mid > c4 ? c4 : mid; }
+    if (r2 > r3) { const mid = ((r2 + r3) / 2) | 0; r2 = r3 = mid < r1 ? r1 : mid > r4 ? r4 : mid; }
+    bandPiecesX0[0] = c2; bandPiecesY0[0] = r1; bandPiecesX1[0] = c3; bandPiecesY1[0] = r2;
+    bandPiecesX0[1] = c1; bandPiecesY0[1] = r2; bandPiecesX1[1] = c4; bandPiecesY1[1] = r3;
+    bandPiecesX0[2] = c2; bandPiecesY0[2] = r3; bandPiecesX1[2] = c3; bandPiecesY1[2] = r4;
+    bandPiecesX0[3] = c0; bandPiecesY0[3] = r0; bandPiecesX1[3] = c5; bandPiecesY1[3] = r1;
+    bandPiecesX0[4] = c0; bandPiecesY0[4] = r1; bandPiecesX1[4] = c2; bandPiecesY1[4] = r2;
+    bandPiecesX0[5] = c3; bandPiecesY0[5] = r1; bandPiecesX1[5] = c5; bandPiecesY1[5] = r2;
+    bandPiecesX0[6] = c0; bandPiecesY0[6] = r2; bandPiecesX1[6] = c1; bandPiecesY1[6] = r3;
+    bandPiecesX0[7] = c4; bandPiecesY0[7] = r2; bandPiecesX1[7] = c5; bandPiecesY1[7] = r3;
+    bandPiecesX0[8] = c0; bandPiecesY0[8] = r3; bandPiecesX1[8] = c2; bandPiecesY1[8] = r4;
+    bandPiecesX0[9] = c3; bandPiecesY0[9] = r3; bandPiecesX1[9] = c5; bandPiecesY1[9] = r4;
+    bandPiecesX0[10] = c0; bandPiecesY0[10] = r4; bandPiecesX1[10] = c5; bandPiecesY1[10] = r5;
+    let flat = 0, n = 0;
+    for (let k = 0; k < 11; k++) {
+      const px0 = bandPiecesX0[k], py0 = bandPiecesY0[k], px1 = bandPiecesX1[k], py1 = bandPiecesY1[k];
+      if (px1 <= px0 || py1 <= py0) continue;
+      const o = n * 5;
+      out[o] = px0; out[o + 1] = py0; out[o + 2] = px1; out[o + 3] = py1; out[o + 4] = k < 3 ? 1 : 0;
+      if (k < 3) flat += (px1 - px0) * (py1 - py0);
+      n++;
+    }
+    if (flat < n * MB_PIECE_COST) return -1;
+    return n;
+  }
+
+  function mbBandKind(i) {
+    const kind = Math.round(f32[i * INST + 5]);
+    return kind === 0 || kind === 2;
+  }
+
+  function mbBands(i, count, scale, toX0, toY0, toX1, toY1, out) {
+    if (H.env('MBUI_STRIPS') === '0') return -1;
+    const a = i * INST;
+    const kind = Math.round(f32[a + 5]);
+    if (f32[a + 32] !== 0 || f32[a + 20] !== 0) return -1;
+    if (kind === 2) {
+      if (f32[a + 12] > 0.5) {
+        if (!mbInside(a, f32[a + 13], 0, scale, bandHole)) return -1;
+      } else {
+        if (i + 1 >= count) return -1;
+        const b = a + INST;
+        if (Math.round(f32[b + 5]) !== 0 || f32[b + 20] !== 0 || f32[b + 11] !== 1 || f32[b + 22] > 0) return -1;
+        if (f32[b + 6] > 0 && f32[b + 15] !== 1) return -1;
+        if (!mbCutAlike(a, b)) return -1;
+        for (let k = 0; k < 4; k++) if (f32[b + 24 + k] > 0 || f32[b + 44 + k] > 0) return -1;
+        if (f32[b + 53] > 0 || f32[b + 55] > 0 || f32[b + 57] > 0 || f32[b + 59] > 0) return -1;
+        if (!mbInside(b, 0, 0, scale, bandHole)) return -1;
+      }
+    } else if (kind === 0) {
+      if (f32[a + 22] > 0) return -1;
+      if (f32[a + 11] > 0 && f32[a + 6] <= 0) return mbPieces(a, scale, toX0, toY0, toX1, toY1, out);
+      if (f32[a + 11] !== 0 || f32[a + 6] <= 0) return -1;
+      if (!mbInside(a, 0, f32[a + 6], scale, bandHole)) return -1;
+    } else {
+      return -1;
+    }
+    mbWhole(a, kind, scale, toX0, toY0, toX1, toY1);
+    const wx0 = bandWhole.x0, wy0 = bandWhole.y0, wx1 = bandWhole.x1, wy1 = bandWhole.y1;
+    const wholeArea = wx1 > wx0 && wy1 > wy0 ? (wx1 - wx0) * (wy1 - wy0) : 0;
+    if (wholeArea <= MB_BAND_COST) return -1;
+    const m = MB_BAND_MARGIN;
+    const top = wy0, bottom = wy1;
+    let hTop = Math.ceil(bandHole.y0 + m), hBottom = Math.floor(bandHole.y1 - m);
+    const rTop = Math.max(bandHole.r0, bandHole.r1), rBottom = Math.max(bandHole.r2, bandHole.r3);
+    const hrx0 = Math.max(wx0, Math.ceil(bandHole.x0 + m)), hry0 = Math.max(wy0, hTop);
+    const hrx1 = Math.min(wx1, Math.floor(bandHole.x1 - m)), hry1 = Math.min(wy1, hBottom);
+    const hrArea = hrx1 > hrx0 && hry1 > hry0 ? (hrx1 - hrx0) * (hry1 - hry0) : 0;
+    if (hrArea <= 2 * MB_BAND_COST) return -1;
+    let mTop = hTop + Math.ceil(rTop), mBottom = hBottom - Math.ceil(rBottom);
+    if (mTop > mBottom) mTop = mBottom = ((mTop + mBottom) / 2) | 0;
+    const clampY = (y) => (y < top ? top : y > bottom ? bottom : y);
+    hTop = clampY(hTop); hBottom = clampY(hBottom); mTop = clampY(mTop); mBottom = clampY(mBottom);
+    let best = wholeArea + MB_BAND_COST, last = -1, found = -1;
+    const rows = Math.max(mTop - hTop, hBottom - mBottom);
+    for (let k = 1; k <= 32 && (k === 1 || ((rows / k) | 0) >= MB_BAND_ROWS); k *= 2) {
+      let n = 0, cost = 0;
+      for (let s = 0; s < 2 * k + 3; s++) {
+        let y0, y1;
+        if (hTop >= hBottom) {
+          if (s > 0) break;
+          y0 = top; y1 = bottom;
+        } else if (s === 0) {
+          y0 = top; y1 = hTop;
+        } else if (s <= k) {
+          y0 = hTop + (((mTop - hTop) * (s - 1)) / k | 0);
+          y1 = hTop + (((mTop - hTop) * s) / k | 0);
+        } else if (s === k + 1) {
+          y0 = mTop; y1 = mBottom;
+        } else if (s <= 2 * k + 1) {
+          const j = s - k - 2;
+          y0 = mBottom + (((hBottom - mBottom) * j) / k | 0);
+          y1 = mBottom + (((hBottom - mBottom) * (j + 1)) / k | 0);
+        } else {
+          y0 = hBottom; y1 = bottom;
+        }
+        if (y0 >= y1) continue;
+        let hl = 0, hrr = 0;
+        if (y0 >= hTop && y1 <= hBottom && mbRoundNarrowest(bandHole, y0, y1, m)) {
+          hl = Math.max(wx0, Math.ceil(bandSpan[0]));
+          hrr = Math.min(wx1, Math.floor(bandSpan[1]));
+        }
+        if (hl >= hrr) {
+          if (wx1 > wx0) {
+            const o = n * 5;
+            bandTry[o] = wx0; bandTry[o + 1] = y0; bandTry[o + 2] = wx1; bandTry[o + 3] = y1; bandTry[o + 4] = 0;
+            n++;
+            cost += (wx1 - wx0) * (y1 - y0) + MB_BAND_COST;
+          }
+        } else {
+          if (hl > wx0) {
+            const o = n * 5;
+            bandTry[o] = wx0; bandTry[o + 1] = y0; bandTry[o + 2] = hl; bandTry[o + 3] = y1; bandTry[o + 4] = 0;
+            n++;
+            cost += (hl - wx0) * (y1 - y0) + MB_BAND_COST;
+          }
+          if (wx1 > hrr) {
+            const o = n * 5;
+            bandTry[o] = hrr; bandTry[o + 1] = y0; bandTry[o + 2] = wx1; bandTry[o + 3] = y1; bandTry[o + 4] = 0;
+            n++;
+            cost += (wx1 - hrr) * (y1 - y0) + MB_BAND_COST;
+          }
+        }
+      }
+      if (cost < best) {
+        best = cost;
+        found = n;
+        out.set(bandTry.subarray(0, n * 5), 0);
+      }
+      if (last >= 0 && cost >= last) break;
+      last = cost;
+    }
+    return found;
+  }
+
+  function drawRun(first, count) {
+    for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, first * INST * 4 + i * 16);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+  }
+
+  function drawBanded(start, end, count) {
+    const W = canvas.width, Hh = canvas.height;
+    const toX0 = cutOn ? cut[0] : 0;
+    const toY0 = cutOn ? Hh - (cut[1] + cut[3]) : 0;
+    const toX1 = cutOn ? cut[0] + cut[2] : W;
+    const toY1 = cutOn ? Hh - cut[1] : Hh;
+    let s = start;
+    for (let i = start; i < end; i++) {
+      if (!mbBandKind(i)) continue;
+      const n = mbBands(i, count, dpr, toX0, toY0, toX1, toY1, bandOut);
+      if (n < 0) continue;
+      if (i > s) drawRun(s, i - s);
+      gl.enable(gl.SCISSOR_TEST);
+      for (let k = 0; k < n; k++) {
+        const o = k * 5;
+        const flat = bandOut[o + 4];
+        if (k === 0 || flat !== bandOut[o - 1]) {
+          gl.useProgram(flat ? progFlat : progNow);
+          if (flat) gl.uniform2f(ufVp, W / dpr, Hh / dpr);
+        }
+        gl.scissor(bandOut[o], Hh - bandOut[o + 3], bandOut[o + 2] - bandOut[o], bandOut[o + 3] - bandOut[o + 1]);
+        drawRun(i, 1);
+      }
+      if (n > 0 && bandOut[(n - 1) * 5 + 4]) gl.useProgram(progNow);
+      if (cutOn) gl.scissor(cut[0], cut[1], cut[2], cut[3]);
+      else gl.disable(gl.SCISSOR_TEST);
+      s = i + 1;
+    }
+    if (end > s) drawRun(s, end - s);
+  }
+
+  // A frame presented: whole-screen frames straight onto the default framebuffer (null); once the app reports partial
+  // dirty rects, into cv (building a baseline if !cvOk, then scissor-updating dirty rects) and blitted onto null.
   H.present = (buf, n, r, g, b) => {
     const len = n * INST;
     // (and the frame's ground after it: a rect over all the window, opaque, a part drawn again first)
     if (f32.length < len + INST) f32 = new Float32Array(len * 2 + INST);
-    for (let i = 0; i < len; i++) f32[i] = buf[i];
+    if (typeof buf.subarray === 'function') f32.set(buf.subarray(0, len), 0);
+    else for (let i = 0; i < len; i++) f32[i] = buf[i];
     f32.fill(0, len, len + INST);
     f32[len] = -16; f32[len + 1] = -16; f32[len + 2] = cssW + 32; f32[len + 3] = cssH + 32;
     f32[len + 8] = r; f32[len + 9] = g; f32[len + 10] = b; f32[len + 11] = 1;
     f32[len + 16] = -1e9; f32[len + 17] = -1e9; f32[len + 18] = 1e9; f32[len + 19] = 1e9;
+    const whole = !dirtyTold || dirtyWhole || missing;
+    if (whole) {
+      dirtyTold = false;
+      dirtyWhole = false;
+      dirty = [];
+      cvOk = false;
+      target = null;
+      frameUpload(n);
+      glassDrawn = false;
+      drawFrame(n, r, g, b, false);
+      missing = drewMissing;
+      glassIdleTick();
+      return;
+    }
     ensureCanvas();
-    if (!cv) dirtyTold = false;
+    if (!cv) {
+      dirtyTold = false;
+      dirtyWhole = false;
+      dirty = [];
+      cvOk = false;
+      target = null;
+      frameUpload(n);
+      glassDrawn = false;
+      drawFrame(n, r, g, b, false);
+      missing = drewMissing;
+      glassIdleTick();
+      return;
+    }
     const parts = takeParts(cvOk);
-    target = cv ? cv.fb : null;
+    target = cv.fb;
     // the frame's instances and its shapes' pieces uploaded once, whether drawn whole or a part at a time (each part
     // uploaded them all again: a list scrolled spent a fifth of its frames in bufferData)
     frameUpload(n);
+    glassDrawn = false;
     if (!parts) {
       drawFrame(n, r, g, b, false);
       missing = drewMissing;
@@ -1500,19 +2164,18 @@
       }
       missing = any;
     }
-    cvOk = !!cv;
+    glassIdleTick();
+    cvOk = !missing;
     target = null;
-    if (cv) {
-      gl.disable(gl.SCISSOR_TEST);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, cv.fb);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
-      // (cleared first: a drawing buffer shown is cleared as it is next drawn to, and Chromium does not count a blit
-      // as that: a frame that drew nothing new, only the blit, read back as cleared)
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.blitFramebuffer(0, 0, cv.w, cv.h, 0, 0, cv.w, cv.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    }
+    gl.disable(gl.SCISSOR_TEST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, cv.fb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    // (cleared first: a drawing buffer shown is cleared as it is next drawn to, and Chromium does not count a blit
+    // as that: a frame that drew nothing new, only the blit, read back as cleared)
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.blitFramebuffer(0, 0, cv.w, cv.h, 0, 0, cv.w, cv.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   };
 
   // The frame's `n` instances (in f32, its ground after them) and its shapes' pieces into the GPU's buffer and texture:
@@ -1540,63 +2203,70 @@
       if (n === 0) return;
     }
     bdTex = null;
-    rTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
-    gl.useProgram(prog);
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
     if (uploadedFor !== n) frameUpload(n);
     mainState();
     if (part) {
-      for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, len * 4 + i * 16);
       gl.disable(gl.BLEND);
-      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, 1);
+      drawRun(n, 1);
       gl.enable(gl.BLEND);
     }
-    // one draw per run of instances showing the same image (slot 20), or sharing one capture of glass (negative);
-    // WebGL has no base instance, so the attributes start at the run instead
+    let pieces = n;
+    while (pieces > 0 && Math.round(f32[(pieces - 1) * INST + 5]) === 12) pieces--;
+    // one draw per run of instances showing the same image (slot 20) of one kind (its program: useProg), or sharing
+    // one capture of glass (negative); WebGL has no base instance, so the attributes start at the run instead
     // (and per run of holes, kind 9: written transparent with no blending, where a native view shows)
-    const hole = (i) => Math.round(f32[i * INST + 5]) === 9;
     let start = 0, bound = 0, shows = false;
     while (start < n) {
       const tid = f32[start * INST + 20] | 0;
-      const h = hole(start);
+      const kind = Math.round(f32[start * INST + 5]);
+      const h = kind === 9;
+      const own = tid >= 0 && !h && hasOwnProg(kind);
       let end = start + 1;
-      while (end < n && (f32[end * INST + 20] | 0) === tid && hole(end) === h) end++;
+      while (end < n && (f32[end * INST + 20] | 0) === tid) {
+        const k = Math.round(f32[end * INST + 5]);
+        if ((k === 9) !== h) break;
+        if (own ? k !== kind : (tid >= 0 && !h && hasOwnProg(k))) break;
+        end++;
+      }
+      useProg(own ? kind : -1);
       if (tid < 0) {
+        glassDrawn = true;
         if (tid !== bound) {
-          shows = capture(start, end, n);
+          shows = capture(start, end, n, pieces, r, g, b);
           bound = tid;
-          mainState();
         }
         if (shows) {
-          for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
-          // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
-          // binds its own there again)
-          const liquid = Math.round(f32[start * INST + 5]) === 6;
-          if (liquid) {
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, rTex || atlasTex);
-          }
-          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, liquid ? 1 : end - start);
+          // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+          const mergedLiquid = kind === 6 && f32[start * INST + 23] > 0;
+          drawRun(start, mergedLiquid ? 1 : end - start);
         }
         start = end;
         continue;
       }
       // a stream's picture (STREAM_TEX + its id): nothing until a frame of its own shows; a hole's image is its
       // view's (src/hostapi/host.mbt view_tex_base + its id), the element under the canvas here
+      // (in a window beside the page, its own texture of each: slotTex)
       const im = h ? null : tid > STREAM_TEX ? streams.get(tid - STREAM_TEX) : tid ? images.get(tid) : null;
-      if (!h && tid > STREAM_TEX && !(im && im.tex)) {
+      const tex = !im || !im.tex ? null : winActive === 0 ? im.tex : slotTex(wins[winActive], tid, im);
+      if (!h && tid > STREAM_TEX && !tex) {
         start = end;
         continue;
       }
-      if (!h && tid > 0 && tid <= STREAM_TEX && !(im && im.tex)) drewMissing = true;
+      if (!h && tid > 0 && tid <= STREAM_TEX && !tex) drewMissing = true;
       gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, im && im.tex ? im.tex : atlasTex);
-      for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
-      if (h) gl.disable(gl.BLEND);
-      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, end - start);
-      if (h) gl.enable(gl.BLEND);
+      gl.bindTexture(gl.TEXTURE_2D, tex || atlasTex);
+      if (h) {
+        gl.disable(gl.BLEND);
+        drawRun(start, end - start);
+        gl.enable(gl.BLEND);
+      } else if (tid === 0) {
+        drawBanded(start, end, n);
+      } else {
+        drawRun(start, end - start);
+      }
       start = end;
     }
     if (part) gl.disable(gl.SCISSOR_TEST);
@@ -1613,10 +2283,10 @@
   let nextView = 0, viewLayer = null;
   function layer() {
     if (!viewLayer) {
-      viewLayer = document.createElement('div');
+      viewLayer = doc.createElement('div');
       // over the page's own ground, under the canvas (both positioned: the body's ground would cover a layer below 0)
       viewLayer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:0';
-      document.body.insertBefore(viewLayer, document.body.firstChild);
+      doc.body.insertBefore(viewLayer, doc.body.firstChild);
       canvas.style.zIndex = '1';
     }
     return viewLayer;
@@ -1630,8 +2300,9 @@
     for (const js of v.scripts) v.el.contentWindow.postMessage({ mbuiScript: js }, '*');
     v.scripts = [];
   };
-  // what a page's frame says, from that frame only (no other window may speak for it)
-  window.addEventListener('message', (e) => {
+  // what a page's frame says, from that frame only (no other window may speak for it); heard on the page and on each
+  // window beside it, whose frames say it to their own (slotPage)
+  const pageSaid = (e) => {
     if (!e.data || typeof e.data.mbuiSaid !== 'string') return;
     for (const v of views.values()) {
       if (v.kind !== 2 || e.source !== v.el.contentWindow) continue;
@@ -1640,7 +2311,8 @@
       runScripts(v);
       H.requestFrame();
     }
-  });
+  };
+  window.addEventListener('message', pageSaid);
   // ---- a site's frame ----
   // (the messages a site's frame and this host trade: `<the app's site name>-preview-…`, @hostapi.set_site_name)
   const preview = (name) => `${H.siteName || 'mbui'}-preview-${name}`;
@@ -1667,7 +2339,7 @@
   };
   const sitePost = (v, m, transfer) => { if (v.port) v.port.postMessage(m, transfer || []); };
   const siteNav = (v, action, path) => { if (v.el.contentWindow) v.el.contentWindow.postMessage({ type: preview('nav'), action, path }, v.origin); };
-  window.addEventListener('message', (e) => {
+  const siteSaid = (e) => {
     if (typeof e.data?.type !== 'string' || !fromFrame(e.data.type)) return;
     for (const v of views.values()) {
       if (v.kind !== 3 || e.source !== v.el.contentWindow || e.origin !== v.origin || e.data.nonce !== v.nonce) continue;
@@ -1683,36 +2355,40 @@
         H.requestFrame();
       }
     }
-  });
+  };
+  window.addEventListener('message', siteSaid);
   // Where a press goes: the canvas lies over every view, so while a site is seen it takes none: they go to what is under
   // it (`under`, behind the views: every press where no view takes it, and every press's capture, as it stays) and,
   // over it, to one box for each rect the app says takes a press over a site (view_tell 4). Not by the canvas cut away
   // (clip-path) where a site is: a press goes through that, Chromium's scrolling does not (a finger or a wheel on the
   // site moves nothing); `pointer-events` both go by.
+  // (each window's own, of the sites it shows: winSave; placeSitePresses for the window in place, siteFor another's)
   let under = null;
-  const coverBoxes = [];
+  let coverBoxes = [];
   const siteTakes = (v) => v.kind === 3 && v.seen && v.touch !== 'through';
   const placeSitePresses = () => {
-    const sites = [...views.values()].filter(siteTakes);
+    const sites = [...views.values()].filter((v) => (v.wid || 0) === winActive && siteTakes(v));
     canvas.style.pointerEvents = sites.length ? 'none' : '';
     if (sites.length && !under) {
-      under = document.createElement('div');
+      under = doc.createElement('div');
       under.style.cssText = 'position:fixed;inset:0;z-index:0;touch-action:none';
-      document.body.insertBefore(under, viewLayer);
+      doc.body.insertBefore(under, layer());
       takePresses(under);
     }
     const covers = sites.flatMap((v) => v.covers);
     while (coverBoxes.length > covers.length) coverBoxes.pop().remove();
     covers.forEach(([x0, y0, x1, y1], i) => {
       if (!coverBoxes[i]) {
-        coverBoxes[i] = document.createElement('div');
+        coverBoxes[i] = doc.createElement('div');
         coverBoxes[i].style.cssText = 'position:fixed;z-index:2;touch-action:none';
-        document.body.appendChild(coverBoxes[i]);
+        doc.body.appendChild(coverBoxes[i]);
         takePresses(coverBoxes[i]);
       }
       Object.assign(coverBoxes[i].style, { left: x0 + 'px', top: y0 + 'px', width: x1 - x0 + 'px', height: y1 - y0 + 'px' });
     });
   };
+  // the presses round the sites of window `wid` placed again (where it is open)
+  const siteFor = (wid) => { if (wid === 0 || liveSlot(wid)) inWin(wid, placeSitePresses); };
   H.viewSiteNext = (id) => {
     const v = views.get(id);
     return v && v.said && v.said.length ? v.said.shift() : '';
@@ -1759,13 +2435,13 @@
       if (what === 2) {
         v.touch = text.split(' ')[0];
         v.el.style.pointerEvents = v.touch === 'through' ? 'none' : 'auto';
-        placeSitePresses();
+        siteFor(v.wid || 0);
       }
       else if (what === 4) {
         const n = text ? text.split(' ').map(Number) : [];
         v.covers = [];
         for (let i = 0; i + 3 < n.length; i += 4) v.covers.push(n.slice(i, i + 4));
-        placeSitePresses();
+        siteFor(v.wid || 0);
       } else if (what === 7) {
         // what a socket did, on to the frame (NativeView::tell_frame): [sid, what, …]
         const [sid, kind, a, b, c] = JSON.parse(text);
@@ -1788,12 +2464,14 @@
   H.viewOpen = (kind, arg) => {
     if (kind !== 1 && kind !== 2 && !(kind === 3 && H.siteFrame)) return 0;
     const id = ++nextView;
-    const clip = document.createElement('div');
+    // (in the window in place: its own document's, under its canvas)
+    const mk = (tag) => (doc || document).createElement(tag);
+    const clip = mk('div');
     clip.style.cssText = 'position:absolute;overflow:hidden;display:none;background:' + (kind === 1 ? '#000' : '#fff');
-    const v = { kind, clip, state: 0, reads: [], waiting: new Map(), nextRead: 0, parts: [], have: 0, total: -1 };
+    const v = { kind, clip, wid: winActive, state: 0, reads: [], waiting: new Map(), nextRead: 0, parts: [], have: 0, total: -1 };
     info(v);
     if (kind === 1) {
-      const el = document.createElement('video');
+      const el = mk('video');
       el.playsInline = true;
       el.style.cssText = 'position:absolute;object-fit:fill';
       el.addEventListener('loadedmetadata', () => {
@@ -1814,8 +2492,18 @@
       });
       // how it stands told as it changes: as it plays, waits, stops, jumps, has more; and each frame of its picture
       // shown as it plays (a sound's: each of the page's frames)
-      for (const e of ['play', 'playing', 'waiting', 'pause', 'stalled', 'canplay', 'ended', 'seeking', 'seeked',
+      for (const e of ['play', 'playing', 'waiting', 'pause', 'stalled', 'canplay', 'ended', 'seeking',
         'progress', 'durationchange', 'ratechange']) el.addEventListener(e, () => stood(id));
+      el.addEventListener('seeked', () => {
+        if (v.pendingSeek !== null) {
+          const p = v.pendingSeek;
+          v.pendingSeek = null;
+          const t = Math.max(0, p.ms / 1000);
+          if (p.near && typeof el.fastSeek === 'function') el.fastSeek(t);
+          else el.currentTime = t;
+        }
+        stood(id);
+      });
       let going = false;
       const frame = () => {
         stood(id);
@@ -1827,6 +2515,8 @@
       el.addEventListener('playing', () => { if (!going) { going = true; go(); } });
       v.el = el;
       v.type = arg;
+      v.scrubbing = false;
+      v.pendingSeek = null;
       // the whole file read through the app, a part at a time, then played
       // (the player waits on the app's bytes now: not the host's work until they come)
       v.ask = (offset) => {
@@ -1838,7 +2528,7 @@
       };
       v.ask(0);
     } else if (kind === 3) {
-      const el = document.createElement('iframe');
+      const el = mk('iframe');
       el.style.cssText = 'position:absolute;border:0;background:#fff;pointer-events:auto;transform-origin:0 0';
       const frame = new URL(H.siteFrame, location.href);
       v.origin = frame.origin;
@@ -1855,7 +2545,7 @@
       el.addEventListener('error', () => { v.state = -1; ready(id, v, -1); stood(id); });
       v.el = el;
     } else {
-      const el = document.createElement('iframe');
+      const el = mk('iframe');
       el.setAttribute('sandbox', 'allow-scripts');
       el.style.cssText = 'position:absolute;border:0;background:#fff';
       // loaded: what a screenshot shows of it is the page itself (in the page's own picture)
@@ -1872,13 +2562,38 @@
     }
     clip.appendChild(v.el);
     clip.style.zIndex = String(++nextZ);
-    layer().appendChild(clip);
+    // (the layer and document it is in: viewPlace moves it where another window places it)
+    v.layer = layer();
+    v.doc = doc;
+    v.layer.appendChild(clip);
     views.set(id, v);
     return id;
   };
   H.viewPlace = (id, x, y, w, h, cx0, cy0, cx1, cy1, shown, r0 = 0, r1 = 0, r2 = 0, r3 = 0) => {
     const v = views.get(id);
     if (!v) return;
+    // Placed in another window than it was (a view the app keeps, taken from one window to another: ui's native.mbt):
+    // moved to this one's layer. Into another document its frame loads again: a site's from where it was (its port
+    // made again as it says it is ready), a page's scripts run again once it is there.
+    const here = layer();
+    if (v.layer !== here) {
+      const from = v.wid || 0;
+      v.wid = winActive;
+      v.layer = here;
+      if (v.doc !== doc) {
+        v.doc = doc;
+        if (v.kind === 3) {
+          if (v.port) { v.port.close(); v.port = null; }
+          try {
+            const u = new URL(v.el.src, location.href);
+            u.searchParams.set('path', (v.at && v.at.path) || '/');
+            v.el.src = u.href;
+          } catch (e) { /* its address as it was */ }
+        } else if (v.kind === 2) v.there = false;
+      }
+      here.appendChild(v.clip);
+      if (from !== winActive) siteFor(from);
+    }
     Object.assign(v.clip.style, { left: cx0 + 'px', top: cy0 + 'px', width: Math.max(0, cx1 - cx0) + 'px',
       height: Math.max(0, cy1 - cy0) + 'px', display: shown ? 'block' : 'none' });
     // (its corners round, each its own (top left, then round it), as the hole the app paints for it: the element cut
@@ -1896,12 +2611,12 @@
     }
     // where it is now, in device pixels, as the page laid it out (scripts/host_contract.sh web views: against VIEWTOLD)
     if (shown && H.log) {
-      const d = window.devicePixelRatio || 1, r = v.el.getBoundingClientRect(), k = v.clip.getBoundingClientRect();
-      const cv = (H.canvas || document.querySelector('canvas'));
+      const d = dpr || 1, r = v.el.getBoundingClientRect(), k = v.clip.getBoundingClientRect();
+      const cv = canvas || (doc || document).querySelector('canvas');
       const o = cv ? cv.getBoundingClientRect() : { left: 0, top: 0 };
       const f = (n) => n.toFixed(4);
       // (its corners as the page has them, each)
-      const cs = getComputedStyle(v.el);
+      const cs = (hostWin.getComputedStyle ? hostWin : window).getComputedStyle(v.el);
       const said = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius', 'borderBottomLeftRadius']
         .map((k) => parseFloat(cs[k]) || 0);
       H.log(`VIEWAT ${id} ${f((r.left - o.left) * d)} ${f((r.top - o.top) * d)} ${f(r.width * d)} ${f(r.height * d)} ` +
@@ -1916,7 +2631,7 @@
     if (v.kind === 1) { v.el.pause(); if (v.url) URL.revokeObjectURL(v.url); }
     if (v.kind === 3 && v.port) v.port.close();
     v.clip.remove();
-    placeSitePresses();
+    siteFor(v.wid || 0);
   };
   H.viewControl = (id, op, value) => {
     const v = views.get(id);
@@ -1931,10 +2646,33 @@
       return;
     }
     if (!v || v.kind !== 1) return;
-    if (op === 1) v.el.play().catch(() => {});
-    else if (op === 2) v.el.pause();
-    else if (op === 3 || op === 11) v.el.currentTime = value / 1000;
+    const doSeek = (ms, near) => {
+      const t = Math.max(0, ms / 1000);
+      if (near && typeof v.el.fastSeek === 'function') v.el.fastSeek(t);
+      else v.el.currentTime = t;
+    };
+    if (op === 1) { v.pendingSeek = null; v.el.play().catch(() => {}); }
+    else if (op === 2) { v.pendingSeek = null; v.el.pause(); }
+    else if (op === 9) {
+      v.scrubbing = value > 0;
+      if (!v.scrubbing && v.pendingSeek !== null && !v.el.seeking) {
+        const p = v.pendingSeek;
+        v.pendingSeek = null;
+        doSeek(p.ms, p.near);
+      }
+    }
+    else if (op === 3 || op === 11) {
+      const near = op === 11;
+      if (v.scrubbing && near && v.el.seeking) {
+        v.pendingSeek = { ms: value, near: true };
+      } else {
+        v.pendingSeek = null;
+        doSeek(value, near);
+      }
+    }
     else if (op === 4) v.el.playbackRate = value;
+    // how loud, 0 to 1 (NativeView::volume)
+    else if (op === 10) v.el.volume = Math.max(0, Math.min(1, value));
     // a frame grabbed (op 21, or the one shown: 22): this host grabs none; failed, said so (viewText's 2: "-1", once)
     else if (op === 21 || op === 22) {
       v.grab = '-1';
@@ -2002,6 +2740,8 @@
     if (more) return;
     if (r.got > 0 && (v.total < 0 || v.have < v.total)) return v.ask(v.have);
     v.url = URL.createObjectURL(new Blob(v.parts, { type: v.type }));
+    // (the Blob holds the bytes now: the parts let go of, not kept twice)
+    v.parts.length = 0;
     v.el.src = v.url;
   };
 
@@ -2027,6 +2767,8 @@
         bmp = small;
       }
       if (!images.has(id)) return bmp.close();
+      // (the page's canvas's: a window beside it takes a copy of its own as it first draws it, slotTex)
+      const gl = mainGl();
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
@@ -2078,6 +2820,7 @@
   H.imagePixels = (id, out) => {
     const im = images.get(id);
     if (!im || im.state !== 1 || !im.tex || out.length < im.w * im.h * 4) return 0;
+    const gl = mainGl();
     const was = gl.getParameter(gl.FRAMEBUFFER_BINDING);
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
@@ -2094,8 +2837,9 @@
   };
   H.imageFree = (id) => {
     const im = images.get(id);
-    if (im && im.tex) gl.deleteTexture(im.tex);
+    if (im && im.tex) mainGl().deleteTexture(im.tex);
     images.delete(id);
+    slotsForget(id);
   };
 
   // ---- streams (src/hostapi/stream.mbt) ----
@@ -2105,16 +2849,24 @@
   // a key frame, the older of two it holds, those inside as it starts anew, a JPEG that does not decode) and the
   // decoder broken ("b": an error) told the same way, each asking for a frame.
   const STREAM_TEX = 4194304;
+  // Adaptive jitter-absorbing presentation clock and four-state catch-up pacer for H.264 streams.
+  const CLOCK_WINDOW_MS = 5000;
+  const JITTER_WINDOW_MS = 2000;
+  const JITTER_QUANTILE = 0.95;
+  const MAX_HOLD_MS = 100;
+  const HOLD_DECAY = 0.05;
+  const CLOCK_JUMP_MS = 500;
   const streams = new Map();
   let nextStream = 0;
   // (a VideoDecoder that takes no H.264, as Chromium's own build has: asked once as the page loads, the app's first
   // frame held until it is answered, so that h264_here is the same from the app's start). Asked of what a station
-  // sends: constrained baseline (its helper's VideoToolbox, AutoLevel: ScreenView.swift) at a 1920 × 1080 view's
-  // level, 4.2 (a viewer's maxWidth, Android's ScreenSession).
+  // sends: High (its helper's VideoToolbox and Windows' Media Foundation ask for it first, AutoLevel: ScreenView.swift,
+  // encode.rs), so that a browser whose decoder takes Baseline alone shows no stream it cannot decode, at a 1920 × 1080
+  // view's level, 4.2 (a viewer's maxWidth, Android's ScreenSession).
   let hasVideoDecoder = false;
   const h264Asked = typeof VideoDecoder === 'undefined'
     ? Promise.resolve()
-    : VideoDecoder.isConfigSupported({ codec: 'avc1.42E02A', codedWidth: 1920, codedHeight: 1080, optimizeForLatency: true })
+    : VideoDecoder.isConfigSupported({ codec: 'avc1.64002A', codedWidth: 1920, codedHeight: 1080, optimizeForLatency: true })
       .then((r) => { hasVideoDecoder = !!r.supported; }, () => {});
   H.h264Here = () => (hasVideoDecoder ? 1 : 0);
   const num = (v) => String(v);
@@ -2122,6 +2874,117 @@
     if (s.closed) return;
     s.events.push(e);
     H.requestFrame();
+  }
+  function observeArrival(s, ts, arrivedMs) {
+    const offset = arrivedMs - ts / 1000;
+    const last = s.samples.length ? s.samples[s.samples.length - 1] : null;
+    if (last && Math.abs(offset - last.offset) > CLOCK_JUMP_MS) {
+      s.samples = [];
+      s.lows = [];
+      s.holdMs = 0;
+    }
+    const previous = s.samples.length ? s.samples[s.samples.length - 1].time : arrivedMs;
+    const sample = { time: arrivedMs, offset, late: 0 };
+    s.samples.push(sample);
+    while (s.lows.length && s.lows[s.lows.length - 1].offset >= offset) s.lows.pop();
+    s.lows.push(sample);
+    while (s.samples[0].time < arrivedMs - CLOCK_WINDOW_MS) {
+      if (s.lows[0] === s.samples[0]) s.lows.shift();
+      s.samples.shift();
+    }
+    const base = s.lows[0].offset;
+    sample.late = offset - base;
+    const recent = [];
+    for (let i = s.samples.length - 1; i >= 0 && s.samples[i].time >= arrivedMs - JITTER_WINDOW_MS; i--) {
+      recent.push(s.samples[i].late);
+    }
+    recent.sort((a, b) => a - b);
+    const target = Math.min(MAX_HOLD_MS, recent[Math.floor(JITTER_QUANTILE * (recent.length - 1))]);
+    s.holdMs = target >= s.holdMs ? target : Math.max(target, s.holdMs - (arrivedMs - previous) * HOLD_DECAY);
+    return base;
+  }
+  function isDue(s, item, now) {
+    return item.ts / 1000 + item.base + s.holdMs <= now + 1e-6;
+  }
+  function dueCount(s, now) {
+    let count = 0;
+    while (count < s.paced.length && isDue(s, s.paced[count], now)) count++;
+    return count;
+  }
+  function waitUsOf(item, now) {
+    const ms = now - item.arrived;
+    return ms > 0 ? Math.min(0xffff_ffff, Math.round(ms * 1000)) : 0;
+  }
+  function presenterPhase(due, draws, backlogMs, sinceCatchUpMs, headOverstayMs) {
+    if (due <= 2) return 'idle';
+    if (due > 12 || headOverstayMs > 200) return 'overrun';
+    if (due - draws <= 2) return 'idle';
+    return backlogMs < 500 || sinceCatchUpMs < 250 ? 'backlog' : 'catchUp';
+  }
+  function trimDecoded(s, now, draws = 0) {
+    let due = dueCount(s, now);
+    const phase = presenterPhase(
+      due, draws, now - (s.backlogSince ?? now), now - s.lastCatchUp,
+      s.paced.length ? now - s.paced[0].arrived - s.holdMs : 0,
+    );
+    if (phase === 'idle') {
+      s.backlogSince = null;
+      return;
+    }
+    if (s.backlogSince === null) s.backlogSince = now;
+    if (phase === 'backlog') return;
+    do {
+      const dropped = s.paced.shift();
+      dropped.frame.close();
+      due--;
+      const waitUs = waitUsOf(dropped, now);
+      say(s, waitUs > 0 ? `d ${num(dropped.ts)} ${waitUs}` : `d ${num(dropped.ts)}`);
+    } while (phase === 'overrun' && due > 2);
+    if (due <= 2) s.backlogSince = null;
+    if (phase === 'catchUp') s.lastCatchUp = now;
+  }
+  function emitFrame(s, item, now) {
+    s.decoded.push({ ts: item.ts, frame: item.frame, w: item.w, h: item.h });
+    s.drawnThisFrame = true;
+    const waitUs = waitUsOf(item, now);
+    say(s, waitUs > 0 ? `f ${num(item.ts)} ${item.w} ${item.h} ${waitUs}` : `f ${num(item.ts)} ${item.w} ${item.h}`);
+  }
+  function schedulePresent(s) {
+    if (!s.paceRaf && !s.closed) s.paceRaf = requestAnimationFrame(() => present(s));
+  }
+  function present(s) {
+    s.paceRaf = 0;
+    if (s.closed) return;
+    s.drawnThisFrame = false;
+    const now = performance.now();
+    trimDecoded(s, now, 1);
+    let drew = false;
+    if (s.paced.length && isDue(s, s.paced[0], now)) {
+      emitFrame(s, s.paced.shift(), now);
+      drew = true;
+    }
+    if (drew || s.paced.length) schedulePresent(s);
+  }
+  function presentDecoded(s, item) {
+    const now = performance.now();
+    const immediate = !s.paced.length && !s.drawnThisFrame;
+    s.paced.push(item);
+    trimDecoded(s, now);
+    if (immediate && s.paced.length && isDue(s, s.paced[0], now)) emitFrame(s, s.paced.shift(), now);
+    if (s.paced.length || s.drawnThisFrame) schedulePresent(s);
+  }
+  function resetPace(s) {
+    if (s.paceRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(s.paceRaf);
+    s.paceRaf = 0;
+    s.drawnThisFrame = false;
+    s.backlogSince = null;
+    s.lastCatchUp = -Infinity;
+    s.samples = [];
+    s.lows = [];
+    s.holdMs = 0;
+    s.arrivals.clear();
+    for (const f of s.paced) f.frame.close();
+    s.paced = [];
   }
   // the decoder for the config there is (none without one): whether there is one now
   function startDecoder(s) {
@@ -2134,8 +2997,21 @@
           if (gen !== s.gen || s.closed) return frame.close();
           const ts = frame.timestamp;
           while (s.inside.length && s.inside[0] <= ts) s.inside.shift();
-          s.decoded.push({ ts, frame, w: frame.displayWidth, h: frame.displayHeight });
-          say(s, `f ${num(ts)} ${frame.displayWidth} ${frame.displayHeight}`);
+          const meta = s.arrivals.get(ts);
+          if (meta) s.arrivals.delete(ts);
+          for (const k of s.arrivals.keys()) {
+            if (k < ts) s.arrivals.delete(k);
+            else break;
+          }
+          const now = performance.now();
+          presentDecoded(s, {
+            ts,
+            frame,
+            w: frame.displayWidth,
+            h: frame.displayHeight,
+            arrived: meta ? meta.arrived : now,
+            base: meta ? meta.base : now - ts / 1000,
+          });
         },
         error: (e) => {
           if (gen !== s.gen) return;
@@ -2159,14 +3035,19 @@
       s.decoder = null;
     }
     s.gen++;
-    if (s.inside.length) say(s, 'd ' + num(Math.max(...s.inside)));
+    let maxDropped = -Infinity;
+    for (const t of s.inside) if (t > maxDropped) maxDropped = t;
+    for (const f of s.paced) if (f.ts > maxDropped) maxDropped = f.ts;
+    if (maxDropped > -Infinity) say(s, 'd ' + num(maxDropped));
     s.inside = [];
+    resetPace(s);
     s.needKey = true;
   }
   H.streamOpen = () => {
     const id = ++nextStream;
-    streams.set(id, { id, events: [], decoded: [], inside: [], gen: 0, needKey: true, decoder: null, config: null,
-      tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
+    streams.set(id, { id, events: [], decoded: [], inside: [], paced: [], arrivals: new Map(), samples: [], lows: [],
+      holdMs: 0, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
+      decoder: null, config: null, tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
     return id;
   };
   H.streamH264 = (id, avcc, w, h) => {
@@ -2187,12 +3068,16 @@
     if (!s) return;
     if (!s.decoder || (s.needKey && !key)) return say(s, 'd ' + num(ts));
     s.needKey = false;
+    const arrived = performance.now();
+    const base = observeArrival(s, ts, arrived);
+    s.arrivals.set(ts, { arrived, base });
     try {
       s.inside.push(ts);
       s.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: new Uint8Array(data) }));
     } catch (e) {
       // not a frame it takes: the next key frame asked for
       s.inside = s.inside.filter((t) => t !== ts);
+      s.arrivals.delete(ts);
       say(s, 'd ' + num(ts));
       if (startDecoder(s)) say(s, 'b');
       return;
@@ -2218,6 +3103,7 @@
   // The last shown frame stays until replaced or closed, so a lost GL texture can be made again even if the sender
   // has stopped sending frames. This is one ImageBitmap or VideoFrame per open stream.
   function uploadStream(s) {
+    const gl = mainGl();
     if (!s.shown || gl.isContextLost()) return;
     if (!s.tex) {
       s.tex = gl.createTexture();
@@ -2244,6 +3130,8 @@
     });
     if (s.shown) s.shown.close();
     s.shown = f.frame;
+    // (what a window beside the page holds of it uploaded again as it next draws it: slotTex)
+    s.shownGen = (s.shownGen || 0) + 1;
     uploadStream(s);
   };
   H.streamClose = (id) => {
@@ -2254,13 +3142,16 @@
     for (const f of s.decoded) f.frame.close();
     s.decoded = [];
     if (s.shown) s.shown.close();
-    if (s.tex) gl.deleteTexture(s.tex);
+    if (s.tex) mainGl().deleteTexture(s.tex);
     streams.delete(id);
+    slotsForget(STREAM_TEX + id);
   };
 
   // ---- text ----
   const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   const mctx = document.createElement('canvas').getContext('2d');
+  // widths the canvas measured (width), at most ADV_MOST of them: past it forgotten all at once and measured again
+  const ADV_MOST = 16384;
   const advCache = new Map();
   const keys = new Map();
   const entries = [];
@@ -2334,12 +3225,35 @@
   };
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
+  // (and the glyphs' keys with what they were of, as MoonBit drops what it shaped by them: not here, which a face going
+  // can reach in a frame whose text still holds keys, but before the next frame starts, textSweep)
+  let keysStale = false;
+  // (whether the generation was read since it last moved on: MoonBit may have shaped by the keys under it, textSweep)
+  let generationRead = false;
   const textChanged = () => {
     mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
+    generationRead = false;
+    keysStale = true;
   };
+  // Between frames (each window's frame starts with it, resize): the glyphs' keys forgotten as text changed, or as
+  // there came to be more than KEYS_MOST of them (each a glyph of a size, weight and style ever shaped: a page left
+  // open on changing text grows them without end), the generation moved on so MoonBit shapes what it shows again
+  // (text.mbt text_arrive: the generation read as each frame starts). It moves on again as the keys are forgotten where
+  // it was read since it moved on as the text changed: a face cleared in a frame (faceClear) moves it on there, MoonBit
+  // reads it at once (faces.mbt words_forgotten) and shapes again by the keys still here, which would be kept with that
+  // generation and drawn next frame as other glyphs; unread (the scale changed as the frame starts), once is enough.
+  const KEYS_MOST = 65536;
+  function textSweep() {
+    if (inFrame) return;
+    if (!keysStale && entries.length <= KEYS_MOST) return;
+    if (!keysStale || generationRead) textChanged();
+    keys.clear();
+    entries.length = 0;
+    keysStale = false;
+  }
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
   // open digits, as the Mac's host sets them (apple_text.m face_font: cv11, ss01; a face without them is as it is)
   const faceDescriptors = (face, weight) => ({
@@ -2484,6 +3398,7 @@
     let w = advCache.get(ak);
     if (w === undefined) {
       w = mctx.measureText(s).width;
+      if (advCache.size >= ADV_MOST) advCache.clear();
       advCache.set(ak, w);
     }
     return w;
@@ -2558,7 +3473,10 @@
     return k;
   };
 
-  H.atlasGeneration = () => generation;
+  H.atlasGeneration = () => {
+    generationRead = true;
+    return generation;
+  };
   // (one atlas: colour glyphs in it with the others)
   H.atlasSize = (colour) => colour ? 0 : ATLAS;
 
@@ -2632,14 +3550,28 @@
   };
 
   // the glyph drawn last put in the atlas, its top left at x, y
-  H.glyphPut = (key, x, y) => {
-    if (!held || held.key !== key) return;
-    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, held.pw, held.ph, gl.RGBA, gl.UNSIGNED_BYTE, held.img);
+  // (the atlas is the run's, one for every window: put in each open window's texture of it, and how far it is filled
+  // kept, for a window opened later to copy that much of the page's: slotAtlas)
+  let atlasUsedW = 0, atlasUsedH = 0;
+  const putGlyph = (g, tex, x, y) => {
+    g.bindTexture(g.TEXTURE_2D, tex);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    g.texSubImage2D(g.TEXTURE_2D, 0, x, y, held.pw, held.ph, g.RGBA, g.UNSIGNED_BYTE, held.img);
     // (back as every other upload takes it: left on, it premultiplies the shapes' pieces too, segsUpload's floats
     // each times its four's last, and every icon after the first glyph drawn came out torn)
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  };
+  H.glyphPut = (key, x, y) => {
+    if (!held || held.key !== key) return;
+    putGlyph(gl, atlasTex, x, y);
+    if (winsOpen) {
+      for (let i = 0; i < MB_WINS; i++) {
+        const s = wins[i];
+        if (i !== winActive && s && !s.closed && s.gl) putGlyph(s.gl, s.atlasTex, x, y);
+      }
+    }
+    atlasUsedW = Math.min(ATLAS, Math.max(atlasUsedW, x + held.pw));
+    atlasUsedH = Math.min(ATLAS, Math.max(atlasUsedH, y + held.ph));
     held = null;
   };
 
@@ -2715,8 +3647,40 @@
       if (ta.selectionStart !== s || ta.selectionEnd !== e) ta.setSelectionRange(s, e);
       taHad = text;
     }
-    if (active && document.activeElement !== ta) ta.focus({ preventScroll: true });
-    if (!active && document.activeElement === ta) ta.blur();
+    if (active && doc.activeElement !== ta) ta.focus({ preventScroll: true });
+    if (!active && doc.activeElement === ta) ta.blur();
+  };
+
+  // The input method's keyboard for the field about to type (@hostapi.ime_action, said before setIme: 0 none, 1 a
+  // search's, 2 an address's, 3 a number's, 4 a secret's, 5 an email address's, 6 words taken as typed), as the phones'
+  // hosts ask theirs (ios_app.m's keyboardType, MBView's EditorInfo): the textarea's inputmode, its Enter key's word,
+  // whether the keyboard corrects, spells or capitalises. A keyboard up for another field takes them only as it comes up
+  // again, so the textarea focused is let go and focused again by setIme after (the tap that moved the field still
+  // handled, frameInGesture: iOS keeps its keyboard up).
+  const imeKinds = [
+    {},
+    { inputmode: 'search', enterkeyhint: 'search' },
+    { inputmode: 'url', enterkeyhint: 'go', autocorrect: 'off' },
+    { inputmode: 'numeric', enterkeyhint: 'done', autocorrect: 'off' },
+    { autocorrect: 'off' },
+    { inputmode: 'email', autocorrect: 'off' },
+    { autocorrect: 'off' },
+  ];
+  let imeKind = 0, imeRefocus = false;
+  H.imeAction = (k) => {
+    const kind = imeKinds[k] ? k : 0;
+    if (kind === imeKind) return;
+    imeKind = kind;
+    const want = imeKinds[kind];
+    for (const name of ['inputmode', 'enterkeyhint', 'autocorrect']) {
+      if (want[name]) ta.setAttribute(name, want[name]);
+      else ta.removeAttribute(name);
+    }
+    if (doc.activeElement === ta) {
+      imeRefocus = true;
+      ta.blur();
+      imeRefocus = false;
+    }
   };
 
   // What an edit changed of the textarea's words `was`, to `now` with the caret at `caret`: [from, to, put], the words
@@ -2738,20 +3702,35 @@
   }
 
   function pos(e) {
-    const r = canvas.getBoundingClientRect();
-    return [e.clientX - r.left, e.clientY - r.top];
+    if (!rectValid) {
+      const r = canvas.getBoundingClientRect();
+      rectLeft = r.left;
+      rectTop = r.top;
+      rectValid = true;
+    }
+    return [e.clientX - rectLeft, e.clientY - rectTop];
   }
 
   // a pointer event, with its own time (performance.now's clock) while MoonBit handles it
   let evT = -1;
-  function ptr(kind, e, button) {
+  function ptr(kind, e, button, fallbackTs) {
     const [x, y] = pos(e);
-    evT = e.timeStamp;
+    evT = e.timeStamp > 0 ? e.timeStamp : (fallbackTs !== undefined ? fallbackTs : e.timeStamp);
     try { cb.pointer(kind, x, y, button); } finally { evT = -1; }
   }
 
+  const isIOS = () => {
+    const nav = hostWin.navigator || navigator;
+    const p = (nav.userAgentData && nav.userAgentData.platform) || nav.platform || '';
+    const ua = nav.userAgent || '';
+    return /iphone|ipad|ipod/i.test(p) || /iphone|ipad|ipod/i.test(ua) || (/mac/i.test(p) && nav.maxTouchPoints > 1);
+  };
+
   let takePresses = null;
-  function setupInput() {
+  // The input of a window (the page's, or one opened beside it: `win`, its id `wid`, its canvas and textarea in place
+  // as it is set up): each event handled as that window's (inWin).
+  function setupInput(win = window, wid = 0) {
+    const on = (target, name, f, opts) => target.addEventListener(name, (e) => inWin(wid, () => f(e)), opts);
     // (a touch screen's fingers each by its pointerId, as they come: kinds 10 down, 11 moved, 12 up, 13 called off, what
     // they come to the app's to work out, touches.mbt)
     const touch = (e) => e.pointerType === 'touch';
@@ -2760,31 +3739,45 @@
       if (force || mods !== modifiersSaid) cb.key(0, mods);
     };
     // (the canvas's, and what takes them in its place while a site is seen)
-    takePresses = (el) => {
-      el.addEventListener('pointerdown', (e) => {
+    const presses = (el) => {
+      on(el, 'pointerdown', (e) => {
         e.preventDefault();
         // A key may have been held before the browser gained focus.
         tellModifiers(modsOf(e));
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
-        if (touch(e)) ptr(10, e, e.pointerId);
+        if (touch(e)) { ptr(10, e, e.pointerId); if (isIOS()) frameInGesture(); }
         else ptr(0, e, e.button);
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
-      el.addEventListener('pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
-      el.addEventListener('pointerup', (e) => (touch(e) ? ptr(12, e, e.pointerId) : ptr(2, e, e.button === 2 ? 2 : 0)));
-      el.addEventListener('pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
+      on(el, 'pointermove', (e) => {
+        if (touch(e)) {
+          const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+          if (list && list.length > 0) {
+            for (const ce of list) ptr(11, ce, e.pointerId, e.timeStamp);
+          } else {
+            ptr(11, e, e.pointerId);
+          }
+        } else {
+          ptr(1, e, 0);
+        }
+      });
+      on(el, 'pointerup', (e) => {
+        if (touch(e)) { ptr(12, e, e.pointerId); if (isIOS()) frameInGesture(); }
+        else ptr(2, e, e.button === 2 ? 2 : 0);
+      });
+      on(el, 'pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
-      el.addEventListener('pointerleave', (e) => {
+      on(el, 'pointerleave', (e) => {
         const to = e.relatedTarget;
         const appInput = to === canvas || (to != null && (to === under || coverBoxes.includes(to)));
         if (e.pointerType === 'mouse' && !appInput) cb.pointer(7, -1, -1, 0);
       });
-      el.addEventListener('contextmenu', (e) => e.preventDefault());
-      el.addEventListener('wheel', (e) => {
+      on(el, 'contextmenu', (e) => e.preventDefault());
+      on(el, 'wheel', (e) => {
         const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssH : 1;
         const [x, y] = pos(e);
         // lines (a mouse wheel's notches, as Firefox says them): eased in by the app (phase 4)
@@ -2797,16 +3790,17 @@
         if (!e.ctrlKey || H.wheelKept) e.preventDefault();
       }, { passive: false });
     };
-    takePresses(canvas);
+    takePresses = presses;
+    presses(canvas);
     const keymap = { Backspace: 1, Delete: 2, ArrowLeft: 3, ArrowRight: 4, ArrowUp: 5, ArrowDown: 6, Enter: 7, Home: 8, End: 9, PageUp: 15, PageDown: 16, Escape: 17, Tab: 18 };
     // the browser's own shortcuts left to it (reload, close, a new tab or window, the address bar, quit, zoom)
     const browsers = new Set(['r', 'w', 't', 'n', 'l', 'q', 'v']);
     // Modifier-only keys are input too. Other keys keep their normal path, including browser shortcuts.
     const modifiers = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS']);
     const modifierKey = (e) => { if (modifiers.has(e.key)) tellModifiers(modsOf(e), true); };
-    window.addEventListener('keydown', modifierKey, true);
-    window.addEventListener('keyup', modifierKey, true);
-    window.addEventListener('blur', () => tellModifiers(0, true));
+    on(win, 'keydown', modifierKey, true);
+    on(win, 'keyup', modifierKey, true);
+    on(win, 'blur', () => tellModifiers(0, true));
     const command = (e) => keysCmd() === 8 ? e.metaKey : e.ctrlKey;
     const browserKey = (e, c) => command(e) && (browsers.has(c) ||
       (!e.altKey && !(e.ctrlKey && e.metaKey) && ['+', '=', '-', '0'].includes(c)));
@@ -2820,7 +3814,7 @@
       return ({ a: 24, b: 3, d: 2, e: 25, f: 4, h: 1, k: 35, n: 6, p: 5, v: 16,
         ArrowLeft: 22, ArrowRight: 23, ArrowUp: 15, ArrowDown: 16 })[c] || 0;
     };
-    ta.addEventListener('keydown', (e) => {
+    on(ta, 'keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       const mods = modsOf(e);
       // a key catcher's focus (device, below): Alt too makes a shortcut; select all, copy, cut are its keys
@@ -2846,9 +3840,13 @@
       if (code) { cb.key(code, mods); e.preventDefault(); }
     });
     // with no field focused, the keys are the app's (its shortcuts, Escape, the arrows; a character as 1000 + it)
-    window.addEventListener('keydown', (e) => {
-      if (e.target === ta || imeActive || e.isComposing) return;
-      if (e.altKey && e.key === 'ArrowLeft') return; // back (below)
+    on(win, 'keydown', (e) => {
+      if (e.defaultPrevented || e.target === ta || imeActive || e.isComposing || e.keyCode === 229) return;
+      if (e.target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
+      if (!catching && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === 'ArrowLeft') {
+        goBack(e);
+        return;
+      }
       const mods = modsOf(e);
       const code = keymap[e.key];
       if (code) { cb.key(code, mods); e.preventDefault(); return; }
@@ -2860,12 +3858,13 @@
       cb.key(own ?? 1000 + c.charCodeAt(0), mods);
       e.preventDefault();
     });
+    on(win, 'mouseup', (e) => { if (e.button === 3) goBack(e); });
     // What an input method did to its field goes to the app's as what it changed there, not as what it says it put in:
     // voice input writes a guess and replaces it as it hears more (iOS's dictation selects its last guess and inserts
     // the next over it; another's keyboard may delete it key by key and type the next), corrections and suggestions
     // replace a word, each an event whose data is only the new words. (The textarea is given the field's words again
     // as the app says them, setIme.)
-    ta.addEventListener('input', (e) => {
+    on(ta, 'input', (e) => {
       if (e.isComposing || composing) return;
       const was = taHad, now = ta.value;
       taHad = now;
@@ -2878,8 +3877,8 @@
     // The keyboard put away by the person (Safari's Done over it), not by the app: the field lets go of the focus, as
     // the phones' apps' do (or setIme would take the focus back and the keyboard come up again). (The page sent behind
     // blurs the textarea too, and leaves it the focused element.)
-    ta.addEventListener('blur', () => {
-      if (imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
+    on(ta, 'blur', () => {
+      if (!imeRefocus && imeActive && keyboardOver() > 0 && doc.activeElement !== ta) {
         cb.text(7, '', 0, 0);
         H.requestFrame();
       }
@@ -2899,33 +3898,37 @@
       }
       e.preventDefault();
     };
-    ta.addEventListener('paste', pasted);
+    on(ta, 'paste', pasted);
     // (with no field focused, what is pasted goes to the page: a chat's ⌘V of a picture with the composer not focused)
-    window.addEventListener('paste', (e) => { if (e.target !== ta) pasted(e); });
-    ta.addEventListener('compositionstart', () => { composing = true; });
-    ta.addEventListener('compositionupdate', (e) => cb.text(1, e.data || '', (e.data || '').length, 0));
-    ta.addEventListener('compositionend', (e) => {
+    on(win, 'paste', (e) => { if (e.target !== ta) pasted(e); });
+    on(ta, 'compositionstart', () => { composing = true; });
+    on(ta, 'compositionupdate', (e) => cb.text(1, e.data || '', (e.data || '').length, 0));
+    on(ta, 'compositionend', (e) => {
       composing = false;
       taHad = ta.value;
       cb.text(1, '', 0, 0);
       if (e.data) cb.text(0, e.data, 0, 0);
     });
-    const sizeChanged = () => { sizeDirty = true; H.requestFrame(); };
-    window.addEventListener('resize', sizeChanged);
+    const sizeChanged = () => inWin(wid, () => { sizeDirty = true; rectValid = false; H.requestFrame(); });
+    on(win, 'resize', sizeChanged);
+    on(win, 'scroll', () => { rectValid = false; });
     // (the soft keyboard coming or going changes no size of the page's: keyboardOver)
-    window.visualViewport?.addEventListener('resize', H.requestFrame);
-    window.visualViewport?.addEventListener('scroll', H.requestFrame);
-    if (typeof ResizeObserver !== 'undefined') {
-      sizeObserver = new ResizeObserver(sizeChanged);
+    if (win.visualViewport) {
+      on(win.visualViewport, 'resize', () => { rectValid = false; H.requestFrame(); });
+      on(win.visualViewport, 'scroll', () => { rectValid = false; H.requestFrame(); });
+    }
+    const Observer = win.ResizeObserver || (typeof ResizeObserver !== 'undefined' ? ResizeObserver : undefined);
+    if (Observer) {
+      sizeObserver = new Observer(sizeChanged);
       sizeObserver.observe(canvas);
     }
     // A window can move between displays with different scales without changing its CSS size (and so without a
     // resize event). Watch the current resolution, then subscribe to the new one when it changes.
-    if (window.matchMedia) {
+    if (win.matchMedia) {
       let resolution;
       const watch = () => {
         if (resolution) resolution.removeEventListener('change', changed);
-        resolution = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+        resolution = win.matchMedia(`(resolution: ${win.devicePixelRatio || 1}dppx)`);
         resolution.addEventListener('change', changed);
       };
       const changed = () => {
@@ -2939,7 +3942,7 @@
   // the pointer's shape (@hostapi.set_cursor)
   const cursors = ['default', 'pointer', 'text', 'ew-resize', 'ns-resize', 'grab', 'grabbing', 'crosshair', 'not-allowed', 'nwse-resize', 'nesw-resize'];
   // (the page's, which all that takes presses inherits)
-  H.setCursor = (k) => { document.body.style.cursor = cursors[k] || 'default'; };
+  H.setCursor = (k) => { doc.body.style.cursor = cursors[k] || 'default'; };
   H.clipboardSet = (s) => { navigator.clipboard?.writeText(s).catch(() => {}); };
   // The floating text menu over words picked by a finger (@hostapi.text_menu: a field's, or the page's words a finger
   // held, as Android's ActionMode and iOS's edit menu): a small bar of the page's own over the rectangle given (under
@@ -3008,7 +4011,12 @@
     window.open(u, '_blank', 'noopener');
     return true;
   };
-  H.log = (s) => { console.log(s); window.__logs.push(s); };
+  H.log = (s) => {
+    console.log(s);
+    const l = window.__logs;
+    l.push(s);
+    if (l.length > LOGS_MOST) l.splice(0, l.length - LOGS_MOST);
+  };
   H.benchMode = () => Number(params.get('bench') || 0);
   // the app's end: no frame after it (a page cannot close itself; whoever drives it reads __done)
   H.exit = (code) => { window.__done = code; document.title = 'DONE ' + code; };
@@ -3024,8 +4032,6 @@
   H.setBack = (b) => { back = b; };
   H.backEnabled = (on) => { backOn = on; };
   const goBack = (e) => { if (back && backOn) { e.preventDefault(); back(2, 0, 1, 0); } };
-  window.addEventListener('keydown', (e) => { if (e.altKey && e.key === 'ArrowLeft') goBack(e); });
-  window.addEventListener('mouseup', (e) => { if (e.button === 3) goBack(e); });
 
   // A context lost (the GPU's process gone; a phone's browser takes it from a page sent behind): without
   // preventDefault the browser never gives it back, and paints the canvas white with its broken-canvas mark, over the
@@ -3039,7 +4045,7 @@
   };
   const contextRestored = () => {
     setupGL();
-    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+    glassLost();
     segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
     uploadedFor = -1;
     textChanged();
@@ -3649,10 +4655,20 @@
     canvas = document.getElementById('c');
     ta = document.getElementById('ime');
     canvas.addEventListener('webglcontextlost', contextLost);
-    canvas.addEventListener('webglcontextrestored', contextRestored);
+    canvas.addEventListener('webglcontextrestored', () => inWin(0, contextRestored));
     setupGL();
     setupInput();
     setupPage();
+    // (the page's window, 0: what it keeps is put here as another's frame or input is handled, winUse)
+    wins[0] = { wid: 0, win: window, closed: false, closing: false, wake: wakes0, texs: new Map(), under: null,
+      coverBoxes: [], takePresses: null };
+    // the windows opened beside the page go with it
+    window.addEventListener('pagehide', () => {
+      for (let i = 1; i < MB_WINS; i++) {
+        const s = wins[i];
+        if (s && !s.closed) { slotGone(s, false); try { s.win.close(); } catch (e) { /* gone already */ } }
+      }
+    });
     // Remember what every key told the app, including one received with a modifier already held.
     modifiersSaid = 0;
     cb = { frame, pointer, wheel, key: (code, mods) => { modifiersSaid = mods; key(code, mods); }, text };
@@ -3663,6 +4679,395 @@
       known = true;
       H.requestFrame();
     });
+  };
+
+  // ---- windows (@hostapi.windows_in_process, window_open_id …; host_js.mbt's windows) ----
+  // A window of the run beside the page is a popup of the same origin, opened by the page itself (window.open of
+  // about:blank), so it is the same program, core and memory as the page: its own canvas, WebGL 2 context, textarea and
+  // input, drawn and handled as the page is, each frame and event of it handed to the app with it in place (winUse:
+  // the globals of the drawing and the input above are that window's while it is, the page's put back after;
+  // H.windows(4) says which, as window_slots.mbt's in_host_window reads it). A WebGL texture is its context's alone:
+  // the glyph atlas, the run's, is put in every window's texture of it as a glyph is drawn (H.glyphPut), and a window
+  // opened later copies as much of the page's as is filled; a picture decoded or a stream's frame shown is the page's
+  // texture, copied into a window's own as that window first draws it (slotTex). A window the person closes (its
+  // pagehide) is let go of and the app told (outside OUTSIDE_WINDOW, -1), between its events; one the app closes
+  // (H.windows(3)) is not told again. Its id is not given to another till that is told.
+  // Ops: 0 whether windows open here (1, or 0: a run to a declared moment, one rendering, a page that cannot open one),
+  // 1 open one (`what`: JSON {role, title, w, h, minW, minH}, each optional; its id, 0 if none opened), 2 bring `wid` to
+  // the front (1, 0 gone), 3 close `wid`, 4 the window handled now, 5 set `wid`'s title (-1: the window handled now).
+  const OUTSIDE_WINDOW = 17;
+  // (where a window of a role was as it last closed, in this run: the next of that role opens there)
+  const rolesKept = new Map();
+  function winSave(s) {
+    Object.assign(s, {
+      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, vao, instBuf, atlasTex, ta, U, PU,
+      cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
+      under, coverBoxes, takePresses, doc, hostWin, glassIdle,
+    });
+  }
+  function winLoad(s) {
+    ({
+      canvas, gl, vs, prog, progs, progFlat, ufVp, progGen, progNow, post, vao, instBuf, atlasTex, ta, U, PU,
+      cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
+      under, coverBoxes, takePresses, doc, hostWin, glassIdle,
+    } = s);
+  }
+  // window `wid` put in place; false where it is gone (nothing of it is handled)
+  function winUse(wid) {
+    if (wid === winActive) return true;
+    const to = wins[wid], from = wins[winActive];
+    if (!to || !from || (wid !== 0 && to.closed)) return false;
+    winSave(from);
+    winLoad(to);
+    winActive = wid;
+    return true;
+  }
+  // `f` done as window `wid`, the one in place before put back after
+  function inWin(wid, f) {
+    if (wid === winActive) return f();
+    const back = winActive;
+    if (!winUse(wid)) return undefined;
+    try { return f(); } finally { winUse(back); }
+  }
+  const mainGl = () => (winActive === 0 || !wins[0] ? gl : wins[0].gl);
+  const liveSlot = (wid) => {
+    const s = wid > 0 && wid < MB_WINS ? wins[wid] : null;
+    return s && !s.closed && !s.closing ? s : null;
+  };
+  const windowsHere = () => shotAt < 0 && !globalThis.__mbrender && typeof window !== 'undefined' &&
+    typeof window.open === 'function';
+
+  // A texture of `g`'s read back (premultiplied RGBA, its first row first), or null.
+  function texPixels(g, tex, w, h) {
+    if (!g || !tex || w <= 0 || h <= 0 || g.isContextLost()) return null;
+    const was = g.getParameter(g.FRAMEBUFFER_BINDING);
+    const fb = g.createFramebuffer();
+    g.bindFramebuffer(g.FRAMEBUFFER, fb);
+    g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, tex, 0);
+    let px = null;
+    if (g.checkFramebufferStatus(g.FRAMEBUFFER) === g.FRAMEBUFFER_COMPLETE) {
+      px = new Uint8Array(w * h * 4);
+      g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, px);
+    }
+    g.bindFramebuffer(g.FRAMEBUFFER, was);
+    g.deleteFramebuffer(fb);
+    return px;
+  }
+  function newTex() {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  // The texture of picture or stream `tid` (`im`: images' or streams' entry, its page's texture ready) in window `s`,
+  // in place now: made of the page's as it first draws it, a stream's again at each frame shown since. (On texture
+  // unit 1, which drawFrame binds it to next: the others hold the atlas, the capture and the shapes' pieces.)
+  function slotTex(s, tid, im) {
+    if (!s || !gl) return null;
+    let e = s.texs.get(tid);
+    if (tid > STREAM_TEX) {
+      if (!im.shown) return null;
+      const gen = im.shownGen || 0;
+      if (e && e.gen === gen) return e.tex;
+      gl.activeTexture(gl.TEXTURE1);
+      if (!e) { e = { tex: newTex(), gen: -1 }; s.texs.set(tid, e); }
+      gl.bindTexture(gl.TEXTURE_2D, e.tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, im.shown);
+      e.gen = gen;
+      return e.tex;
+    }
+    if (e) return e.tex;
+    const px = texPixels(wins[0].gl, im.tex, im.w, im.h);
+    if (!px) return null;
+    gl.activeTexture(gl.TEXTURE1);
+    const tex = newTex();
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, im.w, im.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    s.texs.set(tid, { tex, gen: 0 });
+    return tex;
+  }
+  // a picture or stream let go: each window's texture of it too
+  function slotsForget(tid) {
+    if (!winsOpen) return;
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = wins[i], e = s && s.texs.get(tid);
+      if (!e) continue;
+      s.texs.delete(tid);
+      try { (i === winActive ? gl : s.gl).deleteTexture(e.tex); } catch (err) { /* its context gone */ }
+    }
+  }
+  // The atlas of the window in place (just made, or given back after its context was lost) made what the page's
+  // holds: as much of it as is filled copied.
+  function slotAtlas() {
+    if (!atlasUsedW || !atlasUsedH || !wins[0]) return;
+    const px = texPixels(wins[0].gl, wins[0].atlasTex, atlasUsedW, atlasUsedH);
+    if (!px) return;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, atlasUsedW, atlasUsedH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  }
+
+  // window `s` let go of (the person closed it, or the app, or the page goes), the page in place; told to the app
+  // (`tell`) between events, its id kept from another window till then
+  function slotGone(s, tellApp) {
+    if (s.closed) return;
+    if (winActive === s.wid) winUse(0);
+    s.closed = true;
+    winsOpen--;
+    try {
+      const w = s.win.innerWidth, h = s.win.innerHeight;
+      if (s.role && w > 0 && h > 0) rolesKept.set(s.role, { w, h, left: s.win.screenX, top: s.win.screenY });
+    } catch (e) { /* gone already */ }
+    try { if (s.raf) s.win.cancelAnimationFrame(s.raf); } catch (e) { /* gone already */ }
+    s.raf = 0;
+    try { if (s.sizeObserver) s.sizeObserver.disconnect(); } catch (e) { /* gone already */ }
+    for (const e of s.texs.values()) { try { s.gl.deleteTexture(e.tex); } catch (err) { /* its context gone */ } }
+    s.texs.clear();
+    // (all else its context holds, then the context itself: a closed popup's is not let go of while the page holds it)
+    const sg = s.gl;
+    if (sg) {
+      try {
+        for (const t of [s.atlasTex, s.segsTex]) if (t) sg.deleteTexture(t);
+        for (const l of s.lv || []) { sg.deleteTexture(l.t); sg.deleteFramebuffer(l.fb); }
+        for (const gs of s.glassSlots || []) {
+          if (gs.bt) { sg.deleteFramebuffer(gs.bfb); sg.deleteTexture(gs.bt); }
+        }
+        if (s.cv) { sg.deleteTexture(s.cv.t); sg.deleteFramebuffer(s.cv.fb); }
+        if (s.instBuf) sg.deleteBuffer(s.instBuf);
+        if (s.vao) sg.deleteVertexArray(s.vao);
+        for (const kp of s.progs || []) if (kp && kp.p) sg.deleteProgram(kp.p);
+        if (s.progFlat) sg.deleteProgram(s.progFlat);
+        if (s.post) sg.deleteProgram(s.post);
+        if (s.vs) sg.deleteShader(s.vs);
+        const loser = sg.getExtension('WEBGL_lose_context');
+        if (loser) loser.loseContext();
+      } catch (err) { /* its context gone */ }
+    }
+    Object.assign(s, {
+      gl: null, vs: null, prog: null, progs: new Array(MB_KINDS + 1).fill(null), progFlat: null, ufVp: null,
+      progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
+      lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
+      cv: null, cvOk: false, target: null,
+    });
+    // (the views it showed, the app's still where it keeps them: out of its document, placed again where it next shows
+    // one, H.viewPlace)
+    for (const v of views.values()) {
+      if (v.wid !== s.wid) continue;
+      v.clip.remove();
+      v.layer = null;
+      v.seen = null;
+      if (v.kind === 3 && v.port) { v.port.close(); v.port = null; }
+    }
+    if (!tellApp) {
+      if (wins[s.wid] === s) wins[s.wid] = null;
+      return;
+    }
+    queueMicrotask(() => {
+      if (wins[s.wid] === s) wins[s.wid] = null;
+      if (outside) outside(OUTSIDE_WINDOW, s.wid, -1);
+      H.requestFrame();
+    });
+  }
+
+  // a frame of each window beside the page that has none asked for yet, at its own display's next
+  function slotFrames() {
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = wins[i];
+      if (!s || s.closed || s.closing || s.pending) continue;
+      if (s.win.closed) { slotGone(s, true); continue; }
+      s.pending = true;
+      s.raf = s.win.requestAnimationFrame(() => tickSlot(s));
+    }
+  }
+  function tickSlot(s) {
+    s.pending = false;
+    s.raf = 0;
+    if (s.closed || s.closing) return;
+    if (s.win.closed) { slotGone(s, true); return; }
+    if (!cb || window.__done !== undefined) return;
+    inWin(s.wid, () => {
+      resize();
+      inFrame = true;
+      const t = performance.now();
+      s.wake.at = -1;
+      buildingFor = t;
+      try {
+        cb.frame(cssW, Math.max(1, cssH), dpr, t);
+      } finally {
+        buildingFor = -1;
+        inFrame = false;
+      }
+    });
+  }
+
+  // A window opened beside the page for `what` (op 1): its id, 0 where the browser opened none (its popups blocked),
+  // gave one of another origin or no WebGL 2 there.
+  function windowOpen(what) {
+    if (!windowsHere() || !wins[0] || !cb) return 0;
+    let wid = 1;
+    while (wid < MB_WINS && wins[wid]) wid++;
+    if (wid >= MB_WINS) return 0;
+    let spec = {};
+    if (what.startsWith('{')) {
+      try {
+        const v = JSON.parse(what);
+        if (v && typeof v === 'object') spec = v;
+      } catch (e) { /* not JSON: what it shows, said to the app alone */ }
+    }
+    const num = (v) => (typeof v === 'number' && v > 0 && Number.isFinite(v) ? Math.round(v) : 0);
+    const role = typeof spec.role === 'string' ? spec.role : '';
+    const kept = role ? rolesKept.get(role) : null;
+    const w = kept ? kept.w : num(spec.w) || Math.round(cssW || 900);
+    const h = kept ? kept.h : num(spec.h) || Math.round(cssH || 700);
+    const minW = num(spec.minW), minH = num(spec.minH);
+    let left = kept ? kept.left : null, top = kept ? kept.top : null;
+    // (one of the same role open: the new one a step down and right of it)
+    for (let i = 1; i < MB_WINS; i++) {
+      const s = liveSlot(i);
+      if (!s || !role || s.role !== role) continue;
+      try { left = s.win.screenX + 28; top = s.win.screenY + 28; } catch (e) { /* gone already */ }
+    }
+    const place = left === null || top === null ? '' : `,left=${Math.round(left)},top=${Math.round(top)}`;
+    let child = null;
+    try { child = window.open('about:blank', '', `popup=yes,width=${w},height=${h}${place}`); } catch (e) { child = null; }
+    if (!child) return 0;
+    let cdoc = null;
+    try { cdoc = child.document; } catch (e) { cdoc = null; }
+    if (!cdoc || !cdoc.body) {
+      try { child.close(); } catch (e) { /* gone already */ }
+      return 0;
+    }
+    // the page as the app's own page is (web/index.html): its ground, a canvas over all of it, the textarea at the caret
+    const page = wins[0], pageDoc = document;
+    let ground = '';
+    try { ground = window.getComputedStyle(pageDoc.body).backgroundColor || ''; } catch (e) { ground = ''; }
+    cdoc.title = String(spec.title || pageDoc.title || '');
+    const style = cdoc.createElement('style');
+    style.textContent = `html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:${ground || '#F5F5F7'}}` +
+      'canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none;display:block;user-select:none;' +
+      '-webkit-user-select:none;-webkit-touch-callout:none;z-index:1}' +
+      'textarea{position:fixed;left:0;top:0;width:2px;height:20px;opacity:0;padding:0;border:0;resize:none;' +
+      'overflow:hidden;font-size:16px;caret-color:transparent;color:transparent;background:transparent;outline:none}';
+    (cdoc.head || cdoc.documentElement).appendChild(style);
+    const ccanvas = cdoc.createElement('canvas'), cta = cdoc.createElement('textarea');
+    const pageTa = winActive === 0 ? ta : page.ta;
+    for (const a of pageTa && pageTa.attributes ? [...pageTa.attributes] : []) {
+      if (a.name !== 'id' && a.name !== 'style') cta.setAttribute(a.name, a.value);
+    }
+    cdoc.body.appendChild(ccanvas);
+    cdoc.body.appendChild(cta);
+    const s = {
+      wid, win: child, role, minW, minH, closed: false, closing: false, pending: false, raf: 0, wake: { at: -1 },
+      texs: new Map(),
+      canvas: ccanvas, gl: null, vs: null, prog: null, progs: new Array(MB_KINDS + 1).fill(null), progFlat: null,
+      ufVp: null, progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, ta: cta,
+      U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, rectLeft: 0, rectTop: 0, rectValid: false,
+      sizeDirty: true, sizeObserver: null,
+      lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
+      cv: null, cvOk: false, target: null, dirty: [],
+      dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,
+      segsRows: 0, segsHad: null, segsHadRows: 0, uploadedFor: -1, imeActive: false, composing: false, taHad: '',
+      imeKind: 0, viewLayer: null, under: null, coverBoxes: [], takePresses: null, doc: cdoc, hostWin: child,
+      glassIdle: 0,
+    };
+    wins[wid] = s;
+    winsOpen++;
+    let made = false;
+    inWin(wid, () => {
+      try {
+        setupGL();
+        slotAtlas();
+        setupInput(child, wid);
+        slotPage(s);
+        made = true;
+      } catch (e) {
+        H.log('window ' + wid + ': ' + e);
+      }
+    });
+    if (!made) {
+      slotGone(s, false);
+      try { child.close(); } catch (e) { /* gone already */ }
+      return 0;
+    }
+    H.requestFrame();
+    return wid;
+  }
+  // What a window beside the page answers of its own: the keys held, Escape kept from the browser, its least size, its
+  // context lost and given back, its closing.
+  function slotPage(s) {
+    const win = s.win, wid = s.wid;
+    const held = (e) => { modsNow = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+    for (const name of ['pointerdown', 'pointermove', 'pointerup', 'keydown', 'keyup', 'wheel']) {
+      win.addEventListener(name, held, { capture: true, passive: true });
+    }
+    win.addEventListener('blur', () => { modsNow = 0; });
+    win.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) e.preventDefault();
+    }, { capture: true });
+    // (no smaller than the app said: a popup the page opened is one it may size)
+    if (s.minW || s.minH) {
+      win.addEventListener('resize', () => {
+        const dw = Math.max(0, s.minW - win.innerWidth), dh = Math.max(0, s.minH - win.innerHeight);
+        if (dw || dh) { try { win.resizeBy(dw, dh); } catch (e) { /* the browser's to refuse */ } }
+      });
+    }
+    s.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
+    s.canvas.addEventListener('webglcontextrestored', () => inWin(wid, () => {
+      setupGL();
+      glassLost();
+      segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
+      uploadedFor = -1;
+      s.texs.clear();
+      slotAtlas();
+      H.requestFrame();
+    }));
+    // (what the frames in it say goes to it, their parent)
+    win.addEventListener('message', pageSaid);
+    win.addEventListener('message', siteSaid);
+    const gone = () => { if (!s.closed) slotGone(s, true); };
+    win.addEventListener('pagehide', gone);
+    win.addEventListener('unload', gone);
+  }
+
+  H.windows = (op, wid, what) => {
+    if (op === 0) return windowsHere() ? 1 : 0;
+    if (op === 1) return windowOpen(String(what || ''));
+    if (op === 2) {
+      if (wid === 0) { try { window.focus(); } catch (e) { /* the browser's to refuse */ } return 1; }
+      const s = liveSlot(wid);
+      if (!s) return 0;
+      if (s.win.closed) { slotGone(s, true); return 0; }
+      try { s.win.focus(); } catch (e) { /* the browser's to refuse */ }
+      return 1;
+    }
+    if (op === 3) {
+      const s = liveSlot(wid);
+      if (!s) return 0;
+      // (not in the middle of what is handled now, which may be that window's own frame: once it is over)
+      s.closing = true;
+      queueMicrotask(() => {
+        slotGone(s, false);
+        try { s.win.close(); } catch (e) { /* gone already */ }
+      });
+      return 1;
+    }
+    if (op === 4) return winActive;
+    if (op === 5) {
+      const to = wid < 0 ? winActive : wid;
+      const title = String(what || '');
+      if (to === 0) { document.title = title; return 1; }
+      const s = liveSlot(to);
+      if (!s) return 0;
+      try { s.doc.title = title; } catch (e) { return 0; }
+      return 1;
+    }
+    return 0;
   };
 
   // ---- the page round the app: the keys held, the system's bars, its title and colour, its history ----
@@ -3714,6 +5119,9 @@
   // The page's title and the colour of what the browser draws round it (its bar, what shows past the page's edges):
   // @webpage.set_title, set_theme_color (a CSS colour; "" the page's own again).
   H.setPageTitle = (t) => { document.title = t; };
+  // The page's own title as it loaded (its <title>, which the site names itself in: @webpage.loaded_title), kept from
+  // before the run gave the page one.
+  H.loadedTitle = () => loadedTitle;
   H.setThemeColor = (c) => {
     const meta = document.querySelector && document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', c);
@@ -3780,6 +5188,8 @@
   // the page is pinched in (less of it shown, with no keyboard), nor for less than a point (a browser zoomed to a
   // fraction rounds the two apart).
   function keyboardOver() {
+    // (a window beside the page is a desktop's: no soft keyboard over it)
+    if (winActive !== 0) return 0;
     const v = window.visualViewport;
     if (!v || Math.abs(v.scale - 1) > 0.001) return 0;
     const over = cssH - v.height - v.offsetTop;
@@ -3798,11 +5208,15 @@
     if (blob.type === 'image/png') return blob.size <= PNG_MAX ? [1, new Uint8Array(await blob.arrayBuffer())] : [2, null];
     if (blob.size > SOURCE_MAX) return [2, null];
     const bmp = await createImageBitmap(blob);
-    if (bmp.width * bmp.height > PIXELS_MAX) return [2, null];
     const c = document.createElement('canvas');
-    c.width = bmp.width;
-    c.height = bmp.height;
-    c.getContext('2d').drawImage(bmp, 0, 0);
+    try {
+      if (bmp.width * bmp.height > PIXELS_MAX) return [2, null];
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext('2d').drawImage(bmp, 0, 0);
+    } finally {
+      bmp.close();
+    }
     const png = await new Promise((r) => c.toBlob(r, 'image/png'));
     if (!png) return [3, null];
     return png.size <= PNG_MAX ? [1, new Uint8Array(await png.arrayBuffer())] : [2, null];

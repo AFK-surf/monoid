@@ -15,6 +15,8 @@ export type BoxCert = { v: 1; ws: string; device: string; box: string; at: numbe
 export type Vault = {
   v: 1; ws: string; id: string; seq: number; owner: string; name: string; members: string[]; epoch: number;
   keys: { cert: BoxCert; wrapped: string }[]; recovery?: string; at: number; sig: Sig;
+  /// Absent: personal vault; `"workspace"`: shared workspace vault managed by workspace owners/admins.
+  scope?: "workspace";
   /// The longest grant its items are given for, where an item's listing says none (absent: any).
   lasts?: Scope;
   /// Deleted by its owner: its key sealed to no one (a new epoch), its items let go; it stays deleted. Kept as its
@@ -76,7 +78,7 @@ export type Describe = { name: string; about: string; was: { name: string; about
 /// SSH key's public half, a file's name), said on its card. `typed`: the secret is none the agent holds, but what the
 /// person types in (a file: picks) on the card (nothing of it here until then, nothing sealed); with `oauth`, a token the
 /// person signs in to that service for on the card instead (client/core-ts/src/vault/oauth.ts: `slack`).
-export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; env?: string; username?: string; public_key?: string; filename?: string; typed?: true; oauth?: string; about?: string };
+export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; env?: string; username?: string; public_key?: string; filename?: string; typed?: true; oauth?: string; about?: string; vaultName?: string; shared?: true };
 export type Sealed = { device: string; box: string; secret: string };
 export type Grant = {
   v: 1; ws: string; request: string; vault: string; item: string; mode: Mode; hosts: string[]; scope: Scope; exp: number; timeout?: Timeout;

@@ -31,8 +31,13 @@ pub fn Files::workspace_agent_home_path(self : Files, agent_home : String, ws : 
 ///|
 pub let builtin_skills : Array[String] = [
   "stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault",
-  "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading",
+  "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading",
 ]
+
+///|
+/// `RETIRED_SKILLS`: brought before and no longer (stillfail-retire: station_retire is off and hidden). A copy left
+/// untouched is taken away at every start; the shared memory still counts them the station's own.
+pub let retired_skills : Array[String] = ["stillfail-retire"]
 
 ///|
 pub let feedback_skill = "stillfail-feedback"
@@ -95,7 +100,7 @@ async fn Files::only_skill(self : Files, dir : String) -> Bool {
 
 ///|
 /// Writes the station's own skills into the shared skills directory (agent-home.ts `writeBuiltinSkills`).
-/// `move`: stillfail-move too (else taken away, as stillfail-feedback is).
+/// `move`: stillfail-move too (else taken away, as stillfail-feedback is). The retired skills are taken away so, always.
 pub async fn Storage::write_builtin_skills(
   self : Storage,
   agent_home : String,
@@ -115,6 +120,11 @@ pub async fn Storage::write_builtin_skills(
   }
   if !move && fs.only_skill(fs.join([skills, move_skill])) {
     fs.rm(fs.join([skills, move_skill]), recursive=true, force=true)
+  }
+  for name in retired_skills {
+    if fs.only_skill(fs.join([skills, name])) {
+      fs.rm(fs.join([skills, name]), recursive=true, force=true)
+    }
   }
   let names = builtin_skills.filter(n => move || n != move_skill)
   if feedback {

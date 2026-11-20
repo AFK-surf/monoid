@@ -3,7 +3,8 @@
 // Where config.json names Farview (farview.ts), the tool gives each chat's Farview instead of its Chrome context.
 import { join } from "node:path";
 import { Effect, Layer } from "effect";
-import { Parts, Paths, ScreenRegistry, StationConfig } from "../services.ts";
+import { Parts, Paths, ScreenRegistry, StationConfig, Store } from "../services.ts";
+import { BrowserAgentHold } from "./agent-hold.ts";
 import { browserTools } from "./tool.ts";
 import { browserDoor } from "./proxy.ts";
 import { Browser } from "./service.ts";
@@ -11,6 +12,7 @@ import { FarviewTabs, farviewConfig } from "./farview.ts";
 import { readOnly } from "../mesh/credential.ts";
 import { pipeTcp, reachLocal } from "../mesh/peer-forward.ts";
 import { writeLine } from "../mesh/wire.ts";
+import { given } from "../read/views.ts";
 
 export const BrowserLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -19,6 +21,27 @@ export const BrowserLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const { data } = yield* Paths;
     const screens = yield* ScreenRegistry;
+    const store = yield* Store;
+    const hold = yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const h = new BrowserAgentHold({
+          hub: screens,
+          name: (session) => {
+            const thread = store.sessionHomeThread(session)?.thread ?? store.recentSessionThreads(session, 1).threads[0]?.thread ?? null;
+            const title = (thread ? given(thread) : null) ?? store.getSession(session)?.title?.trim() ?? "";
+            return `agent: ${title !== "" ? title : session}`;
+          },
+        });
+        const off = store.subscribe((c) => {
+          if (c.type === "session" && store.getSession(c.key)?.running !== true) h.releaseSession(c.key);
+          else if (c.type === "sessionRemoved") h.releaseSession(c.key);
+        });
+        return { h, off };
+      }),
+      ({ h, off }) => Effect.sync(() => { off(); h.close(); }),
+    );
+    browser.onAgentAct((session, target, method) => hold.h.act(session, target, method));
+    browser.onStopped((session) => hold.h.releaseSession(session));
     const farview = yield* Effect.acquireRelease(
       Effect.sync(() => new FarviewTabs({ dir: join(data, "browser", "farview"), config: () => farviewConfig(config.raw()), screens })),
       (f) => Effect.sync(() => f.close()),

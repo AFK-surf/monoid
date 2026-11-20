@@ -155,7 +155,7 @@ pub fn account_of(p : J?, station : String) -> J? {
     return None
   }
   let id = match get(p, "id") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(v) => js_string_of(v)
     None => "undefined"
   }
@@ -192,55 +192,17 @@ fn js_string_of(v : J) -> String {
     Null => "null"
     Bool(b) => if b { "true" } else { "false" }
     Num(d) => num_text(d)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(xs) => xs.map(x => if x is Null { "" } else { js_string_of(x) }).join(",")
     Obj(_) => "[object Object]"
   }
 }
 
 ///|
-/// Where an ASCII character sorts in the root collation (`localeCompare`): white space, then punctuation and symbols in
-/// their order, then digits, then letters (a case aside).
-fn collation_weight(c : Int) -> Int {
-  let order = "\t\n\u{0b}\u{0c}\r _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789"
-  if c >= 'a' && c <= 'z' {
-    return 1000 + (c - 'a')
-  }
-  if c >= 'A' && c <= 'Z' {
-    return 1000 + (c - 'A')
-  }
-  for i in 0..<order.length() {
-    if order.unsafe_charcode_at(i) == c {
-      return i
-    }
-  }
-  2000 + c
-}
-
-///|
 /// `a.localeCompare(b)` as the station's ICU has it for the names of variables: by the root collation's order of
 /// characters first, then lower before upper case.
 pub fn locale_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = collation_weight(a.unsafe_charcode_at(i))
-    let y = collation_weight(b.unsafe_charcode_at(i))
-    if x != y {
-      return if x < y { -1 } else { 1 }
-    }
-  }
-  if a.length() != b.length() {
-    return if a.length() < b.length() { -1 } else { 1 }
-  }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      let lx = x >= 'a' && x <= 'z'
-      return if lx { -1 } else { 1 }
-    }
-  }
-  0
+  @jsjson.locale_compare(a, b)
 }
 
 ///|

@@ -96,6 +96,12 @@ fn tool_run(
             if truthy(get(Some(l.listing), "env")) {
               fs.push(("env", get(Some(l.listing), "env").unwrap()))
             }
+            if l.vault_name is Some(vn) {
+              fs.push(("vaultName", js(vn)))
+            }
+            if l.scope is Some(sc) {
+              fs.push(("scope", js(sc)))
+            }
             obj(fs)
           })
         let held = secrets

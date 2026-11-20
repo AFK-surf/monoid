@@ -18,7 +18,7 @@ import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { portableName } from "../../src/ops/paths.ts";
-import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../../src/sessions/agent-home.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../../src/sessions/agent-home.ts";
 import { memoryPath, type Rec, SKIPPED } from "../../src/share/memory.ts";
 
 /// The most lines a side of a merge may have past what the two share at their start and end: beyond it no merge is
@@ -170,7 +170,7 @@ const FILE_MOST = 512 * 1024;
 const SKILL_MOST = 4 * 1024 * 1024;
 const SKILL_FILES = 200;
 const PREV_MOST = 16;
-const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL]);
+const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS]);
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const modeOf = (m: number) => ((m & 0o100) !== 0 ? 0o755 : 0o644);
 const own = (m: number) => (m & 0o077) === 0;

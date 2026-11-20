@@ -271,15 +271,13 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
         Whole => search_field_line.then(@ui.style(px=@sf.room_of(band.band_in)))
       }
     })
-    l.box(fn(f) {
+    @sf.action_box_node(l, fn() { @sf.t("android-chat.search.field") }, fn(f) {
+      let (_, y, _, _) = f.placed_window_now()
+      search_open_from(y)
+    }, fn(f) {
       field.val = Some(f)
       @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
       f.alpha(By(fn() { if search_read().open { 0.0 } else { 1.0 } })) |> ignore
-      @sf.presses_node(f, fn() {
-        let (_, y, _, _) = f.placed_window_now()
-        search_open_from(y)
-      })
-      f.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.search.field"))) })) |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {
         @sf.theme().chat_list.band_words.then(search_field_words)
@@ -377,6 +375,7 @@ pub fn search_page_node(
   })
   |> ignore
   v.box(fn(top) { top.height(By(fn() { Some(inset()) })) |> ignore }) |> ignore
+  let combo : Ref[@sf.SearchCombo?] = Ref(None)
   v.box(fn(bar) {
     @sf.style_node(bar, fn() { search_bar_row })
     // (取消's room beside the field as it comes in: its words' width and the room before them)
@@ -394,44 +393,32 @@ pub fn search_page_node(
       // (from where it stood in the list: its top in the window then, to where it rests)
       .offset(By(fn() { (0.0, (search.from - inset() - search_bar_top) * (1.0 - u())) }))
       |> ignore
-      slot.box(fn(f) {
-        @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
-        f.height(By(fn() { Some(@sf.theme().chat_list.band_h) })) |> ignore
-        @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-        let field = @ui.field(
-          f,
-          finder_field(),
-          placeholder=@sf.t("android-chat.search.field"),
-          shorter=search_field_shorter(),
-          max_lines=1,
-          enter_sends=true,
-          ime_action=@hostapi.ime_action_search,
-          size_by=fn() { @sf.theme().t.ui },
-          colors_by=fn() {
-            let p = @sf.theme().p
-            (p.text, p.muted, p.accent)
-          },
-          // the keyboard's search key, as a keyboard's Enter: the line chosen opened where one is shown chosen
-          submitted=fn(typed) {
-            finder_typed(typed)
-            finder_enter(close)
-          },
-        )
-        field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        v.focus_opens(field) |> ignore
-        // (what is typed, as it is: what the finder looks for)
-        f.reacts(fn() { finder_field().text() }, fn(words) { finder_typed(words) })
-      })
-      |> ignore
+      // (the search's combobox: the field's slot, its list's lines the options: finder_combobox_node)
+      combo.val = Some(finder_combobox_node(slot, fn() { @sf.t("android-chat.search.field") }, close))
+      // (the library's field to look through a list by, as the one in the list it came up from looks: its clear key
+      // while it holds words)
+      let field = @sf.search_input_node(
+        slot,
+        finder_field(),
+        fn() { @sf.t("android-chat.search.field") },
+        at~,
+        shorter=search_field_shorter(),
+        // the keyboard's search key, as a keyboard's Enter: the line chosen opened where one is shown chosen
+        submitted=fn(typed) {
+          finder_typed(typed)
+          finder_enter(close)
+        },
+      )
+      v.focus_opens(field) |> ignore
+      // (what is typed, as it is: what the finder looks for)
+      slot.reacts(fn() { finder_field().text() }, fn(words) { finder_typed(words) })
     })
     |> ignore
-    bar.box(fn(k) {
+    @sf.action_box_node(bar, fn() { @sf.t("android-chat.search.cancel") }, fn(_) { if !search.leaving { search_close_now() } }, fn(k) {
       k
       .alpha(By(u))
       .offset(By(fn() { (cancel_w() * (1.0 - u()), 0.0) }))
       |> ignore
-      @sf.presses_node(k, fn() { if !search.leaving { search_close_now() } })
-      k.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.search.cancel"))) })) |> ignore
       @sf.words_node(k, fn() { @sf.t("android-chat.search.cancel") }, fn() { search_cancel }) |> ignore
     })
     |> ignore
@@ -446,10 +433,10 @@ pub fn search_page_node(
     @sf.style_node(l, fn() { @sf.list_line(at) })
     finder_list_node(
       l,
+      combo.val.unwrap(),
       src,
       workspace,
       fn() { (search.offered)() },
-      close,
       // (who, where and when under a line's words where the list is narrow: a side column's always, across a
       // phone's screen by its width)
       fn() {

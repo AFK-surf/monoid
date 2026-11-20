@@ -136,6 +136,11 @@ impl @hostapi.Host for Native with window_current(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with window_set_title(_, wid, title) {
+  windows(5, wid, title) |> ignore
+}
+
+///|
 impl @hostapi.Host for Native with set_cursor(_, kind) {
   set_cursor(kind)
 }
@@ -168,6 +173,26 @@ impl @hostapi.Host for Native with set_site_name(_, name) {
 ///|
 impl @hostapi.Host for Native with mods_held(_) {
   mods_held()
+}
+
+///|
+impl @hostapi.Host for Native with pointer_lock(_, on) {
+  pointer_lock(on)
+}
+
+///|
+impl @hostapi.Host for Native with pointer_locked(_) {
+  pointer_locked()
+}
+
+///|
+impl @hostapi.Host for Native with pointer_delta(_, out) {
+  pointer_delta(out)
+}
+
+///|
+impl @hostapi.Host for Native with gamepads(_, out) {
+  gamepads(out)
 }
 
 ///|
@@ -478,8 +503,18 @@ impl @hostapi.Host for Native with gpu_ms(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with frames_dropped(_) {
+  frames_dropped()
+}
+
+///|
 impl @hostapi.Host for Native with cpu_ms(_) {
   cpu_ms()
+}
+
+///|
+impl @hostapi.Host for Native with thread_cpu_ms(_) {
+  thread_cpu_ms()
 }
 
 ///|
@@ -510,6 +545,11 @@ impl @hostapi.Host for Native with perf_size(_) {
 ///|
 impl @hostapi.Host for Native with perf_open(_, go) {
   perf_open(go)
+}
+
+///|
+impl @hostapi.Host for Native with reveal_file(_, path, go) {
+  reveal_file(path, go)
 }
 
 ///|
@@ -1324,3 +1364,23 @@ impl @hostapi.Host for Native with st_audio_wanted(_, id) { st_audio_wanted(id) 
 
 ///|
 impl @hostapi.Host for Native with st_audio_volume(_, id, v) { st_audio_volume(id, v) }
+
+///|
+impl @hostapi.Host for Native with auto_launch(_) {
+  auto_launch()
+}
+
+///|
+impl @hostapi.Host for Native with set_auto_launch(_, enabled) {
+  set_auto_launch(enabled)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_set(_, id, accel) {
+  hotkey_set(id, accel)
+}
+
+///|
+impl @hostapi.Host for Native with hotkey_clear(_, id) {
+  hotkey_clear(id)
+}

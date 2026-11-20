@@ -10,6 +10,9 @@ fn chat_bar_node_tester(
   extra_agents? : Int = 0,
   archivable? : Bool = false,
   has_jobs? : Bool = false,
+  jobs_on? : @signals.Signal[Bool],
+  archivable_on? : @signals.Signal[Bool],
+  people? : Int = 0,
   font_scale? : Double = 1.0,
   w? : Double = 390.0,
   h? : Double = 844.0,
@@ -17,25 +20,47 @@ fn chat_bar_node_tester(
   at? : Double,
 ) -> (@ui.Tester, @signals.Signal[String]) {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let title_sig = @signals.signal(title, same=fn(a, b) { a == b })
   let src : Source = {
     ..base,
     topic_read: fn(name, params) {
       let got = base.topic(name, params).get().snapshot()
-      if name == "chatJobs" && has_jobs {
+      // (its services and jobs: some all along, or while `jobs_on` says so, none else: told as the core tells its
+      // summary, a value all along, its first never changing to say there are some)
+      let jobs_now = match jobs_on {
+        Some(on) => on.get()
+        None => has_jobs
+      }
+      if name == "chatJobs" && (jobs_now || jobs_on is Some(_)) {
         let jobs : Map[String, Json] = match got.value {
           Some(Object(m)) => m.copy()
           _ => Map([])
         }
-        jobs["hasJobs"] = Json::boolean(true)
+        jobs["hasJobs"] = Json::boolean(jobs_now)
         return { ..got, value: Some(Json::object(jobs)) }
       }
       guard name == "chat" && got.value is Some(Object(chat)) else { return got }
       let changed = chat.copy()
       changed["title"] = Json::string(title_sig.get())
-      changed["archivable"] = Json::boolean(archivable)
+      // (nothing left in it: all along, or while `archivable_on` says so)
+      changed["archivable"] = Json::boolean(
+        match archivable_on {
+          Some(on) => on.get()
+          None => archivable
+        },
+      )
+      if people > 0 {
+        changed["people"] = Json::array(
+          Array::makei(people, fn(i) {
+            Json::object({
+              "id": Json::string("u\{i}"),
+              "shown": Json::object({ "name": Json::string("人\{i}"), "display": Json::string("Person \{i}") }),
+            })
+          }),
+        )
+      }
       changed["archived"] = Json::boolean(false)
       if extra_agents > 0 {
         let agents = items(got.value, "agents").copy()
@@ -283,4 +308,187 @@ test "小屏顶栏：放不下而直接展开到第 2 行的对话，打开在�
   assert_true(at[0] >= foot, msg="its first line at \{at[0]}, the bar's foot at \{foot}")
   // (and just under it, as where it was left puts it: not further down by the second row twice)
   assert_true(at[0] < foot + 60.0, msg="its first line at \{at[0]}, the bar's foot at \{foot}")
+}
+
+test "小屏顶栏：归档或服务键刚出现就又消失（两帧之间，或刚画出第一帧），agent 标签从它半路所在之处直接回原位，每帧移动不到 8pt，不残留上一段位移" {
+  for cause in ["archive", "jobs"] {
+    for back in ["between", "frame"] {
+      let archivable = @signals.signal(false)
+      let jobs = @signals.signal(false)
+      let on = if cause == "archive" { archivable } else { jobs }
+      let (t, w) = bar_at_drops(archivable, jobs, 20.0)
+      let x0 = bar_tile_drawn(t).map(fn(d) { d.0 }).unwrap_or(-1000.0)
+      // it comes and goes again: 5 ms on, before a frame draws it (between), or at its first frame (frame)
+      let (xs, steps) = bar_tile_way(
+        t,
+        fn() {
+          on.set(true)
+          if back == "between" {
+            t.advance(between_frames_ms)
+          } else {
+            t.frame()
+          }
+          on.set(false)
+        },
+        @ui.move_most_ms,
+      )
+      assert_eq(steps, [], msg="\{cause} \{back} at \{w}: turned back: \{Repr(xs)}")
+      assert_eq(xs[xs.length() - 1].0, x0, msg="\{cause} \{back} at \{w}: back where it was: \{Repr(xs)}")
+      assert_eq(bar_node_audit(t), [], msg="\{cause} \{back}")
+    }
+  }
+}
+
+///|
+/// Where the first agent's tile in the bar is drawn now (its ground: the soft card it stands on, a mark's height), on
+/// its way too.
+fn bar_tile_drawn(t : @ui.Tester) -> (Double, Double)? {
+  let card = @sf.theme().p.card
+  for r in t.drawn_rects() {
+    if r.4 == card && r.1 < 60.0 && (r.3 - mark_side()).abs() < 0.5 && r.2 > mark_side() {
+      return Some((r.0, r.2))
+    }
+  }
+  None
+}
+
+///|
+/// Whether the chat's people are drawn in the bar (their faces' rings, 19 across).
+fn bar_people_drawn(t : @ui.Tester) -> Bool {
+  t.drawn_rects().iter().any(fn(r) { r.1 < 60.0 && (r.2 - 19.0).abs() < 0.5 && (r.3 - 19.0).abs() < 0.5 })
+}
+
+///|
+/// A bar of a chat of one person and its agent (the fixture's), as wide as leaves `slack` of room past its agent's
+/// tile while 归档 and the services' key are not there: less than one of them takes, more than the person does. The
+/// two as `archivable` and `jobs` say.
+fn bar_at_drops(
+  archivable : @signals.Signal[Bool],
+  jobs : @signals.Signal[Bool],
+  slack : Double,
+) -> (@ui.Tester, Double) {
+  // (the room left past the tile at 小屏's 390, its end then the info key's start, the middle's 8 before it)
+  let (t0, _) = chat_bar_node_tester("梳理发布清单", people=1, archivable_on=@signals.signal(false), jobs_on=@signals.signal(false))
+  guard bar_tile_drawn(t0) is Some((x0, w0)) && bar_button_x(t0, tr("android-chat.info.title")) is Some(end0) else {
+    @halt.saying("no tile or 对话信息 in the bar: \{Repr(t0.drawn_rects().filter(fn(r) { r.1 < 60.0 }))}")
+  }
+  let left = end0 - 8.0 - (x0 + w0)
+  let w = 390.0 - left + slack
+  let (t, _) = chat_bar_node_tester("梳理发布清单", people=1, archivable_on=archivable, jobs_on=jobs, w~)
+  (t, w)
+}
+
+///|
+/// Where the bar's button said `label` stands across (its left), as laid out now.
+fn bar_button_x(t : @ui.Tester, label : String) -> Double? {
+  for s in t.semantics() {
+    if s.role == @ui.Role::Button && s.label == label && s.rect.1 < 60.0 {
+      return Some(s.rect.0)
+    }
+  }
+  None
+}
+
+///|
+/// Each frame's left of the agent's tile and whether the people are drawn, from the frame before `change` is made,
+/// through `ms` of the frames a host draws after it; and what of the tile steps more than 8 in a frame.
+fn bar_tile_way(t : @ui.Tester, change : () -> Unit, ms : Double) -> (Array[(Double, Bool)], Array[String]) {
+  let now = fn() { (bar_tile_drawn(t).map(fn(d) { d.0 }).unwrap_or(-1000.0), bar_people_drawn(t)) }
+  let xs = [now()]
+  t.each_frame(Some(fn() { xs.push(now()) }))
+  change()
+  t.run_shown(ms)
+  t.each_frame(None)
+  let steps = []
+  for i in 1..<xs.length() {
+    let d = xs[i].0 - xs[i - 1].0
+    if d > 8.0 || d < -8.0 {
+      steps.push("frame \{i}: \{xs[i - 1].0} → \{xs[i].0}")
+    }
+  }
+  (xs, steps)
+}
+
+///|
+test "小屏顶栏：归档或服务键出现时人头栈刚好放不下，人头在那一刻一步离开、消失时一步回来，agent 标签每帧移动不到 8pt，不急停；作为应答首次告知时直接就位" {
+  for cause in ["archive", "jobs"] {
+    let archivable = @signals.signal(false)
+    let jobs = @signals.signal(false)
+    let on = if cause == "archive" { archivable } else { jobs }
+    let (t, w) = bar_at_drops(archivable, jobs, 20.0)
+    assert_true(bar_people_drawn(t), msg="\{cause} at \{w}: the person drawn while there is room")
+    let x0 = bar_tile_drawn(t).map(fn(d) { d.0 }).unwrap_or(-1000.0)
+    // it comes: the person leaves the row at once, the tile drawn on its way from where it was
+    let (came, came_steps) = bar_tile_way(t, fn() { on.set(true) }, @ui.move_most_ms)
+    let x1 = came[came.length() - 1].0
+    assert_true(!came[came.length() - 1].1, msg="\{cause} at \{w}: the person left the row short of room: \{Repr(came)}")
+    assert_true(!came[1].1, msg="\{cause} at \{w}: the person left at the change's frame, not on the way: \{Repr(came)}")
+    assert_true(x0 - x1 >= 8.0, msg="\{cause} at \{w}: the tile moved for it: \{x0} → \{x1}")
+    assert_eq(came_steps, [], msg="\{cause} at \{w}: its way: \{Repr(came)}")
+    assert_true(came.length() > 3, msg="\{cause} at \{w}: drawn on its way: \{Repr(came)}")
+    // gone: the person back at once, the tile on its way back
+    let (went, went_steps) = bar_tile_way(t, fn() { on.set(false) }, @ui.move_most_ms)
+    assert_true(went[1].1, msg="\{cause} at \{w}: the person back at the change's frame: \{Repr(went)}")
+    assert_eq(went[went.length() - 1].0, x0, msg=cause)
+    assert_eq(went_steps, [], msg="\{cause} at \{w}: its way back: \{Repr(went)}")
+    // told as an answer (the topic's first value): at once, no way
+    let (told, _) = bar_tile_way(t, fn() { @view.answering(fn() { on.set(true) }) }, @ui.move_most_ms)
+    assert_true(told.length() >= 2, msg=cause)
+    assert_eq(told[1].0, x1, msg="\{cause} at \{w}: an answer's at once: \{Repr(told)}")
+    assert_eq(bar_node_audit(t), [], msg=cause)
+  }
+}
+
+///|
+/// How the bar's second row shows on each frame a host draws through `ms` after `change` (its title's words there:
+/// how opaque, 0 not drawn), the frame before it first.
+fn bar_row2_way(t : @ui.Tester, title : String, change : () -> Unit, ms : Double) -> Array[Double] {
+  let now = fn() {
+    t.words().filter(fn(w) { w.0 == title && w.2 >= 48.0 }).fold(init=0.0, fn(a, w) { if w.5 > a { w.5 } else { a } })
+  }
+  let seen = [now()]
+  t.each_frame(Some(fn() { seen.push(now()) }))
+  change()
+  t.run_shown(ms)
+  t.each_frame(None)
+  seen
+}
+
+///|
+test "小屏顶栏：服务键出现使标题放不下 3 字时，实时出现则第 2 行平滑展开；作为订阅首次应答出现（重进带后台任务的对话）则在其布局那一帧直接展开，不在页面横滑中途做展开动画" {
+  let title = "极窄标题测试：当第 1 行连三个汉字加省略号都放不下时自动展开"
+  let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title, station_name: "Willow" }
+  // (the widest bar where the services' key leaves the title less than 3 characters, found once: without it, more)
+  let mut lo = 260.0
+  let mut hi = 420.0
+  while hi - lo > 1.0 {
+    let mid = (lo + hi) / 2.0
+    chat_bar_node_tester(title, jobs_on=@signals.signal(true), w=mid, msg_count=1) |> ignore
+    let open = bar_extra_target(bar_ref) > 30.0
+    if open {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+  let w = lo.floor()
+  let jobs = @signals.signal(false)
+  let (t, _) = chat_bar_node_tester(title, jobs_on=jobs, w~, msg_count=1)
+  assert_true(bar_extra_target(bar_ref) < 0.5, msg="at \{w}: its second row open without the services' key")
+  // live: on its way
+  let came = bar_row2_way(t, title, fn() { jobs.set(true) }, @ui.move_most_ms)
+  assert_true(bar_extra_target(bar_ref) > 30.0, msg="at \{w}: its second row not opened by the services' key")
+  let between = came.filter(fn(a) { a > 0.0 && a < 0.99 })
+  assert_true(between.length() > 3, msg="at \{w}: live, not on its way: \{Repr(came)}")
+  assert_eq(bar_node_audit(t), [])
+  // told as an answer (the jobs' first value as the chat opens again): open at once, as it is laid out
+  let jobs = @signals.signal(false)
+  let (t, _) = chat_bar_node_tester(title, jobs_on=jobs, w~, msg_count=1)
+  assert_true(bar_extra_target(bar_ref) < 0.5, msg="at \{w}: its second row open without the services' key")
+  let told = bar_row2_way(t, title, fn() { @view.answering(fn() { jobs.set(true) }) }, @ui.move_most_ms)
+  assert_true(bar_extra_target(bar_ref) > 30.0, msg="at \{w}: its second row not opened by the answer")
+  let between = told.filter(fn(a) { a > 0.0 && a < 0.99 })
+  assert_eq(between, [], msg="at \{w}: an answer's on its way: \{Repr(told)}")
+  assert_true(told[told.length() - 1] >= 0.99, msg="at \{w}: \{Repr(told)}")
+  assert_eq(bar_node_audit(t), [])
 }

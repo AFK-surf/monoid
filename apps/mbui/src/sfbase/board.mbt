@@ -1,9 +1,10 @@
 // The chats as a board (看板), a way of showing Home's chats beside the list (列表): the workspace's chats in columns
 // by where each stands (待派发, 等你处理, 进行中, 待收口, 监控中), by the station it runs on, or by who is in it. What a
 // chat stands at is the core's (its row's state, tone, lead): the board only sorts by it, so a card goes to another
-// column only as its chat goes on. Whether a workspace shows its board, how it is grouped and the drafts of its 待派发
-// are this device's, kept in the core's prefs (`boardViews`, `boardGroups`, `boardShowEmpty`, `boardDrafts`) by workspace, what was
-// chosen here shown at once while the core takes it. A draft started becomes a chat as a new chat's page makes one
+// column only as its chat goes on. Whether a workspace shows its board and how it is grouped are this device's, kept in
+// the core's prefs (`boardViews`, `boardGroups`, `boardShowEmpty`) by workspace; the drafts of its 待派发 are the person's,
+// the same on all their devices (the core's `boardDrafts` topic, written by `board.drafts`); what was chosen here shown
+// at once while the core takes it. A draft started becomes a chat as a new chat's page makes one
 // (`newChat.create` under the draft's key, then `chat.send` of its words), its card that chat's from the press on.
 
 ///|
@@ -89,9 +90,16 @@ let board_groups_here : Map[String, String] = Map([])
 let board_empty_here : Map[String, Bool] = Map([])
 
 ///|
-/// Each workspace's drafts as written here, by workspace (board_views_here's).
+/// Each workspace's drafts as written here, by workspace, shown till the core says what it made of them: once it
+/// answered, the first value of its topic other than the one it had then (`seen`).
 // kept across runs: put back by board_reset as a run starts
-let board_drafts_here : Map[String, Array[BoardDraft]] = Map([])
+let board_drafts_here : Map[String, BoardHere] = Map([])
+
+///|
+priv struct BoardHere {
+  drafts : Array[BoardDraft]
+  mut seen : Json??
+}
 
 ///|
 /// The words each draft started here began its chat with, by that chat's row's key (`<station>/<key>`): its card's
@@ -121,6 +129,7 @@ pub fn board_reset() -> Unit {
   board_groups_here.clear()
   board_empty_here.clear()
   board_drafts_here.clear()
+  board_writing_here.clear()
   board_titles_here.clear()
   board_seen_here.clear()
   board_written.val = 0
@@ -285,37 +294,49 @@ pub fn set_board_show_empty(src : Source, ws : String, on : Bool) -> Unit {
 }
 
 ///|
+/// What the core says of workspace `ws`'s drafts (its `boardDrafts` topic's `drafts`), as it is now.
+fn board_drafts_told(src : Source, ws : String) -> Json? {
+  field(src.topic("boardDrafts", { "scope": Json::string(ws) }).get().value, "drafts")
+}
+
+///|
 /// The drafts of workspace `ws` as kept (newest first), started ones too.
 fn board_drafts_kept(src : Source, ws : String) -> Array[BoardDraft] {
   board_rev.get() |> ignore
+  let told = board_drafts_told(src, ws)
   match board_drafts_here.get(ws) {
-    Some(d) => d
-    None =>
-      match board_kept(src, "boardDrafts", ws) {
-        Some(Array(a)) =>
-          a
-          .map(fn(d) -> BoardDraft {
-            let one = Some(d)
-            {
-              id: text(one, "id"),
-              title: text(one, "title"),
-              station: text(one, "station"),
-              station_name: text(one, "stationName"),
-              files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
-            }
-          })
-          .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
-        _ => []
+    Some(here) =>
+      match here.seen {
+        Some(seen) if seen != told => board_drafts_here.remove(ws)
+        _ => return here.drafts
       }
+    None => ()
+  }
+  match told {
+    Some(Array(a)) =>
+      a
+      .map(fn(d) -> BoardDraft {
+        let one = Some(d)
+        {
+          id: text(one, "id"),
+          title: text(one, "title"),
+          station: text(one, "station"),
+          station_name: text(one, "stationName"),
+          files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
+        }
+      })
+      .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
+    _ => []
   }
 }
 
 ///|
-/// Workspace `ws`'s drafts made `drafts` (newest first): shown so at once, kept so in the prefs.
+/// Workspace `ws`'s drafts made `drafts` (newest first): shown so at once, given to the core as the board has them.
 fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Unit {
-  board_drafts_here[ws] = drafts
+  let here : BoardHere = { drafts, seen: None }
+  board_drafts_here[ws] = here
   board_rev.set(board_rev.untracked() + 1)
-  let kept = Json::array(
+  let given = Json::array(
     drafts.map(fn(d) {
       let one : Map[String, Json] = {
         "id": Json::string(d.id),
@@ -329,7 +350,18 @@ fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Un
       Json::object(one)
     }),
   )
-  (src.call)("prefs.set", { "boardDrafts": board_of_ws(ws, kept) }, answer_unread)
+  (src.call)("board.drafts", { "workspace": Json::string(ws), "drafts": given }, fn(r) {
+    match r {
+      // (what the core made of it shown from its next value on)
+      Ok(_) => here.seen = Some(@signals.untracked(fn() { board_drafts_told(src, ws) }))
+      // (refused: what it keeps shown again)
+      Err(_) =>
+        if board_drafts_here.get(ws) is Some(now) && physical_equal(now, here) {
+          board_drafts_here.remove(ws)
+        }
+    }
+    board_rev.set(board_rev.untracked() + 1)
+  })
 }
 
 ///|
@@ -344,6 +376,54 @@ pub fn board_drafts_of(src : Source, ws : String) -> Array[BoardDraft] {
 pub fn board_next_id() -> String {
   board_written.val += 1
   "new:board-\{@hostapi.wall_ms().to_int64()}-\{board_written.val}"
+}
+
+///|
+/// The model control of draft `id` (model_triple's `of`): what it is to run on, picked for it alone and kept by the
+/// core apart from a new chat's (`board:<id>`), its chat made with it (`newChat.create` `of`).
+pub fn board_pick_of(id : String) -> String {
+  "board:" + id
+}
+
+///|
+/// What was picked for draft `id` on `station` let go of: the draft deleted or never added.
+pub fn board_pick_forget(src : Source, station : String, id : String) -> Unit {
+  guard station != "" && !src.read_only else { return }
+  (src.call)("pick.set", { "station": Json::string(station), "of": Json::string(board_pick_of(id)), "clear": Json::boolean(true) }, answer_unread)
+}
+
+///|
+/// The task being written in 待派发 of each workspace: its key, kept while the board is away (a chat or the list shown
+/// in its place, the board made again as it comes back), so that its words and pictures, the core's composer's under
+/// it, are there again; a new one only once it is added or put away (board_writing_renew).
+// kept across runs: put back by board_reset as a run starts
+let board_writing_here : Map[String, String] = Map([])
+
+///|
+/// The key of the task being written in 待派发 of workspace `ws` (board_writing_here's).
+pub fn board_writing_id(ws : String) -> String {
+  match board_writing_here.get(ws) {
+    Some(id) => id
+    None => board_writing_renew(ws)
+  }
+}
+
+///|
+/// The task being written in 待派发 of workspace `ws` done with (added, or put away): the next one's key.
+pub fn board_writing_renew(ws : String) -> String {
+  let id = board_next_id()
+  board_writing_here[ws] = id
+  id
+}
+
+///|
+/// Whether something is written in 待派发's line of workspace `ws`: words or pictures, not yet added.
+pub fn board_writing_kept(src : Source, ws : String) -> Bool {
+  guard board_writing_here.get(ws) is Some(id) else { return false }
+  @signals.untracked(fn() {
+    let w = writing(src, board_file_key(ws, id))
+    w.field.text().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()
+  })
 }
 
 ///|
@@ -373,13 +453,17 @@ pub fn board_draft_add(
 }
 
 ///|
-/// The words of draft `id` changed in place, keeping its key, order and destination.
-pub fn board_draft_edit(src : Source, ws : String, id : String, title : String) -> Unit {
+/// Draft `id` changed in place (its panel's): its words and the station it goes to (`station`, named `station_name`),
+/// keeping its key, order and files. Words left empty keep the words it had where it carries no file.
+pub fn board_draft_set(src : Source, ws : String, id : String, title : String, station : String, station_name : String) -> Unit {
   let words = title.trim(chars=" \n\r\t").to_owned()
-  guard words != "" else { return }
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
-  guard was.iter().any(fn(d) { d.id == id && d.title != words }) else { return }
-  board_drafts_put(src, ws, was.map(fn(d) { if d.id == id { { ..d, title: words } } else { d } }))
+  guard was.iter().find_first(fn(d) { d.id == id }) is Some(d) else { return }
+  let title = if words == "" && d.files.is_empty() { d.title } else { words }
+  let station_name = if station == "" { d.station_name } else { station_name }
+  let station = if station == "" { d.station } else { station }
+  guard d.title != title || d.station != station || d.station_name != station_name else { return }
+  board_drafts_put(src, ws, was.map(fn(x) { if x.id == id { { ..x, title, station, station_name } } else { x } }))
 }
 
 ///|
@@ -391,6 +475,7 @@ pub fn board_draft_remove(src : Source, ws : String, id : String, discard_files?
     for d in was {
       if d.id == id {
         board_files_discard(src, ws, id, d.files)
+        board_pick_forget(src, d.station, id)
       }
     }
   }
@@ -439,7 +524,9 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
     toast_later(why)
   }
   let create = fn(taken : Json?) {
-    (src.call)("newChat.create", { "station": Json::string(d.station), "key": Json::string(key) }, fn(res) {
+    // (with what was picked for it: its own control's, as a new chat there runs where nothing was)
+    let made : Map[String, Json] = { "station": Json::string(d.station), "key": Json::string(key), "of": Json::string(board_pick_of(d.id)) }
+    (src.call)("newChat.create", Json::object(made), fn(res) {
       match res {
         Ok(_) => {
           board_draft_remove(src, ws, d.id, discard_files=false)
@@ -466,10 +553,21 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
                     }
                     None => ()
                   }
+                } else {
+                  // (in the outbox, which sends it: never put back, its files' bytes let go of as one taken)
+                  match w {
+                    Some(w) => writing_committed(w)
+                    None => ()
+                  }
                 }
                 toast_later(why)
               }
-              Ok(_) => ()
+              // (gone for good: what it took of the draft, its files' bytes, let go of)
+              Ok(_) =>
+                match w {
+                  Some(w) => writing_committed(w)
+                  None => ()
+                }
             }
           })
         }
@@ -507,12 +605,13 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
 pub let board_listed : Ref[() -> Unit] = Ref(fn() {  })
 
 ///|
-/// The board shown or the list in the workspace in view: what is open beside it closed, what is being written put
-/// away.
+/// The board shown or the list in the workspace in view: what is open beside it closed; what is being written in
+/// 待派发 kept, open again as the board is shown.
 pub fn board_set(src : Source, on : Bool) -> Unit {
   guard @signals.untracked(fn() { workspace_in_view(src).0 }) is Some(w) else { return }
   board_pick.set(None)
-  board_adding.set(false)
+  // (open again on what was being written in 待派发 and left for a chat or the list: its words kept, not put away)
+  board_adding.set(on && board_writing_kept(src, w.id))
   // (the board narrows to all or mine alone: shown as watching, its 监控中 column; hidden, all of them)
   if on {
     match filter_of(src, w.id) {

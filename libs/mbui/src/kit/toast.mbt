@@ -275,8 +275,8 @@ pub fn toast_button(c : @ui.Ctx, key : String, text : String, label : String, ro
 /// is shown does not wait for it): what goes on to it by name, as a run's end goes on to every time told (a toast left
 /// on screen at the end not decided by where the end's last frame happens to fall).
 pub fn toast_due(key : String) -> Double {
-  // (a toaster_node's, where there is one by that key: toast_node_due)
-  match toast_node_due(key) {
+  // (a headless toaster's, where there is one by that key)
+  match @headless.toaster_due(key) {
     Some(d) => d
     None => kit.val.toast_dues.get(key).unwrap_or(-1.0)
   }
@@ -289,9 +289,9 @@ pub fn toast_due(key : String) -> Double {
 /// goes (its time out, closed, swiped). Its time on screen is a timer, not a motion: toast_due, or `run_for` the
 /// toaster's duration.
 pub fn toast_rest(key : String) -> Double {
-  // (a toaster_node's, where there is one by that key: toast_node_rest)
-  // (and once its rows are gone or still, when the last of them came to rest, as they said it: Tester::rest_of)
-  match toast_node_rest(key) {
+  // (a headless toaster's, where there is one by that key)
+  // (and once its rows are gone or still, when the last of them came to rest, as their looks said it: Tester::rest_of)
+  match @headless.toaster_rest(key) {
     Some(r) if r >= 0.0 => r
     _ => @ui.rest_of("\u{2}presence/" + key + "/")
   }

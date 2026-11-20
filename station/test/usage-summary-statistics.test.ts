@@ -23,7 +23,7 @@ test("usage history reads chat and card totals from statistics rather than enume
     thread("slack:a", "a", ["a"], true);
     const b = thread("feishu:b", "b", ["b"], false);
     const shared = thread("slack:shared", "shared", ["a", "b"], true);
-    thread("ember", "orphan", [], false);
+    thread("chat", "orphan", [], false);
     store.db.prepare("UPDATE threads SET hidden_at = 1 WHERE id = ?").run(b);
     store.db.prepare("INSERT OR REPLACE INTO card_outcomes VALUES (?, 1, 'agent', '[]', 1, 1)").run(shared);
     store.db.prepare("INSERT OR REPLACE INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, 'a', 'a', 1)").run(shared);
@@ -35,7 +35,7 @@ test("usage history reads chat and card totals from statistics rather than enume
       ? constants.SQLITE_DENY : constants.SQLITE_OK);
     try {
       const summary = usageHistory(makeStore(store.db, "."), 0n, { workspace: "workspace-a", home: true });
-      assert.deepEqual(summary.places, { slack: 2, ember: 1 });
+      assert.deepEqual(summary.places, { slack: 2, chat: 1 });
       assert.deepEqual([summary.cards, summary.picked, summary.archived], [3, 2, 0]);
     } finally {
       store.db.setAuthorizer(null);
@@ -56,7 +56,7 @@ test("usage history reads chat and card totals from statistics rather than enume
       ? constants.SQLITE_DENY : constants.SQLITE_OK);
     try {
       const summary = usageHistory(makeStore(store.db, "."), 0n, { workspace: "workspace-a", home: true });
-      assert.deepEqual(summary.places, { slack: 1, ember: 1 });
+      assert.deepEqual(summary.places, { slack: 1, chat: 1 });
       assert.deepEqual([summary.cards, summary.picked, summary.archived], [2, 1, 1]);
     } finally {
       store.db.setAuthorizer(null);
@@ -71,7 +71,7 @@ test("usage history reads chat and card totals from statistics rather than enume
       ? constants.SQLITE_DENY : constants.SQLITE_OK);
     try {
       const summary = usageHistory(makeStore(store.db, "."), 0n, { workspace: "workspace-b", home: true });
-      assert.deepEqual(summary.places, { slack: 2, feishu: 1, ember: 1 });
+      assert.deepEqual(summary.places, { slack: 2, feishu: 1, chat: 1 });
       assert.deepEqual([summary.cards, summary.picked, summary.archived], [4, 1, 2]);
     } finally {
       store.db.setAuthorizer(null);
@@ -84,7 +84,7 @@ test("usage history reads chat and card totals from statistics rather than enume
 test("joining one workspace does not rewrite a shared chat's other workspace totals", () => {
   const store = Store.open(":memory:");
   try {
-    const thread = store.openThread("ember", "shared", "shared", null, null).id;
+    const thread = store.openThread("chat", "shared", "shared", null, null).id;
     for (let i = 0; i < 80; i++) {
       const key = `s${i}`, ws = `workspace-${i}`;
       store.insertSession({ key, connect: key, runtime: "claude", profile: "cc", workspace: `/w/${key}`,

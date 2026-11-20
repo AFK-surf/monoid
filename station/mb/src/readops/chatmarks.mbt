@@ -137,7 +137,7 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
   let own : Array[(Map[String, Json], Array[Map[String, Json]])] = []
   for id in thread_ids {
     guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) else { continue }
-    if field(t, "surface") == Json::string("ember") && field(t, "hidden_at") is Null {
+    if field(t, "surface") == Json::string("chat") && field(t, "hidden_at") is Null {
       own.push((t, db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id])))
     }
   }
@@ -262,14 +262,30 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
   let pin_rows = match scope {
     None => db.all("SELECT session, at FROM pins WHERE viewer = ?", [Json::string(email)])
     Some(_) =>
-      if keys.length() == 0 {
+      if keys.is_empty() {
         []
       } else {
-        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(keys.map(Json::string))])
+        let pin_keys = keys.copy()
+        for r in db.all("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))", [ids_json(keys.map(Json::string))]) {
+          let mk = js_text(field(r, "key"))
+          if !pin_keys.contains(mk) {
+            pin_keys.push(mk)
+          }
+        }
+        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(pin_keys.map(Json::string))])
       }
   }
   for r in pin_rows {
-    pins[js_text(field(r, "session"))] = field(r, "at")
+    let raw_key = js_text(field(r, "session"))
+    let anchor = @sql.conversation_of(db, raw_key)
+    let at = field(r, "at")
+    match pins.get(anchor) {
+      None => pins[anchor] = at
+      Some(prev) =>
+        if num(at) < num(prev) {
+          pins[anchor] = at
+        }
+    }
   }
   let (openers, opened_by) = openers_opened(db, Some(keys))
   let opened : Map[String, Json] = Map([])

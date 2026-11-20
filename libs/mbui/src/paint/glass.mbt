@@ -35,8 +35,6 @@ pub(all) struct Glass {
   // liquid: where the pointer is over it, in points from its own top left (View::pointer_here's), a light drawn
   // there along its rim and over its face; None: none
   spot : (Double, Double)?
-  // zero for the meniscus, one for Backdrop’s default highlight, two for ambient
-  backdrop_highlight : Int
 }
 
 ///|
@@ -70,7 +68,6 @@ pub fn Glass::frosted(
     shares_capture,
     contained,
     spot: None,
-    backdrop_highlight: 0,
   }
 }
 
@@ -82,12 +79,12 @@ pub fn Glass::sharing(self : Glass) -> Glass {
 }
 
 ///|
-/// Liquid glass: nearly clear, what is under it bent along its rim (a bezel
-/// `bezel` wide moving it by up to `refraction` px, the colours split by
-/// `chroma`), a light rim, text in it inked by what is under it
-/// (`adaptive`); shapes of one `glass_group` within `merge` of each other
-/// flow into one; `spot`, where the pointer is over it (points from its
-/// top left), lights its rim and face round that point.
+/// Liquid glass (iOS 27 optical model, ported from flutter_liquid_glass): uniform blurred backdrop across center and
+/// rim, quarter-circle bevel refraction (`bezel` wide, up to `refraction` px displacement, chromatic dispersion
+/// `chroma`), adaptive iOS 27 light/dark/clear color transfer, inner bevel shadow, glint (`rim`), and 0.75pt external
+/// contour; text in it inked by what is under it (`adaptive`); shapes of one `glass_group` within `merge` of each
+/// other flow into one; `spot`, where the pointer is over it (points from its top left), lights its rim and face round
+/// that point.
 pub fn Glass::liquid(
   blur? : Double = 1.0,
   tint? : Int64 = 0xFFFFFF1AL,
@@ -119,29 +116,5 @@ pub fn Glass::liquid(
     shares_capture: false,
     contained: false,
     spot,
-    backdrop_highlight: 0,
-  }
-}
-
-
-///|
-/// A single rounded Backdrop lens with Kyant’s circular refraction and optional dispersion; `inner_shadow` the
-/// radius of its InnerShadow (black at 15% times `highlight`, a sixth of the radius lower; 0 none), carried where a
-/// group's merge is (a lens of its own merges with nothing).
-pub fn Glass::backdrop_lens(
-  height~ : Double,
-  amount~ : Double,
-  blur~ : Double,
-  tint~ : Int64,
-  solid~ : Int64,
-  highlight~ : Double,
-  ambient? : Bool = false,
-  dispersion? : Bool = false,
-  inner_shadow? : Double = 0.0,
-) -> Glass {
-  {
-    ..Glass::liquid(blur~, tint~, solid~, saturation=1.0, rim=highlight, bezel=height,
-      refraction=amount, chroma=if dispersion { 1.0 } else { 0.0 }, merge=inner_shadow, adaptive=false),
-    backdrop_highlight: if ambient { 2 } else { 1 },
   }
 }

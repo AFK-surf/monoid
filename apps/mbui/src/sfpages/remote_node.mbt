@@ -488,16 +488,16 @@ fn remote_row_node(
     let (press_lit, press_down, press_up) = @sf.press_late(row)
     // its ground: the pointer's eased in and out, the selected one's while it is the tab shown beside the list
     // (nav_ground_by's); a finger's press the ink at 5%
-    let hand = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    if !finger {
-      row.reacts(fn() { @sf.lit_in_node(slot) }, fn(h) { hand.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hand = if !finger {
+      @motion.hover_fade(row, fn() { @sf.lit_in_node(slot) }, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
     }
-    row.reacts(on, fn(o) { chosen.go_ms(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let chosen = @motion.hover_fade(row, on, duration_ms=@sf.dur_ms)
     let ground = fn() {
       let p = t().p
-      let h = hand.shown(row)
-      let o = chosen.shown(row)
+      let h = hand()
+      let o = chosen()
       let base = if h <= 0.0 && o <= 0.0 {
         0L
       } else {
@@ -592,7 +592,9 @@ fn remote_row_node(
       .lines_up(Is(Some(End)))
       .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @ui.capsule_in(@sf.row_corner, row_key_side), 0.0)))
       |> ignore
-      o.box(fn(k) {
+      @sf.action_box_node(o, fn() { close_label() + " " + item().title }, fn(_) {
+        remote_row_close(src, @signals.untracked(ws), @signals.untracked(item))
+      }, fn(k) {
         k
         .width(Is(Some(row_key_side)))
         .height(Is(Some(row_key_side)))
@@ -601,9 +603,7 @@ fn remote_row_node(
         .lies_along(Is(Middle))
         |> ignore
         @sf.hover_ground_node(k)
-        @sf.presses_node(k, fn() { remote_row_close(src, @signals.untracked(ws), @signals.untracked(item)) })
         k.on_menu(fn(m) { open_menu(m.wx, m.wy, false) }) |> ignore
-        k.says(By(fn() { Some(@view.said(Button, label=close_label() + " " + item().title)) })) |> ignore
         @sf.icon_node(k, "close", row_icon, By(fn() { if @sf.lit_node(k) { t().p.text } else { t().p.muted } })) |> ignore
         @sf.tip_node(tips, k, close_label) |> ignore
       })
@@ -931,6 +931,21 @@ fn remote_station_head_node(
 }
 
 ///|
+/// Whether the workspace's `Place("remote")` holds or fronts `station`'s `screen` (not a Farview tab).
+pub fn remote_has_screen(src : Source, station : String, screen : String) -> Bool {
+  guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return false }
+  let matches = fn(t : @sfbase.RemoteTab) {
+    t is Screen(x) && x.station == station && x.screen == screen && !farview_screen(x.screen)
+  }
+  let front = @signals.untracked(fn() { remote_front_in(src, w.id, remote_lines(src, w.id, (src.asks_terminals)())) })
+  if front is Some((_, t)) && matches(t) {
+    return true
+  }
+  let (tabs, _) = @signals.untracked(fn() { @sfbase.remote_tabs_raw(src, w.id) })
+  tabs.any(fn(k) { @sfbase.remote_tab_parse(k) is Some(t) && matches(t) })
+}
+
+///|
 /// 中屏 and 大屏's `Place("remote")` beside its list (remote_list_node, its selected row the one shown here): the tab in
 /// front (remote_front_in: the list's first row while none is), its page made here with its own one bar for the pane's
 /// top, as the chats' and the stations' pages are: no row of tabs over it (the list beside it is that row: 左子健,
@@ -948,6 +963,8 @@ pub fn remote_workbench_node(
   end_pad? : () -> Double = fn() { 12.0 },
   foot_pad? : () -> Double = fn() { 0.0 },
   width? : () -> Double,
+  shown? : () -> Bool = fn() { true },
+  keep_screen? : (String, String) -> Bool = fn(_, _) { false },
 ) -> Unit {
   let asks_t = (src.asks_terminals)()
   let pads = fn() { (start_pad(), end_pad()) }
@@ -957,20 +974,21 @@ pub fn remote_workbench_node(
   // (a screen shown covered as another is brought to the front while its tab stays open, let go once it is closed)
   let prev_front : Ref[(String, @sfbase.RemoteTab)?] = Ref(None)
   v.reacts(
-    fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) },
+    fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0, shown()) },
     fn(cur) {
-      let (now, tabs) = cur
+      let (now, tabs, is_shown) = cur
       match prev_front.val {
         Some((old_k, Screen(old_at))) if !farview_screen(old_at.screen) => {
-          let still_same = match now {
+          let still_same = is_shown && (match now {
             Some((_, Screen(now_at))) => now_at.station == old_at.station && now_at.screen == old_at.screen
             _ => false
-          }
+          })
           if !still_same {
-            let kept = tabs.any(fn(k) {
-              k == old_k ||
-              (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
-            })
+            let kept = !is_shown ||
+              tabs.any(fn(k) {
+                k == old_k ||
+                (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
+              })
             if kept {
               screen_covered(src, old_at.station, old_at.screen, true)
             } else {
@@ -980,12 +998,38 @@ pub fn remote_workbench_node(
         }
         _ => ()
       }
-      if now is Some((_, Screen(now_at))) && !farview_screen(now_at.screen) {
+      if is_shown && now is Some((_, Screen(now_at))) && !farview_screen(now_at.screen) {
         screen_covered(src, now_at.station, now_at.screen, false)
       }
-      prev_front.val = now
+      prev_front.val = if is_shown { now } else { prev_front.val }
     },
   )
+  v.owns(fn() {
+    let seen : Array[(String, String)] = []
+    let take = fn(at : ScreenAt) {
+      if !farview_screen(at.screen) && !seen.contains((at.station, at.screen)) {
+        seen.push((at.station, at.screen))
+      }
+    }
+    match prev_front.val {
+      Some((_, Screen(at))) => take(at)
+      _ => ()
+    }
+    for k in @signals.untracked(fn() { @sfbase.remote_tabs_raw(src, ws()).0 }) {
+      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+        take(at)
+      }
+    }
+    for pair in seen {
+      let (st, sc) = pair
+      if keep_screen(st, sc) {
+        screen_covered(src, st, sc, false)
+      } else {
+        screen_left(src, st, sc)
+      }
+    }
+  })
+  |> ignore
   v
   .grow(Is(1.0))
   .min_height(Is(Some(0.0)))

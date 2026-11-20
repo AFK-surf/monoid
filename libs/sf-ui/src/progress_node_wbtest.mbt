@@ -95,28 +95,28 @@ test "a progress bar as nodes drawn and read out as the old view's is (its range
   part.set(Some(0.75))
   assert_eq(node_said(t), ("75%", Some((0.0, 75.0, 100.0))), msg="told: said at once, no frame drawn")
   t.draw()
-  t.run_for(@kit.progress_ms / 2.0)
+  t.run_for(@motion.progress_ms / 2.0)
   same("half way to three quarters")
   progress_said(t, "75%", Some((0.0, 75.0, 100.0)))
-  t.run_for(@kit.progress_ms)
+  t.run_for(@motion.progress_ms)
   same("at three quarters")
   part.set(None)
   assert_eq(node_said(t), ("", None), msg="not known: said at once, no frame drawn")
   t.draw()
-  t.run_for(@kit.progress_known_ms / 3.0)
+  t.run_for(@motion.progress_known_ms / 3.0)
   same("going to not known")
-  t.run_for(@kit.progress_known_ms)
+  t.run_for(@motion.progress_known_ms)
   same("not known: swept")
   progress_said(t, "", None)
   let tree = @ui.view_tree().unwrap()
   assert_true(tree.cycle_read(), msg="not known: a wait read by the clock")
   assert_true(!tree.clock_read(), msg="no motion")
-  t.run_for(@kit.progress_sweep_ms / 3.0)
+  t.run_for(@motion.progress_sweep_ms / 3.0)
   same("not known, a third of a sweep later")
   part.set(Some(0.5))
   assert_eq(node_said(t), ("50%", Some((0.0, 50.0, 100.0))), msg="known again: said at once, no frame drawn")
   t.draw()
-  t.run_for(@kit.progress_known_ms)
+  t.run_for(@motion.progress_known_ms)
   same("known again, at half")
   progress_said(t, "50%", Some((0.0, 50.0, 100.0)))
   assert_true(!tree.cycle_read() && !tree.clock_read(), msg="known and there: nothing reads the clock")
@@ -140,5 +140,74 @@ test "a progress bar as nodes, motion reduced, drawn as the old view's is: a par
     assert_true(old.length() >= 2, msg="\{what}: the old one drawn: \{Repr(old)}")
     assert_eq(new, old, msg="\{what}: in the first frame, as the old one")
     assert_true(!ticking, msg="\{what}: nothing read of the clock after")
+  }
+}
+
+///|
+test "a progress bar as nodes finishing: read out whole (its most, 100%) as it is drawn full, however far it was told before; done finishing, read out as told again" {
+  let part : @signals.Signal[Double?] = @signals.signal(Some(0.4), same=fn(a, b) { a == b })
+  let ending = @signals.signal(false)
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=60.0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(200.0))) |> ignore
+      progress_node(b, fn() { part.get() }, fn() { @ui.tree_theme().line }, fn() { theme().p.accent }, finishing=fn() {
+        ending.get()
+      }).width_share(Is(1.0))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let said = fn() raise {
+    let b = t.get(ProgressBar)
+    (b.value, b.range)
+  }
+  let told = said()
+  ending.set(true)
+  t.draw()
+  let finishing = said()
+  ending.set(false)
+  part.set(None)
+  t.draw()
+  let not_known = said()
+  assert_eq(told, ("40%", Some((0.0, 40.0, 100.0))))
+  assert_eq(finishing, ("100%", Some((0.0, 100.0, 100.0))))
+  assert_eq(not_known, ("", None))
+}
+
+///|
+test "progress_node: determinate animation and indeterminate sweep cause zero relayout (laid == 0)" {
+  let part : @signals.Signal[Double?] = @signals.signal(Some(0.2), same=fn(a, b) { a == b })
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=60.0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(200.0))) |> ignore
+      progress_node(b, fn() { part.get() }, fn() { @ui.tree_theme().line }, fn() { theme().p.accent }).width_share(
+        Is(1.0),
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Determinate progress transition: 0.2 -> 0.8
+  part.set(Some(0.8))
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(@motion.progress_ms)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="determinate progress relaid out: \{Repr(f)}")
+  }
+  // Indeterminate sweep
+  part.set(None)
+  t.draw()
+  t.run_for(@motion.progress_known_ms)
+  t.tree_frames_from_now()
+  t.run_for(@motion.progress_sweep_ms / 2.0)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="indeterminate sweep relaid out: \{Repr(f)}")
   }
 }

@@ -24,7 +24,7 @@ priv struct Hosted {
   outq : @effect.Queue[Bytes?]
   turn : @claude.Turn
   live : @claude.Live
-  calls : Array[Array[Int]]
+  calls : Array[String]
   /// what is held of each stream's line not ended yet
   out_part : @pieces.Pieces
   err_part : @pieces.Pieces
@@ -136,7 +136,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let turn = turn_of(m.get("turn"))
     let live = match m.get("live") {
       Some(Null) | None => @claude.Live::new()
-      Some(state) if text("kind") is (None | Some("claude")) => @claude.Live::of_state(@jsjson.parse(state.stringify()) catch { _ => Null })
+      Some(state) if text("kind") is (None | Some("claude")) => @claude.Live::of_state(@jsjson.JValue::of_json(state))
       Some(_) => @claude.Live::new()
     }
     // (taken in now: what Node says of it next is had in order, whenever its socket opens)
@@ -151,7 +151,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       h.codex.orphans = Some(Map([]))
     }
     self.sessions[h.n] = h
-    ignore(self.host.rt.fork(name="agent", () => self.attach(h, socket)))
+    ignore(self.host.rt.fork_daemon("agent", on_error=e => @host.note("agent failed: \{e}"), () => self.attach(h, socket)))
   }
   if num("freeze") is Some(id) {
     let states : Map[String, Json] = {}
@@ -173,7 +173,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       } else {
         Json::object({
           "turn": turn_json(h.turn),
-          "live": @json.parse(@jsjson.stringify(h.live.state())) catch { _ => Json::null() },
+          "live": h.live.state().to_json(),
         })
       }
     }
@@ -184,7 +184,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     let at = num("at").unwrap_or(0.0).to_int64()
     let path = text("path").unwrap_or("")
     let kind = text("kind").unwrap_or("claude")
-    ignore(self.host.rt.fork(name="agent replay", () => self.own_replay(id.to_int(), kind, path, at, m)))
+    ignore(self.host.rt.fork_daemon("agent replay", on_error=e => @host.note("agent replay failed: \{e}"), () => self.own_replay(id.to_int(), kind, path, at, m)))
     return
   }
   let ops = [
@@ -421,31 +421,32 @@ fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, kind~ : String) -> 
 ///|
 async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
   let n = h.n
-  let opened = try { Ok(self.host.shell("unix.open", { "path": Json::string(socket) })) } catch { e => Err(e) }
-  guard opened is Ok(({ "id": conn, .. }, _)) else {
+  let opened = try { Ok(self.host.unix_open(socket)) } catch { e => Err(e) }
+  guard opened is Ok(opened) else {
     self.sessions.remove(n)
     self.host.say(({ "closed": Json::number(n.to_double()) } : Json).stringify())
     return
   }
-  h.conn = conn
+  h.conn = opened.id
+  let socket = opened.socket
   // (what is written to it, one at a time in order)
   ignore(
-    self.host.rt.fork(name="agent write", () => {
+    self.host.rt.fork_quiet(name="agent write", () => {
       // (attached first: what Node said meanwhile comes after)
-      ignore(self.host.shell("tcp.write", { "id": conn }, bytes=@utf8.encode(({ "op": "attach" } : Json).stringify() + "\n"))) catch {
+      socket.write(@utf8.encode(({ "op": "attach" } : Json).stringify() + "\n")) catch {
         _ => ()
       }
       while (try { h.outq.take() } catch { _ => None }) is Some(bytes) {
-        ignore(self.host.shell("tcp.write", { "id": conn }, bytes~)) catch { _ => () }
+        socket.write(bytes) catch { _ => () }
       }
-      ignore(self.host.shell("tcp.end", { "id": conn })) catch { _ => () }
+      socket.end_write() catch { _ => () }
     }),
   )
   // (the runner's messages, each a line: only what a read brought is looked through for their ends)
   let carry = @pieces.Pieces::new()
   while true {
-    let read = try { Ok(self.host.shell("tcp.read", { "id": conn })) } catch { e => Err(e) }
-    guard read is Ok((said, Some(bytes))) && !(said is { "end": true, .. }) && bytes.length() > 0 else { break }
+    let read = try { Ok(socket.read()) } catch { e => Err(e) }
+    guard read is Ok(Some(bytes)) && bytes.length() > 0 else { break }
     for line in carry.lines(bytes) {
       let message = @json.parse(@utf8.decode_lossy(line)) catch { _ => Json::null() }
       if !h.left {
@@ -453,7 +454,7 @@ async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
       }
     }
   }
-  ignore(self.host.shell("tcp.close", { "id": conn })) catch { _ => () }
+  socket.destroy()
   if h.left || h.exited {
     self.sessions.remove(n)
   }
@@ -597,25 +598,19 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
     let text = strip_cr(@utf8.decode_lossy(l.0))
     let frame = @jsjson.parse(text) catch { _ => continue }
     for e in h.live.feed(frame, () => self.now()) {
-      events.push(@jsjson.JValue::Obj([(@jsjson.units("type"), Str(@jsjson.units("live"))), (@jsjson.units("event"), e)]))
+      events.push(@jsjson.JValue::Obj([("type", Str("live")), ("event", e)]))
     }
     if @claude.tools_lost_in(frame, h.calls) is Some(why) {
-      events.push(Obj([(@jsjson.units("type"), Str(@jsjson.units("toolsLost"))), (@jsjson.units("why"), Str(why))]))
+      events.push(Obj([("type", Str("toolsLost")), ("why", Str(why))]))
     }
     if renew_asked(frame) is Some(id) {
-      events.push(Obj([(@jsjson.units("type"), Str(@jsjson.units("renew"))), (@jsjson.units("requestId"), Str(id))]))
+      events.push(Obj([("type", Str("renew")), ("requestId", Str(id))]))
     }
     @claude.on_frame(
       frame,
       h.turn,
       // (a turn's start and end said with the turn as it left it)
-      e => events.push(
-        match e {
-          Obj(fields) if e.get("type") is Some(Str(t)) && (t == @jsjson.units("turnStarted") || t == @jsjson.units("turnEnded")) =>
-            Obj(fields + [(@jsjson.units("turn"), turn_json_js(h.turn))])
-          _ => e
-        },
-      ),
+      e => events.push(with_turn(e, turn_json_js(h.turn))),
       () => self.write(h, interrupt_request(self.host)),
       () => self.now(),
       m => @host.note("agents: \{m}"),
@@ -623,7 +618,19 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
   }
   let end = lines[lines.length() - 1].1
   let turn = turn_json_js(h.turn)
-  let same = @jsjson.stringify(turn) == before
+  self.deliver_heard(h, end, turn, @jsjson.stringify(turn) == before, events)
+}
+
+///|
+fn Agents::deliver_heard(
+  self : Agents,
+  h : Hosted,
+  end : Int64,
+  turn : @jsjson.JValue,
+  same : Bool,
+  events : Array[@jsjson.JValue],
+  node~ : Array[(Bytes, Int64, Int64)] = [],
+) -> Unit {
   // (only what steps wrote: held, told with what comes next or once DELTAS_MS is over)
   if same && events.length() > 0 && events.iter().all(is_delta) {
     merge_into(h.pending, events)
@@ -658,7 +665,7 @@ fn Agents::heard(self : Agents, h : Hosted, lines : Array[(Bytes, Int64)]) -> Un
   h.pending_units = 0
   merge_into(all, events)
   h.told = end
-  self.tell(h, end, turn, all)
+  self.tell(h, end, turn, all, node~)
 }
 
 ///|
@@ -748,7 +755,7 @@ fn Agents::soon(self : Agents, h : Hosted) -> Unit {
   }
   h.later = true
   ignore(
-    self.host.rt.fork(name="agent deltas", () => {
+    self.host.rt.fork_daemon("agent deltas", on_error=e => @host.note("agent deltas failed: \{e}"), () => {
       @effect.sleep(DELTAS_MS)
       h.later = false
       self.flush(h)
@@ -758,16 +765,16 @@ fn Agents::soon(self : Agents, h : Hosted) -> Unit {
 
 ///|
 fn is_delta(e : @jsjson.JValue) -> Bool {
-  guard e.get("type") is Some(Str(t)) && t == @jsjson.units("live") else { return false }
+  guard e.get("type") is Some(Str(t)) && t == "live" else { return false }
   guard e.get("event") is Some(Obj(_) as ev) else { return false }
-  ev.get("kind") is Some(Str(k)) && k == @jsjson.units("delta")
+  ev.get("kind") is Some(Str(k)) && k == "delta"
 }
 
 ///|
 /// `events` after `out`, a step's deltas one after another of the same field told as one: their words joined, or the
 /// tokens a runtime counted for them added up.
 fn merge_into(out : Array[@jsjson.JValue], events : Array[@jsjson.JValue]) -> Unit {
-  let u = @jsjson.units
+  let u = (s : String) => s
   for e in events {
     if is_delta(e) && out.last() is Some(last) && is_delta(last) {
       let a = last.get("event").unwrap()
@@ -810,15 +817,15 @@ fn merge_into(out : Array[@jsjson.JValue], events : Array[@jsjson.JValue]) -> Un
 
 ///|
 /// A frame asking for a new token (`oauth_token_refresh`): its request's id, as `String(frame.request_id ?? "")`.
-fn renew_asked(frame : @jsjson.JValue) -> Array[Int]? {
-  guard frame is Obj(_) && frame.get("type") is Some(Str(t)) && t == @jsjson.units("control_request") else { return None }
-  guard frame.get("request") is Some(Obj(_) as r) && r.get("subtype") is Some(Str(s)) && s == @jsjson.units("oauth_token_refresh") else {
+fn renew_asked(frame : @jsjson.JValue) -> String? {
+  guard frame is Obj(_) && frame.get("type") is Some(Str(t)) && t == "control_request" else { return None }
+  guard frame.get("request") is Some(Obj(_) as r) && r.get("subtype") is Some(Str(s)) && s == "oauth_token_refresh" else {
     return None
   }
   match frame.get("request_id") {
     None | Some(Null) => Some([])
     Some(Str(s)) => Some(s)
-    Some(v) => Some(@jsjson.units(@jsjson.stringify(v)))
+    Some(v) => Some(@jsjson.stringify(v))
   }
 }
 
@@ -838,8 +845,8 @@ fn interrupt_request(host : @host.Host) -> String {
 ///|
 /// The turn as claude.ts `ClaudeSnapshot.turn` says it.
 fn turn_json_js(t : @claude.Turn) -> @jsjson.JValue {
-  let u = @jsjson.units
-  let fields : Array[(Array[Int], @jsjson.JValue)] = [
+  let u = (s : String) => s
+  let fields : Array[(String, @jsjson.JValue)] = [
     (u("busy"), Bool(t.busy)),
     (u("aborting"), Bool(t.aborting)),
     (u("authFailure"), match t.auth_failure { Some(f) => Str(f); None => Null }),
@@ -853,7 +860,7 @@ fn turn_json_js(t : @claude.Turn) -> @jsjson.JValue {
   if t.tasks is Some(tasks) {
     fields.push((u("tasks"), Obj(tasks.map(e => {
       let k = e.1
-      let task : Array[(Array[Int], @jsjson.JValue)] = [
+      let task : Array[(String, @jsjson.JValue)] = [
         (u("id"), Str(k.id)),
         (u("kind"), Str(u(k.kind))),
         (u("description"), Str(k.description)),
@@ -877,7 +884,7 @@ fn turn_json_js(t : @claude.Turn) -> @jsjson.JValue {
 
 ///|
 fn turn_json(t : @claude.Turn) -> Json {
-  @json.parse(@jsjson.stringify(turn_json_js(t))) catch { _ => Json::null() }
+  turn_json_js(t).to_json()
 }
 
 ///|
@@ -891,7 +898,7 @@ fn turn_of(v : Json?) -> @claude.Turn {
     _ => None
   }
   let text = (k : String) => match m.get(k) {
-    Some(String(s)) => Some(@jsjson.units(s))
+    Some(String(s)) => Some(s)
     _ => None
   }
   t.busy = flag("busy").unwrap_or(false)
@@ -905,10 +912,10 @@ fn turn_of(v : Json?) -> @claude.Turn {
     let kept = []
     for id, task in tasks {
       guard task is Object(k) else { continue }
-      kept.push((@jsjson.units(id), @claude.Task::{
-        id: match k.get("id") { Some(String(s)) => @jsjson.units(s); _ => @jsjson.units(id) },
+      kept.push((id, @claude.Task::{
+        id: match k.get("id") { Some(String(s)) => s; _ => id },
         kind: match k.get("kind") { Some(String("agent")) => "agent"; _ => "command" },
-        description: match k.get("description") { Some(String(s)) => @jsjson.units(s); _ => [] },
+        description: match k.get("description") { Some(String(s)) => s; _ => "" },
         background: k.get("background") is Some(True),
         started_at: match k.get("startedAt") { Some(Number(n, ..)) => Some(n); _ => None },
       }))

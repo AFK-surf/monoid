@@ -48,6 +48,19 @@ libs/mesh-transport/target/release/mesh-relay --global /path/to/global-relay-dat
 
 管理 station 从 workspace 内进入，通过客户端 core 与 station 建立带成员凭证的连接。本机旧管理端口 4760 仅重定向到 cloud，已经不再提供独立管理页；4750 是 agent MCP 端点，不要对公网暴露。这两个端口都默认只监听本机，实际端口以 station 的运行记录为准。
 
+### Admin API Key 与 `stillfail admin` CLI
+
+管理员可在管理后台的「密钥」（`/keys`）页面生成 `sfa_…` 前缀的 Admin API Key（明文仅创建时展示一次，可随时吊销）。Admin API Key 拥有管理后台的用户、workspace、邀请码、反馈、中继和审计操作权限，审计日志记为 `<email> (key:<name>)`，但**不可**读取、生成或吊销任何密钥，也不可封禁创建者或 `ADMIN_EMAIL`。
+
+推荐把生成的密钥以「API 密钥 + 代理模式」存入 still.fail 密钥库（代理域名填目标 cloud 域名如 `app.still.fail`，变量名 `STILLFAIL_ADMIN_KEY`）。`stillfail admin`（`bin/admin-cli.ts`）原生支持 `HTTPS_PROXY` CONNECT 隧道与 `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS`，通过 `secret_run` 运行时 agent 无需接触明文密钥即可操作管理接口：
+
+```sh
+STILLFAIL_ADMIN_ORIGIN=https://app.still.fail stillfail admin whoami
+stillfail admin users list --filter beta
+stillfail admin relays rename https://bj.relay.example:8443 北京入口2
+stillfail admin workspaces delete <id> --yes
+```
+
 下面的配置与会话说明包含旧版本兼容字段。新安装使用 workspace 设置管理连接、账号和 station。
 
 ### Claude Code 交互式 TUI

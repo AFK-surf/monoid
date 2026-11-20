@@ -1,7 +1,7 @@
 // One of a few levels in order as nodes of the window's tree (stops' made-once form, seg.mbt: how hard a model thinks
 // on a sheet): a narrow track with interior detents, filled to the current level, and a capsule naming that level. A
 // finger takes the thumb along the track, to the stop under it and leaning a quarter of the way on toward the finger,
-// on the ball's spring (@kit.follow_spring), each stop come to under it felt; let go, the level under it is picked (a
+// on the ball's spring (@motion.follow_spring), each stop come to under it felt; let go, the level under it is picked (a
 // tap is a press let go there). Held, the thumb grows into a lens; where glass is solid, the capsule alone. Read out a slider
 // of its levels, stepped by a screen reader and by the arrows with the keyboard's focus.
 
@@ -186,7 +186,10 @@ pub fn stops_node(
       }
       let thumb_h = fn() { high() - 2.0 * pad }
       let p = @motion.NodeWay::new(@signals.untracked(goal))
-      inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @kit.follow_spring) })
+      inner.reacts(at_start=false, goal, fn(g) {
+        let spec = if finger.untracked() is Some(_) { @motion.tactile_bounce } else { @motion.snappy_damped }
+        p.go(inner, g, spec)
+      })
       let rail_h = 10.0
       inner.box(fn(r) {
         let span = fn() { dmax(0.0, room.width() - cell()) }
@@ -195,7 +198,7 @@ pub fn stops_node(
           .height(Is(Some(rail_h)))
           .radius(Is(rail_h / 2.0))
           .offset(By(fn() { (cell() / 2.0, (thumb_h() - rail_h) / 2.0) }))
-          .ground(By(backdrop_track_ink))
+          .ground(By(track_glass_ink))
         |> ignore
         r.box(fn(fill) {
           fill.width(By(fn() { Some(span()) }))
@@ -225,10 +228,12 @@ pub fn stops_node(
       }
       // The thumb and the rail follow the same spring.
       let held = @motion.NodeWay::new(0.0)
-      let scale = @motion.NodeWay::new(1.0)
+      let scale_x = @motion.NodeWay::new(1.0)
+      let scale_y = @motion.NodeWay::new(1.0)
       inner.reacts(at_start=false, fn() { finger.get() is Some(_) }, fn(h) {
         held.go(inner, if h { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
-        scale.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
+        scale_x.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
+        scale_y.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_y_spring)
       })
       let name = fn() {
         let a = at()
@@ -268,9 +273,15 @@ pub fn stops_node(
             .width(By(fn() { Some(tw()) }))
             .height(By(fn() { Some(thumb_h()) }))
             .offset(By(fn() { (x_now(lens), 0.0) }))
-            .glass(By(fn() { Some(backdrop_slider(lensed(lens))) }))
+            .ground_drawn(By(fn() {
+              let w = tw()
+              let h = thumb_h()
+              let lw = w * scale_x.shown(lens)
+              let lh = h * scale_y.shown(lens)
+              { dx: (w - lw) / 2.0, dy: (h - lh) / 2.0, dw: lw - w, dh: lh - h, corners: None }
+            }))
+            .glass(By(fn() { Some(glass_slider_lens(lensed(lens))) }))
             .alpha(By(fn() { lensed(lens) }))
-            .scale(By(fn() { scale.shown(lens) }))
             |> ignore
           })
           |> ignore

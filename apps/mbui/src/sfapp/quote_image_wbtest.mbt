@@ -10,17 +10,10 @@ fn image_in_chat(
   platform? : Int = 2,
   w? : Double = 390.0,
   nodes? : Bool = false,
-  composed? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too where
-  // `composed` says so, 试用新输入框: sfbase's composer_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
-  if composed {
-    @sfbase.composer_nodes.set(true)
-  }
+  // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform~)
@@ -258,7 +251,8 @@ test "a quoted picture and the original open and close at the pressed picture wi
 
 ///|
 test "a quoted picture and the original open and close at the clicked picture with a mouse" {
-  quoted_preview_places(0, 1280.0, 1)
+  // (a window 小屏 wide: on 中屏 and 大屏 a picture opens in a tab beside the chat)
+  quoted_preview_places(0, 560.0, 1)
 }
 
 ///|
@@ -551,6 +545,8 @@ test "a quoted video cover keeps its identity when the core's row takes over dur
 ///|
 test "a quoted video cover that arrives during the flight is shown on that same flight" {
   new_run()
+  // (the old page's flight, send_flight's: the page made as nodes flies its row, quote_flight_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let available = @signals.signal(false)
   let name = "late-quote.mp4"
@@ -742,12 +738,12 @@ test "an image right clicked: its one menu, again on that menu still the one; in
   assert_eq(@sf.last_presented(), menu)
   assert_true(@sf.presented_open_of(menu))
   assert_eq(quotes(), before + 1)
-  // closed, and the image opened over the whole window
+  // closed, and the image opened over the whole window (the whole window's viewer, as a press opens it on 大屏)
   t.key(@ui.key_escape)
   t.draw()
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get() is Some(_))
+  assert_true(@sfbase.viewer.get() is Some(_))
   // where the chat's image is under it: never that image's menu (its 引用 into the draft the preview covers)
   t.right_click(x, y)
   assert_eq(quotes(), 0)
@@ -756,7 +752,7 @@ test "an image right clicked: its one menu, again on that menu still the one; in
     t.key(@ui.key_escape)
     t.draw()
   }
-  assert_true(viewer.get() is Some(_))
+  assert_true(@sfbase.viewer.get() is Some(_))
   // on its picture, in the middle: its own menu, 复制图片 (as its bar's 复制)
   t.right_click(640.0, 422.0)
   assert_true(t.reachable("复制图片").length() > 0)

@@ -43,13 +43,20 @@ fn page_one(
 ///|
 /// Page `page` of the pane off the tape (Large), its island's (the room the tree leaves the stack beside the block's
 /// column): the page's bars' room where the block's move has got (page_bar_room), the page moved aside as the block is
-/// shown a while; the top's what the page shows across as it is laid out (fold_peek_shift reads it).
-fn pane_page_one(c : @ui.Ctx, src : Source, page : Page) -> Unit {
+/// shown a while; the top's what the page shows across as it is laid out (fold_peek_shift reads it). `held`: its node
+/// holds it at the width the block's move ends at and moves it across and aside (pane_fold_held, chat_page_made's
+/// `held`), so it is built as the block is where it goes, never again at each frame of the move.
+fn pane_page_one(c : @ui.Ctx, src : Source, page : Page, held? : Bool = false) -> Unit {
   let (now, _, _, _) = @sfbase.workspace_in_view(src)
   guard now is Some(w) else { return }
   let (_, target) = fold_target(src, w, c.window_size().0)
-  let f = fold_built(c, target)
+  let f = if held { target } else { fold_built(c, target) }
   fold_bars(c, f)
+  // (held, laid out where the move ends from as it sets off: at rest to what it holds, no way of the page's width for
+  // its lists to hold their rows on, nothing of it set going for the move)
+  if held {
+    @sfbase.page_way_said("", 0.0, ends=0.0)
+  }
   // (the page shown in the pane, whether the one on top or the one kept while that waits: the one page built here)
   let page_id = c.id("main-page")
   // (said by this build: image_item, video_item)
@@ -61,7 +68,7 @@ fn pane_page_one(c : @ui.Ctx, src : Source, page : Page) -> Unit {
   // a right click in it: what is picked copied (context_menu.mbt)
   context_page(c, page_id)
   let pane = c.box(style=frame_main.then(@ui.style(w=Fixed(c.width))), id=page_id, fn() {
-    page_one(c, src, w, page, c.width, c.height, f.aside)
+    page_one(c, src, w, page, c.width, c.height, if held { 0.0 } else { f.aside })
   })
   // (what moves in the page of its own takes its place from the page's foot: a keyboard, the block moving the page
   // aside, move none of it)
@@ -153,6 +160,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
     b.reacts(fn() { native_workspace_item(src, w) }, fn(item) {
       native_sidebar_items[id] = item
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -160,6 +168,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })
@@ -208,6 +217,8 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     made=fn(p) { pane_made(src, p, tips) },
     // (which show, as the stack stands whole: the page made once that shows, by its entry)
     shown=fn(ks) { fold_goes.shown = ks },
+    // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
+    keeps_left=@sfbase.chat_page_left_key,
   )
   |> ignore
 }
@@ -323,9 +334,14 @@ fn pane_made(
                 src,
                 fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
                 tips,
-                start_pad=fn() { dmax(12.0, (ends.start)()) },
+                start_pad=fn() { dmax(12.0, (ends.start)(true)) },
                 end_pad=fn() { (ends.end)(false, false) },
                 width~,
+                shown=pane_shows(k),
+                keep_screen=fn(st, sc) {
+                  side_screen_shown(src, st, sc) ||
+                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                },
               )
             })
           },
@@ -497,14 +513,11 @@ fn pane_made(
       made("kept/" + station + "/" + thread.to_string(), fn(a, core, _here, _stint, frame, width) {
         @settings.kept_chat_node(a, core, station, thread, on_back=core.pop, frame~, width~, tips~)
       })
-    // (by its station and session: another's another page)
-    Setting(RunSettings(station, key)) =>
-      made("run/" + station + "/" + key, fn(a, core, _here, _stint, frame, width) {
-        @settings.run_settings_node(a, core, station, key, on_back=core.pop, frame~, width~, tips~)
-      })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) =>
-      made("adb/" + focus, fn(a, core, _here, _stint, frame, width) { @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~) })
+      made("adb/" + focus, fn(a, core, here, _stint, frame, width) {
+        @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~, sub=fn() { here().sub })
+      })
     Setting(Vault) =>
       made("vault", fn(a, core, here, _stint, frame, width) { @sfpages.vault_node(a, core, here, on_back=core.pop, frame~, width~, tips~) })
     // (by its vault and item: another's another page)
@@ -551,25 +564,17 @@ fn pane_made(
                 p,
                 src,
                 k,
-                pane_page_one,
+                fn(c, s, page) { pane_page_one(c, s, page, held=page is Chat(_)) },
                 key=tape_island_key,
                 drawn=fn(serial) { pane_page_wait.draws(serial) },
                 over=fn(o, src, page, stint) {
                   chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
-                // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
-                body=fn(col, s, r, composer, shows) {
+                // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
+                body=fn(col, s, r, composer, shows, on_stack) {
                   pane_made_chat(col, k)
-                  chat_body_nodes(col, s, r, tips, stint, composer, shows)
-                },
-                // (the composer's old view on the page's way to another width as the side panel slides beside it, as the
-                // old page's was inside its with_side: its foot's room across the way, not stepped where it crosses its
-                // width, composer_foot_in)
-                foot=fn(c, s, r) {
-                  match @sfbase.workspace_in_view(s).0 {
-                    Some(w) => with_side(c, s, w, r, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
-                    None => chat_composer_nodes(c, s, r, wide.tape.get())
-                  }
+                  context_node(col)
+                  chat_body_nodes(col, s, r, tips, stint, composer, shows, on_stack~)
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
                 foot_node=fn(n, s, r, shows, laid) {
@@ -577,14 +582,49 @@ fn pane_made(
                 },
                 leaving=fn(c, s, r) {
                   match @sfbase.workspace_in_view(s).0 {
-                    Some(w) => new_chat_after(c, s, w, r)
+                    Some(w) => new_chat_after(c, s, w, r, tape=wide.tape.get())
                     None => ()
                   }
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
-                narrower=fn(n) { side_narrower(src, n, k) },
-                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)
-                aside=fn(n) { pane_aside_at(src, n) },
+                narrower=fn(s, n) { side_narrower(s, n, k) },
+                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
+                // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
+                aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },
+                // (a chat's old view held at the width the block's move ends at all the way, moved across by its node)
+                held=fn(n) { pane_fold_held(src, n, k) },
+                // (bound once the block's move has first set off with a chat on the page: nothing of it at rest before,
+                // nor while a new chat, whose old view is laid out anew at each width of the move as before)
+                held_from=fn() { pane_fold_set_off() && app.nav.page_of(k) is Some((Chat(_), _)) },
+                // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node)
+                new_node=fn(n, s) {
+                  match @signals.untracked(fn() { @sfbase.workspace_in_view(s).0 }) {
+                    // (as wide as the frame gives the pane (made_k's), less its 文件 beside it at rest where that is open:
+                    // new_side_node's, laid out narrow or wide by where it comes to, not on its way)
+                    Some(w) =>
+                      @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, fn() {
+                        let ww = n.window().0
+                        let pane = ww - fold_target(s, w, ww).1.col
+                        let beside = pane >= side_both_least &&
+                          new_files_open(s, w.id) &&
+                          new_drive_station(s, w) is Some(_)
+                        pane - (if beside { side_whole(s, n) } else { 0.0 })
+                      }, apart=fn() { wide.tape.get() },
+                      // (the window's top row it drags by, as pane_made_host puts over a page of its own: a new chat is
+                      // made under none, hidden with its bar as it becomes its chat)
+                      bar=fn(b) {
+                        b.show(fn() { @ui.window_inset() }, fn(t) {
+                          t
+                          .over(Is(true))
+                          .height(Is(Some(@sf.wide_bar_h)))
+                          .presses(Is(true))
+                          .moves_window(Is(true))
+                          |> ignore
+                        })
+                      }), tips)
+                    None => ()
+                  }
+                },
               )
             })
             |> ignore
@@ -626,42 +666,53 @@ fn pane_chat_bar_ends(
         None => (0.0, 0.0)
       }
     },
-    start: fn() {
+    start: fn(_) {
       match look() {
         Some(f) => f.bar_pl
         None => 0.0
       }
     },
     end: fn(beside, finding) {
-      let col_w = match page() {
-        Some(Chat(r)) if pane_w_at(src, n) >= side_both_least => {
-          let key = chat_key(r)
-          let _ = side_way(key)
-          if panel_own.asked.get() == key {
-            0.0
-          } else {
-            side_col(src, n, key, beside)
-          }
-        }
-        _ => 0.0
+      let side_key = match page() {
+        Some(Chat(r)) => Some(chat_key(r))
+        Some(NewChat) => @sfbase.workspace_in_view(src).0.map(fn(w) { "new:" + w.id })
+        _ => None
       }
-      if col_w > 0.5 {
+      let roots = @ui.tree_corner_roots_now()
+      let closed_end = if finding {
         if @ui.window_keys_own() {
-          bar_in
+          @sf.window_keys_room(roots~) + bar_in
         } else {
-          dmax(bar_in, @sf.window_corner_past(4.0, roots=@ui.tree_corner_roots_now()) - col_w)
-        }
-      } else if beside {
-        // (beside what the pane shows next to it, not a chat's side column: a history's, as before)
-        bar_in
-      } else if finding {
-        if @ui.window_keys_own() {
-          @sf.window_keys_room(roots=@ui.tree_corner_roots_now()) + bar_in
-        } else {
-          @sf.window_corner_past(bar_in, roots=@ui.tree_corner_roots_now())
+          @sf.window_corner_past(bar_in, roots~)
         }
       } else {
-        @sf.window_end_in(bar_in, roots=@ui.tree_corner_roots_now())
+        @sf.window_end_in(bar_in, roots~)
+      }
+      match side_key {
+        Some(key) => {
+          let side_by_side = pane_w_at(src, n) >= side_both_least
+          let col_w = if side_by_side {
+            let _ = side_way(key)
+            side_col(src, n, key, beside)
+          } else {
+            0.0
+          }
+          if @ui.window_keys_own() {
+            if !side_by_side || col_w <= 0.0 {
+              closed_end
+            } else {
+              let whole = side_whole(src, n)
+              let frac = if whole > 0.5 { dmax(0.0, dmin(1.0, col_w / whole)) } else { 1.0 }
+              let smooth = bar_in + (closed_end - bar_in) * (1.0 - frac)
+              dmax(bar_in, dmax(closed_end - col_w, smooth))
+            }
+          } else if col_w > 0.5 {
+            dmax(bar_in, @sf.window_corner_past(4.0, roots~) - col_w)
+          } else {
+            closed_end
+          }
+        }
+        None => if beside { bar_in } else { closed_end }
       }
     },
     linked: fn() { if @ui.window_keys_own() { None } else { Some(@sf.window_corner_key()) } },
@@ -736,6 +787,40 @@ fn pane_aside_at(src : Source, n : @view.View) -> Double {
       fold_along(fold_drawn_at(n), now).aside
     }
     None => 0.0
+  }
+}
+
+///|
+/// How chat page `serial`'s old view in the pane off the tape is laid out as node `n` is drawn (chat_page_made's `held`):
+/// while the block's move goes, at the width the page has where the move ends all the way, moved across as far as its
+/// rows' words stood further in at the width it set off from, less as much as the move has come (laid_toward, as the
+/// side panel's way has it), so the old view is built as the move sets off and not again at each frame of it, its words
+/// going with the page; at rest, and while a new chat (laid out anew as the move goes, its words not a chat's rows), as
+/// wide as it is.
+fn pane_fold_held(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
+  let ww = n.window().0
+  guard @sfbase.workspace_in_view(src).0 is Some(w) else { return { by: 0.0, across: 0.0, laid: ww, toward: ww, toward_by: 0.0 } }
+  let (_, now) = fold_target(src, w, ww)
+  let t = fold_drawn_at(n)
+  let pane = ww - fold_along(t, now).col
+  guard app.nav.page_of(serial) is Some((Chat(_), _)) else { return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 } }
+  // (what of the pane the chat's page does not have: its side panel's column beside it, as it is at that moment)
+  let beside = pane - pane_page_w(src, n, serial, pane)
+  match (fold_goes.from, fold_goes.to) {
+    (Some(a), Some(b)) if fold_going(t) =>
+      laid_toward(pane - beside, ww - a.col - beside, ww - b.col - beside)
+    _ => { by: 0.0, across: 0.0, laid: pane - beside, toward: pane - beside, toward_by: 0.0 }
+  }
+}
+
+///|
+/// How wide chat page `serial` is in a pane `pane` wide, node `n` its page's (its side panel's column beside it, none where
+/// the panel is over the page: side_panel_node's).
+fn pane_page_w(src : Source, n : @view.View, serial : Int, pane : Double) -> Double {
+  match app.nav.page_of(serial) {
+    Some((Chat(r), _)) if pane >= side_both_least =>
+      pane - side_col(src, n, chat_key(r), side_now(src, r).0.length() > 0)
+    _ => pane
   }
 }
 

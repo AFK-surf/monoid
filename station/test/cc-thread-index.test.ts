@@ -113,7 +113,7 @@ test("a destination's surface, time, membership and removal are reflected after 
     assert.equal(ccSessionReady(db, "agent"), false);
     finish(db, "agent");
     assert.deepEqual(ccSessionRows(db, "agent", 20).map((r) => r.thread), [first, second]);
-    db.prepare("UPDATE threads SET surface='ember' WHERE id=?").run(first);
+    db.prepare("UPDATE threads SET surface='chat' WHERE id=?").run(first);
     db.prepare("DELETE FROM thread_sessions WHERE thread=? AND session=?").run(second, "agent");
     finish(db, "agent");
     assert.deepEqual(ccSessionRows(db, "agent", 20), []);
@@ -139,8 +139,8 @@ test("removing a membership releases its copy destination row even if that sessi
 test("merging a source chat's session candidates preserves its original twenty destinations and connects", () => {
   const store = Store.open(":memory:"), db = store.db;
   try {
-    const home = store.openThread("ember", "CHAT", "multi", null, null).id;
-    store.joinThread(home, "b", "ember"); store.joinThread(home, "a", "ember");
+    const home = store.openThread("chat", "CHAT", "multi", null, null).id;
+    store.joinThread(home, "b", "chat"); store.joinThread(home, "a", "chat");
     for (let n = 0; n < 35; n++) {
       const id = store.openThread("slack:one", "C", `target-${n}`, null, null).id;
       if (n % 3 !== 0) store.joinThread(id, "b", "b-slack");
@@ -161,8 +161,8 @@ test("merging a source chat's session candidates preserves its original twenty d
 test("merged copy destinations keep SQLite's ordering of old non-integer entry times", () => {
   const store = Store.open(":memory:"), db = store.db;
   try {
-    const home = store.openThread("ember", "CHAT", "old-times", null, null).id;
-    store.joinThread(home, "a", "ember"); store.joinThread(home, "b", "ember");
+    const home = store.openThread("chat", "CHAT", "old-times", null, null).id;
+    store.joinThread(home, "a", "chat"); store.joinThread(home, "b", "chat");
     for (const [n, at] of [1, 5.5, "old", null].entries()) {
       const id = store.openThread("slack:one", "C", `old-${n}`, null, null).id;
       store.joinThread(id, n % 2 ? "a" : "b", "slack");
@@ -179,12 +179,12 @@ test("merged copy destinations agree with the original across overlapping member
   const store = Store.open(":memory:"), db = store.db;
   try {
     const sessions = ["z", "agent a", "a/1", "甲", "β", "a\"b"];
-    const home = store.openThread("ember", "CHAT", "overlap", null, null).id;
-    for (const session of [...sessions].reverse()) store.joinThread(home, session, "ember");
+    const home = store.openThread("chat", "CHAT", "overlap", null, null).id;
+    for (const session of [...sessions].reverse()) store.joinThread(home, session, "chat");
     let state = 42;
     const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state; };
     for (let n = 0; n < 70; n++) {
-      const id = store.openThread(n % 9 ? "slack:one" : "ember", "C", `overlap-${n}`, null, null).id;
+      const id = store.openThread(n % 9 ? "slack:one" : "chat", "C", `overlap-${n}`, null, null).id;
       const order = [...sessions].sort(() => (random() & 1) ? 1 : -1);
       for (const session of order) if ((random() & 3) !== 0) store.joinThread(id, session, `connect-${session}`);
       if (n % 11 !== 0) put(db, id, 1, random() % 8);
@@ -201,8 +201,8 @@ for (const recursive of [false, true]) {
     const store = Store.open(":memory:"), db = store.db;
     try {
       db.exec(`PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
-      const home = store.openThread("ember", "CHAT", "home", null, null).id;
-      store.joinThread(home, "agent", "ember");
+      const home = store.openThread("chat", "CHAT", "home", null, null).id;
+      store.joinThread(home, "agent", "chat");
       const ids = Array.from({ length: 6 }, (_, n) => {
         const id = store.openThread("slack:one", "C", `target-${n}`, null, null).id;
         store.joinThread(id, "agent", "slack"); put(db, id, 1, n + 1); return id;
@@ -237,7 +237,7 @@ for (const recursive of [false, true]) {
       db.prepare(`UPDATE OR REPLACE entries SET ${alias}=? WHERE thread=? AND n=1`)
         .run(displacedEntry.rowid, ids[5]);
       matches();
-      db.prepare("UPDATE threads SET surface='ember' WHERE id=?").run(ids[4]);
+      db.prepare("UPDATE threads SET surface='chat' WHERE id=?").run(ids[4]);
       matches();
       db.prepare(`INSERT OR REPLACE INTO threads(surface,channel,thread_ts,created_at)
         VALUES('slack:one','C','target-5',200)`).run();

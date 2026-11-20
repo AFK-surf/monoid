@@ -4,13 +4,13 @@
 // each page together (views/admin.ts: found, filtered, sorted, counted); this draws it. Where the page is (a list's
 // words, filter and sort, the item open) is in its URL, so a link shows the same. A page's own parts are beside it:
 // feedback.tsx, workspace.tsx, relays.tsx; what they share, shared.tsx; what the core gives, types.ts.
-import { Boxes, ChevronRight, Copy, List as ListIcon, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
+import { Boxes, ChevronRight, Copy, Key, List as ListIcon, LogOut, Monitor, Plus, Said, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
 import { useEffect, useState, type ReactNode } from "preact/compat";
 import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRoute, useSearchParams } from "wouter-preact";
 import { Wordmark } from "../brand.tsx";
 import { stamp } from "../api.ts";
 import { failure, useToast } from "@stillfail/ui/toast.tsx";
-import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, Menu, MobileBack, ResizeHandle, Select, StatusDot, Switch, SwitchRow, Time, ICON, type Presence, Waiting } from "../ui.tsx";
+import { Button, Confirm, CopyCommand, Dialog, Field, FilterPills, IconButton, Menu, MobileBack, ResizeHandle, SearchInput, Select, StatusDot, SwitchRow, Time, ICON, type Presence, Waiting, ErrorLine, TextInput } from "../ui.tsx";
 import { useSignOut, type Account } from "../cloud/accounts.ts";
 import { admin, useAction } from "../cloud/api.ts";
 import { Avatar } from "../cloud/gate.tsx";
@@ -18,7 +18,6 @@ import * as nav from "../Sidebar.css.ts";
 import * as shellCss from "../styles/shell.css.ts";
 import * as css from "./console.css.ts";
 import * as pagesCss from "../styles/pages.css.ts";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import { t } from "../i18n.ts";
 import { NAME } from "../channel.ts";
 import { Detail, Failed, Marks, narrow, PATH, PENDING, SAMPLE_OVERVIEW, SAMPLE_USER, sampleRows, useKept } from "./shared.tsx";
@@ -45,6 +44,7 @@ export function Console({ account }: { account: Account }) {
           <NavRow to="/codes"><Ticket {...ICON} />{t("web-pages.cloud.inviteCode")}</NavRow>
           <NavRow to="/feedback"><Said {...ICON} />{t("web-pages.admin.feedback")}</NavRow>
           <NavRow to="/relays"><Server {...ICON} />{t("web-pages.admin.relays")}</NavRow>
+          <NavRow to="/keys"><Key {...ICON} />{t("web-pages.admin.keys")}</NavRow>
           <NavRow to="/audit"><ListIcon {...ICON} />{t("web-pages.admin.audit")}</NavRow>
         </div>
         <div className={`${nav.navFootRow} ${css.adminFoot}`}>
@@ -61,6 +61,7 @@ export function Console({ account }: { account: Account }) {
           <Route path="/codes"><ListPage account={account} list="invite-codes" /></Route>
           <Route path="/feedback/:id?"><ListPage account={account} list="feedback" /></Route>
           <Route path="/relays"><RelaysPage account={account} /></Route>
+          <Route path="/keys"><ListPage account={account} list="keys" /></Route>
           <Route path="/audit"><ListPage account={account} list="audit" /></Route>
           <Route><Redirect to="/" replace /></Route>
         </Routes>
@@ -138,12 +139,12 @@ function OverviewBody({ view }: { view: Overview }) {
 const TITLE: Record<List, string> = {
   get users() { return t("web-pages.admin.users"); }, workspaces: "Workspace",
   get "invite-codes"() { return t("web-pages.cloud.inviteCode"); }, get feedback() { return t("web-pages.admin.feedback"); },
-  get audit() { return t("web-pages.admin.audit"); },
+  get audit() { return t("web-pages.admin.audit"); }, get keys() { return t("web-pages.admin.keys"); },
 };
 const PLACEHOLDER: Record<List, string> = {
   get users() { return t("web-pages.admin.search.users"); }, get workspaces() { return t("web-pages.admin.search.workspaces"); },
   get "invite-codes"() { return t("web-pages.admin.search.codes"); }, get feedback() { return t("web-pages.admin.search.feedback"); },
-  get audit() { return t("web-pages.admin.search.audit"); },
+  get audit() { return t("web-pages.admin.search.audit"); }, get keys() { return t("web-pages.admin.search.keys"); },
 };
 const STEP = 50;
 
@@ -158,10 +159,11 @@ function ListPage({ account, list }: { account: Account; list: List }) {
   const { value: view, error } = useKept<ListView>({ topic: "adminList", account: account.sub, list, query, ...(filter ? { filter } : {}), ...(sort ? { sort } : {}), limit });
   const set = (key: string, value: string | null) => setParams((p) => { const next = new URLSearchParams(p); if (value) next.set(key, value); else next.delete(key); return next; }, { replace: true });
   const [making, setMaking] = useState(false);
+  const [makingKey, setMakingKey] = useState(false);
   const [granting, setGranting] = useState(false);
   const [creating, setCreating] = useState(false);
   const search = params.toString() ? `?${params}` : "";
-  const detail = id && list !== "invite-codes" && list !== "audit";
+  const detail = id && list !== "invite-codes" && list !== "audit" && list !== "keys";
   // A report's list is narrowed by its area too, said after its tab in the one filter (views/admin.ts: `new@android`).
   const [tab, area] = filter?.includes("@") ? [filter.slice(0, filter.indexOf("@")), filter.slice(filter.indexOf("@") + 1)] : [filter ?? "", ""];
   const setFilter = (nextTab: string, nextArea: string) => set("filter", nextArea ? `${nextTab === "all" ? "" : nextTab}@${nextArea}` : nextTab === "all" || nextTab === "" ? null : nextTab);
@@ -172,14 +174,12 @@ function ListPage({ account, list }: { account: Account; list: List }) {
         <header className={pagesCss.pageHead}>
           <div><h1>{TITLE[list]}{view && <span className={css.total}>{view.total}</span>}</h1></div>
           {list === "invite-codes" && <Button icon={Plus} variant="primary" onClick={() => setMaking(true)}>{t("web-pages.admin.code.make")}</Button>}
+          {list === "keys" && <Button icon={Plus} variant="primary" onClick={() => setMakingKey(true)}>{t("web-pages.admin.key.make")}</Button>}
           {list === "users" && <Button icon={Plus} onClick={() => setGranting(true)}>{t("web-pages.admin.pending.add")}</Button>}
           {list === "workspaces" && <Button icon={Plus} onClick={() => setCreating(true)}>{t("web-pages.admin.ws.new")}</Button>}
         </header>
         <div className={css.toolbar}>
-          <label className={css.search}>
-            <Search {...ICON} />
-            <input className={controlsCss.input} value={query} placeholder={PLACEHOLDER[list]} aria-label={t("web-pages.admin.search")} onChange={(e) => set("q", e.currentTarget.value)} />
-          </label>
+          <SearchInput className={css.search} value={query} placeholder={PLACEHOLDER[list]} label={t("web-pages.admin.search")} onChange={(v) => set("q", v)} clearable />
           {view?.areas && (
             <span className={css.sort}>
               <Select value={view.area ?? ""} onChange={(v) => setFilter(tab, v)} label={t("web-pages.admin.fb.area")}
@@ -194,17 +194,13 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           )}
         </div>
         {view && (
-          <div className={css.filters} role="tablist">
-            {view.filters.map((f) => (
-              <button key={f.id} role="tab" aria-selected={view.filter === f.id} className={css.filter} data-on={view.filter === f.id || undefined}
-                onClick={() => setFilter(f.id, area)}>{f.label}<span>{f.count}</span></button>
-            ))}
-          </div>
+          <FilterPills className={css.filters} items={view.filters} value={view.filter} onChange={(id) => setFilter(id, area)} />
         )}
         {/* A still.fail cloud from before bug reports has no such list. */}
         {list === "feedback" && error?.status === 404 ? <p className={css.empty}>{t("web-pages.admin.noFeedback")}</p> : <Failed error={error} />}
         {!view ? !error && <Waiting sample={<div className={css.list}>{sampleRows(list).map((row) => list === "invite-codes"
           ? <CodeRow key={row.id} account={account} row={row} />
+          : list === "keys" ? <KeyRow key={row.id} account={account} row={row} />
           : list === "audit" ? <AuditRow key={row.id} row={row} /> : <ItemRow key={row.id} list={list} row={row} open={false} to="" />)}</div>} />
           : view.rows.length === 0 ? (
           <p className={css.empty}>{query ? t("web-pages.admin.notFound") : t("web-pages.admin.empty")}</p>
@@ -212,6 +208,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           <div className={css.list}>
             {view.rows.map((row) => list === "invite-codes"
               ? <CodeRow key={row.id} account={account} row={row} />
+              : list === "keys" ? <KeyRow key={row.id} account={account} row={row} />
               : list === "audit" ? <AuditRow key={row.id} row={row} />
               : <ItemRow key={row.id} list={list} row={row} sort={view.sort} open={row.id === id} to={`${PATH[list]}/${encodeURIComponent(row.id)}${search}`} />)}
             {view.more && <button className={css.more} onClick={() => setLimit((n) => n + STEP)}>{t("web-pages.admin.more", { n: Math.min(STEP, view.found - view.rows.length), total: view.found })}</button>}
@@ -224,6 +221,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           ? <FeedbackDetail key={id} account={account} id={id} close={`${PATH.feedback}${search}`} />
           : <WorkspaceDetail key={id} account={account} id={id} close={`${PATH.workspaces}${search}`} />)}
       {making && <NewCodeDialog account={account} onClose={() => setMaking(false)} />}
+      {makingKey && <NewKeyDialog account={account} onClose={() => setMakingKey(false)} />}
       {granting && <PendingDialog account={account} search={search} onClose={() => setGranting(false)} />}
       {creating && <NewWorkspaceDialog account={account} search={search} onClose={() => setCreating(false)} />}
     </div>
@@ -294,6 +292,46 @@ function CodeRow({ account, row }: { account: Account; row: Row }) {
   );
 }
 
+/** An Admin API key row: name, mono prefix, state pill, creator/usage/expiry line, and revoke action when active. */
+function KeyRow({ account, row }: { account: Account; row: Row }) {
+  const toast = useToast();
+  const [revoking, setRevoking] = useState(false);
+  const revoke = useAction(() => admin.revokeKey(account.sub, row.id), () => toast(t("web-pages.admin.key.revoked")));
+  const at = row.state === "revoked" ? stamp(row, "revoked_at") : stamp(row, "created_at");
+  const lastUsed = stamp(row, "last_used_at");
+  const expires = stamp(row, "expires_at");
+  const creator = row.line.split(" · ")[0] ?? "";
+  const subline = [
+    creator,
+    lastUsed ? t("web-pages.admin.key.lastUsed", { ago: lastUsed.ago }) : t("web-pages.admin.key.neverUsed"),
+    ...(row.state === "active"
+      ? [expires ? t("web-pages.admin.expires", { until: expires.until }) : t("web-pages.admin.key.neverExpires")]
+      : []),
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className={css.row} data-static>
+      <span className={css.rowText}>
+        <span className={css.rowLine1}>
+          <b>{row.title}</b>
+          {row.prefix && <span className={`${shellCss.mono} ${css.keyPrefix}`}>{row.prefix}…</span>}
+          <span className={css.rowTail}>
+            <Marks marks={row.marks} />
+            <span className={css.rowTime}>
+              {row.state === "active"
+                ? <Button variant="ghost" busy={revoke.busy} onClick={() => setRevoking(true)}>{t("web-pages.admin.key.revokeShort")}</Button>
+                : <Time stamp={at} fixed />}
+            </span>
+          </span>
+        </span>
+        <span className={css.rowLine2}>{subline}</span>
+      </span>
+      <Confirm open={revoking} onClose={() => setRevoking(false)} onConfirm={() => { setRevoking(false); void revoke.run(); }}
+        title={t("web-pages.admin.key.revokeConfirm", { name: row.title })} action={t("web-pages.admin.key.revoke")}
+        description={t("web-pages.admin.key.revokeBody")} />
+    </div>
+  );
+}
+
 /** An operator's change: what, to what, on its first line with when; who and what it said under it. */
 function AuditRow({ row }: { row: Row }) {
   return (
@@ -357,16 +395,12 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
       {!u.admin && <>
         <div className={css.group}>{t("web-pages.admin.user.rights")}</div>
         {u.mayCreate !== null && (
-          <label className={`${css.line} ${css.switchLine}`}>
-            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.mayCreate")}</span><span className={css.hint}>{u.mayCreateHint}</span></span>
-            <span className={css.switchBox}><Switch checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} label={t("web-pages.admin.user.mayCreate")} /></span>
-          </label>
+          <SwitchRow compact title={t("web-pages.admin.user.mayCreate")} description={u.mayCreateHint} label={t("web-pages.admin.user.mayCreate")}
+            checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} />
         )}
         {u.beta !== null && (
-          <label className={`${css.line} ${css.switchLine}`}>
-            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.beta")}</span><span className={css.hint}>{t("web-pages.admin.user.betaHint")}</span></span>
-            <span className={css.switchBox}><Switch checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} label={t("web-pages.admin.user.beta")} /></span>
-          </label>
+          <SwitchRow compact title={t("web-pages.admin.user.beta")} description={t("web-pages.admin.user.betaHint")} label={t("web-pages.admin.user.beta")}
+            checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} />
         )}
         {/* (not one's own: the cloud refuses it, and nobody is to lock themselves out of the console) */}
         {u.blocked !== null && u.id !== account.sub && (
@@ -381,7 +415,7 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
             <Button busy={remove.busy} onClick={() => remove.run()}>{t("web-pages.admin.pending.remove")}</Button>
           </div>
         )}
-        {block.error && <p className={controlsCss.fieldError} role="alert">{block.error.message}</p>}
+        {block.error && <ErrorLine>{block.error.message}</ErrorLine>}
       </>}
       {/* Closes at once: the block button turns until the cloud has it, a failure said by toast. */}
       <Confirm open={blocking} onClose={() => setBlocking(false)} onConfirm={() => { setBlocking(false); void block.run(true); }}
@@ -420,7 +454,7 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
       ) : (
         <>
           <Field label={t("web-pages.admin.code.note")} htmlFor="code-note" hint={t("web-pages.admin.code.noteHint")}>
-            <input id="code-note" className={controlsCss.input} value={note} autoFocus maxLength={200} onChange={(e) => setNote(e.currentTarget.value)} placeholder={t("web-pages.admin.code.notePlaceholder")}
+            <TextInput id="code-note" value={note} autoFocus maxLength={200} onChange={(e) => setNote(e.currentTarget.value)} placeholder={t("web-pages.admin.code.notePlaceholder")}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && !make.busy) make.run(); }} />
           </Field>
           <Field label={t("web-pages.admin.code.validity")}>
@@ -429,7 +463,55 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
           <SwitchRow title={t("web-pages.admin.code.beta")} description={t("web-pages.admin.code.betaHint")} checked={beta} onChange={setBeta} />
         </>
       )}
-      {make.error && <p className={controlsCss.fieldError} role="alert">{make.error.message}</p>}
+      {make.error && <ErrorLine>{make.error.message}</ErrorLine>}
+    </Dialog>
+  );
+}
+
+const KEY_DAYS = [30, 90, 365];
+
+function NewKeyDialog({ account, onClose }: { account: Account; onClose(): void }) {
+  const [name, setName] = useState("");
+  const [days, setDays] = useState("90");
+  const make = useAction(() => admin.createKey(account.sub, name.trim(), days ? Number(days) : undefined));
+  const made = make.result;
+  const ready = name.trim() !== "" && !make.busy;
+  return (
+    <Dialog open onClose={onClose} wide title={made ? t("web-pages.admin.key.made") : t("web-pages.admin.key.make")}
+      description={made ? t("web-pages.admin.key.madeLead") : t("web-pages.admin.key.makeLead")}
+      footer={made ? <Button variant="primary" onClick={onClose}>{t("common.done")}</Button> : <>
+        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="primary" busy={make.busy} disabled={!ready} onClick={() => make.run()}>{t("web-pages.admin.key.makeShort")}</Button>
+      </>}>
+      {made ? (
+        <>
+          <Field label={t("web-pages.admin.key.secret")}><div className={css.command}><CopyCommand text={made.key} /></div></Field>
+          <div className={css.vaultTip}>
+            <b>{t("web-pages.admin.key.vaultTitle")}</b>
+            <span>{t("web-pages.admin.key.vaultHint")}</span>
+            <ul>
+              <li>{t("web-pages.admin.key.vaultKind")}</li>
+              <li>{t("web-pages.admin.key.vaultHost", { host: made.host })}</li>
+              <li>{t("web-pages.admin.key.vaultEnv")}</li>
+            </ul>
+          </div>
+          <Field label={t("web-pages.admin.key.cliExample")}><div className={css.command}><CopyCommand text={`STILLFAIL_ADMIN_ORIGIN=${made.origin} stillfail admin whoami`} /></div></Field>
+        </>
+      ) : (
+        <>
+          <Field label={t("web-pages.admin.key.name")} htmlFor="key-name">
+            <TextInput id="key-name" value={name} autoFocus maxLength={80} onChange={(e) => setName(e.currentTarget.value)} placeholder={t("web-pages.admin.key.namePlaceholder")}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); }} />
+          </Field>
+          <Field label={t("web-pages.admin.key.validity")}>
+            <Select value={days} onChange={setDays} label={t("web-pages.admin.key.validity")} options={[
+              ...KEY_DAYS.map((d) => ({ value: String(d), label: t("web-pages.admin.code.days", { n: d }) })),
+              { value: "", label: t("web-pages.admin.key.never") },
+            ]} />
+          </Field>
+        </>
+      )}
+      {make.error && <ErrorLine>{make.error.message}</ErrorLine>}
     </Dialog>
   );
 }
@@ -455,12 +537,12 @@ function PendingDialog({ account, search, onClose }: { account: Account; search:
         <Button variant="primary" busy={add.busy} disabled={!ready} onClick={() => add.run()}>{t("web-pages.admin.pending.addShort")}</Button>
       </>}>
       <Field label={t("web-pages.admin.pending.email")} htmlFor="pending-email">
-        <input id="pending-email" className={controlsCss.input} type="email" value={email} autoFocus maxLength={255} placeholder="name@example.com" onChange={(e) => setEmail(e.currentTarget.value)}
+        <TextInput id="pending-email" type="email" value={email} autoFocus maxLength={255} placeholder="name@example.com" onChange={(e) => setEmail(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) add.run(); }} />
       </Field>
       <SwitchRow title={t("web-pages.admin.user.beta")} description={t("web-pages.admin.user.betaHint")} checked={beta} onChange={setBeta} />
       <SwitchRow title={t("web-pages.admin.user.mayCreate")} description={t("web-pages.admin.pending.mayCreateHint")} checked={mayCreate} onChange={setMayCreate} />
-      {add.error && <p className={controlsCss.fieldError} role="alert">{add.error.message}</p>}
+      {add.error && <ErrorLine>{add.error.message}</ErrorLine>}
     </Dialog>
   );
 }

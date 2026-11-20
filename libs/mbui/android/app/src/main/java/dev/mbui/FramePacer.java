@@ -141,6 +141,7 @@ final class FramePacer {
      * as it is drawn.)
      */
     void frameNow() {
+        appWanted.set(true);
         vsyncAt = new long[] {p.nanoTime(), 0};
         wanted.set(false);
         p.requestRender();

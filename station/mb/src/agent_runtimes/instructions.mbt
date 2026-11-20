@@ -19,10 +19,10 @@ pub let line_most : Int = 1500
 
 ///|
 /// rows.ts `STILLFAIL_SURFACE` and `STATION_AUTHOR`.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
-let station_author : String = "ember"
+let station_author : String = "station"
 
 ///|
 fn instructions(project : String, workspace : String, repos_dir : String, memory_path : String, station : String) -> String {
@@ -335,12 +335,7 @@ fn escape_attr(value : String) -> String {
 ///|
 /// A JavaScript value's truth (`if (v)`).
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Str(s)) => s.length() > 0
-    Some(Num(n)) => n != 0.0 && !n.is_nan()
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|

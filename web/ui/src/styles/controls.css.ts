@@ -13,7 +13,7 @@ const BUTTON_ICON_IN = 13;
 export const btn = style({
   display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", height: "36px",
   padding: "0 16px", borderRadius: "999px", border: `1px solid ${vars.lineStrong}`, background: vars.canvas,
-  color: vars.text, fontSize: vars.textUi, fontWeight: "500", whiteSpace: "nowrap", cursor: "pointer",
+  color: vars.text, fontSize: vars.textUi, fontWeight: "500", whiteSpace: "nowrap", cursor: "pointer", textDecoration: "none",
   transition: `background ${vars.dur} ${vars.easeOut}, border-color ${vars.dur} ${vars.easeOut}`,
   selectors: {
     // Its canvas kept under the ink (lit.ts): on a card's grey it is the button it was, a step on.

@@ -45,7 +45,7 @@ fn made_stack() -> (Tester, Nav[String], MadeLog, Array[String]) {
                 let first = @signals.untracked(page)
                 log.made.push(first)
                 let taps = @signals.signal(0)
-                let scroll = @view.Scroll::new()
+                let scroll = @view.Scroll::plain()
                 log.taps[first] = taps
                 log.scrolls[first] = scroll
                 log.roots[first] = v.id()
@@ -280,4 +280,381 @@ test "window tree: a made page come back to tells what reads its time on top the
   let last = (log.stints["m1"])()
   assert_true(last != then)
   assert_eq(log.seen["m1"].last(), Some(last), msg="by a pop from outside an event: \{Repr(log.seen["m1"])}")
+}
+
+///|
+/// made_stack's, its pages made once kept as they leave the stack (nav_view's `keeps_left`: by their name, of kind "m";
+/// Nav's kept left), those let go for good told (`gone_for_good`, Nav's on_entry_gone).
+fn made_stack_kept() -> (Tester, Nav[String], MadeLog, Array[String], Array[String]) {
+  let left : Array[String] = []
+  let gone_for_good : Array[String] = []
+  let log : MadeLog = { made: [], gone: [], taps: Map([]), scrolls: Map([]), roots: Map([]), owns: Ref(0), stints: Map([]), seen: Map([]) }
+  let nav = Nav::new("a", on_leave=fn(p) { left.push(p) }, on_entry_gone=fn(_, p) { gone_for_good.push(p) })
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      keeps_left=fn(p) { if p.has_prefix("m") { Some((p, "m")) } else { None } },
+      made=fn(p) {
+        if p.has_prefix("m") {
+          Some(
+            (
+              "m",
+              fn(v, page, _under, _stint, _k) {
+                let first = @signals.untracked(page)
+                log.made.push(first)
+                let taps = @signals.signal(0)
+                log.taps[first] = taps
+                v.owns(fn() { log.gone.push(first) }) |> ignore
+                v.box(fn(head) {
+                  head
+                  .height(Is(Some(60.0)))
+                  .words(By(fn() { page() + " " + taps.get().to_string() }), look={ ..@view.words_plain, size: 12.0 })
+                  .presses(Is(true))
+                  .on_press(fn() { taps.set(taps.untracked() + 1) })
+                  |> ignore
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  (t, nav, log, left, gone_for_good)
+}
+
+///|
+/// Popped, its slide run out.
+fn popped(t : Tester, nav : Nav[String]) -> Unit {
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+}
+
+///|
+test "window tree: a made page gone back from kept at rest, taken back the same nodes as it is pushed again; its leaving told once a stay, the least lately used let go for good past the most kept" {
+  let (t, nav, log, left, gone_for_good) = made_stack_kept()
+  pushed(t, nav, "m1")
+  let (m1, _) = nav.top_stay()
+  t.tap(100.0, 30.0)
+  t.tap(100.0, 30.0)
+  assert_true(t.find("m1 2") is Some(_))
+  popped(t, nav)
+  // (gone from the stack: kept, its nodes put by at rest, not drawn, nothing let go; its leaving told once)
+  assert_true(nav.is_kept_left(m1))
+  assert_eq(nav.pages(), ["a"])
+  assert_eq(log.gone, [])
+  assert_eq(left, ["m1"])
+  assert_eq(gone_for_good, [])
+  assert_true(t.find("m1 2") is None)
+  // (a tap where its head was while it is put by: the page on top's, not its)
+  t.tap(100.0, 30.0)
+  assert_eq(log.taps["m1"].get(), 2)
+  // (pushed again: the same nodes, its taps as they were, made no more)
+  pushed(t, nav, "m1")
+  assert_eq(log.made, ["m1"])
+  assert_eq(nav.top_stay().0, m1)
+  assert_true(!nav.is_kept_left(m1))
+  assert_true(t.find("m1 2") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  t.tap(100.0, 30.0)
+  assert_eq(log.taps["m1"].get(), 3)
+  popped(t, nav)
+  assert_eq(left, ["m1", "m1"])
+  // (three others kept after it: it the least lately used, let go for good, its leaving not told again)
+  for p in ["m2", "m3", "m4"] {
+    pushed(t, nav, p)
+    popped(t, nav)
+  }
+  assert_eq(log.gone, ["m1"])
+  assert_eq(gone_for_good, ["m1"])
+  assert_eq(left, ["m1", "m1", "m2", "m3", "m4"])
+  // (pushed again once let go: made anew)
+  pushed(t, nav, "m1")
+  assert_eq(log.made, ["m1", "m2", "m3", "m4", "m1"])
+  assert_true(t.find("m1 0") is Some(_))
+  // (the shelf emptied, as the workspace in view changes: those kept let go for good with it)
+  popped(t, nav)
+  view_event(fn() { nav.shelf_empty() })
+  t.draw()
+  assert_eq(gone_for_good, ["m1", "m2", "m3", "m4", "m1"])
+}
+
+///|
+test "window tree: a made page put by as another is put in place of it over the root, taken back as it is put there again; one never shown kept not" {
+  let (t, nav, log, left, _) = made_stack_kept()
+  pushed(t, nav, "m1")
+  view_event(fn() { nav.replace_above(1, ["m2"]) })
+  t.draw()
+  assert_eq(left, ["m1"])
+  assert_eq(log.gone, [])
+  view_event(fn() { nav.replace_above(1, ["m1"]) })
+  t.draw()
+  assert_eq(log.made, ["m1", "m2"])
+  assert_true(t.find("m1 0") is Some(_))
+  // (one pushed and put in place of before a frame showed it: made nothing, kept nothing)
+  view_event(fn() {
+    nav.push("m5")
+    nav.replace("m6")
+  })
+  t.draw()
+  assert_true(!log.made.contains("m5"))
+  // (the root put in place: what was kept let go for good with the stack over it)
+  view_event(fn() { nav.replace_above(0, ["b"]) })
+  t.draw()
+  assert_true(log.gone.contains("m2"), msg="\{Repr(log.gone)}")
+}
+
+///|
+test "window tree: a flat stack's made page put in place of over its root kept, kept shown while the one in its place waits and put by once that shows, taken back the same nodes as it is put there again" {
+  for owned in [false, true] {
+    let made : Array[String] = []
+    let gone : Array[String] = []
+    let left : Array[String] = []
+    let ready = @signals.signal(true)
+    let nav = Nav::new("root", on_leave=fn(p) { left.push(p) })
+    let t = Tester::new(fn(_c) {  }, w=390.0, h=600.0)
+    set_view_app(fn(root) {
+      if owned {
+        // (an owner as the panes' (page_wait.mbt): the page shown kept while the one put in its place waits)
+        nav.flat_owned(true)
+        let shown = Ref(@signals.untracked(fn() { nav.top_stay() }))
+        root.reacts(fn() { (nav.top_stay(), ready.get()) }, fn(now) {
+          if now.0 == shown.val {
+            return
+          }
+          if now.1 {
+            shown.val = now.0
+            nav.flat_keep(None)
+          } else {
+            nav.flat_keep(Some(shown.val))
+          }
+        })
+      }
+      nav_flat_view(
+        root,
+        nav,
+        fn(c, p) { c.text(p, size=12.0) |> ignore },
+        fn(_) { true },
+        0.0,
+        keeps_left=fn(p) { if p.has_prefix("m") { Some((p, "m")) } else { None } },
+        made=fn(p) {
+          if !p.has_prefix("m") {
+            return None
+          }
+          Some(
+            (
+              "m",
+              fn(v, page, _under, _stint, _k) {
+                let name = @signals.untracked(page)
+                made.push(name)
+                v.box(fn(w) { w.words(By(fn() { "page " + page() })) |> ignore }) |> ignore
+                v.owns(fn() { gone.push(name) }) |> ignore
+              },
+            ),
+          )
+        },
+      )
+      |> ignore
+    })
+    t.draw()
+    nav.replace_above(1, ["mA"])
+    t.draw()
+    assert_true(t.find("page mA") is Some(_), msg="\{owned}")
+    // (B put in its place, waiting where an owner keeps A shown meanwhile: A still shown, then put by as B shows)
+    ready.set(false)
+    nav.replace_above(1, ["mB"])
+    t.draw()
+    if owned {
+      assert_true(t.find("page mA") is Some(_), msg="kept shown")
+      assert_eq(left, [], msg="kept shown")
+    }
+    ready.set(true)
+    t.draw()
+    assert_true(t.find("page mB") is Some(_), msg="\{owned}")
+    assert_true(t.find("page mA") is None, msg="\{owned}")
+    assert_eq((made, gone, left), (["mA", "mB"], [], ["mA"]), msg="\{owned}")
+    // (A again: the same nodes, made no more; B put by)
+    nav.replace_above(1, ["mA"])
+    t.draw()
+    assert_true(t.find("page mA") is Some(_), msg="\{owned}")
+    assert_eq((made, gone, left), (["mA", "mB"], [], ["mA", "mB"]), msg="\{owned}")
+  }
+}
+
+///|
+test "window tree: a made page with a focused tree field covered by another page: returning by pop or by back_gesture restores focus and ime to the field" {
+  let nav = Nav::new("a")
+  let f = Field::new()
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m1" {
+          Some(
+            (
+              "m",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) {
+                  h.height(Is(Some(60.0))) |> ignore
+                  field(h, f, placeholder="页内字段", label="页内字段") |> ignore
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  pushed(t, nav, "m1")
+  f.focus()
+  t.draw()
+  t.type_text("a")
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused before push: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  // (push a page over m1 until settled: m1 is laid out nowhere and loses focus)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime")
+  // (return by nav.pop(): focus and ime restored to the tree field)
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after pop: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("b")
+  t.draw()
+  assert_eq(f.text(), "ab", msg="typing after pop")
+  // (push again until settled, then return by back_gesture: focus and ime restored too)
+  pushed(t, nav, "b")
+  assert_true(!f.focused() && !t.ime().0, msg="covered page drops focus and ime before back_gesture")
+  t.back_gesture(200.0, true)
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_true(f.focused() && t.ime().0, msg="after back_gesture: focused=\{f.focused()} ime=\{Repr(t.ime())}")
+  t.type_text("c")
+  t.draw()
+  assert_eq(f.text(), "abc", msg="typing after back_gesture")
+}
+
+///|
+test "window tree: covered made page parks at rest, keeps layout cache on pop, and restores focus" {
+  let nav = Nav::new("m_home")
+  let count = @signals.signal(0)
+  let runs = Ref(0)
+  let home_counter_id : Ref[@view.NodeId?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m_home" {
+          Some(
+            (
+              "m_home",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(btn) {
+                  btn
+                  .width(Is(Some(100.0)))
+                  .height(Is(Some(40.0)))
+                  .presses(Is(true))
+                  .focusable(Is(true))
+                  .says(Is(Some(@view.said(Button, label="首页按钮"))))
+                  .on_press(fn() {  })
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(counter) {
+                  home_counter_id.val = Some(counter.id())
+                  counter
+                  .height(Is(Some(24.0)))
+                  .words(
+                    By(fn() {
+                      runs.val += 1
+                      "count=\{count.get()}"
+                    }),
+                    look={ ..@view.words_plain, size: 12.0 },
+                  )
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(list) {
+                  for i in 0..<50 {
+                    list.box(fn(row) {
+                      row.height(Is(Some(12.0))).words(Is("row \{i}"), look={ ..@view.words_plain, size: 10.0 }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else if p == "m_top" {
+          Some(
+            (
+              "m_top",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) { h.height(Is(Some(40.0))).words(Is("top"), look={ ..@view.words_plain, size: 12.0 }) |> ignore })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  t.key(key_tab)
+  t.draw()
+  assert_eq(focus_named(t), "Button 首页按钮")
+  assert_true(t.find("count=0") is Some(_))
+  // Push top page over m_home and finish slide animation.
+  pushed(t, nav, "m_top")
+  assert_eq(focus_named(t), "none")
+  // Covered parked page's resting watches (e.g. pv.shift reading clock) must not keep Tree::clock_read() alive,
+  // and parked nodes must not be reported as drawn by Tree::drawn_of.
+  assert_false(view_tree().unwrap().clock_read(), msg="clock_read should be false while covered page is parked at rest")
+  match home_counter_id.val {
+    Some(id) => assert_true(view_tree().unwrap().drawn_of(id, drawn=true) is None, msg="parked node must not appear in drawn_of")
+    None => fail("home_counter_id missing")
+  }
+  t.assert_idle()
+  // While covered, m_home is parked at rest: background signal updates trigger 0 times.
+  let runs_while_covered = runs.val
+  count.set(1)
+  t.draw()
+  count.set(2)
+  t.draw()
+  assert_eq(runs.val, runs_while_covered, msg="covered made page should be at rest")
+  // Pop back to m_home: layout cache is preserved (far fewer than 50 laid nodes),
+  // updated signal value is shown, and focus returns to the button.
+  let laid_before = view_tree().unwrap().work().laid
+  popped(t, nav)
+  let laid_delta = view_tree().unwrap().work().laid - laid_before
+  assert_true(laid_delta <= 15, msg="expected parked layout cache reuse, got laid_delta=\{laid_delta}")
+  assert_true(t.find("count=2") is Some(_), msg="woken page should reflect updated signal")
+  assert_eq(focus_named(t), "Button 首页按钮")
+  t.assert_idle()
 }

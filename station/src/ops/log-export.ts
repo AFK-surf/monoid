@@ -57,15 +57,21 @@ const attribute = (key: string, value: unknown) => ({
     : { stringValue: typeof value === "string" ? value : JSON.stringify(value) ?? String(value) },
 });
 
-/// A line as an OpenTelemetry log record, scrubbed.
+/// A trace's id as OpenTelemetry has it: 32 lowercase hex digits, not all zero.
+const TRACE_ID = /^(?!0{32}$)[0-9a-f]{32}$/;
+
+/// A line as an OpenTelemetry log record, scrubbed. A line of a trace (`trace`) carries its id as the record's own
+/// `traceId` too, so its span's lines are found by it (`log.trace` stays).
 export function record(line: Line, home: string) {
   const fields = Object.entries(line.fields).filter(([, v]) => v !== undefined);
+  const trace = line.fields.trace;
   return {
     timeUnixNano: (BigInt(Math.round(line.ms)) * 1_000_000n).toString(),
     severityNumber: SEVERITY[line.level],
     severityText: line.level,
     body: { stringValue: scrubText(line.message, home) },
     attributes: [attribute("log.target", line.at), ...fields.map(([k, v]) => attribute(`log.${k}`, scrubValue(k, v, home)))],
+    ...(typeof trace === "string" && TRACE_ID.test(trace) ? { traceId: trace } : {}),
   };
 }
 
@@ -83,6 +89,13 @@ export type LogExportOptions = {
   station: () => string | null;
   version: () => string;
   home?: string;
+  /// What each batch says the station runs on and is (main.ts gives them, each left out where not given): the system
+  /// as Node names it, the CPU's architecture, the engine (nodejs, moonbit) and the station's role (station, or rig:
+  /// one that only runs tasks).
+  os?: string;
+  arch?: string;
+  runtime?: string;
+  role?: string;
 };
 
 export class LogExport {
@@ -113,18 +126,30 @@ export class LogExport {
     this.trim();
   }
 
+  /// Past what is kept waiting, the oldest INFO lines go first (a warning or an error says what went wrong), the oldest
+  /// of the rest only once none is left.
   private trim() {
-    if (this.waiting.length > MAX_WAITING) {
-      this.dropped += this.waiting.length - MAX_WAITING;
-      this.waiting.splice(0, this.waiting.length - MAX_WAITING);
+    let over = this.waiting.length - MAX_WAITING;
+    if (over <= 0) return;
+    this.dropped += over;
+    const kept: Line[] = [];
+    for (const line of this.waiting) {
+      if (over > 0 && line.level === "INFO") over--;
+      else kept.push(line);
     }
+    this.waiting = over > 0 ? kept.slice(over) : kept;
   }
 
   /// The batch of `lines` as it is sent.
   body(lines: Line[], station: string, dropped = 0): string {
     const records = lines.map((l) => record(l, this.home));
     if (dropped > 0) records.push(record({ ms: wall.now(), level: "WARN", at: "telemetry", message: "log lines dropped before they could be sent", fields: { dropped } }, this.home));
-    const resource = [attribute("service.name", "stillfail-station"), attribute("service.version", this.options?.version() ?? ""), attribute("stillfail.station", station)];
+    const o = this.options;
+    const described = [["os.type", o?.os], ["host.arch", o?.arch], ["process.runtime.name", o?.runtime], ["stillfail.role", o?.role]] as const;
+    const resource = [
+      attribute("service.name", "stillfail-station"), attribute("service.version", o?.version() ?? ""), attribute("stillfail.station", station),
+      ...described.flatMap(([k, v]) => (v === undefined ? [] : [attribute(k, v)])),
+    ];
     return JSON.stringify({ resourceLogs: [{ resource: { attributes: resource }, scopeLogs: [{ scope: { name: "stillfail-station" }, logRecords: records }] }] });
   }
 

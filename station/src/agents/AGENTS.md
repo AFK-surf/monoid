@@ -1,0 +1,35 @@
+# Station agents, runtimes, tools, and sandboxes (for agents)
+
+## Runtime drivers and MoonBit output parsing
+
+- All runtimes sit behind one driver seam (`station/src/agents/runtime.ts`), and each driver owns its child's stdin:
+  - Claude Code runs one `claude -p` process per session, or a PTY with lifecycle hooks in `station/src/agents/claude-tui.mjs` when TUI mode is selected (chat sessions only, while Node-less releases use `station/mb/src/station_main/claude_tui.mbt`).
+  - Codex runs one app-server per account with one thread per session. Pass per-session settings in `thread/start` config, never process env. Shut down idle app-servers after `WARM_MS` and reopen threads on the next turn.
+  - Other runtimes live in `station/src/agents/`.
+- One shared MoonBit program parses every runtime's output off the main thread on every platform (including Windows runner named pipes), with no TypeScript fallback:
+  - Claude Code (`station/src/agents/mb-agents.ts`, `station/mb/src/reader/agents.mbt`, `station/mb/src/claude`, `station/mb/src/claude/outcome.mbt`): Node starts/stops processes, handles token renewals and turn outcomes, and acknowledges routed batches (`routed`, `station/src/sessions/mb-actor.ts` `#took`). The program hands events directly to actors and `#live` (`station/test/hub-e2e.test.ts` checks none pass through Node). Handover freezes reading first (`freeze`, `station/src/sessions/hub.ts` `handOver`).
+  - Codex (`station/mb/src/reader/agents_codex.mbt`, `station/mb/src/codex`): Node receives only replies, app-server requests, and turn errors. Drop `turn/diff/updated`, route thread notifications in-program, track turn ids and offsets in `codex.ts` `Host.heard`, and use `replay` on crash recovery. Parity tests compare against `station/test/codex-reference.ts` (`station/test/codex-cases.ts`, `station/mb/src/codex/as_typescript_said_test.mbt`).
+  - DeepSeek Harness, Cursor, and ACP runtimes (Antigravity CLI, Grok Build, Devin, Hermes Agent): `station/mb/src/reader/agents_own.mbt` (`station/mb/src/dsh`, `station/mb/src/cursor`, `station/mb/src/acp`). Node receives only request answers, runtime requests, and kept ACP transcripts/usage (`acp.ts` `took`, `KeptTranscript`). Write kept data off the main thread before marking a turn ended (`own-process.ts` `settled`). Crash recovery uses `replayOwn` (`own_replay`). Parity tests compare against `station/test/reference/live.ts` and `station/test/reference/process.ts` (`station/test/runtime-cases.ts`, `station/test/mb-dsh.test.ts`, `station/test/mb-cursor.test.ts`, `station/test/mb-acp.test.ts`).
+  - Assemble chunked agent output lines once via `station/mb/src/pieces`. Concatenating per chunk blows up large lines to gigabytes.
+
+## MCP tools and instructions
+
+- Agent tools run on the local MCP endpoint (`station/src/tools/`, HTTP on `127.0.0.1`, per-session bearer token).
+- Agent guidance lives in `station/src/agents/instructions.ts` and `station/src/skills/`. When changing instructions, tool parameters, or tool rules, append one sentence with the next number to `station/src/agents/migrations.ts` so older sessions see it once.
+- Tool listings are per runtime (`station/src/sessions/agents.ts` `LISTINGS`). Claude Code defers MCP tools, so mark only `chat_post` and `chat_state` as loaded.
+- Keep tool declarations compact: runtimes that load all tools pay every session, and Codex drops parameter descriptions for schemas over 5,000 bytes. State what the tool does and when, and link to its skill in `station/src/skills/` for details. `station/test/tools-weight.test.ts` enforces ceilings. Explain any ceiling raise in the change.
+
+## Subagents never speak in a chat
+
+- Tools that speak (`station/src/tools/mcp.ts` `SPEAKS`, plus writing `slack_api` methods) belong to the main session agent only.
+- Because the MCP endpoint sees one bearer token per session, each runtime driver blocks subagents from speaking tools. Claude Code enforces this via `station/src/agents/subagent-hook.mjs` (gaps documented at `SILENT_SUBAGENTS` in `station/src/agents/claude.ts`). Other runtimes do not enforce it yet.
+- Classify every new tool in `station/test/speaks.test.ts`. Tools that only show a card or report to the still.fail team remain open to subagents until the owner decides otherwise.
+
+## Bug-report replies never auto-reach agents
+
+- Replies from the still.fail team are external input and must never enter a session automatically. Cloud delivers them only to workspace members' apps (`client/core-ts/src/feedback-replies.ts`). No station reads or stores them. Agents see a reply only when a person quotes it, and call `feedback_reply` only when asked.
+
+## Sandboxes
+
+- Heavy work runs in sandboxes targeted by `station_task` (`station/src/agents/sandbox.ts`). Configure l4es front doors in `config.json` under `sandboxes`. `station_list` lists them beside stations, and the station runs each task as a local job through `station/src/agents/sandbox-bridge.mjs`.
+- Install nothing in a sandbox and run no agent or station inside one. Sandboxes are not devices, and no tool or UI adds them. Legacy per-session `sandbox` mode is removed.

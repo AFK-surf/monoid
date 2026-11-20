@@ -709,9 +709,10 @@ pub fn Bidi::is_mixed(self : Bidi) -> Bool {
 ///|
 /// Whether code unit `u` may be of a character that makes a text's levels worth working out (Bidi::new's `complex`:
 /// right to left, Arabic numbers, an embedding or an isolate): none under Hebrew (Latin, Greek, Cyrillic and the rest),
-/// none in CJK, the punctuation, the symbols. Over: every surrogate (what is past the BMP is not looked up), the
-/// right-to-left blocks (with what is unassigned in them), RLM, the embeddings and the isolates' initiators
-/// (bidi_mixed_test holds it to each BMP character's class).
+/// none in CJK, the punctuation, the symbols. Over: the right-to-left blocks (with what is unassigned in them), RLM,
+/// the embeddings, the isolates' initiators, and only the high surrogates (`0xD802`, `0xD803`, `0xD83A`, `0xD83B`)
+/// whose SMP blocks contain `R`/`AL`/`AN` characters, so Emoji (`0xD83C..=0xD83E`) and CJK Extension planes skip
+/// `Bidi::new` (bidi_mixed_wbtest verifies all `0..=0x10FFFF` code points).
 fn may_be_bidi(u : Int) -> Bool {
   if u < 0x0590 {
     return false
@@ -720,7 +721,10 @@ fn may_be_bidi(u : Int) -> Bool {
   u == 0x200F ||
   (u >= 0x202A && u <= 0x202E) ||
   (u >= 0x2066 && u <= 0x2068) ||
-  (u >= 0xD800 && u <= 0xDFFF) ||
+  u == 0xD802 ||
+  u == 0xD803 ||
+  u == 0xD83A ||
+  u == 0xD83B ||
   (u >= 0xFB1D && u <= 0xFDFF) ||
   (u >= 0xFE70 && u <= 0xFEFF)
 }

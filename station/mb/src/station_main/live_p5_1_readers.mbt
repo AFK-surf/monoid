@@ -34,67 +34,65 @@ priv struct MbProc {
 fn mb_spawn(host : @host.Host, program : String, args : Array[String], stderr? : Sink = Ignored) -> MbProc raise SysError {
   let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr~)
   let p : MbProc = { proc, said: @effect.Queue::unbounded(), ended: @effect.Deferred::new(), gone: false }
-  ignore(
-    host.rt.fork(name="mb program", async fn() {
-      let carry = @buffer.new()
-      let mut head : Json? = None
-      let mut wanted = 0
-      let body = @buffer.new()
-      while true {
-        match proc.events.take() {
-          Out(bytes) => {
-            let mut at = 0
-            while at < bytes.length() {
-              match head {
-                Some(h) => {
-                  let take = if wanted - body.length() < bytes.length() - at { wanted - body.length() } else { bytes.length() - at }
-                  body.write_bytesview(bytes[at:at + take])
-                  at += take
-                  if body.length() >= wanted {
-                    ignore(p.said.try_offer((h, Some(body.to_bytes()))))
-                    body.reset()
-                    head = None
+  fork_bg(host, "mb program", async fn() {
+    let carry = @buffer.new()
+    let mut head : Json? = None
+    let mut wanted = 0
+    let body = @buffer.new()
+    while true {
+      match proc.events.take() {
+        Out(bytes) => {
+          let mut at = 0
+          while at < bytes.length() {
+            match head {
+              Some(h) => {
+                let take = if wanted - body.length() < bytes.length() - at { wanted - body.length() } else { bytes.length() - at }
+                body.write_bytesview(bytes[at:at + take])
+                at += take
+                if body.length() >= wanted {
+                  ignore(p.said.try_offer((h, Some(body.to_bytes()))))
+                  body.reset()
+                  head = None
+                }
+              }
+              None => {
+                let mut nl = -1
+                for i = at; i < bytes.length(); i = i + 1 {
+                  if bytes[i] == b'\n' {
+                    nl = i
+                    break
                   }
                 }
-                None => {
-                  let mut nl = -1
-                  for i = at; i < bytes.length(); i = i + 1 {
-                    if bytes[i] == b'\n' {
-                      nl = i
-                      break
+                if nl < 0 {
+                  carry.write_bytesview(bytes[at:])
+                  at = bytes.length()
+                } else {
+                  carry.write_bytesview(bytes[at:nl])
+                  at = nl + 1
+                  let line = @utf8.decode_lossy(carry.to_bytes())
+                  carry.reset()
+                  match (try { Ok(@json.parse(line)) } catch { e => Err(e) }) {
+                    Ok({ "bytes": Number(n, ..), .. } as h) if n > 0.0 => {
+                      head = Some(h)
+                      wanted = n.to_int()
                     }
-                  }
-                  if nl < 0 {
-                    carry.write_bytesview(bytes[at:])
-                    at = bytes.length()
-                  } else {
-                    carry.write_bytesview(bytes[at:nl])
-                    at = nl + 1
-                    let line = @utf8.decode_lossy(carry.to_bytes())
-                    carry.reset()
-                    match (try { Ok(@json.parse(line)) } catch { e => Err(e) }) {
-                      Ok({ "bytes": Number(n, ..), .. } as h) if n > 0.0 => {
-                        head = Some(h)
-                        wanted = n.to_int()
-                      }
-                      Ok({ "bytes": Number(_, ..), .. } as h) => ignore(p.said.try_offer((h, Some(b""))))
-                      Ok(h) => ignore(p.said.try_offer((h, None)))
-                      Err(_) => ()
-                    }
+                    Ok({ "bytes": Number(_, ..), .. } as h) => ignore(p.said.try_offer((h, Some(b""))))
+                    Ok(h) => ignore(p.said.try_offer((h, None)))
+                    Err(_) => ()
                   }
                 }
               }
             }
           }
-          Err(_) => ()
-          Exit(_, _) => break
         }
+        Err(_) => ()
+        Exit(_, _) => break
       }
-      p.gone = true
-      ignore(p.ended.succeed(()))
-      p.said.shutdown()
-    }),
-  )
+    }
+    p.gone = true
+    ignore(p.ended.succeed(()))
+    p.said.shutdown()
+  })
   p
 }
 
@@ -137,6 +135,8 @@ priv struct Slot {
   proc : MbProc
   mut held : Asked?
   mut idle_since : Int64
+  /// The model catalog's version this reader was last given (read/pool.ts `Slot.catalogVersion`).
+  mut catalog_version : Double
 }
 
 ///|
@@ -163,6 +163,9 @@ priv struct Readers {
   /// What only the hub knows, given to every read (its processes' states, its clients' keys).
   mut processes : async () -> Json
   mut client_keys : async () -> Json
+  /// The model catalog now ({ version, models }), given to a reader with a read when it changed: its prices are the
+  /// usage page's (readops `price`).
+  mut catalog : () -> Json
   builders : Map[String, Requested]
   mut checkpointing : Bool
   mut again : Bool
@@ -294,6 +297,7 @@ fn Readers::new(host : @host.Host, program : String, data : String) -> Readers {
     names: {},
     processes: async fn() { Json::array([]) },
     client_keys: async fn() { Json::array([]) },
+    catalog: () => { "version": Json::number(0.0), "models": Json::object({}) },
     builders: {},
     checkpointing: false,
     again: false,
@@ -311,55 +315,47 @@ fn Readers::start(self : Readers, line : Line) -> Slot? {
       return None
     }
   }
-  let slot : Slot = { proc, held: None, idle_since: @host.now() }
+  let slot : Slot = { proc, held: None, idle_since: @host.now(), catalog_version: 0.0 }
   line.slots.push(slot)
-  ignore(
-    self.host.rt.fork(name="reader", async fn() {
-      while proc.next() is Some((said, body)) {
-        if said is { "ready": _, .. } {
-          continue
-        }
-        guard slot.held is Some(asked) else { continue }
-        let id = match said {
-          { "id": Number(n, ..), .. } => n.to_int()
-          _ => -1
-        }
-        if id != asked.id {
-          continue
-        }
-        slot.held = None
-        slot.idle_since = @host.now()
-        let answer : Result[Bytes, (Int, String)] = match (body, said) {
-          (Some(b), _) => Ok(b)
-          (None, { "text": String(t), .. }) => Ok(@utf8.encode(t))
-          (None, _) => {
-            let status = match said {
-              { "status": Number(s, ..), .. } => s.to_int()
-              _ => 500
-            }
-            let m = match said {
-              { "error": String(e), .. } => e
-              _ => "read failed"
-            }
-            Err((status, m))
-          }
-        }
-        ignore(asked.answer.succeed(answer))
-        self.pump(line)
+  fork_bg(self.host, "reader", async fn() {
+    while proc.next() is Some((said, body)) {
+      if said is { "ready": _, .. } {
+        continue
       }
-      // (it ended: what it held failed, the next read starts another)
-      match line.slots.search_by(s => physical_equal(s, slot)) {
-        Some(i) => ignore(line.slots.remove(i))
-        None => ()
+      guard slot.held is Some(asked) else { continue }
+      let id = match said {
+        { "id": Number(n, ..), .. } => n.to_int()
+        _ => -1
       }
-      match slot.held {
-        Some(asked) => ignore(asked.answer.succeed(Err((500, "the reader stopped"))))
-        None => ()
+      if id != asked.id {
+        continue
       }
       slot.held = None
+      slot.idle_since = @host.now()
+      let answer : Result[Bytes, (Int, String)] = match (body, said) {
+        (Some(b), _) => Ok(b)
+        (None, { "text": String(t), .. }) => Ok(@utf8.encode(t))
+        (None, _) => {
+          let status = match said {
+            { "status": Number(s, ..), .. } => s.to_int()
+            _ => 500
+          }
+          let m = match said {
+            { "error": String(e), .. } => e
+            _ => "read failed"
+          }
+          Err((status, m))
+        }
+      }
+      ignore(asked.answer.succeed(answer))
       self.pump(line)
-    }),
-  )
+    }
+    // (it ended: what it held failed, the next read starts another)
+    if line.slots.search_by(s => physical_equal(s, slot)) is Some(i) { ignore(line.slots.remove(i)) }
+    if slot.held is Some(asked) { ignore(asked.answer.succeed(Err((500, "the reader stopped")))) }
+    slot.held = None
+    self.pump(line)
+  })
   Some(slot)
 }
 
@@ -389,11 +385,24 @@ fn Readers::pump(self : Readers, line : Line) -> Unit {
     guard free is Some(slot) else { break }
     let asked = line.waiting.remove(at)
     slot.held = Some(asked)
-    if !slot.proc.post(asked.ask) {
+    if !slot.proc.post(self.with_catalog(slot, asked.ask)) {
       slot.held = None
       ignore(asked.answer.succeed(Err((500, "the reader stopped"))))
     }
   }
+}
+
+///|
+/// `ask` with the model catalog where it changed since this reader was last given it (read/pool.ts `give`).
+fn Readers::with_catalog(self : Readers, slot : Slot, ask : Json) -> Json {
+  guard (self.catalog)() is { "version": Number(version, ..), "models": models, .. } && version != slot.catalog_version &&
+    ask is Object(fields) else {
+    return ask
+  }
+  slot.catalog_version = version
+  let given = fields.copy()
+  given["catalog"] = models
+  Json::object(given)
 }
 
 ///|
@@ -472,7 +481,7 @@ fn Readers::checkpoint_soon(self : Readers) -> Unit {
   self.checkpointing = true
   self.again = false
   ignore(
-    self.host.rt.fork(name="checkpoint", async fn() {
+    self.host.rt.fork_quiet(name="checkpoint", async fn() {
       @effect.sleep(2000) // timer: a debounce of a burst (pool.ts CHECKPOINT_MS)
       ignore(self.read("checkpoint", Json::object({}), "en")) catch {
         e => p51_log("WARN", "readers", "the database's log not written into it", fields={ "error": Json::string("\{e}") })
@@ -495,10 +504,7 @@ fn Readers::let_go_idle(self : Readers) -> Unit {
       if line.name == "moved" && line.slots.length() > 0 && physical_equal(line.slots[0], s) {
         continue
       }
-      match line.slots.search_by(x => physical_equal(x, s)) {
-        Some(i) => ignore(line.slots.remove(i))
-        None => ()
-      }
+      if line.slots.search_by(x => physical_equal(x, s)) is Some(i) { ignore(line.slots.remove(i)) }
       s.proc.stop()
     }
   }
@@ -506,6 +512,54 @@ fn Readers::let_go_idle(self : Readers) -> Unit {
     ignore(name)
     b.let_go_idle(now)
   }
+}
+
+///|
+/// Short of memory: every reader and builder that answers nothing let go (pool.ts `trimIdle`), a count of them. A line
+/// with reads waiting keeps its readers.
+fn Readers::trim_idle(self : Readers) -> Int {
+  if self.closed {
+    return 0
+  }
+  let mut trimmed = 0
+  for line in [self.moved, self.pages, self.log] {
+    if line.waiting.length() > 0 {
+      continue
+    }
+    for s in line.slots.filter(s => s.held is None) {
+      if line.slots.search_by(x => physical_equal(x, s)) is Some(i) { ignore(line.slots.remove(i)) }
+      s.proc.stop()
+      trimmed += 1
+    }
+  }
+  for _, b in self.builders {
+    if !b.running && b.waiting.length() == 0 && b.proc is Some(p) {
+      p.stop()
+      b.proc = None
+      trimmed += 1
+    }
+  }
+  trimmed
+}
+
+///|
+/// The readers' and builders' processes running (resources' `programs`: the station's own memory).
+fn Readers::pids(self : Readers) -> Array[Int] {
+  let out : Array[Int] = []
+  for line in [self.moved, self.pages, self.log] {
+    for s in line.slots {
+      if !s.proc.gone {
+        out.push(s.proc.proc.pid)
+      }
+    }
+  }
+  for _, b in self.builders {
+    match b.proc {
+      Some(p) if !p.gone => out.push(p.proc.pid)
+      _ => ()
+    }
+  }
+  out
 }
 
 ///|
@@ -583,10 +637,7 @@ async fn Requested::ready(self : Requested, items : Array[Json]) -> Unit {
   }
   self.run()
   for d in waits {
-    match d.wait() {
-      Ok(_) => ()
-      Err(e) => raise ReadFailed(503, e)
-    }
+    if d.wait() is Err(e) { raise ReadFailed(503, e) }
   }
 }
 
@@ -597,107 +648,110 @@ fn Requested::run(self : Requested) -> Unit {
   }
   self.running = true
   let host = self.readers.host
-  ignore(
-    host.rt.fork(name="old-state builder", async fn() {
-      defer {
-        self.running = false
+  fork_bg(host, "old-state builder", async fn() {
+    defer {
+      self.running = false
+    }
+    // (the process before holds what only one process may build, until it is gone)
+    (self.readers.previous_gone.val)()
+    let mut pause = 250
+    while self.waiting.length() > 0 && !self.readers.closed {
+      let (item, d) = self.waiting[0]
+      let proc = match self.proc {
+        Some(p) if !p.gone => p
+        _ =>
+          match (try { Ok(mb_spawn(host, self.readers.program, self.args)) } catch { e => Err(e) }) {
+            Ok(p) => {
+              self.proc = Some(p)
+              p
+            }
+            Err(SysError(e)) => {
+              for w in self.waiting {
+                ignore(w.1.succeed(Err(e)))
+              }
+              self.waiting.clear()
+              return
+            }
+          }
       }
-      // (the process before holds what only one process may build, until it is gone)
-      (self.readers.previous_gone.val)()
-      let mut pause = 250
-      while self.waiting.length() > 0 && !self.readers.closed {
-        let (item, d) = self.waiting[0]
-        let proc = match self.proc {
-          Some(p) if !p.gone => p
-          _ =>
-            match (try { Ok(mb_spawn(host, self.readers.program, self.args)) } catch { e => Err(e) }) {
-              Ok(p) => {
-                self.proc = Some(p)
-                p
-              }
-              Err(SysError(e)) => {
-                for w in self.waiting {
-                  ignore(w.1.succeed(Err(e)))
-                }
-                self.waiting.clear()
-                return
-              }
-            }
-        }
-        if !proc.post((self.message)(item)) {
-          self.proc = None
-          continue
-        }
-        // Its answer, the permit it asks for given on the way.
-        let mut result : Json = Json::null()
-        while proc.next() is Some((said, _)) {
-          match said {
-            { "take": True, .. } => ignore(proc.post({ "permit": true }))
-            { "give": True, .. } => ()
-            _ => {
-              result = said
-              break
-            }
-          }
-        }
-        self.last = @host.now()
-        match result {
-          { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
-            pause = 250
-            ignore(self.waiting.remove(0))
-            for w in self.waiting.filter(w => w.0 == item) {
-              ignore(w.1.succeed(Ok(())))
-            }
-            self.waiting.retain(w => w.0 != item)
-            ignore(d.succeed(Ok(())))
-          }
-          { "error": String(e), .. } => {
-            let failed = self.waiting.filter(w => w.0 == item)
-            self.waiting.retain(w => w.0 != item)
-            for w in failed {
-              ignore(w.1.succeed(Err(e)))
-            }
-          }
-          { "fallback": True, .. } =>
-            match self.repair {
-              Some(repair) =>
-                repair() catch {
-                  e => {
-                    // (the database busy with another's write: asked again after a pause)
-                    if !@sql.busy(e) {
-                      let failed = self.waiting.filter(w => w.0 == item)
-                      self.waiting.retain(w => w.0 != item)
-                      for w in failed {
-                        ignore(w.1.succeed(Err("\{e}")))
-                      }
-                    }
-                    @effect.sleep(pause) // timer: a retry after a failure (the writer busy), with a backoff
-                  }
-                }
-              None => {
-                let failed = self.waiting.filter(w => w.0 == item)
-                self.waiting.retain(w => w.0 != item)
-                for w in failed {
-                  ignore(w.1.succeed(Err("the store needs a repair this builder cannot make")))
-                }
-              }
-            }
-          Null => {
-            // (it ended: started again after a growing wait)
-            self.proc = None
-            @effect.sleep(pause) // timer: a retry after a failure, with a backoff
-            pause = if pause * 2 > 30000 { 30000 } else { pause * 2 }
-          }
+      if !proc.post((self.message)(item)) {
+        self.proc = None
+        continue
+      }
+      // Its answer, the permit it asks for given on the way.
+      let mut result : Json = Json::null()
+      while proc.next() is Some((said, _)) {
+        match said {
+          { "take": True, .. } => ignore(proc.post({ "permit": true }))
+          { "give": True, .. } => ()
           _ => {
-            // Not done: to the back, after a pause.
-            ignore(self.waiting.remove(0))
-            self.waiting.push((item, d))
-            @effect.sleep(250) // timer: a retry after a failure (a batch not done), with a pause
+            result = said
+            break
           }
         }
       }
-    }),
-  )
+      // (the station stopping while it answered: `close` already told everyone waiting and emptied the queue, so
+      // what it said last, a done or not, is nobody's)
+      if self.readers.closed || self.waiting.length() == 0 {
+        return
+      }
+      self.last = @host.now()
+      match result {
+        { "done": True, .. } | { "complete": True, .. } | { "id": _, "error": Null, .. } => {
+          pause = 250
+          ignore(self.waiting.remove(0))
+          for w in self.waiting.filter(w => w.0 == item) {
+            ignore(w.1.succeed(Ok(())))
+          }
+          self.waiting.retain(w => w.0 != item)
+          ignore(d.succeed(Ok(())))
+        }
+        { "error": String(e), .. } => {
+          let failed = self.waiting.filter(w => w.0 == item)
+          self.waiting.retain(w => w.0 != item)
+          for w in failed {
+            ignore(w.1.succeed(Err(e)))
+          }
+        }
+        { "fallback": True, .. } =>
+          match self.repair {
+            Some(repair) =>
+              repair() catch {
+                e => {
+                  // (the database busy with another's write: asked again after a pause)
+                  if !@sql.busy(e) {
+                    let failed = self.waiting.filter(w => w.0 == item)
+                    self.waiting.retain(w => w.0 != item)
+                    for w in failed {
+                      ignore(w.1.succeed(Err("\{e}")))
+                    }
+                  }
+                  @effect.sleep(pause) // timer: a retry after a failure (the writer busy), with a backoff
+                }
+              }
+            None => {
+              let failed = self.waiting.filter(w => w.0 == item)
+              self.waiting.retain(w => w.0 != item)
+              for w in failed {
+                ignore(w.1.succeed(Err("the store needs a repair this builder cannot make")))
+              }
+            }
+          }
+        Null => {
+          // (it ended: started again after a growing wait)
+          self.proc = None
+          @effect.sleep(pause) // timer: a retry after a failure, with a backoff
+          pause = if pause * 2 > 30000 { 30000 } else { pause * 2 }
+        }
+        _ => {
+          // Not done: to the back, after a pause.
+          ignore(self.waiting.remove(0))
+          self.waiting.push((item, d))
+          @effect.sleep(250) // timer: a retry after a failure (a batch not done), with a pause
+        }
+      }
+    }
+  })
 }
 
 ///|
@@ -719,10 +773,41 @@ fn Requested::close(self : Requested) -> Unit {
     ignore(w.1.succeed(Err("station stopping")))
   }
   self.waiting.clear()
-  match self.proc {
-    Some(p) => p.stop()
-    None => ()
+  if self.proc is Some(p) { p.stop() }
+}
+
+///|
+/// The readers closed while a builder's process is on an item (the harness's `requestedCloseInFlight`): `program` is
+/// run as the builder `said`, asked one item, and the readers closed the moment that ask is written, so what the
+/// process says after (its `take`, then `said` once its stdin is closed) comes to a builder whose queue `close`
+/// emptied. What the ask was answered, and whether the builder came to its end with nothing left waiting.
+async fn p51_requested_close_in_flight(host : @host.Host, data : String, program : String, said : String) -> Json {
+  let readers = Readers::new(host, program, data)
+  let asked : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let b = readers.builder(
+    "close-in-flight",
+    k => {
+      ignore(asked.succeed(()))
+      { "session": k }
+    },
+    program=said,
+  )
+  let answered : @effect.Deferred[String] = @effect.Deferred::new()
+  ignore(
+    host.rt.fork_quiet(name="close-in-flight ask", async fn() {
+      let what = b.ready([Json::string("s1")]) catch { e => "\{e}" } noraise { _ => "ready" }
+      ignore(answered.succeed(what))
+    }),
+  )
+  asked.wait()
+  readers.close()
+  let answer = answered.wait()
+  // (the builder's process ends once it said its last; the builder's fiber is let run to its end after)
+  if b.proc is Some(p) { p.ended.wait() }
+  while b.running {
+    @effect.pause()
   }
+  { "answer": Json::string(answer), "waiting": Json::number(b.waiting.length().to_double()) }
 }
 
 ///|
@@ -740,10 +825,7 @@ fn Readers::prepare_for(self : Readers, refusal : String, args : Json) -> (async
   }
   let thread = (flag : String?) => (t : Json) => {
     let m : Map[String, Json] = { "thread": t }
-    match flag {
-      Some(f) => m[f] = Json::boolean(true)
-      None => ()
-    }
+    if flag is Some(f) { m[f] = Json::boolean(true) }
     Json::object(m)
   }
   let field = (k : String) => (t : Json) => {
@@ -837,10 +919,7 @@ fn Readers::repair_edits(self : Readers) -> Unit raise {
       let db = p.bus.db
       let timeout = match db.all("PRAGMA busy_timeout", []) {
         [row, ..] =>
-          match row.values().next() {
-            Some(Number(n, ..)) => n.to_int()
-            _ => 5000
-          }
+          opt_num(row.values().next()).map(n => n.to_int()).unwrap_or(5000)
         _ => 5000
       }
       db.exec("PRAGMA busy_timeout = 0")
@@ -861,14 +940,15 @@ fn P51::readers_live(self : P51) -> Readers {
   let bus = self.bus
   let r = Readers::new(self.host, bus.argv0, bus.data)
   r.previous_gone.val = bus.previous_gone
+  r.catalog = () => (bus.model_catalog.val)()
   r.processes = async fn() {
-    match (bus.hub_ask.val)("processes", Json::null()) {
+    match bus.hub_processes() {
       Array(_) as a => a
       _ => Json::array([])
     }
   }
   r.client_keys = async fn() {
-    match (bus.hub_ask.val)("clientKeys", Json::null()) {
+    match bus.hub_client_keys() {
       Array(_) as a => a
       _ => Json::array([])
     }
@@ -882,13 +962,29 @@ fn P51::readers_live(self : P51) -> Readers {
       r.builder("cc-index-latest", s => { "session": s, "latest": true }, program="cc-index").ready(jitems(args))
       return Json::null()
     }
+    // (`$sessionChatNames`: hub.ts `prepareSessionChatNames`, the cc index's chat names of these sessions)
+    if op == "$sessionChatNames" {
+      r.builder("cc-index-names", s => { "session": s, "name": true }, program="cc-index").ready(jitems(args))
+      return Json::null()
+    }
+    // (`$sessionCounts`: agents.ts `waitForSessionCounts`, the sessions' counts built for the overview, a batch at a
+    // time, by `--builder session-counts`)
+    if op == "$sessionCounts" {
+      r.builder("session-counts", _ => Json::object({})).ready([Json::string("all")])
+      return Json::null()
+    }
+    // (the station short of memory: what answers nothing let go, a count; resources/module.ts `trimIdle`)
+    if op == "trimIdle" {
+      return Json::number(r.trim_idle().to_double())
+    }
     if op == "$cardPosts" {
       r.builder("card-posts", t => { "thread": t }).ready(jitems(args))
       return Json::null()
     }
     r.read(op, args, lang)
   }
-  self.stops.push(bus.store.subscribe(_ => r.checkpoint_soon()))
+  self.stops.push(bus.subscribe_store(_ => r.checkpoint_soon()))
+  bus.register_pids(() => r.pids())
   self.every("idle readers", 15000, async fn() { r.let_go_idle() }) // timer: a debounce of a burst (a reader idle a minute let go, pool.ts IDLE_MS)
   self.fork("old lookups", async fn() { r.legacy_lookups(bus) })
   r
@@ -902,11 +998,11 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
   (bus.previous_gone)()
   let kinds = [
     "legacy-said", "legacy-agent", "legacy-login", "legacy-edits", "legacy-policy", "legacy-decision-time", "legacy-decision-session",
-    "legacy-decision-session-repair", "page-letter-gc",
+    "legacy-decision-session-repair", "conversation-backfill", "page-letter-gc",
   ]
   let wake : @effect.Queue[Unit] = @effect.Queue::unbounded()
   self.stops.push(
-    bus.store.subscribe(change => match change {
+    bus.subscribe_store(change => match change {
       { "type": "thread", "entries": Array(e), .. } if e.length() > 0 => ignore(wake.try_offer(()))
       { "type": "threadRemoved", .. } => ignore(wake.try_offer(()))
       _ => ()
@@ -924,6 +1020,9 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
           continue
         }
       }
+      // (ended however this ends, the station's stop too: interrupted while it waited on the builder's answer, it left
+      // the builder running past the station, writing in its data directory)
+      defer proc.stop()
       let mut i = 0
       while left.length() > 0 && !self.closed {
         let kind = left[i % left.length()]
@@ -951,7 +1050,6 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
           _ => i += 1
         }
       }
-      proc.stop()
     }
     // (asked again as the store's threads change: a new message may need its lookup)
     ignore(wake.take())

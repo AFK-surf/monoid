@@ -80,6 +80,15 @@ pub const FRONT_MISSES: u32 = 3;
 /// The longest wait between two tries at starting the front again.
 const FRONT_RETRY_MOST: Duration = Duration::from_secs(3600);
 
+/// What the launcher did to recover (a Node or front killed as hung, a crash, a handover given up), a JSON line each in
+/// run/: the station that starts next takes the file and logs each as its own (station/src/ops/launcher-events.ts,
+/// station/mb/src/station_main/launcher_events.mbt), so they reach the station's log upload; else they were only in
+/// stderr. Written whole each time (`write_whole`: never half a line read), the newest EVENTS_KEPT kept.
+const EVENTS: &str = "launcher-events.jsonl";
+const EVENTS_KEPT: usize = 50;
+/// The longest `reason` kept of a handover given up (its words are the launcher's own).
+const REASON_MOST: usize = 240;
+
 impl Times {
     pub fn of_env() -> Times {
         let s = Duration::from_secs;
@@ -417,6 +426,62 @@ impl<O: Os> Lifecycle<O> {
     fn handoff_failed(&self, why: &str) {
         log::warn(&format!("not handed over; going on as before: {why}"));
         let _ = write_whole(&self.run.join("handoff-failed"), &format!("{why}\n"));
+        let mut end = why.len().min(REASON_MOST);
+        while !why.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.record("handoff_failed", serde_json::json!({ "reason": &why[..end] }), false);
+    }
+
+    /// An event (`kind`, with `fields`) added to run/launcher-events.jsonl (EVENTS); `health`: with what the Node's last
+    /// health.json said of it. Nothing that fails here stops the launcher.
+    fn record(&self, kind: &str, fields: Value, health: bool) {
+        let at = now_ms();
+        let level = if matches!(kind, "node_hung_killed" | "node_crashed" | "front_hung_killed") { "error" } else { "warn" };
+        let mut event = serde_json::json!({ "at": at, "kind": kind, "level": level });
+        if let (Some(event), Value::Object(fields)) = (event.as_object_mut(), fields) {
+            event.extend(fields);
+            if health {
+                event.extend(self.health_of(at));
+            }
+        }
+        let path = self.run.join(EVENTS);
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        let lines: Vec<&str> = before.lines().filter(|l| !l.trim().is_empty()).collect();
+        let mut text = String::new();
+        for line in &lines[lines.len().saturating_sub(EVENTS_KEPT - 1)..] {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push_str(&event.to_string());
+        text.push('\n');
+        if let Err(error) = write_whole(&path, &text) {
+            log::warn(&format!("{EVENTS} not written: {error}"));
+        }
+    }
+
+    /// What the Node's health.json (station/src/ops/health.ts) said last, as of `at`: only its numbers and words of its
+    /// own (no path, nothing a person wrote); none where there is none.
+    fn health_of(&self, at: u64) -> serde_json::Map<String, Value> {
+        let mut out = serde_json::Map::new();
+        let Some(health) = std::fs::read_to_string(self.run.join("health.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return out };
+        if let Some(updated) = health["updatedAt"].as_f64().filter(|u| u.is_finite() && *u >= 0.0) {
+            out.insert("healthAgeMs".into(), at.saturating_sub(updated as u64).into());
+        }
+        for name in ["rssBytes", "openFds", "heldMaxMs"] {
+            if health[name].is_number() {
+                out.insert(name.into(), health[name].clone());
+            }
+        }
+        if let Some(front) = health["front"].as_str().filter(|f| matches!(*f, "ok" | "reconnecting" | "direct")) {
+            out.insert("front".into(), front.into());
+        }
+        for name in ["presenceOnline", "relayConflict"] {
+            if health[name].is_boolean() {
+                out.insert(name.into(), health[name].clone());
+            }
+        }
+        out
     }
 
     fn node_mut(&mut self, slot: Slot) -> Option<&mut Node<O::Node>> {
@@ -631,6 +696,7 @@ impl<O: Os> Lifecycle<O> {
     /// Node serving then hands over to one linked to it: given up once, a station stayed without one for good (each
     /// handover a new endpoint, its devices' connections lost) until it was started again by hand.
     pub fn front_gone(&mut self) {
+        self.record("front_gone", serde_json::json!({ "retries": self.front_retries }), true);
         self.front_gone = true;
         self.probing = None;
         self.front_misses = 0;
@@ -705,6 +771,7 @@ impl<O: Os> Lifecycle<O> {
             return;
         }
         log::error(&format!("the front did not answer {FRONT_MISSES} times in a row ({} s apart): killed as hung", self.times.front_probe.as_secs()));
+        self.record("front_hung_killed", serde_json::json!({ "misses": FRONT_MISSES, "probeMs": self.times.front_probe.as_millis() as u64 }), true);
         self.front_misses = 0;
         self.front_probe_at = None;
         self.os.kill_front();
@@ -752,7 +819,7 @@ impl<O: Os> Lifecycle<O> {
                 self.reroute(&node.served);
                 log::info(&format!("Node {pid} {how}"));
                 if self.stopping.is_none() {
-                    self.crashed(node);
+                    self.crashed(node, how);
                 }
             }
             Some(Slot::Next) => {
@@ -776,8 +843,16 @@ impl<O: Os> Lifecycle<O> {
     }
 
     /// The serving Node ended without being asked: started again after the backoff.
-    fn crashed(&mut self, node: Node<O::Node>) {
+    fn crashed(&mut self, node: Node<O::Node>, how: &str) {
         log::warn(&format!("Node {} ended unexpectedly", node.process.pid()));
+        // One killed as hung was recorded so already.
+        if !node.hung {
+            let mut fields = serde_json::json!({ "pid": node.process.pid(), "version": node.version, "how": how, "taken": node.taken, "failures": self.failures });
+            if let Some(ready) = node.ready {
+                fields["uptimeMs"] = (self.os.now().saturating_duration_since(ready).as_millis() as u64).into();
+            }
+            self.record("node_crashed", fields, true);
+        }
         // A handover under way brings the next one up.
         if self.next.is_some() {
             return;
@@ -820,6 +895,8 @@ impl<O: Os> Lifecycle<O> {
             log::warn(&format!("Node {} did not exit within {} s of handing over; killed", node.process.pid(), self.times.exit.as_secs_f32()));
             *by = now + Duration::from_secs(3600);
             self.os.kill(&mut node.process);
+            let fields = serde_json::json!({ "pid": node.process.pid(), "version": node.version, "exitTimeoutMs": self.times.exit.as_millis() as u64 });
+            self.record("retiring_killed", fields, false);
         }
         if let Some(by) = self.stopping
             && now >= by
@@ -850,6 +927,11 @@ impl<O: Os> Lifecycle<O> {
             node.hung = true;
             let pid = node.process.pid();
             log::error(&format!("Node {pid} said nothing for {} s (its main thread held or hung); killed, and one started again", self.times.heartbeat.as_secs_f32()));
+            let mut fields = serde_json::json!({ "pid": pid, "version": node.version, "heartbeatTimeoutMs": self.times.heartbeat.as_millis() as u64 });
+            if let Some(ready) = node.ready {
+                fields["uptimeMs"] = (now.saturating_duration_since(ready).as_millis() as u64).into();
+            }
+            self.record("node_hung_killed", fields, true);
             // Not asked to hand over: a thread that does not run would not hear it. Its end is a crash's (`crashed`).
             let Lifecycle { os, current, .. } = self;
             if let Some(node) = current.as_mut() {
@@ -1916,5 +1998,118 @@ mod tests {
         assert_eq!(linked, next + 1);
         station.said(Slot::Next, ready("0.2.0"));
         assert_eq!(station.told(next), ["handover"]);
+    }
+
+    impl Lifecycle<Fake> {
+        /// What run/launcher-events.jsonl holds, a value a line.
+        fn events(&self) -> Vec<Value> {
+            self.file(EVENTS).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+        }
+    }
+
+    fn health() -> String {
+        json!({"pid": 101, "updatedAt": now_ms() - 5000, "heldMaxMs": 1200, "front": "ok", "presenceOnline": true, "relayConflict": false, "openFds": 812, "rssBytes": 734003200u64, "home": "/Users/someone"}).to_string()
+    }
+
+    #[test]
+    fn a_node_killed_as_hung_is_recorded_once_with_what_its_health_said() {
+        let mut station = station("eventshung", false);
+        let node = station.last();
+        std::fs::write(station.run.join("health.json"), health()).unwrap();
+        station.said(Slot::Current, heartbeat());
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.pass(s(90));
+        assert_eq!(station.os.killed, [node]);
+        station.ended(node, KILLED);
+        let events = station.events();
+        assert_eq!(events.len(), 1, "its end is not a crash of its own: {events:?}");
+        let e = &events[0];
+        assert_eq!((e["kind"].as_str(), e["level"].as_str()), (Some("node_hung_killed"), Some("error")));
+        assert_eq!((e["pid"].as_u64(), e["version"].as_str(), e["heartbeatTimeoutMs"].as_u64(), e["uptimeMs"].as_u64()), (Some(node as u64), Some("0.1.0"), Some(90_000), Some(90_000)));
+        assert_eq!((e["rssBytes"].as_u64(), e["openFds"].as_u64(), e["heldMaxMs"].as_u64()), (Some(734003200), Some(812), Some(1200)));
+        assert_eq!((e["front"].as_str(), e["presenceOnline"].as_bool(), e["relayConflict"].as_bool()), (Some("ok"), Some(true), Some(false)));
+        assert!(e["healthAgeMs"].as_u64().is_some_and(|age| age >= 5000));
+        assert!(e.get("home").is_none() && e.get("updatedAt").is_none(), "only the summary's fields");
+        assert!(e["at"].as_u64().is_some());
+    }
+
+    #[test]
+    fn a_node_that_crashes_is_recorded_with_how_it_ended() {
+        let mut station = station("eventscrash", false);
+        let node = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.pass(s(5));
+        station.ended(node, EXITED_1);
+        let events = station.events();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!((e["kind"].as_str(), e["level"].as_str(), e["how"].as_str()), (Some("node_crashed"), Some("error"), Some(EXITED_1)));
+        assert_eq!((e["pid"].as_u64(), e["version"].as_str(), e["taken"].as_bool(), e["uptimeMs"].as_u64(), e["failures"].as_u64()), (Some(node as u64), Some("0.1.0"), Some(true), Some(5000), Some(0)));
+        assert!(e.get("rssBytes").is_none(), "no health.json, no summary");
+        // Stopped as asked: no crash.
+        station.pass(s(1));
+        station.stop();
+        station.ended(station.last(), EXITED_0);
+        assert_eq!(station.events().len(), 1);
+    }
+
+    #[test]
+    fn the_front_killed_as_hung_and_gone_are_recorded() {
+        let mut station = station("eventsfront", false);
+        station.os.front = true;
+        station.up(Slot::Current, "0.1.0", 5000);
+        std::fs::write(station.run.join("health.json"), health()).unwrap();
+        station.tick();
+        for n in 1..=3 {
+            station.pass(s(30));
+            station.front_probed(n, false);
+        }
+        assert_eq!(station.os.front_killed, 1);
+        station.os.front = false;
+        station.front_gone();
+        let events = station.events();
+        let kinds: Vec<_> = events.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["front_hung_killed", "front_gone"]);
+        assert_eq!((events[0]["level"].as_str(), events[0]["misses"].as_u64(), events[0]["probeMs"].as_u64(), events[0]["openFds"].as_u64()), (Some("error"), Some(3), Some(30_000), Some(812)));
+        assert_eq!((events[1]["level"].as_str(), events[1]["retries"].as_u64(), events[1]["front"].as_str()), (Some("warn"), Some(0), Some("ok")));
+    }
+
+    #[test]
+    fn a_handover_given_up_and_an_old_node_killed_are_recorded() {
+        let mut station = station("eventshandover", false);
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.start_next();
+        station.pass(s(60));
+        let e = station.events().pop().unwrap();
+        assert_eq!((e["kind"].as_str(), e["level"].as_str()), (Some("handoff_failed"), Some("warn")));
+        assert_eq!(e["reason"].as_str(), Some(format!("the new station (pid {}) was not ready within 60 s", old + 1).as_str()));
+        assert!(e.get("rssBytes").is_none());
+        station.ended(old + 1, KILLED);
+        assert_eq!(station.events().len(), 1, "a Node given up is no crash");
+        // A handover whose old Node does not go.
+        station.start_next();
+        station.said(Slot::Next, ready("0.2.0"));
+        station.pass(s(30));
+        assert_eq!(station.os.killed, [old + 1, old]);
+        let e = station.events().pop().unwrap();
+        assert_eq!((e["kind"].as_str(), e["level"].as_str(), e["pid"].as_u64(), e["version"].as_str(), e["exitTimeoutMs"].as_u64()), (Some("retiring_killed"), Some("warn"), Some(old as u64), Some("0.1.0"), Some(30_000)));
+        // A reason is cut to its most, on a character's boundary.
+        station.handoff_failed(&"é".repeat(200));
+        let reason = station.events().pop().unwrap()["reason"].as_str().unwrap().to_string();
+        assert_eq!(reason.len(), REASON_MOST);
+    }
+
+    #[test]
+    fn only_the_newest_events_are_kept() {
+        let station = station("eventskept", false);
+        std::fs::write(station.run.join(EVENTS), "not json at all\n\n").unwrap();
+        for n in 0..(EVENTS_KEPT + 7) {
+            station.handoff_failed(&format!("try {n}"));
+        }
+        let events = station.events();
+        assert_eq!(events.len(), EVENTS_KEPT);
+        assert_eq!(events[0]["reason"].as_str(), Some("try 7"));
+        assert_eq!(events[EVENTS_KEPT - 1]["reason"].as_str(), Some(format!("try {}", EVENTS_KEPT + 6).as_str()));
     }
 }

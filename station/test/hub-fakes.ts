@@ -183,7 +183,10 @@ export class FakeSession implements AgentSession {
   /// Its runtime begins a turn of its own just as the next prompt is given (Claude Code's after a turn's end): that
   /// prompt is refused as a running turn's, the turn its own.
   startsOwnTurn = false;
+  /// What the test runs as it is prompted, before the prompt is answered (a throw: the prompt fails).
+  beforePrompt?: (text: string) => void;
   async prompt(text: string) {
+    this.beforePrompt?.(text);
     if (this.disposed) throw new Error("disposed");
     if (this.startsOwnTurn) {
       this.startsOwnTurn = false;
@@ -228,7 +231,7 @@ export class FakeSession implements AgentSession {
 }
 
 export class FakeDriver implements AgentDriver {
-  readonly kind: "claude" | "codex";
+  readonly kind: "claude" | "codex" | "agy";
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
@@ -241,6 +244,8 @@ export class FakeDriver implements AgentDriver {
   private n = 1;
   /// Times every process it started was ended.
   shutdowns = 0;
+  /// Given to every session it opens as its `beforePrompt`.
+  beforePrompt?: (text: string) => void;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
   /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
@@ -249,7 +254,7 @@ export class FakeDriver implements AgentDriver {
   /// What it ends of what it keeps idle, the machine short of memory, where a test has it (agents/runtime.ts `evictIdle`).
   evictIdle?: () => Promise<number>;
 
-  constructor(kind: "claude" | "codex") {
+  constructor(kind: "claude" | "codex" | "agy") {
     this.kind = kind;
   }
   runtime() {
@@ -273,6 +278,7 @@ export class FakeDriver implements AgentDriver {
       throw once;
     }
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
+    session.beforePrompt = this.beforePrompt;
     this.sessions.push(session);
     return session;
   }
@@ -330,7 +336,7 @@ export const reply = (to: InboundMessage, ts: string, text: string, over: Partia
 
 /// `workspaces`: those the station is in, its home one first; a session's link names its own.
 /// `askToName`: asked to name an untitled chat as its turn ends (off unless a test looks at it).
-export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean };
+export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; maxConcurrentTurns?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean; toolsHeard?: Map<string, number> };
 
 /// A TestClock for a rig (its hub's, its store's, its sessions'): `adjust(ms)` moves it on, and what was due by then runs.
 /// `asked()` counts the waits begun on it; `begun(n)` resolves once `n` have, each then sleeping on it (an adjust
@@ -395,6 +401,7 @@ export class Rig {
     if (o.maxNudges !== undefined) this.raw.maxNudges = o.maxNudges;
     this.raw.askToName = o.askToName ?? false;
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
+    if (o.maxConcurrentTurns !== undefined) this.raw.maxConcurrentTurns = o.maxConcurrentTurns;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
     this.config = hubConfig(this.raw, this.dir);
     // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program
@@ -406,6 +413,7 @@ export class Rig {
       ["team", this.teamChat],
     ]);
     this.place = o.place ?? { workspace: "ws", station: "st" };
+    this.toolsHeard = o.toolsHeard;
     this.workspaces = o.workspaces;
     this.hub = this.newHub({ chats: (id) => chats.get(id), link: o.link, cold: o.cold });
     openRigs.add(this);
@@ -414,6 +422,8 @@ export class Rig {
   /// The workspace and station its links name.
   place: { workspace: string; station: string };
   workspaces: string[] | undefined;
+  /// The requests each session's token made of the station's tools, where a test counts them (mcp.ts `heard`).
+  toolsHeard: Map<string, number> | undefined;
 
   /// A hub over this rig's store and config (another station's, after a restart: given its own drivers).
   newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown> }) {
@@ -423,6 +433,7 @@ export class Rig {
       chats: o.chats,
       drivers: o.drivers ?? [this.claude, this.codex],
       mcpUrl: o.mcpUrl ?? "http://127.0.0.1:1/mcp",
+      ...(this.toolsHeard ? { toolsHeard: (session: string) => this.toolsHeard!.get(session) ?? 0 } : {}),
       internal: o.internal === false ? null : new InternalChat(),
       link: o.link ? (key) => `https://ember.test/o/${this.hub?.wsOf(key) ?? this.place.workspace}/${this.place.station}/${key.replaceAll(":", "%3A")}` : undefined,
       workspaces: this.workspaces ? () => this.workspaces! : undefined,

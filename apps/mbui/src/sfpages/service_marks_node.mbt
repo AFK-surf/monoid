@@ -62,20 +62,20 @@ fn page_mark_mode_node(parent : @view.View, src : Source, p : ServicePage, site 
     })
     |> ignore
     // ×: marking left
-    @headless.button(bar, fn() { @sf.t("common.close") }, fn(_) { page_marks_leave(p, site) }, disabled=busy, fn(v, s) {
+    @sf.action_box_node(bar, fn() { @sf.t("common.close") }, fn(_) { page_marks_leave(p, site) }, disabled=busy, fn(v) {
       @sf.style_node(v, fn() { mark_close }, in_row=true)
-      @sf.hover_ground_node(v, on=fn() { !busy() }, lit=Some(fn() { s.hovered() || s.pressed() || s.focus_shown() }))
+      @sf.hover_ground_node(v, on=fn() { !busy() }, lit=Some(fn() { v.pointed() || v.pressed() || v.focus_shown() }))
       @sf.icon_node(v, "close", mark_small_icon, By(fn() { @sf.theme().p.muted })) |> ignore
     })
     |> ignore
     // 添加到对话
     let able = fn() { !busy() && n() > 0 }
-    @headless.button(
+    @sf.action_box_node(
       bar,
       fn() { svc(if busy() { "android-chat.preview.shooting" } else { "android-chat.preview.put" }) },
       fn(_) { page_marks_put(p, site, src) },
       disabled=fn() { !able() },
-      fn(v, _) {
+      fn(v) {
         @sf.style_node(v, fn() { if able() { mark_put_pill } else { mark_put_off } }, in_row=true)
         @sf.icon_node(v, "send", mark_small_icon, By(fn() {
           let t = @sf.theme()
@@ -200,22 +200,13 @@ fn service_marks_over_node(parent : @view.View, p : ServicePage, site : @ui.Nati
             None => ()
           }
         }
-        @headless.button(row, fn() { "\{n}" }, fn(_) { opens() }, fn(v, _) {
-          @sf.style_node(v, fn() { mark_pin })
-          raised_node(v, @sf.pin_raised)
-          v
-          .over(Is(true))
-          .offset(By(fn() {
-            let (x, y) = pin_at(v)
-            (x - pin_edge, y - pin_rise)
-          }))
-          |> ignore
-          v.box(fn(i) {
-            @sf.style_node(i, fn() { mark_pin_in })
-            @sf.words_node(i, fn() { "\{n}" }, fn() { mark_pin_words }) |> ignore
-          })
-          |> ignore
-        })
+        let pin = @sf.step_circle_button_node(row, fn() { "\{n}" }, fn() { "\{n}" }, fn(_) { opens() })
+        pin
+        .over(Is(true))
+        .offset(By(fn() {
+          let (x, y) = pin_at(pin)
+          (x - pin_edge, y - pin_rise)
+        }))
         |> ignore
         // what is said of it beside the pin (on its left where the right has too little room), or its note open
         let comment = fn() {
@@ -251,12 +242,12 @@ fn service_marks_over_node(parent : @view.View, p : ServicePage, site : @ui.Nati
                 }))
                 |> ignore
                 r.box(fn(g) { g.grow(By(fn() { if side(r).0 { 0.0 } else { 1.0 } })) |> ignore }) |> ignore
-                @headless.button(r, comment, fn(_) {
+                @sf.action_box_node(r, comment, fn(_) {
                   m.editing = Some(n)
                   m.note.set(comment())
                   m.note.focus()
                   p.tell()
-                }, fn(v, _) {
+                }, fn(v) {
                   @sf.style_node(v, fn() { mark_said }, in_row=true)
                   mark_bubble_node(v, @sf.pin_raised)
                   v.max_width(By(fn() { Some(side(r).1) })) |> ignore
@@ -333,12 +324,12 @@ fn mark_note_node(
       |> ignore
     })
     |> ignore
-    @headless.button(b, fn() { @sf.t("common.delete") }, fn(_) {
+    @sf.action_box_node(b, fn() { @sf.t("common.delete") }, fn(_) {
       page_marks_remove(p, site, n)
       m.note.let_go()
-    }, fn(v, s) {
+    }, fn(v) {
       @sf.style_node(v, fn() { mark_note_remove }, in_row=true)
-      @sf.hover_ground_node(v, lit=Some(fn() { s.hovered() || s.pressed() || s.focus_shown() }))
+      @sf.hover_ground_node(v, lit=Some(fn() { v.pointed() || v.pressed() || v.focus_shown() }))
       @sf.icon_node(v, "trash", note_icon, By(fn() { @sf.theme().p.muted })) |> ignore
     })
     |> ignore
