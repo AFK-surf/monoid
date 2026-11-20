@@ -842,7 +842,7 @@ export function profilesOverview(items: J[], pace: (station: string) => J, nowMs
     return made;
   };
   return {
-    pools: poolSpecs(items, now).map((rows) => {
+    pools: poolSpecs(items.map((item) => item.poolProfile ? { ...item, profile: item.poolProfile, look: false, state: null } : item), now).map((rows) => {
       const pool = fresh ? poolOf({ title: rows.title, slots: rows.slots(h) }, now, offsetMin) : poolKept(rows, pace, now, offsetMin, h);
       const speed = speedOf(speeds.get(rows.title), now);
       return speed === undefined ? pool : Object.freeze({ ...pool, speed });

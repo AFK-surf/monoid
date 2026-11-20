@@ -176,6 +176,11 @@ export function workspaceProfiles(stations: J[]): J {
     const where = availableAt.length > 0 ? t("core-views.profiles.usableOn", { stations: availableAt.join(t("core-views.list_separator")) }) : "";
     const kind = group(p);
     const usable = members.some((m) => m.usable);
+    const state = stateOf(usable, name(host), p, signedIn.length > 1 ? troubleOn(list, members) : null);
+    // A station's warning stays on the account row. A working copy still supplies the pool.
+    const working = state.look ? [...byStation.values()].find(({ i }) =>
+      members[i]!.usable && !troubled(i) && members[i]!.checkTone !== "red" && list[i]![1].quota?.state !== "blocked"
+    ) : undefined;
     items.push({
       key,
       group: kind,
@@ -193,7 +198,8 @@ export function workspaceProfiles(stations: J[]): J {
       hostOnline: byId.get(host)?.online === true,
       // Usable where any of its copies is.
       usable,
-      ...stateOf(usable, name(host), p, signedIn.length > 1 ? troubleOn(list, members) : null),
+      ...state,
+      ...(working === undefined ? {} : { poolProfile: list[working.i]![1] }),
       where,
       allow,
       stations: stations.map(
