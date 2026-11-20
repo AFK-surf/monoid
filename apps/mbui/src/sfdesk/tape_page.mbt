@@ -697,7 +697,7 @@ fn tape_made(
               tape_page_one,
               key=tape_island_key,
               drawn=fn(serial) { tape_page_wait.draws(serial) },
-              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(), tips, stint) },
+              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(o), tips, stint) },
               // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
               // (built in the page's panel, as tape_page_one builds the page: what stands in its corners concentric with them)
               body=fn(col, s, r, composer, shows, on_stack) {
@@ -775,7 +775,7 @@ fn tape_made(
 /// on the panel's words' line; what ends it, ⌘F's field where that is open, concentric with the panel's top right
 /// corner; its buttons round on that line, no corner of the window's; its ground the panel's (tape_page_ground), as a
 /// page's bar there has it.
-fn tape_chat_bar_ends() -> ChatBarEnds {
+fn tape_chat_bar_ends(n : @view.View) -> ChatBarEnds {
   let corners = fn() {
     let side = tape_shown_side()
     let under = if side is None { tape_room_now().under } else { 0.0 }
@@ -795,11 +795,17 @@ fn tape_chat_bar_ends() -> ChatBarEnds {
       }
     },
     end: fn(_, finding) {
-      if finding {
-        tape_bar_end_room(corners(), side=@sfpages.find_field_h)
-      } else {
-        tape_bar_end_room(corners())
+      let side = if finding { @sfpages.find_field_h } else { @sf.bar_key_side }
+      let base_end = tape_bar_end_room(corners(), side~)
+      if !@ui.window_keys_own() {
+        return base_end
       }
+      let r = tape_room_now()
+      let t = tape_drawn_at(n)
+      let page_right = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t)
+      let past_right = dmax(@sf.window_in, r.tw - page_right)
+      let keys_clear = @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) + bar_in - past_right
+      dmax(base_end, keys_clear)
     },
     linked: fn() { None },
     ground: tape_page_ground,
