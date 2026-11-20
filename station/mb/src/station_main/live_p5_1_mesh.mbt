@@ -1099,7 +1099,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   }
   let members = if rig { None } else { Some(self.members(keeper, endpoint, leaves~)) }
   let superseded = @gate.Superseded::new()
-  let storms = @gate.Storms::new(() => wall_ms() / 1000L)
+  let storms = @gate.Storms::new(@host.now)
   let storms_fiber = host.rt.fork(name="storms", async fn() { storms.start() })
   scope_stops.push(() => storms_fiber.interrupt())
   let here : @gate.HereLocal = match self.rig {

@@ -202,7 +202,7 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
 pub fn host_release_io(host : @host.Host) -> ReleaseIo {
   {
     write_bytes: async fn(path, b) {
-      wrap_fs(async fn() { @host_world.fs_put(host, path, b, truncate=true) })
+      wrap_fs(async fn() { @host_world.fs_put_whole(host, path, b) })
     },
     untar: async fn(tgz, out) {
       let args = ["-xzf", tgz, "-C", out]

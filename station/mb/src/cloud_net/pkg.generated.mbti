@@ -219,7 +219,7 @@ pub(all) enum CloudSaid {
 pub fn CloudSaid::to_json(Self) -> @json.Json
 
 pub struct CloudTransport {
-  entry : () -> CloudEntry?
+  entry : () -> CloudEntry? raise NetError
   io : DialIO
   pending : Map[Int32, () -> Unit]
   mut next : Int32
@@ -229,7 +229,7 @@ pub fn CloudTransport::close(Self) -> Unit
 pub fn CloudTransport::dial(Self, Int32, (Result[TlsSocket, DialError]) -> Unit) -> () -> Unit
 pub fn CloudTransport::eligible(Self, String, provider? : Provider) -> Bool raise NetError
 pub async fn CloudTransport::fetch(Self, Http, Pool, HttpRequest) -> HttpResponse
-pub fn CloudTransport::new(() -> CloudEntry?, DialIO) -> Self
+pub fn CloudTransport::new(() -> CloudEntry? raise NetError, DialIO) -> Self
 pub fn CloudTransport::pending_dials(Self) -> Int32
 pub fn CloudTransport::websocket(Self, String, Headers, WsIO, WsEvents) -> WsSocket
 
