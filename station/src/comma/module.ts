@@ -13,7 +13,7 @@ import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
-import { type CommaChats, workspaceMetaOf } from "./surface.ts";
+import { type CommaChats, quantizeOwnerActiveAt, workspaceMetaOf } from "./surface.ts";
 import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
 import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
@@ -154,6 +154,38 @@ export const CommaLive = Layer.effectDiscard(
       scopes.set(workspace, created);
       return created;
     };
+    // Tracks quantized 30s buckets of when each viewer last read a chat on this station so Comma can suppress
+    // redundant ordinary notifications while the owner is actively using still.fail.
+    const activeByViewer = new Map<string, number>();
+    let latestActiveAt: number | null = null;
+    const activeListeners = new Set<() => void>();
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        store.subscribe((change) => {
+          if (change.type !== "read") return;
+          const bucket = quantizeOwnerActiveAt(store.now());
+          if (bucket === null) return;
+          const viewer = typeof change.viewer === "string" ? change.viewer.trim().toLowerCase() : "";
+          let moved = false;
+          if (viewer !== "" && activeByViewer.get(viewer) !== bucket) {
+            activeByViewer.set(viewer, bucket);
+            moved = true;
+          }
+          if (latestActiveAt !== bucket) {
+            latestActiveAt = bucket;
+            moved = true;
+          }
+          if (moved) {
+            for (const cb of [...activeListeners]) cb();
+          }
+        }),
+      ),
+      (stop) => Effect.sync(stop),
+    );
+    const onOwnerActiveChange = (changed: () => void) => {
+      activeListeners.add(changed);
+      return () => { activeListeners.delete(changed); };
+    };
     const onScopeChange = (changed: () => void) => {
       let seen = scopeVersion;
       return cloud.listen(() => { if (seen !== scopeVersion) { seen = scopeVersion; changed(); } });
@@ -176,7 +208,9 @@ export const CommaLive = Layer.effectDiscard(
         const m = cloud.membership(target);
         return m === null ? null : workspaceMetaOf(m, cloud.state?.station ?? "");
       },
-      onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()) }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
+      onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()),
+      ownerActiveAt: (_ws, owner) => (owner ? activeByViewer.get(owner) ?? null : latestActiveAt),
+      onOwnerActiveChange }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);
     parts.routes(

@@ -46,6 +46,9 @@ pub struct CommaLive {
   priv empty_db : @sql.Db
   priv said : async (String?, RouterSay) -> Double
   priv scopes : Map[String, (CommaStats, CommaIndexes, CommaChats)]
+  priv mut owner_active_at_ : Double?
+  priv active_listeners : Map[Int, () -> Unit]
+  priv mut next_active_listener : Int
 }
 
 ///|
@@ -92,6 +95,9 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
     empty_db,
     said,
     scopes: {},
+    owner_active_at_: None,
+    active_listeners: {},
+    next_active_listener: 0,
   }
   // Any change of the station's workspaces moves `scope_version`, so that what was read or written before it is not
   // used after.
@@ -139,6 +145,25 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
       }),
     )
   })
+  let stop_active = (deps.subscribe)(kind => {
+    if kind != "read" {
+      return
+    }
+    match quantize_owner_active_at(Some((io.now)())) {
+      Some(bucket) if live.owner_active_at_ != Some(bucket) => {
+        live.owner_active_at_ = Some(bucket)
+        let cbs = []
+        for _, cb in live.active_listeners {
+          cbs.push(cb)
+        }
+        for cb in cbs {
+          cb()
+        }
+      }
+      _ => ()
+    }
+  })
+  live.stops.push(stop_active)
   live.stops.push(stop_store)
   live.stops.push(() => match notify_peers.val {
     Some(stop) => {
@@ -402,6 +427,13 @@ pub fn CommaLive::make_comma(
       name: Some(ws => self.name(ws)),
       workspace_meta: Some(ws => self.workspace_meta(ws)),
       on_workspace_meta_change: Some(changed => (self.deps.cloud_listen)(changed)),
+      owner_active_at: Some((_, _) => self.owner_active_at_),
+      on_owner_active_change: Some(changed => {
+        let id = self.next_active_listener
+        self.next_active_listener += 1
+        self.active_listeners[id] = changed
+        () => self.active_listeners.remove(id)
+      }),
       reconcile,
       close_connects,
     },

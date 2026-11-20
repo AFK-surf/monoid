@@ -394,6 +394,8 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
           unsubscribed.val += 1
         }
       }),
+      owner_active_at: None,
+      on_owner_active_change: None,
     },
     io,
     rt,
@@ -456,6 +458,8 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
         cb2.val = Some(cb)
         () => unsub2.val += 1
       }),
+      owner_active_at: None,
+      on_owner_active_change: None,
     },
     io,
     rt,
@@ -469,4 +473,72 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
   assert_eq(metas2().length(), 1)
   surface2.closed()
   assert_eq(unsub2.val, 1)
+}
+
+///|
+test "CommaSurface quantizes stillfail_owner_active_at to 30s buckets and pushes updates only on bucket change" {
+  let rt = @effect.Runtime::new()
+  let io = test_io()
+  let tasks = CommaTasks::new("/tmp/comma-tasks-active-wbtest.json", io, rt)
+  let sent : Array[J] = []
+  let sock : Socket = { id: 1, send: text => sent.push(parse_json(text)), on_close: _ => () => () }
+  let active : Ref[Double?] = Ref(Some(1_795_200_012_345.0))
+  let notify : Ref[(() -> Unit)?] = Ref(None)
+  let unsubscribed = Ref(0)
+  let surface = CommaSurface::new(
+    {
+      connect: "cm-active",
+      server: "http://127.0.0.1",
+      token: "salix_conn_test123",
+      name: "Alpha · mac-1",
+      workspace: Some("ws_1"),
+      owner_email: Some("peng@example.com"),
+      tasks,
+      store: test_store(),
+      models: () => [],
+      lang: Some("en"),
+      stats: None,
+      chats: None,
+      previous_exited: async fn() { () },
+      in_scope: () => true,
+      workspace_meta: None,
+      on_workspace_meta_change: None,
+      owner_active_at: Some(() => active.val),
+      on_owner_active_change: Some(cb => {
+        notify.val = Some(cb)
+        () => {
+          notify.val = None
+          unsubscribed.val += 1
+        }
+      }),
+    },
+    io,
+    rt,
+  )
+  let metas = () => sent.filter(f => str_of(prop(Some(f), "type")) == Some("metadata"))
+  surface.socket_ = Some(sock)
+  surface.connect_metadata()
+  assert_eq(metas().length(), 1)
+  assert_eq(
+    prop(prop(Some(metas()[0]), "capabilities"), "stillfail_owner_active_at").map(stringify),
+    Some("1795200000000"),
+  )
+
+  // Activity within the same 30s bucket sends no extra metadata frame.
+  active.val = Some(1_795_200_029_999.0)
+  (notify.val.unwrap())()
+  assert_eq(metas().length(), 1)
+
+  // Activity moving into the next 30s bucket pushes an updated frame.
+  active.val = Some(1_795_200_035_000.0)
+  (notify.val.unwrap())()
+  assert_eq(metas().length(), 2)
+  assert_eq(
+    prop(prop(Some(metas()[1]), "capabilities"), "stillfail_owner_active_at").map(stringify),
+    Some("1795200030000"),
+  )
+
+  surface.closed()
+  assert_eq(unsubscribed.val, 1)
+  assert_true(notify.val is None)
 }

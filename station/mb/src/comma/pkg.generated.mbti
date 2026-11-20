@@ -112,6 +112,8 @@ pub fn num_text(Double) -> String
 
 pub fn or_null(@jsjson.JValue?) -> @jsjson.JValue
 
+pub let owner_active_bucket_ms : Double
+
 pub let page_bytes : Int32
 
 pub let page_rows : Int32
@@ -127,6 +129,8 @@ pub fn points(String) -> Array[String]
 pub fn probe_page(RevIndex) -> Page raise
 
 pub fn prop(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn quantize_owner_active_at(Double?) -> Double?
 
 pub fn question_of(@jsjson.JValue?, String) -> @jsjson.JValue?
 
@@ -277,7 +281,9 @@ pub(all) struct CommaOptions {
   previous_exited : async () -> Unit
   name : ((String?) -> String)?
   workspace_meta : ((String?) -> @jsjson.JValue?)?
-  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
+  owner_active_at : ((String?, String?) -> Double?)?
+  on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
   reconcile : async () -> Unit
   close_connects : async () -> Unit
 }
@@ -539,7 +545,9 @@ pub(all) struct SurfaceOptions {
   previous_exited : async () -> Unit
   in_scope : () -> Bool
   workspace_meta : (() -> @jsjson.JValue?)?
-  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
+  owner_active_at : (() -> Double?)?
+  on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
 }
 
 pub(all) struct SurfaceStore {

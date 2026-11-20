@@ -86,6 +86,10 @@ export type CommaOptions = ConnectsOptions & {
   workspaceMeta?: (ws: string | null) => CommaWorkspaceMeta | null;
   /// Notifies when workspace metadata may have changed.
   onWorkspaceMetaChange?: (changed: () => void) => () => void;
+  /// Last activity timestamp (Unix ms) of the connect's owner in still.fail, reported in capabilities.stillfail_owner_active_at.
+  ownerActiveAt?: (ws: string | null, ownerEmail: string | null) => number | null;
+  /// Notifies when owner activity may have moved into a new 30-second bucket.
+  onOwnerActiveChange?: (changed: () => void) => () => void;
 };
 
 export type CommaParts = ReturnType<typeof makeComma>;
@@ -126,7 +130,9 @@ export function makeComma(options: CommaOptions) {
         models: () => options.models?.(c.id) ?? [], book, stats: isIn ? () => scoped().indexes : options.empty,
         chats, inScope, previousExited: options.previousExited,
         workspaceMeta: isIn && options.workspaceMeta ? () => options.workspaceMeta!(c.workspace ?? null) : undefined,
-        onWorkspaceMetaChange: isIn ? options.onWorkspaceMetaChange : undefined });
+        onWorkspaceMetaChange: isIn ? options.onWorkspaceMetaChange : undefined,
+        ownerActiveAt: isIn && options.ownerActiveAt ? () => options.ownerActiveAt!(c.workspace ?? null, c.resolvedOwnerEmail) : undefined,
+        onOwnerActiveChange: isIn ? options.onOwnerActiveChange : undefined });
     });
   const connects = makeConnects<ScopedConnect>(options, {
     kind: "comma",

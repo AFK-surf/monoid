@@ -55,6 +55,16 @@ const QUESTION_CHOICES = [2, 6] as const;
 /// Maximum number of workspace stations reported in capabilities.stillfail_workspace.
 const MAX_WORKSPACE_STATIONS = 100;
 
+/// Quantization bucket for reported owner activity timestamps so active reading sends at most one metadata frame per 30s.
+export const OWNER_ACTIVE_BUCKET_MS = 30_000;
+
+/// Rounds a positive Unix millisecond timestamp down to its 30-second bucket, or null when invalid.
+export function quantizeOwnerActiveAt(at: number | null | undefined): number | null {
+  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null;
+  const bucket = Math.floor(at / OWNER_ACTIVE_BUCKET_MS) * OWNER_ACTIVE_BUCKET_MS;
+  return bucket > 0 ? bucket : null;
+}
+
 /// Metadata of this connect's still.fail workspace sent in capabilities.stillfail_workspace.
 export type CommaWorkspaceMeta = {
   id: string;
@@ -205,6 +215,10 @@ export type CommaSurfaceOptions = {
   workspaceMeta?: () => CommaWorkspaceMeta | null;
   /// Subscribes to workspace metadata changes so an open socket pushes updated metadata frames.
   onWorkspaceMetaChange?: (changed: () => void) => () => void;
+  /// Last activity timestamp (Unix ms) of the owner in still.fail, quantized to 30s buckets and reported in capabilities.stillfail_owner_active_at.
+  ownerActiveAt?: () => number | null;
+  /// Subscribes to owner activity updates so an open socket pushes updated metadata frames when the 30s bucket advances.
+  onOwnerActiveChange?: (changed: () => void) => () => void;
 };
 
 export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
@@ -234,11 +248,14 @@ export class CommaSurface extends ConnectedSurface {
   private readonly inScope: () => boolean;
   private readonly workspaceMeta: (() => CommaWorkspaceMeta | null) | null;
   private readonly onWorkspaceMetaChange: ((changed: () => void) => () => void) | null;
+  private readonly ownerActiveAt: (() => number | null) | null;
+  private readonly onOwnerActiveChange: ((changed: () => void) => () => void) | null;
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
   private readonly instance = randomUUID();
   /// The socket now, once Comma said it is connected; and the requests to Comma waiting for their answer.
   private socket_: WebSocket | null = null;
   private stopWorkspaceMeta: (() => void) | null = null;
+  private stopOwnerActive: (() => void) | null = null;
   private lastMetadataJson: string | null = null;
   private waiting = new Map<string, { resolve: (v: Json) => void; reject: (e: Error) => void }>();
   /// The people of the Tasks, as Comma said with their Messages.
@@ -268,6 +285,8 @@ export class CommaSurface extends ConnectedSurface {
     this.inScope = options.inScope ?? (() => true);
     this.workspaceMeta = options.workspaceMeta ?? null;
     this.onWorkspaceMetaChange = options.onWorkspaceMetaChange ?? null;
+    this.ownerActiveAt = options.ownerActiveAt ?? null;
+    this.onOwnerActiveChange = options.onOwnerActiveChange ?? null;
   }
 
   // ── the connection ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -308,6 +327,11 @@ export class CommaSurface extends ConnectedSurface {
         this.sendMetadata(true);
         if (this.stopWorkspaceMeta === null && this.onWorkspaceMetaChange !== null) {
           this.stopWorkspaceMeta = this.onWorkspaceMetaChange(() => {
+            if (this.socket_ !== null && this.inScope()) this.sendMetadata(false);
+          });
+        }
+        if (this.stopOwnerActive === null && this.onOwnerActiveChange !== null) {
+          this.stopOwnerActive = this.onOwnerActiveChange(() => {
             if (this.socket_ !== null && this.inScope()) this.sendMetadata(false);
           });
         }
@@ -361,6 +385,8 @@ export class CommaSurface extends ConnectedSurface {
     this.socket_ = null;
     this.stopWorkspaceMeta?.();
     this.stopWorkspaceMeta = null;
+    this.stopOwnerActive?.();
+    this.stopOwnerActive = null;
     this.lastMetadataJson = null;
     for (const [id, w] of this.waiting) {
       w.reject(new Error("Comma is not connected"));
@@ -418,6 +444,7 @@ export class CommaSurface extends ConnectedSurface {
       if (m.model !== null && !known.includes(m.model)) known.push(m.model);
     }
     const meta = this.inScope() ? (this.workspaceMeta?.() ?? null) : null;
+    const activeAt = this.inScope() ? quantizeOwnerActiveAt(this.ownerActiveAt?.()) : null;
     return {
       scope: "",
       persistent_processes: false,
@@ -429,6 +456,7 @@ export class CommaSurface extends ConnectedSurface {
       task_models: models,
       ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }),
       ...(this.ownerEmail === null ? {} : { stillfail_owner_email: this.ownerEmail }),
+      ...(activeAt === null ? {} : { stillfail_owner_active_at: activeAt }),
       ...(meta === null ? {} : { stillfail_workspace: meta }),
     };
   }

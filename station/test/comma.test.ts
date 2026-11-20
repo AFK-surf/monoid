@@ -323,3 +323,61 @@ test("CommaSurface sends capabilities.stillfail_workspace on connect and pushes 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("CommaSurface quantizes capabilities.stillfail_owner_active_at to 30s buckets and pushes updates on bucket change", async () => {
+  const fake = await FakeComma.start();
+  const rig = new Rig();
+  const dir = mkdtempSync(join(tmpdir(), "comma-active-"));
+  const tasks = new CommaTasks(join(dir, "tasks.json"));
+  let activeAt: number | null = 1_795_200_012_345;
+  let notify: (() => void) | null = null;
+  let unsubscribed = 0;
+  const surface = new CommaSurface({
+    connect: "cm-active",
+    server: fake.base,
+    token: "salix_conn_test123",
+    name: "Alpha · mac-1",
+    workspace: "ws_1",
+    ownerEmail: "ada@example.test",
+    tasks,
+    store: rig.store,
+    models: () => [],
+    lang: "en",
+    ownerActiveAt: () => activeAt,
+    onOwnerActiveChange: (cb) => {
+      notify = cb;
+      return () => {
+        notify = null;
+        unsubscribed++;
+      };
+    },
+  });
+  try {
+    await surface.start(async () => {});
+    const metas = () => fake.frames.filter((f) => f.type === "metadata");
+    await fake.until("first metadata", () => metas().length >= 1);
+    assert.equal(metas().length, 1);
+    assert.equal(metas()[0].capabilities.stillfail_owner_active_at, 1_795_200_000_000);
+
+    // Same 30s bucket sends no duplicate frame.
+    activeAt = 1_795_200_029_999;
+    notify!();
+    await settle();
+    assert.equal(metas().length, 1);
+
+    // Next 30s bucket sends an updated metadata frame on the same socket.
+    activeAt = 1_795_200_035_000;
+    notify!();
+    await fake.until("second metadata", () => metas().length === 2);
+    assert.equal(metas()[1].capabilities.stillfail_owner_active_at, 1_795_200_030_000);
+
+    await surface.stop();
+    assert.equal(unsubscribed, 1);
+    assert.equal(notify, null);
+  } finally {
+    await surface.stop();
+    await rig.close();
+    await fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

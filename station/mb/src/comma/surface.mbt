@@ -45,6 +45,22 @@ let post_files : Int = 20
 let tasks_version : Int = 2
 
 ///|
+/// Quantization bucket for reported owner activity timestamps so active reading sends at most one metadata frame per 30s.
+pub let owner_active_bucket_ms : Double = 30000.0
+
+///|
+/// Rounds a positive Unix millisecond timestamp down to its 30-second bucket, or None when invalid.
+pub fn quantize_owner_active_at(at : Double?) -> Double? {
+  match at {
+    Some(v) if v > 0.0 && !(v.is_nan()) && !(v.is_inf()) => {
+      let bucket = (v / owner_active_bucket_ms).floor() * owner_active_bucket_ms
+      if bucket > 0.0 { Some(bucket) } else { None }
+    }
+    _ => None
+  }
+}
+
+///|
 /// Maximum number of workspace stations reported in capabilities.stillfail_workspace.
 let max_workspace_stations : Int = 100
 
@@ -298,6 +314,10 @@ pub(all) struct SurfaceOptions {
   workspace_meta : (() -> J?)?
   /// Subscribes to workspace metadata changes so an open socket pushes updated metadata frames.
   on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  /// Last activity timestamp (Unix ms) of the owner in still.fail, quantized to 30s buckets and reported in capabilities.stillfail_owner_active_at.
+  owner_active_at : (() -> Double?)?
+  /// Subscribes to owner activity updates so an open socket pushes updated metadata frames when the 30s bucket advances.
+  on_owner_active_change : ((() -> Unit) -> () -> Unit)?
 }
 
 ///|
@@ -327,6 +347,8 @@ pub struct CommaSurface {
   priv in_scope : () -> Bool
   priv workspace_meta : (() -> J?)?
   priv on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  priv owner_active_at : (() -> Double?)?
+  priv on_owner_active_change : ((() -> Unit) -> () -> Unit)?
   priv io : Io
   priv runtime : @effect.Runtime
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
@@ -334,6 +356,7 @@ pub struct CommaSurface {
   /// The socket now, once Comma said it is connected; and the requests to Comma waiting for their answer.
   priv mut socket_ : Socket?
   priv mut stop_workspace_meta : (() -> Unit)?
+  priv mut stop_owner_active : (() -> Unit)?
   priv mut last_metadata_json : String?
   priv waiting : Map[String, @effect.Deferred[J]]
   /// The people of the Tasks, as Comma said with their Messages.
@@ -375,11 +398,14 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     in_scope: options.in_scope,
     workspace_meta: options.workspace_meta,
     on_workspace_meta_change: options.on_workspace_meta_change,
+    owner_active_at: options.owner_active_at,
+    on_owner_active_change: options.on_owner_active_change,
     io,
     runtime,
     instance: (io.uuid)(),
     socket_: None,
     stop_workspace_meta: None,
+    stop_owner_active: None,
     last_metadata_json: None,
     waiting: {},
     people: {},
@@ -545,6 +571,13 @@ pub fn CommaSurface::closed(self : CommaSurface) -> Unit {
     }
     None => ()
   }
+  match self.stop_owner_active {
+    Some(stop) => {
+      stop()
+      self.stop_owner_active = None
+    }
+    None => ()
+  }
   self.last_metadata_json = None
   let ids = []
   for id, _ in self.waiting {
@@ -568,6 +601,15 @@ fn CommaSurface::connect_metadata(self : CommaSurface) -> Unit {
     match self.on_workspace_meta_change {
       Some(listen) =>
         self.stop_workspace_meta = Some(
+          listen(() => if self.socket_ is Some(_) && (self.in_scope)() { self.send_metadata(false) }),
+        )
+      None => ()
+    }
+  }
+  if self.stop_owner_active is None {
+    match self.on_owner_active_change {
+      Some(listen) =>
+        self.stop_owner_active = Some(
           listen(() => if self.socket_ is Some(_) && (self.in_scope)() { self.send_metadata(false) }),
         )
       None => ()
@@ -670,6 +712,14 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
   } else {
     None
   }
+  let active_at : Double? = if (self.in_scope)() {
+    match self.owner_active_at {
+      Some(f) => quantize_owner_active_at(f())
+      None => None
+    }
+  } else {
+    None
+  }
   jo([
     ("scope", Some(jstr(""))),
     ("persistent_processes", Some(Bool(false))),
@@ -682,6 +732,7 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
     ("stats_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
     ("task_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
     ("stillfail_owner_email", self.owner_email.map(jstr)),
+    ("stillfail_owner_active_at", active_at.map(v => Num(v))),
     ("stillfail_workspace", meta),
   ])
 }

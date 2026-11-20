@@ -122,6 +122,10 @@ pub(all) struct CommaOptions {
   workspace_meta : ((String?) -> J?)?
   /// Notifies when workspace metadata may have changed.
   on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
+  /// Last activity timestamp (Unix ms) of the connect's owner in still.fail, reported in capabilities.stillfail_owner_active_at.
+  owner_active_at : ((String?, String?) -> Double?)?
+  /// Notifies when owner activity may have moved into a new 30-second bucket.
+  on_owner_active_change : ((() -> Unit) -> () -> Unit)?
   /// The connects brought in line with config.json and the workspaces again, and let go.
   reconcile : async () -> Unit
   close_connects : async () -> Unit
@@ -296,6 +300,15 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
         None
       },
       on_workspace_meta_change: if is_in { options.on_workspace_meta_change } else { None },
+      owner_active_at: if is_in {
+        match options.owner_active_at {
+          Some(f) => Some(() => f(c.connect.workspace, c.connect.owner_email))
+          None => None
+        }
+      } else {
+        None
+      },
+      on_owner_active_change: if is_in { options.on_owner_active_change } else { None },
     },
     self.io,
     self.runtime,
