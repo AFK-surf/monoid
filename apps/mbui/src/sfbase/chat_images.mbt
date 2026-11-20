@@ -25,22 +25,144 @@ pub struct ChatImages {
   /// coming_since), by id: what shows how far it has come counts from it, a row let go of and made again not waiting
   /// anew; let go as it is here, fails or is asked again
   priv since : Map[String, Double]
+  /// the bytes of each one here, by id (its image's, as the host was given it): what counts towards
+  /// chat_images_budget
+  priv bytes : Map[String, Int]
+  /// when each one here was last asked for (a count of askings: `tick`'s), by id
+  priv used : Map[String, Int]
+  priv tick : Ref[Int]
+  /// all of `bytes`
+  priv total : Ref[Int]
+  /// how many bytes are kept at most (chat_images_budget's, unless said)
+  priv budget : Int
 }
 
 ///|
-pub fn ChatImages::new() -> ChatImages {
-  { keys: {}, unreached: {}, reached: {}, held: {}, coming: {}, told: {}, since: {} }
+pub fn ChatImages::new(budget? : Int = chat_images_budget) -> ChatImages {
+  {
+    keys: {},
+    unreached: {},
+    reached: {},
+    held: {},
+    coming: {},
+    told: {},
+    since: {},
+    bytes: {},
+    used: {},
+    tick: { val: 0 },
+    total: { val: 0 },
+    budget,
+  }
+}
+
+///|
+/// How many bytes of chats' pictures are kept here at most (ChatImages::trim): those least lately asked for and shown by
+/// nothing that reads them as nodes let go of beyond it, asked of the core again as they are shown again (which has
+/// them on the device: at once).
+let chat_images_budget : Int = 64 * 1024 * 1024
+
+///|
+/// The viewers' whole pictures (`mem:preview/`, Viewer::image_name) given to chats' pictures (ChatImages::whole), by
+/// key: how many ChatImages show each. What lets one go (Viewer::let_go) leaves it while any does.
+// kept across runs: emptied as each ChatImages is (clear), sfbase's reset
+let whole_given : Map[String, Int] = Map([])
+
+///|
+/// Whether a viewer's whole picture `key` is what a chat's picture shows (whole_given).
+fn whole_given_shown(key : String) -> Bool {
+  whole_given.get(key).unwrap_or(0) > 0
+}
+
+///|
+/// Picture `id` here, counted: `n` bytes, asked for now.
+fn ChatImages::counted(self : ChatImages, id : String, n : Int) -> Unit {
+  self.total.val += n - self.bytes.get(id).unwrap_or(0)
+  self.bytes[id] = n
+  self.touch(id)
+  self.trim(id)
+}
+
+///|
+/// Picture `id` asked for now (`used`).
+fn ChatImages::touch(self : ChatImages, id : String) -> Unit {
+  self.tick.val += 1
+  self.used[id] = self.tick.val
+}
+
+///|
+/// The pictures here beyond chat_images_budget let go of, the least lately asked for first: of those here, that nothing
+/// reading them as nodes shows (an old view's reads track nothing: it asks for what it shows each frame it is built, so
+/// that is the latest asked for), never `kept` (the one just come). Let go of, its image too (a viewer's whole picture
+/// only once no viewer shows it): asked for again, it is asked of the core anew.
+fn ChatImages::trim(self : ChatImages, kept : String) -> Unit {
+  while self.total.val > self.budget {
+    let mut oldest = ""
+    let mut when = 0
+    for id, t in self.used {
+      guard id != kept && self.keys.get(id) is Some(k) && k != "" && k != "!" else { continue }
+      if self.told.get(id) is Some(s) && s.watched() {
+        continue
+      }
+      if oldest == "" || t < when {
+        oldest = id
+        when = t
+      }
+    }
+    guard oldest != "" else { break }
+    self.let_go(oldest)
+  }
+}
+
+///|
+/// Picture `id` let go of (ChatImages::trim): its image, and all that is kept of it, as if never asked for.
+fn ChatImages::let_go(self : ChatImages, id : String) -> Unit {
+  match self.keys.get(id) {
+    Some(k) if k.has_prefix("mem:preview/") => {
+      let n = whole_given.get(k).unwrap_or(0) - 1
+      if n > 0 {
+        whole_given[k] = n
+      } else {
+        whole_given.remove(k)
+        if !preview_shown(k) {
+          @ui.forget_image(k)
+        }
+      }
+    }
+    Some(k) if k != "" && k != "!" => @ui.forget_image(k)
+    _ => ()
+  }
+  self.keys.remove(id)
+  self.held.remove(id)
+  self.unreached.remove(id)
+  self.total.val -= self.bytes.get(id).unwrap_or(0)
+  self.bytes.remove(id)
+  self.used.remove(id)
+  self.told.remove(id)
 }
 
 ///|
 /// As at the start: nothing asked yet.
 pub fn ChatImages::clear(self : ChatImages) -> Unit {
-  self.keys.clear()
   self.unreached.clear()
   self.reached.clear()
   self.held.clear()
   self.coming.clear()
   self.since.clear()
+  for _, k in self.keys {
+    if k.has_prefix("mem:preview/") {
+      let n = whole_given.get(k).unwrap_or(0) - 1
+      if n > 0 {
+        whole_given[k] = n
+      } else {
+        whole_given.remove(k)
+      }
+    }
+  }
+  self.keys.clear()
+  self.bytes.clear()
+  self.used.clear()
+  self.tick.val = 0
+  self.total.val = 0
   let ids = self.told.keys().to_array()
   for id in ids {
     self.tell(id)
@@ -87,7 +209,12 @@ pub fn ChatImages::get(
   ask : ((Json) -> Unit, (Result[(Json, Bytes?), Json]) -> Unit) -> Unit,
 ) -> String {
   match self.keys.get(id) {
-    Some(k) => k
+    Some(k) => {
+      if k != "" && k != "!" {
+        self.touch(id)
+      }
+      k
+    }
     None => {
       self.keys[id] = ""
       ask(
@@ -120,6 +247,7 @@ pub fn ChatImages::get(
             if field(Some(said), "held") is Some(True) {
               self.held[id] = true
             }
+            self.counted(id, bytes.length())
           }
           Ok(_) => self.keys[id] = "!"
           Err(e) => {
@@ -141,14 +269,19 @@ pub fn ChatImages::get(
 ///|
 /// The whole of picture `id` read (the viewer's, put up as `key`): what shows it while its own is not here (still
 /// coming, or failed) shows that from now on, its own let go of when it comes; one here already is kept as it is.
-pub fn ChatImages::whole(self : ChatImages, id : String, key : String) -> Unit {
+/// `size`: its bytes (what it counts towards chat_images_budget).
+pub fn ChatImages::whole(self : ChatImages, id : String, key : String, size? : Int = 0) -> Unit {
   match self.keys.get(id) {
     Some(k) if k != "" && k != "!" => ()
     _ => {
       self.keys[id] = key
+      if key.has_prefix("mem:preview/") {
+        whole_given[key] = whole_given.get(key).unwrap_or(0) + 1
+      }
       self.unreached.remove(id)
       self.coming.remove(id)
       self.since.remove(id)
+      self.counted(id, size)
       self.tell(id)
     }
   }

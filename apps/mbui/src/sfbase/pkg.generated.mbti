@@ -2059,6 +2059,8 @@ pub fn writing_carry(Source, String, String) -> Unit
 
 pub fn writing_comment(Source, Writing, String, String) -> Unit
 
+pub fn writing_committed(Writing) -> Unit
+
 pub fn writing_drop(Source, Writing, String, Array[@json.Json], Bool) -> Unit
 
 pub fn writing_error(Source, Writing, String) -> Unit
@@ -2218,7 +2220,7 @@ pub fn ChatImages::coming_let_go(Self, String) -> Unit
 pub fn ChatImages::coming_since(Self, String, Double) -> Double
 pub fn ChatImages::get(Self, String, String, String, ((@json.Json) -> Unit, (Result[(@json.Json, Bytes?), @json.Json]) -> Unit) -> Unit) -> String
 pub fn ChatImages::held(Self, String) -> Bool
-pub fn ChatImages::new() -> Self
+pub fn ChatImages::new(budget? : Int32) -> Self
 pub fn ChatImages::seen(Self, String, Bool) -> Unit
 pub fn ChatImages::unreached(Self, String) -> Bool
 

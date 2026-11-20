@@ -463,6 +463,53 @@ pub(all) struct FirstFrame {
 pub let pv_first : Map[String, FirstFrame] = Map([])
 
 ///|
+/// When each of pv_first was last asked for, by the thumbnail's id (pv_first_n's count).
+// kept across runs: let go with pv_first (viewer's clear)
+let pv_first_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back with pv_first (viewer's clear)
+let pv_first_n : Ref[Int] = { val: 0 }
+
+///|
+/// First frame `id` asked for now; then those come to what they are (no player of theirs grabbing) beyond
+/// pv_frames_max let go of, the least lately asked for first, never `id`: their picture too where nothing else is drawn
+/// by it (a draft's file's, a message's sent from here, a thumbnail's, a viewer's), what showed it told (pv_first_told).
+/// Asked for again, it is drawn again.
+fn pv_first_asked(id : String) -> Unit {
+  pv_first_n.val += 1
+  pv_first_used[id] = pv_first_n.val
+  let mut gone = false
+  while pv_first.length() > pv_frames_max {
+    let mut oldest = ""
+    let mut when = 0
+    for k, t in pv_first_used {
+      guard k != id && pv_first.get(k) is Some(f) && f.view is None else { continue }
+      if oldest == "" || t < when {
+        oldest = k
+        when = t
+      }
+    }
+    guard oldest != "" else { break }
+    let picture = pv_first.get(oldest).map(fn(f) { f.picture }).unwrap_or("")
+    pv_first.remove(oldest)
+    pv_first_used.remove(oldest)
+    gone = true
+    if picture != "" &&
+      picture != "!" &&
+      !writing_pictures.values().any(fn(p) { p == picture }) &&
+      !sent_pictures.values().any(fn(p) { p == picture }) &&
+      !pv_first.values().any(fn(f) { f.picture == picture }) &&
+      !preview_shown(picture) {
+      @ui.forget_image(picture)
+    }
+  }
+  if gone {
+    first_told()
+  }
+}
+
+///|
 /// The first frame of chat video `a` (on `station`, kept by session `key`; `id` its thumbnail's), drawn here where the
 /// station made no poster: an image's key once here, "" while it comes or where it is too big to read for it, "!"
 /// when it could not be.
@@ -545,6 +592,7 @@ fn first_frame_by(v : @view.View, id : String, name : String, size : Double, ope
     let n = open()
     if !n.here() {
       f.picture = "!"
+      pv_first_asked(id)
       return picture
     }
     f.view = Some(n)
@@ -595,6 +643,7 @@ fn first_settled(f : FirstFrame, n : @ui.NativeView, id : String, name : String,
   }
   n.close()
   first_told()
+  pv_first_asked(id)
 }
 
 ///|
@@ -653,6 +702,9 @@ fn decode_stalled(c : @ui.Ctx, n : @ui.NativeView) -> Bool {
 fn grab_first(c : @ui.Ctx, id : String, name : String, open : () -> @ui.NativeView) -> String {
   match pv_first.get(id) {
     Some(f) => {
+      if f.view is None {
+        pv_first_asked(id)
+      }
       match f.view {
         Some(n) => {
           let got = match n.grabbed() {
@@ -1591,6 +1643,15 @@ pub fn Viewer::let_go(self : Viewer) -> Unit {
     Some(p) => p.close()
     None => ()
   }
+  // (its whole picture, read here, let go of where nothing else shows it: a chat's picture given it, ChatImages::whole,
+  // keeps it; drawn again, it is put up again from its bytes, Viewer::picture)
+  let image = self.image
+  if image.has_prefix("mem:preview/") && !whole_given_shown(image) && !preview_shown(image, but=self) {
+    @ui.forget_image(image)
+    self.image = ""
+  }
+  // (the frames kept for thumbnails replaced while it was open or going, let go of now nothing flies with them)
+  pv_frames_sweep(but=self)
 }
 
 ///|
@@ -2435,8 +2496,7 @@ pub fn Viewer::left_with_picture(
   self.leaving_pic = ""
   self.grab_set(false)
   if decoded {
-    pv_frames[self.id()] = (key, self.left_at)
-    pv_frame_tell(self.id())
+    pv_frame_keep(self.id(), key, self.left_at)
     self.fly_home(key, at, window)
   } else {
     self.fly_home(self.still(src), at, window)
@@ -3004,7 +3064,27 @@ fn Viewer::took_whole(self : Viewer, src : Source, b : Bytes) -> Unit {
     self.image = self.image_name()
     @ui.add_image(self.image, b)
   }
-  src.images.whole(file_image_id(self.station, self.key, self.name), self.image)
+  src.images.whole(file_image_id(self.station, self.key, self.name), self.image, size=b.length())
+}
+
+///|
+/// Whether a viewer's picture `key` (its whole picture: Viewer::image_name) is what any viewer but `but` shows or flies
+/// with (the one open, the one going, one beside a chat, those read ahead beside them, the one the strip slides out),
+/// or a chat's thumbnail does (pv_thumbs, as last built).
+fn preview_shown(key : String, but? : Viewer) -> Bool {
+  let shows = fn(v : Viewer?) {
+    match v {
+      Some(v) if !(but is Some(b) && physical_equal(b, v)) =>
+        v.image == key || v.fly_pic == key || v.leaving_pic == key
+      _ => false
+    }
+  }
+  shows(viewer.untracked()) ||
+  shows(pv_leaving.untracked()) ||
+  tab_viewers.values().any(fn(t) { shows(Some(t.viewer)) || t.near.values().any(fn(n) { shows(Some(n)) }) }) ||
+  pv_strip.near.values().any(fn(n) { shows(Some(n)) }) ||
+  pv_strip.leaving.map(fn(l) { l.picture == key }).unwrap_or(false) ||
+  pv_thumbs.values().any(fn(l) { l.picture == key })
 }
 
 ///|
@@ -3343,12 +3423,91 @@ fn Viewer::keep_left_at(self : Viewer) -> Unit {
   let at = left_from(n)
   let id = self.id()
   if at > 0.0 {
-    pv_frames[id] = ("", at)
-    pv_frame_tell(id)
-  } else if pv_frames.contains(id) {
+    pv_frame_keep(id, "", at)
+  } else if pv_frames.get(id) is Some((was, _)) {
     pv_frames.remove(id)
+    pv_frames_used.remove(id)
+    pv_frame_dropped(was)
     pv_frame_tell(id)
   }
+}
+
+///|
+/// How many thumbnails' frames are kept (pv_frames, pv_first): those least lately kept let go of beyond it, the
+/// thumbnail showing its still as before (the station's poster, its first frame drawn again).
+let pv_frames_max : Int = 64
+
+///|
+/// When each of pv_frames was last kept, by the thumbnail's id (pv_frames_tick's count).
+// kept across runs: let go with pv_frames (viewer's clear)
+let pv_frames_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back with pv_frames (viewer's clear)
+let pv_frames_tick : Ref[Int] = { val: 0 }
+
+///|
+/// The frames' pictures no longer kept for any thumbnail (one kept for it in their place, or it let go of), let go of
+/// once no viewer shows or flies with them (pv_frames_sweep): a viewer closing flies with the frame it was opened
+/// from till its way back is over.
+// kept across runs: let go with pv_frames (viewer's clear)
+let pv_frames_gone : Array[String] = []
+
+///|
+/// The frame of thumbnail `id` kept as `key` ("" none: its still as before), left at `at`: the one kept for it before let
+/// go of, and the least lately kept beyond pv_frames_max.
+fn pv_frame_keep(id : String, key : String, at : Double) -> Unit {
+  match pv_frames.get(id) {
+    Some((was, _)) if was != key => pv_frame_dropped(was)
+    _ => ()
+  }
+  pv_frames[id] = (key, at)
+  pv_frames_tick.val += 1
+  pv_frames_used[id] = pv_frames_tick.val
+  pv_frame_tell(id)
+  while pv_frames.length() > pv_frames_max {
+    let mut oldest = ""
+    let mut when = 0
+    for k, t in pv_frames_used {
+      if k != id && (oldest == "" || t < when) {
+        oldest = k
+        when = t
+      }
+    }
+    guard oldest != "" && pv_frames.get(oldest) is Some((was, _)) else { break }
+    pv_frames.remove(oldest)
+    pv_frames_used.remove(oldest)
+    pv_frame_dropped(was)
+    pv_frame_tell(oldest)
+  }
+  pv_frames_sweep()
+}
+
+///|
+/// A frame's picture no longer kept for its thumbnail (pv_frames_gone).
+fn pv_frame_dropped(key : String) -> Unit {
+  if key != "" && key != "!" {
+    pv_frames_gone.push(key)
+  }
+}
+
+///|
+/// The frames' pictures no longer kept (pv_frames_gone) let go of where nothing shows them: no thumbnail's frame, no
+/// viewer but `but` (one letting go of what it holds) open, going or beside a chat with it.
+fn pv_frames_sweep(but? : Viewer) -> Unit {
+  let still : Array[String] = []
+  for key in pv_frames_gone {
+    if pv_frames.values().any(fn(f) { f.0 == key }) {
+      continue
+    }
+    if preview_shown(key, but?=but) {
+      still.push(key)
+    } else {
+      @ui.forget_image(key)
+    }
+  }
+  pv_frames_gone.clear()
+  pv_frames_gone.push_iter(still.iter())
 }
 
 ///|
@@ -3512,6 +3671,7 @@ pub fn runs_by_line(runs : Array[@ui.Run]) -> Array[Array[@ui.Run]] {
 /// What the viewer keeps put back as the app begins anew (sfbase's reset).
 pub fn file_viewer_reset() -> Unit {
   close_now()
+  whole_given.clear()
   marking.color = 0xE5704AFFL
   marking.next_id = 1
   marking.to_draft = false
@@ -3529,7 +3689,12 @@ pub fn file_viewer_reset() -> Unit {
   }
   pv_frames_told.clear()
   pv_frames_n.val = 0
+  pv_frames_used.clear()
+  pv_frames_tick.val = 0
+  pv_frames_gone.clear()
   pv_first.clear()
+  pv_first_used.clear()
+  pv_first_n.val = 0
   pv_hidden.set("")
   marks_foot_taken.set(0.0)
   pv_read.clear()

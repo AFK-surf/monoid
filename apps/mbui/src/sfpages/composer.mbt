@@ -2558,7 +2558,8 @@ fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : Str
     }
     send_taken(src, r.station, to, taken.unwrap(), fn(said) {
       match said {
-        SentTaken => ()
+        // (gone for good: what it took of the draft, its files' bytes, let go of)
+        SentTaken => @sfbase.writing_committed(w)
         SentRefused(e) | SentKept(e) => {
           sent_local_gone(rk, row)
           @ui.haptic(Reject)
@@ -2566,6 +2567,8 @@ fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : Str
           if said is SentRefused(_) {
             writing_restore(src, w, why, unless_written=true)
           } else {
+            // (in the outbox, which sends it: never put back, its files' bytes let go of as one taken)
+            @sfbase.writing_committed(w)
             toast_later(why)
           }
         }

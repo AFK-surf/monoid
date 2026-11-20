@@ -553,10 +553,21 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
                     }
                     None => ()
                   }
+                } else {
+                  // (in the outbox, which sends it: never put back, its files' bytes let go of as one taken)
+                  match w {
+                    Some(w) => writing_committed(w)
+                    None => ()
+                  }
                 }
                 toast_later(why)
               }
-              Ok(_) => ()
+              // (gone for good: what it took of the draft, its files' bytes, let go of)
+              Ok(_) =>
+                match w {
+                  Some(w) => writing_committed(w)
+                  None => ()
+                }
             }
           })
         }

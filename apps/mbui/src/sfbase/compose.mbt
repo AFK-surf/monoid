@@ -52,10 +52,21 @@ priv struct WritingCached {
   source : Source
   key : String
   value : Writing
+  /// when it was last asked for (writing_cache_tick's count)
+  mut used : Int
 }
 
 ///|
 let writing_cache : Ref[Array[WritingCached]] = Ref([])
+
+///|
+/// How many drafts are kept beyond those in use (writing_cache_trim): one each chat opened in a run, else.
+let writing_cache_max : Int = 32
+
+///|
+/// A count of the drafts asked for (WritingCached's `used`).
+// kept across runs: put back by writings_reset (sfbase's reset)
+let writing_cache_tick : Ref[Int] = { val: 0 }
 
 ///|
 /// Each draft by its key, as the page has it.
@@ -209,6 +220,7 @@ pub fn writings_reset() -> Unit {
   }
   // Array::clear keeps removed slots alive; drop its backing array when the app releases its drafts.
   writing_cache.val = []
+  writing_cache_tick.val = 0
   writings.clear()
   writing_pictures.clear()
   writing_pictures_tell()
@@ -227,8 +239,12 @@ fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Un
 ///|
 /// A draft is shared by its source and key, independent of which page or node reads it.
 fn writing_cached(src : Source, key : String) -> Writing {
+  writing_cache_tick.val += 1
   match writing_cache.val.search_by(fn(w) { physical_equal(w.source, src) && w.key == key }) {
-    Some(i) => writing_cache.val[i].value
+    Some(i) => {
+      writing_cache.val[i].used = writing_cache_tick.val
+      writing_cache.val[i].value
+    }
     None => {
       let state : WritingState = {
         field: @ui.Field::new(),
@@ -280,11 +296,44 @@ fn writing_cached(src : Source, key : String) -> Writing {
         following,
         taken: None,
       }
-      writing_cache.val.push({ source: src, key, value: w })
+      writing_cache.val.push({ source: src, key, value: w, used: writing_cache_tick.val })
       writings[key] = w
+      writing_cache_trim(w)
       w
     }
   }
+}
+
+///|
+/// The drafts kept beyond writing_cache_max let go of, the least lately asked for first, of those nothing holds: none a
+/// field of which is read (its reactions followed), sent and not yet answered (`taken`), with calls to the core under
+/// way, or written in now; `kept` (the one just made) never. What the core keeps of it stays: asked for again, it is
+/// made anew from the core's composer topic.
+fn writing_cache_trim(kept : Writing) -> Unit {
+  @signals.untracked(fn() {
+    while writing_cache.val.length() > writing_cache_max {
+      let mut oldest = -1
+      for i, cached in writing_cache.val {
+        let w = cached.value
+        if physical_equal(w, kept) ||
+          w.following.watched() ||
+          w.taken is Some(_) ||
+          w.pending.untracked() != 0 ||
+          w.field.focused() {
+          continue
+        }
+        if oldest < 0 || cached.used < writing_cache.val[oldest].used {
+          oldest = i
+        }
+      }
+      guard oldest >= 0 else { break }
+      let cached = writing_cache.val.remove(oldest)
+      cached.value.following.dispose()
+      if writings.get(cached.key) is Some(w) && physical_equal(w, cached.value) {
+        writings.remove(cached.key)
+      }
+    }
+  })
 }
 
 ///|
@@ -879,6 +928,36 @@ pub fn writing_take(src : Source, w : Writing, station? : String = "", done : (J
       }
     },
   )
+}
+
+///|
+/// What `take` took of `w` gone for good (the message taken into its chat, or into its outbox, which sends it): the
+/// bytes of its files and quotes' own pictures put up from here let go of, never to be put back. Not before: a message
+/// not taken puts them back (writing_restore, writing_back_or_said). The picture each was drawn as stays for its
+/// message (sent_pictures, which lets it go as it lets go of that: sent_picture_let_go).
+pub fn writing_committed(w : Writing) -> Unit {
+  guard w.taken is Some((_, quotes, files)) else { return }
+  w.taken = None
+  let ids = files.map(fn(f) { text(Some(f), "id") }) +
+    quotes.map(fn(q) { text(field(Some(q), "own"), "id") })
+  for id in ids {
+    guard id != "" else { continue }
+    // (a file of the draft as it is now, taken back in meanwhile, kept: what it shows is its own)
+    let now = w.state.files.untracked() + w.state.quotes.untracked().filter_map(fn(q) { field(Some(q), "own") })
+    if now.iter().any(fn(f) { text(Some(f), "id") == id }) {
+      continue
+    }
+    let picture = writing_pictures.get(id)
+    writing_went.remove(id)
+    writing_stations.remove(id)
+    writing_seeds.remove(id)
+    writing_unseen.remove(id)
+    writing_picture_drop(id)
+    match picture {
+      Some(p) => sent_picture_let_go(p)
+      None => ()
+    }
+  }
 }
 
 ///|
