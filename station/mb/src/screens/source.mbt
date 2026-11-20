@@ -273,6 +273,9 @@ pub(all) struct ViewOptions {
   passkeys : Bool?
   /// "444": its pictures sharp to the pixel, full-chroma where the source encodes it (still.fail Helper's HEVC).
   chroma : String?
+  /// Opened for an agent's computer-use tool (hub.mbt `open_as`), not a person viewing remotely: the Windows desktop
+  /// skips the privileged screen service so agents never cross onto UAC/Winlogon desktops or elevated windows.
+  agent : Bool
 }
 
 ///|
@@ -287,8 +290,9 @@ pub fn ViewOptions::new(
   opus? : Bool = false,
   gamut? : String? = None,
   passkeys? : Bool? = None,
+  agent? : Bool = false,
 ) -> ViewOptions {
-  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut, passkeys, chroma: None }
+  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut, passkeys, chroma: None, agent }
 }
 
 ///|
@@ -319,6 +323,7 @@ pub fn view_options_of(j : J) -> ViewOptions {
       _ => None
     },
     chroma: text(get(Some(j), "chroma")),
+    agent: get(Some(j), "agent") is Some(Bool(true)),
   }
 }
 
