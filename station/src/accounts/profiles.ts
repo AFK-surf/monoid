@@ -82,6 +82,8 @@ export type ProfileQuota = {
   /// 5xx). It says nothing of the allowance, so the one read before stands a while (Accounts.askQuota). Not kept in
   /// the allowance.
   unanswered?: boolean;
+  /// Renewal failed during a Claude quota check: trigger a profile check if currently ok. Not kept in the allowance.
+  recheck?: boolean;
 };
 
 /// Where the providers are: the real ones unless a test says otherwise.
@@ -182,7 +184,7 @@ export type CheckOptions = {
   /// to Kimi (its key the current token, none once signed out).
   login?: boolean;
   /// The machine login's current token, renewed when about to run out (oauth.ts).
-  machineToken?: (env: Env) => Promise<{ token: string }>;
+  machineToken?: (env: Env, rejected?: string) => Promise<{ token: string }>;
   urls?: Urls;
   lang?: Lang;
 };
@@ -277,8 +279,24 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     const status: Json = JSON.parse(output.stdout);
     if (status?.loggedIn !== true) return check("login", t("station.profile.signedOut"), null);
     // What the subscription runs, as Anthropic lists it for the account's own token.
-    const token = machineToken ?? (await profileToken(o, urls, lang));
-    const models = token === undefined ? null : await claudeModels(urls, token);
+    const { token, renewError } = machineToken !== undefined ? { token: machineToken, renewError: null } : await profileToken(o, urls, lang);
+    let { models, status: modelsStatus } = token === undefined ? { models: null, status: null } : await claudeModels(urls, token);
+    if (renewError !== null) {
+      if (models === null) return check("failed", renewError.message, null);
+    } else if (modelsStatus === 401 && token !== undefined) {
+      let renewed: string;
+      try {
+        renewed = o.machine
+          ? (await o.machineToken!(o.env, token)).token
+          : (await claudeOAuthToken(o.env, o.home, token, urls.claudeToken, lang))[0];
+      } catch (e) {
+        if (e instanceof RenewRefused) throw e;
+        return check("failed", e instanceof Error ? e.message : String(e), null);
+      }
+      const retry = await claudeModels(urls, renewed);
+      if (retry.status === 401) return check("login", t("station.quota.signInExpired"), null);
+      models = retry.models;
+    }
     // For a profile in its own home Claude keeps the more specific tier beside its token. Read only that metadata
     // into the check; the token itself stays in the home. A machine login's keychain is handled by MachineLogins.
     let credentials: ReturnType<typeof parseClaudeCredentials> = undefined;
@@ -427,21 +445,21 @@ export function grokEmailIn(text: string): string | null {
 /// A Claude profile's token as it signs in now, renewed first when due (oauth.ts): `auth status` says only that a login
 /// is kept, and one that can no longer be renewed throws (RenewRefused: to sign in again). One not renewed now for
 /// another reason (the provider, the network) is the one kept.
-async function profileToken(o: CheckOptions, urls: Urls, lang: Lang): Promise<string | undefined> {
+async function profileToken(o: CheckOptions, urls: Urls, lang: Lang): Promise<{ token: string | undefined; renewError: Error | null }> {
   try {
-    return (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang))[0];
+    return { token: (await claudeOAuthToken(o.env, o.home, null, urls.claudeToken, lang))[0], renewError: null };
   } catch (e) {
     if (e instanceof RenewRefused) throw e;
-    return await tokenOf(o.home);
+    return { token: await tokenOf(o.home), renewError: e instanceof Error ? e : new Error(String(e)) };
   }
 }
 
-async function claudeModels(urls: Urls, token: string): Promise<string[] | null> {
+async function claudeModels(urls: Urls, token: string): Promise<{ models: string[] | null; status: number | null }> {
   try {
     const response = await get(`${urls.anthropic}/v1/models?limit=100`, { authorization: `Bearer ${token}`, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20" });
-    return response.ok ? await modelIds(response) : null;
+    return { models: response.ok ? await modelIds(response) : null, status: response.status };
   } catch {
-    return null;
+    return { models: null, status: null };
   }
 }
 

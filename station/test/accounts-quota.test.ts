@@ -486,10 +486,24 @@ describe("allowances and renewing", { concurrency: true }, () => {
     const refused = await checkQuota(profile, {}, undefined, urls, "zh");
     assert.deepEqual([refused.state, refused.signedOut], ["unavailable", true]);
     await p.close();
-    // Not renewed for now: nothing is said of the login.
+    // Not renewed for now: nothing is said of the login, but recheck is flagged so checkProfile can mark it failed.
     p = await oauthProvider(503);
     const later = await checkQuota(profile, {}, undefined, { ...urls, anthropic: p.base, claudeToken: p.base }, "zh");
-    assert.deepEqual([later.state, later.signedOut], ["unavailable", undefined]);
+    assert.deepEqual([later.state, later.signedOut, later.recheck], ["unavailable", undefined, true]);
+    await p.close();
+  });
+
+  test("claudeWithRefresh marks signedOut when usage still returns 401 after renewal", async () => {
+    const home = temp("still-401");
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify(credentials(Date.now() + 3_600_000)));
+    const p = await provider((asked) =>
+      asked.method === "POST"
+        ? { status: 200, body: { access_token: "still-bad", refresh_token: "refresh-new", expires_in: 3600 } }
+        : { status: 401, body: { error: "unauthorized" } },
+    );
+    const got = await claudeWithRefresh({}, home, { ...URLS, anthropic: p.base, claudeToken: p.base }, "zh");
+    assert.deepEqual([got.state, got.signedOut], ["unavailable", true]);
+    assert.deepEqual(p.asked.map((r) => r.method), ["GET", "POST", "GET"]);
     await p.close();
   });
 

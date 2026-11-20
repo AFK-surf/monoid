@@ -282,7 +282,7 @@ export class Accounts {
     this.machine =
       deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
     this.checkFn =
-      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env) => this.machineToken(env), urls: this.urls, lang }));
+      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
     this.quotaFn =
       deps.quota !== undefined
         ? deps.quota
@@ -1520,7 +1520,7 @@ export class Accounts {
       return this.quotas.get(id) ?? null;
     }
     if (!this.quotaFn) return this.quotas.get(id) ?? null;
-    const { signedOut, unanswered, ...asked } = await this.quotaFn(profile);
+    const { signedOut, unanswered, recheck, ...asked } = await this.quotaFn(profile);
     if ((this.loginGeneration.get(id) ?? 0) !== generation) return this.quotas.get(id) ?? null;
     // No answer (the provider not reached, or in trouble itself) says nothing of the allowance: the one read before
     // stands, with when it was read, till an answer comes or it is too old to show. One such miss took every Claude
@@ -1553,7 +1553,18 @@ export class Accounts {
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
       if (refused) this.codexLogin(id, true);
       else if (read.state === "ok") this.codexLogin(id, false);
-    } else if (signedOut && this.checks.get(id)?.state !== "login") this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (signedOut && this.checks.get(id)?.state !== "login") {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (recheck && this.checks.get(id)?.state === "ok") {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (
+      profile.runtime === "claude" &&
+      accessKind(profile) === "subscription" &&
+      read.state === "ok" &&
+      (this.checks.get(id)?.state === "failed" || this.checks.get(id)?.state === "login")
+    ) {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    }
     return read;
   }
 

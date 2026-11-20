@@ -368,13 +368,18 @@ pub async fn claude_with_refresh(
     return first
   }
   let renewed = claude_oauth_token(ctx, home, Some(token.0), token_url, lang)
-  claude_usage_response(
+  let (second, still_unauthorized) = claude_usage_response(
     ctx,
     ctx.url("anthropic").unwrap_or(""),
     renewed.0,
     lang,
     version,
-  ).0
+  )
+  if still_unauthorized {
+    jset(second, "signedOut", jbool(true))
+  } else {
+    second
+  }
 }
 
 ///|
@@ -933,7 +938,17 @@ async fn check_quota_inner(
       },
       lang,
       claude_version,
-    )
+    ) catch {
+      e => {
+        let q = failed(ctx, e, lang)
+        if q.get("unanswered") != Some(Bool(true)) &&
+          q.get("signedOut") != Some(Bool(true)) {
+          jset(q, "recheck", jbool(true))
+        } else {
+          q
+        }
+      }
+    }
   }
   codex_quota_of(ctx, profile, codex, lang) catch {
     e => codex_failed(ctx, e, lang)

@@ -413,3 +413,105 @@ test "choose_run_on_profile leaves billed-per-use immediately without cheap_to_l
   assert_eq(stayed_or.id, "or")
   assert_eq(cur_profile, "or")
 }
+
+///|
+test "signs_in skips blocked quota, pick_profile prefers healthy over unavailable, and choose_run_on_profile leaves unavailable immediately" {
+  let now = 1_800_000_000_000.0
+  let p_cc1 = test_access_profile("cc1", ["claude-opus-5-5"], jobj([("kind", js("subscription"))]))
+  let p_cc2 = test_access_profile("cc2", ["claude-opus-5-5"], jobj([("kind", js("subscription"))]))
+  let p_cc3 = test_access_profile("cc3", ["claude-opus-5-5"], jobj([("kind", js("subscription"))]))
+  let p_key = test_access_profile("key", ["claude-opus-5-5"], jobj([("kind", js("anthropic-api")), ("key", js("k"))]))
+  let unavail_q = jobj([
+    ("state", js("unavailable")),
+    ("windows", jarr([])),
+    ("detail", js("Claude 登录续期请求失败，请稍后重试")),
+  ])
+  let blocked_q = jobj([
+    ("state", js("blocked")),
+    ("windows", jarr([])),
+    ("detail", js("account suspended")),
+  ])
+  let ok_q = (five : Double, seven : Double) => jobj([
+    ("state", js("ok")),
+    (
+      "windows",
+      jarr([
+        jobj([("usedPercent", jnum(five)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+        jobj([("usedPercent", jnum(seven)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+      ]),
+    ),
+  ])
+  let blocked_health : Health = { check: Some(jobj([("state", js("ok"))])), quota: Some(blocked_q), account: None, spent: false }
+  assert_false(signs_in(blocked_health))
+  assert_false(usable(blocked_health, now~))
+
+  let healths : Map[String, Health] = {
+    "cc1": { check: Some(jobj([("state", js("ok"))])), quota: Some(unavail_q), account: None, spent: false },
+    "cc2": { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(80.0, 50.0)), account: None, spent: false },
+    "cc3": { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(79.0, 50.0)), account: None, spent: false },
+    "key": { check: Some(jobj([("state", js("ok"))])), quota: Some(jobj([("state", js("unsupported")), ("windows", jarr([]))])), account: None, spent: false },
+  }
+  let signals : PoolSignals = {
+    health: id => healths.get(id).unwrap_or(Health::empty()),
+    load: id => if id == "cc2" || id == "cc3" { 5 } else { 0 },
+    last_picked: _ => 0.0,
+    now: () => now,
+  }
+  // Healthy subscriptions beat unavailable cc1 even with higher load.
+  let picked = pick_profile([p_cc1, p_cc2, p_cc3], Some("claude-opus-5-5"), signals, true)
+  assert_true(picked.id == "cc2" || picked.id == "cc3")
+  // When all other subscriptions are spent, check:ok + quota:unavailable subscription still beats pay-as-you-go.
+  healths["cc2"] = { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(100.0, 100.0)), account: None, spent: false }
+  healths["cc3"] = { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(100.0, 100.0)), account: None, spent: false }
+  assert_eq(pick_profile([p_cc1, p_cc2, p_cc3, p_key], Some("claude-opus-5-5"), signals, true).id, "cc1")
+  // Once cc1's check fails, pay-as-you-go takes over.
+  healths["cc1"] = { check: Some(jobj([("state", js("failed"))])), quota: Some(unavail_q), account: None, spent: false }
+  assert_eq(pick_profile([p_cc1, p_cc2, p_cc3, p_key], Some("claude-opus-5-5"), signals, true).id, "key")
+
+  // choose_run_on_profile: leaves unavailable cc1 immediately without cheap_to_leave, respects holding/pinned,
+  // and healthy crowded cc2 never moves onto unavailable cc1.
+  healths["cc1"] = { check: Some(jobj([("state", js("ok"))])), quota: Some(unavail_q), account: None, spent: false }
+  healths["cc2"] = { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(85.0, 20.0)), account: None, spent: false }
+  healths["cc3"] = { check: Some(jobj([("state", js("ok"))])), quota: Some(ok_q(20.0, 20.0)), account: None, spent: false }
+  let health = (id : String) => healths.get(id).unwrap_or(Health::empty())
+  let run_choice = (cur : String, pinned : Bool, holding : Bool, cheap : Bool, list : Array[Profile]) => accounts_ran(async fn() {
+    let row = Row::of_jv(
+      jobj([
+        ("key", js("s1")),
+        ("runtime", js("claude")),
+        ("profile", js(cur)),
+        ("profilePinned", jbool(pinned)),
+        ("model", js("claude-opus-5-5")),
+      ]),
+    )
+    match
+      choose_run_on_profile(
+        "s1",
+        row,
+        list,
+        holding,
+        crowded=p => urgency(health(p.id).quota, now).crowded,
+        can=id => usable(health(id), now~),
+        health_of=health,
+        cheap_to_leave=() => cheap,
+        elsewhere=() => None,
+        pick=among => pick_profile(
+          among,
+          row.model,
+          { health, load: _ => 0, last_picked: _ => 0.0, now: () => now },
+          false,
+        ),
+      ) {
+      Stay(p) => p.id
+      Move(p) => p.id
+    }
+  })
+  // Holding stays on unavailable cc1.
+  assert_eq(run_choice("cc1", false, true, false, [p_cc1, p_cc3]), "cc1")
+  // Pinned stays on unavailable cc1.
+  assert_eq(run_choice("cc1", true, false, false, [p_cc1, p_cc3]), "cc1")
+  // Unpinned & not holding & not cheap_to_leave: leaves unavailable cc1 immediately for healthy cc3.
+  assert_eq(run_choice("cc1", false, false, false, [p_cc1, p_cc3]), "cc3")
+  // Healthy crowded cc2 must never move onto unavailable cc1 even when cheap_to_leave is true.
+  assert_eq(run_choice("cc2", false, false, true, [p_cc1, p_cc2]), "cc2")
+}
