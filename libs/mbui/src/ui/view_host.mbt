@@ -2221,7 +2221,11 @@ fn Ctx::view_drawn(
     Some(tn) if c.bones == 0L => {
       ride_spoil()
       list_drawn_anew()
-      self.paint_tree_native(c.id, tn, x, y, c.w * s, c.h * s, s)
+      // (where its ground is drawn and as round (View::ground_drawn: a list's row opening to its new height), so the
+      // hole never shows past what is drawn over it as that opens)
+      let (nx, ny) = (x + ground_drawn.dx * s, y + ground_drawn.dy * s)
+      let (nw, nh) = (dmax(0.0, c.w + ground_drawn.dw) * s, dmax(0.0, c.h + ground_drawn.dh) * s)
+      self.paint_tree_native(c.id, tn, nx, ny, nw, nh, s, ground_corners=ground_drawn.corners)
     }
     _ => ()
   }
@@ -2232,7 +2236,9 @@ fn Ctx::view_drawn(
     Some(ts) if c.bones == 0L => {
       ride_spoil()
       list_drawn_anew()
-      self.paint_tree_stream(c.id, ts, x, y, c.w * s, c.h * s, c.radius * s, a)
+      let (sx, sy) = (x + ground_drawn.dx * s, y + ground_drawn.dy * s)
+      let (sw, sh) = (dmax(0.0, c.w + ground_drawn.dw) * s, dmax(0.0, c.h + ground_drawn.dh) * s)
+      self.paint_tree_stream(c.id, ts, sx, sy, sw, sh, c.radius * s, a)
     }
     _ => ()
   }

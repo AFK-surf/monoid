@@ -451,3 +451,111 @@ test "a mark over a picture flying by a route its picture says: carried at its o
   }
   assert_true(ys.length() > 20, msg="\{ys.length()}")
 }
+
+///|
+/// A window: a column `side` wide at its left (none at 0), then a column that scrolls, `covered` of its top under a bar
+/// (Scroll::top_covered), holding `room` of nothing then a thumbnail 100 by 40 at its left, rounded 12, that stays; over all of it while `open` is said a picture 2000 by 1400 at (-400, -300) that moves, past
+/// every edge of the window (a picture zoomed past it). The tree, open, the thumbnail.
+fn zoomed_scene(
+  side : Double,
+  covered : Double,
+  room : Double,
+) -> (@view.Tree, @signals.Signal[Bool], Ref[@view.View?]) {
+  let open = @signals.signal(false)
+  let thumb : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)).row(Is(true)) |> ignore
+      if side > 0.0 {
+        p.box(fn(s) { s.width(Is(Some(side))).shrink(Is(0.0)) |> ignore }) |> ignore
+      }
+      p.box(fn(c) {
+        c.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        c.scrolls(@view.Scroll::new(), top_covered=fn() { covered }, fn(held) {
+          held.box(fn(r) { r.height(Is(Some(room))).shrink(Is(0.0)) |> ignore }) |> ignore
+          held.box(fn(t) {
+            thumb.val = Some(t)
+            t
+            .width(Is(Some(100.0)))
+            .height(Is(Some(40.0)))
+            .shrink(Is(0.0))
+            .radius(Is(12.0))
+            .ground(Is(red))
+            .shared(Is("a"), straight, stays=true)
+            |> ignore
+          })
+          |> ignore
+          held.box(fn(r) { r.height(Is(Some(2000.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      p.show(fn() { open.get() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(b) {
+          b
+          .offset(Is((-400.0, -300.0)))
+          .width(Is(Some(2000.0)))
+          .height(Is(Some(1400.0)))
+          .ground(Is(blue))
+          .shared(Is("a"), straight, with_stays=true)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  (tree, open, thumb)
+}
+
+///|
+/// The corners of the thumbnail of zoomed_scene flying back from its picture opened and closed in a window `w` wide, a
+/// quarter, half and three quarters of its way gone (its flight 200 long).
+fn zoomed_back_corners(
+  w : Double,
+  side : Double,
+  covered : Double,
+  room : Double,
+) -> Array[(Double, Double, Double, Double)] raise {
+  let (tree, open, thumb) = zoomed_scene(side, covered, room)
+  tree.frame(w, 800.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(w, 800.0, now=1000.0) |> ignore
+  tree.frame(w, 800.0, now=1300.0) |> ignore
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(w, 800.0, now=2000.0) |> ignore
+  let t = thumb.val.unwrap()
+  let out = []
+  for now in [2050.0, 2100.0, 2150.0] {
+    tree.frame(w, 800.0, now~) |> ignore
+    assert_true(t.flies(), msg="flying back at \{now}")
+    out.push(tree.lift_cut_corners(t.id()).unwrap())
+  }
+  out
+}
+
+///|
+test "a thumbnail that stays flown back from its picture zoomed past every edge of the window, in all the window or in a column beside another: round all the way, rounder as it comes" {
+  for side in [0.0, 280.0] {
+    let w = 400.0 + side
+    let cs = zoomed_back_corners(w, side, 0.0, 300.0)
+    let mut was = 0.0
+    for c in cs {
+      let (a, b, d, e) = c
+      assert_true(a > 0.0 && b > 0.0 && d > 0.0 && e > 0.0, msg="beside \{side}: \{Repr(cs)}")
+      assert_true(a > was, msg="beside \{side}: rounder each time \{Repr(cs)}")
+      was = a
+    }
+  }
+}
+
+///|
+test "a thumbnail 30 under the bar over its column flown back from its picture zoomed past the window: its foot's corners round, its top's square as they go in under the bar" {
+  let cs = zoomed_back_corners(400.0, 0.0, 60.0, 30.0)
+  for c in cs {
+    let (a, b, d, e) = c
+    assert_true(d > 0.0 && e > 0.0, msg="its foot's: \{Repr(cs)}")
+    assert_true(a == 0.0 && b == 0.0, msg="its top's: \{Repr(cs)}")
+  }
+}
