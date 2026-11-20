@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -2808,6 +2808,76 @@ sim("a_small_upload_says_nothing_of_its_ways_speed", async (s) => {
   assert.equal(mesh.speed(id, DIRECT), null);
   await s.time.pass(TICK_MS * 2);
   assert.equal(mesh.ways(id).length, 1, `no relay explored: ${mesh.ways(id).map((w) => w.key()).join(", ")}`);
+  await close(s, station, mesh);
+});
+
+sim("slow_small_response_triggers_bulk_exploration_and_excludes_slow_link", async (s) => {
+  s.net.direct = { ms: 20, bps: 20 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 60, bps: 20 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  // 256 KiB (< SPEED_MIN_BYTES) at 20 KiB/s takes > 10s (>= SPEED_SLOW_MIN_MS): must be recorded and trigger bulk exploration.
+  const got = await s.run(
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big?mb=0.25", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))),
+    30_000,
+  );
+  assert.equal(got.length, 256 * 1024);
+  const recorded = mesh.speed(id, DIRECT);
+  assert.ok(recorded !== null && recorded < BULK_SLOW_BPS, `expected slow direct speed recorded < BULK_SLOW_BPS, got ${recorded}`);
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === b));
+  assert.ok(mesh.fastBulkLinks(id).every((l) => l.path() !== "direct"), "slow direct link must be excluded from fastBulkLinks");
+  await close(s, station, mesh);
+});
+
+sim("timed_reports_slow_stream_early_after_5s_and_ignores_fast_small_responses", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 10 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a]);
+  const id = `w/${bare}`;
+  // 1. Fast small response (100 KiB in 1s, < SPEED_MIN_BYTES and < SPEED_SLOW_MIN_MS): must not record speed.
+  mesh.noteSpeed(id, a, 100 * 1024, 1_000);
+  assert.equal(mesh.speed(id, a), null, "fast/short small sample must not record speed");
+  let fastIdx = 0;
+  const fastChunks: (Uint8Array | null)[] = [new Uint8Array(16 * 1024), new Uint8Array(100 * 1024), null];
+  const fastTimed = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const c = fastChunks[fastIdx++] ?? null;
+      return fastIdx === 2 ? Effect.as(Effect.sleep(1_000), c) : Effect.succeed(c);
+    }),
+  });
+  await s.run(readAll(fastTimed));
+  assert.equal(mesh.speed(id, a), null, "timed fast small body must not record speed");
+
+  // 2. Streaming large body on a slow link: reports early at >= 64 KiB && >= 5s before 512 KiB arrives.
+  const stepBytes = 32 * 1024;
+  assert.ok(stepBytes * 3 < SPEED_MIN_BYTES && stepBytes * 3 >= SPEED_SLOW_MIN_BYTES);
+  let slowIdx = 0;
+  const slowTimed = mesh.timed(id, a, {
+    take: Effect.suspend(() => {
+      const i = slowIdx++;
+      if (i === 0) return Effect.succeed(new Uint8Array(stepBytes));
+      if (i <= 3) return Effect.as(Effect.sleep(2_000), new Uint8Array(stepBytes));
+      return Effect.succeed(null);
+    }),
+  });
+  // Chunk 0 (t=0, anchor), chunk 1 (t=2s, own=32 KiB), chunk 2 (t=4s, own=64 KiB, < 5s)
+  await s.run(slowTimed.take);
+  await s.run(slowTimed.take);
+  assert.equal(mesh.speed(id, a), null);
+  await s.run(slowTimed.take);
+  assert.equal(mesh.speed(id, a), null, `must not report before ${SPEED_SLOW_MIN_MS}ms`);
+  // Chunk 3 (t=6s, own=96 KiB < 512 KiB, 16 KiB/s < BULK_SLOW_BPS): must report early before EOF.
+  await s.run(slowTimed.take);
+  const early = mesh.speed(id, a);
+  assert.ok(early !== null && early < BULK_SLOW_BPS, `expected early slow speed < BULK_SLOW_BPS before 512 KiB, got ${early}`);
   await close(s, station, mesh);
 });
 

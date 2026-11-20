@@ -145,6 +145,8 @@ pub fn positionals(Array[String], Array[String]) -> Array[String]
 
 pub fn prepare_local_links(String, Array[String], String) -> Result[(String, Array[String]), String]
 
+pub fn preview(String, String) -> @drive.Thumbnail?
+
 pub fn process_usage(Array[Int32]) -> Array[@json.Json?]
 
 pub fn read_lines(@host.Host, Int32, (String) -> Unit, () -> Unit) -> Unit
@@ -356,6 +358,7 @@ pub(all) struct LiveBus {
   jobs_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   ui_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   ui_screen_view : @ref.Ref[(async (@door.Stream, Bytes, @json.Json, @json.Json) -> Bool)?]
+  ui_helper_search : @ref.Ref[(async (Array[String], String, Double, Array[String]) -> Array[String])?]
   coord_ask : @ref.Ref[async (String, @json.Json) -> @json.Json]
   release_hearers : Array[() -> Unit]
   peer_hearers : Array[(String) -> Unit]

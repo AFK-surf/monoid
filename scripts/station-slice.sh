@@ -26,7 +26,10 @@ s=${1:-0/1}
 i=${s%/*} n=${s#*/}
 # (mb-fault-runtimes-and-lend: two MoonBit stations under the launcher, runtimes, lent logins and a refused hand-over,
 # 43 s and 84 core-seconds alone on Studio, 2026-11-20)
-long="test/rules-fork.test.ts:168 test/mb-fault-runtimes-and-lend.test.ts:84 test/memory-sync-random.test.ts:69"
+# (mb-fault-replica-retire: two MoonBit stations over iroh three times, a 48 MiB hand-over cut by a kill, 111-127 s on
+# Studio, 2026-11-20)
+long="test/rules-fork.test.ts:168 test/mb-fault-replica-retire.test.ts:125 test/mb-fault-runtimes-and-lend.test.ts:84"
+long="$long test/memory-sync-random.test.ts:69"
 long="$long test/replica-heap-bounded.test.ts:57"
 long="$long test/move-accounts.test.ts:53 test/replica-retire.test.ts:44 test/lock-moved-model.test.ts:40"
 long="$long test/lock-roster4.test.ts:39 test/updates.test.ts:36 test/chat-handover-steps.test.ts:28"

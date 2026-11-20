@@ -12,6 +12,8 @@ pub fn hash_of(Image) -> String
 
 pub fn links(String) -> Array[Found]
 
+pub fn made_preview(Image, Double) -> (String, String, Bytes)?
+
 pub fn made_small(Image, Double) -> (String, String, Bytes)?
 
 pub fn percent_decode(String) -> String
@@ -19,6 +21,10 @@ pub fn percent_decode(String) -> String
 pub fn percent_encode(String) -> String
 
 pub fn prepare_local_links(LinkWorld, String, Array[String], String) -> (String, Array[String]) raise LinkRefused
+
+pub let preview_max : Int32
+
+pub let preview_small_len : Double
 
 pub fn rgba_to_thumb_hash(Int32, Int32, FixedArray[Byte]) -> Bytes
 

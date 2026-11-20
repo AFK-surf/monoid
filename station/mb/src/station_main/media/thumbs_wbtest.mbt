@@ -358,4 +358,20 @@ test "malformed PNG/JPEG corpus: truncated, bad chunk, bad CRC, illegal dimensio
   assert_true(decode_image(b"\xff\xd8\xff\xe1\x00\x04\x00\x00") is None)
 }
 
+///|
+test "preview resizing: oversized opaque -> JPEG <= 2048 when < 50% of original, None when >= 50%" {
+  // Opaque 2400x1200 -> resized to 2048x1024 JPEG
+  let big : Image = { w: 2400, h: 1200, px: test_picture(2400, 1200, clear=false) }
+  let (ext, mime, bytes) = made_preview(big, 10_000_000.0).unwrap()
+  assert_eq(ext, "jpg")
+  assert_eq(mime, "image/jpeg")
+  let decoded = decode_image(bytes).unwrap()
+  assert_eq((decoded.w, decoded.h), (2048, 1024))
+  // Threshold: must be strictly less than half the original byte length (bytes * 2 < len).
+  let exact_double = bytes.length().to_double() * 2.0
+  assert_true(made_preview(big, exact_double) is None)
+  assert_true(made_preview(big, exact_double - 1.0) is None)
+  assert_true(made_preview(big, exact_double + 1.0) is Some(_))
+}
+
 

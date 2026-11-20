@@ -69,6 +69,13 @@ pub async fn harness(host : @host.Host) -> Unit {
             None => Json::null()
           },
         )
+      "preview" =>
+        Ok(
+          match preview(s("image"), s("dir")) {
+            Some(t) => { "path": Json::string(t.path), "type": Json::string(t.type_) }
+            None => Json::null()
+          },
+        )
       "thumbhash" =>
         Ok(
           match thumbhash(s("image"), match v("dir") { Some(String(d)) => Some(d); _ => None }) {

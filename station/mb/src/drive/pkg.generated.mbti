@@ -160,6 +160,8 @@ pub async fn poster(String, String, Makers, since? : Double) -> String?
 
 pub fn poster_path(String, String) -> String
 
+pub fn preview(String, String, Codecs?) -> Thumbnail?
+
 pub fn protected_place(String, String, Array[String]) -> Where?
 
 pub fn protected_place_soon(String, String, Array[String]) -> Where?
@@ -308,6 +310,7 @@ pub(all) struct Clock {
 
 pub(all) struct Codecs {
   thumbnail : (String, String) -> Thumbnail? raise
+  preview : (String, String) -> Thumbnail? raise
   thumbhash : (String, String?) -> (String, Double, Double)? raise
 }
 

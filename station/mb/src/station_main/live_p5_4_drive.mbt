@@ -262,6 +262,11 @@ async fn p54_drive_ask(d : P54Drive, bus : LiveBus, op : String, a : Json) -> Js
             Some(t) => { "path": Json::string(t.path), "type": Json::string(t.type_) }
             None => Json::null()
           }
+        "drive/thumbs.preview" =>
+          match @drive.preview(s(0), s(1), Some(codecs())) {
+            Some(t) => { "path": Json::string(t.path), "type": Json::string(t.type_) }
+            None => Json::null()
+          }
         "drive/thumbs.keep" =>
           Json::array(
             @drive.keep(
