@@ -29,6 +29,7 @@ pub(all) struct Asked {
   save_kind : String
   save_vault_name : String
   save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   filename : String
   typed : Bool
@@ -357,7 +358,7 @@ pub fn vault_card(
   @sf.card(c, fill=ask.picks_file(), fn() {
     vault_asked(c, ask, request~)
     answered_in_place(c, "vault/" + request, ended.map(fn(e) { (e.0 == "granted", vault_outcome_words(ask, e.0, e.1)) }), fn() {
-      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp | NoKey), describe=ask.describe, remove=ask.remove)
+      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp | NoKey), describe=ask.describe, remove=ask.remove, targets=ask.save_targets)
     })
   })
   |> ignore
@@ -626,7 +627,7 @@ fn ended_name(name : String) -> @ui.Run {
 pub fn vault_actions(c : @ui.Ctx, core : Core, ws : String, request : String, mine : Bool, who? : String? = None) -> Unit {
   let row = items(vaults_of(core, ws), "requests").iter().find_first(fn(r) { text(Some(r), "id") == request })
   match topic_answer(core, ws, request, mine, who) {
-    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"))
+    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"), targets=vault_save_targets(core, ws))
     None => ()
   }
 }
@@ -650,6 +651,7 @@ pub fn vault_foot(
   foot? : Bool = false,
   describe? : Bool = false,
   remove? : Bool = false,
+  targets? : Array[(String, String, Bool)] = [],
 ) -> Unit {
   let note = fn(words : String) { c.text(words, style=@sf.ask_note) |> ignore }
   let lasts = match answer {
@@ -796,7 +798,7 @@ pub fn vault_foot(
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are: the foot's flow,
   // its later line over its first (flow_reverse), laid out in the pass that lays out the card, nothing read back.
   let save_targets = if save && !remove && !describe && signs_in == "" && answer is Approve(_) {
-    vault_save_targets(core, ws)
+    targets
   } else {
     []
   }

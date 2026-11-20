@@ -58,6 +58,7 @@ pub fn vault_foot_node(
   foot~ : Bool,
   describe? : () -> Bool = fn() { false },
   remove? : () -> Bool = fn() { false },
+  targets? : () -> Array[(String, String, Bool)] = fn() { [] },
   extra? : (@view.View) -> Unit,
 ) -> Unit {
   let lasts = fn() {
@@ -207,7 +208,7 @@ pub fn vault_foot_node(
       })
     })
   }
-  let save_targets = fn() { vault_save_targets(core, ws()) }
+  let save_targets = targets
   let can_pick_save_vault = fn() {
     save() && !remove() && !describe() && signs_in() == "" && answer() is Some(Approve(_)) && save_targets().length() > 1
   }
@@ -560,6 +561,7 @@ pub fn vault_actions_node(
     foot=false,
     describe=fn() { field(row(), "describe") is Some(_) },
     remove=fn() { flag(row(), "remove") },
+    targets=fn() { vault_save_targets(core, ws()) },
   )
 }
 
@@ -793,6 +795,7 @@ pub fn vault_card_node(
           foot=true,
           describe=fn() { ask().describe },
           remove=fn() { ask().remove },
+          targets=fn() { ask().save_targets },
         )
       },
     )
@@ -860,6 +863,7 @@ pub fn vault_request_node(
       foot~,
       describe=fn() { ask().describe },
       remove=fn() { ask().remove },
+      targets=fn() { vault_save_targets(core, ws()) },
       extra?,
     )
   })

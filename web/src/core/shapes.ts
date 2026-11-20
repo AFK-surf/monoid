@@ -2198,6 +2198,13 @@ export interface VaultDescribe {
 	wasAbout: string;
 }
 
+/** A keyed vault a secret_save card may save into. */
+export interface VaultTarget {
+	id: string;
+	name: string;
+	workspace?: boolean;
+}
+
 /** An agent's request to use a vault item, or to keep one, as its card in the chat says it (station/src/vault/secrets.ts). */
 export interface VaultAsk {
 	/** The item's name. */
@@ -2247,6 +2254,8 @@ export interface VaultAsk {
 	answer?: string;
 	/** With answer approve, a use: the longest it may be given for (once | hour | chat). */
 	lasts?: string;
+	/** With answer approve, a save when more than one keyed vault exists: personal vaults first, workspace vaults after. */
+	saveTargets?: VaultTarget[];
 }
 
 /** A site's sign-in asked of the person on a card, as it stands. */

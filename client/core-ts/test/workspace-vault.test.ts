@@ -696,6 +696,14 @@ test("secret_save shared/explicit vault targeting, vaultNoKey, and personal-only
     };
     st.requests.push(rDefault);
     await bob.sync();
+    // askAnswers carries saveTargets (personal first, workspace second) for chat save cards when >1 keyed vault exists.
+    const bobAns = askAnswers(bob.core.inner, "ws", [{ request: "r_default", save: true }]);
+    assert.equal(bobAns[0]?.answer, "approve");
+    assert.equal(bobAns[0]?.saveTargets?.length, 2);
+    assert.equal(bobAns[0]?.saveTargets?.[0]?.id, bobPersonalId);
+    assert.equal(bobAns[0]?.saveTargets?.[0]?.workspace, undefined);
+    assert.equal(bobAns[0]?.saveTargets?.[1]?.id, wsVault.id);
+    assert.equal(bobAns[0]?.saveTargets?.[1]?.workspace, true);
     const okDefault = await bob.ask("vault.approve", { request: "r_default", scope: "once", typed: { secret: "tok_personal" } });
     assert.equal(okDefault.vault, bobPersonalId, "default secret_save lands in personal vault, not workspace vault");
 
@@ -726,7 +734,7 @@ test("secret_save shared/explicit vault targeting, vaultNoKey, and personal-only
     await bob2.sync();
     await bob.sync();
 
-    assert.deepEqual(askAnswers(bob2.core.inner, "ws", [{ request: "r_shared", save: true }]), [{ answer: "approve" }]);
+    assert.equal(askAnswers(bob2.core.inner, "ws", [{ request: "r_shared", save: true }])[0]?.answer, "approve");
     const b2View = vaultsView(bob2.core.inner, "ws") as any;
     const reqRowB2 = b2View.requests.find((x: any) => x.id === "r_shared");
     assert.equal(reqRowB2.noKey, undefined);

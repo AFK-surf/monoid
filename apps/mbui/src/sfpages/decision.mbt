@@ -261,6 +261,7 @@ fn vault_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
     save_kind: ask.save_kind,
     save_vault_name: ask.save_vault_name,
     save_shared: ask.save_shared,
+    save_targets: ask.save_targets,
     username: ask.username,
     filename: ask.filename,
     typed: ask.typed,

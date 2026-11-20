@@ -390,7 +390,7 @@ test "the vault's page's request where it is not this device's to answer, or dec
 /// phone's window, drawn.
 fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
   let core = settings_core(src, w)
   @ui.set_view_app(fn(root) {
@@ -754,7 +754,7 @@ test "a save request card defaults to personal vault and only shows shared notic
   }
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
   // Even if an older station sent save_shared=true, default stays personal vault with no shared warning.
-  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
 
   // 1. Default save goes to personal vault (v1) with no shared notice.
   new_run()

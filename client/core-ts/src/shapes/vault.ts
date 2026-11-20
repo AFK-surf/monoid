@@ -21,7 +21,13 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["station", opt("String"), { doc: "Another station of the workspace its commands run on (a secret to keep: the one its command read it on), by name." }],
     ["answer", opt("String"), { doc: "How it is answered on this device, from the vault as the core holds it (views/vault.ts askAnswers): approve\n(允许 / 存入), setUp (a secret to keep while this device's vault is not on: 开启密钥库 first), elsewhere (approved only in an\napp that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`), noKey\n(this device does not hold a key to this encrypted vault yet: cannot approve/save/change/remove here, VaultRequest `noKey`). The chat's cards; absent on a core from before." }],
     ["lasts", opt("String"), { doc: "With answer approve, a use: the longest it may be given for (once | hour | chat)." }],
+    ["saveTargets", opt(vec("VaultTarget")), { doc: "With answer approve, a save when more than one keyed vault exists: personal vaults first, workspace vaults after." }],
   ], { doc: "An agent's request to use a vault item, or to keep one, as its card in the chat says it (station/src/vault/secrets.ts)." }),
+  VaultTarget: struct([
+    ["id", "String"],
+    ["name", "String", { said: true }],
+    ["workspace", opt("bool")],
+  ], { doc: "A keyed vault a secret_save card may save into." }),
   VaultDescribe: struct([
     ["name", "String", { said: true, doc: "Its name as it would be (the same as `name` where it stays)." }],
     ["about", "String", { said: true, doc: "Its about as it would be (\"\": none)." }],

@@ -330,6 +330,7 @@ fn vault_request_asked(rv : Json?) -> Asked {
     save_kind: text(save, "kind"),
     save_vault_name: text(save, "vaultName"),
     save_shared: flag(save, "shared"),
+    save_targets: [],
     username: text(save, "username"),
     filename: text(save, "filename"),
     typed: flag(save, "typed"),

@@ -230,6 +230,7 @@ pub(all) struct VaultAsk {
   save_kind : String
   save_vault_name : String
   save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   /// a file's name, where the agent gave one
   filename : String
@@ -563,6 +564,9 @@ pub fn message_of(m : Json) -> Message {
                 save_kind: text(field(a, "save"), "kind"),
                 save_vault_name: text(field(a, "save"), "vaultName"),
                 save_shared: flag(field(a, "save"), "shared"),
+                save_targets: items(a, "saveTargets").map(fn(t) {
+                  (text(Some(t), "id"), text(Some(t), "name"), flag(Some(t), "workspace"))
+                }),
                 username: text(field(a, "save"), "username"),
                 filename: text(field(a, "save"), "filename"),
                 typed: flag(field(a, "save"), "typed"),
