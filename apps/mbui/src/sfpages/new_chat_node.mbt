@@ -105,7 +105,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
     }
   }
   // (its ground none as it leaves: what is left of it seen over the chat it became, as new_chat_left's)
-  v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
+  v.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
   // (its bar fades out smoothly along bar_out while non-interactive, crossfading with the chat bar's bar_in)
   v.box(fn(b) {
     b
@@ -116,9 +116,9 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
   })
   |> ignore
   v.box(fn(room) {
-    room.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    room.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     room.pick(kind, at_once=true, fn(p, k) {
-      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match k {
         On => new_on_node(p, v, src, w, frame, tips, topic, view, going)
         Blocked => new_blocked_node(p, src, w, frame, tips, view)
@@ -195,6 +195,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
   // comes to be, never on a way between the two (View::lays_anew), what holds it going its own way meanwhile)
   v
   .grow(Is(1.0))
+  .shrink(Is(1.0))
+  .basis(Is(Some(0.0)))
   .min_height(Is(Some(0.0)))
   .lines_up(Is(Some(Middle)))
   .padding(By(fn() { if wide() { (new_column_in, 0.0, new_column_in, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
@@ -232,6 +234,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     .lines_up(By(fn() { if wide() { Some(Middle) } else { None } }))
     .gap(By(fn() { if wide() { @ui.Space::px(S2_5) } else { 0.0 } }))
     .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .basis(Is(Some(0.0)))
     .min_height(Is(Some(0.0)))
     |> ignore
     // (wide, as much room over the scene and the composer as under them; narrow, none: the scene takes it all)
