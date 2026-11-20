@@ -396,6 +396,7 @@ fn viewer_foot_case(fs : Double, copy : Bool) -> @ui.Tester {
 
 ///|
 test "a viewer's foot in a small window without 复制, 取消 and the doing: each half while both fit; at 1.3 the doing's words whole with their ends, 取消 giving way" {
+  let prev = words_of.val
   for fs in [1.0, 1.3] {
     let t = viewer_foot_case(fs, false)
     let ((cx, _, cw, _), (cwx, _, cww, _)) = pill_and_words(t, "Cancel")
@@ -414,11 +415,12 @@ test "a viewer's foot in a small window without 复制, 取消 and the doing: ea
     }
     assert_eq(t.audit(), [], msg=at)
   }
-  set_words(fn(key, _) { key })
+  set_words(prev)
 }
 
 ///|
 test "a viewer's foot on a phone with 复制: at 1.3 the doing keeps its words and ends, 取消 and 复制 giving their ends alike, nothing past the window" {
+  let prev = words_of.val
   for fs in [1.0, 1.3] {
     let t = viewer_foot_case(fs, true)
     let placed : Array[(Double, Double, Double, Double)] = []
@@ -442,5 +444,5 @@ test "a viewer's foot on a phone with 复制: at 1.3 the doing keeps its words a
     assert_true(placed[2].1 >= placed[2].3 + 2.0 * button_padx - 0.01, msg=at)
     assert_eq(t.audit(), [], msg=at)
   }
-  set_words(fn(key, _) { key })
+  set_words(prev)
 }

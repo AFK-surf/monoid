@@ -28,7 +28,7 @@ test "a login's card: its × on its title's first line, cancelled as pressed; it
     let cancelled = @signals.signal(0)
     let pressed = @signals.signal(0)
     let copied = @signals.signal("")
-    let t = u16_case(scale~, fn(root) {
+    let tt = u16_case(scale~, fn(root) {
       login_step_card_node(root, fn() { "GitHub CLI" }, cancel=(fn() { false }, fn() { cancelled.set(cancelled.get() + 1) }), fn(c) {
         login_active_node(c, fn() { false }, fn(x, _) {
           login_lines_node(
@@ -44,28 +44,28 @@ test "a login's card: its × on its title's first line, cancelled as pressed; it
       })
     })
     let at = "words ×\{scale}"
-    let (_, ty, _, _) = t.rect_of("GitHub CLI").unwrap()
-    let x = t.query(Button, label="web-main.logins.cancelWhat").unwrap().rect
+    let (_, ty, _, _) = tt.rect_of("GitHub CLI").unwrap()
+    let x = tt.query(Button, label=t("web-main.logins.cancelWhat")).unwrap().rect
     // (the × in the card's top corner, over the title's first line, not under it)
     assert_true(x.1 <= ty, msg="\{at}: × at \{x.1}, title at \{ty}")
-    t.tap(x.0 + x.2 / 2.0, x.1 + x.3 / 2.0)
-    t.run_for(@ui.move_most_ms)
+    tt.tap(x.0 + x.2 / 2.0, x.1 + x.3 / 2.0)
+    tt.run_for(@ui.move_most_ms)
     assert_eq(cancelled.get(), 1)
-    t.tap_text("复制并打开")
-    t.run_for(@ui.move_most_ms)
+    tt.tap_text("复制并打开")
+    tt.run_for(@ui.move_most_ms)
     assert_eq(pressed.get(), 1)
-    t.tap_text("8F2C-41DA")
-    t.run_for(@ui.move_most_ms)
+    tt.tap_text("8F2C-41DA")
+    tt.run_for(@ui.move_most_ms)
     assert_eq(copied.get(), "8F2C-41DA")
-    assert_true(t.query(Button, label="common.login.otherWays") is Some(_), msg="\{at}: the ⋯ beside the step")
-    let faults = t.audit()
+    assert_true(tt.query(Button, label=t("common.login.otherWays")) is Some(_), msg="\{at}: the ⋯ beside the step")
+    let faults = tt.audit()
     assert_true(faults.is_empty(), msg="\{at}: \{faults.join("\n")}")
   }
 }
 
 ///|
 test "a login's card with nothing to cancel here: no ×, its line last; ended, one line alone" {
-  let t = u16_case(fn(root) {
+  let tt = u16_case(fn(root) {
     root.box(fn(col) {
       col.gap(Is(12.0)) |> ignore
       login_step_card_node(col, fn() { "AWS CLI" }, fn(c) {
@@ -75,17 +75,17 @@ test "a login's card with nothing to cancel here: no ×, its line last; ended, o
     })
     |> ignore
   })
-  assert_true(t.query(Button, label="web-main.logins.cancelWhat") is None)
-  assert_true(t.rect_of("请在工作站上完成登录") is Some(_))
-  assert_true(t.rect_of("gcloud · 登录失败") is Some(_))
-  assert_eq(t.audit(), [])
+  assert_true(tt.query(Button, label=t("web-main.logins.cancelWhat")) is None)
+  assert_true(tt.rect_of("请在工作站上完成登录") is Some(_))
+  assert_true(tt.rect_of("gcloud · 登录失败") is Some(_))
+  assert_eq(tt.audit(), [])
 }
 
 ///|
 test "a code pasted back: 完成 comes in once a code is typed, Enter sends it and it turns while it is sent" {
   let field = @ui.Field::new()
   let sent = @signals.signal("")
-  let t = u16_case(fn(root) {
+  let tt = u16_case(fn(root) {
     login_step_card_node(root, fn() { "Claude Code" }, fn(c) {
       login_active_node(c, fn() { true }, fn(x, _) {
         login_paste_node(
@@ -99,19 +99,20 @@ test "a code pasted back: 完成 comes in once a code is typed, Enter sends it a
       })
     })
   })
-  assert_true(t.query(Button, label="web-main.logins.finish") is None, msg="nothing typed: no 完成")
-  t.tap_text("web-main.logins.pasteCode")
-  t.type_text("abc123 ")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.query(Button, label="web-main.logins.finish") is Some(_), msg="typed: 完成")
-  t.key(@ui.key_code_enter)
-  t.run_for(@ui.move_most_ms)
+  let finish = t("web-main.logins.finish")
+  assert_true(tt.query(Button, label=finish) is None, msg="nothing typed: no 完成")
+  tt.tap_text(t("web-main.logins.pasteCode"))
+  tt.type_text("abc123 ")
+  tt.run_for(@ui.move_most_ms)
+  assert_true(tt.query(Button, label=finish) is Some(_), msg="typed: 完成")
+  tt.key(@ui.key_code_enter)
+  tt.run_for(@ui.move_most_ms)
   assert_eq(sent.get(), "abc123")
   // (sent: 完成 stays, turning, taking no press)
-  assert_true(t.query(Button, label="web-main.logins.finish") is Some(_), msg="sent: 完成 still there")
+  assert_true(tt.query(Button, label=finish) is Some(_), msg="sent: 完成 still there")
   // (the field's words 12 in, 完成 4 from its end, concentric with its corner: the card's look, cardPaste's, as the
   // app's was)
-  let faults = t.audit().filter(fn(f) { !(f.has_prefix("rule 4:") && f.contains("web-main.logins.finish")) })
+  let faults = tt.audit().filter(fn(f) { !(f.has_prefix("rule 4:") && f.contains(finish)) })
   assert_true(faults.is_empty(), msg=faults.join("\n"))
 }
 

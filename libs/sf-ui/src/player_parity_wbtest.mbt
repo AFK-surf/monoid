@@ -65,10 +65,12 @@ fn[T : Eq + Debug] both(
   made : (Bool) -> (@ui.Tester, @player.Media),
   step : (@ui.Tester, @player.Media) -> T raise,
 ) -> T raise {
+  let prev = words_of.val
   let (t, m) = made(false)
   let old = step(t, m)
   let (t, m) = made(true)
   let new = step(t, m)
+  set_words(prev)
   assert_true(new == old, msg="\{what}: the window's tree's player \{Repr(new)}, the old one's \{Repr(old)}")
   new
 }
@@ -193,14 +195,14 @@ test "both players, a desktop's: a double click in the film's middle plays or pa
 
 ///|
 test "both players, a desktop's: its speeds a menu, 0.25× picked" {
-  let seen = both("speeds", fn(node) { either_player(node, false, "a.mp4", []) }, fn(t, _) raise {
-    t.draw()
-    t.click(Button, label="web-pages.drive.player.rate")
-    t.run_for(@ui.move_most_ms)
-    let shown = t.find("0.25×") is Some(_)
-    t.tap_text("0.25×")
-    t.draw()
-    (shown, told(t, 4, value="0.25"))
+  let seen = both("speeds", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) raise {
+    tt.draw()
+    tt.click(Button, label=t("web-pages.drive.player.rate"))
+    tt.run_for(@ui.move_most_ms)
+    let shown = tt.find("0.25×") is Some(_)
+    tt.tap_text("0.25×")
+    tt.draw()
+    (shown, told(tt, 4, value="0.25"))
   })
   assert_eq(seen, (true, true))
 }
@@ -218,15 +220,15 @@ test "both players, a desktop's: the bar says the film's size, length and rate a
 
 ///|
 test "both players, a desktop's: at its end, its host still saying it plays, its play key plays it from its start" {
-  let seen = both("at its end", fn(node) { either_player(node, false, "a.mp4", []) }, fn(t, _) raise {
-    t.draw()
-    t.set_player(1, position=10000.0, duration=10000.0, playing=true, ended=true)
-    t.draw()
-    t.run_for(@ui.move_most_ms)
-    let before = t.views().length()
-    t.click(Button, label="web-main.video.playKey")
-    t.draw()
-    let told = t.views()[before:].to_owned()
+  let seen = both("at its end", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) raise {
+    tt.draw()
+    tt.set_player(1, position=10000.0, duration=10000.0, playing=true, ended=true)
+    tt.draw()
+    tt.run_for(@ui.move_most_ms)
+    let before = tt.views().length()
+    tt.click(Button, label=t("web-main.video.playKey"))
+    tt.draw()
+    let told = tt.views()[before:].to_owned()
     (told.contains("control 1 3 0"), told.iter().any(fn(l) { l.has_prefix("control 1 2") }))
   })
   assert_eq(seen, (true, false))
@@ -234,20 +236,22 @@ test "both players, a desktop's: at its end, its host still saying it plays, its
 
 ///|
 test "both players, a desktop's on a narrow stage: its ⋯ lists the speeds only where its speed left the row" {
-  let rate = "web-pages.drive.player.rate"
+  let prev = words_of.val
   let kept = [0, 0]
   for node in [false, true] {
     for w in [600.0, 610.0, 620.0, 640.0, 680.0, 780.0] {
-      let (t, m) = either_player(node, false, "a.mp4", [], window=(w, 800.0, 0))
+      let (tt, m) = either_player(node, false, "a.mp4", [], window=(w, 800.0, 0))
       // (paused at its start: 保存此帧 among its keys)
       m.pin({ ..pinned(1000.0), playing: false })
-      t.draw()
-      t.run_for(@ui.move_most_ms)
-      let in_row = t.query(Button, label=rate) is Some(_)
-      if t.query(Button, label="web-main.menu.more") is Some(_) {
-        t.click(Button, label="web-main.menu.more") |> ignore
-        t.run_for(@ui.move_most_ms)
-        let listed = t.find("0.25×") is Some(_)
+      tt.draw()
+      tt.run_for(@ui.move_most_ms)
+      let rate = t("web-pages.drive.player.rate")
+      let more = t("web-main.menu.more")
+      let in_row = tt.query(Button, label=rate) is Some(_)
+      if tt.query(Button, label=more) is Some(_) {
+        tt.click(Button, label=more) |> ignore
+        tt.run_for(@ui.move_most_ms)
+        let listed = tt.find("0.25×") is Some(_)
         assert_eq(listed, !in_row, msg="node \{node}, \{w} wide: its speed in its row \{in_row}, in its ⋯ \{listed}")
         if in_row {
           kept[if node { 1 } else { 0 }] += 1
@@ -255,6 +259,7 @@ test "both players, a desktop's on a narrow stage: its ⋯ lists the speeds only
       }
     }
   }
+  set_words(prev)
   // (a single file's player has none of a folder's keys: at none of these widths does 保存此帧 leave while the speed
   // stays, for either; where one does, its ⋯ lists no speeds, as asserted above)
   ignore(kept)

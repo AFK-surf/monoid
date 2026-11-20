@@ -1,10 +1,11 @@
 // The words people read, in their language (web/ui i18n.ts): the catalog's (client/i18n/catalog), as the app says them
-// (set_words: its `fill`, told once as it starts). With none told, a key is said as it is.
+// (set_words: its `fill`, told once as it starts). With none told, `default_words` answers in the current `language()`
+// ("zh" or "en") for the library's own keys, falling back to the raw key for unknown keys.
 
 ///|
 /// How a key's words are said, its `{name}`s put in from the pairs given, as the app said it.
 // kept across runs: what the app says once as it starts (set_words), the same for every run of it
-let words_of : Ref[(String, Array[(String, String)]) -> String] = Ref(fn(key, _) { key })
+let words_of : Ref[(String, Array[(String, String)]) -> String] = Ref(default_words)
 
 ///|
 /// How the words are said from now on (the web's addWords and setLang: the app's catalog in its language).

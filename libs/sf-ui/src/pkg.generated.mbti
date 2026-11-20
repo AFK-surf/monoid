@@ -544,6 +544,8 @@ pub let diff_mark_in : @ui.Space
 
 pub fn dclamp(Double, Double, Double) -> Double
 
+pub fn default_words(String, Array[(String, String)]) -> String
+
 pub fn disc_key_node(@view.View, () -> String, () -> Unit, side~ : Double, ground~ : () -> Int64, (@view.View) -> Unit) -> Unit
 
 #callsite(autofill(loc))
