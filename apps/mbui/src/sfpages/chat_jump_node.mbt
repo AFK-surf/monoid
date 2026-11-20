@@ -1264,8 +1264,10 @@ fn chat_rail_node(
         )
         hover_close.val = hand.close
         // (by the press pointed at, not `within`: that marks the press as only pointing (View::points), which takes its
-        // presses, its tap gesture and its hand cursor away)
-        @sf.tip_node(tips, press, pointed_day, side=Left, at_pointer=true) |> ignore
+        // presses, its tap gesture and its hand cursor away; beside the pointer, as far left of it as the longest tick
+        // reaches in from the press's right and a little more, so from wherever in the press the pointer is it covers
+        // no tick)
+        @sf.tip_node(tips, press, pointed_day, side=Left, gap=rail_day_tip_gap, at_pointer=true) |> ignore
         let closer_id = rail_hover_register(hand.close)
         press
         // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
@@ -1371,9 +1373,15 @@ fn chat_rail_node(
 let rail_day_gap : @ui.Style = @ui.css("w=Full align=AEnd justify=JCenter")
 
 ///|
-/// The dot in a day's gap: S1 round, in the muted ink, so a day starting reads as one and not as ticks gone missing.
+/// The dot in a day's gap: S1 round, in the ticks' own colour (the line's), so a day starting reads as one and not as
+/// ticks gone missing, and no louder than the ticks it parts.
 // kept across runs: a value (no field of it changes)
-let rail_day_dot : @ui.Style = @ui.css("w=S1 h=S1 radius=Full bg=Muted")
+let rail_day_dot : @ui.Style = @ui.css("w=S1 h=S1 radius=Full bg=Line")
+
+///|
+/// How far left of the pointer a day's tip stands: past the longest tick (tick_long, rail_pad in from the press's
+/// right) and S1 more, so it covers none of the rail's ticks.
+let rail_day_tip_gap : Double = tick_long + rail_pad.px() + @ui.Space::px(S1)
 
 ///|
 /// The rail's press (rail_press's): 44 wide and 44 tall at least, its ticks one under another in its middle at its
