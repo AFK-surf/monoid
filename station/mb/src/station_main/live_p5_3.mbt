@@ -470,10 +470,14 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
         .prune_orphan_rooms(num(0, "now").unwrap_or(wall_ms().to_double()))
         .map(jstr),
       )
-    "upkeep.pruneOrphanTranscripts" =>
+    "upkeep.relieveOrphanTranscripts" =>
       Json::array(
         self.upkeep
-        .prune_orphan_transcripts(num(0, "now").unwrap_or(wall_ms().to_double()))
+        .relieve_orphan_transcripts(
+          num(0, "now").unwrap_or(wall_ms().to_double()),
+          num(1, "low").unwrap_or(p53_disk_low_bytes),
+          full=at(2, "full") is True,
+        )
         .map(jstr),
       )
     "upkeep.relieveRepos" =>

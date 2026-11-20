@@ -90,7 +90,7 @@ import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { cleanIdleRebuildable, expireArchived, packUnfinishedArchived, relieveArchived, relieveIdleRebuildable, relieveRepos, startAutoArchiveTimer } from "./lifecycle.ts";
+import { cleanIdleRebuildable, expireArchived, packUnfinishedArchived, relieveLowDiskFull, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -983,22 +983,21 @@ export const AgentsLive = (control: Control) =>
       upkeep.start();
 
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
-      // stations' tasks not in use; low, then idle unarchived rebuildable dirs, then archived workspaces before their
-      // time, then unreferenced shared clones (ops/disk.ts).
+      // stations' tasks not in use; below low, runs a full pass across idle unarchived rebuildables, archived
+      // workspaces, orphan UUID transcripts, and unreferenced shared clones (throttled to once per RELIEVE_FULL_EVERY_MS).
       const relieving = async () => {
         const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
         try {
+          const now = hub.now();
           const disk = await diskOf(data).catch(() => null);
           tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
           if (tier !== "ok") {
-            await upkeep.renewables(hub.now());
-            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
+            await upkeep.renewables(now);
+            await remote.relieve(now, disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
           const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
-          if ((await free()) < low) await relieveIdleRebuildable(hub, free, low);
-          if ((await free()) < low) await relieveArchived(hub, free, low);
-          if ((await free()) < low) await relieveRepos(hub, free, low);
+          await relieveLowDiskFull(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }

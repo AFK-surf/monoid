@@ -21,10 +21,10 @@
 import { Clock } from "effect";
 import { type Dirent } from "node:fs";
 import { lstat, open, readdir, readFile, realpath, rename, rm, stat, statfs, truncate } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
-import { Fibers } from "./fibers.ts";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { Fibers, wall } from "./fibers.ts";
 import { clean, inside, within } from "./paths.ts";
-import { walkBounded } from "./walk.ts";
+import { walkBounded, yieldLoop } from "./walk.ts";
 import { log } from "./log.ts";
 import { collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
 
@@ -67,14 +67,18 @@ export const BOARD_FILES_GONE_MS = DAY;
 /// An orphaned session directory under `<data>/sessions/<connect>/<room>` with no session row and no active job
 /// older than this is removed by Upkeep (well past any new-session or handover-in creation window).
 export const ORPHAN_ROOM_MS = DAY;
-/// An orphaned Claude or Codex transcript under `<data>` unreferenced by any session row (including archived)
-/// older than this is removed by Upkeep.
-export const ORPHAN_TRANSCRIPT_MS = 3 * DAY;
-/// Per-round caps for orphan cleanup in Upkeep.
+/// How often Upkeep scans for orphaned session rooms (once per day; also runs on the first round after startup).
+export const ORPHAN_ROOM_EVERY_MS = DAY;
+/// Per-round caps for orphan room cleanup in Upkeep.
 export const ORPHAN_ROOM_MAX_PER_ROUND = 32;
+export const ORPHAN_WALK_MAX_MS = 10_000;
+/// An orphaned Claude or Codex UUID transcript under `<data>` unreferenced by any session row (including archived)
+/// older than 7 days may be reclaimed when disk is below `diskLow`.
+export const ORPHAN_TRANSCRIPT_MS = 7 * DAY;
+/// Minimum interval between full low-disk reclamation passes (30 minutes).
+export const RELIEVE_FULL_EVERY_MS = 30 * 60_000;
 export const ORPHAN_TRANSCRIPT_MAX_PER_ROUND = 64;
 export const ORPHAN_WALK_MAX_ENTRIES = 10_000;
-export const ORPHAN_WALK_MAX_MS = 10_000;
 /// How often the upkeep runs, and how long after the station starts it first does.
 export const UPKEEP_EVERY_MS = 10 * 60_000;
 export const UPKEEP_FIRST_MS = 2 * 60_000;
@@ -115,13 +119,13 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "shells", class: "authoritative", what: "the agents' shells' settings" },
   { name: "shell", class: "authoritative", what: "the agents' shell's settings" },
   // What is a person's, or the workspace's.
-  { name: "transcripts", class: "authoritative", what: "the agents' transcripts", reclaim: "sessions/lifecycle.ts deleteSession (exclusive), Upkeep pruneOrphanTranscripts" },
+  { name: "transcripts", class: "authoritative", what: "the agents' transcripts", reclaim: "sessions/lifecycle.ts deleteSession (exclusive), ops/storage.ts relieveOrphanTranscripts (low disk only)" },
   { name: "transcripts-segmented", class: "authoritative", what: "transcripts put away in segments (sessions/cold.ts)" },
   { name: "sessions", class: "session-bound", what: "each chat's workspace", reclaim: "sessions/lifecycle.ts expireArchived, packUnfinishedArchived, cleanIdleRebuildable, relieveIdleRebuildable, relieveArchived; Upkeep pruneOrphanRooms" },
   { name: "archive", class: "authoritative", what: "chats put away (store/archive.ts)" },
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
   { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)", maxAgeMs: BOARD_FILES_GONE_MS, reclaim: "Upkeep goneBoardFiles" },
-  { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)", reclaim: "sessions/lifecycle.ts deleteSession (exclusive transcripts), Upkeep pruneOrphanTranscripts" },
+  { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)", reclaim: "sessions/lifecycle.ts deleteSession (exclusive transcripts), ops/storage.ts relieveOrphanTranscripts (low disk only)" },
   { name: "repos", class: "session-bound", what: "the repositories' shared clones", reclaim: "sessions/lifecycle.ts relieveRepos (low disk only)" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },
   { name: "share", class: "authoritative", what: "the memory's versions shared between stations" },
@@ -354,7 +358,6 @@ export async function diskOf(path: string): Promise<{ free: number; total: numbe
 export type OrphanStore = {
   sessionPathsPage(afterKey: string, limit?: number): { key: string; workspace: string; cwd: string | null; archivedAt: number | null }[];
   jobsUp(): { cwd: string }[];
-  transcriptReferenced(runtime: string, id: string, except: string): boolean;
 };
 
 /// Whether any incoming handover (`<data>/replica/handover/in/*.json`) is currently in the `coming` state
@@ -391,37 +394,46 @@ export async function pruneOrphanRooms(
   const realSessions = await realpath(rawSessions).catch(() => null);
   if (realSessions === null) return [];
 
-  const refs = new Set<string>();
-  const addRef = async (p: string | null | undefined) => {
-    if (!p) return;
-    refs.add(clean(p));
-    const r = await realpath(p).catch(() => null);
-    if (r !== null) refs.add(r);
+  // Map every session's workspace to its parent room directory (literal + realpath) for O(1) Set lookup;
+  // keep active jobs' cwds in a small array for `within` checks.
+  const roomRefs = new Set<string>();
+  const jobCwds: string[] = [];
+  const addRoomRef = async (workspace: string | null | undefined) => {
+    if (!workspace) return;
+    const room = clean(dirname(workspace));
+    roomRefs.add(room);
+    const realRoom = await realpath(room).catch(() => null);
+    if (realRoom !== null) roomRefs.add(realRoom);
   };
   try {
     let afterKey = "";
     for (;;) {
       const page = store.sessionPathsPage(afterKey);
-      for (const s of page) await addRef(s.workspace);
+      for (const s of page) await addRoomRef(s.workspace);
       if (page.length === 0) break;
       afterKey = page[page.length - 1]!.key;
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await yieldLoop();
     }
-    for (const job of store.jobsUp()) await addRef(job.cwd);
+    for (const job of store.jobsUp()) {
+      if (!job.cwd) continue;
+      jobCwds.push(clean(job.cwd));
+      const realCwd = await realpath(job.cwd).catch(() => null);
+      if (realCwd !== null) jobCwds.push(realCwd);
+    }
   } catch {
     return [];
   }
 
-  const deadline = Date.now() + maxDurationMs;
+  const deadline = wall.now() + maxDurationMs;
   const gone: string[] = [];
   for (const connect of await readdir(realSessions).catch(() => [] as string[])) {
-    if (gone.length >= limit || Date.now() >= deadline) break;
+    if (gone.length >= limit || wall.now() >= deadline) break;
     if (connect.startsWith(".")) continue;
     const connectPath = join(realSessions, connect);
     const connectSt = await lstat(connectPath).catch(() => null);
     if (connectSt === null || !connectSt.isDirectory() || connectSt.isSymbolicLink()) continue;
     for (const room of await readdir(connectPath).catch(() => [] as string[])) {
-      if (gone.length >= limit || Date.now() >= deadline) break;
+      if (gone.length >= limit || wall.now() >= deadline) break;
       if (room.startsWith(".")) continue;
       const roomPath = join(connectPath, room);
       const rawRoomPath = join(rawSessions, connect, room);
@@ -430,14 +442,15 @@ export async function pruneOrphanRooms(
       const wsSt = await lstat(join(roomPath, "workspace")).catch(() => null);
       const mtimeMs = Math.max(roomSt.mtimeMs, wsSt?.mtimeMs ?? 0);
       if (now - mtimeMs < minAgeMs) continue;
-      let referenced = false;
-      for (const ref of refs) {
-        if (within(ref, roomPath) || within(ref, rawRoomPath)) {
-          referenced = true;
+      if (roomRefs.has(roomPath) || roomRefs.has(rawRoomPath)) continue;
+      let jobReferenced = false;
+      for (const cwd of jobCwds) {
+        if (within(cwd, roomPath) || within(cwd, rawRoomPath)) {
+          jobReferenced = true;
           break;
         }
       }
-      if (referenced) continue;
+      if (jobReferenced) continue;
       const worktrees = await collectWorktreeRegistrations(roomPath).catch(() => []);
       await unlockWorktrees(roomPath).catch(() => undefined);
       const removed = await rm(roomPath, { recursive: true, force: true }).then(() => true, () => false);
@@ -450,32 +463,65 @@ export async function pruneOrphanRooms(
   return gone;
 }
 
-const CODEX_ROLLOUT_RE = /(?:^|-)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
+export type OrphanTranscriptStore = {
+  transcriptReferenced(runtime: string, id: string, except: string): boolean;
+};
 
-function claudeTranscriptId(fileName: string): string | null {
+const UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODEX_UUID_RE = /(?:^|-)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
+
+function claudeUuidId(fileName: string): string | null {
   const base = fileName.endsWith(".zst") ? fileName.slice(0, -4) : fileName;
   if (!base.endsWith(".jsonl")) return null;
   const stem = base.slice(0, -6);
-  return stem.length > 0 && !stem.includes("/") && !stem.includes("\\") ? stem : null;
+  return UUID_EXACT_RE.test(stem) ? stem : null;
 }
 
-function codexTranscriptId(fileName: string): string | null {
-  const m = CODEX_ROLLOUT_RE.exec(fileName);
+function codexUuidId(fileName: string): string | null {
+  const m = CODEX_UUID_RE.exec(fileName);
   return m ? m[1]! : null;
 }
 
-const otherRuntimesLogged = new Set<string>();
+/// Bounded scan of a directory's newest mtime and total bytes. Returns null if the walk is truncated
+/// or fails (caller treats it as too fresh and skips deletion).
+async function boundedDirAgeAndBytes(dir: string, maxDurationMs: number): Promise<{ newestMs: number; bytes: number } | null> {
+  const rootSt = await lstat(dir).catch(() => null);
+  if (rootSt === null || !rootSt.isDirectory() || rootSt.isSymbolicLink()) return null;
+  let newestMs = rootSt.mtimeMs;
+  let bytes = 0;
+  let failed = false;
+  const res = await walkBounded(
+    dir,
+    (e) => {
+      if (e.stats === null) {
+        failed = true;
+        return;
+      }
+      const m = Number(e.stats.mtimeMs);
+      if (m > newestMs) newestMs = m;
+      if (e.file) bytes += used({ blocks: Number(e.stats.blocks), size: Number(e.stats.size) });
+    },
+    { maxDepth: 16, maxEntries: 2_000, maxDurationMs: Math.max(100, Math.min(2_000, maxDurationMs)), stat: true },
+  );
+  if (failed || res.truncated) return null;
+  return { newestMs, bytes };
+}
 
-/// Removes orphaned Claude (`projects/<proj>/<id>.jsonl(.zst)` + `<id>/`) and Codex (`-<uuid>.jsonl(.zst)`)
-/// transcripts whose realpath is under `<data>` (`<data>/transcripts` and `<data>/homes/*`), unreferenced by any
-/// session row (including archived) in `runtime_sessions`/`sessions`, and older than `minAgeMs` (default 3 days).
-/// Other runtimes are left untouched and counted once in `log.info` on the first round.
-export async function pruneOrphanTranscripts(
+/// Low-disk reclamation of orphaned Claude (`<uuid>.jsonl(.zst)` + companion `<uuid>/`, or standalone `<uuid>/`
+/// with no sibling `.jsonl(.zst)`) and Codex (`-<uuid>.jsonl(.zst)`) transcripts under `<data>` (`<data>/transcripts`
+/// and `<data>/homes/*`), unreferenced by any session row (including archived) and older than `minAgeMs` (7 days).
+/// When `full` is true, reclaims all eligible items in the pass without stopping early when `free() >= low`;
+/// otherwise stops as soon as `free() >= low`. Never deletes non-UUID files or directories (e.g. Claude `memory/`).
+export async function relieveOrphanTranscripts(
   data: string,
   now: number,
-  store: OrphanStore,
-  options?: { minAgeMs?: number; limit?: number; maxEntries?: number; maxDurationMs?: number; logOtherOnce?: boolean },
+  store: OrphanTranscriptStore,
+  free: () => number | Promise<number>,
+  low: number,
+  options?: { minAgeMs?: number; limit?: number; maxEntries?: number; maxDurationMs?: number; full?: boolean },
 ): Promise<string[]> {
+  const full = options?.full === true;
+  if (!full && (await free()) >= low) return [];
   const minAgeMs = options?.minAgeMs ?? ORPHAN_TRANSCRIPT_MS;
   const limit = options?.limit ?? ORPHAN_TRANSCRIPT_MAX_PER_ROUND;
   const maxEntries = options?.maxEntries ?? ORPHAN_WALK_MAX_ENTRIES;
@@ -484,24 +530,21 @@ export async function pruneOrphanTranscripts(
   const realData = await realpath(data).catch(() => null);
   if (realData === null) return [];
 
-  const deadline = Date.now() + maxDurationMs;
+  const deadline = wall.now() + maxDurationMs;
   const gone: string[] = [];
-  const otherCounts: Record<string, number> = {};
-  const shouldLogOther = (options?.logOtherOnce ?? true) && !otherRuntimesLogged.has(realData);
+  const doneNow = async () => gone.length >= limit || wall.now() >= deadline || (!full && (await free()) >= low);
 
   const claudeRoots: string[] = [];
   const codexRoots: string[] = [];
-  const otherRoots: [string, string][] = [];
 
   const transcriptsDir = join(realData, "transcripts");
   for (const name of await readdir(transcriptsDir).catch(() => [] as string[])) {
-    if (name.startsWith(".")) continue;
+    if (name !== "claude" && name !== "codex") continue;
     const p = join(transcriptsDir, name);
     const st = await lstat(p).catch(() => null);
     if (st === null || !st.isDirectory() || st.isSymbolicLink()) continue;
     if (name === "claude") claudeRoots.push(p);
-    else if (name === "codex") codexRoots.push(p);
-    else if (shouldLogOther) otherRoots.push([name, p]);
+    else codexRoots.push(p);
   }
 
   const homesDir = join(realData, "homes");
@@ -527,27 +570,38 @@ export async function pruneOrphanTranscripts(
     return r !== null && inside(r, realData);
   };
 
-  // 1. Claude roots: <root>/<proj>/<id>.jsonl(.zst) and companion <root>/<proj>/<id>/
+  // 1. Claude roots: <root>/<proj>/<uuid>.jsonl(.zst) + companion <uuid>/, or standalone <uuid>/ without main file.
   for (const root of claudeRoots) {
-    if (gone.length >= limit || Date.now() >= deadline) break;
-    const candidates: { path: string; id: string; isDir: boolean; mtimeMs: number }[] = [];
+    if (await doneNow()) break;
+    const files: { path: string; parent: string; id: string; mtimeMs: number; bytes: number }[] = [];
+    const uuidDirs: { path: string; parent: string; id: string }[] = [];
+    const mainPresent = new Set<string>();
     await walkBounded(
       root,
       (e) => {
         if (e.depth !== 2 || e.stats === null || e.symlink) return;
-        const name = e.name;
-        const mtimeMs = Number(e.stats.mtimeMs);
+        const parent = dirname(e.path);
         if (e.file) {
-          const id = claudeTranscriptId(name);
-          if (id !== null) candidates.push({ path: e.path, id, isDir: false, mtimeMs });
-        } else if (e.directory && !name.startsWith(".")) {
-          candidates.push({ path: e.path, id: name, isDir: true, mtimeMs });
+          const id = claudeUuidId(e.name);
+          if (id !== null) {
+            mainPresent.add(`${parent}\0${id}`);
+            files.push({
+              path: e.path,
+              parent,
+              id,
+              mtimeMs: Number(e.stats.mtimeMs),
+              bytes: used({ blocks: Number(e.stats.blocks), size: Number(e.stats.size) }),
+            });
+          }
+        } else if (e.directory && UUID_EXACT_RE.test(e.name)) {
+          uuidDirs.push({ path: e.path, parent, id: e.name });
         }
       },
-      { maxDepth: 2, maxEntries, maxDurationMs: Math.max(100, deadline - Date.now()), stat: true },
+      { maxDepth: 2, maxEntries, maxDurationMs: Math.max(100, deadline - wall.now()), stat: true },
     );
-    for (const c of candidates) {
-      if (gone.length >= limit || Date.now() >= deadline) break;
+
+    for (const c of files) {
+      if (await doneNow()) break;
       if (now - c.mtimeMs < minAgeMs) continue;
       let referenced = true;
       try {
@@ -557,35 +611,70 @@ export async function pruneOrphanTranscripts(
       }
       if (referenced) continue;
       if (!(await safeInsideData(c.path))) continue;
-      const removed = await rm(c.path, { recursive: c.isDir, force: true }).then(() => true, () => false);
+      const removed = await rm(c.path, { force: true }).then(() => true, () => false);
       if (removed) {
-        gone.push(relative(realData, c.path));
-        if (!c.isDir) {
-          const compDir = join(c.path.slice(0, c.path.lastIndexOf(sep)), c.id);
-          const compSt = await lstat(compDir).catch(() => null);
-          if (compSt !== null && compSt.isDirectory() && !compSt.isSymbolicLink() && now - compSt.mtimeMs >= minAgeMs && (await safeInsideData(compDir))) {
-            await rm(compDir, { recursive: true, force: true }).catch(() => undefined);
+        const relPath = relative(realData, c.path);
+        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: c.bytes });
+        gone.push(relPath);
+        const compDir = join(c.parent, c.id);
+        if (await safeInsideData(compDir)) {
+          const info = await boundedDirAgeAndBytes(compDir, deadline - wall.now());
+          if (info !== null && now - info.newestMs >= minAgeMs) {
+            const dirRemoved = await rm(compDir, { recursive: true, force: true }).then(() => true, () => false);
+            if (dirRemoved) {
+              log.info("hub", "reclaimed orphan transcript", { path: relative(realData, compDir), runtime: "claude", bytes: info.bytes });
+            }
           }
         }
+      }
+    }
+
+    for (const d of uuidDirs) {
+      if (await doneNow()) break;
+      // Only standalone UUID dirs that have no sibling <uuid>.jsonl(.zst).
+      if (mainPresent.has(`${d.parent}\0${d.id}`)) continue;
+      let referenced = true;
+      try {
+        referenced = store.transcriptReferenced("claude", d.id, "");
+      } catch {
+        return gone;
+      }
+      if (referenced) continue;
+      if (!(await safeInsideData(d.path))) continue;
+      const info = await boundedDirAgeAndBytes(d.path, deadline - wall.now());
+      if (info === null || now - info.newestMs < minAgeMs) continue;
+      const removed = await rm(d.path, { recursive: true, force: true }).then(() => true, () => false);
+      if (removed) {
+        const relPath = relative(realData, d.path);
+        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: info.bytes });
+        gone.push(relPath);
       }
     }
   }
 
   // 2. Codex roots: <root>/.../*-<uuid>.jsonl(.zst)
   for (const root of codexRoots) {
-    if (gone.length >= limit || Date.now() >= deadline) break;
-    const candidates: { path: string; id: string; mtimeMs: number }[] = [];
+    if (await doneNow()) break;
+    const candidates: { path: string; id: string; mtimeMs: number; bytes: number }[] = [];
     await walkBounded(
       root,
       (e) => {
         if (!e.file || e.stats === null || e.symlink) return;
-        const id = codexTranscriptId(e.name);
-        if (id !== null) candidates.push({ path: e.path, id, mtimeMs: Number(e.stats.mtimeMs) });
+        const id = codexUuidId(e.name);
+        if (id !== null) {
+          candidates.push({
+            path: e.path,
+            id,
+            mtimeMs: Number(e.stats.mtimeMs),
+            bytes: used({ blocks: Number(e.stats.blocks), size: Number(e.stats.size) }),
+          });
+        }
       },
-      { maxDepth: 6, maxEntries, maxDurationMs: Math.max(100, deadline - Date.now()), stat: true },
+      { maxDepth: 6, maxEntries, maxDurationMs: Math.max(100, deadline - wall.now()), stat: true },
     );
+
     for (const c of candidates) {
-      if (gone.length >= limit || Date.now() >= deadline) break;
+      if (await doneNow()) break;
       if (now - c.mtimeMs < minAgeMs) continue;
       let referenced = true;
       try {
@@ -596,26 +685,11 @@ export async function pruneOrphanTranscripts(
       if (referenced) continue;
       if (!(await safeInsideData(c.path))) continue;
       const removed = await rm(c.path, { force: true }).then(() => true, () => false);
-      if (removed) gone.push(relative(realData, c.path));
-    }
-  }
-
-  // 3. Other runtimes: untouched, log count once on first round.
-  if (shouldLogOther) {
-    otherRuntimesLogged.add(realData);
-    for (const [runtime, root] of otherRoots) {
-      let count = 0;
-      await walkBounded(
-        root,
-        (e) => {
-          if (e.file) count++;
-        },
-        { maxDepth: 6, maxEntries: 2_000, maxDurationMs: 2_000 },
-      );
-      if (count > 0) otherCounts[runtime] = count;
-    }
-    if (Object.keys(otherCounts).length > 0) {
-      log.info("upkeep", "skipped orphan transcript check for other runtimes", { counts: otherCounts });
+      if (removed) {
+        const relPath = relative(realData, c.path);
+        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "codex", bytes: c.bytes });
+        gone.push(relPath);
+      }
     }
   }
 
@@ -634,7 +708,7 @@ export type UpkeepParts = {
   remote?: (now: number, disk: { free: number; total: number } | null) => Promise<unknown>;
   /// The database's log written into it waiting for the readers (read/pool.ts `checkpointHard`).
   checkpoint?: () => Promise<unknown>;
-  /// Store queries for pruning orphan session rooms and orphan transcripts under `<data>`.
+  /// Store queries for pruning orphan session rooms under `<data>/sessions`.
   orphans?: OrphanStore;
 };
 
@@ -644,6 +718,7 @@ export class Upkeep {
   readonly #parts: UpkeepParts;
   readonly #time: Fibers;
   #running: Promise<void> | null = null;
+  #lastOrphanRoomsAt: number | null = null;
 
   constructor(parts: UpkeepParts) {
     this.#parts = parts;
@@ -696,10 +771,10 @@ export class Upkeep {
     await this.#step("transcript marks", () => orphanMarks(join(data, "transcript-marks")));
     await this.#step("board files", () => goneBoardFiles(join(data, "board-files"), BOARD_FILES_GONE_MS, now));
     await this.#step("repo worktrees", () => pruneRepoWorktrees(data));
-    if (this.#parts.orphans) {
+    if (this.#parts.orphans && (this.#lastOrphanRoomsAt === null || now - this.#lastOrphanRoomsAt >= ORPHAN_ROOM_EVERY_MS)) {
+      this.#lastOrphanRoomsAt = now;
       const store = this.#parts.orphans;
       await this.#step("orphan session rooms", () => pruneOrphanRooms(data, now, store));
-      await this.#step("orphan transcripts", () => pruneOrphanTranscripts(data, now, store));
     }
   }
 

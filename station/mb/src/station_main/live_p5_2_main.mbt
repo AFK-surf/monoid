@@ -891,7 +891,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
         ),
       )
     "cold.cleanIdleRebuildable" =>
-      jn(
+      match
         self
         .storage()
         .clean_idle_rebuildable(
@@ -899,8 +899,10 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
             String(k) => k
             _ => s("key")
           },
-        ),
-      )
+        ) {
+        Some(freed) => jn(freed)
+        None => Json::null()
+      }
     "cold.holdsMore" =>
       jb(
         self
@@ -1190,6 +1192,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     "relieveIdleRebuildable" => {
       let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
       let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_low_ms)
+      let full = jfield(arg, "full") == Json::boolean(true)
       let prev_low = self.relieve_low_bytes
       match jnum_of(arg, "lowBytes") {
         Some(low) => self.relieve_low_bytes = Some(low)
@@ -1198,7 +1201,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       defer {
         self.relieve_low_bytes = prev_low
       }
-      ji(hub.relieve_idle_rebuildable(now, idle_ms~))
+      ji(hub.relieve_idle_rebuildable(now, idle_ms~, full~))
     }
     "packUnfinishedArchived" => {
       let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
@@ -1212,7 +1215,8 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       ji(hub.clean_idle_rebuildable(now, idle_ms~, limit~))
     }
     "relieveArchived" => {
-      hub.relieve_archived()
+      let full = jfield(arg, "full") == Json::boolean(true)
+      hub.relieve_archived(full~)
       Json::null()
     }
     "clones.active" => jb(clones_running.length() > 0)

@@ -1,5 +1,6 @@
-// Tests for PR A: periodic backfill of unfinished archive packs, idle unarchived rebuildable cleanup,
-// bounded idle-unarchived store query, and Upkeep orphan session room / orphan transcript pruning.
+// Tests for PR A: periodic backfill of unfinished archive packs (with cross-round cursor & check cap),
+// idle unarchived rebuildable cleanup (capped by measured count & memoized by last_active_at),
+// bounded idle-unarchived store query, and daily Upkeep orphan session room pruning.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -13,17 +14,22 @@ import {
   archive,
   cleanIdleRebuildable,
   packUnfinishedArchived,
+  relieveArchived,
   relieveIdleRebuildable,
+  relieveLowDiskFull,
 } from "../src/sessions/lifecycle.ts";
 import {
+  ORPHAN_ROOM_EVERY_MS,
   ORPHAN_ROOM_MS,
   ORPHAN_TRANSCRIPT_MS,
+  RELIEVE_FULL_EVERY_MS,
+  Upkeep,
   pruneOrphanRooms,
-  pruneOrphanTranscripts,
+  relieveOrphanTranscripts,
 } from "../src/ops/storage.ts";
 import { MANUAL, Store } from "../src/store/store.ts";
 import { claudeProject } from "./usage-counter-reference.ts";
-import { Rig, settle } from "./hub-fakes.ts";
+import { Rig, settle, testClock } from "./hub-fakes.ts";
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -95,27 +101,22 @@ describe("Item 1: periodic backfill of unfinished archive packing", () => {
       return ws;
     };
 
-    // 1. Session whose initial archive() pack fails transiently: lacks `cold` mark after archive()
     const wsFail = makeArchived("s-fail", now - 60_000);
-    // Trigger explicit archive (first pack throws), then keep its older archived_at timestamp
     archive(r.hub, "s-fail", true);
     await settle();
     r.store.db.prepare("UPDATE sessions SET archived_at = ? WHERE key = ?").run(now - 60_000, "s-fail");
     assert.ok(!existsSync(join(dirname(wsFail), "cold")), "initial failed pack left no cold mark");
 
-    // 2. Three more unfinished archived sessions to test per-round limit = 2
     const wsA = makeArchived("s-a", now - 50_000);
     const wsB = makeArchived("s-b", now - 40_000);
     const wsC = makeArchived("s-c", now - 30_000);
 
-    // 3. Archived session whose room is shared with a live session -> must NOT be packed
     const wsShared = makeArchived("s-shared", now - 20_000);
     r.store.insertSession({
       key: "s-live-sharer", connect: "cl", runtime: "claude", profile: "cc",
       workspace: wsShared, runtimeSessionId: null, token: "tok-sharer", createdAt: now, lastActiveAt: now,
     });
 
-    // 4. Archived session with an active job in its room -> must NOT be packed
     const wsJob = makeArchived("s-job", now - 10_000);
     r.store.insertJob({
       id: "j-active", sessionKey: "s-job", name: "dev", command: "sleep 60", cwd: wsJob,
@@ -123,7 +124,6 @@ describe("Item 1: periodic backfill of unfinished archive packing", () => {
       startedAt: now, endedAt: null, restarts: 0, log: join(data, "jobs", "j-active.log"), watch: false,
     });
 
-    // Round 1 with limit = 2: packs s-fail and s-a only
     const n1 = await packUnfinishedArchived(r.hub, now, 2);
     assert.equal(n1, 2);
     assert.deepEqual(packed, ["s-fail", "s-a"]);
@@ -132,7 +132,6 @@ describe("Item 1: periodic backfill of unfinished archive packing", () => {
     assert.ok(!existsSync(join(dirname(wsB), "cold")), "per-round limit deferred s-b");
     assert.ok(!existsSync(join(dirname(wsC), "cold")), "per-round limit deferred s-c");
 
-    // Round 2 with limit = 2: packs s-b and s-c; leaves s-shared and s-job untouched
     const n2 = await packUnfinishedArchived(r.hub, now, 2);
     assert.equal(n2, 2);
     assert.deepEqual(packed, ["s-fail", "s-a", "s-b", "s-c"]);
@@ -140,6 +139,60 @@ describe("Item 1: periodic backfill of unfinished archive packing", () => {
     assert.ok(existsSync(join(dirname(wsC), "cold")));
     assert.ok(!existsSync(join(dirname(wsShared), "cold")), "shared room must not be packed");
     assert.ok(!existsSync(join(dirname(wsJob), "cold")), "room with active job must not be packed");
+
+    await r.close();
+  });
+
+  test("cross-round cursor advances past persistently failing head sessions so later sessions still get packed", async () => {
+    const packed: string[] = [];
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        needsPack: (key) => coldRooms.needsPack(key),
+        pack: async (key) => {
+          if (key.startsWith("s-stuck")) throw new Error("persistent pack failure");
+          await coldRooms.pack(key);
+          packed.push(key);
+        },
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub);
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+
+    const add = (key: string, offsetMs: number) => {
+      const ws = join(data, "sessions", "cl", key, "workspace");
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(join(ws, "f.txt"), key);
+      r.store.insertSession({
+        key, connect: "cl", runtime: "claude", profile: "cc",
+        workspace: ws, runtimeSessionId: null, token: `tok-${key}`, createdAt: now - offsetMs, lastActiveAt: now - offsetMs,
+      });
+      r.store.setArchived(key, true, MANUAL);
+      r.store.db.prepare("UPDATE sessions SET archived_at = ? WHERE key = ?").run(now - offsetMs, key);
+      return ws;
+    };
+
+    const wsStuck1 = add("s-stuck-1", 40_000);
+    const wsStuck2 = add("s-stuck-2", 30_000);
+    const wsOk1 = add("s-ok-1", 20_000);
+    const wsOk2 = add("s-ok-2", 10_000);
+
+    // Round 1 (limit = 2): attempts s-stuck-1 and s-stuck-2 (both fail inside actor queue), cursor moves past s-stuck-2
+    const n1 = await packUnfinishedArchived(r.hub, now, 2);
+    assert.equal(n1, 2);
+    assert.deepEqual(packed, []);
+    assert.ok(!existsSync(join(dirname(wsStuck1), "cold")));
+    assert.ok(!existsSync(join(dirname(wsStuck2), "cold")));
+
+    // Round 2 (limit = 2): resumes past s-stuck-2 and packs s-ok-1 and s-ok-2
+    const n2 = await packUnfinishedArchived(r.hub, now, 2);
+    assert.equal(n2, 2);
+    assert.deepEqual(packed, ["s-ok-1", "s-ok-2"]);
+    assert.ok(existsSync(join(dirname(wsOk1), "cold")));
+    assert.ok(existsSync(join(dirname(wsOk2), "cold")));
 
     await r.close();
   });
@@ -223,9 +276,9 @@ describe("Item 2: clean rebuildable directories of idle unarchived sessions", ()
     const ws2h = makeIdle("s-2h", 2);
     const ws30m = makeIdle("s-30m", 0.5);
 
-    // Periodic pass (24h threshold): only s-25h cleaned
-    const cleaned = await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 16 });
-    assert.equal(cleaned, 1);
+    // Periodic pass (24h threshold): measures s-tracked (0 freed, git-tracked preserved) and s-25h (freed)
+    const measured1 = await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 16 });
+    assert.equal(measured1, 2);
     assert.ok(!existsSync(join(ws25h, "node_modules")), "25h idle node_modules removed");
     assert.ok(existsSync(join(ws25h, "src.ts")), "source file preserved");
     assert.ok(existsSync(join(ws25h, "untracked-note.txt")), "untracked file preserved");
@@ -237,14 +290,8 @@ describe("Item 2: clean rebuildable directories of idle unarchived sessions", ()
     assert.ok(existsSync(join(ws2h, "node_modules")), "2h idle preserved on normal pass");
     assert.ok(existsSync(join(ws30m, "node_modules")), "30m idle preserved");
 
-    // Low-disk pass (1h threshold): cleans s-23h (oldest) and s-2h, preserves s-30m
-    let fakeFree = 100;
-    const relieved = await relieveIdleRebuildable(
-      r.hub,
-      () => fakeFree,
-      1000,
-      IDLE_REBUILD_LOW_MS,
-    );
+    // Low-disk pass (1h threshold): skips already-measured s-25h & s-tracked; cleans s-23h and s-2h; preserves s-30m
+    const relieved = await relieveIdleRebuildable(r.hub, () => 100, 1000, IDLE_REBUILD_LOW_MS);
     assert.equal(relieved, 2);
     assert.ok(!existsSync(join(ws23h, "node_modules")), "23h idle cleaned on low disk");
     assert.ok(!existsSync(join(ws2h, "node_modules")), "2h idle cleaned on low disk");
@@ -255,9 +302,63 @@ describe("Item 2: clean rebuildable directories of idle unarchived sessions", ()
 
     await r.close();
   });
+
+  test("memoizes measured sessions by lastActiveAt across rounds and re-measures after new activity", async () => {
+    const measuredKeys: string[] = [];
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        cleanIdleRebuildable: async (key) => {
+          const res = await coldRooms.cleanIdleRebuildable(key);
+          if (res !== null) measuredKeys.push(key);
+          return res;
+        },
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub);
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const HOUR = 3_600_000;
+
+    const ws = join(data, "sessions", "cl", "s-memo", "workspace");
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, "index.ts"), "export {};\n");
+    const firstActive = now - 30 * HOUR;
+    r.store.insertSession({
+      key: "s-memo", connect: "cl", runtime: "claude", profile: "cc",
+      workspace: ws, runtimeSessionId: null, token: "tok-memo", createdAt: firstActive, lastActiveAt: firstActive,
+    });
+
+    // Round 1: measures s-memo once (0 bytes freed, still counts toward cap and gets memoized)
+    assert.equal(await cleanIdleRebuildable(r.hub, now, { idleMs: IDLE_REBUILD_MS, limit: 1 }), 1);
+    assert.deepEqual(measuredKeys, ["s-memo"]);
+
+    // Round 2 (same lastActiveAt): skipped — NOT measured again!
+    assert.equal(await cleanIdleRebuildable(r.hub, now + HOUR, { idleMs: IDLE_REBUILD_MS, limit: 1 }), 0);
+    assert.deepEqual(measuredKeys, ["s-memo"]);
+
+    // Low-disk pass (same lastActiveAt): shares memo — also NOT measured again!
+    assert.equal(await relieveIdleRebuildable(r.hub, () => 0, 1000, IDLE_REBUILD_LOW_MS), 0);
+    assert.deepEqual(measuredKeys, ["s-memo"]);
+
+    // Session becomes active again (last_active_at updates) and grows node_modules, then idles >24h again
+    const secondActive = now + 2 * HOUR;
+    r.store.db.prepare("UPDATE sessions SET last_active_at = ? WHERE key = ?").run(secondActive, "s-memo");
+    mkdirSync(join(ws, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(join(ws, "node_modules", "pkg", "a.js"), "1\n".repeat(50));
+
+    assert.equal(await cleanIdleRebuildable(r.hub, secondActive + 25 * HOUR, { idleMs: IDLE_REBUILD_MS, limit: 1 }), 1);
+    assert.deepEqual(measuredKeys, ["s-memo", "s-memo"]);
+    assert.ok(!existsSync(join(ws, "node_modules")), "re-measured and cleaned after new activity");
+
+    await r.close();
+  });
 });
 
-describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => {
+describe("Item 3: orphan session rooms in Upkeep", () => {
   test("prunes >24h orphan rooms with worktree registrations while preserving session-backed, <24h, active-job, and outside-<data> dirs", async () => {
     const data = fresh("item3-rooms");
     const external = fresh("item3-ext");
@@ -265,7 +366,6 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
     const now = 1_800_000_000_000;
     const HOUR = 3_600_000;
 
-    // Shared repo with a worktree inside the orphan room
     const repo = join(data, "repos", "demo");
     mkdirSync(repo, { recursive: true });
     git(repo, ["init", "-b", "main"]);
@@ -273,7 +373,6 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
     git(repo, ["add", "README.md"]);
     git(repo, ["commit", "-m", "init"]);
 
-    // 1. Old orphan room (25h) with linked git worktree
     const oldOrphanRoom = join(data, "sessions", "cl", "orphan-old");
     const oldOrphanWs = join(oldOrphanRoom, "workspace");
     mkdirSync(oldOrphanWs, { recursive: true });
@@ -281,13 +380,11 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
     setMtime(oldOrphanWs, now - 25 * HOUR);
     setMtime(oldOrphanRoom, now - 25 * HOUR);
 
-    // 2. Fresh orphan room (23h) -> must be preserved
     const freshOrphanRoom = join(data, "sessions", "cl", "orphan-fresh");
     mkdirSync(join(freshOrphanRoom, "workspace"), { recursive: true });
     setMtime(join(freshOrphanRoom, "workspace"), now - 23 * HOUR);
     setMtime(freshOrphanRoom, now - 23 * HOUR);
 
-    // 3. Old room backed by a session row -> must be preserved
     const liveRoom = join(data, "sessions", "cl", "live-room");
     const liveWs = join(liveRoom, "workspace");
     mkdirSync(liveWs, { recursive: true });
@@ -298,7 +395,6 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
       workspace: liveWs, runtimeSessionId: null, token: "tok-live", createdAt: now - 48 * HOUR, lastActiveAt: now - 48 * HOUR,
     });
 
-    // 4. Old orphan room with an active job -> must be preserved
     const jobRoom = join(data, "sessions", "cl", "job-room");
     const jobWs = join(jobRoom, "workspace");
     mkdirSync(jobWs, { recursive: true });
@@ -310,7 +406,6 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
       startedAt: now, endedAt: null, restarts: 0, log: join(data, "jobs", "j-orphan.log"), watch: false,
     });
 
-    // 5. Symlink in <data>/sessions pointing outside <data> -> must NOT be followed or deleted
     const extTarget = join(external, "outside-dir");
     mkdirSync(join(extTarget, "room", "workspace"), { recursive: true });
     writeFileSync(join(extTarget, "room", "workspace", "keep.txt"), "keep\n");
@@ -329,105 +424,234 @@ describe("Item 3: orphan session rooms and orphan transcripts in Upkeep", () => 
     store.close();
   });
 
-  test("prunes >3d unreferenced Claude and Codex transcripts under <data> while preserving referenced (incl. archived), <3d, and outside-<data> files", async () => {
-    const data = fresh("item3-transcripts");
-    const external = fresh("item3-tx-ext");
+  test("Upkeep runs pruneOrphanRooms on first round, skips within 24h, and runs again after ORPHAN_ROOM_EVERY_MS", async () => {
+    const data = fresh("item3-cadence");
+    const store = Store.open(join(data, "stillfail.db"));
+    const tc = testClock();
+    await tc.adjust(1_800_000_000_000);
+    const t0 = tc.clock.currentTimeMillisUnsafe();
+    const HOUR = 3_600_000;
+
+    const r1 = join(data, "sessions", "cl", "orphan-1");
+    mkdirSync(join(r1, "workspace"), { recursive: true });
+    setMtime(join(r1, "workspace"), t0 - 25 * HOUR);
+    setMtime(r1, t0 - 25 * HOUR);
+
+    const upkeep = new Upkeep({ data, clock: tc.clock, orphans: store });
+    await upkeep.run();
+    assert.ok(!existsSync(r1), "first round pruned orphan-1");
+
+    // Create another >24h orphan room 1h later: Upkeep skips within ORPHAN_ROOM_EVERY_MS
+    await tc.adjust(HOUR);
+    const t1 = tc.clock.currentTimeMillisUnsafe();
+    const r2 = join(data, "sessions", "cl", "orphan-2");
+    mkdirSync(join(r2, "workspace"), { recursive: true });
+    setMtime(join(r2, "workspace"), t1 - 25 * HOUR);
+    setMtime(r2, t1 - 25 * HOUR);
+    await upkeep.run();
+    assert.ok(existsSync(r2), "skipped within 24h cadence");
+
+    // Advance past ORPHAN_ROOM_EVERY_MS: Upkeep runs orphan room scan again
+    await tc.adjust(ORPHAN_ROOM_EVERY_MS);
+    await upkeep.run();
+    assert.ok(!existsSync(r2), "pruned once 24h cadence elapsed");
+
+    await upkeep.close();
+    store.close();
+  });
+});
+
+describe("Item 4: low-disk orphan UUID transcripts & full low-disk pass with 30m cooldown", () => {
+  test("relieveOrphanTranscripts deletes only >7d unreferenced UUID transcripts & companion/standalone UUID dirs under <data>, preserving memory/, non-UUIDs, <7d, fresh child in UUID dir, archived refs, and outside-<data>", async () => {
+    const data = fresh("item4-tx");
+    const external = fresh("item4-tx-ext");
     const store = Store.open(join(data, "stillfail.db"));
     const now = 1_800_000_000_000;
     const DAY = 24 * 3_600_000;
 
-    // Session referencing claude "ref-archived-id" (ARCHIVED) and codex UUID
-    const refCodexId = "11111111-1111-4111-8111-111111111111";
-    const orphanCodexOld = "22222222-2222-4222-8222-222222222222";
-    const orphanCodexNew = "33333333-3333-4333-8333-333333333333";
+    const uArchived = "11111111-1111-4111-8111-111111111111";
+    const uOrphanOld = "22222222-2222-4222-8222-222222222222";
+    const uOrphanNew = "33333333-3333-4333-8333-333333333333";
+    const uStandaloneOld = "44444444-4444-4444-8444-444444444444";
+    const uStandaloneFreshChild = "55555555-5555-4555-8555-555555555555";
+    const uCodexOld = "66666666-6666-4666-8666-666666666666";
+    const uCodexNew = "77777777-7777-4777-8777-777777777777";
+    const uExternal = "88888888-8888-4888-8888-888888888888";
 
     const wsArch = join(data, "sessions", "cl", "s-arch", "workspace");
     mkdirSync(wsArch, { recursive: true });
     store.insertSession({
       key: "s-arch", connect: "cl", runtime: "claude", profile: "cc",
-      workspace: wsArch, runtimeSessionId: "ref-archived-id", token: "tok-arch", createdAt: now - 10 * DAY, lastActiveAt: now - 10 * DAY,
+      workspace: wsArch, runtimeSessionId: uArchived, token: "tok-arch", createdAt: now - 10 * DAY, lastActiveAt: now - 10 * DAY,
     });
-    store.ranIn("s-arch", "ref-archived-id", "cc");
+    store.ranIn("s-arch", uArchived, "cc");
     store.setArchived("s-arch", true, MANUAL);
-    store.db.prepare("UPDATE sessions SET archived_at = ? WHERE key = ?").run(now - 5 * DAY, "s-arch");
-
-    store.insertSession({
-      key: "s-codex", connect: "cl", runtime: "codex", profile: "cx",
-      workspace: wsArch, runtimeSessionId: refCodexId, token: "tok-cx", createdAt: now - 10 * DAY, lastActiveAt: now - 10 * DAY,
-    });
-    store.ranIn("s-codex", refCodexId, "cx");
 
     const proj = claudeProject(wsArch);
-    const claudeTxDir = join(data, "transcripts", "claude", proj);
-    mkdirSync(claudeTxDir, { recursive: true });
+    const claudeDir = join(data, "transcripts", "claude", proj);
+    mkdirSync(claudeDir, { recursive: true });
 
-    // 1. Referenced by archived session (4d old) -> MUST keep
-    const refClaude = join(claudeTxDir, "ref-archived-id.jsonl");
-    writeFileSync(refClaude, "{}\n");
-    setMtime(refClaude, now - 4 * DAY);
+    // 1. projects/<proj>/memory/ with 8-day-old file -> MUST NEVER delete
+    const memoryDir = join(claudeDir, "memory");
+    mkdirSync(memoryDir, { recursive: true });
+    const memoryFile = join(memoryDir, "MEMORY.md");
+    writeFileSync(memoryFile, "# agent memory\n");
+    setMtime(memoryFile, now - 8 * DAY);
+    setMtime(memoryDir, now - 8 * DAY);
 
-    // 2. Orphan Claude (2d old) -> MUST keep
-    const newOrphanClaude = join(claudeTxDir, "orphan-2d.jsonl");
-    writeFileSync(newOrphanClaude, "{}\n");
-    setMtime(newOrphanClaude, now - 2 * DAY);
+    // 2. Non-UUID .jsonl files (8d old) -> MUST NEVER delete
+    const nonUuidFile = join(claudeDir, "notes.jsonl");
+    const agentFile = join(claudeDir, "agent-a1b2c3.jsonl");
+    writeFileSync(nonUuidFile, "{}\n");
+    writeFileSync(agentFile, "{}\n");
+    setMtime(nonUuidFile, now - 8 * DAY);
+    setMtime(agentFile, now - 8 * DAY);
 
-    // 3. Orphan Claude (4d old) + companion <id>/tool-results/ dir -> MUST delete
-    const oldOrphanClaude = join(claudeTxDir, "orphan-4d.jsonl");
-    const oldOrphanClaudeDir = join(claudeTxDir, "orphan-4d");
-    mkdirSync(join(oldOrphanClaudeDir, "tool-results"), { recursive: true });
-    writeFileSync(oldOrphanClaude, "{}\n");
-    writeFileSync(join(oldOrphanClaudeDir, "tool-results", "a.txt"), "out\n");
-    setMtime(oldOrphanClaude, now - 4 * DAY);
-    setMtime(oldOrphanClaudeDir, now - 4 * DAY);
+    // 3. 8d unreferenced UUID .jsonl + <uuid>/tool-results/x.txt -> MUST delete
+    const oldUuidFile = join(claudeDir, `${uOrphanOld}.jsonl`);
+    const oldUuidDir = join(claudeDir, uOrphanOld);
+    mkdirSync(join(oldUuidDir, "tool-results"), { recursive: true });
+    writeFileSync(oldUuidFile, "{}\n");
+    writeFileSync(join(oldUuidDir, "tool-results", "x.txt"), "out\n");
+    setMtime(oldUuidFile, now - 8 * DAY);
+    setMtime(join(oldUuidDir, "tool-results", "x.txt"), now - 8 * DAY);
+    setMtime(join(oldUuidDir, "tool-results"), now - 8 * DAY);
+    setMtime(oldUuidDir, now - 8 * DAY);
 
-    // 4. Orphan Claude .zst under <data>/homes/cc/projects/<proj>/ (4d old) -> MUST delete
-    const homeClaudeDir = join(data, "homes", "cc", "projects", proj);
-    mkdirSync(homeClaudeDir, { recursive: true });
-    const homeOrphanZst = join(homeClaudeDir, "orphan-home-4d.jsonl.zst");
-    writeFileSync(homeOrphanZst, "zst");
-    setMtime(homeOrphanZst, now - 4 * DAY);
+    // 4. 6d unreferenced UUID .jsonl -> MUST keep (<7d)
+    const newUuidFile = join(claudeDir, `${uOrphanNew}.jsonl`);
+    writeFileSync(newUuidFile, "{}\n");
+    setMtime(newUuidFile, now - 6 * DAY);
 
-    // 5. Codex rollouts under <data>/homes/cx/sessions/2026/11/16/
-    const codexDir = join(data, "homes", "cx", "sessions", "2026", "11", "16");
+    // 5. 8d UUID referenced by archived session -> MUST keep
+    const archUuidFile = join(claudeDir, `${uArchived}.jsonl`);
+    writeFileSync(archUuidFile, "{}\n");
+    setMtime(archUuidFile, now - 8 * DAY);
+
+    // 6. Standalone 8d <uuid>/ with no main file -> MUST delete
+    const standaloneOldDir = join(claudeDir, uStandaloneOld);
+    mkdirSync(join(standaloneOldDir, "tool-results"), { recursive: true });
+    writeFileSync(join(standaloneOldDir, "tool-results", "old.txt"), "old\n");
+    setMtime(join(standaloneOldDir, "tool-results", "old.txt"), now - 8 * DAY);
+    setMtime(join(standaloneOldDir, "tool-results"), now - 8 * DAY);
+    setMtime(standaloneOldDir, now - 8 * DAY);
+
+    // 7. Standalone <uuid>/ whose dir mtime is 8d old, but contains a 1d-old file -> MUST keep
+    const standaloneFreshDir = join(claudeDir, uStandaloneFreshChild);
+    mkdirSync(join(standaloneFreshDir, "tool-results"), { recursive: true });
+    const freshChild = join(standaloneFreshDir, "tool-results", "recent.txt");
+    writeFileSync(freshChild, "recent\n");
+    setMtime(freshChild, now - 1 * DAY);
+    setMtime(standaloneFreshDir, now - 8 * DAY);
+
+    // 8. Codex rollouts (8d old -> delete, 6d old -> keep)
+    const codexDir = join(data, "homes", "cx", "sessions", "2026", "11", "10");
     mkdirSync(codexDir, { recursive: true });
-    const refCodexFile = join(codexDir, `rollout-2026-11-16T00-00-00-${refCodexId}.jsonl`);
-    const oldCodexFile = join(codexDir, `rollout-2026-11-16T00-00-00-${orphanCodexOld}.jsonl`);
-    const newCodexFile = join(codexDir, `rollout-2026-11-18T00-00-00-${orphanCodexNew}.jsonl`);
-    writeFileSync(refCodexFile, "{}\n");
-    writeFileSync(oldCodexFile, "{}\n");
-    writeFileSync(newCodexFile, "{}\n");
-    setMtime(refCodexFile, now - 4 * DAY);
-    setMtime(oldCodexFile, now - 4 * DAY);
-    setMtime(newCodexFile, now - 2 * DAY);
+    const oldCodex = join(codexDir, `rollout-2026-11-10T00-00-00-${uCodexOld}.jsonl`);
+    const newCodex = join(codexDir, `rollout-2026-11-14T00-00-00-${uCodexNew}.jsonl`);
+    writeFileSync(oldCodex, "{}\n");
+    writeFileSync(newCodex, "{}\n");
+    setMtime(oldCodex, now - 8 * DAY);
+    setMtime(newCodex, now - 6 * DAY);
 
-    // 6. Symlink inside <data>/homes pointing outside <data> -> MUST keep
-    const extProfile = join(external, "user-profile");
+    // 9. Outside <data> via symlink in <data>/homes -> MUST keep
+    const extProfile = join(external, "user-home");
     mkdirSync(join(extProfile, "projects", proj), { recursive: true });
-    const extTx = join(extProfile, "projects", proj, "user-4d.jsonl");
-    writeFileSync(extTx, "{}\n");
-    setMtime(extTx, now - 4 * DAY);
+    const extFile = join(extProfile, "projects", proj, `${uExternal}.jsonl`);
+    writeFileSync(extFile, "{}\n");
+    setMtime(extFile, now - 8 * DAY);
     symlinkSync(extProfile, join(data, "homes", "ext-link"));
 
-    // 7. Other runtime under <data>/transcripts/gemini -> untouched
-    const otherDir = join(data, "transcripts", "gemini");
-    mkdirSync(otherDir, { recursive: true });
-    const otherFile = join(otherDir, "old.jsonl");
-    writeFileSync(otherFile, "{}\n");
-    setMtime(otherFile, now - 10 * DAY);
+    // Not below low disk -> nothing deleted
+    const none = await relieveOrphanTranscripts(data, now, store, () => 2000, 1000, { minAgeMs: ORPHAN_TRANSCRIPT_MS });
+    assert.deepEqual(none, []);
+    assert.ok(existsSync(oldUuidFile), "untouched when disk is not below low");
 
-    const gone = await pruneOrphanTranscripts(data, now, store, { minAgeMs: ORPHAN_TRANSCRIPT_MS });
-    assert.ok(!existsSync(oldOrphanClaude), "4d orphan Claude transcript deleted");
-    assert.ok(!existsSync(oldOrphanClaudeDir), "4d orphan Claude companion dir deleted");
-    assert.ok(!existsSync(homeOrphanZst), "4d orphan Claude .zst in <data>/homes deleted");
-    assert.ok(!existsSync(oldCodexFile), "4d orphan Codex rollout deleted");
-    assert.ok(existsSync(refClaude), "archived-session-referenced Claude transcript preserved");
-    assert.ok(existsSync(newOrphanClaude), "2d orphan Claude transcript preserved");
-    assert.ok(existsSync(refCodexFile), "referenced Codex rollout preserved");
-    assert.ok(existsSync(newCodexFile), "2d orphan Codex rollout preserved");
-    assert.ok(existsSync(extTx), "outside-<data> transcript preserved");
-    assert.ok(existsSync(otherFile), "other runtime transcript preserved");
-    assert.ok(gone.length >= 3, `expected at least 3 removed items, got ${JSON.stringify(gone)}`);
+    // Below low disk (full=true): deletes all eligible even if free() rises above low mid-pass
+    let calls = 0;
+    const gone = await relieveOrphanTranscripts(
+      data,
+      now,
+      store,
+      () => (++calls === 1 ? 100 : 5000),
+      1000,
+      { minAgeMs: ORPHAN_TRANSCRIPT_MS, full: true },
+    );
+    assert.ok(!existsSync(oldUuidFile), "8d orphan UUID .jsonl deleted");
+    assert.ok(!existsSync(oldUuidDir), "8d orphan companion <uuid>/ deleted");
+    assert.ok(!existsSync(standaloneOldDir), "8d standalone <uuid>/ deleted");
+    assert.ok(!existsSync(oldCodex), "8d orphan Codex rollout deleted");
+    assert.ok(existsSync(memoryFile), "projects/<proj>/memory/ preserved");
+    assert.ok(existsSync(nonUuidFile), "non-UUID .jsonl preserved");
+    assert.ok(existsSync(agentFile), "agent-xxxx.jsonl preserved");
+    assert.ok(existsSync(newUuidFile), "6d orphan UUID .jsonl preserved");
+    assert.ok(existsSync(archUuidFile), "archived-session-referenced UUID preserved");
+    assert.ok(existsSync(freshChild), "standalone <uuid>/ with 1d child preserved");
+    assert.ok(existsSync(newCodex), "6d orphan Codex rollout preserved");
+    assert.ok(existsSync(extFile), "outside-<data> transcript preserved");
+    assert.ok(gone.length >= 3);
 
     store.close();
+  });
+
+  test("relieveLowDiskFull runs all steps without stopping early when free rises above low, and respects 30m RELIEVE_FULL_EVERY_MS cooldown", async () => {
+    const tc = testClock();
+    await tc.adjust(1_800_000_000_000);
+    let coldRooms!: ColdRooms;
+    const r = new Rig({
+      clock: tc.clock,
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        holdsMore: (key) => coldRooms.holdsMore(key),
+        expire: (key, before) => coldRooms.expire(key, before),
+        cleanIdleRebuildable: (key) => coldRooms.cleanIdleRebuildable(key),
+      },
+    });
+    coldRooms = new ColdRooms(() => r.hub);
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const HOUR = 3_600_000;
+    const MIN = 60_000;
+
+    // Two 2h-idle unarchived sessions: even when free() rises above low after the first, full pass cleans BOTH!
+    const makeIdle = (key: string) => {
+      const ws = join(data, "sessions", "cl", key, "workspace");
+      mkdirSync(join(ws, "node_modules", "pkg"), { recursive: true });
+      writeFileSync(join(ws, "node_modules", "pkg", "a.js"), "1\n".repeat(50));
+      r.store.insertSession({
+        key, connect: "cl", runtime: "claude", profile: "cc",
+        workspace: ws, runtimeSessionId: null, token: `tok-${key}`, createdAt: now - 2 * HOUR, lastActiveAt: now - 2 * HOUR,
+      });
+      return ws;
+    };
+    const ws1 = makeIdle("s-full-1");
+    const ws2 = makeIdle("s-full-2");
+
+    let freeCalls = 0;
+    const ran1 = await relieveLowDiskFull(r.hub, () => (++freeCalls === 1 ? 100 : 10_000), 1000);
+    assert.equal(ran1, true);
+    assert.ok(!existsSync(join(ws1, "node_modules")), "full pass cleaned s-full-1");
+    assert.ok(!existsSync(join(ws2, "node_modules")), "full pass did not stop early when free rose above low");
+
+    // Create a 3rd eligible session and trigger 29 minutes later -> skipped due to RELIEVE_FULL_EVERY_MS (30m)
+    await tc.adjust(29 * MIN);
+    const ws3 = makeIdle("s-full-3");
+    const ran29 = await relieveLowDiskFull(r.hub, () => 100, 1000);
+    assert.equal(ran29, false, "within 30m cooldown, full pass does nothing");
+    assert.ok(existsSync(join(ws3, "node_modules")), "s-full-3 untouched at 29m");
+
+    // Advance 2 more minutes (total 31m >= RELIEVE_FULL_EVERY_MS) -> runs again and cleans s-full-3
+    await tc.adjust(2 * MIN);
+    const ran31 = await relieveLowDiskFull(r.hub, () => 100, 1000);
+    assert.equal(ran31, true, "after 31m, full pass runs again");
+    assert.ok(!existsSync(join(ws3, "node_modules")), "s-full-3 cleaned at 31m");
+
+    // Non-full relieveArchived still stops early when free >= low
+    const ranAbove = await relieveArchived(r.hub, () => 5000, 1000);
+    assert.equal(ranAbove, undefined);
+
+    await r.close();
   });
 });

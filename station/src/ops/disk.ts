@@ -2,10 +2,11 @@
 // under the soft mark (`diskSoft`: DISK_SOFT_BYTES, or a tenth of the disk where that is more) every DISK_SOFT_EVERY_MS,
 // and what is made again when asked for goes first: thumbnails, half-done downloads, old copies of the config,
 // readings of transcripts gone (ops/storage.ts `Upkeep.renewables`), then the mirrors of other stations' tasks not in use
-// (jobs/remote.ts `relieve`). Under the low mark (`diskLow`: DISK_LOW_BYTES, or a tenth of the disk where that is less), what can go goes, in this order, until there is that much again:
-// those mirrors, then the workspaces of archived chats before their time, the longest archived first
-// (sessions/lifecycle.ts `relieveArchived`), then unreferenced shared clones in `<data>/repos` that are clean, pushed,
-// and idle past REPO_IDLE_MS, least recently used first (sessions/lifecycle.ts `relieveRepos`). Only the mirrors went at first: a station, which runs no one's tasks, had
+// (jobs/remote.ts `relieve`). Under the low mark (`diskLow`: DISK_LOW_BYTES, or a tenth of the disk where that is less),
+// a full reclamation pass runs (throttled to once per RELIEVE_FULL_EVERY_MS = 30 min) across all four steps without
+// stopping early between steps: idle unarchived rebuildables (1h threshold, sessions/lifecycle.ts `relieveIdleRebuildable`),
+// archived workspaces before their time (`relieveArchived`), orphaned UUID transcripts under `<data>` older than 7 days
+// (ops/storage.ts `relieveOrphanTranscripts`), and unreferenced shared clones in `<data>/repos` (`relieveRepos`). Only the mirrors went at first: a station, which runs no one's tasks, had
 // none, and its 89G disk was down to 2.3G free with 10G of archived workspaces waiting out their week (2026-10-25). And
 // only under 20 GiB at all, every five minutes, while remote/sessions grew to 63 GiB in five days (2026-11-15).
 

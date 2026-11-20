@@ -1,6 +1,7 @@
 // End-to-end tests for MoonBit station PR A reclamation (`stillfail-reader run`):
-// Hub::pack_unfinished_archived, Hub::clean_idle_rebuildable, Hub::relieve_idle_rebuildable,
-// P53Upkeep::prune_orphan_rooms, and P53Upkeep::prune_orphan_transcripts.
+// Hub::pack_unfinished_archived (with cross-round cursor), Hub::clean_idle_rebuildable &
+// Hub::relieve_idle_rebuildable (capped by measured count & memoized by last_active_at),
+// and P53Upkeep::prune_orphan_rooms.
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -118,7 +119,7 @@ function httpJson(port: number, method: string, path: string, body?: unknown): P
   });
 }
 
-test("MoonBit station backfills unfinished archives, cleans idle unarchived rebuildables, and prunes orphan rooms & transcripts", { skip }, async () => {
+test("MoonBit station backfills unfinished archives, cleans idle unarchived rebuildables (with memo), and prunes orphan rooms", { skip }, async () => {
   const data = fresh("data");
   const app = fresh("app");
   mkdirSync(join(data, "repos"), { recursive: true });
@@ -184,7 +185,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
   const ws2h = makeIdle("s-2h", 2);
   const ws30m = makeIdle("s-30m", 0.5);
 
-  // ── Item 3a: orphan rooms (25h old with worktree, 23h fresh) ──
+  // ── Item 3: orphan rooms (25h old with worktree, 23h fresh) ──
   const repo = join(data, "repos", "demo");
   mkdirSync(repo, { recursive: true });
   git(repo, ["init", "-b", "main"]);
@@ -204,32 +205,67 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
   setMtime(join(freshOrphanRoom, "workspace"), now - 23 * HOUR);
   setMtime(freshOrphanRoom, now - 23 * HOUR);
 
-  // ── Item 3b: orphan & referenced transcripts ──
-  const refProj = claudeProject(wsArch1);
-  const txDir = join(data, "transcripts", "claude", refProj);
+  // ── Item 4: tightened low-disk orphan UUID transcripts (7d threshold, memory/ & non-UUID preserved) ──
+  const uArch = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const uOld = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const uNew = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const uStandaloneOld = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const uStandaloneFresh = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const uCodexOld = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+  store.ranIn("s-arch1", uArch, "cc");
+  const proj = claudeProject(wsArch1);
+  const txDir = join(data, "transcripts", "claude", proj);
   mkdirSync(txDir, { recursive: true });
-  store.ranIn("s-arch1", "ref-mb-id", "cc");
-  const refTx = join(txDir, "ref-mb-id.jsonl");
-  writeFileSync(refTx, "{}\n");
-  setMtime(refTx, now - 4 * DAY);
 
-  const oldOrphanTx = join(txDir, "orphan-mb-4d.jsonl");
-  const oldOrphanTxDir = join(txDir, "orphan-mb-4d");
-  mkdirSync(join(oldOrphanTxDir, "tool-results"), { recursive: true });
-  writeFileSync(oldOrphanTx, "{}\n");
-  writeFileSync(join(oldOrphanTxDir, "tool-results", "r.txt"), "res\n");
-  setMtime(oldOrphanTx, now - 4 * DAY);
-  setMtime(oldOrphanTxDir, now - 4 * DAY);
+  const memDir = join(txDir, "memory");
+  mkdirSync(memDir, { recursive: true });
+  const memFile = join(memDir, "MEMORY.md");
+  writeFileSync(memFile, "# memory\n");
+  setMtime(memFile, now - 8 * DAY);
+  setMtime(memDir, now - 8 * DAY);
 
-  const newOrphanTx = join(txDir, "orphan-mb-2d.jsonl");
-  writeFileSync(newOrphanTx, "{}\n");
-  setMtime(newOrphanTx, now - 2 * DAY);
+  const nonUuidFile = join(txDir, "agent-1234.jsonl");
+  writeFileSync(nonUuidFile, "{}\n");
+  setMtime(nonUuidFile, now - 8 * DAY);
 
-  const codexDir = join(data, "transcripts", "codex", "2026", "11", "16");
+  const archTx = join(txDir, `${uArch}.jsonl`);
+  writeFileSync(archTx, "{}\n");
+  setMtime(archTx, now - 8 * DAY);
+
+  const oldTx = join(txDir, `${uOld}.jsonl`);
+  const oldTxDir = join(txDir, uOld);
+  mkdirSync(join(oldTxDir, "tool-results"), { recursive: true });
+  writeFileSync(oldTx, "{}\n");
+  writeFileSync(join(oldTxDir, "tool-results", "x.txt"), "res\n");
+  setMtime(oldTx, now - 8 * DAY);
+  setMtime(join(oldTxDir, "tool-results", "x.txt"), now - 8 * DAY);
+  setMtime(join(oldTxDir, "tool-results"), now - 8 * DAY);
+  setMtime(oldTxDir, now - 8 * DAY);
+
+  const newTx = join(txDir, `${uNew}.jsonl`);
+  writeFileSync(newTx, "{}\n");
+  setMtime(newTx, now - 6 * DAY);
+
+  const standaloneOldDir = join(txDir, uStandaloneOld);
+  mkdirSync(join(standaloneOldDir, "tool-results"), { recursive: true });
+  writeFileSync(join(standaloneOldDir, "tool-results", "old.txt"), "old\n");
+  setMtime(join(standaloneOldDir, "tool-results", "old.txt"), now - 8 * DAY);
+  setMtime(join(standaloneOldDir, "tool-results"), now - 8 * DAY);
+  setMtime(standaloneOldDir, now - 8 * DAY);
+
+  const standaloneFreshDir = join(txDir, uStandaloneFresh);
+  mkdirSync(join(standaloneFreshDir, "tool-results"), { recursive: true });
+  const freshChild = join(standaloneFreshDir, "tool-results", "new.txt");
+  writeFileSync(freshChild, "new\n");
+  setMtime(freshChild, now - 1 * DAY);
+  setMtime(standaloneFreshDir, now - 8 * DAY);
+
+  const codexDir = join(data, "transcripts", "codex", "2026", "11", "10");
   mkdirSync(codexDir, { recursive: true });
-  const oldCodexTx = join(codexDir, "rollout-2026-11-16T00-00-00-44444444-4444-4444-8444-444444444444.jsonl");
+  const oldCodexTx = join(codexDir, `rollout-2026-11-10T00-00-00-${uCodexOld}.jsonl`);
   writeFileSync(oldCodexTx, "{}\n");
-  setMtime(oldCodexTx, now - 4 * DAY);
+  setMtime(oldCodexTx, now - 8 * DAY);
 
   store.close();
 
@@ -238,7 +274,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     const served = await launched.next("mcp serving", (m) => m.serving === "mcp");
     const port = served.port as number;
 
-    // 1. Backfill unfinished archives with limit = 1 -> packs s-arch1 only, then round 2 packs s-arch2
+    // 1. Backfill unfinished archives with limit = 1 -> round 1 packs s-arch1, round 2 advances cursor & packs s-arch2
     const p1 = await httpJson(port, "POST", "/parts/ask/hub.packUnfinishedArchived", [now, 1]);
     assert.equal(p1.status, 200, JSON.stringify(p1));
     assert.equal(p1.body, 1);
@@ -250,7 +286,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.equal(p2.body, 1);
     assert.ok(existsSync(join(dirname(wsArch2), "cold")), "round 2 packed s-arch2");
 
-    // 2. Idle unarchived rebuildable cleanup (24h threshold): cleans s-25h only
+    // 2. Idle unarchived rebuildable cleanup (24h threshold): measures & cleans s-25h once, memo skips on 2nd round
     const c1 = await httpJson(port, "POST", "/parts/ask/hub.cleanIdleRebuildable", [now]);
     assert.equal(c1.status, 200, JSON.stringify(c1));
     assert.equal(c1.body, 1);
@@ -260,7 +296,11 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(existsSync(join(ws23h, "node_modules")), "23h idle preserved");
     assert.ok(existsSync(join(ws2h, "node_modules")), "2h idle preserved");
 
-    // Low-disk idle rebuildable cleanup (1h threshold): cleans s-23h and s-2h, keeps s-30m
+    const c2 = await httpJson(port, "POST", "/parts/ask/hub.cleanIdleRebuildable", [now]);
+    assert.equal(c2.status, 200, JSON.stringify(c2));
+    assert.equal(c2.body, 0, "memoized s-25h is not measured a second time");
+
+    // Low-disk idle rebuildable cleanup (1h threshold): skips memoized s-25h, cleans s-23h and s-2h, keeps s-30m
     const r1 = await httpJson(port, "POST", "/parts/ask/hub.relieveIdleRebuildable", [now, 1e18]);
     assert.equal(r1.status, 200, JSON.stringify(r1));
     assert.equal(r1.body, 2);
@@ -268,7 +308,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(!existsSync(join(ws2h, "node_modules")), "2h idle cleaned on low disk");
     assert.ok(existsSync(join(ws30m, "node_modules")), "30m idle preserved on low disk");
 
-    // 3a. Orphan rooms pruning
+    // 3. Orphan rooms pruning
     const or1 = await httpJson(port, "POST", "/parts/ask/upkeep.pruneOrphanRooms", [now]);
     assert.equal(or1.status, 200, JSON.stringify(or1));
     assert.deepEqual(or1.body, ["cl/orphan-old"]);
@@ -277,14 +317,23 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(existsSync(freshOrphanRoom), "23h orphan room preserved");
     assert.ok(existsSync(dirname(ws25h)), "session-backed room preserved");
 
-    // 3b. Orphan transcripts pruning
-    const ot1 = await httpJson(port, "POST", "/parts/ask/upkeep.pruneOrphanTranscripts", [now]);
-    assert.equal(ot1.status, 200, JSON.stringify(ot1));
-    assert.ok(!existsSync(oldOrphanTx), "4d orphan Claude transcript removed");
-    assert.ok(!existsSync(oldOrphanTxDir), "4d orphan Claude companion dir removed");
-    assert.ok(!existsSync(oldCodexTx), "4d orphan Codex rollout removed");
-    assert.ok(existsSync(refTx), "archived-session-referenced transcript preserved");
-    assert.ok(existsSync(newOrphanTx), "2d orphan transcript preserved");
+    // 4. Low-disk orphan UUID transcripts: untouched when not below low, cleaned when low (full=true)
+    const otSkip = await httpJson(port, "POST", "/parts/ask/upkeep.relieveOrphanTranscripts", [now, 1, false]);
+    assert.equal(otSkip.status, 200, JSON.stringify(otSkip));
+    assert.deepEqual(otSkip.body, [], "above low mark does not delete orphan transcripts");
+    assert.ok(existsSync(oldTx));
+
+    const otFull = await httpJson(port, "POST", "/parts/ask/upkeep.relieveOrphanTranscripts", [now, 1e18, true]);
+    assert.equal(otFull.status, 200, JSON.stringify(otFull));
+    assert.ok(!existsSync(oldTx), "8d orphan UUID .jsonl deleted");
+    assert.ok(!existsSync(oldTxDir), "8d orphan companion <uuid>/ deleted");
+    assert.ok(!existsSync(standaloneOldDir), "8d standalone <uuid>/ deleted");
+    assert.ok(!existsSync(oldCodexTx), "8d orphan Codex rollout deleted");
+    assert.ok(existsSync(memFile), "projects/<proj>/memory/ preserved");
+    assert.ok(existsSync(nonUuidFile), "non-UUID agent-1234.jsonl preserved");
+    assert.ok(existsSync(archTx), "archived-session-referenced UUID preserved");
+    assert.ok(existsSync(newTx), "6d orphan UUID preserved");
+    assert.ok(existsSync(freshChild), "standalone <uuid>/ with 1d child preserved");
   } finally {
     launched.tell({ type: "stop" });
     await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);

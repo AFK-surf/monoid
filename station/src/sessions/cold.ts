@@ -155,10 +155,10 @@ export class ColdRooms implements ColdStorage {
     return jobs.some((job) => job.sessionKey === key || inRoom(job.cwd, dir));
   }
 
-  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<number> {
+  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<number | null> {
     await this.findRoom(key);
     const dir = this.cleanableRoom(key, requireArchived);
-    if (dir === null) return 0;
+    if (dir === null) return null;
     let freed = 0;
     for (const [path, bytes] of (await measureRoom(dir)).rebuild) {
       // Restoring/activating a chat updates the store before its next message reaches the actor queue.
@@ -187,13 +187,14 @@ export class ColdRooms implements ColdStorage {
   /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
   /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
   /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
-  cleanRebuildable(key: string): Promise<number> {
-    return this.cleanRebuildableIn(key, true);
+  async cleanRebuildable(key: string): Promise<number> {
+    return (await this.cleanRebuildableIn(key, true)) ?? 0;
   }
 
   /// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
-  /// marking cold, or touching transcripts. Returns removed allocated file bytes.
-  cleanIdleRebuildable(key: string): Promise<number> {
+  /// marking cold, or touching transcripts. Returns removed bytes (>= 0) when measured, or null when skipped before
+  /// measuring (running / shared / active job).
+  cleanIdleRebuildable(key: string): Promise<number | null> {
     return this.cleanRebuildableIn(key, false);
   }
 

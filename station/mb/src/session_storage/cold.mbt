@@ -376,9 +376,9 @@ async fn Storage::still_cleanable(self : Storage, key : String, require_archived
 }
 
 ///|
-async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> Double {
+async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> Double? {
   self.find_room(key)
-  guard self.cleanable_room(key, require_archived~) is Some(dir) else { return 0.0 }
+  guard self.cleanable_room(key, require_archived~) is Some(dir) else { return None }
   let mut freed = 0.0
   for pair in self.fs.rebuild_of(dir) {
     let (path, bytes) = pair
@@ -402,19 +402,19 @@ async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_arc
     }
     self.log("info", "hub", msg, jo([("session", js(key)), ("freed", jn(freed))]))
   }
-  freed
+  Some(freed)
 }
 
 ///|
 /// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
 pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
-  self.clean_rebuildable_in(key, require_archived=true)
+  self.clean_rebuildable_in(key, require_archived=true).unwrap_or(0.0)
 }
 
 ///|
 /// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
-/// marking cold, or touching transcripts: the bytes removed.
-pub async fn Storage::clean_idle_rebuildable(self : Storage, key : String) -> Double {
+/// marking cold, or touching transcripts: Some(bytes) when measured, None when skipped before measuring.
+pub async fn Storage::clean_idle_rebuildable(self : Storage, key : String) -> Double? {
   self.clean_rebuildable_in(key, require_archived=false)
 }
 

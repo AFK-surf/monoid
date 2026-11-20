@@ -530,9 +530,9 @@ async fn LiveBus::hub_runtime_changed(
 }
 
 ///|
-/// The disk low: idle unarchived sessions' rebuildable directories cleaned before `relieve_archived`, until `low_bytes` are free.
-async fn LiveBus::hub_relieve_idle_rebuildable(self : LiveBus, now : Double, low_bytes~ : Double, idle_ms? : Double) -> Json {
-  let args : Map[String, Json] = { "now": Json::number(now), "lowBytes": Json::number(low_bytes) }
+/// The disk low: idle unarchived sessions' rebuildable directories cleaned before `relieve_archived`.
+async fn LiveBus::hub_relieve_idle_rebuildable(self : LiveBus, now : Double, low_bytes~ : Double, idle_ms? : Double, full? : Bool = false) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now), "lowBytes": Json::number(low_bytes), "full": Json::boolean(full) }
   if idle_ms is Some(ms) {
     args["idleMs"] = Json::number(ms)
   }
@@ -563,9 +563,9 @@ async fn LiveBus::hub_clean_idle_rebuildable(self : LiveBus, now : Double, idle_
 }
 
 ///|
-/// The disk low: archived sessions' rooms made smaller, until `low_bytes` are free.
-async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> Unit {
-  ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes) }))
+/// The disk low: archived sessions' rooms made smaller.
+async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double, full? : Bool = false) -> Unit {
+  ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes), "full": Json::boolean(full) }))
 }
 
 ///|

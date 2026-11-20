@@ -105,7 +105,8 @@ export interface ColdStorage {
   /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
   needsPack?(key: string): Promise<boolean>;
   /// Removes rebuildable build/install directories from an idle unarchived session without packing or marking cold.
-  cleanIdleRebuildable?(key: string): Promise<number>;
+  /// Returns removed bytes (>= 0) when measured, or null when skipped before measuring (not cleanable / shared / job).
+  cleanIdleRebuildable?(key: string): Promise<number | null>;
 }
 
 /// The most of a shared file the station fetches, as much as an agent may attach.

@@ -158,6 +158,10 @@ pub struct Hub {
   mut counter : UsageCounter?
   /// Whether what the store tells of usage is kept (module.ts `keepCounted`).
   mut keeps_counted : Bool
+  /// Cross-round cursor for `pack_unfinished_archived` (`{archivedAt, key}` or Null).
+  mut pack_cursor : Json
+  /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths).
+  idle_measured : Map[String, Double]
 }
 
 ///|
@@ -190,6 +194,8 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     awaiting_workspace_activity: Set([]),
     counter: None,
     keeps_counted: false,
+    pack_cursor: Json::null(),
+    idle_measured: {},
   }
   // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
   // stops. Each transcript's length goes where its summary reads it (`noteLength`).
