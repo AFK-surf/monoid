@@ -1208,6 +1208,70 @@ test "a login field in focus while driving a tab: 用 1Password 填入; its logi
 }
 
 ///|
+test "1Password fill caches non-secret login metadata across fills, passes --vault to item get, and invalidates on get error" {
+  let r = screen_rig()
+  r.live(others=[])
+  let fail_get = Ref(false)
+  @ui.fake_op_runs.clear()
+  @ui.fake_op.val = Some(fn(args) {
+    if args.length() >= 2 && args[0] == "item" && args[1] == "list" {
+      (
+        0,
+        "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"demo-user\",\"vault\":{\"id\":\"v-work\"},\"urls\":[{\"href\":\"https://github.com/login\"}]},{\"id\":\"gl1\",\"title\":\"GitLab\",\"additional_information\":\"gl-user\",\"vault\":{\"id\":\"v-priv\"},\"urls\":[{\"href\":\"https://gitlab.com\"}]}]",
+        "",
+      )
+    } else if args.length() >= 3 && args[0] == "item" && args[1] == "get" {
+      if fail_get.val {
+        (1, "", "item not found")
+      } else {
+        (0, "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"u-\{args[2]}\"},{\"id\":\"password\",\"label\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"pw-\{args[2]}\"}]", "")
+      }
+    } else {
+      (1, "", "unknown command")
+    }
+  })
+  // First fill: runs item list once, then item get with --vault v-work.
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 2)
+  assert_eq(@ui.fake_op_runs[0], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[1], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Second fill for another cached site within TTL: skips item list and goes straight to item get with --vault v-priv.
+  r.state("live", others=[], more={ "login": { "host": "gitlab.com", "field": "password" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 3)
+  assert_eq(@ui.fake_op_runs[2], ["item", "get", "gl1", "--vault", "v-priv", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  // Failed item get invalidates the cache so the next fill lists again.
+  fail_get.val = true
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 4)
+  let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  assert_eq(closes.length(), 1)
+  let (cx, cy, cw, ch) = closes[0].rect
+  r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  r.t.draw()
+  fail_get.val = false
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "username" } })
+  r.t.draw()
+  r.tap_label("填入")
+  r.t.draw()
+  r.t.draw()
+  assert_eq(@ui.fake_op_runs.length(), 6)
+  assert_eq(@ui.fake_op_runs[4], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[5], ["item", "get", "gh1", "--vault", "v-work", "--fields", "label=username,label=password", "--reveal", "--format", "json"])
+  screen_done(r.t)
+  @ui.fake_op.val = None
+}
+
+///|
 test "no 1Password tool but the system's autofill: 用密码管理器填入 asks it for the site; the login picked there filled, for that site only, the page's focus gone or not" {
   let r = screen_rig()
   r.live(others=[])

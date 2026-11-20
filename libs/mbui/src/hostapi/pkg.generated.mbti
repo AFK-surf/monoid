@@ -257,6 +257,8 @@ pub fn login_fields(String) -> (String, String)
 
 pub fn login_for_host(String, String) -> Bool
 
+pub fn login_secret(String) -> (String, String, String, Bool)
+
 pub fn logins_for(String, String) -> Array[PasswordLogin]
 
 pub fn mem_bytes() -> Double
@@ -818,6 +820,7 @@ pub(all) struct PasswordLogin {
   id : String
   title : String
   username : String
+  vault : String
 }
 
 pub struct Pick {
