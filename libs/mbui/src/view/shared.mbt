@@ -1925,6 +1925,7 @@ fn Tree::paired(
   // (drawn as of each frame's moment while it goes; over at its end, a moment of its own)
   let stop_way = self.queued(fn() { self.drawn_at() }, fn(t) { self.flight_at(f, t) })
   f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  self.hand_at_end(at + ms)
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
@@ -2164,6 +2165,7 @@ fn Tree::fly_from(
   self.lifted_order()
   let stop_way = self.queued(fn() { self.drawn_said() }, fn(t) { self.flight_at(f, t) })
   f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  self.hand_at_end(at + ms)
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
@@ -2222,6 +2224,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
       f.dur = ms
       (f.stop_end)()
       f.stop_end = self.handle(f.node.at).at_moment(f.start + ms, fn() { self.flight_over(f) })
+      self.hand_at_end(f.start + ms)
       self.flight_told(f.node.at)
     }
   }
@@ -2267,6 +2270,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
           f.dur = ms
           (f.stop_end)()
           f.stop_end = self.handle(f.node.at).at_moment(f.start + ms, fn() { self.flight_over(f) })
+          self.hand_at_end(f.start + ms)
           self.flight_told(f.node.at)
         }
       }
@@ -2928,6 +2932,7 @@ fn Tree::feet_carried(
       let v = self.handle(at)
       (m.come_off)()
       m.come_off = v.at_moment(st.come_ends, fn() { come_done(self, v, m) })
+      self.hand_at_end(st.come_ends)
     }
     self.marked()
   }

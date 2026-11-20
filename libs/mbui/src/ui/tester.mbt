@@ -874,6 +874,7 @@ fn tester_make(
   }
   let between = test_frames_between()
   tester_rested.clear()
+  tester_ways_rested.val = -1.0
   frames_at_one.val = (-1.0, 0)
   let t = { fake: f, w, h, frames: 0, seed, origin: time, period: frame_period_default, times: [], between, on_way: false, shown: false, motion: test_motion_judged(loc.to_string()), host_frames: false, inputs_next: @double.infinity, each: None, before }
   // a host's run replayed: its first frame where the host drew it (its first DRAWHASH), the display's frames from
