@@ -114,14 +114,23 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - run: bash apps/mbui/scripts/testflight-guard.sh checkout
-      # (restored only: preview.yml's ios job, on main, saves them)
+      - name: Runner image and iOS SDK 27.1 or later
+        shell: bash
+        run: |
+          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          v=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iOS SDK $v ($(xcodebuild -version | head -1))"
+          case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
+      # (restored only: preview.yml's ios job, on main, saves them, keyed by runner ImageVersion)
       - uses: actions/cache/restore@v4
         with:
           path: |
             .ci/mbc-store
             .ci/hbc
-          key: mbui-ios-${{ github.sha }}
-          restore-keys: mbui-ios-
+          key: mbui-ios-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-ios-${{ env.IMG }}-
+            mbui-ios-
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -129,19 +138,43 @@ jobs:
             !apps/mbui/out/ios-device/_build/**/*.mbc
           key: mbui-ios-moon-${{ github.sha }}
           restore-keys: mbui-ios-moon-
-      - name: iOS's SDK 27.1 or later
-        shell: bash
-        run: |
-          v=$(xcrun --sdk iphoneos --show-sdk-version)
-          echo "iOS SDK $v ($(xcodebuild -version | head -1))"
-          case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
+      - id: hermes
+        run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Library/Caches/stillfail-build
+            apps/mbui/out/core/hermesc
+          key: mbui-hermes-apple-${{ steps.hermes.outputs.key }}
+      - uses: actions/cache/restore@v4
+        with:
+          path: apps/mbui/out/ios-assets-*
+          key: mbui-ios-icon-${{ hashFiles('apps/mbui/scripts/mac-icon.swift', 'apps/mbui/scripts/ios.sh') }}
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       - run: bash apps/mbui/scripts/ios-product-test.sh
       - run: bash apps/mbui/scripts/moon-mtimes.sh
+      - name: The iOS shell's key
+        id: native-keys
+        run: echo "key=natives-shell-apple-ios-arm64-$(node scripts/native.ts key shell-apple ios-arm64)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: shell
+        with:
+          path: ~/Library/Caches/stillfail-native/shell-apple
+          key: ${{ steps.native-keys.outputs.key }}
+      - name: The iOS libghostty-vt's key
+        id: ghostty-key
+        run: echo "key=natives-ghostty-vt-ios-arm64-$(node scripts/native.ts key ghostty-vt ios-arm64)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/stillfail-native/ghostty-vt
+          key: ${{ steps.ghostty-key.outputs.key }}
       - name: Device build dependencies
         run: |
-          rustup target add aarch64-apple-ios
+          if [ "${{ steps.shell.outputs.cache-hit }}" != true ]; then
+            rustup target add aarch64-apple-ios
+          fi
           (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline --ignore-scripts)
       - name: Validate identity and profiles, build, sign, validate and upload
         env:
