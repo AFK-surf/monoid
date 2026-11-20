@@ -82,7 +82,6 @@ const SYNC_FS =
 const MAIN_THREAD_SYNC_FS: Record<string, number> = {
   "station_main/live_p5_1_admin.mbt": 1,
   "station_main/live_p5_1_events.mbt": 5,
-  "station_main/live_p5_2_chats.mbt": 1,
   "station_main/live_p5_2_ctx.mbt": 3,
   "station_main/live_p5_2_drivers.mbt": 2,
   "station_main/live_p5_2_home.mbt": 1,
