@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 2.73 | 3.68 | 14.97 | 37.07 | 56.84 | 32.5 | 66.06 | 97.73 | 120.43 |
 | [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
 | [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
 | [c732e0d4a](https://github.com/AFK-surf/monoid/commit/c732e0d4a24334935b84c58e76f3e0fad3bc1466) fix(ci): settle two station test races and share t | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.54 | 115.28 |
-| [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.47 | 124.48 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.12 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [97a3958fc](https://github.com/AFK-surf/monoid/commit/97a3958fcd2df0dfe772abe5a37a8e785ac51437) feat(mbui): add hover outline panel and polish cha | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
 | [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [c732e0d4a](https://github.com/AFK-surf/monoid/commit/c732e0d4a24334935b84c58e76f3e0fad3bc1466) fix(ci): settle two station test races and share t | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
-| [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
