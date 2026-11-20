@@ -3103,6 +3103,7 @@ let en : Map[String, String] = {
   "web-main.preset.autoStationAllowlistHint": "Balance by load across {n} allowlisted stations",
   "web-main.preset.autoStationEmptyHint": "0 allowlisted stations; turn on “Join automatic assignment allowlist” in station settings first",
   "web-main.newChat.autoStation": "Auto",
+  "web-main.newChat.autoStationShort": "Auto",
   "web-main.newChat.autoStationHint": "Balance by load across {n} allowlisted stations",
   "web-main.newChat.autoEmptyTitle": "No online station in automatic assignment allowlist",
   "web-main.newChat.pickStation": "Pick a station manually",

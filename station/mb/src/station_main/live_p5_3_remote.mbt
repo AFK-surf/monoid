@@ -503,6 +503,12 @@ async fn P53Remote::measured_load(self : P53Remote) -> Json {
 }
 
 ///|
+/// Whether this station opted into automatic chat assignment (`config.json` `acceptAutoChats`).
+fn P53Remote::accept_auto_chats(self : P53Remote) -> Bool {
+  jfield((self.bus.config_raw.val)(), "acceptAutoChats") is True
+}
+
+///|
 /// What this station is and runs, for another of the workspace (remote.ts `describe`).
 async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Json {
   let answer = jobj_of([
@@ -516,6 +522,7 @@ async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Js
     ("reads", jb(true)),
     ("files", jb(true)),
     ("chats", jb(true)),
+    ("acceptAutoChats", jb(self.accept_auto_chats())),
     ("sync", ji(1)),
     ("smallTasks", ji(1)),
     ("fileChunkBytes", ji(@jobs_host.chunk)),
@@ -534,7 +541,7 @@ async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Js
       out[k] = v
     }
   }
-  for k in ["sessions", "messages", "reads", "chats"] {
+  for k in ["sessions", "messages", "reads", "chats", "acceptAutoChats"] {
     out[k] = jb(false)
   }
   out["rig"] = Json::null()

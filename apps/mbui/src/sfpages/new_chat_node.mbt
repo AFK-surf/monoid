@@ -542,7 +542,7 @@ fn new_station_control_node(
   let auto_on = fn() { flag(view(), "autoStation") }
   let label = fn() {
     if auto_on() {
-      @sf.t("web-main.newChat.autoStation")
+      @sf.t("web-main.newChat.autoStationShort")
     } else {
       text(station(), "name")
     }

@@ -2308,6 +2308,7 @@ fn fx_station(address : String) -> Json {
         },
       ])),
       ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ("acceptAutoChats", Json::boolean(fx.accept_auto_chats)),
       (
         "problems",
         if fx.willow_incompatible {
