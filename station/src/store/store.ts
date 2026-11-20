@@ -191,6 +191,8 @@ export const TRANSCRIPT_REFERENCED = `SELECT 1 FROM runtime_sessions r INDEXED B
 export const SESSION_PATHS_BATCH = 200;
 /// Bounded primary-key page of session workspace/cwd paths for low-disk clone reclamation.
 export const SESSION_PATHS_PAGE = `SELECT key, workspace, cwd, archived_at FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2`;
+export const IDLE_UNARCHIVED_BATCH = 64;
+export type IdleUnarchivedSession = { key: string; workspace: string; lastActiveAt: number };
 /// A session's messages not delivered yet and its latest turn (`statsOf`): what is not delivered by the index of those
 /// alone. By (session, thread), SQLite went over every message the session was ever given, and every turn was counted
 /// besides, for no one: auto-archiving looked at each session shown so, on the main thread, 13 s and 22 s on a station short
@@ -1053,6 +1055,24 @@ export class Store {
   /// The first archive after a time, when a timed cleanup should next wake.
   nextArchivedAt(after: number): number | null {
     return this.#one("SELECT archived_at FROM sessions INDEXED BY sessions_put_away WHERE archived_at > ? ORDER BY archived_at, key LIMIT 1", after)?.archived_at ?? null;
+  }
+
+  /// A bounded page of idle unarchived, non-running sessions with `last_active_at <= through`, oldest activity first,
+  /// using the `sessions_live` partial index (avoids scanning `LIVE_SESSIONS`).
+  idleUnarchivedSessions(
+    after: { lastActiveAt: number; key: string } | null = null,
+    through: number,
+    limit = IDLE_UNARCHIVED_BATCH,
+  ): IdleUnarchivedSession[] {
+    let sql = "SELECT key, workspace, last_active_at FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND running = 0 AND last_active_at <= ?";
+    const args: Arg[] = [through];
+    if (after !== null) {
+      sql += " AND last_active_at >= ? AND (last_active_at > ? OR key > ?)";
+      args.push(after.lastActiveAt, after.lastActiveAt, after.key);
+    }
+    args.push(limit);
+    return this.#all(`${sql} ORDER BY last_active_at ASC, key ASC LIMIT ?`, ...args)
+      .map((r) => ({ key: r.key, workspace: r.workspace, lastActiveAt: r.last_active_at }));
   }
 
   /// Every session, most recently active first.

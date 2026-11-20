@@ -530,6 +530,39 @@ async fn LiveBus::hub_runtime_changed(
 }
 
 ///|
+/// The disk low: idle unarchived sessions' rebuildable directories cleaned before `relieve_archived`, until `low_bytes` are free.
+async fn LiveBus::hub_relieve_idle_rebuildable(self : LiveBus, now : Double, low_bytes~ : Double, idle_ms? : Double) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now), "lowBytes": Json::number(low_bytes) }
+  if idle_ms is Some(ms) {
+    args["idleMs"] = Json::number(ms)
+  }
+  (self.hub_ask.val)("relieveIdleRebuildable", Json::object(args))
+}
+
+///|
+/// Backfill packing for unfinished archived sessions (capped per round).
+async fn LiveBus::hub_pack_unfinished_archived(self : LiveBus, now : Double, limit? : Int) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if limit is Some(n) {
+    args["limit"] = Json::number(n.to_double())
+  }
+  (self.hub_ask.val)("packUnfinishedArchived", Json::object(args))
+}
+
+///|
+/// Clean rebuildable directories of idle unarchived sessions (capped per round).
+async fn LiveBus::hub_clean_idle_rebuildable(self : LiveBus, now : Double, idle_ms? : Double, limit? : Int) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if idle_ms is Some(ms) {
+    args["idleMs"] = Json::number(ms)
+  }
+  if limit is Some(n) {
+    args["limit"] = Json::number(n.to_double())
+  }
+  (self.hub_ask.val)("cleanIdleRebuildable", Json::object(args))
+}
+
+///|
 /// The disk low: archived sessions' rooms made smaller, until `low_bytes` are free.
 async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> Unit {
   ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes) }))

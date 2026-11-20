@@ -3,7 +3,7 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
+import { COPY as PRESET_COPY_FILE, NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
@@ -23,7 +23,7 @@ import { homesFirst, sessionPlaces, sharedTranscripts } from "../read/transcript
 import { transcriptPathsSoon, transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
 import { walkBounded } from "../ops/walk.ts";
-import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
+import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, IDLE_UNARCHIVED_BATCH, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
 import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
@@ -396,8 +396,13 @@ export function archiveChat(hub: Hub, thread: number, archived: boolean): void |
 }
 
 /// A snapshot-bounded walk of archived workspaces; no main-thread query returns more than a page.
-async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean | Promise<boolean> = () => true): AsyncGenerator<ArchivedWorkspace> {
-  let after: ArchivedWorkspace | null = null;
+async function* archivedWorkspaces(
+  hub: Hub,
+  through: number | ArchivedWorkspace,
+  needed: () => boolean | Promise<boolean> = () => true,
+  start: ArchivedWorkspace | null = null,
+): AsyncGenerator<ArchivedWorkspace> {
+  let after: ArchivedWorkspace | null = start;
   for (;;) {
     if (!(await needed())) return;
     const page = hub.store.archivedSessions(after, through);
@@ -408,6 +413,19 @@ async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+/// Max unfinished archived sessions packed per periodic round to prevent a startup/timer storm.
+export const PACK_BACKFILL_MAX_PER_ROUND = 16;
+
+/// Unarchived sessions idle this long have their rebuildable directories (node_modules, target, ...) cleaned:
+/// 24 hours makes returning the next day and reinstalling dependencies acceptable.
+export const IDLE_REBUILD_MS = 24 * 3_600_000;
+
+/// Aggressive idle threshold for cleaning rebuildable directories of unarchived sessions when disk is below `diskLow`.
+export const IDLE_REBUILD_LOW_MS = 3_600_000;
+
+/// Max idle unarchived sessions cleaned per periodic round.
+export const IDLE_REBUILD_MAX_PER_ROUND = 16;
 
 /// Empties the workspaces of sessions archived past archivedWorkspaceMs, one after another: each keeps the files sent in
 /// its chat, its history and its transcripts (cold.ts `expire`). Returns when the next one archived comes due (null:
@@ -425,6 +443,104 @@ export async function expireArchived(hub: Hub, now: number): Promise<number | nu
   }
   const next = hub.store.nextArchivedAt(now - after);
   return next === null ? null : next + after;
+}
+
+/// Periodically finishes packing archived sessions that are not yet past `archivedWorkspaceMs` and still lack a `cold`
+/// mark (e.g. after a transient archive failure). Processes one session at a time via its actor queue, yields between
+/// sessions, and caps work per round at `limit`.
+export async function packUnfinishedArchived(hub: Hub, now: number, limit = PACK_BACKFILL_MAX_PER_ROUND): Promise<number> {
+  const { cold } = hub;
+  if (!cold.needsPack || limit <= 0) return 0;
+  const through = hub.store.lastArchivedSession();
+  if (through === null) return 0;
+  const afterMs = hub.config().archivedWorkspaceMs;
+  const start: ArchivedWorkspace | null = afterMs > 0 ? { archivedAt: now - afterMs, key: "" } : null;
+  let attempted = 0;
+  let packedCount = 0;
+  for await (const s of archivedWorkspaces(hub, through, () => attempted < limit, start)) {
+    if (attempted >= limit) break;
+    try {
+      if (!(await cold.needsPack(s.key))) continue;
+      const row = hub.store.getSession(s.key);
+      if (!row || row.archivedAt === null) continue;
+      attempted++;
+      await hub.actor(row).cleanArchive();
+      packedCount++;
+    } catch (error) {
+      log.warn("hub", "an archived session's files not put away on backfill", { session: s.key, error: (error as Error).message });
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return packedCount;
+}
+
+/// Cleans rebuildable build/install directories from idle unarchived sessions (`last_active_at <= now - idleMs`),
+/// oldest activity first, one at a time, capped at `limit` per round. Never packs, writes `cold`, or touches transcripts.
+export async function cleanIdleRebuildable(
+  hub: Hub,
+  now: number,
+  options?: { idleMs?: number; limit?: number },
+): Promise<number> {
+  const { cold } = hub;
+  if (!cold.cleanIdleRebuildable) return 0;
+  const idleMs = options?.idleMs ?? IDLE_REBUILD_MS;
+  const limit = options?.limit ?? IDLE_REBUILD_MAX_PER_ROUND;
+  if (limit <= 0) return 0;
+  const through = now - idleMs;
+  let after: { lastActiveAt: number; key: string } | null = null;
+  let cleaned = 0;
+  for (;;) {
+    if (cleaned >= limit) break;
+    const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
+    for (const s of page) {
+      if (cleaned >= limit) break;
+      try {
+        const freed = await cold.cleanIdleRebuildable(s.key);
+        if (freed > 0) cleaned++;
+      } catch (error) {
+        log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (page.length < IDLE_UNARCHIVED_BATCH) break;
+    const last = page[page.length - 1]!;
+    after = { lastActiveAt: last.lastActiveAt, key: last.key };
+  }
+  return cleaned;
+}
+
+/// Low-disk reclamation of rebuildable directories from idle unarchived sessions (threshold `IDLE_REBUILD_LOW_MS`,
+/// oldest activity first), stopping as soon as `free()` reaches `low`. Runs before `relieveArchived`.
+export async function relieveIdleRebuildable(
+  hub: Hub,
+  free: () => number | Promise<number>,
+  low = DISK_LOW_BYTES,
+  idleMs = IDLE_REBUILD_LOW_MS,
+): Promise<number> {
+  const { cold } = hub;
+  if (!cold.cleanIdleRebuildable) return 0;
+  if ((await free()) >= low) return 0;
+  const through = hub.now() - idleMs;
+  let after: { lastActiveAt: number; key: string } | null = null;
+  let cleaned = 0;
+  for (;;) {
+    if ((await free()) >= low) break;
+    const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
+    for (const s of page) {
+      if ((await free()) >= low) return cleaned;
+      try {
+        const freed = await cold.cleanIdleRebuildable(s.key);
+        if (freed > 0) cleaned++;
+      } catch (error) {
+        log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (page.length < IDLE_UNARCHIVED_BATCH) break;
+    const last = page[page.length - 1]!;
+    after = { lastActiveAt: last.lastActiveAt, key: last.key };
+  }
+  return cleaned;
 }
 
 /// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
@@ -568,7 +684,7 @@ export async function relieveRepos(
       await addRef(s.workspace);
       await addRef(s.cwd);
       if (s.archivedAt === null) {
-        const copyRes = await readJsonObjectStrict(join(s.workspace, ".stillfail-preset.json"));
+        const copyRes = await readJsonObjectStrict(join(s.workspace, PRESET_COPY_FILE));
         if (copyRes.kind === "error") return [];
         if (copyRes.kind === "ok" && Array.isArray(copyRes.value.dirs)) {
           for (const dir of copyRes.value.dirs as any[]) {

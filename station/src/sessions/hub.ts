@@ -102,6 +102,10 @@ export interface ColdStorage {
   /// Whether an archived session's directory holds more than its chat's files, and empties it of that.
   holdsMore?(key: string): Promise<boolean>;
   expire?(key: string, before: number): Promise<void>;
+  /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
+  needsPack?(key: string): Promise<boolean>;
+  /// Removes rebuildable build/install directories from an idle unarchived session without packing or marking cold.
+  cleanIdleRebuildable?(key: string): Promise<number>;
 }
 
 /// The most of a shared file the station fetches, as much as an agent may attach.

@@ -90,7 +90,7 @@ import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveArchived, relieveRepos, startAutoArchiveTimer } from "./lifecycle.ts";
+import { cleanIdleRebuildable, expireArchived, packUnfinishedArchived, relieveArchived, relieveIdleRebuildable, relieveRepos, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -946,13 +946,24 @@ export const AgentsLive = (control: Control) =>
       const stopArchiving = startAutoArchiveTimer(hub, time, readers);
 
       // Chats archived long enough keep only their history and the files sent in them: looked at when the next one
-      // comes due, and every hour for the setting changed.
+      // comes due, and every hour for the setting changed. Also backfills unfinished archive packs and cleans
+      // rebuildable directories of idle unarchived sessions (each bounded per round).
       const emptying = async () => {
         let next: number | null = null;
         try {
           next = await expireArchived(hub, hub.now());
         } catch (error) {
           log.warn("hub", "emptying long-archived workspaces failed", { error: (error as Error).message });
+        }
+        try {
+          await packUnfinishedArchived(hub, hub.now());
+        } catch (error) {
+          log.warn("hub", "backfilling unfinished archived workspaces failed", { error: (error as Error).message });
+        }
+        try {
+          await cleanIdleRebuildable(hub, hub.now());
+        } catch (error) {
+          log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
         }
         time.after(Math.min(3_600_000, next === null ? Infinity : next - hub.now()), emptying);
       };
@@ -967,11 +978,13 @@ export const AgentsLive = (control: Control) =>
         jobs: (now) => jobs.upkeep(now),
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),
+        orphans: store,
       });
       upkeep.start();
 
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
-      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
+      // stations' tasks not in use; low, then idle unarchived rebuildable dirs, then archived workspaces before their
+      // time, then unreferenced shared clones (ops/disk.ts).
       const relieving = async () => {
         const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
@@ -983,6 +996,7 @@ export const AgentsLive = (control: Control) =>
             await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
           const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
+          if ((await free()) < low) await relieveIdleRebuildable(hub, free, low);
           if ((await free()) < low) await relieveArchived(hub, free, low);
           if ((await free()) < low) await relieveRepos(hub, free, low);
         } catch (error) {

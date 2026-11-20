@@ -1056,10 +1056,37 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
 let archived_workspace_batch : Int = 64
 
 ///|
+/// store.ts `IDLE_UNARCHIVED_BATCH`.
+let idle_unarchived_batch : Int = 64
+
+///|
+/// Max unfinished archived sessions packed per periodic round.
+pub let pack_backfill_max_per_round : Int = 16
+
+///|
+/// Unarchived sessions idle this long have their rebuildable directories cleaned (24 hours: acceptable to reinstall
+/// dependencies when returning the next day).
+pub let idle_rebuild_ms : Double = 24.0 * 3600000.0
+
+///|
+/// Aggressive idle threshold for cleaning rebuildable directories of unarchived sessions when disk is below `diskLow`.
+pub let idle_rebuild_low_ms : Double = 3600000.0
+
+///|
+/// Max idle unarchived sessions cleaned per periodic round.
+pub let idle_rebuild_max_per_round : Int = 16
+
+///|
 /// rows of archived workspaces, a page at a time, through `through` (a time, or the last one as `{key, archivedAt}`),
 /// each given to `each` while `needed` says so.
-async fn Hub::archived_workspaces(self : Hub, through : Json, each : async (Json) -> Bool, needed? : async () -> Bool) -> Unit {
-  let mut after = Json::null()
+async fn Hub::archived_workspaces(
+  self : Hub,
+  through : Json,
+  each : async (Json) -> Bool,
+  needed? : async () -> Bool,
+  start? : Json = Json::null(),
+) -> Unit {
+  let mut after = start
   while true {
     match needed {
       Some(n) => if !n() { return }
@@ -1101,6 +1128,136 @@ pub async fn Hub::expire_archived(self : Hub, now : Double) -> Double? {
     Number(n, ..) => Some(n + after)
     _ => None
   }
+}
+
+///|
+/// `packUnfinishedArchived`: finishes packing archived sessions not yet past `archivedWorkspaceMs` that lack a `cold`
+/// mark, one at a time via each session's actor queue, capped at `limit` per round.
+pub async fn Hub::pack_unfinished_archived(self : Hub, now : Double, limit? : Int = pack_backfill_max_per_round) -> Int {
+  if limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  let through = self.store.last_archived_session()
+  if through == Json::null() {
+    return 0
+  }
+  let after_ms = num_of(self.config(), "archivedWorkspaceMs").unwrap_or(0.0)
+  let start : Json = if after_ms > 0.0 {
+    { "archivedAt": num(now - after_ms), "key": Json::string("") }
+  } else {
+    Json::null()
+  }
+  let mut attempted = 0
+  let mut packed = 0
+  self.archived_workspaces(
+    through,
+    async fn(s) {
+      if attempted >= limit {
+        return false
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => return true
+      }
+      try {
+        if (self.world.ask)("cold.needsPack", key_j) != Json::boolean(true) {
+          return true
+        }
+        let row = self.store.get_session(key)
+        if row == Json::null() || field(row, "archivedAt").unwrap_or(Json::null()) == Json::null() {
+          return true
+        }
+        attempted += 1
+        let actor = self.actor(row)
+        ignore(self.ask_actor(actor, "cleanArchive"))
+        packed += 1
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("an archived session's files not put away on backfill"), "session": Json::string(key), "error": Json::string(e.to_string()) })
+      }
+      true
+    },
+    needed=async fn() { attempted < limit },
+    start~,
+  )
+  packed
+}
+
+///|
+/// `cleanIdleRebuildable`: cleans rebuildable directories of idle unarchived sessions (`last_active_at <= now - idle_ms`),
+/// oldest activity first, capped at `limit` per round. Never packs, writes `cold`, or touches transcripts.
+pub async fn Hub::clean_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_ms,
+  limit? : Int = idle_rebuild_max_per_round,
+) -> Int {
+  if limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut cleaned = 0
+  while cleaned < limit {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if cleaned >= limit {
+        return cleaned
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(freed, ..) if freed > 0.0 => cleaned += 1
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  cleaned
+}
+
+///|
+/// `relieveIdleRebuildable`: low-disk reclamation of rebuildable directories from idle unarchived sessions
+/// (threshold `idle_rebuild_low_ms`, oldest activity first), stopping as soon as disk is no longer low.
+pub async fn Hub::relieve_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_low_ms,
+) -> Int {
+  if (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) || !self.disk_free_low() {
+    return 0
+  }
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut cleaned = 0
+  while self.disk_free_low() {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if !self.disk_free_low() {
+        return cleaned
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(freed, ..) if freed > 0.0 => cleaned += 1
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  cleaned
 }
 
 ///|
