@@ -361,8 +361,8 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
             // them, the people left out of it then or not at that moment alone, what is beside them drawn from where it
             // was to there on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
             let slides = bar_slides(e, fn() { bar_keys_shown(view, jobs) })
-            let end_arriving = Ref(!@signals.untracked(read))
-            bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
+            let end_arriving = Ref(from_fresh && !@signals.untracked(read))
+            bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides, from_fresh~)
             e.show(read, at_once=true, fn(end) {
               if end_arriving.val {
                 end_arriving.val = false
@@ -474,6 +474,7 @@ fn bar_middle_node(
   can_toggle : () -> Bool,
   mid_w_sig : @signals.Signal[Double],
   slides : (@view.View) -> Unit,
+  from_fresh? : Bool = false,
 ) -> Unit {
   // (its station as the workspace's marks have it, what it last was while they are asked again: asked_again.mbt)
   let station_held = @sfbase.station_mark_held(src, r.station)
@@ -519,6 +520,7 @@ fn bar_middle_node(
   }
   // (fade in agent avatars smoothly when the real chat topic arrives after an initially empty/pending fresh view)
   let had_empty_agents = Ref(
+    from_fresh &&
     @signals.untracked(fn() {
       match view() {
         Some(v) => v.agents.length() == 0

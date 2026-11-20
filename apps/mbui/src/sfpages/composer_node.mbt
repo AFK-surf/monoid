@@ -574,9 +574,18 @@ fn composer_box_node(
     @signals.untracked(fn() { w.files.get().length() > 0 || w.quotes.get().length() > 0 }),
     same=fn(a, b) { a == b },
   )
+  // (while a departing new-chat composer is hidden (`away()`), keep its last open/capsule shape so its fading
+  // `over_it` choices never snap when clearing the draft triggers `morph.put(0.0)` while `b.resizes` holds height)
+  let multiline_was = Ref(false)
   let multiline = fn() {
-    composer_wants_open(w, roomy=spec.roomy || roomy(), focused=focused(), lingers=held()) ||
-    extras_alive.get()
+    if own is Some(m) && (m.away)() {
+      multiline_was.val
+    } else {
+      let on = composer_wants_open(w, roomy=spec.roomy || roomy(), focused=focused(), lingers=held()) ||
+        extras_alive.get()
+      multiline_was.val = on
+      on
+    }
   }
   let ready = fn() { composer_ready(w, locked=locked()) }
   let scale = stand.scale
@@ -1376,10 +1385,12 @@ fn composer_box_node(
     let had = held_in_was.val
     held_in_was.val = full
     let to = if on { 1.0 } else { 0.0 }
-    // (opened as its page came, the cursor put in it then: there at once)
-    if first.val || quiet != quiet_was.val || !foot.was_placed() {
+    // (opened as its page came, the cursor put in it then: there at once; ignore quiet_n bumped by another page's
+    // composer mounting, e.g. the incoming Chat composer while a departing NewChat's choices fade out)
+    let quiet_changed = quiet != quiet_was.val
+    quiet_was.val = quiet
+    if first.val || (quiet_changed && composing_node.shown == draft) || !foot.was_placed() {
       first.val = false
-      quiet_was.val = quiet
       shape.put(to)
       morph.put(to)
     } else if to != shape.target() {

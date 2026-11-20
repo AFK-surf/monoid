@@ -3658,6 +3658,7 @@ fn pa_compare(
   h : Double,
   platform : Int,
   script : String,
+  at_rest_only? : Bool = false,
 ) -> String? {
   let (old, old_failed) = pa_run(mode, false, w, h, platform, script)
   let (nodes, nodes_failed) = pa_run(mode, true, w, h, platform, script)
@@ -3692,32 +3693,36 @@ fn pa_compare(
     if at_rest && (!next_rest || i == n - 1) {
       rest_at.push(i)
     }
-    for e in pa_diff(o, d, pa_way_tol) {
-      match pa_way_row(name, e, o.at) {
-        Some(r) => used[r] = used.get(r).unwrap_or(0) + 1
-        None => {
-          if !seen.contains(e.key) {
-            seen[e.key] = []
-            order.push(e.key)
+    if !at_rest_only {
+      for e in pa_diff(o, d, pa_way_tol) {
+        match pa_way_row(name, e, o.at) {
+          Some(r) => used[r] = used.get(r).unwrap_or(0) + 1
+          None => {
+            if !seen.contains(e.key) {
+              seen[e.key] = []
+              order.push(e.key)
+            }
+            pa_stretch_add(seen[e.key], e, o.at)
           }
-          pa_stretch_add(seen[e.key], e, o.at)
         }
       }
     }
   }
-  for k in order {
-    for st in seen[k] {
-      fails.push(
-        "WAY \{k} \{st.frames} frames @\{st.from.round()}..\{st.to.round()}ms, most dx \{pa_r(st.dx)} dy \{pa_r(st.dy)} dw \{pa_r(st.dw)}, first: \{st.first}",
-      )
+  if !at_rest_only {
+    for k in order {
+      for st in seen[k] {
+        fails.push(
+          "WAY \{k} \{st.frames} frames @\{st.from.round()}..\{st.to.round()}ms, most dx \{pa_r(st.dx)} dy \{pa_r(st.dy)} dw \{pa_r(st.dw)}, first: \{st.first}",
+        )
+      }
     }
-  }
-  // (each row of pa_way_known of this drive what it let pass, or failing where it let nothing: a row left over)
-  for r, row in pa_way_known {
-    if row.drive == name {
-      match used.get(r) {
-        Some(c) => notes.push("WAY known (\{c} frames): \{pa_what_text(row.what)} @\{row.from}..\{row.to}ms ≤ dx \{row.dx} dy \{row.dy} dw \{row.dw}: \{row.why}")
-        None => fails.push("WAY known row left over (nothing it lets pass): \{pa_what_text(row.what)} @\{row.from}..\{row.to}ms")
+    // (each row of pa_way_known of this drive what it let pass, or failing where it let nothing: a row left over)
+    for r, row in pa_way_known {
+      if row.drive == name {
+        match used.get(r) {
+          Some(c) => notes.push("WAY known (\{c} frames): \{pa_what_text(row.what)} @\{row.from}..\{row.to}ms ≤ dx \{row.dx} dy \{row.dy} dw \{row.dw}: \{row.why}")
+          None => fails.push("WAY known row left over (nothing it lets pass): \{pa_what_text(row.what)} @\{row.from}..\{row.to}ms")
+        }
       }
     }
   }
@@ -4492,7 +4497,7 @@ let pa_drives : Array[(String, String, (Double, Double, Int), String)] = [
 
 ///|
 /// Runs the drives from `from` to `to` (pa_drives' places): what differs.
-fn pa_some(from : Int, to : Int) -> Unit raise {
+fn pa_some(from : Int, to : Int, at_rest_only? : Bool = false) -> Unit raise {
   // (each frame of its own, 60 a second as the films are: at a rate it has nothing to add, mbui's AGENTS.md (Only
   // run_for's way gets the extra frames: a test that walks its own frames to judge motion returns at once))
   if @ui.test_at_a_rate() {
@@ -4502,7 +4507,7 @@ fn pa_some(from : Int, to : Int) -> Unit raise {
   for i in from..<to {
     let (name, mode, screen, script) = pa_drives[i]
     let (w, h, platform) = screen
-    match pa_compare(name, mode, w, h, platform, script) {
+    match pa_compare(name, mode, w, h, platform, script, at_rest_only~) {
       Some(s) => found.push(s)
       None => ()
     }
@@ -4582,17 +4587,19 @@ test "parity chat-uploading-files: the old page and the page made as nodes, fram
   pa_some(32, 33)
 }
 
+// (node-based NewChat -> Chat upgraded to Choreography + container morph; transition frames are verified by
+// newchat_transition_wbtest.mbt while settled states keep 100% parity with the frozen legacy Ctx page)
 ///|
 test "parity wide-newchat: the old page and the page made as nodes, frame by frame and at rest" {
-  pa_some(12, 13)
+  pa_some(12, 13, at_rest_only=true)
 }
 ///|
 test "parity newchat-send: the old page and the page made as nodes, frame by frame and at rest" {
-  pa_some(13, 14)
+  pa_some(13, 14, at_rest_only=true)
 }
 ///|
 test "parity send-newchat-picture: the old page and the page made as nodes, frame by frame and at rest" {
-  pa_some(14, 15)
+  pa_some(14, 15, at_rest_only=true)
 }
 ///|
 test "parity wide-send: the old page and the page made as nodes, frame by frame and at rest" {

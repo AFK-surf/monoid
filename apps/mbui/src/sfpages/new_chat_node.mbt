@@ -672,18 +672,22 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
         },
         send: fn(d) { new_send_node(on, address, name(), d) },
         starting: fn() { @sfbase.fresh.starting.get() },
-        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; fades along
-        // choices_out while offsetting by -fresh_over_held - 4pt so capsules never drop into a multi-line composer)
+        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; wrap in a child
+        // box so we never clobber composer_node's over_drawn offset on `r`, while holding pre-send multi-line height
+        // via fresh_over_held and fading out smoothly along choices_out)
         over_it: Some(fn(r) {
-          r
-          .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(r, "choices_out") }))
-          .offset(By(fn() {
-            let p = @sfbase.fresh_progress(r, "choices_out")
-            let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
-            (0.0, dy)
-          }))
+          r.box(fn(inner) {
+            inner
+            .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(inner, "choices_out") }))
+            .offset(By(fn() {
+              let p = @sfbase.fresh_progress(inner, "choices_out")
+              let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+              (0.0, dy)
+            }))
+            |> ignore
+            new_choosers_node(inner, on, true)
+          })
           |> ignore
-          new_choosers_node(r, on, true)
         }),
         over_tall: @sf.glass_chooser_h.points().unwrap_or(0.0) + @ui.Space::px(S1_5),
         away,
