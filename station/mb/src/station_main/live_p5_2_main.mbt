@@ -414,12 +414,16 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         match call {
           "detach" => (d.detach)()
           "thaw" => (d.thaw)()
-          "shutdown" =>
+          "shutdown" if again =>
             fork_bg(self.host, "driver shutdown", async fn() {
-              (d.shutdown)(again)
+              (d.shutdown)(true)
             })
           _ => ()
         }
+      }
+      // (for good: every driver's processes ended first, then the program they share let go)
+      if call == "shutdown" && !again {
+        fork_bg(self.host, "driver shutdown", async fn() { self.drivers_shut_down() })
       }
     }
     "actors.close" =>
@@ -1123,6 +1127,20 @@ async fn P52::peer_local(
 }
 
 ///|
+/// Every driver shut down for good, then the program they share let go (`AgentsHost::let_go`): a driver's own
+/// shutdown leaves it be, so one ended first never cuts the TERM of another's processes off.
+async fn P52::drivers_shut_down(self : P52) -> Unit {
+  for d in self.drivers.values() {
+    (d.shutdown)(false) catch {
+      _ => ()
+    }
+  }
+  ignore(self.pump.wait(self.agents.let_go())) catch {
+    _ => ()
+  }
+}
+
+///|
 /// What a part asks of the hub on the bus (`hub_ask`): a method of it by name (session_hub `hub_call`).
 async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
   let hub = self.the_hub()
@@ -1152,11 +1170,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           }
         None => ()
       }
-      for d in self.drivers.values() {
-        (d.shutdown)(false) catch {
-          _ => ()
-        }
-      }
+      self.drivers_shut_down()
       if self.actors_program is Some(p) { p.close() }
       self.program.kill_now()
       Json::null()
