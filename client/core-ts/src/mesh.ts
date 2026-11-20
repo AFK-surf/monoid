@@ -328,8 +328,6 @@ export class Way {
   missed = 0;
   /// A ping of it is under way (one not answered yet is not sent again over it).
   pinging = false;
-  /// Consecutive steering ticks covered by replies on the sole main way.
-  skippedPings = 0;
   /// How long its last ping answered took, its first too (none answered: null).
   answeredMs: number | null = null;
   /// What its link's replies had brought as it was last pinged: a ping late while more came is not missed (`brought`).
@@ -2158,7 +2156,6 @@ export class Mesh {
   /// relay, unreached).
   #ping(way: Way): Effect.Effect<void> {
     return Effect.suspend(() => {
-      way.skippedPings = 0;
       if (way.pinging) {
         if (!way.brought()) way.missed++;
         way.note(PING_TIMEOUT_MS);
@@ -2199,19 +2196,8 @@ export class Mesh {
   }
 
   /// Every way to the station pinged at once.
-  #sample(addr: string, repliesCount = false): Effect.Effect<void> {
-    return Effect.suspend(() => {
-      const ways = this.#live(addr);
-      const sole = ways.length === 1 ? ways[0] : undefined;
-      // Replies prove this link is alive. No RTT sample is needed to compare
-      // ways when only the main endpoint's link exists. Probe every sixth tick.
-      if (repliesCount && this.#mainOn(addr) && sole?.link.pinned === null && sole.skippedPings < 5 && sole.brought()) {
-        sole.skippedPings++;
-        sole.missed = 0;
-        return Effect.void;
-      }
-      return Effect.asVoid(Effect.all(ways.map((w) => this.#ping(w)), { concurrency: "unbounded" }));
-    });
+  #sample(addr: string): Effect.Effect<void> {
+    return Effect.asVoid(Effect.all(this.#live(addr).map((w) => this.#ping(w)), { concurrency: "unbounded" }));
   }
 
   /// Moves the station's requests to the best way if it is clearly better than theirs (`clearlyBetter`) BETTER_TICKS
@@ -2422,7 +2408,7 @@ export class Mesh {
         if (this.#closed || !this.#links.has(addr)) break;
         const cur = this.current(addr);
         if (this.#live(addr).length === 0 && (cur === null || !cur.usable())) break;
-        yield* this.#sample(addr, true);
+        yield* this.#sample(addr);
         this.#tellHealth(addr);
         for (const w of this.#live(addr)) this.#watchPaths(addr, w);
         if (recording(this.#env.host)) this.#recordWays(addr);
