@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.88 | 123.51 |
 | [ed4d2a9a8](https://github.com/AFK-surf/monoid/commit/ed4d2a9a88be25f0b0deeb57131ee3788f5c1370) fix(scripts): load libz at run time where zlib.h i | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.88 | 123.51 |
 | [a36908324](https://github.com/AFK-surf/monoid/commit/a36908324aef46321019fdda2528355aae1f9643) fix(ci): restore TestFlight's iOS caches by previe | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.76 | 123.51 |
 | [8c92808eb](https://github.com/AFK-surf/monoid/commit/8c92808eb7faaf53b134d696ed0ec5831977063b) perf(scripts): verify SFDELTA1 chunks in delta-fas | 2.72 | 3.67 | 14.83 | 36.94 | 56.33 | 32.4 | 65.68 | 97.73 | 123.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 | [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.32 | 119.75 |
-| [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.49 | 123.55 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [ed4d2a9a8](https://github.com/AFK-surf/monoid/commit/ed4d2a9a88be25f0b0deeb57131ee3788f5c1370) fix(scripts): load libz at run time where zlib.h i | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [a36908324](https://github.com/AFK-surf/monoid/commit/a36908324aef46321019fdda2528355aae1f9643) fix(ci): restore TestFlight's iOS caches by previe | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [8c92808eb](https://github.com/AFK-surf/monoid/commit/8c92808eb7faaf53b134d696ed0ec5831977063b) perf(scripts): verify SFDELTA1 chunks in delta-fas | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
 | [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
-| [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
