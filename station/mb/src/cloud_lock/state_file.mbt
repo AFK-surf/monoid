@@ -245,6 +245,12 @@ pub fn rigs_of(raw : Json?) -> Array[Json] {
     if get(r, "version") is Some(String(v)) {
       out.push(("version", jstr(v)))
     }
+    if get(r, "ips") is Some(Array(ips)) {
+      let clean = ips.filter(x => x is String(_))
+      if clean.length() > 0 {
+        out.push(("ips", jarr(clean)))
+      }
+    }
     Some(jobj(out))
   })
 }

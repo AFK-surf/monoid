@@ -190,6 +190,16 @@ fn P51::rigs_live(self : P51) -> Unit {
           })
           .map(n => Json::string(n)),
         )
+      { "op": "rigs.stationListed", .. } =>
+        rigs.station_listed(
+          s(0),
+          s(1),
+          args.get(2).unwrap_or(Json::null()),
+          match args.get(3) {
+            None | Some(Null) => None
+            Some(a) => Some(a)
+          },
+        )
       _ => raise BusError("no such rigs call")
     }
     (said, None)

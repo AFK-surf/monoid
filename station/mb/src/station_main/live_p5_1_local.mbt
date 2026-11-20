@@ -28,6 +28,35 @@ fn shell_stream_id(s : @door.Stream) -> Json? {
 }
 
 ///|
+let shell_conns : Array[(@door.Connection, Json)] = []
+
+///|
+fn remember_shell_conn(c : @door.Connection, id : Json) -> @door.Connection {
+  shell_conns.push((c, id))
+  while shell_conns.length() > 1024 {
+    ignore(shell_conns.remove(0))
+  }
+  c
+}
+
+///|
+fn shell_conn_id(c : @door.Connection) -> Json? {
+  match shell_conns.search_by(x => physical_equal(x.0, c)) {
+    Some(i) => Some(shell_conns[i].1)
+    None => {
+      let remote = (c.remote_id)()
+      let mut found : Json? = None
+      for x in shell_conns {
+        if (x.0.remote_id)() == remote && !(x.0.is_closed)() {
+          found = Some(x.1)
+        }
+      }
+      found
+    }
+  }
+}
+
+///|
 /// A stream of the mesh's as a socket: its read, write and finish; closed, it is reset (code 0) unless both its ways
 /// ended already (its peer's end read, its own sent), when there is nothing left to reset.
 fn stream_socket(stream : @door.Stream) -> @net.Socket {
@@ -193,7 +222,10 @@ fn P51::member_stream(self : P51, answer : async (Json) -> Unit) -> async (@gate
       "stream": handle.value("stream").unwrap_or(Json::null()),
       "kind": handle.value("kind").unwrap_or(Json::null()),
       "carry": handle.value("carry").unwrap_or({ "$bytes": "" }),
-      "conn": Json::string((ask.conn.remote_id)()),
+      "conn": match shell_conn_id(ask.conn) {
+        Some(cid) => { "id": cid, "remoteId": Json::string((ask.conn.remote_id)()) }
+        None => Json::string((ask.conn.remote_id)())
+      },
     })
   }
 }

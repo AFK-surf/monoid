@@ -595,7 +595,7 @@ async fn P53Remote::gpus_now(self : P53Remote) -> Json {
 
 ///|
 /// station_list (remote.ts `stationList`): the workspace's stations, or one in detail.
-async fn P53Remote::station_list(self : P53Remote, workspace : String, _session : String, station : String) -> Json {
+async fn P53Remote::station_list(self : P53Remote, workspace : String, session : String, station : String) -> Json {
   let me = bus_station_id(self.bus)
   if station == me || station == "self" {
     return @jobs_host.detailed(self.describe("", workspace))
@@ -622,7 +622,9 @@ async fn P53Remote::station_list(self : P53Remote, workspace : String, _session 
       d
     },
     self.sandboxes().map(d => @jobs_host.Sandbox::{ name: d.name, described: of_jv(@agent_runtimes.sandbox_described(d)) }),
-    None,
+    Some(async fn(rig, answer) {
+      self.bus.rigs_call("rigs.stationListed", [jstr(workspace), jstr(session), rig, answer.unwrap_or(Json::null())])
+    }),
   )
 }
 

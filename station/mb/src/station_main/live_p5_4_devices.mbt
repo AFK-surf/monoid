@@ -569,11 +569,21 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     }
     // a member's connection on the mesh and its streams (the shell's)
     "conn.openBi" => {
-      let (got, _) = host.shell("conn.openBi", { "id": a(0).unwrap_or(Json::null()) })
+      let cid = match a(0) {
+        Some({ "id": id, .. }) => id
+        Some(other) => other
+        None => Json::null()
+      }
+      let (got, _) = host.shell("conn.openBi", { "id": cid })
       opt_field(Some(got), "id").unwrap_or(Json::null())
     }
     "conn.closed" => {
-      ignore(host.shell("conn.closed", { "id": a(0).unwrap_or(Json::null()) })) catch {
+      let cid = match a(0) {
+        Some({ "id": id, .. }) => id
+        Some(other) => other
+        None => Json::null()
+      }
+      ignore(host.shell("conn.closed", { "id": cid })) catch {
         _ => ()
       }
       Json::null()
@@ -581,7 +591,12 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     "conn.isClosed" => Json::boolean(false)
     "conn.hasAnswers" => Json::boolean(true)
     "conn.answers" => {
-      let (got, _) = host.shell("conn.answers", { "id": a(0).unwrap_or(Json::null()), "what": a(1).unwrap_or(Json::null()) })
+      let cid = match a(0) {
+        Some({ "id": id, .. }) => id
+        Some(other) => other
+        None => Json::null()
+      }
+      let (got, _) = host.shell("conn.answers", { "id": cid, "within": a(1).unwrap_or(Json::null()) })
       got
     }
     "conn.remoteId" => Json::string(p54_conn_remote(a(0)))

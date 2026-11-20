@@ -124,7 +124,7 @@ fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
     }
     ignore(ended.succeed(words))
   })
-  {
+  let conn : @door.Connection = {
     remote_id: () => remote,
     alpn: () => alpn,
     via: () => as_text(sync("conn.via")),
@@ -211,6 +211,7 @@ fn shell_connection(host : @host.Host, id : Json) -> @door.Connection {
     }),
     handed: None,
   }
+  remember_shell_conn(conn, id)
 }
 
 ///|
@@ -684,7 +685,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
       "unprotected" => Json::array(cloud.unprotected(ws~))
       "rigOf" =>
         match cloud.rig_of(text("id").unwrap_or(""), workspace=ws) {
-          Some((_, r)) => r
+          Some((w, r)) => { "workspace": Json::string(w), "rig": r }
           None => Json::null()
         }
       "rigs" => Json::array(cloud.rigs(ws.unwrap_or("")))
@@ -1406,20 +1407,27 @@ fn peer_addr(plane : Plane, target : String, ws : String?) -> Json {
     _ => {}
   }
   let ips : Array[Json] = []
-  for m in plane.cloud.memberships() {
-    match m {
-      { "peers": Array(peers), .. } =>
-        for p in peers {
-          match p {
-            { "id": String(id), "ips": Array(given), .. } if id == target =>
-              for ip in given {
-                if ip is String(_) && !ips.contains(ip) {
-                  ips.push(ip)
-                }
-              }
-            _ => ()
+  let take_ips = (entries : Array[Json]) => for p in entries {
+    match p {
+      { "id": String(id), "ips": Array(given), .. } if id == target =>
+        for ip in given {
+          if ip is String(_) && !ips.contains(ip) {
+            ips.push(ip)
           }
         }
+      _ => ()
+    }
+  }
+  for m in plane.cloud.memberships() {
+    match m {
+      Object(o) => {
+        if o.get("peers") is Some(Array(peers)) {
+          take_ips(peers)
+        }
+        if o.get("workspace") is Some(String(w)) {
+          take_ips(plane.cloud.rigs_named(w))
+        }
+      }
       _ => ()
     }
   }
