@@ -45,6 +45,14 @@ export class Station {
   /// The phone's adb offers (station/src/mesh/adb.ts), each on the connection it came on, answered 200 and held open:
   /// the latest one's connection is where the station opens its tunnels.
   offers: { conn: J; head: J }[] = [];
+  /// Held event streams (`/admin/api/events/hold`), for verifying relay policy changes do not reopen streams.
+  eventOpens = 0;
+  readonly #eventStreams = new Set<J>();
+
+  async pushEvent(line: string): Promise<void> {
+    const data = Buffer.from(`data: ${line}\n\n`);
+    for (const s of [...this.#eventStreams]) await s.write(data).catch(() => this.#eventStreams.delete(s));
+  }
 
   static async start(alpns: Uint8Array[] = [ALPN], world: World = REAL): Promise<Station> {
     return Station.bound({ alpns: alpns.map((a) => Buffer.from(a)), relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" }, world);
@@ -186,6 +194,18 @@ export class Station {
           for (let i = 0; i < pieces; i++) await stream.write(Buffer.alloc(64 * 1024, 7)).catch(() => {});
           ended = true;
           await stream.finish().catch(() => {});
+          return;
+        }
+        if (parsed.path === "/admin/api/events/hold") {
+          this.eventOpens++;
+          this.#eventStreams.add(stream);
+          try {
+            await stream.write(Buffer.from("data: ready\n\n"));
+            await stream.stopped();
+          } finally {
+            this.#eventStreams.delete(stream);
+          }
+          ended = true;
           return;
         }
         // A part uploaded: answered in a few bytes, as the station answers one (station/src/api/routes/hub.ts), whatever its size.

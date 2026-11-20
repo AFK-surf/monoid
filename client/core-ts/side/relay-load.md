@@ -28,6 +28,7 @@ Each station joins every workspace. Each workspace keeps its own authenticated s
 `RELAY_LOAD_MS` changes the window for a diagnostic run. Use `300000` for comparisons.
 `RELAY_LOAD_STREAM_MS` sends an application stream chunk at that interval. Zero, the default, leaves streams idle.
 `RELAY_LOAD_OUT` selects the output directory. Preserve each run in a separate directory.
+`RELAY_LOAD_HOT=1` (the default unless `RELAY_LOAD_CONTROLS=1`) enables the two-relay hot set on settled stations. Set `RELAY_LOAD_HOT=0` to measure the full-relay baseline.
 
 The browser has a fresh profile and no Playwright focus emulation.
 The hidden case minimizes its native window and checks `document.visibilityState` before and after the measurement.

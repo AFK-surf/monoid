@@ -198,18 +198,32 @@ class Way {
   silentUntil = 0;
   /// Direct at the addresses the other end said (`SimEndpoint.addAddr`): not a punched hole, it does not go quiet.
   atAddress = false;
+  /// Multipath connection with explicit path set (`relayControls: true`): true when every open path has been closed.
+  multipath = false;
+  noPath = false;
+  stuckLastOpen = false;
+  onAbandon: ((relay: string) => void) | null = null;
   /// Until when it is down (its relay's, or it gone quiet), or 0.
   downUntil(): number {
+    if (this.noPath) return this.net.now() + IDLE_MS;
     const silent = this.silentUntil > this.net.now() ? this.silentUntil : 0;
     if (this.relay === null) return silent;
     const down = this.net.downUntil(this.relay);
+    if (down === 0) this.stuckLastOpen = false;
     const alt = this.alts.find((r) => href(r) !== href(this.relay!) && this.net.downUntil(r) === 0);
+    if (down > 0 && this.multipath && alt === undefined && this.net.now() >= this.net.downSince(this.relay) + PATH_IDLE_MS) {
+      this.stuckLastOpen = true;
+    }
     if (down > 0 && alt !== undefined) {
-      // Its path through the relay given up once it heard nothing on it PATH_IDLE_MS, the packets go through `alt`.
+      // Its path through the relay given up once it heard nothing on it PATH_IDLE_MS, the packets go through `alt`
+      // (`#7893` stale-path rescue switches even if `this.relay` was previously retained as `LastOpenPath`).
       const moves = this.net.downSince(this.relay) + PATH_IDLE_MS;
       if (this.net.now() >= moves) {
-        this.net.note(`a path moved from ${this.relay} to ${alt}`);
+        const dead = this.relay;
+        this.net.note(`a path moved from ${dead} to ${alt}`);
+        this.stuckLastOpen = false;
         this.relay = alt;
+        this.onAbandon?.(dead);
         return this.downUntil();
       }
       return Math.max(silent, Math.min(down, moves));
@@ -225,7 +239,10 @@ class Way {
 class Line {
   #free = 0;
   #queue: { at: number; deliver: () => void }[] = [];
+  #mpQueue: { size: number; always: boolean; deliver: () => void }[] = [];
   #pumping = false;
+  #mpPumping = false;
+  #wakeWaiter: (() => void) | null = null;
   readonly net: SimNet;
   readonly way: Way;
   readonly live: () => boolean;
@@ -237,6 +254,12 @@ class Line {
     this.lost = lost;
   }
 
+  wake(): void {
+    const w = this.#wakeWaiter;
+    this.#wakeWaiter = null;
+    w?.();
+  }
+
   /// How long what was sent on it already keeps it busy from now (ms): a sender held to QUIC's window waits on it.
   backlog(): number {
     return Math.max(0, this.#free - this.net.now());
@@ -244,6 +267,15 @@ class Line {
 
   /// `always`: delivered though its connection is gone meanwhile (word of its closing).
   send(size: number, deliver: () => void, always = false): void {
+    if (this.way.multipath && this.way.downUntil() > this.net.now()) {
+      this.#mpQueue.push({ size, always, deliver });
+      if (!this.#mpPumping) void this.#pumpMultipath();
+      return;
+    }
+    this.#enqueueNow(size, deliver, always);
+  }
+
+  #enqueueNow(size: number, deliver: () => void, always: boolean): void {
     const now = this.net.now();
     const latency = this.way.oneWay() + this.net.jitter();
     const bps = this.way.bps();
@@ -260,6 +292,30 @@ class Line {
     const at = Math.max(leaves + latency + again, this.#queue.at(-1)?.at ?? 0);
     this.#queue.push({ at, deliver: always ? deliver : () => this.live() && deliver() });
     if (!this.#pumping) void this.#pump();
+  }
+
+  async #pumpMultipath(): Promise<void> {
+    this.#mpPumping = true;
+    while (this.#mpQueue.length > 0) {
+      if (!this.live() && !this.#mpQueue[0]!.always) {
+        this.#mpQueue.shift();
+        continue;
+      }
+      const down = this.way.downUntil();
+      const now = this.net.now();
+      if (down > now) {
+        await Promise.race([
+          this.net.sleep(down - now),
+          new Promise<void>((r) => {
+            this.#wakeWaiter = r;
+          }),
+        ]);
+        continue;
+      }
+      const item = this.#mpQueue.shift()!;
+      this.#enqueueNow(item.size, item.deliver, item.always);
+    }
+    this.#mpPumping = false;
   }
 
   async #pump(): Promise<void> {
@@ -422,6 +478,11 @@ export class SimConnection {
   rttMs: number;
   /// When something of it last came (a connection a whole IDLE_MS quiet while a packet is owed is gone, as QUIC's).
   heard: number;
+  #multipath = false;
+  #nextPathId = 0;
+  readonly #knownServers = new Set<string>();
+  readonly #openPaths = new Map<string, { id: string; access: string; rttMs: number; txPackets: number; lostPackets: number; stuckLastOpen?: boolean }>();
+  readonly #reopening = new Set<string>();
 
   constructor(net: SimNet, endpoint: SimEndpoint, remote: string, spoken: Uint8Array, way: Way, firstSample: number) {
     this.net = net;
@@ -497,11 +558,163 @@ export class SimConnection {
   #gone(reason: CloseReason): void {
     if (this.reason !== null) return;
     this.reason = reason;
+    this.out.wake();
     for (const s of this.#streams) s.lost();
     const take = this.#accepting;
     this.#accepting = null;
     take?.(null);
     this.#resolveClosed(reason);
+    if (this.#multipath) this.endpoint.scheduleExtraRelayCleanup();
+  }
+
+  initMultipath(knownServers: Iterable<string>, openAccesses: string[]): void {
+    this.#multipath = true;
+    this.way.multipath = true;
+    this.peer.way.multipath = true;
+    for (const s of knownServers) this.#knownServers.add(s);
+    for (const access of openAccesses) {
+      const server = this.net.server(access);
+      this.#knownServers.add(server);
+      const rttMs = 2 * (this.net.leg(access, this.way.sides[0]).ms + this.net.leg(access, this.way.sides[1]).ms);
+      this.#openPaths.set(server, { id: String(this.#nextPathId++), access, rttMs, txPackets: 0, lostPackets: 0 });
+    }
+    const onAbandon = (deadAccess: string) => {
+      const server = this.net.server(deadAccess);
+      const entry = this.#openPaths.get(server);
+      if (this.#openPaths.size <= 1) {
+        if (entry !== undefined) entry.stuckLastOpen = true;
+      } else if (!(entry?.stuckLastOpen === true && this.net.retainDeadLastOpen)) {
+        this.#openPaths.delete(server);
+      }
+      this.#syncMultipathAlts();
+      this.endpoint.scheduleExtraRelayCleanup();
+    };
+    this.way.onAbandon = onAbandon;
+    this.peer.way.onAbandon = onAbandon;
+    this.#syncMultipathAlts();
+  }
+
+  noteKnownRelays(relays: Iterable<string>): void {
+    if (!this.#multipath) return;
+    for (const r of relays) this.#knownServers.add(this.net.server(r));
+  }
+
+  hasOpenServer(server: string): boolean {
+    if (!this.#multipath || this.reason !== null) return false;
+    this.pruneDeadPaths();
+    return this.#openPaths.has(server) || this.#reopening.has(server);
+  }
+
+  pruneDeadPaths(): void {
+    if (!this.#multipath) return;
+    let changed = false;
+    const now = this.net.now();
+    for (const [server, p] of [...this.#openPaths]) {
+      if (this.net.downUntil(p.access) > 0 && now - this.net.downSince(p.access) >= PATH_IDLE_MS) {
+        if (this.#openPaths.size <= 1) {
+          p.stuckLastOpen = true;
+          continue;
+        }
+        if (p.stuckLastOpen === true && this.net.retainDeadLastOpen) continue;
+        this.#openPaths.delete(server);
+        changed = true;
+      } else if (this.net.downUntil(p.access) === 0) {
+        p.stuckLastOpen = false;
+      }
+    }
+    if (changed) {
+      this.#syncMultipathAlts();
+      this.endpoint.scheduleExtraRelayCleanup();
+    }
+  }
+
+  dropPathsWhere(drop: (server: string) => boolean): void {
+    if (!this.#multipath) return;
+    let changed = false;
+    for (const [server] of [...this.#openPaths]) {
+      if (drop(server)) {
+        if (this.#openPaths.size <= 1) continue;
+        this.#openPaths.delete(server);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.#syncMultipathAlts();
+      this.endpoint.scheduleExtraRelayCleanup();
+    }
+  }
+
+  #syncMultipathAlts(): void {
+    const accesses = [...this.#openPaths.values()].map((p) => p.access);
+    this.way.alts.splice(0, this.way.alts.length, ...accesses);
+    this.peer.way.alts.splice(0, this.peer.way.alts.length, ...accesses);
+    if (accesses.length === 0) {
+      this.way.noPath = this.peer.way.noPath = true;
+      return;
+    }
+    this.way.noPath = this.peer.way.noPath = false;
+    const now = this.net.now();
+    const cur = this.way.relay;
+    const curEntry = cur !== null ? [...this.#openPaths.values()].find((p) => p.access === cur) : undefined;
+    const curStale = cur !== null && this.net.downUntil(cur) > 0 && now - this.net.downSince(cur) >= PATH_IDLE_MS;
+    const curUp = cur !== null && curEntry !== undefined && !curStale;
+    const up = [...this.#openPaths.values()].filter((p) => this.net.downUntil(p.access) === 0).sort((a, b) => a.rttMs - b.rttMs);
+    if (!curUp) {
+      if (up[0] !== undefined) {
+        this.way.relay = this.peer.way.relay = up[0].access;
+        this.way.stuckLastOpen = this.peer.way.stuckLastOpen = false;
+        this.rttMs = up[0].rttMs;
+      } else {
+        const fallback = curEntry ?? [...this.#openPaths.values()].sort((a, b) => a.rttMs - b.rttMs)[0]!;
+        this.way.relay = this.peer.way.relay = fallback.access;
+        this.way.stuckLastOpen = this.peer.way.stuckLastOpen = fallback.stuckLastOpen === true;
+      }
+    } else if (up[0] !== undefined) {
+      const curRtt = curEntry.rttMs;
+      if (up[0].rttMs + Math.max(10, 0.2 * curRtt) < curRtt) {
+        this.way.relay = this.peer.way.relay = up[0].access;
+        this.way.stuckLastOpen = this.peer.way.stuckLastOpen = false;
+        this.rttMs = up[0].rttMs;
+      }
+    }
+    if (this.net.downUntil(this.way.relay!) === 0) {
+      this.out.wake();
+      this.peer.out.wake();
+    }
+  }
+
+  async reopenAllowedPaths(): Promise<void> {
+    if (!this.#multipath || this.reason !== null) return;
+    this.pruneDeadPaths();
+    const candidates: string[] = [];
+    for (const server of this.#knownServers) {
+      if (this.#openPaths.has(server) || this.#reopening.has(server)) continue;
+      if (!this.endpoint.canOpenServerFor(this.remote, server, this.peer.endpoint)) continue;
+      candidates.push(server);
+    }
+    await Promise.all(
+      candidates.map(async (server) => {
+        this.#reopening.add(server);
+        try {
+          const access = await this.endpoint.ensureServerConnected(server);
+          if (access === null || this.reason !== null) return;
+          if (!this.endpoint.canOpenServerFor(this.remote, server, this.peer.endpoint)) return;
+          if (this.net.downUntil(access) > 0) return;
+          const rttMs = 2 * (this.net.leg(access, this.way.sides[0]).ms + this.net.leg(access, this.way.sides[1]).ms);
+          await this.net.sleep(rttMs);
+          if (this.reason !== null || this.#openPaths.has(server)) return;
+          if (!this.endpoint.canOpenServerFor(this.remote, server, this.peer.endpoint) || this.net.downUntil(access) > 0) return;
+          this.#openPaths.set(server, { id: String(this.#nextPathId++), access, rttMs, txPackets: 0, lostPackets: 0 });
+          this.pruneDeadPaths();
+          const disabled = this.endpoint.disabledForRemote(this.remote);
+          if (disabled !== undefined) this.dropPathsWhere((s) => disabled.has(s));
+          this.#syncMultipathAlts();
+        } finally {
+          this.#reopening.delete(server);
+          this.endpoint.scheduleExtraRelayCleanup();
+        }
+      }),
+    );
   }
 
   close(code: number, reason: string): void {
@@ -521,6 +734,27 @@ export class SimConnection {
     return { rxBytes: this.counts.rxBytes, txBytes: this.counts.txBytes };
   }
   paths(): { id: string; selected: boolean; relay: string | null; ip: string | null; rttMs: number; txPackets: number; lostPackets: number }[] {
+    if (this.#multipath) {
+      this.pruneDeadPaths();
+      const now = this.net.now();
+      return [...this.#openPaths.values()].map((p) => {
+        const selected = p.access === this.way.relay;
+        if (selected && this.net.downUntil(p.access) === 0) {
+          p.txPackets = this.counts.txPackets;
+          p.lostPackets = this.counts.lostPackets;
+        }
+        const lostKeepalives = this.net.downUntil(p.access) > 0 ? Math.max(0, Math.floor((now - this.net.downSince(p.access)) / 1_000)) : 0;
+        return {
+          id: p.id,
+          selected,
+          relay: p.access,
+          ip: null,
+          rttMs: p.rttMs,
+          txPackets: p.txPackets + lostKeepalives,
+          lostPackets: p.lostPackets + lostKeepalives,
+        };
+      });
+    }
     const ip = this.way.relay === null ? (this.peer.endpoint.sockets()[0] ?? null) : null;
     return [{ id: "0", selected: true, relay: this.way.relay, ip, rttMs: this.rttMs, txPackets: this.counts.txPackets, lostPackets: this.counts.lostPackets }];
   }
@@ -537,6 +771,13 @@ export class SimEndpoint {
   readonly #keeps: string[] = [];
   /// The access selected for a relay with multiple entrances, one socket on that server at a time.
   readonly #access = new Map<string, string>();
+  readonly #boundServers = new Set<string>();
+  readonly #removedServers = new Set<string>();
+  readonly #disabledByRemote = new Map<string, Set<string>>();
+  readonly #extraCleanupTimers = new Map<string, number>();
+  #entriesCfg: { entry: string; relay: string }[] = [];
+  readonly #allowlist: Set<string> | null;
+  readonly webControls: boolean;
   readonly #incoming: SimConnection[] = [];
   #accepting: ((c: SimConnection | null) => void) | null = null;
   #held = 0;
@@ -554,16 +795,42 @@ export class SimEndpoint {
   readonly alpns: Uint8Array[];
   readonly direct: boolean;
 
-  constructor(net: SimNet, side: "device" | "station", key: Uint8Array, relays: string[], relayOnly: boolean, alpns: Uint8Array[], direct: boolean, lookup = false, entries: { entry: string; relay: string }[] = []) {
+  constructor(
+    net: SimNet,
+    side: "device" | "station",
+    key: Uint8Array,
+    relays: string[],
+    relayOnly: boolean,
+    alpns: Uint8Array[],
+    direct: boolean,
+    lookup = false,
+    entries: { entry: string; relay: string }[] = [],
+    relayAllowlist?: string[],
+    webControls = false,
+  ) {
     this.net = net;
     this.side = side;
     this.key = key;
-    this.relays = relays;
-    this.relayOnly = relayOnly;
+    this.relays = [...relays];
+    this.webControls = webControls;
+    // Browser wasm endpoints have no UDP/IP transports and do not accept incoming connections when `alpns` is empty.
+    this.relayOnly = relayOnly || (webControls && alpns.length === 0);
     this.lookup = lookup;
     this.alpns = alpns;
     this.direct = direct;
+    this.#entriesCfg = [...entries];
+    this.#allowlist =
+      relayAllowlist !== undefined && (!lookup || webControls)
+        ? new Set([
+            ...relayAllowlist.map((u) => net.server(u)),
+            ...entries.flatMap((e) => [net.server(e.entry), net.server(e.relay)]),
+          ])
+        : null;
+    if (webControls && alpns.length === 0) {
+      Object.defineProperty(this, "accept", { value: undefined, configurable: true });
+    }
     for (const r of relays) {
+      this.#boundServers.add(net.server(r));
       const choices = [r, ...entries.filter((e) => href(e.relay) === r).map((e) => href(e.entry))];
       const access = choices.sort((a, b) => net.leg(a, side).ms - net.leg(b, side).ms)[0]!;
       this.#access.set(r, access);
@@ -623,22 +890,49 @@ export class SimEndpoint {
     // Addresses that reach it one way only (`SimNet.oneWay`): the station answers on the way it heard first, and its
     // answers are lost.
     if (this.net.oneWay && !this.relayOnly && there.direct && ips.length > 0) return NEVER;
+    let allKnownServers: string[] = [];
     if (this.relayOnly || !there.direct || ips.length === 0 || (this.net.away && (addr.ips?.length ?? 0) > 0)) {
-      const told = [...(addr.relays ?? []), ...(known?.relays ?? []), ...this.relays].map(href).map((r) => this.#access.get(r) ?? r);
+      const rawTold = [...(addr.relays ?? []), ...(known?.relays ?? []), ...this.relays].map(href);
+      allKnownServers = [...new Set(rawTold.map((r) => this.net.server(r)))];
+      const told = rawTold
+        .filter((r) => !this.webControls || this.canOpenServerFor(there.id(), this.net.server(r), there))
+        .map((r) => this.#access.get(this.net.server(r)) ?? this.#access.get(r) ?? r);
       // The path through the relay of the quickest round trip carries it, as iroh's path selector chooses among relays
       // (an endpoint on one relay alone, on that one).
-      const reachable = told.filter((r) => there.reachableOn(r));
+      const reachable = told.filter((r) => there.reachableOn(r) && (!this.webControls || this.net.downUntil(r) === 0));
       const both = reachable.filter((r) => this.relays.some((o) => this.net.server(o) === this.net.server(r)));
       const ms = (r: string) => this.net.leg(r, this.side).ms + this.net.leg(r, there.side).ms;
-      relay = (both.length > 1 ? [...both].sort((x, y) => ms(x) - ms(y))[0] : reachable[0]) ?? null;
+      const pool = this.webControls ? reachable : both.length > 1 ? both : reachable;
+      relay = (pool.length > 1 ? [...pool].sort((x, y) => ms(x) - ms(y))[0] : reachable[0]) ?? null;
       if (relay === null) return NEVER;
       // iroh sends its first packets on every path it knows of, going onto each relay of them: those it was told of, and
       // those its lookups found (the relays the other end is at home on).
-      for (const r of new Set([...told, ...(this.lookup ? there.relays.map((url) => this.#access.get(url) ?? url) : [])])) this.net.onto(this, r);
+      const lookupExtra = this.lookup
+        ? there.relays
+            .filter((url) => !this.webControls || this.canOpenServerFor(there.id(), this.net.server(url), there))
+            .map((url) => this.#access.get(url) ?? url)
+        : [];
+      for (const r of new Set([...told, ...lookupExtra])) this.net.onto(this, r);
       await this.#goOnto(relay);
     }
     // A path through every relay both are on (the device's endpoint home on each of its relays, as the station is).
-    const alts = relay === null ? [] : [...new Set([...(addr.relays ?? []), ...(known?.relays ?? []), ...this.relays].map(href).map((r) => this.#access.get(r) ?? r))].filter((r) => there.reachableOn(r) && this.relays.some((o) => this.net.server(o) === this.net.server(r)));
+    const alts =
+      relay === null
+        ? []
+        : [
+            ...new Set(
+              [...(addr.relays ?? []), ...(known?.relays ?? []), ...this.relays]
+                .map(href)
+                .filter((r) => !this.webControls || this.canOpenServerFor(there.id(), this.net.server(r), there))
+                .map((r) => this.#access.get(this.net.server(r)) ?? this.#access.get(r) ?? r),
+            ),
+          ].filter(
+            (r) =>
+              there.reachableOn(r) &&
+              (this.webControls
+                ? this.net.downUntil(r) === 0
+                : this.relays.some((o) => this.net.server(o) === this.net.server(r))),
+          );
     const way = new Way(this.net, relay, [this.side, there.side], alts);
     // A handshake: a round trip, its packets lost as the way loses them (sent again after QUIC's initial probe timeout,
     // a second, twice as long each time). One the other end holds, or through a relay that is down, is never answered.
@@ -657,9 +951,10 @@ export class SimEndpoint {
     }
     const first = this.net.now() - started;
     const mine = new SimConnection(this.net, this, there.id(), spoken, way, first);
-    const theirs = new SimConnection(this.net, there, this.id(), spoken, new Way(this.net, relay, [there.side, this.side], alts), 2 * way.oneWay());
+    const theirs = new SimConnection(this.net, there, this.id(), spoken, new Way(this.net, relay, [there.side, this.side], [...alts]), 2 * way.oneWay());
     mine.peer = theirs;
     theirs.peer = mine;
+    if (this.webControls && relay !== null) mine.initMultipath(allKnownServers, alts);
     this.net.opened(mine);
     this.conns.push(mine);
     there.#arrived(theirs);
@@ -695,6 +990,14 @@ export class SimEndpoint {
 
   addAddr(addr: IrohAddr): void {
     this.#known.set(addr.id, { ...this.#known.get(addr.id), ...addr });
+    if (this.webControls && (addr.relays?.length ?? 0) > 0) {
+      for (const c of this.conns) {
+        if (c.remoteId() === addr.id && c.reason === null) {
+          c.noteKnownRelays(addr.relays!);
+          void c.reopenAllowedPaths();
+        }
+      }
+    }
     // Addresses of a station on this LAN, its connections there open: iroh opens a path to them, and their packets go
     // that way (dialled at an address, not punched: it stays).
     const there = this.net.endpoint(addr.id);
@@ -709,6 +1012,7 @@ export class SimEndpoint {
   }
   async networkChange(): Promise<void> {}
   async setRelayEntries(entries: { entry: string; relay: string }[]): Promise<void> {
+    this.#entriesCfg = [...entries];
     for (const relay of this.relays) {
       const choices = [relay, ...entries.filter((e) => href(e.relay) === relay).map((e) => href(e.entry))];
       const access = choices.sort((a, b) => this.net.leg(a, this.side).ms - this.net.leg(b, this.side).ms)[0]!;
@@ -724,10 +1028,103 @@ export class SimEndpoint {
       }
     }
   }
+
+  disabledForRemote(remoteId: string): ReadonlySet<string> | undefined {
+    return this.#disabledByRemote.get(remoteId);
+  }
+
+  canOpenServerFor(remoteId: string, server: string, peer: SimEndpoint): boolean {
+    if (this.#closed || peer.isClosed()) return false;
+    if (this.#allowlist !== null && !this.#allowlist.has(server)) return false;
+    if (this.#removedServers.has(server)) return false;
+    if (this.#disabledByRemote.get(remoteId)?.has(server)) return false;
+    if (!peer.reachableOn(server)) return false;
+    if (this.#boundServers.has(server) && !this.relays.some((r) => this.net.server(r) === server)) return false;
+    return true;
+  }
+
+  async ensureServerConnected(server: string): Promise<string | null> {
+    if (this.#closed) return null;
+    if (this.#allowlist !== null && !this.#allowlist.has(server)) return null;
+    if (this.#removedServers.has(server)) return null;
+    const home = this.relays.find((r) => this.net.server(r) === server);
+    const access = home !== undefined ? (this.#access.get(home) ?? home) : server;
+    this.#extraCleanupTimers.delete(server);
+    await this.#goOnto(access);
+    if (this.#closed || this.#removedServers.has(server)) return null;
+    return access;
+  }
+
+  /// Reclaim non-home extra relays (`theirs`) after 60 s without any open path using them (`RELAY_INACTIVE_CLEANUP_TIME`).
+  scheduleExtraRelayCleanup(): void {
+    if (!this.webControls || this.#closed) return;
+    for (const on of [...this.#onto]) {
+      const server = this.net.server(on);
+      if (this.#boundServers.has(server) || this.relays.some((r) => this.net.server(r) === server)) continue;
+      if (this.conns.some((c) => c.hasOpenServer(server))) continue;
+      const gen = (this.#extraCleanupTimers.get(server) ?? 0) + 1;
+      this.#extraCleanupTimers.set(server, gen);
+      void this.net.sleep(60_000).then(() => {
+        if (this.#closed || this.#extraCleanupTimers.get(server) !== gen) return;
+        this.#extraCleanupTimers.delete(server);
+        if (this.conns.some((c) => c.hasOpenServer(server))) return;
+        this.net.off(this, on);
+        this.#onto.delete(on);
+        this.#on.delete(on);
+      });
+    }
+  }
+
+  async setDisabledRelays(id: string, relays: string[]): Promise<void> {
+    const disabled = new Set(relays.map((u) => this.net.server(u)));
+    if (disabled.size > 0) this.#disabledByRemote.set(id, disabled);
+    else this.#disabledByRemote.delete(id);
+    const reopen: Promise<void>[] = [];
+    for (const c of this.conns) {
+      if (c.remoteId() !== id || c.reason !== null) continue;
+      c.dropPathsWhere((server) => disabled.has(server));
+      reopen.push(c.reopenAllowedPaths());
+    }
+    void Promise.all(reopen);
+  }
+
+  async removeRelay(url: string): Promise<void> {
+    const r = href(url);
+    const server = this.net.server(r);
+    if (this.#allowlist !== null && !this.#allowlist.has(server)) return;
+    this.#removedServers.add(server);
+    const idx = this.relays.findIndex((x) => this.net.server(x) === server);
+    if (idx >= 0) this.relays.splice(idx, 1);
+    const access = this.#access.get(r) ?? r;
+    this.net.off(this, access);
+    this.#onto.delete(access);
+    this.#on.delete(access);
+    for (const c of this.conns) {
+      if (c.reason === null) c.dropPathsWhere((s) => s === server);
+    }
+  }
+
+  async insertRelay(url: string): Promise<void> {
+    const r = href(url);
+    const server = this.net.server(r);
+    if (this.#allowlist !== null && !this.#allowlist.has(server)) return;
+    this.#removedServers.delete(server);
+    this.#boundServers.add(server);
+    if (!this.relays.some((x) => this.net.server(x) === server)) this.relays.push(r);
+    const choices = [r, ...this.#entriesCfg.filter((e) => href(e.relay) === r).map((e) => href(e.entry))];
+    const access = choices.sort((a, b) => this.net.leg(a, this.side).ms - this.net.leg(b, this.side).ms)[0]!;
+    this.#access.set(r, access);
+    void this.#goOnto(access).then(() => {
+      if (this.#closed || this.#removedServers.has(server)) return;
+      for (const c of this.conns) {
+        if (c.reason === null) void c.reopenAllowedPaths();
+      }
+    });
+  }
   relayStatus(): { url: string; connected: boolean; access: string }[] {
     return this.relays.map((url) => {
       const access = this.#access.get(url) ?? url;
-      return { url, connected: this.#onto.has(access), access };
+      return { url, connected: this.#onto.has(access) && (!this.webControls || this.net.downUntil(access) === 0), access };
     });
   }
   async close(): Promise<void> {
@@ -797,6 +1194,8 @@ export class SimNet {
   readonly tries: { to: string; ips: boolean }[] = [];
   /// Dials whose handshake is still going: neither done nor given up (`SimEndpoint.connect`).
   dialing = 0;
+  /// Keep a dead LastOpenPath in `conn.paths()` even after replacement paths open, until explicitly disabled.
+  retainDeadLastOpen = false;
   readonly #relays = new Map<string, { device: Leg; station: Leg }>();
   /// Entries (cloud relays.ts `relay_entries`): a URL on one relay's machine taking what comes to it on to another relay.
   readonly #entries = new Map<string, string>();
@@ -895,6 +1294,17 @@ export class SimNet {
       });
     void this.sleep(ms).then(() => this.note(`${at} up`));
   }
+  up(url: string): void {
+    const at = href(url);
+    this.#down.delete(at);
+    this.note(`${at} up`);
+    for (const c of this.#conns) {
+      if (c.reason === null) {
+        c.out.wake();
+        void c.reopenAllowedPaths();
+      }
+    }
+  }
   downUntil(relay: string): number {
     const until = this.#down.get(href(relay)) ?? 0;
     return until > this.now() ? until : 0;
@@ -932,10 +1342,26 @@ export class SimNet {
   }
 
   /// The device's iroh, as a host gives the core.
-  iroh(): Iroh {
+  iroh(options: { relayControls?: boolean } = {}): Iroh {
     return wrapIroh(
-      async (o) => this.#add(new SimEndpoint(this, "device", o.secretKey, o.relayUrls.map(href), o.relayOnly, o.alpns ?? [], false, o.lookup, o.relayEntries)) as never,
+      async (o) =>
+        this.#add(
+          new SimEndpoint(
+            this,
+            "device",
+            o.secretKey,
+            o.relayUrls.map(href),
+            o.relayOnly,
+            o.alpns ?? [],
+            false,
+            o.lookup,
+            o.relayEntries,
+            o.relayAllowlist,
+            options.relayControls === true,
+          ),
+        ) as never,
       (b) => b,
+      options,
     );
   }
 

@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { loadAddon } from "../src/hosts/node-iroh.ts";
+import { HOT_RELAYS } from "../src/mesh.ts";
 import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { GrantKey } from "../../../station/test/fake-control-plane.ts";
 import { serve } from "../../../station/src/mesh/serve.ts";
@@ -32,11 +33,15 @@ function integer(key: string, fallback: number, min = 1, max = 32): number {
   assert.ok(Number.isInteger(value) && value >= min && value <= max, key);
   return value;
 }
+const hotFlag = process.env.RELAY_LOAD_HOT ?? (process.env.RELAY_LOAD_CONTROLS === "1" ? "0" : "1");
+assert.ok(hotFlag === "0" || hotFlag === "1", "RELAY_LOAD_HOT must be 0 or 1");
+const hotRelays = { enabled: hotFlag === "1", budget: hotFlag === "1" ? HOT_RELAYS : 0 };
 const options = {
   relays: integer("RELAY_LOAD_R", 6), entries: integer("RELAY_LOAD_E", 2, 0), stations: integer("RELAY_LOAD_S", 2),
   workspaces: integer("RELAY_LOAD_W", 1), durationMs: integer("RELAY_LOAD_MS", 300_000, 1000, 900_000),
   streamMs: integer("RELAY_LOAD_STREAM_MS", 0, 0, 60_000),
   visibility: process.env.RELAY_LOAD_VISIBILITY ?? "visible",
+  hotRelays,
 };
 assert.ok(options.entries <= options.relays, "one alternate entrance on each of the first E relays");
 assert.ok(["visible", "hidden"].includes(options.visibility));
@@ -250,7 +255,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   await page.waitForFunction(() => (globalThis as any).workerReady === true);
   await until(() => capture.workers.size > 0, "CDP attached before binding the core endpoint");
   const rpc = (method: string, args: unknown = {}): Promise<any> => page.evaluate(({ method, args }: any) => (globalThis as any).callWorker(method, args), { method, args });
-  const device = await rpc("init", { relays: urls, entries, targets });
+  const device = await rpc("init", { relays: urls, entries, targets, hotRelays: hotRelays.budget });
   const now = Math.floor(Date.now() / 1000);
   const credentials = new Map(workspaces.map(ws => [ws, grant.credential({ typ: "stillfail-member+jwt" },
     { iss: "stillfail-cloud", sub: "load", email: "load@example.invalid", name: "Load", ws, role: "owner", device: device.id, sid: "load", iat: now, exp: now + 3600 })]));
@@ -287,11 +292,11 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
     const fault = await dualRelayFailure(rpc, relays, eventStreams, serverCounts, output);
     const result = { stationDescriptors: Object.fromEntries(descriptors), descriptorChanges, directoryErrors,
       transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified",
-      options, failure, continuityRequired: continuity === "1", browser: browser.version(), visibilityControl: "native-window/no-focus-emulation",
+      options, hotRelays, failure, continuityRequired: continuity === "1", browser: browser.version(), visibilityControl: "native-window/no-focus-emulation",
       actualVisibility, scriptHashes, urls, entries, targets, before, after, controls,
       measurement: measured, ...fault, serverCounts };
     await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");
-    console.log(JSON.stringify({ phase: "dual-result", recovery: result.recovery }));
+    console.log(JSON.stringify({ phase: "dual-result", hotRelays, recovery: result.recovery }));
     assert.ok(result.recovery.requests.every(r => r.status === 200), "all application requests recover");
     assert.equal(result.recovery.allStreamsDelivered, true, "every station event stream delivers");
     // The full-relay baseline can replace a link when path recovery races a new dial.
@@ -316,13 +321,13 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
     await until(async () => (await rpc("snapshot")).counts.eventChunks > chunksBefore, "existing stream delivers after relay removal");
     const final = await rpc("snapshot");
     assert.deepEqual(directoryErrors, []);
-    const result = { stationDescriptors: Object.fromEntries(descriptors), descriptorChanges, directoryErrors, transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options,
+    const result = { stationDescriptors: Object.fromEntries(descriptors), descriptorChanges, directoryErrors, transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options, hotRelays,
       browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after, final, controls,
       measurement: measured, recovery: { relay: cut.url, milliseconds: recoveryMs, ...recovered,
         eventStreamsReopened: serverCounts.eventOpens - opensBefore, allOriginalConnectionsOpen: final.links.every((link: any) => link.originalClosed === null && link.sameConnection) }, serverCounts };
     await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");
     const { perSecond: _seconds, ...total } = measured.total;
-    console.log(JSON.stringify({ phase: "result", output, total, recovery: result.recovery }));
+    console.log(JSON.stringify({ phase: "result", output, hotRelays, total, recovery: result.recovery }));
     assert.equal(result.recovery.allOriginalConnectionsOpen, true, "all original station connections survive the measurement and relay cut");
     assert.equal(result.recovery.eventStreamsReopened, 0, "relay recovery does not reopen application event streams");
   }

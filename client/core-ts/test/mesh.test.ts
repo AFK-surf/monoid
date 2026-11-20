@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -2988,6 +2988,685 @@ sim("main_endpoint_without_lookup_omits_relay_allowlist_while_pinned_endpoints_e
   assert.deepEqual(pinnedLan.relayAllowlist, []);
   assert.equal(pinnedLan.allowPublicRelays, false);
   await close(s, station, mesh);
+});
+
+/// Opens a long-lived event stream on `link` and collects delivered chunks in the background.
+async function holdEvents(s: Sim, link: Link) {
+  const reply = await request(s, link, { method: "GET", path: "/admin/api/events/hold", headers: [["accept", "text/event-stream"]] });
+  assert.equal(reply.status, 200);
+  const chunks: string[] = [];
+  const first = await s.run(reply.body.take);
+  assert.ok(first !== null);
+  chunks.push(text(first));
+  s.runner.fork(
+    Effect.gen(function* () {
+      for (;;) {
+        const next = yield* reply.body.take;
+        if (next === null) return;
+        chunks.push(text(next));
+      }
+    }),
+  );
+  return { chunks, cancel: () => reply.cancel() };
+}
+
+function relaySetOf(urls: (string | null | undefined)[]): string[] {
+  return [...new Set(urls.filter((u): u is string => typeof u === "string").map((u) => new URL(u).href))].sort();
+}
+
+// 1. 6 relays, 2 stations: after 30 s each station narrows to 2 paths (preferring distinct hostOf) and the endpoint
+// stays connected only to their union; links do not drop and event streams do not reopen. Also verifies custom
+// workspace `theirs` relays (selected in hot without becoming an endpoint home relay) and the `HOT_RELAYS + 1` union cap.
+sim("hot_relays_narrows_to_two_paths_per_station_and_keeps_links_and_streams_open", async (s) => {
+  let binds = 0;
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) => {
+      binds++;
+      return webBase.bind(o);
+    },
+  };
+  // `r0` and `r1` share hostname `a.relay.test` (different ports): `st1` has `r0` fastest (10 ms RTT), `r1` second
+  // (12 ms, same host as `r0`), and `r2` third (14 ms, distinct host `b.relay.test`), so host diversity picks `{r0, r2}`.
+  // `r3` is 15 ms (`10 + 10 < 15` is false, so a link initially on `r3` keeps `r3` selected and picks `{r0, r3}`).
+  const r0 = s.relay("https://a.relay.test:8440/", { device: { ms: 5 }, station: { ms: 5 } });
+  const r1 = s.relay("https://a.relay.test:8441/", { device: { ms: 6 }, station: { ms: 6 } });
+  const r2 = s.relay("https://b.relay.test/", { device: { ms: 7 }, station: { ms: 7 } });
+  const r3 = s.relay("https://c.relay.test/", { device: { ms: 7 }, station: { ms: 8 } });
+  const r4 = s.relay("https://d.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const r5 = s.relay("https://e.relay.test/", { device: { ms: 60 }, station: { ms: 60 } });
+  const theirsFast = s.relay("https://custom.workspace.test/", { device: { ms: 4 }, station: { ms: 4 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const st1 = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const st2 = await s.stationOn(r3, [r0, r1, r2, r4, r5]);
+  const stCustom = await s.stationOn(r0, [r1, r2, r3, r4, r5, theirsFast]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  assert.equal(binds, 1);
+
+  const addr1 = `w/${st1.id()}`;
+  const addr2 = `w/${st2.id()}`;
+  const addrCustom = `wCustom/${stCustom.id()}`;
+  const link1 = await s.run(mesh.link(addr1, grants("ok", { n: 0 })));
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  const link2 = await s.run(mesh.link(addr2, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  mesh.addAddr({ id: st2.id(), relays: allRelays });
+  const linkCustom = await s.run(mesh.link(addrCustom, grants("ok", { n: 0 }), [theirsFast]));
+  await s.time.pass(100);
+
+  const ev1 = await holdEvents(s, link1);
+  const ev2 = await holdEvents(s, link2);
+  assert.equal(st1.eventOpens, 1);
+  assert.equal(st2.eventOpens, 1);
+
+  // Before HOT_SETTLE_MS (at 20 s): still full 6 paths on st1 and all 6 official relays connected on the endpoint.
+  await s.time.pass(20_000);
+  assert.equal(link1.conn.paths().length, 6);
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+
+  // Past HOT_SETTLE_MS (at 35 s): each station narrows to 2 paths, endpoint keeps only their 3-relay official union `{r0, r2, r3}`,
+  // and `stCustom` keeps `{theirsFast, r0}` without inserting `theirsFast` as an endpoint home relay.
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(link1.conn.paths().map((p) => p.relay)), [r0, r2].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r0, r3].sort());
+  assert.deepEqual(relaySetOf(linkCustom.conn.paths().map((p) => p.relay)), [theirsFast, r0].sort());
+  assert.deepEqual(
+    relaySetOf(mesh.endpoint().relayStatus().map((r) => r.url)),
+    [r0, r2, r3].sort(),
+  );
+  assert.ok(!mesh.endpoint().relayStatus().some((r) => sameRelay(r.url, theirsFast)));
+  assert.equal(binds, 1, "narrowing must never rebind the main endpoint");
+  assert.equal(mesh.current(addr1), link1);
+  assert.equal(mesh.current(addr2), link2);
+  assert.equal(link1.closed(), null);
+  assert.equal(link2.closed(), null);
+  assert.equal(st1.eventOpens, 1, "event stream on station 1 must not reopen");
+  assert.equal(st2.eventOpens, 1, "event stream on station 2 must not reopen");
+  await st1.pushEvent("still-open-1");
+  await st2.pushEvent("still-open-2");
+  await s.until(() => ev1.chunks.some((c) => c.includes("still-open-1")) && ev2.chunks.some((c) => c.includes("still-open-2")));
+
+  mesh.dropLink(addrCustom);
+
+  // Multi-workspace cap (`HOT_RELAYS = 2`): connect two more workspaces to `st2` whose selected relays are `r4` and
+  // `r5`, while `link2` stays on `r3`, so the 3 links of `st2` want `{r0, r3}`, `{r0, r4}`, `{r0, r5}` and `st2`'s hot
+  // set still caps at `HOT_RELAYS = 2`, keeping `{r3, r4}` while moving `link2c` cleanly without closing any link.
+  s.relay(r4, { device: { ms: 7 }, station: { ms: 8 } });
+  s.relay(r5, { device: { ms: 7 }, station: { ms: 8 } });
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  s.net.down(r3, 80);
+  s.net.down(r5, 80);
+  const link2b = await s.run(mesh.link(`w2/${st2.id()}`, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  s.net.down(r0, 80);
+  s.net.down(r1, 80);
+  s.net.down(r2, 80);
+  s.net.down(r3, 80);
+  s.net.down(r4, 80);
+  const link2c = await s.run(mesh.link(`w3/${st2.id()}`, grants("ok", { n: 0 })));
+  await s.time.pass(200);
+  mesh.addAddr({ id: st2.id(), relays: allRelays });
+  await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(link2.conn.paths().length, HOT_RELAYS, "multi-workspace station hot set must cap at HOT_RELAYS");
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r3, r4].sort());
+  assert.equal(link2b.closed(), null);
+  assert.equal(link2c.closed(), null);
+  assert.equal(st2.eventOpens, 1, "event stream on station 2 must still never reopen");
+
+  ev1.cancel();
+  ev2.cancel();
+  await s.settle(st1.close());
+  await s.settle(st2.close());
+  await s.settle(stCustom.close());
+  await s.run(mesh.close());
+});
+
+// 2. Kill the active selected hot relay: within 3 s packets move to the backup hot relay, then the station relaxes and
+// re-narrows to a new pair of 2 relays without dropping the link or reopening the event stream.
+sim("hot_relays_killing_selected_relay_switches_within_3s_then_relaxes_and_repicks_two", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 35 }, station: { ms: 35 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, allRelays));
+  const id = `w/${station.id()}`;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const ev = await holdEvents(s, link);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.ok(sameRelay(link.via(), r0));
+
+  // Kill the active selected relay `r0`: traffic switches to `r1` within PATH_IDLE_MS (3 s).
+  const cutAt = s.time.now();
+  s.net.down(r0, 10 * 60_000);
+  const rep = await request(s, link, head("/admin/api/overview"));
+  const switchMs = s.time.now() - cutAt;
+  assert.equal(rep.status, 200);
+  assert.ok(switchMs <= PATH_IDLE_MS + 200, `expected failover to backup hot relay within ~3 s, took ${switchMs} ms`);
+  assert.ok(sameRelay(link.via(), r1));
+
+  // Next steer tick sees < HOT_RELAYS live paths in `hot` and relaxes immediately (`relayStatus` back to all 6).
+  await s.time.pass(TICK_MS);
+  assert.equal(mesh.endpoint().relayStatus().length, 6, "endpoint must re-insert non-hot relays on relax");
+  assert.equal(link.conn.paths().length, 5, "all 5 surviving relays open paths on the existing connection");
+
+  // After HOT_SETTLE_MS, narrows to `{r1, r2}`.
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r1, r2].sort());
+  assert.equal(mesh.current(id), link);
+  assert.equal(link.closed(), null);
+  assert.equal(station.eventOpens, 1, "event stream must not reopen");
+
+  ev.cancel();
+  await close(s, station, mesh);
+});
+
+// 3. Kill both hot relays simultaneously, both when the dead `LastOpenPath` stays retained in `conn.paths()`
+// (`retainDeadLastOpen = true`) and under default idle cleanup (`retainDeadLastOpen = false`, #7899): `missed === 1`
+// relaxes the station before `#suspect`'s `#race`, stale-path rescue (#7893) switches the existing connections onto `r2`
+// despite the retained dead path's faster frozen RTT, `RACE_GRACE_MS` keeps the original connections and open event
+// streams unbroken (`eventOpens` unchanged), and after `HOT_SETTLE_MS` the station narrows cleanly to `{r2, r3}`
+// (never re-selecting a retained dead path), then survives a second simultaneous dual-hot cut onto `{r4, r5}`.
+sim("hot_relays_killing_both_hot_relays_relaxes_and_recovers_via_other_relays", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 35 }, station: { ms: 35 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, allRelays));
+  const wire = wireOf(s, mesh);
+  const addr1 = new StationAddr("w", station.id());
+  const addr2 = new StationAddr("w2", station.id());
+  const id = addr1.toString();
+  const id2 = addr2.toString();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const link2 = await s.run(mesh.link(id2, grants("ok", { n: 0 })));
+  const ev1 = await holdEvents(s, link);
+  const ev2 = await holdEvents(s, link2);
+  assert.equal(station.eventOpens, 2);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+
+  // Part A: Keep dead `LastOpenPath` retained even after replacement paths open (`retainDeadLastOpen = true`).
+  s.net.retainDeadLastOpen = true;
+  const cutAt = s.time.now();
+  s.net.down(r0, 10 * 60_000);
+  s.net.down(r1, 10 * 60_000);
+  const getOverview = (addr: StationAddr) =>
+    s.run(Effect.scoped(wire.request(addr, { method: "GET", path: "/admin/api/overview", headers: [] }, new Uint8Array())));
+  const [rep, rep2] = await Promise.all([getOverview(addr1), getOverview(addr2)]);
+  const recoveryMs = s.time.now() - cutAt;
+  s.net.note(`dual hot-relay cut (retained LastOpenPath) recovered in ${recoveryMs} ms`);
+  assert.equal(rep.status, 200);
+  assert.equal(rep2.status, 200);
+  const deadHeld = link.conn.paths().filter((p) => sameRelay(p.relay, r0) || sameRelay(p.relay, r1));
+  assert.equal(
+    deadHeld.length,
+    1,
+    "one dead hot path ages out while the sole LastOpenPath stays retained in conn.paths() alongside reopened paths",
+  );
+  // Bounded by next steer tick (<= TICK_MS = 5 s) + ping timeout (3 s) + sync & path rescue (~300 ms).
+  assert.ok(
+    recoveryMs > 0 && recoveryMs <= TICK_MS + PING_TIMEOUT_MS + 600,
+    `expected recovery after both hot relays cut within <= ${TICK_MS + PING_TIMEOUT_MS + 600} ms, got ${recoveryMs} ms`,
+  );
+  assert.equal(mesh.current(id), link, "dual hot-relay failure must preserve the original connection on workspace 1");
+  assert.equal(mesh.current(id2), link2, "dual hot-relay failure must preserve the original connection on workspace 2");
+  assert.equal(link.closed(), null);
+  assert.equal(link2.closed(), null);
+  assert.equal(station.eventOpens, 2, "dual hot-relay failure must not reopen any application event stream");
+  assert.ok(sameRelay(link.via(), r2), `expected stale-path rescue onto fastest surviving relay r2, got ${link.via()}`);
+  assert.ok(sameRelay(link2.via(), r2), `expected stale-path rescue onto fastest surviving relay r2, got ${link2.via()}`);
+  await station.pushEvent("after-dual-cut-1");
+  await s.until(() => ev1.chunks.some((c) => c.includes("after-dual-cut-1")) && ev2.chunks.some((c) => c.includes("after-dual-cut-1")));
+
+  // Wait for `candidate` from `#race` to close and settle `HOT_SETTLE_MS`: must ignore retained dead `r0`/`r1` and pick `{r2, r3}`.
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r2, r3].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r2, r3].sort());
+  assert.equal(mesh.current(id), link);
+  assert.equal(mesh.current(id2), link2);
+  assert.equal(station.eventOpens, 2);
+
+  // Part B: Default `#7899` (`noq` `pending_idle_abandon`) mode (`retainDeadLastOpen = false`) on a second dual-hot cut `{r2, r3}`.
+  s.net.retainDeadLastOpen = false;
+  const cut2At = s.time.now();
+  s.net.down(r2, 10 * 60_000);
+  s.net.down(r3, 10 * 60_000);
+  const [repB1, repB2] = await Promise.all([getOverview(addr1), getOverview(addr2)]);
+  const recovery2Ms = s.time.now() - cut2At;
+  assert.equal(repB1.status, 200);
+  assert.equal(repB2.status, 200);
+  assert.ok(recovery2Ms > 0 && recovery2Ms <= TICK_MS + PING_TIMEOUT_MS + 600, `second dual cut recovered in ${recovery2Ms} ms`);
+  assert.ok(
+    !link.conn.paths().some((p) => sameRelay(p.relay, r2) || sameRelay(p.relay, r3)),
+    "default #7899 mode abandons the dead LastOpenPath as soon as replacement paths open",
+  );
+  assert.equal(mesh.current(id), link, "original connection survives a second dual hot-relay failure");
+  assert.equal(mesh.current(id2), link2);
+  assert.equal(station.eventOpens, 2, "event streams still never reopened across two dual hot-relay failures");
+  await station.pushEvent("after-dual-cut-2");
+  await s.until(() => ev1.chunks.some((c) => c.includes("after-dual-cut-2")) && ev2.chunks.some((c) => c.includes("after-dual-cut-2")));
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.deepEqual(relaySetOf(link.conn.paths().map((p) => p.relay)), [r4, r5].sort());
+  assert.deepEqual(relaySetOf(link2.conn.paths().map((p) => p.relay)), [r4, r5].sort());
+  assert.equal(station.eventOpens, 2);
+
+  ev1.cancel();
+  ev2.cancel();
+  await close(s, station, mesh);
+});
+
+// 4. A single missed ping (`missed === 1`) immediately relaxes the station (re-inserting cold relays and reopening all
+// 6 paths), while `#suspect`'s race keeps the original connection and open event stream when the old link answers;
+// `dropLink` also clears per-peer disabled state.
+sim("hot_relays_single_missed_ping_relaxes_immediately", async (s) => {
+  const disabledCalls: [string, string[]][] = [];
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        const orig = ep.setDisabledRelays!.bind(ep);
+        ep.setDisabledRelays = (peer, relays) => {
+          disabledCalls.push([peer, [...relays]]);
+          return orig(peer, relays);
+        };
+        return ep;
+      }),
+  };
+  const relays = Array.from({ length: 6 }, (_, i) =>
+    s.relay(`https://r${i}.relay.test/`, { device: { ms: 10 + i * 5 }, station: { ms: 10 + i * 5 } }),
+  );
+  const station = await s.stationOn(relays[0]!, relays.slice(1));
+  const mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, relays));
+  const id = `w/${station.id()}`;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  const ev = await holdEvents(s, link);
+
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(link.conn.paths().length, 2);
+  assert.equal(mesh.endpoint().relayStatus().length, 2);
+
+  // Pause all relays until the next steer tick records `missed === 1` (triggering both `#relaxStation` and `#suspect`'s
+  // `#race`), then immediately restore the relays so the existing connection answers during `#race` and stays current.
+  for (const r of relays) s.net.down(r, 20_000);
+  await s.until(() => (mesh.ways(id)[0]?.missed ?? 0) === 1, TICK_MS + PING_TIMEOUT_MS + 500);
+  for (const r of relays) s.net.up(r);
+  await s.time.pass(500);
+
+  assert.equal(mesh.endpoint().relayStatus().length, 6, "missed === 1 must relax and re-insert all 6 relays immediately");
+  assert.equal(link.conn.paths().length, 6, "all 6 relay paths reopen on the existing connection");
+  assert.equal(mesh.current(id), link, "race keeps the original connection when it answers after a transient pause");
+  assert.equal(link.closed(), null);
+  assert.equal(station.eventOpens, 1, "event stream must not reopen");
+
+  // Settle back to 2 paths, then drop the link and verify per-peer disabled state is cleared (`setDisabledRelays(id, [])`).
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(link.conn.paths().length, 2);
+  disabledCalls.length = 0;
+  mesh.dropLink(id);
+  await s.time.pass(200);
+  assert.ok(
+    disabledCalls.some(([peer, list]) => peer === station.id() && list.length === 0),
+    "dropping the station's links must clear its disabled relays on the endpoint",
+  );
+
+  ev.cancel();
+  await close(s, station, mesh);
+});
+
+// 5. Opt-out & `ways_off` preservation:
+// - Host without all three relay-control methods (including partial capability) makes zero control calls even with `hotRelays`.
+// - Host with all three methods (`relayControls: true`) makes zero control calls when `hotRelays` is omitted or `0`.
+// - Workspace turning off a relay (`off = [r0]`) continues using `pinned`/`fenced` endpoints (`#mainOn === false`) while
+//   stations with `off = []` narrow on the main endpoint.
+sim("hot_relays_opt_out_and_workspace_off_preserve_existing_behavior", async (s) => {
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const all = [r0, r1, r2];
+  const st1 = await s.stationOn(r0, [r1, r2]);
+  const st2 = await s.stationOn(r0, [r1, r2]);
+
+  // (a) Host missing relay-control methods (and partial host with only `setDisabledRelays`): untouched even with `hotRelays`.
+  let partialCalls = 0;
+  const nativeBase = s.net.iroh();
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(nativeBase.bind(o), (ep) => {
+        ep.setDisabledRelays = () => {
+          partialCalls++;
+          return Effect.void;
+        };
+        return ep;
+      }),
+  };
+  const meshPartial = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, all));
+  const partialLink = await s.run(meshPartial.link(`w/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(partialLink.pinned, null, "partial host without insertRelay/removeRelay uses pinned/fenced for off");
+  const partialMain = await s.run(meshPartial.link(`w/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.equal(partialMain.pinned, null);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(partialCalls, 0, "partial capability must never invoke setDisabledRelays");
+  assert.equal(meshPartial.endpoint().relayStatus().length, 3);
+  await s.run(meshPartial.close());
+
+  // (b) Full `relayControls: true` host with `hotRelays` omitted: zero control calls and all 3 paths kept past settle.
+  let unsetCalls = 0;
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        const sd = ep.setDisabledRelays!.bind(ep);
+        const ir = ep.insertRelay!.bind(ep);
+        const rr = ep.removeRelay!.bind(ep);
+        ep.setDisabledRelays = (p, rs) => {
+          unsetCalls++;
+          return sd(p, rs);
+        };
+        ep.insertRelay = (u) => {
+          unsetCalls++;
+          return ir(u);
+        };
+        ep.removeRelay = (u) => {
+          unsetCalls++;
+          return rr(u);
+        };
+        return ep;
+      }),
+  };
+  const meshUnset = await s.run(Mesh.make(env(s), all));
+  const unsetOff = await s.run(meshUnset.link(`w/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(unsetOff.pinned, null, "relayControls host with hotRelays unset uses pinned/fenced for off");
+  const unsetMain = await s.run(meshUnset.link(`w/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.equal(unsetMain.pinned, null);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.equal(unsetCalls, 0, "hotRelays unset must make zero relay-control calls");
+  assert.equal(unsetMain.conn.paths().length, 3);
+  assert.equal(meshUnset.endpoint().relayStatus().length, 3);
+  await s.run(meshUnset.close());
+
+  // (c) `relayControls: true` + `hotRelays: HOT_RELAYS`: workspace with `off = [r0]` uses `pinned`/`fenced` and never
+  // uses `r0`, while `st2` (`off = []`) narrows on `main` to `{r0, r1}`.
+  s.iroh = s.net.iroh({ relayControls: true });
+  const meshOn = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, all));
+  const offLink = await s.run(meshOn.link(`wsOff/${st1.id()}`, grants("ok", { n: 0 }), undefined, [r0]));
+  const mainLink = await s.run(meshOn.link(`wsOn/${st2.id()}`, grants("ok", { n: 0 })));
+  assert.notEqual(offLink.pinned, null, "workspace turning off a relay stays on pinned/fenced endpoints");
+  assert.ok(!sameRelay(meshOn.current(`wsOff/${st1.id()}`)!.via(), r0));
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.ok(!sameRelay(meshOn.current(`wsOff/${st1.id()}`)!.via(), r0));
+  assert.deepEqual(relaySetOf(mainLink.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.equal((await request(s, meshOn.current(`wsOff/${st1.id()}`)!, head("/admin/api/overview"))).status, 200);
+  await s.run(meshOn.close());
+
+  await s.settle(st1.close());
+  await s.settle(st2.close());
+});
+
+// 6. Same station in two workspaces where one has `off = []` and the other turns off either a custom workspace relay X
+// (staying on main) or an official relay `r0` (using pinned/fenced): the station never narrows, makes zero
+// `setDisabledRelays` calls, and never oscillates across steer ticks; clearing the second workspace's `off` (and having
+// all open links on main) waits a full `HOT_SETTLE_MS` (30 s) before narrowing; turning `off` back on relaxes immediately.
+sim("hot_relays_same_station_multi_workspace_off_never_oscillates_and_settles_after_clear", async (s) => {
+  const disabledCalls: [string, string[]][] = [];
+  const webBase = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(webBase.bind(o), (ep) => {
+        if (ep.setDisabledRelays) {
+          const orig = ep.setDisabledRelays.bind(ep);
+          ep.setDisabledRelays = (peer, relays) => {
+            disabledCalls.push([peer, [...relays]]);
+            return orig(peer, relays);
+          };
+        }
+        return ep;
+      }),
+  };
+
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 14 }, station: { ms: 14 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 18 }, station: { ms: 18 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 22 }, station: { ms: 22 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 26 }, station: { ms: 26 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const customX = s.relay("https://custom-x.workspace.test/", { device: { ms: 6 }, station: { ms: 6 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  // Part A: Same station `stCustom`, `wsA` has `off = []` and `wsB` turns off custom relay `customX` (both on `main`).
+  const stCustom = await s.stationOn(r0, [r1, r2, r3, r4, r5, customX]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  const addrCustomA = `wsA/${stCustom.id()}`;
+  const addrCustomB = `wsB/${stCustom.id()}`;
+  const linkCustomA = await s.run(mesh.link(addrCustomA, grants("ok", { n: 0 }), [customX], []));
+  const linkCustomB = await s.run(mesh.link(addrCustomB, grants("ok", { n: 0 }), [customX], [customX]));
+  assert.equal(linkCustomA.pinned, null);
+  assert.equal(linkCustomB.pinned, null);
+
+  for (let step = 0; step < 6; step++) {
+    await s.time.pass(15_000);
+    assert.equal(mesh.endpoint().relayStatus().length, 6, "official relays stay untouched while sibling workspace has custom off");
+    assert.ok(linkCustomA.conn.paths().length >= 6, "wsA keeps full relay paths without narrowing");
+    assert.equal(
+      disabledCalls.filter(([peer]) => peer === stCustom.id()).length,
+      0,
+      "must make zero setDisabledRelays calls while any workspace on the station has non-empty off",
+    );
+  }
+
+  // Clear `wsB`'s `off`: must NOT narrow before 30 s, then narrows once 30 s (`HOT_SETTLE_MS`) elapses.
+  mesh.setWays(addrCustomB, [customX], []);
+  await s.time.pass(20_000);
+  assert.equal(
+    disabledCalls.filter(([peer]) => peer === stCustom.id()).length,
+    0,
+    "must wait full HOT_SETTLE_MS (30 s) after clearing off before narrowing",
+  );
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(linkCustomA.conn.paths().map((p) => p.relay)), [customX, r0].sort());
+  assert.deepEqual(relaySetOf(linkCustomB.conn.paths().map((p) => p.relay)), [customX, r0].sort());
+
+  // Re-disable `customX` in `wsB`: relaxes immediately (without waiting for a steer tick) and stays un-narrowed without oscillation.
+  disabledCalls.length = 0;
+  mesh.setWays(addrCustomB, [customX], [customX]);
+  await s.time.pass(200);
+  assert.deepEqual(
+    disabledCalls.filter(([peer]) => peer === stCustom.id()),
+    [[stCustom.id(), []]],
+    "turning custom relay off again must immediately clear setDisabledRelays once",
+  );
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+  disabledCalls.length = 0;
+  await s.time.pass(2 * HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stCustom.id()).length, 0, "no oscillation after re-disabling");
+  mesh.dropLink(addrCustomA);
+  mesh.dropLink(addrCustomB);
+
+  // Part B: Same station `stOfficial`, `wsA` has `off = []` (on `main`) and `wsB` turns off official relay `r0` (on `pinned`/`fenced`).
+  const stOfficial = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const addrOffA = `wsA/${stOfficial.id()}`;
+  const addrOffB = `wsB/${stOfficial.id()}`;
+  disabledCalls.length = 0;
+  const linkOffA = await s.run(mesh.link(addrOffA, grants("ok", { n: 0 }), undefined, []));
+  const linkOffB = await s.run(mesh.link(addrOffB, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.equal(linkOffA.pinned, null);
+  assert.notEqual(linkOffB.pinned, null);
+
+  for (let step = 0; step < 6; step++) {
+    await s.time.pass(15_000);
+    assert.equal(linkOffA.conn.paths().length, 6, "main workspace must never narrow while sibling workspace is on pinned/fenced");
+    assert.equal(mesh.endpoint().relayStatus().length, 6);
+    assert.equal(
+      disabledCalls.filter(([peer]) => peer === stOfficial.id()).length,
+      0,
+      "must make zero setDisabledRelays calls and never oscillate between main and pinned ticks",
+    );
+  }
+
+  // Clearing `off` while `wsB` still holds a `pinned` link keeps the station un-narrowed (`pinned !== null`); once all
+  // open links are on `main` with `off = []`, it waits a full 30 s before narrowing, then relaxes immediately if `r0` is turned off again.
+  mesh.setWays(addrOffB, undefined, []);
+  await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+  assert.notEqual(mesh.current(addrOffB)?.pinned ?? null, null);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "still un-narrowed while a pinned link remains open");
+
+  mesh.dropLink(addrOffB);
+  const linkOffBMain = await s.run(mesh.link(addrOffB, grants("ok", { n: 0 }), undefined, []));
+  assert.equal(linkOffBMain.pinned, null);
+  await s.time.pass(20_000);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "still settling at 20 s");
+  await s.time.pass(15_000);
+  assert.deepEqual(relaySetOf(linkOffA.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+  assert.deepEqual(relaySetOf(linkOffBMain.conn.paths().map((p) => p.relay)), [r0, r1].sort());
+
+  disabledCalls.length = 0;
+  mesh.setWays(addrOffB, undefined, [r0]);
+  await s.time.pass(200);
+  assert.deepEqual(
+    disabledCalls.filter(([peer]) => peer === stOfficial.id()),
+    [[stOfficial.id(), []]],
+    "turning official relay off in sibling workspace immediately relaxes the station once",
+  );
+  assert.equal(mesh.endpoint().relayStatus().length, 6);
+  disabledCalls.length = 0;
+  await s.time.pass(2 * HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.equal(disabledCalls.filter(([peer]) => peer === stOfficial.id()).length, 0, "no oscillation while sibling workspace is pinned");
+
+  await s.run(mesh.close());
+  await s.settle(stCustom.close());
+  await s.settle(stOfficial.close());
+});
+
+// 7. Regression (`review_mixed_main_and_pinned_does_not_cycle_hot_policy`): healthy mixed `main` + `pinned` workspaces
+// on the same station over 120 s must never narrow or cycle; also covers `pinned` workspace leaving (waits 30 s then
+// narrows) and entering while narrowed (relaxes immediately and stays un-narrowed over 120 s).
+sim("review_mixed_main_and_pinned_does_not_cycle_hot_policy", async (s) => {
+  const changes: { at: number; disabled: string[] }[] = [];
+  const base = s.net.iroh({ relayControls: true });
+  let mesh: Mesh;
+  s.iroh = {
+    bind: (options) =>
+      Effect.map(base.bind(options), (ep) => {
+        if (ep.setDisabledRelays) {
+          const set = ep.setDisabledRelays.bind(ep);
+          ep.setDisabledRelays = (id, disabled) => {
+            changes.push({ at: mesh?.now() ?? 0, disabled: [...disabled] });
+            return set(id, disabled);
+          };
+        }
+        return ep;
+      }),
+  };
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const st = await s.stationOn(r0, [r1, r2]);
+  mesh = await s.run(Mesh.make({ ...env(s), hotRelays: HOT_RELAYS }, [r0, r1, r2]));
+  const mainAddr = `main/${st.id()}`;
+  const pinnedAddr = `pinned/${st.id()}`;
+  const main = await s.run(mesh.link(mainAddr, grants("ok", { n: 0 })));
+  const pinned = await s.run(mesh.link(pinnedAddr, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.equal(main.pinned, null);
+  assert.notEqual(pinned.pinned, null);
+
+  // 120 s (> 3 settle windows): zero narrowing and zero cycling while mixed.
+  await s.time.pass(120_000);
+  assert.equal(main.closed(), null);
+  assert.equal(pinned.closed(), null);
+  assert.equal(
+    changes.length,
+    0,
+    "healthy mixed main/pinned workspaces must never narrow or cycle hot policy",
+  );
+
+  // Pinned workspace leaves: waits full 30 s (`HOT_SETTLE_MS`), then narrows once to disable `r2`.
+  mesh.dropLink(pinnedAddr);
+  await s.time.pass(20_000);
+  assert.equal(changes.length, 0, "must wait full 30 s after pinned workspace leaves before narrowing");
+  await s.time.pass(15_000);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0]!.disabled, [r2]);
+
+  // Pinned workspace enters again while `st` is narrowed: relaxes immediately and never cycles over another 120 s.
+  const pinnedAgain = await s.run(mesh.link(pinnedAddr, grants("ok", { n: 0 }), undefined, [r0]));
+  assert.notEqual(pinnedAgain.pinned, null);
+  await s.time.pass(200);
+  assert.equal(changes.length, 2, "pinned workspace entering must immediately clear disabled relays once");
+  assert.deepEqual(changes[1]!.disabled, []);
+  await s.time.pass(120_000);
+  assert.equal(main.closed(), null);
+  assert.equal(pinnedAgain.closed(), null);
+  assert.equal(changes.length, 2, "must remain stable with zero further policy changes over 120 s");
+
+  await s.run(mesh.close());
+  await s.settle(st.close());
+});
+
+// 8. Regression (`review_hot_healthy_fast_backup_is_not_disabled`): a healthy faster backup relay path that has not yet
+// been adopted by the transport selector (during Gate observation, cooldown, or ACK sample hold) must never be treated
+// as dead or disabled when narrowing; the slower third relay is disabled instead.
+sim("review_hot_healthy_fast_backup_is_not_disabled", async (s) => {
+  const disabledCalls: string[][] = [];
+  const base = s.net.iroh({ relayControls: true });
+  s.iroh = {
+    bind: (options) =>
+      Effect.map(base.bind(options), (ep) => {
+        const set = ep.setDisabledRelays!.bind(ep);
+        ep.setDisabledRelays = (id, urls) => {
+          disabledCalls.push([...urls]);
+          return set(id, urls);
+        };
+        return ep;
+      }),
+  };
+  const r0 = s.relay("https://review-selected.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://review-healthy-fast.test/", { device: { ms: 11 }, station: { ms: 11 } });
+  const r2 = s.relay("https://review-slow.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const st = await s.stationOn(r0, [r1, r2]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: 2 }, [r0, r1, r2]));
+  const link = await s.run(mesh.link(`w/${st.id()}`, grants("ok", { n: 0 })));
+  const original = link.conn.paths.bind(link.conn);
+  const at = s.time.now();
+  // Inject snapshots possible during #7893 Gate observation/cooldown: live faster backup, still unselected.
+  // Transport remains healthy; counter progress and RTT changes deliberately contradict "frozen".
+  link.conn.paths = () =>
+    original().map((p) => ({
+      ...p,
+      rttMs: sameRelay(p.relay, r0) ? 50 : sameRelay(p.relay, r1) ? 5 + ((s.time.now() - at) % 1000) / 1000 : 60,
+      txPackets: p.txPackets + Math.floor((s.time.now() - at) / 1000),
+      lostPackets: 0,
+    }));
+  await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+  assert.ok(
+    !disabledCalls.some((urls) => urls.some((u) => sameRelay(u, r1))),
+    "healthy faster backup must not be classified dead merely because not yet selected",
+  );
+  assert.ok(
+    disabledCalls.some((urls) => urls.length === 1 && sameRelay(urls[0]!, r2)),
+    "the slowest relay review-slow must be disabled instead",
+  );
+  await close(s, st, mesh);
 });
 
 // ── over the addon: what only it can show, never timed ──
