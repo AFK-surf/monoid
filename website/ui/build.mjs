@@ -20,6 +20,7 @@
 //     {{page-style}}               -> alone on a line in head.html: inlines website/ui/assets/pages/<page>.css
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +60,23 @@ const esc = (s) =>
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+
+const hashCache = new Map();
+function fileHash(absPath) {
+  if (hashCache.has(absPath)) return hashCache.get(absPath);
+  if (!existsSync(absPath)) {
+    hashCache.set(absPath, "");
+    return "";
+  }
+  const h = createHash("sha256").update(readFileSync(absPath)).digest("hex").slice(0, 8);
+  hashCache.set(absPath, h);
+  return h;
+}
+
+function withVersion(url, absPath) {
+  const h = fileHash(absPath);
+  return h ? `${url}?v=${h}` : url;
+}
 
 function walkHtml(dir, base = dir) {
   if (!existsSync(dir)) return [];
@@ -161,12 +179,15 @@ function renderShot(spec, shotSizes, shotCounter, pendingShots) {
   }
 
   const { w, h } = size;
-  const oneXExists = existsSync(resolve(SHOTS_DIR, `${name}-1x.webp`));
+  const oneXPath = resolve(SHOTS_DIR, `${name}-1x.webp`);
+  const oneXExists = existsSync(oneXPath);
+  const fullUrl = withVersion(`/assets/shots/${name}.webp`, fullPath);
+  const oneXUrl = oneXExists ? withVersion(`/assets/shots/${name}-1x.webp`, oneXPath) : "";
   const isFirst = shotCounter.count++ === 0;
   const loadAttr = isFirst ? ' fetchpriority="high"' : ' loading="lazy"';
   const srcAttr = oneXExists
-    ? `src="/assets/shots/${name}-1x.webp" srcset="/assets/shots/${name}-1x.webp 1x, /assets/shots/${name}.webp 2x"`
-    : `src="/assets/shots/${name}.webp"`;
+    ? `src="${oneXUrl}" srcset="${oneXUrl} 1x, ${fullUrl} 2x"`
+    : `src="${fullUrl}"`;
   const img = `<picture><img ${srcAttr} alt="${esc(alt)}" width="${w}" height="${h}" decoding="async"${loadAttr}></picture>`;
 
   if (isPhone) {
@@ -217,10 +238,18 @@ function expandTemplate(content, ctx, shotSizes, shotCounter, pendingShots) {
     return renderShot(arg, shotSizes, shotCounter, pendingShots);
   });
 
+  // 3. Append 8-char content hashes to top-level CSS/JS/favicon asset URLs (leave <use href="/assets/icons.svg#..."> intact)
+  out = out.replace(
+    /\b(href|src)="(\/assets\/(?:site\.css|demo\.css|site\.js|playgrounds\.js|favicon\.svg))"/g,
+    (_, attr, url) => `${attr}="${withVersion(url, resolve(ASSETS_DIR, url.slice("/assets/".length)))}"`,
+  );
+
   return out;
 }
 
-function renderLiquidGlassAppHtml() {
+function renderLiquidGlassAppHtml(lgAppDir) {
+  const hostSrc = withVersion("host.js", resolve(lgAppDir, "host.js"));
+  const appSrc = withVersion("app.js", resolve(lgAppDir, "app.js"));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -266,7 +295,7 @@ function renderLiquidGlassAppHtml() {
       document.getElementById("nogl").hidden = false;
       return;
     }
-    ["host.js", "app.js"].forEach(function (src) {
+    [${JSON.stringify(hostSrc)}, ${JSON.stringify(appSrc)}].forEach(function (src) {
       var s = document.createElement("script");
       s.src = src;
       s.async = false;
@@ -335,6 +364,11 @@ function buildMbuiEmbeds(out, skipMbui) {
 <script>if (new URLSearchParams(location.search).get("MBUI_DARK") === "1") document.documentElement.dataset.dark = "1";</script>
 </head>`,
   );
+  const compHostSrc = withVersion("host.js", resolve(compAppDir, "host.js"));
+  const compAppSrc = withVersion("app.js", resolve(compAppDir, "app.js"));
+  kitHtml = kitHtml
+    .replace('load("host.js")', `load(${JSON.stringify(compHostSrc)})`)
+    .replace('load("app.js")', `load(${JSON.stringify(compAppSrc)})`);
   writeFileSync(kitIndexPath, kitHtml);
 
   console.log("[ui.monoid] building Liquid Glass gallery via libs/mbui/scripts/web.sh bundle ...");
@@ -348,7 +382,7 @@ function buildMbuiEmbeds(out, skipMbui) {
     },
     stdio: "inherit",
   });
-  writeFileSync(resolve(lgAppDir, "index.html"), renderLiquidGlassAppHtml());
+  writeFileSync(resolve(lgAppDir, "index.html"), renderLiquidGlassAppHtml(lgAppDir));
 
   const ghosttySrc = resolve(compAppDir, "ghostty-vt.wasm");
   const ghosttyDst = resolve(lgAppDir, "ghostty-vt.wasm");
@@ -371,24 +405,24 @@ function copyAssets(out) {
 }
 
 function writeMetadataFiles(out, routes) {
-  const headers = `# Cache immutable bundles, fonts, and wasm assets; keep HTML fresh.
-/assets/fonts/*
-  Cache-Control: public, max-age=31536000, immutable
-
+  const headers = `# Cache immutable fonts and wasm; revalidate versioned/unhashed site assets via ETag (304).
 /assets/shots/*
-  Cache-Control: public, max-age=31536000, immutable
+  Cache-Control: public, max-age=0, must-revalidate
 
-/assets/*
-  Cache-Control: public, max-age=3600
+/assets/*.css
+  Cache-Control: public, max-age=0, must-revalidate
 
-/components/app/assets/*
-  Cache-Control: public, max-age=31536000, immutable
+/assets/*.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/*.svg
+  Cache-Control: public, max-age=0, must-revalidate
 
 /components/app/*.js
-  Cache-Control: public, max-age=3600
+  Cache-Control: public, max-age=0, must-revalidate
 
 /liquid-glass/app/*.js
-  Cache-Control: public, max-age=3600
+  Cache-Control: public, max-age=0, must-revalidate
 
 /*.wasm
   Cache-Control: public, max-age=31536000, immutable
