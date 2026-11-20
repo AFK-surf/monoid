@@ -682,6 +682,12 @@ test("group (IM) connect live loop: connects over im/2, consumes join code, inbo
     30_000,
     () => `msgs=${JSON.stringify(server.messages(space))}; stderr=${st.err()}`,
   );
+  await given(
+    "session turn 1 idle before sending follow-up",
+    async () => (await httpJson(door, "/admin-api/overview")).body?.counts?.running === 0,
+    15_000,
+    () => st.err(),
+  );
 
   // 2c. Follow-up message without @Claude in the followed space still triggers the session turn.
   server.say(space, ada, "follow-up without mention");
@@ -690,6 +696,12 @@ test("group (IM) connect live loop: connects over im/2, consumes join code, inbo
     () => server.messages(space).some((m) => m.author === botMemberId && m.text.includes("group-reply-2")),
     30_000,
     () => `msgs=${JSON.stringify(server.messages(space))}; stderr=${st.err()}`,
+  );
+  await given(
+    "session turn 2 idle before sending LEAVE_NOW",
+    async () => (await httpJson(door, "/admin-api/overview")).body?.counts?.running === 0,
+    15_000,
+    () => st.err(),
   );
 
   // 2d. Trigger `chat_leave` via LEAVE_NOW -> bot posts farewell and leaves; subsequent unmentioned message is ignored.
