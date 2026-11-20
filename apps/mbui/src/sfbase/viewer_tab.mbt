@@ -35,6 +35,14 @@ pub fn opens_beside(path : String, name : String) -> Bool {
 }
 
 ///|
+/// Whether file `a`, asked over the whole window (open_preview's `full`: pressed, the command key not held), opens in the
+/// whole window's viewer of its own, not as its tab over the whole window: a picture, a film or a song, which fly from
+/// their thumbnail there and back into it as they close.
+pub fn opens_in_viewer(a : Attachment) -> Bool {
+  preview_kind(a.name).0 is Some(KImage | KVideo | KAudio)
+}
+
+///|
 /// Whether a file at `path` named `name` is offered to be opened beside the page (a menu's 在侧边打开, the whole
 /// window's 移到侧边): where the shell has a side panel for the page in view (Shell's `beside_room`, followed as it
 /// changes: beside_room_now), and it opens there.

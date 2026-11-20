@@ -1,18 +1,18 @@
 // A passage of a message picked (a finger held on its words) and a picture in the chat opened, on a wide window a
 // finger points at: what a tap on the picture does to what is picked, and what closes it, each in turn. On a wide
-// window a picture opens as a tab of the chat's over the whole window (sfbase's tab_full.mbt), closed by back, its
-// tab with it.
+// window a picture tapped opens in the whole window's viewer (sfbase's opens_in_viewer), closed by back.
 
 ///|
-/// Whether the chat's picture is open: its tab over the whole window, or in the panel beside the chat.
+/// Whether the chat's picture is open: in the whole window's viewer, its tab over the whole window, or in the panel
+/// beside the chat.
 fn picture_open(t : @ui.Tester) -> Bool {
-  @sfbase.tab_full.get() is Some(_) || t.all(Tab, label="compare.png").length() > 0
+  viewer.get() is Some(_) || @sfbase.tab_full.get() is Some(_) || t.all(Tab, label="compare.png").length() > 0
 }
 
 ///|
 /// The chat's picture closed: by back over the whole window, else by its tab's ×; the moves it sets off done.
 fn picture_closed(t : @ui.Tester) -> Unit raise {
-  if @sfbase.tab_full.get() is Some(_) {
+  if viewer.get() is Some(_) || @sfbase.tab_full.get() is Some(_) {
     t.back()
   } else {
     t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", "compare.png")]))
@@ -31,7 +31,7 @@ fn picture_at(t : @ui.Tester) -> (Double, Double) raise {
 }
 
 ///|
-test "touch wide: words picked, then a picture in the chat tapped: the tap lets go of what is picked and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it and its tab, the chat as it was" {
+test "touch wide: words picked, then a picture in the chat tapped: the tap lets go of what is picked and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it, the chat as it was" {
   let t = touch_wide_tester()
   // (scrolled up to the picture, its message's words beside it)
   let mut tries = 0
@@ -49,9 +49,9 @@ test "touch wide: words picked, then a picture in the chat tapped: the tap lets 
   // (nothing picked: the picture opens, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is Some(_), msg="the picture there opens over the whole window")
+  assert_true(viewer.get() is Some(_), msg="the picture there opens over the whole window")
   picture_closed(t)
-  assert_true(!picture_open(t), msg="closed, its tab with it")
+  assert_true(!picture_open(t), msg="closed")
   let (px, py) = picture_at(t)
   // (words picked, then the picture tapped)
   hold_on(t, "改好后的样子") |> ignore
@@ -74,7 +74,7 @@ test "touch wide: words picked, then a picture in the chat tapped: the tap lets 
 }
 
 ///|
-test "touch wide, a tall window: a link held (its menu up), then a picture in the chat tapped: the tap closes the menu and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it and its tab, the chat as it was" {
+test "touch wide, a tall window: a link held (its menu up), then a picture in the chat tapped: the tap closes the menu and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it, the chat as it was" {
   new_run()
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -94,9 +94,9 @@ test "touch wide, a tall window: a link held (its menu up), then a picture in th
   // (nothing over it: the picture opens, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is Some(_), msg="the picture there opens over the whole window")
+  assert_true(viewer.get() is Some(_), msg="the picture there opens over the whole window")
   picture_closed(t)
-  assert_true(!picture_open(t), msg="closed, its tab with it")
+  assert_true(!picture_open(t), msg="closed")
   let (px, py) = picture_at(t)
   let link = match t.run_rects("example.com/bench/list") {
     [r, ..] => r

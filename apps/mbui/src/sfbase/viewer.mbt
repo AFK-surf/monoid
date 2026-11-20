@@ -1161,7 +1161,8 @@ pub fn preview_rest() -> Double {
 /// file a message names by its path (`a.path`), not one sent with it. Where the shell has a side panel for the page in
 /// view (Shell's `beside`), a tab there, whatever it is (a picture stepping through its chat's there, marked there; a
 /// film or a song played there at once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏
-/// pressed; by default unless the command key is held: full_asked); `beside`: asked beside the page and no more (a
+/// pressed; by default unless the command key is held: full_asked), a picture, a film or a song pressed so (`full` not
+/// said) in the viewer of its own instead, flown from its thumbnail (opens_in_viewer); `beside`: asked beside the page and no more (a
 /// menu's 在侧边打开, the preview's 移到侧边), or, false, over everything in the viewer of its own. Anything not put in a tab opens over everything in that
 /// viewer, what the tabs beside the page play paused; `start`: where a film or a song starts there (ms), else where it
 /// was left.
@@ -1177,13 +1178,16 @@ pub fn open_preview(
   full? : Bool,
   start? : Double = -1.0,
 ) -> Unit {
+  // (pressed, the command key not held: a picture, a film or a song in the viewer of its own, flown from its thumbnail
+  // and back into it, not its tab over the whole window; asked so by name, full=true, its tab still)
+  let pressed_full = full is None && beside is None && full_asked()
   let full = match (full, beside) {
     (Some(f), _) => f
     (None, Some(_)) => false
-    (None, None) => full_asked()
+    (None, None) => pressed_full
   }
   let beside = beside.unwrap_or(true)
-  if beside && opens_beside(a.path, a.name) {
+  if beside && opens_beside(a.path, a.name) && !(pressed_full && opens_in_viewer(a)) {
     let tab = view_tab_key(station, key, a, drive, named)
     tab_facts_said(tab, a)
     // (what it steps through as it was opened, its picture's size as its message says it, which of its message's it

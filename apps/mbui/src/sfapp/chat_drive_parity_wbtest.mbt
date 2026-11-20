@@ -966,7 +966,7 @@ let pa_rest_off_known : Array[(String, String, Double, Double, Double, String)] 
 /// while the agent works on any of them (chat_body_node's ChatTurnsOut: its line out with the answer to its last turn).
 let pa_rest_known : Array[(String, Double, Double, String)] = [
   ("send-over-line", 3700.0, 5100.0, "the agent's line kept while it works on the second words as nodes; the old page's let go as the first's answer came"),
-  ("desk-notice-card-viewer", 5183.0, 8300.0, "a picture opened over the whole window from a list scrolled up, its tab put in the panel under it at once (pa_why_panel_under), the old page's column narrowed and widened again as it closes, the page made as nodes' left as wide as it was (sfdesk's side_unseen): as nodes what is read stays where it was (View::read_from) and the agent's line at work keeps its words cut short (message_working_node's line.cuts); the old page's 16 higher, its top row held by its top, its line's words not drawn"),
+  ("desk-notice-card-viewer", 5183.0, 8300.0, "a picture opened in the whole window's viewer from a list scrolled up and shut: as nodes what is read stays where it was (View::read_from) and the agent's line at work keeps its words cut short (message_working_node's line.cuts); the old page's 16 higher, its top row held by its top, its line's words not drawn"),
 ]
 
 ///|
@@ -1104,9 +1104,6 @@ let pa_why_spit : String = "the answer's words as they are spat out, from their 
 
 ///|
 let pa_why_float : String = "the answer's head line (Claude, its time) as the agent's picture sets out (Float): as nodes laid out where it rests from that frame; the old page's a frame later, from beside the picture"
-
-///|
-let pa_why_panel_under : String = "a file opened over the whole window, its tab put in the side panel under it only to go there and taken out as it closes (sfbase's tab_full.mbt, `lone`; sfdesk's side_under): the panel at once, no slide; as nodes the column takes its width from that frame (on the tape; beside the page, a panel opened only for it shown closed and the column left as it is: side_unseen), the old page a frame later (its laid_w), under the whole window's layer as it comes and as it goes"
 
 ///|
 let pa_why_panel_first : String = "the side panel set off and come to rest: as nodes the column laid out at the narrower end from the cause's frame (column_laid, column_sets_off) and its words moved across with the page; the old page takes the width a frame later (page_way, its laid_w)"
@@ -3082,14 +3079,15 @@ let pa_way_known : Array[PaWay] = [
   { drive: "viewer-open", what: Rows, from: 2067.0, to: 2067.0, dx: pa_way_tol, dy: 20.7, dw: pa_way_tol, why: pa_why_wheel },
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 17.0, to: 633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "viewer-video", what: Key("old alone 「0:13」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "viewer-video-medium", what: Key("old alone 「0:13」"), from: 1550.0, to: 1550.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("composer"), from: 5483.0, to: 6983.0, dx: 0.2, dy: 42.1, dw: 42.1, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「按空格输入」"), from: 6733.0, to: 7300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「发布清单 第三项已经核对完：安装包签名正确。」"), from: 6767.0, to: 7117.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「1 小时前」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「发送到」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
+  { drive: "desk-notice-card-viewer", what: Key("old alone 「星火#发布」"), from: 6800.0, to: 7017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 2183.0, to: 3700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
-  { drive: "viewer-video-medium", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 1550.0, to: 1550.0, dx: 29.1, dy: 0.2, dw: 0.2, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("words 「发消息」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("words 「打好的发布包在这里，下载下来装一下看看。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("words 「推送截图前要先登录 gh。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("composer"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
-  { drive: "viewer-video-medium", what: Key("composer"), from: 3067.0, to: 3067.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
   { drive: "picture-lift", what: Key("nodes alone 「1 小时前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「40 分钟前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
