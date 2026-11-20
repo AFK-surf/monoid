@@ -28,6 +28,7 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "quote": [7],
   "service-page": [7],
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
+  "drive-lend": [7],
   "drive-play": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
