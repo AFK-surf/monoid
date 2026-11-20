@@ -209,9 +209,10 @@ test("markdown_kept_on_the_device_is_read_as_this_reading_reads_it_or_its_readin
     "[对话](https://still.fail/o/ws1/st1/c-1) https://still.fail/w/ws1/s/st1/screen/desktop [https://github.com/a/b/pull/1](https://github.com/a/b/pull/1)",
     "See `C:\\work\\report.md:12` and `D:/work/notes.txt#L3`.",
     "| 类型 | 文件 |\n|---|---|\n| `\"whole\" | \"tasks\"` ``a || b`` `\\|x\\|` | `libs/a/b.ts:3` `b.ts` |",
+    "- 目标：\\[J=\\sum_t r_t + \\alpha\\,\\mathcal{H}\\]，数组 a\\[0\\] 和引用 \\[1\\]",
   ];
   const digest = createHash("sha256").update(JSON.stringify(texts.map(parse))).digest("hex").slice(0, 16);
-  assert.equal(`${MD_READING}:${digest}`, "12:7b2ce21b4cde91ad", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
+  assert.equal(`${MD_READING}:${digest}`, "13:f2a19cb857d4f0d1", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
 });
 
 test("a_link_or_picture_alone_on_its_line_is_a_paragraph_of_its_own_with_no_blank_line_round_it", () => {
@@ -425,6 +426,18 @@ test("bracket math respects code, escaped delimiters, TeX escapes and missing cl
   assert.deepEqual(read("\\[\nx"), [["p", ["[\nx"]]]);
   assert.deepEqual(read(String.raw`\(x\]`), [["p", ["(x]"]]]);
   assert.deepEqual(read("\\(x\\) 与 \\(y\\)"), [["p", [["code", { content: "x", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+});
+
+test("bracket math written mid-line is a formula where it holds TeX, else escaped brackets", () => {
+  // an agent's display formula after words on its line: TeX's own escapes (`\\,`, `\\Big[`) stay the formula's
+  const tex = String.raw`J(\pi)=\mathbb{E}\Big[\sum_t r_t + \alpha\,\mathcal{H}(\pi(\cdot|s_t))\Big]`;
+  assert.deepEqual(read(`- 目标：\\[${tex}\\]`), [["list", [["li", ["目标：", ["code", { content: tex, math: true }]]]]]]);
+  assert.deepEqual(read(String.raw`其中 \[x^2\] 与 \(y\)`), [["p", ["其中 ", ["code", { content: "x^2", math: true }], " 与 ", ["code", { content: "y", math: true }]]]]);
+  assert.deepEqual(withoutDrawing(parse(String.raw`a \[x_1\]`)), [["p", [[0, 2], ["code", { content: [4, 7], math: true }]]]]);
+  assert.ok((parse(String.raw`a \[x_1\]`)[0] as any)[1][1][1].drawing, "drawn");
+  // Markdown's escaped brackets, and an open one, stay words
+  for (const [text, words] of [[String.raw`数组 a\[0\] 和 \[1\]`, "数组 a[0] 和 [1]"], [String.raw`见 \[x^2`, "见 [x^2"]])
+    assert.deepEqual(read(text), [["p", [words]]]);
 });
 
 test("unclosed display math cannot consume text outside its quote or list", () => {
