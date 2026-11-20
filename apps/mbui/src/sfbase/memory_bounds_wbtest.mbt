@@ -231,3 +231,140 @@ test "mermaid's charts beyond 64, or 16 MB of SVG: the least lately drawn let go
   assert_eq(mermaid_bytes.val, 0)
   assert_true(mermaid_used.is_empty())
 }
+
+///|
+test "a mermaid chart a node shows is never let go of for the bound; let go of once that node goes" {
+  bounds_run()
+  mermaid_given.val = true
+  let src = made_source(call=fn(name, _, done) {
+    if name == "mermaid.chart" {
+      done(Ok({ "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"/>", "width": 10, "height": 10 }))
+    } else {
+      done(Err({ "code": "unknown_call", "message": name }))
+    }
+  })
+  let on = @signals.signal(true)
+  let t = @ui.Tester::new(
+    fn(_c) {  },
+    tree=fn(root) {
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.show(fn() { on.get() }, fn(b) {
+        viz_mermaid_node(b, src, "st", fn() { "graph TD; A-->B" }, fn() { 0L }, tips)
+      })
+    },
+    w=400.0,
+    h=300.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_eq(mermaid_shown.length(), 1)
+  let key = mermaid_shown.keys().to_array()[0]
+  assert_true(mermaid_charts.get(key) is Some(ChartMade(_, _, _, _)))
+  // (64 charts more, each shown by a node too, drawn later than it: it is the least lately drawn)
+  for i in 0..<64 {
+    mermaid_charts["c\{i}"] = ChartComing
+    mermaid_shown_by("", "c\{i}")
+    mermaid_chart_made("c\{i}", bounds_bytes(10), 10.0, 10.0)
+    mermaid_trim("c\{i}")
+  }
+  assert_eq(mermaid_charts.length(), 65)
+  assert_true(mermaid_charts.get(key) is Some(ChartMade(_, _, _, _)), msg="shown by a node: kept")
+  assert_true(@ui.has_image("mem:mermaid/" + key))
+  // (its node gone: let go of then, more being kept than mermaid keeps)
+  on.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_false(mermaid_shown.contains(key))
+  assert_true(mermaid_charts.get(key) is None, msg="let go of as its node went")
+  assert_false(@ui.has_image("mem:mermaid/" + key))
+  assert_eq(mermaid_charts.length(), 64)
+}
+
+///|
+test "a first frame a node grabbed is never let go of for the bound while that node shows it; asked for again, kept the latest" {
+  bounds_run()
+  // (come to what it is before its node is made: its picture here)
+  pv_first["draft/v"] = { view: None, picture: "mem:pv-first/v" }
+  let on = @signals.signal(true)
+  let shown : Ref[() -> String] = Ref(fn() { "" })
+  let t = @ui.Tester::new(
+    fn(_c) {  },
+    tree=fn(root) {
+      root.show(fn() { on.get() }, fn(b) { shown.val = bytes_first_frame_node(b, "draft/v", "v.mp4", b"file") })
+    },
+    w=400.0,
+    h=300.0,
+  )
+  // (its picture handed over in the run: a Tester begins with none)
+  @ui.add_image("mem:pv-first/v", bounds_bytes(10))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(pv_first_shown.get("draft/v"), Some(1))
+  assert_eq((shown.val)(), "mem:pv-first/v")
+  for i in 0..<64 {
+    pv_first["f\{i}"] = { view: None, picture: "!" }
+    pv_first_asked("f\{i}")
+  }
+  assert_true(pv_first.get("draft/v") is Some(_), msg="shown by a node: kept")
+  assert_true(@ui.has_image("mem:pv-first/v"))
+  on.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_true(pv_first_shown.is_empty())
+  pv_first["f64"] = { view: None, picture: "!" }
+  pv_first_asked("f64")
+  assert_true(pv_first.get("draft/v") is None, msg="let go of once no node shows it")
+  assert_false(@ui.has_image("mem:pv-first/v"))
+}
+
+///|
+/// A drive's image `name` on station `st`, as a folder lists it.
+fn bounds_drive(name : String) -> DriveFile {
+  { station: "st", root: "r", path: name, name, size: 10.0, mtime: 0.0, kind: "image", mime: "image/png" }
+}
+
+///|
+test "a picture stepped from: its whole picture kept while the strip slides it out, let go of once it does not" {
+  bounds_run()
+  let files = [bounds_drive("a.png"), bounds_drive("b.png")]
+  let src = made_source()
+  let v = new_viewer("st", "", drive_attachment(files[0]), Some(files[0]), InFolder(files))
+  let key = v.image_name()
+  v.image = key
+  v.zoom.boxed(400.0, 300.0, at=0.0)
+  v.zoom.natural(10.0, 10.0, at=0.0)
+  viewer.set(Some(v))
+  let stepped = Ref(false)
+  let t = @ui.Tester::new(
+    fn(c) {
+      if !stepped.val {
+        stepped.val = true
+        v.go(c, src, 1, 0.0)
+      }
+    },
+    w=400.0,
+    h=300.0,
+  )
+  // (its picture handed over in the run: a Tester begins with none)
+  @ui.add_image(key, bounds_bytes(10))
+  t.draw()
+  assert_true(viewer.untracked() is Some(n) && n.file.path == "b.png", msg="stepped to the one after")
+  assert_true(pv_strip.leaving.map(fn(l) { l.picture }) == Some(key))
+  assert_true(@ui.has_image(key), msg="the strip slides it out")
+  // (the viewer closed: the strip with it, and the picture stepped from let go of)
+  close_now()
+  assert_false(@ui.has_image(key))
+  assert_true(pv_previews_gone.is_empty())
+}
+
+///|
+test "a viewer read ahead beside the one shown, no longer beside it: let go of, its whole picture with it" {
+  bounds_run()
+  let src = made_source()
+  let shown = new_viewer("st", "", drive_attachment(bounds_drive("a.png")), None, NoSteps)
+  let far = new_viewer("st", "", drive_attachment(bounds_drive("z.png")), None, NoSteps)
+  let key = far.image_name()
+  @ui.add_image(key, bounds_bytes(10))
+  far.image = key
+  let kept : Map[String, Viewer] = Map([])
+  kept[far.thumb_id()] = far
+  shown.read_near(src, None, None, kept~)
+  assert_true(kept.is_empty())
+  assert_false(@ui.has_image(key), msg="let go of with its viewer")
+}

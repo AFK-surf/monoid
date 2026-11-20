@@ -40,6 +40,29 @@ let mermaid_tick : Ref[Int] = { val: 0 }
 let mermaid_bytes : Ref[Int] = { val: 0 }
 
 ///|
+/// How many nodes of the window's tree show each chart (viz_mermaid_node's, while it is made: they read it once, as
+/// mermaid_made says it changed, and would not ask for it again), by what was asked: never let go of while any does.
+// kept across runs: emptied by viz_pages_reset
+let mermaid_shown : Map[String, Int] = Map([])
+
+///|
+/// A node shows chart `key` now ("" none) in place of `was` ("" none): counted (mermaid_shown), drawn now.
+fn mermaid_shown_by(was : String, key : String) -> Unit {
+  if was != "" {
+    let n = mermaid_shown.get(was).unwrap_or(0) - 1
+    if n > 0 {
+      mermaid_shown[was] = n
+    } else {
+      mermaid_shown.remove(was)
+    }
+  }
+  if key != "" {
+    mermaid_shown[key] = mermaid_shown.get(key).unwrap_or(0) + 1
+    mermaid_touch(key)
+  }
+}
+
+///|
 /// Chart `key` drawn now (mermaid_used).
 fn mermaid_touch(key : String) -> Unit {
   mermaid_tick.val += 1
@@ -54,7 +77,7 @@ fn mermaid_trim(kept : String) -> Unit {
     let mut oldest = ""
     let mut when = 0
     for k, t in mermaid_used {
-      guard k != kept && !(mermaid_charts.get(k) is Some(ChartComing)) else { continue }
+      guard k != kept && !(mermaid_charts.get(k) is Some(ChartComing)) && !mermaid_shown.contains(k) else { continue }
       if oldest == "" || t < when {
         oldest = k
         when = t

@@ -472,6 +472,12 @@ let pv_first_used : Map[String, Int] = Map([])
 let pv_first_n : Ref[Int] = { val: 0 }
 
 ///|
+/// How many nodes of the window's tree that grabbed each first frame (first_frame_by) show it, by the thumbnail's id:
+/// never let go of while any does.
+// kept across runs: let go with pv_first (viewer's clear)
+let pv_first_shown : Map[String, Int] = Map([])
+
+///|
 /// First frame `id` asked for now; then those come to what they are (no player of theirs grabbing) beyond
 /// pv_frames_max let go of, the least lately asked for first, never `id`: their picture too where nothing else is drawn
 /// by it (a draft's file's, a message's sent from here, a thumbnail's, a viewer's), what showed it told (pv_first_told).
@@ -484,7 +490,7 @@ fn pv_first_asked(id : String) -> Unit {
     let mut oldest = ""
     let mut when = 0
     for k, t in pv_first_used {
-      guard k != id && pv_first.get(k) is Some(f) && f.view is None else { continue }
+      guard k != id && pv_first.get(k) is Some(f) && f.view is None && !pv_first_shown.contains(k) else { continue }
       if oldest == "" || t < when {
         oldest = k
         when = t
@@ -582,6 +588,21 @@ fn first_frame_by(v : @view.View, id : String, name : String, size : Double, ope
       Some(f) => f.picture
       None => ""
     }
+  }
+  // (shown by `v` while it is made: never let go of meanwhile, as what shows it would not grab it again)
+  pv_first_shown[id] = pv_first_shown.get(id).unwrap_or(0) + 1
+  v.owns(fn() {
+    let n = pv_first_shown.get(id).unwrap_or(0) - 1
+    if n > 0 {
+      pv_first_shown[id] = n
+    } else {
+      pv_first_shown.remove(id)
+    }
+  })
+  |> ignore
+  if pv_first.get(id) is Some(f) && f.view is None {
+    // (come to what it is before: asked for now, kept the latest)
+    pv_first_asked(id)
   }
   if !pv_first.contains(id) {
     if size <= 0.0 || size > big_file {
@@ -1643,15 +1664,53 @@ pub fn Viewer::let_go(self : Viewer) -> Unit {
     Some(p) => p.close()
     None => ()
   }
-  // (its whole picture, read here, let go of where nothing else shows it: a chat's picture given it, ChatImages::whole,
-  // keeps it; drawn again, it is put up again from its bytes, Viewer::picture)
-  let image = self.image
-  if image.has_prefix("mem:preview/") && !whole_given_shown(image) && !preview_shown(image, but=self) {
-    @ui.forget_image(image)
-    self.image = ""
-  }
+  self.let_go_image()
   // (the frames kept for thumbnails replaced while it was open or going, let go of now nothing flies with them)
   pv_frames_sweep(but=self)
+}
+
+///|
+/// Its whole picture, read here, let go of where nothing else shows it (a chat's picture given it, ChatImages::whole,
+/// keeps it); where something still does (the strip sliding it out as another is stepped to), once nothing does
+/// (pv_previews_gone). Drawn again by it, it is put up again from its bytes (Viewer::picture).
+fn Viewer::let_go_image(self : Viewer) -> Unit {
+  let image = self.image
+  if image.has_prefix("mem:preview/") && !whole_given_shown(image) {
+    if preview_shown(image, but=self) {
+      pv_previews_gone.push(image)
+    } else {
+      @ui.forget_image(image)
+      self.image = ""
+    }
+  }
+  pv_previews_sweep(but=self)
+}
+
+///|
+/// Whole pictures of viewers let go of while something still showed them (Viewer::let_go_image), let go of once
+/// nothing does (pv_previews_sweep).
+// kept across runs: emptied by file_viewer_reset
+let pv_previews_gone : Array[String] = []
+
+///|
+/// The whole pictures waiting to be let go of (pv_previews_gone) let go of where nothing but `but` shows them now:
+/// those a chat's picture was given since are its own to let go of.
+fn pv_previews_sweep(but? : Viewer) -> Unit {
+  let still : Array[String] = []
+  for key in pv_previews_gone {
+    if whole_given_shown(key) {
+      continue
+    }
+    if preview_shown(key, but?=but) {
+      if !still.contains(key) {
+        still.push(key)
+      }
+    } else {
+      @ui.forget_image(key)
+    }
+  }
+  pv_previews_gone.clear()
+  pv_previews_gone.push_iter(still.iter())
 }
 
 ///|
@@ -3169,8 +3228,17 @@ pub fn Viewer::read_near(
   }
   let gone = []
   kept.each(fn(id, _) { if !ids.contains(id) && id != self.thumb_id() { gone.push(id) } })
+  let left : Array[Viewer] = []
   for id in gone {
+    match kept.get(id) {
+      Some(v) => left.push(v)
+      None => ()
+    }
     kept.remove(id)
+  }
+  // (read ahead and no longer beside it: what each read let go of, now none of them is kept)
+  for v in left {
+    v.let_go()
   }
 }
 
@@ -3234,6 +3302,8 @@ pub fn Viewer::go(self : Viewer, c : @ui.Ctx, src : Source, dir : Int, velocity 
       n.awake_said()
       viewer.set(Some(n))
       pv_strip.near.remove(n.thumb_id())
+      // (its whole picture let go of once the strip no longer slides it out: pv_previews_gone)
+      self.let_go_image()
       strip.put(from + dir.to_double() * width)
       strip.go(0.0, @motion.carousel_spring, at~, velocity~)
       // the frame built again from the one it stepped to: a swipe let go steps in the middle of the stage's build,
@@ -3672,6 +3742,7 @@ pub fn runs_by_line(runs : Array[@ui.Run]) -> Array[Array[@ui.Run]] {
 pub fn file_viewer_reset() -> Unit {
   close_now()
   whole_given.clear()
+  pv_previews_gone.clear()
   marking.color = 0xE5704AFFL
   marking.next_id = 1
   marking.to_draft = false
@@ -3694,6 +3765,7 @@ pub fn file_viewer_reset() -> Unit {
   pv_frames_gone.clear()
   pv_first.clear()
   pv_first_used.clear()
+  pv_first_shown.clear()
   pv_first_n.val = 0
   pv_hidden.set("")
   marks_foot_taken.set(0.0)
