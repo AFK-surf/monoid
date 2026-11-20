@@ -768,6 +768,8 @@ async fn P53Jobs::launch(
   for k, v in self.machine.job_env(job, extra, env_get("PATH").unwrap_or("")) {
     vars[k] = v
   }
+  // (never the launcher's front: a job that found it would bind its own key on the station's endpoint)
+  vars.remove("STILLFAIL_MESH_FRONT")
   // (where `stillfail-job screen` asks for the screen: this machine's, which a sandbox's commands do not have)
   if sandboxed {
     vars.remove("STILLFAIL_JOB_SCREEN")

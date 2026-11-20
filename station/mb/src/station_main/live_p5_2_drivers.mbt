@@ -76,7 +76,8 @@ fn profile_says() -> @agent_drivers.ProfileSays {
 }
 
 ///|
-/// The station's environment for what it starts (ops/agent-env.ts): its own, with config.json's `agentEnv` over it.
+/// The station's environment for what it starts (ops/agent-env.ts): its own, with config.json's `agentEnv` over it,
+/// never the launcher's front (`STATION_INTERNAL`).
 fn agent_env(ctx : P52) -> Array[(String, String)] {
   let out = env_all()
   match jfield((ctx.bus.config_raw.val)(), "agentEnv") {
@@ -93,7 +94,7 @@ fn agent_env(ctx : P52) -> Array[(String, String)] {
       }
     _ => ()
   }
-  out
+  out.filter(kv => kv.0 != "STILLFAIL_MESH_FRONT")
 }
 
 ///|

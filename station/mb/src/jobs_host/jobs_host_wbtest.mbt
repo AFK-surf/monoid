@@ -144,3 +144,10 @@ test "resolve_url and WorkspaceSize::to_json" {
   assert_eq(WorkspaceSize::{ bytes: 512.0, complete: true, truncated: false }.to_json().stringify(), "{\"bytes\":512,\"complete\":true}")
   assert_eq(WorkspaceSize::{ bytes: 1024.0, complete: false, truncated: true }.to_json().stringify(), "{\"bytes\":1024,\"complete\":false,\"truncated\":true}")
 }
+
+///|
+test "a job's shell starts without the launcher's front" {
+  let script = spawn_script(10)
+  assert_true(script.has_prefix("unset STILLFAIL_MESH_FRONT; "))
+  assert_true(spawn_script(0).has_prefix("unset STILLFAIL_MESH_FRONT; "))
+}

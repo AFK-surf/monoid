@@ -105,3 +105,17 @@ test "a profile's own proxy leaves this machine out too" {
     #|Some(corp.example,localhost,127.0.0.1,::1)
   ))
 }
+
+///|
+test "what the station starts never carries the launcher's front, whatever its environment or agentEnv say" {
+  let raw = Env::new([
+    ("PATH", "/bin"),
+    ("STILLFAIL_MESH_FRONT", "/data/run/front.sock"),
+    ("OPENAI_API_KEY", "sk"),
+  ])
+  let env = start_env(raw, ["OPENAI_API_KEY"])
+  assert_true(env.get("STILLFAIL_MESH_FRONT") is None)
+  assert_true(env.get("OPENAI_API_KEY") is None)
+  assert_true(env.get("PATH") == Some("/bin"))
+  assert_true(start_env(raw, []).get("STILLFAIL_MESH_FRONT") is None)
+}

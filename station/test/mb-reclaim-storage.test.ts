@@ -72,6 +72,12 @@ function setRepoMtime(repo: string, ms: number): void {
   }
 }
 
+function withoutFront(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.STILLFAIL_MESH_FRONT;
+  return env;
+}
+
 async function launch(data: string, app: string) {
   const listener = () => new Promise<Server>((resolve) => {
     const s = createServer();
@@ -81,7 +87,8 @@ async function launch(data: string, app: string) {
   const fd = (s: Server) => (s as any)._handle.fd as number;
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
-    env: { ...process.env, STILLFAIL_PARTS_DOOR: "1", STILLFAIL_LOCAL_ADMIN: "1" },
+    // Never the host station's front (an agent's environment once carried it): this test station binds a key of its own.
+    env: { ...withoutFront(), STILLFAIL_PARTS_DOOR: "1", STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1" },
   });
   children.push(child);
   mcp.close();
