@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [573f1f6d9](https://github.com/AFK-surf/monoid/commit/573f1f6d9b0c4726f8455d6a7ab3d1ae18a72aae) feat(website): restore classic still.fail and youd | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
 | [b5fa8d018](https://github.com/AFK-surf/monoid/commit/b5fa8d018c4fa196b284e5a53aaabe9349116692) feat(mbui): open previews over the whole window by | 2.74 | 3.7 | 15.03 | 37.09 | 57.04 | 32.52 | 66.16 | 98.16 | 121.64 |
 | [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.39 | 113 |
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.17 | 120.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8c92808eb](https://github.com/AFK-surf/monoid/commit/8c92808eb7faaf53b134d696ed0ec5831977063b) perf(scripts): verify SFDELTA1 chunks in delta-fas | 2.72 | 3.67 | 14.83 | 36.94 | 56.33 | 32.4 | 65.68 | 97.73 | 123.51 |
 | [03747dd85](https://github.com/AFK-surf/monoid/commit/03747dd85c8c1225759846f23cb29106e224aaed) fix(sf-ui): keep a long relay name inside the stat | 2.67 | 3.59 | 14.64 | 36.94 | 56.33 | 32.4 | 65.68 | 97.73 | 121.44 |
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 2.67 | 3.59 | 14.64 | 36.94 | 56.32 | 32.4 | 65.68 | 97.72 | 122.32 |
-| [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 98.01 | 127.95 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [573f1f6d9](https://github.com/AFK-surf/monoid/commit/573f1f6d9b0c4726f8455d6a7ab3d1ae18a72aae) feat(website): restore classic still.fail and youd | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [b5fa8d018](https://github.com/AFK-surf/monoid/commit/b5fa8d018c4fa196b284e5a53aaabe9349116692) feat(mbui): open previews over the whole window by | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8c92808eb](https://github.com/AFK-surf/monoid/commit/8c92808eb7faaf53b134d696ed0ec5831977063b) perf(scripts): verify SFDELTA1 chunks in delta-fas | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [03747dd85](https://github.com/AFK-surf/monoid/commit/03747dd85c8c1225759846f23cb29106e224aaed) fix(sf-ui): keep a long relay name inside the stat | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
-| [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
