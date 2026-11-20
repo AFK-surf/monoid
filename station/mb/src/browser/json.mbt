@@ -14,12 +14,12 @@ pub using @codec {base64_decode_loose as from_base64url}
 
 ///|
 using @jsjson {
-  type JValue as J, jval_strs as jsa, jval_opt_str as jopt, jval_at_path_last as at_path, jval_at_i as at_i,
-  jval_text as text, jval_num_of as num_of, jval_bool_of as bool_of, jval_arr as arr, jval_is_arr as is_arr,
-  jval_is_obj as is_object, jval_nullish as nullish, jval_truthy as truthy, jval_is_true as is_true,
+  type JValue as J, jval_strs as jsa, jval_at_path_last as at_path,
+  jval_text as text, jval_num_of as num_of, jval_arr as arr,
+  jval_is_obj as is_object, jval_truthy as truthy, jval_is_true as is_true,
   jval_js_num as js_num, jval_is_integer as is_integer, jval_safe_int as is_safe_integer, jval_set as put,
-  jval_spread as spread, jval_del as drop_key, stringify_pretty, js_upper_ascii as upper_ascii,
-  js_all_digits as all_digits, js_index_of as index_of, js_last_index_of as last_index_of, jval_num as jms,
+  jval_spread as spread, jval_del as drop_key, stringify_pretty,
+  js_all_digits as all_digits, js_index_of as index_of, js_last_index_of as last_index_of,
   jval_str_eq as is_str,
 }
 
@@ -101,16 +101,6 @@ pub fn message_of(e : Error) -> String {
 }
 
 ///|
-/// An error's kind, as the TypeScript's class would be told apart.
-pub fn kind_of(e : Error) -> String {
-  match e {
-    Thrown(k, _) => k
-    ScreenRefused(_, _) => "ScreenRefused"
-    _ => "Error"
-  }
-}
-
-///|
 fn is_ascii_digit(c : Char) -> Bool { c >= '0' && c <= '9' }
 
 ///|
@@ -118,12 +108,6 @@ fn is_ascii_alpha(c : Char) -> Bool { (c >= 'a' && c <= 'z') || (c >= 'A' && c <
 
 ///|
 fn slice(s : String, a : Int, b? : Int) -> String { @jsjson.js_slice(s, a, end?=b) }
-
-///|
-fn imax(a : Int, b : Int) -> Int { if a > b { a } else { b } }
-
-///|
-fn imin(a : Int, b : Int) -> Int { if a < b { a } else { b } }
 
 ///|
 /// The base64url of `b` (no padding: Buffer's `base64url`).

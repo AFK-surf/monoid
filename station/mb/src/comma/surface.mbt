@@ -1250,24 +1250,3 @@ pub fn CommaSurface::name(self : CommaSurface) -> String {
 pub fn CommaSurface::of_workspace(self : CommaSurface) -> String? {
   self.of_workspace
 }
-
-///|
-/// Whether what it was made for holds still (its config, its workspace).
-pub fn CommaSurface::in_scope_now(self : CommaSurface) -> Bool {
-  (self.in_scope)()
-}
-
-///|
-/// The indexes it would send now; None where it sends none.
-pub fn CommaSurface::indexes_now(self : CommaSurface) -> CommaIndexes? raise {
-  match self.stats {
-    Some(f) => Some(f())
-    None => None
-  }
-}
-
-///|
-/// The chats its Router reads and writes in; None where it does neither.
-pub fn CommaSurface::chats_now(self : CommaSurface) -> CommaChats? {
-  self.chats
-}

@@ -411,17 +411,6 @@ fn Scheduler::changed(self : Scheduler) -> Unit {
 }
 
 ///|
-fn Scheduler::module(self : Scheduler, id : String) -> Module {
-  self.modules[id]
-}
-
-///|
-/// The modules, in order.
-pub fn Scheduler::module_ids(self : Scheduler) -> Array[String] {
-  self.order.copy()
-}
-
-///|
 /// Once the turns asked so far are over (a test's).
 pub async fn Scheduler::settle(self : Scheduler) -> Unit {
   while self.running.length() > 0 {
@@ -651,12 +640,6 @@ pub async fn Scheduler::settle_stopped(
       raise e
     }
   }
-}
-
-///|
-/// How many stopped items and needs were looked at so far (a test's).
-pub fn Scheduler::stopped_looked(self : Scheduler) -> Int {
-  self.stopped.looked
 }
 
 ///|

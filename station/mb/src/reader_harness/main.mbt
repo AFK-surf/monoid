@@ -20,16 +20,12 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
     (Some("harness-feishu"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @feishu.harness(host))
-    (Some("harness-comma"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @comma.harness(host))
     (Some("harness-rigs-mode"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @rigs_mode.harness(host))
     (Some("harness-store-sessions"), Some(db)) =>
       @host.run(shell_dir=beside(db, "shell"), host => @store_sessions.harness(host, db))
     (Some("harness-accounts-oauth"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
-    (Some("harness-move-coord"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @move_coord.harness(host))
     (Some("harness-store-threads"), Some(db)) =>
       @host.run(shell_dir=beside(db, "shell"), host => @store_threads.harness(host, db))
     (Some("harness-accounts-pool"), _) =>
@@ -54,14 +50,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @events.harness(host))
     (Some("harness-session-storage"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_storage.harness(host))
-    (Some("harness-browser"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @browser.harness(host))
-    (Some("harness-screens"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @screens.harness(host))
     (Some("harness-adb-devices"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
-    (Some("harness-terminals-logins"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @terminals_logins.harness(host))
     (Some("harness-drive"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @drive.harness(host))
     (Some("harness-updates"), _) =>

@@ -8,7 +8,6 @@ import {
   "station/jsjson",
   "station/jscase",
   "station/nodepath",
-  "station/ops_platform",
   "mbui/effect",
   "base/net",
   "moonbitlang/core/buffer",

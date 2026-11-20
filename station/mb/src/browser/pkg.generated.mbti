@@ -125,8 +125,6 @@ pub fn from_utf8(Bytes) -> String
 
 pub fn gh_source(String) -> (String, String, String)?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn headful_agent(String) -> String
 
 pub fn host_cdp_open(@host.Host) -> async (String, CdpLink) -> CdpSocket
@@ -176,8 +174,6 @@ pub fn kept_of(SignInState) -> String
 pub fn key_code(String, String) -> Int32
 
 pub fn key_event(@jsjson.JValue) -> @jsjson.JValue
-
-pub fn kind_of(Error) -> String
 
 pub let login_binding : String
 

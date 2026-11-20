@@ -395,27 +395,10 @@ pub(all) enum Clip {
 }
 
 ///|
-pub fn Clip::type_name(self : Clip) -> String {
-  match self {
-    ClipText(_) => "text"
-    ClipPng(_) => "png"
-  }
-}
-
-///|
 pub fn Clip::to_j(self : Clip) -> J {
   match self {
     ClipText(t) => jo([("type", js("text")), ("text", js(t))])
     ClipPng(d) => jo([("type", js("png")), ("data", js(b64(d)))])
-  }
-}
-
-///|
-pub fn clip_of(j : J) -> Clip? {
-  match text(get(Some(j), "type")) {
-    Some("text") => Some(ClipText(text(get(Some(j), "text")).unwrap_or("")))
-    Some("png") => Some(ClipPng(@base64.decode_lossy(text(get(Some(j), "data")).unwrap_or(""))))
-    _ => None
   }
 }
 

@@ -12,11 +12,6 @@ pub using @jsjson {
 }
 
 ///|
-pub fn jl(i : Int64) -> J {
-  Num(i.to_double())
-}
-
-///|
 /// Present: neither absent nor null (`v != null`).
 pub fn present(j : J?) -> Bool {
   !@jsjson.jval_nullish(j)
@@ -28,15 +23,6 @@ pub fn has_key(o : J, k : String) -> Bool {
   match o {
     Obj(ps) => ps.iter().any(p => p.0 == u)
     _ => false
-  }
-}
-
-///|
-/// `o[k] = v` where `v` is something, a copy.
-pub fn set_opt(o : J, k : String, v : J?) -> J {
-  match v {
-    Some(x) => set(o, k, x)
-    None => o
   }
 }
 

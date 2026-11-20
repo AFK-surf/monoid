@@ -3,7 +3,6 @@ package "station/terminals_logins"
 
 import {
   "mbui/effect",
-  "station/host",
   "station/jsjson",
   "station/ops_platform",
 }
@@ -62,8 +61,6 @@ pub fn form_get(String, String) -> String?
 pub fn from_base64(String) -> Bytes
 
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn is_terminal_runner(String) -> Bool
 

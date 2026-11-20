@@ -37,6 +37,8 @@ pub const FLAG_SHIFT : Int32 = 0x20000
 
 pub const HELPER_APP : String = "still.fail Helper.app"
 
+pub const LINUX_SCREEN_BINARY : String = "stillfail-screen-linux"
+
 pub const LOCAL_NETWORK_SETTINGS : String = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
 
 pub const LOOK_LEAST : Double = 0.02
@@ -119,8 +121,6 @@ pub async fn chrome_of(Io, ChromeDisplay, String, String?, root? : String, how? 
 
 pub fn clip_fits(Clip) -> Bool
 
-pub fn clip_of(@jsjson.JValue) -> Clip?
-
 pub fn codec_for(ViewOptions, Array[Codec]) -> Codec?
 
 pub fn codec_of(String) -> Codec?
@@ -149,8 +149,6 @@ pub fn encode_png(Pixels) -> Bytes
 
 pub fn envelope(String, Double) -> @jsjson.JValue
 
-pub fn error_j(Error) -> @jsjson.JValue
-
 pub let evdev : Map[String, Int32]
 
 pub async fn executable(Io, String, Env) -> String?
@@ -164,8 +162,6 @@ pub fn grant_state(@jsjson.JValue, String) -> String
 pub let grants_all : Array[String]
 
 pub fn graphical_session(String, Int32, String) -> Session?
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn helper_app(Io, Env) -> String?
 
@@ -188,6 +184,8 @@ pub fn is_bundle_id(String) -> Bool
 pub fn is_grant(String) -> Bool
 
 pub fn is_user_tab_id(String) -> Bool
+
+pub fn linux_screen_binary(Io, Env) -> String?
 
 pub fn local_network_name(String) -> String
 
@@ -252,8 +250,6 @@ pub fn size_of(String) -> (Double, Double)
 pub fn sock_pipe(Sock) -> HelperPipe
 
 pub fn start_of(Io, String, String) -> Double?
-
-pub fn stat_j(Stat) -> @jsjson.JValue
 
 pub fn tree_text(@jsjson.JValue) -> String
 
@@ -471,7 +467,6 @@ pub(all) enum Clip {
   ClipPng(Bytes)
 }
 pub fn Clip::to_j(Self) -> @jsjson.JValue
-pub fn Clip::type_name(Self) -> String
 
 pub(all) struct Clock {
   now : () -> Double
@@ -776,12 +771,49 @@ pub fn LinuxGstDesktop::size(Self) -> (Double, Double)
 pub fn LinuxGstDesktop::source(Self) -> ScreenSource
 pub fn LinuxGstDesktop::title(Self) -> String
 
+pub struct LinuxInput {
+  // private fields
+}
+pub fn LinuxInput::input_ops(Self) -> InputOps
+pub fn LinuxInput::new() -> Self
+pub fn LinuxInput::ops(Self, ScreenInput) -> Array[@jsjson.JValue]
+pub fn LinuxInput::release(Self) -> Array[@jsjson.JValue]
+
+pub struct LinuxNativeDesktop {
+  // private fields
+}
+pub fn LinuxNativeDesktop::access(Self) -> ScreenAccess
+pub fn LinuxNativeDesktop::available(Self) -> Bool
+pub fn LinuxNativeDesktop::backend(Self) -> String?
+pub fn LinuxNativeDesktop::close(Self) -> Unit
+pub fn LinuxNativeDesktop::new(Io, LinuxNativeOptions) -> Self
+pub async fn LinuxNativeDesktop::open(Self, ViewOptions) -> ScreenView
+pub async fn LinuxNativeDesktop::refresh(Self, force? : Bool) -> Unit
+pub fn LinuxNativeDesktop::set_env(Self, Env) -> Unit
+pub fn LinuxNativeDesktop::size(Self) -> (Double, Double)
+pub fn LinuxNativeDesktop::source(Self) -> ScreenSource
+pub fn LinuxNativeDesktop::title(Self) -> String
+
+pub(all) struct LinuxNativeOptions {
+  binary : String?
+  changed : () -> Unit
+  title : (() -> String)?
+  mut env : Env?
+  start : LinuxNativeStart?
+}
+
+pub(all) struct LinuxNativeStart {
+  start : (String, Array[String], Env, ChildEvents) -> Child
+}
+
 pub(all) struct LinuxOptions {
   data : String
   changed : () -> Unit
   title : (() -> String)?
   env : Env?
   discover : (async (Env) -> Env)?
+  native_binary : String?
+  native_start : LinuxNativeStart?
 }
 
 pub struct LinuxScreenTools {
