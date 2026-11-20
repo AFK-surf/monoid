@@ -38,6 +38,9 @@ export class Rng {
 }
 
 const href = (url: string) => new URL(url).href;
+
+/// How much of a line's time a writer may have sent ahead of it before its writes wait (`SimStream.write`).
+const SEND_WINDOW_MS = 250;
 /// When a simulated run starts.
 export const START = Date.UTC(2026, 9, 6, 9, 0, 0);
 /// QUIC's idle timeout, as iroh has it.
@@ -234,6 +237,11 @@ class Line {
     this.lost = lost;
   }
 
+  /// How long what was sent on it already keeps it busy from now (ms): a sender held to QUIC's window waits on it.
+  backlog(): number {
+    return Math.max(0, this.#free - this.net.now());
+  }
+
   /// `always`: delivered though its connection is gone meanwhile (word of its closing).
   send(size: number, deliver: () => void, always = false): void {
     const now = this.net.now();
@@ -334,8 +342,14 @@ export class SimStream {
     if (this.#finished) throw new Error("stream finished");
     if (this.conn.reason !== null) throw new Error("connection lost");
     const copy = new Uint8Array(bytes);
-    // Cut as QUIC sends it, the sizes drawn from the seed.
+    // Cut as QUIC sends it, the sizes drawn from the seed; held while the line has more than SEND_WINDOW_MS of it
+    // already, as QUIC's flow and congestion control hold a writer: a large body written at once does not sit whole
+    // ahead of what is sent after it on the connection (its pings), and a write is taken as fast as the line takes it.
     for (let at = 0; at < copy.length || at === 0; ) {
+      while (this.conn.out.backlog() > SEND_WINDOW_MS) {
+        await this.conn.net.sleep(this.conn.out.backlog() - SEND_WINDOW_MS);
+        if (this.conn.reason !== null) throw new Error("connection lost");
+      }
       const size = Math.max(1, Math.min(copy.length - at, this.conn.net.rng.int(1024, 32 * 1024)));
       const chunk = copy.subarray(at, at + size);
       this.conn.out.send(chunk.length, () => {

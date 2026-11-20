@@ -2751,6 +2751,66 @@ sim("multi_way_striped_bulk_transfers_aggregate_bandwidth_across_fast_relays", a
   await close(s, station, mesh);
 });
 
+/// A part uploaded on a throttled direct way (a video sent from a phone) is answered in a few bytes: what it says of the
+/// way is how fast its body went, not its reply. Timed only as replies, the way was never found slow and every part
+/// went on it at its 40 KB/s while a relay could take them at megabytes.
+sim("an_upload_found_slow_on_its_way_moves_the_next_part_to_a_faster_relay", async (s) => {
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const part = new Uint8Array(SPEED_MIN_BYTES * 2).fill(7);
+  const upload = (offset: number) =>
+    Effect.scoped(Effect.flatMap(wire.request(addr, { method: "POST", path: `/uploads/parts?id=u&name=v.mp4&size=${part.length * 2}&offset=${offset}`, headers: [["content-type", "application/octet-stream"], [BULK, "1"]] }, part), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length }))));
+  const going = s.runner.run(upload(0));
+  let gone = false;
+  void going.then(() => (gone = true), () => (gone = true));
+  // Found slow while its part is still on the way (half of it gone at 40 KB/s: some 13 s of the 26 it takes).
+  await s.until(() => mesh.speed(id, DIRECT) !== null);
+  assert.equal(gone, false, "the way is found slow before the part has all gone");
+  const slow = mesh.speed(id, DIRECT);
+  assert.ok(slow !== null && slow < BULK_SLOW_BPS, `the upload tells how slow direct is, got ${slow}`);
+  const first = await s.settle(going);
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  assert.equal(first.via, "direct");
+  assert.ok(first.len < 64, `a part is answered in a few bytes, got ${first.len}`);
+  const next = await s.run(upload(part.length));
+  assert.equal(next.via, "relay");
+  await close(s, station, mesh);
+});
+
+sim("a_small_upload_says_nothing_of_its_ways_speed", async (s) => {
+  s.net.direct = { ms: 20, bps: 40 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const small = new Uint8Array(SPEED_MIN_BYTES - 1).fill(7);
+  const r = await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "POST", path: "/uploads/parts?id=u&name=s.bin&size=1&offset=0", headers: [["content-type", "application/octet-stream"], [BULK, "1"]] }, small), (r) => Effect.map(readAll(r.body), () => r.via))));
+  assert.equal(r, "direct");
+  assert.equal(mesh.speed(id, DIRECT), null);
+  await s.time.pass(TICK_MS * 2);
+  assert.equal(mesh.ways(id).length, 1, `no relay explored: ${mesh.ways(id).map((w) => w.key()).join(", ")}`);
+  await close(s, station, mesh);
+});
+
 // ── over the addon: what only it can show, never timed ──
 
 function test(name: string, options: TestOptions | Body, body?: Body) {
