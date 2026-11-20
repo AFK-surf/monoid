@@ -322,7 +322,7 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
     .glass(
       By(fn() {
         let spot = if d.pressed() { Some((act_size / 2.0, act_size / 2.0)) } else { None }
-        Some(@sf.glass_tab_bar(spot~))
+        Some(@sf.glass_tab_bar(spot~).sharing())
       }),
     )
     .shadow(By(bar_shadow))

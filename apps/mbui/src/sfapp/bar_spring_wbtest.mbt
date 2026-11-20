@@ -181,3 +181,12 @@ test "bar: sliding chooses the place under the finger, either side of the line b
     assert_true(app.nav.top() == Home, msg="\{ms}")
   }
 }
+
+///|
+test "bar: capsule and action circle share one liquid glass backdrop capture" {
+  let t = tester("home")
+  let liquids = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  assert_eq(liquids.length(), 2, msg="\{Repr(liquids)}")
+  assert_true(liquids[0].5 > 0, msg="\{Repr(liquids)}")
+  assert_eq(liquids[1].5, liquids[0].5, msg="\{Repr(liquids)}")
+}
