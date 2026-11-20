@@ -583,7 +583,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     (of_jv(answers(from, to_jv(with_method(params, meth)), ws, body)), None)
   }
   // station_move's asks (tools/move.ts `MoveAsks`: mcp_tools'), all of a station confirmed on a card in the asking chat
-  let asks = @mcp_tools.MoveAsks::new(self.move_tool_ctx(), data, { ask: true, set_wait: true, refusal: true, room: true, told: true })
+  let asks = @mcp_tools.MoveAsks::new(self.move_tool_ctx(), data, { ask: true, set_wait: true, refusal: true, room: true, told: true, soon: true })
   bus.on_peer_prefix("handover.", peer_answer)
   bus.on_peer_prefix("move.", async fn(from, ws, meth, params, bytes) {
     if meth == "move.tool" {

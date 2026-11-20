@@ -375,6 +375,7 @@ pub(all) struct MoveHas {
   refusal : Bool
   room : Bool
   told : Bool
+  soon : Bool
 }
 
 pub(all) struct PeerTarget {
