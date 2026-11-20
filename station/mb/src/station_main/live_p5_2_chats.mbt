@@ -1176,9 +1176,17 @@ async fn P52::tools_call(
     // `start_feedback`)
     "ops/fibers.Fibers.after" | "plane.told" => Null
     "fs.open" => {
+      let path = s(0)
+      let mode = s(1)
+      if mode == "" || mode == "r" {
+        let (m, _) = self.host.shell("fs.meta", { "path": jstr(path) })
+        if jfield(m, "exists") == Json::boolean(false) || jnum_of(m, "size") is None {
+          raise @session_chats.Thrown("ENOENT", "ENOENT: no such file or directory, open '\{path}'")
+        }
+      }
       tool_files_next.val += 1
       let h = "toolfile:\{tool_files_next.val}"
-      tool_files[h] = s(0)
+      tool_files[h] = path
       @api_routes.jref(h)
     }
     "base" =>

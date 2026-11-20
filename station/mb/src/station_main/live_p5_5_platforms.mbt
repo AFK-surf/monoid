@@ -885,9 +885,15 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
       let o = of_jv(options)
       let key = unhex_lenient(jtext_or_empty(o, "secretKey"))
       let alpns = core_strs(jfield(o, "alpns")).map(a => Json::string(@drive.hex(@utf8.encode(a))))
+      let test_ips = match env_get("STILLFAIL_GROUP_IPS") {
+        Some(v) if v != "" =>
+          v.split(",").map(s => s.trim().to_string()).filter(s => s != "").to_array()
+        _ => []
+      }
+      let relay_urls = if test_ips.length() > 0 { Json::array([]) } else { jfield(o, "relayUrls") }
       let (bound, _) = host.shell(
         "iroh.bind",
-        { "relayUrls": jfield(o, "relayUrls"), "alpns": Json::array(alpns), "discovery": Json::boolean(jtrue(o, "discovery")) },
+        { "relayUrls": relay_urls, "alpns": Json::array(alpns), "discovery": Json::boolean(jtrue(o, "discovery")) },
         bytes=key,
       )
       guard bound is { "id": endpoint, .. } else { raise BusError("the shell bound no endpoint") }
@@ -898,7 +904,18 @@ fn shell_endpoints(host : @host.Host) -> @connects_hub.Endpoints {
       {
         id: () => id,
         connect: async fn(addr, alpn) {
-          let a = of_jv(addr)
+          let a = match of_jv(addr) {
+            Object(m) if test_ips.length() > 0 => {
+              let next : Map[String, Json] = Map::new()
+              for k, v in m {
+                next[k] = v
+              }
+              next["relays"] = Json::array([])
+              next["ips"] = Json::array(test_ips.map(Json::string(_)))
+              Json::object(next)
+            }
+            other => other
+          }
           match host.shell("iroh.connect", { "id": endpoint, "addr": a }, bytes=@utf8.encode(alpn)).0 {
             { "id": c, .. } => conn(c)
             _ => raise BusError("the shell made no connection")

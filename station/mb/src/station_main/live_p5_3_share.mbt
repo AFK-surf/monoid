@@ -121,24 +121,25 @@ fn P53Share::watching(self : P53Share) -> @share_sync.Watching {
       let marks : Ref[Map[String, String]?] = Ref(None)
       let look = async fn() -> String? {
         let now : Map[String, String] = Map([])
-        let queue = [(root, 0)]
+        let queue = [(root, "", 0)]
         let mut seen = 0
-        while queue.pop() is Some((dir, depth)) {
+        while queue.pop() is Some((dir, rel_dir, depth)) {
           for e in host_readdir_types(host, dir).unwrap_or([]) {
             let (name, kind) = e
             let full = @nodepath.join(sep(), [dir, name])
+            let rel = if rel_dir == "" { name } else { "\{rel_dir}/\{name}" }
             seen += 1
             if seen > 20000 {
               break
             }
             if kind == "dir" {
-              if depth < most && into(full) {
-                queue.push((full, depth + 1))
+              if depth < most && into(rel) {
+                queue.push((full, rel, depth + 1))
               }
               continue
             }
             match (try { Ok(host.shell("fs.meta", { "path": jstr(full) })) } catch { e => Err(e) }) {
-              Ok((m, _)) => now[full] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
+              Ok((m, _)) => now[rel] = "\{jnum_of(m, "size").unwrap_or(0.0)}:\{jnum_of(m, "mtimeMs").unwrap_or(0.0)}"
               Err(_) => ()
             }
           }
