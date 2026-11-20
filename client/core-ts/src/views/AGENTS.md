@@ -34,7 +34,7 @@
 
 - A vault is always encrypted and kept by its person's own devices, with safe mode on or off. In safe mode it follows the workspace's lock in force (`client/core-ts/src/views/vault.ts` `lockOf`). Without safe mode it follows the person's own pinned lock (`personalLockOf`, genesis `""`), as each station builds it from members' own logs (`station/src/cloud/vault-lock.ts`). Turning safe mode on or off changes nothing in the vaults.
 - 开启 (`vault.setup`) begins the person's own lock where none exists, with this device on it, then makes the vault and moves old plain items in (`migrate`). Nothing is written to the plain library again (`plainMode` is always false). Its items are only read to move them and delete them.
-- Shared vaults are not supported without safe mode: a vault another person owns is readable only through a lock naming their devices.
+- Shared workspace vaults (`scope: "workspace"`) work both with and without safe mode: in safe mode they follow the workspace lock; without safe mode `personalLockOf` folds and verifies teammates' personal chains returned by `GET /vault/boxes` locally (never replacing this person's own pinned chain) and merges workspace roles. Workspace owners/admins who are members manage them (`canManage`).
 
 ## A person's presets and starred models
 

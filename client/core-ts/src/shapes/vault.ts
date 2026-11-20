@@ -46,6 +46,8 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["owner", "String"],
     ["ownerName", "String", { said: true }],
     ["mine", "bool", { doc: "The viewer owns it: they add devices and people to it." }],
+    ["scope", opt("String"), { doc: "Absent or `personal`: personal vault; `workspace`: shared workspace vault." }],
+    ["manages", opt("bool"), { doc: "Whether the viewer may manage this vault (add devices, manage members, change lasts, delete)." }],
     ["members", vec("VaultMember")],
     ["station", "String", { doc: "The station that holds it." }],
     ["stationName", "String", { said: true }],
@@ -101,6 +103,7 @@ export const VAULT_SHAPES: Record<string, Shape> = {
     ["plainLeft", opt("u32"), { doc: "Security mode on, items of the viewer's still kept in plain text from before: `vault.migrate` encrypts them into their own vault." }],
     ["statusText", "String", { default: true, doc: "What the settings say of it at their row's end: how many wait to be approved, else how many items, else 未开启." }],
     ["statusBad", "bool", { default: true, doc: "`statusText` says some wait to be approved." }],
+    ["canCreateWorkspace", opt("bool"), { doc: "Whether the viewer is a workspace owner/admin on a set-up device and no active workspace vault exists yet." }],
   ], { doc: "The workspace's vaults as the viewer sees them (the `vaults` topic; client/core-ts/src/views/vault.ts)." }),
   VaultKeyAsk: struct([
     ["workspace", "String"],
