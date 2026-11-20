@@ -5,7 +5,10 @@ import {
   "mbui/effect",
   "moonbitlang/core/ref",
   "station/agent_runtimes",
+  "station/host",
   "station/jsjson",
+  "station/store_sessions",
+  "station/store_threads",
 }
 
 // Values
@@ -498,9 +501,14 @@ pub async fn Accounts::update_config(Self, (@jsjson.JValue) -> @jsjson.JValue ra
 
 pub struct Backend {
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  store : @store_sessions.Store
+  threads : @store_threads.Store?
+  flush_threads : () -> Unit
+  host : @host.Host
+  sep : String
 }
 pub async fn Backend::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
-pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue) -> Self
+pub fn Backend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, @store_sessions.Store, @store_threads.Store?, () -> Unit, @host.Host, sep? : String) -> Self
 
 pub struct Background {
   rt : @effect.Runtime

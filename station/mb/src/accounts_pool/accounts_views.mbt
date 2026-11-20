@@ -4,20 +4,19 @@
 // each account's hours, the models the decisions may ask and their settings, the archive policy and its checks.
 
 ///|
-/// `decisionModels`: the models the decisions may ask: each a usable profile's verified one, with the profiles that
-/// have it.
-pub async fn Accounts::decision_models(self : Accounts) -> JV {
+async fn decision_models_of(
+  profiles : Array[Profile],
+  health_of : (String) -> Health,
+  resolved_model : async (JV, JV, JV) -> JV,
+  model_name : async (String) -> JV,
+) -> JV {
   let order : Array[String] = []
   let models : Map[String, Array[String]] = Map::new()
-  let cfg = self.hub_config()
-  for profile in cfg.profiles {
+  for profile in profiles {
     if !profile.enabled {
       continue
     }
-    let health = match self.hub_accounts {
-      Some(h) => h.health_of(cfg, profile.id)
-      None => self.health(profile.id)
-    }
+    let health = health_of(profile.id)
     if !usable(health) {
       continue
     }
@@ -34,7 +33,7 @@ pub async fn Accounts::decision_models(self : Accounts) -> JV {
       _ => ()
     }
     for model in candidates {
-      let resolved = self.ask("decision.resolvedModel", [profile.raw, capability, model])
+      let resolved = resolved_model(profile.raw, capability, model)
       if !is_truthy(Some(resolved)) {
         continue
       }
@@ -64,12 +63,28 @@ pub async fn Accounts::decision_models(self : Accounts) -> JV {
     out.push(
       jobj([
         ("id", js(id)),
-        ("name", self.ask("modelName", [js(id)])),
+        ("name", model_name(id)),
         ("profiles", jstrs(models[id])),
       ]),
     )
   }
   jarr(out)
+}
+
+///|
+/// `decisionModels`: the models the decisions may ask: each a usable profile's verified one, with the profiles that
+/// have it.
+pub async fn Accounts::decision_models(self : Accounts) -> JV {
+  let cfg = self.hub_config()
+  decision_models_of(
+    cfg.profiles,
+    id => match self.hub_accounts {
+      Some(h) => h.health_of(cfg, id)
+      None => self.health(id)
+    },
+    async fn(raw, cap, model) { self.ask("decision.resolvedModel", [raw, cap, model]) },
+    async fn(id) { self.ask("modelName", [js(id)]) },
+  )
 }
 
 ///|
@@ -179,7 +194,7 @@ pub async fn Accounts::refresh_decision_models(
 ///|
 /// `chatTitleOf`: what the session's chat is called in the chat list; its key only where it has no chat.
 async fn Accounts::chat_title_of(self : Accounts, session : String) -> String {
-  match self.ask("store.sessionChat", [js(session)]) {
+  match self.b.with_threads(t => t.session_chat(Json::string(session))) {
     Obj(_) as chat =>
       js_string(
         Some(
@@ -191,7 +206,7 @@ async fn Accounts::chat_title_of(self : Accounts, session : String) -> String {
         ),
       )
     _ =>
-      match jget(Some(self.ask("store.getSession", [js(session)])), "title") {
+      match jget(Some(json_to_jv(self.b.with_store(s => s.get_session(session)))), "title") {
         None | Some(Null) => session
         t => js_string(t)
       }
@@ -266,7 +281,7 @@ pub async fn Accounts::automatic_decisions_view(
     }
   }
   let recent = []
-  for row in jitems(Some(self.ask("store.recentDecisions", []))) {
+  for row in jitems(Some(self.b.with_threads(t => t.recent_decisions()))) {
     let session = match row.get("session") {
       Some(Str(s)) => s
       _ => ""
@@ -348,13 +363,15 @@ async fn Accounts::policy_view(
   self : Accounts,
   title : async (String) -> String,
 ) -> JV {
-  let saved = self.ask("store.archivePolicy", [])
+  let saved = self.b.with_threads(t => t.archive_policy(Json::null()))
   let policy = self.ask("policy.policyFrom", [saved])
-  let now = to_number(Some(self.ask("store.now", [])))
+  let now = self.b.store.now().to_double()
   let latest_order : Array[String] = []
   let latest : Map[String, JV] = Map::new()
   for row in jitems(
-    Some(self.ask("store.latestDecisionsSince", [jnum(now - policy_days * 86_400_000.0)])),
+    Some(
+      self.b.with_threads(t => t.latest_decisions_since(Json::number(now - policy_days * 86_400_000.0), Json::null())),
+    ),
   ) {
     match row.get("session") {
       Some(Str(s)) => {
@@ -432,7 +449,7 @@ async fn Accounts::policy_view(
           ("title", js(title(session))),
           (
             "runtime",
-            match jget(Some(self.ask("store.getSession", [js(session)])), "runtime") {
+            match jget(Some(json_to_jv(self.b.with_store(s => s.get_session(session)))), "runtime") {
               None | Some(Null) => Null
               Some(r) => r
             },
@@ -1020,7 +1037,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ),
           (
             "shareable",
-            jbool(self.ask("share.shareRefusal", [p.raw]) == Null),
+            jbool(@share_sync.share_refusal(jv_to_json(p.raw)) is None),
           ),
           ("workspaces", jstrs(others.filter(w => allowed_in(p, Some(w), home)))),
           ("serves", jbool(allowed_in(p, joined, home))),
@@ -1046,14 +1063,14 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
 /// `paceView`: GET /profiles/pace: the hours of the accounts the viewer's workspace may run on, read again once a
 /// minute at most or as an allowance is read.
 pub async fn Accounts::pace_view(self : Accounts, viewer : JV?) -> JV {
-  let now = to_number(Some(self.ask("store.now", [])))
+  let now = self.b.store.now().to_double()
   let minute = (now / 60000.0).floor()
   let stale = match self.pace_read {
     None => true
     Some((m, rev, _, _)) => m != minute || rev != self.pace_rev
   }
   if stale {
-    let read = self.ask("store.profileHours", [jnum((now / 3_600_000.0).floor())])
+    let read = json_to_jv(self.b.with_store(s => s.profile_hours((now / 3_600_000.0).floor())))
     self.pace_read = Some((minute, self.pace_rev, now, read))
   }
   let joined = match viewer {

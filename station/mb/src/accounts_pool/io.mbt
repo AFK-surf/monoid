@@ -138,74 +138,96 @@ pub async fn Io::get(
 }
 
 ///|
+fn fs_thrown(code : String, message : String) -> Thrown {
+  Thrown("Error", jobj([("message", js(message)), ("code", js(code))]))
+}
+
+///|
+async fn[T] fs_run(f : async () -> T) -> T {
+  f() catch {
+    Thrown(_, _) as t => raise t
+    e => {
+      let msg = @host_world.shell_error_msg(e)
+      raise fs_thrown(@host_world.os_code(msg), msg)
+    }
+  }
+}
+
+///|
 /// `readFile(path, "utf8")`.
 pub async fn Io::read_file(self : Io, path : String) -> String {
-  match self.b.ask("fs.readFile", [js(path)]) {
-    Str(s) => s
-    other => js_string(Some(other))
+  match fs_run(async fn() { self.b.host.read_text(path) }) {
+    Some(t) => t
+    None => raise fs_thrown("ENOENT", @host_world.enoent_msg("open", path))
   }
 }
 
 ///|
 /// `readFile(path, "utf8")`, None where it throws (`.catch(() => null)`).
 pub async fn Io::read_file_or_none(self : Io, path : String) -> String? {
-  Some(self.read_file(path)) catch {
-    _ => None
-  }
+  Some(self.read_file(path)) catch { _ => None }
 }
 
 ///|
 /// `writePrivateSoon(path, text)` (ops/files.ts): written whole, readable by its owner alone.
 pub async fn Io::write_private(self : Io, path : String, text : String) -> Unit {
-  ignore(self.b.ask("fs.writePrivate", [js(path), js(text)]))
+  fs_run(async fn() { self.b.host.write_private(path, @utf8.encode(text), sep=self.b.sep) })
 }
 
 ///|
 /// `mkdir(path, { recursive: true })`.
 pub async fn Io::mkdir(self : Io, path : String) -> Unit {
-  ignore(self.b.ask("fs.mkdir", [js(path)]))
+  fs_run(async fn() { @host_world.fs_mkdir(self.b.host, path) })
 }
 
 ///|
 /// `rm(path, { recursive: true, force: true })`.
 pub async fn Io::rm(self : Io, path : String) -> Unit {
-  ignore(self.b.ask("fs.rm", [js(path)]))
+  fs_run(async fn() { @host_world.fs_remove(self.b.host, path, recursive=true) })
 }
 
 ///|
 /// `rename(from, to)`.
 pub async fn Io::rename(self : Io, from : String, to : String) -> Unit {
-  ignore(self.b.ask("fs.rename", [js(from), js(to)]))
+  fs_run(async fn() { @host_world.fs_rename(self.b.host, from, to) })
 }
 
 ///|
 /// `readdir(path)`.
 pub async fn Io::readdir(self : Io, path : String) -> Array[String] {
-  jitems(Some(self.b.ask("fs.readdir", [js(path)]))).map(x => js_string(Some(x)))
+  match fs_run(async fn() { @host_world.fs_readdir(self.b.host, path) }) {
+    Some(xs) => xs
+    None => raise fs_thrown("ENOENT", @host_world.enoent_msg("scandir", path))
+  }
 }
 
 ///|
 /// `access(path)` resolved: whether it is there.
 pub async fn Io::exists(self : Io, path : String) -> Bool {
-  self.b.ask("fs.exists", [js(path)]) == Bool(true)
+  @host_world.fs_exists(self.b.host, path) catch { _ => false }
 }
 
 ///|
 /// `stat(path)`: its size and mtimeMs, as the stamp `${size}:${mtimeMs}` the account files are kept by.
 pub async fn Io::stamp(self : Io, path : String) -> String {
-  js_string(Some(self.b.ask("fs.stamp", [js(path)])))
+  match (@host_world.fs_meta(self.b.host, path) catch { _ => None }) {
+    Some(m) => "\{m.size}:\{m.mtime_ms}"
+    None => ""
+  }
 }
 
 ///|
 /// `randomBytes(n).toString("hex")`.
 pub async fn Io::random_hex(self : Io, n : Int) -> String {
-  js_string(Some(self.b.ask("crypto.randomHex", [jint(n)])))
+  ignore(self)
+  @drive.hex(@drive.random_bytes(n))
 }
 
 ///|
 /// `randomUUID()`.
 pub async fn Io::uuid(self : Io) -> String {
-  js_string(Some(self.b.ask("crypto.randomUUID", [])))
+  ignore(self)
+  @drive.random_uuid()
 }
 
 ///|

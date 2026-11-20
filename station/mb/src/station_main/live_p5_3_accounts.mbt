@@ -57,14 +57,27 @@ priv struct P53Accounts {
 }
 
 ///|
+///|
 fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
   let me : Ref[P53Accounts?] = Ref(None)
-  let backend = @accounts_pool.Backend::new(async fn(name, args) {
-    match me.val {
-      Some(a) => a.answer(name, args)
-      None => raise @accounts_pool.plain_error("the accounts are not made yet")
-    }
-  })
+  let threads : @store_threads.Store? = try {
+    Some(@store_threads.Store::new(bus.db, wall_ms().to_double()))
+  } catch {
+    _ => None
+  }
+  let backend = @accounts_pool.Backend::new(
+    async fn(name, args) {
+      match me.val {
+        Some(a) => a.answer(name, args)
+        None => raise @accounts_pool.plain_error("the accounts are not made yet")
+      }
+    },
+    bus.store,
+    threads,
+    () => if threads is Some(t) { told_threads(bus, t) },
+    bus.host,
+    sep=sep(),
+  )
   let (zh, en) = catalogs_json()
   let ctx : @accounts_pool.Ctx = {
     io: @accounts_pool.Io::new(backend),
@@ -331,8 +344,6 @@ fn p53_arg_s(args : Array[@accounts_pool.JV], i : Int) -> String {
 /// What the accounts ask of the rest of the station (`<part>.<method>`, accounts_pool's backend.mbt).
 async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@accounts_pool.JV]) -> @accounts_pool.JV {
   let bus = self.bus
-  let host = bus.host
-  let store = bus.store
   let s = (i : Int) => p53_arg_s(args, i)
   let j = (i : Int) => p53_arg(args, i)
   let done = @accounts_pool.jundef
@@ -361,24 +372,11 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
     if self.machine_answer(name, args) is Some(v) { return v }
     let jargs = args.map(p53_json)
     match name {
-      // ── the files ──
-      "fs.readFile" | "fs.writePrivate" | "fs.mkdir" | "fs.rm" | "fs.rename" | "fs.readdir" | "fs.exists" | "fs.stamp" => {
-        let got = host_fs_op(host, name[3:].to_owned(), jargs) catch {
-          DispatchFsError(c, m) => raise @accounts_pool.Thrown("Error", @accounts_pool.jobj([("message", @accounts_pool.js(m)), ("code", @accounts_pool.js(c))]))
-          e => raise e
-        }
-        if name == "fs.writePrivate" || name == "fs.mkdir" || name == "fs.rm" || name == "fs.rename" {
-          done
-        } else {
-          to_jv(got)
-        }
-      }
       // ── the machine & config.json ──
-      "crypto.randomHex" | "crypto.randomUUID" | "os.info" | "platform.hasKeychain" | "wall.now" | "log.info" | "log.warn" | "log.error" | "config.raw" | "config.put" => {
+      "os.info" | "platform.hasKeychain" | "wall.now" | "log.info" | "log.warn" | "log.error" | "config.raw" | "config.put" => {
         let got = dispatch_infra(bus, name, jargs).unwrap_or(Json::null())
         if name.has_prefix("log.") { done } else { to_jv(got) }
       }
-      "paths.join" => Str(@nodepath.join(sep(), jargs.filter_map(x => if x is String(t) { Some(t) } else { None })))
       "station.env" => to_jv(Json::object(Map::from_array(env_all().map(kv => (kv.0, jstr(kv.1))))))
       "fetch" => {
         let r = j(0)
@@ -397,13 +395,6 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
         })
         to_jv(jobj_of([("status", ji(answer.status)), ("text", jstr(answer.body))]))
       }
-      // ── the store ──
-      _ if name.has_prefix("store.") =>
-        match (try { Ok(dispatch_store(bus, name[6:].to_owned(), jargs)) } catch { e => Err(e) }) {
-          Ok(v) => to_jv(v)
-          Err(e) if said_of(e).contains("no call") => to_jv((bus.hub_ask.val)(name, Json::array(jargs)))
-          Err(e) => raise e
-        }
       // ── the shared profiles (this slice's Sharing) ──
       "shared.lendCodex" => Num(self.sharing().lend_codex(j(0), rejected=j(1) is True))
       "shared.lendAgy" => Num(self.sharing().lend_agy(j(0), rejected=j(1) is True))
@@ -433,11 +424,6 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
           None => Str(host_id)
         }
       }
-      "share.shareRefusal" =>
-        match @share_sync.share_refusal(j(0)) {
-          Some(w) => Str(w)
-          None => Null
-        }
       // ── the sign-ins and the machine's logins (accounts/index.ts `logins`, console.ts, `machine`) ──
       _ if name.has_prefix("logins.") || name.has_prefix("console.") || name.has_prefix("machine.") =>
         match self.sign_in_answer(name, args.map(p53_json)) {

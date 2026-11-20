@@ -89,7 +89,7 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   self.checks[id] = check
   self.hub_cache = None
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileCheck", [js(id), check]))
+    self.b.with_store(s => s.set_profile_check(Json::string(id), jv_to_json(check)))
   })
   let before_models = match jget(before, "models") {
     None => Some(JV::Null)

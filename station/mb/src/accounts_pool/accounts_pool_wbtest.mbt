@@ -63,63 +63,36 @@ fn[X] accounts_ran(f : async () -> X) -> X {
 
 ///|
 test "decision_models asks decision.resolvedModel only of profiles whose decision capability is ready" {
-  let profiles = []
-  let checks = []
+  let profiles : Array[Profile] = []
+  let healths : Map[String, Health] = Map::new()
   for i in 0..<32 {
     let id = "p\{i}"
-    let runtime = if i % 2 == 0 { "claude" } else { "codex" }
-    profiles.push(
-      jobj([
-        ("id", js(id)),
-        ("name", js("Profile \{i}")),
-        ("runtime", js(runtime)),
-        ("models", jarr([js("m-\{i}")])),
-        ("home", js("homes/\{id}")),
-      ]),
-    )
+    profiles.push(test_profile(id, ["m-\{i}"]))
     let state = if i < 2 { "ready" } else { "none" }
-    checks.push(
-      jarr([
-        js(id),
+    healths[id] = {
+      check: Some(
         jobj([
-          (
-            "check",
-            jobj([
-              ("state", js("ok")),
-              ("decision", jobj([("state", js(state)), ("models", jarr([js("m-\{i}")]))])),
-            ]),
-          ),
+          ("state", js("ok")),
+          ("decision", jobj([("state", js(state)), ("models", jarr([js("m-\{i}")]))])),
         ]),
-      ]),
-    )
-  }
-  let raw = jobj([("profiles", jarr(profiles))])
-  let resolved_calls : Array[String] = []
-  let rt = @effect.Runtime::new()
-  let b = Backend::new(async fn(name, args) {
-    match name {
-      "store.profileStatus" => jarr(checks)
-      "decision.resolvedModel" => {
-        resolved_calls.push(js_string(args.get(0).bind(p => p.get("id"))))
-        jbool(true)
-      }
-      "modelName" => args.get(0).unwrap_or(Null)
-      _ => Null
+      ),
+      quota: None,
+      account: None,
+      spent: false,
     }
-  })
-  let clock : Clock = { now: () => 1_800_000_000_000.0, after: (_, _) => () => () }
-  let ctx : Ctx = {
-    io: Io::new(b),
-    words: Words::new(Obj([]), Obj([])),
-    urls: Obj([]),
-    station_lang: "en",
-    tz_offset_ms: _ => 0.0,
   }
-  let given = Given::of_jv(jobj([("checkOnStart", jbool(false))]), "/data")
-  let acc = accounts_ran(async fn() {
-    Accounts::new(b, ctx, given, rt, clock, raw, Catalog::new())
+  let resolved_calls : Array[String] = []
+  let models = accounts_ran(async fn() {
+    decision_models_of(
+      profiles,
+      id => healths.get(id).unwrap_or(Health::empty()),
+      async fn(raw, _cap, _model) {
+        resolved_calls.push(js_string(raw.get("id")))
+        jbool(true)
+      },
+      async fn(id) { js(id) },
+    )
   })
-  let models = accounts_ran(async fn() { acc.decision_models() })
   assert_eq(jitems(Some(models)).length(), 2)
   assert_eq(resolved_calls, ["p0", "p1"])
 }

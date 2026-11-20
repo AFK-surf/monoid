@@ -465,7 +465,7 @@ pub fn Row::of_jv(v : JV) -> Row {
 
 ///|
 async fn SessionAccounts::row(self : SessionAccounts, key : String) -> Row? {
-  match self.b.ask("store.getSession", [js(key)]) {
+  match json_to_jv(self.b.with_store(s => s.get_session(key))) {
     Obj(_) as r => Some(Row::of_jv(r))
     _ => None
   }
@@ -723,17 +723,13 @@ async fn SessionAccounts::set_profile(
   id : String,
   kept : Array[String]?,
 ) -> Unit {
-  ignore(
-    self.b.ask("store.setSessionProfile", [
-      js(key),
-      js(id),
-      jbool(false),
-      match kept {
-        Some(k) => jstrs(k)
-        None => Null
-      },
-    ]),
+  let profiles : Json? = Some(
+    match kept {
+      Some(k) => Json::array(k.map(Json::string))
+      None => Json::null()
+    },
   )
+  self.b.with_store(s => s.set_session_profile(key, Json::string(id), false, profiles))
 }
 
 ///|
@@ -895,11 +891,11 @@ pub async fn SessionAccounts::repick(self : SessionAccounts, key : String) -> Un
 /// `cheapToLeave`: whether session `key` loses little by going on afresh on another account.
 async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -> Bool {
   let now = (self.now)()
-  if self.b.ask("store.recentlyCompacted", [js(key)]) == Bool(true) {
+  if self.b.with_store(s => s.recently_compacted(key)) {
     return true
   }
   let contexts = () => jitems(
-      Some(self.b.ask("store.lastContexts", [js(key), jint(calls_looked_at)])),
+      Some(json_to_jv(Json::array(self.b.with_store(s => s.last_contexts(key, calls_looked_at))))),
     ).map(c => {
       turn: c.get("turn").unwrap_or(Null),
       profile: match c.get("profile") {
@@ -915,7 +911,7 @@ async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -
         _ => None
       },
     })
-  if self.b.ask("store.compactionsReady", []) != Bool(true) {
+  if !self.b.with_store(s => s.compactions_ready()) {
     return cheap_to_leave(contexts(), Map::new())
   }
   let stale = match self.compactions {
@@ -924,7 +920,7 @@ async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -
   }
   if stale {
     let points : Map[String, Double] = Map::new()
-    let got = self.b.ask("store.compactionPoints", [jnum(now - compactions_over_ms)])
+    let got = json_to_jv(self.b.with_store(s => s.compaction_points(Json::number(now - compactions_over_ms))))
     match got {
       Arr(pairs) =>
         for p in pairs {
@@ -1107,24 +1103,26 @@ async fn SessionAccounts::take_across(
     Null
   }
   match row.runtime_session {
-    Some(rs) =>
-      ignore(self.b.ask("store.ranIn", [js(key), js(rs), js(row.profile)]))
+    Some(rs) => self.b.with_store(s => s.ran_in(key, Json::string(rs), Json::string(row.profile)))
     None => ()
   }
-  ignore(
-    self.b.ask("store.setSessionRuntime", [
-      js(key),
-      js(target),
-      js(next.id),
-      jbool(false),
-      js(model),
-      jopt(effort),
-      fast,
-      context,
-      Null,
-    ]),
-  )
-  ignore(self.b.ask("store.setSessionContextBefore", [js(key), Null]))
+  self.b.with_store(s => {
+    s.set_session_runtime(
+      key,
+      Json::string(target),
+      Json::string(next.id),
+      false,
+      Json::string(model),
+      match effort {
+        Some(e) => Json::string(e)
+        None => Json::null()
+      },
+      Some(jv_to_json(fast)),
+      jv_to_json(context),
+      Some(Json::null()),
+    )
+  })
+  self.b.with_store(s => s.set_session_context_before(key, Json::null()))
   self.log(
     said,
     jobj([
@@ -1166,7 +1164,7 @@ pub async fn SessionAccounts::refills_at(self : SessionAccounts, key : String) -
   let now = (self.now)()
   guard self.row(key) is Some(row) else { return now + spent_for_ms }
   let cfg = (self.config)()
-  let last = self.b.ask("store.lastTurn", [js(key)])
+  let last = json_to_jv(self.b.with_store(s => s.last_turn(Json::string(key))))
   let ended = match jget(Some(last), "endedAt") {
     None | Some(Null) => now
     x => to_number(x)

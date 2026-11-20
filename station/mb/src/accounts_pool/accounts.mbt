@@ -401,7 +401,7 @@ pub async fn Accounts::new(
     unchecking: None,
     machine_said: Ref(None),
   }
-  for entry in jitems(Some(b.ask("store.profileStatus", []))) {
+  for entry in jitems(Some(json_to_jv(b.with_store(s => s.profile_status())))) {
     let items = jitems(Some(entry))
     let id = js_string(items.get(0))
     let status = items.get(1)
@@ -775,7 +775,7 @@ pub async fn Accounts::claude_token(
     None | Some(Null) => ""
     h => js_string(h)
   }
-  let joined = js_string(Some(self.ask("paths.join", [js(self.given.data), js(home)])))
+  let joined = @nodepath.join(self.b.sep, [self.given.data, home])
   let (token, expires_at) = claude_oauth_token(
     self.ctx,
     Some(joined),
@@ -1282,7 +1282,7 @@ pub fn manages_station(viewer : JV) -> Bool {
 /// `#keepQuota`: an allowance read kept, and as its hour's.
 fn Accounts::keep_quota(self : Accounts, id : String, quota : JV) -> Unit {
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileQuota", [js(id), quota]))
+    self.b.with_store(s => s.set_profile_quota(Json::string(id), jv_to_json(quota)))
   })
   self.pace_rev += 1
 }
@@ -1303,7 +1303,7 @@ pub async fn Accounts::delete_profile(
     }
     jset(raw, "profiles", jarr(list.filter(p => p.get("id") != Some(Str(id)))))
   })
-  ignore(self.ask("store.forgetProfileHours", [js(id)]))
+  self.b.with_store(s => s.forget_profile_hours(Json::string(id)))
   self.pace_rev += 1
   if self.given.hub_profile_gone {
     self.background.track(async fn() {
