@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.47 | 124.48 |
 | [f4660800f](https://github.com/AFK-surf/monoid/commit/f4660800fb576d8f0b3e8cf824e3ffaab88cbccb) test(station): wait out two live test races (#7631 | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.5 | 122.26 |
 | [e38110638](https://github.com/AFK-surf/monoid/commit/e381106389934969fc0d91e8b47cdaf9c88b982f) fix(station): share the overview's decisions and m | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.5 | 122.26 |
-| [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 2.65 | 3.57 | 14.57 | 36.83 | 56.13 | 32.31 | 65.45 | 97.55 | 129.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [011fb0afe](https://github.com/AFK-surf/monoid/commit/011fb0afe0e00dcad84e625cfaa5733d9fbb421b) fix(mbui): add View soft_min last_resort, structur | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
 | [eee9913c2](https://github.com/AFK-surf/monoid/commit/eee9913c2d79fc3b965b35125e6516f16be3a658) fix(mbui): keep word navigation in web text fields | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.05 |
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [f4660800f](https://github.com/AFK-surf/monoid/commit/f4660800fb576d8f0b3e8cf824e3ffaab88cbccb) test(station): wait out two live test races (#7631 | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [e38110638](https://github.com/AFK-surf/monoid/commit/e381106389934969fc0d91e8b47cdaf9c88b982f) fix(station): share the overview's decisions and m | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.26 |
-| [89c6515e8](https://github.com/AFK-surf/monoid/commit/89c6515e805073a2ebc728bf0c1c2d427732dc1f) feat(motion): add Choreography, container flies_in | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.26 |
