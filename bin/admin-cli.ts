@@ -13,7 +13,7 @@ export interface CliIo {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   env: Record<string, string | undefined>;
-  argv0?: string;
+  argv0?: string | undefined;
 }
 
 interface HttpResult {
@@ -251,8 +251,8 @@ function fmtTime(sec: unknown): string {
 function parseArgs(argv: string[]): {
   json: boolean;
   help: boolean;
-  origin?: string;
-  key?: string;
+  origin?: string | undefined;
+  key?: string | undefined;
   rest: string[];
 } {
   let json = false;

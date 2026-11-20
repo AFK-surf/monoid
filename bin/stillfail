@@ -393,10 +393,10 @@ PLAN
     [ -n "$node" ] || { echo "stillfail admin: node not found" >&2; exit 1; }
     if [ -f "$here/station/admin-cli.js" ]; then
       STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$node" "$here/station/admin-cli.js" "$@"
-    elif [ -f "$here/station/src/admin-cli.ts" ]; then
-      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$node" "$here/station/src/admin-cli.ts" "$@"
+    elif [ -f "$here/bin/admin-cli.ts" ]; then
+      STILLFAIL_CMD=$(basename "$0") STILLFAIL_DATA=$data exec "$node" "$here/bin/admin-cli.ts" "$@"
     else
-      echo "stillfail admin: admin-cli not found in $here/station" >&2; exit 1
+      echo "stillfail admin: admin-cli not found in $here/station or $here/bin" >&2; exit 1
     fi ;;
   *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap | stillfail admin <command>" >&2; exit 2 ;;
 esac

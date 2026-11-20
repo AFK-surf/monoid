@@ -5,7 +5,7 @@ import { createServer as httpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { runAdminCli } from "../src/admin-cli.ts";
+import { runAdminCli } from "../../bin/admin-cli.ts";
 import type { Held } from "../src/vault/keeper.ts";
 import { Proxy } from "../src/vault/proxy.ts";
 import { runWith } from "../src/vault/run.ts";
@@ -213,7 +213,7 @@ test("admin CLI works end-to-end through vault Proxy + runWith(mode: proxy) with
   };
 
   try {
-    const cliEntry = join(import.meta.dirname, "..", "src", "admin-cli.ts");
+    const cliEntry = join(import.meta.dirname, "..", "..", "bin", "admin-cli.ts");
     const ran = await runWith(
       held,
       {
