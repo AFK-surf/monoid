@@ -175,9 +175,19 @@ for platform in $platforms; do
   parts="launcher mesh runner reader"
   [ "$platform" = darwin-arm64 ] && parts="$parts helper"
   [ "$platform" = win32-x64 ] && parts="$parts screen agent-desktop"
+  case $platform in linux-*) parts="$parts screen-linux" ;; esac
   for part in $parts; do node "$root/scripts/native.ts" fetch "$part" "$platform" > /dev/null || : & done
 done
 wait
+# The station's own build, the same for every platform, once here (station-bundle.sh does it when not told
+# STILLFAIL_STATION_BUILT), so that the platforms below are bundled side by side, each its own directory.
+for platform in $platforms; do
+  case $platform in desktop | desktop-win | android) continue ;; esac
+  node "$root/scripts/posthog-key.ts" >&2
+  (cd "$root/station" && rm -rf dist && pnpm run build:node >&2)
+  export STILLFAIL_STATION_BUILT=1
+  break
+done
 
 for platform in $platforms; do
   case $platform in
@@ -340,42 +350,56 @@ for platform in $platforms; do
       fi
       ;;
     *)
-      sh "$root/scripts/station-bundle.sh" "$out/$platform" "$platform"
-      # Packed beside the next platform's bundling (each ~20 s, one after another before 2026-10-04). Windows' a zip
-      # (install.ps1 opens it with Expand-Archive). Into RELEASE_DIR at once; into the bucket only with the feed, once
-      # every platform is packed (put_feed): put here, one by one, a release cut on the way left the new packages beside
-      # the old feed's hashes and signatures (stable.yml's station, cut at its 10 minutes, 2026-11-19).
+      # Each platform side by side (bundled, packed, its Node got), each in directories of its own ($out/$platform,
+      # $out/node-$platform) on the station built once above, its words to sign in $out/signing-$platform, gathered
+      # below in the platforms' order. Windows' a zip (install.ps1 opens it with Expand-Archive). Into RELEASE_DIR at
+      # once; into the bucket only with the feed, once every platform is packed (put_feed): put here, one by one, a
+      # release cut on the way left the new packages beside the old feed's hashes and signatures (stable.yml's station,
+      # cut at its 10 minutes, 2026-11-19).
       if [ "$platform" = win32-x64 ]; then
         file="stillfail-station-$platform.zip"
-        station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
-        (rm -f "$out/$file" && (cd "$out/$platform" && zip -qr "$out/$file" stillfail) && { [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/zip; }) &
-        node_file="node/node-v$(cat "$root/.node-version")-win-x64.zip"
       else
         file="stillfail-station-$platform.tar.gz"
-        station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
-        (tar -czf "$out/$file" -C "$out/$platform" stillfail && { [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/gzip; }) &
-        node_file="node/node-v$(cat "$root/.node-version")-$platform.tar.gz"
       fi
-      putting="${putting:-} $!"
-      if [ -f "$out/$platform/stillfail/NODE_VERSION" ]; then
-        # Its Node (cached by node-dist.sh; nodejs.org's own zip on Windows): its binary's hash is in the signed words;
-        # put unless the releases have that version already.
-        dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
-        signing="${signing:-} $platform=$out/$file,$dist"
-        if ! released "$node_file"; then
-          node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
-          put "$dist" "$node_file" "$node_type"
-          put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+      station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
+      (
+        sh "$root/scripts/station-bundle.sh" "$out/$platform" "$platform"
+        if [ "$platform" = win32-x64 ]; then
+          rm -f "$out/$file" && (cd "$out/$platform" && zip -qr "$out/$file" stillfail)
+          [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/zip
+          node_file="node/node-v$(cat "$root/.node-version")-win-x64.zip"
+        else
+          tar -czf "$out/$file" -C "$out/$platform" stillfail
+          [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/gzip
+          node_file="node/node-v$(cat "$root/.node-version")-$platform.tar.gz"
         fi
-      else
-        # No Node: the signed words name none (release-sign.ts: a node hash of zeros, as stations from before take).
-        signing="${signing:-} $platform=$out/$file"
-      fi
+        if [ -f "$out/$platform/stillfail/NODE_VERSION" ]; then
+          # Its Node (cached by node-dist.sh; nodejs.org's own zip on Windows): its binary's hash is in the signed words;
+          # put unless the releases have that version already.
+          dist=$(sh "$root/scripts/node-dist.sh" "$out/node-$platform" "$platform")
+          if ! released "$node_file"; then
+            node_type=application/gzip; [ "$platform" = win32-x64 ] && node_type=application/zip
+            put "$dist" "$node_file" "$node_type"
+            put "$dist.sha256" "$node_file.sha256" "text/plain; charset=utf-8"
+          fi
+          echo "$platform=$out/$file,$dist" > "$out/signing-$platform"
+        else
+          # No Node: the signed words name none (release-sign.ts: a node hash of zeros, as stations from before take).
+          echo "$platform=$out/$file" > "$out/signing-$platform"
+        fi
+      ) &
+      putting="${putting:-} $!"
       station=yes
       ;;
   esac
 done
-for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not packed or put" >&2; exit 1; }; done
+for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not bundled, packed or put" >&2; exit 1; }; done
+signing=""
+if [ -n "${station:-}" ]; then
+  for platform in $platforms; do
+    [ ! -f "$out/signing-$platform" ] || signing="$signing $(cat "$out/signing-$platform")"
+  done
+fi
 # What stations read to say a newer release is out (station/src/updates/updates.ts), once its files are there: its
 # version, and the words naming each archive and its Node (where it has one), signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
 # scripts/release-sign.ts). Not signing is an error but into RELEASE_DIR outside CI (a dev cloud's), where it warns.

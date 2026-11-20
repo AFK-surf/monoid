@@ -112,6 +112,56 @@ fi
   assert.equal(existsSync(marker), false);
 });
 
+// A deltas-station job (one platform's, STILLFAIL_UNSTAGE_MATCH its platform) takes back its own package alone, not the
+// other platforms' (~135 MB it would not use).
+test("--unstage with STILLFAIL_UNSTAGE_MATCH takes back only the files naming it", (t) => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "release-unstage-match-test-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const bin = join(tmp, "bin"), bucket = join(tmp, "bucket");
+  mkdirSync(bin);
+  mkdirSync(bucket);
+  writeFileSync(join(bin, "curl"), `#!/bin/sh
+out= upload= method=GET url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in -o) shift; out=$1 ;; -T) shift; upload=$1 ;; -X) shift; method=$1 ;; https://*) url=$1 ;; esac
+  shift
+done
+key=\${url#*/objects/}
+object="$FAKE_BUCKET/$(printf %s "$key" | tr / _)"
+if [ -n "$upload" ]; then cp "$upload" "$object"
+elif [ "$method" = DELETE ]; then rm "$object"
+elif [ -n "$out" ]; then [ -f "$object" ] || exit 22; cp "$object" "$out"
+fi
+`);
+  writeFileSync(join(bin, "pnpm"), "#!/bin/sh\nexit 1\n");
+  writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n");
+  for (const name of ["curl", "pnpm", "sleep"]) chmodSync(join(bin, name), 0o755);
+  const run = (env: Record<string, string>, ...args: string[]) => spawnSync("sh", [join(root, "scripts/release-put.sh"), ...args], {
+    cwd: root, encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: "fake", CLOUDFLARE_ACCOUNT_ID: "fake",
+      STILLFAIL_DIRECT_DNS: "", FAKE_BUCKET: bucket, ...env },
+  });
+  const dir = join(tmp, "release");
+  mkdirSync(join(dir, "beta"), { recursive: true });
+  const platforms = ["darwin-arm64", "linux-x64", "linux-arm64"];
+  for (const p of platforms) writeFileSync(join(dir, `beta/stillfail-station-${p}.tar.gz`), p);
+  let result = run({}, "--stage", dir);
+  assert.equal(result.status, 0, result.stderr);
+  for (const p of platforms) assert.equal(existsSync(join(dir, `beta/stillfail-station-${p}.tar.gz`)), false);
+
+  result = run({ STILLFAIL_UNSTAGE_MATCH: "linux-x64" }, "--unstage", dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(dir, "beta/stillfail-station-linux-x64.tar.gz"), "utf8"), "linux-x64");
+  assert.equal(existsSync(join(dir, "beta/stillfail-station-linux-arm64.tar.gz")), false, "not another platform's");
+  assert.equal(existsSync(join(dir, "beta/stillfail-station-darwin-arm64.tar.gz")), false);
+  for (const p of platforms) assert.ok(existsSync(join(dir, `beta/stillfail-station-${p}.tar.gz.staged`)), "every marker stays");
+
+  result = run({ STILLFAIL_UNSTAGE_MATCH: "" }, "--unstage", dir);
+  assert.equal(result.status, 0, result.stderr);
+  for (const p of platforms) assert.equal(readFileSync(join(dir, `beta/stillfail-station-${p}.tar.gz`), "utf8"), p, "unset: all of them");
+});
+
 // An Android release's symbols (scripts/release.sh: symbols/android/…) are put by --files as its APK is, as x-xz; one
 // that cannot be put is a warning, taken out all the same (not handed on to a put that would try it again), and the
 // release goes on; the APK's failure is still the put's.

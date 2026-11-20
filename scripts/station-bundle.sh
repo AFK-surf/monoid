@@ -25,6 +25,8 @@
 # Its Node is the station's own: the agents' PATH never has it (a runtime installed with it would land there).
 # On win32-x64 the executables are .exe, and the command is bin/stillfail.cmd (bin/stillfail.ps1 behind it); its
 # installers are bin/install.{zh,en}.ps1.
+# STILLFAIL_STATION_BUILT=1: dist/admin and station/dist were built by the caller already (scripts/release.sh, once for
+# the platforms it bundles side by side), used as they are.
 #   station-bundle.sh DIR [darwin-arm64|linux-x64|linux-arm64|win32-x64]
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,7 +37,7 @@ case "$platform" in
   *) echo "no such platform: $platform" >&2; exit 1 ;;
 esac
 # Written afresh here, so a release never carries what an older build left in dist/admin (its page), nor an old key.
-node "$root/scripts/posthog-key.ts" >&2
+[ "${STILLFAIL_STATION_BUILT:-}" = 1 ] || node "$root/scripts/posthog-key.ts" >&2
 native() { node "$root/scripts/native.ts" file "$1" "$platform"; }
 x=; [ "$platform" = win32-x64 ] && x=.exe
 launcher="$(native launcher)"
@@ -48,8 +50,10 @@ screen=; [ "$platform" = win32-x64 ] && screen="$(native screen)"
 screen_linux=; case "$platform" in linux-*) screen_linux="$(native screen-linux)" ;; esac
 tree=; [ "$platform" = win32-x64 ] && tree="$(native agent-desktop)"
 # The build's output is the complete set of station files for this release, not a previous build's leftover workers.
-rm -rf "$root/station/dist"
-(cd "$root/station" && pnpm run build:node >&2)
+if [ "${STILLFAIL_STATION_BUILT:-}" != 1 ]; then
+  rm -rf "$root/station/dist"
+  (cd "$root/station" && pnpm run build:node >&2)
+fi
 app="$out/stillfail"
 rm -rf "$app"
 mkdir -p "$app/bin" "$app/mesh/target/release" "$app/dist" "$app/station"

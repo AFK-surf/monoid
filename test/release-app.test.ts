@@ -93,3 +93,35 @@ printf verified > "$RELEASE_DIR/app.apk"
   result = spawnSync("sh", [".github/release.sh", "android"], { cwd: dir, encoding: "utf8", env: { ...env, ANDROID_DEBUG_KEYSTORE_B64: "" } });
   assert.notEqual(result.status, 0, "no package can be made with an unspecified signing key");
 });
+
+// The station's staged release (CI's station job, RELEASE_DIR) needs station/'s packages alone: neither the root's
+// (the website's) nor cloud's (the uploader's), as nothing is uploaded from there.
+test("a staged station release installs station/'s packages alone", (t) => {
+  const source = fileURLToPath(new URL("..", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "release-station-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  for (const name of [".github", "scripts", "cloud", "station", "bin", "tmp"]) mkdirSync(join(dir, name));
+  copyFileSync(join(source, ".github/release.sh"), join(dir, ".github/release.sh"));
+  writeFileSync(join(dir, "bin/pnpm"), `#!/bin/sh\npwd >> "$PNPM_LOG"\n`);
+  chmodSync(join(dir, "bin/pnpm"), 0o755);
+  writeFileSync(join(dir, "scripts/release.sh"), `#!/bin/sh
+set -eu
+[ "$1" = --beta ] && [ "$STILLFAIL_SIGN_STATION" = 1 ]
+[ -z "\${RELEASE_DIR:-}" ] || { mkdir -p "$RELEASE_DIR"; printf built > "$RELEASE_DIR/station-beta.json"; }
+`);
+  const log = join(dir, "pnpm.log");
+  const env = { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, RUNNER_TEMP: join(dir, "tmp"), PNPM_LOG: log,
+    MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: "key", KEYCHAIN_PASSWORD_AFK: "password" };
+  let result = spawnSync("sh", [".github/release.sh", "station"], { cwd: dir, encoding: "utf8", env: { ...env, RELEASE_DIR: join(dir, "out") } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(dir, "out/station-beta.json"), "utf8"), "built");
+  const station = (p: string) => p.endsWith("/station");
+  let installed = readFileSync(log, "utf8").trim().split("\n");
+  assert.deepEqual(installed.map(station), [true], `station/'s alone: ${installed.join(", ")}`);
+  // (into the bucket, not a directory: the uploader's packages too, still not the root's)
+  rmSync(log);
+  result = spawnSync("sh", [".github/release.sh", "station"], { cwd: dir, encoding: "utf8", env });
+  assert.equal(result.status, 0, result.stderr);
+  installed = readFileSync(log, "utf8").trim().split("\n");
+  assert.deepEqual(installed.map((p) => p.split("/").pop()), ["cloud", "station"]);
+});

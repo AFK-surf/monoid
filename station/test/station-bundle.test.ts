@@ -62,6 +62,46 @@ done
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// scripts/release.sh builds the station once and bundles the platforms side by side (STILLFAIL_STATION_BUILT=1): a
+// bundle then neither writes dist/admin again nor builds station/dist, taking both as they are.
+test("a bundle told the station is built takes dist/admin and station/dist as they are", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "station-bundle-built-"));
+  const file = (path: string, content = "fixture") => {
+    const absolute = join(root, path);
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, content);
+  };
+  try {
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    cpSync(fileURLToPath(new URL("../../scripts/station-bundle.sh", import.meta.url)), join(root, "scripts/station-bundle.sh"));
+    for (const path of ["bin/stillfail", ".node-version", "natives/stillfail-station", "natives/mesh.node", "natives/stillfail-runner",
+      "natives/stillfail-reader", "natives/stillfail-screen-linux"]) file(path);
+    file("dist/admin/posthog.json", "built before");
+    file("station/dist/main.js", "built before");
+    file("mock-bin/node", `#!/bin/sh
+set -eu
+case "$1" in
+  */posthog-key.ts) echo "posthog-key.ts run again" >&2; exit 9 ;;
+  */native.ts) case "$3" in
+    launcher) name=stillfail-station ;; mesh) name=mesh.node ;; runner) name=stillfail-runner ;; reader) name=stillfail-reader ;;
+    screen-linux) name=stillfail-screen-linux ;; *) exit 1 ;;
+  esac; printf '%s/natives/%s\\n' "$BUNDLE_TEST_ROOT" "$name" ;;
+  */installers.ts) : ;;
+  *) exit 1 ;;
+esac
+`);
+    file("mock-bin/pnpm", `#!/bin/sh\necho "station built again" >&2\nexit 9\n`);
+    file("mock-bin/git", `#!/bin/sh\nprintf '123\\n'\n`);
+    for (const executable of ["node", "pnpm", "git"]) execFileSync("chmod", ["+x", join(root, "mock-bin", executable)]);
+    const env: NodeJS.ProcessEnv = { ...process.env, BUNDLE_TEST_ROOT: root, STILLFAIL_STATION_BUILT: "1", PATH: `${join(root, "mock-bin")}:${process.env.PATH ?? ""}` };
+    delete env.STILLFAIL_SIGN_STATION;
+    execFileSync("/bin/sh", [join(root, "scripts/station-bundle.sh"), join(root, "out"), "linux-x64"], { env });
+    assert.equal(readFileSync(join(root, "out/stillfail/station/main.js"), "utf8"), "built before");
+    assert.equal(readFileSync(join(root, "out/stillfail/dist/admin/posthog.json"), "utf8"), "built before");
+    assert.equal(readFileSync(join(root, "station/dist/main.js"), "utf8"), "built before", "station/dist left as it was");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("files a module finds beside itself are named as they lie beside main.js in a release, where every module is bundled", () => {
   // The release copies them flat beside main.js (package.json build), so a path into another directory of src only
   // works from the source (2026-11-04: the chat's own phone screen looked for ../screens/scrcpy-server and found none).

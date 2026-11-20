@@ -13,6 +13,8 @@
 # from there first, and deletes it there once all is put (scripts/release-prune.ts deletes what stays after two days).
 # --unstage <dir>: what was staged taken back into <dir> beside its marker (the job making the release's deltas needs the
 # station's archives: scripts/release-deltas.ts); a put after takes the marker as taken, and deletes the staged copy.
+# STILLFAIL_UNSTAGE_MATCH=<words>: only the files whose names have them (a deltas-station job's own platform's
+# package, not the other three's, ~135 MB), the other markers left as they are.
 #   release-put.sh [--files | --feeds | --stage | --unstage] <dir>…
 #   release-put.sh --hand <dir> | --unhand <dir> <name>… | --drop <name>…
 #   release-put.sh --clean-uploaded <name> <local copy>
@@ -158,6 +160,7 @@ case "${1:-}" in
       for marker in $(cd "$dir" && find . -type f -name '*.staged' | sed 's|^\./||' | sort); do
         file="$dir/${marker%.staged}"
         [ -f "$file" ] && continue
+        case ${STILLFAIL_UNSTAGE_MATCH:-} in "") ;; *) case $marker in *"$STILLFAIL_UNSTAGE_MATCH"*) ;; *) continue ;; esac ;; esac
         get "$(cat "$dir/$marker")" "$file.part" || { rm -f "$file.part"; echo "could not get ${marker%.staged} back" >&2; exit 1; }
         mv "$file.part" "$file"; echo "got ${marker%.staged} back"
       done

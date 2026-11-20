@@ -31,7 +31,7 @@
   natives: taking the group first, it held natives and every job waiting for the readers), `natives-main` and cross-platform
   `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to
   `macos-ci` for the non-Apple parts, `natives-mac` building the Apple ones all the same), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
-  `missing_win_list`, `missing_mac_list`, `missing_harness_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
+  `missing_win_list`, `missing_mac_list`, `missing_mac_reader_list`, `missing_harness_list`), and fetches no Farview client (`mbui-moonbit`'s `farview: 'false'`). On
   `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
   `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
@@ -46,8 +46,9 @@
   `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
   line down every one queued until cancelled, 44383403135); a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
-  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh`,
-  `shell-apple` or the reader is missing (cold builds of the first two there took 228 and 323 s before packing, the
+  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
+  `shell-apple` is missing, and the Mac's reader in `natives-mac-reader` only for `check-mac` and `mac-build`, on
+  Mini1 (cold builds of the first two there took 228 and 323 s before packing, the
   reader's 248-260 s at -O0 and its branch units evicted within 17 minutes: on Mini1 its `MBC_STORE` stays on disk; with
   `vars.MINI1 = 'off'` a branch's reader compiles on `macos-26` at -O0); the other Apple parts,
   Xcode/Simulator checks (`side-mac`, iOS/macOS builds), Android's release and main's `station-update` stay on `Mini1`
@@ -85,8 +86,9 @@
   as it was. Its native parts come from `station-natives-*`, which build only what neither the release
   `native-artifacts` (20 of a part, hours of main's) nor the store (`natives/`: main's `natives-store`, after its natives
   jobs; readers kept 14 days, `scripts/release-prune.ts`) has.
-- `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts) and `desktop` for `desktop-build` alone, never
-  for `natives`' slower Linux build. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
+- `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts, not the Mac's reader, which
+  `natives-mac-reader` builds beside it) and `desktop` for `desktop-build` alone, never for `natives`' slower Linux build
+  nor the reader's. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
   alone (`.github/actions/node`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
   token (wrangler only without it). `release-prune` deletes old files after `put` in a job of its own, which neither
   `done` nor `station-update` waits for.

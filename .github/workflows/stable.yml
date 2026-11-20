@@ -544,9 +544,16 @@ jobs:
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
-      # (MoonBit for the station's reader, station/mb/build.sh, where one is not prebuilt after all)
+      # (MoonBit for the station's reader, station/mb/build.sh, where one is not prebuilt after all: mbc alone of mbui's
+      # tools, no Farview client)
       - uses: ./.github/actions/mbui-moonbit
-        with: { farview: 'false' }
+        with: { tools: 'mbc', farview: 'false' }
+      # (the Node each platform's release names, kept by scripts/node-dist.sh: nodejs.org's tarballs and the packages
+      # made of them)
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/stillfail-build/station-ts/node
+          key: station-node-dist-${{ hashFiles('.node-version') }}
       - name: Build the stable station's release (darwin-arm64, linux-x64, linux-arm64, win32-x64) into a directory
         env:
           GH_TOKEN: ${{ github.token }}
@@ -610,7 +617,8 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # names, one word each
           sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
-          sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
+          # (a station platform's job takes back its own package alone)
+          STILLFAIL_UNSTAGE_MATCH="${PLATFORM:-}" sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
       # (a deadline of its own, inside the job's: what is not made by then is left out, the job green)
       - name: Its deltas
         run: node scripts/release-deltas.ts "$RUNNER_TEMP/release" --into "$RUNNER_TEMP/deltas" --deadline 200 --platform "$PLATFORM"

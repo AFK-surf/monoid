@@ -134,11 +134,14 @@ switch (positional[0]) {
     const node = withNode ? (flag("--node") ?? usage()) : "";
     const version = `0.1.${n}`;
     const builds: Record<string, Required<Build>> = {};
-    for (const [, platform, archive, dist] of given) {
-      const [file, raw, nodeSha256] = await Promise.all([hashFile(archive!), hashRaw(archive!), dist === undefined ? NO_NODE : nodeBinarySha(dist, node)]);
+    // (every platform's read side by side, kept in the order given)
+    const hashed = await Promise.all(given.map(([, , archive, dist]) =>
+      Promise.all([hashFile(archive!), hashRaw(archive!), dist === undefined ? NO_NODE : nodeBinarySha(dist, node)])));
+    given.forEach(([, platform, archive], i) => {
+      const [file, raw, nodeSha256] = hashed[i]!;
       if (file.size !== statSync(archive!).size) fail(`${archive} changed while it was read`);
       builds[platform!] = { ...file, nodeSha256, rawSha256: raw.sha256, rawSize: raw.size };
-    }
+    });
     if (Object.keys(builds).length === 0) usage();
     const k = keyOrNone();
     const feed = { version, build: n, commit, ...(k ? signed({ kind: "stillfail-station-release", version, build: n, commit, node, builds }, k) : {}) };
