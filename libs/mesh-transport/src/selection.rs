@@ -451,7 +451,9 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                 .find(|p| &p.path == next && p.sample.connection == r.connection)
                 .map(|p| &p.sample);
             r.selected(next, kind, sample, now);
-            r.cooldown = now.saturating_add(COOLDOWN_MS);
+            if current.is_some() {
+                r.cooldown = now.saturating_add(COOLDOWN_MS);
+            }
         }
     }
 }
@@ -1359,6 +1361,68 @@ mod policy_tests {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    fn first_relay_then_direct(measured: bool) {
+        let mut policy = Policy::new();
+        if measured {
+            let initial = [path(1, 1, Kind::Transit, 40_000, 1)];
+            assert_eq!(policy.choose(None, false, &initial, &[1], 0), Some(0));
+        } else {
+            assert_eq!(policy.choose(None, false, &[], &[1], 0), None);
+            let initial = unmeasured_fallback(false, false, false, Some(1), Some(1));
+            assert_eq!(initial, Some(1));
+            policy.switched_to(None, &1, Kind::Transit, &[], &[1], 0);
+        }
+        assert!(policy.gates.is_empty());
+        let relay = [path(1, 1, Kind::Transit, 40_000, 2)];
+        assert_eq!(
+            policy.choose(Some((&1, Kind::Transit)), true, &relay, &[1], 50),
+            None
+        );
+        assert!(policy.gates.is_empty());
+        for (now, seq, expected) in [(100, 3, None), (5_099, 4, None), (5_100, 5, Some(1))] {
+            let paths = [
+                path(1, 1, Kind::Transit, 40_000, seq),
+                path(2, 1, Kind::Direct, 20_000, seq),
+            ];
+            assert_eq!(
+                policy.choose(Some((&1, Kind::Transit)), true, &paths, &[1], now),
+                expected,
+                "t={now}"
+            );
+        }
+        assert!(policy.gates.is_empty());
+        assert_eq!(policy.recovery[0].cooldown, 35_100);
+        assert_eq!(policy.recovery[0].stay.as_ref().unwrap().since, 5_100);
+    }
+    #[test]
+    fn initial_measured_relay_does_not_delay_direct_observation() {
+        first_relay_then_direct(true);
+    }
+    #[test]
+    fn initial_unmeasured_relay_does_not_delay_direct_observation() {
+        first_relay_then_direct(false);
+    }
+    #[test]
+    fn initial_direct_still_records_early_death_from_selection_time() {
+        for measured in [false, true] {
+            let mut policy = Policy::new();
+            if measured {
+                policy.choose(None, false, &[path(2, 1, Kind::Direct, 20_000, 1)], &[1], 0);
+            } else {
+                policy.choose(None, false, &[], &[1], 0);
+                policy.switched_to(None, &2, Kind::Direct, &[], &[1], 0);
+            }
+            assert!(policy.gates.is_empty());
+            assert_eq!(policy.recovery[0].stay.as_ref().unwrap().since, 0);
+            let relay = [path(1, 1, Kind::Transit, 40_000, 1)];
+            assert_eq!(
+                policy.choose(Some((&2, Kind::Direct)), false, &relay, &[1], 100),
+                Some(0)
+            );
+            assert_eq!(policy.recovery[0].direct_until, 60_100);
+            assert_eq!(policy.recovery[0].cooldown, 30_100);
+        }
+    }
     fn path(id: u64, connection: u64, kind: Kind, us: u64, seq: u64) -> Candidate<u64, u64> {
         Candidate {
             path: id,
