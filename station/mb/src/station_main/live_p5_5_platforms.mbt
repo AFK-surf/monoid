@@ -347,7 +347,13 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "api" =>
         Some(match s.api(txt(a, 0), a.get(1).unwrap_or(Null)) {
           Data(v) => v
-          File(bytes, name, kind) => to_jv({ "file": Json::string(@drive.hex(bytes)), "name": Json::string(name), "type": Json::string(kind) })
+          // (a key no OpenAPI answer has: connects_hub/remote.mbt carries it to another station as bytes)
+          File(bytes, content_type, disposition) =>
+            to_jv({
+              "$feishuFile": Json::string(@drive.hex(bytes)),
+              "contentType": Json::string(content_type),
+              "disposition": Json::string(disposition),
+            })
         })
       _ => None
     }
@@ -435,7 +441,14 @@ async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) 
   })
   ignore(feishu.registrations.on_change(() => (bus.overview_changed.val)()))
   // feishu_api for the agents (feishu/tool.ts), where the agents' part offers it not; `feishu.api` for its.
-  let is_feishu = (id : String) => connects.connects().iter().any(c => jv_text(c, "id").unwrap_or("") == id)
+  // (this station's own, or another station's that a chat here runs on)
+  let is_feishu = (id : String) => connects.connects().iter().any(c => jv_text(c, "id").unwrap_or("") == id) ||
+    (
+      match connects_live.val {
+        Some(live) => match live.workspace.kind_mode(id) { Some(km) => jv_text(km, "kind") == Some("feishu"); None => false }
+        None => false
+      }
+    )
   let world = () => Some(self.feishu_tool_world(connects))
   let (declared, run) = feishu.tool(world, is_feishu)
   bus.parts.tools(
@@ -541,12 +554,13 @@ fn P55::feishu_tool_world(self : P55, connects : @connects_hub.Connects) -> @fei
         [] => raise BusError("\{t} is not a conversation of this session")
       }
     },
-    chat_api: id => match connects.chats(id) {
+    // (this station's own connect, or another station's a chat here runs on: connects_live's)
+    chat_api: id => match (match connects_live.val { Some(live) => live.chat(id); None => connects.chats(id) }) {
       Some(chat) =>
         Some(async fn(meth, params) {
           let v = of_jv((chat.call)("api", [to_jv(Json::string(meth)), params]))
-          match jtext(v, "file") {
-            Some(h) => File(unhex_lenient(h), jtext_or_empty(v, "name"), jtext_or_empty(v, "type"))
+          match jtext(v, "$feishuFile") {
+            Some(h) => File(unhex_lenient(h), jtext_or_empty(v, "contentType"), jtext_or_empty(v, "disposition"))
             None => Data(@feishu.JV::of_json(v))
           }
         })

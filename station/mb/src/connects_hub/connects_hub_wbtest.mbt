@@ -173,3 +173,85 @@ test "parse_ws_refusal extracts status and refusal words and ConnectedSurface su
   rt.advance(0)
   assert_eq(got.val, Some("comma refused the connection: HTTP 409 workspace already connected"))
 }
+
+///|
+test "feishu_api across stations: JSON as it was, a Feishu file as bytes beside its content type and disposition" {
+  let image = b"\xff\xd8\xff\x00\x80\xfe"
+  let feishu : Surface = {
+    has: name => name == "api",
+    get: (_, _) => undefined(),
+    call: async fn(name, args) {
+      guard name == "api" else { raise fail_("no such call") }
+      if js_text(args.get(0)).has_suffix("/resources/file_key") {
+        jo([("$feishuFile", js(hex(image))), ("contentType", js("image/jpeg")), ("disposition", js("attachment; filename=\"photo.jpg\""))])
+      } else {
+        jo([("code", jn(0.0)), ("data", jo([("name", js("团队"))]))])
+      }
+    },
+    remote: false,
+  }
+  let fs : Fs = {
+    sep: "/",
+    read_text: async fn(_) { raise fail_("no files") },
+    read_bytes: async fn(_) { raise fail_("no files") },
+    read_part: async fn(_, _, _) { raise fail_("no files") },
+    size: async fn(_) { raise fail_("no files") },
+    write_text: async fn(_, _) { () },
+    write_bytes: async fn(_, _) { () },
+    append_text: async fn(_, _) { () },
+    rename: async fn(_, _) { () },
+    rm: async fn(_) { () },
+    mkdir: async fn(_) { () },
+    readdir: async fn(_) { [] },
+    write_private: async fn(_, _) { () },
+  }
+  let answerer : CallAnswerer = {
+    surface: async fn(known, _) { if known.id == "fs" { Some(feishu) } else { None } },
+    uploads: "/uploads",
+    cleared: async fn() { () },
+    fs,
+    uuid: () => "u",
+  }
+  let wire : Array[(J, Bytes?)] = []
+  let remote = RemoteSurface::new(
+    "fs@H",
+    { id: "fs", origin: "H" },
+    "H",
+    jo([("kind", js("feishu")), ("workspace", js("ws")), ("has", ja([js("api")]))]),
+    {
+      ask: async fn(_, request, _) {
+        // (what crosses the mesh is JSON text, the bytes after it as they are)
+        let got = answerer.answer(parse_js(js_stringify(request)), None, Some("ws"))
+        wire.push((parse_js(js_stringify(got.json)), got.bytes))
+        got
+      },
+    },
+    None,
+    fs,
+    { write: (_, _, _, _) => () },
+  )
+  let rt = @effect.Runtime::new()
+  let data : Ref[J?] = Ref(None)
+  let file : Ref[J?] = Ref(None)
+  ignore(
+    rt.fork(async fn() {
+      data.val = Some((remote.surface().call)("api", [js("GET /open-apis/im/v1/chats/oc_g"), jo([])]))
+      file.val = Some((remote.surface().call)("api", [js("GET /open-apis/im/v1/messages/om_x/resources/file_key"), jo([("type", js("image"))])]))
+    }),
+  )
+  rt.advance(0)
+  assert_eq(js_stringify(data.val.unwrap()), "{\"code\":0,\"data\":{\"name\":\"团队\"}}")
+  assert_eq(
+    js_stringify(file.val.unwrap()),
+    "{\"$feishuFile\":\"ffd8ff0080fe\",\"contentType\":\"image/jpeg\",\"disposition\":\"attachment; filename=\\\"photo.jpg\\\"\"}",
+  )
+  // On the wire: no hex in the JSON, the bytes after it, as remote.ts `answerCall` sends them.
+  assert_eq(wire.length(), 2)
+  assert_eq(js_stringify(wire[0].0), "{\"result\":{\"answer\":{\"code\":0,\"data\":{\"name\":\"团队\"}},\"files\":[]}}")
+  assert_true(wire[0].1 is None)
+  assert_eq(
+    js_stringify(wire[1].0),
+    "{\"result\":{\"feishuFile\":{\"contentType\":\"image/jpeg\",\"disposition\":\"attachment; filename=\\\"photo.jpg\\\"\"}}}",
+  )
+  assert_true(wire[1].1 == Some(image))
+}

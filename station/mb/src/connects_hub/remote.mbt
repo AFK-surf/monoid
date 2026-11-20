@@ -407,7 +407,32 @@ async fn RemoteSurface::call(self : RemoteSurface, name : String, args : Array[J
       js(hex(bytes))
     }
     "api" if self.has(name) => {
-      let got = self.ask_call("api", [js(s(0)), args.get(1).unwrap_or(Null)])
+      // A non-JSON answer (a Feishu message's image or file) comes as bytes beside its content type and disposition,
+      // given on as the Feishu connection gives it (`$feishuFile`).
+      let request = jo([
+        ("method", js(call_method)),
+        ("workspace", at(Some(self.described), "workspace").unwrap_or(undefined())),
+        ("connect", self.known.to_j()),
+        ("op", js("api")),
+        ("args", ja([js(s(0)), args.get(1).unwrap_or(Null)])),
+        ("whole", jb(true)),
+      ])
+      |> drop_undefined
+      let raw = (self.asker.ask)(self.station, request, NoBody)
+      let got = nullish_or_null(at(Some(raw.json), "result"))
+      match (raw.bytes, at(Some(got), "feishuFile")) {
+        (Some(bytes), Some(Obj(_) as ff)) => {
+          if bytes.length().to_double() > file_max {
+            raise fail_("that station's answer is too long")
+          }
+          return jo([
+            ("$feishuFile", js(hex(bytes))),
+            ("contentType", js(js_text(at(Some(ff), "contentType")))),
+            ("disposition", js(js_text(at(Some(ff), "disposition")))),
+          ])
+        }
+        _ => ()
+      }
       let answer = nullish_or_null(at(Some(got), "answer"))
       match (answer, at(Some(got), "files")) {
         (Obj(_) | Arr(_), Some(Arr(fs))) => {
@@ -511,6 +536,12 @@ pub async fn CallAnswerer::answer(self : CallAnswerer, request : J, body : Bytes
     }
     "api" => {
       let answer = (chat.call)("api", [js(s(0)), match args.get(1) { Some(Null) | None => jo([]); Some(p) => p }])
+      // (a file as the Feishu connection gives it: its bytes go as the answer's, as remote.ts `answerCall` sends them)
+      if str_of(at(Some(answer), "$feishuFile")) is Some(h) {
+        let bytes = unhex(h)
+        let file = jo([("contentType", js(js_text(at(Some(answer), "contentType")))), ("disposition", js(js_text(at(Some(answer), "disposition"))))])
+        return { json: jo([("result", jo([("feishuFile", file)]))]), bytes: Some(bytes) }
+      }
       let files = match chat.get_opt("answerFiles", [answer]) {
         Some(f) => f
         None => ja([])

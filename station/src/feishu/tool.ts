@@ -51,6 +51,15 @@ function fileName(file: FeishuFile): string {
   return `${Array.from(stem || "file").slice(0, 32).join("")}${ext}`;
 }
 
+/// Whether a connect is a Feishu (Lark) one: this station's own (`own`), or one of another station's that a chat here
+/// runs on (the hub's connects hold those too, and their surfaces say their platform).
+export function isFeishuConnect(hub: Hub | undefined, connect: string, own?: (id: string) => boolean): boolean {
+  if (own?.(connect)) return true;
+  if (hub?.config().connects.some((c) => c.id === connect && c.kind === "feishu")) return true;
+  const p = hub?.chatOf(connect)?.platform?.();
+  return p === "feishu" || p === "lark";
+}
+
 export function feishuTools(hub: () => Hub | undefined, isFeishu: (connect: string) => boolean): Tool[] {
   return [
     {
@@ -66,13 +75,14 @@ export function feishuTools(hub: () => Hub | undefined, isFeishu: (connect: stri
         if (verb !== "GET" && path.startsWith("/open-apis/im/v1/messages") && !/\/reactions(\/|$)/.test(path)) {
           throw new Error("send, answer and change messages with chat_post (it keeps what is said in the conversation); feishu_api reads messages and adds reactions");
         }
+        const knownFeishu = (c: string) => isFeishuConnect(h, c, isFeishu);
         let connect: string | null = null;
         if (typeof args.to === "string" && args.to !== "") connect = target(h, key, args.to).connect;
         else {
           const own = h.store.getSession(key)?.connect ?? null;
-          connect = own !== null && isFeishu(own) ? own : (h.store.recentSessionThreads(key).threads.map((t) => t.connect).find(isFeishu) ?? null);
+          connect = own !== null && knownFeishu(own) ? own : (h.store.recentSessionThreads(key).threads.map((t) => t.connect).find(knownFeishu) ?? null);
         }
-        if (connect === null || !isFeishu(connect)) throw new Error("this session has no Feishu conversation: give to= one of your Feishu chats");
+        if (connect === null || !knownFeishu(connect)) throw new Error("this session has no Feishu conversation: give to= one of your Feishu chats");
         const chat = h.chat(connect);
         if (!chat.api) throw new Error("this Feishu connect is not connected");
         const result = await chat.api(method, params);

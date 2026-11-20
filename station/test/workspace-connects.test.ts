@@ -3,7 +3,8 @@
 // what the mesh does (a JSON head, bytes after it).
 import assert from "node:assert/strict";
 import { readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects, fingerprint } from "../src/connects/workspace.ts";
@@ -11,6 +12,12 @@ import { connectEdits } from "../src/api/routes/connects.ts";
 import { overview } from "../src/api/overview.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
+import type { ChatSurface } from "../src/sessions/chat.ts";
+import { FeishuSurface } from "../src/feishu/surface.ts";
+import { FeishuThreads } from "../src/feishu/threads.ts";
+import { feishuTools } from "../src/feishu/tool.ts";
+import { FeishuClient } from "../src/feishu/web.ts";
+import { FakeFeishu, RawAnswer } from "./feishu-fake.ts";
 import { Rig, message, reply, settle } from "./hub-fakes.ts";
 
 type Json = any;
@@ -29,7 +36,7 @@ function across(v: Json): Json {
   return bytes === null ? copy : withBytes(copy, bytes);
 }
 
-type Station = { rig: Rig; bus: PeerBus; connects: WorkspaceConnects; up: boolean; restart(): void };
+type Station = { rig: Rig; bus: PeerBus; connects: WorkspaceConnects; up: boolean; restart(): void; local: Map<string, ChatSurface> };
 
 /// Two stations of workspace "ws", each a hub of its own whose connects are config.json's and the other's it was told
 /// of; H has the Slack connect `cl`.
@@ -72,7 +79,8 @@ function workspace(): { h: Station; s: Station; close(): Promise<void> } {
       return read;
     };
     Object.defineProperty(rig, "config", { get: config, configurable: true });
-    const local = new Map([["cl", rig.chat], ["gpt", rig.gptChat], ["team", rig.teamChat]]);
+    const local = new Map<string, ChatSurface>([["cl", rig.chat], ["gpt", rig.gptChat], ["team", rig.teamChat]]);
+    station.local = local;
     rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? local.get(c) : undefined) ?? station.connects.remote.surface(c) });
     wire();
     stations.set(id, station);
@@ -117,6 +125,44 @@ test("a new conversation of a connect that names another station runs there; wha
   // The bot S's hub knows is H's bot.
   assert.equal(s.rig.hub.chatOf(id)?.botUserId(), "UBOT");
   await close();
+});
+
+test("feishu_api of a chat whose Feishu connect runs on another station: its JSON with and without to=, and a message's image saved in that chat's own uploads", async () => {
+  const { h, s, close } = workspace();
+  const fake = await FakeFeishu.start();
+  const surface = new FeishuSurface({
+    connect: "fs", appId: "cli_test", appSecret: "s", domain: "feishu",
+    threads: new FeishuThreads(join(h.rig.dir, "threads.json")),
+    client: new FeishuClient("cli_test", "s", "feishu", fake.base),
+  });
+  try {
+    h.rig.raw.connects.push({ id: "fs", kind: "feishu", feishu: { appId: "cli_test", appSecret: "s" }, bind: { runtime: "claude" }, station: S });
+    h.local.set("fs", surface);
+    await h.connects.receive("fs", { type: "message", message: { channel: "oc_g", threadTs: "om_a", ts: "om_a", user: "ou_ada", text: "@Bot 帮忙", addressed: true } });
+    await settle();
+    const key = sessionKey(`fs@${H}`, "oc_g", "om_a");
+    assert.ok(s.rig.store.getSession(key), "the session is S's");
+    // S has no Feishu connect of its own: the one it knows is H's.
+    const tool = feishuTools(() => s.rig.hub, (id) => s.rig.raw.connects.some((c: Json) => c.id === id && c.kind === "feishu"))[0]!;
+
+    fake.answer("GET /open-apis/im/v1/chats/oc_g", { code: 0, data: { name: "团队" } });
+    assert.deepEqual(JSON.parse(await tool.run(key, { method: "GET /open-apis/im/v1/chats/oc_g" })), { code: 0, data: { name: "团队" } });
+    fake.answer("GET /open-apis/im/v1/messages", { code: 0, data: { items: [] } });
+    assert.deepEqual(JSON.parse(await tool.run(key, { method: "GET /open-apis/im/v1/messages", to: "oc_g/om_a" })), { code: 0, data: { items: [] } });
+
+    const resource = "/open-apis/im/v1/messages/om_other/resources/file_key";
+    const bytes = Buffer.from([0xff, 0xd8, 0xff, 0x00, 0x80, 0xfe]);
+    fake.answer(`GET ${resource}`, new RawAnswer(bytes, { "content-type": "image/jpeg", "content-disposition": 'attachment; filename="photo.jpg"' }));
+    const saved = JSON.parse(await tool.run(key, { method: `GET ${resource}`, params: { type: "image" } }));
+    assert.equal(dirname(saved.path), join(s.rig.session(key).workspace, "uploads"));
+    assert.deepEqual({ content_type: saved.content_type, size: saved.size }, { content_type: "image/jpeg", size: bytes.length });
+    assert.deepEqual(await readFile(saved.path), bytes);
+    assert.deepEqual(fake.calls("GET", resource).map((c) => c.query), [{ type: "image" }]);
+  } finally {
+    await close();
+    await surface.stop();
+    await fake.close();
+  }
 });
 
 test("a conversation that began before stays where it is; one the station named cannot take runs on the connect's own", async () => {
@@ -364,7 +410,8 @@ function multiWorkspace(loads: Record<string, () => Promise<Json> | Json>) {
       return read;
     };
     Object.defineProperty(rig, "config", { get: config, configurable: true });
-    const local = new Map([["cl", rig.chat], ["gpt", rig.gptChat], ["team", rig.teamChat]]);
+    const local = new Map<string, ChatSurface>([["cl", rig.chat], ["gpt", rig.gptChat], ["team", rig.teamChat]]);
+    station.local = local;
     rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? local.get(c) : undefined) ?? station.connects.remote.surface(c) });
     wire();
     stations.set(id, station);
