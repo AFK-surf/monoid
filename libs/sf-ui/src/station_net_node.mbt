@@ -77,8 +77,10 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
       _ => words_node(p, said, fn() { net_card_words }) |> ignore
     }
   }
-  // (how it is reached long: it is what is cut short, its round trip's words kept; else those words, it kept)
-  let long_path = fn() { net_path_long(net_text(n(), "path")) }
+  // (how it is reached long: it is what is cut short, its round trip's words kept; else those words, it kept. Worked
+  // out once of it, told only as it comes out otherwise: its figures and speeds changing run nothing of how it is cut)
+  let long_now = @signals.computed(fn(_) { net_path_long(net_text(n(), "path")) })
+  let long_path = fn() { long_now.get() }
   let short_path = fn() { !long_path() }
   let words_cut = fn(p : @view.View, said : () -> String, cut : () -> Bool) {
     match look {
@@ -154,7 +156,9 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
 /// long, else the words around its round trip). Shown only once `net` says one (no made-up one).
 fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Unit {
   let has = fn(key : String) { net_field(net(), key) is Some(Object(_)) }
-  let long_path = fn() { net_path_long(net_text(net(), "path")) }
+  // (worked out once of how it goes, told only as it comes out otherwise, as station_net_line_node's)
+  let long_now = @signals.computed(fn(_) { net_path_long(net_text(net(), "path")) })
+  let long_path = fn() { long_now.get() }
   let short_path = fn() { !long_path() }
   parent.box(made_for=loc, fn(r) {
     style_node(r, fn() { net_page_row })
