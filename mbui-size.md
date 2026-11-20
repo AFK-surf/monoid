@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 2.72 | 3.68 | 14.96 | 36.94 | 56.33 | 32.47 | 66.01 | 97.76 | 123.51 |
 | [d74c5683d](https://github.com/AFK-surf/monoid/commit/d74c5683d0dfc7bfcde8b5951a04851b3b71de75) fix(web): enroll a console's machine as the accoun | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.8 | 123.51 |
 | [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.72 | 123.51 |
 | [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.88 | 123.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e70fdb543](https://github.com/AFK-surf/monoid/commit/e70fdb54372d340fd72e2356100f14cdda494403) test(station): add live MoonBit parity tests for C | 2.66 | 3.57 | 14.57 | 36.83 | 56.12 | 32.29 | 65.43 | 97.76 | 120.12 |
 | [099f4a3c3](https://github.com/AFK-surf/monoid/commit/099f4a3c32f9deb3c066c3dbd063d57862f27705) test(station): add dual-station MoonBit mesh/remot | 2.65 | 3.57 | 14.57 | 36.81 | 56.12 | 32.29 | 65.43 | 97.76 | 119.01 |
 | [fe72a9910](https://github.com/AFK-surf/monoid/commit/fe72a991087292da3964cd067cb3cec154b6beec) fix(mbui): keep a field's keyboard while a finger  | 2.65 | 3.57 | 14.57 | 36.81 | 56.12 | 32.29 | 65.43 | 97.5 | 119.6 |
-| [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [d74c5683d](https://github.com/AFK-surf/monoid/commit/d74c5683d0dfc7bfcde8b5951a04851b3b71de75) fix(web): enroll a console's machine as the accoun | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e70fdb543](https://github.com/AFK-surf/monoid/commit/e70fdb54372d340fd72e2356100f14cdda494403) test(station): add live MoonBit parity tests for C | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [099f4a3c3](https://github.com/AFK-surf/monoid/commit/099f4a3c32f9deb3c066c3dbd063d57862f27705) test(station): add dual-station MoonBit mesh/remot | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [fe72a9910](https://github.com/AFK-surf/monoid/commit/fe72a991087292da3964cd067cb3cec154b6beec) fix(mbui): keep a field's keyboard while a finger  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
-| [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
