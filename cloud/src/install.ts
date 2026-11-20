@@ -28,7 +28,7 @@ import { PRODUCTS } from "../../client/i18n/brand.ts";
  * test channel's (beta/, scripts/release.sh --beta). STILLFAIL_CHANNEL where it runs says otherwise.
  */
 export function installScript(origin: string, channel: "stable" | "beta" = "stable", lang: Lang = "zh"): string {
-  return script((key, args) => tr(lang, key, args)).replaceAll("__ORIGIN__", origin).replaceAll("__CHANNEL__", channel).replaceAll("__LANG__", lang).replace("__PRODUCTS__", () => productCases());
+  return script((key, args) => tr(lang, key, args)).replaceAll("__ORIGIN__", origin).replaceAll("__CHANNEL__", channel).replaceAll("__LANG__", lang).replace("__PRODUCTS__", () => productCases()).replaceAll("__ALL_PRODUCTS__", () => allProducts());
 }
 
 /** The installer's `case "$origin"` for each product other than still.fail (client/i18n/brand.ts): its id and reverse
@@ -38,6 +38,12 @@ function productCases(): string {
     const hosts = zones.flatMap((zone) => [`*://${zone}`, `*://${zone}:*`, `*://*.${zone}`, `*://*.${zone}:*`]);
     return `  ${hosts.join("|")}) product=${product.id} reverse=${product.reverse} ;;`;
   }).join("\n");
+}
+
+/** Every product's id and reverse domain, still.fail's first, as the installer's \`id:reverse\` words: the services
+ * one data directory may have been given. */
+function allProducts(): string {
+  return ["stillfail:fail.still", ...PRODUCTS.map(({ product }) => `${product.id}:${product.reverse}`)].join(" ");
 }
 
 /**
@@ -215,12 +221,43 @@ esac
 wsl=""
 [ "$os" = Linux ] && grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null && wsl=yes
 app="$data/app"
-label="$reverse.station"
-plist="$HOME/Library/LaunchAgents/$label.plist"
 unit_dir="\${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-unit="$product-station.service"
 # Whether this Linux has a systemd for the user to run services in (not a container's, not another init).
 user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+# Paths and PATH are XML text in a plist: an ampersand or angle bracket in either must survive launchd's parser.
+xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }
+# One service runs a data directory, whichever cloud updates it. A data directory of its own (Monoid Machine's
+# /data/station, its stillfail-station.service with the machine's own settings beside it) keeps the service it has
+# when it moves to another product's cloud: one of that product's beside it would run the same data, the two taking
+# its lock in turn. The products' own homes (~/.stillfail, ~/.monoid) are each their product's. Any other product's
+# service found running this data is a duplicate, taken away below.
+svc_dup=""
+[ "$os" != Darwin ] && user_systemd && svc_dup=yes
+owns() {
+  if [ "$os" = Darwin ]; then
+    grep -qF "<key>STILLFAIL_DATA</key><string>$(xml "$data")</string>" "$HOME/Library/LaunchAgents/$2.station.plist" 2>/dev/null
+  else
+    [ -n "$svc_dup" ] && grep -qxF "Environment=STILLFAIL_DATA=$data" "$unit_dir/$1-station.service" 2>/dev/null
+  fi
+}
+owners="" svc_owner=""
+for pr in __ALL_PRODUCTS__; do
+  owns "\${pr%%:*}" "\${pr#*:}" && owners="$owners $pr"
+  [ "$data" != "$HOME/.\${pr%%:*}" ] || svc_owner=$pr
+done
+if [ -z "$svc_owner" ]; then
+  case "$owners " in
+    *" stillfail:fail.still "*) svc_owner=stillfail:fail.still ;;
+    " "?*) svc_owner=\${owners# }; svc_owner=\${svc_owner%% *} ;;
+    *) svc_owner="$product:$reverse" ;;
+  esac
+fi
+product=\${svc_owner%%:*} reverse=\${svc_owner#*:}
+dup_products=""
+for pr in $owners; do [ "$pr" = "$svc_owner" ] || dup_products="$dup_products $pr"; done
+label="$reverse.station"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+unit="$product-station.service"
 # Every directory the install writes in is checked before anything is downloaded or joined: one a sudo made root's
 # (~/.config after a \`sudo\` command made it, mkdir's "Permission denied" at the service once the machine had joined,
 # 2026-11-17) stops it here with the command that gives it back. Not run as root instead: the station is the user's,
@@ -385,8 +422,6 @@ agent_path=$(printf '%s' "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PAT
 # The service's definition, as this release has it: written below, and compared with the one running now.
 if [ "$os" = Darwin ]; then
   service_file="$plist"
-  # Paths and PATH are XML text: an ampersand or angle bracket in either must survive launchd's parser.
-  xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }
   cat > "$tmp/service" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -441,7 +476,8 @@ if [ -z "$token" ] && [ -f "$station_json" ]; then
 fi
 # The service's definition, less its PATH: what makes a service "changed".
 without_path() { sed -e 's#<key>PATH</key><string>[^<]*</string>##' -e '/^Environment=PATH=/d' "$1"; }
-same_service() { [ -z "$service_file" ] || { [ -f "$service_file" ] && [ "$(without_path "$tmp/service")" = "$(without_path "$service_file")" ]; }; }
+# (another product's service beside it for the same data is a change too: taken away by a restart)
+same_service() { [ -z "$dup_products" ] && { [ -z "$service_file" ] || { [ -f "$service_file" ] && [ "$(without_path "$tmp/service")" = "$(without_path "$service_file")" ]; }; }; }
 # Whether this runs inside the station: the station among the processes it comes from (an agent's turn, a job).
 inside_station() {
   p=$$
@@ -561,6 +597,20 @@ else
     for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   fi
 fi
+# Another product's service for this same data, and its command linked to this release: taken away for good.
+for dp_pair in $dup_products; do
+  dp=\${dp_pair%%:*} dr=\${dp_pair#*:}
+  if [ "$os" = Darwin ]; then
+    launchctl bootout "gui/$(id -u)/$dr.station" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/$dr.station" >/dev/null 2>&1 || break; sleep 1; done
+    launchctl enable "gui/$(id -u)/$dr.station" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/$dr.station.plist"
+  else
+    systemctl --user disable --now "$dp-station.service" 2>/dev/null || true
+    rm -f "$unit_dir/$dp-station.service"
+  fi
+  if [ -L "$HOME/.local/bin/$dp" ]; then case "$(readlink "$HOME/.local/bin/$dp")" in "$data/app/"*) rm -f "$HOME/.local/bin/$dp" ;; esac; fi
+done
 [ -n "$swapped" ] || swap_app
 rm -rf "$app.old"
 prune_node
