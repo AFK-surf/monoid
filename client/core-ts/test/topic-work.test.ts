@@ -98,7 +98,8 @@ const OVER_READ: Record<string, number> = {
   railCard: 344,
   "railCard usage": 232,
   workspaceMarks: 344,
-  search: 176,
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations on station 0's c-slack-1 crossed 176.0 KB, 2026-11-20)
+  search: 184,
   chatSearch: 128,
   // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18; +39 B
   // startsOnStations on station 0's c-slack-1 crossed 224.0 KB, 2026-11-20)
@@ -147,7 +148,8 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
   newChat: { profiles: 64 },
-  pick: { profiles: 272, stations: 416 },
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations across 15 station overviews crossed 416.0 KB, 2026-11-20)
+  pick: { profiles: 272, stations: 424 },
   settings: { stations: 96 },
   history: { profiles: 72 },
   agentCard: { profiles: 72 },

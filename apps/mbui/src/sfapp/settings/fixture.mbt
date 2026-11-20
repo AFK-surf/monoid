@@ -2427,7 +2427,6 @@ fn fx_station(address : String) -> Json {
       ("face", str("working")),
       ("line", str(if fx.willow_incompatible { "版本不兼容，需要更新" } else if fx.gpus { "AMD EPYC · 32 GB · Linux" } else { "Apple M1 Pro · 32 GB · macOS 26" })),
       ("online", Json::boolean(!fx.willow_away)),
-      ("acceptAutoChats", Json::boolean(true)),
       // the viewer added it: its mode theirs to change (the core's `mine`)
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),

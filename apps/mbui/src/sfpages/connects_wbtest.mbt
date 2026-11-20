@@ -289,7 +289,7 @@ test "a connect's startsOn dialog: explicit manual checklist (no auto-all), disa
     assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: unchecking Maple enables save")
     // Toggle "跟随工作区白名单（自动分配）" ON -> manual checklist hides, save sends { autoStation: true }, detail shows "跟随工作区白名单".
     assert_true(t.find("跟随工作区白名单（自动分配）") is Some(_), msg="\{at}: auto allowlist switch shown")
-    assert_true(t.find("2 台") is Some(_), msg="\{at}: allowlist count shown")
+    assert_true(t.find("1 台") is Some(_), msg="\{at}: allowlist count shown")
     let (ax, ay) = middle_of(t, Switch, "跟随工作区白名单（自动分配）")
     t.tap(ax, ay)
     t.draw()
