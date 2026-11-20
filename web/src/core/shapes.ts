@@ -541,6 +541,13 @@ export interface ArchivingView {
 	modeNote?: string;
 }
 
+export interface AutoChatsView {
+	/** Whether this station accepts automatically assigned new chats and presets (opt-in, default false). */
+	enabled: boolean;
+	/** The viewer manages the station: may change it (`autoChats.save`). */
+	canEdit: boolean;
+}
+
 /** Who is looking: local | access (`email`) | mesh (`email`, `name`, `sub`, `role`, `workspace`, `device`). */
 export interface Viewer {
 	via: string;
@@ -1412,6 +1419,8 @@ export interface Overview {
 	automaticDecisions?: AutomaticDecisionView;
 	/** How its chats go to the archive on their own (`archiving.save`). Absent from stations before it. */
 	archiving?: ArchivingView;
+	/** Whether this station accepts automatically assigned new chats and presets (`autoChats.save`). Absent from stations before it. */
+	autoChats?: AutoChatsView;
 	viewer: Viewer;
 	connects: Connect[];
 	profiles: Profile[];

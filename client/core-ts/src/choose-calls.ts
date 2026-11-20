@@ -76,14 +76,16 @@ export function installChoose(inner: Inner): Choose {
           return Effect.gen(function* () {
             // (as picked in the new chat's control, or in a board draft's: `of`, `board:<id>`)
             const of = field("of") || "new";
-            const ask = yield* attempt(() => choose.create(field("station"), of));
+            const station = field("station");
+            yield* attempt(() => choose.assertCreateStation(station, of));
+            const ask = yield* attempt(() => choose.create(station, of));
             // (by the key the page named it by as its first words were sent: the topic's `next`)
             const key = field("key");
-            const made = yield* handlers.chatCreate!(inner, { kind: "chatCreate", station: field("station"), ask, ...(key !== "" ? { key } : {}) }, progress, at, ctx);
-            choose.used(field("station"), ask, of === "new" ? key : undefined);
+            const made = yield* handlers.chatCreate!(inner, { kind: "chatCreate", station, ask, ...(key !== "" ? { key } : {}) }, progress, at, ctx);
+            choose.used(station, ask, of === "new" ? key : undefined);
             // (a draft's chat made: what was picked for it let go of with it)
-            if (of !== "new") choose.set(field("station"), of, { clear: true });
-            return { key: get(made, "key") ?? null, runtime: ask.runtime ?? null, model: ask.model ?? null, effort: ask.effort ?? null };
+            if (of !== "new") choose.set(station, of, { clear: true });
+            return { station, key: get(made, "key") ?? null, runtime: ask.runtime ?? null, model: ask.model ?? null, effort: ask.effort ?? null };
           });
         case "pick.set":
           return Effect.as(attempt(() => choose.set(field("station"), field("of"), params)), null);

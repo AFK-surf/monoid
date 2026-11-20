@@ -204,7 +204,7 @@ export const overviewPartOf = (j: string) => `json_object(
 /// station for 0.8-1.1 KB (the real-size workspace), and the list's first answer later by as much.
 export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive') AND o.type <> 'null')))
+      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive', 'autoChats') AND o.type <> 'null')))
     END`;
 
 /// What a chat's page reads of its station's overview, the JSON `j` (views.ts #chatOverview: its agents' connects,

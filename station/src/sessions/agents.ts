@@ -371,7 +371,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
       // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
       remote.setSandboxes(() => sandboxesOf(config.raw()));
       jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);

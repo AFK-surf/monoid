@@ -1642,6 +1642,9 @@ web-pages.stations.context.section
 web-pages.stations.context.what
 web-pages.stations.diagnostics.logs
 web-pages.stations.diagnostics.logsLine
+web-pages.stations.autoChats.label
+web-pages.stations.autoChats.line
+web-pages.stations.autoChats.what
 web-pages.stations.diagnostics.section
 web-pages.stations.diagnostics.what
 web-pages.stations.elevation.admin

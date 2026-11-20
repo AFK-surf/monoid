@@ -85,6 +85,8 @@
   "core-logic.choose.problem.not_shared": "{name} belongs to {home}, and none of its Profiles is available to this workspace yet. Turn on “Also for {workspace}” on a Profile",
   "core-logic.choose.problem.not_shared_elsewhere": "{name} belongs to another workspace, and none of its Profiles is available to this one yet. Turn on “Also for {workspace}” on a Profile",
   "core-logic.choose.problem.preset_model_missing": "{name} does not run {model}, the model of the preset “{preset}”; switch to a station that does, or edit the preset or pick “No preset”",
+  "core-logic.choose.problem.auto_empty": "No online station is in the automatic assignment allowlist. Turn on “Join automatic assignment allowlist” in station settings, or pick a station manually.",
+  "core-logic.choose.error.auto_empty": "No online station is in the automatic assignment allowlist. Enable a station in its settings or pick one manually.",
   "core-logic.choose.quota.low": "{label}: {left}% left",
   "core-logic.choose.repick.moved": "Switched to {name}",
   "core-logic.choose.repick.none": "No other account can run this chat",

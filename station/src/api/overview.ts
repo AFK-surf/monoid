@@ -173,6 +173,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     ...(typeof built === "number" && Number.isSafeInteger(built) && built > 0 ? { builtAt: built } : {}),
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
     archiving: archivingView(raw, viewer),
+    autoChats: autoChatsView(raw, viewer),
     viewer: { via: "mesh", ...viewer },
     mesh: meshStatus(d.cloud, viewer),
     connects,
@@ -249,6 +250,12 @@ export function modelWindows(profiles: { models?: unknown }[]): Record<string, n
 function archivingView(raw: any, viewer: Viewer) {
   const days = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : fallback);
   return { days: days(raw?.autoArchiveDays, 1), slackDays: days(raw?.slackArchiveDays, 3), reviewed: raw?.autoArchiveReviewed === true, canEdit: managesStation(viewer) };
+}
+
+/// Whether this station is opted into automatic assignment for new chats and presets (`acceptAutoChats`, default false).
+/// Everyone sees it; its managers change it (PUT /auto-chats).
+function autoChatsView(raw: any, viewer: Viewer) {
+  return { enabled: raw?.acceptAutoChats === true, canEdit: managesStation(viewer) };
 }
 
 function withPermissions(d: OverviewDeps, viewer: Viewer): { permissions?: unknown } {

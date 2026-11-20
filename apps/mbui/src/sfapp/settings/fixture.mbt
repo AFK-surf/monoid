@@ -20,6 +20,8 @@ priv struct SettingsFixture {
   mut afresh_above : Double
   /// the station sending its log to still.fail
   mut logs : Bool
+  /// whether this station accepts automatically assigned new chats and presets
+  mut accept_auto_chats : Bool
   /// a Windows station's running as administrator, as the core shows it (its overview's `elevation`), as a test sets
   /// it; none: not a Windows station
   mut elevation : Json?
@@ -184,6 +186,7 @@ let fx : SettingsFixture = {
   afresh: false,
   afresh_above: 1.0,
   logs: true,
+  accept_auto_chats: false,
   elevation: None,
   copies: None,
   gpus: false,
@@ -420,6 +423,7 @@ fn fixture_reset() -> Unit {
   fx.afresh = false
   fx.afresh_above = 1.0
   fx.logs = true
+  fx.accept_auto_chats = false
   fx.elevation = None
   fx.copies = None
   fixture_retire_asked.clear()
@@ -2423,6 +2427,7 @@ fn fx_station(address : String) -> Json {
           ("search", obj([("files", str("spotlight")), ("personal", Json::boolean(false))])),
           ("context", obj([("afreshWhenCold", Json::boolean(fx.afresh)), ("afreshAbove", Json::number(fx.afresh_above))])),
           ("diagnostics", obj([("logs", Json::boolean(fx.logs))])),
+          ("autoChats", obj([("enabled", Json::boolean(fx.accept_auto_chats)), ("canEdit", Json::boolean(true))])),
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
@@ -4059,6 +4064,11 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     }
     "diagnostics.setLogs" => {
       fx.logs = flag(p, "logs")
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "autoChats.save" => {
+      fx.accept_auto_chats = flag(p, "enabled")
       fx_changed()
       Some(Ok(obj([])))
     }

@@ -1716,6 +1716,17 @@ export class Accounts {
     });
   }
 
+  /// PUT /auto-chats (a workspace manager's): whether this station accepts automatically assigned new chats and presets
+  /// (`acceptAutoChats` in config.json; opt-in, defaults to false).
+  async putAutoChats(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
+    if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.autoChats.managersOnly"));
+    if (typeof input.enabled !== "boolean") throw new Refusal(400, tr(lang, "station.autoChats.badSettings"));
+    const enabled = input.enabled;
+    await this.save(viewer, "auto chats", (raw) => {
+      raw.acceptAutoChats = enabled;
+    });
+  }
+
   /// POST /automatic-decisions/review: the done chats no decision has answered, reviewed now in the background; how many.
   async reviewUndecided(viewer: Viewer, lang: Lang = stationLang()): Promise<number> {
     if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.decisions.managersOnlyReview"));

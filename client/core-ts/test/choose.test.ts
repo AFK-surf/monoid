@@ -466,3 +466,158 @@ test("preset usage ranks frequently and recently used presets first while keepin
   assert.equal(hist.length, 50);
   assert.equal(hist[0]!.id, "p-59");
 });
+
+function makeAllowlistRig() {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const data = new Data(host, runner, { owner: () => "s1" });
+  Effect.runSync(data.open(["s1"]));
+  const store = new Store(host, runner);
+  const choose = new Choose({ store, data, now: () => 1_000, agent: () => null });
+  store.watch({ topic: "stations", scope: "ws1" }, () => {});
+  const setStations = (rows: J[]) => {
+    store.set({ topic: "stations", scope: "ws1" }, { ok: rows });
+  };
+  const setOverview = (id: string, profiles: J[]) => {
+    const ov = { topic: "overview" as const, station: `ws1/${id}` };
+    store.watch(ov, () => {});
+    store.set(ov, { ok: { profiles } });
+    const part = { topic: "stationPart" as const, scope: "ws1", station: `ws1/${id}`, part: "profiles" };
+    store.watch(part, () => {});
+    store.set(part, { ok: profiles });
+  };
+  const view = (): J => {
+    const v = choose.compute({ topic: "newChat", scope: "ws1" });
+    assert.ok(v !== undefined && "ok" in v);
+    return v.ok;
+  };
+  return { choose, data, store, setStations, setOverview, view };
+}
+
+test("auto station allowlist: only acceptAutoChats stations enter the load-balancing pool", () => {
+  const { choose, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "rig1", station: "ws1/rig1", name: "Rig", online: true, mode: "tasks", acceptAutoChats: true, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 3 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 2);
+  // Even though office (running=0) and rig1 (tasks-only, running=0) are idler, only mm2 from the allowlist is picked.
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: new user with no last history picks least busy allowlisted station, never non-allowlisted online[0]", () => {
+  const { setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 2 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 2);
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: consecutive new chats rotate and spread across allowlisted stations without swapping mid-create", () => {
+  const { choose, setStations, setOverview, view } = makeAllowlistRig();
+  const profile = [{ id: "p1", runtimes: ["claude"], enabled: true, models: ["claude-opus-5-5"] }];
+  setOverview("mm1", profile);
+  setOverview("mm2", profile);
+  setOverview("office", profile);
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  // First chat: tied at running=1 -> picks mm1.
+  const firstView = view();
+  assert.equal(firstView.autoStation, true);
+  assert.equal(firstView.station.id, "mm1");
+  // Non-allowlisted station is hard-refused in auto mode.
+  assert.throws(() => choose.assertCreateStation("ws1/office"));
+  choose.assertCreateStation("ws1/mm1");
+  const ask1 = choose.create("ws1/mm1");
+  choose.used("ws1/mm1", ask1, firstView.next);
+
+  // Even before counts.running changes (still tied at 1 vs 1), the tie-breaker rotates the next view to mm2!
+  const secondView = view();
+  assert.equal(secondView.autoStation, true);
+  assert.equal(secondView.station.id, "mm2");
+
+  // And when mm2 gets busier (running=3 vs mm1 running=1), the view picks mm1 again, never office.
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 3 } } },
+  ]);
+  const thirdView = view();
+  assert.equal(thirdView.autoStation, true);
+  assert.equal(thirdView.station.id, "mm1");
+});
+
+test("auto station allowlist: picking a model-bound preset while in auto mode stays in allowlist and never pins non-allowlisted stations", () => {
+  const { choose, data, setStations, setOverview, view } = makeAllowlistRig();
+  setOverview("office", [{ id: "p-off", runtimes: ["codex"], enabled: true, models: ["gpt-6.2-sol"] }]);
+  setOverview("mm1", [{ id: "p-m1", runtimes: ["claude"], enabled: true, models: ["claude-opus-5-5"] }]);
+  setOverview("mm2", [{ id: "p-m2", runtimes: ["codex"], enabled: true, models: ["gpt-6.2-sol"] }]);
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, overview: { counts: { running: 2 } } },
+  ]);
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-codex": { id: "p-codex", name: "Codex Preset", dirs: [], instructions: "", model: { runtime: "codex", model: "gpt-6.2-sol" }, owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "mm2" },
+    },
+  }, false);
+  choose.pickNew("ws1", { autoStation: true });
+  choose.pickNew("ws1", { preset: "p-codex", presetStation: "ws1/mm2" });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  // office runs gpt-6.2-sol with running=0, but is NOT allowlisted; mm1 is allowlisted but lacks gpt-6.2-sol -> picks mm2.
+  assert.equal(v.station.id, "mm2");
+});
+
+test("auto station allowlist: preset autoStation strictly uses allowlisted stations only", () => {
+  const { choose, data, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, overview: { counts: { running: 4 } } },
+  ]);
+  data.put("presetRecords", "ws1", {
+    before: [],
+    records: {
+      "p-auto": { id: "p-auto", name: "Auto Preset", dirs: [], instructions: "", autoStation: true, owner: "u1", createdBy: "u1@x", createdAt: 100, updatedAt: 100, rev: 1, home: "mm1" },
+    },
+  }, false);
+  // User previously pinned office manually; picking an autoStation preset switches strictly to allowlist.
+  choose.pickNew("ws1", { station: "office" });
+  assert.equal(view().station.id, "office");
+  choose.pickNew("ws1", { preset: "p-auto", presetStation: "ws1/mm1" });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.station.id, "mm1");
+});
+
+test("auto station allowlist: empty or all-offline allowlist never silently falls back to non-allowlisted stations", () => {
+  const { choose, setStations, view } = makeAllowlistRig();
+  setStations([
+    { id: "office", station: "ws1/office", name: "Office", online: true, acceptAutoChats: false, overview: { counts: { running: 0 } } },
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: false, acceptAutoChats: true, overview: { counts: { running: 0 } } },
+  ]);
+  choose.pickNew("ws1", { autoStation: true });
+  const v = view();
+  assert.equal(v.autoStation, true);
+  assert.equal(v.autoPoolCount, 0);
+  assert.equal(v.station, undefined);
+  assert.equal(v.blocked, "auto_empty");
+  assert.equal(typeof v.problem, "string");
+  assert.throws(() => choose.assertCreateStation("ws1/office"));
+});

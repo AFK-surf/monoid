@@ -289,6 +289,8 @@
   "station.decisions.modelUnavailable": "The selected model isn't available on any Profile right now",
   "station.archiving.managersOnly": "Only workspace managers can change automatic archiving",
   "station.archiving.badSettings": "Invalid automatic archiving settings: days must be between 0 and 365",
+  "station.autoChats.managersOnly": "Only workspace managers can change the automatic assignment allowlist",
+  "station.autoChats.badSettings": "Invalid automatic assignment setting",
   "station.decisions.badSettings": "Invalid automatic decision settings",
   "station.decisions.pickVerified": "Choose a decision model verified on an existing Profile",
   "station.decisions.reviewUnsupported": "This station doesn't support manual checks yet",

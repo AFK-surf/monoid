@@ -195,6 +195,15 @@ fn archiving_view(raw : J, viewer : Viewer) -> J {
 }
 
 ///|
+/// overview.ts `autoChatsView`.
+fn auto_chats_view(raw : J, viewer : Viewer) -> J {
+  jo([
+    ("enabled", Bool(raw.get("acceptAutoChats") is Some(Bool(true)))),
+    ("canEdit", Bool(manages_station(viewer.role))),
+  ])
+}
+
+///|
 /// ops/agent-env.ts ENV_NAME.
 fn env_name(key : String) -> Bool {
   key.length() > 0 &&
@@ -731,6 +740,7 @@ pub fn overview(
                     ("builtAt", built_at),
                     ("automaticDecisions", Some(decisions)),
                     ("archiving", Some(archiving_view(raw, viewer))),
+                    ("autoChats", Some(auto_chats_view(raw, viewer))),
                     ("viewer", Some(viewer_shown)),
                     ("mesh", Some(mesh_status(d, Some(viewer)))),
                     ("connects", Some(ja(shown_connects))),

@@ -7,6 +7,7 @@
 pub let settings_that_move : Array[String] = [
   "sandboxes", "agentEnv", "askToName", "maxNudges", "warmMinutes", "maxWarmClaude", "afreshAbove", "afreshWhenCold",
   "autoArchiveDays", "autoArchiveReviewed", "archivedWorkspaceDays", "slackArchiveDays", "automaticDecisions",
+  "acceptAutoChats",
 ]
 
 ///|

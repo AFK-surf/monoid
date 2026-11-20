@@ -192,7 +192,7 @@ fn station_view_node(
   // (what its blocks are worked out of: the station as their keys read it, so a change of what no key reads runs none
   // of what reads them; and the blocks worked out once, told only as one comes, goes or moves)
   // (and the `beta` features it runs: its terminals' rows are keys of its overview's parts)
-  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "features"])
+  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "autoChats", "features"])
   let blocks_now = @signals.computed(fn(_) {
     let s = keyed
     // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
@@ -247,7 +247,7 @@ fn station_view_node(
       k if k.has_prefix("processes/") => rs_block_node(b, core, address, rs, k)
       "offline" => @sf.group_node(b, fn(g) { said_row_node(g, fn() { @sf.t("web-pages.stations.settingsOffline") }) })
       "system" =>
-        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation"]), manager)
+        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation", "autoChats"]), manager)
       "logins" => station_logins_node(b, core, address, fn() { flag(top(), "online") })
       "permissions" => station_permissions_node(b, core, address, station_overview_of(s, "permissions"))
       "env" => station_env_node(b, core, address, station_overview_of(s, "agentEnv"), manager)
@@ -399,7 +399,7 @@ fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   let has_env = field(o, "agentEnv") is Some(Array(_)) && (manager || env.length() > 0)
   let search = field(o, "search")
   let has_search = search is Some(Object(_)) && text(search, "files") == "spotlight"
-  if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) {
+  if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) || field(o, "autoChats") is Some(Object(_)) {
     out.push("system")
   }
   if items(field(o, "copies"), "offers").length() > 0 {
@@ -1288,9 +1288,24 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
   let search = fn() { field(field(s(), "overview"), "search") }
   let diagnostics = fn() { field(field(s(), "overview"), "diagnostics") }
   let elevation = fn() { field(field(s(), "overview"), "elevation") }
+  let auto_chats = fn() { field(field(s(), "overview"), "autoChats") }
   let has_search = fn() { search() is Some(Object(_)) && text(search(), "files") == "spotlight" }
   st_section_node(b, fn() { "运行设置" }, fn(sec) {
     @sf.group_node(sec, fn(g) {
+      g.show(fn() { auto_chats() is Some(Object(_)) }, fn(ac) {
+        st_switch_node(
+          ac,
+          core,
+          address,
+          fn() { @sf.t("web-pages.stations.autoChats.label") },
+          fn() { flag(auto_chats(), "enabled") },
+          fn() { @sf.t("web-pages.stations.autoChats.line") },
+          "autoChats.save",
+          "enabled",
+          fn() { @sf.t("web-pages.stations.autoChats.what") },
+          fn() { flag(auto_chats(), "canEdit") && manager },
+        )
+      })
       g.show(has_env, fn(ev) {
         @sf.group_rows_node(ev, fn(gr) {
           @sf.link_row_node(
