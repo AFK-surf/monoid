@@ -147,17 +147,17 @@ priv struct Pump {
 
 ///|
 fn Pump::new(host : @host.Host) -> Pump {
-  { host, lp: @agent_drivers.Loop::new(now=wall_ms().to_double()), armed: None, armed_seq: 0, kicking: false }
+  { host, lp: @agent_drivers.Loop::new(now=@host.now().to_double()), armed: None, armed_seq: 0, kicking: false }
 }
 
 ///|
-/// The loop run to now: its queue, and each timer due by the wall's clock, then its next timer slept for.
+/// The loop run to now: its queue, and each timer due by the monotonic clock, then its next timer slept for.
 fn Pump::kick(self : Pump) -> Unit {
   if self.kicking {
     return
   }
   self.kicking = true
-  self.lp.advance(wall_ms().to_double())
+  self.lp.advance(@host.now().to_double())
   self.kicking = false
   let mut first : Double? = None
   for t in self.lp.timers {
@@ -175,7 +175,7 @@ fn Pump::kick(self : Pump) -> Unit {
           self.armed = Some(at)
           self.armed_seq += 1
           let seq = self.armed_seq
-          let wait = at - wall_ms().to_double()
+          let wait = at - @host.now().to_double()
           fork_bg(self.host, "drivers' timer", async fn() {
             // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
             @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
@@ -375,29 +375,63 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
 }
 
 ///|
+/// Maps a Unix socket open error to the error code/message expected by `agent_drivers`.
+fn pump_open_error_code(e : Error) -> String {
+  let msg = said_of(e)
+  if msg.contains("No such file") || msg.contains("ENOENT") {
+    "ENOENT"
+  } else if msg.contains("Connection refused") || msg.contains("ECONNREFUSED") {
+    "ECONNREFUSED"
+  } else {
+    msg
+  }
+}
+
+///|
 /// A connection to a runner's socket (its path: a Unix socket, a Windows named pipe), its events told on the loop.
 fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvents) -> @agent_drivers.Socket {
-  let conn : Ref[@host.Conn?] = Ref(None)
+  let host = self.host
+  self.connect_with(
+    async fn() {
+      let c = host.unix_open(path)
+      (c.id, async fn() { c.socket.destroy() })
+    },
+    async fn(id, b) { host.tcp_write(id, b) },
+    async fn(id) { host.tcp_read(id) },
+    async fn(id) { host.tcp_end(id) },
+    events,
+  )
+}
+
+///|
+fn Pump::connect_with(
+  self : Pump,
+  open : async () -> (Json, async () -> Unit),
+  write : async (Json, Bytes) -> Unit,
+  read : async (Json) -> Bytes?,
+  end : async (Json) -> Unit,
+  events : @agent_drivers.SocketEvents,
+) -> @agent_drivers.Socket {
+  let destroy_fn : Ref[(async () -> Unit)?] = Ref(None)
   let gone = Ref(false)
   let ended = Ref(false)
   let writes : @effect.Queue[Bytes?] = @effect.Queue::unbounded()
   let host = self.host
   let close_once = () => if !gone.val {
     gone.val = true
-    match conn.val {
-      Some(c) => ignore(host.rt.fork_quiet(name="runner close", async fn() { c.socket.destroy() }))
+    match destroy_fn.val {
+      Some(d) => ignore(host.rt.fork_quiet(name="runner close", async fn() { d() }))
       None => ()
     }
     (events.closed)()
     self.kick()
   }
   fork_bg(host, "runner socket", async fn() {
-    match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
-      Ok(c) => {
-        let id = c.id
-        conn.val = Some(c)
+    match (try { Ok(open()) } catch { e => Err(e) }) {
+      Ok((id, do_destroy)) => {
+        destroy_fn.val = Some(do_destroy)
         if gone.val {
-          c.socket.destroy()
+          do_destroy()
           return
         }
         (events.connected)()
@@ -408,11 +442,15 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
             while !gone.val {
               match writes.take() {
                 Some(b) =>
-                  host.tcp_write(id, b) catch {
-                    _ => break
+                  write(id, b) catch {
+                    e => {
+                      if !gone.val { (events.error)(said_of(e)) }
+                      close_once()
+                      break
+                    }
                   }
                 None => {
-                  host.tcp_end(id) catch { _ => () }
+                  end(id) catch { _ => () }
                   break
                 }
               }
@@ -420,7 +458,7 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
           }),
         )
         while !gone.val {
-          let bytes = host.tcp_read(id) catch {
+          let bytes = read(id) catch {
             e => {
               if !gone.val { (events.error)(said_of(e)) }
               break
@@ -434,8 +472,8 @@ fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvent
         }
         close_once()
       }
-      _ => {
-        if !gone.val { (events.error)("ENOENT") }
+      Err(e) => {
+        if !gone.val { (events.error)(pump_open_error_code(e)) }
         close_once()
       }
     }

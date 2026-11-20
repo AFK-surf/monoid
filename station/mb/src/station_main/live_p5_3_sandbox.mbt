@@ -469,7 +469,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
       ]).stringify(),
     ),
   )
-  let heard = Ref(wall_ms().to_double())
+  let heard = Ref(@host.now().to_double())
   let reached = Ref(false)
   let synced = Ref(false)
   let exit : Ref[Json?] = Ref(None)
@@ -483,7 +483,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
         break
       }
       let limit = if reached.val { silent } else if silent > p53_silent_ms { silent } else { p53_silent_ms }
-      if wall_ms().to_double() - heard.val > limit.to_double() {
+      if @host.now().to_double() - heard.val > limit.to_double() {
         ignore(kill(ssh.pid, "SIGKILL"))
       } else {
         send(p53_t_ping, 0, b"")
@@ -522,7 +522,7 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
           let stream = p53_u32_at(all, at + 1)
           let payload = all[at + 9:at + 9 + length].to_bytes()
           at += 9 + length
-          heard.val = wall_ms().to_double()
+          heard.val = @host.now().to_double()
           reached.val = true
           if t == p53_t_stdout {
             ignore(fd_write(1, payload))

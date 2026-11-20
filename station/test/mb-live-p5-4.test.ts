@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect as netConnect, createConnection, createServer, type Server, type Socket } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -465,7 +465,62 @@ test("run: the vault's SSH agent and its HTTPS proxy, and a device's TCP on any 
     assert.equal(eof.got, "bye");
     assert.equal(eof.held, held + 1, "held while open");
     assert.equal(eof.after, held, "let go at its end");
-    assert.equal((await ask(door, "test.netCalledOff", ["192.0.2.1", 9, 150])).answer, held, "let go as it was called off");
+    const calledOff = (await ask(door, "test.netCalledOff", ["192.0.2.1", 9, 150])).answer;
+    assert.equal(calledOff.held, held, "let go as it was called off");
+    assert.ok(calledOff.elapsedMs < 2000, `connecting slot aborted promptly: ${calledOff.elapsedMs}ms`);
+
+    // backpressured peer (paused reader): p54io_write never blocks the event loop, rejects at queue cap, and close cleans up
+    const pausedSockets: Socket[] = [];
+    const stall = createServer((s) => {
+      s.pause();
+      pausedSockets.push(s);
+    });
+    await new Promise<void>((r) => stall.listen(0, "127.0.0.1", () => r()));
+    try {
+      const bp = (await ask(door, "test.netBackpressure", ["127.0.0.1", (stall.address() as any).port])).answer;
+      assert.equal(bp.hitFull, true, `write queue cap hit: ${JSON.stringify(bp)}`);
+      assert.ok(bp.elapsedMs < 3000, `non-blocking write returned promptly: ${bp.elapsedMs}ms`);
+      assert.equal(bp.heldAfter, held, "slot released after close");
+    } finally {
+      for (const s of pausedSockets) s.destroy();
+      stall.close();
+    }
+
+    // write + end ordering: all queued bytes arrive before EOF
+    const sink = createServer((s) => {
+      let total = 0;
+      let bad = false;
+      s.on("data", (d: Buffer) => {
+        total += d.length;
+        for (let i = 0; i < d.length; i++) if (d[i] !== 0x61) bad = true;
+      });
+      s.on("end", () => s.end(bad ? "bad" : `ok:${total}`));
+    });
+    await new Promise<void>((r) => sink.listen(0, "127.0.0.1", () => r()));
+    try {
+      const ordered = (await ask(door, "test.netWriteEndOrder", ["127.0.0.1", (sink.address() as any).port, 16])).answer;
+      assert.equal(ordered.allWritten, true, JSON.stringify(ordered));
+      assert.equal(ordered.reply, `ok:${16 * 65536}`);
+      assert.equal(ordered.heldAfter, held, "slot released after ordered write+end");
+    } finally {
+      sink.close();
+    }
+
+    // Pump::connect: write error propagation + unix_open error code preservation (ENOENT, ECONNREFUSED, passthrough)
+    const sockDir = fresh("pump");
+    const liveSock = join(sockDir, "live.sock");
+    const staleSock = join(sockDir, "stale.sock");
+    const missingSock = join(sockDir, "missing.sock");
+    const unixSrv = createServer();
+    await new Promise<void>((r) => unixSrv.listen(liveSock, () => r()));
+    linkSync(liveSock, staleSock);
+    await new Promise<void>((r) => unixSrv.close(() => r()));
+    const pumpRes = (await ask(door, "test.pumpConnectErrors", [missingSock, staleSock])).answer;
+    assert.equal(pumpRes.writeErr, "Broken pipe", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.writeDestroyed, true, JSON.stringify(pumpRes));
+    assert.equal(pumpRes.missingCode, "ENOENT", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.refusedCode, "ECONNREFUSED", JSON.stringify(pumpRes));
+    assert.equal(pumpRes.otherCode, "Permission denied", JSON.stringify(pumpRes));
 
     // a device here, reached through another station's tunnel: what came with the ask first, then both ways
     const viewer = { workspace: "ws1", sub: "u1", email: "a@example.com", name: "A", role: "owner" };

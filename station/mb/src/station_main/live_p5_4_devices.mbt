@@ -867,11 +867,127 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
     "test.netCalledOff" if p54_testing() => {
       let host = d.world.bus.host
       let ms = opt_num(call_arg(a, 2)).unwrap_or(100.0).to_int()
+      let t0 = @host.now()
       let opened = @effect.timeout(ms, async fn() { p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int()) }) catch {
         _ => None
       }
       if opened is Some(n) { n.close() }
-      Json::number(p54io_held_ffi().to_double())
+      { "held": Json::number(p54io_held_ffi().to_double()), "elapsedMs": Json::number((@host.now() - t0).to_double()) }
+    }
+    "test.netBackpressure" if p54_testing() => {
+      let host = d.world.bus.host
+      let n = p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      let chunk = Bytes::make(262144, b'x')
+      let t0 = @host.now()
+      let mut writes = 0
+      let mut hit_full = false
+      for _ in 0..<128 {
+        if !n.write(chunk) {
+          hit_full = true
+          break
+        }
+        writes += 1
+      }
+      let elapsed = (@host.now() - t0).to_double()
+      n.close()
+      {
+        "hitFull": Json::boolean(hit_full),
+        "writes": Json::number(writes.to_double()),
+        "elapsedMs": Json::number(elapsed),
+        "heldAfter": Json::number(p54io_held_ffi().to_double()),
+      }
+    }
+    "test.netWriteEndOrder" if p54_testing() => {
+      let host = d.world.bus.host
+      let n = p54_net_tcp(host, s(0), opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      let chunks = opt_num(call_arg(a, 2)).unwrap_or(16.0).to_int()
+      let chunk = Bytes::make(65536, b'a')
+      let mut all_written = true
+      for _ in 0..<chunks {
+        if !n.write(chunk) {
+          all_written = false
+          break
+        }
+      }
+      n.end()
+      let got = StringBuilder::new()
+      while n.read() is Some(b) {
+        got.write_string(@utf8.decode_lossy(b))
+      }
+      {
+        "allWritten": Json::boolean(all_written),
+        "reply": Json::string(got.to_string()),
+        "heldAfter": Json::number(p54io_held_ffi().to_double()),
+      }
+    }
+    "test.pumpConnectErrors" if p54_testing() => {
+      let host = d.world.bus.host
+      let pump = Pump::new(host)
+      // 1. Write failure propagates error and closes the socket
+      let write_err : @effect.Deferred[String] = @effect.Deferred::new()
+      let write_closed : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let write_connected : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let read_hold : @effect.Deferred[Bytes?] = @effect.Deferred::new()
+      let sock = pump.connect_with(
+        async fn() { (Json::number(1.0), async fn() { ignore(read_hold.succeed(None)) }) },
+        async fn(_id, _b) { raise Failure("Broken pipe") },
+        async fn(_id) { read_hold.wait() },
+        async fn(_id) {  },
+        {
+          connected: () => ignore(write_connected.succeed(())),
+          data: _ => (),
+          error: m => ignore(write_err.succeed(m)),
+          closed: () => ignore(write_closed.succeed(())),
+        },
+      )
+      write_connected.wait()
+      (sock.write)("hello")
+      let w_err = write_err.wait()
+      write_closed.wait()
+      let w_destroyed = (sock.destroyed)()
+      // 2. unix_open error code preservation (ENOENT, ECONNREFUSED, and passthrough)
+      let open_err = async fn(path : String) -> String {
+        let err_d : @effect.Deferred[String] = @effect.Deferred::new()
+        let cls_d : @effect.Deferred[Unit] = @effect.Deferred::new()
+        ignore(
+          pump.connect(path, {
+            connected: () => (),
+            data: _ => (),
+            error: m => ignore(err_d.succeed(m)),
+            closed: () => ignore(cls_d.succeed(())),
+          }),
+        )
+        let msg = err_d.wait()
+        cls_d.wait()
+        msg
+      }
+      let missing_code = open_err(s(0))
+      let refused_code = open_err(s(1))
+      let other_d : @effect.Deferred[String] = @effect.Deferred::new()
+      let other_c : @effect.Deferred[Unit] = @effect.Deferred::new()
+      ignore(
+        pump.connect_with(
+          async fn() { raise Failure("Permission denied") },
+          async fn(_id, _b) {  },
+          async fn(_id) { None },
+          async fn(_id) {  },
+          {
+            connected: () => (),
+            data: _ => (),
+            error: m => ignore(other_d.succeed(m)),
+            closed: () => ignore(other_c.succeed(())),
+          },
+        ),
+      )
+      let other_code = other_d.wait()
+      other_c.wait()
+      {
+        "writeErr": Json::string(w_err),
+        "writeDestroyed": Json::boolean(w_destroyed),
+        "missingCode": Json::string(missing_code),
+        "refusedCode": Json::string(refused_code),
+        "otherCode": Json::string(other_code),
+      }
     }
     _ =>
       if op.has_prefix("devices.net.") {
