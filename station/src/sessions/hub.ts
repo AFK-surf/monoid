@@ -32,7 +32,7 @@ import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
-import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -258,6 +258,17 @@ export class Hub {
   prepareSessionChatNames: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
   /// The sessions whose latest conversation must be ready before an asynchronous operation can continue.
   prepareLatestThreads: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
+  /// Cross-round cursor for `packUnfinishedArchived` (`lifecycle.ts`).
+  packBackfillCursor: ArchivedWorkspace | null = null;
+  /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), cleared on archive/delete.
+  readonly idleMeasured = new Map<string, number>();
+  /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`).
+  lastFullRelieveAt: number | null = null;
+
+  /// Drops a session's cached idle-rebuildable measurement (called on archive or delete).
+  forgetIdleMeasured(key: string): void {
+    this.idleMeasured.delete(key);
+  }
   private awaitingWorkspaceActivity = new Set<string>();
   private sandboxNames: SandboxNameBuilder | null = null;
   private sessionDirectories: SessionDirectoryBuilder | null = null;

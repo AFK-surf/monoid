@@ -79,6 +79,8 @@ export const ORPHAN_TRANSCRIPT_MS = 7 * DAY;
 export const RELIEVE_FULL_EVERY_MS = 30 * 60_000;
 export const ORPHAN_TRANSCRIPT_MAX_PER_ROUND = 64;
 export const ORPHAN_WALK_MAX_ENTRIES = 10_000;
+/// Time budget for a full low-disk orphan transcript scan (2 minutes); stops and logs if exceeded.
+export const ORPHAN_TRANSCRIPT_FULL_MAX_MS = 2 * 60_000;
 /// How often the upkeep runs, and how long after the station starts it first does.
 export const UPKEEP_EVERY_MS = 10 * 60_000;
 export const UPKEEP_FIRST_MS = 2 * 60_000;
@@ -510,8 +512,11 @@ async function boundedDirAgeAndBytes(dir: string, maxDurationMs: number): Promis
 /// Low-disk reclamation of orphaned Claude (`<uuid>.jsonl(.zst)` + companion `<uuid>/`, or standalone `<uuid>/`
 /// with no sibling `.jsonl(.zst)`) and Codex (`-<uuid>.jsonl(.zst)`) transcripts under `<data>` (`<data>/transcripts`
 /// and `<data>/homes/*`), unreferenced by any session row (including archived) and older than `minAgeMs` (7 days).
-/// When `full` is true, reclaims all eligible items in the pass without stopping early when `free() >= low`;
-/// otherwise stops as soon as `free() >= low`. Never deletes non-UUID files or directories (e.g. Claude `memory/`).
+/// When `full` is true, reclaims all eligible items across all project/date directories without count or entry caps
+/// and without stopping early when `free() >= low`, bounded only by `ORPHAN_TRANSCRIPT_FULL_MAX_MS` (2 minutes; logs
+/// `log.info` if the budget expires before finishing); non-full keeps `ORPHAN_TRANSCRIPT_MAX_PER_ROUND`,
+/// `ORPHAN_WALK_MAX_ENTRIES`, `ORPHAN_WALK_MAX_MS`, and stops once `free() >= low`. Never deletes non-UUID files or
+/// directories (e.g. Claude `memory/`).
 export async function relieveOrphanTranscripts(
   data: string,
   now: number,
@@ -523,16 +528,26 @@ export async function relieveOrphanTranscripts(
   const full = options?.full === true;
   if (!full && (await free()) >= low) return [];
   const minAgeMs = options?.minAgeMs ?? ORPHAN_TRANSCRIPT_MS;
-  const limit = options?.limit ?? ORPHAN_TRANSCRIPT_MAX_PER_ROUND;
-  const maxEntries = options?.maxEntries ?? ORPHAN_WALK_MAX_ENTRIES;
-  const maxDurationMs = options?.maxDurationMs ?? ORPHAN_WALK_MAX_MS;
+  const limit = options?.limit ?? (full ? Number.POSITIVE_INFINITY : ORPHAN_TRANSCRIPT_MAX_PER_ROUND);
+  const maxEntries = options?.maxEntries ?? (full ? Number.POSITIVE_INFINITY : ORPHAN_WALK_MAX_ENTRIES);
+  const maxDurationMs = options?.maxDurationMs ?? (full ? ORPHAN_TRANSCRIPT_FULL_MAX_MS : ORPHAN_WALK_MAX_MS);
   if (limit <= 0) return [];
   const realData = await realpath(data).catch(() => null);
   if (realData === null) return [];
 
   const deadline = wall.now() + maxDurationMs;
   const gone: string[] = [];
-  const doneNow = async () => gone.length >= limit || wall.now() >= deadline || (!full && (await free()) >= low);
+  let timedOut = false;
+  let visited = 0;
+  const checkDeadline = () => {
+    if (wall.now() >= deadline) {
+      timedOut = true;
+      return true;
+    }
+    return false;
+  };
+  const hitEntries = () => !full && visited >= maxEntries;
+  const doneNow = async () => gone.length >= limit || checkDeadline() || (!full && (await free()) >= low);
 
   const claudeRoots: string[] = [];
   const codexRoots: string[] = [];
@@ -570,129 +585,139 @@ export async function relieveOrphanTranscripts(
     return r !== null && inside(r, realData);
   };
 
-  // 1. Claude roots: <root>/<proj>/<uuid>.jsonl(.zst) + companion <uuid>/, or standalone <uuid>/ without main file.
+  // 1. Claude roots: list `<root>/*`, then list one level per project dir with `yieldLoop()` between dirs.
   for (const root of claudeRoots) {
-    if (await doneNow()) break;
-    const files: { path: string; parent: string; id: string; mtimeMs: number; bytes: number }[] = [];
-    const uuidDirs: { path: string; parent: string; id: string }[] = [];
-    const mainPresent = new Set<string>();
-    await walkBounded(
-      root,
-      (e) => {
-        if (e.depth !== 2 || e.stats === null || e.symlink) return;
-        const parent = dirname(e.path);
-        if (e.file) {
-          const id = claudeUuidId(e.name);
+    if ((await doneNow()) || hitEntries()) break;
+    for (const proj of await readdir(root).catch(() => [] as string[])) {
+      if ((await doneNow()) || hitEntries()) break;
+      if (proj.startsWith(".")) continue;
+      const projPath = join(root, proj);
+      const projSt = await lstat(projPath).catch(() => null);
+      if (projSt === null || !projSt.isDirectory() || projSt.isSymbolicLink()) continue;
+
+      const files: { path: string; id: string; mtimeMs: number; bytes: number }[] = [];
+      const uuidDirs: { path: string; id: string }[] = [];
+      const mainPresent = new Set<string>();
+      for (const entry of await readdir(projPath).catch(() => [] as string[])) {
+        if (hitEntries() || checkDeadline()) break;
+        visited++;
+        const p = join(projPath, entry);
+        const st = await lstat(p).catch(() => null);
+        if (st === null || st.isSymbolicLink()) continue;
+        if (st.isFile()) {
+          const id = claudeUuidId(entry);
           if (id !== null) {
-            mainPresent.add(`${parent}\0${id}`);
+            mainPresent.add(id);
             files.push({
-              path: e.path,
-              parent,
+              path: p,
               id,
-              mtimeMs: Number(e.stats.mtimeMs),
-              bytes: used({ blocks: Number(e.stats.blocks), size: Number(e.stats.size) }),
+              mtimeMs: Number(st.mtimeMs),
+              bytes: used({ blocks: Number(st.blocks), size: Number(st.size) }),
             });
           }
-        } else if (e.directory && UUID_EXACT_RE.test(e.name)) {
-          uuidDirs.push({ path: e.path, parent, id: e.name });
+        } else if (st.isDirectory() && UUID_EXACT_RE.test(entry)) {
+          uuidDirs.push({ path: p, id: entry });
         }
-      },
-      { maxDepth: 2, maxEntries, maxDurationMs: Math.max(100, deadline - wall.now()), stat: true },
-    );
-
-    for (const c of files) {
-      if (await doneNow()) break;
-      if (now - c.mtimeMs < minAgeMs) continue;
-      let referenced = true;
-      try {
-        referenced = store.transcriptReferenced("claude", c.id, "");
-      } catch {
-        return gone;
       }
-      if (referenced) continue;
-      if (!(await safeInsideData(c.path))) continue;
-      const removed = await rm(c.path, { force: true }).then(() => true, () => false);
-      if (removed) {
-        const relPath = relative(realData, c.path);
-        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: c.bytes });
-        gone.push(relPath);
-        const compDir = join(c.parent, c.id);
-        if (await safeInsideData(compDir)) {
-          const info = await boundedDirAgeAndBytes(compDir, deadline - wall.now());
-          if (info !== null && now - info.newestMs >= minAgeMs) {
-            const dirRemoved = await rm(compDir, { recursive: true, force: true }).then(() => true, () => false);
-            if (dirRemoved) {
-              log.info("hub", "reclaimed orphan transcript", { path: relative(realData, compDir), runtime: "claude", bytes: info.bytes });
+
+      for (const c of files) {
+        if (await doneNow()) break;
+        if (now - c.mtimeMs < minAgeMs) continue;
+        let referenced = true;
+        try {
+          referenced = store.transcriptReferenced("claude", c.id, "");
+        } catch {
+          return gone;
+        }
+        if (referenced) continue;
+        if (!(await safeInsideData(c.path))) continue;
+        const removed = await rm(c.path, { force: true }).then(() => true, () => false);
+        if (removed) {
+          const relPath = relative(realData, c.path);
+          log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: c.bytes });
+          gone.push(relPath);
+          const compDir = join(projPath, c.id);
+          if (await safeInsideData(compDir)) {
+            const info = await boundedDirAgeAndBytes(compDir, deadline - wall.now());
+            if (info !== null && now - info.newestMs >= minAgeMs) {
+              const dirRemoved = await rm(compDir, { recursive: true, force: true }).then(() => true, () => false);
+              if (dirRemoved) {
+                log.info("hub", "reclaimed orphan transcript", { path: relative(realData, compDir), runtime: "claude", bytes: info.bytes });
+              }
             }
           }
         }
       }
-    }
 
-    for (const d of uuidDirs) {
-      if (await doneNow()) break;
-      // Only standalone UUID dirs that have no sibling <uuid>.jsonl(.zst).
-      if (mainPresent.has(`${d.parent}\0${d.id}`)) continue;
-      let referenced = true;
-      try {
-        referenced = store.transcriptReferenced("claude", d.id, "");
-      } catch {
-        return gone;
-      }
-      if (referenced) continue;
-      if (!(await safeInsideData(d.path))) continue;
-      const info = await boundedDirAgeAndBytes(d.path, deadline - wall.now());
-      if (info === null || now - info.newestMs < minAgeMs) continue;
-      const removed = await rm(d.path, { recursive: true, force: true }).then(() => true, () => false);
-      if (removed) {
-        const relPath = relative(realData, d.path);
-        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: info.bytes });
-        gone.push(relPath);
-      }
-    }
-  }
-
-  // 2. Codex roots: <root>/.../*-<uuid>.jsonl(.zst)
-  for (const root of codexRoots) {
-    if (await doneNow()) break;
-    const candidates: { path: string; id: string; mtimeMs: number; bytes: number }[] = [];
-    await walkBounded(
-      root,
-      (e) => {
-        if (!e.file || e.stats === null || e.symlink) return;
-        const id = codexUuidId(e.name);
-        if (id !== null) {
-          candidates.push({
-            path: e.path,
-            id,
-            mtimeMs: Number(e.stats.mtimeMs),
-            bytes: used({ blocks: Number(e.stats.blocks), size: Number(e.stats.size) }),
-          });
+      for (const d of uuidDirs) {
+        if (await doneNow()) break;
+        // Only standalone UUID dirs that have no sibling <uuid>.jsonl(.zst).
+        if (mainPresent.has(d.id)) continue;
+        let referenced = true;
+        try {
+          referenced = store.transcriptReferenced("claude", d.id, "");
+        } catch {
+          return gone;
         }
-      },
-      { maxDepth: 6, maxEntries, maxDurationMs: Math.max(100, deadline - wall.now()), stat: true },
-    );
-
-    for (const c of candidates) {
-      if (await doneNow()) break;
-      if (now - c.mtimeMs < minAgeMs) continue;
-      let referenced = true;
-      try {
-        referenced = store.transcriptReferenced("codex", c.id, "");
-      } catch {
-        return gone;
+        if (referenced) continue;
+        if (!(await safeInsideData(d.path))) continue;
+        const info = await boundedDirAgeAndBytes(d.path, deadline - wall.now());
+        if (info === null || now - info.newestMs < minAgeMs) continue;
+        const removed = await rm(d.path, { recursive: true, force: true }).then(() => true, () => false);
+        if (removed) {
+          const relPath = relative(realData, d.path);
+          log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "claude", bytes: info.bytes });
+          gone.push(relPath);
+        }
       }
-      if (referenced) continue;
-      if (!(await safeInsideData(c.path))) continue;
-      const removed = await rm(c.path, { force: true }).then(() => true, () => false);
-      if (removed) {
-        const relPath = relative(realData, c.path);
-        log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "codex", bytes: c.bytes });
-        gone.push(relPath);
-      }
+      await yieldLoop();
     }
   }
 
+  // 2. Codex roots: directory-by-directory BFS up to depth 6 for *-<uuid>.jsonl(.zst), yielding between dirs.
+  for (const root of codexRoots) {
+    if ((await doneNow()) || hitEntries()) break;
+    const queue: [string, number][] = [[root, 0]];
+    let qi = 0;
+    while (qi < queue.length && !(await doneNow()) && !hitEntries()) {
+      const [dir, depth] = queue[qi++]!;
+      for (const entry of await readdir(dir).catch(() => [] as string[])) {
+        if ((await doneNow()) || hitEntries()) break;
+        visited++;
+        const p = join(dir, entry);
+        const st = await lstat(p).catch(() => null);
+        if (st === null || st.isSymbolicLink()) continue;
+        if (st.isDirectory()) {
+          if (depth < 6 && !entry.startsWith(".")) queue.push([p, depth + 1]);
+          continue;
+        }
+        if (!st.isFile()) continue;
+        if (now - Number(st.mtimeMs) < minAgeMs) continue;
+        const id = codexUuidId(entry);
+        if (id === null) continue;
+        let referenced = true;
+        try {
+          referenced = store.transcriptReferenced("codex", id, "");
+        } catch {
+          return gone;
+        }
+        if (referenced) continue;
+        if (!(await safeInsideData(p))) continue;
+        const bytes = used({ blocks: Number(st.blocks), size: Number(st.size) });
+        const removed = await rm(p, { force: true }).then(() => true, () => false);
+        if (removed) {
+          const relPath = relative(realData, p);
+          log.info("hub", "reclaimed orphan transcript", { path: relPath, runtime: "codex", bytes });
+          gone.push(relPath);
+        }
+      }
+      await yieldLoop();
+    }
+  }
+
+  if (full && timedOut) {
+    log.info("hub", "orphan transcript full scan reached time budget before finishing", { reclaimed: gone.length, budgetMs: maxDurationMs });
+  }
   return gone;
 }
 

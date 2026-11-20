@@ -654,4 +654,94 @@ describe("Item 4: low-disk orphan UUID transcripts & full low-disk pass with 30m
 
     await r.close();
   });
+
+  test("relieveLowDiskFull isolates step 2 errors: steps 3 and 4 still run and 30m cooldown is recorded", async () => {
+    const tc = testClock();
+    await tc.adjust(1_800_000_000_000);
+    const r = new Rig({
+      clock: tc.clock,
+      cold: {
+        isCold: async () => false,
+        restore: () => undefined,
+        pack: async () => {},
+        holdsMore: async () => true,
+        expire: async () => {},
+        cleanIdleRebuildable: async () => 0,
+      },
+    });
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const DAY = 24 * 3_600_000;
+    const MIN = 60_000;
+
+    // Make step 2 (relieveArchived) throw synchronously before finishing
+    const origLastArchived = r.store.lastArchivedSession.bind(r.store);
+    r.store.lastArchivedSession = () => {
+      throw new Error("simulated step 2 failure");
+    };
+
+    // Step 3 target: an 8-day-old orphan UUID Claude transcript
+    const uOrphan = "11111111-1111-4111-8111-111111111111";
+    const txDir = join(data, "transcripts", "claude", "proj-step2-err");
+    mkdirSync(txDir, { recursive: true });
+    const orphanTx = join(txDir, `${uOrphan}.jsonl`);
+    writeFileSync(orphanTx, "{}\n");
+    setMtime(orphanTx, now - 8 * DAY);
+
+    // Step 4 target: an unreferenced 20-day-old clean shared clone under <data>/repos
+    const repoDir = join(data, "repos", "old-shared-clone");
+    mkdirSync(join(repoDir, ".git"), { recursive: true });
+    writeFileSync(join(repoDir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    setMtime(join(repoDir, ".git", "HEAD"), now - 20 * DAY);
+
+    const ran = await relieveLowDiskFull(r.hub, () => 100, 1000, {
+      git: async (_dir, args) => {
+        if (args[0] === "remote" && args.length === 1) return { ok: true, stdout: "origin\n" };
+        if (args[0] === "remote" && args[1] === "get-url") return { ok: true, stdout: "https://github.com/org/repo.git\n" };
+        return { ok: true, stdout: "" };
+      },
+    });
+    assert.equal(ran, true);
+    assert.ok(!existsSync(orphanTx), "step 3 (orphan transcripts) ran despite step 2 throwing");
+    assert.ok(!existsSync(repoDir), "step 4 (shared clones) ran despite step 2 throwing");
+
+    // Restore step 2 and verify 30m cooldown was still recorded
+    r.store.lastArchivedSession = origLastArchived;
+    await tc.adjust(10 * MIN);
+    const ranAgain = await relieveLowDiskFull(r.hub, () => 100, 1000);
+    assert.equal(ranAgain, false, "cooldown recorded even when step 2 threw");
+
+    await r.close();
+  });
+
+  test("relieveOrphanTranscripts full mode reclaims more than 64 eligible transcripts across projects (no 64 cap)", async () => {
+    const data = mkdtempSync(join(tmpdir(), "sf-orphan-tx-full-"));
+    const store = Store.open(join(data, "stillfail.db"));
+    const now = 1_800_000_000_000;
+    const DAY = 24 * 3_600_000;
+
+    try {
+      // Create 75 eligible 8-day-old orphan UUID transcripts spread across 3 project directories
+      const created: string[] = [];
+      for (let i = 0; i < 75; i++) {
+        const projDir = join(data, "transcripts", "claude", `proj-${i % 3}`);
+        mkdirSync(projDir, { recursive: true });
+        const hex = i.toString(16).padStart(12, "0");
+        const uuid = `22222222-2222-4222-8222-${hex}`;
+        const f = join(projDir, `${uuid}.jsonl`);
+        writeFileSync(f, "{}\n");
+        setMtime(f, now - 8 * DAY);
+        created.push(f);
+      }
+
+      const gone = await relieveOrphanTranscripts(data, now, store, () => 100, 1000, { full: true });
+      assert.equal(gone.length, 75, "full mode reclaims all 75 eligible transcripts (> 64)");
+      for (const f of created) {
+        assert.ok(!existsSync(f), `${f} removed`);
+      }
+    } finally {
+      store.close();
+      rmSync(data, { recursive: true, force: true });
+    }
+  });
 });

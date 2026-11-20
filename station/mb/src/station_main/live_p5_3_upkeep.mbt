@@ -87,6 +87,10 @@ let p53_orphan_transcript_max : Int = 64
 let p53_orphan_walk_max_entries : Int = 10000
 
 ///|
+/// Time budget for a full low-disk orphan transcript scan (2 minutes); stops and logs if exceeded.
+let p53_orphan_transcript_full_max_ms : Double = 2.0 * 60000.0
+
+///|
 priv struct P53Upkeep {
   bus : LiveBus
   jobs : P53Jobs
@@ -1007,9 +1011,22 @@ async fn P53Upkeep::relieve_orphan_transcripts(
   }
   guard p53_realpath(host, data) is Some(real_data) else { return [] }
 
-  let deadline = wall_ms().to_double() + p53_orphan_walk_max_ms
+  let budget_ms = if full { p53_orphan_transcript_full_max_ms } else { p53_orphan_walk_max_ms }
+  let deadline = wall_ms().to_double() + budget_ms
   let gone : Array[String] = []
-  let done_now = () => gone.length() >= p53_orphan_transcript_max || wall_ms().to_double() >= deadline || (!full && !below_low())
+  let mut timed_out = false
+  let mut visited = 0
+  let check_deadline = () => {
+    if wall_ms().to_double() >= deadline {
+      timed_out = true
+      true
+    } else {
+      false
+    }
+  }
+  let hit_entries = () => !full && visited >= p53_orphan_walk_max_entries
+  let hit_limit = () => !full && gone.length() >= p53_orphan_transcript_max
+  let done_now = () => hit_limit() || check_deadline() || (!full && !below_low())
 
   let claude_roots : Array[String] = []
   let codex_roots : Array[String] = []
@@ -1071,14 +1088,13 @@ async fn P53Upkeep::relieve_orphan_transcripts(
     }
   }
 
-  let mut visited = 0
   // 1. Claude roots: <root>/<proj>/<uuid>.jsonl(.zst) + companion <uuid>/, or standalone <uuid>/ without main file.
   for root in claude_roots {
-    if done_now() || visited >= p53_orphan_walk_max_entries {
+    if done_now() || hit_entries() {
       break
     }
     for proj in p53_names(host, root) {
-      if done_now() || visited >= p53_orphan_walk_max_entries {
+      if done_now() || hit_entries() {
         break
       }
       if proj.has_prefix(".") {
@@ -1092,7 +1108,7 @@ async fn P53Upkeep::relieve_orphan_transcripts(
       let uuid_dirs : Array[(String, String)] = []
       let main_present : Set[String] = Set::new()
       for entry in p53_names(host, proj_path) {
-        if visited >= p53_orphan_walk_max_entries || wall_ms().to_double() >= deadline {
+        if hit_entries() || check_deadline() {
           break
         }
         visited += 1
@@ -1176,16 +1192,16 @@ async fn P53Upkeep::relieve_orphan_transcripts(
 
   // 2. Codex roots: BFS up to depth 6 for *-<uuid>.jsonl(.zst)
   for root in codex_roots {
-    if done_now() || visited >= p53_orphan_walk_max_entries {
+    if done_now() || hit_entries() {
       break
     }
     let queue : Array[(String, Int)] = [(root, 0)]
     let mut qi = 0
-    while qi < queue.length() && !done_now() && visited < p53_orphan_walk_max_entries {
+    while qi < queue.length() && !done_now() && !hit_entries() {
       let (dir, depth) = queue[qi]
       qi += 1
       for entry in p53_names(host, dir) {
-        if done_now() || visited >= p53_orphan_walk_max_entries {
+        if done_now() || hit_entries() {
           break
         }
         visited += 1
@@ -1220,6 +1236,9 @@ async fn P53Upkeep::relieve_orphan_transcripts(
     }
   }
 
+  if full && timed_out {
+    slice_log("info", "hub", "orphan transcript full scan reached time budget before finishing", jobj_of([("reclaimed", ji(gone.length())), ("budgetMs", jn(budget_ms))]))
+  }
   gone
 }
 
