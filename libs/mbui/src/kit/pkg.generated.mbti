@@ -83,8 +83,6 @@ pub fn focus_ring(@ui.Ctx, Bool, Double) -> Unit
 
 pub fn fold(String, String, () -> Unit, disabled? : Bool) -> Fold
 
-pub let follow_spring : @motion.Spec
-
 pub fn form(@ui.Ctx, String, Array[FormField], submit? : String, named? : String, words? : FormWords, w? : @ui.Size) -> FormResult
 
 pub fn form_field(String, String, kind? : FieldKind, required? : Bool, placeholder? : String, check? : (String) -> String) -> FormField
@@ -121,16 +119,19 @@ pub let knob_lens_grow : Double
 
 pub fn label(@ui.Ctx, String, for_id? : Int32, field? : Bool, size? : Double, weight? : Int32, color? : Int64) -> @ui.Response
 
+pub let lens_shadow : Double
+
+pub let lens_shadow_y : Double
+
 pub fn list_card() -> @ui.Style
 
 pub fn list_row(density? : Density) -> @ui.Style
 
-#callsite(autofill(loc))
-pub fn loupe(@ui.Ctx, String, (Double, Double)?, glass? : @paint.Glass, loc~ : SourceLoc) -> Unit
-
 pub let loupe_h : Double
 
 pub let loupe_lift : Double
+
+pub let loupe_side : Double
 
 pub let loupe_w : Double
 

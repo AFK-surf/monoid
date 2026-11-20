@@ -3451,7 +3451,7 @@ pub fn composer_foot_in(c : @ui.Ctx, pane : Double) -> Double {
     None if way.id == "" => to
     None => {
       let a = @motion.Anim::new(composer_foot_at(pane))
-      a.follow(c, to, @sf.move_spring)
+      a.follow(c, to, @motion.move_damped)
       composer_foot_way.val = Some((a, way.id, way.ends))
       a.get(c)
     }
@@ -3462,13 +3462,13 @@ pub fn composer_foot_in(c : @ui.Ctx, pane : Double) -> Double {
     // (the way there: on from the moment it is, whichever frame sees it)
     Some((a, last, ends)) if way.id == "" && last != "" => {
       if to != a.target() {
-        a.animate(c, to, @sf.move_spring, start_at=dmin(ends, c.moment()))
+        a.animate(c, to, @motion.move_damped, start_at=dmin(ends, c.moment()))
       }
       composer_foot_way.val = Some((a, "", 0.0))
       a.get(c)
     }
     Some((a, _, _)) => {
-      a.follow(c, to, @sf.move_spring)
+      a.follow(c, to, @motion.move_damped)
       composer_foot_way.val = Some((a, way.id, way.ends))
       a.get(c)
     }

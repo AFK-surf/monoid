@@ -1934,20 +1934,25 @@ pub fn switch_node(
         track.show(fn() { lens() > 0.0 }, fn(o) {
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(l) {
-            let lens_wh = fn() {
-              (thumb_w() * scale_x.shown(l), d() * scale_y.shown(l))
-            }
             l
-            .width(By(fn() { Some(lens_wh().0) }))
-            .height(By(fn() { Some(lens_wh().1) }))
-            .radius(By(fn() { lens_wh().1 / 2.0 }))
+            .width(By(fn() { Some(thumb_w()) }))
+            .height(By(fn() { Some(d()) }))
+            .radius(By(fn() { d() / 2.0 }))
             .glass(By(fn() { Some(backdrop_toggle(lens())) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
-            .offset(By(fn() {
-              let (lw, lh) = lens_wh()
-              let (_, h) = size()
-              let mid = switch_in + thumb_w() / 2.0 + travel() * k()
-              (mid - lw / 2.0, (h - lh) / 2.0)
+            .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            .ground_drawn(By(fn() {
+              let w = thumb_w()
+              let h = d()
+              let lw = w * scale_x.shown(l)
+              let lh = h * scale_y.shown(l)
+              {
+                dx: (w - lw) / 2.0,
+                dy: (h - lh) / 2.0,
+                dw: lw - w,
+                dh: lh - h,
+                corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+              }
             }))
             |> ignore
           })

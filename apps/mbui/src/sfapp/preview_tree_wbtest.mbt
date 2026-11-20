@@ -3655,7 +3655,7 @@ test "viewer on the tree: its picture said not to decode with the strip put asid
   assert_eq(nodes_of(next).length() + drawn_of(t, next).length(), 0, msg="nothing beside it drawn while it failed: \{Repr(nodes_of(next))}")
   // (one said to be going from where it lay, the strip on its way back: none of it drawn either)
   pv_strip.leaving = Some({ picture: next, x: 20.0, y: 300.0, w: 350.0, h: 240.0, dir: 1, width: 390.0 + @sfbase.slide_gap })
-  pv_strip.way.go(0.0, @motion.sheet_spring, at=t.time())
+  pv_strip.way.go(0.0, @motion.carousel_spring, at=t.time())
   t.frame_at(t.time() + @ui.frame_period_default)
   assert_true(pv_strip.way.goes_at(t.time()), msg="going")
   assert_eq(t.words().filter(fn(w) { w.0 == said }).length(), 1, msg="going: said once")

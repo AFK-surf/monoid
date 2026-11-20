@@ -1020,7 +1020,7 @@ fn composer_box_node(
           // (on a way as it was sent: slowing to rest from as fast as it went, as the old one's (@motion.stop_for), not
           // stopped dead; down from there once that way is over: `sent_down_at`)
           sent_down_at.val = at + hold
-          sent_over.go(box, was - one, @sf.move_spring, velocity=speed * 1000.0)
+          sent_over.go(box, was - one, @motion.move_damped, velocity=speed * 1000.0)
         } else {
           // (held so till what flies from it begins its rise, then down on their flight's curve)
           sent_down_at.val = -1.0

@@ -1658,7 +1658,7 @@ test "小屏: a card held by a finger lifts over its menu's scrim, clear of its 
   board_lifted_over(t, "分享") |> ignore
   @sf.close_presented_of(@sf.last_presented())
   // (back down on its spring from the moment the menu went)
-  t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+  t.run_for(@ui.move_most_ms + @motion.tactile_bounce.duration(1.0, 0.0, 0.0))
   assert_true(!@sf.presented_drawn())
   assert_true(board_lifted_card(t) is None, msg="still lifted")
   assert_eq(board_rect_of(t, Button, name), Some(laid))

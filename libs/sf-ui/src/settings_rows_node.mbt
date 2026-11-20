@@ -49,13 +49,8 @@ pub fn state_dot_node(
         d.ground(By(fn() { look_of(st).0 })) |> ignore
         // (restarting: breathing to .35 and back)
         if st == "restart" {
-          d
-          .alpha(By(fn() {
-            let f = d.cycle_resident(breath_ms)
-            let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-            1.0 - (1.0 - state_breath_low) * @ui.Ease::InOut.at(way)
-          }))
-          |> ignore
+          let breathe = @motion.breathe_alpha(d, period_ms=breath_ms, low=state_breath_low, resident=true)
+          d.alpha(By(breathe)) |> ignore
         }
         // (alive: its breath out round it, over what is beside it)
         if st == "live" {
@@ -69,7 +64,7 @@ pub fn state_dot_node(
             .ground(By(fn() { @ui.tree_theme().color(Positive) }))
             |> ignore
             let way = fn() {
-              let f = halo.cycle_resident(state_live_ms)
+              let f = @motion.resident_cycle(halo, state_live_ms)
               if f < 0.5 {
                 f * 2.0
               } else {

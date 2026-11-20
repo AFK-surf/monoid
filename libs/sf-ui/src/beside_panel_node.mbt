@@ -28,8 +28,7 @@ pub fn beside_panel_node(
   parent.show(
     open,
     fn(layer) {
-      let look = @motion.presence_look(layer, @motion.pop_in, exit=@motion.pop_out)
-      let live = fn() { !layer.leaving() }
+      let (look, live) = @motion.overlay_presence(layer, enter=@motion.pop_in, exit=@motion.pop_out)
       let panel : Ref[@view.View?] = Ref(None)
       layer
       .over(Is(true))

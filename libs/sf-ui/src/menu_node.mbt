@@ -146,8 +146,7 @@ fn menu_node_by(
       let t = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
-      let look = @motion.presence_look(layer, @motion.pop_in, exit=@motion.pop_out)
-      let live = fn() { !layer.leaving() }
+      let (look, live) = @motion.overlay_presence(layer, enter=@motion.pop_in, exit=@motion.pop_out)
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
       // (its rows that can be chosen, by their index: the one with the focus is lit; the keyboard moves the focus along

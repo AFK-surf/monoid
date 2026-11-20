@@ -1097,6 +1097,47 @@ pub fn[T] Signal::watched(self : Signal[T]) -> Bool {
 }
 
 ///|
+/// Whether any non-resting reader (an effect, or a live non-resting watch, directly or through computeds) reads the
+/// signal. Resting watches (`o.resting == true`, e.g. on a parked nav page keeping holds) do not count as awake.
+pub fn[T] Signal::watched_awake(self : Signal[T]) -> Bool {
+  has_awake_sub(self.0, [])
+}
+
+///|
+fn has_awake_sub(node : ReactiveNode, seen : Array[ReactiveNode]) -> Bool {
+  let mut l = node.subs
+  while l is Some(link) {
+    let s = link.sub
+    l = link.next_sub
+    match s.kind {
+      EffectNode => return true
+      WatchNode =>
+        match s.own {
+          WatchOwned(o) if !o.gone && !o.resting => return true
+          _ => ()
+        }
+      ComputedNode => {
+        let mut visited = false
+        for prev in seen {
+          if physical_equal(prev, s) {
+            visited = true
+            break
+          }
+        }
+        if !visited {
+          seen.push(s)
+          if has_awake_sub(s, seen) {
+            return true
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  false
+}
+
+///|
 /// Tell a resource when the last graph reader of this signal leaves. The callback stays installed for later readers.
 pub fn[T] Signal::on_unwatched(self : Signal[T], f : () -> Unit) -> Unit {
   self.0.cleanup = Some(f)
@@ -1416,9 +1457,9 @@ pub fn Watch::stop(self : Watch) -> Unit {
 /// gives wakes them: each that let go, or is stale, told as though what it read changed, to read anew; the others
 /// as they were. For what is put by to be made another's (a list's block kept for the next to come: mbui's
 /// View::park).
-pub fn rest(owner : ReactiveNode) -> () -> Unit {
+pub fn rest(owner : ReactiveNode, drop_holds? : Bool = true) -> () -> Unit {
   let rested : Array[WatchOwn] = []
-  rest_in(owner, rested)
+  rest_in(owner, rested, drop_holds)
   fn() {
     for o in rested {
       if o.resting {
@@ -1433,7 +1474,7 @@ pub fn rest(owner : ReactiveNode) -> () -> Unit {
 }
 
 ///|
-fn rest_in(e : ReactiveNode, rested : Array[WatchOwn]) -> Unit {
+fn rest_in(e : ReactiveNode, rested : Array[WatchOwn], drop_holds : Bool) -> Unit {
   let mut l = e.deps
   while l is Some(link) {
     let d = link.dep
@@ -1441,17 +1482,22 @@ fn rest_in(e : ReactiveNode, rested : Array[WatchOwn]) -> Unit {
     match d.kind {
       WatchNode =>
         match d.own {
-          WatchOwned(o) if !o.gone && !o.resting => {
-            if d.holds {
+          WatchOwned(o) if !o.gone =>
+            if !o.resting {
+              if drop_holds && d.holds {
+                dispose_all_deps_in_reverse(d)
+                o.stale = true
+              }
+              o.resting = true
+              rested.push(o)
+            } else if drop_holds && d.holds && d.deps is Some(_) {
+              // (already resting with holds kept: release holds now as it moves to shelf/kept_left)
               dispose_all_deps_in_reverse(d)
               o.stale = true
             }
-            o.resting = true
-            rested.push(o)
-          }
           _ => ()
         }
-      ScopeNode => rest_in(d, rested)
+      ScopeNode => rest_in(d, rested, drop_holds)
       _ => ()
     }
   }

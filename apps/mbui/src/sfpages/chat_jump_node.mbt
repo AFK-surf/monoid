@@ -1280,7 +1280,7 @@ fn chat_ask_node(
       if foot.cause_at() <= jump.sight_from || @view.answering_now() {
         lifted.put(to)
       } else {
-        lifted.go(to, @sf.move_spring, at=foot.cause_at())
+        lifted.go(to, @motion.move_damped, at=foot.cause_at())
       }
     },
     at_start=false,
@@ -1354,34 +1354,18 @@ fn chat_passage_lit(v : @view.View, key : () -> String, jump : ChatJump, flash :
 /// row's key as it is now (`key`): taken for another row's (a block put by and taken again: View::scrolls_window's
 /// `reused`), the flash of the one before let go at once, and that row's as a row made for it would have it.
 fn chat_flash_way(b : @view.View, key : () -> String, jump : ChatJump) -> @motion.Way {
-  let way = @motion.Way::new(0.0)
-  let due : Ref[() -> Unit] = Ref(fn() {  })
-  let key_was = Ref(@signals.untracked(key))
-  b.reacts(fn() { (chat_gone(jump), key()) }, fn(g) {
-    let ((k, at, _), now) = g
-    // (taken for another row: what lit the one before gone at once, none of it going on over this one)
-    if now != key_was.val {
-      key_was.val = now
-      (due.val)()
-      way.put(0.0)
-    }
-    // (held at its peak where it is asked so (sfbase's flash_held: a fixture's still of it, open_chat_at's `held`), as
-    // the old list's flash_of holds it: lit whole, never fading)
-    let held = @sfbase.flash_held.val
-    guard k == now && at >= 0.0 && (held || b.cause_at() < at + @sfbase.flash_ms) else { return }
-    (due.val)()
-    if held {
-      way.put(1.0)
-      return
-    }
-    way.go(1.0, @motion.tween(@sfbase.flash_in_ms, ease=Out), at~)
-    let out = at + (if @ui.reduced_motion() { @sfbase.flash_ms } else { @sfbase.flash_held_ms })
-    due.val = b.at_moment(out, fn() {
-      way.go(0.0, @motion.tween(@sfbase.flash_ms - @sfbase.flash_held_ms, ease=Leave), at=out)
-    })
-  })
-  b.owns(fn() { (due.val)() }) |> ignore
-  way
+  @motion.flash_way_keyed(
+    b,
+    key,
+    fn() {
+      let (k, at, _) = chat_gone(jump)
+      (k, at)
+    },
+    in_ms=@sfbase.flash_in_ms,
+    held_ms=@sfbase.flash_held_ms,
+    total_ms=@sfbase.flash_ms,
+    hold=fn() { @sfbase.flash_held.val },
+  )
 }
 
 ///|

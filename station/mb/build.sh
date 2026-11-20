@@ -185,10 +185,17 @@ echo "$$" > "$lock/pid"
 
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
 
-# moonbit.h from a directory of the store named by its content, not moon's: each runner of a machine has a moon of its
-# own (CI's ci-1: actions-runner-<n>/_tool/moon-ci), and a unit's command and the headers it read are its key in the
-# store, so no runner took another's units (2026-11-17).
-moon_inc_key=$(shasum "$moon_home/include/moonbit.h" | awk '{print $1}')
+# Hash the names and contents of all include/*.h files so runners with identical headers share the include directory.
+# The 2026-11-20 MoonBit hourly update added moonbit_unsafe_string_substring in a sibling of the unchanged moonbit.h.
+# The old moon-include-* directory lacked the declaration, so natives-harness reported an undeclared function.
+moon_inc_key=$({
+  export LC_ALL=C
+  for f in "$moon_home"/include/*.h; do
+    [ -f "$f" ] || continue
+    printf '%s\n' "${f#"$moon_home"/}"
+    cat "$f" || exit 1
+  done
+} | shasum | awk '{print $1}')
 moon_inc="$MBC_STORE/moon-include-$moon_inc_key"
 if [ ! -f "$moon_inc/moonbit.h" ]; then
   tmp_inc="$moon_inc.tmp.$$"

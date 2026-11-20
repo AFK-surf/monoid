@@ -2194,6 +2194,7 @@ test "browser tab bar with keyboard and mouse, passkey close button, and blocked
   assert_eq(pointers_of(r).length(), before_ptr)
   assert_eq(r.ui().held_nudge.get(), 1)
   r.t.run_for(@sf.refused_ms)
+  assert_eq(r.t.idle_said(), None)
   screen_done(r.t)
 }
 

@@ -225,7 +225,7 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3290.177388696544 ms) | the bar's springs (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:467:7-467:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1194:14-1194:124@stillfail (at rest at 2740 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1097:5-1097:68@stillfail (at rest at 3066.6666666666665 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3290.177388696544 ms) | the bar's springs (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:472:7-472:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1194:14-1194:124@stillfail (at rest at 2740 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1097:5-1097:68@stillfail (at rest at 3066.6666666666665 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
     ),
   ),

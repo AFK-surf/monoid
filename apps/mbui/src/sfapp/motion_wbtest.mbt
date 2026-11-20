@@ -412,7 +412,7 @@ test "the chat's sheet going down: its own rows take no tap, the scrim none" {
   tap_once_on(t, "固定")
   t.tap_once(195.0, 60.0)
   // sunk: on the sheet's spring, at most the window's height
-  t.run_for(@motion.sheet_spring.duration(844.0, 0.0, 0.0))
+  t.run_for(@motion.carousel_spring.duration(844.0, 0.0, 0.0))
   assert_eq(named(calls, "chat.pin").length(), 0)
   assert_true(!@sf.presenting() && !@sf.presented_drawn())
 }

@@ -1,5 +1,5 @@
 // Runnable examples and unit tests for the motion library catalog, node-level tools,
-// and core motion primitives (ShakeWay, HoldWay, Handoff, PressFeel, SheetWay, PushWay, Zoom).
+// and core motion primitives (ShakeWay, HoldWay, Handoff, PressFeel, Zoom).
 
 ///|
 let ex_hover_ms : Double = 140.0
@@ -51,15 +51,15 @@ test "catalog: sample_ease, move_duration_ms, and critically damped vs underdamp
   }
   assert_true(damped_max <= 1.001, msg="snappy_damped must not overshoot: max=\{damped_max}")
 
-  // Underdamped cover_spring exhibits noticeable overshoot (max > 1.01)
-  let cover_pts = @motion.sample_spec(@motion.cover_spring, ex_spring_settle_ms, 50)
-  let mut cover_max = 0.0
-  for v in cover_pts {
-    if v > cover_max {
-      cover_max = v
+  // Underdamped tactile_bounce exhibits noticeable overshoot (max > 1.01)
+  let bounce_pts = @motion.sample_spec(@motion.tactile_bounce, ex_spring_settle_ms, 50)
+  let mut bounce_max = 0.0
+  for v in bounce_pts {
+    if v > bounce_max {
+      bounce_max = v
     }
   }
-  assert_true(cover_max > 1.01, msg="cover_spring should overshoot: max=\{cover_max}")
+  assert_true(bounce_max > 1.01, msg="tactile_bounce should overshoot: max=\{bounce_max}")
 
   // Glass lens spring triplet and symmetric overlay presets
   let (p_sp, sx_sp, sy_sp) = @motion.glass_lens_springs()
@@ -300,7 +300,151 @@ test "tools: overlay_presence releases modal_live on the first frame of exit" {
 }
 
 ///|
-test "examples: ShakeWay, HoldWay, Handoff, PressFeel, SheetWay, PushWay, and Zoom" {
+test "tools: cover_indicator blends between indices with zero relayout and updates live on resize" {
+  let chosen = @signals.signal(0)
+  let cell_w = @signals.signal(80.0)
+  let drawn : Ref[(Double, Double, Double, Double)?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  })
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      let rect = @motion.cover_indicator(
+        b,
+        fn() { chosen.get() },
+        fn(k) {
+          let w = cell_w.get()
+          if k >= 0 && k < 3 {
+            Some((k.to_double() * w, 0.0, w, 32.0))
+          } else {
+            None
+          }
+        },
+      )
+      b.ground_drawn(@view.By(fn() {
+        let r = rect()
+        drawn.val = r
+        match r {
+          Some((x, y, w, h)) => { dx: x, dy: y, dw: w, dh: h, corners: None }
+          None => @view.ground_as_laid
+        }
+      }))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  assert_eq(drawn.val, Some((0.0, 0.0, 80.0, 32.0)))
+
+  // Switching index animates with zero relayout
+  chosen.set(2)
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(ex_spring_mid_ms)
+  assert_true(
+    t.tree_frames().iter().all(fn(f) { f.laid == 0 }),
+    msg="cover_indicator must not trigger relayout during animation",
+  )
+  guard drawn.val is Some((mx, _, mw, _)) else { fail("expected rect mid-motion") }
+  assert_true(mx > 0.0 && mx < 160.0, msg="mid x: \{mx}")
+  assert_eq(mw, 80.0)
+
+  t.run_for(ex_spring_settle_ms * 2.0)
+  assert_eq(drawn.val, Some((160.0, 0.0, 80.0, 32.0)))
+
+  // Live resize updates immediately with zero lag
+  cell_w.set(100.0)
+  t.draw()
+  assert_eq(drawn.val, Some((200.0, 0.0, 100.0, 32.0)))
+}
+
+///|
+test "tools: flash_way_keyed clears on key reuse and fades out by total_ms" {
+  let key = @signals.signal("m1")
+  let target : @signals.Signal[(String, Double)] = @signals.signal(("", -1.0))
+  let lit : Ref[Double] = Ref(0.0)
+  let t = @ui.Tester::new(fn(_c) {  })
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      let way = @motion.flash_way_keyed(b, fn() { key.get() }, fn() { target.get() })
+      b.alpha(@view.By(fn() {
+        let v = way.shown_on(b)
+        lit.val = v
+        v
+      }))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  assert_eq(lit.val, 0.0)
+
+  let at = t.time()
+  target.set(("m1", at))
+  t.run_for(ex_flash_in_ms / 2.0)
+  assert_true(lit.val > 0.0 && lit.val < 1.0, msg="rising: \{lit.val}")
+  t.run_for(ex_flash_in_ms)
+  assert_eq(lit.val, 1.0)
+
+  // Key change (row recycled) clears immediately
+  key.set("m2")
+  t.draw()
+  assert_eq(lit.val, 0.0)
+
+  // Target m2 runs full cycle and settles at 0.0
+  let at2 = t.time()
+  target.set(("m2", at2))
+  t.run_for(ex_flash_in_ms + ex_flash_in_ms / 4.0)
+  assert_eq(lit.val, 1.0)
+  t.run_for(ex_flash_hold_ms + ex_flash_out_ms)
+  assert_eq(lit.val, 0.0)
+  t.assert_idle()
+}
+
+///|
+test "tools: hover_fade_keyed snaps immediately on key change without animation" {
+  let key = @signals.signal("a")
+  let selected = @signals.signal("")
+  let seen : Ref[Double] = Ref(0.0)
+  let t = @ui.Tester::new(fn(_c) {  })
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      let p = @motion.hover_fade_keyed(
+        b,
+        fn() { key.get() },
+        fn() { selected.get() == key.get() },
+        duration_ms=ex_hover_ms,
+      )
+      b.alpha(@view.By(fn() {
+        let v = p()
+        seen.val = v
+        v
+      }))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  assert_eq(seen.val, 0.0)
+
+  // Same key: fades smoothly when selected becomes "a"
+  selected.set("a")
+  t.run_for(ex_hover_ms / 2.0)
+  assert_true(seen.val > 0.0 && seen.val < 1.0, msg="mid fade: \{seen.val}")
+
+  // Key changes to unselected row "b": snaps to 0.0 immediately
+  key.set("b")
+  t.draw()
+  assert_eq(seen.val, 0.0)
+  t.assert_idle()
+
+  // Key changes back to selected row "a": snaps to 1.0 immediately
+  key.set("a")
+  t.draw()
+  assert_eq(seen.val, 1.0)
+  t.assert_idle()
+}
+
+///|
+test "examples: ShakeWay, HoldWay, Handoff, PressFeel, and Zoom" {
   // 1. ShakeWay + shakes_while steadiness
   let shake = @motion.ShakeWay::new()
   let fired = @signals.signal(false)
@@ -333,17 +477,7 @@ test "examples: ShakeWay, HoldWay, Handoff, PressFeel, SheetWay, PushWay, and Zo
   p1.left(50.0)
   assert_eq(p2.other_near(100.0), true)
 
-  // 3. SheetWay & PushWay closed-form evaluation
-  let sheet = @motion.SheetWay::new(detents=[1.0])
-  sheet.go_detent(0, at=0.0)
-  assert_eq(sheet.target(), 1.0)
-  let push = @motion.PushWay::new()
-  push.go(true, at=0.0)
-  assert_eq(push.target(), 1.0)
-  let (px, _) = push.at(500.0)
-  assert_true(px > 0.99, msg="push settled: \{px}")
-
-  // 4. Zoom fit and double-tap zoom
+  // 3. Zoom fit and double-tap zoom
   let z = @motion.Zoom::new()
   z.boxed(400.0, 300.0, at=0.0)
   z.natural(800.0, 600.0, at=0.0)

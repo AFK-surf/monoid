@@ -547,11 +547,18 @@ export function ensureNativeDelta(cacheDir?: string): string | null {
   if (!existsSync(bin)) {
     // (into a name of its own, then renamed: makers compiling at once each leave a whole binary)
     const tmp = `${bin}.tmp.${process.pid}`;
-    const r = spawnSync("cc", ["-O3", "-std=c11", "-o", tmp, fastSource, "-lz"], { encoding: "utf8" });
+    const cc = (defines: string[], lib: string) =>
+      spawnSync("cc", ["-O3", "-std=c11", ...defines, "-o", tmp, fastSource, lib], { encoding: "utf8" });
+    let r = cc([], "-lz");
+    // (no zlib.h here, as on a runner without zlib1g-dev: the system's libz loaded at run time instead)
+    if (r.status !== 0) r = cc(["-DDELTA_DLOPEN_ZLIB"], "-ldl");
     if (r.status === 0) renameSync(tmp, bin);
     else {
       rmSync(tmp, { force: true });
-      console.error(`delta: delta-fast.c not compiled (${r.error?.message ?? r.stderr.trim().split("\n").at(-1)}): the deltas are made in JavaScript`);
+      // (the first error, not the last line: gcc ends with "compilation terminated.")
+      const lines = (r.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+      const why = r.error?.message ?? lines.find((l) => /error/i.test(l)) ?? lines[0] ?? `cc exited ${r.status}`;
+      console.error(`delta: delta-fast.c not compiled (${why}): the deltas are made in JavaScript`);
       found = null;
     }
   }

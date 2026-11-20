@@ -185,7 +185,7 @@ fn EdgePull::drag(self : EdgePull, past : Double, y : Double, h : Double) -> Uni
 ///|
 /// Let go: back to rest from where it is (lift_spring, a little past it), from `v`'s cause's moment.
 fn EdgePull::let_go(self : EdgePull, v : @view.View) -> Unit {
-  self.aside.go(v, 0.0, @motion.lift_spring)
+  self.aside.go(v, 0.0, @motion.tactile_bounce)
 }
 
 ///|

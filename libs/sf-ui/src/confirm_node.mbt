@@ -85,6 +85,7 @@ fn dialog_layer_node(
       // (how far in it is, its look's and its ground's, from the moment it opened; out from the moment it closed)
       let shown = @motion.NodeWay::new(0.0)
       let dim = @motion.NodeWay::new(0.0)
+      layer.carries_until(fn() { dmax(shown.ends_at(), dim.ends_at()) }) |> ignore
       // (another dialog over it: it takes nothing then, dimmed over itself as what is under them is, coming and going
       // as that one's ground does)
       let veiled = @motion.NodeWay::new(0.0)

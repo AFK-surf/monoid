@@ -159,7 +159,7 @@ fn lead_icon_node(parent : @view.View, lead : String, ink : () -> Int64, centred
     if @ui.reduced_motion() {
       0.0
     } else {
-      let g = v.cycle_resident(lead_loop_ms) - delay / lead_loop_ms
+      let g = @motion.resident_cycle(v, lead_loop_ms) - delay / lead_loop_ms
       g - g.floor()
     }
   }

@@ -27,11 +27,6 @@ pub let loupe_side : Double = 8.0
 pub let knob_lens_grow : Double = 1.25
 
 ///|
-/// How a thing a finger moves follows it (the bar's ball: 300, damped as the web's, ZETA 0.635).
-// kept across runs: a value (no field of it changes)
-pub let follow_spring : @motion.Spec = @motion.follow_spring
-
-///|
 /// How much longer a thing a finger moves is drawn toward where it goes, and how much lower, by `v` (its way a frame
 /// at 60): the bar's ball's (a frame's way times 1.6, at most 36; a fifth of that off its height, at most 6).
 pub fn speed_stretch(v : Double) -> (Double, Double) {

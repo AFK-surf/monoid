@@ -11,7 +11,7 @@
 /// way.go(node, 1.0, @motion.snappy_damped)
 /// ```
 // kept across runs: a value (no field of it changes)
-pub let snappy_damped : Spec = cover_damped_spring
+pub let snappy_damped : Spec = spring(ratio=1.0, stiffness=420.0, threshold=0.001)
 
 ///|
 /// Critically damped move spring (visual = 0.28s, bounce = 0, threshold = 0.5):
@@ -23,19 +23,19 @@ pub let snappy_damped : Spec = cover_damped_spring
 /// way.go(node, 160.0, @motion.move_damped)
 /// ```
 // kept across runs: a value (no field of it changes)
-pub let move_damped : Spec = move_spring
+pub let move_damped : Spec = motion_spring(0.28, threshold=0.5)
 
 ///|
 /// Critically damped sheet/carousel spring (visual = 0.32s, bounce = 0, threshold = 0.5):
 /// carousels, horizontal media strips, and settled sheets.
 // kept across runs: a value (no field of it changes)
-pub let carousel_spring : Spec = sheet_spring
+pub let carousel_spring : Spec = motion_spring(0.32, threshold=0.5)
 
 ///|
 /// Tactile light-bounce spring (visual = 0.25s, bounce = 0.35):
 /// long-press lift, finger drag follow, and tactile press release.
 // kept across runs: a value (no field of it changes)
-pub let tactile_bounce : Spec = lift_spring
+pub let tactile_bounce : Spec = motion_spring(0.25, bounce=0.35)
 
 ///|
 /// Liquid glass lens spring triplet: (press_progress, scale_x, scale_y).

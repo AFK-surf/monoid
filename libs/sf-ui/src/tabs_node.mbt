@@ -76,29 +76,18 @@ pub fn[K : Eq] tabs_node(
             x
           }
           // (where the bar or the capsule is along the strip and how wide: off from where it set out to the chosen
-          // tab's place and width together as that changes, on move_spring; the words' size changed, there at once)
-          let first = place_of(@signals.untracked(chosen))
-          let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
-          let way = @motion.NodeWay::new(1.0)
-          strip.reacts(chosen, fn(k) {
-            let to_k = place_of(k)
-            let (from, to) = cover.untracked()
-            if to_k != to {
-              let p = way.value_at(strip.cause_at())
-              cover.set((@ui.cover_set_out(from, to, p), to_k))
-              way.go_from(strip, 0.0, 1.0, @motion.move_spring)
-            }
-          })
-          let rect = fn() {
-            let (from, to) = cover.get()
-            @ui.cover_rect(from, to, way.shown(strip), fn(k) {
+          // tab's place and width together as that changes, on move_damped; the words' size changed, there at once)
+          let rect = @motion.cover_indicator(
+            strip,
+            fn() { place_of(chosen()) },
+            fn(k) {
               if k >= 0 && k < tabs.length() {
                 Some((x_of(k), 0.0, w_of(k), tab_h))
               } else {
                 None
               }
-            })
-          }
+            },
+          )
           strip.box(fn(mark) {
             mark
             .over(Is(true))

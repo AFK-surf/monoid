@@ -129,7 +129,7 @@ test "springs end as Compose reckons their duration" {
   assert_eq(@motion.spring_duration(1.0, 350.0, 100.0, 0.0, 1.0), 354.0)
   assert_eq(@motion.spring_duration(1.0, 350.0, -66.0, 0.0, 1.0), 329.0)
   // Motion.kt's MOVE (2π / .336)², within half a pixel
-  match @motion.move_spring {
+  match @motion.move_damped {
     Spring(_, k, thr, _) => {
       assert_true(near(k, 349.68836455106845, 1.0e-9))
       assert_eq(@motion.spring_duration(1.0, k, 66.0, 0.0, thr), 372.0)
@@ -144,7 +144,7 @@ test "springs end as Compose reckons their duration" {
   }
   // at rest already
   assert_eq(@motion.spring_duration(1.0, 350.0, 0.0, 0.0, 1.0), 0.0)
-  match @motion.sheet_spring {
+  match @motion.carousel_spring {
     Spring(_, k, _, _) => assert_true(near(k, 267.73015410941184, 1.0e-9))
     _ => fail("a spring")
   }
@@ -246,7 +246,7 @@ test "a spring told anew mid-way goes on as fast as it went" {
   let seen : Array[Double] = []
   let kept : Ref[@motion.Anim?] = Ref(None)
   let t = @ui.Tester::new(fn(c) {
-    seen.push(@motion.animate(c, "s", to.val, spec=@motion.row_spring))
+    seen.push(@motion.animate(c, "s", to.val, spec=@motion.move_damped))
     // (the Anim it plays, to ask its end)
     kept.val = Some(@motion.anim(c, "s", 0.0))
     c.box(w=Px(10.0), h=Px(10.0), fn() {  }) |> ignore
@@ -749,7 +749,7 @@ test "springs match Compose's own FloatSpringSpec, frame for frame" {
   let sheet = 2.0 * 3.141592653589793 / (1.2 * 0.32)
   let cases : Array[(@motion.Spec, Double, Double, Double, Double, Array[Double])] = [
     (@motion.spring(), 0.0, 1.0, 0.0, 171.0, [0.0, 0.12842241, 0.3653931, 0.57653147, 0.8986603, 0.9795784, 1.0, 1.0]),
-    (@motion.row_spring, 100.0, 0.0, 0.0, 354.0, [100.0, 96.32119, 87.23453, 75.95016, 44.20961, 23.001738, 11.24473, 2.414866]),
+    (@motion.Spring(1.0, 350.0, 1.0, 0.0), 100.0, 0.0, 0.0, 354.0, [100.0, 96.32119, 87.23453, 75.95016, 44.20961, 23.001738, 11.24473, 2.414866]),
     (@motion.Spring(1.0, omega * omega, 0.5, 0.0), 66.0, 0.0, 0.0, 372.0, [66.0, 63.573936, 57.58083, 50.137196, 29.194187, 15.195139, 7.4312854, 1.597196]),
     (@motion.motion_spring(0.24, bounce=0.08, threshold=0.001), 0.9, 1.0, 0.0, 276.0, [0.9, 0.9049251, 0.9167734, 0.9309648, 0.9673801, 0.98751396, 0.9960531, 1.0]),
     (@motion.Spring(1.0, sheet * sheet, 0.5, 0.0), 600.0, 0.0, 0.0, 576.0, [600.0, 582.698, 538.4667, 481.358, 307.9814, 178.07419, 97.186775, 26.170254]),

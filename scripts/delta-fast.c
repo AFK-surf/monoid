@@ -1,7 +1,8 @@
 // scripts/delta.ts's search and records in C: the suffix array (SA-IS), the 3-byte buckets and bsdiff's matching, each
 // written as delta.ts writes it (read that file for the why of every step), deflating the records in 1 MiB chunks.
 // delta.ts compiles it once (ensureNativeDelta) and hands it the old and made bytes and the runs it found, falling
-// back to its own search where there is no C compiler or zlib.
+// back to its own search where there is no C compiler or zlib. Where zlib's header is not installed (no zlib1g-dev),
+// it compiles with -DDELTA_DLOPEN_ZLIB and loads the system's libz at run time (load_zlib).
 //   delta-fast [--verify] OLD MADE RUNS OUT
 //   delta-fast --files [--verify] OLD MADE FILES OUT
 //   delta-fast --check-only OLD MADE CHUNKS
@@ -21,7 +22,42 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifndef DELTA_DLOPEN_ZLIB
 #include <zlib.h>
+#else
+// zlib's ABI (1.2 and 1.3), without its header: deflateInit2_/inflateInit2_ are given ZLIB_VERSION and
+// sizeof(z_stream), and refuse a libz of another major version or another z_stream, so a mismatch fails, never quietly.
+#include <dlfcn.h>
+typedef unsigned char Bytef;
+typedef unsigned int uInt;
+typedef unsigned long uLong;
+typedef void *voidpf;
+typedef voidpf (*alloc_func)(voidpf opaque, uInt items, uInt size);
+typedef void (*free_func)(voidpf opaque, voidpf address);
+struct internal_state;
+typedef struct z_stream_s {
+  const Bytef *next_in;
+  uInt avail_in;
+  uLong total_in;
+  Bytef *next_out;
+  uInt avail_out;
+  uLong total_out;
+  const char *msg;
+  struct internal_state *state;
+  alloc_func zalloc;
+  free_func zfree;
+  voidpf opaque;
+  int data_type;
+  uLong adler;
+  uLong reserved;
+} z_stream;
+#define Z_OK 0
+#define Z_STREAM_END 1
+#define Z_FINISH 4
+#define Z_DEFLATED 8
+#define Z_DEFAULT_STRATEGY 0
+#define ZLIB_VERSION "1.2.11"
+#endif
 
 #define CHUNK (1 << 20)
 #define PREFIXES (1 << 24)
@@ -34,6 +70,57 @@ static void die(const char *what) {
   fprintf(stderr, "delta-fast: %s%s%s\n", what, errno ? ": " : "", errno ? strerror(errno) : "");
   exit(1);
 }
+
+#ifdef DELTA_DLOPEN_ZLIB
+static struct {
+  int (*deflateInit2_)(z_stream *, int, int, int, int, int, const char *, int);
+  uLong (*deflateBound)(z_stream *, uLong);
+  int (*deflateReset)(z_stream *);
+  int (*deflate)(z_stream *, int);
+  int (*deflateEnd)(z_stream *);
+  int (*inflateInit2_)(z_stream *, int, const char *, int);
+  int (*inflateReset)(z_stream *);
+  int (*inflate)(z_stream *, int);
+  int (*inflateEnd)(z_stream *);
+} zf;
+
+// (a function pointer from dlsym's void *, copied as POSIX has it: no cast between object and function pointers)
+#define ZSYM(lib, name) do { \
+    void *f_ = dlsym((lib), #name); \
+    if (!f_) { errno = 0; die("libz symbol missing: " #name); } \
+    memcpy(&zf.name, &f_, sizeof zf.name); \
+  } while (0)
+
+static void load_zlib(void) {
+  static int loaded;
+  if (loaded) return;
+  static const char *const names[] = { "libz.so.1", "libz.so", "libz.1.dylib" };
+  void *lib = NULL;
+  for (size_t i = 0; !lib && i < sizeof names / sizeof names[0]; i++) lib = dlopen(names[i], RTLD_NOW);
+  if (!lib) { errno = 0; die("libz not found (libz.so.1, libz.so, libz.1.dylib)"); }
+  ZSYM(lib, deflateInit2_);
+  ZSYM(lib, deflateBound);
+  ZSYM(lib, deflateReset);
+  ZSYM(lib, deflate);
+  ZSYM(lib, deflateEnd);
+  ZSYM(lib, inflateInit2_);
+  ZSYM(lib, inflateReset);
+  ZSYM(lib, inflate);
+  ZSYM(lib, inflateEnd);
+  loaded = 1;
+}
+
+#define deflateInit2(s, level, method, bits, mem, strategy) \
+  (load_zlib(), zf.deflateInit2_((s), (level), (method), (bits), (mem), (strategy), ZLIB_VERSION, (int)sizeof(z_stream)))
+#define inflateInit2(s, bits) (load_zlib(), zf.inflateInit2_((s), (bits), ZLIB_VERSION, (int)sizeof(z_stream)))
+#define deflateBound(s, n) zf.deflateBound((s), (n))
+#define deflateReset(s) zf.deflateReset(s)
+#define deflate(s, f) zf.deflate((s), (f))
+#define deflateEnd(s) zf.deflateEnd(s)
+#define inflateReset(s) zf.inflateReset(s)
+#define inflate(s, f) zf.inflate((s), (f))
+#define inflateEnd(s) zf.inflateEnd(s)
+#endif
 
 static void *alloc(size_t n) {
   void *p = malloc(n ? n : 1);

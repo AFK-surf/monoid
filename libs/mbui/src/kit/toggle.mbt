@@ -219,7 +219,7 @@ pub fn toggle_group(
           // (read as it is built: the lens's shadow grows with it from none, which no look draws)
           let held = match glass {
             Some(_) =>
-              @motion.animate(c, "\u{2}held/" + key, if fingered >= 0 { 1.0 } else { 0.0 }, spec=@motion.lift_spring)
+              @motion.animate(c, "\u{2}held/" + key, if fingered >= 0 { 1.0 } else { 0.0 }, spec=@motion.tactile_bounce)
             None => 0.0
           }
           let chosen = items.search_by(fn(it) { now.contains(it.value) })

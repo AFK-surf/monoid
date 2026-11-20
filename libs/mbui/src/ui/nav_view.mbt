@@ -263,11 +263,13 @@ pub fn[P] nav_view(
           None => ()
         }
         for e in nav.pages {
-          all.push(e.serial)
+          if nav.shows(e.serial) || made(e.page) is None {
+            all.push(e.serial)
+          }
         }
         match nav.leaving {
-          Some(e) => all.push(e.serial)
-          None => ()
+          Some(e) if nav.shows(e.serial) || made(e.page) is None => all.push(e.serial)
+          _ => ()
         }
         all
       },
@@ -362,17 +364,8 @@ pub fn[P] nav_view(
                     shown.val
                   },
                   fn(m) {
-                    // (laid out nowhere while it does not show, but on the shelf or the kept left: there it is held by
-                    // no node, put by as it was laid out, and taken back so, laid out again nowhere and then whole for
-                    // nothing)
-                    m
-                    .grow(Is(1.0))
-                    .laid_nowhere(
-                      By(fn() {
-                        !nav.shows(k) && !nav.shelf.iter().any(fn(e) { e.serial == k }) && !nav.is_kept_left(k)
-                      }),
-                    )
-                    |> ignore
+                    // (covered made pages are parked at rest via EachKept rather than laid_nowhere, keeping their layout cache)
+                    m.grow(Is(1.0)) |> ignore
                     nav.made(m, k, e, f, bg, edge)
                   },
                 )
@@ -398,20 +391,32 @@ pub fn[P] nav_view(
           },
         )
       },
-      // (those on the shelf kept, put by at rest: Nav::replace_kept; and those on the kept left: Nav::try_park_left)
-      keeps?=if keeps_made || keeps_left is Some(_) {
-        Some(fn() {
-          nav.said.get() |> ignore
-          nav.shown.get() |> ignore
-          let kept = if keeps_made { nav.shelf.map(fn(e) { e.serial }) } else { [] }
-          for x in nav.kept_left {
+      // (covered made pages on the stack, those on the shelf (Nav::replace_kept), and those on the kept left
+      // (Nav::try_park_left): put by at rest so layout cache is kept and bindings rest while not shown)
+      keeps=fn() {
+        nav.said.get() |> ignore
+        nav.shown.get() |> ignore
+        let kept : Array[Int] = []
+        for e in nav.pages {
+          if !nav.shows(e.serial) && made(e.page) is Some(_) && !kept.contains(e.serial) {
+            kept.push(e.serial)
+          }
+        }
+        if keeps_made {
+          for e in nav.shelf {
+            if !kept.contains(e.serial) {
+              kept.push(e.serial)
+            }
+          }
+        }
+        for x in nav.kept_left {
+          if !kept.contains(x.2.serial) {
             kept.push(x.2.serial)
           }
-          kept
-        })
-      } else {
-        None
+        }
+        kept
       },
+      keeps_holds=fn(k) { nav.pages.iter().any(fn(e) { e.serial == k }) },
     )
   })
 }

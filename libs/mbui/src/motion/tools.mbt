@@ -251,3 +251,112 @@ pub fn overlay_presence(
   let modal_live = fn() { !v.leaving() }
   (look, modal_live)
 }
+
+///|
+/// Keyed hover/active fade progress in `0..1` for reused list rows bound to node `v`:
+/// behaves like `hover_fade`, except whenever `key()` changes (row recycled for another item),
+/// snaps immediately to `active()` (`way.put`) with no frame-dependent motion.
+#callsite(autofill(loc))
+pub fn hover_fade_keyed(
+  v : @view.View,
+  key : () -> String,
+  active : () -> Bool,
+  duration_ms? : Double = 140.0,
+  instant_off? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> () -> Double {
+  let init = if @signals.untracked(active) { 1.0 } else { 0.0 }
+  let way = NodeWay::new(init)
+  let key_was = Ref(@signals.untracked(key))
+  v.reacts(fn() { (key(), active()) }, at_start=false, fn(now) {
+    let (k, on) = now
+    if k != key_was.val {
+      key_was.val = k
+      way.put(if on { 1.0 } else { 0.0 }, loc~)
+    } else if on {
+      way.go(v, 1.0, tween(duration_ms, ease=Out), loc~)
+    } else if @signals.untracked(instant_off) {
+      way.put(0.0, loc~)
+    } else {
+      way.go(v, 0.0, tween(duration_ms, ease=Out), loc~)
+    }
+  })
+  fn() { way.shown(v) }
+}
+
+///|
+/// Index-driven cover sliding indicator rectangle `(x, y, w, h)` bound to node `v`:
+/// wraps `@ui.cover_set_out` + `@ui.cover_rect` + `NodeWay` so the indicator blends from its
+/// previous item(s) to `chosen()` on `spec` (default `move_damped`), while recomputing rects
+/// via `rect_of` live during paint (zero lag on resize/font-scale change, zero relayout during motion).
+#callsite(autofill(loc))
+pub fn cover_indicator(
+  v : @view.View,
+  chosen : () -> Int,
+  rect_of : (Int) -> (Double, Double, Double, Double)?,
+  spec? : Spec = move_damped,
+  loc~ : SourceLoc,
+) -> () -> (Double, Double, Double, Double)? {
+  let first = @signals.untracked(chosen)
+  let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
+  let way = NodeWay::new(1.0)
+  v.reacts(chosen, fn(k) {
+    let (from, to) = cover.untracked()
+    if k != to {
+      let p = way.value_at(v.cause_at())
+      cover.set((@ui.cover_set_out(from, to, p), k), loc~)
+      way.go_from(v, 0.0, 1.0, spec, loc~)
+    }
+  })
+  fn() {
+    let (from, to) = cover.get()
+    @ui.cover_rect(from, to, way.shown(v), rect_of)
+  }
+}
+
+///|
+/// Keyed quote/target highlight flash for reused list items bound to node `v`:
+/// when `key()` changes, immediately clears (`put(0.0)`) and cancels any pending fade timer;
+/// when `target()` matches `(key, at)` with `at >= 0.0` and `v.cause_at() < at + total_ms`,
+/// runs `in_ms` (`Out`, 0 -> 1) -> `held_ms` -> `(total_ms - held_ms)` (`Leave`, 1 -> 0),
+/// or holds solid until `at + total_ms` under `reduced_motion`. Automatically cancels timers on unmount.
+#callsite(autofill(loc))
+pub fn flash_way_keyed(
+  v : @view.View,
+  key : () -> String,
+  target : () -> (String, Double),
+  in_ms? : Double = 160.0,
+  held_ms? : Double = 900.0,
+  total_ms? : Double = 1700.0,
+  hold? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> Way {
+  let way = Way::new(0.0)
+  let due : Ref[() -> Unit] = Ref(fn() {  })
+  let key_was = Ref(@signals.untracked(key))
+  v.reacts(fn() { (target(), key()) }, fn(g) {
+    let ((k, at), now) = g
+    if now != key_was.val {
+      key_was.val = now
+      (due.val)()
+      due.val = fn() {  }
+      way.put(0.0, loc~)
+    }
+    let held = hold()
+    guard k == now && at >= 0.0 && (held || v.cause_at() < at + total_ms) else { return }
+    (due.val)()
+    due.val = fn() {  }
+    if held {
+      way.put(1.0, loc~)
+      return
+    }
+    way.go(1.0, tween(in_ms, ease=Out), at~, loc~)
+    let out = at + (if @ui.reduced_motion() { total_ms } else { held_ms })
+    due.val = v.at_moment(out, fn() {
+      due.val = fn() {  }
+      way.go(0.0, tween(total_ms - held_ms, ease=Leave), at=out, loc~)
+    })
+  })
+  v.owns(fn() { (due.val)() }) |> ignore
+  way
+}

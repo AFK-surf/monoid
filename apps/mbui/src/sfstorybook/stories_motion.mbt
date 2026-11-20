@@ -272,8 +272,7 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               ("snappy_damped（临界阻尼，Hover/切档推荐）", @motion.snappy_damped),
               ("move_damped（临界阻尼，常规位移）", @motion.move_damped),
               ("carousel_spring（临界阻尼，切图条）", @motion.carousel_spring),
-              ("cover_spring（欠阻尼 ζ≈0.78，有过冲）", @motion.cover_spring),
-              ("tactile_bounce（轻回弹 ζ=0.65，按压拖拽）", @motion.tactile_bounce),
+              ("tactile_bounce（欠阻尼过冲 ζ=0.65，按压拖拽）", @motion.tactile_bounce),
             ]
             let starts : Array[(Bool) -> Unit] = []
             let finish_x = motion_track_in + motion_spring_travel + motion_dot_d / 2.0

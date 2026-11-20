@@ -13,14 +13,18 @@
 /// as the change taking them in ends.
 priv struct EachKept[K, T] {
   keys_of : () -> Array[K]
+  keeps_holds : (K) -> Bool
   mut keys : Array[K]
-  put_by : Map[K, (View, @signals.Signal[T], () -> Unit)]
+  put_by : Map[K, (View, @signals.Signal[T], Array[() -> Unit], Ref[Bool])]
   wakes : Array[() -> Unit]
 }
 
 ///|
-fn[K : Hash + Eq, T] EachKept::new(keys_of : () -> Array[K]) -> EachKept[K, T] {
-  { keys_of, keys: [], put_by: Map([]), wakes: [] }
+fn[K : Hash + Eq, T] EachKept::new(
+  keys_of : () -> Array[K],
+  keeps_holds : (K) -> Bool,
+) -> EachKept[K, T] {
+  { keys_of, keeps_holds, keys: [], put_by: Map([]), wakes: [] }
 }
 
 ///|
@@ -33,12 +37,19 @@ fn[K : Hash + Eq, T] each_kept_takes(
   k : K,
   it : T,
 ) -> (View, @signals.Signal[T])? {
-  guard kept is Some(e) && e.put_by.get(k) is Some((v, item, wake)) else { return None }
+  guard kept is Some(e) && e.put_by.get(k) is Some((v, item, wakes, holding)) else { return None }
   e.put_by.remove(k)
+  holding.val = false
   guard v.alive() else { return None }
   slot.take_in(v)
   item.set(it)
-  e.wakes.push(wake)
+  e.wakes.push(fn() {
+    answering(fn() {
+      for w in wakes {
+        w()
+      }
+    })
+  })
   Some((v, item))
 }
 
@@ -52,25 +63,47 @@ fn[K : Hash + Eq, T] each_kept_parks(
   r : (View, @signals.Signal[T]),
 ) -> Bool {
   guard kept is Some(e) && e.keys.contains(k) && r.0.alive() else { return false }
-  let wake = slot.park(r.0)
-  e.put_by[k] = (r.0, r.1, wake)
+  if !(e.keeps_holds)(k) {
+    let wake = slot.park(r.0)
+    e.put_by[k] = (r.0, r.1, [wake], Ref(false))
+  } else {
+    slot.park(r.0, rest=false) |> ignore
+    let wakes : Array[() -> Unit] = []
+    let holding = Ref(true)
+    e.put_by[k] = (r.0, r.1, wakes, holding)
+    slot.tree.after_bindings.push(fn() {
+      if e.put_by.contains(k) && r.0.alive() && holding.val {
+        slot.tree.rest_in(r.0.at, wakes, drop_holds=false)
+      }
+    })
+  }
   true
 }
 
 ///|
 /// As a change of the each ends: those put by whose keys are no more kept let go (held by nothing, let go by nothing
-/// else), and those taken in woken, each binding that let go of what it read or whose reads changed meanwhile worked
-/// out anew, in their places.
-fn[K : Hash + Eq, T] each_kept_settle(kept : EachKept[K, T]?) -> Unit {
+/// else), those that stopped keeping holds drop their holds, and those taken in woken, each binding that let go of what
+/// it read or whose reads changed meanwhile worked out anew, in their places.
+fn[K : Hash + Eq, T] each_kept_settle(slot : View, kept : EachKept[K, T]?) -> Unit {
   guard kept is Some(e) else { return }
   let gone = e.put_by.keys().filter(fn(k) { !e.keys.contains(k) }).collect()
   for k in gone {
     match e.put_by.get(k) {
-      Some((v, _, _)) => {
+      Some((v, _, _, holding)) => {
+        holding.val = false
         e.put_by.remove(k)
         v.let_go()
       }
       None => ()
+    }
+  }
+  for k, entry in e.put_by {
+    let (v, _, wakes, holding) = entry
+    if holding.val && !(e.keeps_holds)(k) {
+      holding.val = false
+      if v.alive() {
+        slot.tree.rest_in(v.at, wakes, drop_holds=true)
+      }
     }
   }
   let wakes = e.wakes.copy()
@@ -86,6 +119,7 @@ fn[K, T] EachKept::let_go_all(self : EachKept[K, T]) -> Unit {
   let all = self.put_by.values().collect()
   self.put_by.clear()
   for r in all {
+    (r.3).val = false
     r.0.let_go()
   }
 }

@@ -101,3 +101,25 @@ test "a switch row with a note under its title has its switch on the title's lin
     }
   }
 }
+
+///|
+test "switch_node: liquid glass lens scale animation causes zero relayout (laid == 0)" {
+  let on = @signals.signal(false)
+  let t = switch_tester(2, on, false)
+  t.check_looks(false)
+  let (x, y, w, h) = t.get(Switch, label="性能记录").rect
+  let lens_mount_ms = dur_ms / 4.0
+  let lens_step_ms = @ui.move_most_ms / 2.0
+  t.touch(0, x + w / 2.0, y + h / 2.0)
+  t.run_for(lens_mount_ms)
+  t.tree_frames_from_now()
+  t.run_for(lens_step_ms)
+  let frames = t.tree_frames()
+  assert_true(frames.length() > 0, msg="expected animation frames while switch lens scales")
+  assert_true(
+    frames.iter().all(fn(f) { f.laid == 0 }),
+    msg="switch_node lens animation must not trigger relayout: \{Repr(frames.map(fn(f) { f.laid }))}",
+  )
+  t.touch(2, x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+}

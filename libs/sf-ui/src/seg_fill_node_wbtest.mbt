@@ -502,3 +502,26 @@ test "a narrow page's choice as nodes, chosen by a finger as the old view's: tap
     assert_eq((made_n, made_at), (old_n, old_at), msg="\{what}: as the old one: chosen \{made_n} times, the \{made_at}; the old one \{old_n}, the \{old_at}")
   }
 }
+
+///|
+test "seg_fill_node: liquid glass lens animation during drag causes zero relayout (laid == 0)" {
+  let r = seg_rig(true, 390.0, seg_three)
+  r.t.check_looks(false)
+  let second = 12.0 + 2.0 + 362.0 / 3.0 * 1.5
+  let y = 20.0 + 17.0
+  let lens_mount_ms = dur_ms / 4.0
+  let lens_step_ms = @ui.move_most_ms / 2.0
+  r.t.touch(0, second, y)
+  r.t.touch(1, seg_third_x, y)
+  r.t.run_for(lens_mount_ms)
+  r.t.tree_frames_from_now()
+  r.t.run_for(lens_step_ms)
+  let frames = r.t.tree_frames()
+  assert_true(frames.length() > 0, msg="expected animation frames while seg_fill_node lens scales")
+  assert_true(
+    frames.iter().all(fn(f) { f.laid == 0 }),
+    msg="seg_fill_node lens animation must not trigger relayout: \{Repr(frames.map(fn(f) { f.laid }))}",
+  )
+  r.t.touch(2, seg_third_x, y)
+  r.t.run_for(@ui.move_most_ms * 2.0)
+}

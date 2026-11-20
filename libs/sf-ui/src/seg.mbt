@@ -326,8 +326,8 @@ pub fn stops(
     Some(fp) => dclamp(at.to_double() + (fp - at.to_double()) * stops_lean, 0.0, last)
     None => dmax(0.0, at.to_double())
   }
-  let pa = @motion.told(c, "sf-stops-p/" + key, goal, spec=@motion.follow_spring)
-  let ha = @motion.told(c, "sf-stops-held/" + key, if finger is Some(_) { 1.0 } else { 0.0 }, spec=@motion.lift_spring)
+  let pa = @motion.told(c, "sf-stops-p/" + key, goal, spec=@motion.tactile_bounce)
+  let ha = @motion.told(c, "sf-stops-held/" + key, if finger is Some(_) { 1.0 } else { 0.0 }, spec=@motion.tactile_bounce)
   let cell = if n > 0 && rw > 2.0 * pad { (rw - 2.0 * pad) / n.to_double() } else { 0.0 }
   let thumb_h = high - 2.0 * pad
   let solid = c.glass_solid()

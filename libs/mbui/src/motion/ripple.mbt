@@ -124,7 +124,7 @@ let press_sink_most : Double = 0.04
 ///|
 /// The way down and back up: a spring with a little give.
 // kept across runs: a value (no field of it changes)
-let sink_spring : Spec = lift_spring
+let sink_spring : Spec = tactile_bounce
 
 ///|
 /// The share of `p` between `a` and `b` (RippleShader subProgress).

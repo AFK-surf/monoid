@@ -38,7 +38,7 @@ pub fn segments_node(
         if @ui.reduced_motion() {
           0.0
         } else {
-          v.cycle_resident(8.0 * work_step_ms) * 2.0 * pi
+          @motion.resident_cycle(v, 8.0 * work_step_ms) * 2.0 * pi
         }
       }),
       drawn=true,

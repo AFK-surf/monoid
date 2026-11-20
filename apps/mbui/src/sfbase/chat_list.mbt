@@ -1443,7 +1443,7 @@ pub fn floor_of(c : @ui.Ctx, rd : Reading, key : String, keys : Array[String]) -
   // the line went or after, the list at rest the same)
   if rd.floor > rd.floor_was {
     out.snap(c, out.get(c) + rd.floor - rd.floor_was)
-    out.animate(c, 0.0, @sf.move_spring)
+    out.animate(c, 0.0, @motion.move_damped)
   }
   rd.floor_was = rd.floor
   // (made way: none left)

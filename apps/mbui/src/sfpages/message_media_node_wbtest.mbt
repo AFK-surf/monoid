@@ -169,7 +169,7 @@ test "a picture right clicked: its menu where, 下载 and 复制图片 once it i
     t.run_for(@ui.move_most_ms)
     assert_true(!@sf.presented_drawn(), msg="\{platform}")
     // (down from the moment the menu was gone, on lift_spring, all the way down from all the way up)
-    t.run_for(@motion.lift_spring.duration(1.0, 0.0, 0.0))
+    t.run_for(@motion.tactile_bounce.duration(1.0, 0.0, 0.0))
     assert_true((media_drawn_w(t) - media_test_w).abs() < 0.01, msg="\{platform}: \{media_drawn_w(t)}")
   }
 }
@@ -218,7 +218,7 @@ test "a picture of a message that offers itself, right clicked or held by a fing
         assert_eq(went.val, 1, msg=name)
       }
       @sf.close_presented_of(@sf.last_presented())
-      t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+      t.run_for(@ui.move_most_ms + @motion.tactile_bounce.duration(1.0, 0.0, 0.0))
     }
   }
 }

@@ -66,7 +66,7 @@ pub fn value_slider_node(
       v.reacts(fn() { sl.pressed() && !disabled() }, at_start=false, fn(on) {
         // (taken on a spring, a little past it; let go, eased back out with no overshoot: the bubble gone once)
         if on {
-          held.go(v, 1.0, @motion.lift_spring)
+          held.go(v, 1.0, @motion.tactile_bounce)
         } else {
           held.go_ms(v, 0.0, vslider_let_go_ms)
         }
