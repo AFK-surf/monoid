@@ -158,8 +158,7 @@ export function opened(data: Data, station: string, key: string): void {
 /// in what else they say; each in the order the menu has them: those `opened` (`[station, key]`, the latest first),
 /// then the rest by when they were last active, the latest first, pinned chats as any other.
 export function search(chats: J, query: string, station: string | null | undefined, exclude: string | null | undefined, limit: number | null | undefined, opened: readonly (readonly [string, string])[] = []): J {
-  const q = query.trim().toLowerCase();
-  const has = (v: J) => typeof v === "string" && v.toLowerCase().includes(q);
+  const words = terms(query);
   const rows = arr(get(chats, "days")).flatMap((d) => arr(get(d, "items")));
   // Each opened's place, looked up once: a row by its id and by its key, the lower place.
   const places = new Map<string, number>();
@@ -174,10 +173,22 @@ export function search(chats: J, query: string, station: string | null | undefin
   const active = (i: J): number => (typeof get(i, "lastActiveAt") === "number" ? (get(i, "lastActiveAt") as number) : 0);
   // (only what it finds is ranked, cut to `limit` and copied: a letter typed in the `@` menu walked every chat of the
   // workspace's and its others' whole, each copied, 2026-11-17)
-  const titledOf = (i: J) => q === "" || has(get(i, "title"));
-  const restOf = (i: J) =>
-    q !== "" &&
-    (arr(get(i, "agents")).some((a) => has(get(a, "agentText"))) || has(get(i, "stationName")) || has(get(i, "originText")) || has(get(get(i, "last"), "preview")));
+  const titledOf = (i: J) => words.length === 0 || hasAll(get(i, "title"), words);
+  const restOf = (i: J) => {
+    if (words.length === 0) return false;
+    const parts: string[] = [];
+    const add = (v: unknown) => {
+      if (typeof v === "string" && v !== "") parts.push(v);
+    };
+    add(get(i, "title"));
+    for (const a of arr(get(i, "agents"))) add(get(a, "agentText"));
+    add(get(i, "stationName"));
+    add(get(i, "originText"));
+    add(get(get(i, "last"), "preview"));
+    if (parts.length === 0) return false;
+    const combined = parts.join("\n").toLowerCase();
+    return words.every((w) => combined.includes(w));
+  };
   const titled: { row: J; index: number; rank: number; active: number }[] = [];
   const rest: { row: J; index: number; rank: number; active: number }[] = [];
   rows.forEach((row, index) => {
@@ -200,13 +211,19 @@ export const OUTSIDE_SHOWN = 3;
 /// whose title has it and before the rest of this workspace's, those already shared with it (`scope`) first, at most
 /// OUTSIDE_SHOWN.
 export function withOutside(local: J[], outside: J[], query: string, scope: string, limit: number | null | undefined): J[] {
-  const q = query.trim().toLowerCase();
-  if (q === "") return local;
-  const titled = (i: J) => typeof get(i, "title") === "string" && (get(i, "title") as string).toLowerCase().includes(q);
+  const words = terms(query);
+  if (words.length === 0) return local;
+  const titled = (i: J) => hasAll(get(i, "title"), words);
   const shared = (i: J) => arr(get(get(i, "xshare"), "to")).includes(scope);
   const theirs = outside.filter(titled);
   const offered = [...theirs.filter(shared), ...theirs.filter((i) => !shared(i))].slice(0, OUTSIDE_SHOWN);
   return [...local.filter(titled), ...offered, ...local.filter((i) => !titled(i))].slice(0, limit ?? Infinity);
+}
+
+function hasAll(v: unknown, words: readonly string[]): boolean {
+  if (typeof v !== "string") return false;
+  const low = v.toLowerCase();
+  return words.every((w) => low.includes(w));
 }
 
 /// The words a search looks for: what is typed, split at spaces, each to be found (case aside).

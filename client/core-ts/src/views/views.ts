@@ -897,6 +897,8 @@ export type ViewsEnv = {
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
   resume?: (topic: Topic) => void;
+  /// A topic a view watches became idle (its owner may cancel in-flight work without discarding cached state).
+  idle?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
   /// A login of a station's as its station last told it (station/machine-logins.ts): the program it is to (gh, gcloud)
@@ -966,6 +968,7 @@ export function envOf(core: Inner): ViewsEnv {
     subOf: owner,
     places: () => xshare.places(core),
     resume: (topic) => core.router.resume(topic),
+    idle: (topic) => core.router.idle(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
     guard: (workspace) => stationsGuard(core, workspace),
@@ -1199,6 +1202,15 @@ export class Views implements Owner {
     for (const key of live?.watches.keys() ?? []) {
       const topic = JSON.parse(key) as Topic;
       if (topic.topic === "stationSearch") this.#core.resume?.(topic);
+    }
+  }
+
+  idle(view: Topic): void {
+    if (view.topic !== "search" && view.topic !== "archive") return;
+    const live = this.#views.get(topicKey(view));
+    for (const key of live?.watches.keys() ?? []) {
+      const topic = JSON.parse(key) as Topic;
+      if (topic.topic === "stationSearch" && !this.searchShownNow(topic)) this.#core.idle?.(topic);
     }
   }
 

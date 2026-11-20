@@ -166,6 +166,10 @@ export class StationsSync {
   readonly #transcriptAgain = new Set<string>();
   /// The stations whose searches shown are to be asked again once SEARCH_STALE_MS is up.
   readonly #staleSearches = new Set<string>();
+  /// Pending debounce timers for `stationSearch` requests, keyed by `topicKey(topic)`.
+  readonly #searchTimers = new Map<string, Fiber.Fiber<void, never>>();
+  /// Active or pending `stationSearch` topics, keyed by `topicKey(topic)`, so stale ones can be cancelled when superseded.
+  readonly #searches = new Map<string, Topic>();
   /// A usage preparation can take many bounded batches; it has its own cancellable stream, outside the sync lane.
   readonly #usageReading = new Map<string, { link: Link; fiber: Fiber.Fiber<void, never> | null }>();
   /// What the station topics want of a stream beyond what the sync wants (host samples, logs, sessions shown).
@@ -784,6 +788,22 @@ export class StationsSync {
     );
   }
 
+  #cancelSearch(address: string, key: string): void {
+    const timer = this.#searchTimers.get(key);
+    if (timer) {
+      this.#searchTimers.delete(key);
+      this.#core.runner.interrupt(timer);
+    }
+    this.#searches.delete(key);
+    this.#core.scheduler.cancel(address, `${address} search/${key}`);
+  }
+
+  /// A search is no longer subscribed (before eviction): cancel any pending settle timer or in-flight request
+  /// without discarding cached results.
+  searchPaused(topic: Topic): void {
+    this.#cancelSearch(topic.station as string, topicKey(topic));
+  }
+
   /// What a search finds on the station (`stationSearch`): asked a moment after the words stop changing
   /// (one shown that long), at the urgency of what is shown, and again as it is shown again; held in memory while
   /// shown, the station's answer as it came. A station from before search answers 404: said so (its `err`), and it is not asked again while shown.
@@ -791,19 +811,38 @@ export class StationsSync {
   searchShown(topic: Topic, again = false): void {
     const address = topic.station as string;
     const key = topicKey(topic);
+    // Cancel any superseded searches on this station that are no longer shown so they cannot hold lane slots.
+    for (const [otherKey, otherTopic] of [...this.#searches]) {
+      if (otherTopic.station === address && otherKey !== key && !this.#core.views.searchShownNow(otherTopic)) {
+        this.#cancelSearch(address, otherKey);
+      }
+    }
+    const prev = this.#searchTimers.get(key);
+    if (prev) {
+      this.#searchTimers.delete(key);
+      this.#core.runner.interrupt(prev);
+    }
     const link = this.#links.get(address);
     // Asked again each time it is shown (what was found before shown meanwhile): what a station holds changes.
     const refused = link?.errors.get(key);
     if (!link || (refused && (refused.status ?? 500) < 500)) return;
-    this.#core.runner.fork(
-      Effect.sleep(SEARCH_SETTLE_MS).pipe(
+    if (refused) {
+      link.errors.delete(key);
+      this.onChange(address, "errors", key);
+    }
+    this.#searches.set(key, topic);
+    const fiber = this.#core.runner.fork(
+      Effect.sleep(SEARCH_SETTLE_MS).pipe( // timer: debounce search typing
         Effect.andThen(
           Effect.sync(() => {
+            if (this.#searchTimers.get(key) === fiber) this.#searchTimers.delete(key);
             if (this.#core.views.searchShownNow(topic)) this.#enqueue(address, `search/${key}`, Priority.shown, this.#search(topic, again));
+            else this.#searches.delete(key);
           }),
         ),
       ),
     );
+    this.#searchTimers.set(key, fiber);
   }
 
   #search(topic: Topic, again: boolean): Effect.Effect<void, CoreError> {
@@ -811,19 +850,26 @@ export class StationsSync {
       const address = topic.station as string;
       const key = topicKey(topic);
       const link = this.#links.get(address);
-      if (!link || !this.reachable(address) || !this.#core.views.searchShownNow(topic)) return;
+      if (!link || !this.reachable(address) || !this.#core.views.searchShownNow(topic)) {
+        this.#searches.delete(key);
+        return;
+      }
       const params = [`q=${encode(topic.q as string)}`];
       if (typeof topic.kind === "string") params.push(`kinds=${encode(topic.kind)}`);
       if (typeof topic.limit === "number") params.push(`limit=${topic.limit}`);
       if (topic.archived === true) params.push("archived=1");
       if (again) params.push("again=1");
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", `/search?${params.join("&")}`, null, { quiet: true }));
+      this.#searches.delete(key);
+      if (!this.#core.views.searchShownNow(topic)) return;
       if (answer._tag === "Success") {
         // (what a search found: asked again each time it is shown, not kept)
+        link.errors.delete(key);
         link.memory.hold(key, answer.success);
         this.onChange(address, "log", key);
-      } else if (answer.failure.status !== undefined) {
-        // Refused (a station from before search), or busy (its index starting: asked again as it is shown again).
+      } else {
+        // Refused (a station from before search), busy, or transient network/timeout failure:
+        // surface it so the view stops waiting; non-4xx errors are retried next time it is shown.
         link.errors.set(key, answer.failure);
         this.onChange(address, "errors", key);
       }
@@ -861,9 +907,11 @@ export class StationsSync {
 
   /// A search no longer shown: let go.
   searchHidden(topic: Topic): void {
-    const link = this.#links.get(topic.station as string);
-    if (!link) return;
+    const address = topic.station as string;
     const key = topicKey(topic);
+    this.#cancelSearch(address, key);
+    const link = this.#links.get(address);
+    if (!link) return;
     link.memory.delete(key);
     link.errors.delete(key);
   }
