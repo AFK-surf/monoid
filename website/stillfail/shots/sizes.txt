@@ -1,0 +1,12 @@
+chat-dark              2240x1400    2x= 124036B  1x=  47214B  fixture=chat-md
+chat-light             2240x1400    2x= 129576B  1x=  48436B  fixture=chat-md
+viz-dark               2240x1400    2x= 162072B  1x=  63146B  fixture=chat-view-side-mbui
+viz-light              2240x1400    2x= 169080B  1x=  64684B  fixture=chat-view-side-mbui
+station-dark           2240x1400    2x=  75220B  1x=  29844B  fixture=settings-station
+station-light          2240x1400    2x=  78156B  1x=  30616B  fixture=settings-station
+crop-terminal-dark     714x1240     2x=  84342B  1x=  35870B  fixture=chat-terminal-side:crop
+crop-terminal-light    714x1240     2x=  84658B  1x=  35964B  fixture=chat-terminal-side:crop
+crop-station-dark      714x1240     2x=  42010B  1x=  17162B  fixture=chat-station-side:crop
+crop-station-light     714x1240     2x=  44088B  1x=  17596B  fixture=chat-station-side:crop
+mobile-dark            1170x2160    2x=  72252B  1x=  18274B  fixture=webdemo
+mobile-light           1170x2160    2x=  73182B  1x=  18198B  fixture=webdemo
