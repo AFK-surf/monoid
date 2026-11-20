@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 2.76 | 3.73 | 15.17 | 37.24 | 57.51 | 32.58 | 66.33 | 98.44 | 126.44 |
 | [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 2.73 | 3.68 | 14.99 | 37.01 | 56.88 | 32.44 | 66.01 | 98.14 | 122.74 |
 | [c5d0a2f8c](https://github.com/AFK-surf/monoid/commit/c5d0a2f8c304a233012f7b2262f841b5b51a4cbf) fix(win,core): fall back to DPAPI when Windows Hel | 2.73 | 3.69 | 14.99 | 37.09 | 56.87 | 32.52 | 66.11 | 97.62 | 120.88 |
 | [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 2.73 | 3.69 | 14.99 | 37.09 | 56.87 | 32.52 | 66.11 | 97.62 | 120.88 |
-| [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.11 | 97.76 | 121.56 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.87 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.81 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [c5d0a2f8c](https://github.com/AFK-surf/monoid/commit/c5d0a2f8c304a233012f7b2262f841b5b51a4cbf) fix(win,core): fall back to DPAPI when Windows Hel | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
-| [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
