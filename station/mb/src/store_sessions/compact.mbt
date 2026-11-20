@@ -19,14 +19,6 @@ fn one_of(
   }
 }
 
-///|
-fn opt_num(d : Double?) -> Json {
-  match d {
-    Some(v) => Json::number(v)
-    None => Json::null()
-  }
-}
-
 // ── what the store reads of it ──
 
 ///|

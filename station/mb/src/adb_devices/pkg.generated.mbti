@@ -4,7 +4,6 @@ package "station/adb_devices"
 import {
   "mbui/effect",
   "moonbitlang/core/set",
-  "station/host",
   "station/jsjson",
   "station/session_chats",
   "station/sql",
@@ -68,8 +67,6 @@ pub let grace : Double
 pub async fn grant_chat_title(World, @jsjson.JValue) -> String?
 
 pub let grant_refused : String
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn has(@jsjson.JValue, String) -> Bool
 

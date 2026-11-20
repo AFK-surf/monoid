@@ -124,14 +124,6 @@ pub fn RetireAsks::get(self : RetireAsks, id : String) -> J? {
 }
 
 ///|
-fn RetireAsks::put(self : RetireAsks, a : J) -> Unit {
-  match self.index_of(text_at(a, "id")) {
-    Some(i) => self.asks[i] = a
-    None => ()
-  }
-}
-
-///|
 pub fn RetireAsks::confirm_label(self : RetireAsks, kind : String) -> String {
   self.w.tr("\{option_key(kind)}.confirm")
 }

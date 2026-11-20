@@ -2,7 +2,6 @@
 package "station/api_routes"
 
 import {
-  "station/host",
   "station/jsjson",
 }
 
@@ -42,8 +41,6 @@ pub fn feishu_entry(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 pub fn file_name(String) -> String?
 
 pub fn handed_ws(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn header_exact(Array[(String, String)], String) -> String?
 

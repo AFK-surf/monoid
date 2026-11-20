@@ -3,7 +3,6 @@ package "station/store_sessions"
 
 import {
   "moonbitlang/core/json",
-  "station/host",
   "station/sql",
 }
 
@@ -23,8 +22,6 @@ pub fn handed_stations(@sql.Db) -> Array[@json.Json] raise
 pub fn handed_with_usage(@sql.Db, @json.Json, @json.Json, Int32) -> Array[@json.Json] raise
 
 pub let handover_page : Int32
-
-pub async fn harness(@host.Host, String) -> Unit
 
 pub fn has_usage(@sql.Db, @json.Json) -> Bool raise
 
@@ -58,7 +55,7 @@ pub fn SessionPage::session(Self, String) -> @json.Json raise
 
 pub struct Store {
   db : @sql.Db
-  mut latest_note : Int64
+  latest_note : Int64
   // private fields
 }
 pub fn Store::add_job_notice(Self, @json.Json, @json.Json) -> Unit raise

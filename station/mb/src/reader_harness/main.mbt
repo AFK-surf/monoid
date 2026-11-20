@@ -4,8 +4,6 @@
 /// to every station: built only for the tests (station/mb/build.sh --harness, scripts/native.ts `reader-harness`).
 fn main {
   let code = match (flag("--builder"), flag("--db")) {
-    (Some("harness-store-schema"), Some(db)) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_schema.harness(host, db))
     (Some("harness-station-main"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @station_main.harness(host))
     (Some("harness-mcp-tools"), _) =>
@@ -14,16 +12,10 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_hub.harness(host))
     (Some("harness-vault-service"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_service.harness(host))
-    (Some("harness-replica-coord"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @replica_coord.harness(host))
     (Some("harness-connects-hub"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
-    (Some("harness-store-sessions"), Some(db)) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_sessions.harness(host, db))
     (Some("harness-accounts-oauth"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
-    (Some("harness-store-threads"), Some(db)) =>
-      @host.run(shell_dir=beside(db, "shell"), host => @store_threads.harness(host, db))
     (Some("harness-accounts-pool"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_pool.harness(host))
     (Some("harness-cloud-lock"), _) =>
@@ -42,14 +34,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @events.harness(host))
     (Some("harness-session-storage"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_storage.harness(host))
-    (Some("harness-adb-devices"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
     (Some("harness-mesh-runtime"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_runtime.harness(host))
-    (Some("harness-api-routes"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @api_routes.harness(host))
-    (Some("harness-jobs-host"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @jobs_host.harness(host))
     (Some("harness-ops-platform"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @ops_platform.harness(host))
     (Some("harness-vault-crypto"), _) =>
@@ -66,19 +52,6 @@ fn main {
     }
   }
   @host.exit(code)
-}
-
-///|
-/// `name` in the directory `path` is in (the database's: its shell beside it).
-fn beside(path : String, name : String) -> String {
-  let slash = path.rev_find("/").unwrap_or(-1)
-  let back = path.rev_find("\\").unwrap_or(-1)
-  let cut = if slash > back { slash } else { back }
-  if cut < 0 {
-    name
-  } else {
-    path.exact_view(end=cut + 1).to_owned() + name
-  }
 }
 
 ///|

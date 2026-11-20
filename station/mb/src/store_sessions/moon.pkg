@@ -1,5 +1,4 @@
 import {
-  "station/host",
   "station/wire",
   "station/sql",
   "station/jsjson",

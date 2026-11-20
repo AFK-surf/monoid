@@ -184,11 +184,6 @@ fn read_archive(host : @host.Host, path : String) -> Array[@jsjson.JValue] raise
 }
 
 ///|
-fn units(s : String) -> Array[Int] {
-  @jsjson.units(s)
-}
-
-///|
 /// What a JavaScript value reads as in a template (`${v}`), for an error's words.
 fn js_text(v : @jsjson.JValue?) -> String {
   @jsjson.jval_js_str(v)

@@ -17,8 +17,6 @@ pub let decision_time_index : String
 
 pub fn first_delivery(String) -> String
 
-pub async fn harness(@host.Host, String) -> Unit
-
 pub fn has_card_outbox(@sql.Db) -> Bool raise
 
 pub fn has_compact_usage(@sql.Db) -> Bool raise

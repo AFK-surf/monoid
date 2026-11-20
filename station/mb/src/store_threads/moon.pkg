@@ -1,6 +1,5 @@
 import {
   "base/codec",
-  "station/host",
   "station/wire",
   "station/sql",
   "station/legacy",

@@ -4,7 +4,7 @@
 
 ///|
 using @jsjson {
-  json_str as jstr, json_bool as jbool, json_num as jnum, json_opt_str as opt_str, json_field as field,
+  json_str as jstr, json_bool as jbool, json_num as jnum, json_field as field,
   jval_of_json as to_js, jval_to_json as of_js, json_strs as strings, json_int64 as jint,
 }
 
