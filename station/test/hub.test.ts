@@ -2649,6 +2649,7 @@ test("a session on OpenRouter moves to a newly added subscription on the next tu
   const r = new Rig({ clock: time.clock });
   const now = time.clock.currentTimeMillisUnsafe();
   r.edit((raw) => {
+    raw.connects[0].bind.model = "claude-opus-5-5";
     raw.profiles = [
       {
         id: "or",
@@ -2669,6 +2670,7 @@ test("a session on OpenRouter moves to a newly added subscription on the next tu
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
   assert.equal(r.session(key).profile, "or");
+  assert.equal(r.claude.last().options.model, "anthropic/claude-opus-5.5");
   const turn = async (text: string) => {
     await r.accept({ ...say(`<@UBOT> ${text}`), threadTs: m.threadTs });
     await settle();
@@ -2705,6 +2707,7 @@ test("a session on OpenRouter moves to a newly added subscription on the next tu
   assert.ok(onOpenRouter.disposed);
   assert.equal(r.session(key).profile, "cc-new");
   assert.equal(r.claude.last().options.profile.id, "cc-new");
+  assert.equal(r.claude.last().options.model, "claude-opus-5-5");
   await done();
   await r.close();
 });
