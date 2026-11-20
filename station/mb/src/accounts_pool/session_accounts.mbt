@@ -812,7 +812,11 @@ pub async fn SessionAccounts::run_on(
         self.can(cfg, p.id, row.model) &&
         (if paid(p) == paid(c) { crowded(c) && !crowded(p) } else { paid(p) })
       among = candidates.filter(better)
-      if among.length() == 0 || holding || !self.cheap_to_leave(key) {
+      // Leaving a billed-per-use profile for a paid subscription happens on the next turn without waiting for
+      // `cheap_to_leave`; moving off a crowded profile to an uncrowded one of the same tier still waits for
+      // `cheap_to_leave`.
+      let upgrading = !paid(c) && among.iter().any(paid)
+      if among.length() == 0 || holding || (!upgrading && !self.cheap_to_leave(key)) {
         return c
       }
     }

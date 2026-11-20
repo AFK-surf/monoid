@@ -232,3 +232,209 @@ test "cheap_to_leave and effort level intersection" {
   assert_eq(available_efforts("codex", Some("gpt-6-sol"), Some(catalog)), ["low", "medium", "high"])
   assert_eq(common_efforts([["low", "medium", "high"], ["medium", "high", "xhigh"]], "codex"), ["medium", "high"])
 }
+
+///|
+fn test_access_profile(id : String, models : Array[String], access : JV) -> Profile {
+  let raw = jobj([
+    ("id", js(id)),
+    ("name", js(id)),
+    ("runtime", js("claude")),
+    ("models", jarr(models.map(js))),
+    ("home", js("/homes/\{id}")),
+    ("access", access),
+  ])
+  {
+    raw,
+    id,
+    name: id,
+    runtime: "claude",
+    runtimes: ["claude"],
+    models,
+    named: models,
+    model: models.get(0),
+    home: "/homes/\{id}",
+    enabled: true,
+    machine: false,
+    background_on_message: false,
+    withheld: None,
+  }
+}
+
+///|
+test "SessionAccounts::run_on leaves billed-per-use immediately without cheap_to_leave, while crowded subscriptions still wait" {
+  let now = 1_800_000_000_000.0
+  let p_or = test_access_profile(
+    "or",
+    ["anthropic/claude-opus-5.5"],
+    jobj([("kind", js("api-provider")), ("provider", js("openrouter")), ("key", js("k"))]),
+  )
+  let p_sub1 = test_access_profile("sub1", ["claude-opus-5-5"], jobj([("kind", js("subscription"))]))
+  let p_sub2 = test_access_profile("sub2", ["claude-opus-5-5"], jobj([("kind", js("subscription"))]))
+  let mut cur_profile = "or"
+  let mut cur_pinned = false
+  let mut recently_compacted = false
+  let mut cur_profiles : Array[Profile] = [p_or, p_sub1]
+  let healths : Map[String, Health] = {
+    "or": { check: Some(jobj([("state", js("ok"))])), quota: None, account: None, spent: false },
+    "sub1": {
+      check: Some(jobj([("state", js("ok"))])),
+      quota: Some(
+        jobj([
+          ("state", js("ok")),
+          (
+            "windows",
+            jarr([
+              jobj([("usedPercent", jnum(10.0)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+              jobj([("usedPercent", jnum(20.0)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+            ]),
+          ),
+        ]),
+      ),
+      account: None,
+      spent: false,
+    },
+    "sub2": {
+      check: Some(jobj([("state", js("ok"))])),
+      quota: Some(
+        jobj([
+          ("state", js("ok")),
+          (
+            "windows",
+            jarr([
+              jobj([("usedPercent", jnum(10.0)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+              jobj([("usedPercent", jnum(20.0)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+            ]),
+          ),
+        ]),
+      ),
+      account: None,
+      spent: false,
+    },
+  }
+  let rt = @effect.Runtime::new()
+  let b = Backend::new(async fn(name, args) {
+    match name {
+      "store.getSession" =>
+        jobj([
+          ("key", js("s1")),
+          ("runtime", js("claude")),
+          ("profile", js(cur_profile)),
+          ("profilePinned", jbool(cur_pinned)),
+          ("model", js("claude-opus-5-5")),
+        ])
+      "store.setSessionProfile" => {
+        cur_profile = js_string(args.get(1))
+        Null
+      }
+      "store.recentlyCompacted" => jbool(recently_compacted)
+      "store.compactionsReady" => jbool(false)
+      "store.lastContexts" =>
+        jarr([
+          jobj([("turn", js("t1")), ("profile", js(cur_profile)), ("model", js("claude-opus-5-5")), ("context", jnum(60_000.0))]),
+          jobj([("turn", js("t1")), ("profile", js(cur_profile)), ("model", js("claude-opus-5-5")), ("context", jnum(90_000.0))]),
+        ])
+      "sessions.running" => jarr([])
+      _ => Null
+    }
+  })
+  let sa = SessionAccounts::new(
+    b,
+    Words::new(Obj([]), Obj([])),
+    "en",
+    async fn() {
+      { profiles: cur_profiles, connects: [], completion_enabled: false, completion_model: None }
+    },
+    () => now,
+    rt,
+    asks_allows=false,
+    tells_moved=false,
+  )
+  sa.set_health(id => healths.get(id).unwrap_or(Health::empty()))
+  // 1. On OpenRouter, holding=true stays on OpenRouter.
+  let held = accounts_ran(async fn() { sa.run_on("s1", holding=true) })
+  assert_eq(held.id, "or")
+  assert_eq(cur_profile, "or")
+  // 2. On OpenRouter, pinned=true stays on OpenRouter.
+  cur_pinned = true
+  let pinned = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  assert_eq(pinned.id, "or")
+  assert_eq(cur_profile, "or")
+  // 3. On OpenRouter, unpinned & not holding & NOT cheap_to_leave: moves to sub1 immediately.
+  cur_pinned = false
+  let moved = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  assert_eq(moved.id, "sub1")
+  assert_eq(cur_profile, "sub1")
+  // 4. Crowded paid subscription (sub1 5h=90%) with uncrowded sub2: stays on sub1 when cheap_to_leave is false.
+  cur_profiles = [p_or, p_sub1, p_sub2]
+  healths["sub1"] = {
+    check: Some(jobj([("state", js("ok"))])),
+    quota: Some(
+      jobj([
+        ("state", js("ok")),
+        (
+          "windows",
+          jarr([
+            jobj([("usedPercent", jnum(90.0)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+            jobj([("usedPercent", jnum(20.0)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+          ]),
+        ),
+      ]),
+    ),
+    account: None,
+    spent: false,
+  }
+  let stayed_crowded = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  assert_eq(stayed_crowded.id, "sub1")
+  assert_eq(cur_profile, "sub1")
+  // 5. Once cheap_to_leave is true, crowded subscription moves to sub2.
+  recently_compacted = true
+  let left_crowded = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  assert_eq(left_crowded.id, "sub2")
+  assert_eq(cur_profile, "sub2")
+  // 6. Crowded billed-per-use profile moving to another billed-per-use profile still waits for cheap_to_leave.
+  let p_or2 = test_access_profile(
+    "or2",
+    ["anthropic/claude-opus-5.5"],
+    jobj([("kind", js("api-provider")), ("provider", js("openrouter")), ("key", js("k2"))]),
+  )
+  cur_profiles = [p_or, p_or2]
+  cur_profile = "or"
+  recently_compacted = false
+  healths["or"] = {
+    check: Some(jobj([("state", js("ok"))])),
+    quota: Some(
+      jobj([
+        ("state", js("ok")),
+        (
+          "windows",
+          jarr([
+            jobj([("usedPercent", jnum(90.0)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+            jobj([("usedPercent", jnum(20.0)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+          ]),
+        ),
+      ]),
+    ),
+    account: None,
+    spent: false,
+  }
+  healths["or2"] = {
+    check: Some(jobj([("state", js("ok"))])),
+    quota: Some(
+      jobj([
+        ("state", js("ok")),
+        (
+          "windows",
+          jarr([
+            jobj([("usedPercent", jnum(10.0)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3_600_000.0))]),
+            jobj([("usedPercent", jnum(20.0)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + 5.0 * 86_400_000.0))]),
+          ]),
+        ),
+      ]),
+    ),
+    account: None,
+    spent: false,
+  }
+  let stayed_or = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  assert_eq(stayed_or.id, "or")
+  assert_eq(cur_profile, "or")
+}

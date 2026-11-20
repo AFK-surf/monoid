@@ -2580,7 +2580,7 @@ test("a session leaves an account whose five hours are nearly full for one with 
   await r.close();
 });
 
-test("a session runs on the subscription; its allowance used up, on the API key, and back on the subscription when it can run again and that loses little", async () => {
+test("a session runs on the subscription; its allowance used up, on the API key, and back on the subscription as soon as one can run again", async () => {
   const time = testClock();
   const r = new Rig({ clock: time.clock });
   const now = time.clock.currentTimeMillisUnsafe();
@@ -2618,19 +2618,93 @@ test("a session runs on the subscription; its allowance used up, on the API key,
   await turn("once more");
   assert.equal(r.session(key).profile, "key");
   await done();
-  // Refilled, its context neither just compacted nor about to be: it stays on the key for now.
+  // Refilled, context uncompacted, but process has background work (`holding`): it stays on the key until that ends.
   used.cc = 0;
   calls("key", [["t1", 60_000], ["t1", 90_000]]);
   const onKey = r.claude.last();
-  await turn("and again");
+  onKey.tasks = [{ id: "a1", kind: "agent", description: "build" }];
+  await turn("meanwhile");
   assert.equal(r.claude.last(), onKey);
   assert.equal(r.session(key).profile, "key");
   await done();
-  // Compacted: the next turn starts afresh on the subscription.
-  calls("key", [["t2", 120_000], ["t2", 20_000]]);
-  await turn("and on");
+  // Background work finished: the next turn moves back to the subscription at once without waiting for compaction.
+  onKey.tasks = [];
+  await turn("and again");
   assert.ok(onKey.disposed);
   assert.equal(r.session(key).profile, "cc");
+  await done();
+  // Kept on the billed-per-use profile by hand: it stays pinned even when a subscription is usable.
+  await configure(r.hub, key, { profile: "key" });
+  await turn("pinned on key");
+  assert.equal(r.session(key).profile, "key");
+  await done();
+  await turn("still pinned on key");
+  assert.equal(r.session(key).profile, "key");
+  await done();
+  await r.close();
+});
+
+test("a session on OpenRouter moves to a newly added subscription on the next turn without waiting for compaction", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  const now = time.clock.currentTimeMillisUnsafe();
+  r.edit((raw) => {
+    raw.profiles = [
+      {
+        id: "or",
+        runtime: "claude",
+        home: "homes/or",
+        access: { kind: "api-provider", provider: "openrouter", key: "k" },
+        models: ["anthropic/claude-opus-5.5"],
+      },
+    ];
+  });
+  r.hub.accounts.setHealth((id) =>
+    id === "or"
+      ? { quota: { state: "unsupported", windows: [], detail: "", checkedAt: now } }
+      : { quota: { state: "ok", windows: [{ label: "每周", usedPercent: 0, resetsAt: null }], detail: null, checkedAt: now } },
+  );
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.session(key).profile, "or");
+  const turn = async (text: string) => {
+    await r.accept({ ...say(`<@UBOT> ${text}`), threadTs: m.threadTs });
+    await settle();
+  };
+  const done = async () => {
+    await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+    r.claude.last().complete();
+    await settle();
+  };
+  let call = 0;
+  r.store.recordUsage(`/t/${key}`, { session: key, offset: call, model: "anthropic/claude-opus-5.5" }, "claude", [
+    [
+      { id: `c${call++}`, at: now + call, model: "anthropic/claude-opus-5.5", subagent: false, fast: false, input: 0, cacheRead: 60_000, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: 60_000, window: null },
+      { turn: "t1", person: null, thread: null, profile: "or" },
+    ],
+    [
+      { id: `c${call++}`, at: now + call, model: "anthropic/claude-opus-5.5", subagent: false, fast: false, input: 0, cacheRead: 90_000, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: 90_000, window: null },
+      { turn: "t1", person: null, thread: null, profile: "or" },
+    ],
+  ]);
+  await done();
+  const onOpenRouter = r.claude.last();
+  // Add a new subscription profile serving the same model: next turn moves off OpenRouter immediately.
+  r.edit((raw) => {
+    raw.profiles.push({
+      id: "cc-new",
+      runtime: "claude",
+      home: "homes/cc-new",
+      access: { kind: "subscription" },
+      models: ["claude-opus-5-5"],
+    });
+  });
+  await turn("next turn");
+  assert.ok(onOpenRouter.disposed);
+  assert.equal(r.session(key).profile, "cc-new");
+  assert.equal(r.claude.last().options.profile.id, "cc-new");
   await done();
   await r.close();
 });

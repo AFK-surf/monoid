@@ -1,8 +1,8 @@
 // The account pool: which of a station's profiles a session runs on. Only profiles with the
 // chosen model (one they run) qualify; of those, one whose check says it cannot sign in or was rejected, or whose allowance is
 // used up, is passed over. Accounts paid for already (subscriptions, memberships) go first: one billed per use (an API
-// key, a gateway) runs a session only when none of them can, and its sessions move back before a turn when one can again
-// and that loses little. Of the rest: one whose short window (5 hours) is nearly full goes last. The others share the
+// key, a gateway) runs a session only when none of them can, and its sessions move back before the next turn as soon as
+// one can again. Of the rest: one whose short window (5 hours) is nearly full goes last. The others share the
 // sessions by weight, each new one going where (sessions + 1) ÷ weight is least: the weight is how fast a profile has
 // to spend not to lose any of its long window (a week; left × window length ÷ time to refill), times what is left of
 // its short one. So what would be lost is spent first without all sessions crowding onto one account and running its

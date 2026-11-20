@@ -289,14 +289,15 @@ export class Accounts {
 
   /// The profile a session's runtime starts on, asked again before each turn: its own while usable (on another it goes
   /// on afresh, afresh.ts), else the one the pool picks among those of its runtime allowed in its workspace. One billed
-  /// per use it leaves for one paid for already that can run it, and one whose short window is nearly full for one paid
-  /// for alike that is not, when that loses little (pool.ts `cheapToLeave`): its context was just compacted, or is about
-  /// to be, and not while its process has work going in the background (`holding`: commands and subagents, which end
-  /// with it). Its own unable to run it and no other able either (every allowance used up), it stays where it is and
-  /// waits there (`refillsAt`); its own unable even to sign in, it moves once to one that signs in. A move is told
-  /// (`moved`, said in its chat) unless `quiet`: a change by hand says its own. `across` (before a turn): none of its
-  /// runtime's able to run it now, it goes on on another runtime's that runs its model and can, as `spend` moves it
-  /// when a turn ran into the allowance (`takeAcross`), rather than first running a turn into a limit it knows of.
+  /// per use it leaves before the next turn for one paid for already that can run it (without waiting for
+  /// `cheapToLeave`); one whose short window is nearly full it leaves for one paid for alike that is not only when that
+  /// loses little (pool.ts `cheapToLeave`: its context was just compacted, or is about to be). Neither moves while its
+  /// process has work going in the background (`holding`: commands and subagents, which end with it). Its own unable to
+  /// run it and no other able either (every allowance used up), it stays where it is and waits there (`refillsAt`); its
+  /// own unable even to sign in, it moves once to one that signs in. A move is told (`moved`, said in its chat) unless
+  /// `quiet`: a change by hand says its own. `across` (before a turn): none of its runtime's able to run it now, it
+  /// goes on on another runtime's that runs its model and can, as `spend` moves it when a turn ran into the allowance
+  /// (`takeAcross`), rather than first running a turn into a limit it knows of.
   runOn(key: string, holding = false, quiet = false, across = false): RunOn {
     const { store } = this.deps;
     const row = store.getSession(key);
@@ -335,14 +336,15 @@ export class Accounts {
     let among = candidates;
     if (current && keeps) {
       if (row.profilePinned) return withSpelling(current);
-      // It moves from one billed per use to one paid for already, and from one nearly full to one paid for alike that is
-      // not (the pool puts those last), never from one paid for already to one billed per use; only when that loses
-      // little.
+      // It moves from one billed per use to one paid for already on the next turn without waiting for `cheapToLeave`,
+      // and from a crowded paid-for account to an uncrowded one (the pool puts those last) only when that loses little
+      // (`cheapToLeave`); never from one paid for already to one billed per use.
       const paid = (p: Profile) => !billedPerUse(p);
       const better = (p: Profile) =>
         p.id !== current.id && fits(p) && this.can(p.id, row.model) && (paid(p) === paid(current) ? crowded(current) && !crowded(p) : paid(p));
       among = candidates.filter(better);
-      if (among.length === 0 || holding || !this.cheapToLeave(key)) return withSpelling(current);
+      const upgrading = !paid(current) && among.some(paid);
+      if (among.length === 0 || holding || (!upgrading && !this.cheapToLeave(key))) return withSpelling(current);
     } else {
       // It goes to those that can run it now; none can: to those that at least sign in (it waits for their refill).
       // When its own is as good as any, it stays. The pool, given none that can run, picks the one picked least
