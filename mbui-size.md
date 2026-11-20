@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.58 | 121.01 |
 | [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.32 | 119.75 |
 | [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.49 | 123.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
 | [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.63 | 117.42 |
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
-| [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.68 | 122.56 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f89e5cb97](https://github.com/AFK-surf/monoid/commit/f89e5cb979901a22ae0f0fc9ba251f5d0ded6a97) test(station): add official upstream test corpora  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
 | [3e334ca29](https://github.com/AFK-surf/monoid/commit/3e334ca29bf1452000486d902a0fa1bbabb80897) feat(station): add native Linux screen capture, Op | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
 | [8eb89195b](https://github.com/AFK-surf/monoid/commit/8eb89195bd4afab72ee1239a6d2bd9764d634e93) feat(screens): decouple ACK viewer_wait_us in pace | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.4 |
 | [6b8e17acf](https://github.com/AFK-surf/monoid/commit/6b8e17acf28b5c731a1feea181e4a36f8492f9fe) fix(mbui): keep zoomed flights round and native ho | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5fb64b3fb](https://github.com/AFK-surf/monoid/commit/5fb64b3fbbd4f4167795c17bcdc307e138a213df) fix(mbui): prevent blank foot_room and stale place | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [0d3abc0b9](https://github.com/AFK-surf/monoid/commit/0d3abc0b93865341cbee4601628a4f265ee7f4fb) refactor(station): share the runtimes' live wire h | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
 | [4d9824f0f](https://github.com/AFK-surf/monoid/commit/4d9824f0f0bf463196c1661a0b8ae9411516f23f) feat(mbui): scroll-to-bottom key in a file tab's t | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.26 |
-| [a0f3ba38f](https://github.com/AFK-surf/monoid/commit/a0f3ba38f84d2cd799e728c69abf22ead9ecc841) refactor(station): share the builders' SQLite help | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
