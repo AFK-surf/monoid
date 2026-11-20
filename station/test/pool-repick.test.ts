@@ -82,7 +82,6 @@ test("repick and runOn move off a quota-unavailable subscription to healthy subs
     });
     const now = time.clock.currentTimeMillisUnsafe();
     const hour = 60 * 60 * 1000;
-    const week = 7 * 24 * hour;
     const okQuota = (five: number, seven: number) => ({
       state: "ok",
       checkedAt: now,
