@@ -913,8 +913,8 @@ fn chat_outline_node(
 }
 
 ///|
-/// What 对话目录's rail of chat `r` (its view `view`) shows: each day's count of what people said and their seqs, oldest
-/// first (the core's chatOutline, subscribed only while it may show), while the outline may be asked for (Source's
+/// What 对话目录's rail of chat `r` (its view `view`) shows: each day's count of what people said, their seqs and each
+/// day's heading as the core says it (今天, 11月19日), oldest first (the core's chatOutline, subscribed only while it may show), while the outline may be asked for (Source's
 /// `asks_outline`), the chat is made, the list `width` wide leaves the rail room at its right (rail_fits) and people
 /// said three things or more (rail_least); none otherwise. `outline`: the chat's outline, read only then.
 fn chat_rail_said(
@@ -922,18 +922,33 @@ fn chat_rail_said(
   outline : @signals.Computed[@sfbase.TopicState],
   view : () -> ChatView,
   width : () -> Double,
-) -> (Array[Int], Array[Double])? {
+) -> (Array[Int], Array[Double], Array[String])? {
   guard (src.asks_outline)() && rail_fits(width()) && view().thread is Some(_) else { return None }
   let value = outline.get().value
   let said = outline_seqs(value)
   guard said.length() >= rail_least else { return None }
-  Some((items(value, "days").map(fn(d) { items(Some(d), "seqs").length() }), said))
+  let days = items(value, "days")
+  Some(
+    (
+      days.map(fn(d) { items(Some(d), "seqs").length() }),
+      said,
+      days.map(fn(d) {
+        let day = text(Some(d), "day")
+        if day != "" {
+          day
+        } else {
+          text(Some(d), "date")
+        }
+      }),
+    ),
+  )
 }
 
 ///|
 /// A tick of the rail as its row draws it (rail_ticks' RailTick, laid out one under another): its place, the message it
 /// stands for (its place among what people said), how long its turn is, whether it is the reader's, whether a day starts
-/// at it after another (a day's gap over it).
+/// at it after another (a day's gap over it, a dot in its middle) and that day's heading (`name`: said by a tip as the
+/// pointer is in that gap; "" where no day starts at it).
 #derive(Eq)
 priv struct ChatRailTick {
   i : Int
@@ -941,20 +956,38 @@ priv struct ChatRailTick {
   turn : Int
   reader : Bool
   day : Bool
+  name : String
 }
 
 ///|
 /// The rail's ticks in a row, one after another, for what `said` says (chat_rail_said's), the reader at `reader`
 /// (ChatJump's: the message at the top of what shows, whether at the end), the chat's newest message `latest`, in
 /// `most` tall.
-fn chat_rail_ticks(said : (Array[Int], Array[Double]), reader : (Double, Bool), latest : Double, most : Double) -> Array[ChatRailTick] {
-  let (days, seqs) = said
+fn chat_rail_ticks(
+  said : (Array[Int], Array[Double], Array[String]),
+  reader : (Double, Bool),
+  latest : Double,
+  most : Double,
+) -> Array[ChatRailTick] {
+  let (days, seqs, names) = said
+  // (the headings of the days anyone said anything on, as rail_ticks' groups are those days)
+  let names = {
+    let out : Array[String] = []
+    for i, k in days {
+      if k > 0 {
+        out.push(names.get(i).unwrap_or(""))
+      }
+    }
+    out
+  }
   let current = outline_current(seqs, reader.0, reader.1)
   let at = seqs.search(current).unwrap_or(seqs.length() - 1)
   let out : Array[ChatRailTick] = []
   for g, group in rail_ticks(days, at, rail_turns(seqs, latest), most) {
     for j, t in group {
-      out.push({ i: out.length(), at: t.at, turn: t.turn, reader: t.reader, day: g > 0 && j == 0 })
+      let day = g > 0 && j == 0
+      let name = if day { names.get(g).unwrap_or("") } else { "" }
+      out.push({ i: out.length(), at: t.at, turn: t.turn, reader: t.reader, day, name })
     }
   }
   out
@@ -983,6 +1016,28 @@ fn chat_rail_tick_index_at(ticks : Array[ChatRailTick], y : Double) -> Int {
     top = top + room
   }
   best
+}
+
+///|
+/// Index (`t.i`) of the first tick of the day whose gap (tick_day_gap over that tick) holds vertical coordinate `y`
+/// within `chat_rail_press`, laid out as chat_rail_tick_index_at has it; -1 where `y` is on no day's gap.
+fn chat_rail_day_at(ticks : Array[ChatRailTick], y : Double) -> Int {
+  guard !ticks.is_empty() else { return -1 }
+  let room = tick_thick + tick_gap.px()
+  let tall = ticks.fold(init=0.0, fn(a, t) { a + room + (if t.day { tick_day_gap.px() } else { 0.0 }) })
+  let rail_h = dmax(rail_press_w, tall + 2.0 * rail_pad.px())
+  let mut top = dmax(rail_pad.px(), (rail_h - tall) / 2.0)
+  for t in ticks {
+    if t.day {
+      // (the gap and half a tick_gap either side of it: the rooms of the ticks over and under it keep the rest)
+      if y >= top - tick_gap.px() / 2.0 && y < top + tick_day_gap.px() + tick_gap.px() / 2.0 {
+        return t.i
+      }
+      top = top + tick_day_gap.px()
+    }
+    top = top + room
+  }
+  -1
 }
 
 ///|
@@ -1057,7 +1112,7 @@ fn chat_rail_node(
     },
     same=fn(a, b) {
       match (a, b) {
-        (Some((d1, s1)), Some((d2, s2))) => d1 == d2 && s1 == s2
+        (Some((d1, s1, n1)), Some((d2, s2, n2))) => d1 == d2 && s1 == s2 && n1 == n2
         (None, None) => true
         _ => false
       }
@@ -1102,7 +1157,7 @@ fn chat_rail_node(
         }
       }, same=fn(a, b) { a == b })
       let go = fn(t : ChatRailTick) {
-        guard @signals.untracked(fn() { said.get() }) is Some((_, seqs)) && seqs.get(t.at) is Some(seq) else { return }
+        guard @signals.untracked(fn() { said.get() }) is Some((_, seqs, _)) && seqs.get(t.at) is Some(seq) else { return }
         @sfbase.go_to(r, seq)
       }
       // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)
@@ -1110,14 +1165,26 @@ fn chat_rail_node(
       @sf.action_box_node(o, fn() { @sf.t("web-main.outline.title") }, fn(press) {
         (hover_close.val)()
         let cv = @signals.untracked(view)
-        guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
+        guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs, _)) else { return }
         let (seq, at_end) = jump.reader.untracked()
         let current = outline_current(seqs, seq, at_end)
         open_outline(src, r, th, current, from=Node(press), side=Left, along=Middle, stint=@signals.untracked(stint))
       }, fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
+        // (the heading of the day whose gap the pointer is in: said by a tip, no tick lit nor the outline opened there)
+        let pointed_day = fn() -> String {
+          if press.pointed_in() {
+            let i = press.pointer_piece(fn(_px, py) { chat_rail_day_at(ticks.get(), py) })
+            match ticks.get().get(i) {
+              Some(t) if i >= 0 => t.name
+              _ => ""
+            }
+          } else {
+            ""
+          }
+        }
         let hovered_idx = fn() -> Int? {
-          if @sf.pointer_rests() && press.pointed_in() {
+          if @sf.pointer_rests() && press.pointed_in() && pointed_day() == "" {
             let i = press.pointer_piece(fn(_px, py) { chat_rail_tick_index_at(ticks.get(), py) })
             if i >= 0 { Some(i) } else { None }
           } else {
@@ -1129,7 +1196,7 @@ fn chat_rail_node(
           match hovered_idx() {
             Some(i) =>
               match (ticks.get().get(i), said.get()) {
-                (Some(tk), Some((_, seqs))) => seqs.get(tk.at).unwrap_or(-1.0)
+                (Some(tk), Some((_, seqs, _))) => seqs.get(tk.at).unwrap_or(-1.0)
                 _ => -1.0
               }
             None => -1.0
@@ -1143,7 +1210,7 @@ fn chat_rail_node(
           @sf.t("web-main.outline.title"),
           fn(col, close) {
             let cv = @signals.untracked(view)
-            guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
+            guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs, _)) else { return }
             let (seq, at_end) = jump.reader.untracked()
             let current = outline_current(seqs, seq, at_end)
             open_outline_hover_body(
@@ -1171,9 +1238,10 @@ fn chat_rail_node(
             panel_held_ver.get() |> ignore
             (panel_held.val)()
           },
-          pointed=fn() { press.pointed_in() },
+          pointed=fn() { press.pointed_in() && pointed_day() == "" },
         )
         hover_close.val = hand.close
+        @sf.tip_node(tips, press, pointed_day, side=Left, at_pointer=true, within=true) |> ignore
         let closer_id = rail_hover_register(hand.close)
         press
         // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
@@ -1220,9 +1288,14 @@ fn chat_rail_node(
           fn(t) { (t.i, t.day) },
           fn(row, t) {
             let idx = t.untracked().i
-            // (a day's gap over the first of a day after another)
+            // (a day's gap over the first of a day after another, a dot in its middle saying a day starts there)
             if t.untracked().day {
-              row.box(fn(g) { g.height(Is(Some(tick_day_gap.px()))) |> ignore }) |> ignore
+              row.box(fn(g) {
+                @sf.style_node(g, fn() { rail_day_gap })
+                g.height(Is(Some(tick_day_gap.px()))) |> ignore
+                g.box(fn(dot) { @sf.style_node(dot, fn() { rail_day_dot }) }) |> ignore
+              })
+              |> ignore
             }
             row.box(fn(room) {
               @sf.style_node(room, fn() { tick_room })
@@ -1267,6 +1340,16 @@ fn chat_rail_node(
   })
   |> ignore
 }
+
+///|
+/// A day's gap on the rail: across the press, what it holds in its middle at its right.
+// kept across runs: a value (no field of it changes)
+let rail_day_gap : @ui.Style = @ui.css("w=Full align=AEnd justify=JCenter")
+
+///|
+/// The dot in a day's gap: S1 round, in the muted ink, so a day starting reads as one and not as ticks gone missing.
+// kept across runs: a value (no field of it changes)
+let rail_day_dot : @ui.Style = @ui.css("w=S1 h=S1 radius=Full bg=Muted")
 
 ///|
 /// The rail's press (rail_press's): 44 wide and 44 tall at least, its ticks one under another in its middle at its
