@@ -71,6 +71,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       page_key=fn(_) { tape_island_key() },
       // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
       keeps_left=@sfbase.chat_page_left_key,
+      transition=@ui.NavTransition::layered(),
     )
     |> ignore
   })
