@@ -3,7 +3,7 @@
 // out or its chat is archived. Only in memory: nothing here is written to disk or logged, and a handover carries it to
 // the next process (`carried`, `carry`). Whether a grant may be taken is decided here, from the grant itself: who
 // signed it (a member of the vault, by a device in the lock), that it answers the request as asked, and that it stays
-// within what the item allows. The same answers and words as keeper.ts (station/test/mb-vault-crypto.test.ts).
+// within what the item allows. The same answers and words as keeper.ts.
 
 ///|
 /// The longest a grant may last by its scope (seconds), with a minute's slack for the clocks of phone and station.
@@ -17,9 +17,6 @@ fn lasts_of(scope : String) -> Double? {
 
 ///|
 let slack : Double = 60.0
-
-///|
-let max_safe : Double = 9007199254740991.0
 
 ///|
 /// A grant held: the request as granted, the grant, its secret opened (`{kind, name, fields}`), how often it was used

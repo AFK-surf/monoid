@@ -10,20 +10,10 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mcp_tools.harness(host))
     (Some("harness-session-hub"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_hub.harness(host))
-    (Some("harness-vault-service"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_service.harness(host))
     (Some("harness-connects-hub"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
-    (Some("harness-accounts-oauth"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
-    (Some("harness-accounts-pool"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_pool.harness(host))
-    (Some("harness-cloud-lock"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_lock.harness(host))
     (Some("harness-agent-drivers"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_drivers.harness(host))
-    (Some("harness-cloud-net"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_net.harness(host))
     (Some("harness-agent-runtimes"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_runtimes.harness(host))
     (Some("harness-mesh-door"), _) =>
@@ -38,8 +28,6 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_runtime.harness(host))
     (Some("harness-ops-platform"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @ops_platform.harness(host))
-    (Some("harness-vault-crypto"), _) =>
-      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_crypto.harness(host))
     (Some("harness-stdlib"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_stdlib(host))
     (Some("harness-upstream"), _) =>

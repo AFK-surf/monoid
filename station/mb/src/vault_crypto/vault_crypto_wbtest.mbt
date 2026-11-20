@@ -1,7 +1,6 @@
 // What is worked out here without the shell: the codecs as Node's, the rules of a scope, hosts and values, the plain
 // library's checks, a schema read as schema-install.ts reads it, and the keeper's grants held, used, renewed, run out
-// and handed over on a clock of the test's. (What needs the shell, the seal and the signatures, the station's
-// test/mb-vault-crypto.test.ts holds to the TypeScript through the program.)
+// and handed over on a clock of the test's.
 
 ///|
 test "hex, base64 and JSON as Node writes and reads them" {

@@ -5,7 +5,6 @@ import {
   "station/host",
   "station/host_world",
   "station/jsjson",
-  "station/jscase",
   "mbui/effect",
   "mbui/text",
   "moonbitlang/core/json",

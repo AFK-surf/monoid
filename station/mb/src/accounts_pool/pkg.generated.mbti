@@ -5,7 +5,6 @@ import {
   "mbui/effect",
   "moonbitlang/core/ref",
   "station/agent_runtimes",
-  "station/host",
   "station/jsjson",
 }
 
@@ -145,8 +144,6 @@ pub fn grant_kind(@jsjson.JValue?) -> String
 pub fn grok_quota_of(Ctx, @jsjson.JValue?, String) -> @jsjson.JValue
 
 pub fn group_of(String) -> String
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn headers_jv(Array[(String, String)]) -> @jsjson.JValue
 

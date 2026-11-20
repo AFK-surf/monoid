@@ -38,8 +38,6 @@ pub fn file_ok(@json.Json) -> String?
 
 pub fn grant_context(String, String) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn hex(BytesView) -> String
 
 pub fn hex_of_length(String, Int32) -> Bool

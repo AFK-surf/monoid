@@ -14,11 +14,8 @@ import {
   "station/wire",
   "station/jsjson",
   "station/nodepath",
-  "station/accounts_oauth",
-  "station/accounts_pool",
   "station/agent_drivers",
   "station/agent_runtimes",
-  "station/cloud_lock",
   "station/cloud_net",
   "station/connects_hub",
   "station/events",
@@ -30,8 +27,6 @@ import {
   "station/session_hub",
   "station/session_storage",
   "station/station_main",
-  "station/vault_crypto",
-  "station/vault_service",
 }
 
 pkgtype(kind: "executable")

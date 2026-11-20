@@ -72,8 +72,6 @@ pub fn genesis(Crypto, @json.Json) -> @lock.LockState raise Failure
 
 pub fn gives_device(Cloud, String?, Viewer) -> Bool
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn hash_of(@json.Json) -> String
 
 pub fn hashable(Array[@json.Json]) -> Unit raise Failure

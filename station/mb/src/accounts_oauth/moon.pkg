@@ -9,8 +9,6 @@ import {
   "station/jscase",
   "station/nodepath",
   "station/cloud_net",
-  "station/api_routes",
   "mbui/effect",
-  "moonbitlang/core/json",
   "moonbitlang/core/encoding/utf8",
 }

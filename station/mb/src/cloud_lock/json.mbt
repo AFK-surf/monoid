@@ -6,7 +6,7 @@ pub using @jsjson {json_stringify as stringify, json_stringify_pretty as stringi
 
 ///|
 using @jsjson {
-  jval_of_json as jvalue_of, json_at as field, json_field as get, json_str_field as text_at,
+  json_at as field, json_field as get, json_str_field as text_at,
   json_num_field as num_at, json_arr_field as array_at, json_str as jstr, json_num as jnum, json_obj as jobj,
   json_arr as jarr, json_strs as jstrs, json_opt_str as opt_str_json, is_safe_integer as safe_int,
 }

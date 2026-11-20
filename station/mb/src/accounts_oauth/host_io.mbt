@@ -14,11 +14,6 @@ fn enoent(path : String, what : String) -> Error {
 }
 
 ///|
-async fn sh(host : @host.Host, op : String, args : Json) -> Json {
-  host.shell(op, args).0
-}
-
-///|
 /// The record of what these parts ask, on `host`: its clock, its runtime's timers, the shell's network and files.
 pub fn host_io(host : @host.Host) -> Io {
   {

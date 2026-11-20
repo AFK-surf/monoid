@@ -27,18 +27,6 @@ fn base_state(peers : Array[String]) -> Json {
 }
 
 ///|
-fn ok_of(j : Json) -> Json raise {
-  match j {
-    Object(m) =>
-      match m.get("ok") {
-        Some(v) => v
-        None => fail("not ok: \{j.stringify()}")
-      }
-    _ => fail("not an object")
-  }
-}
-
-///|
 fn times_asked(trace : Json, asked : String) -> Array[Int64] {
   array_of(Some(trace))
   .unwrap_or([])
@@ -70,7 +58,7 @@ test "a peer that is down is tried again sooner at first, doubling, and brought 
     "events": [],
     "until": 200_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let gets = times_asked(field(out, "trace").unwrap(), "ways.get")
   // (asked at 0; failed at 10: again at 5 010, 15 020, 35 030 (down still), 75 040: answered)
   assert_eq(gets, [0L, 5010L, 15020L, 35030L, 75040L])
@@ -95,7 +83,7 @@ test "the waits double up to ten minutes" {
     "events": [{ "at": 1, "do": "mark", "name": "here" }],
     "until": 3_000_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let gets = times_asked(field(out, "trace").unwrap(), "stationMarks.get")
   let gaps = []
   for i in 1..<gets.length() {
@@ -120,7 +108,7 @@ test "a station from before is left be until this station's record changes again
     "events": [{ "at": 1000, "do": "add", "ws": "w1", "url": "https://own.example" }],
     "until": 100_000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   assert_eq(times_asked(field(out, "trace").unwrap(), "ways.get"), [0L, 1000L])
 }
 
@@ -135,7 +123,7 @@ test "no roster current, nothing is asked; a rig asks no marks" {
     "events": [{ "at": 10, "do": "roster", "peersCurrent": true }],
     "until": 1000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   assert_eq(times_asked(field(out, "trace").unwrap(), "ways.get"), [10L])
   let rig_state = object_copy(base_state([peer_b]))
   rig_state["rig"] = pending_self
@@ -147,7 +135,7 @@ test "no roster current, nothing is asked; a rig asks no marks" {
     "events": [],
     "until": 1000,
   }
-  let out2 = ok_of(harness_case(c2))
+  let out2 = follow_case(c2)
   assert_eq(times_asked(field(out2, "trace").unwrap(), "stationMarks.get"), [])
 }
 
@@ -173,7 +161,7 @@ test "the newer mark is kept by both, the older not given back" {
     "events": [],
     "until": 1000,
   }
-  let out = ok_of(harness_case(c))
+  let out = follow_case(c)
   let of = field(field(field(out, "mine").unwrap(), "w1").unwrap(), "of").unwrap()
   assert_eq(text_of(field(field(of, peer_b).unwrap(), "name")), Some("peer"))
   assert_eq(text_of(field(field(of, me_id).unwrap(), "name")), Some("mine"))

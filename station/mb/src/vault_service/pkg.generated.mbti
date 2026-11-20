@@ -6,7 +6,6 @@ import {
   "moonbitlang/core/debug",
   "moonbitlang/core/json",
   "moonbitlang/core/ref",
-  "station/host",
   "station/sql",
   "station/vault_crypto",
   "stillfail/rules/vault",
@@ -30,8 +29,6 @@ pub let carried_save_pending : String
 pub fn forget_signin_save(@vault_crypto.Db, String, String, status? : String) -> Unit raise
 
 pub fn forms_of(String) -> Array[Bytes]
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn has_invalid_vault_members(@vault_crypto.Db, String) -> Bool raise
 

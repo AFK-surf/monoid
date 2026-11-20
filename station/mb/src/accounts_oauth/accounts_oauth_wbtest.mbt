@@ -1,7 +1,6 @@
-// What station/test/mb-accounts-oauth.test.ts cannot hold the TypeScript to on a machine of its own: a lock held by
-// another (the TypeScript's wait is on the machine's clock), a renewal outlasting a lend's bound, the keychain, the
-// Antigravity CLI's and Devin's terminals, Kimi's and Cursor's grants (their own parts'), commands not there. Each on a
-// world of its own (harness.mbt `World`), its clock moved by the test; the words are their keys here.
+// Native whitebox tests for accounts_oauth: lock contention and stale-lock takeover, renewal outlasting a lend's bound,
+// keychain storage, Antigravity CLI and Devin terminals, Kimi and Cursor grants, missing/hanging commands, and model
+// catalog refresh. Each runs on an in-memory World (world_wbtest.mbt) with a fake clock; words are their keys here.
 
 ///|
 let t0 : Double = 1800000000000.0

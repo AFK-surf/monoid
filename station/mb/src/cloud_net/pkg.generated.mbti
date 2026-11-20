@@ -59,10 +59,6 @@ pub let gather_ms : Int32
 
 pub fn goes_through(String?, Array[String]?) -> Bool
 
-pub async fn harness(@host.Host) -> Unit
-
-pub fn harness_case(@json.Json) -> @json.Json
-
 pub fn host_dial_io(@host.Host, origin? : String) -> DialIO
 
 pub fn host_http(@host.Host) -> Http
@@ -156,8 +152,6 @@ pub fn signed_headers(Array[String], String, Int64, (String) -> String, extra? :
 pub async fn signed_post(CloudView, (String) -> String, Int64, String, String, @json.Json, String, async (HttpRequest) -> HttpResponse) -> @json.Json?
 
 pub fn spec_of(Provider) -> ProviderSpec
-
-pub fn state_json(Map[String, @json.Json]) -> @json.Json
 
 pub fn station_addr(Ways, String, workspace? : String) -> StationAddr
 
