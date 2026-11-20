@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [853a27a04](https://github.com/AFK-surf/monoid/commit/853a27a043803c86acdff794affe3ec93840abff) perf(mbui): raise glass blur cache to 32 slots wit | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
 | [5b050d6fc](https://github.com/AFK-surf/monoid/commit/5b050d6fc21e5ddbe2d9119f5c5f4f14037d8e42) feat(comma): report quantized owner activity times | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
 | [b7304a23f](https://github.com/AFK-surf/monoid/commit/b7304a23f06f6a3388e43bed53dec9b59fbcb60d) fix(mbui): lazily settle moves_for under transitio | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.7 | 66.65 | 98.09 | 122.24 |
 | [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.7 | 66.65 | 98.09 | 122.24 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 | [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 97.96 | 116.44 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.16 | 121.82 |
-| [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.34 | 119.04 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [853a27a04](https://github.com/AFK-surf/monoid/commit/853a27a043803c86acdff794affe3ec93840abff) perf(mbui): raise glass blur cache to 32 slots wit | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 53.95 |
 | [5b050d6fc](https://github.com/AFK-surf/monoid/commit/5b050d6fc21e5ddbe2d9119f5c5f4f14037d8e42) feat(comma): report quantized owner activity times | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54 |
 | [b7304a23f](https://github.com/AFK-surf/monoid/commit/b7304a23f06f6a3388e43bed53dec9b59fbcb60d) fix(mbui): lazily settle moves_for under transitio | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54 |
 | [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2d3ee743e](https://github.com/AFK-surf/monoid/commit/2d3ee743e38777838fe0ff0dcec868d6ed68e1c8) fix(station): end the usage programs and live loca | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
 | [bdfa0f80a](https://github.com/AFK-surf/monoid/commit/bdfa0f80a4e691ba3ed1cbfb717411a3636b11ca) fix(mbui): free host VRAM when glass goes idle and | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.2 |
 | [e40450bb4](https://github.com/AFK-surf/monoid/commit/e40450bb4b0b0cbf5d85a56077c36b75ecb78b6a) fix(mbui): let go of what images, GIF frames, dead | 0.46 | 0.61 | 2.34 | 3.4 | 5.54 | 1.7 | 4.58 | 54.08 |
-| [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
