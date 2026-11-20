@@ -599,8 +599,8 @@ fn Tree::beside_widened(self : Tree, at : Int, w : Double) -> Unit {
 fn Tree::besides_widened_now(self : Tree) -> Unit {
   for at in self.besides_at {
     let n = self.nodes[at]
-    guard n.live && n.beside is Some(b) && b.width == Anchor && n.parent >= 0 else { continue }
-    guard self.alive_id(b.anchor) && !self.leaving_at(at) && !self.out_at(b.anchor.at) && !self.leaving_at(b.anchor.at) else {
+    guard n.live && n.beside is Some(b) && b.width == Anchor && n.parent >= 0 && self.held_from_root(at) else { continue }
+    guard self.alive_id(b.anchor) && self.held_from_root(b.anchor.at) && !self.leaving_at(at) && !self.out_at(b.anchor.at) && !self.leaving_at(b.anchor.at) else {
       continue
     }
     let w = self.nodes[b.anchor.at].flex.width

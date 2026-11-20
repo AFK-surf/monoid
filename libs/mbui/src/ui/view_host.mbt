@@ -6360,12 +6360,19 @@ fn nav_focus_give_back(c : Ctx, kept : Int) -> Unit {
 ///|
 fn nav_focus_due_told() -> Unit {
   guard nav_focus_due.val is Some((nid, visible)) else { return }
-  nav_focus_due.val = None
-  guard view_app.val is Some(t) else { return }
-  let c = g()
-  if c.focus != 0 || !t.holds(t.root().id(), nid) {
+  guard view_app.val is Some(t) else {
+    nav_focus_due.val = None
     return
   }
+  let c = g()
+  if c.focus != 0 || !t.holds(nid, nid) {
+    nav_focus_due.val = None
+    return
+  }
+  if !t.holds(t.root().id(), nid) {
+    return
+  }
+  nav_focus_due.val = None
   if t.can_focus(nid) {
     c.focus_moved(tree_said_id(nid), visible~)
   } else if t.laid_out_nowhere(nid) && t.allows(nid) && t.in_use(nid) {

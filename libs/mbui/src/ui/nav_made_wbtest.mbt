@@ -550,3 +550,111 @@ test "window tree: a made page with a focused tree field covered by another page
   t.draw()
   assert_eq(f.text(), "abc", msg="typing after back_gesture")
 }
+
+///|
+test "window tree: covered made page parks at rest, keeps layout cache on pop, and restores focus" {
+  let nav = Nav::new("m_home")
+  let count = @signals.signal(0)
+  let runs = Ref(0)
+  let home_counter_id : Ref[@view.NodeId?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      bg=fn() { 0xFFFFFFFFL },
+      made=fn(p) {
+        if p == "m_home" {
+          Some(
+            (
+              "m_home",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(btn) {
+                  btn
+                  .width(Is(Some(100.0)))
+                  .height(Is(Some(40.0)))
+                  .presses(Is(true))
+                  .focusable(Is(true))
+                  .says(Is(Some(@view.said(Button, label="首页按钮"))))
+                  .on_press(fn() {  })
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(counter) {
+                  home_counter_id.val = Some(counter.id())
+                  counter
+                  .height(Is(Some(24.0)))
+                  .words(
+                    By(fn() {
+                      runs.val += 1
+                      "count=\{count.get()}"
+                    }),
+                    look={ ..@view.words_plain, size: 12.0 },
+                  )
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(list) {
+                  for i in 0..<50 {
+                    list.box(fn(row) {
+                      row.height(Is(Some(12.0))).words(Is("row \{i}"), look={ ..@view.words_plain, size: 10.0 }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else if p == "m_top" {
+          Some(
+            (
+              "m_top",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) { h.height(Is(Some(40.0))).words(Is("top"), look={ ..@view.words_plain, size: 12.0 }) |> ignore })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          None
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  t.key(key_tab)
+  t.draw()
+  assert_eq(focus_named(t), "Button 首页按钮")
+  assert_true(t.find("count=0") is Some(_))
+  // Push top page over m_home and finish slide animation.
+  pushed(t, nav, "m_top")
+  assert_eq(focus_named(t), "none")
+  // Covered parked page's resting watches (e.g. pv.shift reading clock) must not keep Tree::clock_read() alive,
+  // and parked nodes must not be reported as drawn by Tree::drawn_of.
+  assert_false(view_tree().unwrap().clock_read(), msg="clock_read should be false while covered page is parked at rest")
+  match home_counter_id.val {
+    Some(id) => assert_true(view_tree().unwrap().drawn_of(id, drawn=true) is None, msg="parked node must not appear in drawn_of")
+    None => fail("home_counter_id missing")
+  }
+  t.assert_idle()
+  // While covered, m_home is parked at rest: background signal updates trigger 0 times.
+  let runs_while_covered = runs.val
+  count.set(1)
+  t.draw()
+  count.set(2)
+  t.draw()
+  assert_eq(runs.val, runs_while_covered, msg="covered made page should be at rest")
+  // Pop back to m_home: layout cache is preserved (far fewer than 50 laid nodes),
+  // updated signal value is shown, and focus returns to the button.
+  let laid_before = view_tree().unwrap().work().laid
+  popped(t, nav)
+  let laid_delta = view_tree().unwrap().work().laid - laid_before
+  assert_true(laid_delta <= 15, msg="expected parked layout cache reuse, got laid_delta=\{laid_delta}")
+  assert_true(t.find("count=2") is Some(_), msg="woken page should reflect updated signal")
+  assert_eq(focus_named(t), "Button 首页按钮")
+  t.assert_idle()
+}

@@ -53,7 +53,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
   let ats = self.lists_asked.keys().to_array()
   ats.sort()
   ats.filter_map(fn(at) {
-    guard self.nodes[at].live && self.lists_asked.get(at) is Some(a) else { return None }
+    guard self.nodes[at].live && self.held_from_root(at) && self.lists_asked.get(at) is Some(a) else { return None }
     let list : NodeId = { at, gen: self.nodes[at].gen }
     guard self.drawn_of(list, drawn=true) is Some(ld) else { return None }
     // (each row's outermost node named for it, drawn within where the list shows)
@@ -72,6 +72,9 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
           return
         }
         p = self.nodes[p].parent
+      }
+      if p != at {
+        return
       }
       match self.drawn_of({ at: k, gen: self.nodes[k].gen }, drawn=true) {
         Some(d) if d.y < ld.y + ld.h && d.y + d.h > ld.y && d.h > 0.0 => found.push((order, d.id, (d.x, d.y, d.w, d.h)))
@@ -226,7 +229,7 @@ pub fn Tree::rows_steady_seen(self : Tree, before : Double, now : Double, period
   let row_ks = self.rows_named.keys().to_array()
   row_ks.sort()
   ats.filter_map(fn(at) {
-    guard at >= 0 && at < self.nodes.length() && self.nodes[at].live && !self.out_at(at) &&
+    guard at >= 0 && at < self.nodes.length() && self.nodes[at].live && self.held_from_root(at) && !self.out_at(at) &&
       self.lists_scrolled.get(at) is Some(s) else {
       return None
     }

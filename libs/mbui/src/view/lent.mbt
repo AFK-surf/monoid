@@ -109,7 +109,7 @@ pub fn View::shown_across(self : View, but? : View) -> (Double, Double)? {
   }
 
   // (it laid out nowhere, or what holds it: nothing of it shows)
-  if self.tree.out_at(self.at) {
+  if !self.tree.held_from_root(self.at) || self.tree.out_at(self.at) {
     return None
   }
   for k in self.tree.nodes[self.at].kids {
