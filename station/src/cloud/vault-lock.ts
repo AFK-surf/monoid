@@ -21,7 +21,7 @@ export type VaultsHeld = { version(): number; vaults(ws: string): Vault[]; boxes
 /// What the lock is made of besides the vault: the person logs kept and the members known.
 export type PersonalSources = {
   chains: { version(): number; every(): [string, unknown[]][] };
-  members: { version(): number; members(ws: string): ReadonlyMap<string, string> };
+  members: { version(): number; members(ws: string): ReadonlyMap<string, string>; roles?(ws: string): ReadonlyMap<string, string> };
 };
 
 type Made = { key: string; state: LockState };
@@ -41,14 +41,14 @@ export function personalVaultLock(owner: object, ws: string, from: PersonalSourc
 }
 
 /// A person's devices as their log folds them, those of an app only (a web page keeps no vault).
-type Folded = { genesis: string; head: string; at: number; devices: { id: string; label: string; sign_key?: string; sign_keys: string[] }[] };
+type Folded = { genesis: string; head: string; at: number; chain: unknown[]; devices: { id: string; label: string; sign_key?: string; sign_keys: string[] }[] };
 
 function fold(genesis: string, chain: unknown[], sub: string): Folded | null {
   try {
     const p = personFold(chain, sub) as unknown as { head: string; devices: { id: string; label: string; sign_key?: string; sign_keys?: string[] }[] };
     const last = chain.at(-1) as { at?: unknown } | undefined;
     return {
-      genesis, head: p.head, at: typeof last?.at === "number" ? last.at : 0,
+      genesis, head: p.head, at: typeof last?.at === "number" ? last.at : 0, chain,
       devices: p.devices.map((d) => ({ id: d.id, label: d.label, ...(typeof d.sign_key === "string" ? { sign_key: d.sign_key } : {}), sign_keys: Array.isArray(d.sign_keys) ? d.sign_keys : [] })),
     };
   } catch {
@@ -97,8 +97,7 @@ function chosen(ws: string, sub: string, logs: Folded[], vaults: Vault[] | null,
   return [...logs].sort((a, b) => a.at - b.at).at(-1)!;
 }
 
-function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockState {
-  const emails = from.members.members(ws);
+function selectLogs(ws: string, from: PersonalSources, held?: VaultsHeld): { vaults: Vault[] | null; picked: Map<string, Folded> } {
   const logs = new Map<string, Folded[]>();
   for (const [genesis, chain] of from.chains.every()) {
     const sub = subOf(chain);
@@ -113,9 +112,29 @@ function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockSta
   const vaults = held === undefined ? null : held.vaults(ws);
   const several = [...logs.values()].some((l) => l.length > 1);
   const boxes = held === undefined || !several ? null : held.boxes(ws);
+  const picked = new Map<string, Folded>();
+  for (const [sub, of] of logs) {
+    picked.set(sub, chosen(ws, sub, of, vaults, boxes?.filter((c) => of.some((l) => l.devices.some((d) => d.id === c.device))) ?? null, held?.certOk ?? (() => false)));
+  }
+  return { vaults, picked };
+}
+
+/// The personal chain selected for each member in `personalVaultLock` (for GET /vault/boxes outside security mode).
+export function personalVaultChains(ws: string, from: PersonalSources, held?: VaultsHeld): Record<string, unknown[]> {
+  const { picked } = selectLogs(ws, from, held);
+  const out: Record<string, unknown[]> = {};
+  for (const [sub, f] of picked) out[sub] = f.chain;
+  return out;
+}
+
+function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockState {
+  const emails = from.members.members(ws);
+  const roles = from.members.roles?.(ws);
+  const { vaults, picked } = selectLogs(ws, from, held);
   const members = new Map<string, Member>();
   const name = (sub: string) => {
-    if (!members.has(sub)) members.set(sub, { sub, email: emails.get(sub) ?? "", role: "member" });
+    const role = roles?.get(sub);
+    if (!members.has(sub)) members.set(sub, { sub, email: emails.get(sub) ?? "", role: (role === "owner" || role === "admin" || role === "member" || role === "viewer" ? role : "member") });
   };
   for (const sub of emails.keys()) name(sub);
   for (const v of vaults ?? []) {
@@ -126,8 +145,7 @@ function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockSta
   const devices = new Map<string, Device>();
   const signKeys = new Map<string, string[]>();
   const persons = new Map<string, string>();
-  for (const [sub, of] of logs) {
-    const f = chosen(ws, sub, of, vaults, boxes?.filter((c) => of.some((l) => l.devices.some((d) => d.id === c.device))) ?? null, held?.certOk ?? (() => false));
+  for (const [sub, f] of picked) {
     name(sub);
     persons.set(sub, f.genesis);
     for (const d of f.devices) {

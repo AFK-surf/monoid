@@ -143,6 +143,8 @@ priv struct KeptRequest {
 /// An item an agent may ask for: of a vault (its id) or of the plain library (`plain`), whose owner decides.
 pub(all) struct Listed {
   vault : String
+  vault_name : String?
+  scope : String?
   item : String
   owner : String?
   listing : Json

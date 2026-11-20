@@ -37,19 +37,31 @@ fn timeout_bad(t : Json) -> Bool {
 /// secret_use: a request for `item` (its id or listed name) from `session`, its card posted; decided, the session is
 /// told (`settle`).
 pub async fn Secrets::ask(self : Secrets, session : String, a : UseAsk_) -> String {
-  let (ws, _) = self.place_of(session)
+  let (ws, lock) = self.place_of(session)
   let run_on = match a.station {
     Some(s) if s != "" => self.peer(s)
     _ => None
   }
   let wanted = lower(trim(a.item))
   let found = self.find_listing(session, wanted, a.person)
-  // Named, the card is theirs to decide (a member of the vault it is in); else the vault's owner's.
+  // Named, the card is theirs to decide (a member of the vault it is in); else the chat starter if they are a member
+  // of that vault (e.g. a shared workspace vault), falling back to the vault's owner.
   let decider = match a.person {
     Some(p) if trim(p) != "" => self.person_for(session, a.person)
     _ =>
       match found {
-        Some(f) => f.owner
+        Some(f) => {
+          let starter = self.person_for(session, None)
+          let starter_sub = match (starter, lock) {
+            (Some(email), Some(l)) => member_of(l, email)
+            _ => None
+          }
+          let vault = if f.vault != @vault_crypto.plain_id { self.vaults.vault(ws, f.vault) } else { None }
+          match (starter, starter_sub, vault) {
+            (Some(email), Some(sub), Some(v)) if members_of(v).contains(sub) => Some(email)
+            _ => f.owner
+          }
+        }
         None => None
       }
   }

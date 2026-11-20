@@ -196,3 +196,22 @@ test "admit_personal accepts own app device and refuses wrong sub or bad proof" 
   // Base key with invalid endpoint proof is refused
   assert_true((try Ok(@cloud_lock.admit_personal(bad_crypto, lock, { sub: "u1", endpoint: "dd".repeat(32), base: Some(dev), proof: Some("00".repeat(64)) })) catch { e => Err(e) }) is Err(_))
 }
+
+///|
+test "personal_vault_lock preserves member roles and defaults unknown roles to member" {
+  let ok_crypto : @cloud_lock.Crypto = { verify: (_, _, _, _) => true }
+  let emails = Map([("u1", "u1@x.com"), ("u2", "u2@x.com"), ("u3", "u3@x.com")])
+  let roles = Map([("u1", "owner"), ("u2", "admin"), ("u3", "bogus")])
+  let lock = @cloud_lock.personal_vault_lock(ok_crypto, "w1", [], emails, [], [], (_, _) => false, roles~)
+  let role_of = (sub : String) => match lock {
+    { "members": Object(ms), .. } =>
+      match ms.get(sub) {
+        Some({ "role": String(r), .. }) => r
+        _ => ""
+      }
+    _ => ""
+  }
+  assert_eq(role_of("u1"), "owner")
+  assert_eq(role_of("u2"), "admin")
+  assert_eq(role_of("u3"), "member")
+}

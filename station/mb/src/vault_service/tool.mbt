@@ -96,6 +96,12 @@ fn tool_run(
             if truthy(get(Some(l.listing), "env")) {
               fs.push(("env", get(Some(l.listing), "env").unwrap()))
             }
+            if l.vault_name is Some(vn) {
+              fs.push(("vaultName", js(vn)))
+            }
+            if l.scope is Some(sc) {
+              fs.push(("scope", js(sc)))
+            }
             obj(fs)
           })
         let held = secrets
@@ -187,6 +193,11 @@ fn tool_run(
             _ => None
           },
           oauth: opt("oauth"),
+          scope: match gs(Some(args), "scope") {
+            Some("personal") => Some("personal")
+            Some("workspace") => Some("workspace")
+            _ => None
+          },
           person: person_of(args),
           cwd: home,
           quiet: None,

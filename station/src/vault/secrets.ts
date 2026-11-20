@@ -213,7 +213,7 @@ class DecisionChanged extends Error {}
 class DecisionCardMoved extends Error {}
 
 /// An item an agent may ask for: of a vault (its id) or of the plain library (`plain`), whose owner (email) decides.
-export type Listed = { vault: string; item: string; owner: string | null; listing: Listing };
+export type Listed = { vault: string; vaultName?: string; scope?: "workspace" | "personal"; item: string; owner: string | null; listing: Listing };
 
 /// A use of a secret, as the pages list them: a request decided, in the chat that asked.
 export type Use = { item: string; at: number; session: string; chatTitle: string | null; mode: Mode; command: string | null; hosts: string[]; denied: boolean };
@@ -807,8 +807,9 @@ export class Secrets {
   }
 
   #vaultListings(lock: LockState, vault: Vault, items: Item[]): Listed[] {
+    const scope = vault.scope === "workspace" ? "workspace" : "personal";
     return items.flatMap((item) => !item.deleted && item.listing !== undefined && item.epoch === vault.epoch
-      ? [{ vault: vault.id, item: item.id, owner: lock.members.get(vault.owner)?.email ?? null, listing: item.listing }] : []);
+      ? [{ vault: vault.id, vaultName: vault.name, scope, item: item.id, owner: lock.members.get(vault.owner)?.email ?? null, listing: item.listing }] : []);
   }
 
   #listingsAt(ws: string, lock: LockState | null, email: string): Listed[] {
@@ -1082,12 +1083,23 @@ export class Secrets {
   /// secret_use: a request for `itemName` (its id or listed name) from `session`, its card posted; decided, the session
   /// is told (#settle).
   async ask(session: string, a: { item: string; mode?: string; reason: string; command?: string; hosts?: string[]; station?: string; timeout?: { kind: "idle" | "fixed"; seconds: number }; person?: string }): Promise<string> {
-    const { ws } = this.#placeOf(session);
+    const { ws, lock } = this.#placeOf(session);
     const runOn = a.station ? this.#peer(a.station) : null;
     const wanted = a.item.trim().toLowerCase();
     const found = this.#findListing(session, wanted, a.person);
-    // Named, the card is theirs to decide (a member of the vault it is in); else the vault's owner's.
-    const decider = a.person?.trim() ? this.#personFor(session, a.person) : found?.owner ?? null;
+    // Named, the card is theirs to decide (a member of the vault it is in); else the chat starter if they are a member
+    // of that vault (e.g. a shared workspace vault), falling back to the vault's owner.
+    let decider: string | null;
+    if (a.person?.trim()) {
+      decider = this.#personFor(session, a.person);
+    } else {
+      const starter = this.#personFor(session, undefined);
+      const starterSub = starter !== null && lock !== null ? this.#memberOf(lock, starter) : null;
+      const vault = found !== undefined && found.vault !== PLAIN ? this.#d.vaults.vault(ws, found.vault) : null;
+      decider = starter !== null && starterSub !== null && vault !== null && vault.members.includes(starterSub)
+        ? starter
+        : found?.owner ?? null;
+    }
     if (found === undefined) throw new Refused(`No secret named ${JSON.stringify(a.item)} may be asked for here: secret_list lists those that may.`);
     const { listing } = found;
     const plain = found.vault === PLAIN;
@@ -1532,7 +1544,7 @@ export class Secrets {
       let first: Vault | undefined;
       const personal = (vaults: Vault[]) => {
         for (const vault of vaults) {
-          if (!vault.members.includes(sub) || !vault.keys.some((k) => devices.has(k.cert.device))) continue;
+          if (vault.deleted || vault.scope === "workspace" || !vault.members.includes(sub) || !vault.keys.some((k) => devices.has(k.cert.device))) continue;
           first ??= vault;
           if (vault.owner === sub) return vault;
         }
@@ -1565,6 +1577,12 @@ export class Secrets {
     return this.#vaultFor(lock, sub) !== "" ? "on" : "off";
   }
 
+  /// The workspace vault `sub` is a member of in `lock`'s workspace, if any (non-deleted).
+  #workspaceVaultFor(lock: LockState | null, sub: string | null): Vault | null {
+    if (lock === null || sub === null) return null;
+    return this.#d.vaults.vaults(lock.ws).find((v) => !v.deleted && v.scope === "workspace" && v.members.includes(sub)) ?? null;
+  }
+
   /// secret_save: a request from `session` to keep a secret in the vault of whoever started its chat, given as `value`,
   /// printed by `command` (run here in `cwd`; what it prints is never shown) or, given neither, typed in by that person
   /// on its card (`save.typed`: nothing of it held or sealed here); its card posted, decided, the session is told (#settle).
@@ -1572,7 +1590,7 @@ export class Secrets {
     session: string,
     a: {
       name: string; kind: string; reason: string; value?: string; command?: string; path?: string; username?: string; public_key?: string; filename?: string; modes?: string[]; hosts?: string[]; env?: string;
-      cwd: string; station?: string; browser?: "chat" | "station"; person?: string;
+      cwd: string; station?: string; browser?: "chat" | "station"; person?: string; scope?: "personal" | "workspace";
       /// A token the person signs in to this service for on the card (OAUTH), in place of typing one in.
       oauth?: string;
       /// What it is and how it is used (its listing's `about`, the item's notes): shown to agents with its name.
@@ -1585,6 +1603,7 @@ export class Secrets {
     const place = this.#placeOf(session);
     const ws = place.ws;
     let lock = place.lock;
+    if (a.scope !== undefined && a.scope !== "personal" && a.scope !== "workspace") throw new Refused("scope is personal or workspace");
     const kind = a.kind as Kind;
     // A sign-in is read from a browser, never given, printed or typed in.
     if (kind === "browser" && (a.value !== undefined || a.command !== undefined || a.path !== undefined || a.station !== undefined)) throw new Refused("A sign-in (kind browser) is read from this chat's browser (or the station's: browser \"station\"), its cookies of hosts: give no value, command, path or station.");
@@ -1622,6 +1641,9 @@ export class Secrets {
     let sub = lock === null ? null : this.#memberOf(lock, email);
     // (security mode off: one whose own lock is not heard here yet is sealed to as they turn their vault on, `boxed`)
     if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
+    if (a.scope === "workspace" && this.#workspaceVaultFor(lock, sub) === null) {
+      throw new Refused("No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.");
+    }
     const listing: Listing = { name, kind, modes, hosts, ...(a.env ? { env: a.env } : {}), ...(about ? { about } : {}) };
     const now = this.#d.now();
     const item = `i_${ulid(now)}`;
@@ -1669,15 +1691,20 @@ export class Secrets {
     lock = currentLock();
     sub = lock === null ? null : this.#memberOf(lock, email);
     if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
+    const wsVault = a.scope === "workspace" ? this.#workspaceVaultFor(lock, sub) : null;
+    if (a.scope === "workspace" && wsVault === null) {
+      throw new Refused("No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.");
+    }
     const fields = typed ? null : fieldsOf(value);
     const requestedAt = this.#d.now();
     const id = `r_${ulid(requestedAt)}`;
     const save: Save = {
       kind, name, modes, hosts, ...(a.env ? { env: a.env } : {}), ...(a.username ? { username: a.username } : {}), ...(a.public_key ? { public_key: a.public_key } : {}), ...(filename ? { filename } : {}),
       ...(typed ? { typed: true as const } : {}), ...(a.oauth !== undefined ? { oauth: a.oauth } : {}), ...(about ? { about } : {}),
+      ...(wsVault !== null ? { vaultName: wsVault.name, shared: true as const } : {}),
     };
     const request: Request = {
-      id, ws, vault: lock === null ? PLAIN : sub === null ? "" : this.#vaultFor(lock, sub), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
+      id, ws, vault: wsVault !== null ? wsVault.id : lock === null ? PLAIN : sub === null ? "" : this.#vaultFor(lock, sub), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
       ...(command !== undefined ? { command } : {}), ...(hosts.length ? { hosts } : {}),
       // A vault's: a box for the grant to this chat that comes with keeping it (the app seals the secret to it too).
       box: lock === null ? "" : this.keeper.open(id), at: Math.floor(requestedAt / 1000), status: "pending", owner: email, save, ...(from ? { runOn: from } : {}),
@@ -1737,7 +1764,7 @@ export class Secrets {
             request: r.id, name: s.name, reason: r.reason, ...(r.command ? { command: r.command } : {}), mode: s.modes[0], hosts: hosted(s.modes[0]!) ? s.hosts : [],
             ...(s.about ? { about: s.about } : {}),
             ...(r.runOn ? { station: r.runOn.name } : {}),
-            save: { kind: s.kind, ...(s.username ? { username: s.username } : {}), ...(s.filename ? { filename: s.filename } : {}), ...(s.typed ? { typed: true } : {}), ...(s.oauth ? { oauth: s.oauth } : {}) },
+            save: { kind: s.kind, ...(s.username ? { username: s.username } : {}), ...(s.filename ? { filename: s.filename } : {}), ...(s.typed ? { typed: true } : {}), ...(s.oauth ? { oauth: s.oauth } : {}), ...(s.vaultName ? { vaultName: s.vaultName } : {}), ...(s.shared ? { shared: true } : {}) },
           },
         }
       : null;
