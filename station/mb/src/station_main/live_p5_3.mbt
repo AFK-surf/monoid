@@ -453,6 +453,11 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
         num(0, "now").unwrap_or(wall_ms().to_double()),
         limit?=num(1, "limit").map(n => n.to_int()),
       )
+    "hub.runArchiveUpkeepIfDue" =>
+      self.bus.hub_run_archive_upkeep_if_due(
+        num(0, "now").unwrap_or(wall_ms().to_double()),
+        every_ms?=num(1, "everyMs"),
+      )
     "hub.cleanIdleRebuildable" =>
       self.bus.hub_clean_idle_rebuildable(
         num(0, "now").unwrap_or(wall_ms().to_double()),

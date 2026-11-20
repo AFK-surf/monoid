@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { ColdRooms } from "../src/sessions/cold.ts";
 import {
+  ARCHIVE_UPKEEP_EVERY_MS,
   IDLE_REBUILD_LOW_MS,
   IDLE_REBUILD_MS,
   archive,
@@ -17,6 +18,7 @@ import {
   relieveArchived,
   relieveIdleRebuildable,
   relieveLowDiskFull,
+  runArchiveUpkeepIfDue,
 } from "../src/sessions/lifecycle.ts";
 import {
   ORPHAN_ROOM_EVERY_MS,
@@ -744,5 +746,70 @@ describe("Item 4: low-disk orphan UUID transcripts & full low-disk pass with 30m
       store.close();
       rmSync(data, { recursive: true, force: true });
     }
+  });
+
+  test("runArchiveUpkeepIfDue enforces ARCHIVE_UPKEEP_EVERY_MS (10m): skips startup, runs once across 3x1s triggers, runs again after 10m", async () => {
+    const tc = testClock();
+    await tc.adjust(1_800_000_000_000);
+    let needsPackCalls = 0;
+    let cleanIdleCalls = 0;
+    const r = new Rig({
+      clock: tc.clock,
+      cold: {
+        isCold: async () => false,
+        restore: () => undefined,
+        pack: async () => {},
+        needsPack: async () => {
+          needsPackCalls++;
+          return false;
+        },
+        cleanIdleRebuildable: async () => {
+          cleanIdleCalls++;
+          return null;
+        },
+      },
+    });
+    const data = r.hub.config().dataDir;
+    const now = r.hub.now();
+    const DAY = 24 * 3_600_000;
+
+    // One archived session + one >24h idle unarchived session so each upkeep round invokes both callbacks.
+    const wsArch = join(data, "sessions", "cl", "s-cadence-arch", "workspace");
+    const wsIdle = join(data, "sessions", "cl", "s-cadence-idle", "workspace");
+    mkdirSync(wsArch, { recursive: true });
+    mkdirSync(wsIdle, { recursive: true });
+    r.store.insertSession({
+      key: "s-cadence-arch", connect: "cl", runtime: "claude", profile: "cc",
+      workspace: wsArch, runtimeSessionId: null, token: "tok-ca", createdAt: now - 2 * DAY, lastActiveAt: now - 2 * DAY,
+    });
+    r.store.setArchived("s-cadence-arch", true, MANUAL);
+    r.store.db.prepare("UPDATE sessions SET archived_at = ? WHERE key = ?").run(now - 2 * DAY, "s-cadence-arch");
+    r.store.insertSession({
+      key: "s-cadence-idle", connect: "cl", runtime: "claude", profile: "cc",
+      workspace: wsIdle, runtimeSessionId: null, token: "tok-ci", createdAt: now - 2 * DAY, lastActiveAt: now - 2 * DAY,
+    });
+
+    // At startup (t = 0): lastArchiveUpkeepAt was initialized to startup time -> skipped
+    assert.equal(await runArchiveUpkeepIfDue(r.hub, r.hub.now()), false, "skipped immediately at startup");
+    assert.equal(needsPackCalls, 0);
+    assert.equal(cleanIdleCalls, 0);
+
+    // Advance 10 minutes, then trigger 3 times 1 second apart -> runs only once
+    await tc.adjust(ARCHIVE_UPKEEP_EVERY_MS);
+    assert.equal(await runArchiveUpkeepIfDue(r.hub, r.hub.now()), true, "runs on 1st trigger at +10m");
+    await tc.adjust(1_000);
+    assert.equal(await runArchiveUpkeepIfDue(r.hub, r.hub.now()), false, "2nd trigger +1s skipped");
+    await tc.adjust(1_000);
+    assert.equal(await runArchiveUpkeepIfDue(r.hub, r.hub.now()), false, "3rd trigger +2s skipped");
+    assert.equal(needsPackCalls, 1, "packUnfinishedArchived ran once across 3x1s triggers");
+    assert.equal(cleanIdleCalls, 1, "cleanIdleRebuildable ran once across 3x1s triggers");
+
+    // Advance another 10 minutes -> runs a 2nd time
+    await tc.adjust(ARCHIVE_UPKEEP_EVERY_MS);
+    assert.equal(await runArchiveUpkeepIfDue(r.hub, r.hub.now()), true, "runs a 2nd time after another 10m");
+    assert.equal(needsPackCalls, 2);
+    assert.equal(cleanIdleCalls, 2);
+
+    await r.close();
   });
 });

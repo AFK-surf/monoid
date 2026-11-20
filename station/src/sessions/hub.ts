@@ -260,6 +260,9 @@ export class Hub {
   prepareLatestThreads: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
   /// Cross-round cursor for `packUnfinishedArchived` (`lifecycle.ts`).
   packBackfillCursor: ArchivedWorkspace | null = null;
+  /// Last time periodic archive backfill & idle rebuildable cleanup ran (`lifecycle.ts` `runArchiveUpkeepIfDue`),
+  /// initialized to hub startup time so startup never triggers an immediate burst.
+  lastArchiveUpkeepAt: number;
   /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), cleared on archive/delete.
   readonly idleMeasured = new Map<string, number>();
   /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`).
@@ -327,6 +330,7 @@ export class Hub {
   constructor(options: HubOptions) {
     this.options = options;
     this.clock = options.clock ?? liveClock;
+    this.lastArchiveUpkeepAt = this.now();
     this.store = options.store;
     this.internal = options.internal ?? null;
     this.drivers = new Map(options.drivers.map((d) => [d.runtime(), d]));

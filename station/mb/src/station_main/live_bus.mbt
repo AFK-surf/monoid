@@ -553,6 +553,16 @@ async fn LiveBus::hub_pack_unfinished_archived(self : LiveBus, now : Double, lim
 }
 
 ///|
+/// Run periodic archive backfill & idle rebuildable cleanup if due on `archive_upkeep_every_ms` cadence.
+async fn LiveBus::hub_run_archive_upkeep_if_due(self : LiveBus, now : Double, every_ms? : Double) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if every_ms is Some(e) {
+    args["everyMs"] = Json::number(e)
+  }
+  (self.hub_ask.val)("runArchiveUpkeepIfDue", Json::object(args))
+}
+
+///|
 /// Clean rebuildable directories of idle unarchived sessions (capped per round).
 async fn LiveBus::hub_clean_idle_rebuildable(self : LiveBus, now : Double, idle_ms? : Double, limit? : Int) -> Json {
   let args : Map[String, Json] = { "now": Json::number(now) }

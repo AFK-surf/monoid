@@ -1208,6 +1208,11 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       let limit = jnum_of(arg, "limit").map(n => n.to_int()).unwrap_or(@session_hub.pack_backfill_max_per_round)
       ji(hub.pack_unfinished_archived(now, limit~))
     }
+    "runArchiveUpkeepIfDue" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let every_ms = jnum_of(arg, "everyMs").unwrap_or(@session_hub.archive_upkeep_every_ms)
+      jb(hub.run_archive_upkeep_if_due(now, every_ms~))
+    }
     "cleanIdleRebuildable" => {
       let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
       let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_ms)
@@ -1574,7 +1579,6 @@ async fn P52::lifecycle(self : P52) -> Unit {
   while !self.taken && !self.bus.stopped.is_done() && !self.closed {
     @effect.sleep(200) // timer: a deadline (waiting for take_handover before the first lifecycle pass)
   }
-  let mut first = true
   while !self.bus.stopped.is_done() && !self.closed {
     let next = match self.hub {
       Some(hub) if self.taken => {
@@ -1590,23 +1594,7 @@ async fn P52::lifecycle(self : P52) -> Unit {
             None
           }
         }
-        // Defer periodic archive backfill and idle rebuildable cleanup past the immediate startup pass
-        // (matching Node's initial 60s delay in lifecycle.ts).
-        if !first {
-          ignore(hub.pack_unfinished_archived(wall_ms().to_double()) catch {
-            e => {
-              slice_log("warn", "hub", "backfilling unfinished archived workspaces failed", { "error": jstr(said_of(e)) })
-              0
-            }
-          })
-          ignore(hub.clean_idle_rebuildable(wall_ms().to_double()) catch {
-            e => {
-              slice_log("warn", "hub", "cleaning rebuildable files of idle sessions failed", { "error": jstr(said_of(e)) })
-              0
-            }
-          })
-        }
-        first = false
+        ignore(hub.run_archive_upkeep_if_due(wall_ms().to_double()))
         match (a, b) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)

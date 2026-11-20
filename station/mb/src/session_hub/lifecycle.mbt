@@ -1062,6 +1062,12 @@ let archived_workspace_batch : Int = 64
 let idle_unarchived_batch : Int = 64
 
 ///|
+/// Minimum interval between periodic archive backfill (`pack_unfinished_archived`) and idle rebuildable cleanup
+/// (`clean_idle_rebuildable`) rounds (10 minutes): packing up to 16 sessions per round clears a backlog of several
+/// hundred sessions within a few hours without contending with the main lifecycle loop.
+pub let archive_upkeep_every_ms : Double = 10.0 * 60000.0
+
+///|
 /// Max unfinished archived sessions packed per periodic round.
 pub let pack_backfill_max_per_round : Int = 16
 
@@ -1149,6 +1155,34 @@ pub async fn Hub::expire_archived(self : Hub, now : Double) -> Double? {
     Number(n, ..) => Some(n + after)
     _ => None
   }
+}
+
+///|
+/// Runs `pack_unfinished_archived` and `clean_idle_rebuildable` on their own cadence (`archive_upkeep_every_ms`),
+/// independent of how frequently `P52::lifecycle` wakes. `last_archive_upkeep_at` is initialized to hub startup time
+/// so startup never runs an immediate burst. Returns whether a round ran.
+pub async fn Hub::run_archive_upkeep_if_due(
+  self : Hub,
+  now : Double,
+  every_ms? : Double = archive_upkeep_every_ms,
+) -> Bool {
+  if now - self.last_archive_upkeep_at < every_ms {
+    return false
+  }
+  self.last_archive_upkeep_at = now
+  ignore(self.pack_unfinished_archived(now) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("backfilling unfinished archived workspaces failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  ignore(self.clean_idle_rebuildable(now) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("cleaning rebuildable files of idle sessions failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  true
 }
 
 ///|

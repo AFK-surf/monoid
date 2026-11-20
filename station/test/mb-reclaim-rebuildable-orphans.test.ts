@@ -342,6 +342,30 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(!(otFull.body as string[]).some((p) => p.includes(uArch)), "archived-session-referenced UUID not reclaimed");
     assert.ok(existsSync(newTx), "6d orphan UUID preserved");
     assert.ok(existsSync(freshChild), "standalone <uuid>/ with 1d child preserved");
+
+    // 5. Archive upkeep cadence (10m): skips at startup, runs once across 3x1s triggers at +10m, runs again at +20m
+    const MIN = 60_000;
+    const base = Date.now();
+    const u0 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base]);
+    assert.equal(u0.status, 200, JSON.stringify(u0));
+    assert.equal(u0.body, false, "archive upkeep skipped immediately after startup");
+
+    const u1 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base + 10 * MIN]);
+    assert.equal(u1.status, 200, JSON.stringify(u1));
+    assert.equal(u1.body, true, "archive upkeep runs at +10m");
+
+    const u2 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base + 10 * MIN + 1_000]);
+    assert.equal(u2.status, 200, JSON.stringify(u2));
+    assert.equal(u2.body, false, "archive upkeep skipped 1s later");
+
+    const u3 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base + 10 * MIN + 2_000]);
+    assert.equal(u3.status, 200, JSON.stringify(u3));
+    assert.equal(u3.body, false, "archive upkeep skipped 2s later");
+
+    const u4 = await httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [base + 20 * MIN]);
+    assert.equal(u4.status, 200, JSON.stringify(u4));
+    assert.equal(u4.body, true, "archive upkeep runs a 2nd time at +20m");
+
     // told to stop (`op`, the launcher's control channel), it winds down with its processes (`--builder replica-export`)
     launched.tell({ op: "stop" });
     assert.equal(await launched.ended, 0, launched.err());

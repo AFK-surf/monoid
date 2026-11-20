@@ -415,6 +415,11 @@ async function* archivedWorkspaces(
   }
 }
 
+/// Minimum interval between periodic archive backfill (`packUnfinishedArchived`) and idle rebuildable cleanup
+/// (`cleanIdleRebuildable`) rounds (10 minutes): packing up to 16 sessions per round clears a backlog of several
+/// hundred sessions within a few hours without contending with the main lifecycle loop.
+export const ARCHIVE_UPKEEP_EVERY_MS = 10 * 60_000;
+
 /// Max unfinished archived sessions packed per periodic round to prevent a startup/timer storm.
 export const PACK_BACKFILL_MAX_PER_ROUND = 16;
 
@@ -561,6 +566,29 @@ export async function cleanIdleRebuildable(
     after = { lastActiveAt: last.lastActiveAt, key: last.key };
   }
   return measured;
+}
+
+/// Runs `packUnfinishedArchived` and `cleanIdleRebuildable` on their own cadence (`ARCHIVE_UPKEEP_EVERY_MS`),
+/// independent of how frequently `expireArchived` wakes. `hub.lastArchiveUpkeepAt` is initialized to hub startup time
+/// so startup never runs an immediate burst. Returns whether a round ran.
+export async function runArchiveUpkeepIfDue(
+  hub: Hub,
+  now: number,
+  everyMs = ARCHIVE_UPKEEP_EVERY_MS,
+): Promise<boolean> {
+  if (now - hub.lastArchiveUpkeepAt < everyMs) return false;
+  hub.lastArchiveUpkeepAt = now;
+  try {
+    await packUnfinishedArchived(hub, now);
+  } catch (error) {
+    log.warn("hub", "backfilling unfinished archived workspaces failed", { error: (error as Error).message });
+  }
+  try {
+    await cleanIdleRebuildable(hub, now);
+  } catch (error) {
+    log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
+  }
+  return true;
 }
 
 /// Low-disk reclamation of rebuildable directories from idle unarchived sessions (threshold `IDLE_REBUILD_LOW_MS`,

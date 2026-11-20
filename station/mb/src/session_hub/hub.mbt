@@ -160,6 +160,9 @@ pub struct Hub {
   mut keeps_counted : Bool
   /// Cross-round cursor for `pack_unfinished_archived` (`{archivedAt, key}` or Null).
   mut pack_cursor : Json
+  /// Last time periodic archive backfill & idle rebuildable cleanup ran (`run_archive_upkeep_if_due`),
+  /// initialized to hub startup time so startup never triggers an immediate burst.
+  mut last_archive_upkeep_at : Double
   /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths).
   idle_measured : Map[String, Double]
 }
@@ -195,6 +198,7 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     counter: None,
     keeps_counted: false,
     pack_cursor: Json::null(),
+    last_archive_upkeep_at: (world.now)(),
     idle_measured: {},
   }
   // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
