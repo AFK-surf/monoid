@@ -324,15 +324,29 @@ fn Hub::home(self : Hub) -> String? {
 }
 
 ///|
+fn wake_waiters_list(waiters : Array[@effect.Deferred[Unit]]) -> Unit {
+  if waiters.length() == 0 {
+    return
+  }
+  let list = waiters.copy()
+  waiters.clear()
+  for d in list {
+    ignore(d.succeed(()))
+  }
+}
+
+///|
+fn Hub::wake_waiters(self : Hub) -> Unit {
+  wake_waiters_list(self.timer_waiters)
+}
+
+///|
 /// Sets `run` going at `ms` from now (0 or less: as the step that set it ends, `run_due` then); its id.
 pub fn Hub::after(self : Hub, ms : Double, run : () -> Unit) -> Int {
   self.timer_seq += 1
   let id = self.timer_seq
   self.timers.push({ id, due: self.now() + (if ms > 0.0 { ms } else { 0.0 }), run })
-  for d in self.timer_waiters {
-    ignore(d.succeed(()))
-  }
-  self.timer_waiters.clear()
+  self.wake_waiters()
   id
 }
 
@@ -345,17 +359,34 @@ pub fn Hub::cancel(self : Hub, id : Int) -> Unit {
 }
 
 ///|
-/// Runs what is due by `now` (the clock moved there), earliest first, those set at once in the order set.
-pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
+fn next_due_in(timers : Array[Timer]) -> Double? {
+  let mut best : Double? = None
+  for t in timers {
+    match best {
+      None => best = Some(t.due)
+      Some(b) => if t.due < b { best = Some(t.due) }
+    }
+  }
+  best
+}
+
+///|
+/// The earliest due time among pending hub timers, or `None` when none are scheduled.
+pub fn Hub::next_due(self : Hub) -> Double? {
+  next_due_in(self.timers)
+}
+
+///|
+fn run_due_in(timers : Array[Timer], now : Double) -> Unit {
   while true {
     let mut best : Int? = None
-    for i, t in self.timers {
+    for i, t in timers {
       if t.due <= now {
         match best {
           None => best = Some(i)
           Some(b) =>
-            if t.due < self.timers[b].due ||
-              (t.due == self.timers[b].due && t.id < self.timers[b].id) {
+            if t.due < timers[b].due ||
+              (t.due == timers[b].due && t.id < timers[b].id) {
               best = Some(i)
             }
         }
@@ -364,11 +395,108 @@ pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
     match best {
       None => break
       Some(i) => {
-        let t = self.timers.remove(i)
+        let t = timers.remove(i)
         (t.run)()
       }
     }
   }
+}
+
+///|
+/// Runs what is due by `now` (the clock moved there), earliest first, those set at once in the order set.
+pub fn Hub::run_due(self : Hub, now : Double) -> Unit {
+  run_due_in(self.timers, now)
+}
+
+///|
+async fn[T] drive_loop(
+  rt : @effect.Runtime,
+  stopped : @effect.Deferred[T],
+  now : () -> Double,
+  timers : Array[Timer],
+  waiters : Array[@effect.Deferred[Unit]],
+  work : Array[async () -> Unit],
+  spawn : (async () -> Unit) -> Unit,
+) -> Unit {
+  while !stopped.is_done() {
+    run_due_in(timers, now())
+    while work.length() > 0 {
+      let f = work.remove(0)
+      spawn(f)
+    }
+    if stopped.is_done() {
+      break
+    }
+    let sleep_ms : Int? = match next_due_in(timers) {
+      None => None
+      Some(due) => {
+        let diff = due - now()
+        if diff <= 0.0 {
+          continue
+        }
+        let clamped = if diff > 60_000.0 { 60_000.0 } else { diff }
+        let ms = clamped.ceil().to_int()
+        Some(if ms < 1 { 1 } else { ms })
+      }
+    }
+    let wake : @effect.Deferred[Unit] = @effect.Deferred::new()
+    waiters.push(wake)
+    let done : @effect.Deferred[Unit] = @effect.Deferred::new()
+    let fibers : Array[@effect.Fiber[Unit]] = []
+    if sleep_ms is Some(ms) {
+      fibers.push(
+        rt.fork_quiet(name="hub timer sleep", async fn() {
+          @effect.sleep(ms) // timer: next hub timer deadline (idle eviction, transcript lengths, usage)
+          ignore(done.succeed(()))
+        }),
+      )
+    }
+    fibers.push(
+      rt.fork_quiet(name="hub timer wake", async fn() {
+        wake.wait() catch { _ => () }
+        ignore(done.succeed(()))
+      }),
+    )
+    fibers.push(
+      rt.fork_quiet(name="hub timer stop", async fn() {
+        ignore(stopped.wait()) catch { _ => () }
+        ignore(done.succeed(()))
+      }),
+    )
+    let mut interrupted = false
+    done.wait() catch { _ => interrupted = true }
+    for f in fibers {
+      if !f.is_done() {
+        f.interrupt()
+      }
+    }
+    match waiters.search_by(d => physical_equal(d, wake)) {
+      Some(i) => ignore(waiters.remove(i))
+      None => ()
+    }
+    if interrupted {
+      break
+    }
+  }
+}
+
+///|
+/// Drives the hub's scheduled timers (`after`) and deferred async work (`later`) until `stopped` completes.
+pub async fn[T] Hub::drive(
+  self : Hub,
+  rt : @effect.Runtime,
+  stopped : @effect.Deferred[T],
+  spawn : (async () -> Unit) -> Unit,
+) -> Unit {
+  drive_loop(
+    rt,
+    stopped,
+    () => self.now(),
+    self.timers,
+    self.timer_waiters,
+    pending_work,
+    spawn,
+  )
 }
 
 // ── actors ──

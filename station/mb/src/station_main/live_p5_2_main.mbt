@@ -151,6 +151,19 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       })
     }),
   )
+  // Drive the hub's scheduled timers (idle eviction, transcript lengths, usage) and deferred work.
+  fork_bg(host, "hub timers", async fn() {
+    hub.drive(host.rt, bus.stopped, f => {
+      fork_bg(host, "hub later", async fn() {
+        f() catch {
+          e =>
+            slice_log("warn", "session_hub", "hub later failed", {
+              "error": jstr(said_of(e)),
+            })
+        }
+      })
+    })
+  })
   // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
   fork_bg(host, "lifecycle", async fn() { ctx.lifecycle() })
 }
