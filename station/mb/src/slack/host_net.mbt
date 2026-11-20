@@ -1,6 +1,6 @@
 // What a station's program gives Slack's parts on its host (`@host.Host`, the shell's IO on the program's runtime):
-// HTTP by `fetch`, Socket Mode by `ws.open`/`ws.next`/`ws.send`/`ws.close`, an attachment's bytes by `fs.bytes`, the
-// machine's clock and the runtime's timers and fibers.
+// HTTP by `fetch`, Socket Mode by `ws.open`/`ws.next`/`ws.send`/`ws.ping`/`ws.close`, an attachment's bytes by
+// `fs.bytes`, the machine's clock and the runtime's timers and fibers.
 
 ///|
 fn shell_words(e : Error) -> String {
@@ -107,14 +107,18 @@ fn decode_hex(hex : String) -> Bytes {
 }
 
 ///|
-/// Socket Mode on the shell: `ws.open`, its frames read by `ws.next`. The shell answers Slack's pings itself and says
-/// nothing of pongs: its socket has no `ping` of the surface's.
+/// Socket Mode on the shell: `ws.open` with `control: true`, its frames read by `ws.next`, and liveness pings sent by
+/// `ws.ping`.
 pub fn host_ws(host : @host.Host) -> WsIO {
   {
     open: async fn(url) {
       let (answer, _) = host.shell(
         "ws.open",
-        Json::object({ "url": Json::string(url), "headers": Json::array([]) }),
+        Json::object({
+          "url": Json::string(url),
+          "headers": Json::array([]),
+          "control": Json::boolean(true),
+        }),
       ) catch {
         e => {
           let words = shell_words(e)
@@ -142,8 +146,10 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           let (frame, _) = host.shell("ws.next", Json::object({ "id": Json::number(id) })) catch {
             e => raise fail_(shell_words(e))
           }
-          match json_field(frame, "text") {
-            Some(String(t)) => Some(t)
+          match frame {
+            { "text": String(t), .. } => Some(Text(t))
+            { "pong": True, .. } => Some(Pong)
+            { "ping": True, .. } => Some(Ping)
             _ => None
           }
         },
@@ -166,7 +172,15 @@ pub fn host_ws(host : @host.Host) -> WsIO {
             }),
           )
         },
-        ping: None,
+        ping: Some(() => if !closed.val {
+          ignore(
+            host.rt.fork_quiet(name="slack ws ping", async fn() {
+              ignore(host.shell("ws.ping", Json::object({ "id": Json::number(id) }))) catch {
+                _ => ()
+              }
+            }),
+          )
+        }),
       }
     },
   }

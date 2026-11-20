@@ -487,10 +487,16 @@ pub fn Wall::now(Self) -> Double
 pub fn Wall::told(Self, Double) -> Unit
 
 pub struct WsConn {
-  next : async () -> String?
+  next : async () -> WsFrame?
   send : (String) -> Unit
   close : () -> Unit
   ping : (() -> Unit)?
+}
+
+pub(all) enum WsFrame {
+  Text(String)
+  Ping
+  Pong
 }
 
 pub struct WsIO {

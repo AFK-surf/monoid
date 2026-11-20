@@ -1583,3 +1583,78 @@ fn a_screens_frames_as_datagrams_come_through_loss_at_once() {
         assert!(report[0].2 > report[1].2 && report[2].2 > report[3].2);
     });
 }
+
+/// With `control: true`, `ws.ping` sends a Ping frame and `ws.next` surfaces incoming Pong and Ping frames (while
+/// tungstenite still replies with Pong to server Pings).
+#[test]
+fn ws_control_frames_and_ping_roundtrip() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // Receive client's ws.ping and reply with Pong.
+        let got_ping = ws.next().await.unwrap().unwrap();
+        match got_ping {
+            Message::Ping(payload) => ws.send(Message::Pong(payload)).await.unwrap(),
+            other => panic!("expected Ping from client, got {other:?}"),
+        }
+        // Send a server Ping and expect client's automatic Pong reply.
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        let got_pong = ws.next().await.unwrap().unwrap();
+        assert!(matches!(got_pong, Message::Pong(_)), "expected Pong from client, got {got_pong:?}");
+        // Wait for client close.
+        let _ = ws.next().await;
+    });
+    let opened = call(98_001, "ws.open", json!({ "url": format!("ws://{addr}/"), "control": true }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    call(98_002, "ws.ping", json!({ "id": ws_id }));
+    assert_eq!(call(98_003, "ws.next", json!({ "id": ws_id })), json!({ "pong": true }));
+    assert_eq!(call(98_004, "ws.next", json!({ "id": ws_id })), json!({ "ping": true }));
+    call(98_005, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}
+
+/// Without `control`, Ping and Pong frames stay internal and `ws.next` skips straight to the next data frame.
+#[test]
+fn ws_without_control_skips_ping_and_pong_frames() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        ws.send(Message::Pong(Default::default())).await.unwrap();
+        ws.send(Message::text("hi")).await.unwrap();
+        let _ = ws.next().await;
+    });
+    let opened = call(98_011, "ws.open", json!({ "url": format!("ws://{addr}/") }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    assert_eq!(call(98_012, "ws.next", json!({ "id": ws_id })), json!({ "text": "hi" }));
+    call(98_013, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}

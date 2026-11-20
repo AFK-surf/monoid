@@ -3,9 +3,8 @@
 // its agents say and ask. One SlackSurface per connected connect.
 //
 // The socket kept up: connected again whenever it closes (Slack rotates them) or fails (after a wait that doubles up to
-// a minute), pinged, and taken for dead once it said nothing for a while, where its socket can be pinged (`WsConn`'s
-// `ping`: the shell's `ws.*` answers Slack's pings itself and says nothing of pongs, so a socket of the shell is held
-// only to opening in time).
+// a minute), pinged, and taken for dead once it said nothing (not even a pong) for a while (`WsConn`'s `ping` and
+// `WsFrame::Ping`/`Pong`).
 
 ///|
 /// How long who is in a channel is kept for (`people_in`).
@@ -83,10 +82,18 @@ fn update_text(said : String, max_bytes? : Int = update_text_bytes) -> String {
 pub type Handler = async (J) -> Unit
 
 ///|
-/// A socket the surface reads: its next text (None once it closed), what it sends, its close, and its ping where it has
-/// one (a pong or any frame counts as heard: `heard`).
+/// A frame read from a Slack socket: text payload or WebSocket Ping/Pong control frame.
+pub(all) enum WsFrame {
+  Text(String)
+  Ping
+  Pong
+}
+
+///|
+/// A socket the surface reads: its next frame (None once it closed), what it sends, its close, and its ping where it has
+/// one (a pong, ping, or any text frame counts as heard: `heard`).
 pub struct WsConn {
-  next : async () -> String?
+  next : async () -> WsFrame?
   send : (String) -> Unit
   close : () -> Unit
   ping : (() -> Unit)?
@@ -584,7 +591,11 @@ async fn SlackSurface::run_socket(self : SlackSurface, url : String, handler : H
           self.set_status(false, self.last_error)
           return
         }
-        Some(data) => {
+        Some(Ping) | Some(Pong) => {
+          heard.val = self.now()
+          (self.o.on_heard)()
+        }
+        Some(Text(data)) => {
           heard.val = self.now()
           (self.o.on_heard)()
           if self.message(conn, data, handler) {

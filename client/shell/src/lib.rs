@@ -272,6 +272,7 @@ impl Inner {
             | "ws.open"
             | "ws.next"
             | "ws.send"
+            | "ws.ping"
             | "tcp.open"
             | "adb.pair"
             | "adb.hold"

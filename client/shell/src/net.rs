@@ -15,10 +15,12 @@ use crate::{Answer, Done, Handle, Inner, err, id_of, str_of};
 pub(crate) type SocketRead = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>;
 pub(crate) type SocketWrite = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
 
-/// A WebSocket frame as `ws.next` gives it and `ws.send` takes it.
+/// A WebSocket frame as `ws.next` gives it and `ws.send`/`ws.ping` take it.
 pub(crate) enum WsFrame {
     Text(String),
     Binary(Vec<u8>),
+    Ping,
+    Pong,
 }
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
@@ -319,6 +321,9 @@ impl Inner {
         // `binary`: its binary frames given too (`{binary: true}` and their bytes); else they are let go, as a socket
         // that speaks only text takes `ws.next`'s other answers for its end.
         let binary = a.get("binary").and_then(Value::as_bool).unwrap_or(false);
+        // `control`: incoming Ping/Pong frames given too (`{ping: true}` / `{pong: true}`), so callers that ping can
+        // track liveness; else control frames stay internal to tungstenite without surfacing on `ws.next`.
+        let control = a.get("control").and_then(Value::as_bool).unwrap_or(false);
         let (incoming_tx, incoming) = tokio::sync::mpsc::unbounded_channel();
         let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<WsFrame>();
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
@@ -329,14 +334,25 @@ impl Inner {
                     message = socket.next() => match message {
                         Some(Ok(Message::Text(text))) => { let _ = incoming_tx.send(Ok(WsFrame::Text(text.as_str().to_owned()))); }
                         Some(Ok(Message::Binary(b))) if binary => { let _ = incoming_tx.send(Ok(WsFrame::Binary(b.to_vec()))); }
+                        Some(Ok(Message::Ping(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Ping)); }
+                        Some(Ok(Message::Pong(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Pong)); }
                         Some(Ok(Message::Close(_))) | Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                         Some(Ok(_)) => {}
                         Some(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
                     },
                     text = outgoing_rx.recv() => match text {
-                        Some(frame) => { let m = match frame { WsFrame::Text(t) => Message::text(t), WsFrame::Binary(b) => Message::binary(b) }; if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; } }
-                        // The handle went (ws.close): the socket is closed.
-                        None => { let _ = socket.close(None).await; return; }
+                        Some(frame) => {
+                            let m = match frame {
+                                WsFrame::Text(t) => Message::text(t),
+                                WsFrame::Binary(b) => Message::binary(b),
+                                WsFrame::Ping => Message::Ping(Default::default()),
+                                WsFrame::Pong => Message::Pong(Default::default()),
+                            };
+                            if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; }
+                        }
+                        // The handle went (ws.close): the socket is closed (bounded so a half-open TCP cannot hang close).
+                        // timer: timeout bounding WebSocket close handshake on a dead or half-open connection
+                        None => { let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.close(None)).await; return; }
                     },
                 }
             }
@@ -396,6 +412,8 @@ impl Inner {
                     Some(Ok(WsFrame::Text(text))) => Ok(Answer::json(json!({ "text": text }))),
                     // A binary frame (Feishu's long connection speaks protobuf): its bytes, said `binary`.
                     Some(Ok(WsFrame::Binary(b))) => Ok(Answer::bytes(json!({ "binary": true }), b)),
+                    Some(Ok(WsFrame::Ping)) => Ok(Answer::json(json!({ "ping": true }))),
+                    Some(Ok(WsFrame::Pong)) => Ok(Answer::json(json!({ "pong": true }))),
                     Some(Err(e)) => Err(e),
                     None => Ok(Answer::json(json!({ "end": true }))),
                 }
@@ -405,6 +423,11 @@ impl Inner {
                 // Bytes given: a binary frame; else `text`.
                 let frame = match bytes { Some(b) => WsFrame::Binary(b), None => WsFrame::Text(str_of(a, "text")?.to_string()) };
                 outgoing.send(frame).map_err(|_| "the socket is closed".to_string())?;
+                Ok(Answer::json(json!({})))
+            }
+            "ws.ping" => {
+                let Handle::Ws { outgoing, .. } = self.handle(id_of(a)?)? else { return Err("not a socket".into()) };
+                outgoing.send(WsFrame::Ping).map_err(|_| "the socket is closed".to_string())?;
                 Ok(Answer::json(json!({})))
             }
             "tcp.open" => {
