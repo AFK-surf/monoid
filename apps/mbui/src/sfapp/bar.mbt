@@ -41,6 +41,13 @@ let act_size : Double = bar_track
 let act_gap : Double = 10.0
 
 ///|
+/// Capillary liquid bridge parameters between the bottom bar capsule and the `＋` action circle.
+let bar_bond_merge_max : Double = 18.0
+
+///|
+let bar_bond_break_gap : Double = 6.5
+
+///|
 /// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
 /// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
 let lens_lift_h : Double = 1.17
@@ -630,6 +637,10 @@ priv struct BarModel {
   /// the notch's icon going as another swaps in ("" none), how far the swap is (0 to 1)
   mut icon_was : String
   icon_swap : Glide
+  /// capillary liquid bridge merge radius & elastic recoil between capsule and `＋` action circle
+  bond_merge : @motion.Way
+  bond_recoil : @motion.Way
+  mut bond_bonded : Bool
   /// what it was last told by the app's state (bar_tell, at its cause's moment): told the same again, nothing new
   mut told : BarTold?
 }
@@ -680,6 +691,9 @@ let bar : BarModel = {
   waits: false,
   felt: "",
   icon_was: "",
+  bond_merge: @motion.Way::new(0.0),
+  bond_recoil: @motion.Way::new(0.0),
+  bond_bonded: false,
   told: None,
   icon_swap: glide(1.0),
 }
@@ -718,6 +732,9 @@ fn bar_reset() -> Unit {
   bar.felt = ""
   bar.icon_was = ""
   back_glide(bar.icon_swap, 1.0)
+  bar.bond_merge.put(0.0)
+  bar.bond_recoil.put(0.0)
+  bar.bond_bonded = false
   m_face.val = ""
   bar.told = None
   bar_told_now.set(None)
@@ -731,12 +748,14 @@ fn bar_reset() -> Unit {
 ///|
 /// The panel opened or closed from the moment `at` (its cause's; none: now).
 fn BarModel::open_panel(self : BarModel, open : Bool, at~ : Double) -> Unit {
+  let prev_k_end = self.k_end()
   self.mode.set(open)
   if open {
     self.o.go(1.0, 260.0, 17.0, at~)
   } else {
     self.o.go(0.0, 320.0, 26.0, at~)
   }
+  self.schedule_bond(prev_k_end, at~)
 }
 
 ///|
@@ -755,6 +774,7 @@ fn BarModel::rest(self : BarModel) -> Double {
   for g in gs {
     e = dmax(e, g.end())
   }
+  e = dmax(e, dmax(self.bond_merge.ends_at(), self.bond_recoil.ends_at()))
   e
 }
 
@@ -789,7 +809,58 @@ fn BarModel::jump(self : BarModel) -> Unit {
   for _, g in self.tints {
     g.snap(g.target)
   }
+  self.bond_merge.put(self.bond_merge.target())
+  self.bond_recoil.put(0.0)
   self.swap = None
+}
+
+///|
+/// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) whenever the effective notch target
+/// `k_end()` flips between closed (0) and open (1), whether driven by tab change or panel open/close.
+fn BarModel::schedule_bond(self : BarModel, prev_k_end : Double, at~ : Double) -> Unit {
+  let next_k_end = self.k_end()
+  if (next_k_end > 0.5) == (prev_k_end > 0.5) {
+    return
+  }
+  let end = dmax(at, dmax(self.k.end(), self.o.end()))
+  let gap_at = fn(t : Double) { (act_size + act_gap) * self.k_at(t) - act_size }
+  if next_k_end > 0.5 {
+    // Opening: ＋ emerges from capsule right end -> stretches liquid bridge until gap >= break_gap -> critically damped snap to 0
+    let delay = match @motion.liquid_bond_cross_time(at, end, gap_at, true, bar_bond_break_gap) {
+      Some(ts) => dmax(0.0, ts - at)
+      None => 0.0
+    }
+    self.bond_bonded = false
+    self.bond_merge.put(bar_bond_merge_max)
+    self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
+    self.bond_recoil.put(0.0)
+    self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=-4.5)
+  } else {
+    // Closing: ＋ approaches with zero magnetic attraction while gap > 0 -> blooms on physical contact (gap <= 0)
+    let delay = match @motion.liquid_bond_cross_time(at, end, gap_at, false, 0.0) {
+      Some(tt) => dmax(0.0, tt - at)
+      None => 0.0
+    }
+    self.bond_bonded = true
+    self.bond_merge.put(0.0)
+    self.bond_merge.go(bar_bond_merge_max, @motion.liquid_merge_spring.delayed(delay), at~)
+    self.bond_recoil.put(0.0)
+    self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=4.0)
+  }
+}
+
+///|
+/// Capillary liquid bridge merge radius between the capsule and `＋` circle at moment `t` (ms).
+fn bar_merge_at(t : Double) -> Double {
+  if bar.k_at(t) <= 0.002 {
+    return 0.0
+  }
+  let m = bar.bond_merge.value_at(t)
+  if !bar.bond_bonded && m < 0.05 {
+    0.0
+  } else {
+    dmax(0.0, m)
+  }
 }
 
 // ── what the bar is told ───────────────────────────────────────────────
@@ -994,7 +1065,9 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     }
   }
   // the notch as the place has it
+  let prev_k_end = m.k_end()
   m.k.go(if notched { 1.0 } else { 0.0 }, 300.0, 30.0, at~)
+  m.schedule_bond(prev_k_end, at~)
   let items = told.sets[told.cur]
   // the ball: to the place shown, from where it is then, as stiff as the way there is short (a new place's); riding
   // a bar chosen as it lands; a new width, there at once. Not while a finger has it, nor before the width is known.

@@ -33,6 +33,7 @@ let chosen_share : Double = 0.24
 pub let gallery_pages : Array[(String, String)] = [
   ("overview", "Overview"),
   ("interactive", "Interactive"),
+  ("merge", "Merge"),
   ("dialog", "Dialog"),
 ]
 

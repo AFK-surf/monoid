@@ -82,6 +82,7 @@ pub fn page(root : @view.View, name : String, top? : Double = 0.0, closed? : () 
     wallpaper(w, fn() { grid_on.get() }, fn() { boost.get() })
     match name {
       "film" => film_page(w, top)
+      "merge" => merge_page(w, top)
       _ => {
         let held = if name == "interactive" { Some(held_now()) } else { None }
         overview(w, held, top, grid_on, boost, dialog_open)
@@ -1356,6 +1357,54 @@ fn film_page(root : @view.View, top : Double) -> Unit {
           studio_tab_face("Tokens", icon_terminal),
         ],
       )
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The liquid merge & split page: interactive capillary drag + programmatic button toggle over the wallpaper.
+fn merge_page(root : @view.View, top : Double) -> Unit {
+  let drag_ctrl = @lg.LiquidMerge::new(separated=false)
+  let toggle_ctrl = @lg.LiquidMerge::new(separated=false)
+  root.box(fn(page) {
+    page.grow(Is(1.0)).gap(Is(36.0)).padding(Is((48.0, 48.0 + top, 48.0, 48.0))).lines_up(Is(Some(Start))) |> ignore
+    page.box(fn(s) {
+      s.gap(Is(12.0)) |> ignore
+      s.box(fn(t) {
+        t.words(Is("Drag to Split & Fuse"), look=@lg.words_at(13.0, weight=600)).ink(By(fn() { @lg.alpha(@lg.colors().content, 0.6) }))
+        |> ignore
+      })
+      |> ignore
+      @lg.liquid_merge_node(s, controller=drag_ctrl, label=fn() { "Drag Droplet" }) |> ignore
+    })
+    |> ignore
+    page.box(fn(s) {
+      s.gap(Is(12.0)) |> ignore
+      s.box(fn(t) {
+        t.words(Is("Programmatic Split / Merge"), look=@lg.words_at(13.0, weight=600)).ink(By(fn() { @lg.alpha(@lg.colors().content, 0.6) }))
+        |> ignore
+      })
+      |> ignore
+      s.box(fn(r) {
+        r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Middle))) |> ignore
+        @lg.liquid_merge_node(r, controller=toggle_ctrl, label=fn() { "Toggle Droplet" }) |> ignore
+        let btn_ref : Ref[@view.View?] = Ref(None)
+        let btn = @lg.liquid_button_node(
+          r,
+          fn() { if toggle_ctrl.is_separated() { "Merge" } else { "Split" } },
+          fn() {
+            let at = match btn_ref.val {
+              Some(n) => n.cause_at()
+              None => 0.0
+            }
+            toggle_ctrl.set_separated(!toggle_ctrl.is_separated(), at~)
+          },
+        )
+        btn_ref.val = Some(btn)
+      })
       |> ignore
     })
     |> ignore

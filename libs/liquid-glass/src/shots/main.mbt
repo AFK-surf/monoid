@@ -80,10 +80,31 @@ let stage_script : String =
   #|wait 700
 
 ///|
+/// Liquid merge & split demo script (src/pages merge_page):
+/// 1) Drag right from merged to stretch bridge -> snap at break_gap -> auto-separate to 48pt
+/// 2) Pause at full separation
+/// 3) Drag left to gap ~4pt and release -> pause to prove strictly zero magnetic attraction
+/// 4) Drag left past contact (gap <= 0) -> instant capillary fusion & absorption
+/// 5) Tap Split then Merge button for programmatic transition
+let merge_script : String =
+  #|wait 350
+  #|drag 248 118 34 0 550
+  #|wait 700
+  #|drag 304 118 -44 0 650
+  #|wait 650
+  #|drag 260 118 -14 0 350
+  #|wait 750
+  #|tap Split
+  #|wait 850
+  #|tap Merge
+  #|wait 850
+
+///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.
 let gallery_shots : Array[(String, String, String)] = [
   ("overview", "overview", ""),
   ("interactive", "interactive", ""),
+  ("merge", "merge", ""),
   ("dialog", "dialog", ""),
   ("hover", "overview", "hover Interactive"),
   ("focus", "overview", "key shift+tab"),
@@ -101,14 +122,20 @@ fn main {
   let page_h = env_double("MBUI_LG_H", 1040.0)
   let page_scale = env_double("MBUI_LG_SCALE", 3.0)
   let mut failed = 0
-  for page in ["overview", "dialog", "interactive", "film"] {
+  for page in ["overview", "dialog", "interactive", "film", "merge"] {
     if only != "" && only != page {
       continue
     }
     for dark in [false, true] {
       @lg.set_dark(Some(dark))
       let path = "\{dir}/\{page}-\{if dark { "dark" } else { "light" }}.png"
-      let (w, h, scale) = if page == "film" { (600.0, 400.0, 3.0) } else { (page_w, page_h, page_scale) }
+      let (w, h, scale) = if page == "film" {
+        (600.0, 400.0, 3.0)
+      } else if page == "merge" {
+        (560.0, 360.0, 3.0)
+      } else {
+        (page_w, page_h, page_scale)
+      }
       let ok = @film.picture(
         fn(root) { @pages.page(root, page) },
         path~,
@@ -183,6 +210,26 @@ fn main {
     println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
     if !ok {
       failed += 1
+    }
+  }
+  if only == "" || only == "merge" {
+    for dark in [false, true] {
+      @lg.set_dark(Some(dark))
+      let out = "\{dir}/merge-\{if dark { "dark" } else { "light" }}.mp4"
+      let ok = @film.film(
+        fn(root) { @pages.page(root, "merge") },
+        script=merge_script,
+        out~,
+        w=560.0,
+        h=360.0,
+        scale=2.0,
+        dark~,
+        fps=60,
+      )
+      println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
+      if !ok {
+        failed += 1
+      }
     }
   }
   if failed > 0 {

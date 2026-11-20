@@ -87,7 +87,12 @@ fn bar_part_told(p : BarPart) -> String {
         Some(s) => "\{s.i} \{s.ends}"
         None => ""
       }
-      spr_told(m.k) + spr_told(m.o) + spr_told(m.up) + "\{m.mode.untracked()} " + swap
+      spr_told(m.k) +
+      spr_told(m.o) +
+      spr_told(m.up) +
+      "\{m.bond_merge.target()} \{m.bond_merge.ends_at()} \{m.bond_recoil.ends_at()} " +
+      "\{m.mode.untracked()} " +
+      swap
     }
     Ball =>
       spr_told(m.ball_x) +
@@ -157,9 +162,12 @@ fn bar_moved(n : @view.View, p : BarPart, until : () -> Double, f : (Double) -> 
 }
 
 ///|
-/// Where the notch as drawn ends (BarModel::k_at: its spring's, the panel's and the rise's).
+/// Where the notch as drawn ends (BarModel::k_at: its spring's, the panel's, the rise's, and its liquid bridge's).
 fn bar_k_until() -> Double {
-  dmax(bar.k.end(), dmax(bar.o.end(), bar.up.end()))
+  dmax(
+    dmax(bar.k.end(), dmax(bar.o.end(), bar.up.end())),
+    dmax(bar.bond_merge.ends_at(), bar.bond_recoil.ends_at()),
+  )
 }
 
 ///|
@@ -309,6 +317,7 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
     },
   )
   |> ignore
+  bar_shadows_node(holder, w, clip_top, panel, row_top, drift)
   bar_glass_capsule(holder, w, clip_top, panel, drift)
   // the action's circle of glass beside the capsule, at the bar's right, growing out of nothing as the place has an
   // action and the capsule gives it room (laid out as it is there, drawn so); closing, it keeps the last action's icon
@@ -321,12 +330,16 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
     .radius(Is(act_size / 2.0))
     .glass(
       By(fn() {
+        let t = bar_moment(d, Notch, bar_k_until())
         let spot = if d.pressed() { Some((act_size / 2.0, act_size / 2.0)) } else { None }
-        Some(@sf.glass_tab_bar(spot~).sharing())
+        let merge = bar_merge_at(t)
+        if merge > 0.0 {
+          Some(@sf.glass_tab_bar(spot~, merge~))
+        } else {
+          Some(@sf.glass_tab_bar(spot~).sharing())
+        }
       }),
     )
-    .shadow(By(bar_shadow))
-    .shadow_outside(Is(true))
     .presses(By(fn() {
       match bar_told_now.get() {
         Some(t) => t.shown && t.action != ""
@@ -385,7 +398,12 @@ fn bar_action_icons(d : @view.View) -> Unit {
   }
   for face in bar_faces {
     d.box(fn(c) {
-      c.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      c
+      .over(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .alpha(By(fn() { dclamp((bar.k_at(bar_moment(c, Notch, bar_k_until())) - 0.55) / 0.35, 0.0, 1.0) }))
+      |> ignore
       let shown = fn() { look(c, face) }
       let i = @sf.icon_node(c, face, 30.0, By(bar_action_ink), name_now=fn() {
         if shown() is Some(_) {
@@ -404,20 +422,80 @@ fn bar_action_icons(d : @view.View) -> Unit {
 }
 
 ///|
-/// The action's circle: growing about its middle with the notch, as each frame is drawn; there still while a finger has
-/// the capsule (taking nothing then), as Comma's circle is.
-fn bar_disc_look(d : @view.View) -> Unit {
-  // (how faint and how large: closed, not there)
-  let look_at = fn(t : Double) {
-    let k = bar.k_at(t)
-    if k <= 0.001 {
-      (0.0, 1.0)
-    } else {
-      (dmin(1.0, k * 3.0), dmin(1.0, k))
-    }
+/// The action's circle: emerging smoothly from the capsule's right end with subtle elastic recoil on split/fuse;
+/// there still while a finger has the capsule (taking nothing then), as Comma's circle is.
+fn bar_disc_look_at(t : Double) -> (Double, Double) {
+  let k = bar.k_at(t)
+  if k <= 0.001 {
+    (0.0, 1.0)
+  } else {
+    let alpha = dclamp(k / 0.15, 0.0, 1.0)
+    let base_scale = 0.92 + 0.08 * dclamp(k, 0.0, 1.0)
+    let recoil = dclamp(bar.bond_recoil.value_at(t) * 0.25, -0.06, 0.06)
+    (alpha, dclamp(base_scale + recoil, 0.85, 1.08))
   }
-  let look = fn() { look_at(bar_moment(d, Notch, bar_k_until())) }
+}
+
+///|
+fn bar_disc_look(d : @view.View) -> Unit {
+  let look = fn() { bar_disc_look_at(bar_moment(d, Notch, bar_k_until())) }
   d.alpha(By(fn() { look().0 })).scale(By(fn() { look().1 })) |> ignore
+}
+
+///|
+/// Preceding outside-only shadows for the capsule and `＋` action circle, kept in a sibling layer before both glass
+/// nodes so `sd_group` adjacency is never broken and the `＋` shadow fades in smoothly with separation (never bleeding
+/// dark shadow into the capsule while merged).
+fn bar_shadows_node(
+  holder : @view.View,
+  w : () -> Double,
+  top : () -> Double,
+  bottom : () -> Double,
+  row_top : () -> Double,
+  drift : (Double) -> Double,
+) -> Unit {
+  let h = fn() { bottom() - top() }
+  holder.box(fn(shadows) {
+    shadows.over(Is(true)) |> ignore
+    bar_at(shadows, fn() { 0.0 }, top, w, h, fn(cs) {
+      cs
+      .radius(By(fn() { dmin(rad, h() / 2.0) }))
+      .shadow(By(bar_shadow))
+      .shadow_outside(Is(true))
+      .ground_drawn(
+        By(fn() {
+          bar_part_said(Notch)
+          let t = bar_moment(cs, Panel, dmax(bar.o.end(), bar_k_until()))
+          let d = drift(t)
+          { dx: 0.0, dy: d, dw: bar_capsule_w(w(), bar.k_at(t)) - w(), dh: -d, corners: None }
+        }),
+      )
+      |> ignore
+    })
+    |> ignore
+    bar_at(shadows, fn() { w() - act_size }, row_top, fn() { act_size }, fn() { act_size }, fn(ds) {
+      let at = fn() { bar_moment(ds, Notch, bar_k_until()) }
+      ds
+      .radius(Is(act_size / 2.0))
+      .shadow(By(bar_shadow))
+      .shadow_outside(Is(true))
+      .alpha(By(fn() {
+        let t = at()
+        let k = bar.k_at(t)
+        if k <= 0.001 {
+          0.0
+        } else {
+          let gap = (act_size + act_gap) * k - act_size
+          let u = dclamp(gap / bar_bond_break_gap, 0.0, 1.0)
+          u * u * (3.0 - 2.0 * u)
+        }
+      }))
+      .scale(By(fn() { bar_disc_look_at(at()).1 }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -454,15 +532,14 @@ fn bar_glass_capsule(
     .radius(By(fn() { dmin(rad, h() / 2.0) }))
     .glass(
       By(fn() {
-        let until = if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }
+        bar_part_said(Notch)
+        let until = dmax(if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }, bar_k_until())
         let t = bar_moment(g, Ball, until)
         let a = bar_ball_at(t)
         let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
-        Some(@sf.glass_tab_bar(spot~))
+        Some(@sf.glass_tab_bar(spot~, merge=bar_merge_at(t)))
       }),
     )
-    .shadow(By(bar_shadow))
-    .shadow_outside(Is(true))
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
     // room as far as the notch is open then)
     .ground_drawn(

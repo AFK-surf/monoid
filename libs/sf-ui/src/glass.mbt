@@ -33,7 +33,7 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 /// ios27Light / ios27Dark: uniform 2.1pt Gaussian blur across center and rim, quarter-circle bevel refraction,
 /// adaptive color transfer, inner bevel shadow, glint, and 0.75pt external contour); where glass is drawn solid,
 /// its opaque ground.
-pub fn glass_tab_bar(spot? : (Double, Double)? = None) -> @ui.Glass {
+pub fn glass_tab_bar(spot? : (Double, Double)? = None, merge? : Double = 0.0) -> @ui.Glass {
   let t = theme()
   // Neutral light/dark sentinel selects Apple iOS 27 ios27Light / ios27Dark color transfer model in kind == 6.
   let tint = if t.dark { 0x202020FFL } else { 0xFDFCFD67L }
@@ -47,7 +47,7 @@ pub fn glass_tab_bar(spot? : (Double, Double)? = None) -> @ui.Glass {
     bezel=20.0,
     refraction=28.0,
     chroma=0.0,
-    merge=0.0,
+    merge~,
     adaptive=false,
     spot~,
   )

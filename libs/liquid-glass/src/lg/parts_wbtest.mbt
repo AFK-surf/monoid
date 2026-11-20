@@ -392,6 +392,46 @@ test "a drag of each glass part is drawn the same at 60, 120, 24 and 7 frames a 
 }
 
 ///|
+test "liquid merge: drag past break_gap auto-separates, near-hover has zero attraction, contact fuses" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) { liquid_merge_node(p, controller=ctrl, label=fn() { "Droplet" }) |> ignore })
+  let (x, y) = middle(t, Group, "Droplet")
+  // Initially merged: bonded with full merge radius
+  assert_eq((ctrl.is_bonded(), ctrl.is_separated(), ctrl.merge_at(t.time()) > 20.0), (true, false, true))
+  // Drag right past break_gap -> snaps and auto-separates to separated_gap (48pt)
+  t.drag(x, y, x + 36.0, y)
+  t.run_for(springs_out)
+  let after_split = (ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_separated_gap).abs() < 0.5, ctrl.merge_at(t.time()) == 0.0)
+  // Drag left to gap ~4pt and release -> strictly zero attraction, stays separated with merge == 0.0
+  let (sx, sy) = middle(t, Group, "Droplet")
+  t.drag(sx, sy, sx - 44.0, sy)
+  t.run_for(springs_out)
+  let near_hover = (ctrl.is_bonded(), ctrl.is_separated(), ctrl.gap_at(t.time()) > 2.0 && ctrl.gap_at(t.time()) < 6.0, ctrl.merge_at(t.time()) == 0.0)
+  // Drag left past contact (gap <= 0) -> fuses immediately and absorbs back to merged_gap
+  let (nx, ny) = middle(t, Group, "Droplet")
+  t.drag(nx, ny, nx - 14.0, ny)
+  t.run_for(springs_out)
+  let after_fuse = (ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_merged_gap).abs() < 0.5, ctrl.merge_at(t.time()) > 20.0)
+  assert_eq((after_split, near_hover, after_fuse), ((false, true, true, true), (false, true, true, true), (true, false, true, true)))
+}
+
+///|
+test "liquid merge: programmatic set_separated obeys hysteresis and passes audit" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) { liquid_merge_node(p, controller=ctrl, label=fn() { "Droplet" }) |> ignore })
+  t.by_hand(fn() { ctrl.set_separated(true, at=t.time()) })
+  t.run_for(springs_out)
+  let split_ok = (!ctrl.is_bonded(), ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_separated_gap).abs() < 0.5, ctrl.merge_at(t.time()) == 0.0)
+  t.by_hand(fn() { ctrl.set_separated(false, at=t.time()) })
+  // Halfway while still approaching (gap > 0): strictly zero magnetic attraction!
+  t.run_for(approach_mid_ms)
+  let mid_ok = if ctrl.gap_at(t.time()) > 0.5 { !ctrl.is_bonded() && ctrl.merge_at(t.time()) == 0.0 } else { true }
+  t.run_for(springs_out)
+  let fused_ok = (ctrl.is_bonded(), !ctrl.is_separated(), (ctrl.gap_at(t.time()) - merge_merged_gap).abs() < 0.5, ctrl.merge_at(t.time()) > 20.0)
+  assert_eq((split_ok, mid_ok, fused_ok, t.audit()), ((true, true, true, true), true, (true, true, true, true), []))
+}
+
+///|
 /// Long past every spring of the parts' (the softest, InteractiveHighlight's 0.5 at 300, is within its threshold in
 /// well under a second): what a step waits before what it asserts of a part at rest.
 let springs_out : Double = 1000.0
@@ -410,4 +450,7 @@ let letting_go_ms : Double = 90.0
 
 ///|
 let dragged_ms : Double = 120.0
+
+///|
+let approach_mid_ms : Double = 40.0
 

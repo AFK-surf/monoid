@@ -42,10 +42,11 @@ test "the bar chooses the page by a tap and by the arrow keys, and goes while th
   t.tap(x, y)
   t.run_for(settled)
   let tapped = chosen_page(t)
-  // (the keyboard on the page tabs, the bar's first stop of its two, the last of the window's: Right chooses the next,
-  // Dialog, whose dialog is modal: the bar gone)
+  // (the keyboard on the page tabs, the bar's first stop of its two, the last of the window's: Right chooses Merge,
+  // then Dialog, whose dialog is modal: the bar gone)
   t.tab(back=true)
   t.tab(back=true)
+  t.key(@ui.key_code_right)
   t.key(@ui.key_code_right)
   t.run_for(settled)
   let opened = (chosen_page(t), t.all(Dialog, label="Publish ui.monoid").length(), t.all(Radio).length())
@@ -87,7 +88,7 @@ test "the gallery's bar, each page light and dark, holds to mbui's audit" {
   // (the bar's own faults: the pages' are the catalog's colours over the wallpaper, as the shots draw them)
   let faults = []
   for dark in [false, true] {
-    for name in ["overview", "interactive", "dialog", "film"] {
+    for name in ["overview", "interactive", "merge", "dialog", "film"] {
       let t = gallery_case(name, dark~)
       t.run_for(settled)
       for f in t.audit() {
@@ -159,12 +160,12 @@ test "the bottom dock switches between Optics, Deck and Loupe, and Publish opens
 ///|
 test "a run of choices is drawn the same at 60, 120, 24 and 7 frames a second" {
   inspect(chosen_at().join("\n"), content=(
-    #|Overview false 6 432.5,12,415
-    #|Interactive false 9 432.5,12,415
-    #|Interactive true 9 432.5,12,415
-    #|Overview true 6 432.5,12,415
-    #|Overview false 6 432.5,12,415
+    #|Overview false 6 399,12,482
+    #|Interactive false 9 399,12,482
+    #|Interactive true 9 399,12,482
+    #|Overview true 6 399,12,482
+    #|Overview false 6 399,12,482
     #| false 6 
-    #|Overview false 6 432.5,12,415
+    #|Overview false 6 399,12,482
   ))
 }

@@ -36,6 +36,8 @@ pub fn breathe_alpha(@view.View, period_ms? : Double, low? : Double, resident? :
 
 pub fn calc_generator_duration(Generator, time_step? : Double, max_duration? : Double, keyframes? : Array[Double]) -> Double
 
+pub fn capsule_gap_x(Double, Double) -> Double
+
 pub let carousel_spring : Spec
 
 pub fn circ_in(Double) -> Double
@@ -43,6 +45,8 @@ pub fn circ_in(Double) -> Double
 pub fn circ_in_out(Double) -> Double
 
 pub fn circ_out(Double) -> Double
+
+pub fn circle_gap(Double, Double, Double, Double, Double, Double) -> Double
 
 pub fn clamp(Double, Double, Double) -> Double
 
@@ -178,6 +182,22 @@ pub fn lifted(@ui.Ctx, Int32, String) -> Double
 pub fn linear(Double) -> Double
 
 pub fn linear_easing((Double) -> Double, Double, resolution? : Double) -> String
+
+pub let liquid_auto_fuse_spring : Spec
+
+pub let liquid_auto_split_spring : Spec
+
+pub fn liquid_bond_cross_time(Double, Double, (Double) -> Double, Bool, Double) -> Double?
+
+pub let liquid_merge_spring : Spec
+
+pub let liquid_recoil_spring : Spec
+
+pub let liquid_snap_back_spring : Spec
+
+pub let liquid_split_spring : Spec
+
+pub let liquid_toggle_spring : Spec
 
 pub fn list_keys(@ui.Ctx, String, Array[String], liftable? : (String) -> Bool) -> Int32
 
@@ -318,6 +338,8 @@ pub fn rolling_chars(String) -> Array[Char]
 #callsite(autofill(loc))
 pub fn rolling_slots_node(@view.View, () -> String, () -> Double, () -> @ui.TextStyle, () -> Int64, rolls? : () -> Bool, spec? : Spec, fade_px? : Double, loc~ : SourceLoc) -> @view.View
 
+pub fn rounded_rect_gap(Double, Double, Double, Double, Double, Double, Double, Double, Double, Double) -> Double
+
 pub fn rubber_band(Double, Double, coeff? : Double) -> Double
 
 pub fn rubber_band_clamped(Double, Double, Double, Double, coeff? : Double) -> Double
@@ -429,6 +451,13 @@ pub fn Anim::target(Self) -> Double
 pub fn Anim::value_at(Self, Double) -> Double
 pub impl @ui.Moving for Anim
 
+#derive(Eq, @debug.Debug)
+pub(all) enum BondEvent {
+  Steady
+  Fused
+  Split
+}
+
 pub struct Choreography {
   // private fields
 }
@@ -535,6 +564,24 @@ pub fn HoldWay::at(Self, Double) -> Double
 pub fn HoldWay::end(Self) -> Double
 pub fn HoldWay::holding(Self) -> Bool
 pub fn HoldWay::progress_on(Self, @view.View) -> Double
+
+pub struct LiquidBond {
+  // private fields
+}
+pub fn LiquidBond::break_gap(Self) -> Double
+pub fn LiquidBond::contact_gap(Self) -> Double
+pub fn LiquidBond::end(Self) -> Double
+pub fn LiquidBond::is_bonded(Self) -> Bool
+pub fn LiquidBond::merge_at(Self, Double) -> Double
+pub fn LiquidBond::merge_max(Self) -> Double
+pub fn LiquidBond::merge_on(Self, @view.View) -> Double
+pub fn LiquidBond::new(merged? : Bool, merge_max? : Double, break_gap? : Double, contact_gap? : Double, merge_spec? : Spec, split_spec? : Spec, recoil_spec? : Spec) -> Self
+pub fn LiquidBond::recoil_at(Self, Double) -> Double
+pub fn LiquidBond::recoil_on(Self, @view.View) -> Double
+#callsite(autofill(loc))
+pub fn LiquidBond::reset(Self, Bool, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn LiquidBond::update(Self, Double, at~ : Double, loc~ : SourceLoc) -> BondEvent
 
 pub struct MeasuredCorners {
   // private fields

@@ -22,6 +22,7 @@ All of them are in `src/lg` (`@lg`):
 | `liquid_bottom_tabs_node` | A bar of tabs with a lens over the chosen one; drag the lens to choose. A tab list. |
 | `liquid_control_tile_node`, `liquid_control_item_node`, `liquid_card_node` | The control center's glass tiles, cards and switches. |
 | `liquid_dialog_node` | A modal dialog of glass over a dimmed page, with Cancel and an action. |
+| `liquid_merge_node`, `LiquidMerge` | Two liquid glass bodies with capillary bridge hysteresis: zero attraction before contact, smooth liquid bridge while pulling, crisp snap-off and auto-separation past `break_gap`. |
 | `liquid_progressive_blur_node`, `liquid_adaptive_surface_node`, `liquid_magnifier_node` | A blur that fades out, glass that follows how light the page under it is, and a lens over text. |
 | `DampedDrag`, `InteractiveHighlight` | The springs behind the parts (the catalog's DampedDragAnimation and InteractiveHighlight), for a caller that holds or drives them itself. |
 

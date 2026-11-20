@@ -935,14 +935,19 @@
         d = sd_rr(p, v_rect, s_rr);
         halfMinor = min(v_rect.z, v_rect.w) * 0.5;
       } else {
-        d = sd_group(p, k);
-        float best_d = 1e9;
+        d = 1e9;
         for (int i = 0; i < 8; i++) {
           if (i >= u_n) break;
           float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
-          if (di < best_d) {
-            best_d = di;
-            halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          if (i == 0) {
+            d = di;
+            halfMinor = hi;
+          } else {
+            float h = max(k - abs(d - di), 0.0) / k;
+            float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
+            d = min(d, di) - h * h * k * 0.25;
+            halfMinor = mix(halfMinor, hi, w);
           }
         }
       }
