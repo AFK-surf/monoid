@@ -235,3 +235,21 @@ test "rows steady: keys that stay moved among a page's list's keys by data (reor
 /// How long after one key is moved among a page's list's keys the next is, in the test of two (the first still on its
 /// way then).
 let reorder_again_ms : Double = 120.0
+
+///|
+test "rows steady: a list's way set out on a frame's own moment takes its speed up from rest over the frames from it, and a whole step in its frames is a step all the same" {
+  let p = 1000.0 / 60.0
+  let t0 = 3383.3333333333335
+  // (a way set out at rest on the first frame's moment: 1.54, then 17.13 and 13.65 a frame as its curve has it)
+  let seen = [(t0, t0, 482.65), (3400.0, 3400.0, 481.11), (3416.6666666666665, 3416.6666666666665, 463.98), (
+    3433.3333333333335, 3433.3333333333335, 450.33,
+  )]
+  let (fault, _) = rows_steady_fault(seen, p, set_out=seen[0].1, turned=-1.0)
+  assert_eq(fault, None)
+  // (one frame going 34 between 1 and 2, the way set out on the first frame's moment all the same: a step)
+  let step = [(t0, t0, 480.0), (3400.0, 3400.0, 479.0), (3416.6666666666665, 3416.6666666666665, 445.0), (
+    3433.3333333333335, 3433.3333333333335, 443.0,
+  )]
+  let (fault, _) = rows_steady_fault(step, p, set_out=step[0].1, turned=-1.0)
+  assert_true(fault is Some(_), msg="a step as the way set out")
+}

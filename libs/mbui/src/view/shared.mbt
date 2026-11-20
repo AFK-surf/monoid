@@ -238,6 +238,9 @@ priv struct Flying {
   /// what of where it sets out is seen, given where it goes (View::flies_in's `cut_from`), said anew with where it sets
   /// out (Tree::flights_refresh_now)
   cut_fn : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
+  /// it sets out and lands within a page's list, among its rows (View::flies_in's `in_list`): it carries no key of that
+  /// list (Tree::carried), the rows coming on the list's own way about it
+  in_list : Bool
 }
 
 ///|
@@ -397,7 +400,8 @@ fn flight_far(from : (Double, Double, Double, Double), to : (Double, Double, Dou
 /// a thumbnail sent as one), and the key of a page's list they come in is carried by its way alone (Tree::carried); none
 /// said so, each goes as long as its own way, the key on the longest. `in_list`: it sets out from within the page's list
 /// it lands in (View::scrolls_window), among its rows (what an agent's line puts by a message, the time under one's
-/// words): drawn after all that list scrolls, under its foot and what flies from that foot. `cut_from`: what of where it
+/// words): drawn after all that list scrolls, under its foot and what flies from that foot, carrying none of its keys
+/// (the row it lands in comes on the list's own way, never laid whole where it ends). `cut_from`: what of where it
 /// sets out is seen (x0, y0, x1, y1 in the window, given where it goes: words scrolled in a field, what of them its room
 /// leaves seen), what is seen of it opening from that to all of it on its way (Tree::lift_cut); none: all of it.
 /// Made outside a change it is there at once.
@@ -496,6 +500,7 @@ fn Tree::incoming_now(
       cut_fn=i.cut_from,
       from_cut=i.cut_from.bind(fn(c) { c(to) }),
       container=i.container,
+      in_list=i.in_list,
     )
     |> ignore
   }
@@ -1870,6 +1875,7 @@ fn Tree::paired(
     lead: leads_it,
     awaits_old: false,
     cut_fn: None,
+    in_list: false,
   }
   self.flights.push(f)
   // (a container's hang: what each end holds past its box, at rest)
@@ -2037,6 +2043,7 @@ fn Tree::fly_from(
   cut_fn? : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)? = None,
   from_cut? : (Double, Double, Double, Double)? = None,
   container? : Bool = false,
+  in_list? : Bool = false,
 ) -> Bool {
   // (one flying in from what is none of the tree's on that way of its own, View::flies_in; else as it flies with
   // another of its id, View::shared)
@@ -2114,6 +2121,7 @@ fn Tree::fly_from(
     lead,
     awaits_old: waits_old,
     cut_fn,
+    in_list,
   }
   self.flights.push(f)
   // (set out from what is none of the tree's while an old view is hosted in it: refreshed against where it is laid out
@@ -2264,7 +2272,9 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
       }
       None => ()
     }
+    // (one within the list carries no key: Tree::incoming_carry)
     match led {
+      _ if f.in_list => ()
       Some((_, _, lf, _)) =>
         if physical_equal(lf, f) {
           self.carried(f.node.at, from, to, f.late, f.start, far_of=f.far_of, anew=true, lead=true)
@@ -3057,6 +3067,11 @@ fn Tree::incoming_carry(
       None => None
     }
     let leads_it = led is Some((_, ln, _)) && ln == i.node
+    // (one within the list, among its rows (View::flies_in's `in_list`): its block comes on the list's own way, never
+    // carried whole to where it lands and raised over the rows still on their way to theirs)
+    if i.in_list {
+      continue
+    }
     if led is None || leads_it {
       self.carried(i.node.at, from, to, i.late, self.cause_now(), far_of=i.far_of, lead=leads_it)
     }

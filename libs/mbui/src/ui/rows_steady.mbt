@@ -527,8 +527,9 @@ fn rows_steady_return(
 /// before the last going at a speed off the frames round it (not where the way set out between them: the rows go on
 /// from where they were, as fast as the way has them), or a move one way then back within rows_back_frames a second time
 /// within rows_turn_ms of the turn before. And when it turned back now (`turned` as it was where it did not). Where the
-/// way did set out between them, a frame many times as far as both of those round it is a step all the same
-/// (rows_step_least, rows_step_times), unless `faint`: a row not half open, what it holds not seen.
+/// way did set out between them, or on the first of them (from rest, its curve's start all in the frames from it), a
+/// frame many times as far as both of those round it is a step all the same (rows_step_least, rows_step_times), unless
+/// `faint`: a row not half open, what it holds not seen.
 fn rows_steady_fault(
   seen : Array[(Double, Double, Double)],
   period : Double,
@@ -547,7 +548,7 @@ fn rows_steady_fault(
     let v0 = speed(0) * period
     let v1 = speed(1) * period
     let v2 = speed(2) * period
-    if !(set_out > seen[0].1 && set_out <= seen[3].1) {
+    if !(set_out >= seen[0].1 - 1.0e-6 && set_out <= seen[3].1) {
       // (by more than what laying out leaves over in its sums: a way come to its end at rest (9, then 0 and 0) is no
       // stop on its way, whatever crumb of a point a sum leaves where it rests)
       let off = (v1 - (v0 + v2) / 2.0).abs()
