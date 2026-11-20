@@ -1021,6 +1021,76 @@ async function main() {
     same("claimed", a, b, (rel) => rel.endsWith(".part"));
   });
 
+  test("claiming attachments: equal names and a staged-again id keep distinct copies", { timeout: 120_000 }, async () => {
+    const staged = (w: World, id: string) => join(w.data, "remote", "staged", remote.hash(["peer", "from", id]));
+    const [a, b] = twins("claim-names", (w) => {
+      session(w, "to");
+      for (const id of ["first", "second"]) put(staged(w, id), id);
+    });
+    const given = [{ id: "first", name: "same.txt" }, { id: "second", name: "same.txt" }];
+    const kept = await both("same names", a, b, () => peerFiles.claim(a.hub, "peer", "from", "to", given), "claim", "peer", "from", "to", given);
+    assert.ok("value" in kept);
+    assert.deepEqual(kept.value.map((f: Json) => readFileSync(f.path, "utf8")), ["first", "second"]);
+    const consumed = await both("consumed", a, b, () => peerFiles.claim(a.hub, "peer", "from", "to", given), "claim", "peer", "from", "to", given);
+    assert.ok("error" in consumed);
+    for (const w of [a, b]) put(staged(w, "first"), "third");
+    const again = await both("staged again", a, b, () => peerFiles.claim(a.hub, "peer", "from", "to", given.slice(0, 1)), "claim", "peer", "from", "to", given.slice(0, 1));
+    assert.ok("value" in again);
+    assert.deepEqual([...kept.value, ...again.value].map((f: Json) => readFileSync(f.path, "utf8")), ["first", "second", "third"]);
+    same("claimed", a, b);
+  });
+
+  test("claiming attachments: existing files and dangling links survive concurrent claims", { timeout: 120_000 }, async () => {
+    const stamp = new Date(NOW).toISOString().slice(0, 19).replace(/[:.]/g, "-");
+    const [a, b] = twins("claim-occupied", (w) => {
+      const row = session(w, "to");
+      const uploads = join(row.workspace as string, "uploads");
+      put(join(uploads, `${stamp}-same.txt`), "already kept");
+      symlinkSync("missing.txt", join(uploads, `${stamp}-2-same.txt`));
+      for (const id of ["first", "second"]) put(join(w.data, "remote", "staged", remote.hash(["peer", "from", id])), id);
+    });
+    const given = (id: string) => [{ id, name: "same.txt" }];
+    const x = await tsDo(a, () => Promise.all(["first", "second"].map((id) => peerFiles.claim(a.hub, "peer", "from", "to", given(id)))));
+    const y = await Promise.all(["first", "second"].map((id) => mbDo(b, "claim", "peer", "from", "to", given(id))));
+    assert.ok("value" in x);
+    assert.ok(y.every((v) => "value" in v));
+    // The scheduler may award either number to either claim. Its bytes and all earlier entries are invariant.
+    for (const [w, groups] of [[a, x.value], [b, y.map((v) => "value" in v ? v.value : [])]] as [World, Json[][]][]) {
+      const uploads = join(w.sessions.get("to")!.workspace as string, "uploads");
+      assert.equal(readFileSync(join(uploads, `${stamp}-same.txt`), "utf8"), "already kept");
+      assert.equal(readlinkSync(join(uploads, `${stamp}-2-same.txt`)), "missing.txt");
+      const kept = groups.flat();
+      assert.equal(new Set(kept.map((f) => f.path)).size, 2);
+      assert.deepEqual(kept.map((f) => readFileSync(f.path, "utf8")), ["first", "second"]);
+      assert.equal(readdirSync(uploads).length, 4);
+    }
+  });
+
+  test("claiming attachments: a failed copy releases only its own reserved name", { timeout: 120_000 }, async () => {
+    const staged = (w: World, id: string) => join(w.data, "remote", "staged", remote.hash(["peer", "from", id]));
+    const [a, b] = twins("claim-failure", (w) => {
+      session(w, "to");
+      put(staged(w, "first"), "first contents");
+      put(staged(w, "second"), "second contents");
+      // Both staged inputs passed validation. Losing the second while measuring the first makes its copy fail.
+      w.fns.shownFacts = () => {
+        rmSync(staged(w, "second"), { force: true });
+        return null;
+      };
+    });
+    const given = [{ id: "first", name: "same.txt" }, { id: "second", name: "same.txt" }];
+    const x = await tsDo(a, () => peerFiles.claim(a.hub, "peer", "from", "to", given));
+    const y = await mbDo(b, "claim", "peer", "from", "to", given);
+    assert.ok("error" in x && "error" in y);
+    for (const w of [a, b]) {
+      const uploads = join(w.sessions.get("to")!.workspace as string, "uploads");
+      const names = readdirSync(uploads);
+      assert.equal(names.length, 1);
+      assert.equal(readFileSync(join(uploads, names[0]!), "utf8"), "first contents");
+    }
+    same("failed copy", a, b);
+  });
+
   test("clones into the repository cache: started, found there, failed, dropped", { timeout: 120_000 }, async () => {
     const [a, b] = twins("clones", (w) => {
       put(join(w.data, "repos", "kept", ".git", "config"), '[remote "origin"]\n\turl = git@github.com:team/kept.git\n');

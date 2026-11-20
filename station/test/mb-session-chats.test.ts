@@ -521,7 +521,7 @@ async function fsOp(op: string, a: Json[]): Promise<unknown> {
     case "rename": await rename(a[0], a[1]); return null;
     case "mkdir": await mkdir(a[0], { recursive: true }); return null;
     case "rm": await rm(a[0], { recursive: true, force: true }); return null;
-    case "copyFile": await copyFile(a[0], a[1]); return null;
+    case "copyFile": await copyFile(a[0], a[1], a[2]); return null;
     case "symlink": await symlink(a[0], a[1], a[2]); return null;
     case "readdir": return await readdir(a[0]);
     case "readdirTypes": return (await readdir(a[0], { withFileTypes: true })).map((e) => ({ name: e.name, isFile: e.isFile(), isDirectory: e.isDirectory() }));
@@ -1256,6 +1256,7 @@ test("conversations: files staged out of a protected folder, and attached", { sk
   await writeFile(join(ws, "notes.txt"), "notes");
   await writeFile(join(ws, "pic.gif"), Buffer.from([...Buffer.from("GIF89a"), 3, 0, 2, 0, 0, 0]));
   await mkdir(join(ws, "a dir"), { recursive: true });
+  await writeFile(join(ws, "a dir", "notes.txt"), "other notes");
   for (const [o, args, links] of [
     [{}, { files: ["/Users/x/Documents/a.txt"] }, false],
     [{ mac: true }, { files: [] }, false],
@@ -1277,13 +1278,19 @@ test("conversations: files staged out of a protected folder, and attached", { sk
   }
   const clock = mock.method(Date, "now", () => 1_700_000_000_000);
   try {
-    for (const paths of [["notes.txt"], ["pic.gif", join(ws, "notes.txt")], ["missing.txt"], ["a dir"], Array.from({ length: 11 }, () => "notes.txt")]) {
+    for (const paths of [["notes.txt"], ["pic.gif", join(ws, "notes.txt")], ["notes.txt", "a dir/notes.txt", "notes.txt"], ["missing.txt"], ["a dir"], Array.from({ length: 11 }, () => "notes.txt")]) {
+      await rm(join(ws, "uploads"), { recursive: true, force: true });
       const out = (mb: boolean) => postWorld({ workspace: ws })(mb);
       const a = tsHub({ ...out(false), hub: { ...out(false).hub, now: () => 1_700_000_000_000 } });
       const want = await settledTs(() => attach(a.hub, "me", paths));
+      const bytes = want.ok ? await Promise.all(want.ok.map((f: Json) => readFile(f.path))) : null;
+      if (paths.length === 3) assert.deepEqual(bytes?.map((b) => b.toString()), ["notes", "other notes", "notes"]);
+      // Each implementation starts with the same disk: the TypeScript's copies are not the program's inputs.
+      await rm(join(ws, "uploads"), { recursive: true, force: true });
       const b = mbHub({ ...out(true), hub: { ...out(true).hub, now: () => 1_700_000_000_000 } });
       const got = await mbWorld(b.answer, "attach", "me", paths, null);
       assert.deepEqual(got, want, JSON.stringify(paths));
+      if (got.ok) assert.deepEqual(await Promise.all(got.ok.map((f: Json) => readFile(f.path))), bytes);
     }
   } finally {
     clock.mock.restore();

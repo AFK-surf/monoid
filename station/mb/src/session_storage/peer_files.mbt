@@ -93,14 +93,37 @@ fn Files::uuid(self : Files) -> String {
 }
 
 ///|
-/// A name as a file in uploads is named: stamped, nothing that leaves the directory.
-async fn Storage::upload_name(self : Storage, name : String) -> String {
+/// An attachment's own copy: the preferred name first, numbered only where it is already taken.
+async fn Storage::copy_upload(self : Storage, path : String, dir : String, name : String) -> String {
   let stamp = cut(iso(self.now()), 0, end=19).replace_all(old=":", new="-").replace_all(old=".", new="-")
   let safe = StringBuilder::new()
   for c in name {
     safe.write_char(if c == '\\' || c == '/' || c.to_int() < 0x20 { '_' } else { c })
   }
-  "\{stamp}-\{safe}"
+  let fs = self.fs
+  let mut n = 1
+  while true {
+    let number = if n == 1 { "" } else { "-\{n}" }
+    let into = fs.join([dir, "\{stamp}\{number}-\{safe}"])
+    // The shell's copy replaces. Reserve only a new name before copying; never touch one another copy reserved.
+    let own = try {
+      fs.write(into, b"", exclusive=true)
+      true
+    } catch {
+      e => if code_of(e) == "EEXIST" { false } else { raise e }
+    }
+    if own {
+      fs.copy(path, into) catch {
+        e => {
+          fs.gone(into) catch { _ => () }
+          raise e
+        }
+      }
+      return into
+    }
+    n += 1
+  }
+  raise failed("no attachment name")
 }
 
 ///|
@@ -548,8 +571,7 @@ pub async fn Storage::claim(self : Storage, peer : String, from : String, to : S
   let out = []
   for pair in found {
     let (path, name) = pair
-    let into = fs.join([dir, self.upload_name(name)])
-    fs.copy(path, into)
+    let into = self.copy_upload(path, dir, name)
     fs.gone(path)
     out.push(self.attachment(name, into, match fs.stat(into) { Some(s) => s.size; None => 0.0 }))
   }
