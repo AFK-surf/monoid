@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 98.01 | 127.95 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 97.58 | 111.21 |
 | [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.62 | 154.51 |
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.43 | 97.44 | 112.7 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.42 | 97.52 | 127.45 |
 | [7cc00a60a](https://github.com/AFK-surf/monoid/commit/7cc00a60abb50e24f50cef751dd43189fca6b426) refactor(mb): unify live_wire state helpers, intra | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.47 | 122.81 |
-| [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.49 | 115.86 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.13 |
 | [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.5 | 54.13 |
 | [7cc00a60a](https://github.com/AFK-surf/monoid/commit/7cc00a60abb50e24f50cef751dd43189fca6b426) refactor(mb): unify live_wire state helpers, intra | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.48 | 54.28 |
-| [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.48 | 54.28 |
