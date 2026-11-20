@@ -985,18 +985,50 @@ pub fn profiles_page_node(
   held.prefetch("profiles", scope) |> ignore
   held.prefetch("stations", scope) |> ignore
   let tabs_thumb = @sf.SegThumb::new(v, fn() { if overview.get() { 1 } else { 0 } })
-  v.pick(fn() { overview.get() }, fn(p, shown) {
+  // (hoisted to the page container so kept panes update the top bar reactively when waking without re-calling bar_actions;
+  // overview.get() short-circuits profilesOverview while on 账号)
+  match bar_actions {
+    Some(f) => {
+      let has_pools = @signals.computed(fn(_) {
+        overview.get() &&
+        !items((core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get().value, "pools").is_empty()
+      })
+      let add = fn() { @settings.place_action(core, here(), "profiles") is Some(_) }
+      let adding = fn(at : @view.View) {
+        match @settings.place_action(core, @signals.untracked(here), "profiles") {
+          Some(run) => run(Node(at))
+          None => ()
+        }
+      }
+      let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+      f(
+        fn(l) {
+          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
+          if bar_add {
+            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+          }
+        },
+        fn(_) { @sf.button_height() },
+      )
+    }
+    None => ()
+  }
+  v.each(fn() { [overview.get()] }, fn(x) { x }, keeps=fn() { [true, false] }, at_once=true, fn(p, shown_sig) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    if shown {
-      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
+    if @signals.untracked(fn() { shown_sig.get() }) {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
         overview.set(false)
       })
       // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
       @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
-      // (概览 once what it shows is answered, the list meanwhile: overview_switch)
-      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_overview=fn() {
-        (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
+      // (概览 once what it shows is answered, the list meanwhile: overview_switch; release the ahead read after the
+      // overview frame draws so both initial build and subsequent wake-ups hand over cleanly without leaking)
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_add~, tabs_thumb~, on_show_overview=fn() {
+        (@settings.overview_switch.val)(ws, fn() {
+          overview.set(true)
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read("profiles-list\u{1}" + ws) })
+        })
       })
     }
   })

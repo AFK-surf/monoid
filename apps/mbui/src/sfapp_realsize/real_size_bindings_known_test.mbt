@@ -697,7 +697,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide place-stations screens/screen": 67,
   "wide place-stations stationNet/sample": 6,
   "wide place-stations resources/sample": 6,
-  "wide place-profiles profiles/down": 186,
+  "wide place-profiles profiles/down": 104,
   "wide place-profiles profilesOverview/down": 8,
   "wide newchat-station stationNet/sample": 1,
   "wide newchat-preset-many newChat/host": 28,

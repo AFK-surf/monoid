@@ -2219,6 +2219,7 @@ fn Ctx::view_drawn(
       c.image is Some(_) ||
       c.words != "" ||
       !c.runs.is_empty() ||
+      !c.rects.is_empty() ||
       !c.shapes.is_empty() ||
       !c.lines.is_empty() ||
       c.hosted ||
@@ -2822,8 +2823,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     self.emit_bone(0.0, 0.0, c.w, c.h, bone_whole_r(c.radius, c.w, c.h), bones, 1.0)
     each()
   } else if bones != 0L {
-    // (its pictures, icons and drawings a shape of its box: its own picture, the shapes and lines it draws)
-    if c.image is Some(_) || c.picture is Some(_) || !c.shapes.is_empty() || !c.lines.is_empty() {
+    // (its pictures, icons and drawings a shape of its box: its own picture, the rects, shapes and lines it draws)
+    if c.image is Some(_) || c.picture is Some(_) || !c.rects.is_empty() || !c.shapes.is_empty() || !c.lines.is_empty() {
       self.emit_bone(0.0, 0.0, c.w, c.h, bone_shape_r(c.radius, c.w, c.h), bones, 1.0)
       each()
     }
@@ -3037,6 +3038,10 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   }
   // (its shapes, as bands worked out once for the outlines said (kept by them, whatever colour they are drawn in), in
   // its tint where it has one; their pieces its own, counted from 0)
+  // (its rounded rects under its shapes and lines: native kind 0 instances, no path banding)
+  if bones == 0L && !c.rects.is_empty() {
+    self.emit_rects(0.0, 0.0, c.rects, 1.0)
+  }
   let shape_marks : Array[(Int, Int, Int)] = []
   // (its picture's after them, cut for the pixels it is drawn at: View::picture; the same array while both are)
   let shapes = match c.picture {

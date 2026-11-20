@@ -72,6 +72,8 @@ pub(all) struct Look {
   mut shadow : (Double, Double, Int64)
   /// the halo its words are drawn on, under them (its blur's sigma in points, its colour; 0 blur: none): View::words_halo
   mut halo : (Double, Int64)
+  /// the rounded rectangles it draws over its ground, under its shapes: View::rects
+  mut rects : Array[@paint.Rect]
   /// the shapes it draws over its ground (their outlines, as said: what they come to drawn kept by them), and the one
   /// colour they are drawn in where it is not 0 (their own where it is): View::shapes, View::tint
   mut shapes : Array[@paint.Shape]
@@ -184,6 +186,7 @@ pub(all) struct Content {
   shadow : (Double, Double, Int64)
   /// the halo its words are drawn on (View::words_halo)
   halo : (Double, Int64)
+  rects : Array[@paint.Rect]
   shapes : Array[@paint.Shape]
   lines : Array[@paint.Line]
   tint : Int64
@@ -253,6 +256,7 @@ pub fn Content::draws(self : Content) -> Bool {
   (self.ring.0 > 0.0 && (self.ring.2 & 0xFFL) != 0L) ||
   self.image is Some(_) ||
   self.words != "" ||
+  !self.rects.is_empty() ||
   !self.shapes.is_empty() ||
   !self.lines.is_empty() ||
   self.picture is Some(_) ||
@@ -272,6 +276,7 @@ fn look_draws_any(l : Look, hosted : Bool, ring : (Double, Double, Int64)) -> Bo
   (ring.0 > 0.0 && (ring.2 & 0xFFL) != 0L) ||
   l.image is Some(_) ||
   l.words != "" ||
+  !l.rects.is_empty() ||
   !l.shapes.is_empty() ||
   !l.lines.is_empty() ||
   l.picture is Some(_) ||
@@ -305,6 +310,7 @@ pub(all) struct Drawn {
   shadow : (Double, Double, Int64)
   /// the halo its words are drawn on (View::words_halo)
   halo : (Double, Int64)
+  rects : Array[@paint.Rect]
   shapes : Array[@paint.Shape]
   lines : Array[@paint.Line]
   tint : Int64
@@ -1941,6 +1947,9 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.drawn_exact = false
       n.look.ground_drawn = ground_as_laid
       n.look.cut_soft = false
+      if n.look.rects.length() > 0 {
+        n.look.rects = []
+      }
       if n.look.lines.length() > 0 {
         n.look.lines = []
       }
@@ -2094,7 +2103,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -3948,6 +3957,7 @@ priv enum Prop {
   Sticky
   Reveals
   TakesUnseen
+  Rects
 }
 
 ///|
@@ -4063,6 +4073,7 @@ impl Show for Prop with output(self, logger) {
       Sticky => "Sticky"
       Reveals => "Reveals"
       TakesUnseen => "TakesUnseen"
+      Rects => "Rects"
     },
   )
 }
@@ -4202,6 +4213,7 @@ fn Prop::ord(self : Prop) -> Int {
     Sticky => 102
     Reveals => 103
     TakesUnseen => 104
+    Rects => 105
   }
 }
 
@@ -5791,6 +5803,15 @@ pub fn View::carries_until(self : View, ends : () -> Double) -> View {
 }
 
 ///|
+/// The rounded rectangles it draws over its ground, under its shapes (@paint.Rect: native kind 0 rounded rectangles
+/// from its top left, each in its own colour and corner radii): paint's.
+#callsite(autofill(loc))
+pub fn View::rects(self : View, rects : Live[Array[@paint.Rect]], loc~ : SourceLoc) -> View {
+  self.bind(loc~, Rects, rects, Paint, fn(r) { self.tree.nodes[self.at].look.rects = r })
+  self
+}
+
+///|
 /// The lines it draws over its shapes (@paint.Line: round-capped strokes through points from its top left, each in its
 /// own colour, as far along as it says), as an old view's box draws them (Ctx::lines): paint's.
 #callsite(autofill(loc))
@@ -5993,6 +6014,7 @@ fn draws_of(n : Node) -> Bool {
   l.image is Some(_) ||
   l.words != "" ||
   !l.runs.is_empty() ||
+  !l.rects.is_empty() ||
   !l.shapes.is_empty() ||
   !l.lines.is_empty() ||
   l.picture is Some(_) ||
@@ -6007,6 +6029,7 @@ fn words_alone(n : Node) -> Bool {
   (l.ground & 0xFFL) == 0L &&
   !(l.edge.0 > 0.0 && (l.edge.1 & 0xFFL) != 0L) &&
   l.image is None &&
+  l.rects.is_empty() &&
   l.shapes.is_empty() &&
   l.lines.is_empty() &&
   l.picture is None &&
@@ -13179,6 +13202,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     ink: n.look.ink,
     words: n.look.words,
     words_drawn: n.look.words_drawn,
+    rects: n.look.rects,
     shapes: n.look.shapes,
     lines: n.look.lines,
     tint: n.look.tint,
@@ -14104,6 +14128,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     ground: c.ground,
     ink: c.ink,
     words: c.words,
+    rects: c.rects,
     shapes: c.shapes,
     lines: c.lines,
     tint: c.tint,

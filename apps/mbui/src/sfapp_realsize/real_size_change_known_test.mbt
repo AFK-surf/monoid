@@ -1737,7 +1737,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide place-stations resources/sample": (0, 0, 26, 7, 0, 6),
   "wide place-stations stationMove to= module=/moving": (21, 0, 43, 2, 0, 0),
   "wide place-profiles profiles/quota": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles profiles/down": (127, 1, 188, 47, 0, 0),
+  "wide place-profiles profiles/down": (45, 1, 161, 25, 0, 0),
   "wide place-profiles profilesOverview/down": (0, 0, 27, 6, 0, 6),
   "wide place-remote screens/screen": (0, 0, 22, 2, 0, 0),
   "wide place-remote-tabs screens/screen": (0, 0, 22, 2, 0, 0),
