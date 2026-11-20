@@ -34,33 +34,45 @@ export async function relayControls(rpc: (method: string, args?: unknown) => Pro
     assert.equal(value.status, 200);assert.equal(value.sameConnection, true);
     await snapshot();
   };
-  assert.notEqual(await observe(pathOn, 10_000), null, "the tested relay has a path before disabling");
+  assert.notEqual(await observe(pathOn, 10_000), null, "the tested relay has a path before removal");
+  const methods = ["clear-disabled", "remove-insert", "disabled-remove-insert-clear"];
+  const only = process.env.RELAY_CONTROL_METHOD;
+  assert.ok(only === undefined || methods.includes(only), "known relay recovery method");
   const cases: { method: string; milliseconds: number | null; observationLimitMs: number }[] = [];
   const disabled: { milliseconds: number; mainSockets: number }[] = [];
   let removeClosedMs: number | null = null, insertOpenedMs: number | null = null;
-  for (const method of ["clear-disabled", "clear-disabled-addAddr", "remove-insert-addAddr"]) {
-    await endpoint("setDisabledRelays", id, [relay]);
-    const gone = await observe(value => !pathOn(value), 10_000);
-    assert.notEqual(gone, null, "disabling removes the relay path");
-    assert.ok(socketCount() > 0, "disabling one peer keeps its relay WebSocket");
-    disabled.push({ milliseconds: gone!, mainSockets: socketCount() });
-    await request();
-    const start = performance.now();
-    await endpoint("setDisabledRelays", id, []);
-    if (method === "remove-insert-addAddr") {
+  for (const method of only === undefined ? methods : [only]) {
+    assert.notEqual(await observe(pathOn, 10_000), null, "each case starts with the tested relay path");
+    const usesDisabled = method !== "remove-insert";
+    if (usesDisabled) {
+      await endpoint("setDisabledRelays", id, [relay]);
+      const gone = await observe(value => !pathOn(value), 10_000);
+      assert.notEqual(gone, null, "disabling removes the relay path");
+      assert.ok(socketCount() > 0, "disabling one peer keeps its relay WebSocket");
+      disabled.push({ milliseconds: gone!, mainSockets: socketCount() });
+      await request();
+    }
+    let start = performance.now();
+    if (method !== "clear-disabled") {
       const removedAt = performance.now();
       await endpoint("removeRelay", relay);
       assert.notEqual(await observe(() => socketCount() === 0, 10_000), null, "removeRelay closes the main endpoint's socket");
+      assert.notEqual(await observe(value => !pathOn(value), 10_000), null, "removeRelay removes the peer path");
       removeClosedMs = Math.round(performance.now() - removedAt);
       await request();
       // Even while absent, an entrance update must survive the next insertion.
       await endpoint("setRelayEntries", entries.map(entry => ({ entry, relay: targets[entry] })));
       const insertedAt = performance.now();
+      start = insertedAt;
       await endpoint("insertRelay", relay);
       assert.notEqual(await observe(() => socketCount() > 0, 10_000), null, "insertRelay reconnects its main socket");
       insertOpenedMs = Math.round(performance.now() - insertedAt);
+      if (usesDisabled) assert.equal(pathOn(await snapshot()), false, "insertRelay cannot bypass a peer's disabled set");
     }
-    if (method !== "clear-disabled") await endpoint("addAddr", { id, relays: urls });
+    if (usesDisabled) {
+      start = performance.now();
+      await endpoint("setDisabledRelays", id, []);
+    }
     const restored = await observe(pathOn);
     cases.push({ method, milliseconds: restored === null ? null : Math.round(performance.now() - start), observationLimitMs: 30_000 });
     await request();
@@ -68,6 +80,6 @@ export async function relayControls(rpc: (method: string, args?: unknown) => Pro
   const result = { relay, cases, disabled, removeClosedMs, insertOpenedMs, allOriginalConnectionsOpen: true, eventStreamsReopened: 0 };
   await writeFile(join(output, "relay-controls.json"), JSON.stringify(result, null, 2) + "\n");
   console.log(JSON.stringify({ phase: "relay-controls", ...result }));
-  assert.ok(cases.some(value => value.milliseconds !== null), "none of the three methods restored the relay path");
+  assert.ok(cases.every(value => value.milliseconds !== null), "every tested method must restore the relay path without addAddr");
   return result;
 }
