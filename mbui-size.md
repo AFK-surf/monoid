@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [442ec2eb0](https://github.com/AFK-surf/monoid/commit/442ec2eb03ab6ff866b384611713211ec720e1ce) perf(mbui): bring WebGL2 host to parity with nativ | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 | [5799e3d5b](https://github.com/AFK-surf/monoid/commit/5799e3d5b5e6382838e822d460cc99f5cb0f83d0) chore(farview): bump Stage 12A release (cf0d2d2736 | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 | [faab03fb6](https://github.com/AFK-surf/monoid/commit/faab03fb646501b107bb8e3f2586582529e1d78d) fix(mbui): align scrollbars to container edges and | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.14 | 120.72 |
 | [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.14 | 120.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [573f1f6d9](https://github.com/AFK-surf/monoid/commit/573f1f6d9b0c4726f8455d6a7ab3d1ae18a72aae) feat(website): restore classic still.fail and youd | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
 | [b5fa8d018](https://github.com/AFK-surf/monoid/commit/b5fa8d018c4fa196b284e5a53aaabe9349116692) feat(mbui): open previews over the whole window by | 2.74 | 3.7 | 15.03 | 37.09 | 57.04 | 32.52 | 66.16 | 98.16 | 121.64 |
 | [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.39 | 113 |
-| [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.17 | 120.01 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [442ec2eb0](https://github.com/AFK-surf/monoid/commit/442ec2eb03ab6ff866b384611713211ec720e1ce) perf(mbui): bring WebGL2 host to parity with nativ | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [5799e3d5b](https://github.com/AFK-surf/monoid/commit/5799e3d5b5e6382838e822d460cc99f5cb0f83d0) chore(farview): bump Stage 12A release (cf0d2d2736 | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [faab03fb6](https://github.com/AFK-surf/monoid/commit/faab03fb646501b107bb8e3f2586582529e1d78d) fix(mbui): align scrollbars to container edges and | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [573f1f6d9](https://github.com/AFK-surf/monoid/commit/573f1f6d9b0c4726f8455d6a7ab3d1ae18a72aae) feat(website): restore classic still.fail and youd | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [b5fa8d018](https://github.com/AFK-surf/monoid/commit/b5fa8d018c4fa196b284e5a53aaabe9349116692) feat(mbui): open previews over the whole window by | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
-| [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
