@@ -527,6 +527,11 @@ pub let effect_in_watch : Ref[((SourceLoc) -> Unit)?] = Ref(None)
 pub let effect_in_computed : Ref[((SourceLoc) -> Unit)?] = Ref(None)
 
 ///|
+/// Told as an effect is made while a view node is being constructed (view/untracked_read.mbt): bare effects do not
+/// rest when their node is parked (`View::park`, `@signals.rest`). None: nothing told.
+pub let on_effect_in_view : Ref[((SourceLoc) -> Unit)?] = Ref(None)
+
+///|
 fn effect_of(f : () -> (() -> Unit)?, loc : SourceLoc) -> () -> Unit {
   let e = ReactiveNode::new(WATCHING | RECURSED_CHECK, EffectNode, own=EffectOwn(f))
   if run.computing > run.held_at {
@@ -534,6 +539,10 @@ fn effect_of(f : () -> (() -> Unit)?, loc : SourceLoc) -> () -> Unit {
       Some(told) => told(loc)
       None => ()
     }
+  }
+  match on_effect_in_view.val {
+    Some(told) => told(loc)
+    None => ()
   }
   let parent = owner_now()
   match parent {
@@ -950,6 +959,14 @@ pub fn[T] Signal::set(self : Signal[T], value : T, loc~ : SourceLoc) -> Unit {
     node.flags = MUTABLE | DIRTY
     tell_set(node, loc)
   }
+}
+
+///|
+/// Update the signal from its current value without subscribing the caller to this signal.
+#callsite(autofill(loc))
+pub fn[T] Signal::update(self : Signal[T], f : (T) -> T, loc~ : SourceLoc) -> Unit {
+  let prev = self.untracked()
+  self.set(f(prev), loc~)
 }
 
 ///|

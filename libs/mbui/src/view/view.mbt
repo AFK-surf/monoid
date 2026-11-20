@@ -1837,7 +1837,11 @@ pub fn Tree::new(
   // where the clock has it then: @signals.rest)
   t.clock.on_unwatched(fn() {  })
   let root = t.made(-1)
-  root.owning(fn() { make(root) })
+  if t.sources {
+    root.owning(fn() { root.make_with_effect_diagnostics(make) })
+  } else {
+    root.owning(fn() { make(root) })
+  }
   t
 }
 
@@ -2336,10 +2340,13 @@ fn View::owning(self : View, f : () -> Unit) -> Unit {
   let was = @signals.set_active_sub(None)
   let was_owner = @signals.set_owner(n.owner)
   let making = making_box.val
-  if making is Some(_) {
+  let making_v = making_view.val
+  if making is Some(_) || making_v is Some(_) {
     making_box.val = None
+    making_view.val = None
     f()
     making_box.val = making
+    making_view.val = making_v
   } else {
     f()
   }
@@ -2814,6 +2821,8 @@ pub fn View::box(
   // A structure runs its slot maker through box as a structural callback.
   if self.tree.sources && !n.slot {
     v.owning(fn() { v.make_with_read_diagnostics(make) })
+  } else if self.tree.sources {
+    v.owning(fn() { v.make_with_effect_diagnostics(make) })
   } else {
     v.owning(fn() { make(v) })
   }
@@ -2832,7 +2841,11 @@ fn View::structure_box(self : View, make : (View) -> Unit, loc~ : SourceLoc) -> 
     self.tree.top_last()
   }
   self.box_appended(v.at)
-  v.owning(fn() { make(v) })
+  if self.tree.sources {
+    v.owning(fn() { v.make_with_effect_diagnostics(make) })
+  } else {
+    v.owning(fn() { make(v) })
+  }
   self.tree.structure_row_sync_one(v.at)
   v
 }

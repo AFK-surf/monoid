@@ -280,6 +280,10 @@ fn reset_globals() -> Unit {
   tester_fanout_reset()
   fanout_hold.val = false
   unseen_press_hold.val = false
+  untracked_read_hold.val = false
+  unnamed_press_hold.val = false
+  scroll_each_hold_limit.val = 0
+  effect_in_view_hold.val = false
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -465,6 +469,10 @@ pub fn Tester::new(
     windows_beside~,
     fanout_limit=0,
     unseen_press_held=false,
+    untracked_read_held=false,
+    unnamed_press_held=false,
+    scroll_each_limit=0,
+    effect_in_view_held=false,
     loc~,
   )
 }
@@ -511,6 +519,10 @@ pub fn Tester::tree(
   transitions_only? : Bool = true,
   fanout_limit? : Int = 64,
   unseen_press_held? : Bool = true,
+  untracked_read_held? : Bool = true,
+  unnamed_press_held? : Bool = true,
+  scroll_each_limit? : Int = 50,
+  effect_in_view_held? : Bool = true,
   loc~ : SourceLoc,
 ) -> Tester {
   let made = if transitions_only {
@@ -559,6 +571,10 @@ pub fn Tester::tree(
     windows_beside~,
     fanout_limit~,
     unseen_press_held~,
+    untracked_read_held~,
+    unnamed_press_held~,
+    scroll_each_limit~,
+    effect_in_view_held~,
     loc~,
   )
 }
@@ -604,6 +620,10 @@ fn tester_make(
   windows_beside~ : Bool,
   fanout_limit~ : Int,
   unseen_press_held~ : Bool,
+  untracked_read_held~ : Bool,
+  unnamed_press_held~ : Bool,
+  scroll_each_limit~ : Int,
+  effect_in_view_held~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -913,6 +933,10 @@ fn tester_make(
     fanout_hold.val = true
   }
   unseen_press_hold.val = unseen_press_held
+  untracked_read_hold.val = untracked_read_held
+  unnamed_press_hold.val = unnamed_press_held
+  scroll_each_hold_limit.val = scroll_each_limit
+  effect_in_view_hold.val = effect_in_view_held
   // a host's run replayed: its first frame where the host drew it (its first DRAWHASH), the display's frames from
   // there; else the display's first frame after `time`
   match run.bind(run_first_frame) {
@@ -1532,6 +1556,10 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   self.hold_corners()
   self.hold_fanout()
   self.hold_unseen_press()
+  self.hold_untracked_read()
+  self.hold_unnamed_press()
+  self.hold_scroll_each()
+  self.hold_effect_in_view()
   // (where the focus a key moved along comes to rest, once what moved as it did is at rest: tester_focus_off.mbt)
   self.focus_off_at_rest()
   // (what it drew was placed by the layout it drew by: tester_placed.mbt)

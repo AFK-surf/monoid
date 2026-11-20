@@ -108,3 +108,71 @@ test "graph diagnostics: fan-out counts newly queued sibling readers for the wri
   assert_true(active_sub() is None)
   assert_true(setting_at() is None)
 }
+
+///|
+test "Signal::update updates without self-subscribing, deduplicates equal values, and forwards loc" {
+  let count = signal(10)
+  let writes : Array[(Int, String)] = []
+  let w = watch(fn() {
+    writes.push((count.untracked(), last_set_at()))
+  })
+  defer w.stop()
+  w.read(fn() { count.get() }) |> ignore
+
+  // Normal update notifies subscribers and forwards callsite loc.
+  let upd_loc = graph_test_loc()
+  count.update(fn(n) { n + 5 }, loc=upd_loc)
+  assert_eq(count.untracked(), 15)
+  assert_eq(writes.length(), 1)
+  assert_eq(writes[0].0, 15)
+  assert_eq(writes[0].1, upd_loc.to_string())
+
+  // Equal result deduplicates via `same` and notifies nobody.
+  w.read(fn() { count.get() }) |> ignore
+  count.update(fn(n) { n })
+  assert_eq(writes.length(), 1)
+
+  // Calling Signal::update inside a Watch::read or computed does not subscribe to the signal itself.
+  let target = signal(1)
+  let trigger_sig = signal(0)
+  let computed_runs = Ref(0)
+  let c = computed(fn(_) {
+    computed_runs.val += 1
+    let v = trigger_sig.get()
+    target.update(fn(x) { x + 1 })
+    v
+  })
+  assert_eq(c.get(), 0)
+  assert_eq(computed_runs.val, 1)
+  assert_false(target.watched(), msg="Signal::update inside computed must not subscribe computed to target")
+
+  let watch_runs = Ref(0)
+  let w2 = watch(fn() { watch_runs.val += 1 })
+  defer w2.stop()
+  w2.read(fn() { target.update(fn(x) { x + 1 }) })
+  assert_false(target.watched(), msg="Signal::update inside Watch::read must not subscribe watch to target")
+  target.set(99)
+  assert_eq(watch_runs.val, 0)
+}
+
+///|
+test "on_effect_in_view fires for effect and effect_cleanup, not effect_scope or watch" {
+  let seen : Array[String] = []
+  let was = on_effect_in_view.val
+  defer { on_effect_in_view.val = was }
+  on_effect_in_view.val = Some(fn(loc) { seen.push(loc.to_string()) })
+
+  let scope_stop = effect_scope(fn() { () })
+  scope_stop()
+  let w = watch(fn() { () })
+  w.stop()
+  assert_eq(seen, [])
+
+  let loc1 = graph_test_loc()
+  let s1 = effect(fn() { () }, loc=loc1)
+  s1()
+  let loc2 = graph_test_loc()
+  let s2 = effect_cleanup(fn() { fn() { () } }, loc=loc2)
+  s2()
+  assert_eq(seen, [loc1.to_string(), loc2.to_string()])
+}

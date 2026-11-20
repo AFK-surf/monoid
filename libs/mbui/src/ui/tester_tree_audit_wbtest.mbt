@@ -50,6 +50,7 @@ test "unnamed_press_faults flags unnamed on_press and allows says label, child t
     },
     w=300.0,
     h=300.0,
+    unnamed_press_held=false,
   )
   t.draw()
   let faults = t.unnamed_press_faults()
@@ -74,6 +75,7 @@ test "unnamed_press_faults flags interactive role without label or visible text"
     },
     w=200.0,
     h=200.0,
+    unnamed_press_held=false,
   )
   t.draw()
   let faults = t.unnamed_press_faults()
@@ -238,6 +240,7 @@ test "light_audit draws zero extra frames, detects faults, and assert_clean pass
     w=300.0,
     h=200.0,
     fanout_limit=0,
+    unnamed_press_held=false,
   )
   dirty.set_fanout_limit(8)
   sig.set(1)
@@ -247,4 +250,149 @@ test "light_audit draws zero extra frames, detects faults, and assert_clean pass
   assert_true(faults.iter().any(fn(f) { f.has_prefix("[UNNAMED_PRESS]") }), msg=faults.join("\n"))
   assert_true(faults.iter().any(fn(f) { f.has_prefix("[FAN_OUT]") }), msg=faults.join("\n"))
   assert_true(dirty.assert_clean_said() is Some(_))
+}
+
+///|
+test "pure-tree default theme automatically follows system_dark and repaints default words ink" {
+  let t = Tester::tree(
+    fn(root) {
+      root.box(fn(lbl) { lbl.words(Is("Hello dark mode")) |> ignore }) |> ignore
+    },
+    w=240.0,
+    h=120.0,
+    dark=true,
+  )
+  assert_eq(tree_theme().fg, Theme::dark().fg)
+  assert_eq(tree_theme().bg, Theme::dark().bg)
+  t.set_dark(false)
+  t.draw()
+  assert_eq(tree_theme().fg, Theme::light().fg)
+  assert_eq(tree_theme().bg, Theme::light().bg)
+  t.set_dark(true)
+  t.draw()
+  assert_eq(tree_theme().fg, Theme::dark().fg)
+  assert_eq(tree_theme().bg, Theme::dark().bg)
+}
+
+///|
+test "Tester::tree enables untracked_read, unnamed_press, scroll_each, and effect_in_view guards by default" {
+  // 1. untracked_read_held
+  let sig = @signals.signal(42)
+  let t1 = Tester::tree(
+    fn(root) {
+      root.box(fn(b) {
+        let v = sig.get()
+        b.words(Is(v.to_string())) |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=100.0,
+    untracked_read_held=false,
+  )
+  assert_false(untracked_read_hold.val)
+  assert_eq(t1.hold_untracked_read_said(), None)
+  assert_eq(t1.untracked_read_faults().length(), 1)
+  untracked_read_hold.val = true
+  match t1.hold_untracked_read_said() {
+    Some(msg) => assert_true(msg.contains("[STRICT_READ_UNTRACKED]"), msg=msg)
+    None => @halt.saying("expected hold_untracked_read_said to catch untracked read")
+  }
+  untracked_read_hold.val = false
+
+  // 2. unnamed_press_held
+  let t2 = Tester::tree(
+    fn(root) {
+      root.box(fn(b) {
+        b.width(Is(Some(60.0))).height(Is(Some(32.0))).ground(Is(0x3366CCFFL)).on_press(fn() { () }) |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=100.0,
+    unnamed_press_held=false,
+  )
+  t2.draw()
+  assert_false(unnamed_press_hold.val)
+  assert_eq(t2.hold_unnamed_press_said(), None)
+  unnamed_press_hold.val = true
+  match t2.hold_unnamed_press_said() {
+    Some(msg) => assert_true(msg.contains("[UNNAMED_PRESS]"), msg=msg)
+    None => @halt.saying("expected hold_unnamed_press_said to catch unnamed press")
+  }
+  unnamed_press_hold.val = false
+
+  // 3. scroll_each_limit
+  let items : Array[Int] = []
+  for i in 0..<52 {
+    items.push(i)
+  }
+  let sc = @view.Scroll::new()
+  let t3 = Tester::tree(
+    fn(root) {
+      root.box(fn(box) {
+        box.width(Is(Some(200.0))).height(Is(Some(100.0))).scrolls(sc, fn(inner) {
+          inner.each(fn() { items }, fn(i) { i }, fn(row, _it) {
+            row.height(Is(Some(16.0))) |> ignore
+          }, at_once=true)
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=120.0,
+    scroll_each_limit=0,
+  )
+  assert_eq(scroll_each_hold_limit.val, 0)
+  assert_eq(t3.hold_scroll_each_said(), None)
+  assert_eq(t3.scroll_each_faults().length(), 1)
+  scroll_each_hold_limit.val = 50
+  match t3.hold_scroll_each_said() {
+    Some(msg) => assert_true(msg.contains("[UNVIRTUALIZED_SCROLL_EACH]"), msg=msg)
+    None => @halt.saying("expected hold_scroll_each_said to catch >50 scroll-each rows")
+  }
+  scroll_each_hold_limit.val = 0
+
+  // 4. effect_in_view_held
+  let s_eff = @signals.signal(0)
+  let t4 = Tester::tree(
+    fn(root) {
+      root.box(fn(_b) {
+        @signals.effect(fn() { s_eff.get() |> ignore }) |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=100.0,
+    effect_in_view_held=false,
+  )
+  assert_false(effect_in_view_hold.val)
+  assert_eq(t4.hold_effect_in_view_said(), None)
+  assert_eq(t4.effect_in_view_faults().length(), 1)
+  assert_true(t4.light_audit().iter().any(fn(f) { f.has_prefix("[EFFECT_IN_VIEW]") }))
+  effect_in_view_hold.val = true
+  match t4.hold_effect_in_view_said() {
+    Some(msg) => assert_true(msg.contains("[EFFECT_IN_VIEW]"), msg=msg)
+    None => @halt.saying("expected hold_effect_in_view_said to catch bare effect in view")
+  }
+  effect_in_view_hold.val = false
+
+  // 5. Verify clean Tester::tree has all guards enabled by default
+  let clean = Tester::tree(
+    fn(root) {
+      root.box(fn(ok) {
+        ok.width(Is(Some(80.0))).height(Is(Some(36.0))).words(Is("OK")).on_press(fn() { () }) |> ignore
+      })
+      |> ignore
+    },
+    w=200.0,
+    h=100.0,
+  )
+  clean.draw()
+  assert_true(untracked_read_hold.val)
+  assert_true(unnamed_press_hold.val)
+  assert_eq(scroll_each_hold_limit.val, 50)
+  assert_true(effect_in_view_hold.val)
+  assert_eq(clean.light_audit(), [])
 }

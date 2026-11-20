@@ -313,7 +313,17 @@ pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit, theme?
   // and as what follows its words' style begins following it)
   match theme {
     Some(f) => @signals.untracked(fn() { set_tree_theme(f) })
-    None => ()
+    None =>
+      if around is None {
+        @signals.untracked(fn() {
+          set_tree_theme(fn() {
+            match tree_theme_said.val.get() {
+              Some(t) if t != Theme::light() => t
+              _ => if system_dark() { Theme::dark() } else { Theme::light() }
+            }
+          })
+        })
+      }
   }
   view_made_now(make)
   // (the focus on a node of the tree before: none's now, its id nobody's)
