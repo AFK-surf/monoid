@@ -1973,15 +1973,13 @@ jobs:
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
       - if: github.ref == 'refs/heads/main'
         run: bash scripts/git-history.sh main
-      # Reserve the measured post-build chain, including post-actions: 32 seconds. With tools/pack kept by mbui-moonbit
-      # (`pack`: the bundle built it anew every run, 36 of moon's tasks, 13.5 s, 136034538622) the bundle takes 14 s
-      # where it took 29; after it the upload 4 s, main's two cache saves 10 s and the post steps' cleanup 6 s, about
-      # 34 s less the 5 s JOB_END keeps already. A build cut here saves its store and cleans up in about 18 s.
-      # The same diagnostics and process cleanup apply on main and on a branch.
+      # Leave 42 s before JOB_END, which already leaves 5 s before the job timeout.
+      # Job 136144444377 took 44 s after the build: bundle 29 s, upload 5 s, cache save 6 s and cleanup 4 s.
+      # GitHub cancelled it during Complete job with the artifact and cache already saved.
       - name: Finish the Mac app build
         id: finish
         run: |
-          reserve=32
+          reserve=42
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
@@ -2536,7 +2534,8 @@ jobs:
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
     steps: &deltas-steps
-      - uses: actions/checkout@v5
+      - if: runner.environment != 'self-hosted'
+        uses: actions/checkout@v5
         with:
           sparse-checkout: |
             /scripts/
@@ -2546,11 +2545,25 @@ jobs:
             /libs/mbui/android/app/src/main/java/dev/mbui/Delta.java
             /libs/mbui/android/jzlib/
           sparse-checkout-cone-mode: false
+      # Sparse checkout in ci-1's reused workspaces left skip-worktree bits behind.
+      # Later natives jobs could not find station/mb/build.sh (main 44691945453 and 44692636480).
+      - if: runner.environment == 'self-hosted'
+        uses: actions/checkout@v5
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
       # (ci-1's: the Node kept in ~/.local, as setup-linux's; it needs only .node-version, curl and tar)
       - if: runner.environment == 'self-hosted'
-        run: echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+        run: |
+          if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
+            git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
+            git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
+            git config --local --unset-all core.sparseCheckout 2>/dev/null || true
+            git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
+            git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
+            rm -f .git/info/sparse-checkout .git/index
+            git reset --hard HEAD
+          fi
+          echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release" }

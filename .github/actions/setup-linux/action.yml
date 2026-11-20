@@ -8,6 +8,15 @@ runs:
   steps:
     - shell: bash
       run: |
+        if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
+          git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
+          rm -f .git/info/sparse-checkout .git/index
+          git reset --hard HEAD
+        fi
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
