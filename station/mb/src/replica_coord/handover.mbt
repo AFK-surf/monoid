@@ -1855,8 +1855,8 @@ async fn Handover::send_rows(self : Handover, o : Rec, from : J?) -> Counted {
     }
   }
   // (pages of several tables held for one request, in the order they were read, at most `rows_most` rows in all, where
-  // that station takes them so: handover.ts `batched`)
-  let batched = o.b("batched")
+  // that station takes them so: handover.ts `batched`; not after it went, `from`: what was sent is kept as each page goes)
+  let batched = o.b("batched") && from is None
   let held : Array[(String, Array[J])] = []
   let held_rows = [0]
   let flush = async fn() {

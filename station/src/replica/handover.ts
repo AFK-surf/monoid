@@ -1114,7 +1114,9 @@ export class Handover {
       else if (table !== "threads") sent.rows[table] = (sent.rows[table] ?? 0) + rows.length;
     };
     // (pages of several tables held for one request, in the order they were read, at most ROWS_MOST rows in all, where
-    // that station takes them so: `batched`)
+    // that station takes them so: `batched`. Not after it went (`from`): there what was sent is kept as each page goes
+    // (`o.sent`, `usageSent`), and a page held when a request fails would be counted sent and never go)
+    const batching = o.batched === true && from === null;
     let held: { table: ChatTable; rows: Json[] }[] = [];
     let heldRows = 0;
     const flush = async () => {
@@ -1130,7 +1132,7 @@ export class Handover {
     };
     const page = async (table: ChatTable, rows: Json[]) => {
       if (rows.length === 0) return;
-      if (o.batched !== true) {
+      if (!batching) {
         await ask({ method: "handover.rows", table, rows, page: randomBytes(8).toString("hex") });
         counted(table, rows);
         return;
