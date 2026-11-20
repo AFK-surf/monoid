@@ -1035,7 +1035,7 @@ fn profile_trouble_node(
     })
     // (the link its words give to open, on its one line with its copy key: the page's words cannot be selected)
     k.show(at_once=true, fn() { link() != "" }, fn(x) {
-      x.box(fn(b) { @sf.code_block_node(b, link, fn() { "" }, fn() { None }, command=true) }) |> ignore
+      @sf.code_block_node(x, link, fn() { "" }, fn() { None }, command=true)
     })
     // (what to do, under the link its words lead to)
     k.show(at_once=true, fn() { link() != "" }, fn(x) { @sf.card_lines_node(x, fn() { "" }, note=next, bad~) })
