@@ -562,7 +562,8 @@ fn give_way_seen(setup : (@view.View) -> Unit, change : (@ui.Tester) -> Unit) ->
     root.lines_up(Is(Some(Start))) |> ignore
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
-      setup(words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }))
+      // (focusable isolates row last_resort so this test checks View::shorter's own shrink/min_width contract alone)
+      setup(words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).focusable(Is(true)))
       r.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(10.0))).ground(Is(0x996633FFL)) |> ignore }) |> ignore
     })
     |> ignore
@@ -621,7 +622,8 @@ test "said not cut short (View::cuts false) after it was said to give way, it gi
     |> ignore
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
-      words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).shorter(By(fn() { alts.get() })).cuts(Is(false)).ground(Is(0x996633FFL))
+      // (focusable isolates row last_resort so this test checks View::cuts(false)'s own shrink contract alone)
+      words_node(r, fn() { "2026 年 5 月" }, fn() { secondary.then(one_line) }).focusable(Is(true)).shorter(By(fn() { alts.get() })).cuts(Is(false)).ground(Is(0x996633FFL))
       |> ignore
       // (a box beside them their row has not the room for: they keep the room the shorter one fitting it takes)
       r.box(fn(b) { b.width(Is(Some(40.0))).height(Is(Some(10.0))) |> ignore }) |> ignore
@@ -678,7 +680,8 @@ test "words saying shorter ones, then in pieces (View::words_runs): giving way a
     root.box(fn(r) {
       r.row(Is(true)).width(Is(Some(50.0))) |> ignore
       r.box(fn(w) {
-        w.words(Is("2026 年 5 月"), look=@ui.style_words(secondary.then(one_line))).shorter(Is(["5 月", "5"])) |> ignore
+        // (focusable isolates row last_resort so this test checks View::words_runs' own shrink contract alone)
+        w.focusable(Is(true)).words(Is("2026 年 5 月"), look=@ui.style_words(secondary.then(one_line))).shorter(Is(["5 月", "5"])) |> ignore
         // (the same node's words said in pieces from then on: its words' binding said anew)
         w.reacts(fn() { pieces.get() }, fn(on) {
           if on {
