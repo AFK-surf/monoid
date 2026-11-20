@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 2.77 | 3.74 | 15.22 | 37.28 | 57.63 | 32.68 | 66.6 | 98.34 | 121.28 |
 | [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 2.76 | 3.73 | 15.2 | 37.27 | 57.57 | 32.68 | 66.56 | 98.8 | 124.6 |
 | [1dd0b7818](https://github.com/AFK-surf/monoid/commit/1dd0b7818eb78e33e60e2ba80032311ad1e36576) feat(website): add ui.monoid.build V3 interactive  | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 | [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.54 | 66.23 | 98.17 | 113.97 |
 | [c5f717b1e](https://github.com/AFK-surf/monoid/commit/c5f717b1e8f2bd3b9b1d9a5065bdd07d2a4d3098) feat(station): Farview Stage 10A release, farview. | 2.74 | 3.7 | 15.05 | 37.12 | 57.12 | 32.54 | 66.23 | 98.17 | 127.12 |
 | [f886b0cf9](https://github.com/AFK-surf/monoid/commit/f886b0cf9c69b0e1ed41eb24eebafd4478e6d2fe) feat(mbui): interactive role cursor default, theme | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
-| [41fab27ae](https://github.com/AFK-surf/monoid/commit/41fab27aee4dff32a0678e54a5d2eb4d58dd8c35) feat(mbui): add layout ergonomics, list_reused, pi | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [1dd0b7818](https://github.com/AFK-surf/monoid/commit/1dd0b7818eb78e33e60e2ba80032311ad1e36576) feat(website): add ui.monoid.build V3 interactive  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
 | [c5f717b1e](https://github.com/AFK-surf/monoid/commit/c5f717b1e8f2bd3b9b1d9a5065bdd07d2a4d3098) feat(station): Farview Stage 10A release, farview. | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
 | [f886b0cf9](https://github.com/AFK-surf/monoid/commit/f886b0cf9c69b0e1ed41eb24eebafd4478e6d2fe) feat(mbui): interactive role cursor default, theme | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
-| [41fab27ae](https://github.com/AFK-surf/monoid/commit/41fab27aee4dff32a0678e54a5d2eb4d58dd8c35) feat(mbui): add layout ergonomics, list_reused, pi | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 54.25 |
