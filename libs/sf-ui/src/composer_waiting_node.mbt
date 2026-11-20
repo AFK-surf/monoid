@@ -52,7 +52,7 @@ pub fn file_waiting_node(
       None => fn() { if title() != "" { meta() } else { name() } }
     })
     |> ignore
-    presses_node(card, fn() { on_press(Opened) }, on=opens)
+    card_presses_node(card, fn() { on_press(Opened) }, opens)
     // (its mark and its words together on the card's middle, the mark on their first line's middle, never on the middle
     // of both: apps/mbui/AGENTS.md, a mark beside a block of lines)
     let held = card.box(fn(row) {
