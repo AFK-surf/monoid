@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
 | [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.67 | 121.41 |
 | [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.52 | 119.15 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.49 | 115.86 |
 | [bb4ddd828](https://github.com/AFK-surf/monoid/commit/bb4ddd82868bb17bc032c0e8e6f2469d66a5833a) refactor(mb): replace 36 pure session_chats dep RP | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.49 | 115.86 |
 | [4fe809bec](https://github.com/AFK-surf/monoid/commit/4fe809becbfa9f08777a883457e330f500d5b0be) fix(shell): route iroh.probeRelay to the endpoint' | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.26 | 106.42 |
-| [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 2.65 | 3.57 | 14.56 | 36.8 | 56.09 | 32.28 | 65.42 | 97.54 | 122.24 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
 | [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
 | [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc8eb937e](https://github.com/AFK-surf/monoid/commit/cc8eb937e8b3a43fb8fa69ad55abb888880def47) fix(mbui): an effect writing what it reads keeps l | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.48 | 54.28 |
 | [bb4ddd828](https://github.com/AFK-surf/monoid/commit/bb4ddd82868bb17bc032c0e8e6f2469d66a5833a) refactor(mb): replace 36 pure session_chats dep RP | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [4fe809bec](https://github.com/AFK-surf/monoid/commit/4fe809becbfa9f08777a883457e330f500d5b0be) fix(shell): route iroh.probeRelay to the endpoint' | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
-| [ded934c14](https://github.com/AFK-surf/monoid/commit/ded934c14444d889f4c4dac39cdb478c1bb39930) fix(ci): key core.hbc by the build's day, asked as | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
