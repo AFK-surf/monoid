@@ -450,7 +450,7 @@ int main(void) {
   }
 
   // Unmerged liquid glass (kind 6, a[14] >= 0, a[23] <= 0):
-  // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1 (merged_liquid + sd_group) byte-for-byte;
+  // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1e-7 (merged_liquid + sd_group, same float32 quad bounds) byte-for-byte;
   // (2) two unmerged liquid shapes separated by a shadow (kind 2) sharing one capture make only 1 blur and preserve each
   //     instance's own spot, matching separate captures byte-for-byte at k == 0.
   {
@@ -472,7 +472,7 @@ int main(void) {
     gl_present(eq, 2, 0.1, 0.2, 0.3);
     unsigned char *px_single = pixels_of_fb(surface);
 
-    eq[MB_INST + 23] = 1.0;
+    eq[MB_INST + 23] = 1e-7;
     glass_forget();
     gl_present(eq, 2, 0.1, 0.2, 0.3);
     unsigned char *px_merged = pixels_of_fb(surface);
