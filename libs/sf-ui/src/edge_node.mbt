@@ -154,51 +154,40 @@ pub fn edge_node(
 /// An edge dragged on past its least or its most (edge_node's `pull`), as its look draws it (edge_look_node's `pull`):
 /// how far aside the hand has drawn its line (across the window, given way to: never past edge_pull_most however far
 /// the hand goes), at what height along it, and how tall the edge was as the drag went down (its Drag's, nothing read
-/// of its layout); let go, back to its rest on lift_spring from where it was. At rest, none.
+/// of its layout); let go, back to its rest on tactile_bounce from where it was. At rest, none.
 pub struct EdgePull {
-  priv aside : @motion.NodeWay
-  priv mut y : Double
-  priv mut h : Double
-  /// told as its height along the edge changes with nothing aside changed: what draws it follows
-  priv told : @signals.Signal[Int]
+  priv inner : @motion.EdgePull
 }
 
 ///|
 /// An edge's pull at rest.
 pub fn EdgePull::new() -> EdgePull {
-  { aside: @motion.NodeWay::new(0.0), y: 0.0, h: 0.0, told: @signals.signal(0) }
+  { inner: @motion.EdgePull::new(limit=edge_pull_most) }
 }
 
 ///|
 /// Drawn aside `past` across the window (past its end, as far as the hand went) at `y` along an edge `h` tall: given
 /// way to, there at once (in the hand).
 fn EdgePull::drag(self : EdgePull, past : Double, y : Double, h : Double) -> Unit {
-  let aside = past / (1.0 + past.abs() / edge_pull_most)
-  if self.y != y || self.h != h {
-    self.y = y
-    self.h = h
-    self.told.set(self.told.untracked() + 1)
-  }
-  self.aside.put(aside)
+  self.inner.drag(past, y, h)
 }
 
 ///|
-/// Let go: back to rest from where it is (lift_spring, a little past it), from `v`'s cause's moment.
+/// Let go: back to rest from where it is (tactile_bounce, a little past it), from `v`'s cause's moment.
 fn EdgePull::let_go(self : EdgePull, v : @view.View) -> Unit {
-  self.aside.go(v, 0.0, @motion.tactile_bounce)
+  self.inner.let_go(v)
 }
 
 ///|
 /// Whether it is drawn aside now or has been told to be (in the hand past its end): read by no clock.
 fn EdgePull::taken(self : EdgePull) -> Bool {
-  self.aside.target() != 0.0
+  self.inner.taken()
 }
 
 ///|
 /// How far aside its line is drawn as `n` is drawn, at what height along it, and how tall the edge was: (aside, y, h).
 pub fn EdgePull::shown_on(self : EdgePull, n : @view.View) -> (Double, Double, Double) {
-  self.told.get() |> ignore
-  (self.aside.shown(n), self.y, self.h)
+  self.inner.shown_on(n)
 }
 
 ///|

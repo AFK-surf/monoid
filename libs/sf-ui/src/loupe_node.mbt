@@ -14,9 +14,7 @@
 pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit {
   // (where the finger last read, where it goes as it is let go; whether it is in the finger, as a knob held is)
   let read : @signals.Signal[(Double, Double)?] = @signals.signal(None, same=fn(a, b) { a == b })
-  let held = @motion.NodeWay::new(0.0)
-  let ax = @motion.NodeWay::new(0.0)
-  let ay = @motion.NodeWay::new(0.0)
+  let follow = @motion.SpringFollow2D::new()
   root.box(made_for=loc, fn(l) {
     l
     .over(Is(true))
@@ -46,25 +44,17 @@ pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit 
         match r {
           Some(p) => {
             let (tx, ty) = goal(p)
-            // (come anew: where the finger is, not from where it last was)
-            if held.target() == 0.0 && held.value_at(l.cause_at()) <= 0.001 {
-              ax.put(tx)
-              ay.put(ty)
-            } else {
-              ax.go(l, tx, @motion.tactile_bounce)
-              ay.go(l, ty, @motion.tactile_bounce)
-            }
+            follow.chase(l, tx, ty)
             read.set(Some(p))
-            held.go(l, 1.0, @motion.tactile_bounce)
           }
-          None => held.go(l, 0.0, @motion.tactile_bounce)
+          None => follow.release(l)
         }
       },
     )
     // (shown while it is in the finger or on its way out: none drawn, none magnified, once it has gone)
     l.show(at_once=true,
-      fn() { read.get() is Some(_) && (held.target() > 0.0 || held.goes(l)) },
-      fn(at) { loupe_capsule(at, read, held, ax, ay, goal, loc~) },
+      fn() { read.get() is Some(_) && follow.active(l) },
+      fn(at) { loupe_capsule(at, read, follow, goal, loc~) },
     )
   })
   |> ignore
@@ -73,14 +63,12 @@ pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit 
 ///|
 /// The loupe's capsule in `at`, laid out where the finger last had it (`goal` of `read`), drawn where its ways have it:
 /// what the frame shows there larger, the lens of the glass a knob held is over it (where glass is drawn solid, what it
-/// shows bare), as faint and as large as it is in the finger (`held`), drawn out by its speed across.
+/// shows bare), as faint and as large as it is in the finger (`follow`), drawn out by its speed across.
 #callsite(autofill(loc))
 fn loupe_capsule(
   at : @view.View,
   read : @signals.Signal[(Double, Double)?],
-  held : @motion.NodeWay,
-  ax : @motion.NodeWay,
-  ay : @motion.NodeWay,
+  follow : @motion.SpringFollow2D,
   goal : ((Double, Double)) -> (Double, Double),
   loc~ : SourceLoc,
 ) -> Unit {
@@ -96,21 +84,8 @@ fn loupe_capsule(
   // (drawn out toward where it goes, its back where it was, as it is drawn: how much longer, how much lower, how far
   // over from where it is laid out)
   let drawn = fn(n : @view.View) -> @view.GroundShape {
-    let (x, xv) = ax.motion(n)
-    let y = ay.shown(n)
     let (tx, ty) = laid()
-    // (its way a frame at 60, as the ball's; none where it is all but there)
-    let v = if (ax.target() - x).abs() < 0.5 { 0.0 } else { xv / 60.0 }
-    let (longer, lower) = @motion.speed_stretch(v)
-    let mid = x + (if v < 0.0 { -longer } else { longer }) / 2.0
-    let r = (h - lower) / 2.0
-    {
-      dx: mid - (w + longer) / 2.0 - (tx - w / 2.0),
-      dy: y - (h - lower) / 2.0 - (ty - h / 2.0),
-      dw: longer,
-      dh: -lower,
-      corners: Some((r, r, r, r)),
-    }
+    follow.capsule_shape(n, w, h, tx, ty)
   }
   at
   .over(Is(true))
@@ -130,8 +105,8 @@ fn loupe_capsule(
     }
   }))
   // (as faint as it is in the finger, as large: a knob's lens's)
-  .alpha(By(fn() { dmin(1.0, held.shown(at)) }))
-  .scale(By(fn() { 1.0 + (knob_lens_grow - 1.0) * held.shown(at) }))
+  .alpha(By(fn() { dmin(1.0, follow.held_shown(at)) }))
+  .scale(By(fn() { 1.0 + (knob_lens_grow - 1.0) * follow.held_shown(at) }))
   |> ignore
   at.box(fn(lens) {
     lens
@@ -140,7 +115,7 @@ fn loupe_capsule(
     .ground_drawn(By(fn() { drawn(lens) }))
     .glass(By(fn() { if lens.glass_solid() { None } else { Some(glass_knob()) } }))
     .shadow(By(fn() {
-      let full = dmin(1.0, held.shown(lens))
+      let full = dmin(1.0, follow.held_shown(lens))
       (lens_shadow * full, lens_shadow_y * full, ui_theme_now().shadow)
     }))
     |> ignore
