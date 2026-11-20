@@ -43,6 +43,209 @@ impl Halves {
     }
 }
 
+/// A remote screen's input frame (client/core-ts screen-frames.ts `INPUT`).
+const FRAME_INPUT: u8 = 16;
+/// The longest of a pointer's moves (screens.ts `checkInput`, the station's `parseInput`).
+const MOVE_MOST: f64 = 10_000.0;
+
+/// What the app sends a tapped view straight to its station (`sf_shell_screen_input`), past the core: a game's pointer,
+/// keys, wheel and controllers, which wait on nothing the core's thread is busy with. Sent in the order they came, by
+/// one task at a time, each written whole before the next; a pointer's move still waiting taken over by the next of
+/// the same buttons (a relative one's distance added to it), so a slow stream builds no backlog of moves ahead of a
+/// press, and a press, a key or a release never passes another or is dropped.
+pub(crate) struct InputLine {
+    halves: std::sync::Weak<Halves>,
+    queue: Mutex<InputQueue>,
+}
+
+#[derive(Default)]
+struct InputQueue {
+    waiting: std::collections::VecDeque<Value>,
+    /// A task writes what waits.
+    draining: bool,
+}
+
+/// `v` checked and put as the core puts it (screens.ts `checkInput`), where it is one sent straight: a pointer's,
+/// the wheel's, a key's or a controller's. None: the core's (any other, or one it refuses with its words).
+pub(crate) fn checked_input(v: &Value) -> Option<Value> {
+    let o = v.as_object()?;
+    let num = |k: &str| o.get(k).and_then(Value::as_f64).filter(|n| n.is_finite());
+    let unit = |k: &str| num(k).map(|n| n.clamp(0.0, 1.0));
+    match o.get("t")?.as_str()? {
+        "pointer" => {
+            let kind = o.get("kind")?.as_str().filter(|k| matches!(*k, "down" | "up" | "move"))?;
+            let (x, y) = (unit("x")?, unit("y")?);
+            let buttons = num("buttons").filter(|b| *b >= 0.0).map_or(0, |b| (b.floor() as i64) & 31);
+            let relative = o.get("relative") == Some(&Value::Bool(true));
+            let mut e = json!({ "t": "pointer", "kind": kind, "x": x, "y": y, "buttons": buttons });
+            if kind == "move" {
+                match (num("dx"), num("dy")) {
+                    (Some(dx), Some(dy)) => {
+                        e["dx"] = json!(dx.clamp(-MOVE_MOST, MOVE_MOST));
+                        e["dy"] = json!(dy.clamp(-MOVE_MOST, MOVE_MOST));
+                    }
+                    // (no distance: no `relative` either, as the core has it)
+                    _ => return Some(e),
+                }
+            }
+            if relative {
+                e["relative"] = json!(true);
+            }
+            Some(e)
+        }
+        "wheel" => Some(json!({ "t": "wheel", "x": unit("x")?, "y": unit("y")?, "dx": num("dx")?, "dy": num("dy")? })),
+        "key" => {
+            const KEY_MAX: usize = 64;
+            let kind = o.get("kind")?.as_str().filter(|k| matches!(*k, "down" | "up"))?;
+            let key = o.get("key")?.as_str().filter(|k| !k.is_empty() && k.encode_utf16().count() <= KEY_MAX)?;
+            let code = o.get("code").and_then(Value::as_str).filter(|c| c.encode_utf16().count() <= KEY_MAX).unwrap_or("");
+            let mods = num("mods").filter(|m| *m >= 0.0).map_or(0, |m| (m.floor() as i64) & 15);
+            Some(json!({ "t": "key", "kind": kind, "key": key, "code": code, "mods": mods }))
+        }
+        "gamepad" => {
+            let index = num("index").filter(|i| i.fract() == 0.0 && (0.0..=3.0).contains(i))? as i64;
+            if o.get("connected") == Some(&Value::Bool(false)) {
+                return Some(json!({ "t": "gamepad", "index": index, "connected": false, "buttons": 0, "lx": 0, "ly": 0, "rx": 0, "ry": 0, "lt": 0, "rt": 0 }));
+            }
+            let n = |k: &str, lo: f64| num(k).map_or(0.0, |v| v.clamp(lo, 1.0));
+            let buttons = num("buttons").filter(|b| *b >= 0.0).map_or(0, |b| (b.floor() as i64) & 0x1ffff);
+            Some(json!({ "t": "gamepad", "index": index, "connected": true, "buttons": buttons, "lx": n("lx", -1.0), "ly": n("ly", -1.0), "rx": n("rx", -1.0), "ry": n("ry", -1.0), "lt": n("lt", 0.0), "rt": n("rt", 0.0) }))
+        }
+        _ => None,
+    }
+}
+
+/// A number as JavaScript's JSON.stringify writes it (a whole one without `.0`).
+fn js_number(n: f64) -> String {
+    if n == n.trunc() && n.abs() < 1e21 {
+        format!("{}", n as i64)
+    } else {
+        serde_json::Number::from_f64(n).map_or_else(|| "null".into(), |n| n.to_string())
+    }
+}
+
+/// `input` (checked) as the core's JSON.stringify writes it: its fields in the order `checkInput` makes them.
+fn input_json(input: &Value) -> String {
+    let order: &[&str] = match input["t"].as_str().unwrap_or("") {
+        "pointer" => &["t", "kind", "x", "y", "buttons", "dx", "dy", "relative"],
+        "wheel" => &["t", "x", "y", "dx", "dy"],
+        "key" => &["t", "kind", "key", "code", "mods"],
+        _ => &["t", "index", "connected", "buttons", "lx", "ly", "rx", "ry", "lt", "rt"],
+    };
+    let mut out = String::from("{");
+    for k in order {
+        let Some(v) = input.get(*k) else { continue };
+        if out.len() > 1 {
+            out.push(',');
+        }
+        out.push_str(&format!("\"{k}\":"));
+        match v {
+            Value::Number(n) => out.push_str(&js_number(n.as_f64().unwrap_or(0.0))),
+            v => out.push_str(&v.to_string()),
+        }
+    }
+    out.push('}');
+    out
+}
+
+/// `input` (checked) as a frame on the view's stream, byte for byte the core's (screen-frames.ts `inputFrame`).
+pub(crate) fn input_frame(input: &Value) -> Vec<u8> {
+    let json = input_json(input).into_bytes();
+    let mut f = Vec::with_capacity(5 + json.len());
+    f.push(FRAME_INPUT);
+    f.extend((json.len() as u32).to_be_bytes());
+    f.extend(json);
+    f
+}
+
+/// `next` (checked) taken into `last`, a pointer's move waiting, where it is a move of the same buttons, both relative
+/// or neither: the newest place, and a relative one's distance added (while it stays within `MOVE_MOST`).
+fn merged(last: &mut Value, next: &Value) -> bool {
+    let is_move = |v: &Value| v["t"] == "pointer" && v["kind"] == "move";
+    if !is_move(last) || !is_move(next) || last["buttons"] != next["buttons"] || last.get("relative") != next.get("relative") || last.get("dx").is_some() != next.get("dx").is_some() {
+        return false;
+    }
+    if next.get("relative").is_some() {
+        let (dx, dy) = (last["dx"].as_f64().unwrap_or(0.0) + next["dx"].as_f64().unwrap_or(0.0), last["dy"].as_f64().unwrap_or(0.0) + next["dy"].as_f64().unwrap_or(0.0));
+        if dx.abs() > MOVE_MOST || dy.abs() > MOVE_MOST {
+            return false;
+        }
+        *last = next.clone();
+        last["dx"] = json!(dx);
+        last["dy"] = json!(dy);
+    } else {
+        *last = next.clone();
+    }
+    true
+}
+
+impl InputLine {
+    pub(crate) fn new(halves: &Arc<Halves>) -> InputLine {
+        InputLine { halves: Arc::downgrade(halves), queue: Mutex::default() }
+    }
+
+    pub(crate) fn halves_alive(&self) -> bool {
+        self.halves.strong_count() > 0
+    }
+
+    pub(crate) fn is_of(&self, halves: &Arc<Halves>) -> bool {
+        std::ptr::eq(self.halves.as_ptr(), Arc::as_ptr(halves))
+    }
+
+    /// `input` (checked) to be sent after what waits; a task started to send it where none sends.
+    pub(crate) fn send(self: &Arc<Self>, input: Value, runtime: &tokio::runtime::Handle) {
+        {
+            let mut q = self.queue.lock().unwrap();
+            if q.waiting.back_mut().is_some_and(|last| merged(last, &input)) {
+                tally("tap.inputs.merged");
+            } else {
+                q.waiting.push_back(input);
+            }
+            if q.draining {
+                return;
+            }
+            q.draining = true;
+        }
+        let line = self.clone();
+        runtime.spawn(async move { line.drain().await });
+    }
+
+    /// What waits written, one at a time, till none does (or the stream is gone: what waits dropped).
+    async fn drain(&self) {
+        loop {
+            let next = {
+                let mut q = self.queue.lock().unwrap();
+                match q.waiting.pop_front() {
+                    Some(v) => v,
+                    None => {
+                        q.draining = false;
+                        return;
+                    }
+                }
+            };
+            let frame = input_frame(&next);
+            let wrote = match self.halves.upgrade() {
+                Some(halves) => match halves.send.lock().await.as_mut() {
+                    Some(send) => send.write_all(&frame).await.is_ok(),
+                    None => false,
+                },
+                None => false,
+            };
+            if !wrote {
+                let mut q = self.queue.lock().unwrap();
+                q.waiting.clear();
+                q.draining = false;
+                return;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> Vec<Value> {
+        self.queue.lock().unwrap().waiting.iter().cloned().collect()
+    }
+}
+
 /// A stream carried whole into a socket (`istream.pipe`): each piece of it as a frame, its length (4 bytes, big-endian)
 /// then its bytes; its end, or what failed it (the frame's tag, then the words' length and the words), as one of these.
 pub(crate) const PIPE_END: u32 = 0xFFFF_FFFE;
@@ -638,5 +841,369 @@ impl Inner {
             }
             other => Err(format!("no operation {other}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen_tap::ScreenTap;
+    use iroh::endpoint::presets::Minimal;
+    use iroh::{Endpoint, RelayMode};
+
+    /// The core's own (screens.ts `checkInput`, then screen-frames.ts `inputFrame`'s JSON.stringify), as node wrote them.
+    const THE_CORES: &[(&str, &str)] = &[
+            (r#"{"t":"pointer","kind":"move","x":0.5123456789,"y":1.5,"buttons":1.9,"dx":3,"dy":-2.25,"relative":true}"#, r#"{"t":"pointer","kind":"move","x":0.5123456789,"y":1,"buttons":1,"dx":3,"dy":-2.25,"relative":true}"#),
+            (r#"{"t":"pointer","kind":"move","x":0.1,"y":0.2,"buttons":0,"dx":20000,"dy":-1e-7}"#, r#"{"t":"pointer","kind":"move","x":0.1,"y":0.2,"buttons":0,"dx":10000,"dy":-1e-7}"#),
+            (r#"{"t":"pointer","kind":"move","x":0.1,"y":0.2,"buttons":33,"relative":true}"#, r#"{"t":"pointer","kind":"move","x":0.1,"y":0.2,"buttons":1}"#),
+            (r#"{"t":"pointer","kind":"down","x":-1,"y":0.3333333333333333,"buttons":1,"relative":true,"extra":5}"#, r#"{"t":"pointer","kind":"down","x":0,"y":0.3333333333333333,"buttons":1,"relative":true}"#),
+            (r#"{"t":"wheel","x":0.25,"y":0.75,"dx":0,"dy":-120.5}"#, r#"{"t":"wheel","x":0.25,"y":0.75,"dx":0,"dy":-120.5}"#),
+            (r#"{"t":"key","kind":"down","key":"w","mods":17}"#, r#"{"t":"key","kind":"down","key":"w","code":"","mods":1}"#),
+            (r#"{"t":"key","kind":"up","key":"Enter","code":"Enter \"\\\u0001","mods":2}"#, r#"{"t":"key","kind":"up","key":"Enter","code":"Enter \"\\\u0001","mods":2}"#),
+            (r#"{"t":"gamepad","index":1,"buttons":131073,"lx":-2,"ly":0.5,"rx":0.123,"ry":1,"lt":0.75,"rt":-1}"#, r#"{"t":"gamepad","index":1,"connected":true,"buttons":1,"lx":-1,"ly":0.5,"rx":0.123,"ry":1,"lt":0.75,"rt":0}"#),
+            (r#"{"t":"gamepad","index":3,"connected":false}"#, r#"{"t":"gamepad","index":3,"connected":false,"buttons":0,"lx":0,"ly":0,"rx":0,"ry":0,"lt":0,"rt":0}"#)
+    ];
+
+    #[test]
+    fn an_input_sent_straight_is_the_frame_the_core_would_have_sent() {
+        for (asked, core) in THE_CORES {
+            let checked = checked_input(&serde_json::from_str(asked).unwrap()).unwrap();
+            let f = input_frame(&checked);
+            assert_eq!(f[0], 16);
+            assert_eq!(u32::from_be_bytes(f[1..5].try_into().unwrap()) as usize, f.len() - 5);
+            assert_eq!(std::str::from_utf8(&f[5..]).unwrap(), *core, "{asked}");
+        }
+        // the core's alone: any other kind, one it refuses with its words
+        for other in [r#"{"t":"text","text":"a"}"#, r#"{"t":"window"}"#, r#"{"t":"fill","host":"a","password":"p"}"#, r#"{"t":"key","kind":"down","key":""}"#, r#"{"t":"pointer","kind":"drag","x":0,"y":0}"#, r#"{"t":"wheel","x":0,"y":0}"#, r#"{"t":"gamepad","index":4}"#, "[1]", "7"] {
+            assert_eq!(checked_input(&serde_json::from_str(other).unwrap()), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_move_waiting_is_taken_over_by_the_next_and_nothing_else_is() {
+        let ev = |s: &str| checked_input(&serde_json::from_str(s).unwrap()).unwrap();
+        let mut last = ev(r#"{"t":"pointer","kind":"move","x":0.1,"y":0.1,"buttons":0,"dx":1.5,"dy":-2,"relative":true}"#);
+        assert!(merged(&mut last, &ev(r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0,"dx":2.25,"dy":5,"relative":true}"#)));
+        assert_eq!(last, ev(r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0,"dx":3.75,"dy":3,"relative":true}"#), "the distances added, the newest place");
+        // another button held, absolute and relative, a press, a key: never
+        assert!(!merged(&mut last, &ev(r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":1,"dx":1,"dy":1,"relative":true}"#)));
+        assert!(!merged(&mut last, &ev(r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0}"#)));
+        assert!(!merged(&mut last, &ev(r#"{"t":"pointer","kind":"down","x":0.2,"y":0.3,"buttons":1,"relative":true}"#)));
+        assert!(!merged(&mut last, &ev(r#"{"t":"key","kind":"down","key":"w","code":"KeyW"}"#)));
+        // never past the longest move: sent as two
+        assert!(!merged(&mut last, &ev(r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0,"dx":9999,"dy":0,"relative":true}"#)));
+        let mut abs = ev(r#"{"t":"pointer","kind":"move","x":0.1,"y":0.1,"buttons":0}"#);
+        assert!(merged(&mut abs, &ev(r#"{"t":"pointer","kind":"move","x":0.4,"y":0.6,"buttons":0}"#)));
+        assert_eq!(abs, ev(r#"{"t":"pointer","kind":"move","x":0.4,"y":0.6,"buttons":0}"#));
+        let mut key = ev(r#"{"t":"key","kind":"down","key":"w"}"#);
+        assert!(!merged(&mut key, &ev(r#"{"t":"key","kind":"down","key":"w"}"#)), "a key repeated is sent each time");
+    }
+
+    extern "C" fn no_answers(_: *mut std::ffi::c_void, _: u64, _: *const u8, _: usize, _: *const u8, _: usize, _: *const u8, _: usize, _: u8) {}
+
+    /// A tapped view on a real iroh connection on this machine, its station's end (what the frames come on).
+    fn tapped(shell: &crate::Shell, call: u64) -> (Arc<Halves>, iroh::endpoint::RecvStream, Vec<Endpoint>) {
+        shell.runtime.block_on(async {
+            let alpn = b"stillfail/test".to_vec();
+            let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+            let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+            let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            let addr = crate::iroh_ops::endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+            let taking = b.clone();
+            let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+            let client = a.connect(addr, &alpn).await.unwrap();
+            let station = taken.await.unwrap();
+            let (mut send, recv) = client.open_bi().await.unwrap();
+            send.write_all(b"{}\n").await.unwrap();
+            let (_, mut srecv) = station.accept_bi().await.unwrap();
+            let mut line = [0u8; 3];
+            srecv.read_exact(&mut line).await.unwrap();
+            let (reset, _) = tokio::sync::watch::channel(false);
+            let halves = Arc::new(Halves {
+                conn: 0,
+                send: tokio::sync::Mutex::new(Some(send)),
+                recv: tokio::sync::Mutex::new(Some(recv)),
+                reset,
+                ended: Default::default(),
+                finished: Default::default(),
+                tap: Mutex::new(Some(ScreenTap::new(call, false))),
+                media_out: Default::default(),
+                media_in: Default::default(),
+            });
+            shell.inner.handles.lock().unwrap().insert(900 + call, crate::Handle::IStream(halves.clone()));
+            std::mem::forget(station);
+            (halves, srecv, vec![a, b])
+        })
+    }
+
+    /// The input frames read off the station's end, `n` of them.
+    fn read_inputs(shell: &crate::Shell, recv: &mut iroh::endpoint::RecvStream, n: usize) -> Vec<String> {
+        shell.runtime.block_on(async {
+            let mut got = Vec::new();
+            while got.len() < n {
+                let mut head = [0u8; 5];
+                recv.read_exact(&mut head).await.unwrap();
+                assert_eq!(head[0], 16);
+                let mut body = vec![0u8; u32::from_be_bytes(head[1..5].try_into().unwrap()) as usize];
+                recv.read_exact(&mut body).await.unwrap();
+                got.push(String::from_utf8(body).unwrap());
+            }
+            got
+        })
+    }
+
+    #[test]
+    fn inputs_sent_straight_go_in_order_moves_waiting_taken_over() {
+        let dir = std::env::temp_dir().join(format!("stillfail-shell-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = crate::Shell::start(dir, no_answers, std::ptr::null_mut()).unwrap();
+        let (halves, mut recv, _endpoints) = tapped(&shell, 7);
+        let send = |s: &str| crate::ffi::screen_input(&shell, 7, s.as_bytes());
+        assert_eq!(send(r#"{"t":"text","text":"a"}"#), 0, "the core's");
+        assert_eq!(crate::ffi::screen_input(&shell, 8, br#"{"t":"key","kind":"down","key":"w"}"#), 0, "no view of that call tapped");
+        // the stream held (a write under way): what comes meanwhile waits, its moves taken over
+        let held = shell.runtime.block_on(halves.send.lock());
+        for s in [
+            r#"{"t":"key","kind":"down","key":"w","code":"KeyW"}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":0,"dx":1,"dy":1,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":0,"dx":2,"dy":3,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":0,"dx":-1,"dy":0.5,"relative":true}"#,
+            r#"{"t":"pointer","kind":"down","x":0.5,"y":0.5,"buttons":1,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":1,"dx":4,"dy":0,"relative":true}"#,
+            r#"{"t":"pointer","kind":"up","x":0.5,"y":0.5,"buttons":0,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.1,"y":0.1,"buttons":0}"#,
+            r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0}"#,
+            r#"{"t":"key","kind":"up","key":"w","code":"KeyW"}"#,
+            r#"{"t":"gamepad","index":0,"buttons":1,"lx":0.5}"#,
+        ] {
+            assert_eq!(send(s), 1);
+        }
+        drop(held);
+        let want = [
+            r#"{"t":"key","kind":"down","key":"w","code":"KeyW","mods":0}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":0,"dx":2,"dy":4.5,"relative":true}"#,
+            r#"{"t":"pointer","kind":"down","x":0.5,"y":0.5,"buttons":1,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":1,"dx":4,"dy":0,"relative":true}"#,
+            r#"{"t":"pointer","kind":"up","x":0.5,"y":0.5,"buttons":0,"relative":true}"#,
+            r#"{"t":"pointer","kind":"move","x":0.2,"y":0.3,"buttons":0}"#,
+            r#"{"t":"key","kind":"up","key":"w","code":"KeyW","mods":0}"#,
+            r#"{"t":"gamepad","index":0,"connected":true,"buttons":1,"lx":0.5,"ly":0,"rx":0,"ry":0,"lt":0,"rt":0}"#,
+        ];
+        assert_eq!(read_inputs(&shell, &mut recv, want.len()), want);
+        // a great many at once, from two threads in turn, as fast as they come: each thread's in its order, no move's
+        // distance lost
+        let line = shell.inner.inputs.lock().unwrap().get(&7).unwrap().clone();
+        std::thread::scope(|s| {
+            for who in ["a", "b"] {
+                let send = &send;
+                s.spawn(move || {
+                    for i in 0..1000 {
+                        assert_eq!(send(&format!(r#"{{"t":"key","kind":"{}","key":"{who}{i}"}}"#, if i % 2 == 0 { "down" } else { "up" })), 1);
+                        assert_eq!(send(r#"{"t":"pointer","kind":"move","x":0.5,"y":0.5,"buttons":0,"dx":1,"dy":-1,"relative":true}"#), 1);
+                    }
+                });
+            }
+        });
+        let mut keys = Vec::new();
+        let (mut dx, mut dy) = (0.0, 0.0);
+        let mut read = 0;
+        while keys.len() < 2000 || dx < 2000.0 {
+            let got = read_inputs(&shell, &mut recv, 1).pop().unwrap();
+            read += 1;
+            let v: Value = serde_json::from_str(&got).unwrap();
+            if v["t"] == "key" {
+                keys.push(v["key"].as_str().unwrap().to_string());
+            } else {
+                dx += v["dx"].as_f64().unwrap();
+                dy += v["dy"].as_f64().unwrap();
+            }
+        }
+        assert_eq!((dx, dy), (2000.0, -2000.0), "every move's distance came");
+        for who in ["a", "b"] {
+            let theirs: Vec<&String> = keys.iter().filter(|k| k.starts_with(who)).collect();
+            assert_eq!(theirs, (0..1000).map(|i| format!("{who}{i}")).collect::<Vec<_>>().iter().collect::<Vec<_>>());
+        }
+        assert!(line.waiting().is_empty());
+        eprintln!("4000 inputs sent straight from two threads: {read} frames on the stream ({} moves taken over)", 4000 - read);
+        drop(shell);
+    }
+
+    /// A remote screen's 2K view at 60 and at 120 frames a second over a real iroh connection on this machine, its
+    /// frames as datagrams (screen_dgram.rs), with none, 1%, 3% and 5% of them lost at random, and 3% lost two in a row:
+    /// as it was (one parity shard on a clean link, the connection's counters alone, asleep every 8 shards) and now
+    /// (a tenth at least, the receiving end's reports, no sleeping), no loss told to either. Run alone:
+    /// `cargo test --release -p stillfail-shell two_k_frames -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn two_k_frames_as_datagrams_through_loss_before_and_now() {
+        use crate::screen_dgram::{KEYFRAME_FRAME, MediaIn, MediaOut, MediaRx, route};
+        use std::collections::HashMap;
+        use tokio::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("stillfail-shell-bench-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = crate::Shell::start(dir, no_answers, std::ptr::null_mut()).unwrap();
+        shell.runtime.block_on(async move {
+            let alpn = b"stillfail/test".to_vec();
+            let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+            let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+            let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+            let addr = crate::iroh_ops::endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+            let taking = b.clone();
+            let taken = tokio::spawn(async move { taking.accept().await.unwrap().await.unwrap() });
+            let client = a.connect(addr, &alpn).await.unwrap();
+            let station = taken.await.unwrap();
+            let slot = Mutex::default();
+            const SECONDS: u64 = 5;
+            let mut token = 0u32;
+            let mut rows = Vec::new();
+            for (fps, p_len) in [(60u64, 35_000usize), (120, 20_000)] {
+                for (loss, burst) in [(0.0, 1usize), (0.01, 1), (0.03, 1), (0.05, 1), (0.03, 2)] {
+                    for before in [true, false] {
+                        token += 1;
+                        let frames = fps * SECONDS;
+                        let (mut csend, mut crecv) = client.open_bi().await.unwrap();
+                        let (route, rx) = route(&slot, &client, token).unwrap();
+                        let mut rx = MediaRx { media: MediaIn::new(token, true), rx, rx_done: false, _route: route };
+                        csend.write_all(b"{\"screen\":{}}\n").await.unwrap();
+                        let (mut ssend, mut srecv) = station.accept_bi().await.unwrap();
+                        let sent: Arc<Mutex<HashMap<u64, Instant>>> = Arc::default();
+                        let want_key = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let sending = {
+                            let (station, sent, want_key) = (station.clone(), sent.clone(), want_key.clone());
+                            tokio::spawn(async move {
+                                let mut line = [0u8; 14];
+                                srecv.read_exact(&mut line).await.unwrap();
+                                let asked = want_key.clone();
+                                tokio::spawn(async move {
+                                    let mut f = [0u8; 5];
+                                    while srecv.read_exact(&mut f).await.is_ok() {
+                                        if f == KEYFRAME_FRAME {
+                                            asked.store(true, Ordering::Relaxed);
+                                        }
+                                    }
+                                });
+                                let mut media = MediaOut::new(station, token).unwrap();
+                                media.lose = Some((loss, 0x9e37_79b9_7f4a_7c15 ^ token as u64));
+                                media.burst = burst;
+                                media.before = before;
+                                media.write(&mut ssend, b"{\"status\":200}\n").await.unwrap();
+                                let config = br#"{"codec":"h264","width":2560,"height":1440}"#;
+                                let mut f = vec![1u8];
+                                f.extend((config.len() as u32).to_be_bytes());
+                                f.extend(config);
+                                media.write(&mut ssend, &f).await.unwrap();
+                                let start = Instant::now();
+                                let (mut keys, mut parity_at_end) = (0u64, (0u64, 0u64));
+                                for i in 0..frames {
+                                    tokio::time::sleep_until(start + Duration::from_micros(1_000_000 * i / fps)).await;
+                                    let key = i % (2 * fps) == 0 || want_key.swap(false, Ordering::Relaxed);
+                                    keys += key as u64;
+                                    let len = if key { 140_000 } else { p_len - p_len / 8 + (i as usize * 7919) % (p_len / 4) };
+                                    let mut body = vec![key as u8];
+                                    body.extend(i.to_be_bytes());
+                                    body.extend((0..len).map(|j| (j as u64 * 31 + i) as u8));
+                                    let mut f = vec![2u8];
+                                    f.extend((body.len() as u32).to_be_bytes());
+                                    f.extend(body);
+                                    sent.lock().unwrap().insert(i, Instant::now());
+                                    media.write(&mut ssend, &f).await.unwrap();
+                                    if i == frames / 2 {
+                                        parity_at_end = media.shards;
+                                    }
+                                }
+                                ssend.finish().unwrap();
+                                let late = (media.shards.0 - parity_at_end.0, media.shards.1 - parity_at_end.1);
+                                (media.took, keys, media.shards, late)
+                            })
+                        };
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let mut bytes: Vec<u8> = Vec::new();
+                        let mut line = false;
+                        let mut got: Vec<(u64, bool, Duration)> = Vec::new();
+                        let (mut reports, mut said) = (0u64, Vec::new());
+                        loop {
+                            if rx.media.at_boundary() {
+                                rx.media.drain_into(&mut bytes);
+                            }
+                            if rx.media.take_keyframe(Instant::now()) {
+                                csend.write_all(&KEYFRAME_FRAME).await.unwrap();
+                            }
+                            if !line {
+                                if let Some(at) = bytes.iter().position(|&b| b == b'\n') {
+                                    bytes.drain(..=at);
+                                    line = true;
+                                }
+                            }
+                            while line && bytes.len() >= 5 {
+                                let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+                                if bytes.len() < 5 + len {
+                                    break;
+                                }
+                                if bytes[0] == 2 {
+                                    let i = u64::from_be_bytes(bytes[6..14].try_into().unwrap());
+                                    assert!(bytes[14..5 + len].iter().enumerate().all(|(j, &v)| v == (j as u64 * 31 + i) as u8), "frame {i} made whole as it was sent");
+                                    let at = sent.lock().unwrap()[&i];
+                                    got.push((i, bytes[5] & 1 == 1, at.elapsed()));
+                                }
+                                bytes.drain(..5 + len);
+                            }
+                            let deadline = rx.media.deadline();
+                            let before_report = rx.media.loss;
+                            tokio::select! {
+                                read = crecv.read(&mut buf) => match read.unwrap() {
+                                    Some(n) => {
+                                        let chunk = &buf[..n];
+                                        match rx.media.stream(chunk) {
+                                            Some(b) => {
+                                                bytes.extend_from_slice(&chunk[..b]);
+                                                rx.media.drain_into(&mut bytes);
+                                                bytes.extend_from_slice(&chunk[b..]);
+                                            }
+                                            None => bytes.extend_from_slice(chunk),
+                                        }
+                                    }
+                                    None => break,
+                                },
+                                d = rx.next() => rx.take_waiting(d, Instant::now()),
+                                _ = crate::screen_dgram::until(deadline) => rx.media.tick(Instant::now()),
+                            }
+                            if rx.media.loss.shards < before_report.shards {
+                                reports += 1;
+                                said.push(before_report.missing as f64 / before_report.shards.max(1) as f64);
+                            }
+                        }
+                        let (took, keys, shards, late) = sending.await.unwrap();
+                        for w in got.windows(2) {
+                            assert!(w[1].1 || w[1].0 == w[0].0 + 1, "frame {} given after {}", w[1].0, w[0].0);
+                        }
+                        let pct = |v: &mut Vec<f64>, p: f64| {
+                            v.sort_by(f64::total_cmp);
+                            if v.is_empty() { f64::NAN } else { v[((v.len() - 1) as f64 * p).round() as usize] }
+                        };
+                        let mut ms: Vec<f64> = got.iter().map(|g| g.2.as_secs_f64() * 1000.0).collect();
+                        let mut send_ms: Vec<f64> = took.iter().map(|d| d.as_secs_f64() * 1000.0).collect();
+                        let send_mean = send_ms.iter().sum::<f64>() / send_ms.len().max(1) as f64;
+                        let c = rx.media.counts;
+                        let heard = said.iter().copied().sum::<f64>() / said.len().max(1) as f64;
+                        let row = format!(
+                            "| {fps} | {} | {} | {}/{} ({:.1}%) | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1}% | {:.1}% | {} ({:.2}%) |",
+                            if burst > 1 { format!("{:.0}% ×{burst}", loss * 100.0) } else { format!("{:.0}%", loss * 100.0) },
+                            if before { "before" } else { "now" },
+                            got.len(), frames, got.len() as f64 * 100.0 / frames as f64, c.given_up, keys,
+                            pct(&mut ms, 0.5), pct(&mut ms, 0.99), send_mean, pct(&mut send_ms, 0.99),
+                            shards.1 as f64 * 100.0 / shards.0.max(1) as f64, late.1 as f64 * 100.0 / late.0.max(1) as f64,
+                            reports, heard * 100.0,
+                        );
+                        eprintln!("{row}");
+                        rows.push(row);
+                    }
+                }
+            }
+            eprintln!("\n| fps | loss | | frames given | given up | key frames | P50 ms | P99 ms | send mean ms | send P99 ms | parity | parity (2nd half) | reports (loss said) |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+            for r in rows {
+                eprintln!("{r}");
+            }
+        });
     }
 }

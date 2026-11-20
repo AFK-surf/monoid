@@ -1295,6 +1295,8 @@ fn screen_keys_in(pg : ScreenPage, k : @ui.KeyIn) -> Unit {
       } else {
         u.pasted_v = false
       }
+    // the pointer held for an app there let go of by the person's own keys (⌃Esc, ⌃⌥⇧Q), whatever the app does
+    Key(down~, code~, mods~, ..) if screen_lock_keys(u.mouse, code, mods, down) => ()
     // a browser's own keys on a tab of the station's browser (⌘L, ⌘T, ⌘W, ⌘R, ⌘[, ⌘]): the viewer's, as a browser's
     Key(down~, code~, mods~, ..) if browser_key(s, u, code, mods, down) => ()
     Key(down~, key~, code~, mods~) => {

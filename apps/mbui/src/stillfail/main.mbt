@@ -197,6 +197,21 @@ let core_source : @sfapp.Source = {
         return
       }
     }
+    // a game's pointer, keys, wheel and controllers sent straight to its station the same way, in order, never waiting
+    // on the core's thread (sfpages' screen.input says the view's call; the core's where the shell does not take it)
+    if name == "screen.input" {
+      let view_call = @sfapp.number(Some(params), "call")
+      if view_call > 0.0 {
+        match params {
+          { "input": Object(_) as input, .. } =>
+            if @core.screen_input(view_call.to_int(), input.stringify()) {
+              done(Ok(Json::null()))
+              return
+            }
+          _ => ()
+        }
+      }
+    }
     if call_log {
       @hostapi.log("CALL \{name} \{logged(name, params)}")
     }

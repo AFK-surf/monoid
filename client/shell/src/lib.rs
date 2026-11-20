@@ -39,7 +39,7 @@ mod zstd_ops;
 mod tests;
 
 pub use ffi::{
-    Complete, Media, Say, sf_free, sf_shell_call, sf_shell_call_sync, sf_shell_screen_ack, sf_shell_set_media, sf_shell_set_say, sf_shell_start, sf_shell_stats, sf_shell_stop,
+    Complete, Media, Say, sf_free, sf_shell_call, sf_shell_call_sync, sf_shell_screen_ack, sf_shell_screen_input, sf_shell_set_media, sf_shell_set_say, sf_shell_start, sf_shell_stats, sf_shell_stop,
     sf_utc_offset_min,
 };
 
@@ -158,6 +158,8 @@ pub(crate) struct Inner {
     pub(crate) adb: adb::Adb,
     /// Each connection's datagrams' reader, by its handle, while a view takes them (screen_dgram.rs `route`).
     pub(crate) demuxes: Mutex<HashMap<u64, Arc<Mutex<std::sync::Weak<screen_dgram::Demux>>>>>,
+    /// What the app sends each tapped view straight (`sf_shell_screen_input`), by the view's call, in order.
+    pub(crate) inputs: Mutex<HashMap<u64, Arc<istream::InputLine>>>,
 }
 
 pub struct Shell {
@@ -394,7 +396,7 @@ impl Shell {
         let http = Mutex::new(http_client(&tls));
         let db = Arc::new(Mutex::new(DbHandle { path: dir.join("core.db"), conn: None }));
         let adb = adb::Adb::new(dir.clone());
-        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default() });
+        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default(), inputs: Mutex::default() });
         STATS.lock().unwrap().shells.push(Arc::downgrade(&inner));
         Ok(Shell { runtime, inner })
     }

@@ -87,6 +87,10 @@ pub fn file_bytes(async () -> FileReading, Int64, Int64) -> Pieces
 
 pub let fps_choices : Array[Int32]
 
+pub fn fps_scale(Double?) -> Double
+
+pub let fps_scale_most : Double
+
 pub fn frame(Int32, Bytes) -> Bytes
 
 pub let frame_most : Int32
@@ -124,6 +128,8 @@ pub fn js_u32(Double) -> UInt32
 pub fn json_of(@jsjson.JValue) -> @json.Json
 
 pub fn jvalue(@json.Json) -> @jsjson.JValue
+
+pub let key_queue_ms : Double
 
 pub let kind_ack : Int32
 
@@ -174,6 +180,8 @@ pub fn lang_of_core(Array[(String, String)]) -> String
 pub let latency_every_ms : Double
 
 pub let latency_window_ms : Double
+
+pub let light_cut : Double
 
 pub fn limit_in(Int32) -> Int32
 
@@ -279,7 +287,7 @@ pub let queue_share : Double
 
 pub let quiet : Int32
 
-pub fn rate_ceiling(Double, Double, String?) -> Double
+pub fn rate_ceiling(Double, Double, String?, fps? : Double?) -> Double
 
 pub async fn read_bytes(Pieces, Int32) -> Bytes
 
@@ -553,6 +561,7 @@ pub struct Out {
   bytes : Double
   at : Double
   stall : Double
+  key : Bool
 }
 
 pub struct Pacer {
@@ -575,10 +584,11 @@ pub struct Pacer {
 pub fn Pacer::acked(Self, Double, viewer_wait_ms? : Double) -> Unit
 pub fn Pacer::asked_rate(Self) -> Double?
 pub fn Pacer::backlogged(Self) -> Bool
+pub fn Pacer::free(Self) -> Bool
 pub fn Pacer::may(Self) -> Bool
 pub fn Pacer::new(() -> Double, start? : Double?, fps? : Double?, stalled? : () -> Double) -> Self
 pub fn Pacer::rtt(Self) -> Double?
-pub fn Pacer::sent(Self, Double, Double) -> Unit
+pub fn Pacer::sent(Self, Double, Double, key? : Bool) -> Unit
 pub fn Pacer::set_ceiling(Self, Double) -> Unit
 pub fn Pacer::through_rate(Self) -> Double
 pub fn Pacer::unacked(Self) -> Int32

@@ -249,8 +249,10 @@ export class WindowsDesktop implements ScreenSource {
     await this.refresh();
     if (this.#status?.capture === false) throw new ScreenRefused(501, "station.screen.unsupported", {}, this.access());
     const input = new WinInput();
-    // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs).
-    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}) };
+    // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs). The colours and
+    // chroma asked go as the Mac's helper is told them (desktop.ts): stillfail-screen lets be what it does not make
+    // (its pictures stay 4:2:0, as their parameter sets say).
+    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}) };
     let first: HelperView;
     try {
       first = await this.#start(binary, ask, input);
@@ -263,7 +265,7 @@ export class WindowsDesktop implements ScreenSource {
   }
 
   /// One process for a view, answering (its info had); fails with what it said.
-  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; audio?: boolean; audioCodec?: "opus" }, input: WinInput): Promise<HelperView> {
+  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus" }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
     child.stdin!.write(`${JSON.stringify(ask)}\n`);
     const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio, true);

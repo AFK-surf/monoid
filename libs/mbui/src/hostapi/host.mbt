@@ -289,6 +289,10 @@ pub(open) trait Host {
   set_auto_launch(Self, Bool) -> Bool = _
   hotkey_set(Self, String, String) -> Bool = _
   hotkey_clear(Self, String) -> Unit = _
+  pointer_lock(Self, Bool) -> Unit = _
+  pointer_locked(Self) -> Bool = _
+  pointer_delta(Self, FixedArray[Double]) -> Unit = _
+  gamepads(Self, FixedArray[Double]) -> Int = _
 }
 
 ///|
@@ -453,6 +457,26 @@ impl Host with set_site_name(_, _) {
 
 ///|
 impl Host with mods_held(_) {
+  0
+}
+
+///|
+impl Host with pointer_lock(_, _) {
+  ()
+}
+
+///|
+impl Host with pointer_locked(_) {
+  false
+}
+
+///|
+impl Host with pointer_delta(_, _) {
+  ()
+}
+
+///|
+impl Host with gamepads(_, _) {
   0
 }
 

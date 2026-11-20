@@ -12,11 +12,12 @@ pub const MAX_FPS: u32 = 120;
 pub const KEY_EVERY_MS: f64 = 10_000.0;
 
 /// The frame rate the encoder is set for (its rate control's bits a picture, its GOP, each picture's duration): the one
-/// asked, but no more than AUTO_FPS. A capture asked 90 or 120 seldom gives that many encoded (a 4K desktop on NVENC
-/// gave ~55 at 120): an encoder set for 120 would size each picture for 120 a second and send half the bits; set for
-/// 60, a second of more pictures than that goes a little over the rate, the station's pace bringing it back.
+/// asked (AUTO_FPS where none is), at most MAX_FPS. Set for 60 at 120 a second (a game's, a 2K display's), each picture
+/// was sized for 60 and twice the rate asked went, a queue in front of the link the station's pace then cut the rate
+/// for. A capture that gives fewer than asked (a 4K desktop on NVENC gave ~55 at 120) goes under the rate instead, as
+/// the station asks a 帧率 over 60 more for it (screen-pace.ts `rateCeiling`).
 pub fn encoder_fps(asked: Option<u32>) -> u32 {
-    asked.unwrap_or(AUTO_FPS).clamp(1, AUTO_FPS)
+    asked.unwrap_or(AUTO_FPS).clamp(1, MAX_FPS)
 }
 
 /// When a key frame is due by time (a GOP counted in pictures comes later the fewer there are): KEY_EVERY_MS after the
@@ -132,10 +133,12 @@ mod tests {
     }
 
     #[test]
-    fn the_encoder_is_set_for_at_most_auto() {
+    fn the_encoder_is_set_for_the_rate_asked() {
         assert_eq!(encoder_fps(None), AUTO_FPS);
-        assert_eq!(encoder_fps(Some(120)), 60);
-        assert_eq!(encoder_fps(Some(90)), 60);
+        assert_eq!(encoder_fps(Some(120)), 120);
+        assert_eq!(encoder_fps(Some(90)), 90);
+        assert_eq!(encoder_fps(Some(240)), MAX_FPS);
+        assert_eq!(encoder_fps(Some(0)), 1);
         assert_eq!(encoder_fps(Some(60)), 60);
         assert_eq!(encoder_fps(Some(30)), 30);
         assert_eq!(encoder_fps(Some(15)), 15);

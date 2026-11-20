@@ -30,7 +30,7 @@ import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, typ
 import { type Viewer, readOnly } from "./credential.ts";
 import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
-import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling, startRate } from "./screen-pace.ts";
+import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, QUALITIES, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling, startRate } from "./screen-pace.ts";
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
@@ -288,7 +288,7 @@ export function asked(screen: any): { maxWidth: number; maxHeight: number; codec
   const f = screen.fit;
   const side = (v: unknown) => num(v) && v >= 200 && v <= 2000;
   const fit = control && f && side(f.width) && side(f.height) && num(f.scale) && f.scale >= 1 && f.scale <= 4 ? { width: Math.round(f.width), height: Math.round(f.height), scale: f.scale } : undefined;
-  const quality: Quality | undefined = ["smooth", "hd", "original"].includes(screen.quality) && !peek ? screen.quality : undefined;
+  const quality: Quality | undefined = (QUALITIES as readonly unknown[]).includes(screen.quality) && !peek ? screen.quality : undefined;
   const fps: Fps | undefined = isFps(screen.fps) && !peek ? screen.fps : undefined;
   return { maxWidth: bound(screen.maxWidth, 1920), maxHeight: bound(screen.maxHeight, 1080), codecs, control, peek, ...(screen.audio === "pcm_s16le" && !peek ? { audio: true, ...(screen.opus === true ? { opus: true } : {}) } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(screen.gamut === "p3" ? { gamut: "p3" as const } : {}), ...(typeof screen.passkeys === "boolean" && !peek ? { passkeys: screen.passkeys } : {}), ...said("client", screen.client, 80), ...said("app", screen.app, 16), ...said("self", screen.self, 64), ...(screen.taken === true ? { taken: true } : {}), ...(screen.binaryCursor === true && !peek ? { binaryCursor: true } : {}), ...(screen.customCursor === true && !peek ? { customCursor: true } : {}), ...(Number.isInteger(screen.datagrams) && screen.datagrams > 0 && screen.datagrams <= 0xffff_ffff && !peek ? { datagrams: screen.datagrams as number } : {}), ...(screen.privateClip === true && !peek ? { privateClip: true } : {}), ...(screen.chroma444 === true && quality === "original" ? { chroma444: true } : {}) };
 }
@@ -378,7 +378,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
   const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
   const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
+  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.fps ? { fps: ask.fps } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
     .run()
     .finally(stall.done);
 }
@@ -394,6 +394,8 @@ class ViewSession {
   #inputs: Promise<void> = Promise.resolve();
   #pendingMove: { buttons: number; run: () => Promise<void> } | null = null;
   #wake: () => void = () => {};
+  /// The source's next frame, asked while the last one was being written (`#pump`): at most one.
+  #ahead: Promise<Frame | null> | null = null;
   /// Whether the link's round trip is known (the first frame acknowledged): the sound waits for it.
   #timed = false;
   /// The client's sound is on (`sound`: it muted it, none goes till it is on again).
@@ -464,8 +466,10 @@ class ViewSession {
   readonly access: AccessShown | undefined;
   readonly pacer: Pacer;
   readonly sizer: Sizer;
-  /// The 画质 the view asked (none: 自动, or a client before it): the most its bit rate goes to (screen-pace.ts rateCeiling).
+  /// The 画质 the view asked (none: 自动, or a client before it), and its 帧率 (none: 自动): the most its bit rate goes to
+  /// (screen-pace.ts rateCeiling).
   readonly quality: Quality | undefined;
+  readonly fps: number | undefined;
   /// How late its frames are (the statistics' 帧延时).
   readonly latency = new FrameLatency();
   /// How much of what went over its link was lost (the statistics' 丢包率), from its connection's paths.
@@ -478,7 +482,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; fps?: number; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -498,6 +502,7 @@ class ViewSession {
     this.pacer = o.pacer;
     this.sizer = o.sizer;
     this.quality = o.quality;
+    this.fps = o.fps;
     this.#own = o.bounds;
     this.#now = o.now;
     this.#sleep = o.sleep;
@@ -840,7 +845,9 @@ class ViewSession {
       }
       let next: Frame | null;
       try {
-        next = await this.view.next();
+        const ahead = this.#ahead;
+        this.#ahead = null;
+        next = await (ahead ?? this.view.next());
       } catch (error) {
         if (error instanceof ScreenRefused) {
           this.#stop(accessShown(error.access, this.#lang)?.message ?? tr(this.#lang, error.key, error.args));
@@ -862,17 +869,27 @@ class ViewSession {
       if (next.config) {
         if (next.config.codec !== "jpeg") {
           // A preview (a card, two pictures a second) no higher than the source's own.
-          this.pacer.ceiling(this.peek ? ownRate(next.config.width, next.config.height) : rateCeiling(next.config.width, next.config.height, this.quality));
+          this.pacer.ceiling(this.peek ? ownRate(next.config.width, next.config.height) : rateCeiling(next.config.width, next.config.height, this.quality, this.fps));
           this.#size = { width: next.config.width, height: next.config.height };
         }
         void this.#send(KIND.config, configPayload(next.config));
       }
-      this.pacer.sent(next.ts, next.data.length);
+      this.pacer.sent(next.ts, next.data.length, next.key);
       this.latency.sent(next.ts);
+      // The next frame asked of the source as this one is written, where the pace would let it go (one at most, going
+      // no sooner than the pace lets it): its capture and encoding are not left to wait for the writing, nor for the
+      // 帧率's slot (an encoder at 2K takes much of a 120 a second's 8 ms). What it has not given by the time the view
+      // ends is let be.
+      if (!this.#closed && this.pacer.free()) {
+        const ahead = this.view.next();
+        ahead.catch(() => {});
+        this.#ahead = ahead;
+      }
       await this.#send(KIND.video, videoPayload(next));
       this.#still(next.key);
-      // A screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's.
-      if (!this.#closed && this.view.rate && this.#sharpen.dueMoving(this.#now(), this.#rate)) this.view.keyframe();
+      // A screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's;
+      // never while frames wait in front of the link (a key frame then holds them back longer still).
+      if (!this.#closed && this.view.rate && !this.pacer.backlogged() && this.#sharpen.dueMoving(this.#now(), this.#rate)) this.view.keyframe();
     }
   }
 

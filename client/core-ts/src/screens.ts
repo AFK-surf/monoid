@@ -92,7 +92,7 @@ function text(params: unknown, field: string): string {
 
 /// A 画质 said (`quality`), or null (自动, or not one).
 function qualityOf(q: unknown): ScreenQuality | null {
-  return q === "smooth" || q === "hd" || q === "original" ? q : null;
+  return q === "smooth" || q === "hd" || q === "qhd" || q === "original" ? q : null;
 }
 
 /// A 帧率 said (`fps`: 120, 90, 60, 30 or 15), or null (自动, or not one).

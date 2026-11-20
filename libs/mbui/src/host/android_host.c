@@ -2196,6 +2196,11 @@ int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) { (void)f
 moonbit_string_t mb_host_local_font_families(void) { return moonbit_make_string_raw(0); }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
 
 // ---------------------------------------------------------------------------
 // Streams (src/hostapi/stream.mbt): dev.mbui.Streams decodes (MediaCodec, BitmapFactory) and draws each frame the app

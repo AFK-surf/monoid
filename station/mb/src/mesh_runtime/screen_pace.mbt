@@ -23,6 +23,10 @@ pub fn queue_ms(rtt : Double) -> Double {
 }
 
 ///|
+/// How much longer a key frame on the way may wait (`KEY_QUEUE_MS`).
+pub let key_queue_ms : Double = 25.0
+
+///|
 pub let rtt_window_ms : Double = 10_000.0
 
 ///|
@@ -38,7 +42,11 @@ pub let min_rate : Double = 300_000.0
 pub let down : Double = 0.85
 
 ///|
-pub let cut : Double = 0.5
+pub let cut : Double = 0.65
+
+///|
+/// The first lowering of a hold where what went through was under USED of the rate (`LIGHT_CUT`).
+pub let light_cut : Double = 0.8
 
 ///|
 pub let hold_ms : Double = 200.0
@@ -66,13 +74,13 @@ pub let start_rate : Double = 1_500_000.0
 pub let lan_rtt_ms : Double = 12.0
 
 ///|
-pub let lan_rate : Double = 12_000_000.0
+pub let lan_rate : Double = 25_000_000.0
 
 ///|
 pub let near_rtt_ms : Double = 40.0
 
 ///|
-pub let near_rate : Double = 6_000_000.0
+pub let near_rate : Double = 12_000_000.0
 
 ///|
 pub let far_rtt_ms : Double = 100.0
@@ -170,14 +178,31 @@ pub fn own_rate(width : Double, height : Double) -> Double {
 }
 
 ///|
-pub let max_rate : Double = 60_000_000.0
+pub let max_rate : Double = 100_000_000.0
 
 ///|
-/// The most a picture of this size is asked at (its 画质: "smooth", "hd", "original"; None for 自动).
-pub fn rate_ceiling(width : Double, height : Double, quality : String?) -> Double {
+pub let fps_scale_most : Double = 1.6
+
+///|
+/// How much more a picture is asked at for a 帧率 over 60 (`fpsScale`).
+pub fn fps_scale(fps : Double?) -> Double {
+  match fps {
+    Some(f) if f > 60.0 => dmin(fps_scale_most, 1.0 + (f - 60.0) / 120.0)
+    _ => 1.0
+  }
+}
+
+///|
+/// The most a picture of this size is asked at (its 画质: "smooth", "hd", "qhd", "original"; None for 自动), at the
+/// 帧率 `fps` (None: 自动).
+pub fn rate_ceiling(width : Double, height : Double, quality : String?, fps? : Double? = None) -> Double {
   let own = own_rate(width, height)
-  let per = if quality is Some("smooth") { 6.0 } else { 16.0 }
-  dmax(own, dmin(max_rate, width * height * per))
+  let per = match quality {
+    Some("smooth") => 6.0
+    Some("qhd" | "original") => 20.0
+    _ => 16.0
+  }
+  dmax(own, dmin(max_rate, width * height * per * fps_scale(fps)))
 }
 
 ///|
@@ -256,6 +281,7 @@ pub struct Out {
   bytes : Double
   at : Double
   stall : Double
+  key : Bool
 }
 
 ///|
@@ -343,9 +369,10 @@ pub fn Pacer::set_ceiling(self : Pacer, rate : Double) -> Unit {
 }
 
 ///|
-pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double) -> Unit {
+/// A frame went (`key`: a key frame).
+pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double, key? : Bool = false) -> Unit {
   let now = (self.now)()
-  self.out.push({ ts, bytes, at: now, stall: (self.stalled)() })
+  self.out.push({ ts, bytes, at: now, stall: (self.stalled)(), key })
   if self.gap is Some(gap) {
     self.due = dmax(self.due + gap, now + gap / 2.0)
   }
@@ -357,10 +384,12 @@ pub fn Pacer::sent(self : Pacer, ts : Double, bytes : Double) -> Unit {
 pub fn Pacer::acked(self : Pacer, ts : Double, viewer_wait_ms? : Double = 0.0) -> Unit {
   let now = (self.now)()
   let mut newest : Out? = None
+  let mut key = false
   while self.out.length() > 0 && self.out[0].ts <= ts {
     let f = self.out.remove(0)
     self.through.push({ at: now, bytes: f.bytes })
     newest = Some(f)
+    key = key || f.key
   }
   guard newest is Some(newest) else { return }
   self.first = dmin(self.first, now)
@@ -384,7 +413,7 @@ pub fn Pacer::acked(self : Pacer, ts : Double, viewer_wait_ms? : Double = 0.0) -
     self.trips.remove(0) |> ignore
   }
   match base {
-    Some(b) if net_trip > b + queue_ms(b) => self.queuing(now)
+    Some(b) if net_trip > b + queue_ms(b) + (if key { key_queue_ms } else { 0.0 }) => self.queuing(now)
     _ => self.steady(now)
   }
 }
@@ -418,13 +447,9 @@ pub fn Pacer::rtt(self : Pacer) -> Double? {
 ///|
 /// Whether the next frame may go now; when not, a queue is building.
 pub fn Pacer::may(self : Pacer) -> Bool {
-  if self.out.length() == 0 {
-    return true
-  }
-  guard self.rtt() is Some(rtt) else { return self.out.length() < start_unacked }
-  let now = (self.now)()
-  let may = self.out.length() < max_unacked && self.waited(now) <= rtt + self.viewer_wait() + queue_ms(rtt)
-  if !may {
+  let may = self.free()
+  if !may && self.rtt() is Some(_) {
+    let now = (self.now)()
     if self.since is None {
       self.since = Some(now)
     }
@@ -435,13 +460,29 @@ pub fn Pacer::may(self : Pacer) -> Bool {
 }
 
 ///|
+/// Whether the next frame may go now, as `may` says, asking nothing of the pace (`free`).
+pub fn Pacer::free(self : Pacer) -> Bool {
+  if self.out.length() == 0 {
+    return true
+  }
+  guard self.rtt() is Some(rtt) else { return self.out.length() < start_unacked }
+  self.out.length() < max_unacked && self.waited((self.now)()) <= rtt + self.viewer_wait() + self.queue(rtt)
+}
+
+///|
+/// The queue a view lets build in front of the link: a key frame's more while one is on the way.
+fn Pacer::queue(self : Pacer, rtt : Double) -> Double {
+  queue_ms(rtt) + (if self.out.iter().any(f => f.key) { key_queue_ms } else { 0.0 })
+}
+
+///|
 /// Whether the frames on the way wait in front of the link.
 pub fn Pacer::backlogged(self : Pacer) -> Bool {
   if self.out.length() <= 1 {
     return false
   }
   match self.rtt() {
-    Some(rtt) => self.waited((self.now)()) > rtt + self.viewer_wait() + queue_ms(rtt)
+    Some(rtt) => self.waited((self.now)()) > rtt + self.viewer_wait() + self.queue(rtt)
     None => false
   }
 }
@@ -491,11 +532,14 @@ fn Pacer::queuing(self : Pacer, now : Double) -> Unit {
   if now - self.first < measured_ms {
     return
   }
+  let light = self.down < since
   self.down = now
   let through = self.delivered(now)
-  if through > 0.0 {
-    self.rate = Some(dmax(min_rate, dmin(rate, dmax(rate * cut, through * down))))
+  if through <= 0.0 {
+    return
   }
+  let to = if light && through < rate * used { rate * light_cut } else { dmax(rate * cut, through * down) }
+  self.rate = Some(dmax(min_rate, dmin(rate, to)))
 }
 
 ///|
@@ -535,7 +579,7 @@ pub let still_ms : Double = 250.0
 pub let sharper : Double = 1.1
 
 ///|
-pub let moving_sharpen_ms : Double = 1500.0
+pub let moving_sharpen_ms : Double = 2000.0
 
 ///|
 pub let moving_sharpen_up : Double = 2.0
@@ -638,7 +682,7 @@ pub struct Sizer {
 
 ///|
 pub fn Sizer::new(now : () -> Double, asked : Bounds, quality? : String? = None) -> Sizer {
-  { now, asked, low: false, since: None, whole: quality is Some("original") }
+  { now, asked, low: false, since: None, whole: quality is Some("original" | "qhd") }
 }
 
 ///|

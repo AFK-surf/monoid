@@ -2957,6 +2957,11 @@ int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) { (void)
 void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
 
 // ---- files picked (pick.mbt) ----
 // Pictures (kind 1) from the system's photo picker (PHPickerViewController: no leave to ask for), any file (kind 2) from

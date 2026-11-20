@@ -1137,8 +1137,14 @@ fn screen_stage_gestures(stage : @view.View, pg : ScreenPage) -> Unit {
       screen_finger(stage, s, u, d)
     }
   })
-  // a mouse's secondary button: a right click where it is
-      .on_menu(fn(m) {
+  // a mouse's secondary button: a right click where it is, held as long as it is (a game's aim, a view turned by it),
+  // and the middle one the same (screen_mouse_buttons); none taken whole (a finger's long press): a right click
+  .on_buttons(fn(b) {
+    if @sf.pointer_rests() {
+      screen_mouse_buttons(stage, pg, b)
+    }
+  })
+  .on_menu(fn(m) {
     if @sf.pointer_rests() {
       screen_mouse_menu(pg, m)
     }
@@ -1202,11 +1208,26 @@ fn screen_stage_gestures(stage : @view.View, pg : ScreenPage) -> Unit {
   stage.owns(fn() {
     u.fling.stop()
     left_let_go(s, u, None)
+    screen_buttons_let_go(s, u.mouse)
+    screen_lock_give(u.mouse)
   })
   |> ignore
+  // (the pointer held for an app there: let go of as soon as it holds it no more, the view is no longer driven, or the
+  // stage goes; the secondary and middle buttons held let go of with driving)
+  stage.reacts(fn() { s.said.get() |> ignore; screen_lock_wanted(s) }, fn(wanted) {
+    if !wanted {
+      screen_lock_give(u.mouse)
+    }
+  })
+  stage.reacts(fn() { s.driving_now() }, fn(driving) {
+    if !driving {
+      screen_buttons_let_go(s, u.mouse)
+    }
+  })
+  screen_pads_follow(stage, s)
   // (the pointer gone off the stage: this device's mouse over the picture no more)
   stage.reacts(fn() { stage.pointer_within() }, fn(within) {
-    if !within && !u.mouse.down {
+    if !within && !u.mouse.down && u.mouse.extra == 0 {
       u.mouse.over.set(false)
     }
   })
@@ -1613,9 +1634,16 @@ fn scroll_by(
 priv struct MouseDrive {
   mut down : Bool
   mut sent_down : Bool
+  /// the secondary (2) and middle (4) buttons sent down, held beside the primary or alone (screen_mouse_buttons)
+  mut extra : Int
   mut mods : Int
   mut at : (Double, Double)?
   over : @signals.Signal[Bool]
+  /// the pointer held by this device's window for the screen (an app there holds the screen's: screen_lock_take), its
+  /// moves sent as how far the mouse went (`relative`)
+  mut locked : Bool
+  /// the key that let go of it (screen_lock_keys), its up not sent either; "" none
+  mut lock_key : String
 }
 
 ///|
@@ -1624,16 +1652,36 @@ let screen_ime_h : Double = 20.0
 
 ///|
 fn mouse_drive_new() -> MouseDrive {
-  { down: false, sent_down: false, mods: 0, at: None, over: @signals.signal(false, same=fn(a, b) { a == b }) }
+  {
+    down: false,
+    sent_down: false,
+    extra: 0,
+    mods: 0,
+    at: None,
+    over: @signals.signal(false, same=fn(a, b) { a == b }),
+    locked: false,
+    lock_key: "",
+  }
 }
 
 ///|
 /// The mouse's pointer sent to `at` on the screen (`buttons` held), where it was not already.
 fn MouseDrive::move_to(self : MouseDrive, s : ScreenSess, at : (Double, Double), buttons : Int) -> Unit {
+  // (the pointer held: how far the mouse went, where it stays, each move sent: screen_lock_moved)
+  if self.locked_now() {
+    screen_lock_moved(s, self, buttons)
+    return
+  }
   if self.at != Some(at) {
     self.at = Some(at)
     s.input(s.src, pointer_input("move", at, buttons))
   }
+}
+
+///|
+/// The buttons sent down, all of them (the DOM's bits): the primary, the secondary and the middle.
+fn MouseDrive::held(self : MouseDrive) -> Int {
+  (if self.sent_down { btn_primary } else { 0 }) | self.extra
 }
 
 ///|
@@ -1672,11 +1720,15 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
         }
         match screen_frame_at(d.x, d.y, shown, false) {
           Some(at) => {
-            m.mods = mods_of_held(@ui.mods_held())
-            mods_round(send, m.mods, "down")
+            // (the keys round the first button down, the others' going down with them already)
+            if m.extra == 0 {
+              m.mods = mods_of_held(@ui.mods_held())
+              mods_round(send, m.mods, "down")
+            }
+            screen_lock_take(s, m)
             m.at = Some(at)
-            send(pointer_input("down", at, btn_primary))
             m.sent_down = true
+            send(pointer_held("down", m, at, m.held()))
             m.over.set(true)
           }
           None => ()
@@ -1688,7 +1740,7 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
     Moved =>
       if m.sent_down {
         match screen_frame_at(d.x, d.y, shown, true) {
-          Some(at) => m.move_to(s, at, btn_primary)
+          Some(at) => m.move_to(s, at, m.held())
           None => ()
         }
       }
@@ -1700,9 +1752,13 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
           Some(at) => at
           None => m.at.unwrap_or((0.5, 0.5))
         }
-        m.at = Some(at)
-        send(pointer_input("up", at, 0))
-        mods_round(send, m.mods, "up")
+        if !m.locked_now() {
+          m.at = Some(at)
+        }
+        send(pointer_held("up", m, at, m.extra))
+        if m.extra == 0 {
+          mods_round(send, m.mods, "up")
+        }
       }
     }
   }
@@ -1722,7 +1778,9 @@ fn screen_mouse_moved(stage : @view.View, pg : ScreenPage) -> Unit {
   let driving = s.driving()
   m.over.set(driving && (over is Some(_) || m.sent_down))
   match over {
-    Some(at) if driving && !m.down => m.move_to(s, at, 0)
+    Some(at) if driving && !m.down && m.extra == 0 => m.move_to(s, at, 0)
+    // (the pointer held: wherever it stays, a move how far it went)
+    None if driving && !m.down && m.extra == 0 && m.locked_now() => screen_lock_moved(s, m, 0)
     _ => ()
   }
 }
@@ -1771,7 +1829,7 @@ fn screen_mouse_wheel(pg : ScreenPage, w : @view.Wheel) -> Unit {
   match screen_frame_at(w.x, w.y, u.shown_at(w.at), false) {
     Some(at) => {
       // (those a press still held went down with already go up with it)
-      let mods = mods_of_held(@ui.mods_held()) & (if m.sent_down { m.mods } else { 0 }).lnot()
+      let mods = mods_of_held(@ui.mods_held()) & (if m.held() != 0 { m.mods } else { 0 }).lnot()
       mods_round(send, mods, "down")
       send(wheel_input(at, w.dx, w.dy))
       mods_round(send, mods, "up")

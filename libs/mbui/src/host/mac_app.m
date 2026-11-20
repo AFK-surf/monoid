@@ -5,6 +5,7 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
 #import <Network/Network.h>
+#import <GameController/GameController.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <Security/Security.h>
 #include <sys/resource.h>
@@ -25,6 +26,8 @@
 // (Network's path monitor, below: the framework asked of the linker by this file, as an app of mbui's links what its
 // own moon.pkg names, which need not be Network)
 __asm__(".linker_option \"-framework\", \"Network\"");
+// (game controllers, mb_host_gamepads: GameController's, asked of the linker the same way)
+__asm__(".linker_option \"-framework\", \"GameController\"");
 
 mb_callbacks mb_cb;
 
@@ -642,6 +645,78 @@ static void pump(void) {
 - (NSPoint)pt:(NSEvent *)e {
   return [self convertPoint:e.locationInWindow fromView:nil];
 }
+// The pointer held by the window (@hostapi.set_pointer_lock): the system's pointer hidden and kept where it is
+// (CGAssociateMouseAndMouseCursorPosition), each move's own distance summed (in points, as a browser's movementX)
+// till the app takes it (mb_host_pointer_delta); let go of as the window goes out of focus (tell_state).
+static int lock_on;
+static double lock_dx, lock_dy;
+static void lock_moved(NSEvent *e) {
+  if (!lock_on) return;
+  lock_dx += e.deltaX;
+  lock_dy += e.deltaY;
+}
+static void lock_set(int on) {
+  if (on == lock_on) return;
+  lock_on = on;
+  lock_dx = lock_dy = 0;
+  CGAssociateMouseAndMouseCursorPosition(on ? false : true);
+  if (on) [NSCursor hide];
+  else [NSCursor unhide];
+}
+void mb_host_pointer_lock(int32_t on) {
+  // (held only for a window in front, the person's: one behind holds nothing)
+  if (on && !(NSApp.isActive && NSApp.keyWindow)) return;
+  lock_set(on ? 1 : 0);
+}
+int32_t mb_host_pointer_locked(void) { return lock_on; }
+void mb_host_pointer_delta(double *out) {
+  out[0] = lock_dx;
+  out[1] = lock_dy;
+  lock_dx = lock_dy = 0;
+}
+
+// The game controllers connected (@hostapi.gamepads): GameController's extended ones, by their player slot (or in the
+// order the system lists them), read as the W3C's Standard Gamepad (its sticks down positive: the system's up).
+int32_t mb_host_gamepads(double *out) {
+  int n = 0;
+  for (GCController *c in [GCController controllers]) {
+    if (n >= 4) break;
+    GCExtendedGamepad *g = c.extendedGamepad;
+    if (!g) continue;
+    double *o = out + n * 9;
+    int slot = c.playerIndex >= 0 && c.playerIndex < 4 ? (int)c.playerIndex : n;
+    int b = 0;
+    if (g.buttonA.isPressed) b |= 1 << 0;
+    if (g.buttonB.isPressed) b |= 1 << 1;
+    if (g.buttonX.isPressed) b |= 1 << 2;
+    if (g.buttonY.isPressed) b |= 1 << 3;
+    if (g.leftShoulder.isPressed) b |= 1 << 4;
+    if (g.rightShoulder.isPressed) b |= 1 << 5;
+    if (g.leftTrigger.isPressed) b |= 1 << 6;
+    if (g.rightTrigger.isPressed) b |= 1 << 7;
+    if (g.buttonOptions.isPressed) b |= 1 << 8;
+    if (g.buttonMenu.isPressed) b |= 1 << 9;
+    if (g.leftThumbstickButton.isPressed) b |= 1 << 10;
+    if (g.rightThumbstickButton.isPressed) b |= 1 << 11;
+    if (g.dpad.up.isPressed) b |= 1 << 12;
+    if (g.dpad.down.isPressed) b |= 1 << 13;
+    if (g.dpad.left.isPressed) b |= 1 << 14;
+    if (g.dpad.right.isPressed) b |= 1 << 15;
+    if (g.buttonHome.isPressed) b |= 1 << 16;
+    o[0] = slot;
+    o[1] = 1;
+    o[2] = b;
+    o[3] = g.leftThumbstick.xAxis.value;
+    o[4] = -g.leftThumbstick.yAxis.value;
+    o[5] = g.rightThumbstick.xAxis.value;
+    o[6] = -g.rightThumbstick.yAxis.value;
+    o[7] = g.leftTrigger.value;
+    o[8] = g.rightTrigger.value;
+    n++;
+  }
+  return n;
+}
+
 // the event's own time (seconds since startup, CACurrentMediaTime's clock) while MoonBit handles it
 static double event_time = -1;
 static void mouse(int kind, NSPoint p, NSEvent *e) {
@@ -670,11 +745,26 @@ static void mouse_button(int kind, NSPoint p, NSEvent *e, int button) {
   down_event = nil;
 }
 - (void)mouseDragged:(NSEvent *)e {
-  if (down_secondary) return;
+  // (a Ctrl-click held, the secondary button's: moved as it is, what takes that button whole seeing it move,
+  // @view's Tree::buttons_moved; nothing else's while it is held)
+  lock_moved(e);
   mouse(1, [self pt:e], e);
 }
 - (void)mouseMoved:(NSEvent *)e {
+  lock_moved(e);
   mouse(1, [self pt:e], e);
+}
+- (void)rightMouseDragged:(NSEvent *)e {
+  lock_moved(e);
+  mouse(1, [self pt:e], e);
+}
+- (void)otherMouseDragged:(NSEvent *)e {
+  lock_moved(e);
+  mouse(1, [self pt:e], e);
+}
+// the middle button (the system's 2): the host's 3, down and up (the back and forward buttons, 3 and 4, as they go up)
+- (void)otherMouseDown:(NSEvent *)e {
+  if (e.buttonNumber == 2) mouse_button(0, [self pt:e], e, 3);
 }
 - (void)mouseUp:(NSEvent *)e {
   if (down_secondary) {
@@ -722,7 +812,8 @@ static NSCursor *cursor_of(int kind) {
   [cursor_of(win_slots[@(self.wid)].cursorKind) set];
 }
 - (void)otherMouseUp:(NSEvent *)e {
-  if (e.buttonNumber == 3) go_back();
+  if (e.buttonNumber == 2) mouse_button(2, [self pt:e], e, 3);
+  else if (e.buttonNumber == 3) go_back();
   // the forward button: the app's key (key_forward), read as its forward
   else if (e.buttonNumber == 4) mb_cb.key(40, 0);
 }
@@ -2641,6 +2732,8 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 static void (*state_cb)(int32_t);
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 static void tell_state(void) {
+  // (the pointer held by a window out of focus, or the app gone behind: let go of at once, the pointer seen again)
+  if (lock_on && !(NSApp.isActive && NSApp.keyWindow)) lock_set(0);
   if (!state_cb || !win_slots.count) return;
   int shown = 0, key = 0;
   if (!asleep_at && !screens_asleep)

@@ -525,6 +525,43 @@ fn mods_held() -> Int {
 }
 
 ///|
+extern "C" fn ffi_pointer_lock(on : Int) -> Unit = "mb_host_pointer_lock"
+
+///|
+/// The pointer held by the window or let go of (@hostapi.set_pointer_lock).
+fn pointer_lock(on : Bool) -> Unit {
+  ffi_pointer_lock(if on { 1 } else { 0 })
+}
+
+///|
+extern "C" fn ffi_pointer_locked() -> Int = "mb_host_pointer_locked"
+
+///|
+fn pointer_locked() -> Bool {
+  ffi_pointer_locked() != 0
+}
+
+///|
+#borrow(out)
+extern "C" fn ffi_pointer_delta(out : FixedArray[Double]) -> Unit = "mb_host_pointer_delta"
+
+///|
+/// How far the mouse moved while the pointer is held, since last asked (two numbers in `out`), taken.
+fn pointer_delta(out : FixedArray[Double]) -> Unit {
+  ffi_pointer_delta(out)
+}
+
+///|
+#borrow(out)
+extern "C" fn ffi_gamepads(out : FixedArray[Double]) -> Int = "mb_host_gamepads"
+
+///|
+/// The game controllers connected now (@hostapi.gamepads' numbers in `out`): how many slots it wrote.
+fn gamepads(out : FixedArray[Double]) -> Int {
+  ffi_gamepads(out)
+}
+
+///|
 fn run(
   title : String,
   frame : FuncRef[(Double, Double, Double, Double) -> Unit],

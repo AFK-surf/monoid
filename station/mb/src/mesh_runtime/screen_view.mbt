@@ -478,7 +478,8 @@ pub async fn answer_screen(
   let max_width = num_of(field(ask, "maxWidth")).unwrap_or(1920.0)
   let max_height = num_of(field(ask, "maxHeight")).unwrap_or(1080.0)
   let quality = str_of(field(ask, "quality"))
-  let pacer = Pacer::new(now, start=Some(initial_rate), fps=num_of(field(ask, "fps")), stalled~)
+  let fps = num_of(field(ask, "fps"))
+  let pacer = Pacer::new(now, start=Some(initial_rate), fps~, stalled~)
   let sizer = Sizer::new(now, { max_width, max_height }, quality~)
   let session = ViewSession::new(
     hub,
@@ -502,6 +503,7 @@ pub async fn answer_screen(
     sizer,
     { max_width, max_height },
     quality,
+    fps,
     now,
     host_now.unwrap_or(now),
     rt,
@@ -563,6 +565,8 @@ priv struct ViewSession {
   sizer : Sizer
   own : Bounds
   quality : String?
+  /// The 帧率 asked (None: 自动): the most its bit rate goes to with its 画质.
+  fps : Double?
   now : () -> Double
   rt : @effect.Runtime
   tr : Tr
@@ -593,6 +597,8 @@ priv struct ViewSession {
   mut move_seq : Int
   mut pending_move : PendingMove?
   mut wake_ : @effect.Deferred[Unit]
+  /// The source's next frame, asked while the last one was being written (`#ahead`): at most one.
+  mut ahead : @effect.Deferred[Result[ScreenFrame?, Error]]?
   mut timed : Bool
   mut sound_on : Bool
   /// The person shares their microphone (`micOn`), the virtual one's state as the view said it last, and its watch.
@@ -651,6 +657,7 @@ fn ViewSession::new(
   sizer : Sizer,
   own : Bounds,
   quality : String?,
+  fps : Double?,
   now : () -> Double,
   host_now : () -> Double,
   rt : @effect.Runtime,
@@ -691,6 +698,7 @@ fn ViewSession::new(
     sizer,
     own,
     quality,
+    fps,
     now,
     rt,
     tr,
@@ -711,6 +719,7 @@ fn ViewSession::new(
     move_seq: 0,
     pending_move: None,
     wake_: done_now(),
+    ahead: None,
     timed: false,
     sound_on: true,
     mic_on: false,
@@ -1059,6 +1068,31 @@ async fn ViewSession::sleep_or_wake(self : ViewSession, ms : Int?) -> Unit {
 }
 
 ///|
+/// The source's next frame: the one asked ahead, or asked now.
+async fn ViewSession::next_frame(self : ViewSession) -> ScreenFrame? {
+  guard self.ahead is Some(d) else { return (self.view.next)() }
+  self.ahead = None
+  match d.wait() {
+    Ok(f) => f
+    Err(e) => raise e
+  }
+}
+
+///|
+/// The source's next frame asked now, taken by the pump once it may go (`#ahead`); what it has not given by the time
+/// the view ends is let be.
+fn ViewSession::ask_ahead(self : ViewSession) -> Unit {
+  let d : @effect.Deferred[Result[ScreenFrame?, Error]] = @effect.Deferred::new()
+  self.ahead = Some(d)
+  ignore(
+    self.rt.fork_daemon("screen next", on_error=e => ignore(d.succeed(Err(e))), () => {
+      let got : Result[ScreenFrame?, Error] = try { Ok((self.view.next)()) } catch { e => Err(e) }
+      ignore(d.succeed(got))
+    }),
+  )
+}
+
+///|
 /// Frames out, while the client keeps up (`#pump`).
 async fn ViewSession::pump(self : ViewSession) -> Unit {
   while !self.closed {
@@ -1072,7 +1106,7 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
       self.sleep_or_wake(Some(wait.to_int()))
       continue
     }
-    let next = (self.view.next)() catch {
+    let next = self.next_frame() catch {
       ScreenRefused(_, key, args, access) => {
         let message = match access_shown(access, self.lang, self.tr) {
           Some(s) => str_of(field(s, "message")).unwrap_or("")
@@ -1104,19 +1138,24 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
           if self.peek {
             own_rate(c.width, c.height)
           } else {
-            rate_ceiling(c.width, c.height, self.quality)
+            rate_ceiling(c.width, c.height, self.quality, fps=self.fps)
           },
         )
         self.size = Some((c.width, c.height))
       }
       ignore(self.send(kind_config, config_bytes(c)))
     }
-    self.pacer.sent(f.ts, f.data.length().to_double())
+    self.pacer.sent(f.ts, f.data.length().to_double(), key=f.key)
     self.latency.sent(f.ts)
+    // (the next frame asked of the source as this one is written, where the pace would let it go: one at most)
+    if !self.closed && self.pacer.free() {
+      self.ask_ahead()
+    }
     self.send(kind_video, video_payload(f.key, f.ts, f.data)).wait() catch { _ => () }
     self.still(f.key)
-    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's)
-    if !self.closed && self.view.rate is Some(_) && self.sharpen.due_moving((self.now)(), self.rate) {
+    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's;
+    // never while frames wait in front of the link)
+    if !self.closed && self.view.rate is Some(_) && !self.pacer.backlogged() && self.sharpen.due_moving((self.now)(), self.rate) {
       (self.view.keyframe)()
     }
   }

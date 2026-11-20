@@ -164,6 +164,10 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   for (const bad of [{ ...fit, width: 0 }, { ...fit, scale: "3" }, null]) assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", fit: bad }) as J).call.ask.fit, undefined, JSON.stringify(bad));
   // The 画质 chosen goes to the station (how high the bit rate goes); none for 自动, a preview or one not known.
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "original" }) as J).call.ask.quality, "original");
+  // 超清 (2K): its 画质 said too, its picture 4:2:0 as a game's wants (4:4:4 is 原画's alone)
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd" }) as J).call.ask.quality, "qhd");
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "qhd", chroma444: true }) as J).call.ask.chroma444, undefined);
+  assert.deepEqual((parseCall("screen.bounds", { view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd" }) as J).call, { kind: "bounds", view: "v1", maxWidth: 2560, maxHeight: 1440, quality: "qhd", fps: null });
   for (const quality of [undefined, "best", 3]) assert.equal("quality" in (parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality }) as J).call.ask, false, String(quality));
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", quality: "hd", peek: true }) as J).call.ask.quality, undefined);
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", gamut: "p3" }) as J).call.ask.gamut, "p3");

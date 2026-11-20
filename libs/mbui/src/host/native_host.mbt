@@ -176,6 +176,26 @@ impl @hostapi.Host for Native with mods_held(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with pointer_lock(_, on) {
+  pointer_lock(on)
+}
+
+///|
+impl @hostapi.Host for Native with pointer_locked(_) {
+  pointer_locked()
+}
+
+///|
+impl @hostapi.Host for Native with pointer_delta(_, out) {
+  pointer_delta(out)
+}
+
+///|
+impl @hostapi.Host for Native with gamepads(_, out) {
+  gamepads(out)
+}
+
+///|
 impl @hostapi.Host for Native with run(_, title, frame, pointer, wheel, key, text) {
   run(title, frame, pointer, wheel, key, text)
 }

@@ -305,7 +305,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("shareLook" in prefs && !(typeof prefs.shareLook === "string" && SHARE_LOOK.test(prefs.shareLook))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "shareLook" }));
   if ("archiveHint" in prefs && !["off", "done", "reviewed"].includes(prefs.archiveHint as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "archiveHint" }));
   if ("screenTouch" in prefs && prefs.screenTouch !== "direct" && prefs.screenTouch !== "pad") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenTouch" }));
-  if ("screenQuality" in prefs && !["smooth", "hd", "original"].includes(prefs.screenQuality as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenQuality" }));
+  if ("screenQuality" in prefs && !["smooth", "hd", "qhd", "original"].includes(prefs.screenQuality as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenQuality" }));
   if ("screenFps" in prefs && !SCREEN_FPS.includes(prefs.screenFps as ScreenFps)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenFps" }));
   if ("screenCodec" in prefs && prefs.screenCodec !== "h264") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenCodec" }));
   if ("screenMouse" in prefs && prefs.screenMouse !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenMouse" }));

@@ -174,7 +174,7 @@ fn screen_link_level(st : Json?, net : Json?) -> String {
 ///|
 /// 画质's choices, the default first: its key in the prefs ("" none), its words' key.
 // kept across runs: a table, never written
-let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("original", "original")]
+let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("qhd", "qhd"), ("original", "original")]
 
 // ── what the view's figures are now ──────────────────────────────────────
 

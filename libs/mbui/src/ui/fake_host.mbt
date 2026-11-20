@@ -1421,6 +1421,109 @@ impl @hostapi.Host for FakeHost with mods_held(self) {
 }
 
 ///|
+/// A fake host's pointer held by the window and its game controllers, beside it rather than in it (FakeHost's layout
+/// stays as it was: a field put among others moves the places of those after it in the C of every test program, all
+/// of it compiled again): made as a test first holds the pointer or says controllers, let go as the next run starts.
+priv struct FakePointerAux {
+  fake : FakeHost
+  /// the pointer held by the window (@hostapi.set_pointer_lock), how many times it was told to be, and how far the
+  /// mouse moved while it is, not yet taken (Tester::locked_move)
+  mut lock : Bool
+  mut locks_told : Int
+  mut delta : (Double, Double)
+  /// the game controllers connected, as the test says (Tester::set_gamepads)
+  mut pads : Array[@hostapi.Gamepad]
+}
+
+///|
+// kept across a run's frames: each fake host's entry, let go as the next run starts (reset_globals)
+let fake_pointer_auxs : Array[FakePointerAux] = []
+
+///|
+fn fake_pointer_of(fake : FakeHost) -> FakePointerAux? {
+  for it in fake_pointer_auxs {
+    if physical_equal(it.fake, fake) {
+      return Some(it)
+    }
+  }
+  None
+}
+
+///|
+fn fake_pointer(fake : FakeHost) -> FakePointerAux {
+  match fake_pointer_of(fake) {
+    Some(it) => it
+    None => {
+      let it : FakePointerAux = { fake, lock: false, locks_told: 0, delta: (0.0, 0.0), pads: [] }
+      fake_pointer_auxs.push(it)
+      it
+    }
+  }
+}
+
+///|
+fn fake_pointer_reset() -> Unit {
+  fake_pointer_auxs.clear()
+}
+
+///|
+/// The pointer held or let go of, as told (Tester::pointer_locked); what it moved while held let go of with it.
+impl @hostapi.Host for FakeHost with pointer_lock(self, on) {
+  let p = fake_pointer(self)
+  p.locks_told = p.locks_told + 1
+  p.lock = on
+  p.delta = (0.0, 0.0)
+}
+
+///|
+impl @hostapi.Host for FakeHost with pointer_locked(self) {
+  match fake_pointer_of(self) {
+    Some(p) => p.lock
+    None => false
+  }
+}
+
+///|
+/// How far the mouse moved while the pointer is held (Tester::locked_move), taken.
+impl @hostapi.Host for FakeHost with pointer_delta(self, out) {
+  match fake_pointer_of(self) {
+    Some(p) => {
+      out[0] = p.delta.0
+      out[1] = p.delta.1
+      p.delta = (0.0, 0.0)
+    }
+    None => {
+      out[0] = 0.0
+      out[1] = 0.0
+    }
+  }
+}
+
+///|
+/// The game controllers as the test says (Tester::set_gamepads), their sticks and triggers as they are.
+impl @hostapi.Host for FakeHost with gamepads(self, out) {
+  guard fake_pointer_of(self) is Some(fp) else { return 0 }
+  let mut n = 0
+  for p in fp.pads {
+    if n >= @hostapi.gamepads_most {
+      break
+    }
+    let o = n * @hostapi.gamepad_fields
+    out[o] = p.index.to_double()
+    out[o + 1] = 1.0
+    out[o + 2] = p.buttons.to_double()
+    out[o + 3] = p.lx
+    out[o + 4] = p.ly
+    out[o + 5] = p.rx
+    out[o + 6] = p.ry
+    out[o + 7] = p.lt
+    out[o + 8] = p.rt
+    n += 1
+  }
+  n
+}
+
+///|
 /// The window dragged: counted.
 impl @hostapi.Host for FakeHost with window_drag(self) {
   self.window_drags = self.window_drags + 1

@@ -685,6 +685,8 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       let set = { (key: CFString, value: Any) in VTSessionSetProperty(made, key: key, value: value as CFTypeRef) }
       _ = set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue!)
       _ = set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse!)
+      // Each picture out before the next goes in (an encoder that takes no such setting keeps its own).
+      _ = set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0)
       // H.264: High first (CABAC and 8×8 transforms: small text finer at the same rate), still with no frames
       // reordered (no B-frames, above); Constrained High where the low-latency encoder takes only that; then Main, then
       // Baseline (constrained where the system has it). H.265: Main.
@@ -696,8 +698,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
         break
       }
       let rate = bitrate ?? max(1_000_000, width * height * 3)
-      _ = set(kVTCompressionPropertyKey_AverageBitRate, rate)
-      _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, min(fps, 60))
+      ScreenView.setRate(made, rate)
+      // As many a second as asked (at 120 set for 60, each picture was sized for 60 and twice the rate went).
+      _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
       // A key frame when asked for, and at least every 10 s besides.
       _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 10)
       // The pictures' colours in the stream's VUI (as each picture is tagged: `colors`).
@@ -1039,7 +1042,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     queue.async {
       self.bitrate = max(100_000, bits)
       if let session = self.session {
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: (self.finer ? self.bitrate! * 2 : self.bitrate!) as CFTypeRef)
+        ScreenView.setRate(session, self.finer ? self.bitrate! * 2 : self.bitrate!)
       }
     }
   }
@@ -1051,8 +1054,19 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
     finer = on
     VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: (on ? stillQP : 51) as CFTypeRef)
     if let bitrate {
-      VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: (on ? bitrate * 2 : bitrate) as CFTypeRef)
+      ScreenView.setRate(session, on ? bitrate * 2 : bitrate)
     }
+  }
+
+  /// The bit rate a session encodes at, and the most any second of it may carry: `ratePeak` times it. A scene cut's key
+  /// frame (a game's, a window's) came at many times a moving picture's size, held the pictures behind it in front of
+  /// the link, and the station's pace took that for a slower link.
+  static let ratePeak = 1.5
+  static func setRate(_ session: VTCompressionSession, _ bits: Int) {
+    VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bits as CFTypeRef)
+    // [bytes, seconds] (an encoder that takes no such limit keeps the average alone).
+    let limits = [NSNumber(value: Double(bits) / 8 * ratePeak), NSNumber(value: 1.0)] as CFArray
+    VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limits)
   }
 
   func keyframe() {

@@ -4,7 +4,8 @@
 // picture out for each in), no B-frames, High with CABAC where the encoder has them (`profiles`), a key frame when
 // asked for and at least every 10 s besides. One picture is in it at a time: the view asks for the next only once one
 // went. A still screen's picture sent again as a key frame (docs/remote-screens.md "Still") is encoded finer than the
-// moving ones: its QP no higher than STILL_QP and twice the bit rate for it, where the link carries STILL_FROM or more.
+// moving ones: its QP no higher than STILL_QP and twice the bit rate for it, where the link carries STILL_FROM or more
+// (and less than view.rs's STILL_OWN_FROM: above it the view's own encoder's key frame is sharp enough).
 // That is another encoder of the same kind, made for that picture with those set before it starts (`still`): an encoder
 // takes them once it started without heeding them (NVIDIA's, both codecs: the same picture again the same size to the
 // byte). The bit rate asked as it goes (the station's pace) the same: NVIDIA's encoders keep the one they started at
@@ -58,7 +59,7 @@ pub struct H264 {
     started: u32,
     /// The hardware encoder's name (to make another of it), empty for the software one.
     mft: String,
-    /// The pictures a second it is set for (pace.rs `encoder_fps`: the view's 帧率, at most 60; 60 where none is asked):
+    /// The pictures a second it is set for (pace.rs `encoder_fps`: the view's 帧率, at most 120; 60 where none is asked):
     /// its rate control's bits a picture, its GOP (view.rs also asks a key frame every 10 s by the clock), each
     /// picture's duration.
     fps: u32,

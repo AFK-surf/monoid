@@ -708,14 +708,14 @@ test("a still screen's picture goes again sharper as the rate goes up, a key fra
   await v.served;
 });
 
-test("the rate goes up to its pixels × 16 whatever the 画质 but 流畅, × 6 there", async () => {
-  for (const [quality, top] of [["original", 1920 * 1080 * 16], ["hd", 1920 * 1080 * 16], ["smooth", 1920 * 1080 * 6], [undefined, 1920 * 1080 * 16]] as const) {
+test("the rate goes up to its pixels × 16 (自动, 高清), × 20 (2K, 原画), × 6 (流畅), more over 60 frames a second", async () => {
+  for (const [quality, top, fps] of [["original", 1920 * 1080 * 20], ["qhd", 1920 * 1080 * 20], ["hd", 1920 * 1080 * 16], ["smooth", 1920 * 1080 * 6], [undefined, 1920 * 1080 * 16], ["hd", 1920 * 1080 * 16 * 1.5, 120], ["qhd", 1920 * 1080 * 20 * 1.25, 90]] as const) {
     const hub = new ScreenHub();
     const source = new FakeSource();
     source.make = () => new StillView();
     hub.add(source);
     const time = testClock();
-    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...(quality ? { quality } : {}) }, undefined, time.clock);
+    const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, ...(quality ? { quality } : {}), ...(fps ? { fps } : {}) }, undefined, time.clock);
     await until(v.frames, KIND.video);
     const view = source.views[0] as StillView;
     let ts = 1000;
@@ -727,7 +727,7 @@ test("the rate goes up to its pixels × 16 whatever the 画质 but 流畅, × 6 
       if (view.keyframes === i) break;
       ts = Number((await until(v.frames, KIND.video)).readBigUInt64BE(1));
     }
-    assert.equal(Math.max(...view.rates), top, `${quality}`);
+    assert.equal(Math.max(...view.rates), top, `${quality} ${fps ?? ""}`);
     await v.stream.finish();
     await v.served;
   }
@@ -772,11 +772,50 @@ test("a 帧率 asked: its source opened with it, and no more frames a second go 
   }
 });
 
+test("the source's next frame is asked while the last is written, one at most and only where the pace would let it go", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  hub.add(source);
+  const time = testClock();
+  // 15 a second: a slot of 66.7 ms between frames.
+  const v = await open(hub, member, { maxWidth: 1920, maxHeight: 1080, codecs: ["h264"], control: true, fps: 15 }, undefined, time.clock);
+  const first = await until(v.frames, KIND.video);
+  assert.equal(Number(first.readBigUInt64BE(1)), 1000);
+  await settle();
+  const view = source.views[0]!;
+  // The second asked as the first went, though its slot has not come: it waits for it.
+  assert.equal(view.asked, 2, "one asked ahead");
+  await time.adjust(30);
+  await settle();
+  assert.equal(view.asked, 2, "no more than one ahead");
+  await time.adjust(40);
+  const second = await until(v.frames, KIND.video);
+  assert.equal(Number(second.readBigUInt64BE(1)), 2000, "the one asked ahead, in its turn");
+  await settle();
+  // Two on the way and no round trip known yet: none may go, so none is asked ahead.
+  assert.equal(view.asked, 2, "none asked while the pace holds them");
+  // Acknowledged: on again, one ahead.
+  await v.stream.write(frame(KIND.ack, ts8(2000)));
+  await settle();
+  await time.adjust(70);
+  const third = await until(v.frames, KIND.video);
+  assert.equal(Number(third.readBigUInt64BE(1)), 3000);
+  await settle();
+  assert.equal(view.asked, 4);
+  await v.stream.finish();
+  await v.served;
+});
+
 test("a view's ask: its 画质 among those known, none for a preview's", () => {
   const ask = { maxWidth: 1920, maxHeight: 1080, codecs: ["h265", "h264"] };
   assert.equal(asked({ ...ask, quality: "original" }).quality, "original");
   assert.equal(asked({ ...ask, quality: "hd" }).quality, "hd");
+  assert.equal(asked({ ...ask, quality: "qhd" }).quality, "qhd");
+  assert.equal(asked({ ...ask, quality: "smooth" }).quality, "smooth");
   assert.equal(asked({ ...ask, quality: "best" }).quality, undefined);
+  // 2K is 4:2:0: full chroma with 原画 alone.
+  assert.equal(asked({ ...ask, quality: "qhd", chroma444: true }).chroma444, undefined);
+  assert.equal(asked({ ...ask, quality: "original", chroma444: true }).chroma444, true);
   assert.equal(asked(ask).quality, undefined);
   assert.equal(asked({ ...ask, quality: "original", peek: true }).quality, undefined);
 });
@@ -929,7 +968,7 @@ test("a client that takes the frames as datagrams under its token is told so whe
 
 test("a view starts at the rate its link is known to carry as it opens: a LAN's higher; a preview, or no link known, at START_RATE", async () => {
   const way = (o: Partial<LinkPath>): LinkPath => ({ selected: true, relay: null, ip: "192.168.1.9:7000", rttMs: 4, txPackets: 0, lostPackets: 0, ...o });
-  for (const [paths, rate] of [[undefined, START_RATE], [[way({})], 12_000_000], [[way({ rttMs: 30 })], 6_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 20 })], 4_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 150 })], START_RATE]] as const) {
+  for (const [paths, rate] of [[undefined, START_RATE], [[way({})], 25_000_000], [[way({ rttMs: 30 })], 12_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 20 })], 4_000_000], [[way({ relay: "https://r1/", ip: null, rttMs: 150 })], START_RATE]] as const) {
     const hub = new ScreenHub();
     const source = new FakeSource();
     source.make = () => new StillView();

@@ -50,6 +50,7 @@ void sf_shell_stop(void* shell);
 void sf_shell_set_say(const void* shell, void (*say)(void*, const uint8_t*, size_t, const uint8_t*, size_t), void* ctx);
 void sf_shell_set_media(const void* shell, uint8_t (*media)(void*, uint64_t, uint8_t, uint8_t, uint64_t, uint64_t, const uint8_t*, size_t), void* ctx);
 uint8_t sf_shell_screen_ack(const void* shell, uint64_t call, double ts);
+uint8_t sf_shell_screen_input(const void* shell, uint64_t call, const uint8_t* json, size_t len);
 int32_t sf_utc_offset_min(double at_ms);
 #ifdef __ANDROID__
 uint8_t* sf_shell_stats(size_t* out_len);
@@ -233,6 +234,11 @@ class Engine {
   int screenAck(uint64_t call, double ts) {
     std::lock_guard<std::mutex> lock(tapMutex_);
     return shell_ ? sf_shell_screen_ack(shell_, call, ts) : 0;
+  }
+
+  int screenInput(uint64_t call, const uint8_t* json, size_t len) {
+    std::lock_guard<std::mutex> lock(tapMutex_);
+    return shell_ ? sf_shell_screen_input(shell_, call, json, len) : 0;
   }
 
   /// An answer (the shell's, from one of its threads, or the app's): a task for the loop.
@@ -562,6 +568,10 @@ extern "C" SF_ENGINE_API void sf_engine_tap(sf_engine* e, sf_engine_said say, sf
 
 extern "C" SF_ENGINE_API int sf_engine_screen_ack(sf_engine* e, uint64_t call, double ts) {
   return e->engine->screenAck(call, ts);
+}
+
+extern "C" SF_ENGINE_API int sf_engine_screen_input(sf_engine* e, uint64_t call, const uint8_t* json, size_t len) {
+  return e->engine->screenInput(call, json, len);
 }
 
 #ifdef __ANDROID__

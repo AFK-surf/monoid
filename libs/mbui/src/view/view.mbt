@@ -7763,7 +7763,15 @@ fn Tree::asked_at(
   at : Double,
   takes : (Node) -> Bool,
   then : (Node, Double, Double, Double) -> Unit,
+  took? : Ref[Int] = Ref(-1),
+  takes_at? : ((Int) -> Bool)? = None,
 ) -> Bool {
+  let takes = fn(i : Int) {
+    match takes_at {
+      Some(f) => f(i)
+      None => takes(self.nodes[i])
+    }
+  }
   let t = if self.cause_at >= 0.0 { self.cause_at } else { at }
   if self.cause_at < 0.0 {
     self.bring_to(t)
@@ -7777,7 +7785,7 @@ fn Tree::asked_at(
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
       if self.finger_on(c, cx, cy, s, x, y, now, tracked=false) {
         let n = self.nodes[c.id.at]
-        if takes(n) || n.on_drag is Some(_) || n.on_press is Some(_) || n.top_row || n.hosted {
+        if takes(c.id.at) || n.on_drag is Some(_) || n.on_press is Some(_) || n.top_row || n.hosted {
           found.val = Some(c.id)
         }
       }
@@ -7790,8 +7798,9 @@ fn Tree::asked_at(
     }
     while i >= 0 {
       let n = self.nodes[i]
-      if takes(n) && !self.pressless_at(i) {
+      if takes(i) && !self.pressless_at(i) {
         asked.val = true
+        took.val = i
         let (nx, ny, ns) = self.placed(i)
         then(n, (x - nx) / ns, (y - ny) / ns, t)
         break
@@ -8896,6 +8905,7 @@ fn View::let_go(self : View) -> Unit {
   n.top_row = false
   n.moves_window = false
   n.on_menu = None
+  self.tree.buttons_clear_at(self.at)
   n.on_wheel = None
   n.on_key = None
   n.on_back = None
@@ -15090,7 +15100,7 @@ pub fn Tree::follow_point(self : Tree, x : Double, y : Double, then : (Target) -
   // (the pointer moved: what it is over as this is first told told so after `then`, View::on_pointer_moved, whoever
   // follows it (Tree::point_at, what hosts the tree); what comes under it after as the layout or the order changes, or
   // the same point followed again, not)
-  let moved = Ref(x >= 0.0 && y >= 0.0 && self.pointer_xy != (x, y))
+  let moved = Ref(x >= 0.0 && y >= 0.0 && (self.pointer_xy != (x, y) || self.moves_are_held()))
   let then = fn(t : Target) {
     then(t)
     if moved.val {

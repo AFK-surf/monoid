@@ -773,11 +773,11 @@ fn ScreenSess::pad(self : ScreenSess, src : Source) -> Bool {
 }
 
 ///|
-/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 画质): `smooth`, `hd`, `original`, or
+/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 画质): `smooth`, `hd`, `qhd`, `original`, or
 /// "" (自动: as large as the stage it is shown on, in device pixels: ScreenSess::bounds).
 fn screen_quality(src : Source) -> String {
   match text(src.topic("prefs", {}).get().value, "screenQuality") {
-    "smooth" | "hd" | "original" as q => q
+    "smooth" | "hd" | "qhd" | "original" as q => q
     _ => ""
   }
 }
@@ -818,6 +818,7 @@ fn ScreenSess::bounds(self : ScreenSess, quality : String) -> (Int, Int) {
   match quality {
     "smooth" => (1280, 720)
     "hd" => (1920, 1080)
+    "qhd" => (2560, 1440)
     "original" => (7680, 4320)
     _ =>
       match self.stage_px {
@@ -992,7 +993,12 @@ fn ScreenSess::input(self : ScreenSess, src : Source, input : Json) -> Unit {
   if !(self.input_goes() || (window && self.call != 0 && self.heard)) {
     return
   }
-  screen_tell(src, "screen.input", { "view": Json::string(self.view), "input": input })
+  // (its call: where the engine's shell drives the view itself, the input goes from there, as screen_ack's)
+  screen_tell(src, "screen.input", {
+    "view": Json::string(self.view),
+    "input": input,
+    "call": Json::number(self.call.to_double()),
+  })
 }
 
 ///|
@@ -1174,10 +1180,10 @@ fn ScreenSess::pointer_moved(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// The calls of a screen whose answers nobody reads (screen_tell's `screen.ack`): taken as they come, they build nothing
+/// The calls of a screen whose answers nobody reads (screen_tell's `screen.ack` and `screen.input`): taken as they come, they build nothing
 /// (@core.unread, said as the app starts).
 pub fn screen_unread_calls() -> Array[String] {
-  ["screen.ack"]
+  ["screen.ack", "screen.input"]
 }
 
 ///|

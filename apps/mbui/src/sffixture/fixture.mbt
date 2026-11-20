@@ -1470,6 +1470,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
+        "screenQuality": f_screen_prefs(f).get("screenQuality").unwrap_or(Json::null()),
+        "screenFps": f_screen_prefs(f).get("screenFps").unwrap_or(Json::null()),
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
@@ -2113,6 +2115,25 @@ let fixture_remote_tabs : Map[Int, Map[String, Json]] = Map([])
 let fixture_terminal_zooms : Map[Int, String] = Map([])
 
 ///|
+// kept across runs: by fixture_ids', each fixture's alone (a screen's 画质 and 帧率 kept by the prefs: `screenQuality`,
+// `screenFps`)
+let fixture_screen_prefs : Map[Int, Map[String, Json]] = Map([])
+
+///|
+/// The fixture's screens' 画质 and 帧率 as the prefs keep them (none: 自动).
+fn f_screen_prefs(f : Fixture) -> Map[String, Json] {
+  let id = fixture_id(f)
+  match fixture_screen_prefs.get(id) {
+    Some(m) => m
+    None => {
+      let m : Map[String, Json] = Map([])
+      fixture_screen_prefs[id] = m
+      m
+    }
+  }
+}
+
+///|
 fn fixture_id(f : Fixture) -> Int {
   f.windows.get(fixture_id_key).unwrap_or(0)
 }
@@ -2680,6 +2701,14 @@ pub fn fixture(mode : String) -> Source {
             Some(String(z)) => fixture_terminal_zooms[fixture_id(f)] = z
             Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
             _ => ()
+          }
+          // a screen's 画质 and 帧率 (null: 自动)
+          for k in ["screenQuality", "screenFps"] {
+            match field(Some(params), k) {
+              Some(Null) => f_screen_prefs(f).remove(k)
+              Some(v) => f_screen_prefs(f)[k] = v
+              None => ()
+            }
           }
           // the board's (board_fixture.mbt)
           board_prefs_set(params)

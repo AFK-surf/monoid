@@ -298,6 +298,11 @@ fn reveal(path: &str) {
 
 /// How long a picture may be in the encoder before it is taken as lost.
 const STUCK: Duration = Duration::from_secs(2);
+/// At this bit rate asked or more, a still picture's key frame is the view's own encoder's, as any other key frame: the
+/// still picture's encoder (encode.rs `still`) writes other parameter sets (its rate, twice this, in their VUI), so its
+/// picture went with a config and the next moving one with the view's again, the client's decoder made anew for each
+/// (a game paused a moment, a menu opened: the picture flashed twice). The view's own at this rate is sharp already.
+const STILL_OWN_FROM: u32 = 20_000_000;
 
 struct View {
     gpu: Gpu,
@@ -619,8 +624,9 @@ impl View {
         }
         // Another part of the display: from a key frame (the client's config says the part); one 10 s after the last.
         let mut key = self.force_key || part != self.pushed_region || self.keys.due(self.ms());
-        // The same picture again as a key frame (the screen at rest): encoded finer, by an encoder made for it.
-        let still = key && self.still && !self.no_still && self.encoder.as_ref().unwrap().sharpens();
+        // The same picture again as a key frame (the screen at rest): encoded finer, by an encoder made for it, where the
+        // rate asked is under STILL_OWN_FROM.
+        let still = key && self.still && !self.no_still && self.encoder.as_ref().unwrap().sharpens() && self.encoder.as_ref().unwrap().rates().1 < STILL_OWN_FROM;
         // An encoder that keeps the bit rate it started at: started anew at the one asked, now and then (its next
         // picture a key frame); made anew where it cannot be.
         let now = self.ms();

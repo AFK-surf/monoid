@@ -1149,6 +1149,12 @@ fn pointer_event_now(
   if more {
     args.push(1.0)
   }
+  // (the secondary or middle button on what takes them whole, down to up (View::on_buttons): its alone, no menu's nor
+  // a press's; a middle button nothing takes, nothing; a move told it too, while one is held on it, and on as ever)
+  if view_buttons_took(kind, x, y, button) {
+    input_taped("pointer", h_event_time(), args)
+    return
+  }
   // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
   // the samples before it did laid out with it, touches.mbt)
   let pointed = fn() { if !more { view_pointed() } }

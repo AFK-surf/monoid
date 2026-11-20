@@ -59,6 +59,7 @@ void sf_shell_stop(void *shell);
 void sf_shell_set_say(const void *shell, void (*say)(void *, const uint8_t *, size_t, const uint8_t *, size_t), void *ctx);
 void sf_shell_set_media(const void *shell, uint8_t (*media)(void *, uint64_t, uint8_t, uint8_t, uint64_t, uint64_t, const uint8_t *, size_t), void *ctx);
 uint8_t sf_shell_screen_ack(const void *shell, uint64_t call, double ts);
+uint8_t sf_shell_screen_input(const void *shell, uint64_t call, const uint8_t *json, size_t len);
 uint8_t *sf_shell_stats(size_t *out_len);
 int32_t sf_utc_offset_min(double at_ms);
 }
@@ -1435,8 +1436,14 @@ int mb_core_screen_ack(double call, double ts) {
   return sf_shell_screen_ack(shell, (uint64_t)call, ts);
 }
 
+int mb_core_screen_input(double call, const uint8_t *json, size_t len) {
+  void *shell = C.shell;
+  if (!shell || !C.running || call < 1 || !json || len == 0) return 0;
+  return sf_shell_screen_input(shell, (uint64_t)call, json, len);
+}
+
 // What the shell did of remote screens since its caller last asked (`tap.views=… tap.video=… tap.direct.video=…
-// tap.audio=… tap.direct.audio=… tap.audio.undecoded=… tap.audio.resumed=… tap.acks=… istream.read=… istream.write=…`:
+// tap.audio=… tap.direct.audio=… tap.audio.undecoded=… tap.audio.resumed=… tap.acks=… tap.inputs=… istream.read=… istream.write=…`:
 // those read, those of them the app's host
 // took itself rather than the app's queue, and the acks it sent itself, and how many reads of streams the core asked
 // meanwhile): whether the views are tapped (client/shell istream.tap) and their frames go straight to the decoder
@@ -1456,7 +1463,7 @@ extern "C" int mb_core_tap_line(int who, char *out, size_t n) {
     NSArray *a = [d[k] isKindOfClass:NSArray.class] ? d[k] : nil;
     return a.count ? [a[0] longLongValue] : 0;
   };
-  NSArray<NSString *> *taps = @[ @"tap.views", @"tap.video", @"tap.direct.video", @"tap.audio", @"tap.direct.audio", @"tap.audio.undecoded", @"tap.audio.resumed", @"tap.acks", @"istream.read", @"istream.write" ];
+  NSArray<NSString *> *taps = @[ @"tap.views", @"tap.video", @"tap.direct.video", @"tap.audio", @"tap.direct.audio", @"tap.audio.undecoded", @"tap.audio.resumed", @"tap.acks", @"tap.inputs", @"istream.read", @"istream.write" ];
   NSMutableString *line = [NSMutableString string];
   for (NSString *k in taps)
     [line appendFormat:@"%@%@=%lld", line.length ? @" " : @"", k, count(calls, k) - count(was[who], k)];

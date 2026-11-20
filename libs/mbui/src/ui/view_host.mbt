@@ -3633,6 +3633,37 @@ fn view_pointer(kind : Int, x : Double, y : Double, button : Int, brings? : Bool
 }
 
 ///|
+/// A pointer's event as the secondary and middle buttons are taken whole (`button` 2 the secondary, 3 the middle;
+/// @view's Tree::buttons_down): down on a node that takes them, its till they are up, the moves between told it too;
+/// true where the event is its alone (or a middle button's nothing takes: what took no middle button before takes none
+/// now). A move is never taken so: it goes on to what else it is for.
+fn view_buttons_took(kind : Int, x : Double, y : Double, button : Int) -> Bool {
+  let extra = button == 2 || button == 3
+  match view_app.val {
+    None => button == 3 && (kind == 0 || kind == 2)
+    Some(tree) =>
+      match kind {
+        0 if extra => tree.buttons_down(x, y, view_moment(), button) || button == 3
+        2 if extra => tree.buttons_up(x, y, view_moment(), button) || button == 3
+        1 => {
+          // (the pointer held by the window: each move one, where it stays)
+          tree.set_moves_held(@hostapi.pointer_locked())
+          if tree.buttons_holding() {
+            tree.buttons_moved(x, y, view_moment()) |> ignore
+          }
+          false
+        }
+        // (called off, the pointer gone out of it: let go)
+        3 => {
+          tree.buttons_off(x, y, view_moment())
+          false
+        }
+        _ => false
+      }
+  }
+}
+
+///|
 fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, button : Int, brings : Bool) -> Bool {
   // (the tree as of the event's moment, taken once as it began: what had ended by then settled, what is where then)
   let at = view_moment()

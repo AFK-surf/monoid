@@ -1446,6 +1446,29 @@ fn mods_held() -> Int {
 }
 
 ///|
+/// The pointer held by the window: a browser's is the page's own (web/src/mbui/screen-peripherals.ts, Pointer Lock),
+/// nothing here.
+fn pointer_lock(_on : Bool) -> Unit {
+  ()
+}
+
+///|
+fn pointer_locked() -> Bool {
+  false
+}
+
+///|
+fn pointer_delta(_out : FixedArray[Double]) -> Unit {
+  ()
+}
+
+///|
+/// A browser's game controllers are the page's own (web/src/mbui/screen-peripherals.ts): none read here.
+fn gamepads(_out : FixedArray[Double]) -> Int {
+  0
+}
+
+///|
 extern "js" fn js_set_page_title(title : String) -> Unit =
   #|(t) => { const H = globalThis.__mbhost; if (H && H.setPageTitle) H.setPageTitle(t) }
 

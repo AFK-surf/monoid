@@ -754,3 +754,122 @@ test "an OTLP batch says what describes the station, an empty one left out" {
     content="[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"stillfail-mesh\"}},{\"key\":\"stillfail.station\",\"value\":{\"stringValue\":\"s1\"}},{\"key\":\"service.version\",\"value\":{\"stringValue\":\"0.1.1\"}}]",
   )
 }
+
+///|
+test "2K (qhd): the most a view is asked at, more over 60 frames a second, at most max_rate" {
+  assert_eq(@mesh_runtime.max_rate, 100_000_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("original")), 1920.0 * 1080.0 * 20.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd")), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(60.0)), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(30.0)), 73_728_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("hd"), fps=Some(90.0)), 1920.0 * 1080.0 * 16.0 * 1.25)
+  assert_eq(@mesh_runtime.rate_ceiling(1920.0, 1080.0, Some("hd"), fps=Some(120.0)), 1920.0 * 1080.0 * 16.0 * 1.5)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(90.0)), 92_160_000.0)
+  assert_eq(@mesh_runtime.rate_ceiling(2560.0, 1440.0, Some("qhd"), fps=Some(120.0)), @mesh_runtime.max_rate)
+  assert_eq(@mesh_runtime.rate_ceiling(200.0, 100.0, Some("original"), fps=Some(120.0)), 1_000_000.0)
+  assert_eq(@mesh_runtime.lan_rate, 25_000_000.0)
+}
+
+///|
+test "2K (qhd) and 原画 are never made smaller; 高清 is" {
+  let now = Ref(0.0)
+  let asked : @mesh_runtime.Bounds = { max_width: 7680.0, max_height: 4320.0 }
+  for quality in ["original", "qhd"] {
+    let whole = @mesh_runtime.Sizer::new(() => now.val, asked, quality=Some(quality))
+    for _ in 0..<100 {
+      assert_eq(whole.step(1_000_000.0, 1_000_000.0, 3840.0, 2160.0), None)
+      now.val += 100.0
+    }
+  }
+  let hd = @mesh_runtime.Sizer::new(() => now.val, asked, quality=Some("hd"))
+  let mut made : @mesh_runtime.Bounds? = None
+  for _ in 0..<100 {
+    if made is None {
+      made = hd.step(1_000_000.0, 1_000_000.0, 3840.0, 2160.0)
+    }
+    now.val += 100.0
+  }
+  assert_eq(made, Some({ max_width: 1280.0, max_height: 720.0 }))
+}
+
+///|
+/// A pacer whose round trip is 10 ms, its rate at `rate` and no higher, frames of `bytes` each 16 ms acknowledged 10 ms
+/// on for 1.5 s, then one of `key` bytes as a key frame, never acknowledged: its rate each ms after that.
+fn burst(rate : Double, bytes : Double, key : Double) -> (Array[Double], @mesh_runtime.Pacer, Ref[Double]) {
+  let now = Ref(0.0)
+  let pacer = @mesh_runtime.Pacer::new(() => now.val, start=Some(rate))
+  pacer.set_ceiling(rate)
+  let mut ts = 0.0
+  let due : Array[(Double, Double)] = []
+  while now.val < 1500.0 {
+    while due.length() > 0 && due[0].0 <= now.val {
+      pacer.acked(due.remove(0).1)
+    }
+    if now.val.to_int() % 16 == 0 && pacer.may() {
+      ts += 1000.0
+      pacer.sent(ts, bytes)
+      due.push((now.val + 10.0, ts))
+    }
+    now.val += 1.0
+  }
+  while due.length() > 0 {
+    pacer.acked(due.remove(0).1)
+    now.val += 1.0
+  }
+  pacer.sent(ts + 1000.0, key, key=true)
+  let rates = []
+  let start = now.val
+  while now.val < start + 1000.0 {
+    pacer.may() |> ignore
+    rates.push(pacer.asked_rate().unwrap())
+    now.val += 1.0
+  }
+  (rates, pacer, now)
+}
+
+///|
+test "a large picture after a dark scene lowers the rate by light_cut first; a key frame may wait key_queue_ms more" {
+  assert_eq(@mesh_runtime.cut, 0.65)
+  assert_eq(@mesh_runtime.light_cut, 0.8)
+  assert_eq(@mesh_runtime.key_queue_ms, 25.0)
+  let (rates, _, _) = burst(20_000_000.0, 3_000.0, 1_000_000.0)
+  let steps : Array[Double] = []
+  for r in rates {
+    if !steps.contains(r) {
+      steps.push(r)
+    }
+  }
+  assert_eq(steps[0], 20_000_000.0)
+  assert_eq(steps[1], 20_000_000.0 * @mesh_runtime.light_cut)
+  let first = rates.search(steps[1]).unwrap()
+  assert_eq(first.to_double(), 10.0 + 30.0 + @mesh_runtime.key_queue_ms + 1.0 + @mesh_runtime.hold_ms)
+  assert_eq(steps[2], 20_000_000.0 * @mesh_runtime.light_cut * @mesh_runtime.cut)
+}
+
+///|
+test "a key frame on the way may wait key_queue_ms more before a queue is taken to build; free asks nothing of the pace" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val, start=Some(10_000_000.0))
+  p.sent(1000.0, 10_000.0)
+  now.val = 20.0
+  p.acked(1000.0)
+  assert_eq(p.rtt(), Some(20.0))
+  p.sent(2000.0, 500_000.0, key=true)
+  p.sent(3000.0, 10_000.0)
+  let edge = 20.0 + 20.0 + @mesh_runtime.queue_ms(20.0) + @mesh_runtime.key_queue_ms
+  now.val = edge
+  assert_false(p.backlogged())
+  assert_true(p.free())
+  assert_true(p.may())
+  now.val = edge + 1.0
+  assert_true(p.backlogged())
+  assert_false(p.free())
+  // (free asked again and again: the rate as it was)
+  let (_, b, at) = burst(20_000_000.0, 3_000.0, 1_000_000.0)
+  let rate = b.asked_rate()
+  at.val += 5_000.0
+  for _ in 0..<50 {
+    assert_false(b.free())
+  }
+  assert_eq(b.asked_rate(), rate)
+}

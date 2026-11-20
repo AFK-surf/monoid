@@ -2590,10 +2590,12 @@ web-pages.screen.quality
 web-pages.screen.quality.auto
 web-pages.screen.quality.hd
 web-pages.screen.quality.original
+web-pages.screen.quality.qhd
 web-pages.screen.quality.smooth
 web-pages.screen.qualityHint.auto
 web-pages.screen.qualityHint.hd
 web-pages.screen.qualityHint.original
+web-pages.screen.qualityHint.qhd
 web-pages.screen.qualityHint.smooth
 web-pages.screen.scale
 web-pages.screen.scaleRecommended

@@ -120,6 +120,8 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the fake host's pointer and controllers of the run before: fake_host.mbt)
+  fake_pointer_reset()
   // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
   windows_reset()
   window_zoom_reset()
@@ -3676,6 +3678,59 @@ pub fn Tester::right_click(self : Tester, x : Double, y : Double) -> Unit {
   on_pointer(0, x, y, 2)
   on_pointer(2, x, y, 2)
   self.draw()
+}
+
+///|
+/// A mouse's button other than the primary (`button` 2 the secondary, 3 the middle) down at (x, y), held: what takes it
+/// whole (View::on_buttons) sees it go down, and moves (Tester::move_to, a drag's) till it goes up (Tester::button_up).
+/// One frame drawn after it.
+pub fn Tester::button_down(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(0, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// A mouse's button other than the primary (Tester::button_down) up at (x, y). One frame drawn after it.
+pub fn Tester::button_up(self : Tester, x : Double, y : Double, button : Int) -> Unit {
+  posted_tell()
+  on_pointer(2, x, y, button)
+  self.drawn_now()
+}
+
+///|
+/// Whether the window holds the pointer now (@hostapi.set_pointer_lock), and how many times it was told to hold it or
+/// let it go.
+pub fn Tester::pointer_locked(self : Tester) -> (Bool, Int) {
+  match fake_pointer_of(self.fake) {
+    Some(p) => (p.lock, p.locks_told)
+    None => (false, 0)
+  }
+}
+
+///|
+/// The mouse moved by (`dx`, `dy`) while the window holds the pointer, its move coming where the pointer stays (x, y),
+/// as a host gives it (@hostapi.pointer_delta_take answers it). One frame drawn after it.
+pub fn Tester::locked_move(self : Tester, x : Double, y : Double, dx : Double, dy : Double) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) && p.lock {
+    p.delta = (p.delta.0 + dx, p.delta.1 + dy)
+  }
+  self.move_to(x, y)
+}
+
+///|
+/// The pointer let go of by the system (the window gone out of focus, as a host does by itself): nothing told the app.
+pub fn Tester::pointer_lock_lost(self : Tester) -> Unit {
+  if fake_pointer_of(self.fake) is Some(p) {
+    p.lock = false
+    p.delta = (0.0, 0.0)
+  }
+}
+
+///|
+/// The game controllers connected from now on, as the host reads them (@hostapi.gamepads).
+pub fn Tester::set_gamepads(self : Tester, pads : Array[@hostapi.Gamepad]) -> Unit {
+  fake_pointer(self.fake).pads = pads
 }
 
 ///|

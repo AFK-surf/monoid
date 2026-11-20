@@ -3,11 +3,16 @@
 // the app.
 //
 // H.264 by VideoToolbox: a decompression session made from the config's avcC (its parameter sets, its NAL length:
-// avc.h), each access unit handed over as it came (AVCC), once known sound; frames decoded into Metal-compatible BGRA
-// pixel buffers, each kept until the app shows it (or a later one) and told it ("f TS W H"). JPEG by ImageIO on a queue
-// of the stream's own, into a texture, kept the same way. The app shows a frame (`stream_show`, on the main thread, as
-// its frame takes the event): the stream's texture from then on (a pixel buffer's through a CVMetalTextureCache), what
-// the renderer draws its instances with (apple_render.m: image MB_STREAM_TEX + its id).
+// avc.h), each access unit handed over as it came (AVCC), once known sound; frames decoded into IOSurface pixel buffers
+// in the decoder's own YCbCr (4:2:0 or 4:4:4, 8 or 10 bits: no picture made BGRA as it comes), each kept until the app
+// shows it (or a later one) and told it ("f TS W H"). A config of the same codec and size that the live session can
+// take (VTDecompressionSessionCanAcceptFormatDescription: a sender's parameter sets sent again, a bitrate changed) goes
+// on with it, nothing inside it let go. JPEG by ImageIO on a queue of the stream's own, into a texture, kept the same
+// way. The app shows a frame (`stream_show`, on the main thread, as its frame takes the event): its surface put on the
+// stream's system video layer as it is (Core Animation shows YCbCr as tagged), and the stream's texture from then on,
+// what the renderer draws its instances with (apple_render.m: image MB_STREAM_TEX + its id): a BGRA copy made of it by
+// VideoToolbox's pixel transfer only when the renderer asks for it (mb_stream_texture: a faded or ended view's
+// picture), once a frame.
 //
 // Frames let go ("d TS": no session or not past a key frame, one that is not sound AVCC, the older of two it holds,
 // those inside it as it starts anew, one the decoder drops, a JPEG that does not decode) and the decoder broken ("b": an
@@ -30,7 +35,10 @@
 #import <AVFoundation/AVFoundation.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
+#else
+#import <AppKit/AppKit.h>
 #endif
+#include <mach/mach_time.h>
 #include <os/lock.h>
 #include <stdatomic.h>
 #include "avc.h"
@@ -67,11 +75,12 @@ void mb_host_request_frame(void);
 // lately, kept while a frame in flight may still draw them
 @property id<MTLTexture> tex;
 @property NSMutableArray *retired;
-// a frame shown in wider colours than sRGB's (a Display P3 stream's: `gamut: "p3"`, asked where frames go on the
-// system video layer, which shows them as tagged), its texture not made yet: made in sRGB only if the app draws it (a
-// faded or ended view's picture), with the transfer session and pool that convert it (main thread)
-@property MBStreamFrame *wide;
-@property VTPixelTransferSessionRef toSRGB;
+// a frame shown whose texture is not made yet (its pixels the decoder's YCbCr, or in wider colours than sRGB's: a
+// Display P3 stream's, `gamut: "p3"`, asked where frames go on the system video layer, which shows them as tagged):
+// made BGRA (in sRGB where wider) only if the app draws it (a faded or ended view's picture), with the transfer
+// sessions (into sRGB; its colours as they are) and pool that convert it (main thread)
+@property MBStreamFrame *lazy;
+@property VTPixelTransferSessionRef toSRGB, toBGRA;
 @property CVPixelBufferPoolRef srgbPool;
 @property int srgbW, srgbH;
 // the decoder (its queue): the config's format, its NAL length size and picture size, the session and its generation
@@ -101,6 +110,14 @@ void mb_host_request_frame(void);
 @property long directFrames, directBytes;
 @property CVPixelBufferRef displayed;  // retained: the last shown, put on a layer attached later
 @property NSMutableArray *onLayer;     // the pixel buffers last put on it (display)
+// (main thread) its frames' pacing on that layer (display_paced): the display's refresh (ms, as the layer was attached),
+// when one was last put there (ms), the newer one held back to the next refresh after it (retained) and the timer that
+// puts it (strict: a wait no longer than asked)
+@property double refreshMs, putAt;
+@property CVPixelBufferRef paced;
+@property dispatch_source_t paceTimer;
+// (under @synchronized(self)) frames of its route decoded and on their way to the main thread, not shown yet
+@property long directQueued;
 // a pointer over its picture on that layer (@hostapi.stream_pointer): its own sublayer, its picture and size (points),
 // its hot spot, where it points (0..1 of the layer's bounds) and whether it shows
 @property CALayer *pointer;
@@ -226,8 +243,14 @@ static atomic_bool app_in_background;
 #endif
 
 // A frame fed from a route decoded (main thread): shown and acknowledged here while the route still goes to it, nothing
-// of the app's run; else said, as the app's are.
+// of the app's run; else said, as the app's are. One with a newer behind it on its way here (a burst the main thread
+// was too busy to take one by one) is acknowledged at once and passed over: the newest shown, none of the backlog
+// played out after it.
 static void direct_shown(MBStream *s, MBStreamFrame *f, uint64_t route) {
+  long behind;
+  @synchronized(s) {
+    behind = --s.directQueued;
+  }
   if (s.closed) return;
   if (!routed(route, s.sid)) {
     @synchronized(s) {
@@ -244,7 +267,7 @@ static void direct_shown(MBStream *s, MBStreamFrame *f, uint64_t route) {
     }
     s.decoded = left;
   }
-  show_frame(s, f);
+  if (behind <= 0) show_frame(s, f);
   s.directAt = f.ts;
   route_acked(route, f.ts);
 }
@@ -303,6 +326,9 @@ static void decoded(void *out_ref, void *frame_ref, OSStatus status, VTDecodeInf
         }
         if (direct.longValue < 0) return;
         uint64_t route = s.directRoute;
+        @synchronized(s) {
+          s.directQueued += 1;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{ direct_shown(s, f, route); });
         return;
       }
@@ -339,12 +365,22 @@ static void stop(MBStream *s) {
   s.needKey = YES;
 }
 
-// A session for the config there is (none without one): whether there is one now.
+// A session for the config there is (none without one): whether there is one now. Its frames in the decoder's own
+// YCbCr, the first of these it gives without converting (no format asked: its compressed private one, which Core
+// Animation is not given); BGRA last, for a stream in none of them. Measured on an M5 Max, a 2560x1440 H.265 frame
+// decoded in 1.1 ms (p50) as 420v, 2.2 ms as BGRA, the same picture on the layer (mb_stream_texture's BGRA of it the
+// decoder's to the byte).
 static BOOL start(MBStream *s) {
   stop(s);
   if (!s.format || s.closed) return NO;
   NSDictionary *pixels = @{
-    (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+    (id)kCVPixelBufferPixelFormatTypeKey : @[
+      @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange), @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange),
+      @(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange), @(kCVPixelFormatType_420YpCbCr10BiPlanarFullRange),
+      @(kCVPixelFormatType_444YpCbCr8BiPlanarVideoRange), @(kCVPixelFormatType_444YpCbCr8BiPlanarFullRange),
+      @(kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange), @(kCVPixelFormatType_444YpCbCr10BiPlanarFullRange),
+      @(kCVPixelFormatType_32BGRA)
+    ],
     (id)kCVPixelBufferMetalCompatibilityKey : @YES,
     (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
   };
@@ -358,6 +394,21 @@ static BOOL start(MBStream *s) {
   VTSessionSetProperty(made, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
   s.session = made;
   s.needKey = YES;
+  return YES;
+}
+
+// Format f (its NAL lengths' size `length_size`, the picture w x h) taken by the live session as it is: the same codec
+// and size, which the session says it can decode (a sender's parameter sets sent again, its bitrate or its picture's
+// sharpening changed). Its frames go on as they were (none inside let go, no key frame waited for anew): a session made
+// again cost 10 ms and the frames inside it. 1: taken (f s.format's now), 0: s's as it was.
+static BOOL format_taken(MBStream *s, CMVideoFormatDescriptionRef f, int length_size, int w, int h) {
+  if (!f || !s.session || !s.format || s.closed || s.lengthSize != length_size || s.w != w || s.h != h) return NO;
+  if (CMFormatDescriptionGetMediaSubType(f) != CMFormatDescriptionGetMediaSubType(s.format)) return NO;
+  CMVideoDimensions a = CMVideoFormatDescriptionGetDimensions(f), b = CMVideoFormatDescriptionGetDimensions(s.format);
+  if (a.width != b.width || a.height != b.height) return NO;
+  if (!VTDecompressionSessionCanAcceptFormatDescription(s.session, f)) return NO;
+  CFRelease(s.format);
+  s.format = f;
   return YES;
 }
 
@@ -377,6 +428,7 @@ static void configure(MBStream *s, NSData *avcc, int w, int h) {
   for (int i = 0; i < c.npps; i++, n++) { sets[n] = c.pps[i]; sizes[n] = c.pps_len[i]; }
   CMVideoFormatDescriptionRef f = NULL;
   OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, (size_t)n, sets, sizes, c.length_size, &f);
+  if (st == noErr && format_taken(s, f, c.length_size, w, h)) return;
   if (s.format) CFRelease(s.format);
   s.format = st == noErr ? f : NULL;
   if (st != noErr) NSLog(@"stream %d: parameter sets not taken (%d)", s.sid, (int)st);
@@ -418,6 +470,7 @@ static void configure_hevc(MBStream *s, NSData *hvcc, int w, int h) {
   OSStatus st = sound && length_size != 3 && count >= 3
     ? CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, (size_t)count, sets, sizes, length_size, NULL, &f)
     : kCMFormatDescriptionError_InvalidParameter;
+  if (st == noErr && format_taken(s, f, length_size, w, h)) return;
   if (s.format) CFRelease(s.format);
   s.format = st == noErr ? f : NULL;
   if (st != noErr) NSLog(@"stream %d: an hvcC not taken (%d, %lu bytes)", s.sid, (int)st, (unsigned long)n);
@@ -648,18 +701,21 @@ void mb_host_stream_show(int32_t sid, double ts) {
   show_frame(s, f);
 }
 
+static void display_paced(MBStream *s, CVPixelBufferRef px);
+
 // Frame f shown from now (main thread): on its system video layer and as its texture.
 static void show_frame(MBStream *s, MBStreamFrame *f) {
   // on its system video layer (if it has one) as well: what shows there
   if (f.pixels) {
     if (s.displayed) CVPixelBufferRelease(s.displayed);
     s.displayed = CVPixelBufferRetain(f.pixels);
-    display(s, f.pixels);
+    display_paced(s, f.pixels);
   }
-  s.wide = nil;
-  // Wider than sRGB: its texture (sRGB's, as the app draws) made only when drawn (mb_stream_texture).
-  if (f.pixels && wider_than_srgb(f.pixels)) {
-    s.wide = f;
+  s.lazy = nil;
+  // The decoder's YCbCr, or wider than sRGB: its texture (BGRA, sRGB's as the app draws) made only when drawn
+  // (mb_stream_texture); the one before it let go.
+  if (f.pixels && (CVPixelBufferGetPixelFormatType(f.pixels) != kCVPixelFormatType_32BGRA || wider_than_srgb(f.pixels))) {
+    s.lazy = f;
     s.tex = nil;
     return;
   }
@@ -696,18 +752,25 @@ static void use_texture(MBStream *s, CVPixelBufferRef px, id<MTLTexture> tex, id
   if (texture_cache) CVMetalTextureCacheFlush(texture_cache, 0);
 }
 
-// A wide frame's texture in sRGB (the app's canvas is sRGB: P3's numbers drawn as they are would come out washed
-// out): converted by VideoToolbox's pixel transfer into a buffer of its own, once, when the app draws it.
-static void texture_in_srgb(MBStream *s) {
-  MBStreamFrame *f = s.wide;
-  s.wide = nil;
+// A frame's texture made BGRA when the app draws it, once: by VideoToolbox's pixel transfer into a buffer of its own,
+// its YCbCr made RGB by the matrix and range it is tagged with (the decoder's BGRA of it to the byte), a wide frame's
+// colours made sRGB's (the app's canvas is sRGB: P3's numbers drawn as they are would come out washed out).
+static void texture_made(MBStream *s) {
+  MBStreamFrame *f = s.lazy;
+  s.lazy = nil;
   int w = (int)CVPixelBufferGetWidth(f.pixels), h = (int)CVPixelBufferGetHeight(f.pixels);
-  if (!s.toSRGB) {
+  BOOL wide = wider_than_srgb(f.pixels);
+  if (wide && !s.toSRGB) {
     VTPixelTransferSessionRef made = NULL;
     if (VTPixelTransferSessionCreate(NULL, &made) != noErr || !made) return;
     VTSessionSetProperty(made, kVTPixelTransferPropertyKey_DestinationColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
     VTSessionSetProperty(made, kVTPixelTransferPropertyKey_DestinationTransferFunction, kCVImageBufferTransferFunction_sRGB);
     s.toSRGB = made;
+  }
+  if (!wide && !s.toBGRA) {
+    VTPixelTransferSessionRef made = NULL;
+    if (VTPixelTransferSessionCreate(NULL, &made) != noErr || !made) return;
+    s.toBGRA = made;
   }
   if (!s.srgbPool || s.srgbW != w || s.srgbH != h) {
     if (s.srgbPool) CVPixelBufferPoolRelease(s.srgbPool);
@@ -727,7 +790,7 @@ static void texture_in_srgb(MBStream *s) {
   }
   CVPixelBufferRef out = NULL;
   if (CVPixelBufferPoolCreatePixelBuffer(NULL, s.srgbPool, &out) != kCVReturnSuccess || !out) return;
-  if (VTPixelTransferSessionTransferImage(s.toSRGB, f.pixels, out) == noErr) use_texture(s, out, nil, (__bridge id)out);
+  if (VTPixelTransferSessionTransferImage(wide ? s.toSRGB : s.toBGRA, f.pixels, out) == noErr) use_texture(s, out, nil, (__bridge id)out);
   CVPixelBufferRelease(out);
 }
 
@@ -750,12 +813,78 @@ static void display(MBStream *s, CVPixelBufferRef px) {
   while (s.onLayer.count > 3) [s.onLayer removeObjectAtIndex:0];
 }
 
+// The display's refresh (ms): the screen's most frames a second (60 where it says none).
+static double refresh_ms(void) {
+#if TARGET_OS_IPHONE
+  NSInteger fps = UIScreen.mainScreen.maximumFramesPerSecond;
+#else
+  NSInteger fps = NSScreen.mainScreen.maximumFramesPerSecond;
+#endif
+  return 1000.0 / (double)(fps > 0 ? fps : 60);
+}
+
+static double now_ms(void) {
+  static mach_timebase_info_data_t tb;
+  if (!tb.denom) mach_timebase_info(&tb);
+  return (double)mach_absolute_time() * tb.numer / tb.denom / 1e6;
+}
+
+// at most this long a frame waits to be put on its layer (ms): what pacing may add to what is seen
+#define MB_PACE_MS 4.0
+
+// Pixel buffer `px` put on the stream's layer (main thread), paced. Two frames come within a millisecond or two where
+// the network bunched them: put one on the other in the same refresh, the first is never seen and the second shows for
+// two (a jump, then a stall). So one that comes less than half a refresh (at most MB_PACE_MS) after the last put waits
+// out the rest of that, then goes; a third coming meanwhile goes at once in its place (a backlog: the newest shown, no
+// wait added to it). Only what the layer shows waits: the frame is acknowledged (direct_shown) and drawn as the
+// stream's texture as it came, so its sender's pacing measures nothing of this.
+static void pace_drop(MBStream *s) {
+  if (s.paceTimer) dispatch_source_set_timer(s.paceTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+  if (s.paced) CVPixelBufferRelease(s.paced);
+  s.paced = NULL;
+}
+
+static void display_paced(MBStream *s, CVPixelBufferRef px) {
+  if (!s.display || !px) return;
+  double now = now_ms(), gap = fmin(MB_PACE_MS, s.refreshMs / 2);
+  if (s.paced) {
+    pace_drop(s);
+  } else if (now - s.putAt < gap) {
+    if (!s.paceTimer) {
+      dispatch_source_t t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, DISPATCH_TIMER_STRICT, dispatch_get_main_queue());
+      __weak MBStream *weak = s;
+      dispatch_source_set_event_handler(t, ^{
+        MBStream *live = weak;
+        CVPixelBufferRef held = live.paced;
+        if (!held) return;
+        live.paced = NULL;
+        dispatch_source_set_timer(live.paceTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+        if (!live.closed) {
+          display(live, held);
+          live.putAt = now_ms();
+        }
+        CVPixelBufferRelease(held);
+      });
+      dispatch_source_set_timer(t, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+      dispatch_activate(t);
+      s.paceTimer = t;
+    }
+    s.paced = CVPixelBufferRetain(px);
+    int64_t wait = (int64_t)((s.putAt + gap - now) * NSEC_PER_MSEC);
+    dispatch_source_set_timer(s.paceTimer, dispatch_time(DISPATCH_TIME_NOW, wait), DISPATCH_TIME_FOREVER, 0);
+    return;
+  }
+  display(s, px);
+  s.putAt = now;
+}
+
 static void pointer_put(MBStream *s);
 
 void mb_stream_attach_layer(int sid, CALayer *layer) {
   MBStream *s = stream_of(sid);
   if (!s) return;
   s.display = layer;
+  s.refreshMs = refresh_ms();
   s.placedW = 0;
   s.placedH = 0;
   pointer_put(s);
@@ -781,11 +910,19 @@ void mb_host_stream_close(int32_t sid) {
   if (s.displayed) CVPixelBufferRelease(s.displayed);
   s.displayed = NULL;
   [s.onLayer removeAllObjects];
-  s.wide = nil;
+  pace_drop(s);
+  if (s.paceTimer) dispatch_source_cancel(s.paceTimer);
+  s.paceTimer = nil;
+  s.lazy = nil;
   if (s.toSRGB) {
     VTPixelTransferSessionInvalidate(s.toSRGB);
     CFRelease(s.toSRGB);
     s.toSRGB = NULL;
+  }
+  if (s.toBGRA) {
+    VTPixelTransferSessionInvalidate(s.toBGRA);
+    CFRelease(s.toBGRA);
+    s.toBGRA = NULL;
   }
   if (s.srgbPool) CVPixelBufferPoolRelease(s.srgbPool);
   s.srgbPool = NULL;
@@ -898,7 +1035,7 @@ void mb_host_stream_codec(int32_t sid, moonbit_string_t cmd, moonbit_bytes_t dat
 
 id<MTLTexture> mb_stream_texture(int sid) {
   MBStream *s = stream_of(sid);
-  if (s && s.wide) texture_in_srgb(s);
+  if (s && s.lazy) texture_made(s);
   return s ? s.tex : nil;
 }
 

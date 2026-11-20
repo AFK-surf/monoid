@@ -794,7 +794,7 @@ pub fn asked(screen : Json) -> Json {
     _ => None
   }
   let quality = match m.get("quality") {
-    Some(String("smooth" | "hd" | "original" as q)) if !peek => Some(q)
+    Some(String("smooth" | "hd" | "qhd" | "original" as q)) if !peek => Some(q)
     _ => None
   }
   let fps = if is_fps(m.get("fps")) && !peek { num_of(m.get("fps")) } else { None }
