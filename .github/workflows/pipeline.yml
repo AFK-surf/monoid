@@ -1622,7 +1622,7 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     outputs:
       hand: ${{ steps.hand.outputs.key }}
-      monoid: ${{ steps.monoid.outputs.packed }}
+      monoid: ${{ steps.hand.outputs.packed }}
     environment: production
     timeout-minutes: 5
     steps:
@@ -1644,38 +1644,53 @@ jobs:
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: "mbui-apk-${{ github.sha }}", path: "${{ runner.temp }}/release/android/*.apk", retention-days: 1, compression-level: 0 }
-      - name: Put its files (named by its version, nothing points at them until put writes the feed)
+      # Its files put (named by its version, nothing points at them until put writes the feed), then what is left handed
+      # to put through the bucket, not a run artifact (scripts/release-put.sh --hand), beside monoid's beta Android app
+      # (build.monoid.android.beta, the same key) built from the same build: the put is the network's ~30 s and monoid's
+      # the CPU's, one after the other until 2026-11-20. Neither writes where the other reads: the put reads and empties
+      # $RUNNER_TEMP/release alone; monoid's is made in $RUNNER_TEMP/monoid and its own mktemp, in the warm mbui cache
+      # under scripts/release.sh's lockf. Monoid's, in the same warm cache (its native code is this one's; only the
+      # package is made again: its id, name and links are in its manifest and resources), is put by monoid-android once
+      # the check passed; left for the next release where this job has not the time for it, as desktop-win's (main
+      # 43e63e625's was cut at 351 s building monoid's, the job cancelled). Either failing fails the step, as before.
+      - name: Put its files, and build and sign monoid's beta Android app from the same build
+        id: hand
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: sh scripts/release-put.sh --files "$RUNNER_TEMP/release"
-      # (handed to put through the bucket, not a run artifact: scripts/release-put.sh --hand)
-      - id: hand
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set -o pipefail
-          sh scripts/release-put.sh --hand "$RUNNER_TEMP/release" | tee "$RUNNER_TEMP/hand.out"
-          echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
-      # monoid's (build.monoid.android.beta, the same key): from the same build, in the same warm cache (its native code
-      # is this one's; only the package is made again: its id, name and links are in its manifest and resources); put by
-      # monoid-android once the check passed. Left for the next release where this job has not the time for it, as
-      # desktop-win's: still.fail's was put, and main 43e63e625's was cut at 351 s building monoid's, the job cancelled.
-      - name: Build and sign monoid's beta Android app from the same build
-        id: monoid
-        if: vars.MONOID_CI == 'on'
-        env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
-          RELEASE_DIR: ${{ runner.temp }}/monoid
+          MONOID_CI: ${{ vars.MONOID_CI }}
         run: |
-          used=$(( $(date +%s) - JOB_BEGAN ))
-          if [ "$used" -gt 200 ]; then
-            echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
-            exit 0
+          set -o pipefail
+          monoid=""
+          if [ "$MONOID_CI" = on ]; then
+            used=$(( $(date +%s) - JOB_BEGAN ))
+            if [ "$used" -gt 200 ]; then
+              echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
+            else
+              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" sh .github/release.sh --product monoid android) \
+                > "$RUNNER_TEMP/monoid.log" 2>&1 &
+              monoid=$!
+            fi
           fi
-          sh .github/release.sh --product monoid android
-          echo "packed=1" >> "$GITHUB_OUTPUT"
-      - if: vars.MONOID_CI == 'on' && steps.monoid.outputs.packed == '1'
+          failed=""
+          if (unset ANDROID_DEBUG_KEYSTORE_B64 POSTHOG_JSON
+              sh scripts/release-put.sh --files "$RUNNER_TEMP/release" &&
+              sh scripts/release-put.sh --hand "$RUNNER_TEMP/release" | tee "$RUNNER_TEMP/hand.out"); then
+            echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::still.fail's beta Android app was not put"; failed=1
+          fi
+          if [ -n "$monoid" ]; then
+            if wait "$monoid"; then
+              echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
+              echo "packed=1" >> "$GITHUB_OUTPUT"
+            else
+              cat "$RUNNER_TEMP/monoid.log"; echo "::error::monoid's beta Android app was not built"; failed=1
+            fi
+          fi
+          [ -z "$failed" ]
+      - if: vars.MONOID_CI == 'on' && steps.hand.outputs.packed == '1'
         uses: actions/upload-artifact@v4
         with: { name: "monoid-android-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1, compression-level: 0 }
 

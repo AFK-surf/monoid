@@ -40,8 +40,8 @@
 // deflates the entries it made with that same code, and must come to these very bytes (Delta.java's head).
 //
 // Tools: $ANDROID_HOME's platforms/android-<compileSdk>/android.jar and the newest build-tools' aapt2, zipalign and
-// apksigner; java and javac (17 or newer); R8 from Google's Maven at r8_version; curl, unzip, zip and shasum (or
-// sha256sum). Everything fetched is kept in $APK_CACHE (default ~/.cache/mbui-apk) by its content's hash.
+// apksigner; java and javac (17 or newer); R8 from Google's Maven at r8_version; curl, unzip, zip and sha256sum (or
+// shasum). Everything fetched is kept in $APK_CACHE (default ~/.cache/mbui-apk) by its content's hash.
 
 ///|
 let r8_version : String = "9.0.55"
@@ -101,13 +101,72 @@ fn home() -> String {
 }
 
 ///|
-fn sha256_file(path : String) -> String {
-  let tool = if @sys.run_out("command -v shasum") is Some(_) { "shasum -a 256" } else { "sha256sum" }
-  let out = sh(tool + " " + q(path), "sha256")
-  match out.split(" ").next() {
-    Some(h) => h.to_owned()
-    None => ""
+let hash_tool_ref : Ref[String?] = Ref(None)
+
+///|
+/// The command that hashes files, looked for once: sha256sum (coreutils', and macOS's own since 14) where there is one,
+/// which starts in a millisecond, shasum -a 256 (Perl, tens of milliseconds to start) where not. Both say `<64 hex>  <path>` a line.
+fn hash_tool() -> String {
+  match hash_tool_ref.val {
+    Some(t) => t
+    None => {
+      let t = if @sys.run_out("command -v sha256sum") is Some(_) { "sha256sum" } else { "shasum -a 256" }
+      hash_tool_ref.val = Some(t)
+      t
+    }
   }
+}
+
+///|
+/// The hash of a line of sha256sum's or shasum's: its first 64 characters, after the `\` both put first for a path
+/// they escaped (one with a backslash or a newline in it).
+fn hash_of_line(line : String) -> String {
+  let l = if line.has_prefix("\\") { sub(line, 1, line.length()) } else { line }
+  if l.length() < 64 {
+    ""
+  } else {
+    sub(l, 0, 64)
+  }
+}
+
+///|
+/// Each file's SHA-256 by its path, its tool started once for every 200 of them (one for each file was most of a
+/// build's minute: 2026-11-20); its lines are in the order of the paths given.
+fn sha256_files(paths : Array[String]) -> Map[String, String] {
+  let sums : Map[String, String] = Map([])
+  let uniq : Array[String] = []
+  for p in paths {
+    if !sums.contains(p) {
+      sums[p] = ""
+      uniq.push(p)
+    }
+  }
+  let mut i = 0
+  while i < uniq.length() {
+    let batch : Array[String] = []
+    let end = @cmp.minimum(i + 200, uniq.length())
+    for j = i; j < end; j = j + 1 {
+      batch.push(uniq[j])
+    }
+    let lines = sh(hash_tool() + " -- " + batch.map(q).join(" "), "sha256")
+      .split("\n")
+      .filter(fn(l) { l != "" })
+      .map(fn(l) { l.to_owned() })
+      .to_array()
+    if lines.length() != batch.length() {
+      die("sha256: \{lines.length()} lines for \{batch.length()} files")
+    }
+    for j, p in batch {
+      sums[p] = hash_of_line(lines[j])
+    }
+    i = end
+  }
+  sums
+}
+
+///|
+fn sha256_file(path : String) -> String {
+  sha256_files([path]).get(path).unwrap_or("")
 }
 
 ///|
@@ -374,24 +433,6 @@ fn extract_aar(path : String, sha : String) -> String {
     ignore(@sys.write_text(@sys.join(d, ".done"), ""))
   }
   d
-}
-
-///|
-/// A hash of the files under `paths` (their paths below each and contents), in order.
-fn tree_hash(paths : Array[String], at : String) -> String {
-  let parts = []
-  for base in paths {
-    if @sys.is_file(base) {
-      parts.push("F" + base + " " + sha256_file(base))
-    } else if @sys.is_dir(base) {
-      let tool = if @sys.run_out("command -v shasum") is Some(_) { "shasum -a 256" } else { "sha256sum" }
-      parts.push(
-        "D" +
-        sh("cd " + q(base) + " && find . -type f | LC_ALL=C sort | while IFS= read -r f; do " + tool + " \"$f\"; done", "hash"),
-      )
-    }
-  }
-  sha256_text(parts.join("\n"), at)
 }
 
 ///|
@@ -953,7 +994,8 @@ fn delta_classes(srcs : Array[String], work : String) -> String {
   if !mine.iter().any(fn(p) { p.has_suffix("/dev/mbui/Delta.java") }) {
     return ""
   }
-  let key = mine.map(fn(p) { @sys.basename(p) + " " + sha256_file(p) })
+  let sums = sha256_files(mine)
+  let key = mine.map(fn(p) { @sys.basename(p) + " " + sums.get(p).unwrap_or("") })
   key.sort_by(@rjson.str_cmp)
   let d = @sys.join(cache_dir(), "delta/" + sub(sha256_text(key.join("\n"), work + "/deltakey"), 0, 32))
   if !@sys.exists(@sys.join(d, ".done")) {
@@ -1212,15 +1254,32 @@ fn cmd_build(a : BuildArgs) -> Unit {
   let jars : Array[String] = []
   let libs : Array[(String, String)] = []
   let rules : Array[String] = []
+  // (each got first, then all checked against the lock's SHA-256 at once)
+  let got : Array[String] = []
   for dep in deps {
-    let (coord, ext, sha) = dep
-    let p = match get_artifact(coord, ext, sha~) {
-      Some(p) => p
-      None => {
-        die("\{coord}.\{ext}: not found")
-        ""
-      }
+    let (coord, ext, _) = dep
+    match get_artifact(coord, ext) {
+      Some(p) => got.push(p)
+      None => die("\{coord}.\{ext}: not found")
     }
+  }
+  let checked : Array[String] = []
+  for i, dep in deps {
+    if dep.2 != "" {
+      checked.push(got[i])
+    }
+  }
+  let sums = sha256_files(checked)
+  for i, dep in deps {
+    let (coord, ext, sha) = dep
+    if sha != "" && sums.get(got[i]).unwrap_or("") != sha {
+      ignore(@sys.remove(got[i]))
+      die("\{coord}.\{ext}: not the SHA-256 the lock has (\{sha})")
+    }
+  }
+  for i, dep in deps {
+    let (coord, ext, sha) = dep
+    let p = got[i]
     if ext == "jar" {
       jars.push(p)
       continue
@@ -1262,7 +1321,9 @@ fn cmd_build(a : BuildArgs) -> Unit {
       Some(m) => lib_packages.push(m.get(1))
       None => ()
     }
-    let out = @sys.join(cache_dir(), "flat/" + sub(tree_hash([res], work + "/flatkey"), 0, 24) + ".zip")
+    // (kept by the AAR's own hash, the lock's: `d` is where it was unpacked by it, aar/<24 hex>, once and not
+    // changed after; its res hashed file by file was half of this step, 2026-11-20)
+    let out = @sys.join(cache_dir(), "flat/aar-" + @sys.basename(d) + ".zip")
     if !@sys.exists(out) {
       @sys.makedirs(@sys.dirname(out))
       ignore(sh(q(aapt2) + " compile --dir " + q(res) + " -o " + q(out + ".tmp"), "aapt2 compile"))
@@ -1342,11 +1403,13 @@ fn cmd_build(a : BuildArgs) -> Unit {
   ignore(@sys.write_text(aapt_rules, kept))
   let key = []
   key.push("\{r8_version} \{minify} \{min_sdk} \{a.variant} \{@sys.getenv("JAVA_HOME").unwrap_or("")}")
+  let made_of = jars + all_rules + [default_rules, android_jar]
+  let sums = sha256_files(srcs + made_of)
   for p in srcs {
-    key.push(@sys.basename(p) + " " + sha256_file(p))
+    key.push(@sys.basename(p) + " " + sums.get(p).unwrap_or(""))
   }
-  for p in jars + all_rules + [default_rules, android_jar] {
-    key.push(sha256_file(p))
+  for p in made_of {
+    key.push(sums.get(p).unwrap_or(""))
   }
   key.push(kept)
   let dex_dir = @sys.join(cache_dir(), "dex/" + sub(sha256_text(key.join("\n"), work + "/dexkey"), 0, 32))

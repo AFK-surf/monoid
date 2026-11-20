@@ -284,3 +284,53 @@ test "parse_xmltree_app_attrs extracts appComponentFactory, debuggable, and dev.
   assert_eq(attrs37.app_component_factory, Some("androidx.core.app.CoreComponentFactory"))
   assert_eq(attrs37.env, Some("K=V"))
 }
+
+///|
+test "hash_of_line takes the hash of either tool's line, escaped or not" {
+  let h = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  assert_eq(hash_of_line(h + "  a b/c.txt"), h)
+  assert_eq(hash_of_line(h + " *c.txt"), h)
+  assert_eq(hash_of_line("\\" + h + "  b\\\\s"), h)
+  assert_eq(hash_of_line("short"), "")
+}
+
+///|
+test "sha256_files hashes many files at once, each as sha256_file does" {
+  let d = sh("mktemp -d -t apk-test-XXXXXX", "mktemp").trim(chars=" \n").to_owned()
+  let abc = @sys.join(d, "abc")
+  let spaced = @sys.join(d, "a b/it's here.txt")
+  let slashed = @sys.join(d, "back\\slash")
+  let empty = @sys.join(d, "empty")
+  @sys.makedirs(@sys.join(d, "a b"))
+  assert_true(@sys.write_text(abc, "abc"))
+  assert_true(@sys.write_text(spaced, "abc"))
+  assert_true(@sys.write_text(slashed, "x"))
+  assert_true(@sys.write_text(empty, ""))
+  assert_eq(sha256_files([]).length(), 0)
+  let one = sha256_files([abc])
+  assert_eq(one.length(), 1)
+  assert_eq(one.get(abc), Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))
+  // (in the order asked, twice over: one hash a path)
+  let all = sha256_files([empty, spaced, abc, slashed, abc])
+  assert_eq(all.length(), 4)
+  assert_eq(all.get(empty), Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))
+  assert_eq(all.get(spaced), all.get(abc))
+  assert_eq(all.get(slashed), Some("2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"))
+  for p in [abc, spaced, slashed, empty] {
+    assert_eq(all.get(p), Some(sha256_file(p)))
+  }
+  // (more than one start of the tool: 450 files, three of them)
+  let many = []
+  for i = 0; i < 450; i = i + 1 {
+    let p = @sys.join(d, "f\{i}")
+    assert_true(@sys.write_text(p, if i % 2 == 0 { "abc" } else { "" }))
+    many.push(p)
+  }
+  let sums = sha256_files(many)
+  assert_eq(sums.length(), 450)
+  for i, p in many {
+    assert_eq(sums.get(p), all.get(if i % 2 == 0 { abc } else { empty }))
+  }
+  assert_eq(sha256_text("abc", @sys.join(d, "t")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  ignore(try_sh("rm -rf " + q(d)))
+}
