@@ -31,7 +31,9 @@ pub fn settle_connection(db : @sql.Db) -> Unit raise {
 pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive? : String) -> Unit raise {
   settle_connection(db)
   let mut from = schema_version
+  let mut has_tables = false
   if some_row(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'") {
+    has_tables = true
     from = num(first_row(db, "PRAGMA user_version"), "user_version").map(v => v.to_int()).unwrap_or(0)
     if from != schema_version && from != 12 {
       refuse(
@@ -113,7 +115,11 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   if from == 12 {
     upgrade_from_12(db, host, archive)
   }
-  db.exec("PRAGMA user_version = \{schema_version}")
+  // Written only where it changes: a database already at this version is opened without taking the write lock, which
+  // another process (the station before, its backfills) may hold past the busy timeout.
+  if !has_tables || from != schema_version {
+    db.exec("PRAGMA user_version = \{schema_version}")
+  }
 }
 
 ///|

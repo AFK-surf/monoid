@@ -713,6 +713,7 @@ export class Store {
     const priority = new Int32Array(new SharedArrayBuffer(8));
     const db = timed(new DatabaseSync(path, { timeout: 5000 }), undefined, undefined, priority);
     let from = SCHEMA_VERSION;
+    let hasTables = false;
     try {
       // A commit waits for the log's write, not for the disk: what the last moments before a power cut wrote may be lost,
       // the database never damaged (WAL). Each live step of an agent commits a few times; with each its own flush to
@@ -729,7 +730,7 @@ export class Store {
       // The log's file cut back to WAL_KEEP_BYTES each time it is written into the database from its start: SQLite keeps
       // it at the most it ever grew to otherwise, 520 MB on a station (2026-11-03) with 1 GB of its disk left.
       db.exec(`PRAGMA journal_size_limit = ${WAL_KEEP_BYTES};`);
-      const hasTables = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() !== undefined;
+      hasTables = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() !== undefined;
       if (hasTables) {
         from = (db.prepare("PRAGMA user_version").get() as Json).user_version;
         if (from !== SCHEMA_VERSION && from !== 12) {
@@ -812,7 +813,9 @@ export class Store {
     } else store = new Store(db, join(dirname(path), "archive"), null, clock, priority.buffer as SharedArrayBuffer);
     try {
       if (from === 12) store.#upgradeFrom12();
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+      // Written only where it changes: a database already at this version is opened without taking the write lock, which
+      // another process (the station before, its backfills) may hold past the busy timeout.
+      if (!hasTables || from !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       // (read once here, so that a turn asks nothing of it unless its session has one)
       for (const r of db.prepare("SELECT session FROM moved_notes WHERE told_at IS NULL").all() as { session: string }[]) store.#movedUntold.add(r.session);
     } catch (e) {

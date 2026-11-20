@@ -281,6 +281,11 @@ fn backfill_vault_members(db : @sql.Db, ws : Json, limit? : Int = 32) -> Bool ra
 ///|
 /// At most `limit` old request ids put in the recovery lookup (`backfillReboxIndex`); whether all are.
 pub fn backfill_rebox(db : @sql.Db, limit? : Int = 32) -> Bool raise {
+  // Done already: read without the write lock, which another process (the station before) may hold past the busy
+  // timeout as this one starts. Looked at again inside the transaction.
+  if @sql.row_val(db.first("SELECT done FROM vault_rebox_backfill WHERE id = 1", []).unwrap(), "done") is Number(1.0, ..) {
+    return true
+  }
   tx(db, () => {
     let state = db.first("SELECT after_ws, after_id, done FROM vault_rebox_backfill WHERE id = 1", []).unwrap()
     if @sql.row_val(state, "done") is Number(1.0, ..) {

@@ -15,6 +15,7 @@ import { createServer as httpServer, request } from "node:http";
 import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { deflateSync } from "node:zlib";
 import zhStation from "../../client/i18n/catalog/zh/station.json" with { type: "json" };
@@ -668,7 +669,7 @@ test("children started, followed to their end, given input and signals; a lock o
 
 // ── run, under a launcher of the test's ──
 
-type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void> };
+type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void>; stderr: () => string };
 
 /// The program's `run` with the launcher's descriptors (ops/launcher.ts): its two listeners bound here and handed down
 /// (closed here once it has them), its control channel the fourth's pipe.
@@ -723,7 +724,7 @@ async function launch(data: string, app: string, more: string[] = []): Promise<L
       look();
     });
   const ended = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
-  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended, heard };
+  return { child, said, next, tell: (m) => channel.write(`${JSON.stringify(m)}\n`), ended, heard, stderr: () => err };
 }
 
 function get(port: number | { socket: string }, path: string, body?: string, token?: string): Promise<{ status: number; body: string; headers: Record<string, unknown> }> {
@@ -877,6 +878,31 @@ test("run: a stop lets go of run/hub.json only once its sessions are let go, so 
   b.tell({ op: "stop" });
   assert.equal(await b.ended, 0);
   assert.equal(existsSync(join(data, "run", "hub.json")), false, "let go of as it ends");
+});
+
+test("run: a database already at this version opens while another process holds its write lock", { skip }, async () => {
+  const data = fresh("locked");
+  const app = fresh("app");
+  // the database as a station that ran here left it (every part's tables made)
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  await a.next("mcp", (m) => m.serving === "mcp");
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0);
+  // a process of the station before (a backfill, one held by SIGSTOP) mid-write: the next station opens it all the same
+  const holder = new DatabaseSync(join(data, "stillfail.db"));
+  holder.exec("BEGIN IMMEDIATE");
+  let b: Launched;
+  try {
+    b = await launch(data, app);
+    await b.next("ready", (m) => m.ready === true);
+    assert.equal(b.stderr().includes("database is locked"), false, b.stderr());
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+  }
+  b.tell({ op: "stop" });
+  assert.equal(await b.ended, 0);
 });
 
 test("run on its own: SIGTERM stops it; a launcher gone stops it", { skip }, async () => {

@@ -91,8 +91,10 @@ echo "$$" > "$lock/pid"
   cd "$D"
   # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
   # was made (prepped-$pkg.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
+  # moon version --all ends each line with the tool's path, which differs between ci-1's runners (each its own
+  # MOON_HOME): without it, the runners share reader-mbc-prepped and cprep.
   gen_key=$( {
-    moon version --all
+    moon version --all | sed 's|)[[:space:]].*$|)|'
     "$ROOT/libs/mbui/scripts/mbc" key
     find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
       "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$ROOT/libs/base/moon.mod" "$D/src" "$ROOT/rules/src" "$ROOT/libs/base/src" "$ROOT/libs/mbui/src/effect" \
@@ -135,7 +137,7 @@ echo "$$" > "$lock/pid"
   # only where none is kept, beside the reader's moon build (src/cprep reads only moonbitlang/core, in a target
   # directory of its own in $work), not after it (~70 s of one core on a hosted Mac, 2026-11-19).
   cprep_key=$({
-    moon version --all
+    moon version --all | sed 's|)[[:space:]].*$|)|'
     uname -sm
     if [ -d "$D/src/cprep" ]; then
       find "$D/src/cprep" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
