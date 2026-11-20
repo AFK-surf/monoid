@@ -473,6 +473,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
     // (what the hub tells its live view, hub.ts's `live`: the shell of the program's `#live`)
     "live.running" =>
       if ctx_live.val is Some(l) { l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True) }
+    "overview.changed" => (self.bus.overview_changed.val)()
     "live.forget" => {
       let key = match args {
         String(k) => k

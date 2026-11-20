@@ -28,8 +28,13 @@ fn home_node(
     foot: fn() { nav_foot() + bar_room_at(v.window().0) },
     ground: fn() { @sf.theme().p.bg },
     // what the update wants of the person, over what the last one brought (until it is seen)
-    before: fn(_, _) {
-      let parts : Array[@sfpages.NodePart] = []
+    before: fn(filter, view) {
+      let parts : Array[@sfpages.NodePart] = @sfpages.restart_interrupted_parts(src, view, fn() {
+        match workspace() {
+          Some(w) => chats_of(src, w.id, filter).0
+          None => None
+        }
+      })
       if @sfpages.stale_build_card_shown() {
         parts.push({ key: "stale-build-card", make: fn(p) { @sfpages.stale_build_card_node(p, src) } })
       }

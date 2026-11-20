@@ -384,6 +384,11 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
     match op {
       // ── hub.ts's own parts ──
       "hub.config" => self.config
+      "hub.interruptedIn" => hub.interrupted_in(arg_or_null(args, 0))
+      "hub.resumeInterrupted" =>
+        Json::number(hub.resume_interrupted(arg_or_null(args, 0), arg_or_null(args, 1)).to_double())
+      "hub.dismissInterrupted" =>
+        Json::number(hub.dismiss_interrupted(arg_or_null(args, 0), arg_or_null(args, 1)).to_double())
       "hub.reposDir" => Json::string(self.repos_dir())
       "hub.agentHome" => Json::string(self.agent_home())
       "hub.prepareCardPosts" => (self.bus.reader_ask.val)("$cardPosts", arg_or_null(args, 0), "zh")

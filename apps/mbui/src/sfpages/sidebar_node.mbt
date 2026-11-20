@@ -117,6 +117,32 @@ pub fn chats_lists_node(
         }
       }
     })
+    // Release optimistic-hidden stations once core stops listing them so a subsequent restart shows the card again.
+    p.reacts(
+      fn() -> Array[String]? {
+        if !@sfbase.restart_interrupted_gone.is_empty() {
+          match @sfbase.chats_of(src, id, "all").0 {
+            Some(v) => Some(v.interrupted.map(fn(item) { item.station }))
+            None => None
+          }
+        } else {
+          None
+        }
+      },
+      fn(stations) {
+        guard stations is Some(stations) else { return }
+        if @sfbase.restart_interrupted_gone.is_empty() {
+          return
+        }
+        let listed : Map[String, Bool] = Map([])
+        for station in stations {
+          listed[station] = true
+        }
+        if @sfbase.restart_interrupted_gone.keys().any(fn(k) { !listed.contains(k) }) {
+          @sfbase.restart_interrupted_gone.retain(fn(k, _) { listed.contains(k) })
+        }
+      },
+    )
     for i in 0..<all {
       p.box(fn(lane) {
         lane

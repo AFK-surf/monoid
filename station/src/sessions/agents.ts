@@ -684,6 +684,7 @@ export const AgentsLive = (control: Control) =>
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
+      hub.onInterruptedChanged(() => events.overviewChanged());
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {

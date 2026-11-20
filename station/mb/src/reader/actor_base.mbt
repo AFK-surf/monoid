@@ -185,8 +185,15 @@ fn given_up(turn : Json) -> Bool {
 }
 
 ///|
+fn cut_off_by_restart(turn : Json) -> Bool {
+  str_of(turn.value("outcome")) == Some("aborted") &&
+  turn.value("declared") is (None | Some(Null)) &&
+  str_of(turn.value("detail")) == Some("other: cut off by restart")
+}
+
+///|
 fn retryable(turn : Json) -> Bool {
-  failed_again(turn) || given_up(turn)
+  failed_again(turn) || given_up(turn) || cut_off_by_restart(turn)
 }
 
 ///|

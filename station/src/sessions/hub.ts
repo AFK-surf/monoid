@@ -34,7 +34,7 @@ import { iso, sessionPlaces } from "../read/transcript.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
-import { comingWs, handedWs } from "../store/rows.ts";
+import { comingWs, handedWs, sees } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
@@ -286,6 +286,11 @@ export class Hub {
   private holdsNow = new Set<Hold>();
   /// Sessions taken up from the previous station: their turns run on, not cut off.
   private adopted = new Set<string>();
+  /// Whether `takeUp` found no handover.json (crash / OOM / machine reboot, not an update handover).
+  private nonUpdateRestart = false;
+  /// Sessions whose turns were cut off by a non-update restart and still await manual resume or dismissal.
+  private readonly interruptedByRestart = new Set<string>();
+  private interruptedHook: (() => void) | null = null;
   /// Whether its drivers hold every agent's process of this station's that goes on (`ownsRunner`): from the end of
   /// `takeUp` to a handover or the end.
   private holdsRunners = false;
@@ -381,8 +386,17 @@ export class Hub {
     this.unlistenRunning = this.store.subscribe((change) => {
       // Its summary is told now: with its transcript's length as read.
       if (change.type === "session" && this.lengths.has(change.key)) this.writeLengths([change.key]);
-      if (change.type === "session") this.live.running(change.key, this.store.getSession(change.key)?.running === true);
-      else if (change.type === "sessionRemoved") this.live.running(change.key, false);
+      if (change.type === "session") {
+        const row = this.store.getSession(change.key);
+        this.live.running(change.key, row?.running === true);
+        if (this.interruptedByRestart.has(change.key) && (row === null || row.running || row.archivedAt !== null)) {
+          this.interruptedByRestart.delete(change.key);
+          this.interruptedHook?.();
+        }
+      } else if (change.type === "sessionRemoved") {
+        this.live.running(change.key, false);
+        if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
+      }
     });
     this.deps = this.sessionDeps();
   }
@@ -710,6 +724,7 @@ export class Hub {
     const file = handoverFile(this.config().dataDir);
     let handed: Handover = { sessions: [] };
     const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : error));
+    this.nonUpdateRestart = text === null;
     if (text !== null) {
       try {
         if (text instanceof Error) throw text;
@@ -1148,14 +1163,108 @@ export class Hub {
     for (const actor of this.actors.values()) void actor.toolsAt(url);
   }
 
+  /// Called whenever the set of sessions interrupted by a non-update restart changes (pushes `/overview`).
+  onInterruptedChanged(f: () => void) {
+    this.interruptedHook = f;
+  }
+
+  /// Sessions interrupted by a non-update restart visible to `viewer`, newest active first (items capped at 20).
+  interruptedIn(viewer: InWorkspace): { count: number; items: { key: string; thread: number | null; title: string }[] } {
+    const rows: SessionRow[] = [];
+    for (const key of this.interruptedByRestart) {
+      const row = this.store.getSession(key);
+      if (!row || row.running || row.archivedAt !== null || this.handedOver(key)) continue;
+      if (!sees(viewer, row.ws ?? null)) continue;
+      rows.push(row);
+    }
+    rows.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    return {
+      count: rows.length,
+      items: rows.slice(0, 20).map((row) => {
+        const latest = this.store.latestThread(row.key);
+        return { key: row.key, thread: latest?.thread.id ?? null, title: row.title || latest?.thread.title || "" };
+      }),
+    };
+  }
+
+  /// Resumes sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`),
+  /// gently staggered on the hub clock so a batch click does not spike the machine all at once.
+  resumeInterrupted(viewer: InWorkspace, keys?: string[]): number {
+    const wanted = keys ? new Set(keys) : null;
+    const rows: SessionRow[] = [];
+    for (const key of [...this.interruptedByRestart]) {
+      if (wanted !== null && !wanted.has(key)) continue;
+      const row = this.store.getSession(key);
+      if (!row || row.running || row.archivedAt !== null || this.handedOver(key)) {
+        this.interruptedByRestart.delete(key);
+        continue;
+      }
+      if (!sees(viewer, row.ws ?? null)) continue;
+      this.interruptedByRestart.delete(key);
+      rows.push(row);
+    }
+    if (rows.length === 0) return 0;
+    this.interruptedHook?.();
+    rows.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    const eligible = rows.filter((row) => this.online(row));
+    if (eligible.length === 0) return 0;
+    void this.actor(eligible[0]!).recover();
+    if (eligible.length > 1) {
+      const rest = eligible.slice(1);
+      const self = this;
+      this.fork(
+        Effect.gen(function* () {
+          for (const row of rest) {
+            // timer: stagger batch manual resume after non-update restart
+            yield* Effect.sleep(250);
+            const now = self.store.getSession(row.key);
+            if (!now || now.running || now.archivedAt !== null || self.handedOver(row.key) || !self.online(now)) continue;
+            void self.actor(now).recover();
+          }
+        }),
+      );
+    }
+    return eligible.length;
+  }
+
+  /// Dismisses sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`).
+  dismissInterrupted(viewer: InWorkspace, keys?: string[]): number {
+    const wanted = keys ? new Set(keys) : null;
+    let removed = 0;
+    for (const key of [...this.interruptedByRestart]) {
+      if (wanted !== null && !wanted.has(key)) continue;
+      const row = this.store.getSession(key);
+      if (row && !sees(viewer, row.ws ?? null)) continue;
+      if (this.interruptedByRestart.delete(key)) removed++;
+    }
+    if (removed > 0) this.interruptedHook?.();
+    return removed;
+  }
+
   /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is still
-  /// pending.
+  /// pending. On a non-update restart (no handover.json), cut-off turns are ended cleanly and await manual resume
+  /// instead of auto-spawning every runtime process at once.
   recover() {
+    const manualResume = this.nonUpdateRestart;
+    this.nonUpdateRestart = false;
     const recovering = new Set<string>();
     const running = [...this.store.runningSessions()].sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
     for (const row of running) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
+      if (manualResume) {
+        log.info("hub", "turn cut off by non-update restart; awaiting manual resume", { session: row.key });
+        void this.actor(row).cutOffByRestart().then((interrupted) => {
+          if (!interrupted) return;
+          const now = this.store.getSession(row.key);
+          if (!now || now.running || now.archivedAt !== null || this.handedOver(row.key)) return;
+          if (!this.interruptedByRestart.has(row.key)) {
+            this.interruptedByRestart.add(row.key);
+            this.interruptedHook?.();
+          }
+        }).catch(() => {});
+        continue;
+      }
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
       recovering.add(row.key);
       void this.actor(row).recover();

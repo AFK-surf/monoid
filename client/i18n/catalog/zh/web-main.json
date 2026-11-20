@@ -1292,5 +1292,9 @@
   "web-main.staleBuild.viewProgress": "查看更新进度",
   "web-main.staleBuild.sidebar": "版本已超过 7 天，立即更新",
   "web-main.staleBuild.sidebarWeb": "页面已超过 7 天，刷新更新",
-  "web-main.staleBuild.sidebarIos": "版本已超过 7 天，前往 TestFlight"
+  "web-main.staleBuild.sidebarIos": "版本已超过 7 天，前往 TestFlight",
+  "web-main.restartInterrupted.title": "意外重启，{count} 个对话中断",
+  "web-main.restartInterrupted.resumeAll": "全部拉起",
+  "web-main.restartInterrupted.dismiss": "忽略",
+  "web-main.restartInterrupted.more": "还有 {count} 个对话"
 }

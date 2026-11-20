@@ -152,7 +152,14 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           return
         }
         self.log(a, "info", "trying again a failed turn, as asked")
-        self.start_turn(a, "resume", self.words(a, if given_up(last) { "GO_ON_AFTER_UNANSWERED" } else { "GO_ON_AFTER_FAILED" }))
+        let words_key = if cut_off_by_restart(last) {
+          "RESUME_AFTER_RESTART"
+        } else if given_up(last) {
+          "GO_ON_AFTER_UNANSWERED"
+        } else {
+          "GO_ON_AFTER_FAILED"
+        }
+        self.start_turn(a, "resume", self.words(a, words_key))
       })
     }
     "reassign" => {
@@ -205,6 +212,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
       })
     "recover" => return self.recover(a)
+    "cutOffByRestart" => return self.cut_off_by_restart(a)
     "takeWait" => self.enqueue(a, async fn() { self.take_wait(a) })
     "takeRefill" =>
       self.enqueue(a, async fn() {
@@ -557,6 +565,35 @@ async fn Actors::stop_from_slack(self : Actors, a : Actor, args : Array[Json]) -
     raise e
   }
   Json::null()
+}
+
+///|
+/// Ends a turn cut off by a non-update station restart without auto-starting the runtime:
+/// posts a notice bound to the cut-off turn (when not already declared done/need_human and
+/// no pending user message awaits delivery) and returns whether the session awaits manual resume.
+async fn Actors::cut_off_by_restart(self : Actors, a : Actor) -> Json raise {
+  let mut interrupted = false
+  self.enqueue(a, async fn() {
+    if a.turn is Some(_) {
+      return
+    }
+    a.recovery_deferred = false
+    let ended = num_of(Some(self.store(a, "endCutOff", [jstr(a.key)]))).unwrap_or(0.0).to_int()
+    self.set_running(a, false)
+    if self.archived(a) {
+      self.let_go(a)
+      return
+    }
+    if ended > 0 && !self.has_pending(a) {
+      let latest = self.store(a, "latestTurn", [jstr(a.key)])
+      let summary = latest.value("summary").unwrap_or(Json::null())
+      if cut_off_by_restart(summary) {
+        self.notice(a, "⚠️ " + self.t(a, "station.notice.cutOffRestart"), about=str_of(latest.value("id")))
+        interrupted = true
+      }
+    }
+  })
+  jbool(interrupted)
 }
 
 ///|

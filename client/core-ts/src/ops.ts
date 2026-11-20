@@ -87,6 +87,8 @@ export const PARAMS: Record<string, string> = {
   "move.back": "from:string module?:string item?:string all?:boolean",
   "move.stop": "",
   "station.restart": "",
+  "station.resumeInterrupted": "keys?:strings",
+  "station.dismissInterrupted": "keys?:strings",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
   "elevation.set": "on:boolean",
@@ -399,6 +401,10 @@ function stationOp(name: string, params: unknown): Request | null {
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
+    case "station.resumeInterrupted":
+      return op("POST", () => "/sessions/resume-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
+    case "station.dismissInterrupted":
+      return op("POST", () => "/sessions/dismiss-interrupted", p.has("keys") ? p.pick(["keys"]) : null, OVERVIEW);
     // The station's default for a cold cache and its estimated USD threshold, unless the chat chose (`session.settings`
     // `afresh`); its station's routes/context.ts, set by the workspace's owners and admins.
     case "context.setAfresh":

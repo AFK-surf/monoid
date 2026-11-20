@@ -2870,6 +2870,52 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[2].notice.againSession, undefined);
+  // A turn cut off by a non-update station restart offers 重试 too; a manual stop does not.
+  const cutOffRestart = { kind: "input", outcome: "aborted", declared: null, detail: "other: cut off by restart", about: failed.about, startedAt: 10, endedAt: 11 };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: cutOffRestart }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[2].notice.againSession, "k");
+  const manualStop = { ...cutOffRestart, detail: "other: stopped by user" };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: manualStop }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
+});
+
+test("chats view aggregates online stations' restart-interrupted summaries and omits the field when empty", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, { topic: "chats", scope: "ws" });
+  t.set({ topic: "workspaces" }, [{ workspaces: [{ id: "ws" }] }]);
+  t.set(workspace(), oneStation());
+  t.set(prefs(), {});
+  t.set(link("ws/st"), { state: "online" });
+  t.set(rows("ws/st"), []);
+  await t.read(u, 1);
+  assert.equal(u.value.interrupted, null);
+  t.set(overview("ws/st"), {
+    interrupted: {
+      count: 3,
+      items: [
+        { key: "k1", thread: 11, title: "修复登录态" },
+        { key: "k2", thread: 12, title: "检查内存压力" },
+      ],
+    },
+  });
+  await t.read(u, 1);
+  assert.deepEqual(u.value.interrupted, [
+    {
+      station: "ws/st",
+      stationName: "studio",
+      count: 3,
+      chats: [
+        { key: "k1", thread: 11, title: "修复登录态" },
+        { key: "k2", thread: 12, title: "检查内存压力" },
+      ],
+    },
+  ]);
+  t.set(overview("ws/st"), {});
+  await t.read(u, 1);
+  assert.equal(u.value.interrupted, null);
 });
 
 test("the notice of a failure where the allowance showed a limit offers 重新分配账号, not 重试, while its agent stands there", async () => {

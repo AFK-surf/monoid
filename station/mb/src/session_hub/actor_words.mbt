@@ -24,7 +24,8 @@ pub fn retryable(turn : Json) -> Bool {
   let detail = str_of(turn, "detail").unwrap_or("")
   let failed_again = outcome == Some("failed") && declared_null && again_reasons.iter().any(r => detail.has_prefix("\{r}:"))
   let given_up = outcome == Some("completed") && declared_null
-  failed_again || given_up
+  let cut_off_restart = outcome == Some("aborted") && declared_null && detail == "other: cut off by restart"
+  failed_again || given_up || cut_off_restart
 }
 
 ///|

@@ -1331,5 +1331,9 @@
   "web-main.staleBuild.viewProgress": "View update progress",
   "web-main.staleBuild.sidebar": "Over 7 days old · Update now",
   "web-main.staleBuild.sidebarWeb": "Over 7 days old · Refresh",
-  "web-main.staleBuild.sidebarIos": "Over 7 days old · TestFlight"
+  "web-main.staleBuild.sidebarIos": "Over 7 days old · TestFlight",
+  "web-main.restartInterrupted.title": "Restarted, {count} interrupted",
+  "web-main.restartInterrupted.resumeAll": "Resume all",
+  "web-main.restartInterrupted.dismiss": "Dismiss",
+  "web-main.restartInterrupted.more": "{count} more"
 }

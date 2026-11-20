@@ -177,8 +177,10 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
   await d.accounts?.homesReadSoon?.();
   const profiles = d.accounts?.profilesView(viewer) ?? [];
   const built = d.builtAt?.();
+  const interrupted = d.hub.interruptedIn?.(viewer);
   return {
     ...(typeof built === "number" && Number.isSafeInteger(built) && built > 0 ? { builtAt: built } : {}),
+    ...(interrupted && interrupted.count > 0 ? { interrupted } : {}),
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
     archiving: archivingView(raw, viewer),
     autoChats: autoChatsView(raw, viewer),

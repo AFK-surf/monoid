@@ -181,6 +181,7 @@ export function ensureSaid(sql: Sql): void {
 /// json_each has a hidden column `json` of its own.
 export const overviewPartOf = (j: string) => `json_object(
   'running', ${j} -> '$.counts.running',
+  'interrupted', ${j} -> '$.interrupted',
   'slackUsers', CASE WHEN json_type(${j}, '$.slackUsers') = 'array'
     THEN json((SELECT json_group_array(u.value ORDER BY u.key) FROM json_each(${j}, '$.slackUsers') AS u WHERE u.type = 'text'))
     ELSE json_array() END,

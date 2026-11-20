@@ -631,6 +631,14 @@ async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
   for k, v in bus.parts.overview_of(viewer, lang) {
     base[k] = v
   }
+  match (try { Some((bus.hub_ask.val)("hub.interruptedIn", Json::array([viewer]))) } catch { _ => None }) {
+    Some(Object(m) as interrupted) =>
+      match m.get("count") {
+        Some(Number(n, ..)) if n > 0.0 => base["interrupted"] = interrupted
+        _ => ()
+      }
+    _ => ()
+  }
   Json::object(base)
 }
 

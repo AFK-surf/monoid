@@ -2462,7 +2462,22 @@ export class Views implements Owner {
     const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
     // (one station still to say: how many are left is not known yet)
     const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
-    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}) } }, running: runningRows };
+    const interrupted: J[] = [];
+    for (const s of stations) {
+      if (!s.online) continue;
+      const raw = get(this.#core.data.overviewPart(s.address), "interrupted");
+      const count = u64(get(raw, "count")) ?? 0;
+      if (count <= 0) continue;
+      const chats = arr(get(raw, "items")).flatMap((item) => {
+        const key = str(get(item, "key"));
+        if (!key) return [];
+        const thread = u64(get(item, "thread"));
+        const title = str(get(item, "title")) ?? "";
+        return [{ key, ...(thread !== null ? { thread } : {}), title }];
+      });
+      interrupted.push({ station: s.address, stationName: s.name, count, chats });
+    }
+    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}), ...(interrupted.length > 0 ? { interrupted } : {}) } }, running: runningRows };
   }
 
   /// What #chatsOf makes of a list that no station's link says: its stations, its days (its first `first` rows where
@@ -3915,16 +3930,17 @@ export class Views implements Owner {
       const key = str(get(session, "key"));
       const detail = str(get(turn, "detail")) ?? "";
       const outcome = get(turn, "outcome");
-      if (key === undefined || (outcome !== "failed" && outcome !== "completed") || get(about, "thread") !== id) continue;
+      if (key === undefined || (outcome !== "failed" && outcome !== "completed" && outcome !== "aborted") || get(about, "thread") !== id) continue;
       // Waiting to retry at capacity: 取消; else one that failed for the provider or the connection, or one the station
-      // stopped asking for a state (回复即可继续), and is still where the session stands (nothing ran or was sent
-      // since): 重试, as a reply would (station actor.ts `retryable`).
+      // stopped asking for a state (回复即可继续), or one cut off by a non-update station restart, and is still where the
+      // session stands (nothing ran or was sent since): 重试, as a reply would (station actor.ts `retryable`).
       const status = present.sessionStatus(session);
       const mark = outcome === "failed" && detail.startsWith("overloaded:") && present.waiting(session) !== null ? "retrySession"
         : outcome === "failed" && status === "failed" && AGAIN.some((reason) => detail.startsWith(`${reason}:`)) ? "againSession"
         // Its allowance asked again showed a limit its words did not name: 重新分配账号 (actor.ts `LIMIT_SHOWN`).
         : outcome === "failed" && status === "failed" && detail.startsWith("limit:") ? "reassignSession"
-        : outcome === "completed" && status === "unexpected" ? "againSession" : null;
+        : outcome === "completed" && status === "unexpected" ? "againSession"
+        : outcome === "aborted" && status === "aborted" && detail === "other: cut off by restart" ? "againSession" : null;
       if (mark === null) continue;
       const at = messages.findIndex((m) => m.system === true && m.seq === get(about, "seq") && m.ts === get(about, "ts"));
       const notice = messages[at];

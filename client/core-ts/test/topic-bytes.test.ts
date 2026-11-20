@@ -166,8 +166,8 @@ const EMPTY: Record<string, Record<string, string>> = {
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
-  "chats": { "note.failing": ERROR },
-  "chats mine": { "note.failing": ERROR },
+  "chats": { "note.failing": ERROR, interrupted: STATE },
+  "chats mine": { "note.failing": ERROR, interrupted: STATE },
   // (foundMarks: a search's alone, views/search.ts foundChat; the chat weighed is shared with no other workspace)
   "chatRow": { foundMarks: NEVER, "xshare.to": STATE, "decision.card.vaultAsk.saveTargets": STATE },
   // (profiles.ts gives its note no failing)

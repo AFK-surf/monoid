@@ -1211,6 +1211,38 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
   [
     route(
       "POST",
+      "^\\/*sessions\\/+resume-interrupted\\/*$",
+      async fn(r, _) {
+        self.hub_write(async fn() {
+          let keys = match input(r).get("keys") {
+            Some(Arr(xs)) =>
+              jarr(xs.filter_map(x => match jstr(Some(x)) { Some(s) if s != "" => Some(js(s)); _ => None }))
+            _ => Null
+          }
+          let resumed = self.hub("resumeInterrupted", [r.viewer, keys])
+          self.log("info", "admin", "resumed sessions interrupted by restart", jobj([("resumed", resumed), ("by", js(r.email()))]))
+          ok(jobj([("ok", jbool(true)), ("resumed", resumed)]))
+        })
+      },
+    ),
+    route(
+      "POST",
+      "^\\/*sessions\\/+dismiss-interrupted\\/*$",
+      async fn(r, _) {
+        self.hub_write(async fn() {
+          let keys = match input(r).get("keys") {
+            Some(Arr(xs)) =>
+              jarr(xs.filter_map(x => match jstr(Some(x)) { Some(s) if s != "" => Some(js(s)); _ => None }))
+            _ => Null
+          }
+          let dismissed = self.hub("dismissInterrupted", [r.viewer, keys])
+          self.log("info", "admin", "dismissed sessions interrupted by restart", jobj([("dismissed", dismissed), ("by", js(r.email()))]))
+          ok(jobj([("ok", jbool(true)), ("dismissed", dismissed)]))
+        })
+      },
+    ),
+    route(
+      "POST",
       "^\\/*sessions\\/+([^/]+)\\/+(stop|cancel-retry|retry|reassign|evict|warm|compact|clear|settings)(?:\\/.*)?$",
       async fn(r, m) {
         self.hub_write(async fn() {
