@@ -2116,7 +2116,7 @@ fn card_title_end() -> Double {
 /// The chat's card of row `name` in column `lane`, as its row in Home's list says its chat (chat_row_node's marks, in a
 /// card's room): its title (two lines at most; bolder, the list's unread dot before it, while something in it is unread),
 /// what marks it at its end (pinned, its station away or updating, opened by another chat's agent) and, done, 归档 at its
-/// top end; where it stands now, led by the list's mark for it (a bell, the wait's arc, at work's ring, a check, the
+/// top end; where it stands now, led by the list's mark for it (a bell, the wait's arc, at work's spokes, a check, the
 /// watch's beat; red where it failed) in the list's quiet inks (its words the page's ink where it is the viewer's turn,
 /// red where it failed, else muted), two lines at most; where it runs (its station's mark only where it has one), where
 /// it came from, its agents and its people as the list's rows show them (row_aside_node). Pressed, its chat beside the
@@ -2512,7 +2512,7 @@ fn card_line_slot(m : @view.View, look : @ui.TextStyle, w : Double) -> Unit {
 ///|
 /// Where a card's chat stands (board_chat_card's), in `card`: led on its first line by the list's mark for it (red where
 /// it failed or a message did not go; a bell where it is the viewer's turn; the wait's arc where it waits on something
-/// (CI, a reply); at work's ring; a check, the archive's box once settled; the watch's beat), its words two lines at
+/// (CI, a reply); at work's spokes; a check, the archive's box once settled; the watch's beat), its words two lines at
 /// most in the list's inks: red where it failed, the page's ink where it is the viewer's turn (who decides in bold, as the
 /// list says it), else muted.
 fn card_state_node(card : @view.View, state : () -> CardState) -> Unit {

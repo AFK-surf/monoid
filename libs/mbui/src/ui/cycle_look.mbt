@@ -1,9 +1,9 @@
 // A look by the clock (Ctx::cycle_look): what a mark that never ends while it is shown changes as its cycle goes on (a
-// spinner's turn, a working ring's step, a waiting dot's breath, a beat), worked out where the frame's drawing ends, not
+// spinner's turn, the spokes' step, a waiting dot's breath, a beat), worked out where the frame's drawing ends, not
 // where it is built. Its build reads no time: what holds it (a part kept, a list's row) is kept while nothing else it
 // shows changes, drawn again as its build drew it, and only its look moves on (Compose's graphicsLayer read as it is
 // drawn, Flutter's transitions on a render object, mygo's paint parts painted again: none builds anew for time
-// alone). (Built again each step, a chat's working mark built the panel they are in again ten times a second: on a phone,
+// alone). (Built again each step, a chat's spokes built the panel they are in again ten times a second: on a phone,
 // its whole sidebar, 10 ms each.)
 //
 // What its node draws is tagged as it is painted (instance slot 20, the picture's: none for what it tags, rects,

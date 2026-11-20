@@ -2451,7 +2451,7 @@ fn Tree::beat_set(self : Tree, ms : Double) -> Unit {
 
 ///|
 /// Where a cycle of `period` ms is on the resident clock's steps (0 to 1, from moment 0 on), followed: for an endless
-/// decoration (a working mark's ring, a waiting mark's breath) drawn anew only at each step, as an old view's resident
+/// decoration (a working mark's spokes, a waiting mark's breath) drawn anew only at each step, as an old view's resident
 /// cycle is (Ctx::cycle's `resident`): what hosts the tree wakes for its next step, said `later` (Tree::resident_next),
 /// not a frame after each frame.
 pub fn View::cycle_resident(self : View, period : Double) -> Double {
