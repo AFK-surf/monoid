@@ -94,7 +94,7 @@ fn Tree::hold_found(self : Tree, x : Double, y : Double) -> (NodeId, Double, Dou
     Some((o, id, ms, slop)) if o > taker.val => return Some((id, ms, slop))
     _ => ()
   }
-  let (ww, wh) = self.room.untracked()
+  let (ww, wh) = self.room_untracked()
   let cut = if taker.val >= 0 { taker_box.val } else { (0.0, 0.0, ww, wh) }
   let mut best : (NodeId, Double, Double)? = None
   let mut best_d = 1.0e18

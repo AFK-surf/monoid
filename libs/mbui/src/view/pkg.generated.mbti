@@ -1831,8 +1831,10 @@ pub fn View::width_share(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::window(Self) -> (Double, Double)
 pub fn View::window_down_point(Self) -> (Double, Double)
 pub fn View::window_downs(Self) -> Int32
+pub fn View::window_h(Self) -> Double
 pub fn View::window_held(Self) -> Bool
 pub fn View::window_taps(Self) -> Int32
+pub fn View::window_w(Self) -> Double
 #callsite(autofill(loc))
 pub fn View::words(Self, Live[String], ink? : Int64, look? : WordsLook, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

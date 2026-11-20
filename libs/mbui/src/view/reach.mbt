@@ -378,7 +378,7 @@ fn Tree::reached(
   if near.is_empty() {
     return top
   }
-  let (ww, wh) = self.room.untracked()
+  let (ww, wh) = self.room_untracked()
   let window = (0.0, 0.0, ww, wh)
   // (on one hosting an old view: the old view's where it has something of its own there (Tree::hosts_at); where it has
   // nothing, as though nothing were under the press, what is drawn over it reached from round it as anywhere)

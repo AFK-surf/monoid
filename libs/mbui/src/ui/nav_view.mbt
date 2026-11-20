@@ -497,7 +497,7 @@ fn[P] Nav::held_by(
       (due.val)()
       due.val = fn() {  }
       // (no frame has given the window yet: how far it goes and so how long, not known; set out once it is)
-      if @signals.untracked(fn() { s.window() }).0 <= 0.0 {
+      if @signals.untracked(fn() { s.window_w() }) <= 0.0 {
         nav.t0 = -1.0
         return
       }
@@ -533,7 +533,7 @@ fn[P] Nav::held_by(
     }
   }
   // (one told before the window was known sets out as the first frame gives it, at that moment)
-  s.reacts(fn() { s.window().0 > 0.0 }, fn(laid) {
+  s.reacts(fn() { s.window_w() > 0.0 }, fn(laid) {
     if laid && nav.t0 == -1.0 && (nav.mode == 1 || nav.mode == 2 || nav.mode == 4) {
       nav.go(nav.mode, nav.p1, v=nav.v0)
     }

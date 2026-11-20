@@ -547,6 +547,7 @@ struct Node {
   /// how big it was laid out, told once all of the layout is done (View::laid_size_told: none till then); made as
   /// first read
   mut size_cell : @signals.Signal[(Double, Double)?]?
+  mut size_seen : Bool
   /// what it holds is found by a finger or the pointer within it alone (View::bounds_input)
   mut bounds_input : Bool
   /// tucked over the top of what scrolls it (Scroll::tucks): that node, and how far down its top what covers it reaches
@@ -1014,7 +1015,8 @@ pub struct Tree {
   mut last_w : Double
   mut last_h : Double
   /// the window's size, as its frames give it: what is laid out by it (which frame a window's width calls for) follows it
-  room : @signals.Signal[(Double, Double)]
+  room_w : @signals.Signal[Double]
+  room_h : @signals.Signal[Double]
   /// how far in from the window's top, right, foot and left the system's bars reach (Tree::clear_of): what goes beside
   /// another (View::beside) and what is laid out over the window (View::clear) keeps clear of it
   clear : @signals.Signal[(Double, Double, Double, Double)]
@@ -1579,7 +1581,8 @@ pub fn Tree::new(
     resident_rev: 0,
     keyed: KeyBook::new(),
     places: @signals.signal(0),
-    room: @signals.signal((0.0, 0.0), same=fn(a, b) { a == b }),
+    room_w: @signals.signal(0.0, same=fn(a, b) { a == b }),
+    room_h: @signals.signal(0.0, same=fn(a, b) { a == b }),
     clear: @signals.signal((0.0, 0.0, 0.0, 0.0), same=fn(a, b) { a == b }),
     pressed_anywhere: @signals.signal((0, -1.0, -1.0), same=fn(a, b) { a == b }),
     held_anywhere: @signals.signal(false, same=fn(a, b) { a == b }),
@@ -2069,6 +2072,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.beside_piece = None
       n.focused_cell = None
       n.size_cell = None
+      n.size_seen = false
       n.bounds_input = false
       n.tucked_under = None
       n.drawn_clear = None
@@ -2216,6 +2220,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         tab_by_stop: false,
         focused_cell: None,
         size_cell: None,
+        size_seen: false,
         bounds_input: false,
         tucked_under: None,
         drawn_clear: None,
@@ -4757,10 +4762,29 @@ fn Tree::comes_end_in(self : Tree, at : Int) -> Double {
 }
 
 ///|
+fn Tree::room_untracked(self : Tree) -> (Double, Double) {
+  (self.room_w.untracked(), self.room_h.untracked())
+}
+
+///|
 /// The window's size, as its frames give it (0 by 0 before the first), followed: what is made by it (which frame its
 /// width calls for) made again as it changes.
 pub fn View::window(self : View) -> (Double, Double) {
-  self.tree.room.get()
+  (self.tree.room_w.get(), self.tree.room_h.get())
+}
+
+///|
+/// The window's width, as its frames give it (0 before the first), followed alone: changes to the window's height (a
+/// soft keyboard coming or going) leave what reads only this untouched.
+pub fn View::window_w(self : View) -> Double {
+  self.tree.room_w.get()
+}
+
+///|
+/// The window's height, as its frames give it (0 before the first), followed alone: changes to the window's width
+/// leave what reads only this untouched.
+pub fn View::window_h(self : View) -> Double {
+  self.tree.room_h.get()
 }
 
 ///|
@@ -9380,6 +9404,7 @@ fn View::let_go(self : View) -> Unit {
   n.focused_cell = None
   n.focus_shown_cell = None
   n.size_cell = None
+  n.size_seen = false
   n.shows = None
   n.shows_across = false
   n.shows_room = None
@@ -12126,6 +12151,7 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.focused_cell = None
     n.focus_shown_cell = None
     n.size_cell = None
+    n.size_seen = false
     n.shows = None
     n.shows_across = false
     n.shows_room = None
@@ -12705,14 +12731,29 @@ pub fn Tree::frame(self : Tree, w : Double, h : Double, now? : Double) -> Bool {
     return false
   }
   if w != self.last_w || h != self.last_h {
+    let w_changed = w != self.last_w
+    let h_changed = h != self.last_h
     self.last_w = w
     self.last_h = h
     let s = self.nodes[0].flex.style
-    s.set_width(Pt(w))
-    s.set_height(Pt(h))
+    if w_changed {
+      s.set_width(Pt(w))
+    }
+    if h_changed {
+      s.set_height(Pt(h))
+    }
     self.layout_marked_at(0)
     // (what follows it changed as of the frame's moment, before it is laid out)
-    self.room.set((w, h))
+    if w_changed && h_changed {
+      @signals.start_batch()
+      self.room_w.set(w)
+      self.room_h.set(h)
+      @signals.end_batch()
+    } else if w_changed {
+      self.room_w.set(w)
+    } else {
+      self.room_h.set(h)
+    }
     // (the window's new size is the host's change, as of this frame: what a still pointer is over worked out again)
     if !self.hand_owed || upto > self.hand_owed_at {
       self.hand_owed_at = upto
@@ -13067,7 +13108,8 @@ fn Tree::sizes_told(self : Tree) -> Bool {
   for at in self.sized {
     let n = self.nodes[at]
     guard n.live && n.size_cell is Some(_) else { continue }
-    if !keep.contains(at) {
+    if !n.size_seen {
+      n.size_seen = true
       keep.push(at)
       // (laid out nowhere, it or what holds it (View::laid_nowhere, left out of its row): no size of its own to tell
       // this time, the one it had kept, still followed, till it is laid out somewhere again, as what reads it (how far a
@@ -13086,6 +13128,9 @@ fn Tree::sizes_told(self : Tree) -> Bool {
         None => ()
       }
     }
+  }
+  for at in keep {
+    self.nodes[at].size_seen = false
   }
   // (what was first asked as what was told was read: a node made as it was, its size followed from then on, told the
   // next time all is laid out, not forgotten)
