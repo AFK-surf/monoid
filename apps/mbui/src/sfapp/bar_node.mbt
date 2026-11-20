@@ -230,6 +230,12 @@ fn bar_laid_none() -> BarLaid {
 let bar_laid_told : @signals.Signal[BarLaid] = @signals.signal(bar_laid_none(), same=fn(a, b) { a == b })
 
 ///|
+/// Whether the stack is currently in an interactive back gesture (or cancelling one) over a bottom-bar root place.
+fn bar_nav_gesturing() -> Bool {
+  app.nav.in_gesture() && app.nav.root_shows() && place_of(app.nav.pages()[0]) is Some(_)
+}
+
+///|
 /// The bottom bar drawn in `g`, its glass's node (bar_glass_node: so what a press there goes to holds what it draws),
 /// shown on a place's top page with nothing over it; going down out of the way as it is hidden,
 /// taking nothing as it goes (View::show's `leave`). `ws`: the workspace in view.
@@ -242,7 +248,7 @@ fn bar_node(g : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
     // (none before its width is known: it is first laid out where it goes, at once, bar_tell; its leave scoped to `b`)
     let bar_open = fn() {
       match bar_told_now.get() {
-        Some(t) => t.shown && t.width > 0.0
+        Some(t) => t.width > 0.0 && (t.shown || bar_nav_gesturing())
         None => false
       }
     }
@@ -273,14 +279,36 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   holder
   .width(By(fn() { Some(w()) }))
   .height(By(fn() { Some(panel()) }))
-  .alpha(By(fn() { bar.vis.at(bar_moment(holder, Vis, bar.vis.end())).0 }))
+  .alpha(
+    By(fn() {
+      if bar_nav_gesturing() {
+        app.nav.root_progress(fn() { app.nav.slide_moment(holder) })
+      } else {
+        bar.vis.at(bar_moment(holder, Vis, bar.vis.end())).0
+      }
+    }),
+  )
   |> ignore
-  bar_moved(holder, Vis, fn() { dmax(bar.vis.end(), bar.up.end()) }, fn(t) {
-    let v = bar.vis.at(t).0
-    let foot = 22.0 + nav_foot()
-    let raised = bar_raise(holder.window().1, foot, panel(), status_top_now(holder.window().0)) * bar.up.at(t).0
-    (0.0, (1.0 - v) * bar_drop - raised)
-  })
+  holder
+  .moved_by(
+    fn(_, _, t) {
+      bar_part_said(Vis)
+      let v = if bar_nav_gesturing() {
+        app.nav.root_progress(fn() { t })
+      } else {
+        bar.vis.at(t).0
+      }
+      let foot = 22.0 + nav_foot()
+      let raised = bar_raise(holder.window().1, foot, panel(), status_top_now(holder.window().0)) * bar.up.at(t).0
+      (0.0, (1.0 - v) * bar_drop - raised)
+    },
+    fn(_, _) {
+      bar_part_said(Vis)
+      let nav_end = if bar_nav_gesturing() { app.nav.rest() } else { -1.0 }
+      dmax(nav_end, dmax(bar.vis.end(), bar.up.end()))
+    },
+  )
+  |> ignore
   bar_shadow_node(holder, w, clip_top, panel, drift)
   // the action's own disc under the glass (the glass frosts it as it frosts the pages, its warmth round the notch,
   // fading down from it), and the glass with the notch cut into its top

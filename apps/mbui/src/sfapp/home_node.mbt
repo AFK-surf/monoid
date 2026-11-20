@@ -6,7 +6,14 @@
 ///|
 /// Home in node `v` for `src` (as the narrow frame makes it once: narrow_made_as's Home): the lists under the top bar's
 /// room, over the bottom bar's; the top bar over them. Tips in `tips`, pictures asked for on `stint`.
-fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> Int, shown? : () -> Bool = fn() { true }) -> Unit {
+fn home_node(
+  v : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  stint : () -> Int,
+  serial? : Int = 0,
+  shown? : () -> Bool = fn() { true },
+) -> Unit {
   let workspace = fn() { workspace_in_view(src).0 }
   let view = fn() {
     match workspace() {
@@ -59,6 +66,9 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
   let away = @sfpages.search_away_node(v)
   v.box(fn(lists) {
     lists.over(Is(true)) |> ignore
+    if serial != 0 {
+      tab_body_comes_in(lists, serial)
+    }
     // (the chats as a board where it is chosen: sfpages' board_node, under the bar, over the bottom bar; the one not
     // chosen, once made, put by as it was (View::each's `keeps`), taken in again at once as it is chosen again: the
     // board's cards and the lists' rows not made anew at each switch)
@@ -85,11 +95,18 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
   })
   |> ignore
   v.box(fn(bar) {
-    bar.over(Is(true)).lies_along(Is(Start)).alpha(By(fn() { 1.0 - away() })) |> ignore
+    bar
+    .over(Is(true))
+    .lies_along(Is(Start))
+    .alpha(By(fn() { if serial != 0 && app.nav.is_swapping_out(serial) { 0.0 } else { 1.0 - away() } }))
+    |> ignore
     home_top_bar_node(bar, src, tips, workspace, view, shown~)
   })
   |> ignore
   v.show(@sfpages.search_on_lists, fn(s) {
+    if serial != 0 {
+      tab_body_comes_in(s, serial)
+    }
     @sfpages.search_page_node(s, src, workspace, fn() { status_top_now(s.window().0) }, Whole)
   })
 }
@@ -132,8 +149,9 @@ fn home_top_bar_node(
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (16.0, status_top_now(row.window().0), 16.0, 0.0) }))
-      .min_height(By(fn() { Some(status_top_now(row.window().0) + bar_h) }))
+      .sets_together(fn() { status_top_now(row.window().0) }, fn(top) {
+        row.padding(Is((16.0, top, 16.0, 0.0))).min_height(Is(Some(top + bar_h))) |> ignore
+      })
       .gap(Is(10.0))
       .lines_up(Is(Some(Middle)))
       .fits(Is(true))
@@ -265,7 +283,13 @@ fn home_top_bar_node(
           })
         }
         @sf.action_box_node(end, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, open, fn(s) {
-          s.row(Is(true)).height(Is(Some(34.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)).min_width(Is(Some(0.0)))
+          s
+          .row(Is(true))
+          .height(Is(Some(34.0)))
+          .gap(Is(6.0))
+          .lines_up(Is(Some(Middle)))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
           |> ignore
           // (the fixture's home-sheet: opened by it as the app starts, beside it wherever it is laid out)
           if home_sheet_at_start.val {

@@ -571,6 +571,9 @@ fn view_forget() -> Unit {
   old_scrolls_rects.clear()
   old_bars.clear()
   nav_views.clear()
+  nav_veils.clear()
+  nav_clips.clear()
+  nav_clips_now.clear()
   old_boxes.clear()
   old_box_of.clear()
   old_box_owners.clear()
@@ -1504,6 +1507,29 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   let stretching : Array[(@view.NodeId, Double, Double, Double, Double, Double)] = []
   // (the nodes what they hold is revealed in, on their way, the innermost last: @view.View::spatial_reveal, RevealAt)
   let unveiling : Array[RevealAt] = []
+  // (covered beside pages clipped horizontally during parallax push/pop: (pv_id, cut_left, cut_right, runs0))
+  if dr.mode != mode_hits {
+    nav_clips_now.clear()
+  }
+  let nav_clipping : Array[(@view.NodeId, Double, Double, Int)] = []
+  let nav_clip_trim = fn(runs0 : Int, cut_l : Double, cut_r : Double) -> Unit {
+    if !text_runs.on || runs0 >= text_runs.runs.length() {
+      return
+    }
+    let mut dst = runs0
+    for i in runs0..<text_runs.runs.length() {
+      let r = text_runs.runs[i]
+      let rx0 = dmax(r.x0, cut_l)
+      let rx1 = dmin(r.x1, cut_r)
+      if rx1 > rx0 {
+        text_runs.runs[dst] = { ..r, x0: rx0, x1: rx1 }
+        dst += 1
+      }
+    }
+    while text_runs.runs.length() > dst {
+      text_runs.runs.pop() |> ignore
+    }
+  }
   // (none said anywhere: nothing of it looked at, node by node)
   let reveals = tree.reveals_any()
   let sticks = tree.sticks_any()
@@ -1704,6 +1730,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     while unveiling.length() > 0 && !tree.holds_in_order(unveiling[unveiling.length() - 1].id, c.id) {
       unveiling.pop() |> ignore
     }
+    while nav_clipping.length() > 0 && !tree.holds_in_order(nav_clipping[nav_clipping.length() - 1].0, c.id) {
+      let (_, cut_l, cut_r, runs0) = nav_clipping.pop().unwrap()
+      nav_clip_trim(runs0, cut_l, cut_r)
+    }
     // (the root, the window, is drawn by nothing of its own)
     if c.id.at == 0 {
       return false
@@ -1745,9 +1775,27 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // all it holds passed over; else drawn, and kept as it ends where it can be drawn so again. So too what else holds
     // others, gone through again and again with nothing of it changed (ride_holder), in a row or in none, not in a list
     // drawn whole as one but in its rows; one found holding a row or an old view let be, never begun again)
+    let nav_veil = if dr.mode != mode_hits {
+      match nav_veils.get(c.id) {
+        Some(veil) => veil(x, y, c.w * s, c.h * s, self.clock)
+        None => None
+      }
+    } else {
+      None
+    }
+    let nav_clip = if dr.mode != mode_hits {
+      match nav_clips.get(c.id) {
+        Some(clip) => clip(x, c.w * s, self.clock)
+        None => None
+      }
+    } else {
+      None
+    }
     if fading.length() == 0 &&
       stretching.length() == 0 &&
       unveiling.length() == 0 &&
+      nav_veil is None &&
+      nav_clip is None &&
       !raise_holds(c.id) &&
       !unsteady(c.id) {
       let row = ridings_rows.val == 0 &&
@@ -1851,6 +1899,16 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       Some((x0, y0, x1, y1)) => {
         let (tl, tr, br, bl) = tree.lift_cut_corners(c.id).unwrap_or((0.0, 0.0, 0.0, 0.0))
         push_box_clip(x0, y0, dmax(0.0, x1 - x0), dmax(0.0, y1 - y0), tl, tr, br, bl)
+        clipping.push(c.id)
+      }
+      None => ()
+    }
+    match nav_clip {
+      Some((cx0, cx1, from_right)) => {
+        let (cut_l, cut_r) = if from_right { (-1.0e9, cx1) } else { (cx0, 1.0e9) }
+        nav_clips_now.push((c.id, cut_l, cut_r))
+        nav_clipping.push((c.id, cut_l, cut_r, text_runs.runs.length()))
+        push_clip(cx0, y, cx1, y + c.h * s)
         clipping.push(c.id)
       }
       None => ()
@@ -2060,6 +2118,17 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       let (held, by) = self.view_ring_take(ring_at)
       rings.push((c.id, held, by))
     }
+    match nav_veil {
+      Some((vx, vy, vw, vh, ink)) => {
+        let vk = self.ninst
+        self.emit_rect(vx, vy, vw, vh, 0.0, ink, 0.0, 0L, a)
+        if vk < self.ninst {
+          let (held, by) = self.view_ring_take(vk)
+          rings.push((c.id, held, by))
+        }
+      }
+      None => ()
+    }
     // (its ground a scrim of the tree's (View::scrim_under): what of the tree is drawn over a scrim put over it now, under
     // what it holds, as an old scrim has it as it is painted (scene.mbt's))
     if dr.mode != mode_hits && tree.scrim_of(c.id) {
@@ -2087,6 +2156,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       self.list_ride_end()
     }
     None => ()
+  }
+  while nav_clipping.length() > 0 {
+    let (_, cut_l, cut_r, runs0) = nav_clipping.pop().unwrap()
+    nav_clip_trim(runs0, cut_l, cut_r)
   }
   close_to(None)
   raise_close(None)

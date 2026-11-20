@@ -1229,7 +1229,8 @@ pub fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur
   // the shell's (sfbase's shell.mbt), then the bar's own: timed from here (BarTiming), the page coming in from its side
   // (Arrive), from this moment; the page left kept on the stack's shelf, the one come to taken back from it where it is
   // there (sfbase's nav_root_kept)
-  if !@sfbase.go_place(place, way~, kept~) {
+  let tab_ms = if cur >= 0 { 260.0 } else { 0.0 }
+  if !@sfbase.go_place(place, way~, kept~, tab_ms~) {
     return
   }
   bar_placed(from, place)
@@ -1240,7 +1241,8 @@ pub fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur
     at~,
   )
   // (what a finger's press on its tab asked ahead held till the place has come in: sfbase's places_ahead_node)
-  @sfbase.place_switched(place_switch.ends_at())
+  let tab_end = app.nav.tab_ends_at()
+  @sfbase.place_switched(if tab_end > 0.0 { tab_end } else { place_switch.ends_at() })
 }
 
 ///|

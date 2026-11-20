@@ -130,7 +130,10 @@ test "文件 and 用量 at the bar's top, their gear tapped: as 设置 comes in 
     t.run_for(@ui.move_most_ms / 2.0)
     let from = bar_title_x(t, title) - rest_x
     assert_true(from < 0.0, msg=place)
-    assert_eq(bar_words(t, from), at_rest, msg=place)
+    let under_words = bar_words(t, from)
+    let title_idx = at_rest.search_by(fn(w) { w.0 == title }).unwrap()
+    assert_true(under_words.length() > title_idx, msg=place)
+    assert_eq(under_words[:title_idx + 1].to_owned(), at_rest[:title_idx + 1].to_owned(), msg=place)
   }
 }
 

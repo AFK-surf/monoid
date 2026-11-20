@@ -207,6 +207,16 @@ struct Nav[P] {
   // (Nav::take_kept_left). None where nothing keeps them (an old view's frame, a stack no view holds)
   kept_left : Array[(String, String, NavPage[P])]
   mut keeps_left : ((P) -> (String, String)?)?
+  // dual-ended root tab transition (Nav::replace_tab): outgoing root page kept shown until swap_t0 + swap_dur
+  mut swap_out : NavPage[P]?
+  mut swap_in_serial : Int
+  mut swap_way : Int
+  mut swap_t0 : Double
+  mut swap_dur : Double
+  mut swap_kept : Bool
+  // dedicated signals so tab-swap and back-gesture bindings never wake on ordinary push/pop
+  swap_said : @signals.Signal[Int]
+  gesture_said : @signals.Signal[Int]
 }
 
 ///|
@@ -284,6 +294,14 @@ pub fn[P] Nav::new(
     shelves: None,
     kept_left: [],
     keeps_left: None,
+    swap_out: None,
+    swap_in_serial: 0,
+    swap_way: 0,
+    swap_t0: -1.0,
+    swap_dur: 0.0,
+    swap_kept: false,
+    swap_said: @signals.signal(0),
+    gesture_said: @signals.signal(0),
   }
 }
 
@@ -549,7 +567,7 @@ fn[P] Nav::rested_at(self : Nav[P], frame : Int) -> Double {
 /// When its slide is over, as a test runs to it (Nav::rest, nav_rest): Moving's rest_at, but for a slide held by the
 /// window's tree, the latest it could end (its wait's most, then its way), as one held by the frames says it.
 fn[P] Nav::ends_at(self : Nav[P], frame : Int) -> Double {
-  if self.mode != 1 && self.mode != 2 && self.mode != 4 {
+  let slide_end = if self.mode != 1 && self.mode != 2 && self.mode != 4 {
     -1.0
   } else if self.t0 == nav_held {
     // held for what its page shows (its coming, or the most it waits, a wake, starts it): at rest by the latest its
@@ -562,6 +580,12 @@ fn[P] Nav::ends_at(self : Nav[P], frame : Int) -> Double {
   } else {
     -1.0
   }
+  let swap_end = if self.swap_out is Some(_) && self.swap_t0 >= 0.0 && self.swap_dur > 0.0 {
+    self.swap_t0 + self.swap_dur
+  } else {
+    -1.0
+  }
+  dmax(slide_end, swap_end)
 }
 
 ///|
@@ -581,8 +605,49 @@ pub fn[P] Nav::rest(self : Nav[P]) -> Double {
 }
 
 ///|
+fn[P] Nav::swap_told(self : Nav[P]) -> Unit {
+  self.swap_said.set(self.swap_said.untracked() + 1)
+}
+
+///|
+fn[P] Nav::gesture_told(self : Nav[P]) -> Unit {
+  self.gesture_said.set(self.gesture_said.untracked() + 1)
+}
+
+///|
+/// Finishes an active root tab cross-transition (`Nav::replace_tab`), shelving or releasing the outgoing page.
+fn[P] Nav::settle_swap(self : Nav[P]) -> Unit {
+  match self.swap_out {
+    Some(was) => {
+      if self.swap_t0 >= 0.0 && self.swap_dur > 0.0 {
+        self.ended = dmax(self.ended, self.swap_t0 + self.swap_dur)
+      }
+      self.swap_out = None
+      if self.swap_kept {
+        match self.shelves {
+          Some(shelves) if shelves(was.page) => {
+            was.focus_kept = 0
+            self.shelf.push(was)
+          }
+          _ => self.leaves(was)
+        }
+      } else {
+        self.leaves(was)
+      }
+      self.swap_kept = false
+      self.swap_told()
+      self.shown_told()
+      wake()
+    }
+    None => ()
+  }
+}
+
+///|
 /// Ends what moves at once, where it was going.
 fn[P] Nav::settle(self : Nav[P]) -> Unit {
+  self.settle_swap()
+  let was_gesture = self.mode == 3 || self.mode == 4
   if (self.mode == 1 || self.mode == 2 || self.mode == 4) && self.t0 >= 0.0 {
     self.ended = self.t0 + self.dur
   }
@@ -598,6 +663,9 @@ fn[P] Nav::settle(self : Nav[P]) -> Unit {
   self.leaving = None
   self.mode = 0
   self.p = 0.0
+  if was_gesture {
+    self.gesture_told()
+  }
   self.shown_told()
 }
 
@@ -1075,10 +1143,95 @@ pub fn[P : Eq] Nav::shelved(self : Nav[P], page : P) -> Int? {
 }
 
 ///|
+/// Replaces the root page with `page` using a dual-ended cross-transition (`Nav::replace_tab`): the outgoing root
+/// stays drawn (non-interactive) while fading/sliding out, then moves to the shelf (`kept=true`) or is released.
+/// Interruptible on rapid switches; falls back to `replace_kept`/`replace` when `depth != 1`, reduced motion is on,
+/// or `dur <= 0.0`.
+pub fn[P : Eq] Nav::replace_tab(
+  self : Nav[P],
+  page : P,
+  way? : Int = 0,
+  dur? : Double = 260.0,
+  kept? : Bool = true,
+) -> Unit {
+  self.told_focus(fn() { self.replace_tab_now(page, way, dur, kept) })
+}
+
+///|
+fn[P : Eq] Nav::replace_tab_now(self : Nav[P], page : P, way : Int, dur : Double, kept : Bool) -> Unit {
+  self.settle()
+  if self.pages.length() != 1 {
+    if kept {
+      self.replace_kept_now(page)
+    } else {
+      self.replace_now(page)
+    }
+    return
+  }
+  if self.pages[0].page == page {
+    return
+  }
+  if reduced_motion() || dur <= 0.0 {
+    self.swap_in_serial = 0
+    self.swap_t0 = -1.0
+    self.swap_dur = 0.0
+    if kept {
+      self.replace_kept_now(page)
+    } else {
+      self.replace_now(page)
+    }
+    return
+  }
+  let was = self.pages.pop().unwrap()
+  let e = if kept && self.shelves is Some(_) {
+    match self.shelf.search_by(fn(x) { x.page == page }) {
+      Some(i) => {
+        let x = self.shelf.remove(i)
+        x.stint = next_stint()
+        x
+      }
+      None => nav_page(page, None)
+    }
+  } else {
+    nav_page(page, None)
+  }
+  e.over = was.over
+  self.pages.push(e)
+  self.swap_out = Some(was)
+  self.swap_in_serial = e.serial
+  self.swap_way = way
+  self.swap_dur = dur
+  self.swap_kept = kept
+  self.swap_t0 = match self.hosted {
+    Some(h) => (h.now)()
+    None => if in_frame.val { g().clock } else { -1.0 }
+  }
+  self.told()
+  self.swap_told()
+  match self.hosted {
+    Some(h) => (h.swap_went)()
+    None => ()
+  }
+  g().moving(self.mover, self as &Moving, what="a stack's tab swap")
+  self.shown_told()
+  wake()
+}
+
+///|
 /// The shelf emptied (Nav::replace_kept): each entry on it left for good, as one let go of is (what holds the stack
 /// lets go of its page: forgotten, Nav's `on_leave` told). As the workspace in view changes.
 pub fn[P] Nav::shelf_empty(self : Nav[P]) -> Unit {
-  if self.shelf.length() > 0 || self.kept_left.length() > 0 {
+  let had_swap = match self.swap_out {
+    Some(was) => {
+      self.swap_out = None
+      self.swap_kept = false
+      self.gone.push(was)
+      self.swap_told()
+      true
+    }
+    None => false
+  }
+  if had_swap || self.shelf.length() > 0 || self.kept_left.length() > 0 {
     self.shelf.clear()
     // (and what left over the root, kept: Nav's `kept_left`, let go for good the same way)
     self.kept_left_empty()
@@ -1170,6 +1323,7 @@ fn[P] Nav::gesture(
         self.mode = 3
         self.p = 0.0
         self.finger.set(0.0)
+        self.gesture_told()
         self.shown_told()
         self.x0 = x
         self.vel = 0.0
@@ -1244,6 +1398,7 @@ fn[P] Nav::let_go(self : Nav[P], v : Double) -> Unit {
 
 ///|
 fn[P] Nav::let_go_now(self : Nav[P], v : Double) -> Unit {
+  let was_gesture = self.mode == 3 || self.mode == 4
   self.leaving = self.pages.pop()
   self.topped()
   self.told()
@@ -1252,6 +1407,9 @@ fn[P] Nav::let_go_now(self : Nav[P], v : Double) -> Unit {
     None => ()
   }
   self.go(2, 1.0, v~)
+  if was_gesture {
+    self.gesture_told()
+  }
 }
 
 ///|

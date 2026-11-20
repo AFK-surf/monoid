@@ -10,9 +10,9 @@ test "stale build prompt appears on Small and Large with zero new audit faults a
     let base = wide_tester([], mode="home", w~, h~, platform~)
     base.run_for(@ui.move_most_ms)
     let known = base.audit()
-    // (on Small, the floating bottom glass bar at bar.mbt:1581 intentionally overlaps scrolling list rows underneath it)
+    // (on Small, the floating bottom glass bar at bar.mbt:1588 intentionally overlaps scrolling list rows underneath it)
     let added = fn(faults : Array[String]) {
-      faults.filter(fn(f) { !known.contains(f) && !f.contains("sfapp/bar.mbt:1581") })
+      faults.filter(fn(f) { !known.contains(f) && !f.contains("sfapp/bar.mbt:1588") })
     }
 
     let asked : Array[String] = []

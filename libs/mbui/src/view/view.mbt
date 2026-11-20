@@ -9351,6 +9351,7 @@ fn View::park(self : View, v : View, rest? : Bool = true) -> () -> Unit {
   m.parent = -1
   self.tree.touched(self.at)
   self.tree.order_marked_in(self.at)
+  self.tree.said_marked(self.at, holds=true)
   let h = if n.slot { self.tree.box_holder(self.at) } else { self.at }
   let own = if !m.slot { Some(m.flex) } else { None }
   match own {
@@ -9433,6 +9434,7 @@ fn View::take_in(self : View, v : View) -> Unit {
   self.tree.layout_marked_at(v.at)
   self.tree.place_marked_at(v.at)
   self.tree.touched(v.at)
+  self.tree.said_marked(self.at, holds=true)
 }
 
 ///|

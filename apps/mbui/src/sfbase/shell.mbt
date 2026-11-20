@@ -232,7 +232,7 @@ pub fn place_page(place : String) -> Page {
 /// place; `way` the side it comes in from (the bar's order: -1 its left, 1 its right, 0 none). The same place again
 /// changes nothing. Whether it went. `kept`: the page that leaves the root put on the stack's shelf and the place's taken
 /// back from it (nav_root_kept: the bottom bar's on 小屏), not let go and made anew.
-pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false) -> Bool {
+pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false, tab_ms? : Double = 0.0) -> Bool {
   let page = place_page(place)
   if app.nav.depth() == 1 && app.nav.top() == page {
     return false
@@ -241,7 +241,9 @@ pub fn go_place(place : String, way? : Int = 0, kept? : Bool = false) -> Bool {
     (shell.val.close_overlays)()
     app.switch_way = way
     nav_home()
-    if kept {
+    if tab_ms > 0.0 {
+      app.nav.replace_tab(page, way~, dur=tab_ms, kept~)
+    } else if kept {
       nav_root_kept(page)
     } else {
       app.nav.replace(page)

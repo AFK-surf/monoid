@@ -964,15 +964,22 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let shown = told.shown
   let notched = told.action != ""
   // shown or not
-  m.vis.go_by(
-    if shown { 1.0 } else { 0.0 },
-    if shown {
-      @motion.moved(points=bar_drop)
-    } else {
-      @motion.tween(bar_hide_ms, ease=Leave)
-    },
-    at~,
-  )
+  let p_now = if shown && app.nav.root_shows() { app.nav.root_progress(fn() { at }) } else { 0.0 }
+  if shown && m.vis.target < 0.5 && p_now > 0.01 && p_now < 0.99 {
+    // Handing off from an interactive swipe-back gesture: continue smoothly from its live progress.
+    m.vis.snap(p_now)
+    m.vis.go_by(1.0, @motion.moved(points=bar_drop * (1.0 - p_now)), at~)
+  } else {
+    m.vis.go_by(
+      if shown { 1.0 } else { 0.0 },
+      if shown {
+        @motion.moved(points=bar_drop)
+      } else {
+        @motion.tween(bar_hide_ms, ease=Leave)
+      },
+      at~,
+    )
+  }
   // going: the panel closed, a finger's slide let go
   if !shown {
     if m.mode.get() {

@@ -72,7 +72,6 @@
     "page-at-moment": {
       "src/sfapp/app.mbt": 3,
       "src/sfapp/bar_timing.mbt": 1,
-      "src/sfapp/narrow_shell.mbt": 1,
       "src/sfapp/settings/station_parts.mbt": 1
     }
   }

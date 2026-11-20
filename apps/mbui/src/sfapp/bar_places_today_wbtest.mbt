@@ -172,7 +172,8 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
       "unsub doing {}", "unsub changelog {\"news\":true}", "unsub driveTransfers {\"workspace\":\"ws1\"}", "unsub longJobs {\"scope\":\"ws1\"}",
       "sub doing {}", "unsub lock {\"workspace\":\"ws1\"}", "unsub stationUpdates {\"scope\":\"ws1\"}",
     ],
-    [],
+    // (dual-ended replace_tab keeps Home mounted during swap so connects subscribes doing {} before Home drops it)
+    ["unsub doing {}", "sub doing {}"],
   ),
   (
     "connects→chats",

@@ -2117,6 +2117,17 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
     }
     gone
   }
+  let tree_opt = view_tree()
+  let island_of = fn(i : Int) -> @view.NodeId? {
+    let mut p = i
+    while p >= 0 {
+      if old_box_owners.get(p) is Some((_, id)) {
+        return Some(id)
+      }
+      p = c.nodes[p].parent
+    }
+    None
+  }
   for i in 0..<c.count {
     let n = c.nodes[i]
     // (a field's placeholder too, as Android's hint is words of their own)
@@ -2125,6 +2136,26 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
       n.text != "" &&
       !let_go(i) {
       let (x, y) = c.drawn_at(i)
+      let mut wx = x
+      let mut ww = n.fw
+      if !nav_clips_now.is_empty() {
+        match (tree_opt, island_of(i)) {
+          (Some(tree), Some(iid)) =>
+            match nav_clip_for_node(tree, iid) {
+              Some((cut_l, cut_r)) => {
+                let nx0 = dmax(wx, cut_l)
+                let nx1 = dmin(wx + ww, cut_r)
+                if nx1 <= nx0 {
+                  continue
+                }
+                wx = nx0
+                ww = nx1 - nx0
+              }
+              None => ()
+            }
+          _ => ()
+        }
+      }
       let mut alpha = 1.0
       let mut p = i
       while p >= 0 {
@@ -2135,17 +2166,31 @@ fn Tester::words_marked(self : Tester) -> Array[((String, Double, Double, Double
         }
         p = c.nodes[p].parent
       }
-      out.push(((n.text, x, y, n.fw, n.fh, alpha), n.sem_hid))
+      out.push(((n.text, wx, y, ww, n.fh, alpha), n.sem_hid))
     }
   }
   // (and the words of the window's tree's nodes, where and as faded as they are drawn, as Tester::find finds them)
-  match view_tree() {
+  match tree_opt {
     Some(tree) =>
       for d in tree.drawn() {
         // (a field's placeholder too, its hint: view_words_found)
         let words = view_words_found(d)
         if words != "" && d.bones == 0L {
-          out.push(((words, d.x, d.y, d.w, d.h, d.alpha), !tree.reads_out(d.id)))
+          let mut wx = d.x
+          let mut ww = d.w
+          match nav_clip_for_node(tree, d.id) {
+            Some((cut_l, cut_r)) => {
+              let nx0 = dmax(wx, cut_l)
+              let nx1 = dmin(wx + ww, cut_r)
+              if nx1 <= nx0 {
+                continue
+              }
+              wx = nx0
+              ww = nx1 - nx0
+            }
+            None => ()
+          }
+          out.push(((words, wx, d.y, ww, d.h, d.alpha), !tree.reads_out(d.id)))
         }
       }
     None => ()

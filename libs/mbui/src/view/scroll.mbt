@@ -731,10 +731,15 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
     }
   })
   host.owns(fn() {
-    self.tuck_owed = false
-    self.tuck_room.set(0.0)
-    self.tuck_in = None
-    self.tuck_kept = fn() { true }
+    match self.tuck_in {
+      Some(h) if h.at == host.at && h.gen == host.gen => {
+        self.tuck_owed = false
+        self.tuck_room.set(0.0)
+        self.tuck_in = None
+        self.tuck_kept = fn() { true }
+      }
+      _ => ()
+    }
   })
   |> ignore
 }
@@ -1436,6 +1441,12 @@ pub fn View::scrolls(
   })
   // (let go with it: no fling of it settles after)
   self.owns(fn() {
+    match self.tree.scrolls_at.get(self.at) {
+      Some(o) if physical_equal(o, s) => self.tree.scrolls_at.remove(self.at)
+      _ => ()
+    }
+    s.peers_scrolled.remove(self.at)
+    guard s.host is Some(h) && h.same(self) else { return }
     // (the hand past its edge: at rest where it had it then, as far as it could go as it was said: how far it can go is
     // gone with what it was laid out in, as a fling's below)
     match s.edge.untracked() {
@@ -1496,11 +1507,6 @@ pub fn View::scrolls(
     s.top_cover = fn() { 0.0 }
     s.foot_at = -1
     s.host = None
-    match self.tree.scrolls_at.get(self.at) {
-      Some(o) if physical_equal(o, s) => self.tree.scrolls_at.remove(self.at)
-      _ => ()
-    }
-    s.peers_scrolled.remove(self.at)
     s.to_foot = fn(_) { false }
     // (no glide of it told any more: Tree::on_glides)
     (self.tree.glides_gone)(s.serial)
