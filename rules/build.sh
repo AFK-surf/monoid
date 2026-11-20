@@ -14,9 +14,9 @@ node -e '
 const fs = require("fs");
 const [from, to] = process.argv.slice(1);
 let js = fs.readFileSync(from, "utf8");
-const at = "const _M0FPB4seed = _M0FPB12random__seed();";
-if (js.split(at).length !== 2) { console.error("rules: the hash seed is not drawn as it was; see rules/build.sh"); process.exit(1); }
-js = js.replace(at, "let _M0FPB4seed__held;\nconst _M0FPB4seed__drawn = () => (_M0FPB4seed__held === undefined ? (_M0FPB4seed__held = _M0FPB12random__seed()) : _M0FPB4seed__held);");
+const m = js.match(/^(?:const|var) _M0FPB4seed = _M0FPB12random__seed\(\);$/gm);
+if (!m || m.length !== 1) { console.error("rules: the hash seed is not drawn as it was; see rules/build.sh"); process.exit(1); }
+js = js.replace(m[0], () => "let _M0FPB4seed__held;\nconst _M0FPB4seed__drawn = () => (_M0FPB4seed__held === undefined ? (_M0FPB4seed__held = _M0FPB12random__seed()) : _M0FPB4seed__held);");
 js = js.replace(/\b_M0FPB4seed\b(?!_)/g, "_M0FPB4seed__drawn()");
 fs.writeFileSync(to, "// Built by rules/build.sh from rules/src (MoonBit): not to be edited, built again.\n" + js);
 ' "$built" js/rules.js
