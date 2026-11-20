@@ -333,14 +333,14 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
         // another's the list does not see))
         let list_key = "t\{tl.id}.\{tl.gen}"
         let (held_by, follow_from) = match rows_steady.anchors.get(list_key) {
-          Some((start, _end, _top, foot, scrolled, was_moving, from)) => {
+          Some((start, end, _top, foot, scrolled, was_moving, from)) => {
             // (not held at its foot: its head grown or shrunk over its keys (a bar opening as part of it) moves what it
             // shows with it; what only covers its top, drawn over what it shows (a reader's bars over its words), moves
             // none of it)
             let by = if !(foot && tl.at_foot) && tl.start != start { tl.start - start } else { 0.0 }
             // (a frame judged again at its moment: as the first judge of it had it)
             let again = rows_steady.judged == now
-            let moving = if again { was_moving } else { foot && tl.at_foot && tl.scrolled != scrolled }
+            let moving = if again { was_moving } else { foot && tl.at_foot && (tl.scrolled != scrolled || tl.end != end) }
             let from = if !again && moving && !was_moving { now } else { from }
             (by, if moving { from } else { -1.0e9 })
           }

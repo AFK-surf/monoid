@@ -5083,9 +5083,6 @@ fn View::scrolls_window_ids(
             }
             return
           }
-          // (on a way still going as the change came: on from as fast as it went, one Move (a curve said by the cause
-          // would stand it still where it goes, then set it off again); else the flight's rise, where one carries a key)
-          let moving = speed.values().any(fn(v) { v.1.abs() > 0.01 })
           // (where it all comes to rest: what is under a still pointer found again there, and all of the way let go)
           let rests_at = fn(way : @flex.FlipWay) {
             if way.far > 0.5 {
@@ -5110,14 +5107,12 @@ fn View::scrolls_window_ids(
               None => ()
             }
           }
-          // (on the way of the flight before it, that flight still going, as this change was set out)
-          let on_prev = Ref(false)
-          // (the way going as the change came a flight's: what comes now goes on a flight's way too, never a Move)
-          let was_said = flip_way.untracked().bind(fn(p) { p.said }) is Some(_)
           // (a flight in the change's block told as it is committed, which may be the next frame's (Tree::carried, at the
-          // end of the set-out): from then on all of it on its rise, as long, from where each was as the change came,
-          // the flight's key drawn where it rests, open all the way; where a Move was going as the change came (not a
-          // flight's), on as it went, the flight's key drawn whole)
+          // end of the set-out): from then on all of it on its rise, as long, from where each is drawn as the change
+          // came, the flight's key drawn where it rests, open all the way; a way still going as it came (a Move's tail,
+          // an earlier flight's) is taken up by this one's rise from where it is drawn, as a ComeGroup's curve takes all
+          // of its group's way (flex's ComeGroup spec): never a Move of its own pulling what is over it ahead of the
+          // flight, the gap between them opened and closed again)
           flip_rebuild.val = fn() {
             match flip_said.val {
               Some((t, k, w)) if t >= at && t - at < 100.0 && fresh.contains(k) && flip_way.untracked() is Some(_) => {
@@ -5143,11 +5138,7 @@ fn View::scrolls_window_ids(
                 for a, amt in amts_now {
                   flip_in_amts[a] = amt
                 }
-                let way = if moving && !was_said && !on_prev.val {
-                  @flex.FlipWay::new(at, list)
-                } else {
-                  @flex.FlipWay::new(t, list, said=w)
-                }
+                let way = @flex.FlipWay::new(t, list, said=w)
                 // (its rest set before the way is told, as set_out's is: see there)
                 rests_at(way)
                 flip_way_said(at, way)
@@ -5164,7 +5155,6 @@ fn View::scrolls_window_ids(
           }
           match flip_way.untracked() {
             Some(prev) if !carried_now && prev.said is Some(_) && prev.left(at).0 > 0.05 => {
-              on_prev.val = true
               let (k, _) = prev.left(at)
               let list : Array[@flex.FlipItem] = []
               flip_items.clear()
@@ -5214,7 +5204,7 @@ fn View::scrolls_window_ids(
             list.push({ off: (across_far, 0.0, 0.0, 0.0), v: (0.0, 0.0, 0.0, 0.0) })
           }
           let said = match flip_said.val {
-            Some((t, k, w)) if (!moving || was_said) && t >= at && t - at < 100.0 && fresh.contains(k) => Some((t, w))
+            Some((t, k, w)) if t >= at && t - at < 100.0 && fresh.contains(k) => Some((t, w))
             _ => None
           }
           // (on a flight's rise from where the flight sets out: the frame its change is drawn in, where that is later)
