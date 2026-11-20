@@ -526,7 +526,7 @@ export class Requests {
         const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
         const status = this.#status(station);
         const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
-        const [span, head] = this.#head(station, "GET", path, thumb === false ? [[BULK, "1"]] : [], 0, ctx);
+        const [span, head] = this.#head(station, "GET", path, thumb === false || thumb === "preview" ? [[BULK, "1"]] : [], 0, ctx);
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* this.wire.request(station, head, empty);

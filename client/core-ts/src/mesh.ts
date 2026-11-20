@@ -117,6 +117,9 @@ export const TALLY_EVERY_MS = 60_000;
 export const SPEED_KEY = "relay-speed";
 /// A reply this long or longer tells how fast a way is; a shorter one is mostly its round trip.
 export const SPEED_MIN_BYTES = 512 * 1024;
+/// Minimum bytes and elapsed time for recording a slow bulk way early (below BULK_SLOW_BPS) before SPEED_MIN_BYTES arrives.
+export const SPEED_SLOW_MIN_BYTES = 64 * 1024;
+export const SPEED_SLOW_MIN_MS = 5_000;
 /// What a way's speed is weighed with its round trip by: the time a larger reply (a page of history, an image) takes.
 export const TYPICAL_BYTES = 256 * 1024;
 /// How long the speed seen on a way counts; then it is found out again, from the replies that come through it.
@@ -1074,8 +1077,10 @@ export class Mesh {
   /// the way brings replies now. The way the requests go on found slower than it was taken to be: they are moved at once
   /// if another is clearly better now (`#choose`), not after minutes more on it.
   noteSpeed(addr: string, relay: string, bytes: number, ms: number): void {
-    if (bytes < SPEED_MIN_BYTES || ms <= 0) return;
+    if (ms <= 0 || bytes <= 0) return;
     const bps = (bytes / ms) * 1000;
+    const slowEarly = bytes >= SPEED_SLOW_MIN_BYTES && ms >= SPEED_SLOW_MIN_MS && bps < BULK_SLOW_BPS;
+    if (bytes < SPEED_MIN_BYTES && !slowEarly) return;
     const now = this.#env.host.nowMs();
     this.#saySpeed(addr, relay, bytes, ms, now);
     const id = endpointId(addr);
@@ -1169,21 +1174,34 @@ export class Mesh {
             return chunk;
           }
           own += chunk?.length ?? 0;
-          if (own >= SPEED_MIN_BYTES && !told) {
-            told = true;
-            lastOwn = own;
-            lastCame = came;
-            lastAt = now;
-            this.noteSpeed(addr, way, came - from, now - first);
-          } else if (chunk === null && own >= SPEED_MIN_BYTES) {
-            this.noteSpeed(addr, way, came - from, now - first);
-          } else if (told && chunk !== null && own - lastOwn >= SPEED_MIN_BYTES && now - lastAt >= 5_000) {
+          const elapsed = now - first;
+          const slowTotal =
+            own >= SPEED_SLOW_MIN_BYTES &&
+            elapsed >= SPEED_SLOW_MIN_MS &&
+            ((came - from) / Math.max(1, elapsed)) * 1000 < BULK_SLOW_BPS;
+          if (chunk === null) {
+            if (own >= SPEED_MIN_BYTES || (!told && slowTotal)) {
+              this.noteSpeed(addr, way, came - from, elapsed);
+            }
+          } else if (!told) {
+            if (own >= SPEED_MIN_BYTES || slowTotal) {
+              told = true;
+              lastOwn = own;
+              lastCame = came;
+              lastAt = now;
+              this.noteSpeed(addr, way, came - from, elapsed);
+            }
+          } else if (now - lastAt >= 5_000) {
+            const ownDelta = own - lastOwn;
             const bytes = came - lastCame;
             const ms = now - lastAt;
-            lastOwn = own;
-            lastCame = came;
-            lastAt = now;
-            this.noteSpeed(addr, way, bytes, ms);
+            const slowSlice = ownDelta >= SPEED_SLOW_MIN_BYTES && (bytes / Math.max(1, ms)) * 1000 < BULK_SLOW_BPS;
+            if (ownDelta >= SPEED_MIN_BYTES || slowSlice) {
+              lastOwn = own;
+              lastCame = came;
+              lastAt = now;
+              this.noteSpeed(addr, way, bytes, ms);
+            }
           }
           return chunk;
         }),

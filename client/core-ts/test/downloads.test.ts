@@ -882,3 +882,64 @@ test("cancelling a multi-way download preserves received bytes from concurrent p
   assert.deepEqual(out, file);
   t.core.close();
 });
+
+test("download dynamically upgrades from 1 lane to 2 concurrent lanes when bulkLanes increases mid-download", async () => {
+  const file = bytesOf(12 * MB, 37);
+  let lanesNow = 1;
+  let inflight = 0;
+  let maxInflightAfterUpgrade = 0;
+  const partLanes: { offset: number; lane: string | undefined }[] = [];
+  let firstGate: Deferred.Deferred<void> | null = null;
+  const upgradedGates: Deferred.Deferred<void>[] = [];
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => lanesNow,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        const offset = Number(u.searchParams.get("offset"));
+        return Effect.suspend(() => {
+          const lane = head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1];
+          partLanes.push({ offset, lane });
+          inflight++;
+          if (lanesNow > 1) maxInflightAfterUpgrade = Math.max(maxInflightAfterUpgrade, inflight);
+          let gate: Deferred.Deferred<void> | null = null;
+          if (offset === 0 && firstGate === null) {
+            firstGate = gate = Deferred.makeUnsafe<void>();
+          } else if (lanesNow > 1 && upgradedGates.length < 2) {
+            gate = Deferred.makeUnsafe<void>();
+            upgradedGates.push(gate);
+          }
+          return (gate !== null ? Effect.andThen(Deferred.await(gate), fallback.request(station, head, body)) : fallback.request(station, head, body)).pipe(
+            Effect.ensuring(Effect.sync(() => { inflight--; })),
+          );
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["grow.bin", file]]));
+  const r = await watch(t);
+  const id = (await r.ask("download.start", { station: ST, key: "k1", name: "grow.bin", size: file.length })).ok.download.id as string;
+  assert.equal(partLanes.length, 1, "starts single-lane when bulkLanes() === 1");
+  assert.deepEqual(partLanes[0], { offset: 0, lane: undefined });
+  // Fast relays discovered while first part is in flight.
+  lanesNow = 2;
+  Deferred.doneUnsafe(firstGate!, Effect.void);
+  await t.host.settle();
+  assert.equal(upgradedGates.length, 2, "remaining 2 parts must launch concurrently after bulkLanes rises to 2");
+  assert.equal(maxInflightAfterUpgrade, 2);
+  const upgraded = partLanes.slice(1).map((p) => p.lane).sort();
+  assert.deepEqual(upgraded, ["0", "1"], "concurrent parts must carry distinct BULK_LANE headers");
+  for (const g of upgradedGates) Deferred.doneUnsafe(g, Effect.void);
+  const [d] = await r.view();
+  assert.deepEqual([d.state, d.loaded], ["ready", file.length]);
+  await r.ask("download.take", { id });
+  const out = new Uint8Array(file.length);
+  for (let off = 0; off < file.length; off += 4 * MB) {
+    const got = await r.ask("download.read", { id, offset: off, length: 4 * MB });
+    out.set(got.bytes, off);
+  }
+  assert.deepEqual(out, file);
+  t.core.close();
+});
