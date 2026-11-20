@@ -293,6 +293,7 @@ fn about_station_node(g : @view.View, core : Core, host : () -> Json?, tips : @s
             is_doing(core, ["software.update"], [("station", address), ("id", "station")])
           },
           fn() { false },
+          fn() { true },
           tips,
         )
       } else {

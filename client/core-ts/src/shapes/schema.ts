@@ -83,6 +83,7 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   imageNear: "ImageNear",
   agentCard: "AgentCardView",
   stationNet: { opt: "StationNet" },
+  stationDiag: { opt: "StationDiag" },
   longJobs: "LongJobsView",
   profiles: "ProfilesView",
   profilesOverview: "ProfilesOverviewView",

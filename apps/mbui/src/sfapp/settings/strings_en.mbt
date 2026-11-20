@@ -1695,7 +1695,7 @@ let en : Map[String, String] = {
   "web-pages.stations.search.personalLine": "Workspace members can also search mail, messages, calendars, contacts, notes and photos",
   "web-pages.stations.search.section": "Search",
   "web-pages.stations.search.what": "change search settings",
-  "web-pages.stations.settingsOffline": "The station is offline. Its settings appear once it connects.",
+  "web-pages.stations.settingsOffline": "Snapshot before offline · Editable once connected",
   "web-pages.stations.software": "Software",
   "web-pages.stations.softwareOffline": "The station is offline. Updates appear once it connects.",
   "web-pages.vault.aboutEdit": "About",

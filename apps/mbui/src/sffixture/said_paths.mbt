@@ -1247,6 +1247,16 @@ pub let said_paths : Map[String, Array[String]] = {
     "way.path",
     "home",
   ],
+  "stationDiag": [
+    "summary",
+    "detail",
+    "lastOnlineText",
+    "cloudStatus",
+    "retryText",
+    "lastNetText",
+    "ways.*.name",
+    "ways.*.resultText",
+  ],
   "stationMove": [
     "toName",
     "targets.*.name",

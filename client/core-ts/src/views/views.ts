@@ -47,6 +47,9 @@ import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
 import * as logins from "../station/machine-logins.ts";
+import { StationAddr } from "../station/addr.ts";
+import type { LinkDiag } from "../station/link.ts";
+import { relayHost, type PeerDiag } from "../mesh.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
 import { lineForViewer, noTurnBegun, stageFields } from "../chat-stage.ts";
@@ -100,7 +103,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -908,6 +911,12 @@ export type ViewsEnv = {
   /// Whether a station's topic with no value yet waits on the station for what it shows (station/topics.ts `waits`);
   /// none does where not given.
   waits?: (topic: Topic) => boolean;
+  /// Local reconnect diagnostics of a station's link (`station/link.ts` `Link.diag`).
+  linkDiag?: (station: string) => LinkDiag | null;
+  /// Local mesh dial diagnostics of a station (`mesh.ts` `Mesh.diag`).
+  peerDiag?: (station: string) => PeerDiag | null;
+  /// Whether still.fail cloud is currently unreachable (`status.cloudDown`).
+  cloudDown?: () => boolean;
 };
 
 /// An agent's request about a vault item a card names (`card.vault`), and whether it is one to keep a secret.
@@ -930,6 +939,15 @@ export function envOf(core: Inner): ViewsEnv {
     store: core.store,
     data: core.data,
     waits: (topic) => core.stationTopics.waits(topic),
+    linkDiag: (station) => core.stations.link(station)?.diag ?? null,
+    peerDiag: (station) => {
+      try {
+        return core.stations.wire.diag?.(StationAddr.parse(station)) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    cloudDown: () => core.status.cloudDown(),
     held: (station, thread) => core.stationTopics.held(station, thread),
     loginOf: (station, id) => {
       const l = logins.held(core.stations.link(station)).logins.find((x) => x.id === id);
@@ -1473,6 +1491,8 @@ export class Views implements Owner {
         ];
       case "stationNet":
         return [{ topic: "net", station }];
+      case "stationDiag":
+        return [{ topic: "link", station }, { topic: "net", station }, { topic: "workspace", workspace: ofAddress(station) }];
       case "history":
         return [
           { topic: "live", station, key: view.key },
@@ -2029,6 +2049,8 @@ export class Views implements Owner {
         const net = this.ok({ topic: "net", station: view.station as string });
         return { ok: net === undefined ? null : present.net(net, (h) => this.relayName(h)) };
       }
+      case "stationDiag":
+        return { ok: this.#stationDiag(view.station as string) };
       case "agentCard": {
         const agent = this.agent(view.station as string, view.key as string);
         if (agent === null) return undefined;
@@ -3577,7 +3599,7 @@ export class Views implements Owner {
         online: s.online,
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
-        problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable),
+        problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable, typeof cause === "string" ? cause : null),
         // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
         // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
         ...(unprotected && can && s.online ? { protect: true } : {}),
@@ -3606,6 +3628,34 @@ export class Views implements Owner {
     });
     this.#againIn(silentNext);
     return { ok: items };
+  }
+
+  /// Local connection diagnostics for one station (`stationDiag`).
+  #stationDiag(station: string): J {
+    const ws = ofAddress(station);
+    const id = station.includes("/") ? station.slice(station.indexOf("/") + 1) : station;
+    const workspace = this.ok({ topic: "workspace", workspace: ws });
+    const st = arr(get(workspace, "stations")).find((x) => str(get(x, "id")) === id);
+    const link = this.link(station);
+    const net = this.ok({ topic: "net", station });
+    const linkDiag = this.#core.linkDiag?.(station) ?? null;
+    const peerDiag = this.#core.peerDiag?.(station) ?? null;
+    const cloudDown = linkDiag?.cloudDown ?? this.#core.cloudDown?.() ?? false;
+    const c = this.#clock();
+    return stationDiagView({
+      station,
+      id,
+      name: str(get(st, "name")) ?? id,
+      version: str(get(st, "version")),
+      lastSeenSec: typeof get(st, "lastSeen") === "number" ? (get(st, "lastSeen") as number) : null,
+      link,
+      linkDiag,
+      peerDiag,
+      net: net === undefined ? null : present.net(net, (h) => this.relayName(h)),
+      cloudDown,
+      clock: c,
+      relayName: (h) => this.relayName(h),
+    });
   }
 
   /// A station's decorated overview, what of it the workspace's profiles read decorated (`profile`: its kept part,
@@ -5074,14 +5124,148 @@ export function stationState(online: boolean, saysWhy: boolean, summary: string,
 /// What may be wrong with a station, each in words, worst first: silent though up, down for
 /// a security mode (why), away (red once it has been online, else amber: never connected). Up and saying what this core
 /// cannot read comes first: it explains the rest.
-export function stationProblems(online: boolean, silent: boolean, blocked: string | null, seen: boolean, updating = false, unreadable = false): { key: string; level: string; text: string }[] {
+export function stationProblems(online: boolean, silent: boolean, blocked: string | null, seen: boolean, updating = false, unreadable = false, cause: string | null = null): { key: string; level: string; text: string }[] {
   if (online && unreadable) return [{ key: "incompatible", level: "amber", text: t("core-views.station.incompatible", { name: brand.name() }) }];
   if (online && silent) return [{ key: "silent", level: "amber", text: t("core-views.station.silent", { name: brand.name() }) }];
   if (!online && blocked !== null) return [{ key: "blocked", level: "red", text: blocked }];
   // Gone for its update: back by itself once it is done.
   if (!online && updating) return [{ key: "updating", level: "amber", text: t("core-views.station.updating_back") }];
-  if (!online) return [{ key: "away", level: seen ? "red" : "amber", text: seen ? t("core-views.station.away", { name: brand.name() }) : t("core-views.station.never_connected", { name: brand.name() }) }];
+  if (!online) {
+    if (cause === "network") return [{ key: "away", level: "red", text: t("core-views.station.away_network", { name: brand.name() }) }];
+    if (cause === "unreached") return [{ key: "away", level: "red", text: t("core-views.station.away_unreached", { name: brand.name() }) }];
+    return [{ key: "away", level: seen ? "red" : "amber", text: seen ? t("core-views.station.away", { name: brand.name() }) : t("core-views.station.never_connected", { name: brand.name() }) }];
+  }
   return [];
+}
+
+function clockSeconds(ms: number, offsetMin: number): string {
+  const [, , , , h, m] = format.local(ms, offsetMin);
+  const s = ((Math.floor(ms / 1000) % 60) + 60) % 60;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(h)}:${two(m)}:${two(s)}`;
+}
+
+/// Builds a bounded `StationDiag` value from local link, mesh, cached net and workspace info.
+export function stationDiagView(input: {
+  station: string;
+  id: string;
+  name: string;
+  version: string | null;
+  lastSeenSec: number | null;
+  link: J;
+  linkDiag: LinkDiag | null;
+  peerDiag: PeerDiag | null;
+  net: J | null;
+  cloudDown: boolean;
+  clock: present.Clock;
+  relayName: (host: string) => string | null;
+}): J {
+  const { id, name, version, lastSeenSec, link, linkDiag, peerDiag, net, cloudDown, clock, relayName } = input;
+  const linkState = str(get(link, "state")) ?? "connecting";
+  const linkCause = str(get(link, "cause"));
+  const isDown = down(link);
+  let cause: string;
+  if (isDown) {
+    if (linkCause === "network" || linkCause === "unreached" || linkCause === "station" || linkCause === "lock" || linkCause === "updating") cause = linkCause;
+    else cause = cloudDown ? "network" : "station";
+  } else if (linkState === "error") {
+    cause = "error";
+  } else {
+    cause = "silent";
+  }
+  const summary = t(`core-views.station.diag.summary.${cause}`, { name: brand.name() });
+  const msg = str(get(link, "message"));
+  const detail = msg !== null && msg !== "" ? msg : (linkDiag?.lastEnd ?? null);
+  const lastOnlineMs = lastSeenSec !== null ? lastSeenSec * 1000 : (linkDiag?.downAt ?? null);
+  const lastOnlineText =
+    lastOnlineMs !== null
+      ? t("core-views.station.diag.last_online", {
+          ago: format.relativeTime(lastOnlineMs, clock.now, clock.offsetMin),
+          clock: format.clock(lastOnlineMs, clock.offsetMin),
+        })
+      : null;
+  const cloudStatus = cloudDown ? t("core-views.station.diag.cloud_down") : t("core-views.station.diag.cloud_ok");
+  let retryText: string | null = null;
+  if (linkDiag !== null && linkDiag.misses > 0) {
+    if (linkDiag.retryAt !== null) {
+      const time = clockSeconds(linkDiag.retryAt, clock.offsetMin);
+      retryText = linkDiag.slowBackoff
+        ? t("core-views.station.diag.retry_slow", { n: linkDiag.misses, time })
+        : t("core-views.station.diag.retry_at", { n: linkDiag.misses, time });
+    } else {
+      retryText = t("core-views.station.diag.retry_misses", { n: linkDiag.misses });
+    }
+  }
+  const lastNetPath = str(get(net, "path"));
+  const lastNetRtt = str(get(get(net, "rtt"), "text"));
+  const lastNetText = lastNetPath !== null && lastNetPath !== "" ? (lastNetRtt !== null && lastNetRtt !== "" ? `${lastNetPath} · ${lastNetRtt}` : lastNetPath) : null;
+  const seenAddr = new Set<string>();
+  const addresses: string[] = [];
+  for (const a of [...(peerDiag?.lan ?? []), ...(peerDiag?.tailnet ?? [])]) {
+    if (typeof a === "string" && a !== "" && !seenAddr.has(a)) {
+      seenAddr.add(a);
+      addresses.push(a);
+      if (addresses.length >= 8) break;
+    }
+  }
+  const wayName = (via: string): string => {
+    if (via === "main") return t("core-views.station.diag.way.main");
+    if (via === "main+addresses") return t("core-views.station.diag.way.main_addresses");
+    if (via === "lan") return t("core-views.station.diag.way.lan");
+    if (via === "tailnet") return t("core-views.station.diag.way.tailnet");
+    if (via === "fenced") return t("core-views.station.diag.way.fenced");
+    if (via.startsWith("relay:")) {
+      const host = via.slice(6);
+      return relayName(host) ?? host;
+    }
+    return via;
+  };
+  const ways: { name: string; status: string; resultText: string }[] = [];
+  if (peerDiag !== null && peerDiag.attempts.length > 0) {
+    for (const a of peerDiag.attempts.slice(0, 12)) {
+      const status = a.outcome === "ok" ? "ok" : a.outcome === "no_answer" ? "timeout" : a.outcome === "refused" ? "refused" : a.outcome === "interrupted" ? "down" : "error";
+      const stage = t(`core-views.station.diag.stage.${a.stage}`);
+      const ms = format.duration(a.totalMs);
+      const base = t(`core-views.station.diag.outcome.${a.outcome}`, { stage, ms });
+      const resultText = a.error && (a.outcome === "error" || a.outcome === "refused") ? `${base} · ${a.error}` : base;
+      ways.push({ name: wayName(a.via), status, resultText });
+    }
+  } else if (peerDiag !== null && peerDiag.relays.length > 0) {
+    for (const r of peerDiag.relays.slice(0, 12)) {
+      const host = relayHost(r.url);
+      ways.push({
+        name: relayName(host) ?? host,
+        status: r.connected ? "ok" : "down",
+        resultText: r.connected ? t("core-views.station.diag.relay_up") : t("core-views.station.diag.relay_down"),
+      });
+    }
+  }
+  const lines: string[] = [
+    `Station: ${name} (${id})${version ? ` v${version}` : ""}`,
+    `Cause: ${cause} — ${summary}`,
+    `Cloud: ${cloudStatus}`,
+  ];
+  if (lastOnlineText !== null) lines.push(`Last online: ${lastOnlineText}`);
+  if (lastNetText !== null) lines.push(`Last route: ${lastNetText}`);
+  if (addresses.length > 0) lines.push(`Addresses: ${addresses.join(", ")}`);
+  if (retryText !== null) lines.push(`Retry: ${retryText}`);
+  if (detail !== null) lines.push(`Detail: ${detail}`);
+  if (ways.length > 0) {
+    lines.push("Routes:");
+    for (const w of ways) lines.push(`  - [${w.status}] ${w.name}: ${w.resultText}`);
+  }
+  return {
+    cause,
+    summary,
+    detail,
+    lastOnlineText,
+    cloudStatus,
+    retryText,
+    lastNetText,
+    addresses,
+    ways,
+    copyText: lines.join("\n"),
+  };
 }
 
 

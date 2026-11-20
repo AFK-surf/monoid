@@ -20,7 +20,7 @@ import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
 import { BULK, BULK_LANE, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
-import type { LinkNet, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
+import type { LinkNet, PeerDiag, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
 /// The header a station's reply to a screen's view says the token its frames go as datagrams under with
@@ -251,6 +251,10 @@ export class MeshWire implements StationWire {
     const mesh = this.#env.meshNow();
     if (mesh === null || typeof mesh.fastBulkLinks !== "function") return 1;
     return Math.max(1, mesh.fastBulkLinks(station.toString()).length);
+  }
+
+  diag(station: StationAddr): PeerDiag | null {
+    return this.#env.meshNow()?.diag(station.toString()) ?? null;
   }
 
   measure(station: StationAddr): Effect.Effect<void, CoreError> {

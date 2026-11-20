@@ -109,6 +109,7 @@ const NOT_MEASURED: Record<string, string> = {
   admin: "still.fail's operators' console, not the app's", adminList: "still.fail's operators' console, not the app's", adminItem: "still.fail's operators' console, not the app's",
   adminOverview: "still.fail's operators' console, not the app's", adminRelays: "still.fail's operators' console, not the app's",
   screenCard: "eight fields of one screen (screens.ts screenCard)", terminalCard: "six fields of one terminal (terminals.ts terminalCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
+  stationDiag: "ten fields of one offline station's local diagnostics, capped at 8 addresses and 12 ways (< 2 KB: views/views.ts stationDiagView)",
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
   preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",

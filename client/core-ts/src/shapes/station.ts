@@ -478,6 +478,23 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["path", "String", { said: true, doc: "直连, 北京中继 (the relay's name, or 中继 host), or 正在选路." }],
     ["via", opt("NetVia"), { doc: "The same as a word to tell apart (a chat's bar marks it with a dot)." }],
   ], { doc: "How this device reaches a station, without its figures: what changes seldom, for the places that name it." }),
+  DiagWay: struct([
+    ["name", "String", { said: true }],
+    ["status", "String", { doc: "ok | timeout | refused | error | down" }],
+    ["resultText", "String", { said: true }],
+  ], { doc: "One route tried when dialling a station (or a relay's status when no dial attempt is recorded yet)." }),
+  StationDiag: struct([
+    ["cause", "String", { doc: "network | unreached | station | lock | updating | error | silent" }],
+    ["summary", "String", { said: true }],
+    ["detail", opt("String"), { said: true }],
+    ["lastOnlineText", opt("String"), { said: true }],
+    ["cloudStatus", "String", { said: true }],
+    ["retryText", opt("String"), { said: true }],
+    ["lastNetText", opt("String"), { said: true }],
+    ["addresses", vec("String"), { default: true }],
+    ["ways", vec("DiagWay"), { default: true }],
+    ["copyText", "String"],
+  ], { doc: "Local connection diagnostics for an offline or silent station (`stationDiag`)." }),
   StationNet: struct([
     ["path", "String", { doc: "直连, 北京中继 (the relay's name, or 中继 host), or 正在选路." }],
     ["via", opt("NetVia"), { doc: "The same as a word to tell apart (a chat's bar marks it with a dot). Missing from a core from before." }],

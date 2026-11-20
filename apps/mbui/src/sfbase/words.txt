@@ -2831,6 +2831,15 @@ web-pages.stations.retire.from
 web-pages.stations.retire.remove
 web-pages.stations.retire.noneOk
 web-pages.stations.network.saved
+web-pages.stations.diag.title
+web-pages.stations.diag.copy
+web-pages.stations.diag.copied
+web-pages.stations.diag.cloud
+web-pages.stations.diag.lastNet
+web-pages.stations.diag.addresses
+web-pages.stations.diag.localLog
+web-pages.stations.resourcesSnapshot
+web-pages.stations.processesSnapshot
 web-pages.settings.stations.restart
 web-pages.settings.stations.restartWhat
 web-pages.settings.stations.restarting

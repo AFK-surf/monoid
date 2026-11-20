@@ -2223,16 +2223,50 @@ fn fx_station(address : String) -> Json {
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),
       ("profileStates", fx_station_profile_states(profiles)),
-      ("link", obj([("state", str(if fx.willow_away { "offline" } else { "online" }))])),
-      ("stateText", str(if fx.willow_away { "2 天前在线" } else { "" })),
+      ("link", obj([
+        ("state", str(if fx.willow_away { "offline" } else { "online" })),
+        ..if fx.willow_away {
+          [("cause", str("unreached")), ("message", str("连接超时，未收到 station 响应"))]
+        } else {
+          []
+        },
+      ])),
+      ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
       (
         "problems",
         if fx.willow_incompatible {
           [obj([("key", str("incompatible")), ("level", str("amber")), ("text", str("版本不兼容：这台 station 和这个 still.fail 的版本不匹配，部分信息无法显示。请更新 still.fail 和这台 station。"))])]
         } else if fx.willow_away {
-          [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])]
+          [obj([("key", str("away")), ("level", str("red")), ("text", str("无法连接：可能已离线，或受中继、防火墙影响"))])]
         } else {
           []
+        },
+      ),
+      (
+        "diag",
+        if fx.willow_away {
+          obj([
+            ("cause", str("unreached")),
+            ("summary", str("本机已连上 still.fail cloud，但所有路径均无法连上这台 station")),
+            ("detail", str("连接超时，未收到 station 响应")),
+            ("lastOnlineText", str("5 分钟前（15:42）")),
+            ("cloudStatus", str("正常")),
+            ("retryText", str("已连续失败 5 次 · 下次重试 15:52:10（每 10 分钟）")),
+            ("lastNetText", str("东京中继 · 42 ms")),
+            ("addresses", [str("192.168.1.24:41901"), str("100.64.0.12:41901")]),
+            (
+              "ways",
+              [
+                obj([("name", str("局域网直连")), ("status", str("timeout")), ("resultText", str("无响应（握手 · 10 秒）"))]),
+                obj([("name", str("Tailscale")), ("status", str("error")), ("resultText", str("失败（握手 · 320ms） · connection refused"))]),
+                obj([("name", str("东京中继")), ("status", str("timeout")), ("resultText", str("无响应（等待认证 · 10 秒）"))]),
+                obj([("name", str("新加坡中继")), ("status", str("down")), ("resultText", str("中继未连接"))]),
+              ],
+            ),
+            ("copyText", str("Station: Willow (st1) v0.1.1288\nCause: unreached — 本机已连上 still.fail cloud，但所有路径均无法连上这台 station\nCloud: 正常\nLast online: 5 分钟前（15:42）\nLast route: 东京中继 · 42 ms\nAddresses: 192.168.1.24:41901, 100.64.0.12:41901\nRetry: 已连续失败 5 次 · 下次重试 15:52:10（每 10 分钟）\nDetail: 连接超时，未收到 station 响应\nRoutes:\n  - [timeout] 局域网直连: 无响应（握手 · 10 秒）\n  - [error] Tailscale: 失败（握手 · 320ms） · connection refused\n  - [timeout] 东京中继: 无响应（等待认证 · 10 秒）\n  - [down] 新加坡中继: 中继未连接")),
+          ])
+        } else {
+          Json::null()
         },
       ),
       ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
@@ -2268,8 +2302,12 @@ fn fx_station(address : String) -> Json {
             "meters",
             [
               meter("CPU", if fx.low_meters { 8 } else { 72 }, if fx.low_meters { "red" } else { "ok" }, if fx.low_meters { "空闲 8%" } else { "空闲 72%" }, if fx.low_meters { "8" } else { "72" }, "%", "CPU 空闲率", "负载 1.4", title_short="CPU 空闲"),
-              meter("内存", 18, "amber", "剩 5.8 G", "5.8", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB"),
-              if fx.low_meters {
+              if fx.willow_away {
+                meter("内存", 6, "red", "剩 1.9 G", "1.9", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB")
+              } else {
+                meter("内存", 18, "amber", "剩 5.8 G", "5.8", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB")
+              },
+              if fx.low_meters || fx.willow_away {
                 meter("磁盘", 9, "amber", "剩 19.4 G", "19.4", "GB", "可用磁盘", "总磁盘 1 TB", total_short="总 1 TB")
               } else {
                 meter("磁盘", 42, "ok", "剩 420 G", "420", "GB", "可用磁盘", "总磁盘 1 TB", total_short="总 1 TB")
@@ -2290,17 +2328,31 @@ fn fx_station(address : String) -> Json {
       ),
       (
         "net",
-        obj([
-          ("path", str("直连")),
-          ("via", str("direct")),
-          ("rtt", obj([("text", str("38 ms")), ("level", str("ok"))])),
-          ("rttHistory", []),
-          ("down", str("1.4 MB/s")),
-          ("up", str("96 KB/s")),
-          ("total", str("")),
-          ("downTotal", str("212 MB")),
-          ("upTotal", str("9.6 MB")),
-        ]),
+        if fx.willow_away {
+          obj([
+            ("path", str("东京中继")),
+            ("via", str("relay")),
+            ("rtt", obj([("text", str("42 ms")), ("level", str("ok"))])),
+            ("rttHistory", []),
+            ("down", str("0 B/s")),
+            ("up", str("0 B/s")),
+            ("total", str("")),
+            ("downTotal", str("212 MB")),
+            ("upTotal", str("9.6 MB")),
+          ])
+        } else {
+          obj([
+            ("path", str("直连")),
+            ("via", str("direct")),
+            ("rtt", obj([("text", str("38 ms")), ("level", str("ok"))])),
+            ("rttHistory", []),
+            ("down", str("1.4 MB/s")),
+            ("up", str("96 KB/s")),
+            ("total", str("")),
+            ("downTotal", str("212 MB")),
+            ("upTotal", str("9.6 MB")),
+          ])
+        },
       ),
       (
         "overview",
@@ -2357,10 +2409,10 @@ fn fx_station(address : String) -> Json {
                 ("channel", str("stable")),
                 ("auto", Json::boolean(if fx_station_back.val == "" { fx.auto } else { fx_station_back.val == "settings-station-back" })),
                 ("updatable", Json::boolean(true)),
-                ("state", str(if fx_station_update_failed.val { "failed" } else { "idle" })),
+                ("state", str(if fx_station_update_failed.val || fx.willow_away { "failed" } else { "idle" })),
                 ("failedText", str("更新失败")),
-                ("message", str(if fx_station_update_failed.val { "无法读取 C:\\Users\\Willow\\.stillfail\\mesh\\cloud.json：文件可能已加密或损坏。请在文件加密软件中允许程序 C:\\Users\\Willow\\.stillfail\\app\\node\\node.exe 读取，或从备份恢复文件。" } else { "" })),
-                ("checkedAt", Json::number(1.0)),
+                ("message", str(if fx_station_update_failed.val { "无法读取 C:\\Users\\Willow\\.stillfail\\mesh\\cloud.json：文件可能已加密或损坏。请在文件加密软件中允许程序 C:\\Users\\Willow\\.stillfail\\app\\node\\node.exe 读取，或从备份恢复文件。" } else if fx.willow_away { "下载更新包超时，请检查网络连接后重试" } else { "" })),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("done", str(if fx_station_updated.val { "已更新到 0.1.1300，agent 未中断" } else { "" })),
                 // (the core's words of it: present.ts software)
                 ("shownText", str(if fx_station_updated.val { "0.1.1300" } else { "0.1.1288" })),
@@ -2381,7 +2433,7 @@ fn fx_station(address : String) -> Json {
                 ("newer", Json::boolean(false)),
                 ("updatable", Json::boolean(true)),
                 ("state", str("idle")),
-                ("checkedAt", Json::number(1.0)),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("shownText", str("2.1.4")),
                 ("tipText", str("已是最新")),
               ]),
@@ -2392,7 +2444,7 @@ fn fx_station(address : String) -> Json {
                 ("newer", Json::boolean(false)),
                 ("updatable", Json::boolean(true)),
                 ("state", str("idle")),
-                ("checkedAt", Json::number(1.0)),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("shownText", str("未安装")),
                 ("tipText", str("")),
               ]),
