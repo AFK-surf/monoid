@@ -10,6 +10,14 @@
 // between tries, so a test's front and clock are the ones it runs on.
 
 ///|
+fn strs(v : Json?) -> Array[String] {
+  match v {
+    Some(Array(xs)) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
+    _ => []
+  }
+}
+
+///|
 /// What frames say besides a length (client/shell's PIPE_END, PIPE_FAILED); the longest a frame written here is.
 pub let front_end : UInt = 0xfffffffeU
 

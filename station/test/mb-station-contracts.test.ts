@@ -27,16 +27,6 @@ const repo = join(station, "..");
 /// Calls a package makes that the program never reaches: each with a check that it is so.
 const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [
   {
-    name: "rpc mcp_tools child_process.execFile",
-    why: "mcp_tools' DeviceTools are the harness's: station_main has its own (live_p5_1_tools.mbt) and makes none",
-    holds: () => !programSource().includes("@mcp_tools.DeviceTools"),
-  },
-  {
-    name: "rpc mcp_tools door.screened",
-    why: "mcp_tools' Door is the harness's: station_main's door is run.mbt's, /jobs/screen a place of P5-3's (live_p5_3_jobs.mbt)",
-    holds: () => !programSource().includes("@mcp_tools.Door") && /"\/jobs\/screen" if r\.meth == "POST"/.test(read(join(mb, "station_main", "live_p5_3_jobs.mbt"))),
-  },
-  {
     name: "rpc session_storage fn.historyFound",
     why: "asked only where the storage's world says `hub.has(\"locateAsync\")` is false, and P5-2's says it is true",
     holds: () => /"hub\.has" => Json::boolean\(\["locateAsync",/.test(read(join(mb, "station_main", "live_p5_2_world.mbt"))),

@@ -420,33 +420,6 @@ test "the locks' tells: a head moved told its workspace's members, a person's lo
 }
 
 ///|
-test "a reply that went slowly is said with the ways it had, once taken in" {
-  let way = (relay : String?, selected : Bool, tx : Double, rtt : Double?) => {
-    let w : @mesh_runtime.WayPath = {
-      selected,
-      relay,
-      ip: Some("1.2.3.4:5"),
-      rtt_ms: rtt,
-      tx_packets: tx,
-      lost_packets: 1.0,
-      cwnd: None,
-      congestion_events: None,
-    }
-    w
-  }
-  let before = @mesh_runtime.sent_on([way(Some("r"), false, 2.0, None), way(Some("r"), true, 3.0, Some(9.5))])
-  assert_eq(before, [("r", 2.0), ("r#1", 3.0)])
-  let after = [way(Some("r"), false, 5.0, None), way(Some("r"), true, 10.0, Some(9.5)), way(None, false, 1.0, Some(0.2))]
-  assert_eq(@mesh_runtime.paths_of(after), "r ? 5/1, *r 10ms 10/1, 1.2.3.4:5 0ms 1/1")
-  assert_eq(@mesh_runtime.slow_line(before, Some(0), 9000.0, after, () => "r", 1.0, 1.0, "d"), None)
-  assert_eq(@mesh_runtime.slow_line(before, None, 4999.0, after, () => "r", 1.0, 1.0, "d"), None)
-  let line = @mesh_runtime.slow_line(before, None, 8000.0, after, () => "GET /x", 400_000.0, 3.0, "d").unwrap()
-  assert_eq(line.as_object().unwrap().get("ways"), Some(Json::string("r ? +3/1 cwnd=?, *r#1 10ms +7/1 cwnd=?, 1.2.3.4:5 0ms +1/1 cwnd=?")))
-  assert_eq(line.as_object().unwrap().get("bytesPerSecond"), Some(Json::number(50_000.0)))
-  assert_eq(line.as_object().unwrap().get("rtt"), Some(Json::number(10.0)))
-}
-
-///|
 test "the device tools: only a gateway's, of this station's workspace, each op answered once" {
   let said = []
   let d : @mesh_runtime.ToolsDeps = {
@@ -545,31 +518,6 @@ test "a file's bytes are read as they are sent, opened at the first and closed a
 }
 
 ///|
-test "the served programs are told a member as it changes, and the pieces of their streams together" {
-  let t = @mesh_runtime.ServedTold::new()
-  let ada = o([("email", "a@x"), ("name", "Ada")])
-  assert_eq(t.viewer(1, Some(ada), false, None).length(), 2)
-  assert_eq(t.viewer(1, Some(ada), false, None).length(), 0)
-  assert_eq(t.viewer(1, Some(ada), true, Some(9144.0)).length(), 1)
-  assert_eq(t.viewer_of(1), Some(ada))
-  assert_eq(t.again().length(), 2)
-  assert_eq(t.viewer(1, None, false, None).length(), 1)
-  assert_eq(t.viewer_of(1), None)
-  assert_eq(@mesh_runtime.served_again_after(5000.0), 0.0)
-  assert_eq(@mesh_runtime.served_again_after(4999.0), 1000.0)
-  let q = @mesh_runtime.PieceQueue::new()
-  q.piece(1, Some("a"))
-  q.piece(2, Some("a"))
-  q.piece(3, Some("b"))
-  q.piece(3, None)
-  q.piece(4, None)
-  assert_eq(q.drain().map(j => j.stringify()), [
-    "{\"pieces\":\"a\",\"to\":[1,2]}", "{\"chunk\":3,\"text\":\"b\"}", "{\"done\":3}", "{\"done\":4}",
-  ])
-  assert_eq(q.drain(), [])
-}
-
-///|
 test "a screen's id as its path has it, decoded as decodeURIComponent does" {
   assert_eq(@mesh_runtime.decode_uri_component("browser%3At1"), Some("browser:t1"))
   assert_eq(@mesh_runtime.decode_uri_component("%E4%BD%A0%F0%9F%98%80"), Some("你😀"))
@@ -634,80 +582,8 @@ test "a view of a screen not there is refused, said in the asker's language" {
 }
 
 ///|
-test "a connection's streams come in the order its other end opened them" {
-  let steps = [
-    o([("give", Json::array([1.0, 1.0]))]),
-    o([("take", true)]),
-    o([("skip", 0.0)]),
-    o([("give", Json::array([3.0, 3.0]))]),
-    o([("give", Json::array([9.0]))]),
-    o([("skip", 2.0)]),
-    o([("take", true)]),
-    o([("take", true)]),
-    o([("end", true)]),
-    o([("give", Json::array([4.0, 4.0]))]),
-    o([("take", true)]),
-  ]
-  inspect(@mesh_runtime.incoming_steps_json(steps).stringify(), content="{\"taken\":[1,9,3,null],\"destroyed\":[4]}")
+test "bare strips trailing slashes" {
   assert_eq(@mesh_runtime.bare("https://r///"), "https://r")
-}
-
-///|
-test "the served programs: started, a member told as it changes, one that ends started again as long as it ran" {
-  let rt = @effect.Runtime::new()
-  let posted : Array[Array[Json]] = []
-  let hooks : Array[((Json) -> Unit, (Int) -> Unit)] = []
-  let now = Ref(0.0)
-  let due : Array[(Double, () -> Unit)] = []
-  let w : @mesh_runtime.ServedWith = {
-    spawn: (_, _, said, exited) => {
-      let told = []
-      posted.push(told)
-      hooks.push((said, exited))
-      { post: m => told.push(m), terminate: async fn() {  } }
-    },
-    now: () => now.val,
-    after: (ms, f) => {
-      due.push((now.val + ms, f))
-      () => ()
-    },
-    wall: () => 5.0,
-    answer: async fn(_, _, _) { { status: 200, headers: o([]), body: b"" } },
-    built: (_, _) => (),
-    stream: None,
-    prepare: _ => (),
-    remove: async fn(_) {  },
-    set: () => Json::string("set"),
-    pid: 7,
-    sep: "/",
-    log: (_, _, _, _) => (),
-  }
-  let served = @mesh_runtime.Served::new("reader", "/d", w, rt)
-  let live = []
-  ignore(rt.fork(() => live.append(served.start())))
-  ignore(rt.run_ready())
-  assert_eq(posted.length(), 2)
-  (hooks[0].0)(o([("listening", "/d/run/serve-7-0.sock")]))
-  (hooks[1].0)(o([("listening", "/d/run/serve-7-1.sock")]))
-  ignore(rt.run_ready())
-  assert_eq(live, ["/d/run/serve-7-0.sock", "/d/run/serve-7-1.sock"])
-  served.viewer(1, Some(o([("email", "a@x")])))
-  served.viewer(1, Some(o([("email", "a@x")])))
-  assert_eq(posted[0].length(), 2)
-  // ended soon after it started: started again a second later
-  (hooks[0].1)(1)
-  assert_eq(posted.length(), 2)
-  now.val = 1000.0
-  for d in due {
-    if d.0 <= now.val {
-      (d.1)()
-    }
-  }
-  assert_eq(posted.length(), 3)
-  // ended having run long: at once
-  now.val = 10_000.0
-  (hooks[1].1)(1)
-  assert_eq(posted.length(), 4)
 }
 
 ///|

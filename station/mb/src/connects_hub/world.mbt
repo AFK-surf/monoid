@@ -172,15 +172,6 @@ pub fn Speech::station_lang(self : Speech) -> String {
 }
 
 ///|
-fn slice_chars(cs : Array[Char], from : Int, to : Int) -> String {
-  let out = StringBuilder()
-  for i in from..<to {
-    out.write_char(cs[i])
-  }
-  out.to_string()
-}
-
-///|
 /// Once every turn asked so far has ended.
 pub async fn Turns::settled(self : Turns) -> Unit {
   match self.tail {

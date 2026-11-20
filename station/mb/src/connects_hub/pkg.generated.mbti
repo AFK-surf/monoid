@@ -4,7 +4,6 @@ package "station/connects_hub"
 import {
   "mbui/effect",
   "moonbitlang/core/ref",
-  "station/host",
   "station/jsjson",
   "station/session_chats",
 }
@@ -29,8 +28,6 @@ pub fn channel_key(String, String) -> String
 pub fn code_hash(String) -> String
 
 pub fn connect_of(String, @jsjson.JValue) -> @jsjson.JValue
-
-pub fn connects_part(PartDeps, Connects, KindOf) -> Part
 
 pub fn decision_body(String, @jsjson.JValue) -> @jsjson.JValue
 
@@ -69,8 +66,6 @@ pub fn group_credentials(@jsjson.JValue) -> String?
 pub fn group_refused(String, String) -> Error
 
 pub fn group_unreached(String) -> Error
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn hex(BytesView) -> String
 
@@ -504,12 +499,6 @@ pub fn Hlc::new() -> Self
 pub fn Hlc::next(Self, Double) -> (Double, Double)
 pub fn Hlc::saw(Self, Double, Double) -> Unit
 
-pub struct KindOf {
-  kind : String
-  shown : (Connects, @jsjson.JValue) -> @jsjson.JValue
-  taken : ((Connects) -> Unit)?
-}
-
 #derive(Eq, Show)
 pub(all) struct Known {
   id : String
@@ -594,27 +583,6 @@ pub struct NameBookOptions {
   learn_after_ms : Double
 }
 pub fn NameBookOptions::default() -> Self
-
-pub struct Part {
-  connects : Connects
-  // private fields
-}
-pub async fn Part::changed(Self) -> Unit
-pub fn Part::connection(Self, @jsjson.JValue) -> @jsjson.JValue
-pub async fn Part::learn(Self, Double, Array[String]) -> Unit
-pub async fn Part::left(Self) -> Unit
-pub async fn Part::reconnect(Self, String) -> Unit
-pub fn Part::shown(Self, @jsjson.JValue) -> @jsjson.JValue
-pub async fn Part::store_changed(Self, @jsjson.JValue) -> Unit
-pub async fn Part::taken(Self) -> Unit
-
-pub struct PartDeps {
-  cards : Cards
-  recent_people : async (String) -> String
-  overview_changed : () -> Unit
-  rows_changed : () -> Unit
-  log : Log
-}
 
 pub(all) struct Platform {
   kind : String

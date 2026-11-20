@@ -2,7 +2,6 @@
 package "station/events"
 
 import {
-  "station/host",
   "station/jsjson",
 }
 
@@ -34,8 +33,6 @@ pub fn entries_view(@jsjson.JValue, Map[String, Unit]) -> @jsjson.JValue
 pub let follows_header : String
 
 pub let gpu_sample_ms : Double
-
-pub async fn harness(@host.Host) -> Unit
 
 pub let head_header : String
 
@@ -75,8 +72,6 @@ pub fn read_only(String) -> Bool
 
 pub let resumed_header : String
 
-pub fn route_of(String?, String?) -> StatusRoute
-
 pub fn runtime_compatible(String, Array[(String, String)], String, String, JsonAnswer) -> JsonAnswer
 
 pub let runtime_kinds : Array[String]
@@ -95,21 +90,13 @@ pub fn segment(String) -> String
 
 pub fn session_seen(SeenStore, Viewer, String) -> Bool
 
-pub let settle_ms : Double
-
 pub let stale_ms : Double
 
-pub fn status_of(StatusInput) -> @jsjson.JValue
-
 pub fn takes_every(Map[String, Unit]) -> Bool
-
-pub let tasks_most : Int32
 
 pub fn thread_seen(SeenStore, Viewer, Double) -> Bool
 
 pub fn viewer_key(Viewer, String) -> String
-
-pub let waiting_days : Double
 
 pub fn went(SeenStore, String, Viewer) -> @jsjson.JValue?
 
@@ -384,36 +371,6 @@ pub(all) struct SeenStore {
   thread_there : (Double) -> Bool
   handed_to : (String) -> @jsjson.JValue?
 }
-
-pub(all) struct StatusInput {
-  version : String
-  cloud : @jsjson.JValue?
-  reached : Bool
-  running : Array[@jsjson.JValue]
-  processes : Array[(String, String)]
-  waiting : Array[@jsjson.JValue]
-  health : @jsjson.JValue?
-}
-
-pub(all) enum StatusRoute {
-  Status
-  Watch
-  Health
-  NotFound
-}
-
-pub struct StatusTeller {
-  now : () -> @jsjson.JValue?
-  after : (Double, () -> Unit) -> () -> Unit
-  watchers : Map[Int32, (String) -> Unit]
-  mut next : Int32
-  mut last : String
-  mut pending : (() -> Unit)?
-}
-pub fn StatusTeller::answer(Self, StatusRoute, (String) -> Unit) -> (Int32, String, String, (() -> Unit)?)
-pub fn StatusTeller::changed(Self) -> Unit
-pub fn StatusTeller::close(Self) -> Unit
-pub fn StatusTeller::new(() -> @jsjson.JValue?, (Double, () -> Unit) -> () -> Unit) -> Self
 
 pub struct Stream {
   queue : Array[String]

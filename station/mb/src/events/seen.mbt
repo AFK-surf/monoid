@@ -62,19 +62,6 @@ pub fn seen_of(store : SeenStore, viewer : Viewer, of : Of) -> Bool {
 }
 
 ///|
-fn hex_value(c : Int32) -> Int32 {
-  if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else if c >= 'a'.to_int() && c <= 'f'.to_int() {
-    c - 'a'.to_int() + 10
-  } else if c >= 'A'.to_int() && c <= 'F'.to_int() {
-    c - 'A'.to_int() + 10
-  } else {
-    -1
-  }
-}
-
-///|
 /// request.ts `percentDecode` (a `+` is a space).
 pub fn percent_decode(s : String) -> String {
   @url.percent_decode_lossy(s, plus_space=true)

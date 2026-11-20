@@ -4,16 +4,11 @@ package "station/mcp_tools"
 import {
   "mbui/effect",
   "station/api_routes",
-  "station/host",
   "station/jsjson",
 }
 
 // Values
 pub fn absent(@jsjson.JValue?) -> Bool
-
-pub let access_levels : Array[String]
-
-pub fn access_of(@jsjson.JValue) -> String
 
 pub fn archive_tools(Ctx, hub? : @jsjson.JValue) -> Array[Tool]
 
@@ -75,8 +70,6 @@ pub let grant_ids : Array[String]
 
 pub let groups : Int32
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let hidden : Array[String]
 
 pub let idle_ms : Double
@@ -137,15 +130,9 @@ pub let notice_mark : String
 
 pub async fn notice_report(Ctx, String, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue, ReportDeps) -> @jsjson.JValue
 
-pub let notify_limit : Int32
-
-pub let ops : Array[String]
-
 pub fn outcome_of(@jsjson.JValue) -> @jsjson.JValue
 
 pub fn outcome_words(@jsjson.JValue, String, String) -> String
-
-pub let output_cap : Int32
 
 pub let outward : Array[String]
 
@@ -167,13 +154,9 @@ pub fn path_normalize(String) -> String
 
 pub fn path_resolve(String, Array[String]) -> String
 
-pub fn peer_http_base(String) -> String
-
 pub fn peer_target(String) -> PeerTarget?
 
 pub fn permission_tools(Ctx, grants? : String?, base? : String) -> Array[Tool]
-
-pub fn permitted(String, String) -> Bool
 
 pub fn plan_words(@jsjson.JValue, String, Bool) -> String
 
@@ -187,13 +170,7 @@ pub fn quoted(String) -> String
 
 pub fn reached_at(@jsjson.JValue, Int32) -> String
 
-pub let read_cap : Int32
-
-pub let read_ops : Array[String]
-
 pub async fn read_tail(ToolsBackend, String, Int32) -> String?
-
-pub fn refuse_upgrade(Int32, String) -> Bytes
 
 pub fn relay_tools(Ctx, deps? : String, mesh_list? : Bool, enroll? : Bool, revoke? : Bool, probe? : (async (String) -> Probed)?) -> Array[Tool]
 
@@ -214,8 +191,6 @@ pub fn rig_tools(Ctx, use_? : String) -> Array[Tool]
 pub fn room_words(@jsjson.JValue) -> String
 
 pub fn rust_arch(String) -> String
-
-pub let screen_limit : Int32
 
 pub fn screen_tools(Ctx, hub? : String, base? : String, name? : String) -> Array[Tool]
 
@@ -297,8 +272,6 @@ pub let unbound_refusal : String
 
 pub fn upper(String) -> String
 
-pub fn url_pathname(String) -> String
-
 pub let wait_max : Double
 
 pub fn weight(Tool) -> Int32
@@ -317,11 +290,6 @@ pub(all) suberror Refusal {
   Refusal(String)
 }
 pub impl Show for Refusal
-
-pub(all) suberror ToolError {
-  ToolError(String, String)
-}
-pub impl Show for ToolError
 
 // Types and methods
 type AgentView
@@ -366,44 +334,6 @@ pub fn Ctx::decl(Self, String) -> @jsjson.JValue
 pub fn Ctx::new(ToolsBackend, @api_routes.Words, Consts) -> Self
 pub fn Ctx::tr(Self, String, String, args? : Array[(String, String)]) -> String
 
-pub struct DeviceTools {
-  b : ToolsBackend
-  home : String
-  env : @jsjson.JValue
-  sessions : String?
-  processes : Map[String, Kept]
-  mut next : Int32
-  background : Array[@effect.Fiber[Unit]]
-}
-pub async fn DeviceTools::close(Self) -> Unit
-pub async fn DeviceTools::drained(Self) -> Unit
-pub fn DeviceTools::new(ToolsBackend, String, @jsjson.JValue, String?) -> Self
-pub async fn DeviceTools::run(Self, String, @jsjson.JValue, @jsjson.JValue, String) -> @jsjson.JValue
-
-pub struct Door {
-  mcp : McpEndpoint
-  backend : ToolsBackend
-  ports : Array[Int32]
-}
-pub async fn Door::handle(Self, DoorRequest) -> DoorAnswer
-pub fn Door::new(McpEndpoint, ToolsBackend, Array[Int32]) -> Self
-pub async fn Door::upgrade(Self, DoorRequest) -> Upgraded
-pub fn Door::url(Self) -> String
-
-pub(all) struct DoorAnswer {
-  status : Int32
-  headers : Array[(String, String)]
-  body : Bytes
-  destroyed : Bool
-}
-
-pub(all) struct DoorRequest {
-  method : String
-  url : String
-  headers : Array[(String, String)]
-  body : Bytes
-}
-
 pub struct FeedbackPart {
   tools : Array[Tool]
   routes : Array[ReportRoute]
@@ -411,8 +341,6 @@ pub struct FeedbackPart {
   told_after_ms : Int32
   telling_fixed : async () -> Unit
 }
-
-type Kept
 
 pub(all) struct Listing {
   budget : Int32?
@@ -455,7 +383,6 @@ pub(all) struct PeerTarget {
   port : Int32
   path : String
 }
-pub fn PeerTarget::to_jv(Self) -> @jsjson.JValue
 
 pub(all) enum Probed {
   Reached(Double)
@@ -523,12 +450,6 @@ pub async fn ToolsBackend::invoke(Self, @jsjson.JValue, Array[@jsjson.JValue]) -
 pub async fn ToolsBackend::log(Self, String, String, String, @jsjson.JValue) -> Unit
 pub fn ToolsBackend::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue) -> Self
 pub async fn ToolsBackend::tell(Self, String, Array[@jsjson.JValue]) -> Unit
-
-pub(all) enum Upgraded {
-  Refused(Bytes)
-  Routed
-  Destroyed
-}
 
 // Type aliases
 

@@ -97,11 +97,7 @@ pub let front_end : UInt32
 
 pub let front_failed : UInt32
 
-pub async fn harness(@host.Host) -> Unit
-
 pub let hold_ms : Double
-
-pub fn incoming_steps_json(Array[@json.Json]) -> @json.Json
 
 pub fn interfaces_of_json(@json.Json) -> Array[(String, Array[Iface])]
 
@@ -263,8 +259,6 @@ pub fn parse_scale(@json.Json) -> Double?
 
 pub fn parse_window_pick(@json.Json) -> WindowPick
 
-pub fn paths_of(Array[WayPath]) -> String
-
 pub let piece : Int32
 
 pub fn presence_refusal(ToolsDeps) -> String?
@@ -303,35 +297,13 @@ pub fn said_word(@json.Json?, Int32) -> String?
 
 pub let screen_type : String
 
-pub fn sent_on(Array[WayPath]) -> Array[(String, Double)]
-
 pub async fn serve_tools(ToolsDeps, @door.Connection, @effect.Runtime) -> Unit
-
-pub fn served_again_after(Double) -> Double
-
-pub let served_again_ms : Double
-
-pub let served_listen_ms : Double
-
-pub let served_routes : Array[String]
-
-pub let served_steady_ms : Double
-
-pub let servers : Int32
 
 pub let sharper : Double
 
 pub async fn shell_file(@host.Host, String) -> FileReading
 
 pub fn shell_sockets(@host.Host) -> Sockets
-
-pub fn slow_line(Array[(String, Double)], Int32?, Double, Array[WayPath], () -> String, Double, Double, String) -> @json.Json?
-
-pub let slow_reply_bytes : Int32
-
-pub let slow_reply_ms : Double
-
-pub async fn slowly(@door.Stream, () -> Array[WayPath], String, () -> String, Double, Double, Double, () -> Double, (String, String, @json.Json) -> Unit) -> Unit
 
 pub let stall_tick_ms : Double
 
@@ -395,6 +367,8 @@ pub let used : Double
 
 pub fn video_payload(Bool, Double, Bytes) -> Bytes
 
+pub let viewer_hold_limit_ms : Double
+
 pub async fn write_bytes(async (Bytes, Int64) -> Unit, Pieces, Int64, Int64) -> Int64
 
 // Errors
@@ -426,12 +400,6 @@ pub struct Came {
   carry : Bytes
   id : Int64
   // private fields
-}
-
-pub(all) enum Claimed {
-  Kept(Handled)
-  Refused(Handled)
-  Claim(String, (Handled?) -> Unit)
 }
 
 #derive(Eq, @debug.Debug)
@@ -516,12 +484,6 @@ pub fn FrontEndpoint::set_congestion(Self, String) -> Unit
 pub async fn FrontEndpoint::set_relay_entries(Self, @json.Json) -> Unit
 pub fn FrontEndpoint::sockets(Self) -> Array[String]
 
-pub(all) struct Handled {
-  status : Int32
-  headers : @json.Json
-  body : Bytes
-}
-
 pub(all) struct Iface {
   address : String
   netmask : String
@@ -596,6 +558,7 @@ pub struct Out {
 pub struct Pacer {
   out : Array[Out]
   trips : Array[Trip]
+  viewer_waits : Array[Trip]
   through : Array[Through]
   mut rate : Double?
   mut ceiling : Double?
@@ -609,7 +572,7 @@ pub struct Pacer {
   now : () -> Double
   stalled : () -> Double
 }
-pub fn Pacer::acked(Self, Double) -> Unit
+pub fn Pacer::acked(Self, Double, viewer_wait_ms? : Double) -> Unit
 pub fn Pacer::asked_rate(Self) -> Double?
 pub fn Pacer::backlogged(Self) -> Bool
 pub fn Pacer::may(Self) -> Bool
@@ -619,6 +582,7 @@ pub fn Pacer::sent(Self, Double, Double) -> Unit
 pub fn Pacer::set_ceiling(Self, Double) -> Unit
 pub fn Pacer::through_rate(Self) -> Double
 pub fn Pacer::unacked(Self) -> Int32
+pub fn Pacer::viewer_wait(Self) -> Double
 pub fn Pacer::wait(Self) -> Double
 
 #derive(Eq, @debug.Debug)
@@ -628,13 +592,6 @@ pub(all) struct Parent {
   sampled : Bool
 }
 pub fn Parent::to_json(Self) -> @json.Json
-
-pub struct PieceQueue {
-  pending : Array[(String?, Array[Int32])]
-}
-pub fn PieceQueue::drain(Self) -> Array[@json.Json]
-pub fn PieceQueue::new() -> Self
-pub fn PieceQueue::piece(Self, Int32, String?) -> Unit
 
 pub(all) struct Pieces {
   next : async () -> Bytes?
@@ -654,11 +611,6 @@ pub struct Sample {
   at : Double
   frame : Double
   before : Double
-}
-
-pub(all) struct Says {
-  claim : async (@json.Json, String, String?, String) -> Claimed
-  said : (Double, Double, String, @json.Json) -> Unit
 }
 
 pub(all) struct ScreenFrame {
@@ -726,47 +678,6 @@ pub(all) struct ScreenViewPort {
   feed_mic : ((Bytes, UInt32) -> Unit)?
 }
 
-pub struct Served {
-  // private fields
-}
-pub async fn Served::close(Self) -> Unit
-pub fn Served::new(String, String, ServedWith, @effect.Runtime) -> Self
-pub fn Served::set_changed(Self, (@json.Json, @json.Json) -> Unit) -> Unit
-pub fn Served::set_on_routes(Self, (Array[String]) -> Unit) -> Unit
-pub fn Served::set_says(Self, Says) -> Unit
-pub async fn Served::start(Self) -> Array[String]
-pub fn Served::viewer(Self, Int32, @json.Json?, moved? : Bool, floor? : Double?) -> Unit
-
-pub struct ServedTold {
-  told : Map[Int32, String]
-  names : Map[String, String]
-}
-pub fn ServedTold::again(Self) -> Array[@json.Json]
-pub fn ServedTold::new() -> Self
-pub fn ServedTold::viewer(Self, Int32, @json.Json?, Bool, Double?) -> Array[@json.Json]
-pub fn ServedTold::viewer_of(Self, Int32) -> @json.Json?
-
-pub(all) struct ServedWith {
-  spawn : (String, Array[String], (@json.Json) -> Unit, (Int32) -> Unit) -> ServingProcess
-  now : () -> Double
-  after : (Double, () -> Unit) -> () -> Unit
-  wall : () -> Double
-  answer : async (@json.Json, @json.Json, Bytes) -> Handled
-  built : (@json.Json, Double?) -> Unit
-  stream : (async (@json.Json, @json.Json, Bytes) -> StreamAnswer)?
-  prepare : (String) -> Unit
-  remove : async (String) -> Unit
-  set : () -> @json.Json
-  pid : Int32
-  sep : String
-  log : (String, String, String, @json.Json) -> Unit
-}
-
-pub(all) struct ServingProcess {
-  post : (@json.Json) -> Unit
-  terminate : async () -> Unit
-}
-
 pub struct Sharpener {
   mut at : Double
   mut rate : Double?
@@ -817,18 +728,6 @@ pub(all) struct Span {
   id : String
   wall_ns : Int64
   started : Int64
-}
-
-pub(all) struct StreamAnswer {
-  status : Int32
-  headers : @json.Json
-  body : StreamBody
-}
-
-pub(all) enum StreamBody {
-  Whole(Bytes)
-  Relay(((String) -> Unit, () -> Unit) -> Unit, () -> Unit)
-  Pieces(async () -> Bytes?, async () -> Unit)
 }
 
 pub struct Through {
@@ -888,18 +787,6 @@ pub(all) struct Watcher {
   end : (String) -> Unit
   watch_only : (String?) -> Unit
 }
-
-pub(all) struct WayPath {
-  selected : Bool
-  relay : String?
-  ip : String?
-  rtt_ms : Double?
-  tx_packets : Double
-  lost_packets : Double
-  cwnd : Double?
-  congestion_events : Double?
-}
-pub fn WayPath::of_json(@json.Json) -> Self
 
 #derive(Eq, @debug.Debug)
 pub(all) enum WindowPick {

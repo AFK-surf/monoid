@@ -8,7 +8,7 @@ using @jsjson {type JValue as J}
 
 ///|
 using @session_chats {
-  at, str_of, num_of, bool_of, arr_of, js, jn, ji, jb, jo, ja, jsa, jopt, set_field, without, spread, parse_js,
+  at, str_of, num_of, arr_of, js, jn, ji, jb, jo, ja, jsa, jopt, set_field, without, parse_js,
   type Thrown, thrown_message, thrown_kind, fail_,
 }
 

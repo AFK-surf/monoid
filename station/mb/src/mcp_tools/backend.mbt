@@ -9,7 +9,6 @@
 
 using @api_routes {
   type JV,
-  type Thrown,
   js,
   jnum,
   jint,
@@ -25,9 +24,7 @@ using @api_routes {
   jref,
   jundef,
   is_undef,
-  nullish,
   ref_of,
-  parse,
   try_parse,
   js_string,
   num_text,
@@ -139,7 +136,6 @@ pub fn message_of(e : Error) -> String {
   match e {
     Failed(m) => m
     Refusal(m) => m
-    ToolError(_, m) => m
     @api_routes.Thrown(_, said) => js_string(jget(Some(said), "message"))
     _ => @api_routes.message_of(e)
   }
