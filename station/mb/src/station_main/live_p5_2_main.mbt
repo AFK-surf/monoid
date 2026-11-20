@@ -1141,6 +1141,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         return Json::null()
       }
       self.closed = true
+      self.close_helpers()
       hub.hold("drain")
       match self.actors_program {
         Some(p) =>
@@ -1555,6 +1556,7 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
       }
       all_left(5_000)
       self.closed = true
+      self.close_helpers()
       self.program.release(false)
       return []
     }
@@ -1562,6 +1564,29 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
   self.closed = true
   self.program.release(false)
   jitems(jfield(handed, "sessions"))
+}
+
+///|
+/// The station stops or hands over: the background programs of its own it started (the usage counter's and the
+/// retirement's, the live view's locator) ended at once, the counter stopped so none starts again, where the station
+/// after would otherwise find them still writing to its database.
+fn P52::close_helpers(self : P52) -> Unit {
+  if usage_counter_program.val is Some(p) {
+    p.close(force=true)
+    usage_counter_program.val = None
+  }
+  if usage_retire_program.val is Some(p) {
+    p.close(force=true)
+    usage_retire_program.val = None
+  }
+  // (after the programs: the counter's `usage.close` finds none left to end on SIGTERM alone)
+  if self.hub is Some(h) {
+    h.usage_stop()
+  }
+  if self.live_locator is Some(l) {
+    l.close()
+    self.live_locator = None
+  }
 }
 
 ///|

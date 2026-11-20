@@ -684,6 +684,17 @@ pub async fn Hub::usage_start(self : Hub) -> Unit {
 }
 
 ///|
+/// Stop the hub's usage counter as the station stops or hands over: no read is set going again, and what the store
+/// tells of usage is no longer kept.
+pub fn Hub::usage_stop(self : Hub) -> Unit {
+  if self.counter is Some(c) {
+    c.stop()
+    self.counter = None
+  }
+  self.keeps_counted = false
+}
+
+///|
 /// Start draining moved sessions' chats for usage counting (`UsageDrain::new` + `begin`).
 pub fn Hub::usage_drain(self : Hub) -> Unit {
   let d = UsageDrain::new(self)

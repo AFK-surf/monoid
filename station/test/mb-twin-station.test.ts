@@ -629,8 +629,9 @@ async function sideBySide(twins: Twins) {
   // (what is the machine's or the network's at the moment it is read: its disk, the relays reached, npm's latest)
   // (and the copies' export, which runs in the background and counts where it sent as it goes)
   // (the updates are each one's first look, at npm and the machine, at a moment of its own: what either has read by
-  // then differs from run to run)
-  const machine = [/\.disk\.freeBytes:/, /\.checkedAt:/, /^\.mesh\.reached:/, /^\.updates\b/, /^\.copies\.to:/];
+  // then differs from run to run; so is the usage counter's first read in the background, whose end turns `/usage`'s
+  // `reading` false at a moment of each one's own)
+  const machine = [/\.disk\.freeBytes:/, /\.checkedAt:/, /^\.mesh\.reached:/, /^\.updates\b/, /^\.copies\.to:/, /^\.reading:/];
   // (what an account's routes answer with: the overview, whose fields are each held below once both are settled; the
   // account's own are compared there, beside what is still each one's first look: the copies to take back)
   const overviewed = [...machine.map((r) => new RegExp(r.source.replace("^\\.", "^(?:\\.overview)?\\."))), /^(?:\.overview)?\.(automaticDecisions|machine|machineLogins|rigs|updates|mesh)\b/, /^(?:\.overview)?\.copies\.(empty|restorable)\b/, /^(?:\.overview)?\.profiles\[\d+\]\.check\b/];

@@ -112,14 +112,17 @@ fn LineProgram::pid(self : LineProgram) -> Int? {
 }
 
 ///|
-fn LineProgram::close(self : LineProgram) -> Unit {
-  match self.proc {
-    Some(p) => {
-      self.proc = None
-      p.end_input()
-      ignore(kill(p.pid, "SIGTERM"))
-    }
-    None => ()
+/// Its process let go and what waits on it failed. `force`: killed at once (the station stopping or handing over, as
+/// `LiveLocator::retire`), not left to end on SIGTERM.
+fn LineProgram::close(self : LineProgram, force? : Bool = false) -> Unit {
+  if self.idle is Some(f) {
+    f.interrupt()
+    self.idle = None
+  }
+  if self.proc is Some(p) {
+    self.proc = None
+    p.end_input()
+    ignore(kill(p.pid, if force { "SIGKILL" } else { "SIGTERM" }))
   }
   for w in self.waiting {
     ignore(w.succeed(Err("\{self.name} stopped")))
@@ -302,6 +305,10 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
   let db_path = path([self.data, "stillfail.db"])
   match what {
     "usage.read" => {
+      // (none started again once the station stopped or handed over: close_helpers let the last one go)
+      if self.closed {
+        raise LiveError("the station is closed")
+      }
       let program = match usage_counter_program.val {
         Some(p) => p
         None => {
@@ -345,6 +352,9 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
     // (the station's store is a file: what a database in memory cannot have retired does not arise)
     "usage.inMemory" => Json::boolean(false)
     "usage.retireStep" => {
+      if self.closed {
+        raise LiveError("the station is closed")
+      }
       let program = match usage_retire_program.val {
         Some(p) => p
         None => {

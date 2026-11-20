@@ -21,6 +21,8 @@ pub fn agy_base_model(String) -> (String, String?)
 
 pub fn allowed_in(@json.Json, String?, String?) -> Bool
 
+pub let archive_upkeep_every_ms : Double
+
 pub fn ask_which(Array[@json.Json], String) -> String
 
 pub let auto : String
@@ -119,6 +121,12 @@ pub let holds_known : Array[String]
 
 pub async fn hub_call(Hub, String, Array[@json.Json]) -> @json.Json
 
+pub let idle_rebuild_low_ms : Double
+
+pub let idle_rebuild_max_per_round : Int32
+
+pub let idle_rebuild_ms : Double
+
 pub fn index_of(String, String, from? : Int32) -> Int32
 
 pub fn int(Int32) -> @json.Json
@@ -204,6 +212,10 @@ pub fn options_arg(@json.Json?) -> Array[@json.Json]? raise Refused
 pub fn options_card(Array[@json.Json]) -> @json.Json
 
 pub fn options_said(@json.Json) -> String
+
+pub let pack_backfill_check_max_per_round : Int32
+
+pub let pack_backfill_max_per_round : Int32
 
 pub fn parse_declared(String, Double) -> @json.Json?
 
@@ -382,6 +394,9 @@ pub struct Hub {
   awaiting_workspace_activity : @set.Set[String]
   mut counter : UsageCounter?
   mut keeps_counted : Bool
+  mut pack_cursor : @json.Json
+  mut last_archive_upkeep_at : Double
+  idle_measured : Map[String, Double]
 }
 pub async fn Hub::accept(Self, String, @json.Json) -> Unit
 pub fn Hub::act(Self, String, String, args? : Array[@json.Json]) -> Unit
@@ -402,6 +417,7 @@ pub fn Hub::busy(Self, String) -> Bool
 pub fn Hub::cancel(Self, Int32) -> Unit
 pub fn Hub::changed(Self, String, restart? : Bool) -> Unit
 pub fn Hub::chat_key(Self, String) -> String
+pub async fn Hub::clean_idle_rebuildable(Self, Double, idle_ms? : Double, limit? : Int32) -> Int32
 pub fn Hub::client_key(Self, String) -> String?
 pub fn Hub::client_keys(Self) -> Array[(String, String)]
 pub async fn Hub::command(Self, String, String, Array[@json.Json]) -> @json.Json
@@ -415,8 +431,8 @@ pub async fn Hub::create_session(Self, String, @json.Json, String, @json.Json?, 
 pub async fn Hub::delete_session(Self, String) -> Unit
 pub fn Hub::deliver(Self, @json.Json, @json.Json, Array[String], String, retry_pending? : Bool, workspace? : String?) -> Unit raise
 pub fn Hub::deliver_letter(Self, @json.Json, @json.Json, Array[String]) -> Unit raise
-pub fn Hub::drop_actor(Self, String) -> Bool
 pub async fn[T] Hub::drive(Self, @effect.Runtime, @effect.Deferred[T], (async () -> Unit) -> Unit) -> Unit
+pub fn Hub::drop_actor(Self, String) -> Bool
 pub async fn Hub::end_orphan(Self, @json.Json, Double) -> Bool
 pub fn Hub::every_changed(Self) -> Unit
 pub fn Hub::evict(Self, String) -> Unit
@@ -458,6 +474,7 @@ pub async fn[T] Hub::one_single(Self, String, async () -> T) -> T
 pub fn Hub::online(Self, @json.Json) -> Bool
 pub fn Hub::open_chat(Self, String, String, String?) -> @json.Json raise
 pub async fn Hub::owns_runner(Self, String) -> Bool
+pub async fn Hub::pack_unfinished_archived(Self, Double, limit? : Int32, check_limit? : Int32) -> Int32
 pub fn Hub::process_state(Self, String) -> String
 pub fn Hub::processes(Self) -> Array[(String, String)]
 pub async fn Hub::profile_gone(Self, String) -> Unit
@@ -469,10 +486,12 @@ pub async fn Hub::receive(Self, String, @json.Json) -> Unit
 pub fn Hub::recover(Self) -> Unit raise
 pub fn Hub::release(Self, String) -> Unit raise Refused
 pub fn Hub::release_chat(Self, String) -> Bool raise Refused
-pub async fn Hub::relieve_archived(Self) -> Unit
+pub async fn Hub::relieve_archived(Self, full? : Bool) -> Unit
+pub async fn Hub::relieve_idle_rebuildable(Self, Double, idle_ms? : Double, full? : Bool) -> Int32
 pub fn Hub::reprice_usage(Self) -> Unit
 pub async fn Hub::retire_after_previous(Self) -> Bool
 pub async fn Hub::retire_usage(Self) -> Unit
+pub async fn Hub::run_archive_upkeep_if_due(Self, Double, every_ms? : Double) -> Bool
 pub fn Hub::run_due(Self, Double) -> Unit
 pub fn Hub::running(Self) -> Int32
 pub fn Hub::running_sessions(Self) -> Array[@json.Json]
@@ -499,6 +518,7 @@ pub async fn Hub::unquiet(Self, String) -> Unit
 pub fn Hub::usage_drain(Self) -> Unit
 pub fn Hub::usage_now(Self, String) -> @json.Json? raise
 pub async fn Hub::usage_start(Self) -> Unit
+pub fn Hub::usage_stop(Self) -> Unit
 pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
 pub fn Hub::workspaces(Self) -> Array[String]
 pub fn Hub::ws_of(Self, String?) -> String?
