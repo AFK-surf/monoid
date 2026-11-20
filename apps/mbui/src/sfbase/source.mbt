@@ -556,6 +556,23 @@ fn topic_key(name : String, params : Map[String, Json]) -> String {
 let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 
 ///|
+/// Source `src` let go (its owner's view gone): the topics it follows let go of with it, whatever still watches them, so
+/// none of them holds on to what it reads through (the source it was made of); what that one reads let go of by its own
+/// last watcher as ever, never released here.
+fn followed_forget_source(src : Source) -> Unit {
+  let gone = followed_topics.val.filter(fn(t) { physical_equal(t.source, src) && !t.independent })
+  if gone.is_empty() {
+    return
+  }
+  // (taken out first: what letting each go tells finds none of them)
+  followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && !t.independent) })
+  for t in gone {
+    topic_readers_drop(src, t.key)
+    t.holder.dispose()
+  }
+}
+
+///|
 /// Whether a reader holds topic `name` with `params` now (a page's, a graph's: followed and watched). It asks nothing
 /// of the core and acquires nothing.
 fn topic_held(name : String, params : Map[String, Json]) -> Bool {

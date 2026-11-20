@@ -35,6 +35,10 @@ pub fn fix_download_id(d : FixDownload) -> String {
 pub let fix_downloads : Array[FixDownload] = []
 
 ///|
+/// Where the fixture's chat files downloaded were saved (`download.done`'s `at`), by their download's id.
+pub let fix_saved : Map[String, String] = Map([])
+
+///|
 /// How long each twentieth of a download made up takes.
 pub let fix_download_step_ms : Double = 200.0
 
@@ -272,8 +276,8 @@ pub fn fix_every_transfer(station : String, key : String, root : String) -> Unit
 }
 
 ///|
-/// `download.start`, `download.retry`, `download.take`, `download.done` and `download.cancel` made up; None for any
-/// other call.
+/// `download.start`, `download.retry`, `download.take`, `download.done`, `download.cancel` and `download.saved` made
+/// up; None for any other call.
 pub fn fixture_downloads_call(f : Fixture, name : String, params : Json) -> Result[Json, Json]? {
   let p = Some(params)
   match name {
@@ -320,11 +324,19 @@ pub fn fixture_downloads_call(f : Fixture, name : String, params : Json) -> Resu
     }
     "download.done" | "download.cancel" => {
       let id = text(p, "id")
+      // (saved where the host said: where its file is on this device from now on, download.saved)
+      if name == "download.done" && text(p, "at") != "" {
+        fix_saved[id] = text(p, "at")
+      }
       fix_downloads.retain(fn(d) { fix_download_id(d) != id })
       f.changed()
       Some(Ok({}))
     }
     "download.retry" => Some(Ok({}))
+    "download.saved" => {
+      let id = text(p, "station") + "|" + text(p, "key") + "|" + text(p, "name")
+      Some(Ok({ "at": Json::string(fix_saved.get(id).unwrap_or("")) }))
+    }
     "fill.want" => {
       let k : FixKeeping = {
         station: text(p, "station"),

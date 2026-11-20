@@ -93,6 +93,7 @@ fn file_menu(
   src : String,
   quote? : (() -> Unit)? = None,
   more? : Array[@sf.MenuItem?] = [],
+  reveal? : ((@sf.MenuItem?) -> Unit) -> Unit,
   after? : () -> Array[@sf.MenuItem?] = fn() { [] },
 ) -> Unit {
   match c.menu_asked(id) {
@@ -104,26 +105,37 @@ fn file_menu(
         // (the press is the file's menu's, not a passage's pick)
         pk.taken_at = c.press().frame
       }
-      let items : Array[@sf.MenuItem?] = []
-      match quote {
-        Some(q) => items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.quote"), q, icon="quote")))
-        None => ()
-      }
-      items.append(more)
-      if src != "" && src != "!" {
-        items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(src) }, icon="copy")))
-      }
       let tail = after()
-      if !tail.is_empty() {
-        if !items.is_empty() {
-          items.push(None)
+      let open = fn(shown : @sf.MenuItem?) {
+        let items : Array[@sf.MenuItem?] = []
+        match quote {
+          Some(q) => items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.quote"), q, icon="quote")))
+          None => ()
         }
-        items.append(tail)
+        items.append(more)
+        if shown is Some(_) {
+          items.push(shown)
+        }
+        if src != "" && src != "!" {
+          items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(src) }, icon="copy")))
+        }
+        if !tail.is_empty() {
+          if !items.is_empty() {
+            items.push(None)
+          }
+          items.append(tail)
+        }
+        if items.length() > 0 {
+          @sf.menu(items, from=@sf.at_point(x, y))
+          menu_doing.held_for = if held { id } else { 0 }
+          menu_doing.held_serial = @sf.last_presented()
+        }
       }
-      if items.length() > 0 {
-        @sf.menu(items, from=@sf.at_point(x, y))
-        menu_doing.held_for = if held { id } else { 0 }
-        menu_doing.held_serial = @sf.last_presented()
+      // (its 在访达中显示 where this device shows files in their folders: asked once the frame's builds are over, as a
+      // press waiting for the core is, message_files.mbt with_reveal)
+      match reveal {
+        Some(r) if @hostapi.reveals_files() => c.after_build("file-menu-reveal", fn() { r(open) })
+        _ => open(None)
       }
     }
     _ => ()

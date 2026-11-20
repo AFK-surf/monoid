@@ -399,13 +399,17 @@ test "大屏: a long Markdown beside a chat keeps 目录 in the toolbar and floa
   assert_eq(t.all(Button, label=to_end).length(), 1, msg="滚动到底部 float shown for long Markdown")
   let tab_right = bx + bw
   let tab_bottom = 800.0
-  let reach = @sf.float_button_reach
   let (ex, ey, ew, eh) = t.get(Button, label=to_end).rect
-  // float is outside toolbar, press box >= 44×44, drawn 32×32 circle 16±1 from right and bottom
+  // float is outside toolbar: the button the drawn 32×32 circle (what a screen reader reads), 16±1 from right and
+  // bottom (a finger's press box round it: float_button_node_wbtest's; a mouse's on 大屏 is the app's mouse rule)
   assert_true(ey > by + bh, msg="滚动到底部 floats below toolbar")
-  assert_true(ew >= 44.0 && eh >= 44.0, msg="滚动到底部 press box >= 44×44: \{ew}×\{eh}")
-  assert_true((tab_right - (ex + ew - reach) - 16.0).abs() <= 1.0, msg="↓ right margin \{tab_right - (ex + ew - reach)}")
-  assert_true((tab_bottom - (ey + eh - reach) - 16.0).abs() <= 1.0, msg="↓ bottom margin \{tab_bottom - (ey + eh - reach)}")
+  let side = @sf.float_button_side
+  assert_true(
+    (ew - side).abs() <= 0.5 && (eh - side).abs() <= 0.5,
+    msg="滚动到底部 the drawn circle: \{ew}×\{eh}",
+  )
+  assert_true((tab_right - (ex + ew) - 16.0).abs() <= 1.0, msg="↓ right margin \{tab_right - (ex + ew)}")
+  assert_true((tab_bottom - (ey + eh) - 16.0).abs() <= 1.0, msg="↓ bottom margin \{tab_bottom - (ey + eh)}")
   // narrow tab: opening contents panel covers the floating ↓ button
   t.click(Button, label=contents)
   t.run_for(@ui.move_most_ms)
@@ -462,7 +466,7 @@ test "大屏: a long Markdown beside a chat keeps 目录 in the toolbar and floa
   tw.click(Button, label=contents)
   tw.run_for(@ui.move_most_ms)
   let (ex2, _, ew2, _) = tw.get(Button, label=to_end).rect
-  let right_gap = wtx + wtw - (ex2 + ew2 - reach)
+  let right_gap = wtx + wtw - (ex2 + ew2)
   assert_true((right_gap - (320.0 + 16.0)).abs() <= 1.0, msg="↓ right gap with docked panel: \{right_gap}, want 336 ±1")
 }
 

@@ -407,7 +407,7 @@ pub fn composer(
     composing.had_focus[spec.draft] = true
   }
   let ours = composing.let_go.get(spec.draft).unwrap_or(false)
-  let lost_long = c.held("composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
+  let lost_long = c.held("composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache && !(c.page_owner() != 0 && !@sfbase.app.nav.takes(c.page_owner())), let_go_ms)
   let held = ours && !active_focus && !lost_long
   // (the box it stayed a moment after the cursor left, let go of now: a change of its own, at this moment, whatever
   // words sent from it are doing meanwhile)

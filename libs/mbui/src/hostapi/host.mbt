@@ -126,6 +126,7 @@ pub(open) trait Host {
   perf_size(Self) -> Double = _
   perf_read(Self) -> Bytes = _
   perf_open(Self, Bool) -> Bool = _
+  reveal_file(Self, String, Bool) -> Bool = _
   shared_in(Self) -> String = _
   shared_in_file(Self, Int) -> Bytes = _
   app_version(Self) -> Int = _
@@ -912,6 +913,11 @@ impl Host with perf_size(_) {
 
 ///|
 impl Host with perf_open(_, _) {
+  false
+}
+
+///|
+impl Host with reveal_file(_, _, _) {
   false
 }
 
@@ -2653,6 +2659,20 @@ pub fn perf_opens() -> Bool {
 /// cannot be (perf_opens). Asked off the thread that draws: nothing waits for the file manager.
 pub fn perf_open() -> Bool {
   current.val.perf_open(true)
+}
+
+///|
+/// Whether the device can show a file of its own where it is, in the system's file manager (reveal_file): macOS's
+/// Finder, Windows' Explorer, a Linux desktop's file manager; not a phone's nor the web's.
+pub fn reveals_files() -> Bool {
+  current.val.reveal_file("", false)
+}
+
+///|
+/// The file at `path` (on this device) shown chosen in its folder in the system's file manager (在访达中显示); false
+/// where it cannot be (reveals_files) or is not there.
+pub fn reveal_file(path : String) -> Bool {
+  path != "" && current.val.reveal_file(path, true)
 }
 
 ///|

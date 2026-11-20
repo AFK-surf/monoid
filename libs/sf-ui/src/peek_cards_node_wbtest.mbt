@@ -233,3 +233,50 @@ test "a link's card in an agent's words: its title over its line, pressed where 
 ///|
 /// Longer than what a pick showed takes to leave: the card as it is once that has gone.
 let peek_test_left_ms : Double = 1000.0
+
+///|
+/// The heads a card's `ago` stands at the end of, each in `card`: a chat's (after its title), a file's (after its
+/// name), a pull request's meta (after where it is), each of them saying `long` before `ago`.
+fn peek_ago_heads(card : @view.View, long : String, ago : String) -> Unit {
+  peek_chat_head_node(card, fn() { long }, ago=fn() { ago })
+  peek_file_head_node(card, fn() { long }, fn() { false }, fn() { "~/src/main.mbt" }, fn() { ago })
+  peek_change_node(card, true, fn() { "open" }, fn() { "state.open" }, fn() { long }, fn() { ago }, fn() { "标题" }, fn() {
+    []
+  }, fn(_) {  })
+}
+
+///|
+/// How wide each of the words `t` lays out that `ago` says are how long ago is, each checked to end inside a rig's card
+/// `wide` across (its words 10 in).
+fn peek_agos_inside(t : @ui.Tester, wide : Double, ago : (String) -> Bool) -> Array[Double] {
+  let words = t.words().filter(fn(x) { x.5 > 0.0 })
+  let agos = words.filter(fn(x) { ago(x.0) })
+  for x in agos {
+    guard x.1 >= 50.0 - 0.01 && x.1 + x.3 <= 40.0 + wide - 10.0 + 0.01 else {
+      @halt.saying("「\{x.0}」 laid out from \{x.1} to \{x.1 + x.3}, past the card: \{Repr(words)}")
+    }
+  }
+  agos.map(fn(x) { x.3 })
+}
+
+///|
+test "a narrow card's head: how long ago kept whole at its end, what is before it given way first" {
+  let long = "AFK-surf/monoid-a-repository-with-a-long-name #7279"
+  let is_ago = fn(s : String) { s == "3 分钟前" }
+  let room = peek_rig(fn(card) { peek_ago_heads(card, "标题", "3 分钟前") })
+  let whole = peek_agos_inside(room, 308.0, is_ago)
+  assert_eq(whole.length(), 3)
+  let t = peek_rig(fn(card) { peek_ago_heads(card, long, "3 分钟前") }, wide=200.0)
+  let agos = peek_agos_inside(t, 200.0, is_ago)
+  assert_eq(agos, whole)
+  assert_eq(peek_faults(t), [])
+}
+
+///|
+test "a card's head whose how long ago is longer than its line: cut short inside the card" {
+  let ago = "三年零四个月又十七天之前的某一个下午快要下班的时候"
+  let t = peek_rig(fn(card) { peek_ago_heads(card, "标题", ago) }, wide=200.0)
+  let agos = peek_agos_inside(t, 200.0, fn(s) { s == ago })
+  assert_eq(agos.length(), 3)
+  assert_eq(peek_faults(t), [])
+}

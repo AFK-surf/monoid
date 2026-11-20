@@ -736,6 +736,8 @@ fn tester_make(
     perf_lines: [],
     perf_opens: false,
     perf_opened: 0,
+    reveals: false,
+    revealed: [],
     perf_bytes: 0.0,
     view_texts: {},
     view_stills: {},
@@ -2789,6 +2791,18 @@ pub fn Tester::set_perf(self : Tester, state : Int) -> Unit {
 /// Whether the performance record's folder can be opened from now on (@hostapi.perf_opens: a host with no share sheet).
 pub fn Tester::set_perf_opens(self : Tester, opens : Bool) -> Unit {
   self.fake.perf_opens = opens
+}
+
+///|
+/// Whether files can be shown in their folders from now on (@hostapi.reveals_files: a desktop's file manager).
+pub fn Tester::set_reveals(self : Tester, reveals : Bool) -> Unit {
+  self.fake.reveals = reveals
+}
+
+///|
+/// The files the app showed in their folders (@hostapi.reveal_file), oldest first.
+pub fn Tester::revealed(self : Tester) -> Array[String] {
+  self.fake.revealed.copy()
 }
 
 ///|

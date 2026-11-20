@@ -12,8 +12,6 @@
 ///|
 priv struct AdminLive {
   admin : @api_routes.Admin
-  /// What the routes hold by reference (a hash being made).
-  handles : Map[String, @buffer.Buffer]
   /// The files the routes opened (`fs.open`'s handle, `fh:<n>`): the path each reads.
   files : Map[String, String]
   mut next_handle : Int
@@ -83,31 +81,6 @@ fn p51_piece_answered(file : String, said : Json) -> Bytes raise {
 }
 
 ///|
-/// read/sessions.ts `mime`: a file's type by its extension (Path::extension's: none for a name with no dot, or only the
-/// one it starts with).
-fn p51_mime(p : String) -> String {
-  let mut name = p
-  if name.rev_find("/") is Some(i) { name = name[i + 1:].to_owned() }
-  if name.rev_find("\\") is Some(i) { name = name[i + 1:].to_owned() }
-  let dot = name.rev_find(".").unwrap_or(-1)
-  if dot <= 0 {
-    return "application/octet-stream"
-  }
-  match name[dot + 1:].to_owned().to_lower() {
-    "png" => "image/png"
-    "jpg" | "jpeg" => "image/jpeg"
-    "gif" => "image/gif"
-    "webp" => "image/webp"
-    "svg" => "image/svg+xml"
-    "pdf" => "application/pdf"
-    "txt" => "text/plain; charset=utf-8"
-    "md" => "text/markdown; charset=utf-8"
-    "json" => "application/json"
-    _ => "application/octet-stream"
-  }
-}
-
-///|
 /// Whether a viewer manages the station, and whether one only reads (api_routes' `manages_station`, `read_only`).
 fn p51_manages(viewer : Json) -> Bool {
   @api_routes.manages_station(to_jv(viewer))
@@ -148,29 +121,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
   let text = (i : Int) => match args.get(i) {
     Some(Str(s)) => s
     _ => ""
-  }
-  // A hash being made (`crypto.createHash` and what is asked of its handle).
-  if name.has_prefix("h:") {
-    let (handle, call) = match name.rev_find(".") {
-      Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
-      None => (name, "")
-    }
-    guard a.handles.get(handle) is Some(buf) else { raise @api_routes.Thrown("Error", to_jv({ "message": "no handle \{handle}" })) }
-    match call {
-      "update" => {
-        match @api_routes.bytes_of(args.get(0).unwrap_or(Null)) {
-          Some(b) => buf.write_bytes(b)
-          None => buf.write_bytes(@utf8.encode(text(0)))
-        }
-        return @api_routes.jref(handle)
-      }
-      "digest" => {
-        a.handles.remove(handle)
-        let digest = @cloud_lock.sha256(buf.to_bytes())
-        return if text(0) == "hex" { Str(@cloud_lock.hex_of(digest)) } else { @api_routes.jbytes(digest) }
-      }
-      _ => raise @api_routes.Thrown("Error", to_jv({ "message": "no call \{call} of a hash" }))
-    }
   }
   // A file the routes opened (`fs.open`): its size, a piece of it, let go.
   if name.has_prefix("fh:") {
@@ -273,12 +223,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => 16
       }
       @api_routes.jbytes(@drive.random_bytes(n))
-    }
-    "crypto.createHash" => {
-      a.next_handle += 1
-      let handle = "h:\{a.next_handle}"
-      a.handles[handle] = @buffer.new()
-      @api_routes.jref(handle)
     }
     "clock.currentTimeMillisUnsafe" | "os.homedir" | "os.totalmem" | "os.cpus" | "config.raw" | "config.updateSoon" | "cloud.memberships" | "cloud.reload" | "events.overviewChanged" | "events.tell" =>
       to_jv(dispatch_infra(bus, name, args.map(of_jv)).unwrap_or(Json::null()))
@@ -487,7 +431,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       if device.sign_key is Some(k) { d["sign_key"] = Json::string(k) }
       to_jv({ "device": Json::object(d), "role": Json::string(role) })
     }
-    "read/sessions.mime" => Str(p51_mime(text(0)))
     "cli.joinWorkspace" => {
       let home_locked = () => match self.plane {
         Some(plane) => plane.cloud.locked() is Some(_)
@@ -566,32 +509,41 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Null => @api_routes.jundef
         ws => to_jv(ws)
       }
-    "store.getSession" | "hub.store.getSession" | "store.getJob" | "store.handedTo" | "store.homeChat" | "store.threadSessions" | "store.told" | "hub.store.binding" | "store.getThread" | "store.setThreadTitle" => {
-      let meth = if name.has_prefix("hub.store.") { name[10:].to_owned() } else { name[6:].to_owned() }
-      to_jv(dispatch_store(bus, meth, args.map(of_jv)))
+    "store.getSession" | "hub.store.getSession" => to_jv(bus.store.get_session(text(0)))
+    "store.getJob" => to_jv(bus.store.get_job(arg(0)))
+    "store.handedTo" => to_jv(bus.store.handed_to(text(0)))
+    "store.homeChat" => to_jv(bus.store.home_chat(arg(0)))
+    "hub.store.binding" => to_jv(bus.store.binding(arg(0)))
+    "store.setThreadTitle" => {
+      bus.store.set_thread_title(arg(0), arg(1))
+      Null
     }
-    "runtimeView.runtimeView" => {
-      // (what a client from before takes of a shape: the runtimes it knows, events/compat.mbt)
-      let supported : Map[String, Unit] = {}
-      match arg(2) {
-        { "$set": Array(kinds), .. } =>
-          for k in kinds {
-            if k is String(x) {
-              supported[x] = ()
-            }
-          }
-        _ => ()
-      }
-      match @events.runtime_view(args.get(0).unwrap_or(Null), Some(args.get(1).unwrap_or(Null)), supported) {
-        Omit => to_jv({ "$omit": true })
-        Value(Some(v)) => v
-        Value(None) => @api_routes.jundef
-      }
-    }
-    "device/tools.accessOf" =>
+    "store.told" => {
       match arg(0) {
-        { "tools": { "access": String(a), .. }, .. } if a == "off" || a == "read" || a == "full" => Str(a)
-        _ => Str("off")
+        Array(changes) => bus.store.told(changes)
+        c => bus.store.told([c])
+      }
+      Null
+    }
+    "store.threadSessions" =>
+      match self.threads_store() {
+        Some(t) => {
+          t.set_now(wall_ms().to_double())
+          let v = t.thread_sessions(arg(0))
+          told_threads(bus, t)
+          to_jv(v)
+        }
+        None => Arr([])
+      }
+    "store.getThread" =>
+      match self.threads_store() {
+        Some(t) => {
+          t.set_now(wall_ms().to_double())
+          let v = t.get_thread(arg(0))
+          told_threads(bus, t)
+          to_jv(v)
+        }
+        None => Null
       }
     "mesh/settings.networkView" => to_jv(@mesh_runtime.network_view(Some(arg(0))))
     "read/machine.roots" => {
@@ -602,16 +554,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       to_jv({ "claude": Json::string(path([home, ".claude", "projects"])), "codex": Json::string(path([codex, "sessions"])) })
     }
-    // (std::io::Error as anyhow shows it: read/sessions.ts `ioMessage`)
-    "read/sessions.ioMessage" =>
-      match arg(0) {
-        { "code": String("ENOENT"), .. } => Str("No such file or directory (os error 2)")
-        { "code": String("EACCES"), .. } => Str("Permission denied (os error 13)")
-        { "code": String("EISDIR"), .. } => Str("Is a directory (os error 21)")
-        { "code": String("EPERM"), .. } => Str("Operation not permitted (os error 1)")
-        { "message": String(m), .. } => Str(m)
-        _ => Str("")
-      }
     _ => {
       // Another slice's: asked through the bus with the arguments as JSON; what it refuses thrown as its kind.
       let asked = Json::array(args.map(of_jv))
@@ -666,6 +608,18 @@ async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
 }
 
 ///|
+fn P51::threads_store(self : P51) -> @store_threads.Store? {
+  match self.threads {
+    Some(t) => Some(t)
+    None => {
+      let t = (try { Some(@store_threads.Store::new(self.bus.db, wall_ms().to_double())) } catch { _ => None })
+      self.threads = t
+      t
+    }
+  }
+}
+
+///|
 /// api/overview.ts `overview`, of what the platform has: the control plane, the connects config.json names, the
 /// sessions counted, the agents' processes, the disk, the drive's roots, the memberships.
 async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Json {
@@ -673,14 +627,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   let store = bus.store
   let host = self.host
   let processes = bus.hub_processes() catch { _ => Json::null() }
-  let threads = match self.threads {
-    Some(t) => Some(t)
-    None => {
-      let t = (try { Some(@store_threads.Store::new(bus.db, wall_ms().to_double())) } catch { _ => None })
-      self.threads = t
-      t
-    }
-  }
+  let threads = self.threads_store()
   if threads is Some(t) { t.set_now(wall_ms().to_double()) }
   // What the other slices say of it, asked first (the overview's own reads are synchronous): the accounts' views
   // (P5-3), the updates and the connects' connections (P5-5), Helper's grants (P5-4), the archive policy and the
@@ -1071,7 +1018,6 @@ async fn P51::admin_live(self : P51) -> AdminLive {
   let backend = @api_routes.Backend::new(async fn(name, args) { self.backend(holder.val.unwrap(), name, args) })
   let a : AdminLive = {
     admin: @api_routes.Admin::new(backend, setup),
-    handles: {},
     files: {},
     next_handle: 0,
     streams: {},

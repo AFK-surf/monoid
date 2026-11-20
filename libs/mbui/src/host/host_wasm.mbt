@@ -264,6 +264,14 @@ fn ffi_perf_where() -> String {
 ///|
 fn ffi_perf_open(go : Int) -> Int = "mbhost" "mb_host_perf_open"
 
+///|
+fn mbw_mb_host_reveal_file(path : Int, go : Int) -> Int = "mbhost" "mb_host_reveal_file"
+
+///|
+fn ffi_reveal_file(path : String, go : Int) -> Int {
+  mbw_mb_host_reveal_file(@wasmrt.string_addr(path), go)
+}
+
 fn ffi_perf_size() -> Double = "mbhost" "mb_host_perf_size"
 
 fn mbw_mb_host_perf_read() -> Int = "mbhost" "mb_host_perf_read"
@@ -1137,6 +1145,12 @@ fn perf_where() -> String {
 ///|
 fn perf_open(go : Bool) -> Bool {
   ffi_perf_open(if go { 1 } else { 0 }) != 0
+}
+
+///|
+/// The file at `path` shown in its folder in the system's file manager (`go`), or whether that can be done here.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ffi_reveal_file(path, if go { 1 } else { 0 }) != 0
 }
 
 ///|

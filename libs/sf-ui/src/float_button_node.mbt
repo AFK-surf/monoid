@@ -21,19 +21,21 @@ pub fn float_button_node(
   shortcut? : String = "",
   loc~ : SourceLoc,
 ) -> @view.View {
-  @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled=busy.unwrap_or(fn() { false }), fn(o, _) {
+  // (its room a plain box round it; the button what is drawn, 32 round, which the tree presses in 44 by 44 at the least
+  // (Tree::press_least): what a screen reader is told of it is what is seen, not its room)
+  parent.box(made_for=loc, fn(o) {
     let room = float_button_reach
     o
     .padding(Is((room, room, room, room)))
     .min_width(Is(Some(float_button_side + 2.0 * room)))
     |> ignore
-    o.box(fn(b) {
+    @headless.button(made_for=loc, o, label, fn(_) { press() }, disabled=busy.unwrap_or(fn() { false }), fn(b, _) {
       style_node(b, fn() { float_button_look })
-      hover_ground_node(b, by=o)
+      hover_ground_node(b)
       b
       .ring(
         By(fn() {
-          if o.focus_shown() {
+          if b.focus_shown() {
             let t = @ui.tree_theme()
             (t.focus_w, t.focus_gap, t.focus)
           } else {
@@ -111,12 +113,12 @@ pub fn float_button_node(
         None => icon_node(b, icon, float_button_icon, By(fn() { theme().p.text })) |> ignore
       }
       b.show(fn() { count() != "" }, fn(w) { words_node(w, count, fn() { float_button_count }) |> ignore })
+      match tips {
+        Some(t) => tip_node(t, b, label, side=Top, shortcut~) |> ignore
+        None => ()
+      }
     })
     |> ignore
-    match tips {
-      Some(t) => tip_node(t, o, label, side=Top, shortcut~) |> ignore
-      None => ()
-    }
   })
 }
 

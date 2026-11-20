@@ -1,7 +1,9 @@
 import {
   "base/codec",
+  "base/hash",
   "base/time",
   "base/url",
+  "station/events",
   "station/jsjson",
   "station/i18n",
   "station/jscase",

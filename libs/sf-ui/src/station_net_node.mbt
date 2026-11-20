@@ -6,11 +6,11 @@
 
 ///|
 /// How a station's network line is drawn: `Card` (a card of the stations' list: the card's small words, their line of
-/// the theme's 5, the figures as heavy as a medium, what its round trip is called cut short before the figures are);
-/// `Peek` (a station's card in brief, over where a chat names it: the meta's size on a line of 18, the figures 500
-/// heavy in the palette's inks, the words before them given way in their own box); `Page` (a station's own page, under
-/// its dials: the figures at the ui's size, its round trip said in the words around it, each speed at least 64 wide,
-/// 8 between its lines where the speeds go under).
+/// the theme's 5, the figures as heavy as a medium, a long way of going or else what its round trip is called cut short
+/// before the figures are); `Peek` (a station's card in brief, over where a chat names it: the meta's size on a line of
+/// 18, the figures 500 heavy in the palette's inks, the words before them given way in their own box); `Page` (a
+/// station's own page, under its dials: the figures at the ui's size, its round trip said in the words around it, each
+/// speed at least 64 wide, 8 between its lines where the speeds go under).
 #derive(Eq, Debug)
 pub(all) enum NetLook {
   Card
@@ -55,8 +55,9 @@ pub let station_net_sample : Json = Json::object({
 /// This device's connection to a station in `parent`, as `net` says it now (none: the made-up one,
 /// station_net_sample, to be drawn in its bones), as `look` draws it: on the left how it goes and packets lost, then
 /// `·` and its round trip; on the right ↑ and ↓, the speed each way, 10 apart; the right under the left where the line
-/// has not the room (2 between the lines). Short of room, what its round trip is called is cut short; how it is
-/// reached and the figures are not.
+/// has not the room (2 between the lines), ↓ under ↑ where even that has not. Short of room, one thing is cut short, never two: how it is reached where
+/// that is long (net_path_long: a relay of the workspace's own, named by its address), else what its round trip is
+/// called; the figures, the speeds and a short way of going (直连, 中继) never are.
 #callsite(autofill(loc))
 pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : NetLook = Card, loc~ : SourceLoc) -> Unit {
   if look is Page {
@@ -76,10 +77,15 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
       _ => words_node(p, said, fn() { net_card_words }) |> ignore
     }
   }
-  let words_cut = fn(p : @view.View, said : () -> String) {
+  // (how it is reached long: it is what is cut short, its round trip's words kept; else those words, it kept. Worked
+  // out once of it, told only as it comes out otherwise: its figures and speeds changing run nothing of how it is cut)
+  let long_now = @signals.computed(fn(_) { net_path_long(net_text(n(), "path")) })
+  let long_path = fn() { long_now.get() }
+  let short_path = fn() { !long_path() }
+  let words_cut = fn(p : @view.View, said : () -> String, cut : () -> Bool) {
     match look {
-      Peek => net_peek_words(p, said, fn() { theme().p.muted }, cut=true)
-      _ => words_node(p, said, fn() { net_card_words_cut }) |> ignore
+      Peek => net_peek_words(p, said, fn() { theme().p.muted }, cut~)
+      _ => net_words_cut_by(p, said, fn() { net_card_words }, cut)
     }
   }
   let figure = fn(p : @view.View, key : String) {
@@ -113,30 +119,25 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
     row.box(fn(left) {
       style_node(left, fn() { net_left }, in_row=true)
       left.box(fn(l) {
-        style_node(l, fn() { net_path }, in_row=look is Card)
-        words(l, fn() { net_text(n(), "path") })
+        style_node(l, fn() { if long_path() { net_path_cut } else { net_path } }, in_row=true)
+        words_cut(l, fn() { net_text(n(), "path") }, long_path)
         l.show(fn() { has("loss") }, fn(x) { figure(x, "loss") })
       })
       |> ignore
       left.show(fn() { has("rtt") }, fn(x) {
-        x.box(fn(l) {
-          style_node(l, fn() { net_rtt }, in_row=true)
-          words(l, fn() { "·" })
-          words_cut(l, fn() { t("android-settings.stations.rtt") })
-          figure(l, "rtt")
-        })
-        |> ignore
+        style_node(x, fn() { if long_path() { net_way } else { net_rtt } }, in_row=true)
+        words(x, fn() { "·" })
+        words_cut(x, fn() { t("android-settings.stations.rtt") }, short_path)
+        figure(x, "rtt")
       })
     })
     |> ignore
     row.box(fn(right) {
       style_node(right, fn() { net_right }, in_row=true)
+      right.wraps(Is(Some(net_lines))) |> ignore
       for way in [("↑", "up"), ("↓", "down")] {
         right.box(fn(l) {
-          match look {
-            Peek => style_node(l, fn() { net_way })
-            _ => style_node(l, fn() { net_rtt }, in_row=true)
-          }
+          style_node(l, fn() { net_way }, in_row=true)
           words(l, fn() { way.0 })
           speed(l, way.1)
         })
@@ -151,40 +152,43 @@ pub fn station_net_line_node(parent : @view.View, net : () -> Json?, look? : Net
 ///|
 /// The network line as a station's own page draws it (station_net_line_node's `Page`), as `net` says it now: how it
 /// goes and packets lost, then `·` and its round trip said in the words around it (`当前延迟 {latency}`), the speeds
-/// beside them, under them where the line has not the room. Shown only once `net` says one (no made-up one).
+/// beside them, under them where the line has not the room; cut short as the other looks are (how it goes where that is
+/// long, else the words around its round trip). Shown only once `net` says one (no made-up one).
 fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Unit {
   let has = fn(key : String) { net_field(net(), key) is Some(Object(_)) }
+  // (worked out once of how it goes, told only as it comes out otherwise, as station_net_line_node's)
+  let long_now = @signals.computed(fn(_) { net_path_long(net_text(net(), "path")) })
+  let long_path = fn() { long_now.get() }
+  let short_path = fn() { !long_path() }
   parent.box(made_for=loc, fn(r) {
     style_node(r, fn() { net_page_row })
     r.wraps(Is(Some(net_page_lines))) |> ignore
     r.box(fn(part) {
       style_node(part, fn() { net_left }, in_row=true)
       part.box(fn(l) {
-        style_node(l, fn() { net_page_line_box }, in_row=true)
-        words_node(l, fn() { net_text(net(), "path") }, fn() { net_page_words_cut }) |> ignore
+        style_node(l, fn() { if long_path() { net_page_cut_box } else { net_page_line_box } }, in_row=true)
+        net_words_cut_by(l, fn() { net_text(net(), "path") }, fn() { net_page_words }, long_path)
         l.show(fn() { has("loss") }, fn(f) {
           level_figure_node(f, fn() { net_field(net(), "loss") }, style=fn() { net_page_figure }) |> ignore
         })
       })
       |> ignore
       part.show(fn() { has("rtt") }, fn(x) {
-        x.box(fn(l) {
-          style_node(l, fn() { net_page_line_box }, in_row=true)
-          words_node(l, fn() { "·" }, fn() { net_page_words }) |> ignore
-          let parts = fn() {
-            let words = t("web-pages.stations.latency", args=[("latency", "\u{0}")])
-            words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
-          }
-          words_node(l, fn() { parts().get(0).unwrap_or("") }, fn() { net_page_words }) |> ignore
-          level_figure_node(l, fn() { net_field(net(), "rtt") }, style=fn() { net_page_figure }) |> ignore
-          words_node(l, fn() { parts().get(1).unwrap_or("") }, fn() { net_page_words_cut }) |> ignore
-        })
-        |> ignore
+        style_node(x, fn() { if long_path() { net_page_line_box } else { net_page_cut_box } }, in_row=true)
+        words_node(x, fn() { "·" }, fn() { net_page_words }) |> ignore
+        let parts = fn() {
+          let words = t("web-pages.stations.latency", args=[("latency", "\u{0}")])
+          words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
+        }
+        net_words_cut_by(x, fn() { parts().get(0).unwrap_or("") }, fn() { net_page_words }, short_path)
+        level_figure_node(x, fn() { net_field(net(), "rtt") }, style=fn() { net_page_figure }) |> ignore
+        net_words_cut_by(x, fn() { parts().get(1).unwrap_or("") }, fn() { net_page_words }, short_path)
       })
     })
     |> ignore
     r.box(fn(rates) {
       style_node(rates, fn() { net_right }, in_row=true)
+      rates.wraps(Is(Some(net_page_lines))) |> ignore
       for way in [("↑", "up"), ("↓", "down")] {
         rates.box(fn(l) {
           style_node(l, fn() { net_page_rate }, in_row=true)
@@ -200,21 +204,19 @@ fn net_page_line(parent : @view.View, net : () -> Json?, loc~ : SourceLoc) -> Un
 }
 
 ///|
-/// Words of a peek's line in `p`: the meta's size on a line of 18, `weight`, in `ink`; `cut`: given way in a box of
-/// their own where the line has not the room for them.
+/// Words of a peek's line in `p`: the meta's size on a line of 18, `weight`, in `ink`; while `cut` says so, cut short
+/// where the line has not the room for them (net_cut_by's).
 #callsite(autofill(loc))
 fn net_peek_words(
   p : @view.View,
   words : () -> String,
   ink : () -> Int64,
   weight? : Int = 400,
-  cut? : Bool = false,
+  cut? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
   p.box(made_for=loc, fn(w) {
-    if cut {
-      w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    }
+    net_cut_by(w, cut)
     w
     .words(By(words))
     .words_look(By(fn() { { size: theme().t.meta, weight, line: net_peek_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 } }))
@@ -223,6 +225,46 @@ fn net_peek_words(
   })
   |> ignore
 }
+
+///|
+/// Words of `style` (not cut short itself) in a node of `p`'s, cut short where the line has not the room while `cut`
+/// says so (net_cut_by's).
+#callsite(autofill(loc))
+fn net_words_cut_by(
+  p : @view.View,
+  words : () -> String,
+  style : () -> @ui.TextStyle,
+  cut : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
+  p.box(made_for=loc, fn(w) {
+    styled_words(w, words, style) |> ignore
+    net_cut_by(w, cut)
+  })
+  |> ignore
+}
+
+///|
+/// Words' node `w` cut short along its row where it has not the room, saying they may end in an ellipsis, while `cut`
+/// says so (styled_words' `w=Cut`, as it changes); kept whole else.
+fn net_cut_by(w : @view.View, cut : () -> Bool) -> Unit {
+  w
+  .cuts(By(cut))
+  .min_width(By(fn() { if cut() { Some(0.0) } else { None } }))
+  .allow_ellipsis(By(cut))
+  |> ignore
+}
+
+///|
+/// Whether how a station is reached is long (more than net_path_kept letters: a relay of the workspace's own, named by
+/// its address), so cut short where the line has not the room, rather than what its round trip is called.
+fn net_path_long(path : String) -> Bool {
+  path.length() > net_path_kept
+}
+
+///|
+/// The most letters of a way of going kept whole on a line short of room (直连, 中继, 深圳中继, Direct, Relay).
+let net_path_kept : Int = 6
 
 ///|
 /// A card of a list of machines in `parent` (a station, one that only runs tasks, a device), pressed open (`press`):
@@ -341,7 +383,12 @@ let net_left : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
 let net_path : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
-/// Its round trip (and a card's each way's speed): 4 apart, cut short where the line is.
+/// How it goes long and packets lost, 6 apart, cut short where the line is.
+// kept across runs: a value (no field of it changes)
+let net_path_cut : @ui.Style = @ui.css("row w=Cut gap=S1_5 align=ACenter")
+
+///|
+/// Its round trip: 4 apart, cut short where the line is.
 // kept across runs: a value (no field of it changes)
 let net_rtt : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter")
 
@@ -351,7 +398,7 @@ let net_rtt : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter")
 let net_right : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
 
 ///|
-/// A peek's each way's speed, 4 apart.
+/// Each way's speed (and the round trip beside a long way of going): 4 apart.
 // kept across runs: a value (no field of it changes)
 let net_way : @ui.Style = @ui.css("row gap=S1 align=ACenter")
 
@@ -362,11 +409,6 @@ let net_peek_line : Double = 18.0
 ///|
 // kept across runs: a value (no field of it changes)
 let net_card_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
-
-///|
-/// What its round trip is called on a card, cut short where the line has not the room.
-// kept across runs: a value (no field of it changes)
-let net_card_words_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// A card's figure: in the words' ink, as heavy as a medium.
@@ -387,6 +429,11 @@ let net_page_lines : Double = 8.0
 let net_page_line_box : @ui.Style = @ui.css("row gap=S1 align=ACenter")
 
 ///|
+/// A page's how it goes long and packets lost, or its round trip: 4 apart, cut short where the line is.
+// kept across runs: a value (no field of it changes)
+let net_page_cut_box : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter")
+
+///|
 /// A page's each way's speed: at least 64 wide, 4 apart.
 // kept across runs: a value (no field of it changes)
 let net_page_rate : @ui.Style = @ui.css("row min_w=S16 gap=S1 align=ACenter")
@@ -395,10 +442,6 @@ let net_page_rate : @ui.Style = @ui.css("row min_w=S16 gap=S1 align=ACenter")
 // kept across runs: a value (no field of it changes)
 let net_page_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
 
-///|
-/// The last of a page's line's words, cut short where the line is.
-// kept across runs: a value (no field of it changes)
-let net_page_words_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false, w=Cut)
 
 ///|
 /// A page's figure: the ui's size, as heavy as a medium, in the words' ink.

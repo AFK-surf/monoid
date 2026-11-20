@@ -35,14 +35,14 @@ fn message_j(thread : J, ts : J, author_kind : String, author : String, text : S
 ///|
 async fn say_failure(w : World, thread : J, place : String, error : String) -> Unit {
   try {
-    let chat = w.store("getThread", [thread])
-    let here = at_i(Some(w.store("threadSessions", [thread])), 0)
+    let chat = w.with_threads_j(t => t.get_thread(thread.to_json()))
+    let here = at_i(Some(w.store_thread_sessions(thread)), 0)
     if chat is Null || here is None {
       return
     }
     let note = w.tr("station.cc.failed", args=[("place", place), ("error", error)])
     let ts = w.chat(str_of(at(here, "connect")).unwrap_or(""), "post", [thread_ref(Some(chat)), js(mark_notice(note)), ja([])])
-    w.store("insertMessage", [message_j(thread, ts, station_author, station_author, note, Some(ja([])))]) |> ignore
+    w.store_insert_message(message_j(thread, ts, station_author, station_author, note, Some(ja([])))) |> ignore
   } catch {
     again =>
       w.log("warn", "hub", "a copy's failure was not said in its chat", jo([("thread", thread), ("error", js(thrown_message(again)))]))
@@ -58,7 +58,7 @@ pub async fn cc(w : World, thread : J, who : String, email : String, said : Stri
   try {
     while true {
       try {
-        let all = arr_of(Some(w.store("ccThreads", [thread]))).unwrap_or([])
+        let all = arr_of(Some(w.with_threads_j(t => t.cc_threads(thread.to_json())))).unwrap_or([])
         for o in all {
           let id = at(at(Some(o), "thread"), "id").unwrap_or(Null)
           if jincludes(to, id) {
@@ -104,7 +104,7 @@ pub async fn cc(w : World, thread : J, who : String, email : String, said : Stri
       }
       let text = cc_text(w.words, w.lang.val, named, said)
       let ts = w.chat(connect, "post", [thread_ref(target), js(text), files])
-      w.store("insertMessage", [message_j(at(target, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(files))])
+      w.store_insert_message(message_j(at(target, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(files)))
       |> ignore
     } catch {
       e => {

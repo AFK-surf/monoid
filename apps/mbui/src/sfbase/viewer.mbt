@@ -2250,6 +2250,8 @@ pub fn Viewer::shut(self : Viewer, c : @ui.Ctx) -> Unit {
       // it by the window's tree (viewer_tree.mbt's image_layer: View::shared, the thumbnail's end that stays), out of
       // the way of the chat's bar and composer as that end is (Tree::stays_clear)
       (None, Some(KImage), _) if self.in_tree && tree_thumb_seen(self.thumb_id()) => {
+        // (the way in's end forgotten: the way back's told as it sets out)
+        self.tree_way_end = -1.0
         self.tree_back.set(true)
         self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
       }
@@ -2336,6 +2338,7 @@ fn Viewer::tree_way_told(self : Viewer, start : Double, end : Double, grown : (D
 /// A film whose thumbnail is a node of the window's tree let go of from the moment `at` (its frame grabbed and kept for
 /// that thumbnail, or none to grab): flown back into it by the tree (viewer_tree.mbt's film_shared) as the rest fades.
 fn Viewer::tree_film_back(self : Viewer, at : Double) -> Unit {
+  self.tree_way_end = -1.0
   self.tree_back.set(true)
   self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at~)
 }

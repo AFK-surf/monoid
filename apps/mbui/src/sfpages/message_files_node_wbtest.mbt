@@ -358,3 +358,62 @@ fn audit_but_card_marks(t : @ui.Tester) -> Array[String] {
     )
   })
 }
+
+///|
+test "a file's menu where this device shows files in their folders: 在访达中显示 where the core says it was downloaded to here, showing it there; none where it was not, nor asked where the device shows none" {
+  for case in [("/Users/me/Downloads/report.pdf", true), ("", true), ("/Users/me/Downloads/report.pdf", false)] {
+    let (at, reveals) = case
+    let calls : Array[(String, Json)] = []
+    let src = @sfbase.made_source(
+      topic=fn(name, _) { if name == "downloads" { Some({ "downloads": [], "keeping": [] }) } else { None } },
+      call=fn(name, params, done) {
+        calls.push((name, params))
+        done(Ok(if name == "download.saved" { { "at": Json::string(at) } } else { Json::null() }))
+      },
+    )
+    @sf.presenters_reset()
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+      },
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
+        let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+        let tips = @sf.TipLayer::new(fn() { Some(popup) })
+        message_files_node(col, src, tips, files_place(), fn() { [files_one("report.pdf")] }, fn() { false }, fn() { None }, fn() { "" })
+        @sf.presented_nodes(root)
+      },
+      w=800.0,
+      h=600.0,
+      platform=0,
+    )
+    t.draw()
+    t.set_reveals(reveals)
+    let finder = @sf.t("web-main.preview.revealFinder")
+    let (x, y, _, _) = t.rect_of("report").unwrap()
+    t.right_click(x, y)
+    t.run_for(@ui.move_most_ms)
+    let said = "\{at} \{reveals}"
+    assert_true(t.query(MenuItem, label=@sf.t("web-main.preview.download")) is Some(_), msg=said)
+    if !reveals {
+      assert_eq(calls.map(fn(c) { c.0 }), [], msg=said)
+      assert_true(t.query(MenuItem, label=finder) is None, msg=said)
+      @sf.presenters_reset()
+      continue
+    }
+    assert_eq(calls.map(fn(c) { c.0 }), ["download.saved"], msg=said)
+    let asked = Some(calls[0].1)
+    assert_eq((text(asked, "station"), text(asked, "key"), text(asked, "name")), ("st", "ag", "report.pdf"), msg=said)
+    if at == "" {
+      assert_true(t.query(MenuItem, label=finder) is None, msg=said)
+      @sf.presenters_reset()
+      continue
+    }
+    t.click(MenuItem, label=finder)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.revealed(), [at], msg=said)
+  }
+  @sf.presenters_reset()
+}

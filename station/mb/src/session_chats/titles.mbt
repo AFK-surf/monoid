@@ -48,8 +48,8 @@ pub async fn name_chat(w : World, thread : J, given : String) -> String {
 
 ///|
 /// The chat session `key` last heard from, as its address, when it has no name and nobody is at work in it.
-pub async fn untitled_chat(w : World, key : String) -> String? {
-  let latest = w.store("latestThread", [js(key)])
+pub fn untitled_chat(w : World, key : String) -> String? raise {
+  let latest = w.with_threads_j(t => t.latest_thread(Json::string(key)))
   let thread = at(Some(latest), "thread")
   guard thread is Some(Obj(_)) else { return None }
   if !nullish(at(thread, "hiddenAt")) {
@@ -60,20 +60,20 @@ pub async fn untitled_chat(w : World, key : String) -> String? {
     return None
   }
   let id = at(thread, "id").unwrap_or(Null)
-  if w.store("firstText", [id]) is Null {
+  if w.with_store_j(s => s.first_text(id.to_json())) is Null {
     return None
   }
-  let members = arr_of(Some(w.store("threadSessions", [id]))).unwrap_or([])
+  let members = arr_of(Some(w.store_thread_sessions(id))).unwrap_or([])
   let mut at_work = false
   for m in members {
     let session = str_of(at(Some(m), "session")).unwrap_or("")
     if session == key {
       continue
     }
-    let last = w.store("lastTurn", [js(session)])
-    let running = str_of(Some(w.hub("processState", [js(session)]))) == Some("running")
+    let last = w.with_store_j(s => s.last_turn(Json::string(session)))
+    let running = w.with_hub(h => h.process_state(session)) == "running"
     let busy = running ||
-      w.store("hasPending", [js(session)]) is Bool(true) ||
+      w.with_threads_j(t => t.has_pending(Json::string(session))) is Bool(true) ||
       (last is Obj(_) && (nullish(at(Some(last), "endedAt")) || str_of(at(Some(last), "declared")) == Some("waiting")))
     if busy {
       at_work = true
@@ -89,13 +89,13 @@ pub async fn untitled_chat(w : World, key : String) -> String? {
 
 ///|
 /// Whether `title` may name the chat now (false: it already does), or why not.
-async fn may_name(w : World, thread : J, title : String) -> Result[Bool, String] {
-  let row = w.store("getThread", [thread])
+fn may_name(w : World, thread : J, title : String) -> Result[Bool, String] raise {
+  let row = w.with_threads_j(t => t.get_thread(thread.to_json()))
   guard row is Obj(_) else { return Err("the chat is gone") }
   if str_of(at(Some(row), "title")) is Some(t) && trim(t) != "" {
     return Err("people named this chat")
   }
-  let given = w.store("autoTitle", [thread])
+  let given = w.with_store_j(s => s.auto_title(thread.to_json()))
   let given_title = str_of(at(Some(given), "title"))
   guard given_title is Some(gt) else { return Ok(true) }
   if gt == title {
@@ -105,9 +105,9 @@ async fn may_name(w : World, thread : J, title : String) -> Result[Bool, String]
     return Err("it has been changed as often as it may be")
   }
   let said = num_of(
-      Some(w.store("peopleSaidAfter", [thread, at(Some(given), "n").unwrap_or(Null), jn(said_before_change)])),
+      Some(w.with_store_j(s => s.people_said_after(thread.to_json(), at(Some(given), "n").unwrap_or(Null).to_json(), said_before_change))),
     ).unwrap_or(0.0)
-  if said < said_before_change && !(w.store("hasActiveWatch", [thread]) is Bool(true)) {
+  if said < said_before_change && !(w.with_threads_j(t => t.has_active_watch(thread.to_json())) is Bool(true)) {
     return Err(
       "people have said too little since it was given; change it only when it no longer says what the chat is about",
     )
@@ -116,9 +116,9 @@ async fn may_name(w : World, thread : J, title : String) -> Result[Bool, String]
 }
 
 ///|
-async fn apply_title(w : World, thread : J, title : String) -> Unit {
-  let changed = !(at(Some(w.store("autoTitle", [thread])), "title") is Some(Null))
-  w.store("setAutoTitle", [thread, js(title), jb(changed)]) |> ignore
+fn apply_title(w : World, thread : J, title : String) -> Unit raise {
+  let changed = !(at(Some(w.with_store_j(s => s.auto_title(thread.to_json()))), "title") is Some(Null))
+  w.with_store(s => s.set_auto_title(thread.to_json(), Json::string(title), changed))
 }
 
 ///|

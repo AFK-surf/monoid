@@ -787,64 +787,23 @@ pub async fn SessionAccounts::run_on(
   if row.ultrafast() && (candidates.is_empty() || (row.pinned && !candidates.iter().any(p => p.id == row.profile))) {
     raise plain_error(self.tr(self.station_lang, "station.speed.ultrafast_unavailable"))
   }
-  let current = candidates.iter().find_first(p => p.id == row.profile)
   let now = (self.now)()
-  let crowded = (p : Profile) => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded
-  let strict = candidates.iter().any(p => serves(p, row.model))
-  let fits = (p : Profile) => !strict || serves(p, row.model)
-  let keeps = match current {
-    Some(c) => row.pinned || (self.can(cfg, c.id, row.model) && fits(c))
-    None => false
+  let next = match
+    choose_run_on_profile(
+      key,
+      row,
+      candidates,
+      holding,
+      crowded=p => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded,
+      can=id => self.can(cfg, id, row.model),
+      health_of=id => self.health_of(cfg, id),
+      cheap_to_leave=async fn() { self.cheap_to_leave(key) },
+      elsewhere=async fn() { elsewhere(kept_profiles) },
+      pick=async fn(among) { self.pick(cfg, among, row.model, false) },
+    ) {
+    Stay(p) => return p
+    Move(p) => p
   }
-  let mut among = candidates
-  match current {
-    Some(c) if keeps => {
-      if row.pinned {
-        return c
-      }
-      let paid = (p : Profile) => !billed_per_use(p.raw)
-      let better = (p : Profile) => p.id != c.id &&
-        fits(p) &&
-        self.can(cfg, p.id, row.model) &&
-        (if paid(p) == paid(c) { crowded(c) && !crowded(p) } else { paid(p) })
-      among = candidates.filter(better)
-      // Leaving a billed-per-use profile for a paid subscription happens on the next turn without waiting for
-      // `cheap_to_leave`; moving off a crowded profile to an uncrowded one of the same tier still waits for
-      // `cheap_to_leave`.
-      let upgrading = !paid(c) && among.iter().any(paid)
-      if among.length() == 0 || holding || (!upgrading && !self.cheap_to_leave(key)) {
-        return c
-      }
-    }
-    _ => {
-      let standing = (p : Profile) => if self.can(cfg, p.id, row.model) {
-        2
-      } else if signs_in(self.health_of(cfg, p.id)) {
-        1
-      } else {
-        0
-      }
-      let fit = candidates.filter(fits)
-      let best = js_max_of(fit.map(p => standing(p).to_double()))
-      if best < 2.0 {
-        match elsewhere(kept_profiles) {
-          Some(p) => return p
-          None => ()
-        }
-      }
-      match current {
-        Some(c) if fits(c) && standing(c).to_double() >= best => return c
-        _ => ()
-      }
-      if fit.length() > 0 {
-        among = fit.filter(p => standing(p).to_double() == best)
-      }
-    }
-  }
-  if candidates.length() == 0 {
-    raise plain_error("session \{key}: no profile runs \{row.runtime}")
-  }
-  let next = self.pick(cfg, among, row.model, false)
   if next.id != row.profile || kept_profiles != row.profiles {
     self.set_profile(key, next.id, kept_profiles)
     if next.id != row.profile {
@@ -858,6 +817,88 @@ pub async fn SessionAccounts::run_on(
     }
   }
   next
+}
+
+///|
+/// What `run_on` settles on: `Stay` keeps the session as it is, `Move` is a profile picked again (it may be the one it
+/// was on).
+priv enum RunOnChoice {
+  Stay(Profile)
+  Move(Profile)
+}
+
+///|
+/// The choice `SessionAccounts::run_on` makes among `candidates`, apart from the store and the host: `crowded`, `can`
+/// and `health_of` tell how each profile is doing for the session's model, `cheap_to_leave` whether the session loses
+/// little by going on afresh, `elsewhere` a profile of another runtime it may be taken on by, `pick` the pool's pick.
+async fn choose_run_on_profile(
+  key : String,
+  row : Row,
+  candidates : Array[Profile],
+  holding : Bool,
+  crowded~ : (Profile) -> Bool,
+  can~ : (String) -> Bool,
+  health_of~ : (String) -> Health,
+  cheap_to_leave~ : async () -> Bool,
+  elsewhere~ : async () -> Profile?,
+  pick~ : async (Array[Profile]) -> Profile,
+) -> RunOnChoice {
+  let current = candidates.iter().find_first(p => p.id == row.profile)
+  let strict = candidates.iter().any(p => serves(p, row.model))
+  let fits = (p : Profile) => !strict || serves(p, row.model)
+  let keeps = match current {
+    Some(c) => row.pinned || (can(c.id) && fits(c))
+    None => false
+  }
+  let mut among = candidates
+  match current {
+    Some(c) if keeps => {
+      if row.pinned {
+        return Stay(c)
+      }
+      let paid = (p : Profile) => !billed_per_use(p.raw)
+      let better = (p : Profile) => p.id != c.id &&
+        fits(p) &&
+        can(p.id) &&
+        (if paid(p) == paid(c) { crowded(c) && !crowded(p) } else { paid(p) })
+      among = candidates.filter(better)
+      // Leaving a billed-per-use profile for a paid subscription happens on the next turn without waiting for
+      // `cheap_to_leave`; moving off a crowded profile to an uncrowded one of the same tier still waits for
+      // `cheap_to_leave`.
+      let upgrading = !paid(c) && among.iter().any(paid)
+      if among.length() == 0 || holding || (!upgrading && !cheap_to_leave()) {
+        return Stay(c)
+      }
+    }
+    _ => {
+      let standing = (p : Profile) => if can(p.id) {
+        2
+      } else if signs_in(health_of(p.id)) {
+        1
+      } else {
+        0
+      }
+      let fit = candidates.filter(fits)
+      let best = js_max_of(fit.map(p => standing(p).to_double()))
+      if best < 2.0 {
+        match elsewhere() {
+          Some(p) => return Stay(p)
+          None => ()
+        }
+      }
+      match current {
+        Some(c) if fits(c) && standing(c).to_double() >= best => return Stay(c)
+        _ => ()
+      }
+      if fit.length() > 0 {
+        among = fit.filter(p => standing(p).to_double() == best)
+      }
+    }
+  }
+  if candidates.length() == 0 {
+    raise plain_error("session \{key}: no profile runs \{row.runtime}")
+  }
+  Move(pick(among))
 }
 
 ///|

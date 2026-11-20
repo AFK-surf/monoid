@@ -248,8 +248,13 @@ fn message_file_card_node(
           items.push(x)
         }
       }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
+      with_reveal(src, here, a, owner, fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+      })
     },
   )
 }

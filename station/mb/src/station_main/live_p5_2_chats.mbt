@@ -13,12 +13,10 @@ fn j_undef() -> J {
 }
 
 ///|
-/// The states the hub keeps of its own for the conversations (held posts, relayed chats' openings, title requests).
+/// The states the hub keeps of its own for the conversations (callback handles, side agents, plus the shared
+/// `@session_chats.ChatState` for held posts, relayed chats' openings, and title requests).
 priv struct ChatState {
-  held : Map[String, Map[String, J]]
-  openings : Map[String, J]
-  titles : Map[String, J]
-  mut held_count : Int32
+  shared : @session_chats.ChatState
   callbacks : Map[Int32, async (Array[J]) -> J]
   mut next_cb : Int32
   refs : Map[String, J]
@@ -46,10 +44,7 @@ priv struct SideAgent {
 
 ///|
 let chat_state : ChatState = {
-  held: Map([]),
-  openings: Map([]),
-  titles: Map([]),
-  held_count: 0,
+  shared: @session_chats.ChatState::new(),
   callbacks: Map([]),
   next_cb: 0,
   refs: Map([]),
@@ -66,6 +61,18 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
   // (what the last call threw besides its words, read by the conversations as they tell a kind's fields apart:
   // a busy database's `errcode`, a file's `code`, the sessions a `CcSessionsUnavailable` names)
   let thrown : Ref[J] = Ref(Null)
+  let live : @session_chats.Live? = match self.hub {
+    Some(hub) =>
+      Some({
+        store: self.bus.store,
+        threads: self.threads,
+        hub,
+        db: self.bus.db,
+        state: chat_state.shared,
+        flush_threads: () => told_threads(self.bus, self.threads),
+      })
+    None => None
+  }
   {
     call: async fn(name, args) {
       lang.val = self.lang()
@@ -80,6 +87,7 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
     words: self.cwords,
     lang,
     thrown,
+    live,
   }
 }
 
@@ -160,7 +168,7 @@ async fn P52::storage_call(
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
   match name {
     "hub.setOpening" => {
-      chat_state.openings[a(0).stringify()] = to_jv(a(1))
+      chat_state.shared.set_opening(a(0).stringify(), to_jv(a(1)))
       Json::null()
     }
     _ =>
@@ -244,20 +252,12 @@ async fn P52::chats_answer(
     Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
     None => (name, "")
   }
-  let db = self.bus.db
   match part {
     "store" if meth == "subscribe" => self.store_subscribe(raw.get(0).unwrap_or(Null))
     "store" => to_jv(self.store(meth, args))
     "hub" =>
       match meth {
-        "has" => {
-          let readers = [
-            "historyMessages", "latestMessages", "statePendingCard", "stateQuestion",
-            "reviewPendingCard", "historyPendingCard", "openedChatSaid", "forkReview",
-          ]
-          J::Bool(readers.contains(s(0)))
-        }
-        "isNull" => J::Bool(false)
+        "has" => J::Bool(s(0) == "forkReview")
         "storeHas" => J::Bool(s(0) != "pendingCardHeaderIfReady")
         "chatHasApi" =>
           J::Bool(
@@ -285,58 +285,8 @@ async fn P52::chats_answer(
               Some(v) => to_jv(v)
             }
           }
-        "sameChat" => J::Bool(s(0) == s(1))
-        "chatOfExists" =>
-          J::Bool(
-            s(0) == @session_hub.internal_connect ||
-            (self.the_hub().world.chat)(s(0)) is Some(_),
-          )
-        "hasActor" => J::Bool(self.the_hub().actors.contains(s(0)))
-        "actorId" =>
-          if self.the_hub().actors.contains(s(0)) {
-            @jsjson.JValue::of_string(s(0))
-          } else {
-            Null
-          }
-        "latestMessages" =>
-          to_jv(@readops.latest_messages(db, { "thread": a(0), "limit": a(1) }))
-        "openedChatSaid" =>
-          to_jv(
-            @readops.opened_chat_said(db, {
-              "thread": a(0),
-              "author": a(1),
-              "agentOnly": a(2),
-            }),
-          )
-        "historyMessages" =>
-          to_jv(
-            @readops.chat_history_messages(db, {
-              "thread": a(0),
-              "before": a(1),
-              "limit": a(2),
-            }),
-          )
-        "historyPendingCard" => to_jv(@readops.pending_card_number(db, a(0)))
-        "stateQuestion" =>
-          to_jv(
-            @readops.state_question(db, {
-              "key": a(0),
-              "threads": a(1),
-              "ts": a(2),
-            }),
-          )
-        "statePendingCard" =>
-          to_jv(@readops.state_pending_card(db, { "threads": a(0) }))
-        "reviewPendingCard" =>
-          to_jv(@readops.review_pending_card(db, { "thread": a(0) }))
-        "link" => @jsjson.JValue::of_opt_string((self.the_hub().world.link)(s(0)))
         "workspaces" => J::Arr(self.the_hub().workspaces().map(@jsjson.JValue::of_string))
-        "station" => @jsjson.JValue::of_opt_string((self.the_hub().world.station)())
-        "wsOf" => @jsjson.JValue::of_opt_string(self.the_hub().ws_of_arg(a(0)))
-        "surface" => @jsjson.JValue::of_string(self.the_hub().surface(s(0)))
         "nextTs" => @jsjson.JValue::of_string(self.the_hub().next_ts())
-        "now" => J::Num(wall_ms().to_double())
-        "config" => to_jv(self.config)
         // (hub.ts `peers()`: how a message for a chat moved to another station is carried there, messages.ts
         // `fromPeer`; one function kept, as the TypeScript's hook is one)
         "peers" => if self.bound() { self.peers_callback() } else { Null }
@@ -392,84 +342,6 @@ async fn P52::chats_answer(
         None => Null
       }
     }
-    "state" =>
-      match meth {
-        "heldGet" =>
-          match chat_state.held.get(s(0)) {
-            Some(m) => m.get(s(1)).unwrap_or(j_undef())
-            None => j_undef()
-          }
-        "heldEnsure" => {
-          if !chat_state.held.contains(s(0)) {
-            chat_state.held[s(0)] = Map([])
-          }
-          Null
-        }
-        "heldSize" =>
-          J::Num(
-            chat_state.held
-            .get(s(0))
-            .map(m => m.length())
-            .unwrap_or(0)
-            .to_double(),
-          )
-        "heldDeleteOldest" => {
-          match chat_state.held.get(s(0)) {
-            Some(m) =>
-              if m.keys().next() is Some(k) { m.remove(k) }
-            None => ()
-          }
-          Null
-        }
-        "heldSet" => {
-          if chat_state.held.get(s(0)) is Some(m) { m[s(1)] = raw.get(2).unwrap_or(Null) }
-          Null
-        }
-        "heldDelete" => {
-          if chat_state.held.get(s(0)) is Some(m) { m.remove(s(1)) }
-          Null
-        }
-        "heldCountNext" => {
-          chat_state.held_count += 1
-          J::Num(chat_state.held_count.to_double())
-        }
-        "openingGet" =>
-          match chat_state.openings.get(a(0).stringify()) {
-            Some(Obj(fs)) =>
-              Obj([..fs, ("$id", raw.get(0).unwrap_or(Null))])
-            Some(o) => o
-            None => Null
-          }
-        "openingClaim" => {
-          match chat_state.openings.get(a(0).stringify()) {
-            Some(Obj(fs)) =>
-              chat_state.openings[a(0).stringify()] = Obj(
-                [
-                  ..fs.filter(f => @jsjson.sanitize_str(f.0) != "claimed"),
-                  ("claimed", raw.get(2).unwrap_or(Null)),
-                ],
-              )
-            _ => ()
-          }
-          Null
-        }
-        "openingDelete" => {
-          chat_state.openings.remove(a(0).stringify())
-          Null
-        }
-        "openingIs" => J::Bool(chat_state.openings.contains(a(0).stringify()))
-        "titleRequestSet" => {
-          chat_state.titles[a(0).stringify()] = raw.get(1).unwrap_or(Null)
-          Null
-        }
-        "titleRequestGet" =>
-          chat_state.titles.get(a(0).stringify()).unwrap_or(Null)
-        "titleRequestDelete" => {
-          chat_state.titles.remove(a(0).stringify())
-          Null
-        }
-        _ => raise LiveError("no state op \{meth}")
-      }
     "fn" => {
       let id = jnum_of(a(0), "$fn")
         .unwrap_or(-1.0)
@@ -479,68 +351,11 @@ async fn P52::chats_answer(
         None => raise LiveError("no function \{id}")
       }
     }
-    "db" => {
-      let sql = s(0)
-      let params = args[1:].to_owned()
-      match meth {
-        "exec" => {
-          db.exec(sql)
-          Null
-        }
-        "get" =>
-          match db.all(sql, params) {
-            [row, ..] => to_jv(Json::object(row))
-            _ => j_undef()
-          }
-        "all" => J::Arr(db.all(sql, params).map(r => to_jv(Json::object(r))))
-        _ => {
-          ignore(db.run(sql, params))
-          Null
-        }
-      }
-    }
     "log" => {
       slice_log(meth, s(0), s(1), a(2))
       Null
     }
-    "wall" => {
-      match a(0) {
-        Number(ms, ..) => @effect.sleep(ms.to_int())
-        _ => ()
-      }
-      Null
-    }
-    "random" =>
-      if meth == "uuid" {
-        @jsjson.JValue::of_string(@drive.random_uuid())
-      } else {
-        let n = as_num(a(0))
-          .unwrap_or(16.0)
-          .to_int()
-        @jsjson.JValue::of_string(@drive.hex(@drive.random_bytes(n)))
-      }
     "fs" => to_jv(self.fs_op(meth, args))
-    "os" => @jsjson.JValue::of_string(homedir())
-    "path" => {
-      let parts = args.map(x => {
-        as_text(x).unwrap_or("")
-      })
-      let start = parts
-        .rev()
-        .search_by(p => {
-          p.has_prefix("/") || (p.length() > 1 && p[1:2].to_owned() == ":")
-        })
-      let from = match start {
-        Some(i) => parts.length() - 1 - i
-        None => -1
-      }
-      let base = if from < 0 {
-        [@drive.cwd(), ..parts]
-      } else {
-        parts[from:].to_owned()
-      }
-      @jsjson.JValue::of_string(@nodepath.join(sep(), base))
-    }
     "files" => {
       let now = @host.now().to_double()
       if meth == "profileFilesRead" {
@@ -584,13 +399,6 @@ async fn P52::chats_answer(
       to_jv((self.bus.jobs_ask.val)("accounts." + meth, Json::array(args)))
     "logins" =>
       to_jv((self.bus.ui_ask.val)("logins." + meth, Json::array(args)))
-    "places" =>
-      match meth {
-        "mac" => J::Bool(platform() == "darwin")
-        "protects" => J::Bool(platform() == "darwin" && protected_place(s(0)))
-        "file" => raw.get(0).unwrap_or(Null)
-        _ => Null
-      }
     "repoIndex" => to_jv(self.repo_index_answer(meth, args))
     "net" => to_jv(self.net_fetch(meth, args))
     // (a runtime session of its own a conversation opens, apart from any actor's: regenerate_title.mbt's, a chat's
@@ -798,17 +606,6 @@ async fn P52::dep(
     // (image-size.ts `shownFactsSoon`: a film's or a GIF's size, length and frames read from its head as hubops'
     // and the world's; the picture's ThumbHash is `keep`'s, made in its one decode)
     "shownFactsSoon" => to_jv(shown_facts(self.host, s(0)))
-    "makeReadStore" => @jsjson.JValue::of_string("readStore")
-    "readStateQuestion" =>
-      to_jv(
-        @readops.state_question(self.bus.db, {
-          "key": a(1),
-          "threads": a(2),
-          "ts": a(3),
-        }),
-      )
-    "readStatePendingCard" =>
-      to_jv(@readops.state_pending_card(self.bus.db, { "threads": a(1) }))
     "claim" => J::Arr(storage.claim(s(0), s(1), s(2), opt(a(3))).map(to_jv))
     "sendAlong" => {
       let peers = storage.peers_of(s(2))

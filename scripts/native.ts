@@ -20,7 +20,8 @@
 //   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
-//   node scripts/native.ts missing [--windows] [part[:target]…]    those (default: all of ours) the release and the store lack, one a line
+//   node scripts/native.ts missing [--windows] [--mac] [--linux] [part[:target]…]    those (default: all of ours) the release
+//        and the store lack, one a line: every flag's and every part named, each once
 //   node scripts/native.ts parts [--windows|--mac|--linux]      what missing and ensure take by default, one a line
 //   node scripts/native.ts missing --prebuilt          the prebuilt ones (`msvc`: the shell and engine, Android's,
 //        Windows' and Linux', which the mbui app's jobs only fetch; `prebuilt`: ghostty-vt) in neither the store nor
@@ -953,35 +954,110 @@ const defaultTarget = (part: string): Target => {
 
 // ── keys ──
 
-function git(args: string[], input?: string): string {
-  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8", input, maxBuffer: 64 << 20 });
+function git(args: string[], input?: string, cwd = ROOT): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 64 << 20 });
 }
 /// Each input file and its content's git hash: as committed or staged, and as it is in the worktree when it differs
-/// there (an edit not yet committed is another key), new files not ignored included.
+/// there (an edit not yet committed is another key), new files not ignored included. Read off one listing of the
+/// whole checkout (`tree`), not two git processes a part and target: `missing --linux` and `--mac` asked git 75 times
+/// and took 20-40 s of plan's natives step (main 44674271258, 2026-11-20). A pathspec that listing cannot answer
+/// exactly (`pathspec`) is still git's.
 function inputs(paths: string[]): [string, string][] {
   if (paths.length === 0) return [];
+  checkout ??= tree(ROOT);
+  return inputsIn(checkout, paths) ?? inputsByGit(paths);
+}
+/// What git lists of the checkout, once a process, and the worktree's hashes of its changed files as they are asked
+/// for. Dropped after a build (`buildHere`), which may write into the checkout.
+export type Tree = { root: string; staged: [string, string][]; dirty: string[]; hashes: Map<string, string> };
+let checkout: Tree | null = null;
+export function tree(root: string): Tree {
+  const staged: [string, string][] = [];
+  for (const line of git(["ls-files", "-s", "-z"], undefined, root).split("\0")) {
+    if (!line) continue;
+    const [meta, path] = line.split("\t");
+    staged.push([path!, meta!.split(" ")[1]!]);
+  }
+  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z"], undefined, root).split("\0").filter(Boolean);
+  return { root, staged, dirty, hashes: new Map() };
+}
+/// inputs() from a listing; null where a pathspec is not one `pathspec` answers as git does.
+export function inputsIn(t: Tree, paths: string[]): [string, string][] | null {
+  if (paths.length === 0) return [];
+  const match = pathspec(paths);
+  if (!match) return null;
   const files = new Map<string, string>();
-  for (const line of git(["ls-files", "-s", "-z", "--", ...paths]).split("\0")) {
+  for (const [path, hash] of t.staged) if (match(path)) files.set(path, hash);
+  const dirty = t.dirty.filter(match);
+  const present = [...new Set(dirty)].filter((p) => existsSync(join(t.root, p)) && statSync(join(t.root, p)).isFile());
+  for (const p of dirty) if (!present.includes(p)) files.delete(p);
+  const unhashed = present.filter((p) => !t.hashes.has(p));
+  if (unhashed.length > 0) {
+    const hashes = git(["hash-object", "--stdin-paths"], unhashed.join("\n") + "\n", t.root).trim().split("\n");
+    unhashed.forEach((p, i) => t.hashes.set(p, hashes[i]!));
+  }
+  for (const p of present) files.set(p, t.hashes.get(p)!);
+  return settle(files);
+}
+/// inputs() asked of git with the pathspecs themselves: two processes a call.
+export function inputsByGit(paths: string[], root = ROOT): [string, string][] {
+  if (paths.length === 0) return [];
+  const files = new Map<string, string>();
+  for (const line of git(["ls-files", "-s", "-z", "--", ...paths], undefined, root).split("\0")) {
     if (!line) continue;
     const [meta, path] = line.split("\t");
     files.set(path!, meta!.split(" ")[1]!);
   }
-  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z", "--", ...paths]).split("\0").filter(Boolean);
-  const present = [...new Set(dirty)].filter((p) => existsSync(join(ROOT, p)) && statSync(join(ROOT, p)).isFile());
+  const dirty = git(["ls-files", "-m", "-o", "--exclude-standard", "-z", "--", ...paths], undefined, root).split("\0").filter(Boolean);
+  const present = [...new Set(dirty)].filter((p) => existsSync(join(root, p)) && statSync(join(root, p)).isFile());
   for (const p of dirty) if (!present.includes(p)) files.delete(p);
   if (present.length > 0) {
-    const hashes = git(["hash-object", "--stdin-paths"], present.join("\n") + "\n").trim().split("\n");
+    const hashes = git(["hash-object", "--stdin-paths"], present.join("\n") + "\n", root).trim().split("\n");
     present.forEach((p, i) => files.set(p, hashes[i]!));
   }
+  return settle(files);
+}
+function settle(files: Map<string, string>): [string, string][] {
   // A crate's tests, benches and examples are not in what it builds: changed, it is the same part (a test-only change
   // built the launcher and runner again for three platforms on 2026-10-04).
   for (const p of [...files.keys()]) if (/(^|\/)(tests|benches|examples)\//.test(p)) files.delete(p);
   return [...files].sort(([a], [b]) => (a < b ? -1 : 1));
 }
-function key(part: string, target: Target): string {
+/// Whether a file is in the pathspecs as `git ls-files -- <paths>` takes them, for the two kinds the parts use: a file
+/// or a directory named as it is, and `:(exclude,glob)` with `*`, `?` and `**/` (git's wildmatch with WM_PATHNAME).
+/// Anything else (other magic, a wildcard in a plain path, `.`, `./`, a trailing slash, a class): null, for git.
+export function pathspec(paths: string[]): ((file: string) => boolean) | null {
+  const named: string[] = [], excluded: RegExp[] = [];
+  for (const p of paths) {
+    if (p.startsWith(":(exclude,glob)")) {
+      const re = globRe(p.slice(":(exclude,glob)".length));
+      if (!re) return null;
+      excluded.push(re);
+    } else if (!p || p.startsWith(":") || /[*?[\\]/.test(p) || p.endsWith("/") || p.startsWith("/")
+      || p.split("/").some((s) => s === "" || s === "." || s === "..")) {
+      return null;
+    } else named.push(p);
+  }
+  if (named.length === 0) return null;
+  return (file) => named.some((p) => file === p || file.startsWith(p + "/")) && !excluded.some((re) => re.test(file));
+}
+function globRe(glob: string): RegExp | null {
+  if (!glob || /[[\\]/.test(glob) || glob.startsWith(":")) return null;
+  let re = "";
+  for (let i = 0; i < glob.length;) {
+    if (glob.startsWith("**/", i) && (i === 0 || glob[i - 1] === "/")) { re += "(?:.*/)?"; i += 3; }
+    else if (glob.startsWith("**", i) && i + 2 === glob.length && i > 0 && glob[i - 1] === "/") { re += ".*"; i += 2; }
+    else if (glob.startsWith("**", i)) return null;
+    else if (glob[i] === "*") { re += "[^/]*"; i++; }
+    else if (glob[i] === "?") { re += "[^/]"; i++; }
+    else { re += glob[i]!.replace(/[.+^${}()|\\/]/g, "\\$&"); i++; }
+  }
+  return new RegExp(`^${re}$`);
+}
+export function key(part: string, target: Target, of: (paths: string[]) => [string, string][] = inputs): string {
   const p = P(part);
   const zig = target.startsWith("linux") || (target === "win32-x64" && !onWindows(part, target)) ? (p.zig ?? ZIG) : undefined;
-  const what = { part, target, toolchain: p.rust === false ? undefined : TOOLCHAIN, zig, recipe: p.recipe(target), files: p.files(target), inputs: inputs(inputsFor(p, target)) };
+  const what = { part, target, toolchain: p.rust === false ? undefined : TOOLCHAIN, zig, recipe: p.recipe(target), files: p.files(target), inputs: of(inputsFor(p, target)) };
   return createHash("sha256").update(JSON.stringify(what)).digest("hex").slice(0, 24);
 }
 const asset = (part: string, target: Target, k: string) => `${part}-${target}-${k}.tar.gz`;
@@ -1383,6 +1459,8 @@ function buildHere(part: string, target: Target, k: string): string {
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
     throw e;
+  } finally {
+    checkout = null;
   }
   const final = cached(part, target, k);
   install(tmp, final, { part, target, key: k, from: "built", host: hostname(), builtAt: new Date().toISOString(), toolchain: TOOLCHAIN, commit: git(["rev-parse", "HEAD"]).trim() });
@@ -1641,7 +1719,7 @@ function pack(dir: string, name: string, into: string): string {
 
 // ── commands ──
 
-const pair = (args: string[]): [string, Target] => {
+export const pair = (args: string[]): [string, Target] => {
   const part = args[0] ?? fail("which part?");
   P(part);
   const target = (args[1] as Target) ?? defaultTarget(part);
@@ -1722,7 +1800,8 @@ async function main(argv: string[]) {
     case "missing": {
       // Each part (default: all of ours) the release lacks, one a line: CI's plan skips the natives job when none is.
       // --windows: those only Windows builds (the natives-win job's); --mac: Apple's (natives-mac); --linux: the rest
-      // that CI builds on ci-1 (natives); without them, all of ours that CI builds.
+      // that CI builds on ci-1 (natives); without them, all of ours that CI builds. Flags and parts named together are
+      // all of them, each once (`missingWanted`): plan asks once for every list it splits (pipeline.yml's natives step).
       // --prebuilt: the prebuilt ones (`msvc`) that neither the store nor the release has (the prebuild workflow's).
       if (args.includes("--prebuilt")) {
         for (const [p, t] of ours()) {
@@ -1732,10 +1811,7 @@ async function main(argv: string[]) {
         }
         return;
       }
-      const windows = args.includes("--windows"), mac = args.includes("--mac"), linux = args.includes("--linux");
-      const wanted: [string, Target][] = [];
-      for (const a of args.filter((a) => !["--windows", "--mac", "--linux"].includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
-      if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
+      const wanted = missingWanted(args);
       const remote = (await published()) ?? fail("the release's assets could not be listed");
       // (one the release pruned, KEEP of its group, but the store keeps (store-sync): not missing. The store asked only
       // of those the release lacks, side by side)
@@ -1892,9 +1968,21 @@ async function main(argv: string[]) {
   }
 }
 
+/// What `missing` asks of the release: each flag's defaults (--windows, --mac, --linux) and each part named, in that
+/// order, each once; with neither, all of ours CI builds. One flag and no part, or parts and no flag, is what it was.
+export function missingWanted(args: string[]): [string, Target][] {
+  const flags = ["--windows", "--mac", "--linux"];
+  const wanted: [string, Target][] = [];
+  for (const f of flags) if (args.includes(f)) wanted.push(...defaults(f === "--windows", f === "--mac", f === "--linux"));
+  for (const a of args.filter((a) => !flags.includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
+  if (wanted.length === 0) wanted.push(...defaults(false, false, false));
+  const seen = new Set<string>();
+  return wanted.filter(([p, t]) => !seen.has(`${p}:${t}`) && !!seen.add(`${p}:${t}`));
+}
+
 /// What `ensure` and `missing` take where no part is named: all of ours that this kind of machine builds (--windows:
 /// MSVC's; --mac: Apple's; --linux: ci-1's; none of them: all but MSVC's), never what is prebuilt by hand.
-function defaults(windows: boolean, mac: boolean, linux: boolean): [string, Target][] {
+export function defaults(windows: boolean, mac: boolean, linux: boolean): [string, Target][] {
   const wanted: [string, Target][] = [];
   for (const [p, t] of ours()) {
     if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
@@ -1912,6 +2000,8 @@ function ours(): [string, Target][] {
   return all;
 }
 
+/// Every part's name.
+export const partNames = (): string[] => Object.keys(PARTS);
 /// What a part is made of, as paths in the repository: for every target.
 export const inputsOf = (part: string): string[] => [...new Set(P(part).targets.flatMap((t) => inputsFor(P(part), t)))];
 /// The targets a part is built for.

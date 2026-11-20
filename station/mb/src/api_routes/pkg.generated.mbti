@@ -236,7 +236,7 @@ pub async fn Admin::exists(Self, String) -> Bool
 pub async fn Admin::fs(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn Admin::fs_stat(Self, String) -> Stat
 pub async fn Admin::handle(Self, Request) -> Answer
-pub async fn Admin::io_message(Self, Error) -> String
+pub fn Admin::io_message(Self, Error) -> String
 pub async fn Admin::job_seen(Self, @jsjson.JValue, String) -> Bool
 pub fn Admin::keep_sends(Self, Array[KeptSend]) -> Unit
 pub fn Admin::kept_sends(Self, Map[Double, Double]) -> Array[KeptSend]

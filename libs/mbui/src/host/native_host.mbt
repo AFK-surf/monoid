@@ -548,6 +548,11 @@ impl @hostapi.Host for Native with perf_open(_, go) {
 }
 
 ///|
+impl @hostapi.Host for Native with reveal_file(_, path, go) {
+  reveal_file(path, go)
+}
+
+///|
 impl @hostapi.Host for Native with perf_read(_) {
   perf_read()
 }

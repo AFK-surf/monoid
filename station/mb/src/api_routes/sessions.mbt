@@ -40,7 +40,7 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
     return not_found()
   }
   if self.stat_or_none(path) is Some(st) && st.file {
-    return OnDisk(self.mime(path), path)
+    return OnDisk(mime_of(path), path)
   }
   // Packed with its archived workspace: the route reads it out of the archive, under its lock.
   let room = match self.setup.data {
@@ -55,14 +55,35 @@ async fn Admin::uploaded(self : Admin, key : String, name : String) -> Found {
   if !self.exists(join([room, "workspace.tar.zst"])) {
     return not_found()
   }
-  Archived(self.mime(path), room, path, "uploads/\{base}")
+  Archived(mime_of(path), room, path, "uploads/\{base}")
 }
 
 ///|
-async fn Admin::mime(self : Admin, path : String) -> String {
-  jstr(Some(self.backend.ask("read/sessions.mime", [js(path)]))).unwrap_or(
-    "application/octet-stream",
-  )
+/// read/sessions.ts `mime`: a file's type by its extension (none for a name with no dot, or only a leading one).
+fn mime_of(p : String) -> String {
+  let mut name = p
+  if name.rev_find("/") is Some(i) {
+    name = name[i + 1:].to_owned()
+  }
+  if name.rev_find("\\") is Some(i) {
+    name = name[i + 1:].to_owned()
+  }
+  let dot = name.rev_find(".").unwrap_or(-1)
+  if dot <= 0 {
+    return "application/octet-stream"
+  }
+  match name[dot + 1:].to_owned().to_lower() {
+    "png" => "image/png"
+    "jpg" | "jpeg" => "image/jpeg"
+    "gif" => "image/gif"
+    "webp" => "image/webp"
+    "svg" => "image/svg+xml"
+    "pdf" => "application/pdf"
+    "txt" => "text/plain; charset=utf-8"
+    "md" => "text/markdown; charset=utf-8"
+    "json" => "application/json"
+    _ => "application/octet-stream"
+  }
 }
 
 ///|
