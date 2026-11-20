@@ -297,6 +297,12 @@ pub fn notice_show(channel~ : String, tag~ : String, title~ : String, body~ : St
 
 pub fn now() -> Double
 
+pub fn op_list_cache_keep(String) -> Unit
+
+pub fn op_list_cache_reset() -> Unit
+
+pub fn op_list_cached_for(String) -> Array[PasswordLogin]
+
 pub fn op_run(Array[String]) -> OpRun?
 
 pub fn open_tab(String) -> Bool

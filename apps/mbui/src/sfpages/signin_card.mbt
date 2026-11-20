@@ -59,7 +59,7 @@ fn signin_reset() -> Unit {
   signin_menu.val = ""
   signin_saving.clear()
   signin_code.clear()
-  op_list_cache_reset()
+  @hostapi.op_list_cache_reset()
 }
 
 ///|
@@ -116,7 +116,7 @@ fn signin_start(core : @settings.Core, station : String, ask : SignInAsk) -> Uni
     signin_steps[ask.id] = "auto"
     return
   }
-  let cached = op_list_cached_for(ask.site)
+  let cached = @hostapi.op_list_cached_for(ask.site)
   if cached.length() == 1 {
     signin_pick(core, station, ask, cached[0])
     return
@@ -168,7 +168,7 @@ fn signin_took(core : @settings.Core, station : String, ask : SignInAsk) -> Unit
   match d.trouble() {
     Some(t) => {
       if step == "getting" {
-        op_list_cache_reset()
+        @hostapi.op_list_cache_reset()
       }
       signin_said(ask.id, op_trouble_words(t))
       return
@@ -177,7 +177,7 @@ fn signin_took(core : @settings.Core, station : String, ask : SignInAsk) -> Unit
   }
   match step {
     "listing" => {
-      op_list_cache_keep(d.out)
+      @hostapi.op_list_cache_keep(d.out)
       let found = @hostapi.logins_for(d.out, ask.site)
       if found.is_empty() {
         signin_said(ask.id, @sf.t("android-misc.screen.fill.none", args=[("host", ask.site)]))

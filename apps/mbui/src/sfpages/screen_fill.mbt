@@ -45,44 +45,6 @@ fn ScreenSess::login_host(self : ScreenSess) -> String? {
 }
 
 ///|
-/// Non-secret metadata returned by `op item list --categories Login --format json` (ids, titles, usernames, URLs, vault
-/// ids; never passwords), kept for a short window so repeated fills avoid re-listing every vault on Windows where `op`
-/// has no local cache daemon. Emptied on test reset (signin_reset) and whenever `item get` fails.
-let op_list_ttl_ms : Double = 300000.0
-
-///|
-// kept across runs: emptied by op_list_cache_reset (called from signin_reset)
-let op_list_cache_json : Ref[String] = Ref("")
-
-///|
-// kept across runs: emptied by op_list_cache_reset (called from signin_reset)
-let op_list_cache_at : Ref[Double] = Ref(-1.0)
-
-///|
-fn op_list_cache_reset() -> Unit {
-  op_list_cache_json.val = ""
-  op_list_cache_at.val = -1.0
-}
-
-///|
-fn op_list_cache_keep(listed : String) -> Unit {
-  op_list_cache_json.val = listed
-  op_list_cache_at.val = @hostapi.now()
-}
-
-///|
-fn op_list_cached_for(host : String) -> Array[@hostapi.PasswordLogin] {
-  if op_list_cache_at.val < 0.0 || op_list_cache_json.val == "" {
-    return []
-  }
-  if @hostapi.now() - op_list_cache_at.val >= op_list_ttl_ms {
-    op_list_cache_reset()
-    return []
-  }
-  @hostapi.logins_for(op_list_cache_json.val, host)
-}
-
-///|
 fn op_item_get_args(l : @hostapi.PasswordLogin, fields? : Bool = true) -> Array[String] {
   let args = ["item", "get", l.id]
   if l.vault != "" {
@@ -121,7 +83,7 @@ fn ScreenSess::fill_start(self : ScreenSess) -> Unit {
     self.fill_step.set("auto")
     return
   }
-  let cached = op_list_cached_for(host)
+  let cached = @hostapi.op_list_cached_for(host)
   if cached.length() == 1 {
     self.fill_pick(cached[0])
     return
@@ -236,7 +198,7 @@ fn ScreenSess::fill_took(self : ScreenSess) -> Unit {
   match d.trouble() {
     Some(t) => {
       if self.fill_step.get() == "getting" {
-        op_list_cache_reset()
+        @hostapi.op_list_cache_reset()
       }
       self.fill_said(op_trouble_words(t))
       return
@@ -245,7 +207,7 @@ fn ScreenSess::fill_took(self : ScreenSess) -> Unit {
   }
   match self.fill_step.get() {
     "listing" => {
-      op_list_cache_keep(d.out)
+      @hostapi.op_list_cache_keep(d.out)
       let found = @hostapi.logins_for(d.out, self.fill_host)
       if found.is_empty() {
         self.fill_said(@sf.t("android-misc.screen.fill.none", args=[("host", self.fill_host)]))

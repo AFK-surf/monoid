@@ -213,6 +213,7 @@ fn reset_globals() -> Unit {
   answers_waiting.clear()
   outside_takers.clear()
   @hostapi.autofill_forget()
+  @hostapi.op_list_cache_reset()
   views_told.clear()
   views_told_changed()
   code_fields.clear()
