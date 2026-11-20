@@ -634,6 +634,7 @@ pub(all) struct Socket {
   send : (Bytes) -> Unit
   ping : () -> Unit
   terminate : () -> Unit
+  is_open : () -> Bool
 }
 
 pub(all) enum SocketEvent {

@@ -20,7 +20,11 @@
 //   (live_p5_2_drivers.mbt `p52_claude_logins`), each with the token refused: the same test's too;
 // - "fsOp" {name, args}: what the conversations' `fs.*` answers (live_p5_2_chats.mbt `host_fs_op`: `{ok}`, or
 //   `{code, message}` as it throws); "repoWalk" {root, file}: the repositories' index walking `root` through it,
-//   with whether each folder's listing let the program's other fibers run while it waited (never on its thread).
+//   with whether each folder's listing let the program's other fibers run while it waited (never on its thread);
+// - "watchDir" {dir, every}: a directory followed as the shared skills' logins are (live_p5_3_share.mbt
+//   `p53_watch_dir`, looked at every `every` ms), answered with its handle once its first look is done; "watchDirSaid" {handle, count}: what it told once it
+//   told `count` things (each a name changed, `"?"` for none, `"!failed"`); "watchDirClose" {handle}: let go, answered
+//   once its fiber ended.
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -276,6 +280,10 @@ pub async fn harness(host : @host.Host) -> Unit {
       "claudeLogins" => Ok(claude_logins_asked(host))
       "fsOp" => Ok(fs_op_said(host, s("name"), match v("args") { Some(Array(a)) => a; _ => [] }))
       "repoWalk" => Ok(repo_walk_probed(host, s("root"), s("file")))
+      "watchDir" => Ok(harness_watch_dir(host, s("dir"), match v("every") { Some(Number(n, ..)) => n.to_int(); _ => 50 }))
+      "watchDirSaid" =>
+        harness_watch_said(match v("handle") { Some(Number(n, ..)) => n.to_int(); _ => -1 }, match v("count") { Some(Number(n, ..)) => n.to_int(); _ => 0 })
+      "watchDirClose" => harness_watch_close(match v("handle") { Some(Number(n, ..)) => n.to_int(); _ => -1 })
       "gcmSeal" => {
         let key = @vault_crypto.unhex(s("key"))
         let nonce = @vault_crypto.unhex(s("nonce"))
@@ -686,4 +694,53 @@ async fn host_fetch_said(host : @host.Host, ask : Json) -> Json {
     @host.FetchTimeout => { "error": Json::string(@host.fetch_timed_out), "isTimeout": Json::boolean(true) }
     e => { "error": Json::string(said_of(e)), "isTimeout": Json::boolean(false) }
   }
+}
+
+///|
+/// A directory followed for the harness ("watchDir"): what it told, in order, and its fiber's end.
+priv struct HarnessWatch {
+  watcher : @share_sync.Watcher
+  told : Array[String]
+  heard : Ref[@effect.Deferred[Unit]]
+  ended : @effect.Deferred[Unit]
+}
+
+///|
+let harness_watches : Map[Int, HarnessWatch] = Map([])
+
+///|
+async fn harness_watch_dir(host : @host.Host, dir : String, every : Int) -> Json {
+  let told = []
+  let heard = Ref(@effect.Deferred::new())
+  let tell = (what : String) => {
+    told.push(what)
+    ignore(heard.val.succeed(()))
+    heard.val = @effect.Deferred::new()
+  }
+  let ended = @effect.Deferred::new()
+  let began = @effect.Deferred::new()
+  let watcher = p53_watch_dir(host, @effect.Deferred::new(), dir, name => tell(name.unwrap_or("?")), () => tell("!failed"), every~, began~, ended~)
+  let handle = harness_watches.length()
+  harness_watches[handle] = { watcher, told, heard, ended }
+  began.wait()
+  Json::number(handle.to_double())
+}
+
+///|
+async fn harness_watch_said(handle : Int, count : Int) -> Result[Json, String] {
+  guard harness_watches.get(handle) is Some(w) else { return Err("no such watch") }
+  // (a bound only on what must come: what never comes fails the test, saying so)
+  let came = @effect.timeout(10000, () => while w.told.length() < count {
+    w.heard.val.wait()
+  })
+  guard came is Some(_) else { return Err("told \{w.told.length()} of \{count} within 10s: \{Json::array(w.told.map(t => Json::string(t))).stringify()}") }
+  Ok(Json::array(w.told.map(t => Json::string(t))))
+}
+
+///|
+async fn harness_watch_close(handle : Int) -> Result[Json, String] {
+  guard harness_watches.get(handle) is Some(w) else { return Err("no such watch") }
+  (w.watcher.close)()
+  guard @effect.timeout(10000, () => w.ended.wait()) is Some(_) else { return Err("its fiber did not end within 10s") }
+  Ok(Json::array(w.told.map(t => Json::string(t))))
 }

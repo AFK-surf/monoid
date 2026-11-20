@@ -613,3 +613,38 @@ test("a move's plan reads each page of chats in one statement (store.ts sessionP
   h.child.stdin!.end();
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
 });
+
+test("Feishu's and Comma's sockets kept up as comma/surface.ts and feishu/surface.ts keep them (pinged every 15 s, dead after 45 s quiet); a platform's socket on the shell sends its ping frame and says it is open only from its open until it closed or was cut off; Comma's part given where the session pages are as sessions/agents.ts `pages` says", { skip }, async () => {
+  const h = harness();
+  assert.deepEqual(await h.ok({ step: "keepalive" }), { feishu: { pingMs: 15_000, staleMs: 45_000 }, comma: { pingMs: 15_000, staleMs: 45_000 } });
+  // the socket's ping is a WebSocket ping frame the server hears (and answers with its pong); the server then closes it
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+  const pinged: number[] = [];
+  wss.on("connection", (ws) => {
+    ws.on("ping", () => {
+      pinged.push(1);
+      setImmediate(() => ws.close());
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  closers.push(() => server.close());
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  const probe = await h.ok({ step: "socket", url });
+  assert.equal(pinged.length, 1, JSON.stringify(probe));
+  assert.deepEqual([probe.before, probe.opened, probe.after], [false, true, false], JSON.stringify(probe));
+  assert.equal(probe.said.at(-1), "closed", JSON.stringify(probe));
+  assert.ok(probe.said.includes("pong"), JSON.stringify(probe));
+  assert.deepEqual([probe.cutOpened, probe.cut], [true, false]);
+  // where the session pages are: still.fail cloud's alone, in a workspace not left, its test channel's origin on beta
+  const state = { provider: "stillfail", origin: "https://app.still.fail", workspace: "w1", station: "s1" };
+  assert.deepEqual(await h.ok({ step: "pageBase", state, channel: "stable" }), { origin: "https://app.still.fail", workspace: "w1", station: "s1" });
+  assert.deepEqual(await h.ok({ step: "pageBase", state, channel: "beta" }), { origin: "https://app.youdid.wtf", workspace: "w1", station: "s1" });
+  assert.deepEqual(await h.ok({ step: "pageBase", state: { ...state, origin: "https://app.monoid.build" }, channel: "beta" }), { origin: "https://app.monoid.zone", workspace: "w1", station: "s1" });
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, provider: "comma" }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, workspace: "" }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: { ...state, removed_at: 1 }, channel: "stable" }), null);
+  assert.equal(await h.ok({ step: "pageBase", state: null, channel: "stable" }), null);
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});

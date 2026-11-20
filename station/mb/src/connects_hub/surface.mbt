@@ -37,6 +37,8 @@ pub(all) struct Socket {
   ping : () -> Unit
   /// Cut off (`terminate`).
   terminate : () -> Unit
+  /// Open now (`readyState === WebSocket.OPEN`): opened, and neither closed nor cut off since.
+  is_open : () -> Bool
 }
 
 ///|

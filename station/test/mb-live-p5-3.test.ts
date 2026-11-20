@@ -16,6 +16,7 @@ import { createSocket } from "node:dgram";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
@@ -767,4 +768,51 @@ test("a sandbox's task through the program's own bridge, skill_read and skill.re
   }
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0);
+});
+
+test("a directory followed as the shared skills' logins are (Watching.dir, fs.watch's): an entry made, changed and removed told by its name, what was there at first not; once let go its fiber ends and nothing more is told; one not there told as failed", { skip: skip || (mbHarnessBinary() === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false) }, async () => {
+  const child = spawn(mbHarnessBinary()!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "pipe"], env: noNode() });
+  children.push(child);
+  let seq = 0;
+  let stderr = "";
+  child.stderr!.on("data", (d) => (stderr += d));
+  const waiting = new Map<number, (v: any) => void>();
+  createInterface({ input: child.stdout! }).on("line", (line) => {
+    const m = JSON.parse(line);
+    waiting.get(m.id)?.(m);
+    waiting.delete(m.id);
+  });
+  child.on("exit", (code) => {
+    for (const w of waiting.values()) w({ error: `the harness ended (${code}): ${stderr}` });
+  });
+  const ok = (a: Record<string, unknown>) =>
+    new Promise<any>((resolve) => {
+      seq += 1;
+      waiting.set(seq, resolve);
+      child.stdin!.write(`${JSON.stringify({ id: seq, ...a })}\n`);
+    }).then((said) => {
+      assert.equal(said.error, undefined, `${JSON.stringify(a)}: ${said.error} ${stderr}`);
+      return said.ok;
+    });
+  const dir = fresh("watched");
+  writeFileSync(join(dir, "auth.json"), "{}");
+  const handle = await ok({ op: "watchDir", dir, every: 20 });
+  // (what was there as it began is not a change: the first thing told is the file made after)
+  await ok({ op: "watchDirSaid", handle, count: 0 });
+  writeFileSync(join(dir, "new.json"), "1");
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 1 }), ["new.json"]);
+  writeFileSync(join(dir, "auth.json"), '{"token":"t"}');
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 2 }), ["new.json", "auth.json"]);
+  rmSync(join(dir, "new.json"));
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 3 }), ["new.json", "auth.json", "new.json"]);
+  // let go: answered once its fiber ended, so nothing can tell what changes after
+  assert.deepEqual(await ok({ op: "watchDirClose", handle }), ["new.json", "auth.json", "new.json"]);
+  writeFileSync(join(dir, "after.json"), "2");
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle, count: 0 }), ["new.json", "auth.json", "new.json"]);
+  // a directory not there (a profile's home before it is signed in): told as failed, and its fiber ends by itself
+  const missing = await ok({ op: "watchDir", dir: join(dir, "absent"), every: 20 });
+  assert.deepEqual(await ok({ op: "watchDirSaid", handle: missing, count: 1 }), ["!failed"]);
+  assert.deepEqual(await ok({ op: "watchDirClose", handle: missing }), ["!failed"]);
+  child.stdin!.end();
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
 });

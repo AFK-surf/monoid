@@ -12,6 +12,13 @@
 //   hub}: answered once the agents' side was asked that (what a choice set going comes to);
 // - {step: "card", key, call: "may"|"chosen", viewer, card, option, at}: a part's card choice, as the admin API asks it;
 // - {step: "stop"}.
+// Asked with no parts made (live_p5_5_platforms.mbt as the connects use it):
+// - {step: "keepalive"}: how Feishu's and Comma's sockets are pinged and taken for dead ({feishu, comma}: {pingMs,
+//   staleMs});
+// - {step: "socket", url}: a platform's socket on the shell (`p55_shell_socket`) to the test's WebSocket server:
+//   whether it is open before it opened, once opened, and once the server closed it after its ping
+//   ({before, opened, said, after}), and a second socket cut off once opened ({cutOpened, cut});
+// - {step: "pageBase", state, channel}: where the session pages are as Comma's part is given them (`page_base_of`).
 
 ///|
 let p5_5_harnessed : Ref[LiveBus?] = Ref(None)
@@ -35,6 +42,19 @@ async fn p5_5_harness(host : @host.Host, ask : Json) -> Result[Json, String] {
 ///|
 async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
   match jtext_or_empty(ask, "step") {
+    "keepalive" => {
+      let said = (o : @connects_hub.SurfaceOptions) => ({ "pingMs": Json::number(o.ping_ms), "staleMs": Json::number(o.stale_ms) } : Json)
+      { "feishu": said(feishu_surface_options(host, "f1", None)), "comma": said(comma_surface_options(host, "c1", None)) }
+    }
+    "socket" => p5_5_socket_probe(host, jtext_or_empty(ask, "url"))
+    "pageBase" =>
+      page_base_of(
+        match jfield(ask, "state") {
+          Null => None
+          st => Some(st)
+        },
+        jtext_or_empty(ask, "channel"),
+      )
     "start" => {
       let data = jtext_or_empty(ask, "data")
       let app = jtext_or_empty(ask, "app")
@@ -136,5 +156,55 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         _ => raise BusError("no such step: \{step}")
       }
     }
+  }
+}
+
+///|
+/// The next thing a socket says, named; a bound only on what must come (one that never comes fails the test, saying so).
+async fn p5_5_socket_said(sock : @connects_hub.Socket) -> String {
+  guard @effect.timeout(10000, () => sock.events.take()) is Some(ev) else {
+    raise BusError("the socket said nothing within 10s")
+  }
+  match ev {
+    Opened => "opened"
+    Said(_, _) => "said"
+    Pong => "pong"
+    Pinged => "pinged"
+    Closed => "closed"
+    Failed(e) => "failed: \{e}"
+    Refused(n, _) => "refused \{n}"
+  }
+}
+
+///|
+async fn p5_5_socket_probe(host : @host.Host, url : String) -> Json {
+  let open = p55_shell_socket(host)
+  let sock = open(url, [])
+  let before = (sock.is_open)()
+  let first = p5_5_socket_said(sock)
+  guard first == "opened" else { raise BusError("the socket did not open: \{first}") }
+  let opened = (sock.is_open)()
+  (sock.ping)()
+  let said = []
+  while true {
+    let next = p5_5_socket_said(sock)
+    said.push(Json::string(next))
+    if next == "closed" || next.has_prefix("failed") {
+      break
+    }
+  }
+  let after = (sock.is_open)()
+  let other = open(url, [])
+  let o = p5_5_socket_said(other)
+  guard o == "opened" else { raise BusError("the second socket did not open: \{o}") }
+  let cut_opened = (other.is_open)()
+  (other.terminate)()
+  {
+    "before": Json::boolean(before),
+    "opened": Json::boolean(opened),
+    "said": Json::array(said),
+    "after": Json::boolean(after),
+    "cutOpened": Json::boolean(cut_opened),
+    "cut": Json::boolean((other.is_open)()),
   }
 }

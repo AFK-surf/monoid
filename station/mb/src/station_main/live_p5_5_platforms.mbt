@@ -16,8 +16,11 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
     let events : @effect.Queue[@connects_hub.SocketEvent] = @effect.Queue::unbounded()
     let id : Ref[Json?] = Ref(None)
     let closed = Ref(false)
+    // (the `ws` package's `readyState === OPEN`: from its open until it closes, ends or is cut off)
+    let open = Ref(false)
     let close = () => if !closed.val {
       closed.val = true
+      open.val = false
       match id.val {
         Some(i) =>
           host.rt.fork(async fn() { ignore(host.shell("ws.close", { "id": i })) catch { _ => () } }) |> ignore
@@ -53,10 +56,12 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
         ignore(host.shell("ws.close", { "id": i })) catch { _ => () }
         return
       }
+      open.val = true
       ignore(events.try_offer(Opened))
       while !closed.val {
         let (frame, bytes) = host.shell("ws.next", { "id": i }) catch {
           e => {
+            open.val = false
             ignore(events.try_offer(Failed("\{e}")))
             return
           }
@@ -67,6 +72,7 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
           { "pong": True, .. } => ignore(events.try_offer(Pong))
           { "ping": True, .. } => ignore(events.try_offer(Pinged))
           _ => {
+            open.val = false
             ignore(events.try_offer(Closed))
             return
           }
@@ -98,23 +104,52 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
         _ => ()
       },
       terminate: close,
+      is_open: () => open.val && !closed.val,
     }
   }
 }
 
 ///|
-fn surface_options(host : @host.Host, connect : String, book : @connects_hub.NameBook?, binary? : Bool = false) -> @connects_hub.SurfaceOptions {
+/// How often Comma's and Feishu's sockets are pinged, and how long one may say nothing before it is taken for dead
+/// (comma/surface.ts and feishu/surface.ts `PING_MS`, `STALE_MS`); Slack keeps its own (slack/surface.mbt).
+let platform_ping_ms : Double = 15000.0
+
+///|
+let platform_stale_ms : Double = 45000.0
+
+///|
+fn surface_options(
+  host : @host.Host,
+  connect : String,
+  book : @connects_hub.NameBook?,
+  binary? : Bool = false,
+  ping_ms? : Double = 5000.0,
+  stale_ms? : Double = 20000.0,
+) -> @connects_hub.SurfaceOptions {
   {
     connect: Some(connect),
     book,
-    ping_ms: 5000.0,
-    stale_ms: 20000.0,
+    ping_ms,
+    stale_ms,
     backoff_ms: 1000.0,
     clock: p5_connects_clock(),
     on_heard: () => (),
     log: connects_log(),
     open_socket: Some(p55_shell_socket(host, binary~)),
   }
+}
+
+///|
+/// Feishu's long connection (protobuf frames, binary) kept up as feishu/surface.ts keeps it.
+fn feishu_surface_options(host : @host.Host, connect : String, book : @connects_hub.NameBook?) -> @connects_hub.SurfaceOptions {
+  surface_options(host, connect, book, binary=true, ping_ms=platform_ping_ms, stale_ms=platform_stale_ms)
+}
+
+///|
+/// Comma's Router socket kept up as comma/surface.ts keeps it: pinged by the socket's own ping frame alone (it has no
+/// ping of its own, so its hook's `ping` does nothing besides).
+fn comma_surface_options(host : @host.Host, connect : String, book : @connects_hub.NameBook?) -> @connects_hub.SurfaceOptions {
+  surface_options(host, connect, book, ping_ms=platform_ping_ms, stale_ms=platform_stale_ms)
 }
 
 ///|
@@ -227,7 +262,7 @@ let feishu_calls : Array[String] = [
 ///|
 /// A Feishu surface and the connects' socket loop under it (connects/surface.ts `ConnectedSurface`).
 fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, book : @connects_hub.NameBook) -> @connects_hub.Connection {
-  let base = @connects_hub.ConnectedSurface::new("feishu", surface_options(host, id, Some(book), binary=true), usable=i => {
+  let base = @connects_hub.ConnectedSurface::new("feishu", feishu_surface_options(host, id, Some(book)), usable=i => {
     let c = of_jv(i)
     s.usable({
       team: jtext_or_empty(c, "team"),
@@ -241,7 +276,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
   })
   base.hooked(identify=async fn() { s.identify().to_jv() }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
     let hooks = s.socket_hooks(url, async fn(e) { handler(e) })
-    let wrap = (sock : @connects_hub.Socket) => ({ send: sock.send, is_open: () => true } : @feishu.Socket)
+    let wrap = (sock : @connects_hub.Socket) => ({ send: sock.send, is_open: sock.is_open } : @feishu.Socket)
     base.socket_to(url, {
       opened: sock => (hooks.opened)(wrap(sock)),
       message: (sock, data, _binary, at, end) => (hooks.message)(wrap(sock), data, at.to_int64()) catch {
@@ -555,7 +590,7 @@ let comma_calls : Array[String] = ["mention", "sessionLink", "post", "download",
 ///|
 /// A Comma surface and the connects' socket loop under it.
 fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, book : @connects_hub.NameBook) -> @connects_hub.Connection {
-  let base = @connects_hub.ConnectedSurface::new("comma", surface_options(host, id, Some(book)))
+  let base = @connects_hub.ConnectedSurface::new("comma", comma_surface_options(host, id, Some(book)))
   // (Comma shows no status line: comma/surface.ts `Quiet`, each said taken as shown)
   base.set_status_line(_ => @connects_hub.StatusLine::new(f => base.run(f), base.clock, 1000.0, async fn(_, _, _) { true }))
   base.hooked(identify=async fn() { s.identify() }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
@@ -600,6 +635,7 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
           }
           s.message(cs, @utf8.decode_lossy(data), () => end(None))
         },
+        // (comma/surface.ts gives no ping of its own: `socket_to` sends the socket's ping frame every `ping_ms`)
         ping: _ => (),
       }, headers=s.headers())
     } catch {
@@ -647,6 +683,34 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
 }
 
 ///|
+/// Where this station's session pages are (sessions/agents.ts `pages`, sessions/page.ts `PageBase`): its control
+/// plane's origin as people on its channel open it (`pageOrigin`), its home workspace and its id there; null where
+/// it is in no workspace (or was removed from it) or its control plane has no pages (Comma's).
+fn page_base_of(state : Json?, channel : String) -> Json {
+  guard state is Some(s) else { return Json::null() }
+  guard jtext(s, "workspace") is Some(w) && w != "" && jfield(s, "removed_at") == Json::null() else {
+    return Json::null()
+  }
+  guard @cloud_net.provider_of(Some(jfield(s, "provider"))) is Stillfail else { return Json::null() }
+  guard jtext(s, "origin") is Some(origin) && jtext(s, "station") is Some(station) else { return Json::null() }
+  let origin = if channel != "beta" {
+    origin
+  } else if origin == "https://app.still.fail" {
+    "https://app.youdid.wtf"
+  } else if origin == "https://app.monoid.build" {
+    "https://app.monoid.zone"
+  } else {
+    origin
+  }
+  { "origin": Json::string(origin), "workspace": Json::string(w), "station": Json::string(station) }
+}
+
+///|
+fn bus_pages(bus : LiveBus) -> Json {
+  page_base_of((bus.cloud_state.val)(), station_channel((bus.config_raw.val)(), bus.app))
+}
+
+///|
 /// The connect platform of Comma's, and its part's own (the workspace's statistics and Task index, the Router's chats,
 /// what another station asks of them).
 async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -> @connects_hub.Connects {
@@ -674,7 +738,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       },
       station: () => bus.key.id,
       cloud_listen: cloud_listeners,
-      pages: () => Null,
+      pages: () => to_jv(bus_pages(bus)),
       read: async fn(op, args, lang, _background) {
         match (bus.reader_ask.val)(op, of_jv(args), lang) {
           String(t) => t
