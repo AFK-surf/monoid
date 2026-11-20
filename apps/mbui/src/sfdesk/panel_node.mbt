@@ -704,11 +704,13 @@ fn side_own_node(
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "jobs" {
       jobs_tab_node(s, src, r, tips, foot_card, fn(job) {
-        // (over the whole window, the command key held as it was pressed: sfbase's tab_full.mbt)
-        let full = @sfbase.full_held()
+        // (over the whole window, the command key not held as it was pressed: sfbase's tab_full.mbt; not in the panel
+        // yet, only to go there, lone)
+        let full = @sfbase.full_asked()
+        let lone = full && !side_now(src, r).0.contains("service:" + job)
         side_tab_open(src, r, "service:" + job)
         if full {
-          @sfbase.tab_full_open(r, "service:" + job)
+          @sfbase.tab_full_open(r, "service:" + job, lone~)
         }
       })
       // (what its press asked, taken over by what it read as it was made: side_front_pressed)

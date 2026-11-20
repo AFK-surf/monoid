@@ -4,7 +4,7 @@
 // nowhere, and the viewer has no way to the chat's other pictures nor says which of them it is), and goes back to the
 // row it was pressed in as it closes; pressed before the core has it, it is asked by that name as the core takes it
 // over (the row keeping the key it was sent as: chat_body_rows' `sent_as`, given the viewer by sfbase's rows_sent_as).
-// On 小屏 over the whole window, and on 大屏 in its tab beside the chat.
+// On 小屏 over the whole window, and on 大屏 as its tab beside the chat over the whole window.
 
 ///|
 /// The core's outbox row `out-1` taking over words "." sent from here quoting picture `file` (named `name`), once
@@ -76,16 +76,12 @@ fn cnsq_check(w : Double, platform : Int, early : Bool) -> Unit raise {
     msg="\{w}, taken over \{if early { "as it shows" } else { "before" }}: the viewer asked the core by \{Repr(asked)}, not by its row's name there",
   )
   t.run_for(@ui.move_most_ms)
-  // (a phone's over the whole window, back closing it; a desktop's 大屏 a tab beside the chat, closed by its ×)
-  if w == 390.0 {
-    t.back()
-  } else {
-    t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", name)]))
-  }
+  // (over the whole window, a phone's and a desktop's 大屏's as its tab: back closing it)
+  t.back()
   t.run_for(@ui.move_most_ms * 2.0)
   let back = t.locate("img:" + name)
-  // (beside its tab its row laid out at the narrower width and back again, to a tenth of a point where it was; over the
-  // whole window, flown back to its very place)
+  // (on 大屏 its row laid out at the narrower width under its tab and back again, to a tenth of a point where it was;
+  // on 小屏, flown back to its very place)
   let near = fn(a : (Double, Double), b : (Double, Double)) {
     if w == 390.0 {
       a == b

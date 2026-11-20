@@ -33,6 +33,7 @@ fn chat_page_reset() -> Unit {
   chat_pops.jobs = 0
   chat_jobs_wait.val = None
   side_front_wait.val = None
+  side_under_chat.val = ""
 }
 
 ///|

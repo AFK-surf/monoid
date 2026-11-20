@@ -162,7 +162,7 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
     open: fn(p) { open_where(src, p) },
     open_over: fn(p) { open_over_where(src, p) },
     detail: detail_where,
-    beside: fn(tab) { beside_where(src, wide, tab) },
+    beside: fn(tab, full) { beside_where(src, wide, tab, full) },
     beside_for: fn(tab, was) {
       match app.nav.top() {
         Chat(r) if wide => Some(@sfdesk.view_step(src, r, tab, was))
@@ -318,12 +318,12 @@ fn detail_where(src : Source, r : ChatRef, tab : String) -> Unit {
 }
 
 ///|
-/// A file's tab `tab` asked beside (Shell's `beside`): on the wide frame, in the side panel of the chat in view, in
-/// front (that file's tab there already, brought to the front): the tab put there; else nowhere (None: it opens over
-/// the whole window).
-fn beside_where(src : Source, wide : Bool, tab : String) -> String? {
+/// A file's tab `tab` asked beside (Shell's `beside`, `full` to go over the whole window at once): on the wide frame,
+/// in the side panel of the chat in view, in front (that file's tab there already, brought to the front): the tab put
+/// there and whether it is new there; else nowhere (None: it opens over the whole window).
+fn beside_where(src : Source, wide : Bool, tab : String, full : Bool) -> (String, Bool)? {
   match app.nav.top() {
-    Chat(r) if wide => Some(@sfdesk.view_beside(src, r, tab))
+    Chat(r) if wide => Some(@sfdesk.view_beside(src, r, tab, full~))
     _ => None
   }
 }

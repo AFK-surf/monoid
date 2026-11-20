@@ -400,7 +400,7 @@ fn beside_open(
   let at : PlayAsked = { at, plays, how }
   // (said before the shell is asked: its tab's node may be made as the shell puts it there)
   tab_asked[tab] = at
-  let put = match (shell.val.beside)(tab) {
+  let (put, new) = match (shell.val.beside)(tab, full) {
     Some(put) => put
     None => {
       tab_asked.remove(tab)
@@ -417,10 +417,11 @@ fn beside_open(
       t.viewer.play_asked(at)
     }
   })
-  // (over the whole window as its tab, asked so: the chat in view's, where the shell put it)
+  // (over the whole window as its tab, asked so: the chat in view's, where the shell put it; put there new, only to go
+  // there: lone, tab_full.mbt)
   if full {
     match app.nav.top() {
-      Chat(r) => tab_full_open(r, put)
+      Chat(r) => tab_full_open(r, put, lone=new)
       _ => ()
     }
   }

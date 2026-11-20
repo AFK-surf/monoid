@@ -1086,10 +1086,10 @@ pub fn preview_rest() -> Double {
 ///|
 /// Opens `a` of the chat on `station` (kept by the session `key`); `steps`: what an image steps through; `named`: a
 /// file a message names by its path (`a.path`), not one sent with it. Where the shell has a side panel for the page in
-/// view (Shell's `beside`), a tab there by default, whatever it is (a picture stepping through its chat's there, marked
-/// there; a film or a song played there at once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏 pressed; by default as the
-/// command key is held: full_held); `beside`: asked beside the page and no more (a menu's 在侧边打开, the preview's
-/// 移到侧边), or, false, over everything in the viewer of its own. Anything not put in a tab opens over everything in that
+/// view (Shell's `beside`), a tab there, whatever it is (a picture stepping through its chat's there, marked there; a
+/// film or a song played there at once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏
+/// pressed; by default unless the command key is held: full_asked); `beside`: asked beside the page and no more (a
+/// menu's 在侧边打开, the preview's 移到侧边), or, false, over everything in the viewer of its own. Anything not put in a tab opens over everything in that
 /// viewer, what the tabs beside the page play paused; `start`: where a film or a song starts there (ms), else where it
 /// was left.
 pub fn open_preview(
@@ -1107,7 +1107,7 @@ pub fn open_preview(
   let full = match (full, beside) {
     (Some(f), _) => f
     (None, Some(_)) => false
-    (None, None) => full_held()
+    (None, None) => full_asked()
   }
   let beside = beside.unwrap_or(true)
   if beside && opens_beside(a.path, a.name) {
