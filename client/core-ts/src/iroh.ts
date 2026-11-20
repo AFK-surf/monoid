@@ -118,8 +118,9 @@ export type BindOptions = {
   relayUrls: string[];
   /// Alternative entrances to the same relay, not additional independent relays.
   relayEntries?: { entry: string; relay: string }[];
-  /// Immutable ceiling of relay and entry URLs this endpoint may ever use (`[]` permits only IP and custom
-  /// transports). Omitted: unrestricted.
+  /// When `lookup` is `false`, immutable iroh `relay_allowlist` ceiling (`[]` permits only IP and custom transports).
+  /// When `lookup` is `true`, filters relay URLs returned by DHT and mDNS lookups and grows with `setRelayEntries`.
+  /// Omitted: unrestricted.
   relayAllowlist?: string[];
   /// When true with `relayAllowlist`, also admit iroh's built-in default relays for emergency fallback when all
   /// configured relays are down.

@@ -2820,6 +2820,46 @@ sim("retune_with_new_entry_updates_in_place_without_rebinding", async (s) => {
   await close(s, station, mesh);
 });
 
+sim("main_endpoint_without_lookup_omits_relay_allowlist_while_pinned_endpoints_enforce_it", async (s) => {
+  const bound: BindOptions[] = [];
+  const baseBind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) => {
+      bound.push(o);
+      return baseBind(o);
+    },
+  };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 200 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30 }, station: { ms: 20 } });
+  const entry = s.net.entry("https://entry.relay.test:8443/", a, { device: { ms: 40 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false }, [a, b], [entry], { [entry]: a }));
+  assert.equal(bound.length, 1);
+  assert.equal(bound[0]!.relayAllowlist, undefined, "lookup: false main endpoint must omit relayAllowlist so setRelayEntries and workspace relays stay open");
+  assert.equal(bound[0]!.allowPublicRelays, undefined);
+
+  const id = `w/${station.id()}`;
+  station.lan = station.addr().ips;
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, [a]));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await s.until(() => bound.some((o) => o.relayUrls.length === 0 && o.relayOnly === false));
+  const pinnedSingle = bound.find((o) => o.relayOnly === true && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedFence = bound.find((o) => o.relayOnly === false && o.lookup === false && o.relayUrls.length === 1 && o.relayUrls[0] === b);
+  const pinnedLan = bound.find((o) => o.relayOnly === false && o.relayUrls.length === 0);
+  assert.ok(pinnedSingle !== undefined, "expected pinned single-relay endpoint");
+  assert.deepEqual(pinnedSingle.relayAllowlist, [b]);
+  assert.equal(pinnedSingle.allowPublicRelays, false);
+  assert.ok(pinnedFence !== undefined, "expected pinned fenced endpoint");
+  assert.deepEqual(pinnedFence.relayAllowlist, [b]);
+  assert.equal(pinnedFence.allowPublicRelays, false);
+  assert.ok(pinnedLan !== undefined, "expected pinned LAN endpoint");
+  assert.deepEqual(pinnedLan.relayAllowlist, []);
+  assert.equal(pinnedLan.allowPublicRelays, false);
+  await close(s, station, mesh);
+});
+
 // ── over the addon: what only it can show, never timed ──
 
 function test(name: string, options: TestOptions | Body, body?: Body) {

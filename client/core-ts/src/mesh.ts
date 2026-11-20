@@ -1001,8 +1001,8 @@ export class Mesh {
     relayEntries: { entry: string; relay: string }[],
     relayAllowlist: string[],
   ): Effect.Effect<IrohEndpoint, CoreError> {
-    const allowPublicRelays = env.lookup === true && env.relayOnly !== true && relays.length > 0;
-    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, relayAllowlist, allowPublicRelays);
+    const lookupActive = env.lookup === true && env.relayOnly !== true && relays.length > 0;
+    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, lookupActive ? relayAllowlist : undefined, lookupActive);
   }
 
   /// An endpoint: one at an address or on one relay alone looks nothing up (`lookup` only with a relay, and IP
@@ -1026,8 +1026,7 @@ export class Mesh {
         relayOnly,
         ...(alpns.length > 0 ? { alpns } : {}),
         ...(relayEntries.length > 0 ? { relayEntries } : {}),
-        ...(relayAllowlist !== undefined ? { relayAllowlist } : {}),
-        allowPublicRelays,
+        ...(relayAllowlist !== undefined ? { relayAllowlist, allowPublicRelays } : {}),
       }),
       (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.bind_failed")),
     );
