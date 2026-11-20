@@ -97,6 +97,18 @@ put_feed() {
     if r2 put "$name" --file "$out/deltas-made/$name" --content-type "$ctype"; then echo "uploaded $name ($(du -h "$out/deltas-made/$name" | cut -f1))"
     else whole=""; echo "release.sh: $name not put: $feed_name is put without its deltas" >&2; fi
   done
+  # (the station's packages, named the same each release (feed_packages=yes): put only now, side by side, after the
+  # deltas and archives to them and just before the feed naming them, so that a release cut while it was built or its
+  # deltas made leaves the packages and the feed of the release before as they were)
+  if [ -n "${feed_packages:-}" ]; then
+    pids=""
+    for package in "$@"; do
+      case ${package%%=*} in *.zip) ctype=application/zip ;; *.tar.gz) ctype=application/gzip ;; *) ctype=application/octet-stream ;; esac
+      put "${package#*=}" "${package%%=*}" "$ctype" &
+      pids="$pids $!"
+    done
+    for pid in $pids; do wait "$pid" || { echo "release.sh: not every package of $feed_name was put: $feed_name not put" >&2; exit 1; }; done
+  fi
   if [ -n "$whole" ] && [ -f "$out/deltas-made/$feed_name" ]; then put "$out/deltas-made/$feed_name" "$feed_name" "$feed_type"
   else put "$feed_file" "$feed_name" "$feed_type"; fi
   rm -rf "$out/deltas" "$out/deltas-made"
@@ -329,17 +341,19 @@ for platform in $platforms; do
       ;;
     *)
       sh "$root/scripts/station-bundle.sh" "$out/$platform" "$platform"
-      # Packed and put beside the next platform's bundling (each ~20 s, one after another before 2026-10-04).
-      # Windows' a zip (install.ps1 opens it with Expand-Archive).
+      # Packed beside the next platform's bundling (each ~20 s, one after another before 2026-10-04). Windows' a zip
+      # (install.ps1 opens it with Expand-Archive). Into RELEASE_DIR at once; into the bucket only with the feed, once
+      # every platform is packed (put_feed): put here, one by one, a release cut on the way left the new packages beside
+      # the old feed's hashes and signatures (stable.yml's station, cut at its 10 minutes, 2026-11-19).
       if [ "$platform" = win32-x64 ]; then
         file="stillfail-station-$platform.zip"
         station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
-        (rm -f "$out/$file" && (cd "$out/$platform" && zip -qr "$out/$file" stillfail) && put "$out/$file" "${beta:+beta/}$file" application/zip) &
+        (rm -f "$out/$file" && (cd "$out/$platform" && zip -qr "$out/$file" stillfail) && { [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/zip; }) &
         node_file="node/node-v$(cat "$root/.node-version")-win-x64.zip"
       else
         file="stillfail-station-$platform.tar.gz"
         station_files="${station_files:-} ${beta:+beta/}$file=$out/$file"
-        (tar -czf "$out/$file" -C "$out/$platform" stillfail && put "$out/$file" "${beta:+beta/}$file" application/gzip) &
+        (tar -czf "$out/$file" -C "$out/$platform" stillfail && { [ -z "${RELEASE_DIR:-}" ] || put "$out/$file" "${beta:+beta/}$file" application/gzip; }) &
         node_file="node/node-v$(cat "$root/.node-version")-$platform.tar.gz"
       fi
       putting="${putting:-} $!"
@@ -361,13 +375,16 @@ for platform in $platforms; do
       ;;
   esac
 done
-for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not put" >&2; exit 1; }; done
+for pid in ${putting:-}; do wait "$pid" || { echo "a station release was not packed or put" >&2; exit 1; }; done
 # What stations read to say a newer release is out (station/src/updates/updates.ts), once its files are there: its
 # version, and the words naming each archive and its Node (where it has one), signed with $RELEASE_SIGNING_KEY (scripts/release-sign.ts,
 # scripts/release-sign.ts). Not signing is an error but into RELEASE_DIR outside CI (a dev cloud's), where it warns.
 if [ -n "${station:-}" ]; then
   node "$root/scripts/release-sign.ts" station "$out/station.json" --build "$build" --commit "$(git -C "$root" rev-parse HEAD)" \
     --node "$(cat "$root/.node-version")" ${RELEASE_DIR:+--unsigned-ok} $signing
+  # (into the bucket: the packages with the feed, after its deltas: put_feed's feed_packages)
+  feed_packages=yes
   # shellcheck disable=SC2086 # name=file pairs, one word each
   put_feed "$out/station.json" "station${beta:+-beta}.json" application/json $station_files
+  feed_packages=""
 fi

@@ -20,14 +20,14 @@
 //   node scripts/native.ts run <part>… -- <command…>   the command, with each part's variable set (STILLFAIL_MESH_NATIVE, …)
 //   node scripts/native.ts iroh-pkg [dir]              the web's iroh (iroh-wasm) put in web/src/core/iroh-pkg
 //   node scripts/native.ts status                      every part and target: key, and whether cached / published
-//   node scripts/native.ts missing [--windows] [part[:target]…]    those (default: all of ours) the release lacks, one a line
+//   node scripts/native.ts missing [--windows] [part[:target]…]    those (default: all of ours) the release and the store lack, one a line
 //   node scripts/native.ts parts [--windows|--mac|--linux]      what missing and ensure take by default, one a line
 //   node scripts/native.ts missing --prebuilt          the prebuilt ones (`msvc`: the shell and engine, Android's,
 //        Windows' and Linux', which the mbui app's jobs only fetch; `prebuilt`: ghostty-vt) in neither the store nor
 //        the release, one a line
 //   node scripts/native.ts ensure [--windows] [--publish] [--outbox DIR] [part[:target]…]
-//        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release lacks
-//        (gh, main only), then prunes those parts and targets to the newest 20; --outbox copies the artifacts the
+//        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release and the
+//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --outbox copies the artifacts the
 //        release lacks there (a branch's run artifact)
 //        The default leaves out what only Windows builds (MSVC's: the mbui app's shell and engine); --windows is those.
 //        Never what only Linux builds (the mbui app's Linux shell and engine: the prebuild workflow's alone), nor
@@ -43,7 +43,10 @@
 //   node scripts/native.ts store-sync                  CI on main: each prebuilt part at its key that the release has and
 //        the store lacks, copied there (release-put.sh, CLOUDFLARE_API_TOKEN); never built. (Every part, not only the
 //        Windows ones: the release's download answered GitHub's runners 504 again and again on 2026-11-08, iroh-wasm's,
-//        failing every branch's bundle, static and check-linux; the store is asked first.)
+//        failing every branch's bundle, static and check-linux; the store is asked first. And the readers: the release
+//        keeps 20 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
+//        built all four in its station job, past its 10 minutes. scripts/release-prune.ts deletes a reader there after
+//        14 days. Not reader-harness, the tests' alone.)
 //
 // STILLFAIL_NATIVE=build never downloads (builds what the cache lacks); STILLFAIL_NATIVE=offline neither downloads nor
 // builds. Builds go to $CARGO_TARGET_DIR/native/<part> when it is set (station crates add the target to the part),
@@ -1697,7 +1700,11 @@ async function main(argv: string[]) {
       for (const a of args.filter((a) => !["--windows", "--mac", "--linux"].includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
       if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
       const remote = (await published()) ?? fail("the release's assets could not be listed");
-      for (const [p, t] of wanted) if (!remote.has(asset(p, t, key(p, t)))) console.log(`${p}:${t}`);
+      // (one the release pruned, KEEP of its group, but the store keeps (store-sync): not missing. The store asked only
+      // of those the release lacks, side by side)
+      const lacking = wanted.filter(([p, t]) => !remote.has(asset(p, t, key(p, t))));
+      const stored = await Promise.all(lacking.map(([p, t]) => inStore(asset(p, t, key(p, t)))));
+      lacking.forEach(([p, t], i) => { if (!stored[i]) console.log(`${p}:${t}`); });
       return;
     }
     case "ensure": {
@@ -1754,7 +1761,8 @@ async function main(argv: string[]) {
       for (const [p, t] of wanted) {
         const k = key(p, t);
         const name = asset(p, t, k);
-        const there = remote.has(name);
+        // (in the store, where store-sync keeps what the release pruned: not published again)
+        const there = remote.has(name) || (await inStore(name));
         const before = complete(cached(p, t, k), p, t);
         const started = Date.now();
         const dir = await get(p, t);
@@ -1810,7 +1818,9 @@ async function main(argv: string[]) {
       mkdirSync(join(work, "natives"), { recursive: true });
       let any = false;
       try {
+        // (not the tests' program, reader-harness: only check-station runs it, from the release)
         for (const [p, t] of ours()) {
+          if (p === "reader-harness") continue;
           const name = asset(p, t, key(p, t));
           if (await inStore(name)) { console.log(`${name}: in the store`); continue; }
           if (!(await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }

@@ -821,22 +821,23 @@ jobs:
 
   # main: the prebuilt natives in the releases bucket's natives/ (what `prebuild --release` put in the release
   # native-artifacts, the prebuild workflow's or a Mac's, copied over: nothing is built here), once the API (which serves
-  # natives/) is out. Seconds when the store has them.
+  # natives/) is out, and once the natives jobs published this commit's, the readers too: the release keeps 20 of a
+  # part, a few hours of main's, and the stable release of the day before, finding its readers in neither, built all
+  # four in its station job (stable.yml). Seconds when the store has them. Node alone: release-put.sh goes through
+  # Cloudflare's API with the token.
   natives-store:
-    needs: [plan, api]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.api.result)
+    needs: [plan, api, natives, natives-win-reader-main, natives-mac]
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.api.result)
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/node
       - name: Copy what the store lacks from the release
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          node scripts/native.ts store-sync
+        run: node scripts/native.ts store-sync
 
   # quick runner (label quick, on macos-ci too) takes only the short jobs everything else waits on: natives (what a run's
   # builds and checks need), and main's done and station-update. Behind the builds in macos-ci's four, natives waited
