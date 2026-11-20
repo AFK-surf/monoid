@@ -302,7 +302,7 @@ impl Inner {
             | "tar.pack"
             | "tar.unpack"
             | "tar.file" => self.run_zstd(op, &a, bytes).await,
-            "fs.put" | "storage.get" | "storage.set" | "storage.delete" => self.run_fs_async(op, &a, bytes).await,
+            "fs.put" | "fs.rotate" | "storage.get" | "storage.set" | "storage.delete" => self.run_fs_async(op, &a, bytes).await,
             "iroh.bind"
             | "iroh.meshSubscribe"
             | "iroh.meshUnsubscribe"

@@ -1915,3 +1915,64 @@ fn ws_open_preserves_handshake_refusal_words() {
         Err("websocket refused (400): line one line two".to_string())
     );
 }
+
+#[test]
+fn rotates_a_log_in_place_keeping_its_tail_and_inode() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let rotate = |id: u64, args: Value| -> Value {
+        shell.call(id, "fs.rotate".into(), args.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+
+    // Missing file returns false.
+    let missing = dir.path().join("missing.log");
+    assert_eq!(rotate(96_501, json!({ "path": missing.display().to_string(), "cap": 100 })), json!(false));
+
+    // File at or below cap returns false and leaves no .1 or .1.tmp behind.
+    let log = dir.path().join("job.log");
+    let backup = dir.path().join("job.log.1");
+    let tmp = dir.path().join("job.log.1.tmp");
+    std::fs::write(&log, vec![b'a'; 100]).unwrap();
+    assert_eq!(rotate(96_502, json!({ "path": log.display().to_string(), "cap": 100.0 })), json!(false));
+    assert!(!backup.exists() && !tmp.exists());
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 100);
+
+    // File past cap (> 64 KiB so the streaming buffer loops) with custom keep < cap (as floats).
+    let data: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&log, &data).unwrap();
+    #[cfg(unix)]
+    let ino_before = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&log).unwrap().ino()
+    };
+    assert_eq!(
+        rotate(96_503, json!({ "path": log.display().to_string(), "cap": 100_000.0, "keep": 80_000.0 })),
+        json!(true)
+    );
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    assert!(!tmp.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), &data[data.len() - 80_000..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), ino_before);
+        assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    // Default keep (omitted) equals cap.
+    let data2: Vec<u8> = (0..120_000u32).map(|i| ((i * 3) % 251) as u8).collect();
+    std::fs::write(&log, &data2).unwrap();
+    assert_eq!(rotate(96_504, json!({ "path": log.display().to_string(), "cap": 70_000 })), json!(true));
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    assert!(!tmp.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), &data2[data2.len() - 70_000..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), ino_before);
+        assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}

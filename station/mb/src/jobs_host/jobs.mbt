@@ -364,48 +364,10 @@ pub async fn output_at(host : @host.Host, path : String) -> Double? {
 /// bytes copied to `<path>.1` (through `<path>.1.tmp`), then the file truncated to nothing, its inode the same.
 pub async fn rotate_in_place(host : @host.Host, path : String, cap : Double, keep? : Double) -> Bool raise {
   let keep = keep.unwrap_or(cap)
-  let size_of = async fn() -> Double? {
-    match try_ask(host, "fs.meta", { "path": jstr(path) }) {
-      Some(Object(_) as m) => num(field(m, "size"))
-      _ => None
-    }
+  match ask(host, "fs.rotate", { "path": jstr(path), "cap": jnum(cap), "keep": jnum(keep) }) {
+    True => true
+    _ => false
   }
-  guard size_of() is Some(first) else { return false }
-  let mut size = first
-  if size <= cap {
-    return false
-  }
-  let tmp = path + ".1.tmp"
-  try {
-    ignore(put(host, tmp, b"", offset=0.0, truncate=true, mode=0o600))
-    let mut at = if size - keep > 0.0 { size - keep } else { 0.0 }
-    let mut written = 0.0
-    for pass in 0..<2 {
-      ignore(pass)
-      while at < size {
-        let n = if size - at < 1048576.0 { (size - at).to_int() } else { 1048576 }
-        let piece = match ask(host, "fs.bytes", { "path": jstr(path), "from": jnum(at), "length": jint(n) }) {
-          String(h) => @hex.decode(h)
-          _ => b""
-        }
-        if piece.length() == 0 {
-          break
-        }
-        ignore(put(host, tmp, piece, offset=written))
-        written += piece.length().to_double()
-        at += piece.length().to_double()
-      }
-      size = size_of().unwrap_or(size)
-    }
-    rename(host, tmp, path + ".1")
-    ignore(put(host, path, b"", offset=0.0, truncate=true))
-  } catch {
-    e => {
-      remove(host, tmp)
-      raise e
-    }
-  }
-  true
 }
 
 ///|

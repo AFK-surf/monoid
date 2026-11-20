@@ -285,6 +285,77 @@ impl Inner {
                 .map_err(err)??;
                 Ok(Answer::json(json!({ "size": size })))
             }
+            // A log other processes append to, cut in place once past `cap` (station/src/ops/storage.ts
+            // `rotateInPlace`): its last `keep` bytes (default `cap`) streamed through one 64 KiB buffer into
+            // `<path>.1.tmp` (0600), renamed to `<path>.1`, then `<path>` truncated to 0 keeping its inode.
+            "fs.rotate" => {
+                let path = PathBuf::from(str_of(a, "path")?);
+                let u64_of = |key: &str| -> Option<u64> {
+                    let v = a.get(key)?;
+                    if let Some(n) = v.as_u64() {
+                        Some(n)
+                    } else {
+                        v.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64)
+                    }
+                };
+                let cap = u64_of("cap").ok_or_else(|| "no cap".to_string())?;
+                let keep = match a.get("keep") {
+                    None | Some(Value::Null) => cap,
+                    Some(_) => u64_of("keep").ok_or_else(|| "invalid keep".to_string())?,
+                };
+                let rotated = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                    use std::io::{Read, Seek, SeekFrom, Write};
+                    let Ok(from) = std::fs::File::open(&path) else {
+                        return Ok(false);
+                    };
+                    let Ok(meta) = from.metadata() else {
+                        return Ok(false);
+                    };
+                    let size = meta.len();
+                    if size <= cap {
+                        return Ok(false);
+                    }
+                    let tmp = PathBuf::from(format!("{}.1.tmp", path.display()));
+                    let backup = PathBuf::from(format!("{}.1", path.display()));
+                    let run = |mut from: std::fs::File| -> Result<(), String> {
+                        let mut size = size;
+                        let mut to = own_file(&tmp)?;
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let mut at = size.saturating_sub(keep);
+                        from.seek(SeekFrom::Start(at)).map_err(err)?;
+                        for _ in 0..2 {
+                            while at < size {
+                                let want = ((size - at) as usize).min(buf.len());
+                                let n = match from.read(&mut buf[..want]) {
+                                    Ok(n) => n,
+                                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                    Err(e) => return Err(err(e)),
+                                };
+                                if n == 0 {
+                                    break;
+                                }
+                                to.write_all(&buf[..n]).map_err(err)?;
+                                at += n as u64;
+                            }
+                            size = from.metadata().map_err(err)?.len();
+                        }
+                        drop(to);
+                        drop(from);
+                        std::fs::rename(&tmp, &backup).map_err(err)?;
+                        let f = std::fs::OpenOptions::new().write(true).open(&path).map_err(err)?;
+                        f.set_len(0).map_err(err)?;
+                        Ok(())
+                    };
+                    if let Err(e) = run(from) {
+                        let _ = std::fs::remove_file(&tmp);
+                        return Err(e);
+                    }
+                    Ok(true)
+                })
+                .await
+                .map_err(err)??;
+                Ok(Answer::json(json!(rotated)))
+            }
             "storage.get" => {
                 let path = storage_path(&self.dir, str_of(a, "key")?);
                 self.disk(move || match std::fs::read(&path) {
