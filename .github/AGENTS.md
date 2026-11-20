@@ -79,7 +79,8 @@
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
   a part that needs more is made faster, split (the station's, a job a platform: `--platform`, put's `--merge`) or gets
-  fewer bases, not longer (10 bases: the owner, 2026-11-11).
+  fewer bases, not longer (10 bases: the owner, 2026-11-11). All but Android's (its `javac`, `ubuntu-24.04`'s JDK) run on `ci-1`, idle on
+  main by then, not queued behind GitHub's runners (`ubuntu-24.04` with `vars.CI_1 = 'off'`).
 - Stable (`workflows/stable.yml`) runs from main's head against the release's older checkout: a step that needs newer
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
   staged; only `station-put` puts it, packages then `station.json` seconds apart, so a run cut before leaves the channel
@@ -89,7 +90,7 @@
 - `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts, not the Mac's reader, which
   `natives-mac-reader` builds beside it) and `desktop` for `desktop-build` alone, never for `natives`' slower Linux build
   nor the reader's. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
-  alone (`.github/actions/node`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
+  alone (`.github/actions/node`; on `ci-1`, `scripts/node-here.sh`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
   token (wrangler only without it). `release-prune` deletes old files after `put` in a job of its own, which neither
   `done` nor `station-update` waits for.
 - The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's

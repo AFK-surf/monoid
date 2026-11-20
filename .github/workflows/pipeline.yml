@@ -2242,9 +2242,10 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
-      # (mbc and chk alone, as desktop-build's: the other tools' keys and caches were 12-15 s of the job)
+      # (mbc, chk and pack alone: the other tools' keys and caches were 12-15 s of the job; pack is the packager win.sh
+      # runs (`scripts/mbui meta`), built there from nothing on each run, 36 tasks, when not kept)
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc chk' }
+        with: { tools: 'mbc chk pack' }
       - name: The Windows natives' keys
         id: native-keys
         run: |
@@ -2386,31 +2387,48 @@ jobs:
           echo "BUILD_KEY=mbui-win-build-mono-$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)" >> "$GITHUB_ENV"
           export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
           MBUI_WIN_BUILT="beta:$(cat "$B/build")" bash scripts/with-timeout.sh @$((JOB_END - 25)) sh scripts/release.sh --beta desktop-win
-      - name: Put its files (named by its version, nothing points at them until put writes the feeds)
+      # Its files put (named by its version, nothing points at them until put writes the feeds), beside monoid's beta
+      # Windows app (build.monoid.desktop.beta): the same program, linked again with its own resources (its id, name and
+      # environment: apps/mbui/scripts/win.sh), nothing compiled again; put by monoid-desktop-win once the check passed.
+      # The put is the network's ~7 s and monoid's the CPU's ~30, one after the other until 2026-11-20, as android's.
+      # Neither writes where the other reads: the put reads and empties $RUNNER_TEMP/release alone (release.sh copied the
+      # installer there), monoid's is made in $RUNNER_TEMP/monoid and apps/mbui/out/setup; each without the other's
+      # secret. Only while the job's 5 minutes leave room for it: it never holds still.fail's release back. 3b0992b9's
+      # job was 304 s with it, stopped at its 5 minutes, and the release with it (43054413565, 2026-11-11): left out,
+      # monoid's Windows app comes with the next release. Either failing fails the step, as before.
+      - name: Put its files, and pack and sign monoid's beta Windows app from the same build
+        id: monoid
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: sh scripts/release-put.sh --files "$RUNNER_TEMP/release"
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          MONOID_CI: ${{ vars.MONOID_CI }}
+        run: |
+          monoid=""
+          if [ "$MONOID_CI" = on ]; then
+            used=$(( $(date +%s) - JOB_BEGAN ))
+            if [ "$used" -gt 220 ]; then
+              echo "::warning::monoid's beta Windows app left for the next release: this job has used ${used} s of its 300"
+            else
+              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" sh scripts/release.sh --product monoid --beta desktop-win) \
+                > "$RUNNER_TEMP/monoid.log" 2>&1 &
+              monoid=$!
+            fi
+          fi
+          failed=""
+          put_rc=0
+          (unset RELEASE_SIGNING_KEY; sh scripts/release-put.sh --files "$RUNNER_TEMP/release") || put_rc=$?
+          [ "$put_rc" = 0 ] || echo "::error::still.fail's beta Windows app's files were not put"
+          if [ -n "$monoid" ]; then
+            if wait "$monoid"; then
+              echo "::group::monoid's beta Windows app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
+              echo "packed=1" >> "$GITHUB_OUTPUT"
+            else
+              cat "$RUNNER_TEMP/monoid.log"; echo "::error::monoid's beta Windows app was not packed"; failed=1
+            fi
+          fi
+          [ "$put_rc" = 0 ] && [ -z "$failed" ]
       - uses: actions/upload-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release", retention-days: 7 }
-      # monoid's (build.monoid.desktop.beta): the same program, linked again with its own resources (its id, name and
-      # environment: apps/mbui/scripts/win.sh), nothing compiled again; put by monoid-desktop-win once the check passed.
-      # Only while the job's 5 minutes leave room for it (some 30 s): it never holds still.fail's release back, which is
-      # put and handed on above. 3b0992b9's job was 304 s with it, stopped at its 5 minutes, and the release with it
-      # (43054413565, 2026-11-11): left out, monoid's Windows app comes with the next release.
-      - name: Pack and sign monoid's beta Windows app from the same build
-        id: monoid
-        if: vars.MONOID_CI == 'on'
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-          RELEASE_DIR: ${{ runner.temp }}/monoid
-        run: |
-          used=$(( $(date +%s) - JOB_BEGAN ))
-          if [ "$used" -gt 220 ]; then
-            echo "::warning::monoid's beta Windows app left for the next release: this job has used ${used} s of its 300"
-            exit 0
-          fi
-          sh scripts/release.sh --product monoid --beta desktop-win
-          echo "packed=1" >> "$GITHUB_OUTPUT"
       - if: steps.monoid.outputs.packed == '1'
         uses: actions/upload-artifact@v4
         with: { name: "monoid-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1 }
@@ -2500,7 +2518,10 @@ jobs:
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
-    runs-on: ubuntu-24.04
+    # (on ci-1, idle on main once natives is done: GitHub's ubuntu-24.04 kept these 2-4 minutes in its queue, and the
+    # six leave its runners to check-station and deltas-android, whose javac ubuntu-24.04's JDK 17 is; with
+    # vars.CI_1 == 'off', ubuntu-24.04)
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2525,7 +2546,11 @@ jobs:
             /libs/mbui/android/app/src/main/java/dev/mbui/Delta.java
             /libs/mbui/android/jzlib/
           sparse-checkout-cone-mode: false
-      - uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      # (ci-1's: the Node kept in ~/.local, as setup-linux's; it needs only .node-version, curl and tar)
+      - if: runner.environment == 'self-hosted'
+        run: echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release" }
@@ -2561,7 +2586,8 @@ jobs:
   deltas-desktop:
     needs: [plan, desktop]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop.result == 'success' }}
-    runs-on: ubuntu-24.04
+    # (on ci-1, as deltas-station)
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2572,7 +2598,8 @@ jobs:
   deltas-desktop-win:
     needs: [plan, desktop-win]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop-win.result == 'success' }}
-    runs-on: ubuntu-24.04
+    # (on ci-1, as deltas-station)
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     environment: production
     timeout-minutes: 5
     continue-on-error: true
