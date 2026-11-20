@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.26 | 98.16 | 128.95 |
 | [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.25 | 98.17 | 144.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 2.73 | 3.67 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.65 | 120.43 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
 | [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.76 | 129.28 |
-| [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.73 | 125.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.15 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61794c1c3](https://github.com/AFK-surf/monoid/commit/61794c1c31c73d49c066919f1541bc57f17ca449) fix(mbui): let the files sidebar scroll to its las | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
 | [138e670f3](https://github.com/AFK-surf/monoid/commit/138e670f329b9bdd620c42508aaea7de33abef6d) fix(mbui): tell the tree where shared flights end  | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.07 |
 | [2adad9846](https://github.com/AFK-surf/monoid/commit/2adad9846baca71106ab7cf270a6b456ddf62205) fix(station): serialize move state writes and retr | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
-| [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
