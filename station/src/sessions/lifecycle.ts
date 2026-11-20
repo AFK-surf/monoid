@@ -863,7 +863,7 @@ export async function relieveRepos(
     // Run local branch cleanup (unthrottled by daily cadence) so merged/applied/process-only branches are dropped
     // and stale (>14d) unpushed branches are archived into a verified bundle before checking remaining unpushed tips.
     await pruneRepoBranchesIn(dataDir, cand.name, cand.path, now, { git });
-    const revRes = await git(cand.path, ["rev-list", "--count", "--branches", "HEAD", "--not", "--remotes"]);
+    const revRes = await git(cand.path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"]);
     if (!revRes.ok || revRes.stdout.trim() !== "0") continue;
     const stashRes = await git(cand.path, ["for-each-ref", "refs/stash"]);
     if (!stashRes.ok || stashRes.stdout.trim() !== "") continue;

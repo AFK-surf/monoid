@@ -463,6 +463,17 @@ describe("PR B: relieveRepos relaxation (3d idle, process-file untracked, stale-
       git(idle4, ["remote", "set-url", "origin", "https://github.com/example/i4.git"]);
       setRepoMtime(idle4, idle4d);
 
+      // 7. Clone with an unpushed local tag pointing to a commit not on any remote (idle 4d) -> MUST NOT be reclaimed
+      const unpushedTag = initCloneWithRemote(join(reposDir, "unpushed-tag"), join(remotesDir, "utag.git"), baseNow);
+      git(unpushedTag, ["checkout", "--detach", "HEAD"]);
+      writeFileSync(join(unpushedTag, "tag.ts"), "export const t = 1;\n");
+      git(unpushedTag, ["add", "tag.ts"]);
+      git(unpushedTag, ["commit", "-m", "tagged commit"], { GIT_AUTHOR_DATE: isoSec(baseNow - 20 * DAY), GIT_COMMITTER_DATE: isoSec(baseNow - 20 * DAY) });
+      git(unpushedTag, ["tag", "v0.1-local"]);
+      git(unpushedTag, ["checkout", "main"]);
+      git(unpushedTag, ["remote", "set-url", "origin", "https://github.com/example/utag.git"]);
+      setRepoMtime(unpushedTag, idle4d);
+
       const removed = await relieveRepos(rig.hub, () => DISK_LOW_BYTES - 1, DISK_LOW_BYTES, { full: true });
       assert.deepEqual(removed.sort(), ["idle-4d", "merged-and-stale", "process-untracked"]);
 
@@ -472,6 +483,7 @@ describe("PR B: relieveRepos relaxation (3d idle, process-file untracked, stale-
       assert.ok(existsSync(unpushed13d), "unpushed-13d preserved");
       assert.ok(existsSync(realUntracked), "real-untracked preserved");
       assert.ok(existsSync(idle2), "idle-2d preserved");
+      assert.ok(existsSync(unpushedTag), "unpushed local tag clone preserved");
 
       // Stale branch from merged-and-stale was archived into <data>/repo-bundles/merged-and-stale/ before deletion!
       const bDir = join(rig.dir, "repo-bundles", "merged-and-stale");

@@ -315,9 +315,19 @@ test("MoonBit station prunes shared-clone branches (with 14d bundling), expires 
   git(realUntracked, ["remote", "set-url", "origin", "https://github.com/example/ru.git"]);
   setRepoMtime(realUntracked, now - 4 * DAY);
 
-  const idle2d = initClone(join(data, "repos", "idle-2d"), join(remotes, "i2.git"), now);
-  git(idle2d, ["remote", "set-url", "origin", "https://github.com/example/i2.git"]);
-  setRepoMtime(idle2d, now - 2 * DAY);
+    const idle2d = initClone(join(data, "repos", "idle-2d"), join(remotes, "i2.git"), now);
+    git(idle2d, ["remote", "set-url", "origin", "https://github.com/example/i2.git"]);
+    setRepoMtime(idle2d, now - 2 * DAY);
+
+    const unpushedTag = initClone(join(data, "repos", "unpushed-tag"), join(remotes, "utag.git"), now);
+    git(unpushedTag, ["checkout", "--detach", "HEAD"]);
+    writeFileSync(join(unpushedTag, "tag.ts"), "export const t = 1;\n");
+    git(unpushedTag, ["add", "tag.ts"]);
+    git(unpushedTag, ["commit", "-m", "tagged commit"], { GIT_AUTHOR_DATE: isoSec(now - 20 * DAY), GIT_COMMITTER_DATE: isoSec(now - 20 * DAY) });
+    git(unpushedTag, ["tag", "v0.1-local"]);
+    git(unpushedTag, ["checkout", "main"]);
+    git(unpushedTag, ["remote", "set-url", "origin", "https://github.com/example/utag.git"]);
+    setRepoMtime(unpushedTag, now - 4 * DAY);
 
   const launched = await launch(data, app);
   try {
@@ -375,6 +385,7 @@ test("MoonBit station prunes shared-clone branches (with 14d bundling), expires 
     assert.ok(!existsSync(idle4dStale), "4d idle clone with 15d stale branch reclaimed after bundling");
     assert.ok(existsSync(realUntracked), "non-process untracked clone preserved");
     assert.ok(existsSync(idle2d), "2d idle clone preserved");
+    assert.ok(existsSync(unpushedTag), "unpushed local tag clone preserved");
     assert.ok(existsSync(join(data, "repo-bundles", "idle-4d-stale")), "stale branch bundled before clone deletion");
 
     // told to stop (`op`, the launcher's control channel), it winds down with its processes (`--builder replica-export`)

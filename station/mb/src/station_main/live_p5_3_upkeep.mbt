@@ -690,7 +690,7 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double, 
     // Run local branch cleanup (unthrottled by daily cadence) so merged/applied/process-only branches are dropped
     // and stale (>14d) unpushed branches are archived into a verified bundle before checking remaining unpushed tips.
     ignore(p53_prune_repo_branches_in(host, data, name, repo_path, now))
-    let (rev_ok, rev_out) = p53_run_repo_git(host, repo_path, ["rev-list", "--count", "--branches", "HEAD", "--not", "--remotes"])
+    let (rev_ok, rev_out) = p53_run_repo_git(host, repo_path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"])
     if !rev_ok || rev_out.trim().to_owned() != "0" {
       continue
     }
