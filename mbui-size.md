@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.54 | 66.23 | 98.17 | 113.97 |
 | [c5f717b1e](https://github.com/AFK-surf/monoid/commit/c5f717b1e8f2bd3b9b1d9a5065bdd07d2a4d3098) feat(station): Farview Stage 10A release, farview. | 2.74 | 3.7 | 15.05 | 37.12 | 57.12 | 32.54 | 66.23 | 98.17 | 127.12 |
 | [f886b0cf9](https://github.com/AFK-surf/monoid/commit/f886b0cf9c69b0e1ed41eb24eebafd4478e6d2fe) feat(mbui): interactive role cursor default, theme | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
 | [41fab27ae](https://github.com/AFK-surf/monoid/commit/41fab27aee4dff32a0678e54a5d2eb4d58dd8c35) feat(mbui): add layout ergonomics, list_reused, pi | 2.74 | 3.7 | 15.05 | 37.11 | 57.12 | 32.54 | 66.21 | 98.4 | 129.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.72 | 123.51 |
 | [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.88 | 123.51 |
 | [ed4d2a9a8](https://github.com/AFK-surf/monoid/commit/ed4d2a9a88be25f0b0deeb57131ee3788f5c1370) fix(scripts): load libz at run time where zlib.h i | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.88 | 123.51 |
-| [a36908324](https://github.com/AFK-surf/monoid/commit/a36908324aef46321019fdda2528355aae1f9643) fix(ci): restore TestFlight's iOS caches by previe | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.76 | 123.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
 | [c5f717b1e](https://github.com/AFK-surf/monoid/commit/c5f717b1e8f2bd3b9b1d9a5065bdd07d2a4d3098) feat(station): Farview Stage 10A release, farview. | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
 | [f886b0cf9](https://github.com/AFK-surf/monoid/commit/f886b0cf9c69b0e1ed41eb24eebafd4478e6d2fe) feat(mbui): interactive role cursor default, theme | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
 | [41fab27ae](https://github.com/AFK-surf/monoid/commit/41fab27aee4dff32a0678e54a5d2eb4d58dd8c35) feat(mbui): add layout ergonomics, list_reused, pi | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 54.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [5b1432464](https://github.com/AFK-surf/monoid/commit/5b14324647220c24364ead4c8262f3fe912af973) fix(station): hash all MoonBit headers for the inc | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [ed4d2a9a8](https://github.com/AFK-surf/monoid/commit/ed4d2a9a88be25f0b0deeb57131ee3788f5c1370) fix(scripts): load libz at run time where zlib.h i | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
-| [a36908324](https://github.com/AFK-surf/monoid/commit/a36908324aef46321019fdda2528355aae1f9643) fix(ci): restore TestFlight's iOS caches by previe | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
