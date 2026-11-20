@@ -1174,7 +1174,7 @@ let jobs_alarm_restart : @ui.Style = @ui.css("w=S2_5 h=S2_5 radius=Full bg=Warn 
 /// 28 high and 6 apart, as far from the next as the rows under them are (32 and 2: pengxiao, 2026-10-25, the panel's
 /// rows unevenly apart).
 // kept across runs: a value (no field of it changes)
-let info_facts : @ui.Style = @ui.css("w=Full px=S2_5 gap=S1_5")
+let info_facts : @ui.Style = @ui.css("w=Full px=S4 gap=S1_5")
 
 ///|
 let info_fact_h : Double = 28.0
@@ -1215,7 +1215,7 @@ let info_inline : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 ///|
 /// Its agents (detailsList): 8 under the facts, each its mark and label over its line, 2 apart.
 // kept across runs: a value (no field of it changes)
-let info_agents : @ui.Style = @ui.css("w=Full px=S2_5 pt=S2 gap=S1_5")
+let info_agents : @ui.Style = @ui.css("w=Full px=S4 pt=S2 gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

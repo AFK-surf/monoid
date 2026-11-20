@@ -148,7 +148,7 @@ fn rs_open(
   let (_, w, h, platform) = s
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let k : RsCore = {
     l: long_chat(),
     now: 0.0,

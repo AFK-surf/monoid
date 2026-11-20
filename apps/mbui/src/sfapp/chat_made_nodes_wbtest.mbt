@@ -6,7 +6,7 @@
 /// The fixture's Home with chat_page_nodes as `nodes` says, `w` by `h` on `platform`.
 fn made_tester(w : Double, h : Double, platform : Int, nodes : Bool) -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("home")
   (@ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~), src)
 }
@@ -17,7 +17,7 @@ fn made_tester(w : Double, h : Double, platform : Int, nodes : Bool) -> (@ui.Tes
 fn made_new_chat_sent(t : @ui.Tester, small : Bool, words : String) -> ChatRef raise {
   if small {
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
   }
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
@@ -122,7 +122,7 @@ test "a new chat become its chat, on 小屏 and 大屏, chat_page_nodes off: the
 ///|
 test "大屏, an agent's history asked as a page with its inside nodes: its chat the new page" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -151,7 +151,7 @@ test "大屏, an agent's history asked as a page with its inside nodes: its chat
 /// opened, `w` by `h`, chat_page_nodes as `nodes` says; after the chat's page has come. The chat.
 fn made_beside_tester(mode : String, w : Double, h : Double, nodes : Bool) -> (@ui.Tester, Source, ChatRef) {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -227,7 +227,7 @@ test "a new chat become its chat with its inside nodes, on 小屏 and 大屏: it
     let (t, _) = made_tester(w, h, platform, true)
     if name == "小屏" {
       let (_, y) = bar_places_at()
-      t.tap(195.0, y - 28.0 - 4.0)
+      t.tap(bar_action_x, y)
     }
     t.run_for(@ui.move_most_ms)
     let title = "想让 agent 做什么？"

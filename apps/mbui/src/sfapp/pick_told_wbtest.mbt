@@ -84,6 +84,22 @@ test "a mouse's passage picked anew in the same message (another passage, or the
     t.host_says_finger(Some(false))
     @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Page))
     t.run_for(@ui.move_most_ms)
+    // (the page made as nodes: what a mouse picks the window's tree's (picked_now), its selection's number for its
+    // identity, its message for what it is of)
+    if @sfbase.chat_page_nodes.untracked() {
+      mouse_picked(t, 4.0, 120.0, framed) |> ignore
+      guard @ui.picked_now() is Some(one) else { fail("framed \{framed}: none picked") }
+      assert_true(one.made > 0, msg="framed \{framed}: \{Repr(one)}")
+      mouse_picked(t, 40.0, 200.0, framed) |> ignore
+      guard @ui.picked_now() is Some(two) else { fail("framed \{framed}: none picked the second time") }
+      assert_true(two.of == one.of && two.made > one.made, msg="framed \{framed}: \{Repr(one)} then \{Repr(two)}")
+      mouse_picked(t, 40.0, 200.0, framed) |> ignore
+      guard @ui.picked_now() is Some(three) else { fail("framed \{framed}: none picked the third time") }
+      assert_true(three.made > two.made, msg="framed \{framed}: \{Repr(two)} then \{Repr(three)}")
+      t.run_for(@ui.move_most_ms)
+      assert_eq(@ui.picked_now(), Some(three), msg="framed \{framed}")
+      continue
+    }
     let one = mouse_picked(t, 4.0, 120.0, framed)
     assert_true(one.serial > 0, msg="framed \{framed}: \{Repr(one)}")
     let two = mouse_picked(t, 40.0, 200.0, framed)

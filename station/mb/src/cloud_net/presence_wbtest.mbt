@@ -340,3 +340,43 @@ test "Comma's plane signs in its own tag in still.fail's headers and is told no 
   (s.events.message)("{\"type\":\"tool\",\"id\":\"t1\",\"request\":{}}")
   assert_true(s.sent[s.sent.length() - 1].contains("unavailable"))
 }
+
+///|
+/// The socket closed as the shell's `ws.next` says its end (`@host_world.ws_close_of`, what `host_ws` tells).
+fn World::ended_by(self : World, frame : Json) -> Unit {
+  let (code, reason) = @host_world.ws_close_of(frame)
+  (self.last().events.close)(code, reason)
+}
+
+///|
+test "the plane's Close frames as the shell says them: 4000 three times waits a minute, 4004 removes, none is neither" {
+  let w = world()
+  w.rt.advance(10)
+  for wait in [1000, 2000, 0] {
+    (w.last().events.open)()
+    w.ended_by({ "end": true, "code": 4000, "reason": "replaced" })
+    w.rt.advance(wait)
+  }
+  assert_eq(
+    w.presence[w.presence.length() - 1],
+    "false \{conflict_error} (still.fail cloud closed the presence socket (4000 replaced)) true",
+  )
+  w.rt.advance(59_999)
+  assert_eq(w.socks.length(), 3)
+  w.rt.advance(1)
+  assert_eq(w.socks.length(), 4)
+  (w.last().events.open)()
+  w.ended_by({ "end": true, "code": 4004, "reason": "removed" })
+  assert_true(w.cloud.removed())
+  w.rt.advance(600_000)
+  assert_eq(w.socks.length(), 4)
+  // (an end with no code, 1005: neither replaced nor removed, tried again a second later)
+  let w = world()
+  w.rt.advance(10)
+  (w.last().events.open)()
+  w.ended_by({ "end": true })
+  w.rt.advance(1000)
+  assert_eq(w.socks.length(), 2)
+  assert_false(w.cloud.removed())
+  assert_eq(w.presence[w.presence.length() - 1], "false still.fail cloud closed the presence socket (1005) false")
+}

@@ -9,7 +9,7 @@
 /// (sfbase's chat_page_nodes).
 fn find_chat_tester(calls : Array[Made], found? : Json? = None, nodes? : Bool = false) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -1293,7 +1293,9 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   // (the messages' words under the bar there: the old view's own, were it seen)
   let runs = t.text_runs()
   assert_true(runs.iter().any(fn(r) { r.top < foot }), msg="no message's words under the bar")
-  let past = match runs.search_by(fn(r) { r.top >= foot + 10.0 && r.x1 - r.x0 >= 30.0 }) {
+  // (a message's, over the composer: not its 发消息)
+  let composer_top = t.rect_of("发消息").map(fn(r) { r.1 }).unwrap_or(844.0)
+  let past = match runs.search_by(fn(r) { r.top >= foot + 10.0 && r.bottom < composer_top - 10.0 && r.x1 - r.x0 >= 30.0 }) {
     Some(i) => runs[i]
     None => @halt.saying("no message's words past the bar")
   }
@@ -1304,15 +1306,24 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
     assert_true(y1 + d < foot, msg="\{label}: \{d} below it is under the bar")
     assert_true(bar_key_held((x0 + x1) / 2.0, y1 + d) == Some(id), msg="\{label}: \{d} below it")
   }
-  // (past the bar, on a message's words: a long press picks them, the old view's)
+  // (past the bar, on a message's words: a long press picks them; the old view's said in sfbase's picked, the page made
+  // as nodes the tree's, @ui.picked_now)
   let u = screen_in("chat", corner_windows[0], "zh")
   let (x, y) = (past.x0 + 24.0, (past.top + past.bottom) / 2.0)
   u.press_at(x, y)
   u.run_for(@ui.long_press_ms)
   u.release(x, y)
   u.run_for(@sfbase.pick_bar_in_ms)
-  let p = @sfbase.picked.get()
-  assert_true(p.ts != "" && p.b > p.a, msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p)}")
+  if @sfbase.chat_page_nodes.get() {
+    let p = @ui.picked_now()
+    assert_true(
+      p is Some(tp) && !tp.of.is_empty() && tp.text != "",
+      msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p.map(fn(tp) { (tp.text, tp.of) }))}",
+    )
+  } else {
+    let p = @sfbase.picked.get()
+    assert_true(p.ts != "" && p.b > p.a, msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p)}")
+  }
 }
 
 ///|
@@ -1321,7 +1332,7 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
 fn find_small_tester(calls : Array[Made], nodes? : Bool = false) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,

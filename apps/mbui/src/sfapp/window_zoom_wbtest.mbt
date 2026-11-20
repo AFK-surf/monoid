@@ -45,9 +45,14 @@ test "window zoom: the chat remains usable at both limits" {
     }
     let faults = t.corner_faults()
     assert_true(faults.is_empty(), msg="zoom \{zoom}: \{Repr(faults)}")
-    guard t.boxes().iter().find_first(fn(b) { b.kind == "editor" }) is Some(editor) else { fail("no chat editor at zoom \{zoom}") }
+    // (the old composer's editor, else the field of the composer made as nodes, composer_field's)
+    let editor = match t.boxes().iter().find_first(fn(b) { b.kind == "editor" }) {
+      Some(e) => Some((e.x, e.y, e.w, e.h))
+      None => composer_field(t)
+    }
+    guard editor is Some((ex, ey, ew, eh)) else { fail("no chat editor at zoom \{zoom}") }
     let (w, h) = t.ctx().window_size()
-    let (x, y) = (editor.x + editor.w / 2.0, editor.y + editor.h / 2.0)
+    let (x, y) = (ex + ew / 2.0, ey + eh / 2.0)
     assert_true(x >= 0.0 && x < w && y >= 0.0 && y < h, msg="the chat editor is outside the window at zoom \{zoom}")
     t.tap(x, y)
     t.type_text("第一行")
@@ -221,7 +226,7 @@ test "window zoom: window corners stay consistent at every size" {
 /// they say one measure of it (mbui's to mend, not the bar's).
 // kept across runs: a value (no field of it changes)
 let zoom_bar_corners_known : Array[String] = [
-  "a box in 「整理发布清单 你 A」 (at 815,6 32×32, node 232) (corner 4.666666666666666) in the top right of 「整理发布清单 你 A 星 个 搜索全部内容 今天…」 (at 0,0 853×533, node 164) (corner 10.666666666666666): 6 from its edges, a corner the theme's ranges do not let it have; 4.666666666666666 in, it would be 6",
+  "a box in 「整理发布清单 你 A」 (at 815,6 32×32, node 269) (corner 4.666666666666666) in the top right of 「Claude 30 分钟前 高度先按 90 估，…」 (at 0,0 853×533, node 7) (corner 10.666666666666666): 6 from its edges, a corner the theme's ranges do not let it have; 4.666666666666666 in, it would be 6",
 ]
 
 ///|

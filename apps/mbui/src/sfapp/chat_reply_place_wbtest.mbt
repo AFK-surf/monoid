@@ -62,7 +62,7 @@ let rp_screens : Array[(String, Double, Double, Int)] = [("小屏", 390.0, 844.0
 fn rp_open(screen : (String, Double, Double, Int), clock : Ref[Double]) -> @ui.Tester raise {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -461,6 +461,8 @@ test "chat list: held by an answer's top, the next message moves nothing; the vi
     let (_, w, h, platform) = screen
     let clock = Ref(0.0)
     new_run()
+    // (the old page's list and its hold (hold_placed): held on it)
+    @sfbase.hold_chat_page_nodes(Some(false))
     fix_clock.val = Some(fn() { clock.val })
     let src = fixture("chat")
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

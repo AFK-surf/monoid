@@ -47,8 +47,8 @@
 {"out":{"id":19,"call":"notify.permission","params":{"state":"unknown"}},"w":1794268277286.766}
 {"in":{"id":19,"ok":null},"w":1794268277302.586}
 {"step":"until 端到端测试","w":1794268277319.759}
-{"step":"tap icon:ling","w":1794268277319.824}
-{"step":"tap icon:ling","acted":true,"w":1794268277320.4}
+{"step":"tap icon:plus","w":1794268277319.824}
+{"step":"tap icon:plus","acted":true,"w":1794268277320.4}
 {"out":{"id":20,"subscribe":{"topic":"newChat","scope":"01M71BHWV2A8PY3FK5W6XADZ69"},"keyed":true},"w":1794268277336.144}
 {"out":{"id":21,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M71BHWV2A8PY3FK5W6XADZ69","newChat":"01M71BHWV2A8PY3FK5W6XADZ69"}},"w":1794268277339.97}
 {"step":"wait 500","w":1794268277340.92}

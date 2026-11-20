@@ -424,6 +424,8 @@ test "made again: one come at the end, one changed, one gone, one moved back, a 
 ///|
 test "a chat's page with nothing changed goes over none of its rows again; a message come, its rows made again" {
   new_run()
+  // (the old page's rows and their motion keys (rd.motion_keys), what stable keeps)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let messages = Array::makei(30, fn(i) { said(i + 1, "第 \{i + 1} 句") })
   let title = Ref("整理发布清单")
@@ -486,6 +488,8 @@ test "a chat's page with nothing changed goes over none of its rows again; a mes
 ///|
 test "a chat keeps its rows when scrolled and renamed, then shows a new message at the end" {
   new_run()
+  // (the old page's rows and their motion keys (rd.motion_keys), what stable keeps)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let messages = Array::makei(30, fn(i) { said(i + 1, "第 \{i + 1} 句") })
   let title = Ref("整理发布清单")

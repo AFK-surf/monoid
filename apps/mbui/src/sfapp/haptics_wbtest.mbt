@@ -123,7 +123,7 @@ test "what comes to be is felt as it comes: not as it is first seen, nor while i
 /// cards asked) while `asks` is.
 fn needed_open(told : @signals.Signal[Bool], asks : @signals.Signal[Bool]) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,

@@ -70,6 +70,7 @@ test "a picture waiting in the composer, tapped, opens in the viewer from the by
 /// A picture waiting in an existing chat or a new one's composer, opened and closed as a host takes a pointer's events.
 fn waiting_picture_return(new_chat : Bool) -> Unit raise {
   new_run()
+  both_way()
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -128,16 +129,18 @@ fn waiting_picture_return(new_chat : Bool) -> Unit raise {
 
 ///|
 test "a picture waiting in an existing chat is visible as soon as its preview returns" {
-  both_pages(fn() raise {
-    waiting_picture_return(false)
-  })
+  both_pages(
+    fn() raise { waiting_picture_return(false) },
+    old_only="the old composer's tile it reads (thumb_of), as it ran before the page made as nodes was the test channel's",
+  )
 }
 
 ///|
 test "a picture waiting in a new chat is visible as soon as its preview returns" {
-  both_pages(fn() raise {
-    waiting_picture_return(true)
-  })
+  both_pages(
+    fn() raise { waiting_picture_return(true) },
+    old_only="the old composer's tile it reads (thumb_of), as it ran before the page made as nodes was the test channel's",
+  )
 }
 
 ///|
@@ -970,7 +973,7 @@ test "a video waiting in the composer made as nodes stands on a video's black in
 ///|
 test "a picture restored in the composer made as nodes shows as the device reads it, and the viewer opens on it" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1010,13 +1013,13 @@ test "a picture restored in the composer made as nodes shows as the device reads
     }
     None => fail("the viewer did not open")
   }
-  @sfbase.chat_page_nodes.set(false)
+  @sfbase.hold_chat_page_nodes(Some(false))
 }
 
 ///|
 test "a message's picture quoted in the composer made as nodes shows as its station's comes, never a grey square for good" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1049,7 +1052,7 @@ test "a message's picture quoted in the composer made as nodes shows as its stat
   (answer.val.unwrap())(Ok((Json::object({}), Some(png_head()))))
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
   assert_true(t.locate("img:mem:test/quoted").length() > 0, msg="the quoted picture did not come to its tile")
-  @sfbase.chat_page_nodes.set(false)
+  @sfbase.hold_chat_page_nodes(Some(false))
 }
 
 ///|

@@ -78,7 +78,7 @@ fn ls_open(mode : String, screen : (String, Double, Double, Int)) -> (@ui.Tester
   let (_, w, h, platform) = screen
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let held : LsHeld = { value: None, version: 0, changes: @signals.signal(0), ops: None }
   let told : Array[(String, Json)] = []
   let src = ls_source(fixture(mode), held, told)
@@ -157,7 +157,7 @@ test "a new chat become its chat, its page made as nodes read by key, 小屏 and
     let (name, w, h, platform) = screen
     new_run()
     @sf.presenters_reset()
-    @sfbase.chat_page_nodes.set(true)
+    @sfbase.hold_chat_page_nodes(Some(true))
     let src = round_trip_again(fixture("home"), 0.0)
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
     // (Home answered by the made-up core first)

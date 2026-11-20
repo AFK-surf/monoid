@@ -29,41 +29,37 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 }
 
 ///|
-/// The bottom bar's glass (`raised` 72% over a 20px blur), its rim lit: a hairline
-/// inside its edge, light along its top and left, less along its foot and right (white at 0.35 / 0.8 / 0.45; in the
-/// dark 0.14 / 0.3 / 0.16).
-pub fn glass_bottom_bar() -> @ui.Glass {
-  let t = theme()
-  let ground = alpha(t.p.raised, 0.72)
-  let (e, l, b) = if t.dark { (0.14, 0.3, 0.16) } else { (0.35, 0.8, 0.45) }
-  @ui.Glass::frosted(
-    blur=20.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=e,
-    rim_lit=l,
-    rim_back=b,
+/// The bottom bar's glass, a Backdrop lens as AndroidLiquidGlass's LiquidBottomTabs has it (libs/liquid-glass
+/// liquid_bottom_tabs.mbt tabs_glass; catalog/components/LiquidBottomTabs.kt): what is under it made vivid (a
+/// saturation of 1.5), blurred by 8 and bent along its rim by a lens 24 deep moving it by up to 24, the container's
+/// colour over it (#FAFAFA at 40%; #121212 at 40% in the dark), Backdrop's default highlight; where glass is drawn
+/// solid, that colour at its fullest.
+pub fn glass_tab_bar() -> @ui.Glass {
+  let container = if theme().dark { 0x12121266L } else { 0xFAFAFA66L }
+  @ui.Glass::backdrop_lens(
+    height=24.0,
+    amount=24.0,
+    blur=8.0,
+    tint=container,
+    solid=alpha(container, 1.0),
+    highlight=1.0,
+    saturation=1.5,
   )
 }
 
 ///|
-/// The bar's ball over the place in view: the bar's glass with white over it (42%; 12% in the dark), a 24px
-/// blur, its rim brighter (0.5 / 0.95 / 0.55; dark 0.22 / 0.45 / 0.25).
-pub fn glass_bar_ball() -> @ui.Glass {
-  let t = theme()
-  let ground = over(
-    alpha(t.p.raised, 0.72),
-    alpha(0xFFFFFFFFL, if t.dark { 0.12 } else { 0.42 }),
-  )
-  let (e, l, b) = if t.dark { (0.22, 0.45, 0.25) } else { (0.5, 0.95, 0.55) }
-  @ui.Glass::frosted(
-    blur=24.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=e,
-    rim_lit=l,
-    rim_back=b,
-  )
+/// The bottom bar's shadow (LiquidBottomTabs' Shadow: Backdrop's own, a deviation of 12, 4 down, black at 10%).
+pub let tab_bar_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
+
+///|
+/// The pill under the place shown inside glass (colors_tokens.xml token_glass_selection): black at 8%, white at 12% in
+/// the dark.
+pub fn glass_selection() -> Int64 {
+  if theme().dark {
+    0xFFFFFF1FL
+  } else {
+    0x00000014L
+  }
 }
 
 ///|
@@ -124,22 +120,6 @@ pub let tab_lens_raised : Raised = { sigma: 12.0, dy: 4.0, color: 0x0000001AL }
 ///|
 fn backdrop_track_ink() -> Int64 {
   if theme().dark { 0x7878805CL } else { 0x78787833L }
-}
-
-///|
-/// The page's primary action in the bar's notch (a "+"): the accent at 86% over a 20px blur, its rim
-/// 0.4 / 0.75 / 0.4.
-pub fn glass_action() -> @ui.Glass {
-  let t = theme()
-  let ground = alpha(t.p.accent, 0.86)
-  @ui.Glass::frosted(
-    blur=20.0,
-    tint=ground,
-    solid=over(t.p.bg, ground),
-    rim_edge=0.4,
-    rim_lit=0.75,
-    rim_back=0.4,
-  )
 }
 
 ///|

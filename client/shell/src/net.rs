@@ -21,7 +21,18 @@ pub(crate) enum WsFrame {
     Binary(Vec<u8>),
     Ping,
     Pong,
+    /// The other side's Close frame, with its code and reason where it gave them (`ws.next`'s `end`, and its `code` and
+    /// `reason`: a presence socket the plane replaced, 4000, or whose station it removed, 4004).
+    Close(Option<(u16, String)>),
 }
+
+/// How long `ws.open` may take to have its socket, its TLS and its Upgrade answered where its caller says nothing (as the
+/// TypeScript station's presence socket waits for its open, station/src/cloud/presence.ts).
+const WS_OPEN_WITHIN_MS: u64 = 20_000;
+
+/// How long a frame may take to be written: a socket whose other side stopped reading (a sleep, a network gone without
+/// a reset) fills the kernel's buffer, and its write would wait for good, holding its reads and pings with it.
+const WS_WRITE_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A listening socket: TCP on this machine's loopback (one bound here, or one a launcher bound and handed down by its
 /// descriptor), or a Unix socket by its path.
@@ -69,11 +80,13 @@ pub(crate) fn tls_config() -> rustls::ClientConfig {
 }
 
 /// As the Rust core's native host had it: HTTP/2 pings and TCP keepalive find connections a sleep or a new network left dead.
-pub(crate) fn http_client(tls: &rustls::ClientConfig) -> reqwest::Client {
-    http_builder(tls).build().expect("reqwest client")
+/// `follow`: redirects followed (up to ten, `redirect: "follow"`: a download's 302 to its storage); else none, its 3xx
+/// answered as it came (sign-ins, the vault's proxy and the rest read the redirect itself).
+pub(crate) fn http_client(tls: &rustls::ClientConfig, follow: bool) -> reqwest::Client {
+    http_builder(tls, follow).build().expect("reqwest client")
 }
 
-fn http_builder(tls: &rustls::ClientConfig) -> reqwest::ClientBuilder {
+fn http_builder(tls: &rustls::ClientConfig, follow: bool) -> reqwest::ClientBuilder {
     use std::time::Duration;
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls.clone())
@@ -83,7 +96,7 @@ fn http_builder(tls: &rustls::ClientConfig) -> reqwest::ClientBuilder {
         .http2_keep_alive_interval(Duration::from_secs(20))
         .http2_keep_alive_timeout(Duration::from_secs(5))
         .http2_keep_alive_while_idle(true)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(if follow { reqwest::redirect::Policy::limited(10) } else { reqwest::redirect::Policy::none() })
 }
 
 /// Every name resolved to a cloud entry (its host and port): the TCP goes there, while TLS (its server name, the
@@ -127,6 +140,53 @@ fn ws_error(error: WsError) -> String {
         WsError::Http(response) => format!("websocket refused ({})", response.status().as_u16()),
         error => format!("websocket: {error}"),
     }
+}
+
+/// A duration in ms a call gives as `key` (more than 0), if it gives one.
+fn ms_of(a: &Value, key: &str) -> Option<std::time::Duration> {
+    a.get(key).and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| std::time::Duration::from_millis(ms as u64))
+}
+
+/// A TCP connection a WebSocket goes over, to `host` (a name or an address, in brackets where IPv6) and `port`: kept
+/// alive (SO_KEEPALIVE, its first probe after 30 s idle as `http_builder`'s) and without Nagle, each address it
+/// resolves to tried in turn.
+async fn ws_tcp(host: &str, port: u16) -> Result<tokio::net::TcpStream, String> {
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let mut failed = None;
+    for addr in tokio::net::lookup_host((host, port)).await.map_err(|e| format!("websocket: {e}"))? {
+        let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.map_err(err)?;
+        socket.set_keepalive(true).map_err(err)?;
+        keep_idle(&socket);
+        match socket.connect(addr).await {
+            Ok(stream) => {
+                stream.set_nodelay(true).map_err(err)?;
+                return Ok(stream);
+            }
+            Err(e) => failed = Some(e),
+        }
+    }
+    Err(match failed {
+        Some(e) => format!("websocket: {e}"),
+        None => format!("websocket: {host} has no address"),
+    })
+}
+
+/// A kept-alive socket's first probe after 30 s idle (the system's own is two hours). Where the system has no such
+/// setting, its own.
+fn keep_idle(socket: &tokio::net::TcpSocket) {
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))]
+    {
+        use std::os::fd::AsRawFd;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let option = libc::TCP_KEEPIDLE;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let option = libc::TCP_KEEPALIVE;
+        let idle: libc::c_int = 30;
+        // SAFETY: setsockopt on a socket this function's caller holds, with an int it reads.
+        unsafe { libc::setsockopt(socket.as_raw_fd(), libc::IPPROTO_TCP, option, (&idle as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios")))]
+    let _ = socket;
 }
 
 fn headers_of(response: &reqwest::Response) -> Value {
@@ -267,17 +327,21 @@ fn shut(done: std::io::Result<()>) -> Result<(), String> {
 }
 
 impl Inner {
+    /// The request a call says, and its client. `redirect: "follow"`: redirects followed; else (`"manual"`, or none
+    /// said) its answer is the first one, a 3xx too.
     fn request(&self, a: &Value, body: Option<Vec<u8>>) -> Result<reqwest::RequestBuilder, String> {
         let method = reqwest::Method::from_bytes(str_of(a, "method")?.as_bytes()).map_err(err)?;
+        let follow = a.get("redirect").and_then(Value::as_str) == Some("follow");
         let client = match entry_of(a)? {
+            None if follow => self.http_follow.lock().unwrap().clone(),
             None => self.http.lock().unwrap().clone(),
             Some((host, port)) => {
                 let mut entries = self.entries.lock().unwrap();
-                match entries.get(&(host.clone(), port)) {
+                match entries.get(&(host.clone(), port, follow)) {
                     Some(c) => c.clone(),
                     None => {
-                        let c = http_builder(&self.tls).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
-                        entries.insert((host, port), c.clone());
+                        let c = http_builder(&self.tls, follow).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
+                        entries.insert((host, port, follow), c.clone());
                         c
                     }
                 }
@@ -295,6 +359,23 @@ impl Inner {
         Ok(builder)
     }
 
+    /// The answer to the request a call says, its head within `head_within` where given, and whether it is another
+    /// URL's than the one asked (a redirect followed).
+    async fn sent(&self, a: &Value, body: Option<Vec<u8>>, head_within: Option<std::time::Duration>) -> Result<(reqwest::Response, bool), String> {
+        let (client, request) = self.request(a, body)?.build_split();
+        let request = request.map_err(http_error)?;
+        let asked = request.url().clone();
+        let sent = client.execute(request);
+        let response = match head_within {
+            // timer: a deadline on an answer's head, where its caller gives one
+            Some(d) => tokio::time::timeout(d, sent).await.map_err(|_| format!("no answer within {} ms", d.as_millis()))?,
+            None => sent.await,
+        }
+        .map_err(http_error)?;
+        let redirected = response.url() != &asked;
+        Ok((response, redirected))
+    }
+
     async fn ws_open(self: &Arc<Self>, a: &Value) -> Done {
         let mut request = str_of(a, "url")?.into_client_request().map_err(ws_error)?;
         let protocols: Vec<&str> = a.get("protocols").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
@@ -309,15 +390,26 @@ impl Inner {
             }
         }
         let connector = Some(Connector::Rustls(self.tls.clone()));
-        // `entry`: the TCP to a cloud entry, TLS and the Host the URL's own (as `fetch`'s, `EntryResolver`).
-        let (socket, _) = match entry_of(a)? {
-            None => tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await.map_err(ws_error)?,
-            Some((host, port)) => {
-                let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(err)?;
-                stream.set_nodelay(true).map_err(err)?;
-                tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)?
+        // `entry`: the TCP to a cloud entry, TLS and the Host the URL's own (as `fetch`'s, `EntryResolver`); else the
+        // URL's own host and port. TLS where the URL is `wss:`, none where `ws:` (`client_async_tls_with_config`).
+        let (host, port) = match entry_of(a)? {
+            Some(entry) => entry,
+            None => {
+                let uri = request.uri();
+                let host = uri.host().ok_or("websocket: the URL has no host")?.to_string();
+                let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
+                (host, port)
             }
         };
+        // `timeoutMs`: how long the socket, its TLS and its Upgrade may take together; a handshake into a socket that
+        // never answers held its caller for good (a presence socket that never opened, nor tried again).
+        let within = ms_of(a, "timeoutMs").unwrap_or(std::time::Duration::from_millis(WS_OPEN_WITHIN_MS));
+        let opening = async {
+            let stream = ws_tcp(&host, port).await?;
+            tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)
+        };
+        // timer: a deadline on a WebSocket's opening (its TCP, TLS and Upgrade), given or 20 s
+        let (socket, _) = tokio::time::timeout(within, opening).await.map_err(|_| format!("websocket: open timed out within {} ms", within.as_millis()))??;
         // `binary`: its binary frames given too (`{binary: true}` and their bytes); else they are let go, as a socket
         // that speaks only text takes `ws.next`'s other answers for its end.
         let binary = a.get("binary").and_then(Value::as_bool).unwrap_or(false);
@@ -336,7 +428,11 @@ impl Inner {
                         Some(Ok(Message::Binary(b))) if binary => { let _ = incoming_tx.send(Ok(WsFrame::Binary(b.to_vec()))); }
                         Some(Ok(Message::Ping(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Ping)); }
                         Some(Ok(Message::Pong(_))) if control => { let _ = incoming_tx.send(Ok(WsFrame::Pong)); }
-                        Some(Ok(Message::Close(_))) | Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
+                        Some(Ok(Message::Close(frame))) => {
+                            let _ = incoming_tx.send(Ok(WsFrame::Close(frame.map(|f| (u16::from(f.code), f.reason.to_string())))));
+                            return;
+                        }
+                        Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
                         Some(Ok(_)) => {}
                         Some(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
                     },
@@ -347,8 +443,14 @@ impl Inner {
                                 WsFrame::Binary(b) => Message::binary(b),
                                 WsFrame::Ping => Message::Ping(Default::default()),
                                 WsFrame::Pong => Message::Pong(Default::default()),
+                                WsFrame::Close(_) => Message::Close(None),
                             };
-                            if let Err(e) = socket.send(m).await { let _ = incoming_tx.send(Err(ws_error(e))); return; }
+                            // timer: a deadline on a frame's write, so a socket whose other side stopped reading ends
+                            match tokio::time::timeout(WS_WRITE_WITHIN, socket.send(m)).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => { let _ = incoming_tx.send(Err(ws_error(e))); return; }
+                                Err(_) => { let _ = incoming_tx.send(Err("websocket: write timed out".into())); return; }
+                            }
                         }
                         // The handle went (ws.close): the socket is closed (bounded so a half-open TCP cannot hang close).
                         // timer: timeout bounding WebSocket close handshake on a dead or half-open connection
@@ -367,14 +469,8 @@ impl Inner {
                 // `timeoutMs`: how long the answer's head may take to come; `stallMs`: how long its body may stay
                 // silent between two pieces (a whole-download deadline would cut a large one off on a slow network).
                 // Neither given: as long as the caller waits (it cancels the call).
-                let within = |key: &str| a.get(key).and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| std::time::Duration::from_millis(ms as u64));
-                let (head_within, stall_within) = (within("timeoutMs"), within("stallMs"));
-                let sent = self.request(a, bytes)?.send();
-                let mut response = match head_within {
-                    Some(d) => tokio::time::timeout(d, sent).await.map_err(|_| format!("no answer within {} ms", d.as_millis()))?,
-                    None => sent.await,
-                }
-                .map_err(http_error)?;
+                let (head_within, stall_within) = (ms_of(a, "timeoutMs"), ms_of(a, "stallMs"));
+                let (mut response, redirected) = self.sent(a, bytes, head_within).await?;
                 let (status, headers) = (response.status().as_u16(), headers_of(&response));
                 let mut body = Vec::new();
                 loop {
@@ -388,17 +484,25 @@ impl Inner {
                         None => break,
                     }
                 }
-                Ok(Answer::bytes(json!({ "status": status, "headers": headers }), body))
+                Ok(Answer::bytes(json!({ "status": status, "headers": headers, "redirected": redirected }), body))
             }
+            // `timeoutMs`: how long its head may take, as `fetch`'s.
             "stream.open" => {
-                let response = self.request(a, bytes)?.send().await.map_err(http_error)?;
+                let (response, redirected) = self.sent(a, bytes, ms_of(a, "timeoutMs")).await?;
                 let (status, headers) = (response.status().as_u16(), headers_of(&response));
                 let id = self.keep(Handle::Response(Arc::new(tokio::sync::Mutex::new(response))));
-                Ok(Answer::json(json!({ "status": status, "headers": headers, "id": id })))
+                Ok(Answer::json(json!({ "status": status, "headers": headers, "id": id, "redirected": redirected })))
             }
+            // `stallMs` (else `timeoutMs`): how long its next piece may take to come.
             "stream.read" => {
                 let Handle::Response(response) = self.handle(id_of(a)?)? else { return Err("not a response".into()) };
-                let chunk = response.lock().await.chunk().await.map_err(http_error)?;
+                let mut response = response.lock().await;
+                let chunk = match ms_of(a, "stallMs").or_else(|| ms_of(a, "timeoutMs")) {
+                    // timer: a deadline on a stream's next piece, where its caller gives one
+                    Some(d) => tokio::time::timeout(d, response.chunk()).await.map_err(|_| format!("nothing more came within {} ms", d.as_millis()))?,
+                    None => response.chunk().await,
+                }
+                .map_err(http_error)?;
                 Ok(match chunk {
                     Some(c) => Answer::bytes(json!({}), c.to_vec()),
                     None => Answer::json(json!({ "end": true })),
@@ -414,8 +518,10 @@ impl Inner {
                     Some(Ok(WsFrame::Binary(b))) => Ok(Answer::bytes(json!({ "binary": true }), b)),
                     Some(Ok(WsFrame::Ping)) => Ok(Answer::json(json!({ "ping": true }))),
                     Some(Ok(WsFrame::Pong)) => Ok(Answer::json(json!({ "pong": true }))),
+                    // Its end, with the Close frame's code and reason where the other side gave them.
+                    Some(Ok(WsFrame::Close(Some((code, reason))))) => Ok(Answer::json(json!({ "end": true, "code": code, "reason": reason }))),
+                    Some(Ok(WsFrame::Close(None))) | None => Ok(Answer::json(json!({ "end": true }))),
                     Some(Err(e)) => Err(e),
-                    None => Ok(Answer::json(json!({ "end": true }))),
                 }
             }
             "ws.send" => {
@@ -573,7 +679,8 @@ impl Inner {
             }
             "reset" => {
                 // Requests already on the old pool keep it until they end.
-                *self.http.lock().unwrap() = http_client(&self.tls);
+                *self.http.lock().unwrap() = http_client(&self.tls, false);
+                *self.http_follow.lock().unwrap() = http_client(&self.tls, true);
                 self.entries.lock().unwrap().clear();
                 Ok(Answer::json(json!({})))
             }

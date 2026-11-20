@@ -101,7 +101,7 @@ fn sao_run(
 ) -> (Array[SaoLook], Double, SaoLook) raise {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture(if case is Words { "chat" } else { "chat-ask-end" })
   let src : Source = {
     ..base,

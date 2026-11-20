@@ -23,13 +23,23 @@ test "followed at its end, a message said over the agent's line: the line stays 
   let working = tr("android-chat.chat.working")
   // its line in at the chat's end, the list there
   t.run_for(fix_deliver_ms)
-  let at = turns_of("ws1/st1\u{1}s-c1").started_at("act:s-c1")
-  t.run_for(at - t.time() + line_turn_ms)
-  let rest = t.rest_of("a list")
-  if rest > t.time() && rest < @double.infinity {
-    t.run_for(rest - t.time())
+  if @sfbase.chat_page_nodes.untracked() {
+    // (the page made as nodes keeps no old list's turns nor rests: its line drawn, then as long as its turn's way)
+    let mut m = 0
+    while t.drawn_of(working) is None && m < 120 {
+      t.frame()
+      m += 1
+    }
+    t.run_for(line_turn_ms)
+  } else {
+    let at = turns_of("ws1/st1\u{1}s-c1").started_at("act:s-c1")
+    t.run_for(at - t.time() + line_turn_ms)
+    let rest = t.rest_of("a list")
+    if rest > t.time() && rest < @double.infinity {
+      t.run_for(rest - t.time())
+    }
   }
-  let (_, y0) = t.drawn_of(working).unwrap()
+  guard t.drawn_of(working) is Some((_, y0)) else { fail("no \{working} at \{t.time()}") }
   // someone says something: it comes in over the line
   let words = "我也看看这个"
   said_by_ana(170, words)

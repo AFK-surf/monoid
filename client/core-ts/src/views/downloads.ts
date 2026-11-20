@@ -59,6 +59,8 @@ type Of = Extract<Call, { kind: "download" }>;
 
 /// A part fetched at a time (as the pages read a big file).
 export const DOWNLOAD_PART = 4 * 1024 * 1024;
+/// Maximum concurrent striped part fetches when multiple fast bulk lanes are available.
+export const DOWNLOAD_CONCURRENCY_MAX = 3;
 /// The most a station from before parts sends whole.
 const WHOLE_MAX = 50 * 1024 * 1024;
 
@@ -137,6 +139,18 @@ type FileHead = { type: string; total: number };
 type FilePart = FileHead & { bytes: Uint8Array };
 type DriveHead = FileHead & { mtime: number | null };
 type DrivePart = DriveHead & { bytes: Uint8Array };
+
+/// Controlled abort sentinel for multi-way downloads when a concurrent batch must fall back or restart.
+class Restart {
+  readonly action: "whole" | "zip404" | "changed";
+  readonly mtime: number;
+  readonly total: number;
+  constructor(action: "whole" | "zip404" | "changed", mtime = 0, total = 0) {
+    this.action = action;
+    this.mtime = mtime;
+    this.total = total;
+  }
+}
 
 /// What a file is called to people: a file sent up as its sender named it, without what the station put before it
 /// (station/src/api/routes/hub.ts uploadPath: the time and a mark).
@@ -273,6 +287,125 @@ export class Downloads {
         if (bytes.length > 0) yield* inner.driveKept.keep(file.id, "chat", 0, d.size, first.type, 0, bytes);
         yield* self.#note(d);
         self.#moved(d, bytes.length);
+      }
+      const lanes = Math.min(DOWNLOAD_CONCURRENCY_MAX, Math.max(1, inner.stations.requests.wire.bulkLanes?.(addr) ?? 1));
+      if (lanes > 1 && d.size > DOWNLOAD_PART) {
+        for (;;) {
+          const expectedSize = d.size;
+          const missing: { at: number; length: number }[] = [];
+          let keptDone = 0;
+          for (let scan = 0; scan < expectedSize;) {
+            const until = yield* inner.driveKept.keptUntil(file.id, file.mtime, expectedSize, scan, expectedSize);
+            if (until > scan) {
+              keptDone += until - scan;
+              scan = until;
+              continue;
+            }
+            const next = yield* inner.driveKept.nextKept(file.id, file.mtime, expectedSize, scan, expectedSize);
+            while (scan < next) {
+              const length = Math.min(DOWNLOAD_PART, next - scan);
+              missing.push({ at: scan, length });
+              scan += length;
+            }
+          }
+          self.#moved(d, keptDone);
+          if (missing.length === 0) return;
+          const inflight = new Map<number, number>();
+          const report = () => {
+            let live = 0;
+            for (const n of inflight.values()) live += n;
+            self.#moved(d, keptDone + live);
+          };
+          const batch = yield* Effect.result(
+            Effect.forEach(
+              missing,
+              (part, idx): Effect.Effect<void, CoreError | Restart> =>
+                Effect.gen(function* () {
+                  const heard = (n: number) => {
+                    inflight.set(part.at, n);
+                    report();
+                  };
+                  if (from.kind === "chat") {
+                    const got = yield* Effect.result(receivedPart<FileHead, FilePart>(
+                      (take, said) => inner.stations.requests.filePart(addr, from.key, from.file, part.at, part.length, null, heard, take, said, false, false, idx),
+                      (head, came) => head.total === expectedSize && part.at + came.length <= expectedSize
+                        ? inner.driveKept.keep(file.id, "chat", 0, expectedSize, head.type, part.at, came) : Effect.void,
+                    ));
+                    if (got._tag === "Failure") {
+                      if (part.at === 0 && got.failure.code === "unsupported" && expectedSize <= WHOLE_MAX) {
+                        return yield* Effect.fail(new Restart("whole"));
+                      }
+                      return yield* Effect.fail(got.failure);
+                    }
+                    const { part: ans, bytes } = got.success;
+                    if (ans.total !== d.size) d.size = ans.total;
+                    if (bytes.length === 0) {
+                      if (part.at < d.size) return yield* Effect.fail(new CoreError("io", t("station.core.fileUnreadable")));
+                      return;
+                    }
+                    yield* inner.driveKept.keep(file.id, "chat", 0, d.size, ans.type, part.at, bytes);
+                    inflight.delete(part.at);
+                    keptDone += bytes.length;
+                    report();
+                  } else {
+                    const where = from.kind === "drive" ? from : from.made!;
+                    const read = yield* Effect.result(receivedPart<DriveHead, DrivePart>(
+                      (take, said) => inner.stations.requests.driveRead(addr, where.root, where.path, part.at, part.length, null, heard, take, said, false, [file.mtime, expectedSize], false, idx),
+                      (head, came) => head.total === expectedSize && (head.mtime === null || head.mtime === file.mtime) && part.at + came.length <= expectedSize
+                        ? inner.driveKept.keep(file.id, "file", file.mtime, expectedSize, head.type, part.at, came) : Effect.void,
+                    ));
+                    if (read._tag === "Failure") {
+                      if (from.kind === "zip" && !zipped && read.failure.status === 404) {
+                        return yield* Effect.fail(new Restart("zip404"));
+                      }
+                      return yield* Effect.fail(read.failure);
+                    }
+                    const { part: ans, bytes } = read.success;
+                    if ((ans.mtime !== null && ans.mtime !== file.mtime) || ans.total !== expectedSize) {
+                      return yield* Effect.fail(new Restart("changed", ans.mtime ?? 0, ans.total));
+                    }
+                    if (bytes.length === 0) {
+                      if (part.at < expectedSize) return yield* Effect.fail(new CoreError("io", t("station.core.fileUnreadable")));
+                      return;
+                    }
+                    yield* inner.driveKept.keep(file.id, "file", file.mtime, expectedSize, ans.type, part.at, bytes);
+                    inflight.delete(part.at);
+                    keptDone += bytes.length;
+                    report();
+                  }
+                }),
+              { concurrency: lanes, discard: true },
+            ),
+          );
+          if (batch._tag === "Failure") {
+            const fail = batch.failure;
+            if (fail instanceof Restart) {
+              if (fail.action === "whole" && from.kind === "chat") {
+                const { value, bytes: whole } = yield* wholeFile(inner, addr, from.key, from.file, false, (p) => self.#moved(d, Number(get(p, "loaded"))), null);
+                const { type } = value as { type: string };
+                d.size = whole.length;
+                yield* inner.driveKept.keep(file.id, "chat", 0, d.size, type, 0, whole);
+                self.#moved(d, d.size);
+                return;
+              }
+              if (fail.action === "zip404" && from.kind === "zip") {
+                yield* inner.driveKept.forget(file.id);
+                from.made = null;
+                yield* self.#note(d);
+                return yield* self.#fetchAll(d);
+              }
+              if (fail.action === "changed" && from.kind !== "chat") {
+                const where = from.kind === "drive" ? from : from.made!;
+                yield* inner.driveKept.forget(file.id);
+                where.mtime = fail.mtime;
+                d.size = fail.total;
+                yield* self.#note(d);
+                return yield* self.#fetchAll(d);
+              }
+            }
+            return yield* Effect.fail(fail as CoreError);
+          }
+        }
       }
       for (let at = 0; at < d.size;) {
         // what is kept from here on, however it came (a viewer's read, a player's ranges, what was loaded): taken

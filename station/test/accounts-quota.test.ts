@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, statSync,
 import { devNull } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
+import { agyAllowance, agyScopeForModel, clipKeepingLinks } from "../src/accounts/agy-quota.ts";
 import { claudeOAuthToken, RefreshLock } from "../src/accounts/oauth.ts";
 import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
@@ -159,6 +159,16 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(eofQ.unanswered, true);
     const blockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: "Your account has been suspended (typeof check)" }, undefined, URLS, "zh");
     assert.deepEqual([blockedQ.state, blockedQ.unanswered], ["blocked", undefined]);
+
+    // Google asking the account to be verified: its whole link said, which cut short opens a 400.
+    const verify =
+      "https://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser";
+    const eligible = `Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\n${verify}`;
+    const verifyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: eligible }, undefined, URLS, "zh");
+    assert.equal(verifyQ.state, "unavailable");
+    assert.ok(verifyQ.detail!.endsWith(`continue:\n${verify}`), verifyQ.detail!);
+    assert.equal(clipKeepingLinks(`${"x".repeat(10)} ${verify} after`, 30), `${"x".repeat(10)} ${verify}`);
+    assert.equal(clipKeepingLinks("x".repeat(40), 30), "x".repeat(30));
 
     // No windows: a person's account says it could not read them; a company's paying as it goes has none to show.
     const emptyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_EMPTY: "1" }, undefined, URLS, "zh");

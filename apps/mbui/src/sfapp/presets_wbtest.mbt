@@ -149,8 +149,9 @@ test "a preset that names its model and its station shows them as its own, a pre
     for (words, held) in [("Opus 5.5", "模型已被 "), ("Willow", "Station 已被 ")] {
       new_run()
       let t = preset_mode(if bound { "newchat-preset-bound" } else { "newchat-preset-picked" })
-      guard t.find(words) is Some((x, y)) else { fail("no \{words}: \{runs(t)}") }
-      t.tap(x, y)
+      // (the control by its role: the page's subtitle names the station too)
+      guard t.query(Button, has=words) is Some(_) else { fail("no \{words}: \{runs(t)}\n\{t.semantics_dump()}") }
+      t.click(Button, has=words)
       t.run_for(@ui.move_most_ms)
       let said = shows_start(t, held)
       assert_eq(said, bound, msg="\{words}, bound \{bound}: \{runs(t)}")
@@ -168,8 +169,9 @@ test "不用预设 from a held control lets go of the preset" {
   new_run()
   let calls : Array[Made] = []
   let t = preset_mode("newchat-preset-bound", src=preset_calls("newchat-preset-bound", calls))
-  guard t.find("Willow") is Some((x, y)) else { fail("no Willow: \{runs(t)}") }
-  t.tap(x, y)
+  // (the control by its role: the page's subtitle names the station too)
+  guard t.query(Button, has="Willow") is Some(_) else { fail("no Willow: \{runs(t)}\n\{t.semantics_dump()}") }
+  t.click(Button, has="Willow")
   t.run_for(@ui.move_most_ms)
   press(t, "不用预设")
   t.frame()

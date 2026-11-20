@@ -33,21 +33,16 @@ fn bar_back() -> @ui.Tester raise {
 }
 
 ///|
-/// The notch the last frame drew in the bar's glass (Tester::drawn_notches: the frosted glass's, its circle's middle
-/// below its top and its radius), (0, 0) none.
-fn glass_notch(t : @ui.Tester) -> (Double, Double) {
-  for n in t.drawn_notches() {
-    if n.0 == 5 {
-      return (n.2, n.3)
-    }
-  }
-  (0.0, 0.0)
+/// How wide the last frame drew the bar's capsule of glass (Tester::drawn_glass: the glass as high as the bar, the
+/// widest), its right end in by the action's room as far as the notch is open; 0 none.
+fn glass_notch(t : @ui.Tester) -> Double {
+  t.drawn_glass().fold(init=0.0, fn(a, g) { if (g.3 - bar_track).abs() < 1.0 && g.2 > a { g.2 } else { a } })
 }
 
 ///|
-/// The notch with it `k` open, as the bar draws it: where its circle's middle is below the glass's top, its radius.
-fn notch_of(k : Double) -> (Double, Double) {
-  (-lift * k, (drop / 2.0 + notch_gap) * k)
+/// How wide the bar draws its capsule with the notch `k` open, on a 390 window's bar.
+fn notch_of(k : Double) -> Double {
+  bar_capsule_w(390.0 - 44.0, k)
 }
 
 ///|
@@ -61,7 +56,7 @@ fn place_across(t : @ui.Tester, key : String) -> (Double, Double, Double) raise 
   let (x, _, w, _) = said_at(t, place_label(key)).unwrap()
   // The bar may rise or enter from below; find its actual painted glass instead of assuming the distance moved.
   let bottom = t.drawn_glass_corners().fold(init=0.0, fn(a, g) {
-    if (g.2 - told.width).abs() < 1.0 { dmax(a, g.1 + g.3) } else { a }
+    if (g.0 - 22.0).abs() < 1.0 && g.2 > told.width / 2.0 { dmax(a, g.1 + g.3) } else { a }
   })
   assert_true(bottom > 0.0, msg="bar glass not drawn")
   let top = bottom - bar_track - 2.0
@@ -102,8 +97,7 @@ test "bar: back from a chat, the notch opening frame by frame: drawn where it is
   t.check_looks(true)
   // it moves: the notch drawn where it is at each frame's moment
   assert_true(first != second && second != third, msg="\{Repr(first)} \{Repr(second)} \{Repr(third)}")
-  let (cy, r) = notch_of(bar.k_at(at))
-  assert_eq(second, (cy, r))
+  assert_true((second - notch_of(bar.k_at(at))).abs() < 0.01, msg="\{second} \{notch_of(bar.k_at(at))}")
   // and nothing of the bar is built or laid out for it
   assert_eq((p1.nodes, p1.laid, p2.nodes, p2.laid), (0, 0, 0, 0), msg="before: \{warm1} / \{warm2}; counted: \{Repr(p1)} \{why1} / \{Repr(p2)} \{t.built_why()}")
 }
@@ -125,7 +119,7 @@ test "bar: the notch opening, each frame painted so is the frame built whole; th
   assert_true((one.0 - one.2).abs() <= 0.5 && (two.0 - two.2).abs() <= 0.5, msg="\{Repr(one)} \{Repr(two)}")
   // to its end, each frame compared with the frame built whole (looks_check)
   t.run_for(bar_rest() - t.time())
-  assert_eq(glass_notch(t), notch_of(1.0))
+  assert_true((glass_notch(t) - notch_of(1.0)).abs() < 0.01)
 }
 
 ///|
@@ -141,37 +135,32 @@ test "bar: a place pressed where it is drawn as the notch opens is that place" {
 }
 
 ///|
-test "bar: a hold closes the notch and centres the places with it; release brings both back" {
+test "bar: a hold keeps the action's room and the places where they are, held and let go" {
   let during_rise_ms = 100.0
   let held_frame_ms = 1000.0
   let t = tester("home")
   let (xs, y) = bar_places_at()
   let open = glass_notch(t)
   let before = place_across(t, "files")
-  assert_eq(open, notch_of(1.0))
+  assert_true((open - notch_of(1.0)).abs() < 0.01, msg="\{open}")
   t.press_at(xs[0], y)
   t.run_for(bar_hold_ms)
   t.frame()
   t.run_for(during_rise_ms)
-  let middle = glass_notch(t)
+  assert_true((glass_notch(t) - open).abs() < 0.01, msg="\{open} \{glass_notch(t)}")
   let during = place_across(t, "files")
-  assert_true(middle.1 > 0.0 && middle.1 < open.1, msg="\{Repr(open)} \{Repr(middle)}")
-  assert_true((during.0 - during.2).abs() <= 0.5, msg="\{Repr(during)}")
+  assert_true((during.0 - during.2).abs() <= 0.5 && (during.0 - before.0).abs() <= 0.5, msg="\{Repr(before)} \{Repr(during)}")
   t.run_for(held_frame_ms)
-  let held = place_across(t, "files")
-  let closed_x = 22.0 + bar_centres(390.0 - 44.0, 0.0, 4)[1]
-  assert_eq(glass_notch(t), (0.0, 0.0))
-  assert_true((held.0 - closed_x).abs() <= 0.5 && (held.1 - closed_x).abs() <= 2.0, msg="\{Repr(held)} \{closed_x}")
+  assert_true((glass_notch(t) - open).abs() < 0.01)
   t.release(xs[0], y)
   t.run_for(held_frame_ms)
   let after = place_across(t, "files")
-  let restored = glass_notch(t)
-  assert_true((restored.0 - open.0).abs() < 0.001 && (restored.1 - open.1).abs() < 0.001, msg="\{Repr(open)} \{Repr(restored)}")
+  assert_true((glass_notch(t) - open).abs() < 0.001)
   assert_true((after.0 - before.0).abs() <= 0.5 && (after.1 - before.1).abs() <= 0.5, msg="\{Repr(before)} \{Repr(after)}")
 }
 
 ///|
-test "bar: sliding chooses the place under the finger as the notch closes and when it is closed" {
+test "bar: sliding chooses the place under the finger, either side of the line between two places" {
   for ms in [100.0, 1000.0] {
     let t = tester("home")
     let (xs, y) = bar_places_at()
@@ -183,15 +172,12 @@ test "bar: sliding chooses the place under the finger as the notch closes and wh
     t.run_for(bar_hold_ms)
     t.frame()
     t.run_for(ms)
-    let open_boundary = (xs[0] + xs[1]) / 2.0
-    let now_cs = bar_centres(told.width, bar.k_at(t.time()), items.length())
-    let drawn_boundary = 22.0 + (now_cs[0] + now_cs[1]) / 2.0
-    assert_true(drawn_boundary - open_boundary > 1.0, msg="\{ms}: \{open_boundary} \{drawn_boundary}")
-    // This lies on opposite sides of the old and the drawn boundary: the drawn side is chats.
-    let x = (open_boundary + drawn_boundary) / 2.0
-    t.move_to(x, y)
+    let boundary = (xs[0] + xs[1]) / 2.0
+    t.move_to(boundary + 4.0, y)
+    assert_eq(bar.felt, "\{told.cur}/files", msg="\{ms}")
+    t.move_to(boundary - 4.0, y)
     assert_eq(bar.felt, "\{told.cur}/chats", msg="\{ms}")
-    t.release(x, y)
+    t.release(boundary - 4.0, y)
     assert_true(app.nav.top() == Home, msg="\{ms}")
   }
 }

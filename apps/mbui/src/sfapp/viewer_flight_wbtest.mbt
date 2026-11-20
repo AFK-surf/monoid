@@ -30,19 +30,31 @@ test "a picture of the chat opened on a phone: drawn in each frame from the tap 
   let at = t.locate("img:compare.png")
   assert_true(at.length() > 0)
   let (x, y) = at[0]
-  let big = fn() {
-    t.drawn_images().iter().any(fn(i) { i[0] <= x && x <= i[0] + i[2] && i[1] <= y && y <= i[1] + i[3] && i[2] > 100.0 })
+  // (the picture over a point, wider than an icon: its middle)
+  let big_at = fn(px : Double, py : Double) -> (Double, Double)? {
+    for i in t.drawn_images() {
+      if i[0] <= px && px <= i[0] + i[2] && i[1] <= py && py <= i[1] + i[3] && i[2] > 100.0 {
+        return Some((i[0] + i[2] / 2.0, i[1] + i[3] / 2.0))
+      }
+    }
+    None
   }
-  assert_true(big())
-  // a finger's tap, then the display's frames one by one: in each, the picture there (its thumbnail, or flying out of
-  // it), never a frame of nothing where it was
+  assert_true(big_at(x, y) is Some(_))
+  // a finger's tap, then the display's frames one by one: in each, the picture over where it was the frame before (its
+  // thumbnail, then flying out of it to the viewer's middle, View::shared), never a frame of nothing nor a jump
   t.touch(0, x, y)
   t.touch(2, x, y)
   let end = t.time() + @ui.move_most_ms
   let mut frames = 0
+  let mut cx = x
+  let mut cy = y
   while t.time() < end && frames < 8 {
     t.frame()
-    assert_true(big())
+    guard big_at(cx, cy) is Some((nx, ny)) else {
+      fail("frame \{frames}: no picture over (\{cx}, \{cy}), where it was the frame before")
+    }
+    cx = nx
+    cy = ny
     frames += 1
   }
   assert_true(viewer.get() is Some(_))

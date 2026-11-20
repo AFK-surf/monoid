@@ -10,8 +10,9 @@
 //     reason} -> {} + the bytes, or {none: true}; secure.set {key, user} + the bytes -> {}; secure.delete {key} -> {};
 //     secure.ask {reason} -> {}. What takes the person asks them with Windows Hello (win_hello.h), as apple_core.mm
 //     asks with LocalAuthentication, one prompt at a time on a thread of its own (the person's: the core's thread goes
-//     on meanwhile): secure.ask; secure.get of a `user` value there is (none asks nobody); secure.set of one only where
-//     Hello is set up (else no_device_lock, nothing kept that could not be read as it was meant).
+//     on meanwhile): secure.ask; secure.get of a `user` value there is (none asks nobody); secure.set of one. Where Hello
+//     is not set up or not there (no_device_lock: a password-only or local account, a VM, an RDP session) none of them
+//     asks: reads, writes and asks all fall back to DPAPI alone, as safe as this Windows login (as linux_core.c keeps).
 //   kept.read {at, start, end} -> {} + the bytes, or {none: true}: a file the app saved (its path, as mb_host_keep_where
 //     said it) read back, bytes start to end (the core's downloads: drive-kept.ts `saved`).
 //   listen.* (a login's loopback listener, mbui's win_listen.c): listen.open {port, host} -> {id, port};
@@ -484,7 +485,9 @@ static void person_do(person_job *j) {
   const char *no = NULL;
   HWND window = (HWND)mb_app_hwnd();
   if (j->op == PERSON_ASK) {
-    if ((no = win_hello_ask(window, j->reason)) != NULL) answer(j->id, NULL, no, NULL, 0);
+    no = win_hello_ask(window, j->reason);
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+    if (no) answer(j->id, NULL, no, NULL, 0);
     else answer(j->id, "{}", NULL, NULL, 0);
   } else if (j->op == PERSON_GET) {
     uint8_t *out = NULL;
@@ -492,8 +495,8 @@ static void person_do(person_job *j) {
     // none asks nobody (a probe for a key, MBUI_SECURE_TEST's)
     int got = secure_read(j->key, 1, &out, &len, why, sizeof why);
     if (got > 0) no = win_hello_ask(window, j->reason);
-    // (no Hello here: a value kept before this app asked with it, sealed as safe as the Windows login, read as it was
-    // kept, as it always was here; else nobody without Hello could open their vault again)
+    // (no Hello here, no_device_lock: read with DPAPI alone, as safe as the Windows login, as it was kept; a cancel,
+    // a window not in front or Hello's own error still refuses)
     if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
     if (got < 0) answer(j->id, NULL, why, NULL, 0);
     else if (got == 0) answer(j->id, "{\"none\":true}", NULL, NULL, 0);
@@ -504,7 +507,11 @@ static void person_do(person_job *j) {
     secure_get_many(j->id, j->keys, j->nkeys, 1, 1, window, j->reason);
   } else {
     static const uint8_t none = 0;
-    if ((no = win_hello_check()) != NULL) answer(j->id, NULL, no, NULL, 0);
+    // no Hello here (no_device_lock): kept with DPAPI alone for this Windows login, as reads and asks fall back, so
+    // password-only and local accounts, VMs and RDP sessions are not refused; where Hello is set up, reads still ask
+    no = win_hello_check();
+    if (no && strcmp(no, "no_device_lock") == 0) no = NULL;
+    if (no) answer(j->id, NULL, no, NULL, 0);
     else if (secure_set(j->key, 1, j->bytes ? j->bytes : &none, j->bytes ? j->blen : 0, why, sizeof why)) answer(j->id, "{}", NULL, NULL, 0);
     else answer(j->id, NULL, why, NULL, 0);
   }

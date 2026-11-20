@@ -38,7 +38,7 @@ fn pick_test_png() -> Bytes {
 test "small touch ＋ → recent photo in the strip: what Picks.photo reads goes into the chat's composer as the host's event tells it" {
   for nodes in [false, true] {
     new_run()
-    @sfbase.chat_page_nodes.set(nodes)
+    @sfbase.hold_chat_page_nodes(Some(nodes))
     let calls : Array[Made] = []
     let src = pick_test_source(calls)
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -100,7 +100,7 @@ test "large touch ＋ → 照片 (an unfolded phone or tablet's panel beside ＋
   ].map(fn(x) { x.to_byte() }))
   for nodes in [false, true] {
     new_run()
-    @sfbase.chat_page_nodes.set(nodes)
+    @sfbase.hold_chat_page_nodes(Some(nodes))
     let calls : Array[Made] = []
     let src = pick_test_source(calls)
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

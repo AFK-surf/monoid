@@ -12,7 +12,6 @@
 let words_large_known : Map[String, Int] = {
   let known = Map([])
   for k in [
-    ("phone-zh chat-screens", 4),
     ("phone-zh settings-new-connect-platform", 1),
     ("phone-zh settings-new-connect-platform-group", 1),
     ("phone-zh settings-vault-words", 14),  // was 10, +4 (a) vault.mbt:859 真问题，待修
@@ -25,7 +24,6 @@ let words_large_known : Map[String, Int] = {
     ("phone-en chat-agent", 2),  // was 0, +2 (a) hover.mbt:1113 真问题，待修
     ("phone-en chat-preview-csv", 1),
     ("phone-en chat-preview-html", 1),
-    ("phone-en chat-screens", 4),
     // (its switch's title 「Send as file in this chat」 on two lines beside the switch, 40,642 224×50: the old panel's, told
     // of its nodes again as the tree's squeeze came to say what shares their row; it was 1 before its panel became nodes)
     ("phone-en chat-station-sheet", 1),
@@ -69,15 +67,5 @@ let words_large_known : Map[String, Int] = {
 /// parts), mended as each is made as nodes. None is left of search's lines (their
 /// lines as high as their words at least, @sf.touch_found), of a model's configuration's capsule (newchat-model), of a mark's letter (drawn at 1 as its mark is, @sf.mark_words_node), of a tag, a video's length or 用量's months (as
 /// high as their words' line, @sf.tag_node, box_at, a least), of 智能体's card's spend (on its line of 26), or of a checkbox's tick (drawn by its stroke, @sf.check_node's).
-let words_large_outgrown_known : Map[String, Int] = {
-  let known = Map([])
-  for k in [
-    ("phone-en chat-image-coming", 2),
-    ("phone-en chat-screens", 8),
-    ("phone-zh chat-image-coming", 2),
-    ("phone-zh chat-screens", 8),
-  ] {
-    known[k.0] = k.1
-  }
-  known
-}
+/// None now: a chat's picture coming and its screens', the last, made as nodes with the chat's page (2026-11-19).
+let words_large_outgrown_known : Map[String, Int] = Map([])

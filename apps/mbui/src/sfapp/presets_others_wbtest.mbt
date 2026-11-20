@@ -139,8 +139,9 @@ test "a control the other's preset holds offers 复制「X」为我的预设 and
   @sffixture.new_fix.preset = "p-ops"
   @sffixture.new_fix.bound = true
   let t = preset_mode("newchat")
-  guard t.find("Willow") is Some((x, y)) else { fail("no Willow: \{runs(t)}") }
-  t.tap(x, y)
+  // (the control by its role: the page's subtitle names the station too)
+  guard t.query(Button, has="Willow") is Some(_) else { fail("no Willow: \{runs(t)}\n\{t.semantics_dump()}") }
+  t.click(Button, has="Willow")
   t.run_for(@ui.move_most_ms)
   assert_true(shows_start(t, "Station 已被 ") && shows(t, "复制「线上排障」为我的预设") && shows(t, "不用预设"), msg=runs(t))
   assert_false(shows_start(t, "编辑「"), msg=runs(t))

@@ -520,6 +520,8 @@ fn ask_dismiss_node(
   let live = fn() { shown() && !resolved() }
   v.show(shown, fn(s) {
     @sf.style_node(s, fn() { if lead { under_post_room_lead } else { under_post_room } })
+    // (忽略 as wide as its words at the start, not drawn across the column)
+    s.lines_up(Is(Some(Start))) |> ignore
     @sf.action_box_node(s, fn() { @sf.t("web-main.chat.asks.dismiss") }, disabled=fn() { !live() }, fn(_) {
       if @signals.untracked(live) {
         let_go(src, here, @signals.untracked(seq))

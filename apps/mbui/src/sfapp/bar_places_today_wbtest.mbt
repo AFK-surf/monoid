@@ -25,7 +25,7 @@ let today_bar : Array[String] = ["chats", "connects", "usage", "profiles"]
 ///|
 /// The bar's places' middles in the phone's window (390 by 844), and its middle's height.
 fn today_bar_at() -> (Array[Double], Double) {
-  (bar_centres(390.0 - 44.0, 1.0, 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
+  (bar_centres(390.0 - 44.0, bar.k_end(), 4).map(fn(x) { x + 22.0 }), 844.0 - 22.0 - 28.0)
 }
 
 ///|
@@ -258,7 +258,7 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   bars_picked.set(Some(([today_bar], 0)))
   t.run_for(kept_switch_over_ms)
   to_bar_rest(t)
-  let (xs, y) = today_bar_at()
+  let (_, y) = today_bar_at()
   println("bar-today: at rest on \{today_entry()}")
   let at_rest_heard = heard.length()
   for line in today_wire(heard, 0) {
@@ -278,7 +278,7 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
     let i = today_bar.search(place).unwrap()
     let mark = heard.length()
     let before = today_entry()
-    let (work, made, let_go) = today_work(t, fn() { t.tap(xs[i], y) })
+    let (work, made, let_go) = today_work(t, fn() { t.tap(today_bar_at().0[i], y) })
     to_bar_rest(t)
     println("bar-today: \{from_place}→\{place}: \{work}")
     println("bar-today:   entry \{before} → \{today_entry()}")
@@ -360,10 +360,10 @@ test "bar places today: each place made as nodes left for another and come back 
     bars_picked.set(Some(([today_bar], 0)))
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
-    let (xs, y) = today_bar_at()
+    let (_, y) = today_bar_at()
     let i = today_bar.search(place).unwrap()
     if place != "chats" {
-      t.tap(xs[i], y)
+      t.tap(today_bar_at().0[i], y)
       t.run_for(kept_switch_over_ms)
       to_bar_rest(t)
     }
@@ -412,10 +412,10 @@ test "bar places today: each place made as nodes left for another and come back 
     println("bar-keep \{place}: scroll mark \{Repr(marked.map(fn(m) { m.0 }))} at \{left_y} as left")
     println("bar-keep \{place}: as left: \{left} \{choice()} entry \{today_entry()}")
     // to 额度 (an old view's place) and back, by a finger on the bar
-    t.tap(xs[3], y)
+    t.tap(today_bar_at().0[3], y)
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
-    t.tap(xs[i], y)
+    t.tap(today_bar_at().0[i], y)
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
     let back = today_looks(t, "")

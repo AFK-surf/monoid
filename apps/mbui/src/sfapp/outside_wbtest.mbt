@@ -155,7 +155,7 @@ test "a core that cannot say what the words refer to: they go as they are" {
 test "a new chat's first message is shared before it goes too, over the fixture's core" {
   let t = tester("home")
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   outside_tap_field(t, "做任何事")
   t.type_text("按 @[季度路线图] 排一下")
@@ -466,9 +466,7 @@ fn outside_round_trip(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(if new_chat { "home" } else { "chat" })
   let station : Source = {
     ..base,

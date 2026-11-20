@@ -25,7 +25,7 @@ export type Revocation = { kind: string; id: string; at: number };
 /// stations there and what that workspace takes back.
 /// `locked`: that workspace is in security mode, as the control plane says (its lock is pinned here before any of its
 /// members is taken).
-export type Joined = { workspace: string; workspace_name: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid };
+export type Joined = { workspace: string; workspace_name: string; workspace_emoji?: string; workspace_icon?: string; name: string; peers: any[]; revocations: Revocation[]; locked?: true; rigs?: Rig[]; ways?: WaysSaid };
 
 /// A workspace's own relays and the ways its members' devices do not take to its stations (`lan`, `tailnet`, `direct`,
 /// a relay's URL), as still.fail cloud kept them before the stations did: what a station takes as its first of them
@@ -57,6 +57,8 @@ export type CloudState = {
   station: string;
   workspace: string;
   workspace_name: string;
+  workspace_emoji?: string;
+  workspace_icon?: string;
   name: string;
   relay_url: string;
   /// Every relay, still.fail's (`relay_url`) first; missing from files of before there were several.
@@ -326,6 +328,10 @@ export function readState(data: string): CloudState | null {
   if (!existsSync(statePath(data))) return null;
   const raw = readJsonFile(statePath(data));
   const state: CloudState = { ...raw, relay_urls: raw.relay_urls ?? [], peers: raw.peers ?? [], revocations: raw.revocations ?? [] };
+  if (typeof raw.workspace_emoji === "string" && raw.workspace_emoji !== "") state.workspace_emoji = raw.workspace_emoji;
+  else delete state.workspace_emoji;
+  if (typeof raw.workspace_icon === "string" && raw.workspace_icon !== "") state.workspace_icon = raw.workspace_icon;
+  else delete state.workspace_icon;
   if (raw.joined !== undefined) state.joined = joinedOf(raw.joined);
   if (raw.provider !== undefined) state.provider = providerOf(raw.provider);
   if (raw.rigs !== undefined) state.rigs = rigsOf(raw.rigs);
@@ -375,7 +381,10 @@ export function writeState(data: string, s: CloudState) {
 function stateText(s: CloudState): string {
   const out: Record<string, unknown> = {
     ...(s.provider !== undefined ? { provider: s.provider } : {}),
-    origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name, name: s.name,
+    origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name,
+    ...(typeof s.workspace_emoji === "string" && s.workspace_emoji !== "" ? { workspace_emoji: s.workspace_emoji } : {}),
+    ...(typeof s.workspace_icon === "string" && s.workspace_icon !== "" ? { workspace_icon: s.workspace_icon } : {}),
+    name: s.name,
     relay_url: s.relay_url, relay_urls: s.relay_urls, grant_keys: s.grant_keys, peers: s.peers, revocations: s.revocations,
   };
   if (s.stillfail_relays !== undefined) out.stillfail_relays = s.stillfail_relays;
@@ -401,6 +410,8 @@ export function joinedOf(raw: unknown): Joined[] {
       ? [{
           workspace: j.workspace,
           workspace_name: typeof j.workspace_name === "string" ? j.workspace_name : j.workspace,
+          ...(typeof j.workspace_emoji === "string" && j.workspace_emoji !== "" ? { workspace_emoji: j.workspace_emoji } : {}),
+          ...(typeof j.workspace_icon === "string" && j.workspace_icon !== "" ? { workspace_icon: j.workspace_icon } : {}),
           name: typeof j.name === "string" ? j.name : "",
           peers: Array.isArray(j.peers) ? j.peers : [],
           revocations: Array.isArray(j.revocations) ? j.revocations.filter(isRevocation) : [],
@@ -1217,7 +1228,16 @@ export class Cloud {
   }
 
   private homeMembership(s: CloudState): Membership {
-    return { workspace: s.workspace, workspace_name: s.workspace_name, name: s.name, peers: s.peers, revocations: s.revocations, home: true };
+    return {
+      workspace: s.workspace,
+      workspace_name: s.workspace_name,
+      ...(typeof s.workspace_emoji === "string" && s.workspace_emoji !== "" ? { workspace_emoji: s.workspace_emoji } : {}),
+      ...(typeof s.workspace_icon === "string" && s.workspace_icon !== "" ? { workspace_icon: s.workspace_icon } : {}),
+      name: s.name,
+      peers: s.peers,
+      revocations: s.revocations,
+      home: true,
+    };
   }
 
   private joinedMembership(j: Joined, home: string): Membership | null {

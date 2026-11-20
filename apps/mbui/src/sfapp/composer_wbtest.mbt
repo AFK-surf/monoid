@@ -28,9 +28,7 @@ fn fake_core(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` or `composed` says so: sfbase's chat_page_nodes)
-  if nodes || composed {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes || composed))
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
   let base = fixture("chat")

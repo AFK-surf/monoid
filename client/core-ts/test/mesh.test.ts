@@ -20,7 +20,7 @@ import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, 
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
-import { BULK, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
+import { BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -2702,6 +2702,51 @@ sim("prune_keeps_the_fastest_bulk_relay_and_bulk_header_never_reaches_the_statio
   for (const req of station.served) {
     const keys = Object.keys(req.headers ?? {}).map((k) => k.toLowerCase());
     assert.ok(!keys.includes(BULK), `stillfail-bulk leaked to station: ${JSON.stringify(req.headers)}`);
+  }
+  await close(s, station, mesh);
+});
+
+sim("multi_way_striped_bulk_transfers_aggregate_bandwidth_across_fast_relays", async (s) => {
+  s.net.direct = { ms: 20, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 256 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 80, bps: 1 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b, c]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b, c]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  // First bulk transfer measures slow direct and triggers on-demand pinned relay exploration for b and c.
+  await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))));
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === b) && mesh.ways(id).some((w) => w.link.via() === c));
+  assert.ok(wire.bulkLanes(addr) >= 2, `expected >= 2 fast bulk lanes, got ${wire.bulkLanes(addr)}`);
+  assert.ok(mesh.fastBulkLinks(id).every((l) => l.path() !== "direct"), "slow direct must be excluded from fastBulkLinks");
+  const readLane = (lane: number) =>
+    Effect.scoped(
+      Effect.flatMap(
+        wire.request(addr, { method: "GET", path: "/admin/api/big?mb=2", headers: [[BULK, "1"], [BULK_LANE, String(lane)]] }, new Uint8Array()),
+        (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, relay: r.relay, len: bytes.length })),
+      ),
+    );
+  const startedAt = s.time.now();
+  const [r0, r1] = await s.run(Effect.all([readLane(0), readLane(1)], { concurrency: "unbounded" }));
+  const elapsed = s.time.now() - startedAt;
+  assert.equal(r0.via, "relay");
+  assert.equal(r1.via, "relay");
+  assert.notEqual(r0.relay, null);
+  assert.notEqual(r1.relay, null);
+  assert.notEqual(r0.relay, r1.relay, "striped lanes must spread across distinct fast relays");
+  assert.equal(r0.len, 2 * 1024 * 1024);
+  assert.equal(r1.len, 2 * 1024 * 1024);
+  assert.ok(elapsed < 3_200, `expected parallel striped transfer (~2s) instead of serial (~4s), took ${elapsed}ms`);
+  for (const req of station.served) {
+    const keys = Object.keys(req.headers ?? {}).map((k) => k.toLowerCase());
+    assert.ok(!keys.includes(BULK_LANE), `stillfail-bulk-lane leaked to station: ${JSON.stringify(req.headers)}`);
   }
   await close(s, station, mesh);
 });

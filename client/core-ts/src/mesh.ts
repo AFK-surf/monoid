@@ -2377,6 +2377,16 @@ export class Mesh {
     return [...byKey.values()].sort((a, b) => this.#bulkScore(addr, a) - this.#bulkScore(addr, b)).map((w) => w.link);
   }
 
+  /// Fast open bulk ways suitable for concurrent striped transfers: excludes ways known to be below BULK_SLOW_BPS.
+  fastBulkLinks(addr: string): Link[] {
+    return this.bulkLinks(addr).filter((l) => {
+      if (l.pinned === LAN) return true;
+      const sk = l.speedKey();
+      const bps = sk !== null ? this.speed(addr, sk) : null;
+      return bps === null || bps >= BULK_SLOW_BPS;
+    });
+  }
+
   /// Standby link for hedging a slow bulk transfer: never hedges onto a way already known to be below BULK_SLOW_BPS.
   bulkStandby(addr: string, link: Link): Link | null {
     const ways = this.#live(addr);
@@ -2437,6 +2447,16 @@ export class Mesh {
   bulkLink(addr: string, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
     return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
       this.#maybeExploreBulk(addr, credentials);
+      return this.bulkLinks(addr)[0] ?? cur;
+    });
+  }
+
+  /// Bulk link for a striped lane, spreading concurrent parts across fast bulk ways.
+  bulkLinkAt(addr: string, lane: number, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
+    return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
+      this.#maybeExploreBulk(addr, credentials);
+      const fast = this.fastBulkLinks(addr);
+      if (fast.length > 0) return fast[Math.abs(lane) % fast.length]!;
       return this.bulkLinks(addr)[0] ?? cur;
     });
   }

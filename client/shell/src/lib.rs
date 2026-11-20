@@ -138,8 +138,11 @@ pub(crate) struct Inner {
     pub(crate) db: Arc<Mutex<DbHandle>>,
     pub(crate) tls: Arc<rustls::ClientConfig>,
     pub(crate) http: Mutex<reqwest::Client>,
-    /// A pool for each cloud entry requests go through (`entry`: station/AGENTS.md, Cloud TCP entries), by its host and port.
-    pub(crate) entries: Mutex<HashMap<(String, u16), reqwest::Client>>,
+    /// The pool of requests that follow redirects (`redirect: "follow"`, up to ten); `http` follows none.
+    pub(crate) http_follow: Mutex<reqwest::Client>,
+    /// A pool for each cloud entry requests go through (`entry`: station/AGENTS.md, Cloud TCP entries), by its host and
+    /// port and whether it follows redirects.
+    pub(crate) entries: Mutex<HashMap<(String, u16, bool), reqwest::Client>>,
     /// Fetch calls still owned by the core. Their exchange is dropped when its caller stops waiting, even between
     /// response headers and the body. Registered before spawning, so an immediate cancellation cannot miss it.
     pub(crate) fetches: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<()>>>,
@@ -394,10 +397,11 @@ impl Shell {
             }
         })?;
         let tls = Arc::new(tls_config());
-        let http = Mutex::new(http_client(&tls));
+        let http = Mutex::new(http_client(&tls, false));
+        let http_follow = Mutex::new(http_client(&tls, true));
         let db = Arc::new(Mutex::new(DbHandle { path: dir.join("core.db"), conn: None }));
         let adb = adb::Adb::new(dir.clone());
-        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default(), inputs: Mutex::default() });
+        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, http_follow, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default(), inputs: Mutex::default() });
         STATS.lock().unwrap().shells.push(Arc::downgrade(&inner));
         Ok(Shell { runtime, inner })
     }
@@ -405,10 +409,11 @@ impl Shell {
     pub fn call(&self, id: u64, op: String, json: &[u8], bytes: Option<Vec<u8>>) {
         let inner = self.inner.clone();
         let args: Value = serde_json::from_slice(json).unwrap_or(Value::Null);
-        // A fetch, and a dial's handshake (iroh.connect): given up when the core cancels the call, its connection dropped,
-        // which closes it (a dial left going retransmitted its Initial for the connection's whole idle timeout: the
-        // station addon's `dial`, station/native/mesh/src/lib.rs).
-        let cancelled = if op == "fetch" || op == "iroh.connect" {
+        // A fetch, a dial's handshake (iroh.connect), a WebSocket's opening (ws.open) and a stream's head or next piece
+        // (stream.open, stream.read): given up when the core cancels the call, its connection dropped, which closes it (a
+        // dial left going retransmitted its Initial for the connection's whole idle timeout: the station addon's `dial`,
+        // station/native/mesh/src/lib.rs; a WebSocket's handshake left going held its socket until the other side spoke).
+        let cancelled = if matches!(op.as_str(), "fetch" | "iroh.connect" | "ws.open" | "stream.open" | "stream.read") {
             let (cancel, cancelled) = tokio::sync::oneshot::channel();
             inner.fetches.lock().unwrap().insert(id, cancel);
             Some(cancelled)

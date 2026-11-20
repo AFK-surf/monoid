@@ -842,11 +842,23 @@ fn tray_check_to_words() -> Double {
 /// Where 归档's words stand across a slot `w` wide (their start) as the row's end is at `edge`, they `words` wide, the
 /// row's own inset `pad`: at the slot's end at first as the row uncovers them; once its end is close behind them, with
 /// it, a point less behind it than the check is before them (so the check is never uncovered on the way); docked where
-/// a marked row's title starts, the check in the row's mark's column, the row going on.
+/// a marked row's title starts, the check in the row's mark's column, the row going on. They come into the dock
+/// slowing down evenly over the last `k` before it (no corner where they meet it: a row springing back on its way past
+/// it brings them to rest there, not to a stop in one frame), at `dock` exactly once the row's end is at 0.
 fn tray_words_x(w : Double, edge : Double, words : Double, pad : Double) -> Double {
   let rest = w - pad - words
   let dock = pad + row_mark_w() + row_mark_gap()
-  dmax(dock, dmin(edge + tray_check_to_words() - 1.0, rest))
+  let reach = tray_check_to_words() - 1.0
+  let raw = dmin(edge + reach, rest)
+  let k = dmin(32.0, dmax(1.0, dock - reach))
+  let u = raw - dock
+  if u <= -k {
+    dock
+  } else if u >= k {
+    raw
+  } else {
+    dock + (u + k) * (u + k) / (4.0 * k)
+  }
 }
 
 ///|

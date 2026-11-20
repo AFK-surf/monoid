@@ -218,7 +218,7 @@ test "⌘W closes the visible side panel, including a file and several tabs, wit
   for nodes in [false, true] {
     for mode in ["chat-history-side", "chat-tabs-side", "chat-view-side"] {
       let calls : Array[Made] = []
-      let t = wide_tester(calls, mode~, before=fn(_) { if nodes { @sfbase.chat_page_nodes.set(true) } })
+      let t = wide_tester(calls, mode~, before=fn(_) { @sfbase.hold_chat_page_nodes(Some(nodes)) })
       t.run_for(@ui.move_most_ms)
       // The composer may have focus when the shortcut is pressed.
       t.click(TextField, label="发消息")

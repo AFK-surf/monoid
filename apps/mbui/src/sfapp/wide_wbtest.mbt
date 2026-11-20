@@ -705,11 +705,13 @@ test "wide: the machine's own sessions offered under the composer as its station
   assert_true(inks().length() > 0 && inks().iter().all(fn(k) { k == @sf.theme().p.muted }), msg="quiet: \{Repr(inks())}")
   // pointed at: its ground, its words the text's
   t.move_to(ox, oy)
-  t.draw()
+  // (its ground comes in over the hover's way: hover_ground_node's)
+  t.run_for(@sf.dur_ms)
   assert_true(ground(), msg="the hover's ground under the offer")
   assert_true(inks().iter().all(fn(k) { k == @sf.theme().p.text }), msg="lit: \{Repr(inks())}")
-  // left: quiet again
+  // left: quiet again, its ground gone over the same way
   t.leave()
+  t.run_for(@sf.dur_ms)
   assert_false(ground())
 }
 
@@ -916,13 +918,13 @@ test "wide: a new chat becomes its chat as the web's: its scene fading where it 
   let typed = seen_once(t, words)
   assert_true(typed.1 > by && typed.1 < by + bh)
   assert_at((bx, by), { let (x, y, _, _) = composer_glass(t); (x, y) })
-  // half way: the scene where it was as it fades
+  // half way: the scene fading gently upward from where it was (new_chat_node's scene_out, 10 at its end)
   t.run_for(new_leave_ms / 2.0)
   let half = match heading() {
     Some(y) => y
     None => fail("the scene gone at once")
   }
-  assert_true((half - title).abs() < 0.5, msg="the scene stays: \{title} → \{half}")
+  assert_true(half <= title && title - half <= 10.5, msg="the scene fades gently upward (within 10px): \{title} → \{half}")
   // the scene gone at 140 ms
   t.run_for(new_leave_ms / 2.0 + 1.0)
   assert_true(heading() is None)
@@ -1058,7 +1060,14 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   assert_true(app.nav.top() == NewChat)
   let (_, y0, _, h0) = composer_glass(t)
   assert_true((y0 + h0 - (cy + ch)).abs() < 1.0, msg="from the chat's foot: \{Repr((y0, h0))} \{Repr((cy, ch))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  // (the old page's words looked at in its old view; the page made as nodes' in the window's tree)
+  let scene_alpha = fn() {
+    match t.look_of("想让 agent 做什么？") {
+      Some(l) => Some(l.2)
+      None => t.words().iter().find_first(fn(w) { w.0 == "想让 agent 做什么？" }).map(fn(w) { w.5 })
+    }
+  }
+  assert_eq(scene_alpha(), Some(1.0))
   // what it holds there and did not at the chat's foot (the new chat's choices) carried on its ground all the way
   choices_in_ground(t)
   t.run_for(@ui.move_most_ms / 2.0)
@@ -1066,7 +1075,7 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   t.run_for(went + @ui.move_most_ms + 1.0 - t.time())
   let (_, y1, _, h1) = composer_glass(t)
   assert_true(y1 + h1 < cy - 100.0, msg="in the page's middle: \{Repr((y1, h1))}")
-  assert_eq(t.look_of("想让 agent 做什么？").map(fn(l) { l.2 }), Some(1.0))
+  assert_eq(scene_alpha(), Some(1.0))
   // back to the chat by its row: the composer down to its foot from its place in the page, the rest the chat's at
   // once, the new chat's scene gone in that frame (another chat looked at: nothing of the new chat fades over it, its
   // words over the chat's own as it went till 2026-11-14; the coordinator of the migration's ruling)
@@ -2695,8 +2704,15 @@ test "wide: a working agent's card whose standing is long (what it waits for) ha
 ///|
 /// The chat of fixture `chat-agent-card` on 大屏 with its agents' cards' latest lines as `latest` says (its lines, the
 /// view's version), and where its latest agent's message's name is (the pointer resting there opens its card).
-fn lines_card(latest : @signals.Signal[(Array[(String, String)], Int)]) -> (@ui.Tester, Double, Double) raise {
+fn lines_card(
+  latest : @signals.Signal[(Array[(String, String)], Int)],
+  nodes? : Bool? = None,
+) -> (@ui.Tester, Double, Double) raise {
   new_run()
+  // (the page's way held where a test says: the old card's lines running on (useLinesMotion) is the old page's)
+  if nodes is Some(on) {
+    @sfbase.hold_chat_page_nodes(Some(on))
+  }
   let base = fixture("chat-agent-card")
   let src : Source = {
     ..base,
@@ -2773,7 +2789,7 @@ test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx 
   let latest : @signals.Signal[(Array[(String, String)], Int)] = @signals.signal(
     ([("k1", "读了 src/ui/list.mbt"), ("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt")], 1),
   )
-  let (t, x, y) = lines_card(latest)
+  let (t, x, y) = lines_card(latest, nodes=Some(false))
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.0 }) }
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
