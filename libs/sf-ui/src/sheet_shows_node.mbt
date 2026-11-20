@@ -121,9 +121,9 @@ fn sheet_confirm_node(
 ) -> Unit {
   col.box(made_for=loc, fn(b) {
     style_node(b, fn() { sheet_says_at.then(panel_words_in_node(col)) })
-    words_node(b, fn() { words }, fn() { sheet_lead }) |> ignore
+    words_node(b, fn() { words }, fn() { sheet_lead }).words_selectable() |> ignore
     if warning != "" {
-      words_node(b, fn() { warning }, fn() { sheet_warning }) |> ignore
+      words_node(b, fn() { warning }, fn() { sheet_warning }).words_selectable() |> ignore
     }
     sheet_actions_node(b, fn(f) {
       button_node(f, fn() { t("common.cancel") }, cancel) |> ignore
@@ -177,7 +177,7 @@ fn sheet_ask_node(
     })
     panel_opens_in_node(field)
     if hint != "" {
-      words_node(b, fn() { hint }, fn() { sheet_hint }) |> ignore
+      words_node(b, fn() { hint }, fn() { sheet_hint }).words_selectable() |> ignore
     }
     sheet_actions_node(b, fn(f) {
       button_node(f, fn() { t("common.cancel") }, cancel) |> ignore

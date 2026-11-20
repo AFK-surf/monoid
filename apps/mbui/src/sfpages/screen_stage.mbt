@@ -881,6 +881,7 @@ fn drop_row_node(r : @view.View, s : ScreenSess, d : ScreenDropItem) -> Unit {
               @sf.words_node(u, fn() { @sf.t("android-misc.drive.upload.failed", args=[("error", d.error)]) }, fn() {
                 drop_failed_words
               })
+              .words_selectable()
               |> ignore
             _ => {
               let size = d.bytes.length()

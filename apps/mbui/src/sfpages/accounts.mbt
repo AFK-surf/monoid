@@ -471,6 +471,7 @@ fn profile_state_node(st : @view.View, core : Core, address : String, id : Strin
       }
       join([line, when], " · ")
     }, fn() { pf_check_words })
+    .words_selectable()
     |> ignore
     b.pick(at_once=true, acting, fn(x, busy) {
       if busy {
@@ -1033,7 +1034,7 @@ fn profile_trouble_node(
     k.show(at_once=true, fn() { action() == "command" }, fn(x) {
       x.box(fn(b) { @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true) }) |> ignore
     })
-    // (the link its words give to open, on its one line with its copy key: the page's words cannot be selected)
+    // (the link its words give to open, on its one line with its copy key)
     k.show(at_once=true, fn() { link() != "" }, fn(x) {
       @sf.code_block_node(x, link, fn() { "" }, fn() { None }, command=true)
     })

@@ -871,7 +871,7 @@ fn usage_body_node(
         })
         body.show(fn() { !details_pending() }, fn(at) { usage_overview_node(at, core, v, chart, press, tips?) })
         body.show(fn() { v() is None && error() is Some(_) }, fn(p) {
-          @sf.words_node(p, fn() { @sf.t("web-pages.settings.usage.failed", args=[("error", error_text(error().unwrap()))]) }, fn() { ug_failed }) |> ignore
+          @sf.words_node(p, fn() { @sf.t("web-pages.settings.usage.failed", args=[("error", error_text(error().unwrap()))]) }, fn() { ug_failed }).words_selectable() |> ignore
         })
         body.show(fn() { v() is Some(_) && !details_pending() }, fn(q) {
           q.pick(fn() { flag(v(), "empty") }, fn(p, empty) {

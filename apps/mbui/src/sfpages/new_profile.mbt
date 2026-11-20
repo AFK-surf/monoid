@@ -727,10 +727,11 @@ fn machine_offers_node(
             @sf.words_node(w, fn() { if text(lv(), "email") != "" { text(lv(), "email") } else { @sf.t("web-main.profile.signedIn") } }, fn() {
               ap_offer_line
             })
+            .words_selectable()
             |> ignore
             // why it cannot be used (what the provider said)
             w.show(fn() { blocked || text(quota(), "state") == "unavailable" }, fn(y) {
-              @sf.words_node(y, fn() { text(quota(), "detail") }, fn() { if blocked { ap_note_bad } else { ap_note } }) |> ignore
+              @sf.words_node(y, fn() { text(quota(), "detail") }, fn() { if blocked { ap_note_bad } else { ap_note } }).words_selectable() |> ignore
             })
           })
           |> ignore

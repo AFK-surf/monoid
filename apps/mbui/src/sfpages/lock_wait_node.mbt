@@ -225,7 +225,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
         })
       Asked => {
         v.show(fn() { state() == "failed" }, fn(n) {
-          @sf.words_node(n, fn() { text(pair(), "error") }, fn() { lock_failed }).words_centered(Is(!in_card)) |> ignore
+          @sf.words_node(n, fn() { text(pair(), "error") }, fn() { lock_failed }).words_centered(Is(!in_card)).words_selectable() |> ignore
         })
         v.show(fn() { state() != "failed" }, fn(n) {
           lock_note_node(n, fn() {

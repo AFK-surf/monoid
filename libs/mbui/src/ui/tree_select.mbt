@@ -18,11 +18,15 @@ let view_tree_made : Ref[Int] = Ref(0)
 let words_picks : @view.Lent[Bool] = @view.Lent::new()
 
 ///|
-/// The words in pieces node `v` holds, now or later, picked with the pointer, a mouse's (a page's, as an old view's
-/// page's in Ctx::selectable): pressed and dragged over, picked; ⌘C (Ctrl+C) copies them; a press elsewhere lets them
-/// go.
+/// The words in pieces (and opted-in plain `View::words` via `View::words_selectable`) node `v` holds, now or later,
+/// picked with the pointer, a mouse's (a page's, as an old view's page's in Ctx::selectable): pressed and dragged over,
+/// picked; ⌘C (Ctrl+C) copies them; a press elsewhere lets them go.
 pub fn words_picked(v : @view.View) -> Unit {
-  v.lends(words_picks, true).lends(@view.runs_picker, words_picker) |> ignore
+  v
+  .lends(words_picks, true)
+  .lends(@view.runs_picker, words_picker)
+  .lends(@view.words_picker_init, words_plain_init)
+  |> ignore
 }
 
 ///|
@@ -33,6 +37,12 @@ pub fn words_picked(v : @view.View) -> Unit {
 let words_picker : (@view.View) -> @view.Live[(Int, Int)] = words_picked_span
 
 ///|
+/// Initial picked-span reader lent for plain `View::words` nodes mounted inside `words_picked` while a selection is
+/// already active (for example when a virtualized list row scrolls back into view), incurring zero bindings at rest.
+// kept across runs: a function, the same for every run
+let words_plain_init : (@view.View) -> (Int, Int) = words_picked_plain_init
+
+///|
 /// What of each paragraph's words is picked with the pointer (from, to; (0, 0) none), by its key, as a signal of its
 /// own made as it is first read (words_picked_span): told as what is picked changes (picked_told), each only as its
 /// own span does.
@@ -40,9 +50,24 @@ let words_picker : (@view.View) -> @view.Live[(Int, Int)] = words_picked_span
 let picked_spans_said : Map[SelKey, @signals.Signal[(Int, Int)]] = Map([])
 
 ///|
-/// Whether what is picked with the pointer was picked by a finger, as a signal (Ctx::selection_by_finger).
-// kept across runs: said again from what is picked as that changes
-let picked_finger_said : Ref[@signals.Signal[Bool]] = Ref(@signals.signal(false))
+/// Plain `View::words` nodes whose `runs_picked` span was applied directly without a signal binding: their node id and
+/// applied span, cleared or updated by `picked_told`.
+// kept across runs: cleared by select_none and view_forget, kept per window in window_kept.mbt
+let picked_plain_applied : Map[SelKey, (@view.NodeId, (Int, Int))] = Map([])
+
+///|
+/// Initial selection span for a newly mounted plain `View::words` node: O(1) no-op at rest (`picked.spans.is_empty()`).
+fn words_picked_plain_init(v : @view.View) -> (Int, Int) {
+  if picked.spans.is_empty() || v.words_set_now().0 == "" {
+    return (0, 0)
+  }
+  let k = tree_key(v)
+  let span = picked_span_of(k)
+  if span.0 < span.1 {
+    picked_plain_applied[k] = (v.id(), span)
+  }
+  span
+}
 
 ///|
 /// What of paragraph `k`'s words is picked now ((0, 0): none).
@@ -55,7 +80,8 @@ fn picked_span_of(k : SelKey) -> (Int, Int) {
 
 ///|
 /// What is picked with the pointer changed: told what follows it (each node's words of the window's tree: what of them
-/// is picked, words_picked_span), each paragraph whose span changed alone, at once.
+/// is picked, words_picked_span and direct updates for plain `View::words`), each paragraph whose span changed alone,
+/// at once.
 fn picked_told() -> Unit {
   @signals.start_batch()
   let unread : Array[SelKey] = []
@@ -65,6 +91,52 @@ fn picked_told() -> Unit {
       unread.push(k)
     }
   })
+  match view_app.val {
+    Some(tree) => {
+      let gone : Array[SelKey] = []
+      let updated : Array[(SelKey, @view.NodeId, (Int, Int))] = []
+      picked_plain_applied.each(fn(k, prev) {
+        let now = picked_span_of(k)
+        if now.0 >= now.1 {
+          tree.set_runs_picked(prev.0, (0, 0))
+          gone.push(k)
+        } else {
+          let id = match picked_shown.get(k) {
+            Some((shown_id, _)) => shown_id
+            None => prev.0
+          }
+          if id != prev.0 {
+            tree.set_runs_picked(prev.0, (0, 0))
+          }
+          if id != prev.0 || now != prev.1 {
+            tree.set_runs_picked(id, now)
+            updated.push((k, id, now))
+          }
+        }
+      })
+      for k in gone {
+        picked_plain_applied.remove(k)
+      }
+      for u in updated {
+        picked_plain_applied[u.0] = (u.1, u.2)
+      }
+      picked.spans.each(fn(k, s) {
+        if s.a < s.b && !picked_spans_said.contains(k) {
+          match picked_shown.get(k) {
+            Some((id, _)) => {
+              let now = (s.a, s.b)
+              if picked_plain_applied.get(k) != Some((id, now)) {
+                tree.set_runs_picked(id, now)
+                picked_plain_applied[k] = (id, now)
+              }
+            }
+            None => ()
+          }
+        }
+      })
+    }
+    None => picked_plain_applied.clear()
+  }
   picked_finger_said.val.set(picked.finger)
   picked_now_tell()
   @signals.end_batch()
@@ -101,11 +173,30 @@ fn words_picked_span(v : @view.View) -> @view.Live[(Int, Int)] {
 }
 
 ///|
+/// Whether what is picked with the pointer was picked by a finger, as a signal (Ctx::selection_by_finger).
+// kept across runs: said again from what is picked as that changes
+let picked_finger_said : Ref[@signals.Signal[Bool]] = Ref(@signals.signal(false))
+
+///|
+/// Whether node `v` is inside `words_picked` with its default picker (not overridden by a non-picking block).
+fn tree_runs_pickable(v : @view.View) -> Bool {
+  v.lent(words_picks) == Some(true) &&
+    v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true)
+}
+
+///|
+/// Whether plain `View::words` node `v` opted into selection (`View::words_selectable`) inside `words_picked` and does
+/// not sit inside an interactive control.
+fn tree_plain_pickable(tree : @view.Tree, v : @view.View) -> Bool {
+  tree_runs_pickable(v) && v.lent(@view.words_pickable) == Some(true) && !tree.in_control(v.id())
+}
+
+///|
 /// The paragraphs of the window's tree that can be picked as it is laid out and shown now (what an event finds: the
-/// tree laid out as of its moment), in the order they are drawn: a node's words in pieces where what holds it says so
-/// (words_picked), drawn (not clear, not laid out nowhere), taking input (none under a modal layer over it), each with
-/// the part of it seen (what holds it cutting it: Tree::seen_bounds), laid out in its own terms as it draws them
-/// (view_runs_laid), as big as it is drawn; none with a finger's pointing.
+/// tree laid out as of its moment), in the order they are drawn: a node's words in pieces or opted-in plain words where
+/// what holds it says so (words_picked), drawn (not clear, not laid out nowhere), taking input (none under a modal
+/// layer over it), each with the part of it seen (what holds it cutting it: Tree::seen_bounds), laid out in its own
+/// terms as it draws them (view_runs_laid / view_words_laid), as big as it is drawn; none with a finger's pointing.
 fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
   tree_sels_made.val = tree_sels_made.val + 1
   let out : Array[SelTarget] = []
@@ -115,13 +206,15 @@ fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
       // (laid out as of the moment it is asked: what an event finds)
       tree.laid_as_now()
       tree.each_drawn_scaled(fn(c, x, y, a, s) {
-        if c.runs.is_empty() || a <= 0.0 || !tree.allows(c.id) {
+        if a <= 0.0 || !tree.allows(c.id) {
+          return
+        }
+        let plain = if c.runs.is_empty() { c.words_drawn.unwrap_or(c.words) } else { "" }
+        if c.runs.is_empty() && plain == "" {
           return
         }
         match tree.view_of(c.id) {
-          // (where its words are picked, by the picker that picks them: not where a block in it was lent another)
-          Some(v) if v.lent(words_picks) == Some(true) &&
-            v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true) => {
+          Some(v) if !c.runs.is_empty() && tree_runs_pickable(v) => {
             let (r, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
             let (bx0, by0, bx1, by1) = tree.seen_bounds(c.id)
             let place = tree_place(v)
@@ -133,7 +226,7 @@ fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
               layer: TreeLayer(tree.stack_of(c.id)),
               island: None,
               at: place,
-              lay,
+              lay: Rich(lay),
               text: lay.text,
               ox: x,
               oy: y,
@@ -146,6 +239,30 @@ fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
               node: Some(c.id),
             })
             ignore(r)
+          }
+          Some(v) if c.runs.is_empty() && tree_plain_pickable(tree, v) => {
+            let tl = view_words_laid(plain, c.words_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+            let (bx0, by0, bx1, by1) = tree.seen_bounds(c.id)
+            let place = tree_place(v)
+            let base = tree_key(v)
+            picked_shown_by(base, v)
+            out.push({
+              base,
+              layer: TreeLayer(tree.stack_of(c.id)),
+              island: None,
+              at: place,
+              lay: Plain(tl),
+              text: tl.text,
+              ox: x,
+              oy: y,
+              x0: dmax(x, bx0),
+              y0: dmax(y, by0),
+              x1: dmin(x + c.w * s, bx1),
+              y1: dmin(y + c.h * s, by1),
+              sc: s,
+              center: if c.words_center { c.w } else { -1.0 },
+              node: Some(c.id),
+            })
           }
           _ => ()
         }
@@ -212,7 +329,11 @@ fn tree_words_under(x : Double, y : Double) -> Bool {
   tree.laid_as_now()
   let found = Ref(false)
   tree.each_drawn_scaled(fn(c, cx, cy, a, s) {
-    if found.val || c.runs.is_empty() || a <= 0.0 || !tree.allows(c.id) {
+    if found.val || a <= 0.0 || !tree.allows(c.id) {
+      return
+    }
+    let has_plain = c.runs.is_empty() && c.words_drawn.unwrap_or(c.words) != ""
+    if c.runs.is_empty() && !has_plain {
       return
     }
     if x < cx || y < cy || x >= cx + c.w * s || y >= cy + c.h * s {
@@ -223,8 +344,8 @@ fn tree_words_under(x : Double, y : Double) -> Bool {
       return
     }
     match tree.view_of(c.id) {
-      Some(v) if v.lent(words_picks) == Some(true) &&
-        v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true) => found.val = true
+      Some(v) if !c.runs.is_empty() && tree_runs_pickable(v) => found.val = true
+      Some(v) if has_plain && tree_plain_pickable(tree, v) => found.val = true
       _ => ()
     }
   })
@@ -403,6 +524,8 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
         Some(Dragging(id)) if tree.claims_scroll(id) =>
           tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore
         Some(Nowhere) => ()
+        // (a ground backdrop holding selectable words, such as a dialog or sheet: its hold released so finger selection picks the word)
+        Some(Node(id)) if words is Some(_) && tree.is_ground(id) => tree.hold_lost_in(id.at)
         // (an old view under them held it, the words of the tree's that take no press drawn over it there (a page's
         // messages over 小屏's shell): its press called off, as a hold of the old frame's own on words it drew is its)
         Some(Old(_, _)) if words is Some(t) && tree_words_over(tree, t, x, y) => g().press_called_off(x, y, at)
@@ -435,8 +558,9 @@ fn tree_finger_menu(tree : @view.Tree, x : Double, y : Double, words : SelTarget
   guard view_down.val is Some(_) else { return false }
   let call_off : () -> Unit = match view_held.val {
     // (a field of the tree's on Android has its own long press (tree_field_held) that picks the word there; never
-    // stolen by its secondary-button context menu, nor by an I-beam backdrop area wired with field_menu_on)
-    Some(Node(id)) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) => return false
+    // stolen by its secondary-button context menu, nor by an I-beam backdrop area wired with field_menu_on, nor by a
+    // ground backdrop whose hold belongs to finger text selection)
+    Some(Node(id)) if tree_fields.contains(id) || tree_field_menu_areas.contains(id) || tree.is_ground(id) => return false
     Some(Node(id)) => fn() { tree.hold_lost_in(id.at) }
     Some(Dragging(id)) if tree.claims_scroll(id) && words is None =>
       fn() { tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore }

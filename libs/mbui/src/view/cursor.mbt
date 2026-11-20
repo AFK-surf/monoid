@@ -173,3 +173,51 @@ pub fn View::as_ground(self : View) -> View {
   n.as_ground = true
   self
 }
+
+///|
+/// Whether node `self` is an interactive control (takes presses, non-scroll drags, window top-row drags, or declares an
+/// interactive accessibility role) rather than a passive container, ground backdrop, modal scrim, hover-only region, or
+/// scroll claimer.
+fn Node::is_control(self : Node) -> Bool {
+  if self.as_ground || self.modal || self.hosted || self.points || self.hold_only is Some(_) {
+    return false
+  }
+  if self.on_press is Some(_) || (self.on_drag is Some(_) && self.claims is None) || self.top_row {
+    return true
+  }
+  match self.said {
+    Some(s) => role_is_interactive(s.role)
+    None => false
+  }
+}
+
+///|
+/// Whether node `id` is marked as a ground backdrop (`View::as_ground`).
+pub fn Tree::is_ground(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].as_ground
+}
+
+///|
+/// Whether node `id` is an interactive control (`Node::is_control`).
+pub fn Tree::node_is_control(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].is_control()
+}
+
+///|
+/// Whether node `id` or any ancestor up to a modal or hosted boundary is an interactive control: plain words inside
+/// buttons, clickable rows, switches, links, or text fields stay non-selectable even inside a `words_selectable` card.
+pub fn Tree::in_control(self : Tree, id : NodeId) -> Bool {
+  guard self.alive_id(id) else { return false }
+  let mut i = id.at
+  while i >= 0 {
+    let n = self.nodes[i]
+    if n.modal || n.hosted {
+      break
+    }
+    if n.is_control() {
+      return true
+    }
+    i = n.parent
+  }
+  false
+}

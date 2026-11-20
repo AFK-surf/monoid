@@ -55,11 +55,11 @@ pub fn own_head_node(
       r.show(fn() { dot() != "" }, fn(d) { state_dot_node(d, dot) })
       r.show(fn() { shown().length() > 0 }, fn(w) {
         w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        words_node(w, fn() { shown().get(0).unwrap_or("") }, line_look) |> ignore
+        words_node(w, fn() { shown().get(0).unwrap_or("") }, line_look).words_selectable() |> ignore
       })
     })
     b.each(fn() { shown().mapi(fn(i, l) { (i, l) }).filter(fn(x) { x.0 > 0 }) }, fn(x) { x.0 }, fn(w, x) {
-      words_node(w, fn() { x.get().1 }, line_look) |> ignore
+      words_node(w, fn() { x.get().1 }, line_look).words_selectable() |> ignore
     })
     match tags {
       Some(f) => f(b)
@@ -80,7 +80,8 @@ pub fn own_head_node(
     }
     // (red where it does not work, else amber)
     b.each(fn() { warnings().mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(w, x) {
-      words_node(w, fn() { x.get().1.0 }, fn() { if x.get().1.1 { head_warn_red } else { head_warn_amber } }) |> ignore
+      words_node(w, fn() { x.get().1.0 }, fn() { if x.get().1.1 { head_warn_red } else { head_warn_amber } }).words_selectable()
+      |> ignore
     })
   }
   let end = fn(e : @view.View) {
@@ -129,7 +130,7 @@ pub fn own_head_node(
                 },
               )
               |> ignore
-            None => words.box(name_words) |> ignore
+            None => words.box(fn(n) { n.words_selectable() |> ignore; name_words(n) }) |> ignore
           }
           words.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
         })
@@ -152,7 +153,7 @@ pub fn own_head_node(
         style_node(l, fn() { head_name_line.then(head_name_grow) }, in_row=true)
         l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         // (short of room, its name is cut short, what follows it kept)
-        words_node(l, name, fn() { head_name_wide }).shrink(Is(1.0)) |> ignore
+        words_node(l, name, fn() { head_name_wide }).shrink(Is(1.0)).words_selectable() |> ignore
         l.show(busy, fn(s) { spinner_node(s, size=spinner_inline) |> ignore })
         match rename {
           Some(f) => l.show(renames, fn(e) { icon_action_node(e, "edit", rename_label, f) |> ignore })

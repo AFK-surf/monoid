@@ -210,13 +210,20 @@ priv enum SelLayer {
 }
 
 ///|
+/// How a selectable paragraph's text is laid out: in styled pieces (`RichLayout`) or as plain words (`TextLayout`).
+priv enum SelLayout {
+  Rich(RichLayout)
+  Plain(TextLayout)
+}
+
+///|
 priv struct SelTarget {
   base : SelKey
   layer : SelLayer
   /// the old view it was built in (Node's `island`): whether a press may pick it now, view_host.mbt's old_owner_open
   island : @view.NodeId?
   at : Array[Int]
-  lay : RichLayout
+  lay : SelLayout
   text : String
   ox : Double
   oy : Double
@@ -239,14 +246,26 @@ priv struct SelTarget {
 fn SelTarget::offset_at(self : SelTarget, x : Double, y : Double) -> Int {
   let lx = (x - self.ox) / self.sc
   let ly = (y - self.oy) / self.sc
-  self.lay.offset_at(lx - rich_shift_at(self.lay, ly, self.center), ly)
+  match self.lay {
+    Rich(lay) => lay.offset_at(lx - rich_shift_at(lay, ly, self.center), ly)
+    Plain(tl) => tl.offset_at(lx - text_shift_at(tl, ly, self.center), ly)
+  }
 }
 
 ///|
 /// What of paragraph `t` is picked, a rectangle a line, in its own terms as it is drawn (its lines in their middles
 /// where they stand so).
 fn SelTarget::picked_rects(self : SelTarget) -> Array[(Double, Double, Double, Double)] {
-  selected_rects(self.base, self.lay).map(fn(r) { (r.0 + rich_shift_at(self.lay, r.1 + r.3 / 2.0, self.center), r.1, r.2, r.3) })
+  match self.lay {
+    Rich(lay) =>
+      selected_rects(self.base, lay).map(fn(r) {
+        (r.0 + rich_shift_at(lay, r.1 + r.3 / 2.0, self.center), r.1, r.2, r.3)
+      })
+    Plain(tl) =>
+      selected_plain_rects(self.base, tl).map(fn(r) {
+        (r.0 + text_shift_at(tl, r.1 + r.3 / 2.0, self.center), r.1, r.2, r.3)
+      })
+  }
 }
 
 ///|
@@ -1023,7 +1042,7 @@ fn Ctx::sel_walk(
               layer: OldLayer(layer),
               island: n.island,
               at: at.copy(),
-              lay,
+              lay: Rich(lay),
               text: n.text,
               ox: n.x + n.pad_l,
               oy: n.y + n.pad_t,
@@ -1105,7 +1124,7 @@ fn selectable_painted(
   x1 : Double,
   y1 : Double,
 ) -> Unit {
-  desk.next_sels.push({ base, layer, island, at, lay, text, ox, oy, x0, y0, x1, y1, sc: 1.0, center: -1.0, node: None })
+  desk.next_sels.push({ base, layer, island, at, lay: Rich(lay), text, ox, oy, x0, y0, x1, y1, sc: 1.0, center: -1.0, node: None })
 }
 
 ///|
@@ -1113,6 +1132,15 @@ fn selectable_painted(
 fn selected_rects(base : SelKey, lay : RichLayout) -> Array[(Double, Double, Double, Double)] {
   match picked.spans.get(base) {
     Some(s) if s.a < s.b => lay.rects(s.a, s.b)
+    _ => []
+  }
+}
+
+///|
+/// What of plain paragraph `base` is picked: a rectangle a line, in its text's terms.
+fn selected_plain_rects(base : SelKey, tl : TextLayout) -> Array[(Double, Double, Double, Double)] {
+  match picked.spans.get(base) {
+    Some(s) if s.a < s.b => tl.rects(s.a, s.b)
     _ => []
   }
 }

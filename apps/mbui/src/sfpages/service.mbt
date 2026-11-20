@@ -639,7 +639,7 @@ fn load_row(b : @view.View, rr : () -> Json?) -> Unit {
     })
   })
   |> ignore
-  b.show(fn() { error() != "" }, fn(e) { @sf.sized_words_node(e, error, caption, ink) |> ignore })
+  b.show(fn() { error() != "" }, fn(e) { @sf.sized_words_node(e, error, caption, ink).words_selectable() |> ignore })
 }
 
 ///|

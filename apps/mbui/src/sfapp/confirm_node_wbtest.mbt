@@ -157,3 +157,28 @@ test "大屏 on a Mac: ⌘. closes a confirm as Escape does (a Mac's cancel), it
   t.run_for(@ui.move_most_ms)
   assert_eq((up, runs.val, @sf.presenting()), (true, 0, false))
 }
+
+///|
+test "大屏: a confirm's words can be selected with the mouse and copied via right-click context menu over the modal" {
+  new_run()
+  let src = fixture("chat")
+  open_chat(chat_a)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=840.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  @sf.confirm("确认操作", "错误代码 E-4029：请稍后重试。", "确定", fn() {  })
+  t.run_for(@ui.move_most_ms)
+  let r = t.rect_of("错误代码 E-4029：请稍后重试。").unwrap()
+  let mid_y = r.1 + r.3 / 2.0
+  t.move_to(r.0 + 10.0, mid_y)
+  t.frame()
+  assert_eq(t.cursor(), IBeam, msg="IBeam over confirm body words")
+  t.drag(r.0 + 1.0, mid_y, r.0 + r.2 + 20.0, mid_y)
+  t.release(r.0 + r.2 + 20.0, mid_y)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "错误代码 E-4029：请稍后重试。")
+  t.right_click(r.0 + 20.0, mid_y)
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItem, label=@sf.t("desktop.contextMenu.copy"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), "错误代码 E-4029：请稍后重试。")
+}

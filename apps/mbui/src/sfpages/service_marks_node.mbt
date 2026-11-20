@@ -37,7 +37,7 @@ fn page_mark_mode_node(parent : @view.View, src : Source, p : ServicePage, site 
       w.pick(at_once=true, fn() { error() != "" }, fn(k, failed) {
         k.row(Is(true)).gap(Is(@ui.Space::S2.px())).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         if failed {
-          @sf.words_node(k, error, fn() { mark_error_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(k, error, fn() { mark_error_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))).words_selectable() |> ignore
         } else {
           @sf.words_node(
             k,

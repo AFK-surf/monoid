@@ -804,6 +804,7 @@ fn station_diag_node(b : @view.View, core : Core, address : String, stopped : ()
         @sf.group_node(sec, fn(g) {
           g.show(fn() { diag() is Some(Object(_)) }, fn(s) {
             @sf.block_node(s, fn(k) {
+              k.words_selectable() |> ignore
               k.show(fn() { text(diag(), "detail") != "" || text(diag(), "retryText") != "" }, fn(h) {
                 @sf.style_node(h, fn() { st_diag_head })
                 h.show(fn() { text(diag(), "detail") != "" }, fn(w) {
@@ -1544,10 +1545,10 @@ fn station_system_node(b : @view.View, core : Core, address : String, s : () -> 
       })
     })
     sec.show(fn() { text(elevation(), "failed") != "" }, fn(f) {
-      @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }) |> ignore
+      @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }).words_selectable() |> ignore
     })
     sec.show(fn() { text(screen_service(), "failed") != "" }, fn(f) {
-      @sf.words_node(f, fn() { text(screen_service(), "failed") }, fn() { st_problem_bad }) |> ignore
+      @sf.words_node(f, fn() { text(screen_service(), "failed") }, fn() { st_problem_bad }).words_selectable() |> ignore
     })
   })
 }
@@ -2089,7 +2090,7 @@ fn station_elevation_node(b : @view.View, core : Core, address : String, elevati
       )
     })
     sec.show(fn() { text(elevation(), "failed") != "" }, fn(f) {
-      @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }) |> ignore
+      @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }).words_selectable() |> ignore
     })
   })
 }
@@ -2214,7 +2215,7 @@ fn software_list_node(
       }, fn() { sw_foot_words })
       |> ignore
       foot.show(fn() { software_failed.get(station) is Some(_) }, fn(w) {
-        @sf.words_node(w, fn() { software_failed.get(station).unwrap_or("") }, fn() { sw_failed_line }) |> ignore
+        @sf.words_node(w, fn() { software_failed.get(station).unwrap_or("") }, fn() { sw_failed_line }).words_selectable() |> ignore
       })
       foot.show(fn() { online() && checked() is Some(_) }, fn(w) {
         let checking = fn() { is_doing(core, ["software.check"], [("station", station)]) }

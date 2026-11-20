@@ -2032,6 +2032,58 @@ fn TextLayout::line_range(self : TextLayout, line : Int) -> (Int, Int) {
 }
 
 ///|
+/// The rectangles (x, y, w, h; one a line) the text from `a` until `b` covers: a plain node's selection highlight.
+pub fn TextLayout::rects(
+  self : TextLayout,
+  a : Int,
+  b : Int,
+) -> Array[(Double, Double, Double, Double)] {
+  let out = []
+  let s = self.shaped
+  let n = s.starts.length()
+  let mut l = -1
+  let mut x0 = 0.0
+  let mut x1 = 0.0
+  for c in 0..<n {
+    let st = s.starts[c]
+    if st < a || st >= b || is_nl(s.cu[c]) {
+      continue
+    }
+    let cl = self.line_of[c]
+    if cl != l {
+      if l >= 0 {
+        out.push((x0, l.to_double() * self.line_h, x1 - x0, self.line_h))
+      }
+      l = cl
+      x0 = self.xs[c]
+      x1 = x0
+    }
+    // a line's clusters may be out of order (right to left): the box around them
+    if self.xs[c] < x0 {
+      x0 = self.xs[c]
+    }
+    if self.xs[c] + s.adv[c] > x1 {
+      x1 = self.xs[c] + s.adv[c]
+    }
+  }
+  if l >= 0 {
+    out.push((x0, l.to_double() * self.line_h, x1 - x0, self.line_h))
+  }
+  out
+}
+
+///|
+/// How far the line of plain words laid out in `tl` at `y` (in its terms) is moved across where each line stands in the
+/// middle of `center_in` (`emit_text`'s centering; 0 where not centred).
+fn text_shift_at(tl : TextLayout, y : Double, center_in : Double) -> Double {
+  if center_in < 0.0 || tl.line_w.length() == 0 || tl.line_h <= 0.0 {
+    return 0.0
+  }
+  let line = imin(imax((y / tl.line_h).to_int(), 0), tl.line_w.length() - 1)
+  dmax((center_in - tl.line_w[line]) / 2.0, 0.0)
+}
+
+///|
 /// The width `text` advances on one line in that font (style: @hostapi.style_italic, style_mono), as mbui lays it out:
 /// for comparing with the platform's own (src/textdiff).
 pub fn text_advance(

@@ -101,7 +101,11 @@ pub fn ask_node(
         )
         if hint != "" {
           b.box(fn(t) {
-            t.words(Is(hint), look=toast_words_look(Meta, L5, 400, true)).ink(By(fn() { theme().color(Muted) })) |> ignore
+            t
+            .words(Is(hint), look=toast_words_look(Meta, L5, 400, true))
+            .ink(By(fn() { theme().color(Muted) }))
+            .words_selectable()
+            |> ignore
           })
           |> ignore
         }

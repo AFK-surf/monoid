@@ -7555,7 +7555,27 @@ pub fn View::words(
     // (how its words are set said: what follows it told, once this is)
     self.words_told()
   })
+  // (when mounted inside a selectable container while a selection is already active, restore its highlight without
+  // creating a signal binding at mount time)
+  if self.lent(words_pickable) == Some(true) {
+    match self.lent(words_picker_init) {
+      Some(init) => tree.nodes[at].look.runs_picked = init(self)
+      None => ()
+    }
+  }
   self
+}
+
+///|
+/// Update the picked selection span of node `id`'s words directly (paint-only when changed), used for plain
+/// `View::words` nodes so they incur no signal or binding overhead at rest.
+pub fn Tree::set_runs_picked(self : Tree, id : NodeId, span : (Int, Int)) -> Unit {
+  guard self.alive_id(id) else { return }
+  let n = self.nodes[id.at]
+  if n.look.runs_picked != span {
+    n.look.runs_picked = span
+    self.look_marked_at(id.at)
+  }
 }
 
 ///|

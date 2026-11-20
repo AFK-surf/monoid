@@ -588,6 +588,7 @@ fn view_forget() -> Unit {
   tree_said_of.clear()
   layer_focus_open.clear()
   tree_field_menu_areas.clear()
+  picked_plain_applied.clear()
   field_menu_asked.clear()
   leaving_ime_nodes.clear()
   old_hits_rects.clear()
@@ -807,6 +808,42 @@ fn runs_over(r : Rich, lay : RichLayout, w : Double) -> Bool {
 /// (Node::rich_layout's).
 fn runs_past(r : Rich, lay : RichLayout) -> Bool {
   r.max_lines > 0 && r.wrap && lay.line_start.length() > r.max_lines
+}
+
+///|
+/// A node's plain words as they are drawn `w` wide (at `scale`, line breaks kept where `kept`): wrapped in that width
+/// as laid out, or on one line cut to `w` with an ellipsis when wider than it.
+fn view_words_laid(
+  shown : String,
+  look : @view.WordsLook,
+  w : Double,
+  scale : Double,
+  kept? : Bool = false,
+) -> TextLayout {
+  let (size, line, style, spacing) = (
+    view_sp(scale, look.size),
+    view_line(scale, look),
+    view_words_style(),
+    view_spacing(scale, look),
+  )
+  let words = view_words_set(shown, look, kept)
+  let tl = layout_words(
+    words,
+    size,
+    look.weight,
+    if look.wrap { w } else { 1.0e9 },
+    look.wrap,
+    balance=look.balance,
+    line~,
+    style~,
+    spacing~,
+    max_lines=look.max_lines,
+  )
+  if !look.wrap && tl.w > w + 0.5 {
+    ellipsized(words, tl, w, fn(s) { layout_text(s, size, look.weight, 1.0e9, false, line~, style~, spacing~) })
+  } else {
+    tl
+  }
 }
 
 ///|
@@ -3025,14 +3062,17 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     let k = c.words_look
     // (one line given less than it is wide: cut to it, ending in an ellipsis, as an old view's words on one line are)
     // (at the system's size of words, in the theme's digits, as measured: view_words_measure)
-    let (size, line, style, spacing) = (view_sp(words_scale, k.size), view_line(words_scale, k), view_words_style(), view_spacing(words_scale, k))
+    let (size, style, spacing) = (view_sp(words_scale, k.size), view_words_style(), view_spacing(words_scale, k))
     // (wrapped in its width as laid out, as an old view's words are where they are placed: Node::text_layout's)
-    let words = view_words_set(shown, k, c.words_breaks)
-    let tl = layout_words(words, size, k.weight, if k.wrap { c.w } else { 1.0e9 }, k.wrap, balance=k.balance, line~, style~, spacing~, max_lines=k.max_lines)
-    let tl = if !k.wrap && tl.w > c.w + 0.5 {
-      ellipsized(words, tl, c.w, fn(s) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~) })
-    } else {
-      tl
+    let tl = view_words_laid(shown, k, c.w, words_scale, kept=c.words_breaks)
+    // (what of it is picked with the pointer, under all of it: View::words_selectable)
+    let (pa, pb) = c.runs_picked
+    if pa < pb {
+      let center_in = if c.words_center { c.w } else { -1.0 }
+      for rect in tl.rects(pa, pb) {
+        let dx = text_shift_at(tl, rect.1 + rect.3 / 2.0, center_in)
+        self.emit_rect(rect.0 + dx, rect.1, rect.2, rect.3, 0.0, desk.sel_color, 0.0, 0L, 1.0)
+      }
     }
     // (the halo they are drawn on, under them, not cut with them where they are cut short: View::words_halo,
     // halo.mbt)
@@ -3964,6 +4004,18 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
         Dragged(_) => {
           view_held.val = Some(Nowhere)
           true
+        }
+        // (a ground backdrop (a dialog's or panel's ground_node) over selectable words: a mouse press on the words
+        // selects them instead of being swallowed by the ground)
+        Pressed(id) if button != 2 &&
+          pointing() is Mouse &&
+          tree.is_ground(id) &&
+          !tree_fields.contains(id) &&
+          !tree_field_menu_areas.contains(id) &&
+          tree_sel_at(x, y) is Some(_) => {
+          view_held.val = Some(Old(-1, None))
+          view_input_went(-1)
+          false
         }
         // (the secondary button presses nothing where nothing asks for a menu)
         Pressed(id) => {
@@ -7198,7 +7250,12 @@ fn view_cursor_tell() -> Unit {
         OfOld => desk.old_shape
         OfGround => Cursor::Arrow.code()
       }
-      if k == Cursor::Arrow.code() && !(view_shape_of.val is OfOld) && view_over_words.val {
+      let over_ground = match view_shape_of.val {
+        OfGround => true
+        OfNode(id) => !tree.node_is_control(id)
+        OfOld => false
+      }
+      if k == Cursor::Arrow.code() && over_ground && view_over_words.val {
         Cursor::IBeam.code()
       } else {
         k

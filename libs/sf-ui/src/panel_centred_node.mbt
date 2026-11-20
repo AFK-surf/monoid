@@ -178,7 +178,7 @@ fn panel_centred_node(
             |> ignore
             part.show(fn() { now().2 != "" }, fn(lead) {
               style_node(lead, fn() { dialog_lead_at.then(@ui.style(pl=room(words_in))) })
-              words_node(lead, fn() { now().2 }, fn() { dialog_lead }) |> ignore
+              words_node(lead, fn() { now().2 }, fn() { dialog_lead }).words_selectable() |> ignore
             })
           })
           |> ignore

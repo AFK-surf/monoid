@@ -441,6 +441,7 @@ fn picker_shut_node(v : @view.View) -> Unit {
     @sf.words_node(b, fn() { if dialogs.denied.get() { @sf.t("web-pages.drive.pickNeedsAccess") } else { dialogs.error.get() } }, fn() {
       shut_words
     })
+    .words_selectable()
     |> ignore
   })
   |> ignore

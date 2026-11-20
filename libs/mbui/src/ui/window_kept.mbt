@@ -559,6 +559,7 @@ fn window_kept_ui_7() -> Array[WindowKept] {
     kept_map(picked_shown),
     kept_ref(picked_now_said, fn() { @signals.signal(None, same=fn(a, b) { a == b }) }),
     kept_map(picked_spans_said),
+    kept_map(picked_plain_applied),
     kept_ref(picked_finger_said, fn() { @signals.signal(false) }),
     kept_ref(tree_sels_made, fn() { 0 }),
     kept_ref(tree_edge, fn() { None }),

@@ -401,7 +401,7 @@ pub fn rows_view_node(
                   r.box(fn(n) {
                     @sf.style_node(n, fn() { tree_note })
                     n.box(fn(i) { i.width(Is(Some(tree_note_in + tree_step * depth.to_double()))).shrink(Is(0.0)) |> ignore }) |> ignore
-                    @sf.words_node(n, fn() { words }, fn() { if error { tree_error } else { tree_words } }) |> ignore
+                    @sf.words_node(n, fn() { words }, fn() { if error { tree_error } else { tree_words } }).words_selectable() |> ignore
                   })
                   |> ignore
                 Reading(depth) =>
@@ -669,7 +669,7 @@ fn column_node(
         1 =>
           b.box(fn(n) {
             @sf.style_node(n, fn() { column_note })
-            @sf.words_node(n, fn() { drive_folder(src, at.station, root, at.path).1.unwrap_or("") }, fn() { tree_error }) |> ignore
+            @sf.words_node(n, fn() { drive_folder(src, at.station, root, at.path).1.unwrap_or("") }, fn() { tree_error }).words_selectable() |> ignore
           })
           |> ignore
         2 =>

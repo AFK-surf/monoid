@@ -161,20 +161,37 @@ pub fn picked_end_piece(p : WordsPicked) -> (Double, Double) -> (Double, Double,
     let base = tree_key(v)
     guard picked_in_order() is Some((_, end)) && base == end else { return None }
     let (rs, look, set) = v.runs_set_now()
-    guard !rs.is_empty() else { return None }
-    let (_, lay, _) = view_runs_laid(rs, look, set, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now())
-    let rects = selected_rects(base, lay)
-    guard !rects.is_empty() else { return None }
+    let center_in = if v.words_centered_now() { w } else { -1.0 }
     let down = spot_cmp(picked.from, picked.to) <= 0
-    let mut r = rects[0]
-    for q in rects {
-      let later = q.1 > r.1 || (q.1 == r.1 && q.0 > r.0)
-      if later == down {
-        r = q
+    if !rs.is_empty() {
+      let (_, lay, _) = view_runs_laid(rs, look, set, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+      let rects = selected_rects(base, lay)
+      guard !rects.is_empty() else { return None }
+      let mut r = rects[0]
+      for q in rects {
+        let later = q.1 > r.1 || (q.1 == r.1 && q.0 > r.0)
+        if later == down {
+          r = q
+        }
       }
+      let shift = rich_shift_at(lay, r.1 + r.3 / 2.0, center_in)
+      Some((r.0 + shift + (if down { r.2 } else { 0.0 }), r.1, 0.0, r.3))
+    } else {
+      let (shown, plook) = v.words_set_now()
+      guard shown != "" else { return None }
+      let tl = view_words_laid(shown, plook, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+      let rects = selected_plain_rects(base, tl)
+      guard !rects.is_empty() else { return None }
+      let mut r = rects[0]
+      for q in rects {
+        let later = q.1 > r.1 || (q.1 == r.1 && q.0 > r.0)
+        if later == down {
+          r = q
+        }
+      }
+      let shift = text_shift_at(tl, r.1 + r.3 / 2.0, center_in)
+      Some((r.0 + shift + (if down { r.2 } else { 0.0 }), r.1, 0.0, r.3))
     }
-    let shift = rich_shift_at(lay, r.1 + r.3 / 2.0, if v.words_centered_now() { w } else { -1.0 })
-    Some((r.0 + shift + (if down { r.2 } else { 0.0 }), r.1, 0.0, r.3))
   }
 }
 

@@ -381,6 +381,7 @@ fn tape_made(
     // (no old view: made so whatever pane_makes says)
     Service(station, job) =>
       made("service/" + station + "/" + job, fn(p, _core, _here, _stint, _told, _acts) {
+        context_node(p)
         service_beside_node(p, src, station, job)
       })
     // (已归档, none of its chats beside the side column's list of them: what it is)
@@ -642,10 +643,12 @@ fn tape_made(
     // (by its station and id: another's another page; 添加连接 in the bar)
     Setting(Connects(only)) if pane_makes.val =>
       made("connects/" + only, fn(p, core, here, stint, told, acts) {
+        context_node(p)
         @sfpages.connects_node(p, src, core, here, only, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~, tips~, bar_actions=acts)
       })
     Setting(Connect(station, id)) if pane_makes.val =>
       made("connect/" + station + "/" + id, fn(p, core, here, stint, told, _acts) {
+        context_node(p)
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~, tips~)
       })
     Setting(AutoCompletion) if pane_makes.val =>
@@ -666,19 +669,23 @@ fn tape_made(
       })
     Setting(Archiving) if pane_makes.val =>
       made("archiving", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
       })
     Setting(AutoDecisions) if pane_makes.val =>
       made("auto-decisions", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
         @sfpages.decisions_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (by its station: another station's another page, not this one become it)
     Setting(StationArchiving(st)) if pane_makes.val =>
       made("station-archiving/" + st, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
         @sfpages.station_archiving_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
     Setting(StationMove(st)) if pane_makes.val =>
       made("station-move/" + st, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as

@@ -1533,15 +1533,18 @@ fn link_row_made(
           n.row(Is(true)).min_width(Is(Some(0.0))) |> ignore
           n.box(fn(w) {
             w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            styled_words(w, note, fn() { note_look(pg_link_note.then(cut_words)) }) |> ignore
+            styled_words(w, note, fn() { note_look(pg_link_note.then(cut_words)) }).words_selectable(on=!goes) |> ignore
           })
           |> ignore
         } else {
-          styled_words(n, note, fn() { note_look(if note_cut_now() { pg_link_note.then(cut_words) } else { pg_link_note }) }) |> ignore
+          styled_words(n, note, fn() { note_look(if note_cut_now() { pg_link_note.then(cut_words) } else { pg_link_note }) }).words_selectable(on=!goes)
+          |> ignore
         }
       })
       // (what is wrong, in red under it: link_row's `trouble`)
-      words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { pg_link_note.then(bad) }) |> ignore })
+      words.show(fn() { trouble() != "" }, fn(n) {
+        styled_words(n, trouble, fn() { pg_link_note.then(bad) }).words_selectable() |> ignore
+      })
       match below {
         Some(f) => row_below_node(words, f, below_open)
         None => ()
@@ -2161,13 +2164,13 @@ pub fn page_note_node(
   match look_node(parent) {
     Narrow =>
       parent.box(made_for=loc, fn(n) {
-        n.padding(Is((pg_note_x, pg_note_top, pg_note_x, pg_note_foot))) |> ignore
+        n.padding(Is((pg_note_x, pg_note_top, pg_note_x, pg_note_foot))).words_selectable() |> ignore
         n.box(fn(w) { styled_words(w, words, fn() { if bad() { pg_note_bad } else { pg_note } }) |> ignore }) |> ignore
       })
       |> ignore
     Wide =>
       parent.box(fn(n) {
-        n.padding(Is((0.0, pg_note_top, 0.0, 0.0))).max_width(Is(Some(desk_hint_most))) |> ignore
+        n.padding(Is((0.0, pg_note_top, 0.0, 0.0))).max_width(Is(Some(desk_hint_most))).words_selectable() |> ignore
         n.box(fn(w) { styled_words(w, words, fn() { if bad() { desk_note_bad } else { desk_hint_words } }) |> ignore })
         |> ignore
       })
@@ -2309,6 +2312,7 @@ pub fn page_card_node(
       .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
       .lends(part_at, { ..at, list: false, card: true })
+      .words_selectable()
       |> ignore
       body(k)
     })
@@ -2340,7 +2344,7 @@ pub fn card_lines_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(l) {
-    l.min_width(Is(Some(0.0))).gap(Is(card_lines_gap)) |> ignore
+    l.min_width(Is(Some(0.0))).gap(Is(card_lines_gap)).words_selectable() |> ignore
     for line in [(title, desk_strong), (words, desk_words), (note, desk_muted), (bad, desk_note_bad)] {
       let (said, look) = line
       l.show(fn() { said() != "" }, fn(w) { styled_words(w, said, fn() { look }) |> ignore })
