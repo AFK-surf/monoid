@@ -2,8 +2,9 @@
 // written as delta.ts writes it (read that file for the why of every step), deflating the records in 1 MiB chunks.
 // delta.ts compiles it once (ensureNativeDelta) and hands it the old and made bytes and the runs it found, falling
 // back to its own search where there is no C compiler or zlib.
-//   delta-fast OLD MADE RUNS OUT
-//   delta-fast --files OLD MADE FILES OUT
+//   delta-fast [--verify] OLD MADE RUNS OUT
+//   delta-fast --files [--verify] OLD MADE FILES OUT
+//   delta-fast --check-only OLD MADE CHUNKS
 // RUNS: the runs found (wholeFiles, sameBlocks), in delta.ts's order (by made, but for a block sameBlocks followed back
 // over a run found before it, which the search takes as delta.ts's does), 12 bytes each, little-endian
 // { u32 made; u32 old; u32 len }; empty: none (the whole old blob sorted).
@@ -549,17 +550,210 @@ static void bsdiff(Search *S, Chunker *out) {
 #undef AT
 }
 
+// --- verifying chunks (equivalent to station/src/updates/delta.ts patch()) ---
+
+static uint32_t get_u32(const uint8_t *b) {
+  return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+static void verify_fail(const char *unlink_path, const char *what) {
+  if (unlink_path) unlink(unlink_path);
+  errno = 0;
+  die(what);
+}
+
+static void verify_fail_at(const char *unlink_path, const char *what, int64_t offset) {
+  if (unlink_path) unlink(unlink_path);
+  fprintf(stderr, "delta-fast: %s at %lld\n", what, (long long)offset);
+  exit(1);
+}
+
+typedef struct {
+  const uint8_t *data;
+  size_t total, at;
+  uint8_t *buf;
+  size_t buf_len, pos;
+  z_stream is;
+  const char *unlink_path;
+} VerifyReader;
+
+static int vr_next_chunk(VerifyReader *vr) {
+  if (vr->at == vr->total) return 0;
+  if (vr->total - vr->at < 8) verify_fail(vr->unlink_path, "a chunk header is cut short");
+  uint32_t raw_len = get_u32(vr->data + vr->at);
+  uint32_t packed_len = get_u32(vr->data + vr->at + 4);
+  vr->at += 8;
+  if (raw_len == 0 || raw_len > CHUNK) verify_fail(vr->unlink_path, "invalid chunk raw_len");
+  if ((size_t)packed_len > vr->total - vr->at) verify_fail(vr->unlink_path, "a chunk is cut short");
+  if (inflateReset(&vr->is) != Z_OK) verify_fail(vr->unlink_path, "inflateReset");
+  vr->is.next_in = (Bytef *)(vr->data + vr->at);
+  vr->is.avail_in = (uInt)packed_len;
+  vr->is.next_out = vr->buf;
+  vr->is.avail_out = (uInt)raw_len;
+  int zr = inflate(&vr->is, Z_FINISH);
+  if (zr != Z_STREAM_END || vr->is.avail_in != 0 || vr->is.avail_out != 0) {
+    verify_fail(vr->unlink_path, "a chunk does not inflate to its raw_len");
+  }
+  vr->at += packed_len;
+  vr->buf_len = raw_len;
+  vr->pos = 0;
+  return 1;
+}
+
+static size_t vr_take(VerifyReader *vr, size_t max) {
+  while (vr->pos == vr->buf_len) {
+    if (!vr_next_chunk(vr)) verify_fail(vr->unlink_path, "the delta's stream ends early");
+  }
+  size_t avail = vr->buf_len - vr->pos;
+  return max < avail ? max : avail;
+}
+
+static int64_t read_i64_checked(const uint8_t *b, const char *unlink_path) {
+  uint32_t lo = get_u32(b);
+  uint32_t hi_u = get_u32(b + 4);
+  int32_t hi = (int32_t)hi_u;
+  if (hi > 0x1fffff || hi < -0x200000) verify_fail(unlink_path, "a record's number is too large");
+  return (int64_t)(((uint64_t)hi_u << 32) | (uint64_t)lo);
+}
+
+static void verify_chunks(const uint8_t *old, int64_t oldsize, const uint8_t *made, int64_t newsize,
+                          const char *chunks_path, int unlink_on_fail) {
+  const char *unlink_path = unlink_on_fail ? chunks_path : NULL;
+  int fd = open(chunks_path, O_RDONLY);
+  if (fd < 0) {
+    int saved = errno;
+    if (unlink_path) unlink(unlink_path);
+    errno = saved;
+    die(chunks_path);
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    int saved = errno;
+    close(fd);
+    if (unlink_path) unlink(unlink_path);
+    errno = saved;
+    die(chunks_path);
+  }
+  if (st.st_size > 0x7ffffffe) {
+    close(fd);
+    if (unlink_path) unlink(unlink_path);
+    errno = EFBIG;
+    die(chunks_path);
+  }
+  size_t total = (size_t)st.st_size;
+  static const uint8_t none[1] = { 0 };
+  const uint8_t *data = none;
+  if (total > 0) {
+    void *mp = mmap(NULL, total, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mp == MAP_FAILED) {
+      int saved = errno;
+      close(fd);
+      if (unlink_path) unlink(unlink_path);
+      errno = saved;
+      die(chunks_path);
+    }
+    data = mp;
+  }
+  close(fd);
+
+  VerifyReader vr = { 0 };
+  vr.data = data;
+  vr.total = total;
+  vr.buf = alloc(CHUNK);
+  vr.unlink_path = unlink_path;
+  if (inflateInit2(&vr.is, -15) != Z_OK) verify_fail(unlink_path, "inflateInit2");
+
+  int64_t o = 0, p = 0;
+  uint8_t ctrl[24];
+  while (o < newsize) {
+    for (size_t got = 0; got < 24;) {
+      size_t k = vr_take(&vr, 24 - got);
+      memcpy(ctrl + got, vr.buf + vr.pos, k);
+      vr.pos += k;
+      got += k;
+    }
+    int64_t x = read_i64_checked(ctrl, unlink_path);
+    int64_t y = read_i64_checked(ctrl + 8, unlink_path);
+    int64_t z = read_i64_checked(ctrl + 16, unlink_path);
+    if (x < 0 || y < 0) verify_fail(unlink_path, "a record with a negative length");
+    if (x > newsize - o || y > newsize - o - x) verify_fail(unlink_path, "a record goes past made_size");
+    for (int64_t left = x; left > 0;) {
+      size_t want = left < CHUNK ? (size_t)left : CHUNK;
+      size_t k = vr_take(&vr, want);
+      const uint8_t *b = vr.buf + vr.pos;
+      if (p >= 0 && (int64_t)k <= oldsize && p <= oldsize - (int64_t)k) {
+        for (size_t i = 0; i < k; i++) {
+          if ((uint8_t)(b[i] + old[p + (int64_t)i]) != made[o + (int64_t)i]) {
+            verify_fail_at(unlink_path, "what the delta makes differs from the package", o + (int64_t)i);
+          }
+        }
+      } else {
+        for (size_t i = 0; i < k; i++) {
+          uint8_t ob = (p <= oldsize - 1 - (int64_t)i && p + (int64_t)i >= 0) ? old[p + (int64_t)i] : 0;
+          if ((uint8_t)(b[i] + ob) != made[o + (int64_t)i]) {
+            verify_fail_at(unlink_path, "what the delta makes differs from the package", o + (int64_t)i);
+          }
+        }
+      }
+      if (p > INT64_MAX - (int64_t)k) verify_fail(unlink_path, "old offset overflow");
+      vr.pos += k;
+      p += (int64_t)k;
+      o += (int64_t)k;
+      left -= (int64_t)k;
+    }
+    for (int64_t left = y; left > 0;) {
+      size_t want = left < CHUNK ? (size_t)left : CHUNK;
+      size_t k = vr_take(&vr, want);
+      if (memcmp(vr.buf + vr.pos, made + o, k) != 0) {
+        verify_fail_at(unlink_path, "what the delta makes differs from the package", o);
+      }
+      vr.pos += k;
+      o += (int64_t)k;
+      left -= (int64_t)k;
+    }
+    if ((z > 0 && p > INT64_MAX - z) || (z < 0 && p < INT64_MIN - z)) {
+      verify_fail(unlink_path, "old offset overflow");
+    }
+    p += z;
+  }
+  if (vr.pos != vr.buf_len || vr.at != vr.total) {
+    verify_fail(unlink_path, "the delta's stream goes on past made_size");
+  }
+  inflateEnd(&vr.is);
+  free(vr.buf);
+  if (total > 0) munmap((void *)data, total);
+}
+
 int main(int argc, char **argv) {
-  int files_mode = argc == 6 && strcmp(argv[1], "--files") == 0;
-  if (!files_mode && argc != 5) {
-    fprintf(stderr, "usage: delta-fast OLD MADE RUNS OUT | delta-fast --files OLD MADE FILES OUT\n");
+  int files_mode = 0, verify_mode = 0, check_only = 0;
+  int argi = 1;
+  while (argi < argc && argv[argi][0] == '-') {
+    if (strcmp(argv[argi], "--files") == 0) files_mode = 1;
+    else if (strcmp(argv[argi], "--verify") == 0) verify_mode = 1;
+    else if (strcmp(argv[argi], "--check-only") == 0) check_only = 1;
+    else break;
+    argi++;
+  }
+  int rest = argc - argi;
+  if (check_only) {
+    if (files_mode || verify_mode || rest != 3) {
+      fprintf(stderr, "usage: delta-fast [--verify] OLD MADE RUNS OUT | delta-fast --files [--verify] OLD MADE FILES OUT | delta-fast --check-only OLD MADE CHUNKS\n");
+      return 2;
+    }
+    errno = 0;
+    Mapped old = map(argv[argi]), made = map(argv[argi + 1]);
+    verify_chunks(old.p, (int64_t)old.n, made.p, (int64_t)made.n, argv[argi + 2], 0);
+    return 0;
+  }
+  if (rest != 4) {
+    fprintf(stderr, "usage: delta-fast [--verify] OLD MADE RUNS OUT | delta-fast --files [--verify] OLD MADE FILES OUT | delta-fast --check-only OLD MADE CHUNKS\n");
     return 2;
   }
   errno = 0;
-  const char *old_path = argv[files_mode ? 2 : 1];
-  const char *made_path = argv[files_mode ? 3 : 2];
-  const char *third_path = argv[files_mode ? 4 : 3];
-  const char *out_path = argv[files_mode ? 5 : 4];
+  const char *old_path = argv[argi];
+  const char *made_path = argv[argi + 1];
+  const char *third_path = argv[argi + 2];
+  const char *out_path = argv[argi + 3];
   Mapped old = map(old_path), made = map(made_path), third = map(third_path);
   int64_t oldsize = (int64_t)old.n;
   Run *runs = NULL;
@@ -650,5 +844,6 @@ int main(int argc, char **argv) {
   free(I);
   free(starts);
   free(runs);
+  if (verify_mode) verify_chunks(old.p, oldsize, made.p, (int64_t)made.n, out_path, 1);
   return 0;
 }
