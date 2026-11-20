@@ -969,7 +969,8 @@ let rail_need : Double = rail_press_w + @ui.scroll_bar_room + rail_clear
 
 ///|
 /// A tick of the rail, drawn as the library's rules are (a line of the line's colour, square): S0_5 (2) thick, S1 apart,
-/// a day S3 from the one before; as long as its turn (rail_turns: how many messages from it to the next said, the
+/// a day another S1 further from the one before (twice as far: S3 there read as ticks gone missing, with nothing to say a
+/// day starts); as long as its turn (rail_turns: how many messages from it to the next said, the
 /// agents' answers among them) from S1 (one) to S3 (32 or more), the reader's S4 and in the ink; the press's room over
 /// and under them (rail_pad). The rail at most half the list's height; where its ticks do not fit, a steady map of the
 /// whole chat (rail_ticks). The styles and rail_ticks' sums are of these alone.
@@ -981,7 +982,7 @@ let tick_gap : @ui.Space = S1
 
 ///|
 // kept across runs: a value (a token)
-let tick_day_gap : @ui.Space = S3
+let tick_day_gap : @ui.Space = S1
 
 ///|
 let tick_least : Double = 6.0
