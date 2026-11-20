@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 2.73 | 3.69 | 14.99 | 37.09 | 56.87 | 32.52 | 66.11 | 97.62 | 120.88 |
 | [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.11 | 97.76 | 121.56 |
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [080bbe333](https://github.com/AFK-surf/monoid/commit/080bbe333df0f92f3d7e6bdf93fd21f1342c757d) fix(mbui): register native views, streams and fiel | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [3ac54494d](https://github.com/AFK-surf/monoid/commit/3ac54494d41a80c7b69cf0bcd9bc6a4fe2ffd7e1) feat(mbui): continuous drag scrim, tape handoff, a | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
-| [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [080bbe333](https://github.com/AFK-surf/monoid/commit/080bbe333df0f92f3d7e6bdf93fd21f1342c757d) fix(mbui): register native views, streams and fiel | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.68 | 4.52 | 54.25 |
 | [3ac54494d](https://github.com/AFK-surf/monoid/commit/3ac54494d41a80c7b69cf0bcd9bc6a4fe2ffd7e1) feat(mbui): continuous drag scrim, tape handoff, a | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.18 |
 | [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
-| [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
