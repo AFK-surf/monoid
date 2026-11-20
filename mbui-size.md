@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [07ab0ec5f](https://github.com/AFK-surf/monoid/commit/07ab0ec5fc0516223eee4dc38ded1f7ddee1389a) fix(station): read adb revokes without taking the  | 2.67 | 3.58 | 14.64 | 36.93 | 56.33 | 32.39 | 65.67 | 97.63 | 125.92 |
 | [6b2f2c4fa](https://github.com/AFK-surf/monoid/commit/6b2f2c4fad295544428147c3355ef00bba73a635) refactor(station/mb): wire session_storage directl | 2.66 | 3.58 | 14.62 | 36.92 | 56.29 | 32.38 | 65.63 | 97.73 | 120.51 |
 | [b251a55c4](https://github.com/AFK-surf/monoid/commit/b251a55c4e3f66d324cb182e76a4883372dc015c) feat(mbui): add layered NavTransition protocol, ge | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.63 | 130.99 |
 | [d84bebb93](https://github.com/AFK-surf/monoid/commit/d84bebb93d3605ed0e7685d96110b71e17efd902) fix(mbui): keep in-list flights from carrying thei | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.63 | 130.99 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 2.65 | 3.56 | 14.53 | 36.75 | 55.96 | 32.25 | 65.32 | 97.44 | 119.22 |
 | [1ff8361c1](https://github.com/AFK-surf/monoid/commit/1ff8361c11dcd13b7163c7abd5b0c0b335ec7faf) fix(station): store Feishu bot identity on MoonBit | 2.65 | 3.56 | 14.53 | 36.75 | 55.96 | 32.24 | 65.32 | 97.73 | 119.22 |
 | [e354a8b79](https://github.com/AFK-surf/monoid/commit/e354a8b798d1d87f9eae929c2c8f2616b3fcb670) fix(station/mb): make a cold session's actor befor | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.47 | 123.92 |
-| [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [07ab0ec5f](https://github.com/AFK-surf/monoid/commit/07ab0ec5fc0516223eee4dc38ded1f7ddee1389a) fix(station): read adb revokes without taking the  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
 | [6b2f2c4fa](https://github.com/AFK-surf/monoid/commit/6b2f2c4fad295544428147c3355ef00bba73a635) refactor(station/mb): wire session_storage directl | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
 | [b251a55c4](https://github.com/AFK-surf/monoid/commit/b251a55c4e3f66d324cb182e76a4883372dc015c) feat(mbui): add layered NavTransition protocol, ge | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 53.94 |
 | [d84bebb93](https://github.com/AFK-surf/monoid/commit/d84bebb93d3605ed0e7685d96110b71e17efd902) fix(mbui): keep in-list flights from carrying thei | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.68 | 4.52 | 54.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8701788d7](https://github.com/AFK-surf/monoid/commit/8701788d7797ee74d9adf3ce9ef9335daa98cd2b) feat(mbui): float the reader's scroll-to-bottom ke | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [1ff8361c1](https://github.com/AFK-surf/monoid/commit/1ff8361c11dcd13b7163c7abd5b0c0b335ec7faf) fix(station): store Feishu bot identity on MoonBit | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
 | [e354a8b79](https://github.com/AFK-surf/monoid/commit/e354a8b798d1d87f9eae929c2c8f2616b3fcb670) fix(station/mb): make a cold session's actor befor | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
-| [68a571407](https://github.com/AFK-surf/monoid/commit/68a571407a202c9da63c0c8429838fe30f747e55) feat(mbui): support trackpad horizontal swipe pagi | 0.45 | 0.59 | 2.27 | 3.35 | 5.45 | 1.67 | 4.48 | 54.45 |
