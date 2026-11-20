@@ -39,7 +39,7 @@ let mark_busy : @ui.Style = @ui.css("w=S2_5 h=S2_5")
 
 ///|
 /// A row's mark (its row's `key`): one that comes while the chat is in view (a new message, work
-/// begun) pops in (scale 0, 1.3 at 60%, 1: 320 ms, ease-out; clear up to half its size); one there as the list is first drawn does not.
+/// begun) fades in over @sf.dur_ms (140 ms Out, no scale); one there as the list is first drawn does not.
 pub fn row_mark(c : @ui.Ctx, key : String, tone : String) -> Unit {
   let pop = @motion.anim(c, "side/mark-pop/" + key, 1.0, global=true)
   match marks_seen.get(key) {
@@ -47,7 +47,7 @@ pub fn row_mark(c : @ui.Ctx, key : String, tone : String) -> Unit {
       marks_seen[key] = tone
       if tone != "" && !@ui.reduced_motion() {
         pop.snap(c, 0.0)
-        pop.animate(c, 1.0, @motion.tween(mark_pop_ms, ease=Out))
+        pop.animate(c, 1.0, @motion.tween(@sf.dur_ms, ease=Out))
       }
     }
     None => marks_seen[key] = tone
@@ -56,7 +56,7 @@ pub fn row_mark(c : @ui.Ctx, key : String, tone : String) -> Unit {
   let mark = chat_mark(c, tone)
   let v = pop.get(c)
   if mark != 0 && v < 1.0 {
-    c.look(mark, @ui.look(alpha=@sf.seen_at(pop_scale(v)), scale=pop_scale(v)))
+    c.look(mark, @ui.look(alpha=v))
   }
 }
 
@@ -68,25 +68,6 @@ let marks_seen : Map[String, String] = Map([])
 fn marks_reset() -> Unit {
   marks_seen.clear()
 }
-
-///|
-/// The pop's length, and its size at `v` of the way (0, 1.3 at 60%, 1).
-let mark_pop_ms : Double = 320.0
-
-///|
-fn pop_scale(v : Double) -> Double {
-  if v < mark_pop_peak_at {
-    mark_pop_peak * v / mark_pop_peak_at
-  } else {
-    mark_pop_peak - (mark_pop_peak - 1.0) * (v - mark_pop_peak_at) / (1.0 - mark_pop_peak_at)
-  }
-}
-
-///|
-let mark_pop_peak : Double = 1.3
-
-///|
-let mark_pop_peak_at : Double = 0.6
 
 // A row's second line from where its chat stands (still.fail web/src/ChatMark.tsx WaitingText `slot`, ChatMark.css.ts
 // leadLine, leadSlot, waitingLead; Sidebar.css.ts navSessionLast): by what the core says leads it (ChatItem's

@@ -1,6 +1,6 @@
-// Motion library showcase pages (动效库): 6 interactive pages demonstrating
+// Motion library showcase pages (动效库): 8 interactive pages demonstrating
 // curves & springs, press/hover/shake, controls & glass, overlays & handoff,
-// reveal/list/flash, and waiting/resident cycles.
+// reveal/list/flash, waiting/resident cycles, transitions & shared flight, and zoom & gestures.
 
 ///|
 let motion_group : String = "动效库"
@@ -1076,6 +1076,527 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
                   |> ignore
                 }
               })
+              |> ignore
+            })
+          },
+        ),
+        (
+          "同步完成四段描边 SyncKey",
+          fn(card) {
+            let syncing : @signals.Signal[String?] = kept(Some("正在同步最新消息"))
+            side_by_side(card, fn(r) {
+              r.box(fn(slot) {
+                slot
+                .width(Is(Some(32.0)))
+                .height(Is(Some(32.0)))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .radius(Is(16.0))
+                .ground(By(fn() { @sf.theme().p.canvas }))
+                .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                |> ignore
+                @sf.sync_key_node(slot, tips, 32.0, 18.0, fn() { syncing.get() }, delay_ms=0.0)
+              })
+              |> ignore
+              @sf.button_node(r, fn() { "模拟同步" }, fn() { syncing.set(Some("正在同步最新消息")) }, icon="refresh")
+              |> ignore
+              @sf.button_node(r, fn() { "同步完成" }, fn() { syncing.set(None) }, tone=Ghost, icon="check")
+              |> ignore
+            })
+            @sf.words_node(
+              card,
+              fn() {
+                match syncing.get() {
+                  Some(_) => "状态：同步中（减速摆正 → 箭头回抽 → 打勾描边 → 淡出）"
+                  None => "状态：已完成"
+                }
+              },
+              fn() { @sf.caption },
+            )
+            |> ignore
+          },
+        ),
+        (
+          "Station 机器人 10Hz 眨眼与呼吸 Glyph",
+          fn(card) {
+            let mode = kept(1)
+            let counts = fn() -> @sf.GlyphCounts {
+              match mode.get() {
+                0 => { online: 3, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
+                1 => { online: 3, dim: 0, failing: 0, working: 2, asleep: false, connecting: 0 }
+                2 => { online: 2, dim: 1, failing: 0, working: 0, asleep: false, connecting: 1 }
+                _ => { online: 2, dim: 0, failing: 1, working: 0, asleep: false, connecting: 0 }
+              }
+            }
+            side_by_side(card, fn(r) {
+              @sf.station_glyph_node(r, counts, 32.0, fn() { @sf.theme().p.text }, fn() { @sf.theme().p.red })
+              |> ignore
+              @sf.seg_node(
+                r,
+                fn() { ["空闲", "工作中", "连接中", "异常"] },
+                fn() { mode.get() },
+                fn(i) { mode.set(i) },
+                said="Station 状态",
+              )
+              |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    // 7. Transitions & Shared Flight
+    {
+      key: "motion-transitions",
+      group: motion_group,
+      name: "转场与飞行 Transitions",
+      file: "libs/mbui/src/ui/nav_transition.mbt",
+      api: [("nav_transition.mbt", "NavTransition::layered"), ("shared.mbt", "shared"), ("shared.mbt", "flight_by")],
+      play: None,
+      about: "分层路由推入与返回（背景视差与压暗遮罩）、共享元素跨列平滑飞行，以及跟手拖拽的速度接续弹簧回弹。",
+      cases: [
+        (
+          "分层路由转场 NavTransition::layered",
+          fn(card) {
+            let nav = @ui.Nav::new(0)
+            let depth = kept(1)
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(196.0)))
+              .radius(Is(@sf.small_corner))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              |> ignore
+              @ui.nav_view(
+                stage,
+                nav,
+                fn(_c, _p) {  },
+                bg=fn() { @sf.theme().p.canvas },
+                transition=@ui.NavTransition::layered(),
+                made=fn(p) {
+                  Some(
+                    (
+                      if p == 0 { "list" } else { "detail" },
+                      fn(pv, _page, _under, _stint, _serial) {
+                        pv.pad(Is(14.0)).gap(Is(8.0)) |> ignore
+                        if p == 0 {
+                          @sf.words_node(pv, fn() { "消息列表（背景页）" }, fn() { story_card_title }) |> ignore
+                          @sf.words_node(
+                            pv,
+                            fn() { "推入详情时左移 28% 视差并叠加 12% 压暗遮罩。" },
+                            fn() { @sf.caption },
+                          )
+                          |> ignore
+                          for title in ["整理发布清单", "动效收敛 Wave 2"] {
+                            pv.box(fn(row) {
+                              row
+                              .padding(Is((10.0, 8.0, 10.0, 8.0)))
+                              .radius(Is(6.0))
+                              .ground(By(fn() { @sf.theme().p.paper }))
+                              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                              |> ignore
+                              @sf.words_node(row, fn() { title }, fn() { @sf.meta }) |> ignore
+                            })
+                            |> ignore
+                          }
+                        } else {
+                          @sf.words_node(pv, fn() { "会话详情（前景页）" }, fn() { story_card_title }) |> ignore
+                          @sf.words_node(
+                            pv,
+                            fn() { "携带 1px 边缘分隔线滑入，返回时反向退出。" },
+                            fn() { @sf.caption },
+                          )
+                          |> ignore
+                          pv.box(fn(msg) {
+                            msg
+                            .padding(Is((12.0, 10.0, 12.0, 10.0)))
+                            .radius(Is(8.0))
+                            .ground(By(fn() { @sf.theme().p.paper }))
+                            .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                            |> ignore
+                            @sf.words_node(msg, fn() { "分层路由在绘制层驱动视差与遮罩，零重排。" }, fn() { @sf.meta })
+                            |> ignore
+                          })
+                          |> ignore
+                        }
+                      },
+                    ),
+                  )
+                },
+              )
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "推入详情" },
+                fn() {
+                  if nav.depth() == 1 {
+                    nav.push(1)
+                    depth.set(2)
+                  }
+                },
+                icon="arrow-right",
+                disabled=fn() { depth.get() > 1 },
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "返回列表" },
+                fn() {
+                  if nav.depth() > 1 {
+                    nav.pop() |> ignore
+                    depth.set(1)
+                  }
+                },
+                tone=Ghost,
+                disabled=fn() { depth.get() <= 1 },
+              )
+              |> ignore
+            })
+          },
+        ),
+        (
+          "共享元素跨列飞行 @motion.shared",
+          fn(card) {
+            let in_progress = kept(false)
+            let toggle = fn() { in_progress.set(!in_progress.untracked()) }
+            let task_card = fn(col : @view.View) {
+              @sf.action_box_node(
+                col,
+                fn() { "移动任务卡片" },
+                fn(_) { toggle() },
+                fn(b) {
+                  @motion.shared(b, "motion-story-flight-task", spec=@motion.moved()) |> ignore
+                  b
+                  .padding(Is((12.0, 10.0, 12.0, 10.0)))
+                  .radius(Is(@sf.small_corner))
+                  .ground(By(fn() { @sf.theme().p.paper }))
+                  .edge(By(fn() { (1.0, @sf.theme().p.accent) }))
+                  .gap(Is(4.0))
+                  |> ignore
+                  @sf.words_node(b, fn() { "收敛动效图谱" }, fn() { story_card_title }) |> ignore
+                  @sf.words_node(b, fn() { "点击卡片跨列飞行" }, fn() { @sf.caption }) |> ignore
+                },
+              )
+              |> ignore
+            }
+            card.box(fn(cols) {
+              cols.row(Is(true)).gap(Is(12.0)) |> ignore
+              for pair in [("待办", false), ("进行中", true)] {
+                let (heading, target) = pair
+                cols.box(fn(col) {
+                  col
+                  .grow(Is(1.0))
+                  .basis(Is(Some(0.0)))
+                  .min_width(Is(Some(0.0)))
+                  .min_height(Is(Some(112.0)))
+                  .pad(Is(10.0))
+                  .gap(Is(8.0))
+                  .radius(Is(@sf.small_corner))
+                  .ground(By(fn() { @sf.theme().p.canvas }))
+                  .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                  |> ignore
+                  @sf.words_node(col, fn() { heading }, fn() { @sf.caption }) |> ignore
+                  col.show(fn() { in_progress.get() == target }, at_once=true, task_card)
+                })
+                |> ignore
+              }
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { if in_progress.get() { "移回待办" } else { "移至进行中" } },
+                toggle,
+                icon="arrow-right",
+              )
+              |> ignore
+            })
+          },
+        ),
+        (
+          "跟手滑动与速度回弹 move_damped",
+          fn(card) {
+            let x_way = @motion.NodeWay::new(0.0)
+            let start_x = Ref(0.0)
+            let start_wx = Ref(0.0)
+            let knob_ref : Ref[@view.View?] = Ref(None)
+            card.box(fn(track) {
+              track
+              .height(Is(Some(52.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .clips(Is(true))
+              |> ignore
+              track.box(fn(knob) {
+                knob_ref.val = Some(knob)
+                knob
+                .padding(Is((14.0, 8.0, 14.0, 8.0)))
+                .radius(Is(8.0))
+                .ground(By(fn() { @sf.theme().p.paper }))
+                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                .offset(By(fn() { (x_way.shown(knob), 0.0) }))
+                .cursor(Is(Some(Grab)))
+                .says(Is(Some(@view.said(Slider, label="跟手拖拽滑块"))))
+                .on_drag(fn(d) {
+                  match d.kind {
+                    Down => {
+                      start_x.val = x_way.value_at(d.at)
+                      start_wx.val = d.wx
+                      x_way.put(start_x.val)
+                    }
+                    Moved => {
+                      let next = @sf.dclamp(start_x.val + (d.wx - start_wx.val), -120.0, 120.0)
+                      x_way.put(next)
+                    }
+                    Up | Off =>
+                      x_way.go(knob, 0.0, @motion.move_damped, velocity=d.vx() * 1000.0)
+                  }
+                })
+                |> ignore
+                @sf.words_node(
+                  knob,
+                  fn() { "左右拖拽松手回弹" },
+                  fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
+                )
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "模拟甩动回弹" },
+                fn() {
+                  match knob_ref.val {
+                    Some(k) => {
+                      x_way.put(100.0)
+                      x_way.go(k, 0.0, @motion.move_damped, velocity=640.0)
+                    }
+                    None => ()
+                  }
+                },
+                icon="play",
+              )
+              |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    // 8. Zoom & Gestures
+    {
+      key: "motion-zoom",
+      group: motion_group,
+      name: "缩放与手势 Zoom",
+      file: "libs/mbui/src/motion/zoom.mbt",
+      api: [
+        ("zoom.mbt", "Zoom::new"),
+        ("zoom.mbt", "Zoom::zoom_to"),
+        ("zoom.mbt", "Zoom::double_tap"),
+        ("zoom.mbt", "Zoom::fling"),
+      ],
+      play: None,
+      about: "画布双击缩放、倍率切换与惯性甩动复位（@motion.Zoom），实时展示缩放倍率与偏移坐标。",
+      cases: [
+        (
+          "画布缩放与惯性甩动 Zoom",
+          fn(card) {
+            let z = @motion.Zoom::new(enlarge=true, margin=fn(_) { 12.0 })
+            let nat_w = 200.0
+            let nat_h = 120.0
+            let stage_ref : Ref[@view.View?] = Ref(None)
+            let stage_size = Ref((320.0, 220.0))
+            let last_drag = Ref((0.0, 0.0))
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(220.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              |> ignore
+              stage.by_room(fn(inner, room) {
+                stage_ref.val = Some(inner)
+                inner
+                .over(Is(true))
+                .says(Is(Some(@view.said(Image, label="缩放手势演示画布"))))
+                .gesture(
+                  @ui.touch_slop(),
+                  tap=fn(d) {
+                    if inner.twice(d) {
+                      z.double_tap(d.x, d.y, at=d.at)
+                    }
+                  },
+                  drag=fn(d) {
+                    match d.kind {
+                      Down => {
+                        z.stop_fling(at=d.at) |> ignore
+                        last_drag.val = (d.wx, d.wy)
+                      }
+                      Moved => {
+                        let (lx, ly) = last_drag.val
+                        z.pan(d.wx - lx, d.wy - ly, at=d.at)
+                        last_drag.val = (d.wx, d.wy)
+                      }
+                      Up | Off => z.fling(d.vx(), d.vy(), at=d.at)
+                    }
+                  },
+                )
+                |> ignore
+                inner.reacts(
+                  fn() { (room.width(), room.height().unwrap_or(220.0)) },
+                  fn(sz) {
+                    let (w, h) = sz
+                    if w > 0.0 && h > 0.0 {
+                      stage_size.val = (w, h)
+                      let t = inner.logic_at()
+                      z.boxed(w, h, at=t)
+                      z.natural(nat_w, nat_h, at=t)
+                    }
+                  },
+                )
+                let rect_now = fn(v : @view.View) -> (Double, Double, Double, Double) {
+                  z.told()
+                  let at = v.drawn_while(fn(t) { z.goes_at(t) })
+                  z.rect_at(at).unwrap_or((12.0, 12.0, nat_w, nat_h))
+                }
+                inner.box(fn(art) {
+                  art
+                  .over(Is(true))
+                  .width(Is(Some(nat_w)))
+                  .height(Is(Some(nat_h)))
+                  .radius(Is(10.0))
+                  .ground(By(fn() { @sf.theme().p.paper }))
+                  .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                  .pad(Is(12.0))
+                  .gap(Is(6.0))
+                  .offset(By(fn() {
+                    let (rx, ry, _, _) = rect_now(art)
+                    (rx, ry)
+                  }))
+                  .scale(
+                    By(fn() {
+                      let (_, _, rw, _) = rect_now(art)
+                      if nat_w > 0.0 { rw / nat_w } else { 1.0 }
+                    }),
+                    about=At(0.0, 0.0),
+                  )
+                  |> ignore
+                  @sf.words_node(art, fn() { "Zoom 画布目标" }, fn() { story_card_title }) |> ignore
+                  @sf.words_node(art, fn() { "双击放大或拖拽惯性平移" }, fn() { @sf.caption }) |> ignore
+                  art.box(fn(bar) {
+                    bar.row(Is(true)).gap(Is(6.0)) |> ignore
+                    for i in 0..<3 {
+                      bar.box(fn(chip) {
+                        chip
+                        .width(Is(Some(36.0)))
+                        .height(Is(Some(14.0)))
+                        .radius(Is(4.0))
+                        .ground(By(fn() {
+                          if i == 0 {
+                            @sf.theme().p.accent
+                          } else {
+                            @sf.theme().p.chip
+                          }
+                        }))
+                        |> ignore
+                      })
+                      |> ignore
+                    }
+                  })
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            card.box(fn(readout) {
+              @sf.words_node(
+                readout,
+                fn() {
+                  z.told()
+                  let at = readout.drawn_while(fn(t) { z.goes_at(t) })
+                  let fit = z.fit()
+                  let sc = if fit > 0.0 { z.scale_at(at) / fit } else { 1.0 }
+                  let sc10 = (sc * 10.0).round() / 10.0
+                  let (rx, ry, _, _) = z.rect_at(at).unwrap_or((0.0, 0.0, nat_w, nat_h))
+                  "倍率 \{sc10}x   坐标 (\{rx.round().to_int()}, \{ry.round().to_int()})"
+                },
+                fn() { @sf.caption },
+              )
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "1x 适配" },
+                fn() {
+                  match stage_ref.val {
+                    Some(v) => z.reset(at=v.cause_at())
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "2x 放大" },
+                fn() {
+                  match stage_ref.val {
+                    Some(v) => {
+                      let (bw, bh) = stage_size.val
+                      z.zoom_to(z.fit() * 2.0, bw / 2.0, bh / 2.0, true, at=v.cause_at())
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "3x 细节" },
+                fn() {
+                  match stage_ref.val {
+                    Some(v) => {
+                      let (bw, bh) = stage_size.val
+                      z.zoom_to(z.fit() * 3.0, bw * 0.35, bh * 0.4, true, at=v.cause_at())
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "模拟惯性甩动复位" },
+                fn() {
+                  match stage_ref.val {
+                    Some(v) => {
+                      let t = v.cause_at()
+                      let (bw, bh) = stage_size.val
+                      if z.zoomed_at(t) {
+                        z.reset(at=t)
+                      } else {
+                        z.zoom_to(z.fit() * 2.4, bw / 2.0, bh / 2.0, false, at=t)
+                        z.fling(0.9, 0.45, at=t)
+                      }
+                    }
+                    None => ()
+                  }
+                },
+                icon="play",
+              )
               |> ignore
             })
           },

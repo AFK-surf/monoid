@@ -1,6 +1,6 @@
-// The 6 motion library showcase stories (stories_motion.mbt) in a Tester:
+// The 8 motion library showcase stories (stories_motion.mbt) in a Tester:
 // every page passes Tester::audit() at 390 and 1280 width and at 1.0x and 1.3x font scale,
-// and core interactive controls (curves play/reverse, controls switching, reveal flash & list, overlays confirm) work cleanly.
+// and core interactive controls across all 8 pages work cleanly.
 
 ///|
 fn motion_story_keys() -> Array[String] {
@@ -11,6 +11,8 @@ fn motion_story_keys() -> Array[String] {
     "motion-overlays",
     "motion-reveal",
     "motion-cycles",
+    "motion-transitions",
+    "motion-zoom",
   ]
 }
 
@@ -27,7 +29,7 @@ fn motion_tester(key : String, w : Double, scale? : Double = 1.0, h? : Double = 
 }
 
 ///|
-test "all 6 motion stories pass audit at 390 and 1280 width and 1.0 and 1.3 scale" {
+test "all 8 motion stories pass audit at 390 and 1280 width and 1.0 and 1.3 scale" {
   let all : Array[String] = []
   for key in motion_story_keys() {
     for w in [390.0, 1280.0] {
@@ -97,4 +99,57 @@ test "motion-overlays: confirm dialog opens and closes cleanly on Cancel" {
   t.click(Button, label="取消")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("应用这套动效参数？") is None, msg="confirm dialog closed")
+}
+
+///|
+test "motion-cycles: SyncKey toggle and Station Glyph mode switch run cleanly" {
+  let t = motion_tester("motion-cycles", 1280.0, h=1600.0)
+  t.click(Button, label="同步完成")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("状态：已完成") is Some(_), msg="sync_key switched to completed")
+  t.click(Button, label="模拟同步")
+  t.run_for(@ui.move_most_ms)
+  t.click(Radio, label="连接中")
+  t.run_for(@ui.move_most_ms)
+  t.click(Radio, label="异常")
+  t.run_for(@ui.move_most_ms)
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-transitions: layered push/pop, shared element flight, and spring fling work cleanly" {
+  let t = motion_tester("motion-transitions", 1280.0, h=1600.0)
+  t.click(Button, label="推入详情")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("会话详情（前景页）") is Some(_), msg="layered nav pushed detail")
+  t.click(Button, label="返回列表")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("消息列表（背景页）") is Some(_), msg="layered nav popped to list")
+  t.click(Button, label="移至进行中")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("移回待办") is Some(_), msg="shared task card flew to in-progress")
+  t.click(Button, label="模拟甩动回弹")
+  t.run_for(@ui.move_most_ms * 2.0)
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-zoom: 2x, 3x, inertia fling, and 1x reset run cleanly" {
+  let t = motion_tester("motion-zoom", 1280.0, h=1200.0)
+  t.click(Button, label="2x 放大")
+  t.run_for(@ui.move_most_ms * 2.0)
+  let words_2x = t.words().map(fn(w) { w.0 }).join("|")
+  assert_true(t.find("倍率 2x") is Some(_), msg="zoomed to 2x: \{words_2x}")
+  t.click(Button, label="3x 细节")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("倍率 3x") is Some(_), msg="zoomed to 3x")
+  t.click(Button, label="1x 适配")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("倍率 1x") is Some(_), msg="reset to 1x")
+  t.click(Button, label="模拟惯性甩动复位")
+  t.run_for(@ui.move_most_ms * 3.0)
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
 }

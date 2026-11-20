@@ -3,12 +3,12 @@
 
 ///|
 /// A chat's mark (chat_mark's) in `parent` as `tone` says it now (busy, done, alert, wait; anything else none): a dot 8
-/// across, blue or red, or at work a yellow ring stepping round in 10. One that comes while it shows pops in (scale 0,
-/// 1.3 at 60%, 1: mark_pop_ms, eased out: row_mark's); one there as it is made does not.
+/// across, blue or red, or at work a yellow ring stepping round in 10. One that comes while it shows fades in over
+/// @sf.dur_ms (140 ms Out, no scale); one there as it is made does not.
 pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
   let pop = @motion.NodeWay::new(1.0)
   parent.box(fn(m) {
-    // (one there as it is made does not pop: only one that comes while it shows)
+    // (one there as it is made does not fade in: only one that comes while it shows)
     let first = Ref(true)
     m.reacts(tone, fn(t) {
       if first.val {
@@ -16,10 +16,10 @@ pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
         return
       }
       if t != "" && !@ui.reduced_motion() {
-        pop.go_from(m, 0.0, 1.0, @motion.tween(mark_pop_ms, ease=Out))
+        pop.go_from(m, 0.0, 1.0, @motion.tween(@sf.dur_ms, ease=Out))
       }
     })
-    m.alpha(By(fn() { @sf.seen_at(pop_scale(pop.shown(m))) })).scale(By(fn() { pop_scale(pop.shown(m)) })) |> ignore
+    m.alpha(By(fn() { pop.shown(m) })) |> ignore
     m.says(By(fn() {
       match tone() {
         "busy" | "done" | "alert" | "wait" => Some(@view.said(Image, label=@sf.t("web-main.chatMark." + tone())))
