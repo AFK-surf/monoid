@@ -33,3 +33,11 @@ test "a command on Windows is found with PATHEXT, never as the POSIX script besi
   // No PATH, nothing found.
   assert_eq(win_find_command("codex", [], ";", join, there), None)
 }
+
+///|
+test "startEnv never gives the launcher's front to what the station starts" {
+  let own = [("PATH", "/bin"), ("STILLFAIL_MESH_FRONT", "/data/run/front.sock")]
+  let env = start_env(own, Json::object({ "agentEnv": Json::object({ "STILLFAIL_MESH_FRONT": Json::string("/x") }) }), [])
+  assert_true(env.iter().all(p => p.0 != "STILLFAIL_MESH_FRONT"))
+  assert_true(env.iter().any(p => p == ("PATH", "/bin")))
+}

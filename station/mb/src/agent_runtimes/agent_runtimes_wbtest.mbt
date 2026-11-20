@@ -41,3 +41,14 @@ test "the agents' home: a change while a round runs makes one more after it" {
   h.ended()
   inspect(h.rounds, content="2")
 }
+
+///|
+test "env cleaning leaves the launcher's front out, scrubbed or not" {
+  let env = Fields::of([
+    ("STILLFAIL_MESH_FRONT", js("/data/run/front.sock")),
+    ("KEEP", js("1")),
+  ])
+  let cleaned = clean_env(env, [])
+  assert_true(cleaned.get("STILLFAIL_MESH_FRONT") is None)
+  assert_true(cleaned.get("KEEP") == Some(js("1")))
+}

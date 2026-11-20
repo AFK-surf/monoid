@@ -267,6 +267,7 @@ async fn p54_terminals_start(bus : LiveBus) -> P54Terms {
       for kv in env_all() {
         station_env[kv.0] = kv.1
       }
+      station_env.remove("STILLFAIL_MESH_FRONT")
       let env = @terminals_logins.shell_env(p54_os(), station_env).iter().map(kv => (kv.0, kv.1)).collect()
       let info = p54_start_runner(bus, id, program, args, cwd, Some((cols, rows)), env~)
       sockets[id] = p54_text(Some(info), "socket").unwrap_or("")
@@ -494,6 +495,7 @@ async fn p54_logins_start(
     for kv in env_all() {
       m[kv.0] = kv.1
     }
+    m.remove("STILLFAIL_MESH_FRONT")
     m
   }
   let run_out = async fn(program : String, args : Array[String]) -> String? {

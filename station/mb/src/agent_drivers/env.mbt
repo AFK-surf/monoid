@@ -115,9 +115,12 @@ pub fn keep_local(env : Env) -> Env {
 
 ///|
 /// The station's environment for what it starts (`startEnv`): `raw` (its own with its owners' variables over it) less
-/// `scrubbed`, this machine kept out of a proxy.
+/// `scrubbed` and the station's internal variables (`STATION_INTERNAL`: the launcher's front, whose socket binds the
+/// station's endpoint), this machine kept out of a proxy.
 pub fn start_env(raw : Env, scrubbed : Array[String]) -> Env {
-  keep_local(Env::new(raw.pairs.filter(p => !scrubbed.contains(p.0))))
+  keep_local(
+    Env::new(raw.pairs.filter(p => !scrubbed.contains(p.0) && p.0 != "STILLFAIL_MESH_FRONT")),
+  )
 }
 
 ///|
