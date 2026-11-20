@@ -1090,9 +1090,28 @@ done
 url=$(printf '%s' "$cfg" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
 printf '{"runtime":"claude","pid":%s,"sid":"%s"}\n' "$$" "$sid" >> "$FAKE_OUT/launches.jsonl"
 say() { printf '%s\n' "$1"; }
+# chat_post holds a post back while the steer is still unread; send the held one again until it goes.
 mcp_post() {
-  curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$1"'","text":"'"$2"'","kind":"all_done","done":"'"$3"'"}}}' > /dev/null
+  held_id=""
+  i=0
+  while [ "$i" -lt 200 ]; do
+    i=$((i + 1))
+    if [ -n "$held_id" ]; then
+      args='{"to":"'"$1"'","send":"'"$held_id"'","kind":"all_done","done":"'"$3"'"}'
+    else
+      args='{"to":"'"$1"'","text":"'"$2"'","kind":"all_done","done":"'"$3"'"}'
+    fi
+    resp=$(curl -sS --max-time 10 -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chat_post","arguments":'"$args"'}}' 2>>"$FAKE_OUT/claude-mcp-err.log")
+    case "$resp" in
+      *'Posted to'*) return 0 ;;
+      *'Not posted:'*) held_id=$(printf '%s' "$resp" | sed -n 's/.*Held as \(held-[0-9][0-9]*\).*/\1/p') ;;
+      *'no held post'*) held_id="" ;;
+      *) printf '%s\n' "$resp" >> "$FAKE_OUT/claude-mcp-err.log" ;;
+    esac
+    sleep 0.05
+  done
+  return 1
 }
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
@@ -1109,7 +1128,6 @@ while IFS= read -r line; do
             printf '%s\n' "$sline" >> "$FAKE_OUT/claude-steered.jsonl"
             say '{"type":"system","subtype":"status","status":"requesting","session_id":"'"$sid"'"}'
             say '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"ack1","name":"STEER-ACK"}},"session_id":"'"$sid"'"}'
-            sleep 0.2
             mcp_post "$to" "claude-steered-ok" "answered steered turn"
             break ;;
         esac
@@ -1166,17 +1184,31 @@ def notify(method, params):
     say({"method": method, "params": params})
 
 def mcp_post(mcp_url, token, to, text, done):
-    body = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "chat_post", "arguments": {"to": to, "text": text, "kind": "all_done", "done": done}},
-    }).encode()
-    req = urllib.request.Request(mcp_url, data=body, headers={"content-type": "application/json", "authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            r.read()
-    except Exception as e:
-        with open(os.path.join(out_dir, "codex-mcp-err.log"), "a") as f:
-            f.write(str(e) + "\\n")
+    # chat_post holds a post back while the steer is still unread; send the held one again until it goes.
+    held_id = None
+    for _ in range(200):
+        args = {"to": to, "send": held_id, "kind": "all_done", "done": done} if held_id else {"to": to, "text": text, "kind": "all_done", "done": done}
+        body = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "chat_post", "arguments": args},
+        }).encode()
+        req = urllib.request.Request(mcp_url, data=body, headers={"content-type": "application/json", "authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                resp = r.read().decode("utf-8", "replace")
+        except Exception as e:
+            resp = "error: " + str(e)
+        if "Posted to" in resp:
+            return
+        if "Not posted:" in resp:
+            m = re.search(r"Held as (held-\\d+)", resp)
+            held_id = m.group(1) if m else None
+        elif "no held post" in resp:
+            held_id = None
+        else:
+            with open(os.path.join(out_dir, "codex-mcp-err.log"), "a") as f:
+                f.write(resp + "\\n")
+        time.sleep(0.05)
 
 seq = 0
 threads = {}
@@ -1221,7 +1253,6 @@ def run_turn(tid, text):
             cmd_id = f"cmd-{seq}"
             notify("item/started", {"threadId": tid, "turnId": turn_id, "item": {"type": "commandExecution", "id": cmd_id, "command": "true"}})
             notify("item/completed", {"threadId": tid, "turnId": turn_id, "item": {"type": "commandExecution", "id": cmd_id}})
-            time.sleep(0.2)
             notify("item/agentMessage/delta", {"threadId": tid, "turnId": turn_id, "itemId": item_id, "delta": "codex-steered"})
             if t["url"] and t["to"]:
                 mcp_post(t["url"], t["token"], t["to"], "codex-steered-ok", "answered steered turn")
@@ -1311,7 +1342,7 @@ for raw in sys.stdin:
 
   // Fake `agy` (pure python3, no Node) speaking `agy acp --gemini-dir ...` JSON-RPC
   const fakeAgy = `#!/usr/bin/env python3
-import json, os, re, sys, urllib.request, uuid
+import json, os, re, sys, time, urllib.request, uuid
 
 args = sys.argv[1:]
 out_dir = os.environ["FAKE_OUT"]
@@ -1331,17 +1362,31 @@ def say(obj):
     sys.stdout.flush()
 
 def mcp_post(mcp_url, token, to, text, done):
-    body = json.dumps({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "chat_post", "arguments": {"to": to, "text": text, "kind": "all_done", "done": done}},
-    }).encode()
-    req = urllib.request.Request(mcp_url, data=body, headers={"content-type": "application/json", "authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            r.read()
-    except Exception as e:
-        with open(os.path.join(out_dir, "agy-mcp-err.log"), "a") as f:
-            f.write(str(e) + "\\n")
+    # chat_post holds a post back while the steer is still unread; send the held one again until it goes.
+    held_id = None
+    for _ in range(200):
+        args = {"to": to, "send": held_id, "kind": "all_done", "done": done} if held_id else {"to": to, "text": text, "kind": "all_done", "done": done}
+        body = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "chat_post", "arguments": args},
+        }).encode()
+        req = urllib.request.Request(mcp_url, data=body, headers={"content-type": "application/json", "authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                resp = r.read().decode("utf-8", "replace")
+        except Exception as e:
+            resp = "error: " + str(e)
+        if "Posted to" in resp:
+            return
+        if "Not posted:" in resp:
+            m = re.search(r"Held as (held-\\d+)", resp)
+            held_id = m.group(1) if m else None
+        elif "no held post" in resp:
+            held_id = None
+        else:
+            with open(os.path.join(out_dir, "agy-mcp-err.log"), "a") as f:
+                f.write(resp + "\\n")
+        time.sleep(0.05)
 
 models = {
     "currentModelId": "gemini-3.5-flash",
@@ -1411,8 +1456,6 @@ for raw in sys.stdin:
             say({"method": "session/update", "params": {"sessionId": session_id, "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": text}}}})
             say({"method": "session/update", "params": {"sessionId": session_id, "update": {"sessionUpdate": "tool_call", "toolCallId": "st1", "title": "ack", "kind": "read", "status": "in_progress"}}})
             say({"method": "session/update", "params": {"sessionId": session_id, "update": {"sessionUpdate": "tool_call_update", "toolCallId": "st1", "status": "completed", "content": []}}})
-            import time
-            time.sleep(0.2)
             if mcp_url and last_to:
                 mcp_post(mcp_url, mcp_token, last_to, "agy-steered-ok", "answered steered turn")
             say({"id": mid, "result": {"stopReason": "end_turn"}})
