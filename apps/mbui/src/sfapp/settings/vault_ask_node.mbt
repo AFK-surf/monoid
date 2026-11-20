@@ -592,6 +592,9 @@ fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool) -> U
     w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_head_node(s, ask) })
     w.show(fn() { ask().oauth == "" }, fn(s) { vault_runs_node(s, fn() { vault_title_runs(ask()) }, @sf.ask_title) |> ignore })
     w.show(fn() { ask().reason != "" }, fn(s) { @sf.words_node(s, fn() { ask().reason }, fn() { @sf.ask_note }) |> ignore })
+    w.show(fn() { vault_save_shared_text(ask()) != "" }, fn(s) {
+      vault_runs_node(s, fn() { [@ui.span(vault_save_shared_text(ask()), color=@sf.theme().p.warn_ink)] }, @sf.ask_note) |> ignore
+    })
     // (what signing in lets agents do, and that it stays theirs: the card's how it is given, in the person's words)
     w.show(fn() { ask().oauth != "" }, fn(s) { vault_oauth_gives_node(s, ask) })
     w.show(fn() { ask().command != "" }, fn(s) {

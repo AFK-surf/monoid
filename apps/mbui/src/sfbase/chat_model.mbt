@@ -228,6 +228,8 @@ pub(all) struct VaultAsk {
   /// How it is given, including the allowed hosts, as the core says it.
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
   username : String
   /// a file's name, where the agent gave one
   filename : String
@@ -559,6 +561,8 @@ pub fn message_of(m : Json) -> Message {
                 command: text(a, "command"),
                 how_text: text(a, "howText"),
                 save_kind: text(field(a, "save"), "kind"),
+                save_vault_name: text(field(a, "save"), "vaultName"),
+                save_shared: flag(field(a, "save"), "shared"),
                 username: text(field(a, "save"), "username"),
                 filename: text(field(a, "save"), "filename"),
                 typed: flag(field(a, "save"), "typed"),

@@ -60,6 +60,10 @@ priv struct SettingsFixture {
   /// the workspace in no safe mode, the vault its person's own (settings-vault-own-…): "" in safe mode; "off" not turned on
   /// yet (开启 begins their own lock); "on" turned on here; "outside" this device to be approved by another of theirs
   mut vault_own : String
+  /// shared workspace vault fixture mode: "" none, "create" admin can create one, "has" workspace vault exists
+  mut vault_workspace : String
+  /// members of the workspace vault in the fixture
+  vault_workspace_members : Array[String]
   /// the skills shared (true) or no longer (false) since the run started (`skill.share`), by name
   skills_shared : Map[String, Bool]
   /// the quota's resets used on ChatGPT 团队 (`profile.resetQuota`)
@@ -199,6 +203,8 @@ let fx : SettingsFixture = {
   plain_left: 0,
   vault_waits: false,
   vault_own: "",
+  vault_workspace: "",
+  vault_workspace_members: ["u1", "u2", "u3"],
   skills_shared: {},
   resets_used: 0,
   reset_expiry: false,
@@ -294,6 +300,30 @@ fn fx_vault_row() -> Json {
     row.push(("waits", str("Willow")))
   }
   obj(row)
+}
+
+///|
+/// The shared workspace vault in the fixture (`settings-vault-workspace*`).
+fn fx_workspace_vault_row() -> Json {
+  obj([
+    ("id", str("v-ws")),
+    ("name", str("Workspace 密钥库")),
+    ("scope", str("workspace")),
+    ("owner", str("u1")),
+    ("ownerName", str("林")),
+    ("mine", Json::boolean(false)),
+    ("manages", Json::boolean(true)),
+    ("members", Json::array(fx.vault_workspace_members.map(str))),
+    ("station", str("st1")),
+    ("stationName", str("Willow")),
+    ("items", Json::number(2.0)),
+    ("devices", Json::number(4.0)),
+    ("open", Json::boolean(false)),
+    ("keyed", Json::boolean(true)),
+    ("missing", Json::number(1.0)),
+    ("recoverable", Json::boolean(false)),
+    ("lasts", str("chat")),
+  ])
 }
 
 ///|
@@ -439,6 +469,9 @@ fn fixture_reset() -> Unit {
   fx.plain_left = 0
   fx.vault_waits = false
   fx.vault_own = ""
+  fx.vault_workspace = ""
+  fx.vault_workspace_members.clear()
+  fx.vault_workspace_members.append(["u1", "u2", "u3"])
   fx.pairing = false
   fx.pairing_personal = false
   fx.pairing_more = false
@@ -1037,6 +1070,16 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
     "settings-vault-editor" => fixture_open.desk = "vault-editor"
+    "settings-vault-workspace-create" => fx.vault_workspace = "create"
+    "settings-vault-workspace" => fx.vault_workspace = "has"
+    "settings-vault-workspace-members" => {
+      fx.vault_workspace = "has"
+      fixture_open.desk = "vault-workspace-members"
+    }
+    "settings-vault-workspace-editor" => {
+      fx.vault_workspace = "has"
+      fixture_open.desk = "vault-workspace-editor"
+    }
     "settings-vault-recover" => fixture_open.desk = "vault-recover"
     "settings-add-people" => up("add-people", "", 0)
     "settings-workspace-mark" => up("workspace-mark", "", 0)
@@ -1105,10 +1148,11 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-members"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
-    "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
+    "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" | "settings-vault-workspace-editor" => "vault-items"
     "settings-vault-item" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
     "settings-completion" => "completion"
@@ -3557,40 +3601,67 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             Json::boolean(fx.vault_own != "outside" && !["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case)),
           ),
           ("setUp", Json::boolean(!fx.vault_off)),
+          ("canCreateWorkspace", Json::boolean(fx.vault_workspace == "create")),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
             "vaults",
             // (none where it is on nowhere: settings-vault-off in safe mode too)
-            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) { [] } else { [fx_vault_row()] },
+            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) {
+              []
+            } else if fx.vault_workspace == "has" {
+              [fx_vault_row(), fx_workspace_vault_row()]
+            } else {
+              [fx_vault_row()]
+            },
           ),
           (
             "requests",
             if fx.vault_own == "off" || fx.vault_own == "outside" {
               []
             } else {
-              [
-              obj([
-                ("id", str("r1")),
-                ("vault", str("v1")),
-                ("vaultName", str("林的库")),
-                ("item", str("it1")),
-                ("itemName", str("GitHub token")),
-                ("session", str("s-c1")),
-                ("station", str("st1")),
-                ("chat", str("c1")),
-                ("mode", str("proxy")),
-                ("reason", str("要把发布清单推到仓库")),
-                ("command", str("git push origin main")),
-                ("hosts", ["api.github.com"]),
-                ("howText", str("代理 · 限 api.github.com")),
-                ("at", Json::number(0.0)),
-              ]),
+              let reqs = [
+                obj([
+                  ("id", str("r1")),
+                  ("vault", str("v1")),
+                  ("vaultName", str("林的库")),
+                  ("item", str("it1")),
+                  ("itemName", str("GitHub token")),
+                  ("session", str("s-c1")),
+                  ("station", str("st1")),
+                  ("chat", str("c1")),
+                  ("mode", str("proxy")),
+                  ("reason", str("要把发布清单推到仓库")),
+                  ("command", str("git push origin main")),
+                  ("hosts", ["api.github.com"]),
+                  ("howText", str("代理 · 限 api.github.com")),
+                  ("at", Json::number(0.0)),
+                ]),
               ]
+              if fx.vault_workspace == "has" {
+                reqs.push(
+                  obj([
+                    ("id", str("r-ws-save")),
+                    ("vault", str("v-ws")),
+                    ("vaultName", str("Workspace 密钥库")),
+                    ("item", str("")),
+                    ("itemName", str("Sentry DSN")),
+                    ("session", str("s-c1")),
+                    ("station", str("st1")),
+                    ("chat", str("c1")),
+                    ("mode", str("env")),
+                    ("reason", str("存入团队共享的错误上报配置")),
+                    ("howText", str("环境变量 · SENTRY_DSN")),
+                    ("save", obj([("kind", str("token")), ("vaultName", str("Workspace 密钥库")), ("shared", Json::boolean(true))])),
+                    ("at", Json::number(0.0)),
+                  ]),
+                )
+              }
+              Json::array(reqs)
             },
           ),
           ("refused", []),
-          // (the core's words of it: its one request waits; none where no vault of theirs is kept)
-          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else { "1 个待批准" })),
+          // (the core's words of it: its requests wait; none where no vault of theirs is kept)
+          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else if fx.vault_workspace == "has" { "2 个待批准" } else { "1 个待批准" })),
           ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
         ] +
         (match fx.lock_case {
@@ -3926,6 +3997,20 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     }
     // this device asking for the keys it lacks: its other devices told
     "vault.ask" => Some(Ok(obj([("asked", Json::number(1.0))])))
+    "vault.create" => {
+      if text(p, "scope") == "workspace" {
+        fx.vault_workspace = "has"
+        fx_changed()
+      }
+      Some(Ok(obj([("id", str(if text(p, "scope") == "workspace" { "v-ws" } else { "v1" }))])))
+    }
+    "vault.setMembers" => {
+      fx.vault_workspace_members.clear()
+      fx.vault_workspace_members.append(strings(p, "members"))
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "vault.putItem" => Some(Ok(obj([("id", str("it-new"))])))
     // the new device turned away, or its prompt closed: no longer shown
     "lockPrompt.deny" | "lockPrompt.hide" => {
       fx.pairing = false

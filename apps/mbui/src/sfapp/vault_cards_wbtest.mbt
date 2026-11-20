@@ -390,7 +390,7 @@ test "the vault's page's request where it is not this device's to answer, or dec
 /// phone's window, drawn.
 fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
   let core = settings_core(src, w)
   @ui.set_view_app(fn(root) {
@@ -715,4 +715,53 @@ test "a request to delete an item: 删除密钥 and its name, 删除 deletes it"
   assert_eq(card_faults, [])
   vt_press(t, "删除")
   assert_eq(vt_vault_calls(calls), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r-demo\",\"scope\":\"once\"}"])
+}
+
+///|
+test "a shared save request card shows the shared workspace vault notice" {
+  new_run()
+  let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  let asked_named : @settings.Asked = { name: "Sentry DSN", reason: "存入团队共享的错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  let core = settings_core(vault_src(["r1"], true, [], save=true), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core, fn() { "ws1" }, fn() { "r1" }, fn() { asked_named }) }) |> ignore
+  })
+  t.draw()
+  assert_true(t.find("将存入团队共享密钥库「Workspace 密钥库」") is Some(_))
+  // fallback notice when vault name is empty
+  new_run()
+  let asked_fallback : @settings.Asked = { ..asked_named, save_vault_name: "" }
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  let core2 = settings_core(vault_src(["r1"], true, [], save=true), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core2, fn() { "ws1" }, fn() { "r1" }, fn() { asked_fallback }) }) |> ignore
+  })
+  t2.draw()
+  assert_true(t2.find("将存入 Workspace 密钥库（团队共享）") is Some(_))
+}
+
+///|
+test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x font scale" {
+  let sizes : Array[(Double, Double, Int, Double)] = [(1100.0, 760.0, 0, 1.0), (390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3)]
+  let modes : Array[String] = [
+    "settings-vault-workspace-create",
+    "settings-vault-workspace",
+    "settings-vault-workspace-members",
+    "settings-vault-workspace-editor",
+  ]
+  for size in sizes {
+    let (w, h, platform, scale) = size
+    for mode in modes {
+      let src = fixture_app(mode)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+      t.set_font_scale(scale)
+      t.frame()
+      vt_rest(t)
+      let at = "\{mode} \{w}×\{h} @\{scale}"
+      // (the wide frame's 12px sidebar drag edge overlaps its neighboring panes by 6px on every wide settings screen)
+      let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt") })
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    }
+  }
 }

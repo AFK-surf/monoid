@@ -27,6 +27,8 @@ pub(all) struct Asked {
   command : String
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
   username : String
   filename : String
   typed : Bool
@@ -386,6 +388,20 @@ pub fn vault_ask_words(c : @ui.Ctx, ask : Asked) -> Unit {
 }
 
 ///|
+/// What is said when saving a secret into a shared workspace vault, or "" for a personal vault or non-save request.
+fn vault_save_shared_text(ask : Asked) -> String {
+  if ask.save_kind != "" && ask.save_shared {
+    if ask.save_vault_name != "" {
+      fill("android-settings.vault.ask.saveSharedNamed", [("name", ask.save_vault_name)])
+    } else {
+      tr("android-settings.vault.ask.saveShared")
+    }
+  } else {
+    ""
+  }
+}
+
+///|
 /// What is asked (AskCard's what): its title (使用 …, 存入密码 … and the account; the item's name in it heavier than the
 /// words around it, not in quotes), the command, and only what is
 /// out of the ordinary: a command that reads the secret itself, one run on another station.
@@ -430,6 +446,10 @@ fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
     }
     if ask.reason != "" {
       c.text(ask.reason, style=@sf.ask_note) |> ignore
+    }
+    let shared_text = vault_save_shared_text(ask)
+    if shared_text != "" {
+      c.rich([@ui.span(shared_text, color=t.p.warn_ink)], style=@sf.ask_note) |> ignore
     }
     if ask.oauth != "" {
       // (what signing in lets agents do, and that it stays theirs: vault_oauth_gives_node's)
