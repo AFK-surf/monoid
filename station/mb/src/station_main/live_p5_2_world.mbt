@@ -237,6 +237,7 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
       let at = self.locator().locate(key) catch { _ => Json::null() }
       let rt0 = jtext(at, "runtime").unwrap_or("")
       let logical : Array[String] = []
+      let claude_dirs : Array[String] = []
       for each in jitems(jfield(at, "paths")) {
         let (p, rt) = match each {
           String(s) => (s, rt0)
@@ -246,7 +247,20 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
           continue
         }
         let base = sfs.basename(p)
-        let matches = allowed.iter().any(pair => pair.0 == rt && base.contains(pair.1))
+        let logical_base = if base.has_suffix(".zst") { base[:base.length() - 4].to_owned() } else { base }
+        let matches = allowed.iter().any(pair => {
+          if pair.0 != rt {
+            return false
+          }
+          let id = pair.1
+          if rt == "claude" {
+            logical_base == id + ".jsonl"
+          } else if rt == "codex" {
+            logical_base == id + ".jsonl" || logical_base.has_suffix("-" + id + ".jsonl")
+          } else {
+            logical_base == id + ".jsonl"
+          }
+        })
         if !matches {
           continue
         }
@@ -254,13 +268,17 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
         if !p53_within(root, parent) {
           continue
         }
-        let main_path = sfs.join([parent, base])
+        let main_path = sfs.join([parent, logical_base])
         if !logical.contains(main_path) {
           logical.push(main_path)
         }
         if rt == "claude" {
-          let stem = if base.has_suffix(".jsonl") { base[:base.length() - 6].to_owned() } else { base }
-          sfs.jsonl_files(sfs.join([parent, stem]), logical) catch { _ => () }
+          let stem = if logical_base.has_suffix(".jsonl") { logical_base[:logical_base.length() - 6].to_owned() } else { logical_base }
+          let sub_dir = sfs.join([parent, stem])
+          sfs.jsonl_files(sub_dir, logical) catch { _ => () }
+          if !claude_dirs.contains(sub_dir) {
+            claude_dirs.push(sub_dir)
+          }
         }
       }
       let out : Array[Json] = []
@@ -273,6 +291,15 @@ async fn P52::machine_ask(self : P52, what : String, args : Json) -> Json {
             Some(rc) if p53_within(root, rc) => out.push(Json::string(cand))
             _ => ()
           }
+        }
+      }
+      for dir in claude_dirs {
+        if sfs.lkind(dir) != Some("dir") {
+          continue
+        }
+        match sfs.realpath(dir) {
+          Some(rd) if rd != root && p53_within(root, rd) => out.push(Json::string(dir))
+          _ => ()
         }
       }
       Json::array(out)

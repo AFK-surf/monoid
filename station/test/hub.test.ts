@@ -2081,14 +2081,14 @@ test("a pending message edited before delivery reaches the agent as edited", asy
   await r.close();
 });
 
-test("deleting a session ends its process and removes its workspace, the threads only it was in and what the readers kept of its transcript's reading", async () => {
+test("deleting a session ends its process and removes its workspace, exclusive transcripts under <data>, the threads only it was in and what the readers kept of its transcript's reading", async () => {
   const r = new Rig();
   const m = message();
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
   const row = r.session(key);
-  // The runtime's transcript lives in the profile's home and stays.
+  // The runtime's transcript lives in the station-managed profile home under <data> and is deleted when exclusive.
   const transcript = join(r.config.profiles[0]!.home, "projects", "x", `${row.runtimeSessionId}.jsonl`);
   mkdirSync(dirname(transcript), { recursive: true });
   writeFileSync(transcript, "{}\n");
@@ -2103,7 +2103,7 @@ test("deleting a session ends its process and removes its workspace, the threads
   assert.equal(r.store.threadAt("slack:T1", "C1", m.threadTs), null);
   assert.ok(!existsSync(row.workspace));
   assert.ok(!existsSync(dirname(row.workspace)));
-  assert.ok(existsSync(transcript));
+  assert.ok(!existsSync(transcript));
   assert.deepEqual(readdirSync(marks), []);
   await r.close();
 });

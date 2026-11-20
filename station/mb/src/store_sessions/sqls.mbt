@@ -55,7 +55,7 @@ let transcript_referenced : String =
 
 ///|
 let session_paths_page : String =
-  #|SELECT key, workspace, cwd FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2
+  #|SELECT key, workspace, cwd, archived_at FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2
 
 ///|
 let stats_of : String =

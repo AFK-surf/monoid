@@ -447,6 +447,15 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     }
     "upkeep" => self.upkeep.pass()
     "relieve" => self.upkeep.relieving()
+    "upkeep.relieveRepos" =>
+      Json::array(
+        self.upkeep
+        .relieve_repos(
+          num(0, "now").unwrap_or(wall_ms().to_double()),
+          num(1, "low").unwrap_or(p53_disk_low_bytes),
+        )
+        .map(jstr),
+      )
     "upkeep.renewables" => {
       let did = []
       self.upkeep.renewables(

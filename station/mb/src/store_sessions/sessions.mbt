@@ -1351,7 +1351,7 @@ pub fn Store::session_paths_page(
 ) -> Array[Json] raise {
   self
   .all(session_paths_page, [after, jint(limit.to_int64())])
-  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "cwd": col(r, "cwd") })
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "cwd": col(r, "cwd"), "archivedAt": col(r, "archived_at") })
 }
 
 ///|

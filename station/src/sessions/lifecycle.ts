@@ -3,7 +3,7 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { NoPreset, type PresetCopy, keepCopy, presetRefusal, readPresetsFile } from "./presets.ts";
+import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
@@ -12,7 +12,7 @@ import { DISK_LOW_BYTES } from "../ops/disk.ts";
 import { PlaceRefused } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
-import { clean, inside, within } from "../ops/paths.ts";
+import { clean, inside, samePath, within } from "../ops/paths.ts";
 import { pruneRepoWorktrees, treeBytes } from "../ops/storage.ts";
 import { startEnv } from "../ops/agent-env.ts";
 import { wall } from "../ops/fibers.ts";
@@ -491,10 +491,40 @@ async function repoLastTouchedMs(repoPath: string): Promise<number | null> {
   return latest;
 }
 
+function isRecoverableRemoteUrl(raw: string): boolean {
+  const url = raw.trim();
+  if (url === "" || /^file:/i.test(url)) return false;
+  if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../") || url === "." || url === ".." || /^[A-Za-z]:[\\/]/.test(url) || url.startsWith("\\\\")) {
+    return false;
+  }
+  if (/^(https?|ssh|git):\/\/[^/?#]+\/.+/i.test(url)) return true;
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9][A-Za-z0-9.-]*:(?!:)\S+$/.test(url)) return true;
+  return false;
+}
+
+/// Reads a JSON file strictly: returns `{ kind: "missing" }` only on ENOENT, `{ kind: "ok", value }` on valid object,
+/// or `{ kind: "error" }` on any other read/parse error so callers can fail closed.
+async function readJsonObjectStrict(path: string): Promise<{ kind: "missing" } | { kind: "error" } | { kind: "ok"; value: Record<string, unknown> }> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "error" };
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "error" };
+    return { kind: "ok", value: parsed as Record<string, unknown> };
+  } catch {
+    return { kind: "error" };
+  }
+}
+
 /// Reclaims unreferenced shared clones in `<data>/repos` when disk space remains below `low` after `relieveArchived`:
 /// least recently used first, stopping as soon as free space reaches `low`. Only clones that are real directories under
-/// `<data>/repos`, clean, pushed to a remote, have no stash or worktree registrations, are unreferenced by presets,
-/// sessions, active jobs, or `move/repos.json`, and have not been touched for REPO_IDLE_MS are removed.
+/// `<data>/repos`, clean, pushed to a non-local remote, have no stash or worktree registrations, are unreferenced by
+/// presets, sessions (including unarchived sessions' preset copies), active jobs, or `move/repos.json`, and have not
+/// been touched for REPO_IDLE_MS are removed.
 export async function relieveRepos(
   hub: Hub,
   free: () => number | Promise<number>,
@@ -509,7 +539,8 @@ export async function relieveRepos(
   const realRepos = await realpath(rawRepos).catch(() => null);
   if (realRepos === null) return [];
 
-  // Collect all referenced paths once: presets across all workspaces, all session rows, active jobs, and move/repos.json.
+  // Collect all referenced paths once: presets across all workspaces, all session rows (plus preset copies of
+  // unarchived sessions), active jobs, and move/repos.json. Fail closed if any reference file exists but is unreadable.
   const refs = new Set<string>();
   const addRef = async (p: string | null | undefined) => {
     if (!p) return;
@@ -518,9 +549,16 @@ export async function relieveRepos(
     if (r !== null) refs.add(r);
   };
   for (const home of await agentHomes(agentHome)) {
-    const { presets } = await readPresetsFile(home);
-    for (const preset of presets) {
-      for (const dir of preset.dirs) await addRef(dir.path);
+    const res = await readJsonObjectStrict(join(home, "presets.json"));
+    if (res.kind === "error") return [];
+    if (res.kind === "missing") continue;
+    const presets = res.value.presets;
+    if (presets !== undefined && !Array.isArray(presets)) return [];
+    for (const preset of (presets as any[]) ?? []) {
+      if (!Array.isArray(preset?.dirs)) continue;
+      for (const dir of preset.dirs) {
+        if (typeof dir?.path === "string") await addRef(dir.path);
+      }
     }
   }
   let afterKey = "";
@@ -529,6 +567,17 @@ export async function relieveRepos(
     for (const s of page) {
       await addRef(s.workspace);
       await addRef(s.cwd);
+      if (s.archivedAt === null) {
+        const copyRes = await readJsonObjectStrict(join(s.workspace, ".stillfail-preset.json"));
+        if (copyRes.kind === "error") return [];
+        if (copyRes.kind === "ok" && Array.isArray(copyRes.value.dirs)) {
+          for (const dir of copyRes.value.dirs as any[]) {
+            if (typeof dir?.path === "string" && (typeof dir?.elsewhere !== "string" || dir.elsewhere === "")) {
+              await addRef(dir.path);
+            }
+          }
+        }
+      }
     }
     if (page.length === 0) break;
     afterKey = page[page.length - 1]!.key;
@@ -539,19 +588,11 @@ export async function relieveRepos(
   } catch {
     return [];
   }
-  const moveReposPath = join(dataDir, "move", "repos.json");
-  const moveReposText = await readFile(moveReposPath, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : undefined));
-  if (moveReposText === undefined) return [];
-  if (moveReposText !== null) {
-    try {
-      const parsed = JSON.parse(moveReposText) as Record<string, { dir?: unknown }>;
-      if (parsed && typeof parsed === "object") {
-        for (const entry of Object.values(parsed)) {
-          if (typeof entry?.dir === "string") await addRef(entry.dir);
-        }
-      }
-    } catch {
-      return [];
+  const moveReposRes = await readJsonObjectStrict(join(dataDir, "move", "repos.json"));
+  if (moveReposRes.kind === "error") return [];
+  if (moveReposRes.kind === "ok") {
+    for (const entry of Object.values(moveReposRes.value)) {
+      if (typeof (entry as any)?.dir === "string") await addRef((entry as any).dir);
     }
   }
 
@@ -587,25 +628,31 @@ export async function relieveRepos(
   for (const cand of candidates) {
     if ((await free()) >= low) break;
     if (hub.clones.hasActive()) break;
-    // Condition 2: has a remote, no unpushed commits on branches/tags, no refs/stash.
+    // Condition 2: has a non-local remote, no unpushed commits (including detached HEAD / all refs), no refs/stash.
     const remotesRes = await git(cand.path, ["remote"]);
     if (!remotesRes.ok) continue;
     const remotes = remotesRes.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (remotes.length === 0) continue;
     const primary = remotes.includes("origin") ? "origin" : remotes[0]!;
     const urlRes = await git(cand.path, ["remote", "get-url", primary]);
-    if (!urlRes.ok || urlRes.stdout.trim() === "") continue;
-    const revRes = await git(cand.path, ["rev-list", "--count", "--branches", "--tags", "--not", "--remotes"]);
+    const remoteUrl = urlRes.stdout.trim();
+    if (!urlRes.ok || !isRecoverableRemoteUrl(remoteUrl)) continue;
+    const revRes = await git(cand.path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"]);
     if (!revRes.ok || revRes.stdout.trim() !== "0") continue;
     const stashRes = await git(cand.path, ["for-each-ref", "refs/stash"]);
     if (!stashRes.ok || stashRes.stdout.trim() !== "") continue;
-    // Condition 3: clean main working tree (including untracked files).
-    const statusRes = await git(cand.path, ["status", "--porcelain"]);
+    // Condition 3: clean main working tree (including untracked files, regardless of repo status.showUntrackedFiles).
+    const statusRes = await git(cand.path, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"]);
     if (!statusRes.ok || statusRes.stdout !== "") continue;
+    // Re-check before rm: a session may have added a worktree or touched the repo during the git checks.
+    const recheckWt = await readdir(join(cand.path, ".git", "worktrees")).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? [] : null));
+    if (recheckWt === null || recheckWt.length > 0) continue;
+    const recheckMtime = await repoLastTouchedMs(cand.path);
+    if (recheckMtime === null || recheckMtime !== cand.mtime) continue;
     if (hub.clones.hasActive() || (await free()) >= low) break;
     const { bytes } = await treeBytes(cand.path);
     await rm(cand.path, { recursive: true, force: true });
-    log.info("hub", "reclaimed unused shared clone", { path: cand.path, remote: safeUrl(urlRes.stdout.trim()), freed: bytes });
+    log.info("hub", "reclaimed unused shared clone", { path: cand.path, remote: safeUrl(remoteUrl), freed: bytes });
     removed.push(cand.name);
   }
   return removed;
@@ -864,9 +911,10 @@ export async function deleteSession(hub: Hub, key: string) {
   const sources = hub.store.runtimeSessionSources(key);
   const places = sessionPlaces(row);
   const transcripts = (await transcriptSourcesSoon(dataDir, profiles, sources, places)).paths.map((p) => p.path);
-  // Collect exclusive transcript files under `<data>` before removing the session row.
+  // Collect exclusive transcript files and Claude session directories under `<data>` before removing the session row.
   const realData = await realpath(dataDir).catch(() => null);
   const exclusiveFiles: string[] = [];
+  const exclusiveDirs: string[] = [];
   if (realData !== null) {
     for (const source of sources) {
       if (hub.store.transcriptReferenced(source.runtime, source.id, key)) continue;
@@ -878,7 +926,11 @@ export async function deleteSession(hub: Hub, key: string) {
       if (parent === null || !within(parent, realData)) continue;
       const logical = join(parent, basename(found));
       exclusiveFiles.push(logical);
-      if (runtime === "claude") await jsonlFilesSoon(join(parent, basename(found, ".jsonl")), exclusiveFiles);
+      if (runtime === "claude") {
+        const subDir = join(parent, basename(found, ".jsonl"));
+        await jsonlFilesSoon(subDir, exclusiveFiles);
+        exclusiveDirs.push(subDir);
+      }
     }
   }
   hub.store.deleteSession(key);
@@ -894,6 +946,13 @@ export async function deleteSession(hub: Hub, key: string) {
         if (realPath === null || !within(realPath, realData)) continue;
         await rm(candidate, { force: true }).catch((error) => log.warn("hub", "exclusive transcript not removed", { session: key, path: candidate, error: (error as Error).message }));
       }
+    }
+    for (const dir of new Set(exclusiveDirs)) {
+      const st = await lstat(dir).catch(() => null);
+      if (st === null || !st.isDirectory() || st.isSymbolicLink()) continue;
+      const realDir = await realpath(dir).catch(() => null);
+      if (realDir === null || !within(realDir, realData) || samePath(realDir, realData)) continue;
+      await rm(dir, { recursive: true, force: true }).catch((error) => log.warn("hub", "exclusive transcript directory not removed", { session: key, path: dir, error: (error as Error).message }));
     }
   }
   // Sessions made by the station keep their workspace in a directory of their own under `<data>/sessions`.

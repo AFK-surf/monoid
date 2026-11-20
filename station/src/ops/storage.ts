@@ -326,8 +326,8 @@ export async function pruneRepoWorktrees(data: string): Promise<string[]> {
       const underSessions = inside(target, rawSessions) || (realSessions !== null && inside(target, realSessions));
       if (!underSessions) continue;
       if (await lstat(target).then(() => true, () => false)) continue;
-      await rm(adminDir, { recursive: true, force: true }).catch(() => undefined);
-      gone.push(`${repoName}/${wtName}`);
+      const removed = await rm(adminDir, { recursive: true, force: true }).then(() => true, () => false);
+      if (removed) gone.push(`${repoName}/${wtName}`);
     }
   }
   return gone;

@@ -33,7 +33,7 @@ function git(cwd: string, args: string[]): string {
   }).trim();
 }
 
-function initRepo(dir: string, withBareRemote?: string): string {
+function initRepo(dir: string, withBareRemote?: string, remoteUrl?: string): string {
   mkdirSync(dir, { recursive: true });
   git(dir, ["init", "-b", "main"]);
   writeFileSync(join(dir, "README.md"), "hello\n");
@@ -44,6 +44,9 @@ function initRepo(dir: string, withBareRemote?: string): string {
     git(withBareRemote, ["init", "--bare"]);
     git(dir, ["remote", "add", "origin", withBareRemote]);
     git(dir, ["push", "-u", "origin", "main"]);
+    if (remoteUrl !== undefined) {
+      git(dir, ["remote", "set-url", "origin", remoteUrl]);
+    }
   }
   return dir;
 }
@@ -242,12 +245,15 @@ describe("Item 3: deleteSession deletes exclusive transcripts, preserves shared/
       rig.store.ranIn("exclusive", "ex-1", "cc");
       const exDir = join(rig.config.profiles[0]!.home, "projects", "p1");
       mkdirSync(join(exDir, "ex-1", "subagents"), { recursive: true });
+      mkdirSync(join(exDir, "ex-1", "tool-results"), { recursive: true });
       const exMain = join(exDir, "ex-1.jsonl");
       const exSub = join(exDir, "ex-1", "subagents", "sub1.jsonl");
       const exSubPacked = packed(join(exDir, "ex-1", "subagents", "sub2.jsonl"));
+      const exToolResult = join(exDir, "ex-1", "tool-results", "x.txt");
       writeFileSync(exMain, '{"type":"user","message":{"content":"hi"}}\n');
       writeFileSync(exSub, '{"type":"user","message":{"content":"sub"}}\n');
       writeFileSync(exSubPacked, "zst-bytes");
+      writeFileSync(exToolResult, "tool result output\n");
 
       // 2. Shared transcript with another ARCHIVED session -> MUST NOT be deleted
       const ws2a = mkWs("shared-a");
@@ -281,6 +287,8 @@ describe("Item 3: deleteSession deletes exclusive transcripts, preserves shared/
       assert.ok(!existsSync(exMain), "exclusive main transcript deleted");
       assert.ok(!existsSync(exSub), "exclusive Claude subagent transcript deleted");
       assert.ok(!existsSync(exSubPacked), "exclusive packed .zst transcript deleted");
+      assert.ok(!existsSync(exToolResult), "exclusive Claude tool-results file deleted");
+      assert.ok(!existsSync(join(exDir, "ex-1")), "exclusive Claude session directory removed recursively");
 
       await deleteSession(rig.hub, "shared-a");
       assert.ok(existsSync(shMain), "transcript shared with archived session MUST NOT be deleted");
@@ -378,28 +386,37 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       const freshMs = baseNow - REPO_IDLE_MS + 3_600_000;
 
       // Eligible #1 (oldest) — SHOULD BE DELETED FIRST
-      const eligibleOldest = initRepo(join(reposDir, "eligible-oldest"), join(remotesDir, "e1.git"));
+      const eligibleOldest = initRepo(join(reposDir, "eligible-oldest"), join(remotesDir, "e1.git"), "https://github.com/example/e1.git");
       setRepoMtime(eligibleOldest, olderMs);
 
       // Eligible #2 (second oldest) — SHOULD BE DELETED ONLY IF STILL BELOW LOW
-      const eligibleSecond = initRepo(join(reposDir, "eligible-second"), join(remotesDir, "e2.git"));
+      const eligibleSecond = initRepo(join(reposDir, "eligible-second"), join(remotesDir, "e2.git"), "https://github.com/example/e2.git");
       setRepoMtime(eligibleSecond, oldMs);
 
-      // Counterexample A: unpushed commit
-      const unpushed = initRepo(join(reposDir, "unpushed"), join(remotesDir, "unpushed.git"));
+      // Counterexample A: unpushed commit on branch
+      const unpushed = initRepo(join(reposDir, "unpushed"), join(remotesDir, "unpushed.git"), "https://github.com/example/unpushed.git");
       writeFileSync(join(unpushed, "local.txt"), "unpushed\n");
       git(unpushed, ["add", "local.txt"]);
       git(unpushed, ["commit", "-m", "local only"]);
       setRepoMtime(unpushed, olderMs);
 
+      // Counterexample A2: unpushed commit on detached HEAD
+      const detachedUnpushed = initRepo(join(reposDir, "detached-unpushed"), join(remotesDir, "detached.git"), "https://github.com/example/detached.git");
+      git(detachedUnpushed, ["checkout", "--detach", "HEAD"]);
+      writeFileSync(join(detachedUnpushed, "detached.txt"), "detached commit\n");
+      git(detachedUnpushed, ["add", "detached.txt"]);
+      git(detachedUnpushed, ["commit", "-m", "detached only"]);
+      setRepoMtime(detachedUnpushed, olderMs);
+
       // Counterexample B: refs/stash
-      const stashed = initRepo(join(reposDir, "stashed"), join(remotesDir, "stashed.git"));
+      const stashed = initRepo(join(reposDir, "stashed"), join(remotesDir, "stashed.git"), "https://github.com/example/stashed.git");
       writeFileSync(join(stashed, "README.md"), "dirty\n");
       git(stashed, ["stash", "push", "-m", "wip"]);
       setRepoMtime(stashed, olderMs);
 
-      // Counterexample C: untracked file
-      const untracked = initRepo(join(reposDir, "untracked"), join(remotesDir, "untracked.git"));
+      // Counterexample C: untracked file (including when repo sets status.showUntrackedFiles=no)
+      const untracked = initRepo(join(reposDir, "untracked"), join(remotesDir, "untracked.git"), "https://github.com/example/untracked.git");
+      git(untracked, ["config", "status.showUntrackedFiles", "no"]);
       writeFileSync(join(untracked, "untracked.txt"), "hello\n");
       setRepoMtime(untracked, olderMs);
 
@@ -407,8 +424,14 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       const noRemote = initRepo(join(reposDir, "no-remote"));
       setRepoMtime(noRemote, olderMs);
 
+      // Counterexample D2: local path remote & file: remote (not recoverable from elsewhere)
+      const localPathRemote = initRepo(join(reposDir, "local-path-remote"), join(remotesDir, "local.git"));
+      setRepoMtime(localPathRemote, olderMs);
+      const fileUrlRemote = initRepo(join(reposDir, "file-url-remote"), join(remotesDir, "fileurl.git"), `file://${join(remotesDir, "fileurl.git")}`);
+      setRepoMtime(fileUrlRemote, olderMs);
+
       // Counterexample E: locked worktree (archived session)
-      const lockedWtRepo = initRepo(join(reposDir, "locked-wt"), join(remotesDir, "locked-wt.git"));
+      const lockedWtRepo = initRepo(join(reposDir, "locked-wt"), join(remotesDir, "locked-wt.git"), "https://github.com/example/locked-wt.git");
       const archWtPath = join(rig.dir, "sessions", "cl", "arch", "workspace", "wt");
       mkdirSync(dirname(archWtPath), { recursive: true });
       git(lockedWtRepo, ["worktree", "add", "-b", "b-arch", archWtPath]);
@@ -417,7 +440,7 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       setRepoMtime(lockedWtRepo, olderMs);
 
       // Counterexample F: referenced by a preset (in joined workspace)
-      const presetRepo = initRepo(join(reposDir, "preset-repo"), join(remotesDir, "preset.git"));
+      const presetRepo = initRepo(join(reposDir, "preset-repo"), join(remotesDir, "preset.git"), "https://github.com/example/preset.git");
       const joinedHome = join(rig.config.agentHome, "workspaces", "ws-joined");
       mkdirSync(joinedHome, { recursive: true });
       writeFileSync(join(joinedHome, "presets.json"), JSON.stringify({
@@ -426,8 +449,21 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       }));
       setRepoMtime(presetRepo, olderMs);
 
+      // Counterexample F2: referenced only by an unarchived session's .stillfail-preset.json copy (preset deleted, cwd null)
+      const presetCopyRepo = initRepo(join(reposDir, "preset-copy-repo"), join(remotesDir, "pcopy.git"), "https://github.com/example/pcopy.git");
+      const liveCopyWs = join(rig.dir, "sessions", "cl", "s-preset-copy", "workspace");
+      mkdirSync(liveCopyWs, { recursive: true });
+      writeFileSync(join(liveCopyWs, ".stillfail-preset.json"), JSON.stringify({
+        id: "old-preset", name: "Deleted Preset", dirs: [{ path: presetCopyRepo, repo: null }], instructions: "",
+      }));
+      rig.store.insertSession({
+        key: "s-preset-copy", connect: "cl", runtime: "claude", profile: "cc",
+        workspace: liveCopyWs, cwd: null, runtimeSessionId: null, token: "tok-pcopy", createdAt: 1, lastActiveAt: 1,
+      });
+      setRepoMtime(presetCopyRepo, olderMs);
+
       // Counterexample G: referenced by an archived session's cwd
-      const sessionRepo = initRepo(join(reposDir, "session-repo"), join(remotesDir, "session.git"));
+      const sessionRepo = initRepo(join(reposDir, "session-repo"), join(remotesDir, "session.git"), "https://github.com/example/session.git");
       rig.store.insertSession({
         key: "s-using-repo", connect: "cl", runtime: "claude", profile: "cc",
         workspace: join(rig.dir, "sessions", "cl", "s-using-repo", "workspace"),
@@ -437,7 +473,7 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       setRepoMtime(sessionRepo, olderMs);
 
       // Counterexample H: referenced by an unfinished job's cwd
-      const jobRepo = initRepo(join(reposDir, "job-repo"), join(remotesDir, "job.git"));
+      const jobRepo = initRepo(join(reposDir, "job-repo"), join(remotesDir, "job.git"), "https://github.com/example/job.git");
       rig.store.insertJob({
         id: "job-1", sessionKey: "s-using-repo", name: "build", command: "sleep 1",
         cwd: jobRepo, port: null, token: "tok-job-1", state: "running", pgid: null,
@@ -447,7 +483,7 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       setRepoMtime(jobRepo, olderMs);
 
       // Counterexample I: listed in move/repos.json
-      const moveRepo = initRepo(join(reposDir, "move-repo"), join(remotesDir, "move.git"));
+      const moveRepo = initRepo(join(reposDir, "move-repo"), join(remotesDir, "move.git"), "https://github.com/example/move.git");
       mkdirSync(join(rig.dir, "move"), { recursive: true });
       writeFileSync(join(rig.dir, "move", "repos.json"), JSON.stringify({
         "https://example.com/move.git": { dir: moveRepo, made: true },
@@ -455,16 +491,16 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       setRepoMtime(moveRepo, olderMs);
 
       // Counterexample J: recently touched (< 14 days)
-      const freshRepo = initRepo(join(reposDir, "fresh-repo"), join(remotesDir, "fresh.git"));
+      const freshRepo = initRepo(join(reposDir, "fresh-repo"), join(remotesDir, "fresh.git"), "https://github.com/example/fresh.git");
       setRepoMtime(freshRepo, freshMs);
 
       // Counterexample K: symlink pointing outside <data>
-      const externalTarget = initRepo(join(outsideDir, "real-ext"), join(remotesDir, "ext.git"));
+      const externalTarget = initRepo(join(outsideDir, "real-ext"), join(remotesDir, "ext.git"), "https://github.com/example/ext.git");
       setRepoMtime(externalTarget, olderMs);
       symlinkSync(externalTarget, join(reposDir, "symlink-ext"));
 
       // Counterexample L: .cloning-* temp dir
-      const cloningDir = initRepo(join(reposDir, ".cloning-abc"), join(remotesDir, "cloning.git"));
+      const cloningDir = initRepo(join(reposDir, ".cloning-abc"), join(remotesDir, "cloning.git"), "https://github.com/example/cloning.git");
       setRepoMtime(cloningDir, olderMs);
 
       // First call: free() is below low for 1 deletion, then >= low -> should delete ONLY eligible-oldest!
@@ -486,7 +522,7 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       assert.ok(existsSync(cloningDir), "relieveRepos MUST NOT delete .cloning-* temp dir");
 
       // Counterexample M: git command failure / timeout treats eligible clone as ineligible
-      const gitFailRepo = initRepo(join(reposDir, "git-fail-repo"), join(remotesDir, "git-fail.git"));
+      const gitFailRepo = initRepo(join(reposDir, "git-fail-repo"), join(remotesDir, "git-fail.git"), "https://github.com/example/git-fail.git");
       setRepoMtime(gitFailRepo, olderMs);
       const goneFail = await relieveRepos(rig.hub, () => DISK_LOW_BYTES - 1, DISK_LOW_BYTES, {
         git: async () => ({ ok: false, stdout: "" }),
@@ -494,8 +530,37 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       assert.deepEqual(goneFail, []);
       assert.ok(existsSync(gitFailRepo), "clone preserved when git check fails or times out");
 
+      // Counterexample M2: corrupted presets.json aborts the whole round (deletes nothing)
+      const corruptPresetsPath = join(rig.config.agentHome, "presets.json");
+      writeFileSync(corruptPresetsPath, "{not valid json");
+      const goneCorruptPresets = await relieveRepos(rig.hub, () => DISK_LOW_BYTES - 1, DISK_LOW_BYTES);
+      assert.deepEqual(goneCorruptPresets, []);
+      assert.ok(existsSync(gitFailRepo), "corrupted presets.json aborts entire round");
+      rmSync(corruptPresetsPath, { force: true });
+
+      // Counterexample M3: repo touched during git checks is skipped on re-check before rm
+      const touchedDuringGit = initRepo(join(reposDir, "touched-during-git"), join(remotesDir, "touched.git"), "https://github.com/example/touched.git");
+      setRepoMtime(touchedDuringGit, olderMs);
+      const goneTouched = await relieveRepos(rig.hub, () => DISK_LOW_BYTES - 1, DISK_LOW_BYTES, {
+        git: async (dir, args) => {
+          if (dir !== realpathSync(touchedDuringGit)) return { ok: false, stdout: "" };
+          if (args.includes("status")) {
+            setRepoMtime(touchedDuringGit, baseNow);
+          }
+          return {
+            ok: true,
+            stdout: args[0] === "remote" && args.length === 1 ? "origin\n"
+              : args[0] === "remote" ? "https://github.com/example/touched.git\n"
+              : args[0] === "rev-list" ? "0\n"
+              : "",
+          };
+        },
+      });
+      assert.ok(!goneTouched.includes("touched-during-git"), "repo touched during git checks is skipped");
+      assert.ok(existsSync(touchedDuringGit), "repo touched during git checks MUST NOT be deleted");
+
       // Counterexample N: active clone in progress prevents reclamation
-      const activeRepo = initRepo(join(reposDir, "while-cloning"), join(remotesDir, "while-cloning.git"));
+      const activeRepo = initRepo(join(reposDir, "while-cloning"), join(remotesDir, "while-cloning.git"), "https://github.com/example/while-cloning.git");
       setRepoMtime(activeRepo, olderMs);
       // Force active state via custom Clones run that never finishes during relieveRepos
       let releaseClone!: () => void;
@@ -510,8 +575,8 @@ describe("Item 4: low-disk reclamation of unreferenced shared clones", () => {
       (rig.hub.clones as any).run = origRun;
 
       for (const kept of [
-        unpushed, stashed, untracked, noRemote, lockedWtRepo, presetRepo,
-        sessionRepo, jobRepo, moveRepo, freshRepo, join(reposDir, "symlink-ext"), externalTarget, gitFailRepo, activeRepo,
+        unpushed, detachedUnpushed, stashed, untracked, noRemote, localPathRemote, fileUrlRemote, lockedWtRepo, presetRepo, presetCopyRepo,
+        sessionRepo, jobRepo, moveRepo, freshRepo, join(reposDir, "symlink-ext"), externalTarget, touchedDuringGit, activeRepo,
       ]) {
         assert.ok(existsSync(kept), `MUST NOT be deleted: ${kept}`);
       }

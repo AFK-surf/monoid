@@ -536,9 +536,9 @@ async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> U
 }
 
 ///|
-/// Whether any repository clone is currently in progress.
+/// Whether any repository clone is currently in progress (fail closed on error).
 async fn LiveBus::hub_clones_active(self : LiveBus) -> Bool {
-  ((self.hub_ask.val)("clones.active", Json::null()) catch { _ => Json::boolean(false) }) == Json::boolean(true)
+  ((self.hub_ask.val)("clones.active", Json::null()) catch { _ => Json::boolean(true) }) == Json::boolean(true)
 }
 
 ///|

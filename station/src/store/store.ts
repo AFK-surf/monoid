@@ -190,7 +190,7 @@ export const TRANSCRIPT_REFERENCED = `SELECT 1 FROM runtime_sessions r INDEXED B
   LIMIT 1`;
 export const SESSION_PATHS_BATCH = 200;
 /// Bounded primary-key page of session workspace/cwd paths for low-disk clone reclamation.
-export const SESSION_PATHS_PAGE = `SELECT key, workspace, cwd FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2`;
+export const SESSION_PATHS_PAGE = `SELECT key, workspace, cwd, archived_at FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2`;
 /// A session's messages not delivered yet and its latest turn (`statsOf`): what is not delivered by the index of those
 /// alone. By (session, thread), SQLite went over every message the session was ever given, and every turn was counted
 /// besides, for no one: auto-archiving looked at each session shown so, on the main thread, 13 s and 22 s on a station short
@@ -1574,11 +1574,12 @@ export class Store {
   }
 
   /// A primary-key-bounded page of session workspace/cwd paths for low-disk clone reclamation.
-  sessionPathsPage(after: string, limit = SESSION_PATHS_BATCH): { key: string; workspace: string; cwd: string | null }[] {
+  sessionPathsPage(after: string, limit = SESSION_PATHS_BATCH): { key: string; workspace: string; cwd: string | null; archivedAt: number | null }[] {
     return (this.#all(SESSION_PATHS_PAGE, after, limit) as Json[]).map((r) => ({
       key: String(r.key),
       workspace: String(r.workspace),
       cwd: r.cwd === null || r.cwd === undefined ? null : String(r.cwd),
+      archivedAt: r.archived_at === null || r.archived_at === undefined ? null : Number(r.archived_at),
     }));
   }
 

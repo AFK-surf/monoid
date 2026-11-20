@@ -501,7 +501,8 @@ pub async fn Hub::archive_chat(self : Hub, thread : Json, archived : Bool) -> Un
 
 ///|
 /// `deleteSession`: its process ends, its rows go (with the threads only it was in) and its workspace directory,
-/// transcript copy and what the readers kept of its transcripts' reading with them.
+/// transcript copy, exclusive transcripts under `<data>`, and what the readers kept of its transcripts' reading with
+/// them. Transcripts outside `<data>` (a person's own profile home) or referenced by any other session row stay.
 pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
   let row = match self.get_session(key) {
     Some(r) => r
