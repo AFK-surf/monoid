@@ -838,8 +838,15 @@ test("run: a stop lets go of run/hub.json only once its sessions are let go, so 
   await a.next("mcp", (m) => m.serving === "mcp");
   assert.equal(JSON.parse(readFileSync(join(data, "run", "hub.json"), "utf8")).pid, a.child.pid);
   // its winding down held: its processes (the sessions' program, the readers) stopped, so letting go of them waits
-  // (one that ended since `ps` looked, a short command of its own, is left out)
-  const rows = spawnSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter((r) => r[1] === String(a.child.pid));
+  // (one that ended since `ps` looked, a short command of its own, is left out); `copies.start()` spawns
+  // `--builder replica-export` only after `door_ready`, and it is the one `wait_live_p5_5_closed()` awaits on stop: wait for it
+  let rows: string[][] = [];
+  for (let i = 0; i < 250; i++) {
+    rows = spawnSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }).stdout.split("\n").map((l) => l.trim().split(/\s+/)).filter((r) => r[1] === String(a.child.pid));
+    if (rows.some((r) => r.includes("replica-export"))) break;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(rows.some((r) => r.includes("replica-export")), `its processes (waiting for replica-export): ${JSON.stringify(rows)}`);
   const kids = rows.map((r) => Number(r[0])).filter((k) => {
     try {
       process.kill(k, "SIGSTOP");

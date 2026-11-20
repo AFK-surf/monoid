@@ -667,7 +667,12 @@ test(
       await within("s1 watch job and service stopped on archive", 15_000, () => {
         const w = store.getJob(watchJob.id);
         const s = store.getJob(svcJob.id);
-        return w?.state === "stopped" && s?.state === "stopped" && !alive(watchPgid, true) && !alive(svcPgid, true) ? true : null;
+        if (w?.state !== "stopped" || s?.state !== "stopped" || alive(watchPgid, true) || alive(svcPgid, true)) return null;
+        // `Jobs::stopAll` appends the note after the stop itself: wait for it too
+        return readFileSync(w.log, "utf8").includes("[still.fail] stopped: its chat ended") &&
+          readFileSync(s.log, "utf8").includes("[still.fail] stopped: its chat ended")
+          ? true
+          : null;
       });
       assert.match(readFileSync(store.getJob(watchJob.id)!.log, "utf8"), /\[still\.fail\] stopped: its chat ended/);
       assert.match(readFileSync(store.getJob(svcJob.id)!.log, "utf8"), /\[still\.fail\] stopped: its chat ended/);
