@@ -117,7 +117,7 @@ fn ChatImages::trim(self : ChatImages, kept : String) -> Unit {
 /// Picture `id` let go of (ChatImages::trim): its image, and all that is kept of it, as if never asked for.
 fn ChatImages::let_go(self : ChatImages, id : String) -> Unit {
   match self.keys.get(id) {
-    Some(k) if k.has_prefix("mem:preview/") => {
+    Some(k) if is_preview_image_key(k) => {
       let n = whole_given.get(k).unwrap_or(0) - 1
       if n > 0 {
         whole_given[k] = n
@@ -149,7 +149,7 @@ pub fn ChatImages::clear(self : ChatImages) -> Unit {
   self.coming.clear()
   self.since.clear()
   for _, k in self.keys {
-    if k.has_prefix("mem:preview/") {
+    if is_preview_image_key(k) {
       let n = whole_given.get(k).unwrap_or(0) - 1
       if n > 0 {
         whole_given[k] = n
@@ -272,10 +272,24 @@ pub fn ChatImages::get(
 /// `size`: its bytes (what it counts towards chat_images_budget).
 pub fn ChatImages::whole(self : ChatImages, id : String, key : String, size? : Int = 0) -> Unit {
   match self.keys.get(id) {
-    Some(k) if k != "" && k != "!" => ()
-    _ => {
+    Some(k) if k != "" && k != "!" && !(k.has_prefix("mem:preview-p/") && key.has_prefix("mem:preview/")) => ()
+    old => {
+      match old {
+        Some(k) if k.has_prefix("mem:preview-p/") => {
+          let n = whole_given.get(k).unwrap_or(0) - 1
+          if n > 0 {
+            whole_given[k] = n
+          } else {
+            whole_given.remove(k)
+            if !preview_shown(k) {
+              @ui.forget_image(k)
+            }
+          }
+        }
+        _ => ()
+      }
       self.keys[id] = key
-      if key.has_prefix("mem:preview/") {
+      if is_preview_image_key(key) {
         whole_given[key] = whole_given.get(key).unwrap_or(0) + 1
       }
       self.unreached.remove(id)

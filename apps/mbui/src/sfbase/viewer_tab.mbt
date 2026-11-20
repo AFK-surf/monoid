@@ -596,10 +596,37 @@ pub fn viewer_tab_node(
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed, 下载 asked)
   // (its film's or song's player made as it is asked for: what plays it there from then)
   let media_made = @signals.signal(false)
-  q.reacts(fn() { (vw.sniffed.get(), vw.bytes.get() is Some(_), vw.error.get() is Some(_), vw.fetching.get(), vw.asked_told.get()) }, fn(_) {
-    vw.fetch(src)
-    media_made.set(vw.media is Some(_))
-  })
+  q.reacts(
+    fn() {
+      (
+        vw.sniffed.get(),
+        vw.bytes.get() is Some(_),
+        vw.error.get() is Some(_),
+        vw.fetching.get(),
+        vw.asked_told.get(),
+        vw.whole_due(),
+      )
+    },
+    fn(_) {
+      vw.fetch(src)
+      media_made.set(vw.media is Some(_))
+    },
+  )
+  // release the preview image once the whole image is decoded so host memory stays bounded
+  q.reacts(
+    fn() {
+      vw.bytes.get() |> ignore
+      vw.preview_image != "" &&
+      vw.image != "" &&
+      vw.image != vw.preview_image &&
+      @ui.image_any_ready(vw.image)
+    },
+    fn(ready) {
+      if ready {
+        vw.drop_preview_image()
+      }
+    },
+  )
   // what marking made of its picture, taken as the host says it is drawn (MarkedImage::ready): kept, or into the chat's
   // draft, once (Viewer::marks_frame), while it is this tab's marking
   q.reacts(
@@ -632,6 +659,8 @@ pub fn viewer_tab_node(
         vw.ask_install()
       }
       vw.share_came()
+      vw.copy_came()
+      vw.marks_finish_came()
     }
   })
   let tips_at : Ref[@view.View?] = Ref(None)
@@ -776,6 +805,17 @@ fn tab_keys_node(
   }
   // (marking it: marking's actions in their place, Viewer::marks_here)
   r.show(fn() { vw.marks_here() }, fn(k) { marks_actions_node_of(k, vw, ink, tips) })
+  // (loading or upgrading an image: progress in the bar)
+  if gives {
+    r.show(fn() { !vw.marks_here() && vw.image_loading() }, fn(x) {
+      @sf.viewer_coming_node(x, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
+    })
+  } else {
+    r.show(fn() { !vw.marks_here() && vw.image_loading() }, fn(x) {
+      @sf.viewer_coming_node(x, fn() { vw.got.get() }, fn() { vw.file.size }, ink, lead=false, track=@sf.vfr_head_coming_track)
+      |> ignore
+    })
+  }
   // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
   // Viewer::set_source)
   let sourced = fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }
@@ -838,7 +878,7 @@ fn tab_keys_node(
   // 标注图片: once its whole picture is here, a picture it shows (as the whole window's bar has it: image_tools)
   slot(
     tab_keys_drop_mark,
-    fn() { vw.bytes.get() is Some(_) && vw.markable() },
+    fn() { (gives || !vw.upgrading()) && vw.bytes.get() is Some(_) && vw.markable() },
     fn() { Some(@sf.menu_item_of(@sf.t("web-main.annotate.image"), fn() { vw.marks_start_here() }, icon="edit")) },
     fn(x) {
       @sf.tool_node(
@@ -853,20 +893,10 @@ fn tab_keys_node(
     },
   )
   // 复制: the whole picture on the clipboard, a check a moment after (as the whole window's bar has it: image_tools)
-  let copy_image = fn() {
-    match vw.bytes.untracked() {
-      Some(b) => {
-        @hostapi.clipboard_set_image(b)
-        @ui.haptic(KeyboardTap)
-        vw.copied += 1
-        true
-      }
-      None => false
-    }
-  }
+  let copy_image = fn() { vw.ask_copy() }
   slot(
     tab_keys_drop_copy,
-    fn() { vw.bytes.get() is Some(_) && vw.shown_kind() == Some(KImage) },
+    fn() { (gives || !vw.upgrading()) && vw.bytes.get() is Some(_) && vw.shown_kind() == Some(KImage) },
     fn() { Some(@sf.menu_item_of(@sf.t("common.copy"), fn() { copy_image() |> ignore }, icon="copy")) },
     fn(x) { @sf.copy_tool_node(x, ink, corner, copy_image, tip=tips) |> ignore },
   )
@@ -878,7 +908,7 @@ fn tab_keys_node(
   }
   slot(
     tab_keys_drop_download,
-    fn() { !vw.coming() },
+    fn() { (gives || !vw.upgrading()) && !vw.coming() },
     fn() {
       Some(
         @sf.menu_item_of(
@@ -1131,6 +1161,16 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, ta
       None => ()
     }
   }
+  // zoomed in past fitted (or gliding there): the image itself asked for in place of its preview (Viewer::whole_due);
+  // once asked, wanted till it comes, zoomed out again or not
+  s.reacts(
+    fn() {
+      vw.zoom.told()
+      let z = vw.zoom
+      z.nw > 0.0 && (if z.gliding { z.g_to[0] } else { z.scale }) > z.fit() * 1.01
+    },
+    fn(zoomed) { if zoomed { vw.zoomed_in.set(true) } },
+  )
   s
   .on_key(fn(k) {
     if marked() {
@@ -1257,8 +1297,8 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, ta
             return
           }
           match (z.rect_at(e.at), vw.bytes.get()) {
-            (Some((rx, ry, rw, rh)), Some(b)) if e.x + m >= rx && e.x + m < rx + rw && e.y + m >= ry && e.y + m < ry + rh =>
-              vw.picture_menu_at(e.wx, e.wy, b)
+            (Some((rx, ry, rw, rh)), Some(_)) if e.x + m >= rx && e.x + m < rx + rw && e.y + m >= ry && e.y + m < ry + rh =>
+              vw.picture_menu_at(e.wx, e.wy)
             _ => ()
           }
         })
@@ -1330,13 +1370,7 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, ta
       |> ignore
     })
     |> ignore
-    // (coming with nothing to stand in for it: how much has; its read failed, or no picture in it: why)
-    stage.show(fn() { vw.coming() && vw.stand_in(src) == "" }, fn(f) {
-      f.over(Is(true)).lines_up(Is(Some(Middle))).padding(Is((24.0, 24.0, 24.0, 24.0))) |> ignore
-      f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-      f.box(fn(c) { viewer_coming_node(c, vw) }) |> ignore
-      f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-    })
+    // (its read failed, or no picture in it: why)
     stage.show(fn() { vw.picture_failed() || vw.error.get() is Some(_) }, fn(f) {
       f.over(Is(true)).padding(Is((24.0, 24.0, 24.0, 24.0))).lines_up(Is(Some(Middle))) |> ignore
       f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore

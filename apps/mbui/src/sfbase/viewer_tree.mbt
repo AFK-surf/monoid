@@ -154,9 +154,14 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   // for before it was here saved as its whole comes; each once (Viewer::ask_save)
   n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
     download_told(src, vw)
-    if vw.save_after && vw.whole_here() is Some(_) {
-      vw.save_after = false
-      vw.save_tree()
+    if vw.whole_here() is Some(_) {
+      if vw.save_after {
+        vw.save_after = false
+        vw.save_tree()
+      }
+      vw.share_came()
+      vw.copy_came()
+      vw.marks_finish_came()
     }
   })
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed)
@@ -173,6 +178,21 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       )
     },
     fn(_) { vw.fetch(src) },
+  )
+  // release the preview image once the whole image is decoded so host memory stays bounded
+  n.reacts(
+    fn() {
+      vw.bytes.get() |> ignore
+      vw.preview_image != "" &&
+      vw.image != "" &&
+      vw.image != vw.preview_image &&
+      @ui.image_any_ready(vw.image)
+    },
+    fn(ready) {
+      if ready {
+        vw.drop_preview_image()
+      }
+    },
   )
   // zoomed in past fitted (or gliding there): the image itself asked for in place of its preview (Viewer::whole_due);
   // once asked, wanted till it comes, zoomed out again or not
@@ -406,7 +426,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         }))
         .width(By(fn() { going().map(fn(g) { g.0.w }) }))
         .height(By(fn() { going().map(fn(g) { g.0.h }) }))
-        .image(By(fn() { going().map(fn(g) { (g.0.picture, "", stage_px) }) }))
+        .image(By(fn() { going().map(fn(g) { (g.0.picture, "", stage_max_px()) }) }))
         |> ignore
       })
       |> ignore
@@ -461,7 +481,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         .image(By(fn() {
           vw.bytes.get() |> ignore
           if !vw.picture_failed() && vw.size_unknown(src) {
-            Some((vw.picture(src), "", stage_px))
+            Some((vw.picture(src), "", stage_max_px()))
           } else {
             None
           }
@@ -812,7 +832,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
           let due = at + @ui.long_press_ms
           v.hold_off = canvas.at_moment(due, fn() {
             match (z.rect_at(due), v.bytes.get()) {
-              (Some((rx, ry, rw, rh)), Some(b)) if v.held && v.moved <= tap_slop && !v.pinched &&
+              (Some((rx, ry, rw, rh)), Some(_)) if v.held && v.moved <= tap_slop && !v.pinched &&
                 v.fingers.length() == 1 &&
                 v.down_lx >= rx &&
                 v.down_lx < rx + rw &&
@@ -820,7 +840,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
                 v.down_ly < ry + rh => {
                 v.caught = true
                 @ui.haptic(LongPress)
-                v.picture_menu_at(v.down_x, v.down_y, b)
+                v.picture_menu_at(v.down_x, v.down_y)
               }
               _ => ()
             }
@@ -991,8 +1011,8 @@ fn Viewer::menu_on(self : Viewer, m : @view.Menu) -> Unit {
     return
   }
   match (self.zoom.rect_at(m.at), self.bytes.get()) {
-    (Some((rx, ry, rw, rh)), Some(b)) if m.x >= rx && m.x < rx + rw && m.y >= ry && m.y < ry + rh =>
-      self.picture_menu_at(m.wx, m.wy, b)
+    (Some((rx, ry, rw, rh)), Some(_)) if m.x >= rx && m.x < rx + rw && m.y >= ry && m.y < ry + rh =>
+      self.picture_menu_at(m.wx, m.wy)
     _ => ()
   }
 }
@@ -1009,10 +1029,11 @@ pub fn Viewer::marks_rect(self : Viewer, at : Double) -> (Double, Double, Double
 /// till that is decoded for the size it is drawn at, as Viewer::shown_picture has them (which of them decided as it is
 /// drawn, at its pixels then); None: nothing of it yet.
 fn Viewer::picture_shown(self : Viewer, src : Source) -> (String, String, Int)? {
+  let cap = self.decode_max_px()
   match self.picture(src) {
     "" => None
-    picture if picture != self.image => Some((picture, "", stage_px))
-    picture => Some((picture, self.stand_in(src), stage_px))
+    picture if picture != self.image => Some((picture, "", cap))
+    picture => Some((picture, self.stand_in(src), cap))
   }
 }
 
@@ -1453,22 +1474,22 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     fn() { vf_title(vw) },
     // (its kind and size after its name where the bar has room: wider than a phone, viewer_head_node)
     fn() { vf_meta(vw, src) },
-    // (as it rests, a tap hides it, while it comes it stays)
-    fn() { vw.bars_shown() || vw.coming() },
+    // (as it rests, a tap hides it, while it comes or upgrades it stays)
+    fn() { vw.bars_shown() || vw.image_loading() },
     fn(node) { vw.shown_on(node) },
     fn() { (@sf.viewer_host().room)().0 },
     fn() { stage().0 },
     ink,
     fn() { @sf.viewer_page_glass() },
     fn(row) {
-      // while it comes, how much of it has, once the core has said: a line of the bar's own as the wide bar's is
+      // while it comes or upgrades, how much of it has, once the core has said: a line of the bar's own as the wide bar's is
       // (viewer_coming_node), never the stage's card (file_progress_node), taller than the bar and crowding its name out
-      row.show(fn() { vw.coming() && vw.got.get() is Some(_) }, fn(r) {
+      row.show(fn() { !marked() && vw.image_loading() && vw.got.get() is Some(_) }, fn(r) {
         @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink, lead=false, track=@sf.vfr_head_coming_track)
         |> ignore
       })
-      // (its tools; marking, marking's actions in their place)
-      row.show(fn() { !marked() }, fn(r) {
+      // (its tools; marking, marking's actions in their place; hidden while upgrading with progress shown on narrow head bar)
+      row.show(fn() { !marked() && !(vw.upgrading() && vw.got.get() is Some(_)) }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
         image_tools(r, src, vw, ink, Is(@sf.tool_side / 2.0), tips)
       })
@@ -1477,7 +1498,7 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     fn() {
       // (marking, which of its actions: marks_actions_node's)
       let m = if marked() { "\{marking.busy} \{marking.error} \{marks_any()} \{vw.draft_key() != ""}" } else { "" }
-      "\{whole()} \{downloading(dl())} \{vw.coming()} \{vw.got.get() is Some(_)} \{m}"
+      "\{whole()} \{downloading(dl())} \{vw.coming()} \{vw.upgrading()} \{vw.got.get() is Some(_)} \{m}"
     },
     fn() {
       vw.shut_tree()
@@ -1515,15 +1536,15 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
     fn() { stage().0 },
     ink,
     fn(row, corner) {
-      // (while it comes, from the start)
-      row.show(fn() { vw.coming() }, fn(r) {
-        @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
-      })
-      // (its tools; marking, marking's actions in their place)
       let marked = fn() {
         marks_said()
         marking.on
       }
+      // (while it comes or upgrades, from the start)
+      row.show(fn() { !marked() && vw.image_loading() }, fn(r) {
+        @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
+      })
+      // (its tools; marking, marking's actions in their place)
       row.show(fn() { !marked() }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
         image_tools(r, src, vw, ink, corner, tips)
@@ -1613,23 +1634,7 @@ fn image_tools(
   // 复制: the whole picture on the clipboard, a check a moment after; one too big to show
   // too, once read
   row.show(fn() { whole() && vw.shown_kind() == Some(KImage) }, fn(r) {
-    @sf.copy_tool_node(
-      r,
-      ink,
-      corner,
-      fn() {
-        match vw.bytes.untracked() {
-          Some(b) => {
-            @ui.current().copy_image(b)
-            vw.copied += 1
-            true
-          }
-          None => false
-        }
-      },
-      tip=tips,
-    )
-    |> ignore
+    @sf.copy_tool_node(r, ink, corner, fn() { vw.ask_copy() }, tip=tips) |> ignore
   })
   // 移到侧边: where the shell has a side panel for the page under it, a file that opens there (beside_offered): the
   // whole window closed for its tab
@@ -2024,7 +2029,7 @@ fn film_flight(
         .over(Is(true))
         .image(By(fn() {
           match flight(f) {
-            Some(_) if picture() != "" => Some((picture(), "", stage_px))
+            Some(_) if picture() != "" => Some((picture(), "", stage_max_px()))
             _ => None
           }
         }))
@@ -2167,7 +2172,7 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
     .image(By(fn() {
       match vw.still(src) {
         "" | "!" => None
-        k => Some((k, "", stage_px))
+        k => Some((k, "", stage_max_px()))
       }
     }))
     // (as its thumbnail draws it, so it flies as one: covering its box, a letterboxed one contained)
@@ -2222,7 +2227,7 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
       .image(By(fn() {
         vw.grab_told.get() |> ignore
         if vw.leaving_pic != "" {
-          Some((vw.leaving_pic, "", stage_px))
+          Some((vw.leaving_pic, "", stage_max_px()))
         } else {
           None
         }

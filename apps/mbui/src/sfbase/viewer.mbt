@@ -191,6 +191,10 @@ pub(all) struct Viewer {
   mut save_after : Bool
   /// …or to be handed to another app (分享: Viewer::ask_share), as its whole comes
   mut share_after : Bool
+  /// …or to be put on the clipboard (复制: Viewer::ask_copy), as its whole comes
+  mut copy_after : Bool
+  /// …or to draw its marks onto its whole (标注完成: Viewer::finish_marks), as its whole comes
+  mut marks_after : Bool?
   /// a chat's file asked to be downloaded by the core (downloads.mbt), said to it in the next frame (the old bars');
   /// told as it is asked (`asked_told`: the window's tree's viewer says it to the core then, and saves what was asked
   /// for to be saved as its whole comes, each once)
@@ -224,6 +228,8 @@ pub(all) struct Viewer {
   flow_told : @signals.Signal[Int]
   /// the image's key once its bytes are given
   mut image : String
+  /// the preview image's key (`mem:preview-p/<id>`), distinct from the whole image's (`mem:preview/<id>`)
+  mut preview_image : String
   /// drawn once (its way in set going), closed (only drawn going), how far it has faded in (0 … 1, a motion)
   mut started : Bool
   mut closing : Bool
@@ -1244,6 +1250,8 @@ pub fn new_viewer(
     asked: false,
     save_after: false,
     share_after: false,
+    copy_after: false,
+    marks_after: None,
     download_asked: false,
     install_after: false,
     awake: true,
@@ -1268,6 +1276,7 @@ pub fn new_viewer(
     colored_dark: false,
     flow: None,
     image: "",
+    preview_image: "",
     started: false,
     closing: false,
     fade: @motion.Way::new(0.0),
@@ -1673,21 +1682,55 @@ pub fn Viewer::let_go(self : Viewer) -> Unit {
   pv_frames_sweep(but=self)
 }
 
+fn is_preview_image_key(key : String) -> Bool {
+  key.has_prefix("mem:preview/") || key.has_prefix("mem:preview-p/")
+}
+
 ///|
 /// Its whole picture, read here, let go of where nothing else shows it (a chat's picture given it, ChatImages::whole,
 /// keeps it); where something still does (the strip sliding it out as another is stepped to), once nothing does
 /// (pv_previews_gone). Drawn again by it, it is put up again from its bytes (Viewer::picture).
 fn Viewer::let_go_image(self : Viewer) -> Unit {
-  let image = self.image
-  if image.has_prefix("mem:preview/") && !whole_given_shown(image) {
-    if preview_shown(image, but=self) {
-      pv_previews_gone.push(image)
+  let drop = fn(key : String) -> Bool {
+    if is_preview_image_key(key) && !whole_given_shown(key) {
+      if preview_shown(key, but=self) {
+        pv_previews_gone.push(key)
+        false
+      } else {
+        @ui.forget_image(key)
+        true
+      }
     } else {
-      @ui.forget_image(image)
-      self.image = ""
+      false
     }
   }
+  let image = self.image
+  let preview = self.preview_image
+  if drop(image) {
+    self.image = ""
+  }
+  if preview != "" && preview != image {
+    drop(preview) |> ignore
+  }
+  self.preview_image = ""
   pv_previews_sweep(but=self)
+}
+
+///|
+/// Drop the preview image key once the whole image is ready so both do not stay resident in the host.
+fn Viewer::drop_preview_image(self : Viewer) -> Unit {
+  let key = self.preview_image
+  if key != "" && key != self.image {
+    self.preview_image = ""
+    if is_preview_image_key(key) && !whole_given_shown(key) {
+      if preview_shown(key, but=self) {
+        pv_previews_gone.push(key)
+      } else {
+        @ui.forget_image(key)
+      }
+    }
+    pv_previews_sweep(but=self)
+  }
 }
 
 ///|
@@ -2614,7 +2657,7 @@ pub fn Viewer::bars_shown(self : Viewer) -> Bool {
   marks_said()
   self.awake ||
   self.near_bar ||
-  self.coming() ||
+  self.image_loading() ||
   ((self.shown_kind() == Some(KHtml) || self.shown_kind() == Some(KMbui)) && !self.source) ||
   marking.on
 }
@@ -2642,9 +2685,20 @@ pub fn Viewer::draft_key(self : Viewer) -> String {
 /// The marked image asked for: drawn by the host at the picture's own size (marks.mbt), then downloaded or put in the
 /// chat's draft with a quote per numbered mark.
 pub fn Viewer::finish_marks(self : Viewer, to_draft : Bool) -> Unit {
-  let bytes = match self.bytes.get() {
+  let bytes = match self.whole_here() {
     Some(b) => b
-    None => return
+    None => {
+      if self.previewed.untracked() {
+        self.error.set(None)
+        self.asked = true
+        self.marks_after = Some(to_draft)
+        marking.busy = true
+        marking.error = ""
+        marks_changed()
+        self.asked_told.set(self.asked_told.untracked() + 1)
+      }
+      return
+    }
   }
   marks_put_down()
   let z = self.zoom
@@ -2714,6 +2768,23 @@ pub fn Viewer::marks_came(self : Viewer, keep : (String, String, Bytes) -> Unit,
 /// An image still coming (its thumbnail in its place meanwhile).
 pub fn Viewer::coming(self : Viewer) -> Bool {
   self.shown_kind() == Some(KImage) && !self.file.path.has_prefix("draft:") && self.bytes.get() is None && self.error.get() is None
+}
+
+///|
+/// A previewed image upgrading to its whole image on demand (zoomed into, or asked for).
+pub fn Viewer::upgrading(self : Viewer) -> Bool {
+  self.shown_kind() == Some(KImage) &&
+  !self.file.path.has_prefix("draft:") &&
+  self.previewed.get() &&
+  self.fetching.get() &&
+  self.whole_due() &&
+  self.error.get() is None
+}
+
+///|
+/// An image loading its initial bytes or upgrading from its preview to its whole image.
+pub fn Viewer::image_loading(self : Viewer) -> Bool {
+  self.coming() || self.upgrading()
 }
 
 ///|
@@ -2811,6 +2882,69 @@ pub fn Viewer::share_came(self : Viewer) -> Unit {
 }
 
 ///|
+/// Ask for the whole image in place of its preview (e.g. when entering marking).
+pub fn Viewer::request_whole(self : Viewer) -> Unit {
+  if !self.file.path.has_prefix("draft:") && self.previewed.untracked() && !self.asked {
+    self.error.set(None)
+    self.asked = true
+    self.asked_told.set(self.asked_told.untracked() + 1)
+  }
+}
+
+///|
+/// 复制: put the whole image on the clipboard, or fetch the whole image first while a preview shows.
+pub fn Viewer::ask_copy(self : Viewer) -> Bool {
+  match self.whole_here() {
+    Some(b) => {
+      @hostapi.clipboard_set_image(b)
+      @ui.haptic(KeyboardTap)
+      self.copied += 1
+      true
+    }
+    None => {
+      if self.bytes.untracked() is Some(_) {
+        self.error.set(None)
+        self.asked = true
+        self.copy_after = true
+        self.asked_told.set(self.asked_told.untracked() + 1)
+      }
+      false
+    }
+  }
+}
+
+///|
+/// What was asked to be copied before its whole was here, copied once the whole arrives (Viewer::ask_copy).
+pub fn Viewer::copy_came(self : Viewer) -> Unit {
+  if self.copy_after {
+    match self.whole_here() {
+      Some(b) => {
+        self.copy_after = false
+        @hostapi.clipboard_set_image(b)
+        @ui.haptic(KeyboardTap)
+        self.copied += 1
+        toast_later(@sf.t("common.copied"))
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+/// What was asked to finish marking before its whole was here, finished once the whole arrives (Viewer::finish_marks).
+pub fn Viewer::marks_finish_came(self : Viewer) -> Unit {
+  match self.marks_after {
+    Some(to_draft) if self.whole_here() is Some(_) => {
+      self.marks_after = None
+      if marking.on {
+        self.finish_marks(to_draft)
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 /// 下载 pressed on a node of the window's tree (a tab's tools beside a chat: viewer_tab.mbt), outside any build: as
 /// Viewer::ask_save, what is here handed to the host at once (keep_now).
 pub fn Viewer::save_now(self : Viewer) -> Unit {
@@ -2904,6 +3038,22 @@ pub fn Viewer::flight_target(self : Viewer, c : @ui.Ctx, src : Source) -> (Doubl
 pub let stage_px : Int = 4096
 
 ///|
+/// The decode cap on the stage: 8192 on desktop/web so tall screenshots stay crisp when zoomed, 4096 on phones.
+pub fn stage_max_px() -> Int {
+  if @sf.picture_to_album() { stage_px } else { 8192 }
+}
+
+///|
+/// The decode cap for this viewer: station previews are at most 2048 px, whole images use stage_max_px().
+fn Viewer::decode_max_px(self : Viewer) -> Int {
+  if self.previewed.untracked() {
+    2048
+  } else {
+    stage_max_px()
+  }
+}
+
+///|
 /// What an image shows drawn at `r` (where it is on the stage, or lands): its whole picture once that is decoded (its
 /// decode for that size asked for here where it is not), until then what stands in for it: one picture takes
 /// another's place only once it can be drawn, never a frame of nothing between them.
@@ -2913,7 +3063,7 @@ pub fn Viewer::shown_picture(self : Viewer, c : @ui.Ctx, src : Source, r : (Doub
     return picture
   }
   let (_, _, w, h) = r
-  if c.image_ready(picture, dmin(dmax(w, h) * c.scale, stage_px.to_double())) {
+  if c.image_ready(picture, dmin(dmax(w, h) * c.scale, self.decode_max_px().to_double())) {
     return picture
   }
   match self.stand_in(src) {
@@ -2983,17 +3133,18 @@ pub fn Viewer::flight_from(self : Viewer, c : @ui.Ctx) -> Thumb? {
 }
 
 ///|
-/// The picture's own menu at (`x`, `y`), its whole `b` here.
+/// The picture's own menu at (`x`, `y`).
 /// (a handler's: what it does is asked of the host as its item is chosen)
-fn Viewer::picture_menu_at(self : Viewer, x : Double, y : Double, b : Bytes) -> Unit {
+fn Viewer::picture_menu_at(self : Viewer, x : Double, y : Double) -> Unit {
   let (label, glyph) = @sf.picture_out_way()
   let out = fn() {
     if @sf.picture_to_album() {
-      keep_bytes_now(self.name, self.mime, b, way=Photos)
+      match self.whole_here() {
+        Some(b) => keep_bytes_now(self.name, self.mime, b, way=Photos)
+        None => self.save_now()
+      }
     } else {
-      @hostapi.clipboard_set_image(b)
-      @ui.haptic(KeyboardTap)
-      self.copied += 1
+      self.ask_copy() |> ignore
     }
   }
   let items = [Some(@sf.menu_item_of(label, out, icon=glyph))]
@@ -3097,7 +3248,10 @@ pub fn drive_attachment(f : DriveFile) -> Attachment {
 /// no marks, no flight). As the host says it.
 pub fn Viewer::picture_failed(self : Viewer) -> Bool {
   match self.bytes.get() {
-    Some(_) => @ui.image_state(self.image_name()) == -1
+    Some(_) => {
+      let key = if self.image != "" { self.image } else { self.image_name() }
+      @ui.image_state(key) == -1
+    }
     None => false
   }
 }
@@ -3117,15 +3271,31 @@ fn Viewer::image_name(self : Viewer) -> String {
 }
 
 ///|
+/// What its station preview picture is called once read, kept distinct from the whole image key so upgrading never
+/// collides with the host's decoded-image cache and keeps the preview as stand-in while the whole image decodes.
+fn Viewer::preview_image_name(self : Viewer) -> String {
+  "mem:preview-p/" + self.id()
+}
+
+///|
 /// Its whole read as `b`: a chat's image put up as its whole picture (Viewer::picture's), and given to the chat's
 /// picture of it, which shows it where its own (the station's thumbnail) is not here yet (ChatImages::whole): an image
 /// opened and read is never missing where its message shows it.
 fn Viewer::took_whole(self : Viewer, src : Source, b : Bytes) -> Unit {
   guard self.chat_file() && self.shown_kind() == Some(KImage) && b.length() > 0 else { return }
-  // (the image itself after its preview: put in the preview's picture's place, the same name)
-  if self.image == "" || self.bytes.untracked() is Some(_) {
-    self.image = self.image_name()
-    @ui.add_image(self.image, b)
+  if self.previewed.untracked() {
+    let key = self.preview_image_name()
+    if self.preview_image != key {
+      self.preview_image = key
+      @ui.add_image(key, b)
+    }
+    self.image = key
+  } else {
+    let key = self.image_name()
+    if self.image != key {
+      self.image = key
+      @ui.add_image(key, b)
+    }
   }
   src.images.whole(file_image_id(self.station, self.key, self.name), self.image, size=b.length())
 }
@@ -3138,7 +3308,7 @@ fn preview_shown(key : String, but? : Viewer) -> Bool {
   let shows = fn(v : Viewer?) {
     match v {
       Some(v) if !(but is Some(b) && physical_equal(b, v)) =>
-        v.image == key || v.fly_pic == key || v.leaving_pic == key
+        v.image == key || v.preview_image == key || v.fly_pic == key || v.leaving_pic == key
       _ => false
     }
   }
@@ -3155,8 +3325,15 @@ fn preview_shown(key : String, but? : Viewer) -> Bool {
 pub fn Viewer::picture(self : Viewer, src : Source) -> String {
   match self.bytes.get() {
     Some(b) if self.image == "" => {
-      self.image = self.image_name()
-      @ui.add_image(self.image, b)
+      let key = if self.previewed.untracked() {
+        let k = self.preview_image_name()
+        self.preview_image = k
+        k
+      } else {
+        self.image_name()
+      }
+      self.image = key
+      @ui.add_image(key, b)
     }
     _ => ()
   }
@@ -3172,6 +3349,9 @@ pub fn Viewer::picture(self : Viewer, src : Source) -> String {
 /// else the picture it was picked as here (one sent, one still in a draft: never asked of a station), else the
 /// station's thumbnail of it, else its likeness; "" none. Read by a node, told as either comes.
 pub fn Viewer::stand_in(self : Viewer, src : Source) -> String {
+  if self.preview_image != "" && self.image != self.preview_image {
+    return self.preview_image
+  }
   match pv_thumbs.get(self.thumb_id()) {
     Some(l) if l.picture != "" => return l.picture
     _ => ()
