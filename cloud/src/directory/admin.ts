@@ -1,10 +1,13 @@
 import { ulid } from "ulid";
 import { STATIONS_PER_WORKSPACE } from "../../../client/limits.ts";
 import { CODE_TTL_DAYS, isAdmin, newCode, normalizeCode } from "../admin";
-import { nowSeconds } from "../auth";
-import type { AccountEvent, AddedView, AdminAuditEntry, AdminList, AdminPending, AdminUser, AdminWorkspace, Admission, InviteCodeView, RigView, Role, StationView } from "../types";
+import { b64url, digest, nowSeconds } from "../auth";
+import type { AccountEvent, AddedView, AdminAuditEntry, AdminKeyView, AdminList, AdminPending, AdminUser, AdminWorkspace, Admission, InviteCodeView, RigView, Role, StationView } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
 import { AUDIT_KEPT, AUDIT_LISTED, HOURS_KEPT, LIST, MOVE_SKIPPED, OPERATOR_KEPT_S, PLANS, SHOWN_PICTURE, cleanName, emailsOf, fail, limitsOf, type AddedMail, type Attachment, type DirectoryLoad, type Plan, type Row } from "./types";
+
+const ADMIN_KEY_PREFIX = "sfa_";
+const ADMIN_KEYS_MAX = 50;
 
 // ── operators, audit, cloud move, and admin console ─────────────────────
 
@@ -473,5 +476,76 @@ export class DirectoryAdmin {
     if (row!.used_by !== null) fail(409, "invite_code_used");
     this.#db.run("UPDATE invite_codes SET revoked_at = COALESCE(revoked_at, ?) WHERE code = ?", nowSeconds(), code);
     this.adminChanged("invite-codes");
+  }
+
+  // ── admin API keys ──────────────────────────────────────────────────────
+
+  adminKeys(): AdminKeyView[] {
+    return this.#db.rows("SELECT id, name, prefix, created_by, created_by_email, created_at, expires_at, last_used_at, revoked_at FROM admin_keys ORDER BY created_at DESC, id DESC").map((r) => ({
+      id: r.id as string,
+      name: r.name as string,
+      prefix: r.prefix as string,
+      created_by: r.created_by as string,
+      created_by_email: r.created_by_email as string,
+      created_at: r.created_at as number,
+      expires_at: (r.expires_at as number | null) ?? null,
+      last_used_at: (r.last_used_at as number | null) ?? null,
+      revoked_at: (r.revoked_at as number | null) ?? null,
+    }));
+  }
+
+  async createAdminKey(sub: string, email: string, name: unknown, days?: unknown): Promise<AdminKeyView & { key: string }> {
+    const clean = cleanName(name) ?? fail(400, "invalid_name");
+    const now = nowSeconds();
+    let expiresAt: number | null = null;
+    if (days !== undefined && days !== null) {
+      if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 3650) fail(400, "invalid_days");
+      expiresAt = now + (days as number) * 24 * 60 * 60;
+    }
+    const active = this.#db.one("SELECT COUNT(*) AS n FROM admin_keys WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)", now)!.n as number;
+    if (active >= ADMIN_KEYS_MAX) fail(409, "too_many_keys");
+    const id = `ak_${ulid()}`;
+    const raw = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const key = `${ADMIN_KEY_PREFIX}${raw}`;
+    const prefix = key.slice(0, 12);
+    const keyHash = await digest(key);
+    this.#db.run(
+      "INSERT INTO admin_keys (id, name, prefix, key_hash, created_by, created_by_email, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      id, clean, prefix, keyHash, sub, email, now, expiresAt,
+    );
+    this.#host.adminChanged("keys");
+    return { id, name: clean, prefix, created_by: sub, created_by_email: email, created_at: now, expires_at: expiresAt, last_used_at: null, revoked_at: null, key };
+  }
+
+  revokeAdminKey(id: unknown): { id: string; name: string; prefix: string; ok: true } {
+    if (typeof id !== "string" || !id) fail(404, "key_not_found");
+    const keyId = id as string;
+    const row = this.#db.one("SELECT id, name, prefix, revoked_at FROM admin_keys WHERE id = ?", keyId);
+    if (!row) fail(404, "key_not_found");
+    if (row!.revoked_at === null) {
+      this.#db.run("UPDATE admin_keys SET revoked_at = ? WHERE id = ?", nowSeconds(), keyId);
+      this.#host.adminChanged("keys");
+    }
+    return { id: row!.id as string, name: row!.name as string, prefix: row!.prefix as string, ok: true };
+  }
+
+  verifyAdminKey(keyHash: string): { id: string; name: string; prefix: string; created_by: string; created_by_email: string } | null {
+    const now = nowSeconds();
+    const row = this.#db.one(
+      "SELECT id, name, prefix, created_by, created_by_email, last_used_at FROM admin_keys WHERE key_hash = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)",
+      keyHash, now,
+    );
+    if (!row) return null;
+    const last = row.last_used_at as number | null;
+    if (last === null || now - last >= 300) {
+      this.#db.run("UPDATE admin_keys SET last_used_at = ? WHERE id = ?", now, row.id);
+    }
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      prefix: row.prefix as string,
+      created_by: row.created_by as string,
+      created_by_email: row.created_by_email as string,
+    };
   }
 }

@@ -16,7 +16,7 @@ import { asOrigin, forward, served } from "./guests";
 import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
-import { adminApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
+import { adminApi, adminKeyApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
 import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, relayToTelemetry, route, takeNotes, unverifiedNotes } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
@@ -195,7 +195,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   if (onConsole) {
     if (path === "/v1/auth/google/start" && request.method === "GET") return toPublic(env, url);
-    if (path.startsWith("/v1/admin/")) return adminApi(request, env, path);
+    if (path.startsWith("/v1/admin/")) {
+      const supplied = bearerToken(request);
+      if (supplied?.startsWith("sfa_")) return adminKeyApi(request, env, path, supplied);
+      return adminApi(request, env, path);
+    }
     if (!CONSOLE_CALLS.has(path)) return notFound();
   }
   // A browser signing in on an old host, or on the test channel's, goes on to the new one, which Google calls back.
@@ -265,6 +269,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     } catch {
       return reply({ error: "invalid_request" }, 400);
     }
+  }
+  if (onPublic && path.startsWith("/v1/admin/")) {
+    const supplied = bearerToken(request);
+    if (supplied?.startsWith("sfa_")) return adminKeyApi(request, env, path, supplied);
   }
   const admin = /^\/v1\/admin\/accounts\/([A-Za-z0-9_-]{1,128})$/.exec(path);
   const deleteWorkspace = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/delete$/.exec(path);

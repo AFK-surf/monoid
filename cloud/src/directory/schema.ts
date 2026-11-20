@@ -45,6 +45,8 @@ export function initSchema(db: DirectoryDb, runMigrations: { freePlan(): void; s
       CREATE TABLE IF NOT EXISTS operators (sub TEXT PRIMARY KEY, email TEXT NOT NULL, seen_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS admin_audit (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '');
       CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (created_at DESC);
+      CREATE TABLE IF NOT EXISTS admin_keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_by_email TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER, last_used_at INTEGER, revoked_at INTEGER);
+      CREATE INDEX IF NOT EXISTS admin_keys_hash ON admin_keys (key_hash);
     `);
   // users had neither column before invite codes, nor beta (1: let into the test channel) before it, nor blocked (1:
   // the admin blocked the account; the account's own object is what keeps it out) before the console could block,

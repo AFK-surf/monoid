@@ -117,7 +117,7 @@ export function stamp(ms: number, c: Clock): Record<string, unknown> {
 }
 
 /// Times kept in seconds (still.fail cloud's) and in milliseconds (the station's).
-const SECONDS = new Set(["created_at", "expires_at", "used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
+const SECONDS = new Set(["created_at", "expires_at", "used_at", "last_used_at", "revoked_at", "last_seen", "lastSeen", "updated_at", "delivered_at", "added_at"]);
 const MILLIS = new Set(["createdAt", "lastActiveAt", "lastUsedAt", "checkedAt", "resetsAt"]);
 /// The fields `times` says in words (`time`), each a moment.
 export const TIME_KEYS: readonly string[] = [...SECONDS, ...MILLIS];

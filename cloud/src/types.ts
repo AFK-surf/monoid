@@ -63,7 +63,20 @@ export type AccountEvent =
   | { type: "feedback"; workspace: string };
 
 /** The operator's console's lists (AccountEvent `admin`). */
-export type AdminList = "users" | "workspaces" | "invite-codes" | "feedback" | "audit";
+export type AdminList = "users" | "workspaces" | "invite-codes" | "feedback" | "audit" | "keys";
+
+/** An Admin API key listed in the console (never includes the secret or its hash). Times in seconds. */
+export interface AdminKeyView {
+  id: string;
+  name: string;
+  prefix: string;
+  created_by: string;
+  created_by_email: string;
+  created_at: number;
+  expires_at: number | null;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
 
 /** What an operator of the console changed (GET /v1/admin/audit): who, what, of what. Times in seconds. */
 export interface AdminAuditEntry {

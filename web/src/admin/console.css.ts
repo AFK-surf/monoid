@@ -65,6 +65,15 @@ export const rowTime = style({
 });
 export const rowLine2 = style({ fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 export const code = style({ fontSize: vars.textBody, letterSpacing: ".04em" });
+export const keyPrefix = style({
+  flex: "none", padding: "1px 6px", borderRadius: vars.rOption, background: vars.sidebar, fontSize: vars.textMeta, color: vars.muted,
+});
+export const vaultTip = style({
+  display: "grid", gap: "4px", padding: "10px 12px", borderRadius: vars.rOption, background: vars.sidebar,
+  fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, cornerShape: vars.cornerShape,
+});
+globalStyle(`${vaultTip} > b`, { fontSize: vars.textUi, fontWeight: "600", color: vars.text });
+globalStyle(`${vaultTip} > ul`, { margin: "2px 0 0", paddingLeft: "18px", display: "grid", gap: "2px" });
 export const wsMark = style({
   flex: "none", width: "28px", height: "28px", display: "grid", placeItems: "center", borderRadius: "9px", background: vars.paper,
   fontSize: vars.textUi, fontWeight: "600", cornerShape: vars.cornerShape,

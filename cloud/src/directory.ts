@@ -23,7 +23,7 @@ import type { MeshRelay } from "./mesh-relay-registry";
 import type { Shows } from "./noticeText";
 import type { RelayListed, RelayTokenInput } from "./relay-registry";
 import type { Listed, Relays, relays } from "./relays";
-import type { AccountEvent, AdminAuditEntry, AdminFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InviteCodeView, LockHead, LockRequestView, MeView, PendingInvitation, Role, StationEvent, WorkspaceFeedback, WorkspaceSummary, WorkspaceView } from "./types";
+import type { AccountEvent, AdminAuditEntry, AdminFeedback, AdminKeyView, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InviteCodeView, LockHead, LockRequestView, MeView, PendingInvitation, Role, StationEvent, WorkspaceFeedback, WorkspaceSummary, WorkspaceView } from "./types";
 import { DirectoryAdmin } from "./directory/admin";
 import { DirectoryDb, type DirectoryHost } from "./directory/db";
 import { DirectoryFeedback } from "./directory/feedback";
@@ -567,6 +567,22 @@ export class Directory extends DurableObject<Env> {
 
   revokeInviteCode(value: string): void {
     this.#admin.revokeInviteCode(value);
+  }
+
+  adminKeys(): AdminKeyView[] {
+    return this.#admin.adminKeys();
+  }
+
+  createAdminKey(sub: string, email: string, name: unknown, days?: unknown): Promise<AdminKeyView & { key: string }> {
+    return this.#admin.createAdminKey(sub, email, name, days);
+  }
+
+  revokeAdminKey(id: unknown): { id: string; name: string; prefix: string; ok: true } {
+    return this.#admin.revokeAdminKey(id);
+  }
+
+  verifyAdminKey(keyHash: string): { id: string; name: string; prefix: string; created_by: string; created_by_email: string } | null {
+    return this.#admin.verifyAdminKey(keyHash);
   }
 
   // ── bug reports (feedback) ──────────────────────────────────────────────

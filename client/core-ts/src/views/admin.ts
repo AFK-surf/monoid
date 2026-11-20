@@ -126,6 +126,17 @@ function codeLabel(state: string): string {
   return ["used", "revoked", "expired"].includes(state) ? t(`core-views.admin.code.${state}`) : t("core-views.admin.code.open");
 }
 
+function keyState(k: J, now: number): [string, string] {
+  if (num(k, "revoked_at") !== null) return ["revoked", "red"];
+  const exp = num(k, "expires_at");
+  if (exp !== null && exp <= now) return ["expired", "amber"];
+  return ["active", "green"];
+}
+
+function keyLabel(state: string): string {
+  return ["revoked", "expired"].includes(state) ? t(`core-views.admin.key.${state}`) : t("core-views.admin.key.active");
+}
+
 function feedbackStatus(status: string): [string, string] {
   switch (status) {
     case "triaged":
@@ -209,6 +220,14 @@ function codeKind(now: number): Kind {
   };
 }
 
+function keyKind(now: number): Kind {
+  const is = (state: string) => (k: J) => keyState(k, now)[0] === state;
+  return {
+    filters: [["all", t("core-views.admin.filter.all"), () => true], ["active", keyLabel("active"), is("active")], ["expired", keyLabel("expired"), is("expired")], ["revoked", keyLabel("revoked"), is("revoked")]],
+    sorts: [["created", t("core-views.admin.sort.generated")], ["used", t("core-views.admin.sort.last_used")]],
+  };
+}
+
 /// Whether the last word on a report is its reporter's (their agent's, or a person's in the app): one to answer.
 function repliedTo(f: J): boolean {
   const r = items(f, "replies");
@@ -241,6 +260,7 @@ const AUDIT_KINDS: [string, (action: string) => boolean][] = [
   ["codes", (a) => a.startsWith("code.")],
   ["feedback", (a) => a.startsWith("feedback.")],
   ["relays", (a) => a.startsWith("relay.")],
+  ["keys", (a) => a.startsWith("key.")],
 ];
 
 function auditKind(): Kind {
@@ -276,6 +296,8 @@ function auditAction(action: string, detail: string): string {
     case "relay.remove":
     case "relay.token":
     case "relay.token_revoke":
+    case "key.create":
+    case "key.revoke":
       return t(`core-views.admin.audit.action.${action.replace(".", "_")}`);
   }
   return action;
@@ -303,6 +325,12 @@ function auditDetail(action: string, detail: string): string {
       return days !== undefined ? t("core-views.admin.audit.detail.days", { n: Number(days) }) : part === "beta" ? channelLabel("beta") : part;
     }).join(" · ");
   }
+  if (action === "key.create") {
+    return detail.split(" · ").map((part) => {
+      const days = /^days=([0-9]+)$/.exec(part)?.[1];
+      return days !== undefined ? t("core-views.admin.audit.detail.days", { n: Number(days) }) : part === "never" ? t("core-views.admin.key.never_expires") : part;
+    }).join(" · ");
+  }
   return detail;
 }
 
@@ -327,6 +355,8 @@ function haystack(list: string, v: J): string {
   } else if (list === "audit") {
     const action = strOf(v, "action");
     text = `${action} ${auditAction(action, strOf(v, "detail"))} ${strOf(v, "actor")} ${strOf(v, "target")} ${strOf(v, "detail")}`;
+  } else if (list === "keys") {
+    text = `${strOf(v, "name")} ${strOf(v, "prefix")} ${strOf(v, "created_by_email")} ${strOf(v, "id")}`;
   } else {
     const u = get(v, "used_by");
     const user = u !== undefined ? `${strOf(u, "name")} ${strOf(u, "email")}` : "";
@@ -346,6 +376,7 @@ function order(list: string, sort: string, a: J, b: J): number {
   let o: number;
   if (sort === "created") o = desc(num(a, "created_at"), num(b, "created_at"));
   else if (sort === "updated") o = desc(num(a, "updated_at"), num(b, "updated_at"));
+  else if (list === "keys" && sort === "used") o = desc(num(a, "last_used_at"), num(b, "last_used_at"));
   else if (list === "users" && sort === "workspaces") o = items(b, "workspaces").length - items(a, "workspaces").length;
   else if (list === "workspaces" && sort === "members") o = items(b, "members").length - items(a, "members").length;
   else if (list === "workspaces" && sort === "active") o = desc(latestStation(a), latestStation(b));
@@ -447,6 +478,26 @@ function row(list: string, v: J, now: number): J {
       created_at: orNull(get(v, "created_at")),
     };
   }
+  if (list === "keys") {
+    const [state, tone] = keyState(v, now);
+    const parts: string[] = [];
+    const by = strOf(v, "created_by_email");
+    if (by !== "") parts.push(by);
+    if (num(v, "last_used_at") === null) parts.push(t("core-views.admin.key.never_used"));
+    if (num(v, "expires_at") === null) parts.push(t("core-views.admin.key.never_expires"));
+    return {
+      id: strOf(v, "id"),
+      title: strOf(v, "name"),
+      prefix: strOf(v, "prefix"),
+      line: parts.join(" · "),
+      state,
+      marks: [mark(keyLabel(state), tone)],
+      created_at: orNull(get(v, "created_at")),
+      last_used_at: orNull(get(v, "last_used_at")),
+      expires_at: orNull(get(v, "expires_at")),
+      revoked_at: orNull(get(v, "revoked_at")),
+    };
+  }
   const [state, tone] = codeState(v, now);
   const user = isObj(get(v, "used_by")) ? v.used_by : null;
   let line: string;
@@ -475,7 +526,7 @@ function row(list: string, v: J, now: number): J {
 }
 
 function rowsOf(list: string, value: J): J[] {
-  const key = list === "users" ? "users" : list === "workspaces" ? "workspaces" : list === "feedback" ? "feedback" : list === "audit" ? "audit" : "codes";
+  const key = list === "users" ? "users" : list === "workspaces" ? "workspaces" : list === "feedback" ? "feedback" : list === "audit" ? "audit" : list === "keys" ? "keys" : "codes";
   return items(value, key);
 }
 
@@ -507,6 +558,7 @@ export function list(name: string, value: J, query: string, filter: string | nul
   else if (name === "invite-codes") kind = codeKind(now);
   else if (name === "feedback") kind = feedbackKind();
   else if (name === "audit") kind = auditKind();
+  else if (name === "keys") kind = keyKind(now);
   else throw CoreError.invalid(t("core-views.admin.error.no_list"));
   const words = format.splitWhitespace(query.toLowerCase());
   const searched = all.filter((v) => words.length === 0 || found(haystack(name, v), words));
