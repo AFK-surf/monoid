@@ -183,14 +183,22 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View) -> (Source, (B
     for t in topics {
       t.watch.stop()
     }
-    // (what was worked out of what it read, nothing following it, let go of with it where it was ever put by:
+    // (its shared topics' followers let go of with it, what still watches them or not (followed_forget_source); what
+    // was worked out of what it read, nothing following it, let go of with it where it was ever put by:
     // kept_forget_source)
-    if ever_parked.val {
-      match owned_ref.val {
-        Some(owned) => kept_forget_source(owned)
-        None => ()
+    match owned_ref.val {
+      Some(owned) => {
+        // (after the frame that draws it gone, never at once: a page's view let go between frames (a page popped by
+        // home()) keeps what it followed asked till then, as a source let go does (source.mbt's), the frame after
+        // letting go of all of it; after_drawn_frame, as after_frame runs at once between frames)
+        @ui.after_drawn_frame(fn() { followed_forget_source(owned) })
+        if ever_parked.val {
+          kept_forget_source(owned)
+        }
       }
+      None => ()
     }
   }) |> ignore
   (owned, park)
 }
+

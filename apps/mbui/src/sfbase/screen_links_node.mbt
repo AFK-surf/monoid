@@ -236,8 +236,21 @@ fn screen_peek_node(
     Some(f) => f
     None => fn() { true }
   }
+  // (put by at rest (its row scrolled out, kept for its key): not wanted then)
+  let resting = @signals.signal(false)
+  // (put by, what follows it put by too: its preview stopped here, at that moment)
+  v.on_rest(
+    fn() {
+      resting.set(true)
+      if p.run != PeekOff {
+        peek_stop(src, p)
+      }
+    },
+    wake=fn() { resting.set(false) },
+  )
+  |> ignore
   // (asked while all of it holds; stopped as any stops: nothing of its ending kept to ask again by)
-  v.reacts(fn() { shows() && @ui.app_visible() }, fn(want) {
+  v.reacts(fn() { shows() && @ui.app_visible() && !resting.get() }, fn(want) {
     if want {
       if p.run == PeekOff {
         peek_start(src, p)
@@ -254,7 +267,7 @@ fn screen_peek_node(
     v.at_moment(
       v.cause_at() + peek_again_ms,
       fn() {
-        if p.run == PeekEnded && p.view == view && @signals.untracked(fn() { shows() && @ui.app_visible() }) {
+        if p.run == PeekEnded && p.view == view && @signals.untracked(fn() { shows() && @ui.app_visible() && !resting.get() }) {
           peek_start(src, p)
         }
       },

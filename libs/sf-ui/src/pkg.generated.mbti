@@ -220,6 +220,8 @@ pub fn button_start_reach() -> @ui.Style
 
 pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit) -> @view.View
 
+pub fn capsule_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, disabled? : () -> Bool, side? : @ui.Side, on_open? : (Bool) -> Unit, loc~ : SourceLoc) -> @view.View
+
 pub fn capsule_end_room(Double, Double) -> @ui.Space
 
 pub fn capsule_fit(Double, Double, Double) -> Double
@@ -362,6 +364,8 @@ pub fn composer_inner_radius() -> @ui.Radius
 pub let composer_pad : Double
 
 pub let composer_pad_room : @ui.Space
+
+pub fn composer_notice_node(@view.View, TipLayer, () -> String, () -> String, () -> Double, summary? : () -> (String, String)?, offer? : NoticeOffer, dismiss? : NoticeOffer, choice? : NoticeChoice, held? : () -> Bool, failed? : () -> String, loc~ : SourceLoc) -> @view.View
 
 pub fn composer_radius() -> @ui.Radius
 
@@ -2596,7 +2600,7 @@ pub fn waiting(@ui.Ctx, () -> Unit, text? : String, error? : String, note? : Wai
 
 pub let waiting_in : @motion.Trans
 
-pub fn waiting_node(@view.View, (@view.View) -> Unit, error? : () -> String, note? : () -> WaitNote, fill? : Bool) -> Unit
+pub fn waiting_node(@view.View, (@view.View) -> Unit, error? : () -> String, note? : () -> WaitNote, fill? : Bool, fits? : Bool) -> Unit
 
 pub let wake_ms : Double
 
@@ -3211,6 +3215,13 @@ pub(all) struct NativeOver {
   acts : Array[(String, String, String, () -> Unit)]
   active : Array[String]
   mut alive : () -> Bool
+}
+
+pub(all) struct NoticeChoice {
+  choices : () -> Array[(String, String)]
+  chosen : () -> String
+  choose : (String) -> Unit
+  on_open : ((Bool) -> Unit)?
 }
 
 pub(all) struct PageBar {

@@ -2596,10 +2596,11 @@ fn composer_notices_node(
               _ => None
             }
           },
-          choices=fn() { [("go_on", @sf.t("web-main.chat.goOn")), ("afresh", @sf.t("web-main.chat.afresh"))] },
-          chosen=fn() { if cold().map(fn(c) { c.3 }).unwrap_or(false) { "afresh" } else { "go_on" } },
           held~,
-          choose=fn(value) {
+          choice={
+            choices: fn() { [("go_on", @sf.t("web-main.chat.goOn")), ("afresh", @sf.t("web-main.chat.afresh"))] },
+            chosen: fn() { if cold().map(fn(c) { c.3 }).unwrap_or(false) { "afresh" } else { "go_on" } },
+            choose: fn(value) {
               guard cold() is Some((session, _, _, afresh)) && !held() else { return }
               let next = value == "afresh"
               if next != afresh {
@@ -2607,6 +2608,8 @@ fn composer_notices_node(
                 let params : Json = { "station": Json::string(r.station), "key": Json::string(session), "afresh": Json::boolean(next) }
                 @sfbase.act(src, @sf.t(words), doing(), "session.settings", params)
               }
+            },
+            on_open: None,
           },
         )
         made.offset(By(fn() { (0.0, drawn_off(made)) })) |> ignore

@@ -566,6 +566,8 @@ pub fn file_viewer_reset() -> Unit
 
 pub fn files_into(String, Dragged) -> Unit
 
+pub fn files_into_many(String, Array[Dragged]) -> Unit
+
 pub fn files_tabs(Source, String) -> FilesTabs??
 
 pub fn files_tabs_act(Source, String, String, pane? : DriveAt, id? : String, side? : Int32, (FilesTabs?) -> Unit) -> Unit

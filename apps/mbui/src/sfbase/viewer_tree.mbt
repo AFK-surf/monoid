@@ -619,7 +619,17 @@ fn image_ends(n : @view.View, vw : Viewer, src : Source) -> Unit {
       vw.fly.said()
       vw.fade.said()
       match pv_leaving.get() {
-        Some(l) if physical_equal(l, vw) && !vw.leaving_grab => Some(if vw.flies { vw.fly.end() } else { vw.fade.end() })
+        // (back by the tree's shared flight once that is told: its own end to the moment, not the fade's rounded up)
+        Some(l) if physical_equal(l, vw) && !vw.leaving_grab =>
+          Some(
+            if vw.flies {
+              vw.fly.end()
+            } else if vw.tree_back.untracked() && vw.tree_way_end > 0.0 {
+              vw.tree_way_end
+            } else {
+              vw.fade.end()
+            },
+          )
         _ => None
       }
     },

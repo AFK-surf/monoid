@@ -190,6 +190,11 @@ fn menu_node_by(
       // (its panel, once made, and what opened it: what a press outside it is outside of, where it is not modal)
       let panel : Ref[@view.View?] = Ref(None)
       let opener : Ref[@view.View?] = Ref(None)
+      // (said before it is modal: the field the focus is in kept as the layer takes what is under it, never cleared)
+      if keep_field {
+        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
+        layer.leaves_typing() |> ignore
+      }
       layer
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
@@ -220,10 +225,6 @@ fn menu_node_by(
             cancel()
           }
         })
-      }
-      if keep_field {
-        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
-        layer.leaves_typing() |> ignore
       }
       // (not modal: the key back toward what opened it)
       let back = match side {

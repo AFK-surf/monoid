@@ -1040,6 +1040,12 @@ pub fn files_into(chat : String, d : Dragged) -> Unit {
 }
 
 ///|
+/// Files `ds` let go on chat `chat` together (files_into's, all at once): taken into its draft as one drop.
+pub fn files_into_many(chat : String, ds : Array[Dragged]) -> Unit {
+  draft_give_all(chat, ds.map(fn(d) { Dropped(d) }))
+}
+
+///|
 /// Whether files from this machine's Finder let go on a chat are taken by where they are (finder_dragged): where this
 /// machine is a station. Elsewhere a field takes them as their paths, words.
 pub fn finder_by_station() -> Bool {
