@@ -1263,7 +1263,9 @@ fn chat_rail_node(
           pointed=fn() { press.pointed_in() && pointed_day() == "" },
         )
         hover_close.val = hand.close
-        @sf.tip_node(tips, press, pointed_day, side=Left, at_pointer=true, within=true) |> ignore
+        // (by the press pointed at, not `within`: that marks the press as only pointing (View::points), which takes its
+        // presses, its tap gesture and its hand cursor away)
+        @sf.tip_node(tips, press, pointed_day, side=Left, at_pointer=true) |> ignore
         let closer_id = rail_hover_register(hand.close)
         press
         // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
