@@ -181,26 +181,7 @@ fn title_of(row : Map[String, Json], first_text : String?) -> String {
 ///|
 /// titles.ts `withoutMentions`: Slack's `<@U123>` taken out.
 fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(at) {
-    out.write_string(rest.view(end_offset=at).to_owned())
-    let after = rest.view(start_offset=at + 2).to_owned()
-    let end = after.find(">").unwrap_or(-1)
-    let id_ok = end > 0 &&
-      after
-      .view(end_offset=end)
-      .iter()
-      .all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
-    if id_ok {
-      rest = after.view(start_offset=end + 1).to_owned()
-    } else {
-      out.write_string("<@")
-      rest = after
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
+  @jsjson.without_mentions(text)
 }
 
 ///|
@@ -225,8 +206,8 @@ fn with_runtime(identity : @jsjson.JValue?, runtime : String) -> Json {
   match identity {
     Some(Obj(_) as o) => if to_json(o) is Object(fields) { for k, v in fields { m[k] = v } }
     Some(Arr(xs)) => for i, x in xs { m[i.to_string()] = to_json(x) }
-    Some(Str(units)) =>
-      for i, ch in @jsjson.points(@jsjson.text(units)) {
+    Some(Str(s)) =>
+      for i, ch in @jsjson.points(@jsjson.sanitize_str(s)) {
         m[i.to_string()] = Json::string(ch)
       }
     _ => ()
@@ -362,7 +343,7 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
         Some(Arr(xs)) =>
           for a in xs {
             if a.get("name") is Some(Str(n)) {
-              let name = @jsjson.text(n)
+              let name = @jsjson.sanitize_str(n)
               if name != "" {
                 files.push(name)
               }
@@ -872,7 +853,7 @@ fn Reading::config(self : Reading) -> @jsjson.JValue {
 ///|
 fn jstr(v : @jsjson.JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }

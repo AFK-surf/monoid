@@ -13,6 +13,7 @@ pub using @jsjson {
   jval_or_null as or_null, jval_safe_int as safe_int, js_string, jval_js_str_raw as js_text,
   js_compare as units_cmp, points, chars as first_points, parse as parse_json, stringify,
   js_utf8_len as byte_length, jval_to_json_lossy as to_json, jval_of_json as from_json, json_num as bind_num,
+  js_number, jval_stringify_num as num_text,
 }
 
 ///|
@@ -71,14 +72,7 @@ pub fn kind_of(e : Error) -> String {
 ///|
 /// An object of the fields given, those None (undefined) left out as JSON.stringify leaves them.
 pub fn jo(fields : Array[(String, J?)]) -> J {
-  let out = []
-  for f in fields {
-    match f.1 {
-      Some(v) => out.push((@jsjson.units(f.0), v))
-      None => ()
-    }
-  }
-  Obj(out)
+  Obj(fields.filter_map(f => f.1.map(v => (f.0, v))))
 }
 
 ///|
@@ -86,9 +80,8 @@ pub fn jo(fields : Array[(String, J?)]) -> J {
 pub fn prop(v : J?, key : String) -> J? {
   match v {
     Some(Obj(entries)) => {
-      let k = @jsjson.units(key)
       for e in entries {
-        if e.0 == k {
+        if e.0 == key {
           return Some(e.1)
         }
       }
@@ -108,7 +101,7 @@ pub fn prop(v : J?, key : String) -> J? {
         Some(Num(u.length().to_double()))
       } else {
         match index_key(key) {
-          Some(i) if i < u.length() => Some(Str([u[i]]))
+          Some(i) if i < u.length() => Some(Str(u.unsafe_substring(start=i, end=i + 1)))
           _ => None
         }
       }
@@ -143,30 +136,21 @@ pub fn nullish(a : J?, b : J?) -> J? {
 }
 
 ///|
-/// A number as `String(n)` says it.
-pub fn num_text(n : Double) -> String {
-  js_text(Num(n))
-}
-
-///|
 /// A string as node writes it to UTF-8 (a lone surrogate as U+FFFD).
 pub fn utf8_of(s : String) -> Bytes {
-  @utf8.encode(@jsjson.text(@jsjson.units(s)))
+  @utf8.encode(@jsjson.sanitize_str(s))
 }
 
 ///|
 /// A text parameter as node binds a string: a lone surrogate as U+FFFD.
 pub fn bind_text(s : String) -> Json {
-  Json::string(@jsjson.text(@jsjson.units(s)))
+  Json::string(@jsjson.sanitize_str(s))
 }
 
 ///|
 /// An integer column's value (a number SQLite gave).
 pub fn col_num(row : Map[String, Json], name : String) -> Double? {
-  match row.get(name) {
-    Some(Number(n, ..)) => Some(n)
-    _ => None
-  }
+  @jsjson.json_num_of(row.get(name))
 }
 
 ///|
@@ -227,53 +211,4 @@ pub fn col_json_text(row : Map[String, Json], name : String) -> String {
 /// `createHash("sha256").update(bytes).digest("hex")`.
 pub fn sha256_hex(b : Bytes) -> String {
   @memory.sha256_hex(b[:])
-}
-
-///|
-/// `Number(text)` of a decimal integer as the station writes one (meta's values); NaN for anything else.
-pub fn js_number(text : String) -> Double {
-  let t = js_trim(text)
-  if t == "" {
-    return 0.0
-  }
-  let mut neg = false
-  let mut i = 0
-  if t.unsafe_charcode_at(0) == '-' || t.unsafe_charcode_at(0) == '+' {
-    neg = t.unsafe_charcode_at(0) == '-'
-    i = 1
-  }
-  if i >= t.length() {
-    return @double.not_a_number
-  }
-  let mut v = 0.0
-  let mut frac = 0.0
-  let mut scale = 1.0
-  let mut dot = false
-  let mut digits = 0
-  while i < t.length() {
-    let c = t.unsafe_charcode_at(i)
-    if c >= '0' && c <= '9' {
-      digits += 1
-      if dot {
-        scale = scale / 10.0
-        frac = frac + (c - '0').to_double() * scale
-      } else {
-        v = v * 10.0 + (c - '0').to_double()
-      }
-    } else if c == '.' && !dot {
-      dot = true
-    } else {
-      return @double.not_a_number
-    }
-    i += 1
-  }
-  if digits == 0 {
-    return @double.not_a_number
-  }
-  let r = v + frac
-  if neg {
-    -r
-  } else {
-    r
-  }
 }

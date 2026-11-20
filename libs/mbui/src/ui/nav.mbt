@@ -864,7 +864,7 @@ fn[P] Nav::focus_follows(self : Nav[P], before : NavPage[P]) -> Unit {
   if kept != 0 {
     top.focus_kept = 0
     if (c.focus == 0 || (h.holds)(c.focus)) && (h.still)(kept) {
-      c.focus_moved(kept)
+      nav_focus_give_back(c, kept)
     }
   }
 }

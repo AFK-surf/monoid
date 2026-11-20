@@ -23,30 +23,8 @@ pub let urls : Urls = {
 }
 
 ///|
-/// The access kinds each runtime can use.
-pub fn access_kinds(runtime : String) -> Array[String] {
-  match runtime {
-    "hermes" => ["env"]
-    // Antigravity CLI: a Google account signed in to, a Gemini key, or its own variables.
-    "agy" => ["subscription", "api-provider", "env"]
-    "claude" => ["subscription", "opencode-go", "anthropic-api", "api-provider", "env"]
-    // DeepSeek Harness and Pi have no subscription to sign in to here.
-    "dsh" | "pi" => ["opencode-go", "anthropic-api", "api-provider", "env"]
-    // Grok Build: SuperGrok signed in to, an xAI key, or its own variables.
-    "grok" => ["subscription", "api-provider", "env"]
-    // Cursor: a Cursor account signed in to, or its own variables (CURSOR_API_KEY).
-    "cursor" => ["subscription", "env"]
-    // Devin: a Devin account signed in to, or its own variables (WINDSURF_API_KEY).
-    "devin" => ["subscription", "env"]
-    _ => ["subscription", "opencode-go", "api-provider", "env"]
-  }
-}
-
-///|
-/// Access kinds that authenticate with a key the profile stores.
-pub fn keyed(kind : String) -> Bool {
-  kind == "opencode-go" || kind == "anthropic-api" || kind == "api-provider"
-}
+/// The access kinds each runtime can use, keyed kinds, and runtimes per access kind.
+pub using @agent_runtimes {access_kinds, keyed, runtimes_of_kind as runtimes_of}
 
 ///|
 /// What these checks ask of the station's other parts.
@@ -95,25 +73,6 @@ pub fn needs_key(deps : ProfileDeps, kind : String, provider : String?) -> Bool 
 }
 
 ///|
-/// The runtimes an access kind runs without its provider.
-pub fn runtimes_of(kind : String, runtime : String?) -> Array[String] {
-  match kind {
-    "opencode-go" => ["claude", "codex", "dsh", "pi"]
-    "anthropic-api" => ["claude", "dsh", "pi"]
-    "api-provider" => []
-    _ =>
-      if kind == "subscription" && (runtime == Some("dsh") || runtime == Some("pi")) {
-        []
-      } else {
-        match runtime {
-          Some(r) if r != "" => [r]
-          _ => []
-        }
-      }
-  }
-}
-
-///|
 /// The runtimes of an access as config.json has it (with its provider and address).
 pub fn runtimes_for(deps : ProfileDeps, access : Json, runtime : Json?) -> Array[String] {
   (deps.profile_runtimes)(access, runtime)
@@ -121,9 +80,7 @@ pub fn runtimes_for(deps : ProfileDeps, access : Json, runtime : Json?) -> Array
 
 ///|
 /// agents/devin.ts `devinData`; agents/agy.ts `agyHome`, `agyToken`, `agyTokenIn`.
-pub fn devin_data(home : String) -> String {
-  join([home, "devin", "data"])
-}
+pub using @agent_runtimes {devin_data}
 
 ///|
 pub fn agy_home(home : String) -> String {

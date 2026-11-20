@@ -107,19 +107,13 @@ fn either(a : J?, b : J?) -> J? {
 ///|
 /// JavaScript's truthiness.
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) => false
-    Some(Bool(b)) => b
-    Some(Num(n)) => !(n == 0.0 || n.is_nan())
-    Some(Str(s)) => s.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|
 /// Math.round.
 fn js_round(x : Double) -> Double {
-  (x + 0.5).floor()
+  @jsjson.js_round(x)
 }
 
 ///|
@@ -302,7 +296,7 @@ fn agent_env_view(raw : J) -> J {
     _ => []
   }
   let env = set
-    .map(e => (@jsjson.raw_text(e.0), e.1))
+    .map(e => (e.0, e.1))
     .filter(e => env_name(e.0) && e.1 is Str(_))
     .map(e => (e.0, text_of(Some(e.1)).unwrap()))
   env.sort_by((a, b) => js_compare(a.0, b.0))
@@ -503,7 +497,7 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     }
   }
   let kind = match c.get("kind") {
-    Some(Str(s)) if s.length() > 0 => @jsjson.raw_text(s)
+    Some(Str(s)) if s.length() > 0 => s
     _ => "slack"
   }
   let profiles : Array[String] = []
@@ -598,7 +592,7 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
   if (d.connect_kind)(kind) is Some(own) {
     if (own.shown)(c) is Obj(entries) {
       for e in entries {
-        put(@jsjson.raw_text(e.0), Some(e.1))
+        put(e.0, Some(e.1))
       }
     }
     put(
@@ -626,7 +620,7 @@ pub fn overview(
     Some(Arr(items)) =>
       items.filter(c => {
         let ws = match c.get("workspace") {
-          Some(Str(s)) if s.length() > 0 => Some(@jsjson.raw_text(s))
+          Some(Str(s)) if s.length() > 0 => Some(s)
           _ => None
         }
         sees_ws(viewer, ws)
@@ -687,7 +681,7 @@ pub fn overview(
                 for e in entries {
                   viewer_shown = with_prop(
                     viewer_shown,
-                    @jsjson.raw_text(e.0),
+                    e.0,
                     e.1,
                   )
                 }
@@ -910,7 +904,7 @@ let placeholder_mark : String = "\u{F8FF}\u{0}title\u{0}"
 fn fill(value : J, names : Map[String, String]) -> J {
   match value {
     Str(s) => {
-      let t = @jsjson.raw_text(s)
+      let t = s
       if t.has_prefix(placeholder_mark) {
         match
           names.get(t.view(start_offset=placeholder_mark.length()).to_string()) {
@@ -998,11 +992,11 @@ fn decisions_stamp_of(decisions_version : J, config : J, decision_models : J) ->
 fn decisions_whose(viewer : Viewer) -> String {
   let home = match viewer.raw.get("home") {
     None => "undefined"
-    Some(h) => @jsjson.raw_text(@jsjson.js_string(h))
+    Some(h) => @jsjson.js_string(h)
   }
   let workspace = match viewer.raw.get("workspace") {
     None | Some(Null) => ""
-    Some(w) => @jsjson.raw_text(@jsjson.js_string(w))
+    Some(w) => @jsjson.js_string(w)
   }
   "\{viewer.role}\u{0}\{home}\u{0}\{workspace}\u{0}\{viewer.email}"
 }

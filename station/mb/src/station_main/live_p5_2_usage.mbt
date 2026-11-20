@@ -33,49 +33,28 @@ fn LineProgram::started(self : LineProgram) -> Proc raise {
     None => ()
   }
   if self.proc is Some(p) { return p }
-  let p = spawn(self.host, self.argv0, self.args, stdin_piped=true, stdout=Piped)
-  self.proc = Some(p)
-  ignore(
-    self.host.rt.fork_daemon(self.name + "'s lines", on_error=e => @host.note((self.name + "'s lines") + " failed: \{e}"), async fn() {
-      let held = @buffer.Buffer()
-      let mut ended = false
-      while !ended {
-        match p.events.take() {
-          Out(b) => {
-            held.write_bytes(b)
-            let lines = @utf8.decode_lossy(held.to_bytes()).split("\n").map(l => l.to_owned()).collect()
-            held.reset()
-            held.write_bytes(@utf8.encode(lines[lines.length() - 1]))
-            for line in lines[:lines.length() - 1] {
-              if line == "" {
-                continue
-              }
-              let answer = @json.parse(line) catch { _ => Json::string(line) }
-              if self.waiting.length() > 0 {
-                ignore(self.waiting.remove(0).succeed(Ok(answer)))
-              }
-              self.idle_soon()
-            }
-          }
-          Err(_) => ()
-          Exit(code, _) => {
-            ended = true
-            match self.proc {
-              Some(now) if physical_equal(now, p) => {
-                self.proc = None
-                let why = "\{self.name} stopped (exit \{match code { Some(c) => c.to_string(); None => "null" }})"
-                for w in self.waiting {
-                  ignore(w.succeed(Err(why)))
-                }
-                self.waiting.clear()
-              }
-              _ => ()
-            }
-          }
-        }
+  let p = spawn_lines(
+    self.host,
+    self.argv0,
+    self.args,
+    self.name + "'s lines",
+    (_, line) => {
+      if line == "" { return }
+      let answer = @json.parse(line) catch { _ => Json::string(line) }
+      if self.waiting.length() > 0 {
+        ignore(self.waiting.remove(0).succeed(Ok(answer)))
       }
-    }),
+      self.idle_soon()
+    },
+    (p, code) =>
+      if self.proc is Some(now) && physical_equal(now, p) {
+        self.proc = None
+        let why = "\{self.name} stopped (exit \{match code { Some(c) => c.to_string(); None => "null" }})"
+        for w in self.waiting { ignore(w.succeed(Err(why))) }
+        self.waiting.clear()
+      },
   )
+  self.proc = Some(p)
   p
 }
 

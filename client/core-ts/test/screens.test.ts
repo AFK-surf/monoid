@@ -105,10 +105,23 @@ each("a_views_frames_are_read_whole_however_the_stream_cuts_them", (seed) => {
 });
 
 test("what_a_client_sends_on_a_view_is_framed_as_the_station_reads_it", () => {
-  const sent = join([inputFrame({ t: "text", text: "你好" }), ackFrame(2 ** 33 + 5), keyframeFrame(), lookFrame({ x: 0.5, y: 0, w: 0.5, h: 0.25 }, 1200, 300), lookFrame(null, 0, 0)]);
+  const ack8 = ackFrame(2 ** 33 + 5);
+  assert.equal(ack8.length, 5 + 8, "ack without waitUs stays 8-byte payload");
+  assert.equal(ackFrame(100, 0).length, 5 + 8);
+  assert.equal(ackFrame(100, -10).length, 5 + 8);
+  const ack12 = ackFrame(2 ** 33 + 6, 42_500.4);
+  assert.equal(ack12.length, 5 + 12, "ack with waitUs > 0 appends 4-byte u32 BE");
+  const ackSat = ackFrame(2 ** 33 + 7, 1e12);
+  assert.equal(ackSat.length, 5 + 12);
+  const sent = join([inputFrame({ t: "text", text: "你好" }), ack8, ack12, ackSat, keyframeFrame(), lookFrame({ x: 0.5, y: 0, w: 0.5, h: 0.25 }, 1200, 300), lookFrame(null, 0, 0)]);
   const [frames, rest] = readClientFrames(sent);
-  assert.deepEqual(frames, [{ input: { t: "text", text: "你好" } }, { ack: 2 ** 33 + 5 }, { keyframe: true }, { look: { region: { x: 0.5, y: 0, w: 0.5, h: 0.25 }, maxWidth: 1200, maxHeight: 300 } }, { look: { region: null } }]);
+  assert.deepEqual(frames, [{ input: { t: "text", text: "你好" } }, { ack: 2 ** 33 + 5 }, { ack: 2 ** 33 + 6, waitUs: 42_500 }, { ack: 2 ** 33 + 7, waitUs: 0xffff_ffff }, { keyframe: true }, { look: { region: { x: 0.5, y: 0, w: 0.5, h: 0.25 }, maxWidth: 1200, maxHeight: 300 } }, { look: { region: null } }]);
   assert.equal(rest.length, 0);
+  // parseCall("screen.ack") keeps positive finite waitUs and omits zero/negative/non-finite.
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: 0 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: -5 }) as J).call, { kind: "ack", view: "v1", ts: 1000 });
+  assert.deepEqual((parseCall("screen.ack", { view: "v1", ts: 1000, waitUs: 25_000 }) as J).call, { kind: "ack", view: "v1", ts: 1000, waitUs: 25_000 });
   assert.throws(() => {
     const r = new FrameReader();
     r.push(new Uint8Array([2, 0xff, 0xff, 0xff, 0xff]));

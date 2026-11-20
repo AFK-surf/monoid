@@ -273,7 +273,7 @@ pub async fn LoginsPart::heard_peer(self : LoginsPart, peer : String, request : 
       }
       let chat_title = text(get(r, "chatTitle"))
       let ws = match workspace {
-        Str(u) => Some(@jsjson.raw_text(u))
+        Str(u) => Some(u)
         _ => None
       }
       let starter = () => { by, workspace: ws, chat: None, chat_title, peer: Some((peer, session)) }
@@ -329,7 +329,7 @@ pub fn LoginsPart::tool(self : LoginsPart) -> LoginToolDeps {
       let id = (self.host.peer_named)(station)
       let starter = self.starter_of(session)
       let rest = match args {
-        Obj(ps) => J::Obj(ps.filter(p => p.0 != @jsjson.units("station")))
+        Obj(ps) => J::Obj(ps.filter(p => p.0 != "station"))
         other => other
       }
       let request = jo([
@@ -367,7 +367,7 @@ pub fn LoginsPart::tool(self : LoginsPart) -> LoginToolDeps {
         e => raise e
       }
       match get(Some(answer), "text") {
-        Some(Str(u)) => @jsjson.raw_text(u)
+        Some(Str(u)) => u
         _ => raise Failure("\{(self.host.station_name)(id)} gave no answer")
       }
     }),

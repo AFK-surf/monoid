@@ -177,6 +177,8 @@ pub let server_version : String
 
 pub async fn servers_of(Shares, Share) -> Array[Array[String]]?
 
+pub async fn session_gate(World, String, Array[Int32], String) -> String?
+
 pub let settle : Double
 
 pub let signed_revoke_max : Int32

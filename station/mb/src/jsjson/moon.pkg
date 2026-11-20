@@ -1,4 +1,5 @@
 import {
+  "base/time",
   "moonbitlang/core/json",
   "moonbitlang/core/double",
   "moonbitlang/core/buffer",

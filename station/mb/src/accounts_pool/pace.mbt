@@ -276,15 +276,7 @@ pub fn spend_scopes(runtime : String, model : String?) -> Array[String] {
 ///|
 /// JavaScript's `Math.round`.
 pub fn js_round(x : Double) -> Double {
-  if x.is_nan() || x.is_inf() {
-    return x
-  }
-  let f = x.floor()
-  if x - f >= 0.5 {
-    f + 1.0
-  } else {
-    f
-  }
+  @jsjson.js_round(x)
 }
 
 ///|

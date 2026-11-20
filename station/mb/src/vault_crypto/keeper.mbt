@@ -175,21 +175,13 @@ fn same(a : Json?, b : Json?) -> Bool {
 ///|
 /// Whether a value is truthy as JS has it.
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(Number(n, ..)) => n == n && n != 0.0
-    Some(String(s)) => s != ""
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|
 /// `Number.isSafeInteger(v)`.
 fn safe_int(v : Json?) -> Bool {
-  match v {
-    Some(Number(n, ..)) => n == n.floor() && n.abs() <= max_safe
-    _ => false
-  }
+  v is Some(Number(n, ..)) && @jsjson.is_safe_integer(n)
 }
 
 ///|
@@ -203,28 +195,7 @@ fn number(v : Json?) -> Double? {
 ///|
 /// JS's `String(v)`, as a template says a value.
 pub fn js_string(v : Json?) -> String {
-  match v {
-    None => "undefined"
-    Some(String(s)) => s
-    Some(Null) => "null"
-    Some(True) => "true"
-    Some(False) => "false"
-    Some(Number(n, ..)) => if n != n { "NaN" } else { js_number(n) }
-    Some(Array(xs)) => {
-      let b = StringBuilder()
-      for i, x in xs {
-        if i > 0 {
-          b.write_string(",")
-        }
-        match x {
-          Null => ()
-          _ => b.write_string(js_string(Some(x)))
-        }
-      }
-      b.to_string()
-    }
-    Some(Object(_)) => "[object Object]"
-  }
+  @jsjson.json_js_str(v)
 }
 
 ///|

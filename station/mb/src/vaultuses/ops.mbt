@@ -10,7 +10,7 @@ fn field(q : @jsjson.JValue, name : String) -> @jsjson.JValue? {
 ///|
 fn text_of(v : @jsjson.JValue?) -> Json {
   match v {
-    Some(Str(s)) => Json::string(@jsjson.text(s))
+    Some(Str(s)) => Json::string(@jsjson.sanitize_str(s))
     _ => Json::null()
   }
 }
@@ -18,7 +18,7 @@ fn text_of(v : @jsjson.JValue?) -> Json {
 ///|
 fn units_of(v : @jsjson.JValue?) -> Array[Int]? {
   match v {
-    Some(Str(s)) => Some(s)
+    Some(Str(s)) => Some(@jsjson.units(s))
     _ => None
   }
 }
@@ -59,7 +59,7 @@ fn pending(q : @jsjson.JValue) -> Bool {
 pub fn operate(db : @sql.Db, line : String) -> Json raise {
   let ask = @jsjson.parse(line) catch { @jsjson.SyntaxError(m) => raise Failure("unreadable request: \{m}") }
   let op = match field(ask, "op") {
-    Some(Str(s)) => @jsjson.text(s)
+    Some(Str(s)) => @jsjson.sanitize_str(s)
     _ => ""
   }
   let q = field(ask, "q").unwrap_or(Null)

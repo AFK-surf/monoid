@@ -79,7 +79,7 @@ let tree_hits_passed : Ref[Int] = Ref(0)
 
 ///|
 /// Native node `id` drawn this frame at (`x`, `y`), `w` × `h` where it is drawn: its hole there (NativeView::paint_in),
-/// its corners as `s` makes them, what is over it found from it (its covers: Tree::finger_areas, Tree::taken_over).
+/// its corners (`ground_corners`, else its own) as `s` makes them, what is over it found from it (its covers: Tree::finger_areas, Tree::taken_over).
 fn Ctx::paint_tree_native(
   self : Ctx,
   id : @view.NodeId,
@@ -89,12 +89,17 @@ fn Ctx::paint_tree_native(
   w : Double,
   h : Double,
   s : Double,
+  ground_corners? : (Double, Double, Double, Double)? = None,
 ) -> Unit {
   // (a shot shows no native view: it is the window's, where the page has it)
   if shooting.val {
     return
   }
-  let (r0, r1, r2, r3) = (tn.corners)()
+  // (as round as its ground is drawn, where that says (View::ground_drawn); else its own)
+  let (r0, r1, r2, r3) = match ground_corners {
+    Some(gc) => gc
+    None => (tn.corners)()
+  }
   let radii = FixedArray::from_array([dmax(r0, 0.0) * s, dmax(r1, 0.0) * s, dmax(r2, 0.0) * s, dmax(r3, 0.0) * s])
   // (what is over it is what of the tree's is drawn after it and takes a finger (Tree::taken_over), and the old views'
   // targets after those of the old views the walk came to before it, found before the walk: tree_hits_passed)

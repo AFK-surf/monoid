@@ -643,7 +643,7 @@ pub fn widget_source_before_add_needs_repair(db : @sql.Db) -> Bool raise {
 
 ///|
 /// Called while the caller holds the write transaction, after changing the merged lookup.
-fn repair_widget_source_before_add(db : @sql.Db) -> Unit raise {
+pub fn repair_widget_source_before_add(db : @sql.Db) -> Unit raise {
   if !widget_source_before_add_needs_repair(db) {
     return
   }

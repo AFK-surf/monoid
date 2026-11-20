@@ -13,7 +13,7 @@ fn profiles_of(r : Map[String, Json]) -> Json {
     match (try { Some(@jsjson.parse(raw)) } catch { _ => None }) {
       Some(Arr(xs)) => {
         let list = xs.filter_map(x => match x {
-          Str(s) if @jsjson.text(s) != "" => Some(Json::string(@jsjson.text(s)))
+          Str(s) if @jsjson.sanitize_str(s) != "" => Some(Json::string(@jsjson.sanitize_str(s)))
           _ => None
         })
         if list.length() > 0 {

@@ -25,24 +25,15 @@ pub using @jscase {trim as js_trim}
 using @jscase {is_space as js_space}
 
 ///|
-fn safe_int_at(v : Json?) -> Bool {
-  match v {
-    Some(Number(n, ..)) => safe_int(n)
-    _ => false
-  }
-}
+fn safe_int_at(v : Json?) -> Bool { v is Some(Number(n, ..)) && safe_int(n) }
 
 ///|
 /// A number as `String(n)` writes it.
-pub fn num_text(n : Double) -> String {
-  @cloud_lock.stringify(Json::number(n))
-}
+pub fn num_text(n : Double) -> String { @cloud_lock.stringify(Json::number(n)) }
 
 ///|
 /// An object's own keys and values in JavaScript's order (Object.entries).
-pub fn js_entries(m : Map[String, Json]) -> Array[(String, Json)] {
-  js_order(m.iter().collect())
-}
+pub fn js_entries(m : Map[String, Json]) -> Array[(String, Json)] { js_order(m.iter().collect()) }
 
 ///|
 /// Pairs put in the order JavaScript keeps an object's keys in: its integer-like keys first, ascending.
@@ -99,16 +90,7 @@ pub fn js_lower(s : String) -> String {
 
 ///|
 fn is_hex_text(s : String, n : Int) -> Bool {
-  if s.length() != n {
-    return false
-  }
-  for i in 0..<s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if !((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)) {
-      return false
-    }
-  }
-  true
+  s.length() == n && s.iter().all(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
 }
 
 ///|

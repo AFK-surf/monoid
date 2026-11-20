@@ -191,9 +191,13 @@ pub fn access_of(p : JValue) -> JValue? {
 }
 
 ///|
-/// `accessKind`.
-pub fn access_kind(p : JValue) -> String {
-  str_at(access_of(p), "kind").unwrap_or("env")
+pub using @agent_runtimes {
+  access_kind,
+  profile_model,
+  is_machine,
+  profile_fast,
+  takes_fast,
+  kimi_signed_in,
 }
 
 ///|
@@ -204,44 +208,4 @@ pub fn profile_id(p : JValue) -> String {
 ///|
 pub fn profile_home(p : JValue) -> String {
   str_at(Some(p), "home").unwrap_or("")
-}
-
-///|
-/// `profileModel`.
-pub fn profile_model(p : JValue) -> String? {
-  filled(Some(p), "model")
-}
-
-///|
-/// `isMachine`.
-pub fn is_machine(p : JValue) -> Bool {
-  is_true(Some(p), "machine")
-}
-
-///|
-/// `profileFast`.
-pub fn profile_fast(p : JValue) -> Bool {
-  is_true(Some(p), "fast")
-}
-
-///|
-/// `takesFast`.
-pub fn takes_fast(p : JValue) -> Bool {
-  let kind = access_kind(p)
-  match str_at(Some(p), "runtime") {
-    Some("codex") => kind == "subscription"
-    Some("claude") =>
-      kind == "anthropic-api" ||
-      kind == "subscription" ||
-      (kind == "api-provider" && str_at(access_of(p), "provider") == Some("openrouter"))
-    _ => false
-  }
-}
-
-///|
-/// `kimiSignedIn`.
-pub fn kimi_signed_in(p : JValue) -> Bool {
-  access_kind(p) == "api-provider" &&
-  str_at(access_of(p), "provider") == Some("kimi-code") &&
-  is_true(access_of(p), "login")
 }

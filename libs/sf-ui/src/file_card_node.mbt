@@ -49,7 +49,7 @@ pub fn file_card_node(
       // opens nothing. A mouse's button held is a press as long as any: file_menu's, menu_asked's)
       Some(menu_at) =>
         menu_presses_node(card, fn() { if open() { on_press(Open) } }, fn(x, y, _) { if open() { menu_at(x, y) } })
-      None => presses_node(card, fn() { on_press(Open) }, on=open)
+      None => card_presses_node(card, fn() { on_press(Open) }, open)
     }
     // (its mark, 24, concentric with its round start; going up, the ring in its place: how far, or turning while that
     // is not known or every byte is gone and its station is still to say so)
@@ -110,6 +110,26 @@ pub fn file_card_node(
       }, fn() { on_press(Remove) })
     })
   })
+}
+
+///|
+/// A file's card `v` pressed as presses_node's is while `on` says so; while it does not, it takes no finger, no focus
+/// and no press of its own, and what it holds (its ↻, ✎ and ✕ at its end) is still pressed: never View::presses,
+/// whose `inert` would take its own buttons with it.
+fn card_presses_node(v : @view.View, press : () -> Unit, on : () -> Bool) -> Unit {
+  v
+  .focusable(By(on))
+  .focus_ring_theme()
+  .takes(fn(w, h, _) { if on() { [(0.0, 0.0, w, h)] } else { [] } })
+  .on_press(fn() { if on() { press() } })
+  |> ignore
+  let on_it = fn(d : @view.Drag) { on() && v.finger_target(d.wx, d.wy) }
+  v.gesture(
+    @ui.touch_slop(),
+    tap=fn(d) { if on_it(d) { press() } },
+    drag=fn(d) { if d.kind == Up && @ui.pointing() is Mouse && on_it(d) { press() } },
+  )
+  |> ignore
 }
 
 ///|

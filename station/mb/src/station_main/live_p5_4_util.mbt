@@ -10,12 +10,6 @@ fn p54_session(context : Json) -> String {
 }
 
 ///|
-/// `f` once, `ms` from now on the program's runtime; what it gives calls it off.
-fn p54_after(host : @host.Host, ms : Double, f : () -> Unit) -> () -> Unit {
-  bus_after(host, ms, f)
-}
-
-///|
 /// An error's words, without its kind's name where it says only that.
 fn p54_message(e : Error) -> String {
   match e {
@@ -65,18 +59,6 @@ fn p54_spawn(
     }
   })
   child
-}
-
-///|
-/// `program` run to its end: its code, stdout and stderr.
-async fn p54_run(
-  host : @host.Host,
-  program : String,
-  args : Array[String],
-  env? : Array[(String, String)],
-  cwd? : String,
-) -> (Int?, String, String) {
-  run_cmd(host, program, args, env?, cwd?)
 }
 
 ///|
@@ -140,50 +122,4 @@ fn P54Conn::writer(self : P54Conn) -> (Bytes) -> Unit {
     }
   })
   b => ignore(q.try_offer(b))
-}
-
-///|
-fn p54_station_id(bus : LiveBus) -> String? {
-  bus_station_id_opt(bus)
-}
-
-///|
-fn p54_home(bus : LiveBus) -> String? {
-  bus_home(bus)
-}
-
-///|
-fn p54_session_row(bus : LiveBus, key : String) -> Json? {
-  bus_session_row_opt(bus, key)
-}
-
-///|
-fn p54_session_ws(bus : LiveBus, key : String) -> String? {
-  bus_session_ws(bus, key)
-}
-
-///|
-fn p54_session_dir(bus : LiveBus, key : String) -> String? {
-  bus_session_dir(bus, key)
-}
-
-///|
-/// The runner binary (platform/processes.ts `runnerBinary`): STILLFAIL_RUNNER, else beside this program, else in the
-/// release's station directory.
-fn p54_runner_binary(bus : LiveBus) -> String? {
-  let name = if is_windows() { "stillfail-runner.exe" } else { "stillfail-runner" }
-  let here = @nodepath.dirname(sep(), @drive.real_of(bus.argv0))
-  let candidates = [env_get("STILLFAIL_RUNNER").unwrap_or(""), path([here, name]), path([bus.app, "station", name])]
-  for c in candidates {
-    if c != "" && (try { Ok(@drive.stat(c)) } catch { e => Err(e) }) is Ok(_) {
-      return Some(c)
-    }
-  }
-  None
-}
-
-///|
-/// The system as the TypeScript station's platform names it (`platform.os`): macos, linux, windows.
-fn p54_os() -> String {
-  platform_os()
 }

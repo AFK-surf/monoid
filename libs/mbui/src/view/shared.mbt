@@ -790,14 +790,35 @@ pub fn Tree::lift_cut_corners(self : Tree, id : NodeId) -> (Double, Double, Doub
   match (l.stays, l.within) {
     // (each corner less how far that cut comes into the flight on either side of it, so that where the cut comes in
     // its edge is square, and as it goes back out the corner grows back round from none, never a jump)
-    (Some(_), _) => {
+    // (measured from what of the flight the window shows, the other end's overhang past the window taken off as far
+    // along as it is: an other end opened past the window (a picture zoomed past its edges) cuts nothing of the
+    // corners, only that end's room coming into it does)
+    (Some(e), _) => {
       let (ca, cb, cc, cd) = self.look_from(id.at, 1.0).corners
       guard self.lift_cut(id) is Some((q0, q1, q2, q3)) else { return Some((ca, cb, cc, cd)) }
+      let (wx, wy, ww, wh) = self.placed_window(l.top)
+      let (x0, y0, x1, y1) = (wx, wy, wx + ww, wy + wh)
+      let t = match e.route {
+        Some(r) => (r.opened)(e.ends, 1.0 - l.k)
+        None => l.from_stays_end()
+      }
+      // (the other end, in the window: where the flight goes, set out from the end that stays; else where it set out)
+      let (ox, oy, ow, oh) = if e.at_start {
+        let (fx, fy, fw, fh) = self.placed_window(l.follow)
+        let (hx, hy) = self.held_off(l.follow)
+        (fx + hx - l.held_off.0, fy + hy - l.held_off.1, fw, fh)
+      } else {
+        e.ends.from
+      }
       let (lx, ly, lw, lh) = self.lift_rect(l)
-      let dl = dmax(0.0, q0 - lx)
-      let dt = dmax(0.0, q1 - ly)
-      let dr = dmax(0.0, lx + lw - q2)
-      let db = dmax(0.0, ly + lh - q3)
+      let vx0 = lx + dmax(0.0, x0 - ox) * t
+      let vy0 = ly + dmax(0.0, y0 - oy) * t
+      let vx1 = lx + lw - dmax(0.0, ox + ow - x1) * t
+      let vy1 = ly + lh - dmax(0.0, oy + oh - y1) * t
+      let dl = dmax(0.0, q0 - vx0)
+      let dt = dmax(0.0, q1 - vy0)
+      let dr = dmax(0.0, vx1 - q2)
+      let db = dmax(0.0, vy1 - q3)
       let cr = fn(r : Double, a : Double, b : Double) { dmax(0.0, r - dmax(a, b)) }
       Some((cr(ca, dl, dt), cr(cb, dt, dr), cr(cc, dr, db), cr(cd, db, dl)))
     }

@@ -52,13 +52,7 @@ fn digits_at(s : String, i : Int) -> String {
 ///|
 /// Where `word` is in `s` from `from`, or -1.
 fn index_of(s : String, word : String, from~ : Int = 0) -> Int {
-  if from > s.length() {
-    return -1
-  }
-  match js_slice(s, from).find(word) {
-    Some(i) => i + from
-    None => -1
-  }
+  @jsjson.js_index_of(s, word, from~)
 }
 
 ///|

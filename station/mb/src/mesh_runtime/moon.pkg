@@ -2,6 +2,7 @@ import {
   "base/url",
   "station/host",
   "station/jsjson",
+  "station/nodepath",
   "station/jscase",
   "station/wire",
   "station/mesh_door/door",

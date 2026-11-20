@@ -5,7 +5,7 @@
 
 ///|
 using @jsjson {
-  type JValue, units as u, text as t, jval_str as js, jval_num as num, jval_int as int, jval_obj as obj,
+  type JValue, sanitize_str as t, jval_str as js, jval_num as num, jval_int as int, jval_obj as obj,
   jval_strs as arr_of, jval_at as get, jval_str_of as str_of, jval_nonempty as nonempty,
   jval_is_true as is_true, jval_num_of as num_of, jval_finite_or_zero as finite_or_zero, jval_arr as arr,
   jval_is_obj as is_object, jval_entries as fields, js_less, js_index_of as index_of,
@@ -21,7 +21,7 @@ pub type J = JValue
 
 ///|
 fn is_s(v : J?, s : String) -> Bool {
-  v is Some(Str(x)) && x == u(s)
+  v is Some(Str(x)) && x == s
 }
 
 ///|
@@ -30,7 +30,7 @@ fn spread_of(v : J?) -> Array[(String, J)] {
   match v {
     Some(Obj(entries)) => entries.map(e => (t(e.0), e.1))
     Some(Arr(items)) => items.mapi((i, x) => (i.to_string(), x))
-    Some(Str(s)) => s.mapi((i, c) => (i.to_string(), Str([c])))
+    Some(Str(s)) => Array::makei(s.length(), i => (i.to_string(), Str(s.unsafe_substring(start=i, end=i + 1))))
     _ => []
   }
 }

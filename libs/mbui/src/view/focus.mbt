@@ -145,7 +145,8 @@ pub fn Tree::focus_order(self : Tree) -> Array[FocusAt] {
 pub fn Tree::focus_to(self : Tree, id : NodeId?, visible? : Bool = false) -> Bool {
   let ok = match id {
     Some(i) =>
-      self.can_focus(i)
+      self.can_focus(i) ||
+      (self.typing_left_under() && self.alive_id(i) && self.nodes[i.at].focusable && self.keys_own(i))
     None => true
   }
   if !ok {

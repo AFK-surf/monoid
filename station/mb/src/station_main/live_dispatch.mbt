@@ -583,6 +583,38 @@ fn fork_bg(host : @host.Host, name : String, f : async () -> Unit) -> Unit {
 }
 
 ///|
+/// Spawn a child with piped stdin/stdout and feed each `\n`-delimited stdout line to `on_line`, then `on_exit`.
+fn spawn_lines(
+  host : @host.Host,
+  program : String,
+  args : Array[String],
+  name : String,
+  on_line : (Proc, String) -> Unit,
+  on_exit : (Proc, Int?) -> Unit,
+) -> Proc raise SysError {
+  let p = spawn(host, program, args, stdin_piped=true, stdout=Piped)
+  fork_bg(host, name, async fn() {
+    let line = @buffer.Buffer()
+    while true {
+      match p.events.take() {
+        Out(b) =>
+          for i in 0..<b.length() {
+            if b[i] == b'\n' {
+              on_line(p, @utf8.decode_lossy(line.to_bytes()))
+              line.reset()
+            } else {
+              line.write_byte(b[i])
+            }
+          }
+        Err(_) => ()
+        Exit(code, _) => { on_exit(p, code); return }
+      }
+    }
+  })
+  p
+}
+
+///|
 /// Run `f` once after `ms` milliseconds on the program's runtime; the returned closure cancels and interrupts it.
 fn bus_after(host : @host.Host, ms : Double, f : () -> Unit) -> () -> Unit {
   let off = Ref(false)
@@ -600,6 +632,11 @@ fn platform_os() -> String {
 }
 
 ///|
+fn bus_cloud(bus : LiveBus) -> Json {
+  (bus.cloud_state.val)().unwrap_or(Json::null())
+}
+
+///|
 fn bus_station_id_opt(bus : LiveBus) -> String? {
   match (bus.cloud_state.val)() {
     Some(s) => match jtext(s, "station") { Some(id) if id != "" => Some(id); _ => None }
@@ -608,10 +645,23 @@ fn bus_station_id_opt(bus : LiveBus) -> String? {
 }
 
 ///|
+fn bus_station_id(bus : LiveBus) -> String {
+  bus_station_id_opt(bus).unwrap_or(bus.key.id)
+}
+
+///|
 fn bus_home(bus : LiveBus) -> String? {
   match (bus.cloud_state.val)() {
     Some(s) => match jtext(s, "workspace") { Some(w) if w != "" => Some(w); _ => None }
     None => None
+  }
+}
+
+///|
+fn bus_agent_home(bus : LiveBus) -> String {
+  match jtext((bus.config_raw.val)(), "agentHome") {
+    Some(h) if h != "" => h
+    _ => path([bus.data, "agent"])
   }
 }
 
@@ -658,6 +708,141 @@ async fn run_cmd(host : @host.Host, program : String, args : Array[String], env?
   let proc = spawn(host, program, args, env?, cwd?, stdout=Piped, stderr=Piped)
   let (code, _, out, err) = proc.finished()
   (code, @utf8.decode_lossy(out), @utf8.decode_lossy(err))
+}
+
+///|
+/// Run a child to its end with optional stdin and timeout; None where it did not start.
+async fn run_capture(
+  host : @host.Host,
+  program : String,
+  args : Array[String],
+  env? : Array[(String, String)],
+  cwd? : String,
+  input? : String,
+  ms? : Int = 0,
+  group? : Bool = false,
+) -> (Int?, String?, String, String, Bool)? {
+  let proc = spawn(host, program, args, env?, cwd?, stdin_piped=input is Some(_), stdout=Piped, stderr=Piped, group~) catch {
+    _ => return None
+  }
+  if input is Some(t) {
+    ignore(proc.write(@utf8.encode(t)))
+    proc.end_input()
+  }
+  if ms > 0 {
+    match @effect.timeout(ms, async fn() { proc.finished() }) {
+      Some((code, signal, out, err)) => Some((code, signal, @utf8.decode_lossy(out), @utf8.decode_lossy(err), false))
+      None => {
+        ignore(kill(proc.pid, "SIGKILL", group~))
+        Some((None, None, "", "", true))
+      }
+    }
+  } else {
+    let (code, signal, out, err) = proc.finished()
+    Some((code, signal, @utf8.decode_lossy(out), @utf8.decode_lossy(err), false))
+  }
+}
+
+///|
+/// What a command printed (trimmed), None where it failed or took longer than `ms`.
+async fn run_said(host : @host.Host, program : String, args : Array[String], ms : Int) -> String? {
+  match run_capture(host, program, args, ms~) {
+    Some((Some(0), _, out, _, false)) => Some(out.trim().to_owned())
+    _ => None
+  }
+}
+
+///|
+/// A program run to its end via shell `proc.run`, its stdout; none where it failed.
+async fn shell_proc_run(host : @host.Host, command : String, args : Array[String], timeout_ms? : Int = 10000) -> String? {
+  match (try { Ok(host.shell("proc.run", { "command": jstr(command), "args": Json::array(args.map(jstr)), "timeoutMs": ji(timeout_ms) })) } catch { e => Err(e) }) {
+    Ok((String(s), _)) => Some(s)
+    _ => None
+  }
+}
+
+///|
+/// The CPUs' ticks from `machine()` as (busy, total); None where unavailable.
+fn machine_cpu_ticks() -> (Double, Double)? {
+  guard machine() is { "cpus": Array(cpus), .. } && cpus.length() > 0 else { return None }
+  let mut busy = 0.0
+  let mut total = 0.0
+  for c in cpus {
+    if c is { "times": Object(t), .. } {
+      for k, v in t {
+        if v is Number(n, ..) {
+          total += n
+          if k != "idle" { busy += n }
+        }
+      }
+    }
+  }
+  Some((busy, total))
+}
+
+///|
+/// Shared GPU sampler (`@jobs_host.Gpus`: Apple Silicon ioreg, NVIDIA nvidia-smi, Linux DRM, Windows AMD).
+fn make_gpus(host : @host.Host) -> @jobs_host.Gpus {
+  let run = async fn(file, args, ms) { @jobs_host.run_on(host, file, args, ms) }
+  @jobs_host.Gpus::new(
+    run,
+    platform_os(),
+    arch(),
+    () => wall_ms().to_double(),
+    async fn() { @jobs_host.linux_gpus(@jobs_host.LinuxIo::shell(host, run)) },
+  )
+}
+
+///|
+fn gpus_to_json(g : Array[@jobs_host.Gpu]) -> Json {
+  Json::array(g.map(x => x.to_json()))
+}
+
+///|
+/// Start `program` under `runner`, returning its `{"ready": true, ...}` line.
+async fn start_runner_proc(
+  host : @host.Host,
+  runner : String,
+  data : String,
+  id : String,
+  program : String,
+  args : Array[String],
+  env? : Array[(String, String)],
+  cwd : String,
+  pty? : (Int, Int),
+  use_nice? : Bool = false,
+) -> Json {
+  let given = ["--dir", path([data, "run", "runners"]), "--id", id, "--cwd", cwd]
+  if pty is Some((cols, rows)) {
+    given.push("--pty")
+    given.push("\{cols}x\{rows}")
+  }
+  given.push("--")
+  given.push(program)
+  for a in args { given.push(a) }
+  let (command, all_args) = if use_nice && !is_windows() {
+    let nice = agent_nice()
+    if nice > 0 && host_exists(host, "/usr/bin/nice") {
+      ("/usr/bin/nice", ["-n", nice.to_string(), runner, ..given])
+    } else {
+      (runner, given)
+    }
+  } else {
+    (runner, given)
+  }
+  let child = spawn(host, command, all_args, env?, stdout=Piped, stderr=Piped, group=true)
+  let (_, _, out, err) = child.finished()
+  let text = @utf8.decode_lossy(out)
+  for line in text.split("\n") {
+    let l = line.to_owned()
+    if l.has_prefix("{") {
+      if attempt(() => @json.parse(l)) is Ok({ "ready": True, .. } as ready) {
+        return ready
+      }
+    }
+  }
+  let why = @utf8.decode_lossy(err).trim().to_owned()
+  raise LiveError("the runner did not start: \{if why == "" { text.trim().to_owned() } else { why }}")
 }
 
 ///|

@@ -23,10 +23,12 @@ priv enum Inst {
   IAndroids(AndroidScreens)
   IX11(X11Desktop)
   IGst(LinuxGstDesktop)
+  ILinuxNative(LinuxNativeDesktop)
   ILinux(LinuxDesktop)
   ITools(LinuxScreenTools)
   IMac(MacInput)
   IWinIn(WinInput)
+  ILinuxIn(LinuxInput)
   ISimIn(SimInput)
   IAndIn(AndroidInput)
   IScrcpy(ScrcpyStream)
@@ -202,6 +204,7 @@ fn Harness::source_of(self : Harness, i : Inst) -> ScreenSource? {
     IWindows(w) => Some(w.source())
     IX11(x) => Some(x.source())
     IGst(g) => Some(g.source())
+    ILinuxNative(n) => Some(n.source())
     ILinux(l) => Some(l.source())
     _ => None
   }

@@ -299,11 +299,11 @@ fn with_delta(op : J, delta : PointerDelta?) -> J {
     (Obj(fields), Some(d)) => {
       let more = fields.copy()
       if d.moved {
-        more.push((@jsjson.units("dx"), jn(d.dx)))
-        more.push((@jsjson.units("dy"), jn(d.dy)))
+        more.push(("dx", jn(d.dx)))
+        more.push(("dy", jn(d.dy)))
       }
       if d.relative {
-        more.push((@jsjson.units("relative"), jb(true)))
+        more.push(("relative", jb(true)))
       }
       Obj(more)
     }

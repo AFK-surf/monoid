@@ -23,7 +23,7 @@ let sessions_at_work_before_upgrade : String =
 
 ///|
 /// store/store.ts LATEST_DECISIONS_SCOPED.
-let latest_decisions_scoped : String =
+pub let latest_decisions_scoped : String =
   #|WITH RECURSIVE
   #|
   #|
@@ -69,7 +69,7 @@ let latest_decisions_scoped : String =
 
 ///|
 /// store/store.ts LATEST_DECISIONS_SCOPED_FALLBACK.
-let latest_decisions_scoped_fallback : String =
+pub let latest_decisions_scoped_fallback : String =
   #|WITH latest AS MATERIALIZED (
   #|  SELECT MAX(id) AS id, session FROM decision_checks WHERE created_at >= ?1 GROUP BY +session
   #|)
@@ -81,7 +81,7 @@ let latest_decisions_scoped_fallback : String =
 
 ///|
 /// store/store.ts RECENT_CONNECT_THREADS.
-let recent_connect_threads : String =
+pub let recent_connect_threads : String =
   #|WITH recent AS MATERIALIZED (
   #|  SELECT t.id, t.surface, t.created_at, COALESCE(e.at, 0) AS said_at
   #|  FROM threads t LEFT JOIN thread_state s ON s.thread = t.id

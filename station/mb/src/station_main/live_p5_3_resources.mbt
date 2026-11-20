@@ -186,7 +186,7 @@ async fn P53Resources::view(self : P53Resources) -> Json {
 ///|
 /// The machine's processes (`ps`), none where they are not read.
 async fn P53Resources::table(self : P53Resources) -> Array[P53Proc]? {
-  guard p53_run(self.bus.host, "/bin/ps", ["-axo", "pid=,ppid=,pgid=,rss=,comm="]) is Some(out) else { return None }
+  guard shell_proc_run(self.bus.host, "/bin/ps", ["-axo", "pid=,ppid=,pgid=,rss=,comm="]) is Some(out) else { return None }
   let rows = []
   for line in out.split("\n") {
     let words = line.to_string().split(" ").filter(w => w != "").map(w => w.to_string()).to_array()
@@ -207,7 +207,7 @@ async fn P53Resources::table(self : P53Resources) -> Array[P53Proc]? {
 /// Each process's arguments (`ps -axo pid=,args=`).
 async fn P53Resources::args(self : P53Resources) -> Map[Int, String] {
   let out : Map[Int, String] = Map([])
-  guard p53_run(self.bus.host, "/bin/ps", ["-axo", "pid=,args="]) is Some(text) else { return out }
+  guard shell_proc_run(self.bus.host, "/bin/ps", ["-axo", "pid=,args="]) is Some(text) else { return out }
   for line in text.split("\n") {
     let l = line.to_string().trim_start(chars=" ").to_string()
     match l.find(" ") {
@@ -614,7 +614,7 @@ async fn P53Resources::launcher(self : P53Resources) -> Int? {
   guard attempt(() => @json.parse(t)) is Ok(said) else { return None }
   guard jnum_of(said, "pid") is Some(pid) && pid > 0.0 && jnum_of(said, "handoff") == Some(1.0) else { return None }
   let pid = pid.to_int()
-  match p53_run(self.bus.host, "/bin/ps", ["-o", "comm=", "-p", pid.to_string()]) {
+  match shell_proc_run(self.bus.host, "/bin/ps", ["-o", "comm=", "-p", pid.to_string()]) {
     Some(comm) if @nodepath.basename("/", comm.trim_space().to_string()).has_prefix("stillfail") => Some(pid)
     _ => None
   }

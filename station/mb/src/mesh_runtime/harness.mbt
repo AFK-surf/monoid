@@ -746,7 +746,12 @@ async fn Harness::do_(self : Harness, on : String, verb : String, a : Json) -> J
   if self.pacers.get(on) is Some(p) {
     return match verb {
       "sent" => { p.sent(n("ts"), n("bytes")); Json::null() }
-      "acked" => { p.acked(n("ts")); Json::null() }
+      "acked" => {
+        let wait = num_of(arg(a, "wait")).unwrap_or(0.0)
+        p.acked(n("ts"), viewer_wait_ms=wait)
+        Json::null()
+      }
+      "viewerWait" => jnum(p.viewer_wait())
       "may" => Json::boolean(p.may())
       "backlogged" => Json::boolean(p.backlogged())
       "rate" => opt_json(p.asked_rate())

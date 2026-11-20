@@ -109,12 +109,7 @@ pub struct Rig {
 
 ///|
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(String(s)) => s != ""
-    Some(Number(n, ..)) => n != 0.0 && n == n
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|

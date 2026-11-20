@@ -268,7 +268,7 @@ fn index_row_of(v : J) -> IndexRow {
 fn H::holder_of(self : H, v : J) -> Holder {
   match v {
     Num(n) => self.holders.get(n.to_int()).unwrap_or(Token(-1))
-    Str(u) => Named(utext(u))
+    Str(u) => Named(u)
     _ => Named("")
   }
 }
@@ -359,7 +359,7 @@ fn sql_params(v : J) -> Array[Json] {
 
 ///|
 fn sql_rows(rows : Array[Map[String, Json]]) -> J {
-  Arr(rows.map(r => Obj(r.to_array().map(e => (@jsjson.units(e.0), from_json(e.1))))))
+  Arr(rows.map(r => Obj(r.to_array().map(e => (e.0, from_json(e.1))))))
 }
 
 ///|
@@ -1278,7 +1278,7 @@ async fn H::make_live(self : H, o : J) -> Int {
       data: str_of(prop(oo, "data")).unwrap_or(""),
       home: () => state.home.val,
       memberships: () => match state.memberships.val {
-        Obj(entries) => entries.map(e => utext(e.0))
+        Obj(entries) => entries.map(e => e.0)
         _ => []
       },
       membership: ws => or_null(prop(Some(state.memberships.val), ws)),
@@ -1395,7 +1395,7 @@ pub async fn harness(host : @host.Host) -> Unit {
                   let v = f(a)
                   jobj([("cbDone", k), ("ok", v)])
                 } catch {
-                  e => Obj([(@jsjson.units("cbDone"), k)] + H::threw(e).map(x => (@jsjson.units(x.0), x.1)))
+                  e => Obj([("cbDone", k)] + H::threw(e).map(x => (x.0, x.1)))
                 }
               None => jobj([("cbDone", k), ("error", jstr("no callback \{cb}")), ("kind", jstr(""))])
             }
@@ -1415,7 +1415,7 @@ pub async fn harness(host : @host.Host) -> Unit {
           let v = h.case(op, args)
           jobj([("done", id), ("ok", v)])
         } catch {
-          e => Obj([(@jsjson.units("done"), id)] + H::threw(e).map(x => (@jsjson.units(x.0), x.1)))
+          e => Obj([("done", id)] + H::threw(e).map(x => (x.0, x.1)))
         }
         h.say(reply)
       }),

@@ -91,21 +91,6 @@ fn P53Jobs::get(self : P53Jobs, id : String) -> Json {
 }
 
 ///|
-fn p53_a(args : Array[Json], i : Int) -> Json {
-  arg_at(args, i)
-}
-
-///|
-fn p53_as(args : Array[Json], i : Int) -> String {
-  arg_str(args, i)
-}
-
-///|
-fn p53_ai(args : Array[Json], i : Int) -> Int {
-  arg_int(args, i)
-}
-
-///|
 /// What the program asks of the station for its jobs (jobs.ts `asked`).
 async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json {
   let host = self.bus.host
@@ -136,19 +121,19 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
     "node.pressure" => jopt(p53_pressure(host))
     "node.inputIdle" =>
       (p53_input_idle(host)).map(jn).unwrap_or(Json::null())
-    "node.pidAlive" => jb(pid_alive(p53_ai(args, 0)))
+    "node.pidAlive" => jb(pid_alive(arg_int(args, 0)))
     "node.keepClaims" => {
       self.machine.keep_claims(a(0))
       Json::null()
     }
-    "node.tail" => jstr(@jobs_host.tail(host, s(0), p53_ai(args, 1)))
+    "node.tail" => jstr(@jobs_host.tail(host, s(0), arg_int(args, 1)))
     "node.lost" => jb(host_exists(host, self.machine.lost_file(s(0))))
     "node.append" => {
       p53_append(host, s(0), s(1))
       Json::null()
     }
     "node.signal" => {
-      ignore(kill(p53_ai(args, 0), s(1), group=true))
+      ignore(kill(arg_int(args, 0), s(1), group=true))
       Json::null()
     }
     "node.grace" => {
@@ -156,7 +141,7 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
       Json::null()
     }
     "node.endLeftBehind" => {
-      let pgid = p53_ai(args, 0)
+      let pgid = arg_int(args, 0)
       if !self.machine.follows(pgid) {
         let entry = self.store().process_by_group(ji(pgid))
         if jtext(entry, "runtime") == Some("job") {
@@ -183,7 +168,7 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
     }
     "node.follow" => {
       let id = s(0)
-      let pgid = p53_ai(args, 1)
+      let pgid = arg_int(args, 1)
       let job = self.get(id)
       let now = self.now()
       let started = jnum_of(job, "startedAt").unwrap_or(now)
@@ -202,9 +187,9 @@ async fn P53Jobs::asked(self : P53Jobs, f : String, args : Array[Json]) -> Json 
 /// What the program tells the station of its jobs, needing no answer.
 fn P53Jobs::told(self : P53Jobs, f : String, args : Array[Json]) -> Unit {
   match f {
-    "log" => slice_log(p53_as(args, 0), "jobs", p53_as(args, 1), p53_a(args, 2))
+    "log" => slice_log(arg_str(args, 0), "jobs", arg_str(args, 1), arg_at(args, 2))
     "node.endGroup" => {
-      let pgid = p53_ai(args, 0)
+      let pgid = arg_int(args, 0)
       fork_bg(self.bus.host, "a group left behind", async fn() { self.machine.end_group(pgid, @jobs_host.stop_grace_ms) })
     }
     _ => ()
@@ -601,8 +586,8 @@ fn P53Jobs::up_in(self : P53Jobs, keys : Json?, ws : String?) -> Array[Json] {
 ///|
 /// Whether a session is of workspace `ws` (its chat's; the home one's where it says none).
 fn P53Jobs::of_workspace(self : P53Jobs, session : String, ws : String) -> Bool {
-  let row = p53_session_row(self.bus, session)
-  !(row is Null) && either(jtext(row, "ws"), p53_home(self.bus)) == Some(ws)
+  let row = bus_session_row(self.bus, session)
+  !(row is Null) && either(jtext(row, "ws"), bus_home(self.bus)) == Some(ws)
 }
 
 ///|
@@ -629,7 +614,7 @@ async fn P53Jobs::start_moved(self : P53Jobs, j : Json) -> Map[String, Json] {
   let cwd = match jtext(j, "cwd") {
     Some(c) => c
     None =>
-      (jtext(p53_session_row(self.bus, session), "workspace")).unwrap_or(self.bus.data)
+      (jtext(bus_session_row(self.bus, session), "workspace")).unwrap_or(self.bus.data)
   }
   self.start(session, jtext_or_empty(j, "name"), jtext_or_empty(j, "command"), cwd, jnum_of(j, "port"), jtrue(j, "watch"), None, false, Json::null())
 }
@@ -751,7 +736,7 @@ async fn P53Jobs::log(self : P53Jobs, id : String, lines : Int) -> String {
 ///|
 /// Whether a session's agent was at work lately (jobs.ts `awake`): one idle longer is not woken for a stop from a page.
 fn P53Jobs::awake(self : P53Jobs, session : String) -> Bool {
-  let s = p53_session_row(self.bus, session)
+  let s = bus_session_row(self.bus, session)
   if s is Null {
     return false
   }
@@ -891,7 +876,7 @@ async fn p53_pressure_read(host : @host.Host) -> String? {
     Some(if share < 0.04 { "critical" } else if share < 0.1 { "high" } else { "normal" })
   }
   if platform() == "darwin" {
-    guard p53_run(host, "/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]) is Some(level) else { return None }
+    guard shell_proc_run(host, "/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]) is Some(level) else { return None }
     match level.trim_space().to_string() {
       "1" => Some("normal")
       "4" => Some("critical")
@@ -940,7 +925,7 @@ async fn p53_input_idle(host : @host.Host) -> Double? {
   if platform() != "darwin" {
     return None
   }
-  guard p53_run(host, "/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"]) is Some(out) else {
+  guard shell_proc_run(host, "/usr/sbin/ioreg", ["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"]) is Some(out) else {
     return None
   }
   for line in out.split("\n") {
@@ -962,8 +947,7 @@ async fn p53_input_idle(host : @host.Host) -> Double? {
 ///|
 /// Words appended to a file (a job's log).
 async fn p53_append(host : @host.Host, path : String, text : String) -> Unit {
-  // (no offset: written at its end)
-  ignore(try { Ok(host.shell("fs.put", { "path": jstr(path) }, bytes=@utf8.encode(text))) } catch { e => Err(e) })
+  host_append_file(host, path, @utf8.encode(text)) catch { _ => () }
 }
 
 // ── a service's preview ──
@@ -1037,7 +1021,7 @@ async fn P53Jobs::preview_json(self : P53Jobs, arg : Json) -> Json {
   jobj_of([
     ("status", ji(answer.status)),
     ("headers", Json::array(answer.headers.map(h => Json::array([jstr(h.0), jstr(h.1)])))),
-    ("body", jstr(p53_utf8(out.to_bytes()))),
+    ("body", jstr(@utf8.decode_lossy(out.to_bytes()))),
   ])
 }
 
@@ -1107,7 +1091,7 @@ fn P53Jobs::tools(self : P53Jobs) -> Array[PartTool] {
         ("additionalProperties", jb(false)),
       ]),
       async fn(session, args) {
-        let row = p53_session_row(bus, session)
+        let row = bus_session_row(bus, session)
         let home = match jtext(row, "workspace") {
           Some(w) => w
           None => raise P53Error("unknown session")

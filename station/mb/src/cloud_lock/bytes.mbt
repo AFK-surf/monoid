@@ -43,40 +43,7 @@ fn why_of(e : Error) -> String {
 ///|
 /// UTF-8 as Node encodes a string (Buffer.from(s), createHash's update): a lone surrogate as U+FFFD.
 pub fn utf8_of(s : String) -> Bytes {
-  let out = @buffer.new()
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let mut c = s.unsafe_charcode_at(i)
-    i += 1
-    if c >= 0xd800 && c <= 0xdbff && i < n {
-      let d = s.unsafe_charcode_at(i)
-      if d >= 0xdc00 && d <= 0xdfff {
-        c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
-        i += 1
-      } else {
-        c = 0xfffd
-      }
-    } else if c >= 0xd800 && c <= 0xdfff {
-      c = 0xfffd
-    }
-    if c < 0x80 {
-      out.write_byte(c.to_byte())
-    } else if c < 0x800 {
-      out.write_byte((0xc0 | (c >> 6)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    } else if c < 0x10000 {
-      out.write_byte((0xe0 | (c >> 12)).to_byte())
-      out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    } else {
-      out.write_byte((0xf0 | (c >> 18)).to_byte())
-      out.write_byte((0x80 | ((c >> 12) & 0x3f)).to_byte())
-      out.write_byte((0x80 | ((c >> 6) & 0x3f)).to_byte())
-      out.write_byte((0x80 | (c & 0x3f)).to_byte())
-    }
-  }
-  out.to_bytes()
+  @jsjson.utf8(s)
 }
 
 ///|
@@ -110,28 +77,7 @@ pub fn hex_of(b : BytesView) -> String {
 /// Base64 or base64url as Buffer.from(s, "base64url") reads it: either alphabet, what is neither skipped, ending at
 /// "=".
 pub fn b64_bytes(s : String) -> Bytes {
-  let digits = StringBuilder()
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c == 0x3d {
-      break
-    }
-    if (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x61 && c <= 0x7a) ||
-      (c >= 0x30 && c <= 0x39) ||
-      c == 0x2b ||
-      c == 0x2d ||
-      c == 0x2f ||
-      c == 0x5f {
-      digits.write_char(c.unsafe_to_char())
-      n += 1
-    }
-  }
-  let text = digits.to_string()
-  // A lone digit past a group of four is six bits: no byte, as Node leaves it.
-  let text = if n % 4 == 1 { text.view(end_offset=n - 1).to_string() } else { text }
-  @codec.base64_decode(text).unwrap_or(b"")
+  @codec.base64_decode_loose(s)
 }
 
 ///|

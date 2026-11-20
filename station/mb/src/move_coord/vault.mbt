@@ -46,15 +46,11 @@ pub struct Vault {
 
 ///|
 pub fn Vault::new(d : VaultDeps) -> Vault {
-  let put = match (d.disk.read)(@nodepath.join("/", [d.data, "move", "vaults.json"])) {
-    Some(t) =>
-      match (try Ok(parse(t)) catch { e => Err(e) }) {
-        Ok(j) => j
-        Err(_) => jo([])
-      }
-    None => jo([])
+  {
+    d,
+    moved: KeptSet::new(d.disk, move_path(d.data, "vault-moved.json")),
+    put: read_move_json(d.disk, d.data, "vaults.json"),
   }
-  { d, moved: KeptSet::new(d.disk, @nodepath.join("/", [d.data, "move", "vault-moved.json"])), put }
 }
 
 ///|
@@ -82,10 +78,10 @@ fn pages(items : Array[J]) -> Array[Array[J]] {
 
 ///|
 pub fn Vault::module(self : Vault) -> Module {
-  {
-    id: "vault",
-    needs: [],
-    plan: async fn(ws, _to, _reads) {
+  simple_module(
+    "vault",
+    self.moved,
+    async fn(ws, _to, _reads) {
       (self.d.owners)(ws).map(owner => new_item(
         "vault",
         "\{vault_item_id(owner)}@\{ws}",
@@ -93,7 +89,7 @@ pub fn Vault::module(self : Vault) -> Module {
         [],
       ))
     },
-    move: async fn(item, to, _progress, _arrive) {
+    async fn(item, to, _progress, _arrive) {
       let (owner, ws) = vault_of(item)
       let plain = (self.d.stores.plain_items)(ws, owner)
       for page in pages(plain) {
@@ -133,7 +129,7 @@ pub fn Vault::module(self : Vault) -> Module {
       }
       self.moved.add(item_id(item))
     },
-    back: async fn(item, from, _arrive) {
+    async fn(item, from, _arrive) {
       let (owner, ws) = vault_of(item)
       ignore(
         (self.d.ask)(
@@ -148,26 +144,12 @@ pub fn Vault::module(self : Vault) -> Module {
       )
       self.moved.delete(item_id(item))
     },
-    state: async fn(item) {
-      st(if self.moved.has(item_id(item)) { "there" } else { "here" })
-    },
-    usable_here: Some(async fn(_) { true }),
-    usable_there: None,
-    can_lend: None,
-    lend: None,
-    lent_for: None,
-    left: None,
-    is_here: None,
-    abandon: None,
-    ready: None,
-    stop: None,
-    resume: None,
-  }
+  )
 }
 
 ///|
 async fn Vault::save(self : Vault) -> Unit {
-  (self.d.disk.write)(@nodepath.join("/", [self.d.data, "move", "vaults.json"]), stringify(self.put))
+  write_move_json(self.d.disk, self.d.data, "vaults.json", self.put)
 }
 
 ///|

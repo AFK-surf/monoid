@@ -3,6 +3,7 @@ import {
   "base/hash",
   "station/host",
   "station/jsjson",
+  "station/nodepath",
   "stillfail/rules/form",
   "stillfail/rules/lock",
   "stillfail/rules/fork",

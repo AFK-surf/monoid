@@ -4,7 +4,7 @@
 ///|
 /// A choice among a few in `parent` (select's, as a node): closed, a capsule as a one-line field is (the theme's
 /// control height, body words), what is chosen in it (`value` among `options`: each value and its words) cut short,
-/// a chevron at its end; its line the field's hover grey while the hand is on it or it has the focus. Pressed (Enter,
+/// a chevron at its end; its hairline the border's while the hand is on it or it has the focus. Pressed (Enter,
 /// Space, a screen reader's press), its options through the presenters (@sf.pick) beside it, the chosen checked;
 /// `choose` given the one chosen. `whole`: never narrower than what is chosen in it says (what is beside it gives way);
 /// else `select_w` at most. While `disabled()`, at 55% and taking no press. Read out a button, `label` and its choice.
@@ -61,7 +61,7 @@ pub fn select_node(
       .radius(Is(1.0e6))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { @ui.tree_theme().color(Surface) }))
-      .edge(By(fn() { (1.0, @ui.tree_theme().color(if !d.disabled() && lit_node(b) { FieldHover } else { Border })) }))
+      .edge(By(fn() { control_edge(hot=!d.disabled() && lit_node(b)) }))
       .alpha(By(fn() { if d.disabled() { select_disabled_alpha } else { 1.0 } }))
       |> ignore
       if !whole {

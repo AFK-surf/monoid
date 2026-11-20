@@ -2,7 +2,7 @@
 // is asked for, from the acknowledgements alone, on a clock the test moves.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CUT, DOWN, DOWNSIZE_MS, FPS_CHOICES, FrameLatency, LoopStall, DOWNSIZE_SHARE, LOW_BOUNDS, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, START_RATE, START_UNACKED, START_UP, Sizer, UPSIZE_MS, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, MOVING_SHARPEN_MS, MOVING_SHARPEN_UP, STILL_MS, Sharpener, ownRate, queueMs, rateCeiling, startRate } from "../src/mesh/screen-pace.ts";
+import { CUT, DOWN, DOWNSIZE_MS, FPS_CHOICES, FrameLatency, LoopStall, DOWNSIZE_SHARE, LOW_BOUNDS, MAX_RATE, MAX_UNACKED, MIN_RATE, Pacer, QUEUE_MS, RTT_WINDOW_MS, START_RATE, START_UNACKED, START_UP, Sizer, UPSIZE_MS, UP, UP_AFTER_MS, UP_EVERY_MS, UP_FAST, VIEWER_HOLD_LIMIT_MS, MOVING_SHARPEN_MS, MOVING_SHARPEN_UP, STILL_MS, Sharpener, ownRate, queueMs, rateCeiling, startRate } from "../src/mesh/screen-pace.ts";
 
 function paced() {
   let now = 0;
@@ -391,4 +391,95 @@ test("a still screen's picture sharper after STILL_MS; a moving one's key frame 
   jpeg.sent(0, null, true);
   assert.equal(jpeg.dueMoving(10_000, 9_000_000), false);
   assert.equal(jpeg.due(10_000, 9_000_000), false);
+});
+
+test("viewerWaitMs decouples client jitter hold from network congestion, caps at 100ms, rejects bogus waits, and decays after RTT_WINDOW_MS", () => {
+  // 1. Legitimate client jitter hold (0..100ms) does not inflate net RTT or lower bitrate.
+  let now = 0;
+  const pacer = new Pacer(() => now);
+  const own = ownRate(1920, 1080);
+  pacer.ceiling(own);
+  const due: { at: number; ts: number; wait: number }[] = [];
+  let ts = 0;
+  for (let t = 0; t < 4000; t++) {
+    now = t;
+    while (due.length > 0 && due[0]!.at <= t) {
+      const d = due.shift()!;
+      pacer.acked(d.ts, d.wait);
+    }
+    if (t % 16 === 0 && pacer.may()) {
+      ts += 1000;
+      pacer.sent(ts, 12_000);
+      // 10ms pure network RTT + 70ms client jitter hold (<= VIEWER_HOLD_LIMIT_MS)
+      const hold = t >= 200 ? 70 : 0;
+      due.push({ at: t + 10 + hold, ts, wait: hold });
+    }
+  }
+  assert.equal(pacer.rtt(), 10, "net RTT stays at pure network RTT");
+  assert.equal(pacer.viewerWait(), 70);
+  assert.equal(pacer.rate(), own, "legitimate viewer hold must not cut bitrate");
+
+  // 2. Client hold > VIEWER_HOLD_LIMIT_MS (100ms) is capped so a stalled client still pauses may() and triggers backlogged().
+  let now2 = 0;
+  const cappedPacer = new Pacer(() => now2);
+  cappedPacer.ceiling(own);
+  cappedPacer.sent(1000, 10_000);
+  now2 = 160;
+  cappedPacer.acked(1000, 150); // totalTrip=160, wait=150 -> netTrip=10, viewerWait capped at 100
+  assert.equal(cappedPacer.rtt(), 10);
+  assert.equal(cappedPacer.viewerWait(), VIEWER_HOLD_LIMIT_MS);
+  cappedPacer.sent(2000, 10_000);
+  cappedPacer.sent(3000, 10_000);
+  now2 = 160 + 10 + VIEWER_HOLD_LIMIT_MS + queueMs(10);
+  assert.equal(cappedPacer.may(), true);
+  assert.equal(cappedPacer.backlogged(), false);
+  now2 += 1;
+  assert.equal(cappedPacer.may(), false, "wait past rtt + VIEWER_HOLD_LIMIT_MS + queueMs pauses sending");
+  assert.equal(cappedPacer.backlogged(), true);
+
+  // 3. Untrusted viewerWaitMs (> totalTrip, negative, NaN, Infinity) is treated as 0.
+  let now3 = 0;
+  const untrusted = new Pacer(() => now3);
+  for (const bogus of [50, -10, Number.NaN, Number.POSITIVE_INFINITY]) {
+    untrusted.sent((ts += 1000), 10_000);
+    now3 += 20;
+    untrusted.acked(ts, bogus);
+    assert.equal(untrusted.viewerWait(), 0, `bogus wait ${bogus} ignored`);
+    assert.equal(untrusted.rtt(), 20);
+  }
+
+  // 4. Real network congestion while holding still lowers bitrate.
+  let now4 = 0;
+  const congested = new Pacer(() => now4);
+  congested.ceiling(own);
+  const due4: { at: number; ts: number; wait: number }[] = [];
+  let ts4 = 0;
+  for (let t = 0; t < 4000; t++) {
+    now4 = t;
+    while (due4.length > 0 && due4[0]!.at <= t) {
+      const d = due4.shift()!;
+      congested.acked(d.ts, d.wait);
+    }
+    if (t % 16 === 0 && congested.may()) {
+      ts4 += 1000;
+      congested.sent(ts4, 15_000);
+      // After 200ms, network trip grows from 10ms to 180ms while client also holds 50ms.
+      const net = t >= 200 ? 180 : 10;
+      const hold = 50;
+      due4.push({ at: t + net + hold, ts: ts4, wait: hold });
+    }
+  }
+  assert.ok(congested.rate()! < own, `real network congestion must still cut bitrate (got ${congested.rate()})`);
+
+  // 5. Returning to a clean link (wait=0) decays viewerWait() back to 0 after RTT_WINDOW_MS.
+  let now5 = 0;
+  const clean = new Pacer(() => now5);
+  clean.sent(1000, 10_000);
+  now5 = 70;
+  clean.acked(1000, 60);
+  assert.equal(clean.viewerWait(), 60);
+  clean.sent(2000, 10_000);
+  now5 = 70 + RTT_WINDOW_MS + 1;
+  clean.acked(2000, 0);
+  assert.equal(clean.viewerWait(), 0, "viewerWait returns to 0 once prior holds age out of RTT_WINDOW_MS");
 });

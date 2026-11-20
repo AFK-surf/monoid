@@ -189,20 +189,9 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
   let stream_handle = p54_stream_handle(handle)
   let carry = p54_bytes_of(opt_field(Some(handle), "carry"))
   let stream : @door.Stream = {
-    read: async fn() {
-      let (said, bytes) = p54_stream_call(host, stream_handle, "read") catch { _ => return None }
-      match (opt_field(Some(said), "end"), bytes) {
-        (Some(True), _) => None
-        (_, Some(b)) => Some(b)
-        _ => None
-      }
-    },
+    read: async fn() { p54_stream_read(host, stream_handle) },
     write: async fn(b) { ignore(p54_stream_call(host, stream_handle, "write", bytes=b)) },
-    finish: async fn() {
-      ignore(p54_stream_call(host, stream_handle, "finish")) catch {
-        _ => ()
-      }
-    },
+    finish: async fn() { ignore(p54_stream_call(host, stream_handle, "finish")) catch { _ => () } },
     stopped: async fn() {
       match (try { Ok(p54_stream_call(host, stream_handle, "stopped")) } catch { e => Err(e) }) {
         Ok(({ "code": Number(c, ..), .. }, _)) => Some(c.to_int())
@@ -210,9 +199,7 @@ async fn p54_screen_view(s : P54Screens, asked : Json) -> Unit {
       }
     },
     reset: async fn(code) {
-      ignore(p54_stream_call(host, stream_handle, "reset", code=Json::number(code.to_double()))) catch {
-        _ => ()
-      }
+      ignore(p54_stream_call(host, stream_handle, "reset", code=ji(code))) catch { _ => () }
     },
   }
   let words = (lang : String, key : String, args : Json) => {

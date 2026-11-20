@@ -51,7 +51,7 @@ fn overview_harness(ask : J) -> J {
             if c.get("byConnect") is Some(Obj(entries)) {
               for e in entries {
                 if e.1 is Num(n) {
-                  by[@jsjson.raw_text(e.0)] = n
+                  by[e.0] = n
                 }
               }
             }
@@ -98,7 +98,7 @@ fn overview_harness(ask : J) -> J {
         if w.field("memory") is Some(Obj(entries)) {
           for e in entries {
             if e.1 is Num(n) {
-              memory[@jsjson.raw_text(e.0)] = n
+              memory[e.0] = n
             }
           }
         }
@@ -296,8 +296,8 @@ fn overview_harness(ask : J) -> J {
                     ])
                     if c is Obj(entries) {
                       for e in entries {
-                        if @jsjson.raw_text(e.0) != "session" {
-                          out = with_prop(out, @jsjson.raw_text(e.0), e.1)
+                        if e.0 != "session" {
+                          out = with_prop(out, e.0, e.1)
                         }
                       }
                     }

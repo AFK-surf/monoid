@@ -8,27 +8,19 @@ using @jsjson { type JValue }
 ///|
 /// A string as a JSON string value.
 pub fn str(s : String) -> JValue {
-  Str(@jsjson.units(s))
+  Str(s)
 }
 
 ///|
 /// A value the shell gave (a row's column) as JavaScript has it.
 pub fn of_json(j : Json) -> JValue {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(d, ..) => Num(d)
-    String(s) => str(s)
-    Array(items) => Arr(items.map(of_json))
-    Object(m) => Obj(m.to_array().map(e => (@jsjson.units(e.0), of_json(e.1))))
-  }
+  @jsjson.JValue::of_json(j)
 }
 
 ///|
 /// A row the shell gave, by its columns' names in their order.
 fn row_of(m : Map[String, Json]) -> JValue {
-  Obj(m.to_array().map(e => (@jsjson.units(e.0), of_json(e.1))))
+  Obj(m.to_array().map(e => (e.0, of_json(e.1))))
 }
 
 ///|
@@ -36,7 +28,7 @@ fn row_of(m : Map[String, Json]) -> JValue {
 fn param(v : JValue?) -> Json {
   match v {
     Some(Num(d)) => Json::number(d)
-    Some(Str(s)) => Json::string(@jsjson.text(s))
+    Some(Str(s)) => Json::string(@jsjson.sanitize_str(s))
     Some(Bool(b)) => Json::boolean(b)
     Some(Null) | None => Json::null()
     Some(v) => Json::string(@jsjson.stringify(v))
@@ -63,7 +55,7 @@ fn num(v : JValue?) -> Double {
 ///|
 fn text_of(v : JValue?) -> String? {
   match v {
-    Some(Str(s)) => Some(@jsjson.text(s))
+    Some(Str(s)) => Some(@jsjson.sanitize_str(s))
     _ => None
   }
 }
@@ -71,14 +63,13 @@ fn text_of(v : JValue?) -> String? {
 ///|
 /// `o` with `name` set: where it is, in its place, else last (as `{...o, name}` has it).
 fn set(o : JValue, name : String, v : JValue) -> JValue {
-  guard o is Obj(entries) else { return Obj([(@jsjson.units(name), v)]) }
-  let key = @jsjson.units(name)
+  guard o is Obj(entries) else { return Obj([(name, v)]) }
   let out = []
   let mut found = false
   for e in entries {
-    if e.0 == key {
+    if e.0 == name {
       if !found {
-        out.push((key, v))
+        out.push((name, v))
         found = true
       }
     } else {
@@ -86,7 +77,7 @@ fn set(o : JValue, name : String, v : JValue) -> JValue {
     }
   }
   if !found {
-    out.push((key, v))
+    out.push((name, v))
   }
   Obj(out)
 }
@@ -95,8 +86,7 @@ fn set(o : JValue, name : String, v : JValue) -> JValue {
 /// `o` without `name`.
 fn without(o : JValue, name : String) -> JValue {
   guard o is Obj(entries) else { return o }
-  let key = @jsjson.units(name)
-  Obj(entries.filter(e => e.0 != key))
+  Obj(entries.filter(e => e.0 != name))
 }
 
 ///|
@@ -105,7 +95,7 @@ fn keys_of(o : JValue) -> Array[String] {
     Obj(entries) => {
       let out : Array[String] = []
       for e in entries {
-        let k = @jsjson.text(e.0)
+        let k = @jsjson.sanitize_str(e.0)
         if !out.contains(k) {
           out.push(k)
         }
@@ -124,24 +114,7 @@ fn stringify(v : JValue) -> String {
 ///|
 /// How many bytes `s` is in UTF-8, as Buffer.from(s, "utf8") makes it (a lone surrogate three, as U+FFFD).
 pub fn utf8_length(s : String) -> Int {
-  let mut n = 0
-  let len = s.length()
-  let mut i = 0
-  while i < len {
-    let c = s.unsafe_charcode_at(i)
-    i += 1
-    if c < 0x80 {
-      n += 1
-    } else if c < 0x800 {
-      n += 2
-    } else if c >= 0xd800 && c <= 0xdbff && i < len && s.unsafe_charcode_at(i) >= 0xdc00 && s.unsafe_charcode_at(i) <= 0xdfff {
-      n += 4
-      i += 1
-    } else {
-      n += 3
-    }
-  }
-  n
+  @jsjson.js_utf8_len(s)
 }
 
 ///|

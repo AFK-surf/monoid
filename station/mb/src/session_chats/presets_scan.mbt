@@ -320,7 +320,7 @@ pub async fn candidates(w : World, repos_dir : String, presets : Array[J], found
         if l != 0.0 {
           if l > 0.0 { -1.0 } else { 1.0 }
         } else {
-          num_of(Some(w.dep("localeCompare", [at(Some(b), "name").unwrap_or(Null), at(Some(c), "name").unwrap_or(Null)]))).unwrap_or(0.0) * -1.0
+          @drive.collate(str_of(at(Some(b), "name")).unwrap_or(""), str_of(at(Some(c), "name")).unwrap_or("")).to_double() * -1.0
         }
       }
       if order < 0.0 {

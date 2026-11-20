@@ -214,37 +214,7 @@ let sep : String = "/"
 ///|
 /// node:path `join(to, rest)` (POSIX).
 fn path_join(a : String, b : String) -> String {
-  let parts = (a + "/" + b).split("/").map(p => p.to_string()).to_array()
-  let absolute = a.has_prefix("/") || (a == "" && b.has_prefix("/"))
-  let out : Array[String] = []
-  for p in parts {
-    if p == "" || p == "." {
-      continue
-    }
-    if p == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        ignore(out.pop())
-      } else if !absolute {
-        out.push("..")
-      }
-      continue
-    }
-    out.push(p)
-  }
-  let joined = out.join("/")
-  let trailing = (a + "/" + b).has_suffix("/") && joined != ""
-  let body = if absolute {
-    "/" + joined
-  } else if joined == "" {
-    "."
-  } else {
-    joined
-  }
-  if trailing {
-    body + "/"
-  } else {
-    body
-  }
+  @nodepath.join("/", [a, b])
 }
 
 ///|

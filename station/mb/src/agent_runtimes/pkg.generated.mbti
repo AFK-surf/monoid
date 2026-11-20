@@ -11,6 +11,8 @@ pub fn access_env(String, String, String, String?, Via) -> Fields
 
 pub fn access_kind(@jsjson.JValue) -> String
 
+pub fn access_kinds(String) -> Array[String]
+
 pub let acp_init : String
 
 pub let acp_open : String
@@ -27,7 +29,11 @@ pub fn agent_home_feedback(String, @jsjson.JValue?) -> Bool
 
 pub fn ago_words(Double) -> String
 
+pub fn agy_base_model(String) -> (String, String?)
+
 pub fn agy_hook_command(String, String, String) -> String
+
+pub let agy_levels : Array[String]
 
 pub fn anthropic_root(String) -> String
 
@@ -261,6 +267,8 @@ pub fn keychain_read_of((Int32, String)?) -> KeychainRead
 
 pub let keychain_stub : String
 
+pub fn keyed(String) -> Bool
+
 pub let kimi_code : String
 
 pub fn kimi_signed_in(@jsjson.JValue) -> Bool
@@ -373,6 +381,8 @@ pub fn runtime_label(String) -> String
 
 pub fn runtimes_of(Endpoints) -> Array[String]
 
+pub fn runtimes_of_kind(String, String?) -> Array[String]
+
 pub fn sandbox_command(String, Sandbox, SandboxPlace, String, String, Array[Double], String, String, String) -> String
 
 pub fn sandbox_described(Sandbox) -> @jsjson.JValue
@@ -394,6 +404,8 @@ pub fn site_instructions_of(String?) -> String
 pub let skill_most : Int32
 
 pub let sources : Array[Source]
+
+pub fn split_agy_tier(String) -> (String, String)?
 
 pub fn split_devin_fusion(String) -> Fusion?
 

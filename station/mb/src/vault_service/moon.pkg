@@ -9,6 +9,7 @@ import {
   "station/signin",
   "station/jsjson",
   "station/jscase",
+  "station/nodepath",
   "stillfail/rules/vault",
   "moonbitlang/core/double",
   "moonbitlang/core/cmp",

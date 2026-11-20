@@ -300,7 +300,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
         if self.legacy_decision_time {
           legacy_latest_decisions_scoped_fallback_sql
         } else {
-          latest_decisions_scoped_fallback_sql
+          @readops.latest_decisions_scoped_fallback
         },
         [since, workspace, jint(1)],
       )
@@ -311,7 +311,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
         } else if self.legacy_decision_time {
           legacy_latest_decisions_scoped_sql
         } else {
-          latest_decisions_scoped_sql
+          @readops.latest_decisions_scoped
         },
         [since, workspace, jint(0)],
       )
@@ -335,7 +335,7 @@ pub fn Store::latest_decisions_since(self : Store, since : Json, viewer : Json) 
       let fallback = () => if !given {
         self.all(latest_decisions_sql, [since])
       } else {
-        self.all(latest_decisions_scoped_fallback_sql, [since, workspace, home_flag])
+        self.all(@readops.latest_decisions_scoped_fallback, [since, workspace, home_flag])
       }
       if not_home &&
         (

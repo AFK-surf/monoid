@@ -3,17 +3,17 @@
 
 ///|
 /// runtime-cases.ts `long`.
-fn long(n : Int) -> Array[Int] {
-  let out = []
+fn long(n : Int) -> String {
+  let out = StringBuilder()
   for i in 0..<n {
     if i % 7 == 3 {
-      out.push(0xd83d)
-      out.push(0xde00)
+      out.write_char((0xd83d : Int).unsafe_to_char())
+      out.write_char((0xde00 : Int).unsafe_to_char())
     } else {
-      out.push(0x61 + i % 26)
+      out.write_char((0x61 + i % 26).unsafe_to_char())
     }
   }
-  out
+  out.to_string()
 }
 
 ///|
@@ -21,7 +21,7 @@ fn long(n : Int) -> Array[Int] {
 fn expand(v : @jsjson.JValue) -> @jsjson.JValue {
   match v {
     Str(s) => {
-      let t = @jsjson.raw_text(s)
+      let t = s
       if t.has_prefix("<<long:") && t.has_suffix(">>") {
         let mut n = 0
         for i in 7..<(t.length() - 2) {
@@ -44,10 +44,10 @@ fn folded(v : @jsjson.JValue) -> @jsjson.JValue {
   match v {
     Str(s) if s.length() > 512 => {
       let mut h : UInt = 0x811c9dc5U
-      for c in s {
-        h = (h ^ c.reinterpret_as_uint()) * 0x01000193U
+      for i in 0..<s.length() {
+        h = (h ^ s.unsafe_get(i).to_int().reinterpret_as_uint()) * 0x01000193U
       }
-      Str(@jsjson.units("<<\{s.length()}:\{h.to_string(radix=16)}>>"))
+      Str("<<\{s.length()}:\{h.to_string(radix=16)}>>")
     }
     Arr(items) => Arr(items.map(folded))
     Obj(fields) => Obj(fields.map(f => (f.0, folded(f.1))))
@@ -77,10 +77,10 @@ fn same(what : String, at : Int, got : @jsjson.JValue, said : String) -> Unit ra
 const NOW : Double = 1700000000000.0
 
 ///|
-fn text_of(v : @jsjson.JValue?) -> Array[Int] {
+fn text_of(v : @jsjson.JValue?) -> String {
   match v {
     Some(Str(s)) => s
-    _ => []
+    _ => ""
   }
 }
 
@@ -93,7 +93,7 @@ test "each line as the TypeScript read it" {
     let mut got : Array[@jsjson.JValue] = []
     let mut read = false
     if v.get("$new") is Some(n) {
-      s = @acp.Session::new(@jsjson.raw_text(text_of(n.get("flavor"))), kept=n.get("kept") is Some(Bool(true)))
+      s = @acp.Session::new(text_of(n.get("flavor")), kept=n.get("kept") is Some(Bool(true)))
     } else if v.get("$prompt") is Some(p) {
       got = s.prompted(text_of(p.get("owner")), text_of(p.get("text")))
     } else if v.get("$inject") is Some(p) {
@@ -125,18 +125,18 @@ test "what a crash reads again as the TypeScript read it" {
   for at, r in replays_said {
     let (lines, result) = r
     guard expand(parsed(lines)) is Arr([Arr([Str(flavor), Bool(kept), Str(from_id)]), .. rest]) else { fail("not lines") }
-    let replay = @acp.Replay::new(@jsjson.raw_text(flavor), kept~, from_id)
+    let replay = @acp.Replay::new(flavor, kept~, from_id)
     for v in rest {
       replay.line(v)
     }
     let usages = replay.finish(() => NOW)
     let session = replay.session()
     let got = @jsjson.JValue::Obj([
-      (@jsjson.units("session"), Str(session.session)),
-      (@jsjson.units("turn"), session.turn.json()),
-      (@jsjson.units("live"), session.state()),
-      (@jsjson.units("opened"), replay.opened().unwrap_or(Null)),
-      (@jsjson.units("usages"), Arr(usages)),
+      ("session", Str(session.session)),
+      ("turn", session.turn.json()),
+      ("live", session.state()),
+      ("opened", replay.opened().unwrap_or(Null)),
+      ("usages", Arr(usages)),
     ])
     same("replay", at, got, result)
   }

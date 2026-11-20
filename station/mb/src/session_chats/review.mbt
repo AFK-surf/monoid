@@ -57,7 +57,7 @@ async fn candidates_of(w : World) -> Array[(J, J)] {
       continue
     }
     let health = w.ask("accounts.healthOf", [at(Some(profile), "id").unwrap_or(Null)])
-    if !(w.dep("usable", [health]) is Bool(true)) {
+    if !@session_hub.usable(health.to_json(), None) {
       continue
     }
     let capability = at(at(Some(health), "check"), "decision")
@@ -99,7 +99,7 @@ pub async fn review(w : World, key : String) -> Unit {
     }
   }
   let saved = w.store("archivePolicy", [policy_ws(w, js(key))])
-  let policy = w.dep("policyFrom", [saved])
+  let policy = @session_storage.policy_from(opt_json(Some(saved)))
   let policy_at = match at(at(Some(saved), "change"), "id") {
     Some(Null) | None => ji(0)
     Some(id) => id
@@ -198,7 +198,7 @@ pub async fn review(w : World, key : String) -> Unit {
     for i in 0..<candidates.length() {
       selected = i
       try {
-        answer = Ok(decide(w, candidates[i].1, w.dep("policyQuestion", [policy]), state))
+        answer = Ok(decide(w, candidates[i].1, @jsjson.JValue::of_json(@session_storage.policy_question(policy)), state))
         break
       } catch {
         e => answer = Err(thrown_message(e))
@@ -211,13 +211,13 @@ pub async fn review(w : World, key : String) -> Unit {
   let config = candidates[selected].1
   let threshold = at(Some(config), "threshold").unwrap_or(Null)
   let accepted = match reviewed {
-    Ok(r) => w.dep("recommends", [r, policy, threshold]) is Bool(true)
+    Ok(r) => @session_storage.recommends(r.to_json(), policy, num_of(Some(threshold)).unwrap_or(0.0))
     Err(_) => false
   }
   let picked = match reviewed {
     Ok(r) => {
-      let sel = at(Some(r), "selected").unwrap_or(Null)
-      arr_of(at(Some(policy), "options")).unwrap_or([]).search_by(o => jeq(at(Some(o), "id").unwrap_or(Null), sel)).map(i => arr_of(at(Some(policy), "options")).unwrap()[i])
+      let sel = str_of(at(Some(r), "selected"))
+      policy.options.search_by(o => Some(o.id) == sel).map(i => policy.options[i])
     }
     Err(_) => None
   }
@@ -234,7 +234,7 @@ pub async fn review(w : World, key : String) -> Unit {
     jeq(at(Some(now_rule), "model").unwrap_or(Null), at(Some(rule), "model").unwrap_or(Null)) &&
     jeq(policy_stamp(w, key), policy_at)
   let option = match picked {
-    Some(o) => jo([("id", at(Some(o), "id").unwrap_or(Null)), ("name", at(Some(o), "name").unwrap_or(Null)), ("archive", at(Some(o), "archive").unwrap_or(Null))])
+    Some(o) => jo([("id", js(o.id)), ("name", js(o.name)), ("archive", jb(o.archive))])
     None => J::Null
   }
   let elapsed = w.now() - started
@@ -244,7 +244,7 @@ pub async fn review(w : World, key : String) -> Unit {
       ("version", ji(3)),
       ("policyAt", policy_at),
       ("option", option),
-      ("archiveMass", match reviewed { Ok(r) => w.dep("archiveMass", [r, policy]); Err(_) => J::Null }),
+      ("archiveMass", match reviewed { Ok(r) => jn(@session_storage.archive_mass(r.to_json(), policy)); Err(_) => J::Null }),
       ("profile", candidates[selected].0),
       ("provider", at(Some(config), "provider").unwrap_or(Null)),
       ("model", at(Some(config), "model").unwrap_or(Null)),
@@ -264,9 +264,9 @@ pub async fn review(w : World, key : String) -> Unit {
     match picked {
       Some(o) =>
         jo([
-          ("option", at(Some(o), "id").unwrap_or(Null)),
-          ("name", at(Some(o), "name").unwrap_or(Null)),
-          ("archive", at(Some(o), "archive").unwrap_or(Null)),
+          ("option", js(o.id)),
+          ("name", js(o.name)),
+          ("archive", jb(o.archive)),
           ("recommended", jb(accepted)),
         ])
       None => jo([("error", js(match reviewed { Err(e) => e; Ok(_) => "没有判断结果" }))])

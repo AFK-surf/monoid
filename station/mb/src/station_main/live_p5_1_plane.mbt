@@ -403,11 +403,11 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     "stillFails" => Json::array(@cloud_net.still_fails(self.state.view()).map(Json::string(_)))
     "addRelay" =>
       @cloud_net.add_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or(""), text("by")).to_json() catch {
-        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", @jsjson.JV::of_json({ "message": Json::string(m) }))
+        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", to_jv({ "message": Json::string(m) }))
       }
     "removeRelay" =>
       @cloud_net.remove_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or("")).to_json() catch {
-        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", @jsjson.JV::of_json({ "message": Json::string(m) }))
+        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", to_jv({ "message": Json::string(m) }))
       }
     // (the relays tool's mesh asks before the mesh's directory answers them, or while no mesh runs: answered as
     // agents.ts answers them with no directory, none listed and nothing enrolled or revoked; live_p5_1_scopes.mbt

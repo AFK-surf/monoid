@@ -390,82 +390,33 @@ pub fn DeviceRegistry::remove(
 pub let device_list_decl : J = tool_decl(
   "device_list",
   "List the devices of this workspace an agent can use: phones, boards, cameras, routers, printers, serial ports, anything that runs no station but is attached to one (on its USB or its network) or lent by its person's still.fail app (an Android phone with 共享调试 on). Each says its kind (adb, tcp, serial), what it is reached at there, where it is attached, whose it is, whether this chat may use it now (thisChat) and who has access. A device attached to a whole station is open to every chat; one on a station that only runs tasks, and a person's phone, need their owner's approval (device_use).",
-  jo([
-    ("type", js("object")),
-    ("properties", jo([])),
-    ("additionalProperties", jb(false)),
-  ]),
+  schema_obj([]),
 )
 
 ///|
 pub let device_use_decl : J = tool_decl(
   "device_use",
   "Use a device from device_list. One open to this chat is put at once on a port of 127.0.0.1 here, which only this chat's processes can connect to; one that needs its owner's approval is asked for with a card in your chat, which its owner (not necessarily the person you work for) approves for this chat for a time, or refuses. Asking does not wait: you are told in this session when it is decided, and only a grant counts, not a yes written in the chat. Once granted, call this again: it says where the device is and how it is used. Skill stillfail-jobs (Devices) says more.",
-  jo([
-    ("type", js("object")),
+  schema_obj([
+    ("device", schema_prop("string", "The device: its name from device_list (any case), or its id; a person's email for their Android phone (lent once they approve). None: the phone of the person you work for.")),
+    ("reason", schema_prop("string", "What you will do with it and why (shown on the card to its owner).")),
     (
-      "properties",
+      "timeout",
       jo([
+        ("type", js("object")),
+        ("description", js("How long the grant should last (the owner may choose another): idle (ends once this chat has not used the device that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.")),
         (
-          "device",
+          "properties",
           jo([
-            ("type", js("string")),
-            (
-              "description",
-              js(
-                "The device: its name from device_list (any case), or its id; a person's email for their Android phone (lent once they approve). None: the phone of the person you work for.",
-              ),
-            ),
+            ("kind", jo([("enum", jsa(["idle", "fixed"]))])),
+            ("seconds", jo([("type", js("integer"))])),
           ]),
         ),
-        (
-          "reason",
-          jo([
-            ("type", js("string")),
-            (
-              "description",
-              js(
-                "What you will do with it and why (shown on the card to its owner).",
-              ),
-            ),
-          ]),
-        ),
-        (
-          "timeout",
-          jo([
-            ("type", js("object")),
-            (
-              "description",
-              js(
-                "How long the grant should last (the owner may choose another): idle (ends once this chat has not used the device that long) or fixed, in whole minutes from 1 minute to 30 days. Default: idle, 1 hour.",
-              ),
-            ),
-            (
-              "properties",
-              jo([
-                ("kind", jo([("enum", jsa(["idle", "fixed"]))])),
-                ("seconds", jo([("type", js("integer"))])),
-              ]),
-            ),
-            ("required", jsa(["kind", "seconds"])),
-            ("additionalProperties", jb(false)),
-          ]),
-        ),
-        (
-          "done",
-          jo([
-            ("type", js("boolean")),
-            (
-              "description",
-              js(
-                "Hand it back: end this chat's grant of it (or its request still pending), and close its port here. With no device named, every one this chat holds.",
-              ),
-            ),
-          ]),
-        ),
+        ("required", jsa(["kind", "seconds"])),
+        ("additionalProperties", jb(false)),
       ]),
     ),
-    ("additionalProperties", jb(false)),
+    ("done", schema_prop("boolean", "Hand it back: end this chat's grant of it (or its request still pending), and close its port here. With no device named, every one this chat holds.")),
   ]),
 )
 

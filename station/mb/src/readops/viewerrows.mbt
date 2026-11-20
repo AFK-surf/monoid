@@ -10,22 +10,7 @@ let archive_page : Int = 50
 ///|
 /// titles.ts `withoutMentions`: text without Slack's `<@U123>` mentions.
 fn without_mentions(text : String) -> String {
-  let out = StringBuilder::new()
-  let mut rest = text
-  while rest.find("<@") is Some(at) {
-    out.write_string(rest.view(end_offset=at).to_owned())
-    let after = rest.view(start_offset=at + 2).to_owned()
-    match after.find(">") {
-      Some(end) if end > 0 && after.view(end_offset=end).iter().all(c => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) =>
-        rest = after.view(start_offset=end + 1).to_owned()
-      _ => {
-        out.write_string("<@")
-        rest = after
-      }
-    }
-  }
-  out.write_string(rest)
-  out.to_string()
+  @jsjson.without_mentions(text)
 }
 
 ///|
@@ -160,33 +145,7 @@ fn row_for(shared : Json, own : Own, words : Json) -> Json {
 ///|
 /// JavaScript's `Number(text)`: white space around it, decimal (with `Infinity`), or hex, octal and binary; NaN else.
 fn js_number(text : String) -> Double {
-  let t = @jscase.trim(text)
-  if t == "" {
-    return 0.0
-  }
-  let lower = @jscase.lower(t)
-  for prefix in [("0x", 16), ("0o", 8), ("0b", 2)] {
-    if lower.has_prefix(prefix.0) && lower.length() > 2 {
-      let mut n = 0.0
-      for c in lower.view(start_offset=2) {
-        let d = if c >= '0' && c <= '9' { c.to_int() - '0'.to_int() } else if c >= 'a' && c <= 'f' { c.to_int() - 'a'.to_int() + 10 } else { 99 }
-        if d >= prefix.1 {
-          return 0.0 / 0.0
-        }
-        n = n * prefix.1.to_double() + d.to_double()
-      }
-      return n
-    }
-  }
-  match t {
-    "Infinity" | "+Infinity" => return 1.0 / 0.0
-    "-Infinity" => return -1.0 / 0.0
-    _ => ()
-  }
-  if lower.contains("inf") || lower.contains("nan") {
-    return 0.0 / 0.0
-  }
-  parse_f64(t).unwrap_or(0.0 / 0.0)
+  @jsjson.js_number(text)
 }
 
 ///|

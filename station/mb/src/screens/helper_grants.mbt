@@ -98,12 +98,7 @@ pub fn grant_state(s : J, grant : String) -> String {
 ///|
 /// JavaScript's truthiness of a value.
 fn truthy(v : J?) -> Bool {
-  match v {
-    None | Some(Null) | Some(Bool(false)) => false
-    Some(Num(d)) => d != 0.0 && !d.is_nan()
-    Some(Str(u)) => u.length() > 0
-    _ => true
-  }
+  @jsjson.jval_truthy(v)
 }
 
 ///|

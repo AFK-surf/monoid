@@ -51,7 +51,7 @@ fn granted_names(request : JV, g : JV) -> Array[String] {
   match oget(request, "names") {
     Some(Arr(a)) =>
       a.filter_map(n => match n {
-        Str(u) if given.contains(@jsjson.text(u)) => Some(@jsjson.text(u))
+        Str(u) if given.contains(@jsjson.sanitize_str(u)) => Some(@jsjson.sanitize_str(u))
         _ => None
       })
     _ => given
@@ -225,7 +225,7 @@ pub fn peer_source(ask : async (String, JV) -> Answer, t : JV) -> Source {
       match got.bytes {
         None =>
           match oget(got.json, "data") {
-            Some(Str(u)) => return (from_base64(@jsjson.text(u)), size, mtime)
+            Some(Str(u)) => return (from_base64(@jsjson.sanitize_str(u)), size, mtime)
             _ => raise Failure("\{station} answered no part of \{path}")
           }
         Some((next, stop_bytes)) =>

@@ -308,7 +308,7 @@ pub fn takes_fast(@jsjson.JValue) -> Bool
 
 pub fn to_base36(Int64) -> String
 
-pub fn tools_lost_in(@jsjson.JValue, Array[Array[Int32]]) -> String?
+pub fn tools_lost_in(@jsjson.JValue, Array[String]) -> String?
 
 pub fn tools_unreachable(String) -> Bool
 

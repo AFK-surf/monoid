@@ -891,30 +891,7 @@ pub fn Acp::replayed(self : Acp, replayed : J, resume : String?, mcp_url : Strin
 ///|
 /// `Number(s)` of a string.
 fn js_number(s : String) -> Double {
-  let x = trim(s)
-  if x == "" {
-    return 0.0
-  }
-  if x.has_prefix("0x") || x.has_prefix("0X") {
-    let digits = sub(x, 2)
-    if digits == "" || !all_units(digits, c => is_digit(c) || (c >= 'a'.to_int() && c <= 'f'.to_int()) || (c >= 'A'.to_int() && c <= 'F'.to_int())) {
-      return @double.not_a_number
-    }
-    return @string.parse_double(@bigint.BigInt::from_string(digits, radix=16).to_string()) catch { _ => @double.not_a_number }
-  }
-  let plain = all_units(x, c => is_digit(c) || c == '.'.to_int() || c == 'e'.to_int() || c == 'E'.to_int() || c == '+'.to_int() || c == '-'.to_int())
-  if x == "Infinity" || x == "+Infinity" {
-    return @double.infinity
-  }
-  if x == "-Infinity" {
-    return @double.neg_infinity
-  }
-  if !plain {
-    return @double.not_a_number
-  }
-  @string.parse_double(x) catch {
-    _ => @double.not_a_number
-  }
+  @jsjson.js_number(s)
 }
 
 ///|

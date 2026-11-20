@@ -103,7 +103,7 @@ let slack_calls : Array[String] = [
 ///|
 /// A Slack surface as the connects and the hub take it (connects_hub's `Connection`, its `Surface` called by name).
 fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
-  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.text(u); _ => "" }
+  let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let opt = (v : String?) => match v { Some(t) => to_jv(Json::string(t)); None => @jsjson.JValue::Null }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue {
     match name {
@@ -127,7 +127,7 @@ fn slack_connection(s : @slack.SlackSurface) -> @connects_hub.Connection {
       }
       "working" => {
         let (ch, ts) = thread_of_j(a.get(0))
-        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.text(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.text(u))); _ => None })
+        s.working(ch, ts, match a.get(1) { Some(Str(u)) => Some(@jsjson.sanitize_str(u)); _ => None }, txt(a, 2), page?=match a.get(3) { Some(Str(u)) => Some(Some(@jsjson.sanitize_str(u))); _ => None })
         Null
       }
       "standsAt" => {
@@ -431,7 +431,7 @@ async fn P55::start_connects(self : P55) -> Unit {
         }
         None
       },
-      config_connects: async fn() { core_items(jfield((bus.config_raw.val)(), "connects")).map(to_jv) },
+      config_connects: async fn() { jitems(jfield((bus.config_raw.val)(), "connects")).map(to_jv) },
       receive: async fn(connect, event) { ignore(self.hub("hub.receive", [Json::string(connect), of_jv(event)])) },
       moved_to: async fn(connect, channel, ts) {
         as_text(self.hub("hub.movedTo", [Json::string(connect), Json::string(channel), Json::string(ts)]))
@@ -535,7 +535,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   // made for: one ask for the overview)
   self.op("connects.overview", async fn(_arg) {
     let out = []
-    for c in core_items(jfield((bus.config_raw.val)(), "connects")) {
+    for c in jitems(jfield((bus.config_raw.val)(), "connects")) {
       let id = jtext_or_empty(c, "id")
       let kind = match jfield(c, "kind") {
         String(k) if k != "" => k
@@ -626,7 +626,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     }
   })
   for op in ["connects.kindOf", "connects.ownKinds", "connects.heldBy", "connects.movedAway", "connects.runsOn", "connects.move", "connects.arrived", "connects.route", "connects.describedFor", "connects.learnOf", "retire.of", "retire.named", "retire.move", "retire.takeHeld"] {
-    self.op(op, async fn(arg) { self.coord_connects(op, core_items(arg)) })
+    self.op(op, async fn(arg) { self.coord_connects(op, jitems(arg)) })
   }
   // A connect's chat surface by its call's name (sessions/chat.ts `ChatSurface`), as the agents' side and its storage ask
   // it: `[connect, ...args]`, `{connect, args}`, or `{connect, thread, text, files, user, …}` by the call's fields.
@@ -692,7 +692,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     // (a connect's surface called by name: the hub's posting, P5-2's)
     let id = jtext_or_empty(arg, "connect")
     match live.chat(id) {
-      Some(s) => of_jv((s.call)(jtext_or_empty(arg, "call"), core_items(jfield(arg, "args")).map(to_jv)))
+      Some(s) => of_jv((s.call)(jtext_or_empty(arg, "call"), jitems(jfield(arg, "args")).map(to_jv)))
       None => raise BusError("no such connect connected here: \{id}")
     }
   })

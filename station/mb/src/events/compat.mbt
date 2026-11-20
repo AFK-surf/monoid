@@ -97,7 +97,7 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
     Str(_) => {
       let name = text_of(Some(ty)).unwrap()
       if name == "RuntimeKind" {
-        return if v is Str(s) && !supported.contains(@jsjson.raw_text(s)) {
+        return if v is Str(s) && !supported.contains(s) {
           Omit
         } else {
           Value(value)
@@ -207,7 +207,7 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
 fn string_of_tag(v : J?) -> String {
   match v {
     None => "undefined"
-    Some(v) => @jsjson.raw_text(@jsjson.js_string(v))
+    Some(v) => @jsjson.js_string(v)
   }
 }
 

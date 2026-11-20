@@ -153,10 +153,7 @@ fn refused(status : Int, message : String) -> Json {
 ///|
 /// Whether a viewer manages the station's workspace (mesh/credential.ts `managesStation`: its owner or an admin).
 fn manages(viewer : Json) -> Bool {
-  match jtext(viewer, "role") {
-    Some("owner") | Some("admin") => true
-    _ => false
-  }
+  p51_manages(viewer)
 }
 
 ///|

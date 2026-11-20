@@ -65,8 +65,7 @@ fn is_str(v : Json?, max? : Int = 100000) -> Bool {
 ///|
 /// What JS's `trim` takes away: white space and line ends.
 fn js_space(c : Int) -> Bool {
-  (c >= 9 && c <= 13) || c == 32 || c == 0xa0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200a) || c == 0x2028 ||
-  c == 0x2029 || c == 0x202f || c == 0x205f || c == 0x3000 || c == 0xfeff
+  @jsjson.is_js_space(c)
 }
 
 ///|

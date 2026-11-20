@@ -314,7 +314,7 @@ fn refused(lang : String, k : String, args? : Array[(String, J)] = []) -> Error 
 /// `String(error)`.
 fn error_text(e : Error) -> String {
   let name = match field_of(e, "name") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ =>
       match kind_of(e) {
         "TypeError" | "RangeError" | "SyntaxError" => kind_of(e)
@@ -415,7 +415,7 @@ pub struct Updates {
 /// updates.ts `canonicalNow`: `realpathSync(p)`, none where it throws.
 async fn realpath_now(w : World, p : String) -> String? {
   match (try Some(w.call("fs.realpathSync", [js(p)])) catch { _ => None }) {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -606,7 +606,7 @@ pub fn Updates::auto(self : Updates) -> Bool {
 /// itself is off until a newer one than it is out, then on again (resume_auto). Only while it is off.
 pub fn Updates::auto_after(self : Updates) -> String? {
   match get(Some(self.config.raw), "autoUpdateAfter") {
-    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.text(u))) is Some(_) => Some(@jsjson.text(u))
+    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.sanitize_str(u))) is Some(_) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -2059,7 +2059,7 @@ async fn Updates::fetch_codex(self : Updates, npm : String, env : Env) -> String
     let v = get(Some(self.fetch_json("\{self.registry}/\{pkg}/latest")), "version")
     let u = get(get(Some(self.fetch_json("\{self.registry}/\{pkg}/\{js_string_opt(v)}-\{p}")), "dist"), "tarball")
     match (v, u) {
-      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.text(v), @jsjson.text(u)))
+      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.sanitize_str(v), @jsjson.sanitize_str(u)))
       _ => None
     }
   } catch {

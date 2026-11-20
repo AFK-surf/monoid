@@ -226,23 +226,13 @@ pub fn js_length(s : String) -> Int {
 ///|
 /// `s.slice(a, b)` by UTF-16 units.
 pub fn js_slice(s : String, a : Int, b? : Int) -> String {
-  let n = s.length()
-  let e = match b {
-    Some(x) => if x < 0 { @cmp.maximum(0, n + x) } else { @cmp.minimum(x, n) }
-    None => n
-  }
-  let st = if a < 0 { @cmp.maximum(0, n + a) } else { @cmp.minimum(a, n) }
-  if st >= e {
-    ""
-  } else {
-    s.unsafe_substring(start=st, end=e)
-  }
+  @jsjson.js_slice(s, a, end?=b)
 }
 
 ///|
 /// `s.trim()` (JavaScript's white space and line ends).
 pub fn js_trim(s : String) -> String {
-  @jscase.trim_white(s)
+  @jsjson.trim_js(s)
 }
 
 ///|

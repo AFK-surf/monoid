@@ -420,20 +420,7 @@ fn payload_json(payload : Bytes) -> Json? {
 ///|
 /// A value as JavaScript read it, as JSON here.
 pub fn json_of(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => jnum(n)
-    Str(s) => jstr(@jsjson.text(s))
-    Arr(xs) => Json::array(xs.map(json_of))
-    Obj(kvs) => {
-      let m : Map[String, Json] = Map([])
-      for kv in kvs {
-        m[@jsjson.text(kv.0)] = json_of(kv.1)
-      }
-      Json::object(m)
-    }
-  }
+  v.to_json_lossy()
 }
 
 ///|

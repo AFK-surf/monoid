@@ -82,37 +82,13 @@ pub fn Fs::join(self : Fs, parts : Array[String]) -> String {
 ///|
 /// `dirname(path)`.
 pub fn Fs::dirname(self : Fs, path : String) -> String {
-  let cs = path.to_array()
-  let mut end = cs.length()
-  while end > 1 && cs[end - 1].to_string() == self.sep {
-    end -= 1
-  }
-  let mut i = end - 1
-  while i >= 0 && cs[i].to_string() != self.sep && !(self.sep == "\\" && cs[i] == '/') {
-    i -= 1
-  }
-  if i < 0 {
-    "."
-  } else if i == 0 {
-    self.sep
-  } else {
-    slice_chars(cs, 0, i)
-  }
+  @nodepath.dirname(self.sep, path)
 }
 
 ///|
 /// `basename(path)`.
 pub fn basename(path : String, sep : String) -> String {
-  let cs = path.to_array()
-  let mut end = cs.length()
-  while end > 0 && (cs[end - 1].to_string() == sep || cs[end - 1] == '/') {
-    end -= 1
-  }
-  let mut i = end - 1
-  while i >= 0 && cs[i].to_string() != sep && cs[i] != '/' {
-    i -= 1
-  }
-  slice_chars(cs, i + 1, end)
+  @nodepath.basename(sep, path)
 }
 
 ///|

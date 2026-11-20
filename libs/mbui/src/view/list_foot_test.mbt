@@ -301,3 +301,62 @@ test "scrolls_window following its foot: not held, a block over its last grown a
     (up(y37), y39, 0.0),
   )
 }
+
+///|
+test "scrolls_window near_top: blocks come into sight shorter than counted take it within a height of its top as they are measured, the page asked then comes in over what shows: what shows stays where the wheel put it, asked once" {
+  let asked = Ref(0)
+  let keys = @signals.signal(Array::makei(20, fn(i) { i }), same=fn(a, b) { a == b })
+  let live : Map[Int, @view.View] = Map([])
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(300.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=80.0,
+        follows=fn() { true },
+        near_top=(1.0, fn() { true }, fn() {
+          asked.val += 1
+          // (the page before, fifteen blocks, as the list asks: answered at once)
+          let now = Array::makei(15, fn(i) { i - 15 * asked.val })
+          now.append(keys.get())
+          keys.set(now)
+        }),
+        fn(b, k) {
+          live[k] = b
+          b.owns(fn() { live.remove(k) }) |> ignore
+          // (each 30 tall, counted 80 till it is laid out)
+          b.height(Is(Some(30.0))) |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(300.0, 300.0) |> ignore
+  let first = asked.val
+  // (the wheel turned up 5 at a time: what was at the top of what shows each time 5 further down, page come or not)
+  let moved = []
+  let mut turns = 0
+  while turns < 200 && asked.val < 1 {
+    let ks = live.keys().collect()
+    ks.sort()
+    let k = ks.iter().find_first(fn(k) { live[k].rect().1 >= 0.0 }).unwrap()
+    let y = live[k].rect().1
+    tree.wheel_at(150.0, 150.0, 0.0, -5.0, 0, 10.0 + turns.to_double()) |> ignore
+    tree.frame(300.0, 300.0) |> ignore
+    moved.push(live.get(k).map(fn(v) { v.rect().1 - y }).unwrap_or(-1.0e9))
+    turns += 1
+  }
+  // (the frames after: nothing more asked, nothing moved)
+  let ks = live.keys().collect()
+  ks.sort()
+  let k = ks.iter().find_first(fn(k) { live[k].rect().1 >= 0.0 }).unwrap()
+  let y = live[k].rect().1
+  tree.frame(300.0, 300.0) |> ignore
+  tree.frame(300.0, 300.0) |> ignore
+  moved.push(live.get(k).map(fn(v) { v.rect().1 - y + 5.0 }).unwrap_or(-1.0e9))
+  assert_eq((first, asked.val, keys.get().length()), (0, 1, 35))
+  assert_eq(moved, Array::make(moved.length(), 5.0))
+}

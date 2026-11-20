@@ -120,6 +120,15 @@ fn jwith(j : Json, k : String, v : Json) -> Json {
 }
 
 ///|
+/// Ensure a peer request object carries `"method": meth` (a copy; non-objects become `{"method": meth}`).
+fn with_method(params : Json, meth : String) -> Json {
+  match params {
+    Object(m) if m.contains("method") => params
+    _ => jwith(params, "method", Json::string(meth))
+  }
+}
+
+///|
 /// What JSON.stringify(v, null, 2) writes.
 fn jpretty(v : Json) -> String {
   v.stringify(indent=2)
@@ -267,7 +276,7 @@ fn as_text(v : Json) -> String? {
 /// value), none where `v` is no object or has no `k`.
 fn jv_field(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
   guard v is Obj(entries) else { return None }
-  let key = @jsjson.units(k)
+  let key = k
   let mut found = None
   for e in entries {
     if e.0 == key {
@@ -281,7 +290,7 @@ fn jv_field(v : @jsjson.JValue, k : String) -> @jsjson.JValue? {
 /// `jtext(of_jv(v), k)` without making all of `v` JSON.
 fn jv_text(v : @jsjson.JValue, k : String) -> String? {
   match jv_field(v, k) {
-    Some(Str(u)) => Some(@jsjson.raw_text(u))
+    Some(Str(u)) => Some(u)
     _ => None
   }
 }

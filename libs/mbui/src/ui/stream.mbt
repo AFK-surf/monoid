@@ -72,8 +72,10 @@ pub struct Stream {
   priv out : Array[(Double, Int)]
   /// what it let go of itself, said as the next frame begins ("d TS")
   priv own : Array[String]
-  /// the frames to say shown once this frame is painted
-  priv acks : Array[Double]
+  /// the frames to say shown once this frame is painted (ts, host wait_us)
+  priv acks : Array[(Double, Double)]
+  /// how long the host held the frame currently being reported to `shown` (µs; 0 if none)
+  priv mut last_wait_us : Double
   /// the frame its events were last taken in
   priv mut taken : Int
   priv mut closed : Bool
@@ -148,6 +150,7 @@ pub fn Stream::new(
     out: [],
     own: [],
     acks: [],
+    last_wait_us: 0.0,
     taken: -1,
     closed: false,
     feed: None,
@@ -391,6 +394,31 @@ pub fn Stream::shown_at(self : Stream) -> Double? {
 }
 
 ///|
+/// How long (µs) the host held the frame currently being reported to `shown` (0 when none was said).
+pub fn Stream::wait_us(self : Stream) -> Double {
+  self.last_wait_us
+}
+
+///|
+fn Stream::say_shown(self : Stream, ts : Double, wait_us : Double) -> Unit {
+  self.last_wait_us = wait_us
+  (self.shown)(ts)
+  self.last_wait_us = 0.0
+}
+
+///|
+fn stream_wait_us(w : Array[String], at : Int) -> Double {
+  if at < w.length() {
+    match stream_num(w[at]) {
+      Some(v) if v > 0.0 => v
+      _ => 0.0
+    }
+  } else {
+    0.0
+  }
+}
+
+///|
 /// Its host's number for it (what a Tester's stream_fed, stream_shows… take): from the first config or frame handed
 /// over; 0 before, or where the host has none.
 pub fn Stream::id(self : Stream) -> Int {
@@ -510,12 +538,13 @@ fn Stream::take_direct(self : Stream, w : Array[String]) -> Unit {
 fn Stream::take_quietly(self : Stream, e : String) -> Bool {
   let w = e.split(" ").map(fn(x) { x.to_owned() }).to_array()
   match w {
-    ["f", t, pw, ph, ..] =>
+    ["f", t, pw, ph, ..] => {
+      let wait_us = stream_wait_us(w, 4)
       match (stream_num(t), stream_num(pw), stream_num(ph)) {
         (Some(ts), _, _) if self.unhide(ts) => {
           // (one not to be shown: let go, as its host would have said)
           self.settled_to(ts, wake=false)
-          (self.shown)(ts)
+          self.say_shown(ts, wait_us)
           true
         }
         (Some(ts), Some(fw), Some(fh)) => {
@@ -534,21 +563,24 @@ fn Stream::take_quietly(self : Stream, e : String) -> Bool {
           self.at = Some(ts)
           self.settled_to(ts, wake=false)
           h_stream_show(self.id, ts)
-          (self.shown)(ts)
+          self.say_shown(ts, wait_us)
           true
         }
         _ => false
       }
-    ["d", t, ..] =>
+    }
+    ["d", t, ..] => {
+      let wait_us = stream_wait_us(w, 2)
       match stream_num(t) {
         Some(ts) => {
           self.unhide(ts) |> ignore
           self.settled_to(ts, wake=false)
-          (self.shown)(ts)
+          self.say_shown(ts, wait_us)
           true
         }
         None => false
       }
+    }
     ["b", ..] => {
       self.need_key = true
       (self.broken)()
@@ -706,11 +738,12 @@ fn streams_frame_start() -> Unit {
     let take = fn(e : String) {
       let w = e.split(" ").map(fn(x) { x.to_owned() }).to_array()
       match w {
-        ["f", t, pw, ph, ..] =>
+        ["f", t, pw, ph, ..] => {
+          let wait_us = stream_wait_us(w, 4)
           match (stream_num(t), stream_num(pw), stream_num(ph)) {
             // (one not to be shown, said decoded: let go, never latched)
             (Some(ts), _, _) if s.unhide(ts) => {
-              s.acks.push(ts)
+              s.acks.push((ts, wait_us))
               s.settled_to(ts)
             }
             (Some(ts), Some(fw), Some(fh)) => {
@@ -721,20 +754,23 @@ fn streams_frame_start() -> Unit {
                 Some((fw.to_int(), fh.to_int()))
               }
               latch.val = Some(ts)
-              s.acks.push(ts)
+              s.acks.push((ts, wait_us))
               s.settled_to(ts)
             }
             _ => ()
           }
-        ["d", t, ..] =>
+        }
+        ["d", t, ..] => {
+          let wait_us = stream_wait_us(w, 2)
           match stream_num(t) {
             Some(ts) => {
               s.unhide(ts) |> ignore
-              s.acks.push(ts)
+              s.acks.push((ts, wait_us))
               s.settled_to(ts)
             }
             None => ()
           }
+        }
         ["b", ..] => {
           s.need_key = true
           (s.broken)()
@@ -783,8 +819,8 @@ fn streams_after_paint() -> Unit {
     }
     let acks = s.acks.copy()
     s.acks.clear()
-    for ts in acks {
-      (s.shown)(ts)
+    for ack in acks {
+      s.say_shown(ack.0, ack.1)
     }
   }
 }

@@ -8,6 +8,8 @@ pub fn has_word(String, String) -> Bool
 
 pub fn has_word_by(String, String, (Int32) -> Bool) -> Bool
 
+pub fn in_ranges(FixedArray[Int32], Int32) -> Bool
+
 pub fn is_space(Int32) -> Bool
 
 pub fn is_white_space(Int32) -> Bool

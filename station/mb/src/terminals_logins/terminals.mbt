@@ -799,7 +799,7 @@ pub fn asked(v : J?) -> Asked? {
     return None
   }
   let text_of = (x : J?) => match x {
-    Some(Str(u)) if u.length() > 0 && u.length() <= 4096 => Some(@jsjson.raw_text(u))
+    Some(Str(u)) if u.length() > 0 && u.length() <= 4096 => Some(u)
     _ => None
   }
   Some({

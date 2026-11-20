@@ -795,6 +795,8 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
       given: { check: "given", quota: "given", resetQuota: "given", discover: "given", machine: false, checkOnStart: false, workspaces: true, shared: true, reviewUndecided: true, hubProfileGone: true, hubAllowanceReset: true, hub: false, configChecked: true },
     }));
     let mbChanged = 0;
+    // (a Codex account read of one home held under way while the test changes the profile's home)
+    const held = { home: null as string | null, asked: () => {}, going: Promise.resolve() };
     p.handle = ioHandler(async (name, args) => {
       switch (name) {
         case "store.profileStatus": return [...mb.store.profileStatus().entries()];
@@ -831,7 +833,12 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
           return { raw: r, changes, unchecked: [...unchecked] };
         }
         case "console.read": return consoleLogins.get(args[0]) ?? null;
-        case "codex.accountIdentity": return codexAccountIdentity(args[0]);
+        case "codex.accountIdentity":
+          if (held.home !== null && args[0].endsWith(held.home)) {
+            held.asked();
+            await held.going;
+          }
+          return codexAccountIdentity(args[0]);
         case "codex.claimsIn": return codexClaimsIn(args[0]) ?? { $undef: 1 };
         case "console.in": return consoleIn(args[0]);
         case "policy.policyFrom": return (await import("../src/sessions/archive-policy.ts")).policyFrom(args[0]);
@@ -959,12 +966,60 @@ describe("accounts_pool: the accounts in lockstep", { skip }, () => {
         await p.ask("accounts.health", "cx");
         await p.settle();
         await settle();
-        return (await p.ask("accounts.health", "cx")).account;
+        // (the read this ask starts let end too: none left under way into the next step)
+        const { account } = await p.ask("accounts.health", "cx");
+        await p.settle();
+        await settle();
+        return account;
       };
       await p.ask("accounts.configSaid", homed("cx-a"));
       assert.equal(await accountOf(), `codex:${JSON.stringify(["acc-a", "user-1"])}`);
       await p.ask("accounts.configSaid", homed("cx-b"));
       assert.equal(await accountOf(), `codex:${JSON.stringify(["acc-b", "user-1"])}`, "the profile as config.json says it now");
+      // The home changed while a read of the old one is under way: the new home is read after it, never the old
+      // home's read taken as the new one's (each side alike).
+      const acc = (a: string) => `codex:${JSON.stringify([a, "user-1"])}`;
+      await p.ask("accounts.configSaid", homed("cx-a"));
+      assert.equal(await accountOf(), acc("acc-a"));
+      let go = () => {};
+      const asked = new Promise<void>((r) => (held.asked = r));
+      held.going = new Promise<void>((r) => (go = r));
+      held.home = "cx-a";
+      await p.ask("accounts.health", "cx");
+      await asked;
+      await p.ask("accounts.configSaid", homed("cx-b"));
+      await p.ask("accounts.health", "cx");
+      held.home = null;
+      go();
+      await p.settle();
+      await settle();
+      const { account: mbAfter } = await p.ask("accounts.health", "cx");
+      await p.settle();
+      await settle();
+      assert.equal(mbAfter, acc("acc-b"), "the new home read after the old one's read");
+      for (const [home, a] of [["cx-a", "acc-a"], ["cx-b", "acc-b"]]) {
+        mkdirSync(join(ts.data, "homes", home), { recursive: true });
+        writeFileSync(join(ts.data, "homes", home, "auth.json"), JSON.stringify({ tokens: { access_token: `h.${claims}.s`, account_id: a, id_token: `h.${claims}.s` } }));
+      }
+      const tsHomed = (home: string) => ts.config.update((r: Json) => { r.profiles = r.profiles.map((pr: Json) => (pr.id === "cx" ? { ...pr, home: `homes/${home}` } : pr)); });
+      // (the reads under way, as the TypeScript keeps them: each one's promise)
+      const tsReadsDone = async () => {
+        const reads = (tsAccounts as any).codexAccountReads as Map<string, any>;
+        while (reads.size > 0) await Promise.all([...reads.values()].map((v) => (v?.read ?? v).catch(() => {})));
+      };
+      tsHomed("cx-a");
+      tsAccounts.health("cx");
+      await tsReadsDone();
+      assert.equal(tsAccounts.health("cx").account, acc("acc-a"));
+      await tsReadsDone();
+      // (a read of cx-a under way: started and not yet done, as a promise cannot end within this turn)
+      tsAccounts.health("cx");
+      tsHomed("cx-b");
+      tsAccounts.health("cx");
+      await tsReadsDone();
+      const tsAfter = tsAccounts.health("cx").account;
+      await tsReadsDone();
+      assert.equal(tsAfter, acc("acc-b"), "the new home read after the old one's read");
     } finally {
       await tsAccounts.close();
       await p.ask("accounts.close");

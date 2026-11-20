@@ -288,25 +288,7 @@ let opened_links : Ref[Int] = Ref(0)
 
 ///|
 pub fn dirname(path : String) -> String {
-  // (the last `/` or `\`: a Windows socket's path has the one, any other's the other)
-  let mut at = -1
-  for i in 0..<path.length() {
-    let c = path.code_unit_at(i)
-    if c == '/' || c == '\\' {
-      at = i
-    }
-  }
-  if at < 0 {
-    return "."
-  }
-  let root = at == 0 ||
-    (at == 2 && path.length() >= 3 && path.code_unit_at(1) == ':')
-  if root {
-    // (a root's directory is the root itself: `/`, `C:\`)
-    path.clamped_view(end=at + 1).to_owned()
-  } else {
-    path.clamped_view(end=at).to_owned()
-  }
+  @nodepath.dirname("\\", path)
 }
 
 ///|

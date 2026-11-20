@@ -319,6 +319,7 @@ impl Inner {
             | "iroh.setCongestion"
             | "iroh.setAlpns"
             | "iroh.holdIncoming"
+            | "iroh.probeRelay"
             | "conn.openBi"
             | "conn.openUni"
             | "conn.acceptBi"

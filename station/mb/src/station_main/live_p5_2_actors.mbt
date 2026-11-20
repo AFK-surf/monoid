@@ -572,9 +572,8 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
   if jfield(event, "routed") is True {
     if kind == "live" {
       let e = jfield(event, "event")
-      if jtext(e, "kind") == Some("phase") &&
-        jtext(e, "phase") == Some("requesting") &&
-        self.mirror.unread.length() > 0 {
+      // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+      if jtext(e, "kind") == Some("phase") && jtext(e, "phase") == Some("requesting") {
         self.mirror.unread = []
         self.routing_cleared = true
       }
@@ -595,9 +594,7 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     if ek == "start" && jtext(e, "step") == Some("thinking") {
       return
     }
-    if ek == "phase" &&
-      jtext(e, "phase") == Some("requesting") &&
-      self.mirror.unread.length() > 0 {
+    if ek == "phase" && jtext(e, "phase") == Some("requesting") {
       self.mirror.unread = []
       self.read_at = self.sent + 1
     }
@@ -1266,7 +1263,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
             write(of_jv(given.get(0).unwrap_or(Null)))
             Null
           }
-          ignore(record_fn([Obj([(@jsjson.units("$fn"), Num(write_id.to_double()))])])) catch {
+          ignore(record_fn([Obj([("$fn", Num(write_id.to_double()))])])) catch {
             e => {
               chat_state.callbacks.remove(write_id)
               raise e

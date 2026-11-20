@@ -97,3 +97,91 @@ test "what is pressed at a column's foot stays where it was as what it opened th
     assert_eq((list, shut), (list, was))
   }
 }
+
+///|
+/// A window 300 by 400 all of it a page's list from its end, following its foot, of 3 rows 40 tall (so short its rows
+/// sit at its foot, 280 to 400), the last row's button opening 80 under it in sight (View::opens_in_sight): the tree, its
+/// clock, the button, what it opens and its list.
+fn short_open_case() -> (@view.Tree, Ref[Double], Ref[@view.View?], Ref[@view.View?], @view.Scroll) {
+  let now = Ref(0.0)
+  let button : Ref[@view.View?] = Ref(None)
+  let under : Ref[@view.View?] = Ref(None)
+  let opened = @signals.signal(false, same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(win) {
+        win.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        win.scrolls_window(
+          scroll,
+          fn() { [0, 1, 2] },
+          est=40.0,
+          follows=fn() { true },
+          from_end=true,
+          fn(b, k) {
+            if k == 2 {
+              b.box(fn(p) {
+                button.val = Some(p)
+                p
+                .height(Is(Some(40.0)))
+                .shrink(Is(0.0))
+                .on_press(fn() { opened.set(!opened.untracked()) })
+                .says(By(fn() { Some(@view.said(Button, label="row \{k}", expanded=opened.get())) }))
+                .opens_in_sight()
+                |> ignore
+              })
+              |> ignore
+              b.box(fn(u) {
+                under.val = Some(u)
+                u.height(By(fn() { Some(if opened.get() { 80.0 } else { 0.0 }) })).shrink(Is(0.0)) |> ignore
+              })
+              |> ignore
+            } else {
+              b.height(Is(Some(40.0))) |> ignore
+            }
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { now.val },
+  )
+  tree.frame(300.0, 400.0, now=0.0) |> ignore
+  (tree, now, button, under, scroll)
+}
+
+///|
+test "a short page's list from its end, its last row's button opening in sight at its foot: its foot stays at the window's foot, opened, shut and opened again, what was pressed where it was" {
+  let (tree, now, button, under, scroll) = short_open_case()
+  let b = fn() { button.val.unwrap().rect() }
+  let foot = fn() {
+    let (_, y, _, h) = under.val.unwrap().rect()
+    y + h
+  }
+  let press = fn(at : Double) {
+    let (x, y, w, h) = b()
+    now.val = at
+    tree.press(x + w / 2.0, y + h / 2.0) |> ignore
+    tree.frame(300.0, 400.0, now=at) |> ignore
+    (y, b().1)
+  }
+  let rest = fn(at : Double) {
+    now.val = at
+    tree.frame(300.0, 400.0, now=at) |> ignore
+  }
+  assert_eq((b().1, foot()), (360.0, 400.0))
+  // (opened: the row grown up from the window's foot, never taken to the list's top)
+  press(1000.0) |> ignore
+  let first = foot()
+  rest(3000.0)
+  assert_eq((first, b().1, foot(), scroll.most()), (400.0, 280.0, 400.0, 0.0))
+  // (shut: the button where it was pressed)
+  let (was, shut) = press(4000.0)
+  rest(6000.0)
+  assert_eq((shut, b().1), (was, was))
+  // (opened again: the button where it was pressed, then at rest no room under its foot, the list at the window's foot)
+  let (was, opened) = press(7000.0)
+  rest(9000.0)
+  assert_eq((opened, foot(), scroll.most()), (was, 400.0, 0.0))
+}

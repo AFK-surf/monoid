@@ -139,59 +139,8 @@ pub fn sees_images(catalog : Catalog, model : String) -> Bool {
 }
 
 ///|
-/// The thinking levels a model's id may end in (agy.ts `AGY_LEVELS`, devin.ts `LEVELS`).
-let levels : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-
-///|
-fn level_at_end(s : String) -> String? {
-  for l in levels {
-    if s.has_suffix("-" + l) && s.length() > l.length() + 1 {
-      return Some(l)
-    }
-  }
-  None
-}
-
-///|
-/// agents/agy.ts `agyBaseModel`: a raw ACP `modelId` split into its base model and thinking level.
-pub fn agy_base_model(id : String) -> (String, String?) {
-  let trimmed = trim(id)
-  match level_at_end(trimmed) {
-    Some(l) => (sub(trimmed, 0, trimmed.length() - l.length() - 1), Some(l))
-    None => (trimmed, None)
-  }
-}
-
-///|
-/// agents/devin.ts `splitDevinFusion`.
-fn split_devin_fusion(id : String) -> (String, String?, String)? {
-  let s = lower(trim(id))
-  if !s.has_prefix("fusion-") {
-    return None
-  }
-  let at = index_of(s, "-sidekick-", start=7)
-  if at < 0 {
-    return None
-  }
-  let raw_lead = sub(s, 7, at)
-  let side = from(s, at + 10)
-  if raw_lead == "" || side == "" {
-    return None
-  }
-  match level_at_end(raw_lead) {
-    Some(l) => Some((sub(raw_lead, 0, raw_lead.length() - l.length() - 1), Some(l), side))
-    None => Some((raw_lead, None, side))
-  }
-}
-
-///|
-/// agents/devin.ts `devinFusionBase`.
-pub fn devin_fusion_base(id : String) -> (String, String?) {
-  match split_devin_fusion(id) {
-    Some((lead, effort, side)) => ("fusion-\{lead}-sidekick-\{side}", effort)
-    None => (id, None)
-  }
-}
+/// agents/agy.ts `agyBaseModel` and agents/devin.ts `devinFusionBase`.
+pub using @agent_runtimes {agy_base_model, devin_fusion_base}
 
 ///|
 /// What unchecking changed on a profile.

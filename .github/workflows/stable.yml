@@ -201,6 +201,9 @@ jobs:
             echo "POSTHOG_FILE=$RUNNER_TEMP/posthog.json" >> "$GITHUB_ENV"
           fi
           unset POSTHOG_JSON
+          # the build's number, as release.sh has it: core.hbc's key says when it was built (apps/mbui/scripts/core.sh
+          # built_at_define), so asked without it no key was the release's
+          export MBUI_BUILD=$(git rev-list --count HEAD)
           export HERMESC=$(cygpath -m "$(node scripts/native.ts path engine win32-x64)/hermesc.exe")
           STILLFAIL_POSTHOG=$([ ! -s "$RUNNER_TEMP/posthog.json" ] || echo "$RUNNER_TEMP/posthog.json") bash apps/mbui/scripts/core.sh hermes-kept || exit 0
           bash apps/mbui/scripts/core.sh hermes-kept || exit 0

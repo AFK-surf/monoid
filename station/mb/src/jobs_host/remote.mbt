@@ -169,18 +169,7 @@ pub fn heard(got : Got?, seen : Json) -> Json {
 ///|
 /// A plain JSON value as `JSON.stringify` writes it.
 fn js_json(v : Json) -> @jsjson.JValue {
-  match v {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(d, ..) => Num(d)
-    String(s) => Str(@jsjson.units(s))
-    Array(a) => Arr(a.map(js_json))
-    Object(m) => {
-      let keys = js_key_order(m.keys().collect())
-      Obj(keys.map(k => (@jsjson.units(k), js_json(m[k]))))
-    }
-  }
+  @jsjson.JValue::of_json(v)
 }
 
 ///|
@@ -208,22 +197,10 @@ pub fn remote_budget(total : Double?) -> Double {
 ///|
 /// STANDARD base64 as the Rust decodes it: padded, nothing else in it.
 pub fn from_base64(data : String) -> Bytes raise {
-  let n = data.length()
-  let mut pad = 0
-  let mut ok = n % 4 == 0
-  for i in 0..<n {
-    let c = data.unsafe_charcode_at(i)
-    if c == '=' {
-      pad += 1
-    } else if pad > 0 ||
-      !(is_alpha_unit(c) || is_digit(c) || c == '+' || c == '/') {
-      ok = false
-    }
+  match @codec.base64_decode_strict(data) {
+    Some(b) => b
+    None => raise HostError("Invalid input length or symbol")
   }
-  if !ok || pad > 2 {
-    raise HostError("Invalid input length or symbol")
-  }
-  @base64.decode(data)
 }
 
 ///|

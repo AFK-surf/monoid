@@ -90,3 +90,43 @@ test "a file's card with nothing to open takes no press; one that opens, opens" 
     assert_eq(opened.val, if open { 1 } else { 0 }, msg="open \{open}")
   }
 }
+
+///|
+test "a file's card with nothing to open: its ↻ and ✕ at its end still pressed, the card itself not" {
+  let pressed : Array[FileCardPress] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(Some(Start))) |> ignore
+    let tips = TipLayer::new(fn() { None })
+    root.box(fn(col) {
+      col.width(Is(Some(400.0))) |> ignore
+      file_card_node(
+        col,
+        tips,
+        fn() { "季度报告.pdf" },
+        fn() { "上传失败" },
+        fn() { true },
+        fn() { true },
+        fn() { true },
+        fn() { "重试" },
+        fn() { "移除" },
+        fn(p) { pressed.push(p) },
+        open=fn() { false },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let (x, y) = t.find("上传失败").unwrap()
+  t.tap(x, y)
+  t.run_for(upload_tapped_ms)
+  assert_true(pressed.is_empty(), msg="the card: \{pressed.length()}")
+  t.click(Button, label="重试")
+  t.run_for(upload_tapped_ms)
+  t.click(Button, label="移除")
+  t.run_for(upload_tapped_ms)
+  assert_true(pressed.length() == 2 && pressed[0] is Retry && pressed[1] is Remove, msg="\{pressed.length()}")
+}

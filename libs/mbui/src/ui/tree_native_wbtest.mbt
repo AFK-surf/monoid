@@ -198,3 +198,74 @@ test "what a page says, bound by a node of the tree's: laid out and drawn by the
   inspect(stands(t, page), content="0 0 300 232")
   assert_eq(t.rect_of("under it").map(fn(r) { r.1 }), Some(232.0))
 }
+
+///|
+test "a rounded native view filling a box in a page's list's block said `flips`, the box grown 120 to 200 as said (View::resizes) under a cover over all of it: its hole drawn as tall as its ground and the cover on the way, never past them, 200 at its end" {
+  let tall = @signals.signal(120.0, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_) {  }, w=300.0, h=400.0, platform=0)
+  t.check_looks(false)
+  let page = NativeView::page("<p>a</p>")
+  let ink = 0x777777FFL
+  set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      col.scrolls_window(
+        @view.Scroll::list(),
+        fn() { [0, 1] },
+        est=50.0,
+        flips=true,
+        fn(b, k) {
+          if k == 0 {
+            b.box(fn(f) {
+              f.width(Is(Some(300.0))).height(By(fn() { Some(tall.get()) })) |> ignore
+              // (as tall as said by a move of the list's, the cause its own: View::resizes)
+              f.reacts(
+                fn() { tall.get() },
+                fn(_) { @view.transition(within=f.transitions_root(), fn() { f.resizes() |> ignore }) },
+                at_start=false,
+              )
+              native(f, page, corners=fn() { (16.0, 16.0, 16.0, 16.0) })
+              .over(Is(true))
+              .width(Is(Some(300.0)))
+              .height(By(fn() { Some(tall.get()) }))
+              |> ignore
+              f.box(fn(o) {
+                o.over(Is(true)).width(Is(Some(300.0))).height(By(fn() { Some(tall.get()) })).ground(Is(ink)) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          } else {
+            b.box(fn(l) { l.words(Is("under it")).height(Is(Some(50.0))) |> ignore }) |> ignore
+          }
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(move_most_ms)
+  let hole_h = fn() { t.holes().map(fn(h) { h.3 }) }
+  let cover_h = fn() { t.drawn_rects().filter(fn(r) { r.4 == ink }).map(fn(r) { r.3 }) }
+  assert_eq(hole_h(), [120.0])
+  assert_eq(cover_h(), [120.0])
+  view_event(fn() { tall.set(200.0) })
+  // (the first frames of its way: the hole as tall as its cover (on the host's pixels), on its way at the first)
+  let look = fn(at : String, on_way : Bool) raise {
+    match (hole_h(), cover_h()) {
+      ([h], [c]) => {
+        assert_true((h - c).abs() < 1.0, msg="\{at}: the hole \{h} tall, its cover \{c}")
+        assert_true(!on_way || (c > 120.5 && c < 199.5), msg="\{at}: its cover \{c} tall, not on its way")
+      }
+      (hs, cs) => fail("\{at}: holes \{Repr(hs)}, covers \{Repr(cs)}")
+    }
+  }
+  t.frame()
+  look("its first frame", true)
+  t.frame()
+  look("its second frame", false)
+  t.run_for(move_most_ms)
+  assert_eq(hole_h(), [200.0])
+  assert_eq(cover_h(), [200.0])
+}

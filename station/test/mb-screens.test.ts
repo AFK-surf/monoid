@@ -763,6 +763,8 @@ async function loadModules() {
     mac: await import("../src/screens/mac-input.ts"),
     win: await import("../src/screens/win-desktop.ts"),
     winInput: await import("../src/screens/win-input.ts"),
+    linuxInput: await import("../src/screens/linux-input.ts"),
+    linuxNative: await import("../src/screens/linux-native.ts"),
     sim: await import("../src/screens/simulator.ts"),
     simInput: await import("../src/screens/sim-input.ts"),
     simDebug: await import("../src/screens/sim-debug.ts"),
@@ -876,7 +878,7 @@ class TsSide implements Side {
       case "fakeSource": return this.#fakeSource(a.spec ?? {});
       case "helperView": {
         const socket = M.net.createConnection(a.path ?? "/view.sock");
-        const inputOps = a.input === "win" ? new M.winInput.WinInput() : a.input === "sim" ? new M.simInput.SimInput() : new M.mac.MacInput();
+        const inputOps = a.input === "win" ? new M.winInput.WinInput() : a.input === "linux" ? new M.linuxInput.LinuxInput() : a.input === "sim" ? new M.simInput.SimInput() : new M.mac.MacInput();
         const view = new M.desktop.HelperView(a.codec ?? "h264", socket, this.#cb(`${name}.gone`), inputOps, a.capture ?? "ScreenCaptureKit", a.audio === true, a.mic === true);
         // (asked for by the scenario when it asks, not as the station's own opener does at once)
         view.ready.catch(() => {});
@@ -895,9 +897,11 @@ class TsSide implements Side {
       case "tools": return new M.tools.LinuxScreenTools(a.data);
       case "x11": return new M.x11.X11Desktop({ changed: this.#cb(`${name}.changed`), ...(a.title !== undefined ? { title: () => a.title } : {}), ...(a.tools ? { tools: this.insts.get(a.tools) } : {}), ...(a.env ? { env: { ...a.env } } : {}), ...(a.ffmpeg ? { ffmpeg: a.ffmpeg } : {}), ...(a.xdotool ? { xdotool: a.xdotool } : {}), ...(a.prepareWaitMs !== undefined ? { prepareWaitMs: a.prepareWaitMs } : {}) });
       case "gst": return new M.portal.LinuxGstDesktop({ changed: this.#cb(`${name}.changed`), env: { ...(a.env ?? process.env) }, ...(a.mode ? { mode: a.mode } : {}), ...(a.title !== undefined ? { title: () => a.title } : {}), ...(a.python ? { python: a.python } : {}), ...(a.helper ? { helper: a.helper } : {}), ...(a.consentWaitMs !== undefined ? { consentWaitMs: a.consentWaitMs } : {}) });
-      case "linux": return new M.linux.LinuxDesktop({ data: a.data, changed: this.#cb(`${name}.changed`), ...(a.title !== undefined ? { title: () => a.title } : {}), ...(a.env ? { env: { ...a.env } } : {}) });
+      case "linuxNative": return new M.linuxNative.LinuxNativeDesktop({ binary: a.binary ?? null, changed: this.#cb(`${name}.changed`), ...(a.title !== undefined ? { title: () => a.title } : {}), ...(a.env ? { env: { ...a.env } } : {}) });
+      case "linux": return new M.linux.LinuxDesktop({ data: a.data, changed: this.#cb(`${name}.changed`), ...(a.title !== undefined ? { title: () => a.title } : {}), ...(a.env ? { env: { ...a.env } } : {}), ...(a.nativeBinary !== undefined ? { nativeBinary: a.nativeBinary } : {}) });
       case "macInput": return new M.mac.MacInput();
       case "winInput": return new M.winInput.WinInput();
+      case "linuxInput": return new M.linuxInput.LinuxInput();
       case "simInput": return new M.simInput.SimInput();
       case "androidInput": return new M.android.AndroidInput();
       case "scrcpy": return new M.android.ScrcpyStream((s: Json) => this.#cbWith(`${name}.session`, s), (p: Json) => this.#cbWith(`${name}.packet`, { config: p.config, key: p.key, pts: String(p.pts), data: b64(p.data) }));
@@ -969,8 +973,10 @@ class TsSide implements Side {
       case "HelperGrants": return this.#grantsCall(name, o, f, a);
       case "HelperFiles": return this.#filesCall(o, f, a);
       case "HelperFs": return this.#hfsCall(o, f, a);
-      case "Desktop": case "WindowsDesktop": case "X11Desktop": case "LinuxGstDesktop": case "LinuxDesktop":
+      case "Desktop": case "WindowsDesktop": case "X11Desktop": case "LinuxGstDesktop": case "LinuxNativeDesktop": case "LinuxDesktop":
         if (f === "refresh") { await o.refresh(a.force === true); return null; }
+        if (f === "available") return o.available();
+        if (f === "backend") return o.backend();
         if (f === "helperBack") { await o.helperBack(); return null; }
         if (f === "close") { await o.close(); return null; }
         return this.#sourceCall(o, f, a);
@@ -987,6 +993,7 @@ class TsSide implements Side {
         throw new Error(`no ${f}`);
       case "MacInput": return f === "ops" ? plain(o.ops(input(a.event), a.now)) : plain(o.release());
       case "WinInput": return f === "ops" ? plain(o.ops(input(a.event))) : plain(o.release());
+      case "LinuxInput": return f === "ops" ? plain(o.ops(input(a.event))) : plain(o.release());
       case "SimInput": return plain(o.ops(input(a.event)));
       case "AndroidInput": return o.messages(input(a.event), a.size).map((m: Buffer) => b64(m));
       case "ScrcpyStream": o.heard(unb64(a.data)); return null;
@@ -1751,10 +1758,11 @@ async function main() {
 
   test("input as each machine takes it: macOS's, Windows', an iOS Simulator's, scrcpy's; what a view holds let go", async () => {
     await both("inputs", async (s) => {
-      for (const kind of ["macInput", "winInput", "simInput", "androidInput"]) await s.new(kind, { inst: kind });
+      for (const kind of ["macInput", "winInput", "linuxInput", "simInput", "androidInput"]) await s.new(kind, { inst: kind });
       for (const [event, now] of INPUTS) {
         await s.call("macInput", "ops", { event, now });
         await s.call("winInput", "ops", { event });
+        await s.call("linuxInput", "ops", { event });
         await s.call("simInput", "ops", { event });
         await s.call("androidInput", "messages", { event, size: { width: 1080, height: 2400 } });
       }
@@ -1765,6 +1773,10 @@ async function main() {
       await s.call("winInput", "ops", { event: EV.key("down", "ControlRight", "Control", 2) });
       await s.call("winInput", "release");
       await s.call("winInput", "release");
+      await s.call("linuxInput", "ops", { event: EV.down(0.5, 0.5, 3) });
+      await s.call("linuxInput", "ops", { event: EV.key("down", "ControlRight", "Control", 2) });
+      await s.call("linuxInput", "release");
+      await s.call("linuxInput", "release");
     });
   });
 
@@ -3078,6 +3090,27 @@ async function sessionScenario(s: Play) {
   await s.call("l", "access");
   await s.call("l", "open", { options: { maxWidth: 1, maxHeight: 1, codecs: ["jpeg"] } });
   await s.call("l", "close");
+
+  // Native helper routing: when `stillfail-screen-linux status` reports capture: true, LinuxDesktop prefers it;
+  // when status reports waylandNoWlr, it falls back cleanly.
+  let nativeReply: Json = { ok: true, backend: "x11", display: { id: 0, width: 1920, height: 1080 }, capture: true };
+  s.w.spawnRules.unshift((c) => {
+    if (c.file === "/bin/stillfail-screen-linux" && c.args[0] === "status") {
+      queueMicrotask(() => {
+        c.out(Buffer.from(JSON.stringify(nativeReply) + "\n"));
+        c.close(0);
+      });
+      return true;
+    }
+  });
+  await s.new("linux", { inst: "ln", data: "/data", env: { DISPLAY: ":0", PATH: "/usr/bin" }, title: "NativeBox", nativeBinary: "/bin/stillfail-screen-linux" });
+  await s.call("ln", "refresh", { force: true });
+  for (const f of ["access", "size"]) await s.call("ln", f);
+  nativeReply = { ok: false, capture: false, unsupported: "waylandNoWlr", error: "no wlr" };
+  await s.call("ln", "refresh", { force: true });
+  for (const f of ["access", "size"]) await s.call("ln", f);
+  await s.call("ln", "close");
+  s.w.spawnRules.shift();
 }
 
 async function portalScenario(s: Play) {

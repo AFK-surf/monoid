@@ -228,15 +228,7 @@ fn ReParser::escape(self : ReParser) -> Result[Array[(Int32, Int32)], Int32] {
 fn hex_value(s : String, at : Int32, n : Int32) -> Int32 {
   let mut v = 0
   for i in 0..<n {
-    let c = s.unsafe_charcode_at(at + i)
-    let d = if c >= '0' && c <= '9' {
-      c - '0'
-    } else if c >= 'a' && c <= 'f' {
-      c - 'a' + 10
-    } else {
-      c - 'A' + 10
-    }
-    v = v * 16 + d
+    v = v * 16 + @codec.hex_digit(s.unsafe_charcode_at(at + i)).unwrap_or(0)
   }
   v
 }

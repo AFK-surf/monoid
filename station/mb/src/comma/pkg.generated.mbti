@@ -88,7 +88,7 @@ pub fn js(String) -> @jsjson.JValue
 
 pub fn js_number(String) -> Double
 
-pub fn js_string(@jsjson.JValue) -> Array[Int32]
+pub fn js_string(@jsjson.JValue) -> String
 
 pub fn js_text(@jsjson.JValue) -> String
 

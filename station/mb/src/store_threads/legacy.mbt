@@ -309,44 +309,6 @@ fn bounded_card_edit(db : @sql.Db, thread : Json, n : String, native : Bool) -> 
 }
 
 ///|
-/// widget-sources.ts `widgetSourceBeforeAddNeedsRepair`.
-fn widget_source_before_add_needs_repair(db : @sql.Db) -> Bool raise {
-  guard sql_of(db, "trigger", "widget_source_before_add") is Some(sql) else { return false }
-  let gated = sql.contains("widget_source_before_gate")
-  let gate = exists(db, "view", "widget_source_before_gate")
-  let gate_sql = sql_of(db, "trigger", "widget_source_before_gate_run")
-  let legacy = uses_legacy_edits(db)
-  let old_index = legacy && legacy_edits_use_old_index(db)
-  gated != legacy ||
-  gate != legacy ||
-  (gate_sql is Some(_)) != legacy ||
-  (!gated && sql.contains("FROM entries x INDEXED BY entries_target")) ||
-  (legacy && gate_sql is Some(g) && g.contains("INDEXED BY entries_target") != old_index)
-}
-
-///|
-/// widget-sources.ts `repairWidgetSourceBeforeAdd`: in the caller's write transaction.
-fn repair_widget_source_before_add(db : @sql.Db) -> Unit raise {
-  if !widget_source_before_add_needs_repair(db) {
-    return
-  }
-  let legacy = uses_legacy_edits(db)
-  let gate = if legacy {
-    if legacy_edits_use_old_index(db) {
-      widget_before_gate_old_index_sql
-    } else {
-      widget_before_gate_sql
-    }
-  } else {
-    ""
-  }
-  let add = if legacy { widget_before_add_legacy_sql } else { widget_before_add_sql }
-  db.exec(
-    "DROP TRIGGER widget_source_before_add;\n    DROP TRIGGER IF EXISTS widget_source_before_gate_run; DROP VIEW IF EXISTS widget_source_before_gate;\n    \{gate} \{add}",
-  )
-}
-
-///|
 /// legacy-edits-build.ts `installLegacyEdits(db, true)`.
 fn install_legacy_edits(db : @sql.Db) -> Bool raise {
   if has_legacy_edits(db) {
@@ -384,7 +346,7 @@ fn repair_merged_edit_lookup(db : @sql.Db) -> Unit raise {
     !has_edit_index()
   }
   let view_needs_repair = needs_repair(view())
-  if !view_needs_repair && !widget_source_before_add_needs_repair(db) {
+  if !view_needs_repair && !@store_schema.widget_source_before_add_needs_repair(db) {
     return
   }
   if view_needs_repair && !has_edit_index() {
@@ -407,7 +369,7 @@ fn repair_merged_edit_lookup(db : @sql.Db) -> Unit raise {
       }
       db.exec("DROP VIEW IF EXISTS merged; \{merged}")
     }
-    repair_widget_source_before_add(db)
+    @store_schema.repair_widget_source_before_add(db)
     db.exec("COMMIT")
   }
   work() catch {
@@ -423,14 +385,14 @@ fn repair_merged_edit_lookup(db : @sql.Db) -> Unit raise {
 ///|
 /// legacy-said-build.ts `legacySaidReadHead`: (known, the latest ordinary message's n, author_kind, author).
 fn legacy_said_read_head(db : @sql.Db, thread : Json) -> (Bool, Map[String, Json]?) raise {
-  guard one(db, legacy_said_head_first_sql, [thread]) is Some(first) else { return (true, None) }
+  guard one(db, @readops.legacy_said_head_first_sql, [thread]) is Some(first) else { return (true, None) }
   if !(col(first, "n") is Null) {
     return (true, Some(first))
   }
-  if one(db, legacy_said_needs_drain_sql, [thread]) is None {
-    return (true, one(db, legacy_said_latest_sql, [thread]))
+  if one(db, @readops.legacy_said_needs_drain_sql, [thread]) is None {
+    return (true, one(db, @readops.legacy_said_latest_sql, [thread]))
   }
-  guard one(db, legacy_said_head_tail_sql, [thread]) is Some(tail) else { return (false, None) }
+  guard one(db, @readops.legacy_said_head_tail_sql, [thread]) is Some(tail) else { return (false, None) }
   if !(col(tail, "n") is Null) {
     return (true, Some(tail))
   }

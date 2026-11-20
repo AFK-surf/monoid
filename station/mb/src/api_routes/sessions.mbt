@@ -375,12 +375,7 @@ async fn Admin::place_of(
 /// ICU's order of two names, as `localeCompare` has it for the names a directory holds: letters by their lower case
 /// first, a lower case before its upper case.
 fn locale_compare(a : String, b : String) -> Int32 {
-  let la = a.to_lower()
-  let lb = b.to_lower()
-  if la != lb {
-    return js_compare(la, lb)
-  }
-  -js_compare(a, b)
+  @jsjson.locale_compare(a, b)
 }
 
 ///|

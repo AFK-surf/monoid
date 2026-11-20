@@ -2287,6 +2287,13 @@
   // a key frame, the older of two it holds, those inside as it starts anew, a JPEG that does not decode) and the
   // decoder broken ("b": an error) told the same way, each asking for a frame.
   const STREAM_TEX = 4194304;
+  // Adaptive jitter-absorbing presentation clock and four-state catch-up pacer for H.264 streams.
+  const CLOCK_WINDOW_MS = 5000;
+  const JITTER_WINDOW_MS = 2000;
+  const JITTER_QUANTILE = 0.95;
+  const MAX_HOLD_MS = 100;
+  const HOLD_DECAY = 0.05;
+  const CLOCK_JUMP_MS = 500;
   const streams = new Map();
   let nextStream = 0;
   // (a VideoDecoder that takes no H.264, as Chromium's own build has: asked once as the page loads, the app's first
@@ -2306,6 +2313,117 @@
     s.events.push(e);
     H.requestFrame();
   }
+  function observeArrival(s, ts, arrivedMs) {
+    const offset = arrivedMs - ts / 1000;
+    const last = s.samples.length ? s.samples[s.samples.length - 1] : null;
+    if (last && Math.abs(offset - last.offset) > CLOCK_JUMP_MS) {
+      s.samples = [];
+      s.lows = [];
+      s.holdMs = 0;
+    }
+    const previous = s.samples.length ? s.samples[s.samples.length - 1].time : arrivedMs;
+    const sample = { time: arrivedMs, offset, late: 0 };
+    s.samples.push(sample);
+    while (s.lows.length && s.lows[s.lows.length - 1].offset >= offset) s.lows.pop();
+    s.lows.push(sample);
+    while (s.samples[0].time < arrivedMs - CLOCK_WINDOW_MS) {
+      if (s.lows[0] === s.samples[0]) s.lows.shift();
+      s.samples.shift();
+    }
+    const base = s.lows[0].offset;
+    sample.late = offset - base;
+    const recent = [];
+    for (let i = s.samples.length - 1; i >= 0 && s.samples[i].time >= arrivedMs - JITTER_WINDOW_MS; i--) {
+      recent.push(s.samples[i].late);
+    }
+    recent.sort((a, b) => a - b);
+    const target = Math.min(MAX_HOLD_MS, recent[Math.floor(JITTER_QUANTILE * (recent.length - 1))]);
+    s.holdMs = target >= s.holdMs ? target : Math.max(target, s.holdMs - (arrivedMs - previous) * HOLD_DECAY);
+    return base;
+  }
+  function isDue(s, item, now) {
+    return item.ts / 1000 + item.base + s.holdMs <= now + 1e-6;
+  }
+  function dueCount(s, now) {
+    let count = 0;
+    while (count < s.paced.length && isDue(s, s.paced[count], now)) count++;
+    return count;
+  }
+  function waitUsOf(item, now) {
+    const ms = now - item.arrived;
+    return ms > 0 ? Math.min(0xffff_ffff, Math.round(ms * 1000)) : 0;
+  }
+  function presenterPhase(due, draws, backlogMs, sinceCatchUpMs, headOverstayMs) {
+    if (due <= 2) return 'idle';
+    if (due > 12 || headOverstayMs > 200) return 'overrun';
+    if (due - draws <= 2) return 'idle';
+    return backlogMs < 500 || sinceCatchUpMs < 250 ? 'backlog' : 'catchUp';
+  }
+  function trimDecoded(s, now, draws = 0) {
+    let due = dueCount(s, now);
+    const phase = presenterPhase(
+      due, draws, now - (s.backlogSince ?? now), now - s.lastCatchUp,
+      s.paced.length ? now - s.paced[0].arrived - s.holdMs : 0,
+    );
+    if (phase === 'idle') {
+      s.backlogSince = null;
+      return;
+    }
+    if (s.backlogSince === null) s.backlogSince = now;
+    if (phase === 'backlog') return;
+    do {
+      const dropped = s.paced.shift();
+      dropped.frame.close();
+      due--;
+      const waitUs = waitUsOf(dropped, now);
+      say(s, waitUs > 0 ? `d ${num(dropped.ts)} ${waitUs}` : `d ${num(dropped.ts)}`);
+    } while (phase === 'overrun' && due > 2);
+    if (due <= 2) s.backlogSince = null;
+    if (phase === 'catchUp') s.lastCatchUp = now;
+  }
+  function emitFrame(s, item, now) {
+    s.decoded.push({ ts: item.ts, frame: item.frame, w: item.w, h: item.h });
+    s.drawnThisFrame = true;
+    const waitUs = waitUsOf(item, now);
+    say(s, waitUs > 0 ? `f ${num(item.ts)} ${item.w} ${item.h} ${waitUs}` : `f ${num(item.ts)} ${item.w} ${item.h}`);
+  }
+  function schedulePresent(s) {
+    if (!s.paceRaf && !s.closed) s.paceRaf = requestAnimationFrame(() => present(s));
+  }
+  function present(s) {
+    s.paceRaf = 0;
+    if (s.closed) return;
+    s.drawnThisFrame = false;
+    const now = performance.now();
+    trimDecoded(s, now, 1);
+    let drew = false;
+    if (s.paced.length && isDue(s, s.paced[0], now)) {
+      emitFrame(s, s.paced.shift(), now);
+      drew = true;
+    }
+    if (drew || s.paced.length) schedulePresent(s);
+  }
+  function presentDecoded(s, item) {
+    const now = performance.now();
+    const immediate = !s.paced.length && !s.drawnThisFrame;
+    s.paced.push(item);
+    trimDecoded(s, now);
+    if (immediate && s.paced.length && isDue(s, s.paced[0], now)) emitFrame(s, s.paced.shift(), now);
+    if (s.paced.length || s.drawnThisFrame) schedulePresent(s);
+  }
+  function resetPace(s) {
+    if (s.paceRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(s.paceRaf);
+    s.paceRaf = 0;
+    s.drawnThisFrame = false;
+    s.backlogSince = null;
+    s.lastCatchUp = -Infinity;
+    s.samples = [];
+    s.lows = [];
+    s.holdMs = 0;
+    s.arrivals.clear();
+    for (const f of s.paced) f.frame.close();
+    s.paced = [];
+  }
   // the decoder for the config there is (none without one): whether there is one now
   function startDecoder(s) {
     stopDecoder(s);
@@ -2317,8 +2435,21 @@
           if (gen !== s.gen || s.closed) return frame.close();
           const ts = frame.timestamp;
           while (s.inside.length && s.inside[0] <= ts) s.inside.shift();
-          s.decoded.push({ ts, frame, w: frame.displayWidth, h: frame.displayHeight });
-          say(s, `f ${num(ts)} ${frame.displayWidth} ${frame.displayHeight}`);
+          const meta = s.arrivals.get(ts);
+          if (meta) s.arrivals.delete(ts);
+          for (const k of s.arrivals.keys()) {
+            if (k < ts) s.arrivals.delete(k);
+            else break;
+          }
+          const now = performance.now();
+          presentDecoded(s, {
+            ts,
+            frame,
+            w: frame.displayWidth,
+            h: frame.displayHeight,
+            arrived: meta ? meta.arrived : now,
+            base: meta ? meta.base : now - ts / 1000,
+          });
         },
         error: (e) => {
           if (gen !== s.gen) return;
@@ -2342,14 +2473,19 @@
       s.decoder = null;
     }
     s.gen++;
-    if (s.inside.length) say(s, 'd ' + num(Math.max(...s.inside)));
+    let maxDropped = -Infinity;
+    for (const t of s.inside) if (t > maxDropped) maxDropped = t;
+    for (const f of s.paced) if (f.ts > maxDropped) maxDropped = f.ts;
+    if (maxDropped > -Infinity) say(s, 'd ' + num(maxDropped));
     s.inside = [];
+    resetPace(s);
     s.needKey = true;
   }
   H.streamOpen = () => {
     const id = ++nextStream;
-    streams.set(id, { id, events: [], decoded: [], inside: [], gen: 0, needKey: true, decoder: null, config: null,
-      tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
+    streams.set(id, { id, events: [], decoded: [], inside: [], paced: [], arrivals: new Map(), samples: [], lows: [],
+      holdMs: 0, backlogSince: null, lastCatchUp: -Infinity, paceRaf: 0, drawnThisFrame: false, gen: 0, needKey: true,
+      decoder: null, config: null, tex: null, shown: null, closed: false, jpegs: Promise.resolve() });
     return id;
   };
   H.streamH264 = (id, avcc, w, h) => {
@@ -2370,12 +2506,16 @@
     if (!s) return;
     if (!s.decoder || (s.needKey && !key)) return say(s, 'd ' + num(ts));
     s.needKey = false;
+    const arrived = performance.now();
+    const base = observeArrival(s, ts, arrived);
+    s.arrivals.set(ts, { arrived, base });
     try {
       s.inside.push(ts);
       s.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: new Uint8Array(data) }));
     } catch (e) {
       // not a frame it takes: the next key frame asked for
       s.inside = s.inside.filter((t) => t !== ts);
+      s.arrivals.delete(ts);
       say(s, 'd ' + num(ts));
       if (startDecoder(s)) say(s, 'b');
       return;

@@ -19,12 +19,7 @@ fn strict_eq(a : Json?, b : Json?) -> Bool {
 ///|
 /// `v` truthy as JavaScript has it.
 fn truthy(v : Json?) -> Bool {
-  match v {
-    None | Some(Null) | Some(False) => false
-    Some(Number(d, ..)) => d != 0.0 && d == d
-    Some(String(s)) => s != ""
-    _ => true
-  }
+  @jsjson.json_truthy(v)
 }
 
 ///|

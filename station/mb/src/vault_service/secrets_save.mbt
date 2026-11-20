@@ -146,15 +146,7 @@ fn shell_quoted(p : String) -> String {
 ///|
 /// `basename(p)`.
 fn basename(p : String) -> String {
-  let mut end = p.length()
-  while end > 1 && p.code_unit_at(end - 1) == '/' {
-    end -= 1
-  }
-  let s = slice(p, 0, b=end)
-  match s.rev_find("/") {
-    Some(i) => slice(s, i + 1)
-    None => s
-  }
+  @nodepath.basename("/", p)
 }
 
 ///|

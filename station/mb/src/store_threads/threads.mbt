@@ -575,7 +575,7 @@ pub fn Store::recent_connect_people(self : Store, connect : Json, limit : Json) 
   let prefix = "slack:\{c}:"
   Json::array(
     self
-    .all(recent_connect_threads_sql, [limit, connect])
+    .all(@readops.recent_connect_threads, [limit, connect])
     .map(r => {
       let people = []
       for person in self.thread_people(col(r, "id"), col(r, "surface")) {

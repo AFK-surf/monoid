@@ -159,13 +159,48 @@ priv struct ProbeWatch {
 }
 
 ///|
+/// The most relays one check probes through (relays.ts `MAX_PROBES_PER_TICK`, `PROBE` says why).
+let max_probes_per_tick : Int = 4
+
+///|
+/// What one probe through a relay found (relays.ts `ProbeOutcome`): no probe at all, the endpoint reached, the relay out
+/// of this machine's reach, or the endpoint not reached (its stage, or the error, as said).
+priv enum ProbeOutcome {
+  Unsupported(String)
+  Reached
+  Offline
+  Failed(String)
+}
+
+///|
+async fn probe_once(probe : async (String) -> Json, relay : String) -> ProbeOutcome {
+  let probed = try {
+    Ok(@effect.timeout(probe_deadline_ms, async fn() { probe(relay) })) // timer: a deadline on the probe
+  } catch {
+    e => Err(error_words(e))
+  }
+  match probed {
+    Ok(Some({ "ok": True, .. })) => Reached
+    Ok(Some({ "stage": String("probe_offline"), .. })) => Offline
+    Ok(Some({ "stage": String(stage), .. })) => Failed("stage=\{stage}")
+    Ok(Some(_)) => Failed("stage=unknown")
+    Ok(None) => Failed("error=no answer in \{probe_deadline_ms} ms")
+    Err(words) if words.contains("no operation") ||
+      words.contains("not a function") => Unsupported(words)
+    Err(words) => Failed("error=\{words}")
+  }
+}
+
+///|
 /// One check's turn of the watch (relays.ts `probeTick`): `up` whether a relay answered its ping, `reachable` the first
-/// that did.
+/// that did, `rest` the relays after it (not asked this check), `ping_once` one ping of one of them.
 async fn ProbeWatch::tick(
   self : ProbeWatch,
   endpoint : RelayEndpoint,
   up : Bool,
   reachable : String?,
+  rest : Array[String],
+  ping_once : async (String) -> Bool,
   on_unhealthy : () -> Unit,
   say : (String, String) -> Unit,
 ) -> Unit {
@@ -175,7 +210,7 @@ async fn ProbeWatch::tick(
     self.failures = 0
     return
   }
-  guard reachable is Some(relay) else { return }
+  guard reachable is Some(first) else { return }
   let status = match (endpoint.relay_status)() {
     Array(rs) => rs
     _ => []
@@ -191,49 +226,97 @@ async fn ProbeWatch::tick(
     }
   }
   self.healthy_ticks = 0
-  let probed = try {
-    Ok(@effect.timeout(probe_deadline_ms, async fn() { probe(relay) })) // timer: a deadline on the probe
-  } catch {
-    e => Err(error_words(e))
-  }
-  let said : Result[Json, String] = match probed {
-    Ok(Some(found)) => Ok(found)
-    Ok(None) => Err("no answer in \{probe_deadline_ms} ms")
-    Err(words) => Err(words)
-  }
-  let now = @effect.now()
-  match said {
-    Err(words) if words.contains("no operation") || words.contains("not a function") => {
-      // (a front or an addon from before: never restarted for having no probe)
-      self.failures = 0
-      self.unsupported = true
-      say("INFO", "the endpoint cannot be probed through a relay; not probed again: relay=\{relay} error=\{words}")
-      return
-    }
-    Ok({ "ok": True, .. }) => {
-      self.failures = 0
-      match self.last_recover_at {
-        Some(at) if now - at >= self.cooldown => {
-          self.cooldown = self.params.cooldown_ms
-          self.last_recover_at = None
-        }
-        _ => ()
+  let tried : Array[String] = []
+  let failed_relays : Array[String] = []
+  let offline_relays : Array[String] = []
+  let mut first_detail = ""
+  let mut probed = 0
+  let mut rest_idx = 0
+  let mut exhausted = false
+  while probed < max_probes_per_tick {
+    // The first that answered its ping, then the next of the rest whose ping answers.
+    let mut next : String? = if probed == 0 { Some(first) } else { None }
+    while next is None && rest_idx < rest.length() {
+      let c = rest[rest_idx]
+      rest_idx += 1
+      if tried.contains(bare(c)) {
+        continue
       }
-      return
+      if ping_once(c) {
+        next = Some(c)
+      }
     }
-    Ok({ "stage": String("probe_offline"), .. }) => {
-      say("INFO", "a probe through a relay that answers did not get on it; the network's, not the endpoint's: relay=\{relay}")
-      return
+    let relay = match next {
+      Some(r) => r
+      None => {
+        exhausted = true
+        break
+      }
     }
-    _ => ()
+    tried.push(bare(relay))
+    let res = probe_once(probe, relay)
+    probed += 1
+    match res {
+      Unsupported(words) => {
+        // (a front or an addon from before: never restarted for having no probe)
+        self.failures = 0
+        self.unsupported = true
+        say("INFO", "the endpoint cannot be probed through a relay; not probed again: relay=\{relay} error=\{words}")
+        return
+      }
+      Reached => {
+        if failed_relays.length() > 0 {
+          say("INFO", "the endpoint was not reached through one relay, but answered through another; not the endpoint's: relay=\{failed_relays[0]} okRelay=\{relay} \{first_detail}")
+        }
+        self.failures = 0
+        let now = @effect.now()
+        match self.last_recover_at {
+          Some(at) if now - at >= self.cooldown => {
+            self.cooldown = self.params.cooldown_ms
+            self.last_recover_at = None
+          }
+          _ => ()
+        }
+        return
+      }
+      Offline => offline_relays.push(relay)
+      Failed(detail) => {
+        if failed_relays.length() == 0 {
+          first_detail = detail
+        }
+        failed_relays.push(relay)
+        // (two relays found it out of reach: the endpoint's)
+        if failed_relays.length() >= 2 {
+          break
+        }
+      }
+    }
+  }
+  if rest_idx >= rest.length() && failed_relays.length() < 2 {
+    exhausted = true
+  }
+  if failed_relays.length() == 0 {
+    let relays = if offline_relays.length() > 1 {
+      " relays=\{offline_relays.join(",")}"
+    } else {
+      ""
+    }
+    let relay = if offline_relays.length() > 0 { offline_relays[0] } else { first }
+    say("INFO", "a probe through a relay that answers did not get on it; the network's, not the endpoint's: relay=\{relay}\{relays}")
+    return
+  }
+  if failed_relays.length() == 1 && !exhausted {
+    say("INFO", "a probe failed through one relay while other relays could not be reached; not counting it against the endpoint: relay=\{failed_relays[0]} offline=\{offline_relays.join(",")} \{first_detail}")
+    return
+  }
+  let also = if failed_relays.length() > 1 {
+    " also=\{failed_relays[1]}"
+  } else {
+    ""
   }
   self.failures += 1
-  let why = match said {
-    Ok({ "stage": String(stage), .. }) => "stage=\{stage}"
-    Ok(_) => "stage=unknown"
-    Err(words) => "error=\{words}"
-  }
-  say("WARN", "the endpoint was not reached through a relay that answers: relay=\{relay} \{why} failures=\{self.failures}")
+  say("WARN", "the endpoint was not reached through a relay that answers: relay=\{failed_relays[0]}\{also} \{first_detail} failures=\{self.failures}")
+  let now = @effect.now()
   if self.failures < self.params.failures_to_recover ||
     now - self.started_at < self.params.startup_grace_ms {
     return
@@ -251,7 +334,7 @@ async fn ProbeWatch::tick(
     None => self.cooldown = self.params.cooldown_ms
   }
   self.last_recover_at = Some(now)
-  say("ERROR", "the endpoint failed its end-to-end probes through a relay that answers; recovering it: relay=\{relay} failures=\{self.failures} cooldownMs=\{self.cooldown}")
+  say("ERROR", "the endpoint failed its end-to-end probes through a relay that answers; recovering it: relay=\{failed_relays[0]}\{also} failures=\{self.failures} cooldownMs=\{self.cooldown}")
   self.failures = 0
   on_unhealthy()
 }
@@ -325,6 +408,7 @@ pub async fn keep_relays(
   let check = async fn() {
     let mut up = false
     let mut reachable : String? = None
+    let mut rest : Array[String] = []
     let order = match (endpoint.home)() {
       None => ours
       Some(h) =>
@@ -334,7 +418,7 @@ pub async fn keep_relays(
         ]
     }
     // Two tries each: one lost request is not the relay down.
-    for relay in order {
+    for i, relay in order {
       let mut answered = false
       for _ in 0..<2 {
         let ok = (pinger.ping)(bare(relay)) catch { _ => false }
@@ -356,6 +440,8 @@ pub async fn keep_relays(
       if answered {
         up = true
         reachable = Some(relay)
+        // (the relays after it, not asked this check: probed through where it fails, relays.ts `PROBE`)
+        rest = order[i + 1:].to_owned()
         break
       }
     }
@@ -380,10 +466,18 @@ pub async fn keep_relays(
     }
     match on_unhealthy {
       Some(told) =>
-        watch.tick(endpoint, up, reachable, told, match say {
-          Some(f) => f
-          None => (_, words) => log(words)
-        })
+        watch.tick(
+          endpoint,
+          up,
+          reachable,
+          rest,
+          async fn(u) { (pinger.ping)(bare(u)) catch { _ => false } },
+          told,
+          match say {
+            Some(f) => f
+            None => (_, words) => log(words)
+          },
+        )
       None => ()
     }
   }

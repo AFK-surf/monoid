@@ -3,6 +3,7 @@ import {
   "station/host",
   "station/jsjson",
   "station/jscase",
+  "station/nodepath",
   "station/sql",
   "station/cloud_lock",
   "stillfail/rules/lock",

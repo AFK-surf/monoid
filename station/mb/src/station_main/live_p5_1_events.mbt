@@ -5,52 +5,14 @@
 // from the process before (`run/events.json`) and handed to the next as this one stops.
 
 ///|
-/// What a command printed, None where it failed or took longer than `ms`.
-async fn run_said(host : @host.Host, program : String, args : Array[String], ms : Int) -> String? {
-  let proc = spawn(host, program, args, stdout=Piped) catch { _ => return None }
-  let got = @effect.timeout(ms, async fn() { proc.finished() })
-  match got {
-    Some((Some(0), _, out, _)) => Some(@utf8.decode_lossy(out).trim().to_owned())
-    Some(_) => None
-    None => {
-      ignore(kill(proc.pid, "SIGKILL"))
-      None
-    }
-  }
-}
-
-///|
 priv struct AdminHostLive {
   host : @events.Host
-  /// The GPUs said last, and when (jobs/gpu.ts keeps NVIDIA's ten seconds).
-  mut gpus : (Int64, Json)?
 }
 
 ///|
 /// The CPUs' ticks as the machine says them now: all of them, and those not idle.
 fn cpu_ticks() -> @events.Ticks? {
-  match machine() {
-    { "cpus": Array(cpus), .. } if cpus.length() > 0 => {
-      let mut busy = 0.0
-      let mut total = 0.0
-      for c in cpus {
-        match c {
-          { "times": Object(t), .. } =>
-            for k, v in t {
-              if v is Number(n, ..) {
-                total += n
-                if k != "idle" {
-                  busy += n
-                }
-              }
-            }
-          _ => ()
-        }
-      }
-      Some({ busy, total })
-    }
-    _ => None
-  }
+  machine_cpu_ticks().map(t => { busy: t.0, total: t.1 })
 }
 
 ///|
@@ -122,91 +84,15 @@ async fn host_sample(host : @host.Host) -> Json {
 }
 
 ///|
-/// jobs/gpu.ts: Apple Silicon's GPU (ioreg), NVIDIA's (nvidia-smi), each answering within 1.5 s or counting as none.
-async fn gpus_now(host : @host.Host) -> Json {
-  let out : Array[Json] = []
-  if platform() == "darwin" && arch() == "arm64" {
-    match run_said(host, "/usr/sbin/ioreg", ["-rc", "AGXAccelerator", "-d1"], 1500) {
-      Some(text) => {
-        let after = (key : String) => match text.find(key) {
-          Some(i) => Some(text[i + key.length():].to_owned())
-          None => None
-        }
-        let name = match after("\"model\" = \"") {
-          Some(rest) =>
-            match rest.find("\"") {
-              Some(j) => Some(rest[:j].to_owned())
-              None => None
-            }
-          None => None
-        }
-        let digits = (s : String?) => match s {
-          Some(rest) => {
-            let b = StringBuilder()
-            for c in rest.trim_start() {
-              if c >= '0' && c <= '9' {
-                b.write_char(c)
-              } else {
-                break
-              }
-            }
-            attempt(() => @string.parse_int(b.to_string())).to_option()
-          }
-          None => None
-        }
-        let cores = digits(after("\"gpu-core-count\" = "))
-        let busy = match digits(after("\"Device Utilization %\"=")) {
-          Some(b) => Some(b)
-          None => digits(after("\"Device Utilization %\" = "))
-        }
-        if name is Some(_) || cores is Some(_) || busy is Some(_) {
-          let g : Map[String, Json] = { "name": Json::string(name.unwrap_or("Apple GPU")) }
-          if cores is Some(c) { g["cores"] = Json::number(c.to_double()) }
-          match busy {
-            Some(b) if b <= 100 => g["busy"] = Json::number(b.to_double() / 100.0)
-            _ => ()
-          }
-          out.push(Json::object(g))
-        }
-      }
-      None => ()
-    }
-  }
-  if platform() != "darwin" {
-    match run_said(host, "nvidia-smi", ["--query-gpu=name,memory.total,memory.used,utilization.gpu", "--format=csv,noheader,nounits"], 1500) {
-      Some(csv) =>
-        for line in csv.split("\n") {
-          let parts = line.split(",").map(p => p.trim().to_owned()).to_array()
-          if parts.length() == 0 || parts[0] == "" {
-            continue
-          }
-          let g : Map[String, Json] = { "name": Json::string(parts[0]) }
-          let num = (i : Int) => match parts.get(i) {
-            Some(v) => attempt(() => @string.parse_double(v)).to_option()
-            None => None
-          }
-          if num(1) is Some(t) { g["memoryTotalBytes"] = Json::number(t * 1048576.0) }
-          if num(2) is Some(u) { g["memoryUsedBytes"] = Json::number(u * 1048576.0) }
-          if num(3) is Some(b) { g["busy"] = Json::number(b.round() / 100.0) }
-          out.push(Json::object(g))
-        }
-      None => ()
-    }
-  }
-  Json::array(out)
-}
-
-///|
 /// services.ts AdminHost: the machine's state (api/host.ts `Host`), its CPUs followed while the station runs; the bus's
 /// `host_sample` from now on.
 fn P51::admin_host_live(self : P51) -> AdminHostLive {
   let host = self.host
-  let fork_after = (ms : Double, f : () -> Unit) => bus_after(host, ms, f)
-  let live : Ref[AdminHostLive?] = Ref(None)
+  let gpus = make_gpus(host)
   let deps : @events.HostDeps = {
     test_host: () => env_get("STILLFAIL_TEST_HOST") == Some("1"),
     now: () => wall_ms().to_double(),
-    after: fork_after,
+    after: (ms, f) => bus_after(host, ms, f),
     cpu_ticks: k => k(cpu_ticks()),
     sample: k => fork_bg(host, "host sample", async fn() { k(to_jv(host_sample(host))) }),
     statfs: (p, k) => match disk_of(p) {
@@ -225,21 +111,13 @@ fn P51::admin_host_live(self : P51) -> AdminHostLive {
     },
     arch: if arch() == "x86_64" { "x64" } else { arch() },
     os: () => platform(),
-    gpus_read: k => ignore(
-      host.rt.fork_daemon("gpus", on_error=e => @host.note("gpus failed: \{e}"), async fn() {
-        let g = gpus_now(host)
-        if live.val is Some(l) { l.gpus = Some((@host.now(), g)) }
-        k(Some(to_jv(g)))
-      }),
-    ),
-    gpus_cached: Some(() => match live.val {
-      Some({ gpus: Some((_, g)), .. }) => Some(to_jv(g))
-      _ => None
+    gpus_read: k => fork_bg(host, "gpus", async fn() {
+      k(gpus.read().map(g => to_jv(gpus_to_json(g))))
     }),
+    gpus_cached: Some(() => gpus.cached().map(g => to_jv(gpus_to_json(g)))),
   }
   let h = @events.Host::new(deps, self.bus.data)
-  let l : AdminHostLive = { host: h, gpus: None }
-  live.val = Some(l)
+  let l : AdminHostLive = { host: h }
   // timer: a sample of this machine (its CPUs every 15 s: api/host.ts CPU_EVERY_MS)
   let stop = h.follow((ms, f) => {
     let fiber = host.rt.fork(name="cpu follow", async fn() {

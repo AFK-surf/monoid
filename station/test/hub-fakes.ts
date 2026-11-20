@@ -183,7 +183,10 @@ export class FakeSession implements AgentSession {
   /// Its runtime begins a turn of its own just as the next prompt is given (Claude Code's after a turn's end): that
   /// prompt is refused as a running turn's, the turn its own.
   startsOwnTurn = false;
+  /// What the test runs as it is prompted, before the prompt is answered (a throw: the prompt fails).
+  beforePrompt?: (text: string) => void;
   async prompt(text: string) {
+    this.beforePrompt?.(text);
     if (this.disposed) throw new Error("disposed");
     if (this.startsOwnTurn) {
       this.startsOwnTurn = false;
@@ -241,6 +244,8 @@ export class FakeDriver implements AgentDriver {
   private n = 1;
   /// Times every process it started was ended.
   shutdowns = 0;
+  /// Given to every session it opens as its `beforePrompt`.
+  beforePrompt?: (text: string) => void;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
   /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
@@ -273,6 +278,7 @@ export class FakeDriver implements AgentDriver {
       throw once;
     }
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
+    session.beforePrompt = this.beforePrompt;
     this.sessions.push(session);
     return session;
   }

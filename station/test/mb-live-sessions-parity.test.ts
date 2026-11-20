@@ -148,7 +148,9 @@ while IFS= read -r line; do
           *'"type":"user"'*)
             printf '%s\n' "$steer_line" >> "$FAKE_OUT/prompts-$sid.jsonl"
             say '{"type":"system","subtype":"status","status":"requesting","session_id":"'"$sid"'"}'
-            sleep 0.15
+            # (a step after it on the same stdout: once the live stream shows it, the station read the requesting)
+            say '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"hold-ack","name":"HOLD-READ-ACK"}},"session_id":"'"$sid"'"}'
+            while [ ! -f "$FAKE_OUT/hold-read-done" ]; do sleep 0.05; done
             break ;;
         esac
       done
@@ -293,6 +295,23 @@ async function tool(port: number, token: string, name: string, args: unknown = {
   assert.equal(res.status, 200, `${name} status ${res.status}: ${res.raw}`);
   assert.equal(res.json.error, undefined, `${name} rpc error: ${res.raw}`);
   return { text: res.json.result.content[0].text, error: res.json.result.isError === true };
+}
+
+/// An event stream of the admin API: what it said so far, and its closing.
+function events(port: number, path: string) {
+  const heard: string[] = [];
+  let close = () => {};
+  const opened = new Promise<number>((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path }, (res) => {
+      res.setEncoding("utf8");
+      res.on("data", (d: string) => heard.push(d));
+      resolve(res.statusCode!);
+    });
+    req.on("error", reject);
+    close = () => req.destroy();
+    req.end();
+  });
+  return { opened, close: () => close(), text: () => heard.join("") };
 }
 
 async function until<T>(what: string, look: () => T | null | undefined | false | Promise<T | null | undefined | false>, detail: () => string = () => "", timeoutMs = 45_000): Promise<T> {
@@ -530,20 +549,29 @@ test("2. chat_post heldPost, options cards + withdraw + Admin API close-card (<c
     const { thread: tState } = seedSession(s.store, s.data, { key: "chat:c-state", token: "t-state", ts: "1792000003.000001", title: "State Chat" });
 
     // ── heldPost: unread message holds chat_post; resend with send=<held-id> posts original text & ends all_done ──
-    const holdStart = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "SCENARIO-HOLD" });
-    assert.equal(holdStart.status, 200, holdStart.raw);
-    await until("fake claude ready for unread message", () => existsSync(join(s.out, "hold-ready")), () => s.proc.err());
-    const unreadMsg = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "UNREAD-TRIGGER" });
-    assert.equal(unreadMsg.status, 200, unreadMsg.raw);
-    writeFileSync(join(s.out, "hold-go"), "1");
-    await until("heldPost turn completed", () => existsSync(join(s.out, "hold-second.json")) && s.store.lastTurn("chat:c-hold")?.endedAt != null, () => s.proc.err());
-    const holdFirst = JSON.parse(readFileSync(join(s.out, "hold-first.json"), "utf8"));
-    assert.match(holdFirst.result.content[0].text, /^Not posted:.*Held as held-\d+/, JSON.stringify(holdFirst));
-    const holdSecond = JSON.parse(readFileSync(join(s.out, "hold-second.json"), "utf8"));
-    assert.notEqual(holdSecond.result.isError, true, JSON.stringify(holdSecond));
-    assert.match(holdSecond.result.content[0].text, /Posted to CHAT\/1792000001\.000001, and recorded state all_done\./);
-    assert.ok(s.store.messagesBefore(tHold.id, null, 20).some((m) => m.authorKind === "agent" && m.text === "held body original"));
-    assert.equal(s.store.lastTurn("chat:c-hold")!.ending, "all_done");
+    // (the live stream says when the station read the agent's requesting after the steer: what clears its unread)
+    const live = events(s.door, "/admin-api/events?live=chat%3Ac-hold&from=0");
+    try {
+      assert.equal(await live.opened, 200);
+      const holdStart = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "SCENARIO-HOLD" });
+      assert.equal(holdStart.status, 200, holdStart.raw);
+      await until("fake claude ready for unread message", () => existsSync(join(s.out, "hold-ready")), () => s.proc.err());
+      const unreadMsg = await httpJson(s.door, `/admin-api/threads/${tHold.id}/messages`, "POST", { text: "UNREAD-TRIGGER" });
+      assert.equal(unreadMsg.status, 200, unreadMsg.raw);
+      writeFileSync(join(s.out, "hold-go"), "1");
+      await until("the station read the requesting after the steer", () => live.text().includes("HOLD-READ-ACK"), () => `${s.proc.err()}\nlive=${live.text().slice(-400)}`);
+      writeFileSync(join(s.out, "hold-read-done"), "1");
+      await until("heldPost turn completed", () => existsSync(join(s.out, "hold-second.json")) && s.store.lastTurn("chat:c-hold")?.endedAt != null, () => s.proc.err());
+      const holdFirst = JSON.parse(readFileSync(join(s.out, "hold-first.json"), "utf8"));
+      assert.match(holdFirst.result.content[0].text, /^Not posted:.*Held as held-\d+/, JSON.stringify(holdFirst));
+      const holdSecond = JSON.parse(readFileSync(join(s.out, "hold-second.json"), "utf8"));
+      assert.notEqual(holdSecond.result.isError, true, JSON.stringify(holdSecond));
+      assert.match(holdSecond.result.content[0].text, /Posted to CHAT\/1792000001\.000001, and recorded state all_done\./);
+      assert.ok(s.store.messagesBefore(tHold.id, null, 20).some((m) => m.authorKind === "agent" && m.text === "held body original"));
+      assert.equal(s.store.lastTurn("chat:c-hold")!.ending, "all_done");
+    } finally {
+      live.close();
+    }
 
     // ── options card + withdraw ──
     const cardAddr = `CHAT/${tCard.threadTs}`;

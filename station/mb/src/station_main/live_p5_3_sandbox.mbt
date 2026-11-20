@@ -246,10 +246,7 @@ async fn p53_sbx_scan(host : @host.Host, entry : Json, base : String, root : Str
         if depth > 32 {
           continue
         }
-        let names = match (try { Ok(host.shell("fs.readdir", { "path": jstr(path) })) } catch { e => Err(e) }) {
-          Ok((Array(xs), _)) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
-          _ => []
-        }
+        let names = host_readdir_names(host, path).unwrap_or([])
         // (in the order Node's walk goes: the first name first)
         for i = names.length() - 1; i >= 0; i = i - 1 {
           if !skip.contains(names[i]) {
@@ -333,7 +330,7 @@ async fn p53_place_link(host : @host.Host, path : String, target : String) -> Un
           _ => ()
         }
       }
-      ignore(host.shell("fs.remove", { "path": jstr(path), "recursive": jb(true) }))
+      host_remove_tree(host, path)
     }
     None => ()
   }
@@ -347,7 +344,7 @@ async fn p53_lend_gh(host : @host.Host, env : Map[String, String]) -> Unit {
   if env.contains("GH_TOKEN") || env.contains("GITHUB_TOKEN") {
     return
   }
-  let token = match p53_run(host, "gh", ["auth", "token", "-h", "github.com"], timeout_ms=10000) {
+  let token = match shell_proc_run(host, "gh", ["auth", "token", "-h", "github.com"], timeout_ms=10000) {
     Some(t) => t.trim(chars=" \n\r\t").to_string()
     None => ""
   }

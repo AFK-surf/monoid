@@ -94,7 +94,7 @@ fn canon_into(j : J, out : StringBuilder) -> Unit {
     Null => out.write_string("null")
     Bool(b) => out.write_string(if b { "true" } else { "false" })
     Num(d) => out.write_string(if d == 0.0 { "0" } else { @session_chats.num_text(d) })
-    Str(u) => canon_string(@jsjson.text(u), out)
+    Str(u) => canon_string(@jsjson.sanitize_str(u), out)
     Arr(xs) => {
       out.write_char('[')
       for i, x in xs {

@@ -122,7 +122,7 @@ pub fn CdpLink::heard(self : CdpLink, raw : String) -> Unit {
       match at(m, "method") {
         Some(Str(u)) => {
           let e : CdpEvent = {
-            method: @jsjson.text(u),
+            method: @jsjson.sanitize_str(u),
             params: match at(m, "params") {
               None | Some(Null) => Obj([])
               Some(p) => p

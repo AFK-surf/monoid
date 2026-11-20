@@ -139,8 +139,15 @@ fn p54_hash(host : @host.Host, name : String, data : Bytes) -> Bytes raise {
 // ── P-256 ──
 
 ///|
+/// Zeros in front up to a multiple of 8 bytes: core's `from_octets` reads each word as `u64be`, a plain
+/// `uint64_t` load in the C backend, misaligned (UB, UBSan's abort at zig cc -O0) when the length is not one.
 fn p54_big(b : Bytes) -> @bigint.BigInt {
-  @bigint.BigInt::from_octets(b)
+  let rem = b.length() % 8
+  if b.length() >= 8 && rem != 0 {
+    @bigint.BigInt::from_octets(p54_cat([Bytes::make(8 - rem, b'\x00'), b]))
+  } else {
+    @bigint.BigInt::from_octets(b)
+  }
 }
 
 ///|

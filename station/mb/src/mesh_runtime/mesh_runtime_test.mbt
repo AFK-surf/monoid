@@ -228,6 +228,46 @@ test "a pacer's 帧率 slots its frames, a late one letting the next come sooner
 }
 
 ///|
+test "a pacer decouples viewer_wait_ms from network RTT, caps at 100ms, ignores invalid waits, and decays after 10s" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val)
+  let own = @mesh_runtime.own_rate(1920.0, 1080.0)
+  p.set_ceiling(own)
+  p.sent(1000.0, 10_000.0)
+  now.val = 70.0
+  p.acked(1000.0, viewer_wait_ms=60.0)
+  assert_eq(p.rtt(), Some(10.0))
+  assert_eq(p.viewer_wait(), 60.0)
+  assert_eq(p.asked_rate(), Some(own))
+  // In-flight window credits viewer_wait (60ms) + rtt (10ms) + queue_ms(10) (30ms) = 100ms.
+  p.sent(2000.0, 10_000.0)
+  p.sent(3000.0, 10_000.0)
+  now.val = 170.0
+  assert_true(p.may())
+  assert_false(p.backlogged())
+  now.val = 171.0
+  assert_false(p.may())
+  assert_true(p.backlogged())
+  // Capped at viewer_hold_limit_ms (100ms).
+  p.acked(3000.0, viewer_wait_ms=100.0)
+  now.val = 300.0
+  p.sent(4000.0, 10_000.0)
+  now.val = 460.0
+  p.acked(4000.0, viewer_wait_ms=150.0)
+  assert_eq(p.viewer_wait(), @mesh_runtime.viewer_hold_limit_ms)
+  // Bogus wait > total_trip or NaN is treated as 0 and ages out after rtt_window_ms.
+  now.val = 11_000.0
+  p.sent(5000.0, 10_000.0)
+  now.val = 11_020.0
+  p.acked(5000.0, viewer_wait_ms=50.0)
+  assert_eq(p.viewer_wait(), 0.0)
+  p.sent(6000.0, 10_000.0)
+  now.val = 11_040.0
+  p.acked(6000.0, viewer_wait_ms=@double.not_a_number)
+  assert_eq(p.viewer_wait(), 0.0)
+}
+
+///|
 test "a sizer asks the smaller picture once the link carries a quarter for DOWNSIZE_MS, and back" {
   let now = Ref(0.0)
   let z = @mesh_runtime.Sizer::new(() => now.val, { max_width: 1920.0, max_height: 1080.0 })

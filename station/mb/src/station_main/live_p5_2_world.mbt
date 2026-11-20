@@ -321,7 +321,7 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     }
     "policy.mine" =>
       match viewer {
-        Some(v) => Json::boolean(@api_routes.sees(@jsjson.JV::of_json(v), @jsjson.JV::of_json(jopt(self.ws_of(s(0))))))
+        Some(v) => Json::boolean(@api_routes.sees(to_jv(v), to_jv(jopt(self.ws_of(s(0))))))
         None => Json::boolean(true)
       }
     "policy.title" => Json::string(self.chat_title_of(s(0)))
@@ -507,7 +507,7 @@ async fn P52::start_feedback(self : P52) -> Unit {
         let ask : @mcp_tools.ReportAsk = {
           body: @utf8.encode(jtext(asked, "rawBody").unwrap_or("")),
           lang: jtext(asked, "lang").unwrap_or(self.lang()),
-          viewer: @jsjson.JV::of_json(jfield(asked, "viewer")),
+          viewer: to_jv(jfield(asked, "viewer")),
         }
         let answer = (rr.handle)(ask, params)
         let body = match answer.body {

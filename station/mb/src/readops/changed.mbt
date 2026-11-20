@@ -49,7 +49,7 @@ fn by_units(a : String, b : String) -> Int {
 /// JSON.stringify of a string or a number.
 fn json_text(v : Json) -> String {
   match v {
-    String(s) => @jsjson.stringify(Str(@jsjson.units(s)))
+    String(s) => @jsjson.stringify(Str(s))
     Number(n, ..) => @jsjson.stringify(Num(n))
     True => "true"
     False => "false"

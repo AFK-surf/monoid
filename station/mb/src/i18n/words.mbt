@@ -127,7 +127,7 @@ pub fn tr_jvalue(
     None => @jsjson.jval_at(Some(zh), key)
   }
   let text = match found {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(Obj(_) as f) => plural(@jsjson.jval_str_of(f.get("one")), @jsjson.jval_str_of(f.get("other")), key, args)
     _ => key
   }

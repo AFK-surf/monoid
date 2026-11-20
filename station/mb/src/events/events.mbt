@@ -1649,7 +1649,7 @@ fn Events::tell_shared(self : Events, dirty : Dirty, done : () -> Unit) -> Unit 
           scope.filter_map(id => {
             match id {
               Str(s) => {
-                let id = @jsjson.raw_text(s)
+                let id = s
                 if !now.contains(id) && told.contains(id) {
                   Some(id)
                 } else {

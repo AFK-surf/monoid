@@ -7,7 +7,7 @@
 pub using @jsjson {
   type JValue as J, jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo,
   jval_array as ja, jval_strs as jstrs, jval_at as get, jval_str_raw_of as text, jval_num_of as num, stringify,
-  parse, stringify_pretty as pretty, jval_js_str_raw as js_string_of,
+  parse, stringify_pretty as pretty, jval_js_str_raw as js_string_of, utf8 as utf8_of, utf8_text,
 }
 
 ///|
@@ -20,7 +20,6 @@ pub using @codec {base64_decode_loose as from_base64}
 pub using @jscase {trim_end as js_trim_end}
 
 ///|
-/// `Number.isInteger(n) && lo <= n && n <= hi`.
 fn within(v : J?, lo : Int, hi : Int) -> Bool {
   v is Some(Num(d)) && @jsjson.is_integer(d) && d >= lo.to_double() && d <= hi.to_double()
 }
@@ -34,22 +33,7 @@ fn int_of(v : J?) -> Int {
 }
 
 ///|
-/// `bytes.toString("base64")`.
-pub fn base64_of(b : Bytes) -> String {
-  @codec.base64_encode(b[:])
-}
-
-///|
-/// `Buffer.from(s)` (UTF-8, a lone surrogate as U+FFFD).
-pub fn utf8_of(s : String) -> Bytes {
-  @utf8.encode(s)
-}
-
-///|
-/// `bytes.toString("utf8")`.
-pub fn utf8_text(b : Bytes) -> String {
-  @utf8.decode_lossy(b)
-}
+pub fn base64_of(b : Bytes) -> String { @codec.base64_encode(b[:]) }
 
 ///|
 /// Listeners as a Set keeps them: in the order added, a call going over them seeing one added meanwhile and not one

@@ -27,20 +27,7 @@ pub fn station_lang() -> String {
 ///|
 /// JSON as the catalog's filling takes it.
 fn core_json(j : J) -> Json {
-  match j {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(u) => Json::string(@jsjson.text(u))
-    Arr(xs) => Json::array(xs.map(core_json))
-    Obj(ps) => {
-      let m : Map[String, Json] = Map([])
-      for p in ps {
-        m[@jsjson.text(p.0)] = core_json(p.1)
-      }
-      Json::object(m)
-    }
-  }
+  j.to_json_lossy()
 }
 
 ///|
@@ -48,7 +35,7 @@ fn core_json(j : J) -> Json {
 pub fn tr(lang : String, key : String, args? : J = jo([])) -> String {
   let m : Map[String, Json] = Map([])
   match args {
-    Obj(ps) => for p in ps { m[@jsjson.text(p.0)] = core_json(p.1) }
+    Obj(ps) => for p in ps { m[@jsjson.sanitize_str(p.0)] = core_json(p.1) }
     _ => ()
   }
   @ops_platform.tr(catalog.val, lang, key, m)
@@ -87,7 +74,7 @@ pub async fn release_channel(w : World, app : String) -> String? {
     (try Some(w.call("fs.readFileSync", [js(pjoin([app, "CHANNEL"])), js("utf8")])) catch {
       _ => None
     }) {
-    Some(Str(u)) => channel_of_id(@jsjson.text(u))
+    Some(Str(u)) => channel_of_id(@jsjson.sanitize_str(u))
     _ => None
   }
   releases[app] = channel
@@ -119,7 +106,7 @@ pub fn forget_releases() -> Unit {
 /// The config's `updateChannel`, when it names one.
 fn config_channel(raw : J) -> String? {
   match get(Some(raw), "updateChannel") {
-    Some(Str(u)) => channel_of_id(@jsjson.text(u))
+    Some(Str(u)) => channel_of_id(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -153,7 +140,7 @@ pub async fn station_version(w : World, app : String) -> String? {
     (try Some(w.call("fs.readFileSync", [js(pjoin([app, "BUILD"])), js("utf8")])) catch {
       _ => None
     }) {
-    Some(Str(u)) => trim(@jsjson.text(u))
+    Some(Str(u)) => trim(@jsjson.sanitize_str(u))
     _ => return None
   }
   if build != "" && all_digits(build) {

@@ -178,7 +178,7 @@ pub fn host_machine(host : @host.Host, clock : Clock, procs : MachineProcs) -> M
             None | Some(Null) => ""
             a => js_str(a)
           }
-          Some((@jsjson.text(u), agent))
+          Some((@jsjson.sanitize_str(u), agent))
         }
         _ => None
       }

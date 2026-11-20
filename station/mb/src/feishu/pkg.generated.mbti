@@ -14,9 +14,9 @@ pub fn accounts_base(Net, String) -> String
 
 pub fn accounts_of(String) -> String
 
-pub fn addons() -> @jsjson.JV
+pub fn addons() -> @jsjson.JValue
 
-pub fn answered_card(Words, String, String, String, String) -> @jsjson.JV
+pub fn answered_card(Words, String, String, String, String) -> @jsjson.JValue
 
 pub fn api_code(Error) -> Double?
 
@@ -28,7 +28,7 @@ pub fn base64url(BytesView) -> String
 
 pub let boundary : String
 
-pub fn card_answer_of(@jsjson.JV?, String) -> CardAnswer?
+pub fn card_answer_of(@jsjson.JValue?, String) -> CardAnswer?
 
 pub let card_chars : Int32
 
@@ -40,19 +40,19 @@ pub fn decode_uri_component(String) -> String raise FeishuError
 
 pub fn deflate(BytesView) -> Bytes
 
-pub fn domain_of(@jsjson.JV?) -> String
+pub fn domain_of(@jsjson.JValue?) -> String
 
-pub fn done_card(Words, Double, String?, String) -> @jsjson.JV
+pub fn done_card(Words, Double, String?, String) -> @jsjson.JValue
 
 pub fn encode(Frame) -> Bytes
 
-pub fn encode_addons(@jsjson.JV) -> String
+pub fn encode_addons(@jsjson.JValue) -> String
 
 pub fn encode_uri_component(String) -> String raise FeishuError
 
-pub fn ended_card(String, String) -> @jsjson.JV
+pub fn ended_card(String, String) -> @jsjson.JValue
 
-pub fn ended_words(Words, @jsjson.JV?, CardEnd, String?, String) -> String
+pub fn ended_words(Words, @jsjson.JValue?, CardEnd, String?, String) -> String
 
 pub fn entity(String) -> String
 
@@ -60,11 +60,11 @@ pub fn error_words(Error) -> String
 
 pub fn extname(String) -> String
 
-pub async fn feishu_api_run(ToolWorld?, (String) -> Bool, String, @jsjson.JV) -> String
+pub async fn feishu_api_run(ToolWorld?, (String) -> Bool, String, @jsjson.JValue) -> String
 
-pub fn feishu_api_tool() -> @jsjson.JV
+pub fn feishu_api_tool() -> @jsjson.JValue
 
-pub fn feishu_connects(@jsjson.JV) -> Array[FeishuConnect]
+pub fn feishu_connects(@jsjson.JValue) -> Array[FeishuConnect]
 
 pub fn file_name(String, String) -> String
 
@@ -74,7 +74,7 @@ pub fn gzip(BytesView) -> Bytes
 
 pub async fn harness(@host.Host) -> Unit
 
-pub async fn harness_case(@jsjson.JV) -> @jsjson.JV
+pub async fn harness_case(@jsjson.JValue) -> @jsjson.JValue
 
 pub fn has(String, String) -> Bool
 
@@ -90,7 +90,7 @@ pub fn host_random_hex(@host.Host) -> (Int32) -> String
 
 pub async fn identity_of(FeishuClient) -> BotIdentity
 
-pub fn inline(@jsjson.JV) -> String
+pub fn inline(@jsjson.JValue) -> String
 
 pub fn is_finite(Double) -> Bool
 
@@ -100,45 +100,45 @@ pub fn is_js_space(Int32) -> Bool
 
 pub fn is_json_type(String) -> Bool
 
-pub fn is_record(@jsjson.JV?) -> Bool
+pub fn is_record(@jsjson.JValue?) -> Bool
 
 pub fn iso(Int64) -> String
 
-pub fn jat(@jsjson.JV?, Int32) -> @jsjson.JV?
+pub fn jat(@jsjson.JValue?, Int32) -> @jsjson.JValue?
 
-pub fn jdelete(@jsjson.JV, String) -> Unit
+pub fn jdelete(@jsjson.JValue, String) -> Unit
 
-pub fn jget(@jsjson.JV?, String) -> @jsjson.JV?
+pub fn jget(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub fn jint(Int32) -> @jsjson.JV
+pub fn jint(Int32) -> @jsjson.JValue
 
-pub fn jitems(@jsjson.JV?) -> Array[@jsjson.JV]
+pub fn jitems(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
-pub fn jkeys(@jsjson.JV) -> Array[String]
+pub fn jkeys(@jsjson.JValue) -> Array[String]
 
-pub fn jnum(Double) -> @jsjson.JV
+pub fn jnum(Double) -> @jsjson.JValue
 
-pub fn jnumber(@jsjson.JV?) -> Double?
+pub fn jnumber(@jsjson.JValue?) -> Double?
 
-pub fn jobj(Array[(String, @jsjson.JV?)]) -> @jsjson.JV
+pub fn jobj(Array[(String, @jsjson.JValue?)]) -> @jsjson.JValue
 
-pub fn jopt(String?) -> @jsjson.JV
+pub fn jopt(String?) -> @jsjson.JValue
 
-pub fn jput(@jsjson.JV, String, @jsjson.JV) -> Unit
+pub fn jput(@jsjson.JValue, String, @jsjson.JValue) -> Unit
 
-pub fn js(String) -> @jsjson.JV
+pub fn js(String) -> @jsjson.JValue
 
 pub fn js_number(String) -> Double
 
 pub fn js_round(Double) -> Double
 
-pub fn js_string(@jsjson.JV?) -> String
+pub fn js_string(@jsjson.JValue?) -> String
 
-pub fn jstr(@jsjson.JV?) -> String?
+pub fn jstr(@jsjson.JValue?) -> String?
 
-pub fn jvalues(@jsjson.JV) -> Array[@jsjson.JV]
+pub fn jvalues(@jsjson.JValue) -> Array[@jsjson.JValue]
 
-pub fn listed_as_event(@jsjson.JV?) -> @jsjson.JV
+pub fn listed_as_event(@jsjson.JValue?) -> @jsjson.JValue
 
 pub async fn make_feishu(@effect.Runtime, String, String, Net, Words, Log, Disk, (Int32) -> String, String) -> Feishu
 
@@ -146,7 +146,7 @@ pub fn mask_secret(String) -> String
 
 pub let members_ms : Int64
 
-pub fn message_of(@jsjson.JV?, String) -> FeishuMessage?
+pub fn message_of(@jsjson.JValue?, String) -> FeishuMessage?
 
 pub let method_control : Int64
 
@@ -154,9 +154,9 @@ pub let method_data : Int64
 
 pub let min_interval_ms : Int32
 
-pub fn multipart(@jsjson.JV?, Array[FilePart]) -> Bytes
+pub fn multipart(@jsjson.JValue?, Array[FilePart]) -> Bytes
 
-pub fn nullish(@jsjson.JV?, @jsjson.JV) -> @jsjson.JV
+pub fn nullish(@jsjson.JValue?, @jsjson.JValue) -> @jsjson.JValue
 
 pub fn num_text(Double) -> String
 
@@ -164,17 +164,17 @@ pub fn open_base(Net, String) -> String
 
 pub fn open_of(String) -> String
 
-pub fn or_null(@jsjson.JV?) -> @jsjson.JV
+pub fn or_null(@jsjson.JValue?) -> @jsjson.JValue
 
-pub fn parse(String) -> @jsjson.JV raise @jsjson.SyntaxError
+pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
 pub let ping_ms : Int32
 
 pub fn points(String) -> Array[String]
 
-pub fn question_card(Words, String, @jsjson.JV?, String, String) -> @jsjson.JV
+pub fn question_card(Words, String, @jsjson.JValue?, String, String) -> @jsjson.JValue
 
-pub async fn registration_post(Net, String, Array[(String, String)]) -> @jsjson.JV
+pub async fn registration_post(Net, String, Array[(String, String)]) -> @jsjson.JValue
 
 pub fn replace_every(String, String, String) -> String
 
@@ -182,13 +182,13 @@ pub fn resource_of(String) -> (String, String, String)?
 
 pub fn resource_url(String, String, String) -> String
 
-pub fn seen_patch(FeishuConnect, BotIdentity) -> ((@jsjson.JV) -> Unit)?
+pub fn seen_patch(FeishuConnect, BotIdentity) -> ((@jsjson.JValue) -> Unit)?
 
 pub fn service_of(String) -> Double raise FeishuError
 
-pub fn shown(@jsjson.JV, BotIdentity?) -> @jsjson.JV
+pub fn shown(@jsjson.JValue, BotIdentity?) -> @jsjson.JValue
 
-pub fn shown_registration(@jsjson.JV) -> @jsjson.JV
+pub fn shown_registration(@jsjson.JValue) -> @jsjson.JValue
 
 pub fn slice_js(String, Int32, b? : Int32) -> String
 
@@ -196,9 +196,9 @@ pub let stale_ms : Int32
 
 pub fn starts(String, String) -> Bool
 
-pub fn stringify(@jsjson.JV) -> String
+pub fn stringify(@jsjson.JValue) -> String
 
-pub fn text(@jsjson.JV?) -> String
+pub fn text(@jsjson.JValue?) -> String
 
 pub fn text_posts(String) -> Array[String]
 
@@ -210,7 +210,7 @@ pub fn trim_end_js(String) -> String
 
 pub fn trim_js(String) -> String
 
-pub fn try_parse(String) -> @jsjson.JV?
+pub fn try_parse(String) -> @jsjson.JValue?
 
 pub fn url_with(String, Array[(String, String)]) -> String raise FeishuError
 
@@ -222,7 +222,7 @@ pub async fn verify_feishu_app(Net, Words, String, String, String, lang? : Strin
 
 pub fn whole(Double) -> Int64
 
-pub fn working_card(String) -> @jsjson.JV
+pub fn working_card(String) -> @jsjson.JValue
 
 pub fn wrap64(Double) -> Int64
 
@@ -239,10 +239,10 @@ pub impl Show for FeishuError
 
 // Types and methods
 pub(all) enum Answered {
-  Data(@jsjson.JV)
+  Data(@jsjson.JValue)
   File(Bytes, String, String)
 }
-pub fn Answered::data(Self) -> @jsjson.JV
+pub fn Answered::data(Self) -> @jsjson.JValue
 
 pub(all) struct Attachment {
   path : String
@@ -268,17 +268,17 @@ pub(all) struct BotIdentity {
   bot_image : String?
   bot_id : String
 }
-pub fn BotIdentity::to_jv(Self) -> @jsjson.JV
+pub fn BotIdentity::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct CardAnswer {
   chat : String
   message : String
   user : String
   event : String
-  value : @jsjson.JV
-  form : @jsjson.JV
+  value : @jsjson.JValue
+  form : @jsjson.JValue
 }
-pub fn CardAnswer::to_jv(Self) -> @jsjson.JV
+pub fn CardAnswer::to_jv(Self) -> @jsjson.JValue
 
 pub(all) enum CardEnd {
   ByMessage(String, String)
@@ -294,7 +294,7 @@ pub(all) struct ChatMessage {
   from_bot : Bool
   files : Array[InboundFile]
 }
-pub fn ChatMessage::to_jv(Self) -> @jsjson.JV
+pub fn ChatMessage::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct Disk {
   read : async (String) -> Bytes?
@@ -310,16 +310,16 @@ pub struct Feishu {
 }
 pub async fn Feishu::close(Self) -> Unit
 pub fn Feishu::create(Self, FeishuConnect, NameBook?) -> FeishuSurface raise FeishuError
-pub fn Feishu::overview(Self, String, String?) -> @jsjson.JV
-pub fn Feishu::tool(Self, () -> ToolWorld?, (String) -> Bool) -> (@jsjson.JV, async (String, @jsjson.JV) -> String)
+pub fn Feishu::overview(Self, String, String?) -> @jsjson.JValue
+pub fn Feishu::tool(Self, () -> ToolWorld?, (String) -> Bool) -> (@jsjson.JValue, async (String, @jsjson.JValue) -> String)
 
 pub struct FeishuClient {
   base : String
   app_id : String
   // private fields
 }
-pub async fn FeishuClient::api(Self, String, String, body? : @jsjson.JV?, query? : Array[(String, String)], files? : Array[FilePart], take_file? : Bool) -> Answered
-pub async fn FeishuClient::call(Self, String, String, body? : @jsjson.JV?, query? : Array[(String, String)], files? : Array[FilePart]) -> @jsjson.JV
+pub async fn FeishuClient::api(Self, String, String, body? : @jsjson.JValue?, query? : Array[(String, String)], files? : Array[FilePart], take_file? : Bool) -> Answered
+pub async fn FeishuClient::call(Self, String, String, body? : @jsjson.JValue?, query? : Array[(String, String)], files? : Array[FilePart]) -> @jsjson.JValue
 pub async fn FeishuClient::endpoint(Self) -> (String, Double)
 pub fn FeishuClient::new(Net, String, String, domain? : String, base? : String) -> Self
 pub async fn FeishuClient::resource(Self, String, String, String) -> Bytes
@@ -333,13 +333,14 @@ pub(all) struct FeishuConnect {
   app_secret : String
   domain : String
   threads : Bool
+  direct_threads : Bool
   bot_name : String?
   bot_image : String?
   bot_open_id : String?
   tenant : (String, String)?
   workspace : String?
 }
-pub fn FeishuConnect::to_jv(Self) -> @jsjson.JV
+pub fn FeishuConnect::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct FeishuMessage {
   chat : String
@@ -355,7 +356,7 @@ pub(all) struct FeishuMessage {
   files : Array[InboundFile]
   at : Double
 }
-pub fn FeishuMessage::to_jv(Self) -> @jsjson.JV
+pub fn FeishuMessage::to_jv(Self) -> @jsjson.JValue
 
 pub struct FeishuStatus {
   line : StatusLine
@@ -373,12 +374,12 @@ pub struct FeishuSurface {
   // private fields
 }
 pub async fn FeishuSurface::address(Self) -> String
-pub async fn FeishuSurface::api(Self, String, @jsjson.JV) -> Answered
+pub async fn FeishuSurface::api(Self, String, @jsjson.JValue) -> Answered
 pub async fn FeishuSurface::begin(Self, String, String) -> (ThreadRef, String)
 pub fn FeishuSurface::bot_name(Self) -> String
 pub fn FeishuSurface::bot_user_id(Self) -> String
-pub async fn FeishuSurface::card_ended(Self, ThreadRef, String, String, @jsjson.JV?, CardEnd) -> Unit
-pub async fn FeishuSurface::catch_up(Self, async (@jsjson.JV) -> Unit) -> Unit
+pub async fn FeishuSurface::card_ended(Self, ThreadRef, String, String, @jsjson.JValue?, CardEnd) -> Unit
+pub async fn FeishuSurface::catch_up(Self, async (@jsjson.JValue) -> Unit) -> Unit
 pub async fn FeishuSurface::channel_name(Self, String) -> String?
 pub async fn FeishuSurface::download(Self, InboundFile) -> Bytes
 pub async fn FeishuSurface::edit(Self, ThreadRef, String, String) -> Bool
@@ -394,13 +395,13 @@ pub async fn FeishuSurface::people_in(Self, String) -> Array[Member]
 pub fn FeishuSurface::permalink(Self, ThreadRef) -> String raise FeishuError
 pub async fn FeishuSurface::places(Self) -> Array[Place]
 pub fn FeishuSurface::platform(Self) -> String
-pub async fn FeishuSurface::post(Self, ThreadRef, String, Array[Attachment], card? : @jsjson.JV?) -> String
+pub async fn FeishuSurface::post(Self, ThreadRef, String, Array[Attachment], card? : @jsjson.JValue?) -> String
 pub async fn FeishuSurface::quoted(Self, ThreadRef, String) -> ChatMessage?
 pub async fn FeishuSurface::send(Self, ThreadRef, String, String) -> String
 pub fn FeishuSurface::session_link(Self) -> String?
-pub fn FeishuSurface::socket_hooks(Self, String, async (@jsjson.JV) -> Unit) -> SocketHooks raise FeishuError
+pub fn FeishuSurface::socket_hooks(Self, String, async (@jsjson.JValue) -> Unit) -> SocketHooks raise FeishuError
 pub fn FeishuSurface::stop(Self) -> Unit
-pub async fn FeishuSurface::take(Self, @jsjson.JV, async (@jsjson.JV) -> Unit) -> @jsjson.JV?
+pub async fn FeishuSurface::take(Self, @jsjson.JValue, async (@jsjson.JValue) -> Unit) -> @jsjson.JValue?
 pub fn FeishuSurface::usable(Self, BotIdentity) -> Unit raise FeishuError
 pub async fn FeishuSurface::user_email(Self, String) -> String?
 pub async fn FeishuSurface::user_name(Self, String) -> String?
@@ -416,6 +417,7 @@ pub(all) struct FeishuSurfaceOptions {
   domain : String
   threads : FeishuThreads
   thread_mode : Bool
+  direct_threads : Bool
   book : NameBook?
   client : FeishuClient?
   net : Net
@@ -430,11 +432,11 @@ pub struct FeishuThreads {
   // private fields
 }
 pub fn FeishuThreads::begin(Self, String, String, String) -> Unit raise FeishuError
-pub fn FeishuThreads::conversations(Self, String) -> Array[(String, @jsjson.JV)]
-pub fn FeishuThreads::current(Self, String, String) -> @jsjson.JV?
+pub fn FeishuThreads::conversations(Self, String) -> Array[(String, @jsjson.JValue)]
+pub fn FeishuThreads::current(Self, String, String) -> @jsjson.JValue?
 pub fn FeishuThreads::heard(Self, String, String, Double) -> Unit raise FeishuError
 pub fn FeishuThreads::heard_topic(Self, String, String, String) -> Unit raise FeishuError
-pub fn FeishuThreads::kept_jv(Self) -> @jsjson.JV
+pub fn FeishuThreads::kept_jv(Self) -> @jsjson.JValue
 pub async fn FeishuThreads::open(Disk, Log, String) -> Self
 pub fn FeishuThreads::topic_root(Self, String, String) -> String?
 pub async fn FeishuThreads::written(Self) -> Unit
@@ -481,14 +483,14 @@ pub(all) struct InboundFile {
   size : Int32
   url : String?
 }
-pub fn InboundFile::to_jv(Self) -> @jsjson.JV
+pub fn InboundFile::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct Log {
-  say : (String, String, String, @jsjson.JV) -> Unit
+  say : (String, String, String, @jsjson.JValue) -> Unit
 }
-pub fn Log::error(Self, String, String, @jsjson.JV) -> Unit
-pub fn Log::info(Self, String, String, @jsjson.JV) -> Unit
-pub fn Log::warn(Self, String, String, @jsjson.JV) -> Unit
+pub fn Log::error(Self, String, String, @jsjson.JValue) -> Unit
+pub fn Log::info(Self, String, String, @jsjson.JValue) -> Unit
+pub fn Log::warn(Self, String, String, @jsjson.JValue) -> Unit
 
 pub(all) struct Member {
   id : String
@@ -520,7 +522,7 @@ pub(all) struct Person {
   name : String
   email : String
 }
-pub fn Person::to_jv(Self) -> @jsjson.JV
+pub fn Person::to_jv(Self) -> @jsjson.JValue
 
 pub(all) struct Place {
   id : String
@@ -537,29 +539,29 @@ pub fn PrivateFile::write(Self, String) -> @effect.Deferred[Unit]
 pub async fn PrivateFile::written(Self) -> Unit
 
 pub struct Reg {
-  r : @jsjson.JV
+  r : @jsjson.JValue
   // private fields
 }
-pub fn Reg::jv(Self) -> @jsjson.JV
+pub fn Reg::jv(Self) -> @jsjson.JValue
 
 pub struct Registrations {
   // private fields
 }
-pub fn Registrations::all_jv(Self) -> @jsjson.JV
-pub async fn Registrations::begin(Self, String, String, String?, context? : @jsjson.JV, workspace? : String?) -> Reg
+pub fn Registrations::all_jv(Self) -> @jsjson.JValue
+pub async fn Registrations::begin(Self, String, String, String?, context? : @jsjson.JValue, workspace? : String?) -> Reg
 pub async fn Registrations::cancel(Self, String, String, workspace? : String) -> Bool
 pub async fn Registrations::close(Self) -> Unit
 pub async fn Registrations::complete(Self, String, String, String, async (Reg) -> String) -> String?
 pub fn Registrations::get(Self, String) -> Reg?
 pub fn Registrations::new(@effect.Runtime, RegistrationsOptions) -> Self
-pub fn Registrations::of(Self, String, workspace? : String) -> Array[@jsjson.JV]
+pub fn Registrations::of(Self, String, workspace? : String) -> Array[@jsjson.JValue]
 pub fn Registrations::on_change(Self, () -> Unit) -> () -> Unit
 pub async fn Registrations::ready(Self) -> Unit
 pub fn Registrations::start(Self, async (Reg) -> String) -> Unit
 pub async fn Registrations::written(Self) -> Unit
 
 pub(all) struct RegistrationsOptions {
-  post : async (String, Array[(String, String)]) -> @jsjson.JV
+  post : async (String, Array[(String, String)]) -> @jsjson.JValue
   file : String?
   disk : Disk
   log : Log
@@ -580,7 +582,7 @@ pub(all) struct SocketHooks {
 }
 
 pub(all) struct StatusCalls {
-  api : async (String, String, @jsjson.JV?) -> @jsjson.JV
+  api : async (String, String, @jsjson.JValue?) -> @jsjson.JValue
   send : async (String, String) -> String
   called : (String) -> Bool
 }
@@ -602,8 +604,8 @@ pub(all) struct ThreadRef {
 pub(all) struct ToolWorld {
   session : (String) -> (String?, String)?
   recent_connects : (String) -> Array[String]
-  target : (String, @jsjson.JV) -> String raise
-  chat_api : (String) -> (async (String, @jsjson.JV) -> Answered)?
+  target : (String, @jsjson.JValue) -> String raise
+  chat_api : (String) -> (async (String, @jsjson.JValue) -> Answered)?
   now : () -> Int64
   uuid : () -> String
   disk : Disk
@@ -616,6 +618,6 @@ pub(all) struct Words {
 }
 
 // Type aliases
-pub using @jsjson {type JV}
+pub using @jsjson {type JValue as JV}
 
 // Traits

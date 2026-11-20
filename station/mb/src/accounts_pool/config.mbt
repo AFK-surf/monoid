@@ -53,50 +53,13 @@ fn is_absolute(p : String) -> Bool {
 ///|
 /// Node's `path.normalize` (POSIX).
 pub fn normalize_path(path : String) -> String {
-  if path == "" {
-    return "."
-  }
-  let absolute = path.has_prefix("/")
-  let trailing = path.has_suffix("/")
-  let out : Array[String] = []
-  for seg in split_on(path, "/") {
-    if seg == "" || seg == "." {
-      continue
-    }
-    if seg == ".." {
-      if out.length() > 0 && out[out.length() - 1] != ".." {
-        ignore(out.pop())
-      } else if !absolute {
-        out.push("..")
-      }
-      continue
-    }
-    out.push(seg)
-  }
-  let mut s = out.join("/")
-  if s == "" && !absolute {
-    s = "."
-  }
-  if s != "" && trailing && s != "." {
-    s = s + "/"
-  } else if s == "." && trailing {
-    s = "./"
-  }
-  if absolute {
-    "/" + s
-  } else {
-    s
-  }
+  @nodepath.join("/", [path])
 }
 
 ///|
 /// Node's `path.join` (POSIX).
 pub fn join_path(parts : Array[String]) -> String {
-  let kept = parts.filter(p => p != "")
-  if kept.length() == 0 {
-    return "."
-  }
-  normalize_path(kept.join("/"))
+  @nodepath.join("/", parts)
 }
 
 ///|

@@ -34,7 +34,7 @@ fn hook(store : Store, spec : @jsjson.JValue?, n : Double?) -> (() -> Unit raise
         let params = match jget(s, "args") {
           Some(Arr(xs)) =>
             xs.map(x => match (x, n) {
-              (Str(u), Some(v)) if @jsjson.text(u) == "$n" => jnum(v)
+              (Str(u), Some(v)) if @jsjson.sanitize_str(u) == "$n" => jnum(v)
               _ => to_json(x)
             })
           _ => []
@@ -56,7 +56,7 @@ fn card_fn(spec : @jsjson.JValue?) -> (@jsjson.JValue?) -> @jsjson.JValue raise 
             _ => Obj([])
           }
           for f in fields {
-            out = jset(out, @jsjson.text(f.0), f.1)
+            out = jset(out, @jsjson.sanitize_str(f.0), f.1)
           }
           out
         }
@@ -75,7 +75,7 @@ fn prepared_of(v : @jsjson.JValue?) -> Prepared? {
         card: jtext(jget(p, "card")),
         edit: match jget(p, "edit") {
           None => None
-          Some(Str(s)) => Some(Some(@jsjson.text(s)))
+          Some(Str(s)) => Some(Some(@jsjson.sanitize_str(s)))
           Some(_) => Some(None)
         },
       })

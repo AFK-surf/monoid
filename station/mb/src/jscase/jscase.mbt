@@ -3,7 +3,7 @@
 // surrogate kept), the white space of a regular expression's `\s` and its words (`\p{L}\p{N}`).
 
 ///|
-fn in_ranges(ranges : FixedArray[Int], c : Int) -> Bool {
+pub fn in_ranges(ranges : FixedArray[Int], c : Int) -> Bool {
   let mut lo = 0
   let mut hi = ranges.length() / 2
   while lo < hi {
