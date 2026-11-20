@@ -111,6 +111,21 @@ fn vault_can_manage(rv : Json?) -> Bool {
 }
 
 ///|
+/// Member subs of a vault row (`VaultRow.members` is `Array[{ sub, name }]` in core-ts; also accepts plain strings).
+fn vault_member_subs(rv : Json?) -> Array[String] {
+  items(rv, "members").filter_map(fn(x) {
+    match x {
+      String(s) if s != "" => Some(s)
+      Object(_) => {
+        let s = text(Some(x), "sub")
+        if s != "" { Some(s) } else { None }
+      }
+      _ => None
+    }
+  })
+}
+
+///|
 /// The library's blocks (Library) by their keys, as the core's `vaults` (`v`) says it: the requests waiting on the
 /// viewer ("requests", each one's card, as in its chat); none yet, a card to make one ("none"); a vault this device has
 /// no key to ("no-key/<vault>"), one waiting to be keyed anew ("waits/<vault>"), each a section under its name; a row
@@ -283,7 +298,7 @@ fn vault_workspace_node(b : @view.View, core : Core, here : () -> Here, rv : () 
         fn() { @sf.t("web-pages.vault.members.title") },
         fn() { vault_members_dialog(core, @signals.untracked(here), @signals.untracked(rv)) },
         note=fn() {
-          let n = strings(rv(), "members").length()
+          let n = vault_member_subs(rv()).length()
           @sf.t("web-pages.vault.members.count", args=[("n", n.to_string())])
         },
       )

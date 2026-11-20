@@ -570,7 +570,7 @@ pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
   let ws = here.workspace
   let my_sub = here.sub
   let vault_id = text(rv, "id")
-  let initial = strings(rv, "members")
+  let initial = vault_member_subs(rv)
   let can_manage = vault_can_manage(rv)
   let ws_members = fn() {
     items((core.topic)("workspace", { "workspace": str(ws) }).get().value, "members")
@@ -636,14 +636,24 @@ pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
         })
       } else {
         let shown = fn() {
-          ws_members().filter(fn(m) { initial.contains(text(Some(m), "sub")) })
+          let from_ws = ws_members().filter(fn(m) { initial.contains(text(Some(m), "sub")) })
+          if from_ws.length() > 0 {
+            from_ws
+          } else {
+            items(rv, "members")
+          }
         }
         @sf.group_node(v, fn(g) {
           g.each(shown, fn(m) { text(Some(m), "sub") }, fn(row, m) {
             let mv = fn() { Some(m.get()) }
             let title = fn() {
               let n = text(mv(), "name")
-              if n != "" { n } else { text(mv(), "email") }
+              if n != "" {
+                n
+              } else {
+                let e = text(mv(), "email")
+                if e != "" { e } else { text(mv(), "sub") }
+              }
             }
             @sf.link_row_node(row, title, fn() {  }, note=fn() { text(mv(), "email") }, goes=false)
           })

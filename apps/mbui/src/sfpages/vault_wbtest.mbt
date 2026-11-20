@@ -351,6 +351,10 @@ test "workspace vault members dialog toggles member, shows rekey warning, and em
   presented_in(t)
   assert_true(t.find("Workspace 密钥库成员") is Some(_))
   assert_true(t.find("移除成员后将自动更换密钥库主密钥并重新加密所有条目。") is None)
+  // verify VaultMember object array [{ sub, name }] initializes all 3 switches to On
+  assert_eq(t.get(Switch, label="林").check, Some(On))
+  assert_eq(t.get(Switch, label="Ana").check, Some(On))
+  assert_eq(t.get(Switch, label="周").check, Some(On))
   // uncheck 周 (u3)
   t.click(Switch, label="周")
   t.run_for(@ui.move_most_ms)

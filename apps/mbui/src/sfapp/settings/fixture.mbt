@@ -313,7 +313,20 @@ fn fx_workspace_vault_row() -> Json {
     ("ownerName", str("林")),
     ("mine", Json::boolean(false)),
     ("manages", Json::boolean(true)),
-    ("members", Json::array(fx.vault_workspace_members.map(str))),
+    (
+      "members",
+      Json::array(
+        fx.vault_workspace_members.map(fn(s) {
+          let name = match s {
+            "u1" => "林"
+            "u2" => "Ana"
+            "u3" => "周"
+            _ => s
+          }
+          obj([("sub", str(s)), ("name", str(name))])
+        }),
+      ),
+    ),
     ("station", str("st1")),
     ("stationName", str("Willow")),
     ("items", Json::number(2.0)),
