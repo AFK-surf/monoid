@@ -270,3 +270,203 @@ test "chats already_said_j, Attachment::of_j, comma_connects and shown" {
   )
   assert_eq(workspace_db_name("ws-1").length(), 64)
 }
+
+///|
+fn test_io() -> Io {
+  let seq = Ref(0)
+  {
+    now: () => 0.0,
+    after: (_, _) => () => (),
+    sleep: async fn(_) { () },
+    turn: async fn() { () },
+    random_hex: _ => "00",
+    uuid: () => {
+      seq.val += 1
+      "u-\{seq.val}"
+    },
+    log: (_, _, _) => (),
+    read_text: _ => None,
+    write_private: async fn(_, _) { () },
+    mkdir: async fn(_, _) { () },
+    file_part: async fn(_, _, _) { None },
+    open_db: (_, _) => raise fail_("no db in test"),
+    platform: "darwin",
+    arch: "arm64",
+    hostname: "fallback-host",
+    version: "0.1.0",
+    words: Words::empty(),
+    lang: () => "en",
+  }
+}
+
+///|
+fn test_store() -> SurfaceStore {
+  {
+    get_session: async fn(_) { Null },
+    pending_count: async fn(_) { 0.0 },
+    thread_at: async fn(_, _, _) { Null },
+    leave_thread: async fn(_, _) { () },
+    handler: async fn(_) { () },
+    book_person: None,
+    book_known: None,
+  }
+}
+
+///|
+test "workspace_meta_of includes self, deduplicates, omits empty marks, and caps at 100 stations while keeping self" {
+  let peers : Array[J] = []
+  for i = 0; i < 120; i = i + 1 {
+    peers.push(jobj([("id", jstr("peer_\{i}")), ("name", jstr("Station \{i}"))]))
+  }
+  peers.push(jobj([("id", jstr("peer_0")), ("name", jstr("Duplicate"))]))
+  let m = jobj([
+    ("workspace", jstr("ws_1")),
+    ("workspace_name", jstr("Team")),
+    ("name", jstr("SelfHost")),
+    ("peers", Arr(peers)),
+  ])
+  let meta = workspace_meta_of(m, "self_id", "fallback-host")
+  assert_eq(str_of(prop(Some(meta), "id")), Some("ws_1"))
+  assert_eq(str_of(prop(Some(meta), "name")), Some("Team"))
+  assert_eq(str_of(prop(Some(meta), "station")), Some("SelfHost"))
+  assert_true(prop(Some(meta), "emoji") is None)
+  assert_true(prop(Some(meta), "icon") is None)
+  let stations = arr_of(prop(Some(meta), "stations")).unwrap()
+  assert_eq(stations.length(), 100)
+  assert_eq(stations.filter(s => str_of(prop(Some(s), "id")) == Some("peer_0")).length(), 1)
+  assert_eq(stringify(stations[99]), "{\"id\":\"self_id\",\"name\":\"SelfHost\"}")
+
+  // Self already in peers with outdated name, empty own name -> falls back to fallback_host; empty peer name -> id.
+  let with_self = workspace_meta_of(
+    @jsjson.parse(
+      "{\"workspace\":\"ws_2\",\"workspace_name\":\"Lab\",\"workspace_emoji\":\"🧪\",\"workspace_icon\":\"glyph:beaker\",\"name\":\"\",\"peers\":[{\"id\":\"self_id\",\"name\":\"old-name\"},{\"id\":\"other\",\"name\":\"\"}]}",
+    ),
+    "self_id",
+    "my-mac",
+  )
+  assert_eq(
+    stringify(with_self),
+    "{\"id\":\"ws_2\",\"name\":\"Lab\",\"station\":\"my-mac\",\"emoji\":\"🧪\",\"icon\":\"glyph:beaker\",\"stations\":[{\"id\":\"self_id\",\"name\":\"my-mac\"},{\"id\":\"other\",\"name\":\"other\"}]}",
+  )
+}
+
+///|
+test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates, omits when out of scope, and cleans up on close" {
+  let rt = @effect.Runtime::new()
+  let io = test_io()
+  let tasks = CommaTasks::new("/tmp/comma-tasks-wbtest.json", io, rt)
+  let sent : Array[J] = []
+  let sock : Socket = {
+    id: 1,
+    send: text => sent.push(parse_json(text)),
+    on_close: _ => () => (),
+  }
+  let current : Ref[J?] = Ref(
+    Some(
+      @jsjson.parse(
+        "{\"id\":\"ws_1\",\"name\":\"Alpha\",\"station\":\"mac-1\",\"emoji\":\"🚀\",\"icon\":\"glyph:rocket\",\"stations\":[{\"id\":\"st_1\",\"name\":\"mac-1\"}]}",
+      ),
+    ),
+  )
+  let notify : Ref[(() -> Unit)?] = Ref(None)
+  let unsubscribed = Ref(0)
+  let surface = CommaSurface::new(
+    {
+      connect: "cm",
+      server: "http://127.0.0.1",
+      token: "salix_conn_test123",
+      name: "Alpha · mac-1",
+      workspace: Some("ws_1"),
+      owner_email: None,
+      tasks,
+      store: test_store(),
+      models: () => [],
+      lang: Some("en"),
+      stats: None,
+      chats: None,
+      previous_exited: async fn() { () },
+      in_scope: () => true,
+      workspace_meta: Some(() => current.val),
+      on_workspace_meta_change: Some(cb => {
+        notify.val = Some(cb)
+        () => {
+          notify.val = None
+          unsubscribed.val += 1
+        }
+      }),
+    },
+    io,
+    rt,
+  )
+  let metas = () => sent.filter(f => str_of(prop(Some(f), "type")) == Some("metadata"))
+  surface.socket_ = Some(sock)
+  surface.connect_metadata()
+  assert_eq(metas().length(), 1)
+  assert_eq(
+    prop(prop(Some(metas()[0]), "capabilities"), "stillfail_workspace").map(stringify),
+    current.val.map(stringify),
+  )
+
+  // Unchanged metadata pushes nothing.
+  (notify.val.unwrap())()
+  assert_eq(metas().length(), 1)
+
+  // Updated metadata pushes a new metadata frame on the same socket.
+  current.val = Some(
+    @jsjson.parse("{\"id\":\"ws_1\",\"name\":\"Alpha Renamed\",\"station\":\"mac-1\",\"stations\":[{\"id\":\"st_1\",\"name\":\"mac-1\"}]}"),
+  )
+  (notify.val.unwrap())()
+  assert_eq(metas().length(), 2)
+  let ws_meta = prop(prop(Some(metas()[1]), "capabilities"), "stillfail_workspace")
+  assert_eq(ws_meta.map(stringify), current.val.map(stringify))
+  assert_true(prop(ws_meta, "emoji") is None)
+  assert_true(prop(ws_meta, "icon") is None)
+
+  // Closed unsubscribes and resets state.
+  let saved_cb = notify.val.unwrap()
+  surface.closed()
+  assert_eq(unsubscribed.val, 1)
+  assert_true(notify.val is None)
+  saved_cb()
+  assert_eq(metas().length(), 2)
+
+  // Out of scope omits stillfail_workspace and ignores notifications.
+  let sent2 : Array[J] = []
+  let sock2 : Socket = { id: 2, send: text => sent2.push(parse_json(text)), on_close: _ => () => () }
+  let cb2 : Ref[(() -> Unit)?] = Ref(None)
+  let unsub2 = Ref(0)
+  let surface2 = CommaSurface::new(
+    {
+      connect: "cm2",
+      server: "http://127.0.0.1",
+      token: "salix_conn_test123",
+      name: "one",
+      workspace: Some("ws_1"),
+      owner_email: None,
+      tasks,
+      store: test_store(),
+      models: () => [],
+      lang: Some("en"),
+      stats: None,
+      chats: None,
+      previous_exited: async fn() { () },
+      in_scope: () => false,
+      workspace_meta: Some(() => current.val),
+      on_workspace_meta_change: Some(cb => {
+        cb2.val = Some(cb)
+        () => unsub2.val += 1
+      }),
+    },
+    io,
+    rt,
+  )
+  surface2.socket_ = Some(sock2)
+  surface2.connect_metadata()
+  let metas2 = () => sent2.filter(f => str_of(prop(Some(f), "type")) == Some("metadata"))
+  assert_eq(metas2().length(), 1)
+  assert_true(prop(prop(Some(metas2()[0]), "capabilities"), "stillfail_workspace") is None)
+  (cb2.val.unwrap())()
+  assert_eq(metas2().length(), 1)
+  surface2.closed()
+  assert_eq(unsub2.val, 1)
+}

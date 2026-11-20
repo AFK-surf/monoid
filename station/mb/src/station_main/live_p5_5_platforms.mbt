@@ -732,7 +732,19 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       membership: ws => match self.memberships().search_by(m => m.0 == ws) {
         Some(i) => {
           let m = self.memberships()[i]
-          to_jv({ "workspace": Json::string(m.0), "workspace_name": Json::string(m.1), "name": Json::string(hostname()), "peers": Json::array(m.3) })
+          let obj : Map[String, Json] = {
+            "workspace": Json::string(m.0),
+            "workspace_name": Json::string(m.1),
+            "name": Json::string(if m.4 != "" { m.4 } else { hostname() }),
+            "peers": Json::array(m.3),
+          }
+          if m.5 is Some(e) && e != "" {
+            obj["workspace_emoji"] = Json::string(e)
+          }
+          if m.6 is Some(ic) && ic != "" {
+            obj["workspace_icon"] = Json::string(ic)
+          }
+          to_jv(Json::object(obj))
         }
         None => Null
       },

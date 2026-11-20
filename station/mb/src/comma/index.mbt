@@ -118,6 +118,10 @@ pub(all) struct CommaOptions {
   previous_exited : async () -> Unit
   /// What the station calls itself to Comma for a connect of a workspace (None: the home one).
   name : ((String?) -> String)?
+  /// Metadata of workspace `ws` (None: the home one) reported in capabilities.stillfail_workspace.
+  workspace_meta : ((String?) -> J?)?
+  /// Notifies when workspace metadata may have changed.
+  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
   /// The connects brought in line with config.json and the workspaces again, and let go.
   reconcile : async () -> Unit
   close_connects : async () -> Unit
@@ -283,6 +287,15 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
       chats,
       previous_exited: options.previous_exited,
       in_scope,
+      workspace_meta: if is_in {
+        match options.workspace_meta {
+          Some(f) => Some(() => f(c.connect.workspace))
+          None => None
+        }
+      } else {
+        None
+      },
+      on_workspace_meta_change: if is_in { options.on_workspace_meta_change } else { None },
     },
     self.io,
     self.runtime,

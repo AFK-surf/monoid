@@ -83,6 +83,49 @@ test "cloud.json's text, its fields in the Rust struct's order" {
 }
 
 ///|
+test "cloud.json workspace_emoji and workspace_icon serialization and joined_of filtering" {
+  let s : @cloud_lock.CloudState = {
+    fields: Map([
+      ("origin", Json::string("https://app.still.fail")),
+      ("station", Json::string("st1")),
+      ("workspace", Json::string("w1")),
+      ("workspace_name", Json::string("Home")),
+      ("workspace_emoji", Json::string("🚀")),
+      ("workspace_icon", Json::string("glyph:rocket")),
+      ("name", Json::string("mac-1")),
+      ("peers", Json::array([])),
+      ("revocations", Json::array([])),
+    ]),
+  }
+  let txt = @cloud_lock.state_text(s)
+  assert_true(txt.contains("\"workspace_name\": \"Home\",\n  \"workspace_emoji\": \"🚀\",\n  \"workspace_icon\": \"glyph:rocket\",\n  \"name\": \"mac-1\""))
+  // Empty strings are omitted by state_text
+  let s_empty : @cloud_lock.CloudState = {
+    fields: Map([
+      ("workspace", Json::string("w1")),
+      ("workspace_name", Json::string("Home")),
+      ("workspace_emoji", Json::string("")),
+      ("workspace_icon", Json::string("")),
+      ("name", Json::string("mac-1")),
+    ]),
+  }
+  let txt_empty = @cloud_lock.state_text(s_empty)
+  assert_false(txt_empty.contains("workspace_emoji"))
+  assert_false(txt_empty.contains("workspace_icon"))
+  // joined_of keeps non-empty emoji/icon and omits empty or non-string values
+  let joined = @cloud_lock.joined_of(
+    Some(
+      @cloud_lock.parse(
+        "[{\"workspace\":\"j1\",\"workspace_name\":\"Lab\",\"workspace_emoji\":\"🧪\",\"workspace_icon\":\"glyph:beaker\",\"name\":\"s1\"},{\"workspace\":\"j2\",\"workspace_name\":\"Bare\",\"workspace_emoji\":\"\",\"workspace_icon\":123,\"name\":\"s2\"}]",
+      ).unwrap(),
+    ),
+  )
+  assert_eq(joined.length(), 2)
+  assert_eq(@cloud_lock.stringify(joined[0]), "{\"workspace\":\"j1\",\"workspace_name\":\"Lab\",\"workspace_emoji\":\"🧪\",\"workspace_icon\":\"glyph:beaker\",\"name\":\"s1\",\"peers\":[],\"revocations\":[]}")
+  assert_eq(@cloud_lock.stringify(joined[1]), "{\"workspace\":\"j2\",\"workspace_name\":\"Bare\",\"name\":\"s2\",\"peers\":[],\"revocations\":[]}")
+}
+
+///|
 test "the build a request says" {
   assert_eq(@cloud_lock.build_of(Some(" 9244 ")), Some(9244))
   assert_eq(@cloud_lock.build_of(Some("0.1.9275")), Some(9275))

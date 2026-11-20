@@ -303,6 +303,14 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
           _ => jstr(ws)
         },
       ),
+    ]
+    if get(j, "workspace_emoji") is Some(String(e)) && e != "" {
+      out.push(("workspace_emoji", jstr(e)))
+    }
+    if get(j, "workspace_icon") is Some(String(ic)) && ic != "" {
+      out.push(("workspace_icon", jstr(ic)))
+    }
+    out.push(
       (
         "name",
         match get(j, "name") {
@@ -310,6 +318,8 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
           _ => jstr("")
         },
       ),
+    )
+    out.push(
       (
         "peers",
         match get(j, "peers") {
@@ -317,6 +327,8 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
           _ => jarr([])
         },
       ),
+    )
+    out.push(
       (
         "revocations",
         match get(j, "revocations") {
@@ -324,7 +336,7 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
           _ => jarr([])
         },
       ),
-    ]
+    )
     if get(j, "locked") is Some(True) {
       out.push(("locked", Json::boolean(true)))
     }
@@ -355,6 +367,14 @@ pub fn read_state(disk : Disk, data : String) -> CloudState? raise Failure {
   m["relay_urls"] = or_empty("relay_urls")
   m["peers"] = or_empty("peers")
   m["revocations"] = or_empty("revocations")
+  match get(raw, "workspace_emoji") {
+    Some(String(e)) if e != "" => m["workspace_emoji"] = jstr(e)
+    _ => m.remove("workspace_emoji")
+  }
+  match get(raw, "workspace_icon") {
+    Some(String(ic)) if ic != "" => m["workspace_icon"] = jstr(ic)
+    _ => m.remove("workspace_icon")
+  }
   if get(raw, "joined") is Some(j) {
     m["joined"] = jarr(joined_of(Some(j)))
   }
@@ -405,7 +425,16 @@ pub fn state_text(s : CloudState) -> String {
   let out : Map[String, Json] = Map([])
   let put = (k : String) => if s.fields.get(k) is Some(v) { out[k] = v }
   put("provider")
-  for k in ["origin", "station", "workspace", "workspace_name", "name", "relay_url", "relay_urls", "grant_keys", "peers", "revocations"] {
+  for k in ["origin", "station", "workspace", "workspace_name"] {
+    put(k)
+  }
+  if s.fields.get("workspace_emoji") is Some(String(e)) && e != "" {
+    out["workspace_emoji"] = jstr(e)
+  }
+  if s.fields.get("workspace_icon") is Some(String(ic)) && ic != "" {
+    out["workspace_icon"] = jstr(ic)
+  }
+  for k in ["name", "relay_url", "relay_urls", "grant_keys", "peers", "revocations"] {
     put(k)
   }
   put("stillfail_relays")

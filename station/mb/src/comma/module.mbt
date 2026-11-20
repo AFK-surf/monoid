@@ -356,6 +356,22 @@ pub fn CommaLive::name(self : CommaLive, ws : String?) -> String {
 }
 
 ///|
+/// Metadata of workspace `ws` (None: the home one) reported in capabilities.stillfail_workspace.
+pub fn CommaLive::workspace_meta(self : CommaLive, ws : String?) -> J? {
+  let target = match ws {
+    Some(w) => Some(w)
+    None => (self.deps.home)()
+  }
+  guard target is Some(t) else { return None }
+  let m = (self.deps.membership)(t)
+  if m is Null {
+    None
+  } else {
+    Some(workspace_meta_of(m, (self.deps.station)(), self.io.hostname))
+  }
+}
+
+///|
 /// Comma's connects made with this part's scopes (index.mbt `make_comma`).
 pub fn CommaLive::make_comma(
   self : CommaLive,
@@ -384,6 +400,8 @@ pub fn CommaLive::make_comma(
       on_scope_change: f => self.on_scope_change(f),
       previous_exited: self.deps.previous_exited,
       name: Some(ws => self.name(ws)),
+      workspace_meta: Some(ws => self.workspace_meta(ws)),
+      on_workspace_meta_change: Some(changed => (self.deps.cloud_listen)(changed)),
       reconcile,
       close_connects,
     },
