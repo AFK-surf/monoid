@@ -797,7 +797,7 @@ fn optics_scene(
               let b = fmt_tenth(blur_val.get())
               let rf = refraction_val.get().round().to_int()
               let ch = fmt_chroma(chroma_val.get())
-              "Glass::liquid(blur: \{b}, refraction: \{rf}, chroma: \{ch})"
+              "Glass::liquid(blur: \{b}, refraction: \{rf},\n  chroma: \{ch})"
             }),
             look={ ..@lg.words_at(11.5, weight=500, wrap=true), line: 16.0 },
           )
@@ -1169,7 +1169,7 @@ fn loupe_scene(parent : @view.View) -> Unit {
   parent.box(fn(wrap) {
     wrap.grow(Is(1.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
     wrap.box(fn(col) {
-      col.width(Is(Some(960.0))).max_width(Is(Some(960.0)), within=true).gap(Is(18.0)) |> ignore
+      col.width(Is(Some(640.0))).max_width(Is(Some(640.0)), within=true).gap(Is(18.0)) |> ignore
       // Top tier: Progressive Blur
       col.box(fn(sec1) {
         sec1.gap(Is(10.0)) |> ignore
@@ -1183,7 +1183,7 @@ fn loupe_scene(parent : @view.View) -> Unit {
         sec1.box(fn(b) {
           b.radius(Is(24.0)).clips(Is(true)) |> ignore
           b.box(fn(text) {
-            text.padding(Is((22.0, 18.0, 22.0, 18.0))).ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.56) }))
+            text.padding(Is((22.0, 20.0, 22.0, 20.0))).ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.56) }))
             |> ignore
             text.box(fn(t) {
               t
@@ -1196,7 +1196,7 @@ fn loupe_scene(parent : @view.View) -> Unit {
           |> ignore
           b.box(fn(o) {
             o.over(Is(true)) |> ignore
-            @lg.liquid_progressive_blur_node(o, words=fn() { "Progressive Blur · ui.monoid" }, height=84.0) |> ignore
+            @lg.liquid_progressive_blur_node(o, words=fn() { "Progressive Blur · ui.monoid" }, height=74.0) |> ignore
           })
           |> ignore
         })
