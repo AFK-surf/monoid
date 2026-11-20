@@ -515,7 +515,7 @@ fn main {
   @ui.on_message("local_station", fn(_, _) { () })
   if core_linked() == 0 || !@sfcore.start() {
     @sfapp.host_setup()
-    @ui.run_legacy_ctx(@sf.product(), fn(c) {
+    @ui.run_legacy_ctx(run_title(), fn(c) {
       @sf.begin(c) |> ignore
       c.box(w=Fill(1.0), h=Fill(1.0), align=ACenter, justify=JCenter, fn() {
         c.text("这个版本没有链接内核（APP=stillfail scripts/mac.sh build）", size=13.0, color=@sf.theme().p.muted)
@@ -574,7 +574,7 @@ fn main {
   @ui.perf_also("page", fn(_) { @ui.journal_shown() })
   @ui.perf_also("screens", @sfpages.screens_perf)
   @ui.run_legacy_ctx(
-    @sf.product(),
+    run_title(),
     fn(c) {
       // (what the core said since the last frame is handed to @core.receive as the frame begins, before this:
       // sfcore.start)
@@ -585,4 +585,15 @@ fn main {
     },
     tree=@sfapp.app_tree(core_source),
   )
+}
+
+///|
+/// The title the app's window runs with: in a browser the page's own as it loaded (its `<title>`, monoid's on
+/// app.monoid.build, youdid.wtf's on the test channel's host), else the product's name as the build says it. Not the
+/// core's: the run begins before the core has said which product it is.
+fn run_title() -> String {
+  match @webpage.loaded_title() {
+    "" => @sf.product()
+    page => page
+  }
 }

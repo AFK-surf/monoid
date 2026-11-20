@@ -11,6 +11,8 @@
   const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
+  // (H.loadedTitle's: read as this host loads, before H.run gives the page its run's title)
+  const loadedTitle = typeof document !== 'undefined' ? String(document.title || '').trim() : '';
   // The page's query parameter `n` for the program (host_js.mbt's env): the address as it is now, else as it was when
   // this host loaded, so what the page's own start took off the address with history.replaceState before the program's
   // first frame read it (a drive's script, a sign-in's answer) is still given; "" when neither has it.
@@ -4548,6 +4550,9 @@
   // The page's title and the colour of what the browser draws round it (its bar, what shows past the page's edges):
   // @webpage.set_title, set_theme_color (a CSS colour; "" the page's own again).
   H.setPageTitle = (t) => { document.title = t; };
+  // The page's own title as it loaded (its <title>, which the site names itself in: @webpage.loaded_title), kept from
+  // before the run gave the page one.
+  H.loadedTitle = () => loadedTitle;
   H.setThemeColor = (c) => {
     const meta = document.querySelector && document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', c);
