@@ -339,6 +339,38 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .map(|r| r.direct_until)
             .max()
             .unwrap_or(0);
+        // Keep the observed sample sources while they still qualify. Microsecond jitter
+        // between connections must not restart an otherwise continuous observation.
+        let pinned = self.gates.get(current_path).and_then(|gate| {
+            let candidate = gate.candidate.as_ref()?;
+            let (old_current, old_next) = gate.compared.as_ref()?;
+            let current = paths.iter().find(|p| {
+                &p.path == current_path
+                    && p.sample.same_source(old_current)
+                    && p.sample.sequence >= old_current.sequence
+                    && p.sample.sequence != 0
+            })?;
+            let (index, next) = paths.iter().enumerate().find(|(_, p)| {
+                &p.path == candidate
+                    && p.sample.same_source(old_next)
+                    && p.sample.sequence >= old_next.sequence
+                    && p.sample.sequence != 0
+            })?;
+            let allowed = now >= cooldown
+                && !(current_kind == Kind::Transit
+                    && next.kind == Kind::Direct
+                    && now < direct_until)
+                && next
+                    .sample
+                    .rtt_us
+                    .checked_add(current_kind.margin(next.kind, current.sample.rtt_us))
+                    .is_some_and(|required| required <= current.sample.rtt_us);
+            allowed.then_some((&current.sample, index, next))
+        });
+        let current_sample = pinned
+            .as_ref()
+            .map(|(sample, _, _)| *sample)
+            .unwrap_or(current_sample);
         // Filter before ranking: a relay that fails its margin must not hide an eligible IP path.
         let eligible = paths
             .iter()
@@ -359,6 +391,12 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         let Some((i, next)) = eligible else {
             self.reset(current);
             return None;
+        };
+        // Still rank different network paths. A genuinely faster eligible path starts
+        // its own observation, while another sample of this candidate keeps its sources.
+        let (i, next) = match pinned {
+            Some((_, index, pinned_next)) if pinned_next.path == next.path => (index, pinned_next),
+            _ => (i, next),
         };
         // Capacity exhaustion keeps a working path, but never blocks the failure branch above.
         if !self.gates.contains_key(current_path) && self.gates.len() >= MAX_TRACKED {
@@ -389,6 +427,17 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         connections: &[S],
         now: u64,
     ) {
+        self.switched_to(current, &next.path, next.kind, paths, connections, now);
+    }
+    fn switched_to(
+        &mut self,
+        current: Option<(&T, Kind)>,
+        next: &T,
+        kind: Kind,
+        paths: &[Candidate<T, S>],
+        connections: &[S],
+        now: u64,
+    ) {
         if let Some((path, _)) = current {
             self.gates.remove(path);
         }
@@ -399,11 +448,29 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         {
             let sample = paths
                 .iter()
-                .find(|p| p.path == next.path && p.sample.connection == r.connection)
+                .find(|p| &p.path == next && p.sample.connection == r.connection)
                 .map(|p| &p.sample);
-            r.selected(&next.path, next.kind, sample, now);
+            r.selected(next, kind, sample, now);
             r.cooldown = now.saturating_add(COOLDOWN_MS);
         }
+    }
+}
+
+// A missing same-path RTT is not a dead native path: the latest ACK may have
+// returned on another path. Keep Custom's inner validation requirement on rescue.
+fn unmeasured_fallback<T>(
+    has_current: bool,
+    current_seen: bool,
+    has_rtt: bool,
+    native: Option<T>,
+    first: Option<T>,
+) -> Option<T> {
+    if current_seen || has_rtt {
+        None
+    } else if has_current {
+        native
+    } else {
+        first
     }
 }
 
@@ -431,6 +498,7 @@ impl PathSelector for Selector {
         let mut data = Vec::new();
         let mut connections = Vec::new();
         let mut first = None;
+        let mut first_native = None;
         let mut current_seen = false;
         for path in ctx.paths() {
             // Include identities without RTTs so that an absent direct path is observed promptly.
@@ -447,6 +515,9 @@ impl PathSelector for Selector {
                 first = Some(path.clone());
             }
             let Some(stats) = path.stats() else { continue };
+            if first_native.is_none() && !matches!(path.network_path(), FourTuple::Custom { .. }) {
+                first_native = Some(path.clone());
+            }
             let Some(rtt) = stats.same_path_rtt else {
                 continue;
             };
@@ -480,11 +551,8 @@ impl PathSelector for Selector {
             }
         }
         let current = ctx.current().map(|p| (p, Kind::of(p)));
-        let chosen =
-            self.policy
-                .lock()
-                .unwrap()
-                .choose(current, current_seen, &paths, &connections, now);
+        let mut policy = self.policy.lock().unwrap();
+        let chosen = policy.choose(current, current_seen, &paths, &connections, now);
         if let Some(i) = chosen {
             if self.trace_routing {
                 eprintln!(
@@ -496,11 +564,22 @@ impl PathSelector for Selector {
                 );
             }
             selection.set(&data[i]);
-        } else if paths.is_empty()
-            && ctx.current().is_none()
-            && let Some(first) = first
-        {
-            selection.set(&first);
+        } else if let Some(fallback) = unmeasured_fallback(
+            ctx.current().is_some(),
+            current_seen,
+            !paths.is_empty(),
+            first_native,
+            first,
+        ) {
+            policy.switched_to(
+                current,
+                fallback.network_path(),
+                Kind::of(fallback.network_path()),
+                &paths,
+                &connections,
+                now,
+            );
+            selection.set(&fallback);
         }
         selection
     }
@@ -1271,6 +1350,171 @@ mod policy_tests {
             }
             assert_eq!(
                 policy.choose(Some((&1, Transit)), true, &paths, &[2], now),
+                expected
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    fn path(id: u64, connection: u64, kind: Kind, us: u64, seq: u64) -> Candidate<u64, u64> {
+        Candidate {
+            path: id,
+            kind,
+            sample: Sample {
+                connection,
+                generation: id,
+                epoch: 0,
+                sequence: seq,
+                rtt_us: us,
+            },
+        }
+    }
+    fn alternating_sources(kinds: (Kind, Kind), duration: u64) {
+        let mut policy = Policy::new();
+        for tick in 0..=duration / 1_000 {
+            let seq = tick + 1;
+            let jitter = if tick % 2 == 0 { 0 } else { 50 };
+            let paths = [
+                path(1, 1, kinds.0, 40_000 + jitter, seq),
+                path(1, 2, kinds.0, 40_050 - jitter, seq),
+                path(2, 1, kinds.1, 20_050 - jitter, seq),
+                path(2, 2, kinds.1, 20_000 + jitter, seq),
+            ];
+            let selected = policy
+                .choose(Some((&1, kinds.0)), true, &paths, &[1, 2], tick * 1_000)
+                .map(|i| paths[i].path);
+            assert_eq!(
+                selected,
+                (tick * 1_000 == duration).then_some(2),
+                "tick {tick}"
+            );
+        }
+    }
+    #[test]
+    fn alternating_connections_still_switch_transit_to_direct_after_five_seconds() {
+        alternating_sources((Kind::Transit, Kind::Direct), 5_000);
+    }
+    #[test]
+    fn alternating_connections_still_switch_direct_to_transit_after_three_seconds() {
+        alternating_sources((Kind::Direct, Kind::Transit), 3_000);
+    }
+    #[test]
+    fn alternating_connections_still_switch_within_class_after_three_seconds() {
+        alternating_sources((Kind::Transit, Kind::Transit), 3_000);
+    }
+    #[test]
+    fn losing_or_invalidating_pinned_sources_restarts_observation() {
+        for lose_margin in [false, true] {
+            let mut policy = Policy::new();
+            let initial = [
+                path(1, 1, Kind::Transit, 40_000, 1),
+                path(2, 1, Kind::Direct, 20_000, 1),
+            ];
+            assert_eq!(
+                policy.choose(Some((&1, Kind::Transit)), true, &initial, &[1, 2], 0),
+                None
+            );
+            for (now, seq, expected) in [(3_000, 2, None), (5_000, 3, None), (8_000, 4, Some(2))] {
+                let mut paths = vec![
+                    path(1, 2, Kind::Transit, 40_000, seq),
+                    path(2, 2, Kind::Direct, 20_000, seq),
+                ];
+                if lose_margin {
+                    paths.extend([
+                        path(1, 1, Kind::Transit, 40_000, seq),
+                        path(2, 1, Kind::Direct, 39_000, seq),
+                    ]);
+                }
+                assert_eq!(
+                    policy
+                        .choose(Some((&1, Kind::Transit)), true, &paths, &[1, 2], now)
+                        .map(|i| paths[i].path),
+                    expected
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_faster_distinct_candidate_still_restarts_observation() {
+        let mut policy = Policy::new();
+        let initial = [
+            path(1, 1, Kind::Transit, 40_000, 1),
+            path(2, 1, Kind::Direct, 20_000, 1),
+        ];
+        assert_eq!(
+            policy.choose(Some((&1, Kind::Transit)), true, &initial, &[1], 0),
+            None
+        );
+        for (now, seq, expected) in [(3_000, 2, None), (5_000, 3, None), (8_000, 4, Some(3))] {
+            let paths = [
+                path(1, 1, Kind::Transit, 40_000, seq),
+                path(2, 1, Kind::Direct, 20_000, seq),
+                path(3, 1, Kind::Direct, 10_000, seq),
+            ];
+            assert_eq!(
+                policy
+                    .choose(Some((&1, Kind::Transit)), true, &paths, &[1], now)
+                    .map(|i| paths[i].path),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn lost_current_can_use_an_unmeasured_native_backup() {
+        assert_eq!(
+            unmeasured_fallback(true, false, false, Some(2), Some(2)),
+            Some(2)
+        );
+    }
+    #[test]
+    fn unmeasured_fallback_preserves_custom_validation_and_current_paths() {
+        assert_eq!(unmeasured_fallback(true, false, false, None, Some(3)), None);
+        assert_eq!(
+            unmeasured_fallback(true, true, false, Some(2), Some(2)),
+            None
+        );
+        assert_eq!(
+            unmeasured_fallback(true, false, true, Some(2), Some(2)),
+            None
+        );
+        // Preserve the initial path choice when no selection exists yet.
+        assert_eq!(
+            unmeasured_fallback(false, false, false, None, Some(3)),
+            Some(3)
+        );
+    }
+    #[test]
+    fn unmeasured_rescue_records_the_replacements_cooldown() {
+        let mut policy = Policy::new();
+        let initial = [path(2, 1, Kind::Direct, 10_000, 1)];
+        policy.choose(None, false, &initial, &[1], 0);
+        policy.choose(Some((&2, Kind::Direct)), false, &[], &[1], 1_000);
+        policy.switched_to(
+            Some((&2, Kind::Direct)),
+            &1,
+            Kind::Transit,
+            &[],
+            &[1],
+            1_000,
+        );
+        for (now, seq, expected) in [
+            (1_001, 1, None),
+            (4_001, 2, None),
+            (30_999, 3, None),
+            (31_000, 4, None),
+            (34_000, 5, Some(3)),
+        ] {
+            let paths = [
+                path(1, 1, Kind::Transit, 100_000, seq),
+                path(3, 1, Kind::Transit, 10_000, seq),
+            ];
+            assert_eq!(
+                policy
+                    .choose(Some((&1, Kind::Transit)), true, &paths, &[1], now)
+                    .map(|i| paths[i].path),
                 expected
             );
         }
