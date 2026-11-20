@@ -40,9 +40,6 @@ pub fn transition(f : () -> Unit, within? : View) -> Unit {
 ///|
 /// `transition`'s work, the node it is within by its index (-1: none said): one body for every caller.
 fn transition_run(scope_at : Int, f : () -> Unit) -> Unit {
-  if transition_depth.val == 0 && transition_held.val.is_empty() {
-    settle_unsettled_for_transition()
-  }
   // (told inside a change, a flush or a batch: what its writes tell runs once that is told whole, after `f` is over;
   // held till then, the one entry this put let go of once it is)
   transition_held.val = transition_held.val + [scope_at]

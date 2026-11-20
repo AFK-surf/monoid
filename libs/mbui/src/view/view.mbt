@@ -2796,10 +2796,6 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.unsettled_at = -1.0
   self.unsettled_clean = false
   self.answer_unsettled = false
-  if !unsettled_trees.is_empty() {
-    unsettled_trees.retain(fn(t) { !physical_equal(t, self) })
-    unsettled_trees.shrink_to_fit()
-  }
   if node_rests.length() > 0 {
     node_rests.retain(fn(e) { !physical_equal(e.1.tree, self) })
   }
@@ -3599,7 +3595,10 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     }
   })
   w.on_marked(fn() {
-    if !self.standing && !self.laying {
+    let told = if b.live { transition_marked() } else { [] }
+    if !told.is_empty() {
+      b.moved = b.moved + told
+    } else if !self.standing && !self.laying {
       self.unsettled_clean = false
     }
     // (marked as an answer writes what it read: what it sets as it runs is the answer's)
@@ -3611,12 +3610,6 @@ fn[T] Tree::queued(self : Tree, read : () -> T, then : (T) -> Unit, at? : Int = 
     }
     if b.live && answering_depth.val > 0 && answer_held.val.is_empty() {
       self.answer_unsettled = true
-    }
-    if b.live {
-      let told = transition_marked()
-      if !told.is_empty() {
-        b.moved = b.moved + told
-      }
     }
     if b.live && !b.marked {
       if !b.queued {
@@ -3845,6 +3838,8 @@ fn Tree::structured_by(
     let told = transition_marked()
     if !told.is_empty() {
       moved.val = moved.val + told
+    } else if !self.standing && !self.laying {
+      self.unsettled_clean = false
     }
   })
   let v = w.read(read)
@@ -6669,6 +6664,11 @@ pub fn View::laid_before_moves(self : View) -> Unit {
 /// and its offset), drawn off and grown or shrunk by nothing: as it stood before a change told now is laid out, in the
 /// terms of laid_window_now (for what moves from there for that change's cause, said once at that moment).
 pub fn View::placed_window_now(self : View) -> (Double, Double, Double, Double) {
+  if self.transition_gate() && self.tree.moves_causes > 0 && self.tree.unsettled_at >= 0.0 && self.tree.unsettled_clean {
+    @signals.start_batch()
+    self.tree.settle_unsettled_layout_now()
+    @signals.end_batch_in_turn()
+  }
   guard self.live() is Some(n) else { return (0.0, 0.0, 0.0, 0.0) }
   let mut x = 0.0
   let mut y = 0.0
@@ -11953,13 +11953,19 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
 }
 
 ///|
-// kept across runs: trees with pending lazy moves_for settlement, removed on layout or disposal
-let unsettled_trees : Array[Tree] = []
-
-///|
 fn Tree::eager_settle(self : Tree) -> Bool {
   self.before_causes > 0 ||
   (self.moves_causes > 0 && (self.transitions_only_set == 0 || self.answer_unsettled))
+}
+
+///|
+fn Tree::has_settle_work(self : Tree) -> Bool {
+  self.layout_due ||
+  !self.places_due.is_empty() ||
+  !self.looks_due.is_empty() ||
+  self.order_due ||
+  !self.bindings_due.is_empty() ||
+  !self.pulls_marked.is_empty()
 }
 
 ///|
@@ -11967,7 +11973,7 @@ fn Tree::mark_unsettled(self : Tree, at : Double) -> Unit {
   if self.gone || self.last_w <= 0.0 || self.standing {
     return
   }
-  if !(self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+  if !self.has_settle_work() {
     self.scrolls_shown_at(at)
     return
   }
@@ -11975,37 +11981,37 @@ fn Tree::mark_unsettled(self : Tree, at : Double) -> Unit {
     self.unsettled_at = at
   }
   self.unsettled_clean = true
-  if !unsettled_trees.iter().any(fn(t) { physical_equal(t, self) }) {
-    unsettled_trees.push(self)
-  }
 }
 
 ///|
 fn Tree::clear_unsettled(self : Tree) -> Unit {
   self.unsettled_clean = false
   self.answer_unsettled = false
-  if self.unsettled_at >= 0.0 {
-    self.unsettled_at = -1.0
-    if !unsettled_trees.is_empty() {
-      unsettled_trees.retain(fn(t) { !physical_equal(t, self) })
-      unsettled_trees.shrink_to_fit()
-    }
-  }
+  self.unsettled_at = -1.0
 }
 
 ///|
-fn settle_unsettled_for_transition() -> Unit {
-  if unsettled_trees.is_empty() {
+fn Tree::settle_unsettled_layout_now(self : Tree) -> Unit {
+  if self.gone || self.standing || self.laying || self.last_w <= 0.0 || self.unsettled_at < 0.0 || !self.unsettled_clean {
     return
   }
-  let pending = unsettled_trees.copy()
-  for t in pending {
-    if !t.gone && t.moves_causes > 0 && t.unsettled_at >= 0.0 && t.unsettled_clean && !t.laying && !t.standing {
-      let cause_was = t.cause_at
-      t.cause_at = t.unsettled_at
-      t.settle_layout_at(t.unsettled_at)
-      t.cause_at = cause_was
-    }
+  let at = self.unsettled_at
+  self.clear_unsettled()
+  let saved_bindings = self.bindings_due.copy()
+  self.bindings_due.clear()
+  let saved_pulls = self.pulls_marked.copy()
+  self.pulls_marked.clear()
+  let saved_after = self.after_bindings.copy()
+  self.after_bindings.clear()
+  let cause_was = self.cause_at
+  self.cause_at = at
+  self.settle_layout_at(at)
+  self.cause_at = cause_was
+  self.bindings_due.append(saved_bindings)
+  self.pulls_marked.append(saved_pulls)
+  self.after_bindings.append(saved_after)
+  if !self.bindings_due.is_empty() || !self.pulls_marked.is_empty() {
+    self.due = true
   }
 }
 
@@ -12185,11 +12191,22 @@ fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
       self.pulls_marked.append(still)
       self.pulls_marked.release_unused(placeholder=bound_gone)
       self.after_bindings_run()
+      if self.order_due {
+        self.order_due = false
+        self.order_again()
+        self.work.orders = self.work.orders + 1
+        self.drawn_due = true
+      }
     })
     self.standing = false
     self.change_ended()
+  } else if self.order_due {
+    self.order_due = false
+    self.order_again()
+    self.work.orders = self.work.orders + 1
+    self.drawn_due = true
   }
-  if self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty() {
+  if self.has_settle_work() {
     self.marked()
     self.mark_unsettled(at)
   } else {
@@ -12203,7 +12220,7 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
   if self.standing || self.last_w <= 0.0 {
     return
   }
-  if !(self.layout_due || !self.places_due.is_empty() || !self.bindings_due.is_empty() || !self.pulls_marked.is_empty()) {
+  if !self.has_settle_work() {
     // (nothing laid out again: what it holds stands where it was placed, its column where it is now (the hand moved it))
     self.scrolls_shown_at(at)
     self.clear_unsettled()
@@ -12217,6 +12234,7 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
     self.clock_to(at)
     self.beat.set(at)
     self.pull()
+    self.due = true
     self.pass_via = 3
     self.laid_out(at)
   })
