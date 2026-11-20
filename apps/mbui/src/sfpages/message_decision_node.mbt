@@ -577,9 +577,25 @@ fn chat_state_node(
   rest : () -> String,
 ) -> Unit {
   let ask = fn() { (here.view)().state_ask }
-  v.pick(fn() { lead() == "need" && ask() is Some(_) }, fn(p, need) {
-    if need {
-      need_card_node(p, src, here, words, rest, fn() { ask().unwrap_or(0.0) })
+  // (the card let go, its line in its place: one thing changing look, the card fading where it is while its room gives
+  // way, as decision_rooms_node's)
+  let done = fn() { !(lead() == "need" && ask() is Some(_)) }
+  ends_on_way(v, done)
+  v.pick(done, leave=msg_part_leave_ms, fn(p, is_done) {
+    if !is_done {
+      // (what it says as it was before it was let go, held so as it leaves: never the line's words in it as it fades)
+      let held : Ref[(String, String, Double)?] = Ref(None)
+      let shown = fn() -> (String, String, Double) {
+        match held.val {
+          Some(h) if done() => h
+          _ => {
+            let now = (words(), rest(), ask().unwrap_or(0.0))
+            held.val = Some(now)
+            now
+          }
+        }
+      }
+      need_card_node(p, src, here, fn() { shown().0 }, fn() { shown().1 }, fn() { shown().2 })
     } else {
       p.box(fn(s) {
         chat_state_line_node(s, words, lead, rest) |> ignore

@@ -527,19 +527,21 @@ fn chat_goes_to(
     guard @sfbase.go_tos.get(chat) is Some(target) else { return }
     let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
-    // (the first and the last message the window holds; the row of the one gone to, else of a notice folding it)
-    let mut first = -1.0
-    let mut last = -1.0
+    // (the first and the last message the window holds, none where it holds none (a message's seq may be below 0: one
+    // sent from here); the row of the one gone to, else of a notice folding it)
+    let mut first : Double? = None
+    let mut last : Double? = None
     let mut at : (String, Message)? = None
     let mut folded : (String, Message)? = None
     for k in rs.keys {
       match rs.get(k).map(fn(row) { row.entry }) {
         Some(Said(m)) => {
-          if first < 0.0 {
-            first = m.seq
+          if first is None {
+            first = Some(m.seq)
           }
-          if m.seq > last {
-            last = m.seq
+          match last {
+            Some(l) if m.seq <= l => ()
+            _ => last = Some(m.seq)
           }
           if m.seq == target && at is None {
             at = Some((k, m))
@@ -645,10 +647,10 @@ fn chat_goes_to(
         jump.put.set(1)
         chat_stand(jump, place, k, stand_at, c, slice=pk, glide=back is None && in_sight, sought=back is None)
       }
-      None if first >= 0.0 && last >= 0.0 && target >= first && target <= last => give_up(true)
+      None if first is Some(f) && last is Some(l) && target >= f && target <= l => give_up(true)
       None => {
-        let before = cv.more && (first < 0.0 || target < first)
-        let after = cv.newer && (last < 0.0 || target > last)
+        let before = cv.more && (match first { Some(f) => target < f; None => true })
+        let after = cv.newer && (match last { Some(l) => target > l; None => true })
         match cv.thread {
           // (not in the chat's window, the chat holding more before or after it: the window moved about it
           // (chat.around), once for each; already moved so as it was asked (a quote's: go_to_quoted))
@@ -673,7 +675,7 @@ fn chat_goes_to(
               )
             }
           // (none left to bring in: it is not in the chat)
-          _ => give_up(first >= 0.0)
+          _ => give_up(first is Some(_))
         }
       }
     }
@@ -1107,6 +1109,8 @@ fn chat_rail_node(
 ) -> Unit {
   let said = @signals.computed(
     fn(was) {
+      // (its outline asked only where the rail asks it and has room for it: chat_rail_said's own guard, before the topic)
+      guard (src.asks_outline)() && rail_fits(width()) else { return None }
       match view().thread {
         Some(th) => {
           let outline = src.topic("chatOutline", outline_params(r, th))

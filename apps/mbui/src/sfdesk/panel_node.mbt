@@ -126,7 +126,7 @@ fn side_slides(n : @view.View, src : Source, key : String, chat : String, open :
         way.go(target, @motion.moved(over=(target - cur_w).abs()), at~)
       }
       // (the chat's rows laid out anew at where it goes, on their list's way from this moment: side_narrower)
-      @sfbase.column_sets_off(chat)
+      @sfbase.column_sets_off(chat, over=(target - cur_w).abs())
       if !open {
         let ends = way.end()
         n.at_moment(ends, fn() { if way.end() == ends { side_left(key) } }) |> ignore

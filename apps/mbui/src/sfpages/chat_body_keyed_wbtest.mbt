@@ -316,3 +316,29 @@ test "a chat's messages by key given anew by its source: the page's list goes on
   t.run_for(@ui.move_most_ms)
   assert_true(t.find(scale_put) is Some(_), msg="the message in the list given anew not shown")
 }
+
+///|
+test "where it stood, the turn before's: gone in the frame words are sent from here; kept offline, what was sent waiting" {
+  @sfbase.reset()
+  reset()
+  let base = keyed_with(scale_chat(12), { "stateText": Json::string("已完成：用户选择了「不需要部署」"), "stateLead": Json::string("done") })
+  let sending : Array[@sfbase.LocalSent] = [
+    { row: { ..chat_body_no_out, id: "local:1", text: "刚发的", state: "sending" }, before: Map([]), newest: 12.0 },
+  ]
+  let states = fn(chat : Json, sending : Array[@sfbase.LocalSent]) {
+    let v = @sfbase.chat_view_made(chat)
+    let made = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, @sfbase.entries_of(v), sending)
+    made.keys.filter(fn(k) { made.rows.get(k).map_or(false, fn(r) { r.entry is State(_, _, _) }) }).length()
+  }
+  // (nothing on its way: where it stands shown)
+  assert_eq(states(base, []), 1)
+  // (words sent from here, the station up: gone with them, by key as made whole)
+  assert_eq(states(base, sending), 0)
+  // (its station down: kept, what was sent waiting to go)
+  let offline = keyed_with(base, { "offline": Json::boolean(true) })
+  assert_eq(states(offline, sending), 1)
+  let faults : Array[String] = []
+  faults.append(keyed_faults(base, "state, sending", sending~))
+  faults.append(keyed_faults(offline, "state, sending offline", sending~))
+  assert_eq(faults, [])
+}

@@ -1190,6 +1190,9 @@ fn Replay::ready(self : Replay) -> Array[Int] {
   let firsts : Array[Int] = []
   let seen : Array[Int] = []
   let seen_kept : Array[Int] = []
+  // (subscriptions whose letting go is not sent yet: the core's last word of one let go of keeping its value (`v`)
+  // comes of that letting go, so it waits for it, though the others go on past it)
+  let unsub_pending : Array[Int] = []
   let from = if self.first_out < self.next_in { self.first_out } else { self.next_in }
   for i in from..<self.evs.length() {
     let e = self.evs[i]
@@ -1199,6 +1202,16 @@ fn Replay::ready(self : Replay) -> Array[Int] {
       // of yet; the coordinator of the migration, 2026-11-12)
       if !is_report(e.msg) && !is_let_go(e.msg) {
         break
+      }
+      if is_let_go(e.msg) {
+        match e.msg {
+          Object(o) =>
+            match id_of(o) {
+              Some(id) => unsub_pending.push(id)
+              None => ()
+            }
+          _ => ()
+        }
       }
       continue
     }
@@ -1221,8 +1234,8 @@ fn Replay::ready(self : Replay) -> Array[Int] {
               continue
             }
             seen.push(id)
-            // (an answer to an ask not made again waits)
-            if self.ids.contains(id) {
+            // (an answer to an ask not made again waits; so does the last word of a letting go not sent yet)
+            if self.ids.contains(id) && !(m.contains("v") && unsub_pending.contains(id)) {
               firsts.push(i)
             }
           }

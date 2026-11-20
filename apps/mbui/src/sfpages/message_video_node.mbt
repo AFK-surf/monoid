@@ -192,6 +192,8 @@ fn message_video_node(
         Some((((w - pw) / 2.0, (h - ph) / 2.0, pw, ph), @ui.tree_theme().color(@sf.video_ground)))
       }))
       .image_fades(Is(true))
+      // (said as its file's name, as the old view's box said it: what a run looks for by it)
+      .says(By(fn() { Some(@view.said(Image, label=a().name)) }))
       |> ignore
     })
     |> ignore

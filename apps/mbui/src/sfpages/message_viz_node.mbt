@@ -190,9 +190,18 @@ fn viz_page_node(parent : @view.View, place : String, html : String, state : Jso
         // is for that word's moment, View::resizes; what was read over it does not step)
         // (its page telling its height is a live cause of its own: what it moves round it in its list goes its way too,
         // @view.transition)
+        // (said again and again in one moment, its height as it was or once more for that moment: one move, the last)
+        let last_h = Ref(f.height)
+        let last_at = Ref(@double.neg_infinity)
         fr.reacts(
           fn() { f.said.get() },
-          fn(_) { @view.transition(within=fr.transitions_root(), fn() { fr.resizes() |> ignore }) },
+          fn(_) {
+            guard f.height != last_h.val else { return }
+            last_h.val = f.height
+            guard fr.cause_at() != last_at.val else { return }
+            last_at.val = fr.cause_at()
+            @view.transition(within=fr.transitions_root(), fn() { fr.resizes() |> ignore })
+          },
           at_start=false,
         )
       }

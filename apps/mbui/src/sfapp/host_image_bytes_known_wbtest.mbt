@@ -18,7 +18,6 @@ fn init {
     // at every rate, 2026-11-16)
     ("src/sfapp/switch_still_wbtest.mbt", 127704),
     ("src/sfapp/chat_bar_wide_wbtest.mbt", 89156),
-    ("src/sfapp/chat_drive_parity_wbtest.mbt", 300978),
     ("src/sfapp/chat_images_told_wbtest.mbt", 57845),
     ("src/sfapp/chat_keys_wbtest.mbt", 127704),
     ("src/sfapp/chat_motion_desk_wbtest.mbt", 462064),

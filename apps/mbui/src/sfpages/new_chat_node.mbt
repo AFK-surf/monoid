@@ -73,7 +73,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
   .on_action("composer.focus", fn(e) {
     (@sfbase.page_for_key.val)(e.at)
     wr.field.focus()
-    composer_take_focus()
+    composer_take_focus(drafts=new_chat_drafts)
     @sfbase.draft_given(draft)
     true
   })
@@ -1010,7 +1010,7 @@ fn new_send_node(on : NewOn, station : String, name : String, d : Writing) -> Un
   }
   // sent, felt as a key's light tap (a no as something refused)
   @ui.haptic(KeyboardTap)
-  let words = @signals.untracked(fn() { d.text.get() }).trim(chars=" \n\t").to_owned()
+  let words = sent_words(d)
   remember_sent_pictures_now(src, d, station)
   let up = @signals.untracked(fn() { up_files(d) })
   let going = @signals.untracked(fn() { going_files(d) })

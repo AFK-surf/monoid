@@ -554,7 +554,9 @@ fn agent_out_steps(plan : AgentOutPlan) -> AgentOut {
   // (how far its head has slid out, 0 … 1: from where its picture lands (the plan's Spit) over emit_head_ms)
   let head_out = @motion.Way::new(0.0)
   // det-ok(motion-length): emit.mbt's Spit, its head sliding out of its picture as its words begin
-  head_out.go(1.0, @motion.tween(@sfbase.emit_head_ms, ease=Linear, delay=plan.float_ms), at=plan.float_at)
+  // (an answer following its agent's own last one, no line to fold first: out once the list's flip has given it its room)
+  let delay = if !plan.folds && plan.float_ms > 0.0 { @sf.dmax(plan.float_ms, 300.0) } else { plan.float_ms }
+  head_out.go(1.0, @motion.tween(@sfbase.emit_head_ms, ease=Linear, delay~), at=plan.float_at)
   {
     avatar: fn(av) {
       plan.av.val = Some(av)

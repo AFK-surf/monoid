@@ -319,8 +319,9 @@ pub(all) struct Viewer {
   /// its picture flown by the window's tree, from a thumbnail of a chat's page made as nodes or back into it
   /// (View::shared's `told`: Viewer::tree_way_told): its fade that flight's growing, its picture none of it
   tree_way : @signals.Signal[Bool]
-  /// when that flight ends (the clock's ms), as it is told (Viewer::tree_way_told)
-  mut tree_way_end : Double
+  /// when that flight ends (the clock's ms), as it is told (Viewer::tree_way_told): told again as the flight goes on
+  /// longer (the chat moved under it on its way back), what ends it following
+  tree_way_end : @signals.Signal[Double]
   /// the fingers on its stage by their ids (Drag's `finger`), where each is now; how fast the one moving it goes, by
   /// its events' own moments; what calls off the hold waited for (its picture's menu)
   fingers : Map[Int, (Double, Double)]
@@ -1333,7 +1334,7 @@ pub fn new_viewer(
     tree_layers: 0,
     tree_back: @signals.signal(false),
     tree_way: @signals.signal(false),
-    tree_way_end: 0.0,
+    tree_way_end: @signals.signal(0.0, same=fn(a, b) { a == b }),
     fingers: Map([]),
     speed: @ui.Velocity::new(),
     hold_off: fn() {  },
@@ -2418,8 +2419,10 @@ pub fn Viewer::shut(self : Viewer, c : @ui.Ctx) -> Unit {
       // the way of the chat's bar and composer as that end is (Tree::stays_clear)
       (None, Some(KImage), _) if self.in_tree && tree_thumb_seen(self.thumb_id()) => {
         // (the way in's end forgotten: the way back's told as it sets out)
-        self.tree_way_end = -1.0
+        self.tree_way_end.set(-1.0)
         self.tree_back.set(true)
+        // (its way in over: the way back is told by the tree as it sets out, tree_way_told)
+        self.tree_way.set(false)
         self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
       }
       // a film of a chat's page made as nodes, its thumbnail drawn: the frame it shows grabbed first (its player is the
@@ -2428,7 +2431,10 @@ pub fn Viewer::shut(self : Viewer, c : @ui.Ctx) -> Unit {
       // to grab, at once with its still
       (None, Some(KVideo), _) if self.in_tree && self.chat_file() && tree_thumb_seen(self.thumb_id()) =>
         match self.view() {
-          Some(n) if n.here() && n.shown() && !n.grabbing() => {
+          // (still flying in: back from where that has got to at once, no frame grabbed of a player not seen whole)
+          Some(n) if !self.flies &&
+            !(self.tree_way.untracked() && viewer_moment(c) < self.tree_way_end.untracked()) &&
+            n.here() && n.shown() && !n.grabbing() => {
             self.grab_set(true)
             self.left_at = left_from(n)
             c.tell("preview-grab", fn() { n.grab_shown(kept_frame_side) })
@@ -2492,7 +2498,7 @@ pub fn Viewer::fly_home(self : Viewer, picture : String, at : Double, window : (
 fn Viewer::tree_way_told(self : Viewer, start : Double, end : Double, grown : (Double) -> Double) -> Unit {
   let ms = end - start
   guard ms > 0.0 else { return }
-  self.tree_way_end = end
+  self.tree_way_end.set(end)
   self.tree_way.set(true)
   if self.tree_back.untracked() {
     self.fade.go(0.0, @motion.tween_to(duration=ms, ease=fn(x) { 1.0 - grown(start + x * ms) }), at=start)
@@ -2505,8 +2511,10 @@ fn Viewer::tree_way_told(self : Viewer, start : Double, end : Double, grown : (D
 /// A film whose thumbnail is a node of the window's tree let go of from the moment `at` (its frame grabbed and kept for
 /// that thumbnail, or none to grab): flown back into it by the tree (viewer_tree.mbt's film_shared) as the rest fades.
 fn Viewer::tree_film_back(self : Viewer, at : Double) -> Unit {
-  self.tree_way_end = -1.0
+  self.tree_way_end.set(-1.0)
   self.tree_back.set(true)
+  // (its way in over: the way back is told by the tree as it sets out, tree_way_told)
+  self.tree_way.set(false)
   self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at~)
 }
 

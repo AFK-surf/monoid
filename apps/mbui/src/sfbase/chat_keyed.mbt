@@ -397,6 +397,8 @@ pub fn chat_head_json(src : Source, r : ChatRef) -> Json? {
 /// as view_of_chat works it out (sent_here_view's the same). Told as the head changes, not as a word
 /// comes into a message.
 pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
+  // (no chat yet, a new chat's composer's: none, its topic never asked)
+  guard r.session != "" else { return None }
   // (the head read first: what holds the topic, whose messages by key are then there; what is on its way from here
   // answering its last card, as the core will say once it has it)
   match chat_head(src, r).0 {
@@ -444,18 +446,30 @@ pub let chat_read_made : Ref[Int] = Ref(0)
 /// person's words after it, they answer it at once (no more asked, its decision theirs, the chat's asks without it,
 /// where it stands gone as its agent has words to take), as the core will say once it has them. The head so, and the
 /// card's message so by its key (none where they answer none). Looked for from the newest back no further than that card
-/// or a person's words after it.
+/// or a person's words after it. Answering none, words on their way end the turn before's line of where it stands (one
+/// asking nothing of the viewer) at once.
 pub fn chat_sent_here(
   r : ChatRef,
   head : ChatView,
   ms : ChatMessages,
 ) -> (ChatView, (String, Message)?) {
-  guard chat_sent_card(r, ms) is Some((k, m)) else { return (head, None) }
-  let asks = head.asks.filter(fn(seq) { seq != m.seq })
-  (
-    { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
-    Some((k, chat_card_answered(m))),
-  )
+  match chat_sent_card(r, ms) {
+    Some((k, m)) => {
+      let asks = head.asks.filter(fn(seq) { seq != m.seq })
+      (
+        { ..head, asks, ask_clear: head.ask_clear && !asks.is_empty(), state: None, state_ask: None },
+        Some((k, chat_card_answered(m))),
+      )
+    }
+    None =>
+      // (new words sent from here end the turn before's line of where it stands (done, nothing asked of the viewer) at
+      // once, never leaving it under the words flying in till the core says it gone)
+      if !sending_now(r.station + "\u{1}" + r.session).is_empty() && head.state is Some(_) && head.state_ask is None {
+        ({ ..head, state: None }, None)
+      } else {
+        (head, None)
+      }
+  }
 }
 
 ///|

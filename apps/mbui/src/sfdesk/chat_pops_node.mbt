@@ -108,7 +108,7 @@ fn chat_pop_node(
     }
     guard !@sf.presented_open_of(was()) else { return }
     guard bar_anchor_node(own, Bottom, End) is Some((from, side, along)) else { return }
-    @sf.panel_nodes("", fn(v, _) { body(v) }, from~, w~, side~, along~, gone=fn() { open.set(false) })
+    @sf.panel_nodes("", fn(v, _) { body(v) }, from~, w~, side~, along~, gone=fn() { if !gone.val { open.set(false) } })
     mine.val = @sf.last_presented()
     keep(mine.val)
   })

@@ -229,9 +229,12 @@ fn chat_body_ends(
     out(row)
   }
   if !v.newer {
-    match v.state {
-      Some((words, lead, rest)) => put(under, Entry::State(words, lead, rest), lone())
-      None => ()
+    // (where it stood gone in the frame words are sent from here and not offline, as chat_body_rows has it)
+    if still.is_empty() || v.offline {
+      match v.state {
+        Some((words, lead, rest)) => put(under, Entry::State(words, lead, rest), lone())
+        None => ()
+      }
     }
     for a in chat_working_kept(v, turns) {
       put(under, Entry::Working(a), lone())
@@ -358,7 +361,12 @@ fn chat_body_keyed(
       let v = head()
       guard still.get(0) is Some(l) && l.row.joined && !v.newer && v.outbox.is_empty() else { return None }
       let keys = msgs.keys()
-      guard keys.last() is Some(k) && msgs.raw(k) is Some(j) && items(Some(j), "elsewhere").is_empty() else {
+      // (one of the viewer's own, not a station's line or another's: what goes close under it is theirs)
+      guard keys.last() is Some(k) &&
+        msgs.raw(k) is Some(j) &&
+        items(Some(j), "elsewhere").is_empty() &&
+        flag(Some(j), "mine") &&
+        !flag(Some(j), "system") else {
         return None
       }
       Some(k)

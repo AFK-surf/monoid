@@ -302,12 +302,10 @@ for t in $targets; do
     # screens 32 apart: no two of a row of 32 share a run.
     # send_steady has nine tests now, and tests 2-3 (22 and 27 paced sends) walk the most frames. Its 2-9 range ran
     # as one process on app 4/4, which hit the 5-minute limit at 318 s on main f855908e (44401157133). Cut it in five.
-    # (chat_drive_parity's four by its tests' times the same way: 29, 35, 32 and 35 s, where by count 0-10 was 54 of
-    # 130 s; each on one of the app part's four runners, app_group_of)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:6 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
-      src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5 src/sfapp/chat_drive_parity_wbtest.mbt:@4@15@27
+      src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
       src/sfapp/switches_still_wbtest.mbt:32)
     pages=()
     while IFS= read -r f; do
@@ -327,13 +325,11 @@ for t in $targets; do
         # screen, its bars set on the default run; 40-102 s a run at the four rates, #5407 42976047326)
         # (duo_side's, every screen's controls held clear of an iPhone Duo's column on its side, at rest: the same)
         # (switches_still's, every screen's switches pressed, its table set on the default run: main's switches job's alone)
-        # (chat_drive_parity's, the old chat page and the one made as nodes walked frame by frame: at a rate each of its
-        # tests returns at once, @ui.test_at_a_rate)
         # (corners' and contrast's too, said here since a branch's changed files at a rate (APP_GROUP=1/1, every run on the
         # one): main's rates never ran them (their groups are the default rate's alone), and a branch that changed
         # corners_wbtest ran its three at 120 and 60 with the motion counted on one runner, cut at its 5 minutes,
         # lock-upgrade-page 43559278519, 2026-11-14)
-        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt | */chat_drive_parity_wbtest.mbt) continue ;; esac
+        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
         # (send_steady's one run: at a rate eight of its nine tests return at once, the file 1 s (page-seconds.txt),
         # where its five cuts moved the app part's count so that chat_page_nodes' two halves fell on part 3/3 and part
         # 1/3 and part 3/3 at 60 was cut at 318 s; one run here, part 1/3, the halves on part 2/3 and part 3/3)
@@ -557,9 +553,6 @@ for t in $targets; do
           # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
           # (real_size's wide half on the fourth since (app_group_of), the second's reckoning raised for what ran there
           # beside it all the same, 43864771728: by the table 715, 503, 393 and 561 s of pages)
-          # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
-          # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
-          # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
           # Account for the real_size and kept_rows sweeps on groups 1 and 4.
           # Group 2 now runs its pages on four workers after its sweeps finish. words_large and the second
           # chat_page_nodes run moved to contrast and group 1 (app 2/4 was cut at 292 s with 549 -O0 units,
@@ -827,14 +820,6 @@ for t in $targets; do
       # times where the other three's ran 0.6-0.9, app 1/4 286 s of its 5 minutes on mbui-picks-whole 43544698219
       # after #6086, the third's 164 s with its pages on one program)
       "src/sfapp/answers_still_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "" | 60 | 120) echo 3 ;; *) echo 4 ;; esac ;;
-      # (chat_drive_parity's four, its k-th on the k-th of the four, beside each one's pages: one process of its 41
-      # tests, each two pages walked frame by frame side by side, was 288 s of app 1/4's, cut at its 5 minutes on #6837
-      # b68070c9c and main d77015c89, 2026-11-17. Its k-th run is the one from its (k-1)-th cut in sweeps)
-      "src/sfapp/chat_drive_parity_wbtest.mbt --index "*)
-        local k=1 c cut=" ${sweeps[*]} "
-        cut=${cut#* src/sfapp/chat_drive_parity_wbtest.mbt:} cut=${cut%% *}
-        for c in ${cut//@/ }; do [ "${3%-*}" -lt "$c" ] || k=$((k + 1)); done
-        echo $k ;;
       "@pages "*) [ "$2" = 0 ] && echo 1 || echo "$2" ;;
       *) [ $# -gt 2 ] && echo 4 || echo 1 ;;
     esac

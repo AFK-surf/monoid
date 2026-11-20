@@ -222,6 +222,9 @@ fn mine_said_node(
   let lead_view : @signals.Signal[@view.View?] = @signals.signal_ref(None)
   let flight_ends : @signals.Signal[Double?] = @signals.signal(None)
   let lead_dy = Ref(0.0)
+  // (what is under it flown in once: shown again at the same cause (what comes between it and the last let in), there
+  // at once, not flying again from where it set out)
+  let under_flew = Ref(false)
   let fly : SentFly = {
     flight: sent_flight(@sfbase.sent_delay_take(@signals.untracked(key))),
     lead: sent_lead(
@@ -317,8 +320,10 @@ fn mine_said_node(
           fn() { if said() { found_at() } else { None } },
           lit=fn() { if said() { lit() } else { ("", 0L) } },
           cards=(here.tips, fn(l) { if said() { cards(l) } else { None } }),
-          flies_from~,
-          words_room~,
+          // (made as it was sent, flying from the field; made later (its words come once a quote alone was sent): in its
+          // row, no second flight from where the field was then, as its "under" has it)
+          flies_from=if b.cause_at() == made_at { flies_from } else { None },
+          words_room=if b.cause_at() == made_at { words_room } else { None },
           fly~,
         )
       })
@@ -358,7 +363,8 @@ fn mine_said_node(
         // else its first file or quote: SentFly's `lead`), on their flight's own way from its own cause (the old page's
         // flight_settled, the desktop's: flight_across), whole as they land; at once otherwise. One curve, one length,
         // one clock: never a fade of its own after it)
-        if fly.lead != "" && n.cause_at() == made_at {
+        if fly.lead != "" && !under_flew.val && n.cause_at() == made_at {
+          under_flew.val = true
           let sent_at = n.cause_at()
           if has_parts {
             // (with files or quotes, the composer's ground starts tall and shrinks down as they fly out of it: unseen
@@ -407,6 +413,15 @@ fn mine_said_node(
               },
               in_list=true,
             )
+            // (on its way under its lead, said of its chat as its lead is: words sent after them in that while land it
+            // with its lead, sent_in_field_land, never its lead landed and this left on its way, seen whole)
+            if flies_from is Some(_) {
+              let chat = here.station + "\u{1}" + here.session
+              let held = sent_in_field.get(chat).unwrap_or([])
+              held.push((made_at + @sfbase.sent_out_away_ms(), n))
+              sent_in_field[chat] = held
+              n.owns(fn() { sent_in_field_drop(chat, n) }) |> ignore
+            }
             n.alpha(By(fn() {
               if n.drawn_while(fn(now) { now <= sent_at }) <= sent_at {
                 return 0.0

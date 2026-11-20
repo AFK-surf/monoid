@@ -1492,8 +1492,6 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone chat live/step": 1,
   "phone chat-agent live/step": 1,
   "phone chat-job live/step": 1,
-  "phone chat-jobs chatOutline/said": 3,
-  "phone chat-jobs chatOutline/edit": 5,
   "phone chat-working live/step": 1,
   "phone newchat newChat/host": 29,
   "phone newchat newChat/down": 29,

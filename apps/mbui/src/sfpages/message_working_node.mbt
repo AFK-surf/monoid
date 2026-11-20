@@ -88,6 +88,7 @@ fn working_said_node(
   came : () -> Double?,
   steadies : ActivitySteadies,
   faces? : Map[String, AgentFace] = Map([]),
+  shows_at? : () -> Double = fn() { -1.0 },
 ) -> MessageRowNode {
   let live = fn() {
     @sfbase.hold(src, @sfbase.chat_scope(here.station, here.session), "live", {
@@ -120,6 +121,12 @@ fn working_said_node(
     r.by_room(fn(held, room) {
       held.box(fn(area) {
         @sf.style_node(area, fn() { activity_row_box })
+        // (where it is in the list with words sent from here as they fly: none of it seen till they land, its room
+        // taken all along, chat_body_node's working_shows_at; none bound where it is seen at once)
+        if shows_at() > area.cause_at() {
+          let shown_after = @sf.waited_past_node(area, shows_at, 0.0)
+          area.alpha(By(fn() { if shown_after() { 1.0 } else { 0.0 } })) |> ignore
+        }
         // the clock's words as they show now ("" none): what they take of the line
         let clock_said : @signals.Signal[String] = @signals.signal("")
         // (how wide they are with the gap before them, worked out as they change, not as what reads it is drawn)

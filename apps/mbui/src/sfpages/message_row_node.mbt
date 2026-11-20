@@ -65,7 +65,16 @@ fn message_row_frame_node(
     // row with it, never a step of the gap's in the frame it sets off)
     root.pick(fn() { row_top_kind(top()) }, fn(gap, _) {
       gap.height(By(fn() { Some(top()) })) |> ignore
-      @sfbase.column_set_off_each(gap, fn() { if gap.alive() { gap.resizes() |> ignore } })
+      @sfbase.column_set_off_each(gap, fn() {
+        if gap.alive() {
+          let over = @sfbase.column_set_off_over()
+          if over > 0.0 {
+            gap.resizes(spec=(@ui.move_ms(over), fn(p) { @ui.Ease::Move.at(p) })) |> ignore
+          } else {
+            gap.resizes() |> ignore
+          }
+        }
+      })
     })
     // (its middle, as wide as the list less its sides, those its padding: the old row's line and its middle
     // (row_line, row_middle) one node, no box of room either side)

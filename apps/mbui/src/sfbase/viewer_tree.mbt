@@ -639,13 +639,14 @@ fn image_ends(n : @view.View, vw : Viewer, src : Source) -> Unit {
       vw.fly.said()
       vw.fade.said()
       match pv_leaving.get() {
-        // (back by the tree's shared flight once that is told: its own end to the moment, not the fade's rounded up)
+        // (back by the tree's shared flight once that is told: its own end to the moment (tree_way_end), not the fade's
+        // rounded up)
         Some(l) if physical_equal(l, vw) && !vw.leaving_grab =>
           Some(
             if vw.flies {
               vw.fly.end()
-            } else if vw.tree_back.untracked() && vw.tree_way_end > 0.0 {
-              vw.tree_way_end
+            } else if vw.tree_back.untracked() && vw.tree_way_end.get() > 0.0 {
+              vw.tree_way_end.get()
             } else {
               vw.fade.end()
             },
@@ -2129,7 +2130,7 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
   let goes = fn(t : Double) {
     // (its flight told as it sets out: till it ends, Viewer::tree_way_told; before that, as long as one may take)
     if vw.tree_way.get() {
-      t < vw.tree_way_end
+      t < vw.tree_way_end.get()
     } else {
       t < made + flight_most_ms
     }

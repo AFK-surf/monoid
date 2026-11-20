@@ -155,7 +155,8 @@ pub fn chat_page_body_node(
   // its pictures that could not be had for want of its station asked again as the chat comes into view (made, or shown
   // again from under what covered it), and as its station is reached again (ChatImages::seen, as its view says it
   // offline or not), as the old page's list asks them (chat_list's)
-  v.reacts(shows, fn(now) { if now { src.images.again(r.station) } })
+  // (and as it is woken, taken back from the stack's kept left: shown as it was, its pictures asked again all the same)
+  v.reacts(fn() { (shows(), woken.get()) }, fn(now) { if now.0 { src.images.again(r.station) } })
   // (whether it shows, lent to what its rows make: a screen's card previews it only while it does, screen_links_node's)
   v.lends(@sfbase.page_shows_lent, shows) |> ignore
   v.reacts(fn() { read.get().map(fn(x) { !x.0.offline }) }, fn(reached) {
@@ -168,19 +169,31 @@ pub fn chat_page_body_node(
   v.by_room(fn(b, given) {
     b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     let width = fn() { given.width() }
-    // (the composer at the foot of the room before the view is read, in the list's foot once it is)
-    match composer {
-      Some(build) =>
-        // (at once: the composer is in one place at a time, never in both as the view is read)
-        b.show(at_once=true, fn() { read.get() is None }, fn(o) {
-          o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-          o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
-          build(o)
-        })
-        |> ignore
-      None => ()
-    }
-    b.show(at_once=true, fn() { read.get() is Some(_) }, fn(o) {
+    // (the composer at the foot of the room before the view is read, in the list's foot once it is: one pick, so that
+    // the one before the view is let go of before the one in the list's foot is made, never both at once; the cursor
+    // it had, or was to take, taken by the one after it)
+    b.pick(at_once=true, fn() { read.get() is Some(_) }, fn(o, loaded) {
+      guard loaded else {
+        match composer {
+          Some(build) => {
+            o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
+            build(o)
+            // (whether its field had the cursor, as it last said: what its field's going tells first is not the person's)
+            let had = Ref(false)
+            o.reacts(fn() { w.field.focused() }, fn(f) { had.val = f })
+            o.owns(fn() {
+              if had.val || w.field.focused() || composing.wanted {
+                composer_take_focus()
+                composing_node.shown = ""
+              }
+            })
+            |> ignore
+          }
+          None => ()
+        }
+        return
+      }
       o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       let first = @signals.untracked(fn() { read.get().unwrap() })
       let view = fn() {
@@ -265,7 +278,6 @@ pub fn chat_page_body_node(
       )
       |> ignore
     })
-    |> ignore
   })
   .grow(Is(1.0))
   .shrink(Is(1.0))

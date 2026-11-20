@@ -27,6 +27,8 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
     panel
     .grow(Is(1.0))
     .clips(Is(true))
+    // (out of the semantics tree while the tape's side is over it, as the old page's tape_behind was)
+    .hides(By(fn() { wide.tape_at.get() != Page }))
     .ground(By(fn() { tape_page_ground(panel) }))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .padding(By(fn() { (0.0, 0.0, if tape_shown_side() is None { tape_room_now().under } else { 0.0 }, 0.0) }))

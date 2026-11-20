@@ -239,10 +239,25 @@ let columns_laid : Map[String, (@view.View) -> ColumnLaid] = Map([])
 let columns_set_off : Map[String, () -> Unit] = Map([])
 
 ///|
-/// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it.
-pub fn column_sets_off(chat : String, resize? : Bool = true) -> Unit {
+// kept across runs: how far what sets the column off goes while it is told so (column_sets_off), 0 otherwise
+let column_set_off_over_ref : Ref[Double] = Ref(0.0)
+
+///|
+/// How far what sets a chat's column off on its way goes (a side panel sliding in or out), read as it is told so
+/// (column_sets_off's `over`): what goes on that way with it (a row's room, the list's head, the composer's foot) a
+/// Move by as far (@ui.move_ms), as long as it. 0 where none was said, or outside its telling.
+pub fn column_set_off_over() -> Double {
+  column_set_off_over_ref.val
+}
+
+///|
+/// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it; `over`:
+/// how far what sets it off goes (column_set_off_over), 0 none said; `resize` false: only the count told, no list or
+/// row told to lay out anew (the fold's own way).
+pub fn column_sets_off(chat : String, over? : Double = 0.0, resize? : Bool = true) -> Unit {
   // (the page set off on its way by its cause (a side panel opened or shut): what it changes on the chat's page goes its
   // way, @view.transition)
+  column_set_off_over_ref.val = over
   @view.transition(fn() {
     columns_set_off_said.set(columns_set_off_said.untracked() + 1)
     if resize {
@@ -256,6 +271,7 @@ pub fn column_sets_off(chat : String, resize? : Bool = true) -> Unit {
       }
     }
   })
+  column_set_off_over_ref.val = 0.0
 }
 
 ///|
