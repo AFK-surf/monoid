@@ -16,7 +16,10 @@ const worker = globalThis as unknown as {
 };
 const runner = new Runner();
 const kept = new Map<string, Uint8Array>();
+const records: { at: number; text: string }[] = [];
+const closures: { at: number; address: string; reason: unknown }[] = [];
 const host: BaseHost = {
+  recorder: { on: () => true, line: text => { records.push({ at: Date.now(), text }); } },
   storageGet: key => Effect.sync(() => kept.get(key) ?? null),
   storageSet: (key, value) => Effect.sync(() => { kept.set(key, value); }),
   nowMs: () => Date.now(), monotonicMs: () => performance.now(),
@@ -56,12 +59,13 @@ async function invoke(method: string, args: any): Promise<unknown> {
       const attach = endpoint.meshUseLeaf!.bind(endpoint);
       endpoint.meshUseLeaf = async value => { await attach(value); counts.attached++; };
       return endpoint;
-    }, bytes => bytes, { relayControls: true });
+    }, bytes => bytes);
     const leaf = new LeafLinks();
     mesh = await runner.run(Mesh.make({ host, runner, tracer: new Tracer(host, runner, 0), iroh,
       wakes: new Wakes(), alpn, says: { protocol: 2 }, relayOnly: true, lookup: false,
       prepare: leaf.prepare,
       linked: (address, link, endpoint) => {
+        runner.fork(Effect.map(link.conn.closed(), reason => { closures.push({ at: Date.now(), address, reason }); }));
         // Observe the policy stream without changing its contents or scheduling.
         const request = link.request.bind(link);
         link.request = (...input) => Effect.map(request(...input), reply => {
@@ -104,9 +108,9 @@ async function invoke(method: string, args: any): Promise<unknown> {
     finally { reply.cancel(); }
     return { status: reply.status, sameConnection: link.conn === item.link.conn, closed: item.link.closed() };
   }
-  if (method === "snapshot") return { counts: { ...counts }, identities, errors,
+  if (method === "snapshot") return { at: Date.now(), records: [...records], closures: [...closures], counts: { ...counts }, identities, errors,
     relays: bound[0].relayStatus(),
-    links: [...links].map(([address, item]) => ({ address, originalClosed: item.link.closed(),
+    links: [...links].map(([address, item]) => ({ address, originalClosed: item.link.closed(), originalCloseReason: item.link.conn.closeReason(), originalPaths: item.link.conn.paths(),
       sameConnection: mesh.current(address)?.conn === item.link.conn,
       paths: mesh.current(address)?.conn.paths() ?? [], via: mesh.current(address)?.via() ?? null })),
   };

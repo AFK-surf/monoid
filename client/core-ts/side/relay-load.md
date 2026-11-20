@@ -53,3 +53,7 @@ This writes `relay-controls.json` before the relay failure experiment.
 It times path recovery after clearing disabled relays, clearing them with `addAddr`, and removing then inserting the relay with `addAddr`.
 A null recovery time means no path appeared within the 30-second observation window.
 Every observation checks that the original station connections and event streams remain open.
+
+Worker HTTP requests to relay hosts are grouped by host and `METHOD /path` in `measurement.http`. The raw request times are in `measurement.httpRequests` and `cdp.ndjson`. `RELAY_LOAD_MS=900000` selects a 15-minute window.
+
+The fixture stores the final snapshot, original close reasons, connection records and close events. It fails if an original connection is lost or an application event stream reopens.

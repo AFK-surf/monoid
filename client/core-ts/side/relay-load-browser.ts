@@ -33,7 +33,7 @@ function integer(key: string, fallback: number, min = 1, max = 32): number {
 }
 const options = {
   relays: integer("RELAY_LOAD_R", 6), entries: integer("RELAY_LOAD_E", 2, 0), stations: integer("RELAY_LOAD_S", 2),
-  workspaces: integer("RELAY_LOAD_W", 1), durationMs: integer("RELAY_LOAD_MS", 300_000, 1000, 600_000),
+  workspaces: integer("RELAY_LOAD_W", 1), durationMs: integer("RELAY_LOAD_MS", 300_000, 1000, 900_000),
   streamMs: integer("RELAY_LOAD_STREAM_MS", 0, 0, 60_000),
   visibility: process.env.RELAY_LOAD_VISIBILITY ?? "visible",
 };
@@ -233,7 +233,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   assert.equal(actualVisibility, options.visibility);
   // Finish observing short sockets created in the last ten seconds of the window.
   await pause(10_000);
-  const measured = capture.summarize(start, end, after.identities);
+  const measured = capture.summarize(start, end, after.identities, [...urls, ...entries]);
   const controls = process.env.RELAY_LOAD_CONTROLS === "1" ? await relayControls(rpc, capture, device.id, urls, entries, targets, output) : undefined;
   const selected = (await rpc("snapshot")).links[0].paths.find((path: any) => path.selected && path.relay);
   assert.ok(selected, "the first station has a selected relay path");
@@ -249,11 +249,13 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   await until(async () => (await rpc("snapshot")).counts.eventChunks > chunksBefore, "existing stream delivers after relay removal");
   const final = await rpc("snapshot");
   const result = { transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options,
-    browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after, controls,
+    browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after, final, controls,
     measurement: measured, recovery: { relay: cut.url, milliseconds: recoveryMs, ...recovered,
       eventStreamsReopened: serverCounts.eventOpens - opensBefore, allOriginalConnectionsOpen: final.links.every((link: any) => link.originalClosed === null && link.sameConnection) }, serverCounts };
   await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");
   const { perSecond: _seconds, ...total } = measured.total;
   console.log(JSON.stringify({ phase: "result", output, total, recovery: result.recovery }));
+  assert.equal(result.recovery.allOriginalConnectionsOpen, true, "all original station connections survive the measurement and relay cut");
+  assert.equal(result.recovery.eventStreamsReopened, 0, "relay recovery does not reopen application event streams");
   await rpc("close");
 });

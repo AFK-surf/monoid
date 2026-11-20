@@ -10,6 +10,7 @@ type Frame = { at: number; id: string; direction: "sent" | "received"; bytes: nu
 export class RelayCapture {
   readonly sockets = new Map<string, Socket>();
   readonly frames: Frame[] = [];
+  readonly requests: { at: number; host: string; path: string; method: string }[] = [];
   readonly workers = new Set<string>();
   readonly errors: string[] = [];
   readonly #cdp: any;
@@ -50,6 +51,15 @@ export class RelayCapture {
   }
   #event(session: string, method: string, params: any): void {
     if (this.#closed) return;
+    if (method === "Network.requestWillBeSent") {
+      const url = new URL(params.request.url);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        const request = { at: performance.now(), host: url.host, path: url.pathname, method: params.request.method };
+        this.requests.push(request);
+        this.#raw.write(JSON.stringify({ kind: "http", session, ...request }) + "\n");
+      }
+      return;
+    }
     if (!method.startsWith("Network.webSocket")) return;
     const at = performance.now();
     const id = `${session}:${params.requestId}`;
@@ -80,7 +90,7 @@ export class RelayCapture {
     }
     this.#raw.write(JSON.stringify(out) + "\n");
   }
-  summarize(start: number, end: number, identities: { kind: string; id: string; scope?: string }[]) {
+  summarize(start: number, end: number, identities: { kind: string; id: string; scope?: string }[], relayUrls: string[]) {
     assert.ok(end > start);
     const sockets = [...this.sockets.values()];
     const known = new Map(identities.map(identity => [identity.id, identity]));
@@ -129,7 +139,15 @@ export class RelayCapture {
         }),
       };
     };
-    return { window: { start, end, durationSeconds }, total: group(null),
+    const hosts = new Set(relayUrls.map(url => new URL(url).host));
+    const requests = this.requests.filter(r => hosts.has(r.host) && r.at >= start && r.at < end);
+    const http = Object.fromEntries([...hosts].map(host => [host, Object.fromEntries(
+      [...new Set(requests.filter(r => r.host === host).map(r => `${r.method} ${r.path}`))].map(path => {
+        const count = requests.filter(r => r.host === host && `${r.method} ${r.path}` === path).length;
+        return [path, { count, perMinute: count * 60 / durationSeconds }];
+      }),
+    )]));
+    return { window: { start, end, durationSeconds }, http, httpRequests: requests, total: group(null),
       byHost: Object.fromEntries([...new Set(sockets.map(s => s.host))].map(host => [host, group(host)])),
       sockets: described, errors: this.errors, workerSessions: [...this.workers] };
   }
