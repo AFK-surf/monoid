@@ -22,12 +22,14 @@ export async function sendCode(env: Env, lang: Lang, to: string, code: string, d
   const lead = tr(lang, "cloud.mail.code.lead");
   const more = [...(device ? [tr(lang, "cloud.mail.code.for", { name: device })] : []), tr(lang, "cloud.mail.code.notYou")];
   // The code on a line of its own, big, to read off or copy; not in the subject, which lock screens and mail lists show.
+  // Six digits read as two groups of three, as the app's code boxes group them (the sign-in page takes it with the space).
+  const shown = /^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
   const html =
     `<div style="font:16px/1.7 system-ui;color:#242424"><p>${escape(lead)}</p>` +
-    `<p style="margin:16px 0;font-size:32px;font-weight:700;letter-spacing:6px;font-variant-numeric:tabular-nums">${code}</p>` +
+    `<p style="margin:16px 0;font-size:32px;font-weight:700;letter-spacing:4px;word-spacing:10px;font-variant-numeric:tabular-nums">${escape(shown)}</p>` +
     more.map((line, i) => `<p${i === more.length - 1 ? ' style="color:#777"' : ""}>${escape(line)}</p>`).join("") +
     "</div>";
-  await env.EMAIL!.send({ from: { email: env.EMAIL_FROM!, name: cloudProduct().name }, to, subject: tr(lang, "cloud.mail.code.subject"), text: [lead, code, ...more].join("\n\n"), html });
+  await env.EMAIL!.send({ from: { email: env.EMAIL_FROM!, name: cloudProduct().name }, to, subject: tr(lang, "cloud.mail.code.subject"), text: [lead, shown, ...more].join("\n\n"), html });
 }
 
 /**

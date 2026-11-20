@@ -42,7 +42,9 @@ async function browser(h: H, address: string, callback = "http://127.0.0.1:32145
 function codeFor(h: H, to: string): string {
   const mail = h.mails.filter((m) => m.to === to).at(-1);
   assert.ok(mail, `a mail to ${to}`);
-  return /\b(\d{6})\b/.exec(mail.text)![1]!;
+  const m = /\b(\d{3}) (\d{3})\b/.exec(mail.text);
+  assert.ok(m, `the code in groups of three in ${JSON.stringify(mail.text)}`);
+  return m[1]! + m[2]!;
 }
 
 /** A sign-in with an email from start to tokens. */
@@ -79,8 +81,12 @@ test("an email signs up with a code sent to it, and signs in to the same account
     assert.match(sent.headers.get("content-security-policy")!, /form-action [^;]* http:\/\/127\.0\.0\.1:32145(;| )/, "its form may send the browser back to the client");
     assert.equal(h.mails.length, 1);
     assert.equal(h.mails[0]!.to, "new.person@example.test");
-    assert.doesNotMatch(h.mails[0]!.subject, /\d{6}/, "the code is not in the subject: lock screens show it");
+    assert.doesNotMatch(h.mails[0]!.subject, /\d{6}|\d{3} \d{3}/, "the code is not in the subject: lock screens show it");
     const code = codeFor(h, "new.person@example.test");
+    const grouped = `${code.slice(0, 3)} ${code.slice(3)}`;
+    assert.ok(h.mails[0]!.text.split("\n\n").includes(grouped), "the code on a line of its own, three and three");
+    assert.match(h.mails[0]!.html, new RegExp(`>${grouped}</p>`), "the code shown three and three");
+    assert.doesNotMatch(h.mails[0]!.text, /\b\d{6}\b/, "never as six digits run together");
     const wrong = await b.post({ via: "code", code: code === "000000" ? "111111" : "000000" });
     assert.equal(wrong.status, 200);
     assert.match(await wrong.text(), /4/, "how many tries are left");

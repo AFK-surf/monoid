@@ -326,6 +326,9 @@ pub fn code_block(@ui.Ctx, String, String, colours? : String?, face? : Int32?) -
 
 pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?, face? : () -> Int?, command? : Bool) -> Unit
 
+#callsite(autofill(loc))
+pub fn code_display_node(@view.View, () -> String, groups? : Array[Int32], loc~ : SourceLoc) -> @view.View
+
 pub let code_edge : @ui.Color
 
 pub fn code_face() -> Bytes
@@ -337,6 +340,8 @@ pub fn code_ink_ask(String, String) -> Unit
 pub fn code_ink_node(@view.View, () -> String, () -> String) -> () -> String??
 
 pub fn code_ink_told(String, String) -> String??
+
+pub fn code_segments(String, groups? : Array[Int32]) -> Array[String]
 
 pub let columns : Columns
 

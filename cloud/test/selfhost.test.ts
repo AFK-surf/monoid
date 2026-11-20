@@ -104,7 +104,8 @@ test("without Google, a cloud with mail signs in with an email alone: no Google 
     assert.doesNotMatch(b.page, /value="google"|accounts\.google\.com|Google/);
     assert.equal((await b.post({ via: "google" })).status, 200, "the page again, not Google");
     assert.equal((await b.post({ via: "email", email: "owner@example.test" })).status, 200);
-    const code = /\b(\d{6})\b/.exec(h.mails.at(-1)!.text)![1]!;
+    const m = /\b(\d{3}) (\d{3})\b/.exec(h.mails.at(-1)!.text)!;
+    const code = m[1]! + m[2]!;
     const tokens = await b.exchange(await b.post({ via: "code", code }));
     assert.equal(tokens.email, "owner@example.test");
   } finally {
